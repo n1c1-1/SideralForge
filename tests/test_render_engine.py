@@ -66,5 +66,5 @@ def test_settings_change_and_cache(prep):
 
 
 def test_presets_are_valid():
-    for name, values in PRESETS.items():
+    for values in PRESETS.values():
         RenderSettings(**values)

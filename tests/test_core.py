@@ -129,3 +129,20 @@ def test_journal_events(project):
     assert types[0] == "run_start" and "stage_end" in types and types[-1] == "run_end"
     more, pos2 = read_events(project.logs / "events.jsonl", pos)
     assert more == [] and pos2 == pos
+
+
+def test_preview_accepts_grey_and_channel_first(project):
+    import numpy as np
+
+    class P(Stage):
+        name = "p"
+        title = "p"
+
+        def run(self, ctx, p):
+            ctx.preview("grey", np.random.rand(40, 60))
+            ctx.preview("chw", np.random.rand(3, 40, 60))
+            ctx.preview("hwc", (np.random.rand(40, 60, 3) * 255).astype(np.uint8))
+
+    pl = Pipeline(project, [P()], Journal(project.logs, echo=False))
+    assert pl.run() == "done"
+    assert len(list((project.stage_dir("p") / "previews").glob("*.jpg"))) == 3

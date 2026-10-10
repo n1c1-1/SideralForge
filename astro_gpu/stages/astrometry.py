@@ -6,6 +6,8 @@ import numpy as np
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage, StageError
 
+GOOD_PAIRS = 15     # matched star pairs that make a triangle match certain (false matches raise instead)
+
 
 class AstrometryParams(StageParams):
     target: str = P("", label="Target name",
@@ -125,9 +127,9 @@ class Astrometry(Stage):
                 res = _match(gs, gm, ra0, dec0, sc, W, H, brightdet, off, fw, fh, aa, tol)
                 if res is not None and (best is None or res[2] > best[2]):
                     best = (*res, sc, glim, radius)
-                    if res[2] > 25:
+                    if res[2] >= GOOD_PAIRS:
                         break
-            if best is not None and best[2] > 25:
+            if best is not None and best[2] >= GOOD_PAIRS:
                 break
         if best is None:
             raise StageError("could not match the stars with Gaia: check the target / coordinates and the image "
@@ -205,12 +207,12 @@ def _match(gs, gm, ra0, dec0, sc, W, H, brightdet, off, fw, fh, aa, tol):
                 if flip:
                     q[:, 1] = H - 1 - q[:, 1]
                 try:
-                    T, (a, _) = aa.find_transform(q, gpos, max_control_points=60)
+                    T, (a, _) = aa.find_transform(q, gpos, max_control_points=100)
                 except Exception:  # noqa: BLE001 - no match for this hypothesis
                     continue
                 if abs(np.log(T.scale)) < tol and (best is None or len(a) > best[2]):
                     best = (flip, T, len(a), list(w0.wcs.crval))
-        if best is not None and best[2] > 25:
+        if best is not None and best[2] >= GOOD_PAIRS:
             break
     return best
 

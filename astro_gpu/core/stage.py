@@ -135,9 +135,11 @@ class Context:
         self.journal.emit("progress", stage=self.stage.name, frac=float(frac), msg=msg, eta=eta, elapsed=el)
 
     def preview(self, name: str, rgb: np.ndarray, max_side: int = 1600) -> Path:
-        """Save an 8-bit RGB preview (H, W, 3) or (3, H, W) float [0,1] / uint8 and announce it."""
+        """Save a preview: (H, W, 3), (3, H, W) or greyscale (H, W), float [0,1] or uint8, and announce it."""
         import cv2
         a = np.asarray(rgb)
+        if a.ndim == 2:                                   # greyscale map
+            a = np.repeat(a[:, :, None], 3, axis=2)
         if a.ndim == 3 and a.shape[0] == 3 and a.shape[2] != 3:
             a = a.transpose(1, 2, 0)
         if a.dtype != np.uint8:
