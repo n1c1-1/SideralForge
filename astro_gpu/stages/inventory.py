@@ -40,7 +40,11 @@ class Inventory(Stage):
         with ThreadPoolExecutor(8) as ex:
             for k, files in groups.items():
                 infos = []
-                for info in ex.map(read_info, files):
+                if not files:
+                    out[k] = infos
+                    continue
+                first = read_info(files[0])          # decoded once; the others only read their EXIF header
+                for info in ex.map(lambda f: read_info(f, like=first), files):
                     infos.append(info.to_dict())
                     done += 1
                     ctx.progress(done / total, f"reading metadata {done}/{total}")

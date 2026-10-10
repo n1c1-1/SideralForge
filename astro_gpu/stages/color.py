@@ -180,22 +180,16 @@ def line_vec(S, lam, lines):
 
 
 def response_plot(lam, S, n):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(8, 3.6), dpi=110)
-    for c, col in zip(range(3), ("#d9534f", "#5cb85c", "#428bca")):
+    from ..core import plots
+    fig, ax = plots.figure(size=(8, 3.6))
+    for c, col in zip(range(3), ("#e0605a", "#6fbf73", "#5aa0d8")):
         ax.plot(lam, S[c] / S.max(), color=col, lw=2)
     for l0, nm in ((486.1, "Hb"), (500.7, "[OIII]"), (656.3, "Ha")):
-        ax.axvline(l0, color="#888", lw=0.8, ls=":")
-        ax.text(l0 + 3, 1.02, nm, fontsize=9)
+        ax.axvline(l0, color=plots.MUTED, lw=0.8, ls=":")
+        ax.text(l0 + 3, 1.02, nm, fontsize=9, color=plots.FG)
     ax.set_xlim(350, 1000)
     ax.set_ylim(0, 1.1)
     ax.set_xlabel("wavelength (nm)")
     ax.set_ylabel("relative response")
     ax.set_title(f"Sensor spectral response reconstructed from {n} Gaia XP stars", fontsize=11)
-    fig.tight_layout()
-    fig.canvas.draw()
-    img = np.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
-    plt.close(fig)
-    return img
+    return plots.to_rgb(fig)

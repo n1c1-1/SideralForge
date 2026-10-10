@@ -57,10 +57,18 @@ def _cfa_from_rawpy(r) -> str:
     return s.replace("g", "G")
 
 
-def read_info(path: str | Path) -> FrameInfo:
+def read_info(path: str | Path, like: FrameInfo | None = None) -> FrameInfo:
+    """Metadata of a frame. With ``like`` (a frame of the same camera already read), RAW files are not decoded:
+    only their EXIF header is read and the sensor properties are copied (much faster on slow disks)."""
     path = Path(path)
     ext = path.suffix.lower()
     if ext in RAW_EXT:
+        if like is not None and like.kind == "raw" and Path(like.path).suffix.lower() == ext:
+            info = FrameInfo(str(path), "raw", like.width, like.height, like.cfa, like.black, like.white)
+            _exif_into(info, path)
+            if info.camera and info.camera != like.camera:
+                return _raw_info(path)
+            return info
         return _raw_info(path)
     if ext in FITS_EXT:
         return _fits_info(path)
@@ -90,7 +98,6 @@ def read_cfa(path: str | Path) -> np.ndarray:
 
 
 def _raw_info(path: Path) -> FrameInfo:
-    import exifread
     import rawpy
     with rawpy.imread(str(path)) as r:
         h, w = r.raw_image_visible.shape
@@ -98,6 +105,12 @@ def _raw_info(path: Path) -> FrameInfo:
         black = float(np.mean(r.black_level_per_channel))
         white = float(r.white_level)
     info = FrameInfo(str(path), "raw", w, h, cfa, black, white)
+    _exif_into(info, path)
+    return info
+
+
+def _exif_into(info: FrameInfo, path: Path) -> None:
+    import exifread
     try:
         with open(path, "rb") as f:
             t = exifread.process_file(f, details=False)
@@ -115,7 +128,6 @@ def _raw_info(path: Path) -> FrameInfo:
     if info.time is None:
         info.time = datetime.fromtimestamp(path.stat().st_mtime).isoformat()
     info.pixel_um = PIXEL_PITCH_UM.get(info.camera)
-    return info
 
 
 def _ratio(v) -> float | None:

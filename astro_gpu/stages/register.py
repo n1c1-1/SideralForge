@@ -157,26 +157,18 @@ def fit_frame(cat, ref, tree, W, H):
 
 
 def quality_plot(meta, fwhm, transp, ok):
-    import matplotlib
-    matplotlib.use("Agg")
     from datetime import datetime
 
-    import matplotlib.pyplot as plt
+    from ..core import plots
     t = [datetime.fromisoformat(m["time"]) if m.get("time") else None for m in meta]
     x = t if all(t) else list(range(len(meta)))
-    fig, ax = plt.subplots(2, 1, figsize=(9, 4.6), dpi=110, sharex=True)
-    ax[0].plot(x, np.where(ok, transp, np.nan), ".", ms=3, color="#d9a441")
+    fig, ax = plots.figure(2, 1, size=(9, 4.6), sharex=True)
+    ax[0].plot(x, np.where(ok, transp, np.nan), ".", ms=3, color=plots.AMBER)
     ax[0].set_ylabel("transparency")
-    ax[1].plot(x, fwhm, ".", ms=3, color="#5aa0d8")
+    ax[1].plot(x, fwhm, ".", ms=3, color=plots.BLUE)
     ax[1].set_ylabel("FWHM (px)")
-    for a in ax:
-        a.grid(alpha=0.3)
     fig.autofmt_xdate()
-    fig.tight_layout()
-    fig.canvas.draw()
-    img = np.asarray(fig.canvas.buffer_rgba())[:, :, :3].copy()
-    plt.close(fig)
-    return img
+    return plots.to_rgb(fig)
 
 
 # ---------------------------------------------------------------------- worker processes
