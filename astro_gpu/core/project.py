@@ -71,7 +71,9 @@ class Project:
                             scratch_dir=str(scratch_dir or root / "work" / "_scratch"),
                             reference_image=reference_image, created=datetime.now().isoformat(timespec="seconds"))
         (root / "project.json").write_text(json.dumps(asdict(cfg), indent=2), encoding="utf-8")
-        return cls(root)
+        p = cls(root)
+        remember(p)
+        return p
 
     def _load(self) -> ProjectConfig:
         p = self.root / "project.json"
@@ -119,6 +121,37 @@ class Project:
     def clear_override(self, stage: str, name: str) -> None:
         self.config.params.get(stage, {}).pop(name, None)
         self.save()
+
+
+REGISTRY = Path.home() / ".astro_gpu" / "projects.json"
+
+
+def remember(project: Project) -> None:
+    """Record a project as recently used (shared by the command line and the interface)."""
+    try:
+        reg = json.loads(REGISTRY.read_text(encoding="utf-8")) if REGISTRY.exists() else {}
+    except (OSError, ValueError):
+        reg = {}
+    key = str(project.root.resolve())
+    reg[key] = {"name": project.config.name, "used": datetime.now().isoformat(timespec="seconds")}
+    reg = dict(sorted(reg.items(), key=lambda kv: kv[1]["used"], reverse=True)[:30])
+    try:
+        REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+        tmp = REGISTRY.with_suffix(".tmp")
+        tmp.write_text(json.dumps(reg, indent=1), encoding="utf-8")
+        os.replace(tmp, REGISTRY)
+    except OSError:
+        pass
+
+
+def recent_projects() -> list[tuple[str, str]]:
+    """(name, folder) of the recently used projects that still exist, most recent first."""
+    try:
+        reg = json.loads(REGISTRY.read_text(encoding="utf-8")) if REGISTRY.exists() else {}
+    except (OSError, ValueError):
+        return []
+    items = sorted(reg.items(), key=lambda kv: kv[1].get("used", ""), reverse=True)
+    return [(v.get("name", Path(k).name), k) for k, v in items if (Path(k) / "project.json").exists()]
 
 
 def list_frames(folders: list[str]) -> list[Path]:

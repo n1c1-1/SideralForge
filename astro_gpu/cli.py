@@ -12,10 +12,11 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
 def _pipeline(project_dir):
-    from .core.project import Project
+    from .core.project import Project, remember
     from .core.runner import Pipeline
     from .stages import all_stages
     p = Project(project_dir)
+    remember(p)
     return p, Pipeline(p, all_stages())
 
 
@@ -83,11 +84,12 @@ def cmd_set(a):
 
 
 def cmd_render(a):
-    from .core.project import Project
+    from .core.project import Project, remember
     from .render.engine import RenderEngine
     from .render.export import ExportSettings, export
     from .render.settings import PRESETS, RenderSettings
     p = Project(a.project)
+    remember(p)
     vals = dict(PRESETS.get(a.preset, {})) if a.preset else {}
     vals.update(p.config.render.get("settings", {}) if a.use_saved else {})
     for item in a.set or []:

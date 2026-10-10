@@ -336,8 +336,8 @@ class MainWindow(QMainWindow):
         self.project = p
         self.pipeline = Pipeline(p, all_stages())
         self.setWindowTitle(f"astro_GPU {__version__} - {p.config.name}")
-        rec = [r for r in self.settings.value("recent", [], type=list) if r != str(p.root)]
-        self.settings.setValue("recent", [str(p.root)] + rec[:9])
+        from ..core.project import remember
+        remember(p)
         self._update_recent()
         self.journal.clear()
         dev = p.config.devices.get("main")
@@ -371,11 +371,22 @@ class MainWindow(QMainWindow):
             self.project.save()
 
     def _update_recent(self):
+        """Recently used projects, whether they were opened here or run from the command line."""
         from PySide6.QtWidgets import QMenu
+
+        from ..core.project import recent_projects
         m = QMenu(self)
-        for r in self.settings.value("recent", [], type=list):
-            a = m.addAction(r)
+        items = recent_projects()
+        known = {Path(r).resolve() for _, r in items}
+        for r in self.settings.value("recent", [], type=list):          # list kept by older versions
+            if Path(r, "project.json").exists() and Path(r).resolve() not in known:
+                items.append((Path(r).name, r))
+        for name, r in items[:20]:
+            a = m.addAction(f"{name}    {r}")
+            a.setToolTip(r)
             a.triggered.connect(lambda _=False, rr=r: self.load_project(rr))
+        if not items:
+            m.addAction("(no project yet)").setEnabled(False)
         self.recent.setMenu(m)
 
     # ------------------------------------------------------------------ status
