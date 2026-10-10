@@ -26,6 +26,9 @@ class DenoiseParams(StageParams):
                              help="Peak learning rate of the one-cycle schedule.")
     seed: int = P(0, label="Random seed", level=ADVANCED, ge=0,
                   help="Seed of the random tile selection (for reproducible runs).")
+    reuse_model: str = P("", label="Reuse a trained network", level=ADVANCED,
+                         help="Path of an n2n_model.pt trained earlier on the same kind of data: no training, the "
+                              "network is applied as is (re-runs, A/B tests where only the processing should change).")
 
 
 class Denoise(Stage):
@@ -54,8 +57,15 @@ class Denoise(Stage):
         B = ctx.load("stack", "drz_B.npy").astype(np.float32)
         Wt = ctx.load("stack", "drz_weight.npy").astype(np.float32)
         bk, sg, nm = norm_params(A, Wt)
-        ck = ctx.ckpt / "train.pt"
-        net = train(ctx, A, B, nm, bk, sg, p, dev, ck)
+        if p.reuse_model:
+            ck_ = torch.load(p.reuse_model, map_location=dev, weights_only=False)
+            net = UNet().to(dev)
+            net.load_state_dict(ck_["net"])
+            bk, sg = ck_["bk"], ck_["sg"]
+            ctx.log(f"network reused from {p.reuse_model} (no training)")
+        else:
+            ck = ctx.ckpt / "train.pt"
+            net = train(ctx, A, B, nm, bk, sg, p, dev, ck)
         torch.save({"net": net.state_dict(), "bk": bk, "sg": sg}, ctx.out("n2n_model.pt"))
         net.eval()
         ctx.progress(0.92, "denoising the half-stacks")
