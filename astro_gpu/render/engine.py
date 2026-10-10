@@ -30,7 +30,7 @@ XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
                         [0.0556434, -0.2040259, 1.0572252]])
 
 LAYER_KEYS = ("fine_k", "fine_lo_pct", "fine_hi_pct", "faint_smooth", "faint_lo_pct", "faint_hi_pct", "resid_boost",
-              "colour_detail", "cont_detail", "oiii_boost", "oiii_threshold")
+              "colour_detail", "cont_detail", "oiii_boost", "oiii_threshold", "oiii_smooth")
 NEB_LIN_KEYS = LAYER_KEYS + ("ha_boost", "ha_sigma", "glow_k", "glow_sigma", "g_glow", "speck_k", "white_temp", "tint")
 NEB_KEYS = NEB_LIN_KEYS + ("chroma", "chroma_protect", "hue_target", "hue_shift", "chroma_sigma", "snr_lo", "snr_hi",
                            "sky_level", "dark_level", "toe", "sky_pct", "dark_pct", "white_mult", "hdr_strength",
@@ -67,7 +67,8 @@ class RenderEngine:
                                                               if (self.dir / f"{n}.npy").exists()]
             if (self.dir / "O.npy").exists() and self.prep.get("oiii_sigma"):
                 names.append("O")
-                self.o_vec = torch.tensor(self.prep["o"], dtype=torch.float32, device=self.dev)
+                self.o_vec = torch.tensor(self.prep.get("o_display", self.prep["o"]), dtype=torch.float32,
+                                          device=self.dev)
             self._host = {n: torch.from_numpy(np.load(self.dir / f"{n}.npy")) for n in names}
             self.Am = torch.tensor(self.prep["Am"], dtype=torch.float32, device=self.dev)
             self.split = bool(self.prep.get("split", True))
@@ -147,8 +148,7 @@ class RenderEngine:
         if s.colour_detail > 0 and "chroma_fine" in self._host:
             astro += s.colour_detail * self._layer("chroma_fine", f)
         if s.oiii_boost > 0 and "O" in self._host:        # OIII emission above the noise, in its own colour
-            O = (self._layer("O", f) - s.oiii_threshold * float(self.prep["oiii_sigma"])).clamp(min=0)
-            astro += s.oiii_boost * self.o_vec[:, None, None] * O[None]
+            astro += s.oiii_boost * self.o_vec[:, None, None] * self._oiii(s, f, valid)[None]
         return astro
 
     def white_balance(self, s: RenderSettings) -> np.ndarray:
@@ -211,6 +211,18 @@ class RenderEngine:
         lin = torch.einsum("ij,jhw->ihw", self.M_eff(s), astro)
         lin[:, ~valid] = 0
         return lin
+
+    def _oiii(self, s: RenderSettings, f: int, valid: torch.Tensor) -> torch.Tensor:
+        """OIII map at the chosen smoothing, minus its sky level, soft-thresholded at the measured sky noise."""
+        O = self._layer("O", f)
+        extra = max(s.oiii_smooth ** 2 - float(self.prep.get("oiii_scale", 6.0)) ** 2, 0.0) ** 0.5
+        if extra > 0:
+            O = ops.gaussian_blur(O, extra / f)
+        Eg0 = self._layer("Eg0", f)
+        sky = valid & (Eg0 < ops.percentile(Eg0, 50, valid))
+        o0 = ops.percentile(O, 50, sky)
+        sig = 1.4826 * ops.percentile((O - o0).abs(), 50, sky)
+        return (O - o0 - s.oiii_threshold * sig).clamp(min=0)
 
     def _glow(self, s: RenderSettings, f: int) -> torch.Tensor:
         h, w = self._shape(f)

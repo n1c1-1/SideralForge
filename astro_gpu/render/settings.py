@@ -40,9 +40,14 @@ class RenderSettings(StageParams):
                                "inner regions around the ionising stars; next to H-alpha it is easily drowned.",
                           tip="0 = calibrated; 1 = OIII doubled; 2-3 = HOO-like rendering. Only OIII above the noise "
                               "threshold is amplified.")
-    oiii_threshold: float = S(1.0, section="Colour", label="OIII noise threshold", level=ADVANCED, ge=0, le=5, step=0.1,
-                              unit="sigma", help="OIII below this many noise sigmas (measured on the sky) is not "
-                                                 "amplified, so that the background does not turn teal.")
+    oiii_smooth: float = S(16.0, section="Colour", label="OIII smoothing", ge=2, le=60, step=1, unit="px",
+                           help="Scale of the OIII map. Its separation from H-alpha is noisy with a colour camera: "
+                                "large scales are reliable, fine ones turn into blotches.",
+                           tip="12-24 px for most data; lower only with very deep integrations.")
+    oiii_threshold: float = S(2.0, section="Colour", label="OIII noise threshold", level=ADVANCED, ge=0, le=6, step=0.1,
+                              unit="sigma", help="OIII below this many noise sigmas (measured live on the sky at the "
+                                                 "chosen smoothing) is not amplified, so that the background does not "
+                                                 "turn teal.")
     resid_boost: float = S(0.0, section="Colour", label="Blue / reflection tones", ge=-1.0, le=3.0, step=0.05,
                            help="Amplifies the colour component that is neither H-alpha nor starlight nor OIII: bluer "
                                 "than the stars (reflection nebulae, H-beta) or redder (dust). With a colour camera "

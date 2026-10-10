@@ -39,11 +39,11 @@ class RenderPrepParams(StageParams):
                               "together) are preserved.")
     guard_sigma: float = P(1.0, label="Guard tolerance", level=ADVANCED, ge=0, le=5, step=0.1, unit="sigma",
                            help="How far below the local emission level a star footprint may go.")
-    oiii_scale: float = P(6.0, label="OIII map smoothing", level=ADVANCED, ge=0, le=50, unit="px",
+    oiii_scale: float = P(4.0, label="OIII map base smoothing", level=ADVANCED, ge=0, le=50, unit="px",
                           help="The OIII emission (teal, 496/501 nm) is separated from H-alpha and starlight with the "
-                               "spectral response of your camera. With a colour camera the three signatures are close, "
-                               "so the separation is noisy at fine scales and is smoothed at this scale. 0 disables "
-                               "the OIII layer.")
+                               "spectral response of your camera. With a colour camera the three signatures are close "
+                               "and the separation is noisy: the map is stored smoothed at this scale (more smoothing "
+                               "is set live in the final adjustment tab). 0 disables the OIII layer.")
 
 
 class RenderPrep(Stage):
@@ -57,7 +57,7 @@ class RenderPrep(Stage):
                    "faint areas, fine colour, blue-green tones) is decided live in the final adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "4"          # 2: layers mixed live by the rendering engine; 3: unsmoothed continuum; 4: OIII layer
+    version = "5"          # 2: live layers; 3: unsmoothed continuum; 4: OIII layer; 5: OIII display colour
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -134,6 +134,7 @@ class RenderPrep(Stage):
             ctx.log(f"OIII layer: peak {np.percentile(O[good], 99.9) / max(s_o, 1e-9):.0f} sigma above the sky "
                     f"(condition number of the separation {np.linalg.cond(B3):.0f})")
             del O, Eg_
+        o_disp = oiii_display_vector(M, o_)
         # fine-detail layer (Noise2Noise small scales minus Wiener small scales), switched off on star footprints
         ctx.progress(0.65, "fine detail layer")
         n2 = ctx.load("starless", "n2n_final.npy").astype(np.float32) / flat
@@ -180,10 +181,29 @@ class RenderPrep(Stage):
                                     "vh": vh.tolist(), "M": M.tolist(), "drizzle_scale": S, "width": W,
                                     "height": H, "mag_offset": dm, "e": e_.tolist(), "Am": Am.tolist(),
                                     "layers": 2, "split": bool(p.cont_smooth > 0), "o": o_.tolist(),
-                                    "oiii_sigma": s_o})
+                                    "o_display": o_disp.tolist(), "oiii_sigma": s_o, "oiii_scale": p.oiii_scale})
         np.savez(ctx.out("profile.npz"), r=r_all, prof=prof)
         from ..core.imgutil import asinh_preview
         ctx.preview("nebula_layer", asinh_preview(preview, M, k=30))
+
+
+def oiii_display_vector(M: np.ndarray, o_cam: np.ndarray) -> np.ndarray:
+    """Camera-space vector whose display colour is the true colour of the [OIII] 495.9 + 500.7 nm lines.
+
+    The colour of the doublet is outside the sRGB gamut; it is brought in by adding white (hue kept). The vector has
+    the same luminance as the OIII signature of the camera, so a boost adds the brightness the OIII really has.
+    """
+    import colour
+
+    from .color import XYZ_TO_SRGB
+    cmfs = colour.MSDS_CMFS["CIE 1931 2 Degree Standard Observer"]
+    wl, v = cmfs.wavelengths, cmfs.values
+    xyz = sum(w * np.array([np.interp(lam, wl, v[:, i]) for i in range(3)]) for lam, w in ((500.7, 1.0), (495.9, 0.33)))
+    rgb = XYZ_TO_SRGB @ xyz
+    rgb = rgb - min(rgb.min(), 0.0)
+    lum = np.array([0.2126, 0.7152, 0.0722])
+    rgb = rgb / (lum @ rgb) * (lum @ (M @ o_cam))
+    return np.linalg.solve(M, rgb)
 
 
 def crop_box(good: np.ndarray, edge_frac: float):

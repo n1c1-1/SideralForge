@@ -37,6 +37,23 @@ Still to do:
 * data-driven colour scales (finer where the signal allows);
 * a "structure" control using the Noise2Noise layer more widely.
 
+## Robustness on galaxy fields and difficult data (M33 test, 2026-10-10)
+
+M33 (A7S, 900 mm, 20 s at ISO 4000, no darks, no dithering, strong vignetting) exposed:
+
+* colour: at high galactic latitude the stars are too similar to determine the sensitivity curves; the free fit
+  gave an unphysical red channel (centred at 576 nm). Fixed: physical check of the curves and camera profiles
+  (the profile of the same camera predicted the M33 star colours within 1.8 %);
+* the colour matrix is still fitted on the stars of the field and differs strongly from the one of the same camera
+  on Milky Way fields: derive it from the sensitivity curves over a broad set of spectra (all stellar types,
+  emission lines, reflection) instead, independent of the field;
+* walking noise (fixed pattern dragged by the drift, no darks): diagonal colour streaks dominate the starless
+  image; estimate and remove the fixed pattern from all frames (median of the calibrated frames in sensor
+  coordinates) before registration;
+* sky background: the H-alpha survey follows the galaxy disc, so the regression takes the galaxy for H-alpha and
+  sky; mask extended objects (catalogue size, or bright smooth structures) in the background fit;
+* 9 % pure black after the tone curve, pink frame at the edges (vignetting 0.126 at the corners).
+
 ## Frame selection
 
 * The automatic transparency rule excluded 36 % of the M33 frames: refine the rule and flag large exclusions in
