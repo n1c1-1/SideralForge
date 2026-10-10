@@ -7,8 +7,9 @@ What makes it different from the usual stack → stretch → star removal → de
 
 * **Bayer drizzle on the GPU** directly from the raw colour pixels (no debayering interpolation), polynomial
   sub-pixel registration, transparency weighting, predictive outlier rejection, two independent half-stacks.
-* **Astrometry and colour from Gaia DR3**: plate solving on Gaia, spectral response of *your* sensor reconstructed
-  from Gaia XP spectra, physical colour matrix (G2V white).
+* **Astrometry and colour from Gaia DR3**: plate solving on Gaia, with an all-sky blind solver (geometric hashing
+  of star quads on Hipparcos / Tycho-2) when the target is unknown; spectral response of *your* sensor
+  reconstructed from Gaia XP spectra, physical colour matrix (G2V white).
 * **Noise2Noise denoiser trained on your own half-stacks**: it cannot invent detail that is not in both halves.
 * **Stars are measured, not erased**: empirical variable chromatic PSF, forced photometry of every Gaia star with a
   colour prior, faint-star model. The starless image is obtained by subtraction (no neural star removal), so faint
@@ -74,6 +75,20 @@ The user guide is in [astro_gpu/resources/GUIDE.md](astro_gpu/resources/GUIDE.md
 | background | star flat, sky model anchored on H-alpha and unresolved starlight |
 | render_prep | layers and star tables for the interactive rendering |
 
+## Validation
+
+The whole chain was run automatically from the raw frames and compared with two careful earlier processings of the
+same data (Sony A7S, TS 61 EDPH with reducer, 7.5 x 5 deg fields):
+
+| Data | Frames | Result |
+|---|---|---|
+| NGC 7822 (2026-08) | 602 x 30 s, 446 kept | same image as the reference processing (mean difference 5.6/255); blind astrometry without focal length; 1 dark dip on 152 000 stars |
+| Heart & Soul (2026-08) | 721 x 15 s | same image (mean difference 4.1/255), on an 8 GB GPU |
+
+Typical durations on an RTX 4060 Ti: about 1 h 15 for 600 frames of 12 Mpx (Noise2Noise training: 35 min);
+interactive rendering: 0.15-0.35 s per adjustment in preview, 2 s at full resolution.
+
 ## Status
 
-Version 0.1 - colour sensors only (monochrome + filters planned).
+Version 0.1 - colour sensors only (monochrome + filters planned). Tested on Windows 11 with RTX 4060 Ti (16 GB)
+and RTX 3070 (8 GB).
