@@ -54,7 +54,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "9"          # 5: halos from the extended PSF; 6-7: core mask; 9: bright-star zones interpolated
+    version = "11"         # 5: halos from the extended PSF; 6-7: core mask; 9: star zones; 11: zones of bright stars only
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -458,12 +458,13 @@ def star_zone_weight(img, model, x, y, g, sig, gmax=11.0):
     around the star, so it is not used.)"""
     H, W = img.shape[1:]
     m = img.mean(0)
-    L = model.max(0)
     # local sky pedestal (the starless image still holds the sky): large-scale minimum, smoothed
-    d = cv2.GaussianBlur(cv2.resize(m, (max(W // 8, 1), max(H // 8, 1)), interpolation=cv2.INTER_AREA), (0, 0), 2)
-    d = cv2.GaussianBlur(cv2.erode(d, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 41))), (0, 0), 10)
-    sky = cv2.resize(d, (W, H), interpolation=cv2.INTER_LINEAR)
+    sky = _local_floor(m)
     neb = np.clip(cv2.GaussianBlur(m, (0, 0), 16) - sky, 0, None)
+    # in a dense field the summed wings of thousands of stars make a smooth floor of star light everywhere; an error
+    # on it is smooth too, so only the light standing above that floor belongs to a single star
+    L = model.max(0)
+    L = np.clip(L - np.maximum(_local_floor(L), 0), 0, None)
     T = 3 * sig + 0.5 * neb
     # unreliable where the probable error of the star model (about a quarter of its light, as measured on the
     # residuals) exceeds that level - the nebula under a well subtracted halo is kept
@@ -473,8 +474,22 @@ def star_zone_weight(img, model, x, y, g, sig, gmax=11.0):
     for i in np.where((g < gmax) & (x > -300) & (x < W + 300) & (y > -300) & (y < H + 300))[0]:
         cv2.circle(disc, (int(round(x[i])), int(round(y[i]))), int(np.clip(40 * 10 ** (0.2 * (gmax - g[i])), 30, 300)), 1, -1)
     w = w * disc
+    # a zone belongs to a bright star: only the regions connected to the centre of one are kept (the compact cores of
+    # the many fainter stars around it are well subtracted or filled, they are not interpolated)
+    n, lab = cv2.connectedComponents((w > 0).astype(np.uint8), connectivity=8)
+    b = (g < gmax) & (x >= 0) & (x < W) & (y >= 0) & (y < H)
+    seeds = np.unique(lab[np.round(y[b]).astype(int).clip(0, H - 1), np.round(x[b]).astype(int).clip(0, W - 1)])
+    w = w * np.isin(lab, seeds[seeds > 0])
     w = np.maximum(w, cv2.dilate(w, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))))
     return cv2.GaussianBlur(w, (0, 0), 4)
+
+
+def _local_floor(m):
+    """Large-scale local minimum of an image (erosion over ~330 px at 1/8 scale), smoothed, at full resolution."""
+    H, W = m.shape
+    d = cv2.GaussianBlur(cv2.resize(m, (max(W // 8, 1), max(H // 8, 1)), interpolation=cv2.INTER_AREA), (0, 0), 2)
+    d = cv2.GaussianBlur(cv2.erode(d, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 41))), (0, 0), 10)
+    return cv2.resize(d, (W, H), interpolation=cv2.INTER_LINEAR)
 
 
 def star_zone_fill(img, w):

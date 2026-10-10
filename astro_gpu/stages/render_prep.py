@@ -41,6 +41,14 @@ class RenderPrepParams(StageParams):
     guard_sigma: float = P(3.0, label="Guard tolerance", level=ADVANCED, ge=0, le=10, step=0.1, unit="sigma",
                            help="How far below the brightness of the surroundings a star footprint may go before it is "
                                 "lifted (deeper = a hole left by the star subtraction, not noise).")
+    n2n_base: float = P(1.0, label="Noise2Noise in the base", level=ADVANCED, ge=0, le=1, step=0.05,
+                        help="The fine scales of the nebula are taken from the Noise2Noise network trained on your data: "
+                             "a local Wiener filter leaves islands of unfiltered pixel noise ('pepper') wherever its "
+                             "local noise estimate falls short, the network does not. 0 = Wiener everywhere (the 'Fine "
+                             "detail' slider then injects the network's detail).")
+    n2n_scale: float = P(16.0, label="Noise2Noise up to", level=ADVANCED, ge=0, le=200, step=1, unit="px",
+                         help="Scales smaller than this come from the network, larger ones from the Wiener filter (its "
+                              "large-scale level is the best characterised). 0 = the network at every scale.")
     oiii_scale: float = P(4.0, label="OIII map base smoothing", level=ADVANCED, ge=0, le=50, unit="px",
                           help="The OIII emission (teal, 496/501 nm) is separated from H-alpha and starlight with the "
                                "spectral response of your camera. With a colour camera the three signatures are close "
@@ -59,7 +67,7 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "10"         # 7: full-res base, generic guard; 8: star depth; 9: fine layers vs star light; 10: guard fill
+    version = "12"         # 7: full-res base; 8: star depth; 9: fine layers vs star light; 10: guard; 12: N2N fine scales
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -106,11 +114,27 @@ class RenderPrep(Stage):
         ctx.progress(0.1, "star footprints")
         foot_w = footprints(ctx, fs, dm, H, W) if p.star_guard else np.zeros((H, W), np.float32)
         ctx.metric("guard_footprint_pct", round(100 * float((foot_w > 0.5).mean()), 1))
-        ctx.progress(0.25, "nebula layer")
-        N = guard_generic(astro, Yl, foot_w, lum, w_cam, p.guard_sigma) if p.star_guard else astro
+        ctx.progress(0.2, "nebula layer")
+        # two denoisers are available: the multi-scale Wiener filter and the Noise2Noise network trained on these data.
+        # A local Wiener filter leaves islands of unfiltered pixel noise wherever its local noise estimate falls short
+        # (dark and bright pepper, worst at the edges of a nebula); the network does not. The fine scales come from the
+        # network, the large ones from the Wiener filter (bright-star zones are interpolated identically in both)
+        wstar = star_light_weight(ctx, lum, astro.shape[1:]) * (1 - foot_w)
+        ctx.metric("fine_layers_off_pct", round(100 * float((wstar < 0.5).mean()), 1))
+        n2 = ctx.load("starless", "n2n_final.npy").astype(np.float32) / flat
+        b0 = ctx.load("starless", "sl_final.npy").astype(np.float32) / flat
+        base = astro.copy()
+        for c in range(3):
+            d = n2[c] - b0[c]
+            if p.n2n_scale > 0:
+                d -= cv2.GaussianBlur(d, (0, 0), p.n2n_scale)
+            base[c] += p.n2n_base * d
+        del d
+        N = guard_generic(base, np.tensordot(lum, base, 1).astype(np.float32), foot_w, lum, w_cam, p.guard_sigma) \
+            if p.star_guard else base
         ctx.save("N.npy", N.astype(np.float32))
         preview = N
-        del Yl
+        del Yl, base
         # optional colour components for the colour sliders: the rest (neither H-alpha nor starlight) and OIII
         ctx.progress(0.45, "colour components")
         EC = np.tensordot(np.linalg.pinv(Am), astro, 1)
@@ -141,16 +165,12 @@ class RenderPrep(Stage):
         # fine-detail layer: Noise2Noise small scales minus Wiener small scales, kept as brightness (its colour is
         # noise), off on star footprints
         ctx.progress(0.65, "fine detail layer")
-        n2 = ctx.load("starless", "n2n_final.npy").astype(np.float32) / flat
-        b0 = ctx.load("starless", "sl_final.npy").astype(np.float32) / flat
         det = np.stack([(n2[c] - cv2.GaussianBlur(n2[c], (0, 0), p.fine_sigma))
                         - (b0[c] - cv2.GaussianBlur(b0[c], (0, 0), p.fine_sigma)) for c in range(3)])
         del n2, b0
-        # the fine layers are not reliable where the light of the stars dominates (residual spikes, halo streaks):
-        # weight 0 where the modelled / removed star light exceeds 3 noise sigmas of the brightness
-        wstar = star_light_weight(ctx, lum, astro.shape[1:]) * (1 - foot_w)
-        ctx.metric("fine_layers_off_pct", round(100 * float((wstar < 0.5).mean()), 1))
-        ctx.save("dY.npy", (np.tensordot(lum, det, 1) * wstar).astype(np.float16))
+        # the fine layers are not reliable where the light of the stars dominates (residual spikes, halo streaks);
+        # where the base already comes from the network its fine scales are in it (not counted twice)
+        ctx.save("dY.npy", (np.tensordot(lum, det, 1) * wstar * (1 - p.n2n_base)).astype(np.float16))
         del det
         cf = ctx.project.stage_dir("starless") / "chroma_fine.npy"
         if cf.exists():                           # star residuals are common to both halves: off on star light too

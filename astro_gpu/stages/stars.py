@@ -50,7 +50,7 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "4"          # 2: empirical extended 2-D PSF; 3: radial halo with the flux; 4: capped amplitude per star
+    version = "6"          # 2: empirical extended 2-D PSF; 3: radial halo with the flux; 4: capped amplitude; 6: unbiased
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device
@@ -365,17 +365,92 @@ def _shift(a, dx, dy):
 
 
 def _star_mask(tree, x, y, gd, i, xc, yc, R, shape, gmax=17.0, k=3.0):
+    """Discs over the stars (brighter than gmax) of the cutout centred on star i (i = None: on xc, yc)."""
     msk = np.zeros(shape, np.uint8)
-    for j in tree.query_ball_point([x[i], y[i]], R * 1.42):
+    ctr = [xc, yc] if i is None else [x[i], y[i]]
+    for j in tree.query_ball_point(ctr, R * 1.42):
         if j != i and gd[j] < gmax:
             cv2.circle(msk, (int(round(x[j] - xc + R)), int(round(y[j] - yc + R))),
                        int(np.clip(3 + k * (gmax - gd[j]), 3, 60)), 1, -1)
     return msk > 0
 
 
-def _template(img, res_src, x, y, gd, flux, idx, R, tree, gmask, subpixel):
+def field_sky(img, block=32, degree=4):
+    """Smooth sky of the whole field per channel: polynomial of the given degree fitted on block medians, objects
+    brighter than the sky clipped iteratively (one-sided: nebulae and residual starlight are positive)."""
+    C, H, W = img.shape
+    nby, nbx = H // block, W // block
+    by, bx = (np.arange(nby) + 0.5) * block, (np.arange(nbx) + 0.5) * block
+    v_, u_ = np.meshgrid(by / H * 2 - 1, bx / W * 2 - 1, indexing="ij")
+    terms = [u_ ** i * v_ ** j for i in range(degree + 1) for j in range(degree + 1 - i)]
+    A = np.stack([t.ravel() for t in terms], 1)
+    out = np.empty_like(img)
+    for c in range(C):
+        b = np.median(img[c][:nby * block, :nbx * block].reshape(nby, block, nbx, block), axis=(1, 3)).ravel()
+        ok = np.isfinite(b)
+        for _ in range(8):
+            q = np.linalg.lstsq(A[ok], b[ok], rcond=None)[0]
+            r = b - A @ q
+            s = 1.4826 * np.median(np.abs(r[ok] - np.median(r[ok])))
+            ok = np.isfinite(b) & (r < 2.0 * s) & (r > -4.0 * s)
+        grid = (A @ q).reshape(nby, nbx).astype(np.float32)
+        out[c] = cv2.resize(grid, (W, H), interpolation=cv2.INTER_LINEAR)
+    return out
+
+
+def _ring_plane(v, ring, xx, yy):
+    """Plane a + b x + c y fitted on the ring pixels of v (one 3-sigma clipping pass); the median if too few."""
+    z = v[ring]
+    if z.size < 30:
+        return float(np.median(v[ring])) if z.size else 0.0
+    A = np.c_[np.ones(z.size), xx[ring], yy[ring]].astype(np.float64)
+    ok = np.ones(z.size, bool)
+    for _ in range(2):
+        coef = np.linalg.lstsq(A[ok], z[ok], rcond=None)[0]
+        d = z - A @ coef
+        s_ = 1.4826 * np.median(np.abs(d[ok] - np.median(d[ok])))
+        ok = np.abs(d) < 3 * max(s_, 1e-12)
+        if ok.sum() < 30:
+            return float(np.median(z))
+    return (coef[0] + coef[1] * xx + coef[2] * yy).astype(np.float32)
+
+
+def _control(res_src, x, y, gd, tree, R, gmask, gsel, W, H, n=48, seed=1):
+    """The template estimator applied to random positions of the field away from stars brighter than gsel (same
+    background removal, same masks), in ADU: its bias. Comparing the median of a small area with that of a far ring
+    is biased wherever the sky is curved or holds faint nebulosity (skewed levels); measured, the bias is removed."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[-R:R + 1, -R:R + 1]
+    rr = np.hypot(xx, yy)
+    outer = rr > R - 4
+    cuts = []
+    for _ in range(50 * n):
+        if len(cuts) >= n:
+            break
+        xc, yc = int(rng.uniform(R, W - R - 1)), int(rng.uniform(R, H - R - 1))
+        if any(gd[j] < gsel for j in tree.query_ball_point([xc, yc], 0.6 * R)):
+            continue
+        res = res_src(np.s_[:, yc - R:yc + R + 1, xc - R:xc + R + 1])
+        msk = _star_mask(tree, x, y, gd, None, xc, yc, R, rr.shape, gmask)
+        cut = np.empty((3, 2 * R + 1, 2 * R + 1), np.float32)
+        for c in range(3):
+            v = res[c].astype(np.float32)
+            v = v - _ring_plane(v, outer & ~msk, xx, yy)
+            v[msk] = np.nan
+            cut[c] = v
+        cuts.append(cut)
+    if len(cuts) < 8:
+        return None, 0
+    return np.nan_to_num(np.nanmedian(np.stack(cuts), axis=0)), len(cuts)
+
+
+def _template(img, res_src, x, y, gd, flux, idx, R, tree, gmask, subpixel, control=None):
     """Median of the residual cutouts around the stars ``idx``, background removed, other stars masked, centred
-    to the sub-pixel when ``subpixel``, divided by the flux of the star: (3, 2R+1, 2R+1)."""
+    to the sub-pixel when ``subpixel``, divided by the flux of the star: (3, 2R+1, 2R+1).
+
+    The background of each cutout is a plane fitted on its outer ring: over a large radius the sky is not flat (the
+    Milky Way, a nebula), and a gradient shared by the field would not average out over the stars - it would end up
+    in the template and be subtracted around every bright star."""
     yy, xx = np.mgrid[-R:R + 1, -R:R + 1]
     rr = np.hypot(xx, yy)
     outer = rr > R - 4
@@ -385,9 +460,12 @@ def _template(img, res_src, x, y, gd, flux, idx, R, tree, gmask, subpixel):
         win = np.s_[:, yc - R:yc + R + 1, xc - R:xc + R + 1]
         res = res_src(win)
         msk = _star_mask(tree, x, y, gd, i, xc, yc, R, rr.shape, gmask)
+        ring = outer & ~msk
         for c in range(3):
             v = res[c].astype(np.float32)
-            v = v - np.median(v[outer & ~msk])
+            v = v - _ring_plane(v, ring, xx, yy)
+            if control is not None:
+                v = v - control[c]
             v[msk] = np.nan
             if subpixel:
                 v = _shift(v, xc - x[i], yc - y[i])
@@ -455,12 +533,21 @@ def extended_psf(img, model, x, y, g, Fp, fluxes, dm, W, H, radius, log=print, r
     if len(iso) < 6:
         info["extended_psf"] = f"not measured: only {len(iso)} bright isolated stars"
         return (corr if info.get("mid_psf_stars") else None), info
-    text, rr = _template(img, lambda w: img[w] - model[w] - corr[w], x, y, gd, Fp, iso, R0, tree, 16.0, False)
+    # the sky of the field is curved (vignetting residuals, light pollution): over a radius of hundreds of pixels a
+    # plane per cutout is not enough, the curvature would look like a (negative) halo around every star. A smooth
+    # sky of the whole field is removed first (measured on blocks, stars subtracted, nebulae clipped)
+    sky = field_sky(img - model)
+    src = lambda w: img[w] - sky[w] - model[w] - corr[w]  # noqa: E731
+    ctrl, nctrl = _control(src, x, y, gd, tree, R0, 16.0, float(np.median(gd[iso])) + 1.5, W, H)
+    text, rr = _template(img, src, x, y, gd, Fp, iso, R0, tree, 16.0, False, control=ctrl)
+    if ctrl is not None:
+        info["extended_psf_control"] = int(nctrl)
+        log(f"estimator bias measured at {nctrl} random positions (max {np.abs(ctrl[1][rr < 0.8 * R0]).max():.2f} ADU)")
     f_ref = float(np.median([Fp[1][i] for i in iso[:5]]))
     rb = np.arange(0, R0, 4)
     prof = np.array([np.mean(text[1][(rr >= r) & (rr < r + 4)]) for r in rb]) * f_ref
     noise_r = sig / np.sqrt(np.maximum(2 * np.pi * (rb + 2) * 4 / 9, 1))
-    above = np.where(np.abs(prof) > 3 * noise_r)[0]
+    above = np.where(prof > 3 * noise_r)[0]
     Rt = int(radius) if radius > 0 else int(np.clip(rb[above.max()] + 8 if len(above) else 40, 30, R0))
     r_in = 8.0
     text = text * (np.clip((Rt - rr) / max(0.25 * Rt, 1), 0, 1) * np.clip((rr - r_in) / 4.0, 0, 1))[None]
@@ -483,7 +570,17 @@ def extended_psf(img, model, x, y, g, Fp, fluxes, dm, W, H, radius, log=print, r
         vals = v.ravel()[order]
         med = np.array([np.median(vals[bounds[k]:bounds[k + 1]]) if bounds[k + 1] > bounds[k] else 0.0
                         for k in range(len(bounds) - 1)])
-        text[c] = v - med[rb1] * (1 - w_rad)
+        # scattered light is positive and fades with the distance: beyond its maximum (12-40 px) the radial part is
+        # kept below its running minimum and above 0 (what is left of the measurement noise would otherwise be
+        # subtracted as light around every bright star - a negative halo adds a bright disc)
+        phys = med.copy()
+        k0 = min(12 + int(np.argmax(med[12:41])), len(med) - 1) if len(med) > 41 else min(12, len(med) - 1)
+        phys[k0:] = np.clip(np.minimum.accumulate(med[k0:]), 0, None)
+        # the rest (spikes, rings, reflections) is kept with its point symmetry only: the odd part of a template is
+        # what remains of the sky gradients of the cutouts, not light of the instrument
+        nr = v - med[rb1]
+        nr = 0.5 * (nr + nr[::-1, ::-1])
+        text[c] = nr + phys[rb1] * w_rad
     # amplitude per star and per channel, measured on ring medians beyond 50 px and capped: never more than the
     # instrument's halo (Gaia fluxes of very bright stars are unreliable; light in excess is nebula, kept; the
     # colour of the scattered light may differ from the star's)
@@ -501,7 +598,9 @@ def extended_psf(img, model, x, y, g, Fp, fluxes, dm, W, H, radius, log=print, r
         win = np.s_[yc - Rt:yc + Rt + 1, xc - Rt:xc + Rt + 1]
         free = ~_star_mask(tree, x, y, gd, i, xc, yc, Rt, rr_t.shape, 16.0)
         for c in range(3):
-            res = img[c][win] - model[c][win] - corr[c][win]
+            res = img[c][win] - sky[c][win] - model[c][win] - corr[c][win]
+            if ctrl is not None:
+                res = res - ctrl[c][R0 - Rt:R0 + Rt + 1, R0 - Rt:R0 + Rt + 1]
             bk = np.median(res[(rr_t > Rt - 6) & free])
             r_r = np.array([np.median(res[m & free]) - bk if (m & free).sum() > 30 else np.nan for m in ridx])
             tt = t_r[c] * float(Fp[c][i])
