@@ -50,7 +50,7 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "9"          # 2: empirical extended 2-D PSF; 3: radial halo with the flux; 4: capped amplitude; 9: physical
+    version = "10"         # 9: physical template; 10: one halo amplitude per star for the three channels
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device
@@ -563,9 +563,10 @@ def extended_psf(img, model, x, y, g, Fp, fluxes, dm, W, H, radius, log=print, r
         nr = v - med[rb1]
         nr = 0.5 * (nr + nr[::-1, ::-1])
         text[c] = nr + phys[rb1] * w_rad
-    # amplitude per star and per channel, measured on ring medians beyond 50 px and capped: never more than the
-    # instrument's halo (Gaia fluxes of very bright stars are unreliable; light in excess is nebula, kept; the
-    # colour of the scattered light may differ from the star's)
+    # amplitude per star, measured on ring medians beyond 50 px and capped: never more than the instrument's halo
+    # (Gaia fluxes of very bright stars are unreliable; light in excess is nebula, kept). One amplitude for the three
+    # channels: the colour of the scattered light is in the template; fitting the channels separately on the faint
+    # outer rings leaves a coloured residual (red excess, blue deficit) around every bright star
     rings = np.arange(50, min(Rt, 220), 6)
     ridx = [(rr_t >= r) & (rr_t < r + 6) for r in rings]
     t_r = np.array([[np.median(text[c][m]) for m in ridx] for c in range(3)])
@@ -579,14 +580,17 @@ def extended_psf(img, model, x, y, g, Fp, fluxes, dm, W, H, radius, log=print, r
             continue
         win = np.s_[yc - Rt:yc + Rt + 1, xc - Rt:xc + Rt + 1]
         free = ~_star_mask(tree, x, y, gd, i, xc, yc, Rt, rr_t.shape, 16.0)
+        r_sum = np.zeros(len(ridx))
+        t_sum = np.zeros(len(ridx))
         for c in range(3):
             res = img[c][win] - sky[c][win] - model[c][win] - corr[c][win]
             bk = np.median(res[(rr_t > Rt - 6) & free])
             r_r = np.array([np.median(res[m & free]) - bk if (m & free).sum() > 30 else np.nan for m in ridx])
-            tt = t_r[c] * float(Fp[c][i])
-            ok = np.isfinite(r_r) & (np.abs(tt) > sig / 3)
-            if ok.sum() >= 4:                     # median ratio over the rings: robust to a ring of nebula
-                amp[c, i] = float(np.clip(np.median(r_r[ok] / tt[ok]), 0.0, 1.3))
+            r_sum += np.nan_to_num(r_r)
+            t_sum += t_r[c] * float(Fp[c][i])
+        ok = np.isfinite(r_sum) & (np.abs(t_sum) > sig)
+        if ok.sum() >= 4:                         # median ratio over the rings: robust to a ring of nebula
+            amp[:, i] = float(np.clip(np.median(r_sum[ok] / t_sum[ok]), 0.0, 1.3))
         nfit += 1
     _add(corr, text, x, y, Fp * amp, use, False)
     info.update({"extended_psf_stars": int(len(iso)), "extended_psf_radius": Rt, "extended_psf_applied": int(len(use)),
