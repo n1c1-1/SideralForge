@@ -16,11 +16,28 @@ Probable causes (conservative defaults):
 * Noise2Noise fine detail injected only above the 80th emission percentile (`render_prep.fine_lo_pct`);
 * sharpening only in high signal-to-noise emission.
 
-Plan (to discuss before changing defaults):
+Done (render_prep version 2, starless version 2): the choices are now live sliders of the final adjustment tab,
+without heavy reprocessing. `render_prep` stores separate layers (emission, continuum, rest, unsmoothed rest,
+Noise2Noise emission detail, fine colour) that the engine mixes on the fly:
+
+* **Fine colour** (`colour_detail`): colour finer than 8 px, kept aside by the Wiener step where both half-stacks
+  agree, switched off on star footprints;
+* **Blue-green / reflection tones** (`resid_boost`): gain on the rest component (OIII, H-beta, reflection);
+* **Fine detail** / **Fine detail start** (`fine_k`, `fine_lo_pct`): Noise2Noise detail injection, now down to
+  any brightness;
+* **Faint area smoothing** (`faint_smooth` and limits).
+
+Default values reproduce the previous render (NGC 7822: median difference 0.002 ADU; remaining differences are
+star residuals no longer re-injected by the detail layer). Preset "Rich detail & colour" to calibrate on Heart.
+
+Still to do:
 
 * measure on matched crops which blue-green structures and fine details of the original are confirmed by both
-  half-stacks (real) and which are noise or denoiser texture;
+  half-stacks (real) and which are noise or denoiser texture; calibrate the preset accordingly;
 * data-driven colour scales (finer where the signal allows);
-* a dedicated OIII / blue-green component with its own boost slider;
-* expose the faint-area smoothing and the detail injection in the final adjustment tab (with fast recompute);
 * a "structure" control using the Noise2Noise layer more widely.
+
+## Frame selection
+
+* The automatic transparency rule excluded 36 % of the M33 frames: refine the rule and flag large exclusions in
+  the interface.

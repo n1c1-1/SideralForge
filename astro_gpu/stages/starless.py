@@ -32,8 +32,9 @@ class StarlessParams(StageParams):
                            help="In bright emission, the residual suppression is reduced by this fraction (the "
                                 "nebula signal dominates the residuals there).")
     chroma_min_scale: int = P(3, label="Finest colour scale", level=ADVANCED, ge=0, le=6,
-                              help="Colour information is discarded below wavelet scale 2^n px (fine colour is pure "
-                                   "noise); 3 = 8 px.")
+                              help="Colour finer than wavelet scale 2^n px (3 = 8 px) is left out of the denoised image, "
+                                   "where it is mostly noise, and kept aside - only where both half-stacks agree - for "
+                                   "the 'Fine colour' slider of the final adjustment tab.")
     lift_gmax: float = P(17.5, label="Dip repair limit", level=ADVANCED, ge=10, le=21, step=0.5, unit="G mag",
                          help="Around stars brighter than this, the background is not allowed to dip below its "
                               "local surroundings (over-subtracted star = dark hole).")
@@ -53,7 +54,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "1"
+    version = "2"          # 2: fine colour kept aside for the rendering
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -84,7 +85,9 @@ class Starless(Stage):
         del cleanraw
 
         ctx.progress(0.35, "multi-scale Wiener denoising")
-        wms = wiener(A + delta, B + delta, M, p, model, log=ctx.log)
+        wms, chroma_fine = wiener(A + delta, B + delta, M, p, model, log=ctx.log)
+        ctx.save("chroma_fine.npy", chroma_fine.astype(np.float32))
+        del chroma_fine
         ctx.progress(0.55, "final cleaning")
         final0, _ = clean(wms, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
         del wms
@@ -269,7 +272,10 @@ def _residual_halos(sl, x, y, g, fl, W, H, log, RH=30):
 
 
 def wiener(A_cam, B_cam, M, p, star_model, log=print):
-    """Multi-scale Wiener filter on Y, R-Y, B-Y driven by the two half-stacks, with a star-residual model."""
+    """Multi-scale Wiener filter on Y, R-Y, B-Y driven by the two half-stacks, with a star-residual model.
+
+    Returns (filtered image, fine colour layer) in camera space; the fine colour layer holds the Wiener-filtered
+    colour of the scales finer than 2^chroma_min_scale px, which the filtered image does not contain."""
     t0 = time.time()
     Minv = np.linalg.inv(M)
     NJ = 7
@@ -300,6 +306,7 @@ def wiener(A_cam, B_cam, M, p, star_model, log=print):
     q1, q2 = np.percentile(inner, [75, 97])
     neb_gate = p.nebula_gate * np.clip((Ysm - q1) / (q2 - q1), 0, 1)
     out = np.zeros_like(A)
+    fine = np.zeros_like(A)                  # fine-scale colour (R-Y, B-Y below 2^chroma_min_scale px)
     for c in range(3):
         wa, ca = starlet(A[c], NJ)
         wb, cb = starlet(B[c], NJ)
@@ -325,12 +332,17 @@ def wiener(A_cam, B_cam, M, p, star_model, log=print):
             else:
                 gj = np.clip(1 - p.wiener_k * pd / np.maximum(ps, 1e-12), 0, 1)
             if c > 0 and j < p.chroma_min_scale:
-                gj = gj * 0.0
+                # fine colour is kept aside (Wiener-filtered, i.e. confirmed by both halves) for the rendering,
+                # where a slider decides how much of it to show
+                fine[c] += gj * S
+                msg.append(f"{2 ** j}px:({np.median(gj):.2f})")
+                continue
             res += gj * S
             msg.append(f"{2 ** j}px:{np.median(gj):.2f}")
         out[c] = res
-        log(f"Wiener {('Y', 'R-Y', 'B-Y')[c]} median gain per scale " + " ".join(msg) + f" ({time.time() - t0:.0f} s)")
-    return from_ycc(out)
+        log(f"Wiener {('Y', 'R-Y', 'B-Y')[c]} median gain per scale " + " ".join(msg) + f" ({time.time() - t0:.0f} s)"
+            + (" - (kept aside for the 'Fine colour' slider)" if c > 0 and p.chroma_min_scale > 0 else ""))
+    return from_ycc(out), from_ycc(fine)
 
 
 def bright_halos(sl, x, y, g, gmax):
