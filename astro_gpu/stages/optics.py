@@ -106,7 +106,7 @@ def _centroid_fit(pch):
 def measure_lateral(d, GR, GC):
     import sep
     H, W = d.shape[1:]
-    chans = [np.ascontiguousarray(np.asarray(d[c], np.float32)) for c in range(3)]
+    chans = [np.array(d[c], dtype=np.float32, copy=True) for c in range(3)]      # writable (sep needs it)
     subs = [g - sep.Background(g, bw=64, bh=64).back() for g in chans]
     bkg = sep.Background(chans[1], bw=64, bh=64)
     sep.set_extract_pixstack(3000000)
