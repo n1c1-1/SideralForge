@@ -53,7 +53,13 @@ uv run astro-gpu status D:/astro/NGC7822
 uv run astro-gpu params D:/astro/NGC7822 stack # effective parameters, with the reason of every automatic value
 uv run astro-gpu set D:/astro/NGC7822 stack.scale=2.0
 uv run astro-gpu render D:/astro/NGC7822 --preset "H-alpha emphasised" --name ha
+uv run astro-gpu render D:/astro/NGC7822 --preset faithful     # -> results/faithful/ (only what the data prove)
+uv run astro-gpu render D:/astro/NGC7822 --preset artistic     # -> results/artistic/ (sharpening, stronger stretch)
 ```
+
+Every project is meant to end with these two renders: **Faithful** (measured colours, no display sharpening, detail
+as measured) and **Artistic** (non-blind sharpening with the star shape measured on the stack, stronger stretch and
+local contrast). Both are presets of the final adjustment tab.
 
 The user guide is in [astro_gpu/resources/GUIDE.md](astro_gpu/resources/GUIDE.md) (also F1 in the interface).
 
