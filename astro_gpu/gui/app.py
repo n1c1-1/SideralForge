@@ -314,7 +314,7 @@ class MainWindow(QMainWindow):
 
     def show_guide(self):
         from PySide6.QtWidgets import QDialog, QTextBrowser
-        p = Path(__file__).resolve().parents[2] / "docs" / "GUIDE.md"
+        p = Path(__file__).resolve().parents[1] / "resources" / "GUIDE.md"
         dlg = QDialog(self)
         dlg.setWindowTitle("astro_GPU guide")
         dlg.resize(820, 760)

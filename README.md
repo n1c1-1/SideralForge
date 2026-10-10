@@ -52,6 +52,8 @@ uv run astro-gpu set D:/astro/NGC7822 stack.scale=2.0
 uv run astro-gpu render D:/astro/NGC7822 --preset "H-alpha emphasised" --name ha
 ```
 
+The user guide is in [astro_gpu/resources/GUIDE.md](astro_gpu/resources/GUIDE.md) (also F1 in the interface).
+
 ## Pipeline
 
 | Stage | What it does |

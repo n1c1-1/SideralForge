@@ -107,22 +107,28 @@ class Astrometry(Stage):
             typical = 206.265 * pix / 500.0 / S_drz if pix else 3.0
             scales.sort(key=lambda v: abs(np.log(v / typical)))
         best = None
-        for k, sc in enumerate(scales):
-            ctx.progress(0.6 * k / len(scales), f"searching the field at {sc:.2f}\"/px")
-            fw, fh = W * sc / 3600, H * sc / 3600
-            if not p.scale and (fw > 40 or fw < 0.1):
-                continue
-            area = fw * fh
-            glim = float(np.clip(12.5 - 1.25 * np.log10(max(area, 1e-3) / 37.0), 10.5, 16.0))
-            radius = 0.5 * np.hypot(fw, fh) * (1 + 2 * p.search_offsets) + 0.2
-            gs, gm = gaia_bright(ra0, dec0, radius, glim)
-            if len(gm) < 20:
-                continue
-            res = _match(gs, gm, ra0, dec0, sc, W, H, brightdet, p.search_offsets, fw, fh, aa, tol)
-            if res is not None and (best is None or res[2] > best[2]):
-                best = (*res, sc, glim, radius)
-                if res[2] > 25:
-                    break
+        # pass 1: every scale with the given centre only (fast); pass 2: also shifted centres
+        passes = [0.0, p.search_offsets] if p.search_offsets > 0 else [0.0]
+        for ip, off in enumerate(passes):
+            for k, sc in enumerate(scales):
+                ctx.progress(0.6 * (ip + k / len(scales)) / len(passes),
+                             f"searching the field at {sc:.2f}\"/px" + (" (shifted centres)" if off else ""))
+                fw, fh = W * sc / 3600, H * sc / 3600
+                if not p.scale and (fw > 40 or fw < 0.1):
+                    continue
+                area = fw * fh
+                glim = float(np.clip(12.5 - 1.25 * np.log10(max(area, 1e-3) / 37.0), 10.5, 16.0))
+                radius = 0.5 * np.hypot(fw, fh) * (1 + 2 * p.search_offsets) + 0.2
+                gs, gm = gaia_bright(ra0, dec0, radius, glim)
+                if len(gm) < 20:
+                    continue
+                res = _match(gs, gm, ra0, dec0, sc, W, H, brightdet, off, fw, fh, aa, tol)
+                if res is not None and (best is None or res[2] > best[2]):
+                    best = (*res, sc, glim, radius)
+                    if res[2] > 25:
+                        break
+            if best is not None and best[2] > 25:
+                break
         if best is None:
             raise StageError("could not match the stars with Gaia: check the target / coordinates and the image "
                              "scale (focal length, pixel size)")
