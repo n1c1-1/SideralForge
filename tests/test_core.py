@@ -146,3 +146,19 @@ def test_preview_accepts_grey_and_channel_first(project):
     pl = Pipeline(project, [P()], Journal(project.logs, echo=False))
     assert pl.run() == "done"
     assert len(list((project.stage_dir("p") / "previews").glob("*.jpg"))) == 3
+
+
+def test_new_parameter_at_default_keeps_results(project):
+    pl = Pipeline(project, [StageA(), StageB()], Journal(project.logs, echo=False))
+    pl.run()
+
+    class AParams2(AParams):
+        extra: bool = P(True, label="extra", help="new option, default = old behaviour")
+
+    class StageA2(StageA):
+        Params = AParams2
+
+    pl2 = Pipeline(project, [StageA2(), StageB()], Journal(project.logs, echo=False))
+    assert [s.state for s in pl2.status()] == ["done", "done"]
+    project.set_override("a", "extra", False)
+    assert pl2.status()[0].state == "stale"

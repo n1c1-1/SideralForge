@@ -104,7 +104,7 @@ class Pipeline:
                             break
                     else:
                         p, _, _ = self.effective_params(st)
-                        if params_hash(p) != m.get("params_hash"):
+                        if params_hash(p) != m.get("params_hash") and not _same_params(st, p, m.get("params", {})):
                             state, reason = "stale", "parameters changed"
             out[st.name] = StageStatus(st.name, st.title, state, reason, m.get("duration"), m.get("finished", ""))
         return [out[s.name] for s in self.stages]
@@ -189,6 +189,21 @@ class Pipeline:
         self.journal.emit("stage_end", stage=st.name, status="done", duration=dur)
         _record_timing(st.name, dur)
         return "done"
+
+
+def _same_params(stage: Stage, p, stored: dict) -> bool:
+    """Equal parameters, tolerating parameters added since the stage ran when they are at their default value
+    (a new option that keeps the previous behaviour must not invalidate past results) and removed parameters."""
+    cur = p.model_dump(mode="json")
+    for k, v in cur.items():
+        if k in stored:
+            if stored[k] != v:
+                return False
+        else:
+            default = stage.Params.model_fields[k].default
+            if json.loads(json.dumps(default, default=str)) != v:
+                return False
+    return True
 
 
 def request_stop(project: Project) -> None:
