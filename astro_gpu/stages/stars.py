@@ -144,22 +144,32 @@ def stamps(E, xs, ys, cols, R, W, H, dev, xi=None, yi=None):
 
 
 class Group:
-    """Stars sharing a stamp size: render (flux -> image) and gather (image -> per-star projection)."""
+    """Stars sharing a stamp size: render (flux -> image) and gather (image -> per-star projection).
 
-    def __init__(self, Pst, xi, yi, R, W, H, dev):
-        self.P = Pst
+    Memory: int32 pixel indices + half-precision profiles (the off-image part is zeroed in the profiles), built
+    in batches, so that a million stars fit on an 8 GB GPU.
+    """
+
+    def __init__(self, Pst, xi, yi, R, W, H, dev, batch=50000):
         oy, ox = np.mgrid[-R:R + 1, -R:R + 1]
-        py = torch.from_numpy(yi[:, None, None] + oy[None]).to(dev)
-        px = torch.from_numpy(xi[:, None, None] + ox[None]).to(dev)
-        inside = (py >= 0) & (py < H) & (px >= 0) & (px < W)
-        self.idx = py.clamp(0, H - 1) * W + px.clamp(0, W - 1)
-        self.m = inside.half()
+        oyt = torch.from_numpy(oy.astype(np.int32)).to(dev)
+        oxt = torch.from_numpy(ox.astype(np.int32)).to(dev)
+        idx_parts, p_parts = [], []
+        for k in range(0, len(xi), batch):
+            py = torch.from_numpy(yi[k:k + batch].astype(np.int32)).to(dev)[:, None, None] + oyt[None]
+            px = torch.from_numpy(xi[k:k + batch].astype(np.int32)).to(dev)[:, None, None] + oxt[None]
+            inside = (py >= 0) & (py < H) & (px >= 0) & (px < W)
+            idx_parts.append(py.clamp(0, H - 1) * W + px.clamp(0, W - 1))
+            p_parts.append(Pst[k:k + batch] * inside.to(Pst.dtype))
+            del py, px, inside
+        self.idx = torch.cat(idx_parts) if idx_parts else torch.zeros(0, 2 * R + 1, 2 * R + 1, dtype=torch.int32, device=dev)
+        self.P = torch.cat(p_parts) if p_parts else torch.zeros(0, 2 * R + 1, 2 * R + 1, dtype=torch.half, device=dev)
 
     def render(self, Fl, out):
-        out.index_add_(0, self.idx.reshape(-1), (Fl[:, None, None] * self.P.float() * self.m.float()).reshape(-1))
+        out.index_add_(0, self.idx.reshape(-1), (Fl[:, None, None] * self.P.float()).reshape(-1))
 
     def gather(self, img_flat):
-        return (img_flat[self.idx] * self.P.float() * self.m.float()).sum((1, 2))
+        return (img_flat[self.idx] * self.P.float()).sum((1, 2))
 
 
 def forced_photometry(img, pm, x, y, g, col, sel, dm, p, W, H, dev, progress):

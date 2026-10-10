@@ -246,8 +246,8 @@ def _residual_halos(sl, x, y, g, fl, W, H, log, RH=30):
     models = [torch.zeros(H * W, device=dev) for _ in range(3)]
     xxt = torch.from_numpy(xx.astype(np.float32)).to(dev)[None]
     yyt = torch.from_numpy(yy.astype(np.float32)).to(dev)[None]
-    for k0 in range(0, len(sel), 30000):
-        ss = sel[k0:k0 + 30000]
+    for k0 in range(0, len(sel), 8000):                      # ~1 GB per batch on the GPU
+        ss = sel[k0:k0 + 8000]
         kb = np.clip(np.searchsorted([b_[1] for b_ in bins], g[ss]), 0, len(bins) - 1)
         xi, yi = np.round(x[ss]).astype(np.int64), np.round(y[ss]).astype(np.int64)
         py = torch.from_numpy(yi[:, None, None] + yy[None]).to(dev)
