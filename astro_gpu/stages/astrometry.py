@@ -30,6 +30,10 @@ class AstrometryParams(StageParams):
                             help="Approximate size of a pixel of the stacked image on the sky. Computed from the focal "
                                  "length and the pixel size when they are known; otherwise searched automatically.",
                             tip="206.265 x pixel size (um) / focal length (mm), divided by the drizzle scale.")
+    blind: bool = P(True, label="Blind solving", level=ADVANCED,
+                    help="When the field centre is unknown (or the guided search fails), identify the field on the "
+                         "whole sky from its brightest stars (geometric hashing of star quads, like astrometry.net).",
+                    tip="Works for fields wider than about 1 deg; the first use downloads two bright-star catalogues.")
     search_offsets: float = P(0.2, label="Centre search range", level=ADVANCED, ge=0.0, le=1.0, step=0.05,
                               unit="x field", help="How far from the given centre the solver looks for the field.")
     sip_order: int = P(3, label="Distortion order", level=ADVANCED, ge=0, le=5,
@@ -81,11 +85,12 @@ class Astrometry(Stage):
         if p.scale is None and p.focal_mm and p.pixel_um:
             p = p.model_copy(update={"scale": 206.265 * p.pixel_um / p.focal_mm / S_drz})
             ctx.log(f"image scale {p.scale:.3f}\"/px from focal {p.focal_mm} mm and pixel {p.pixel_um} um")
-        if ra0 is None or dec0 is None:
-            if not p.target:
-                raise StageError("the approximate field centre is unknown: enter the target name or its RA/Dec")
-            ra0, dec0 = resolve_name(p.target)
-            ctx.log(f"'{p.target}' resolved by SIMBAD: RA {ra0:.4f} Dec {dec0:.4f}")
+        if (ra0 is None or dec0 is None) and p.target:
+            try:
+                ra0, dec0 = resolve_name(p.target)
+                ctx.log(f"'{p.target}' resolved by SIMBAD: RA {ra0:.4f} Dec {dec0:.4f}")
+            except StageError as e:
+                ctx.log(str(e), "warning")
         d = ctx.load("stack", "drz_full.npy", mmap=True)
         g = np.array(d[1], dtype=np.float32, copy=True)
         H, W = g.shape
@@ -99,6 +104,11 @@ class Astrometry(Stage):
         ctx.log(f"{len(det)} stars detected in the stack")
         if len(det) < 50:
             raise StageError("too few stars detected in the stack to solve the field")
+        if ra0 is None or dec0 is None:
+            if not p.blind:
+                raise StageError("the approximate field centre is unknown: enter the target name or its RA/Dec")
+            ra0, dec0, sc_b = _blind(ctx, brightdet, W, H)
+            p = p.model_copy(update={"scale": sc_b})
 
         # triangle matching is scale-invariant: a coarse grid of scales is enough when the scale is unknown
         scales = [p.scale] if p.scale else list(np.geomspace(0.4, 40, 22))
@@ -131,6 +141,16 @@ class Astrometry(Stage):
                         break
             if best is not None and best[2] >= GOOD_PAIRS:
                 break
+        if best is None and p.blind:
+            ctx.log("guided search failed: trying the all-sky blind solver", "warning")
+            ra0, dec0, sc_b = _blind(ctx, brightdet, W, H)
+            fw, fh = W * sc_b / 3600, H * sc_b / 3600
+            glim = float(np.clip(12.5 - 1.25 * np.log10(max(fw * fh, 1e-3) / 37.0), 10.5, 16.0))
+            radius = 0.5 * np.hypot(fw, fh) * (1 + 2 * p.search_offsets) + 0.2
+            gs, gm = gaia_bright(ra0, dec0, radius, glim)
+            res = _match(gs, gm, ra0, dec0, sc_b, W, H, brightdet, 0.0, fw, fh, aa, 0.15)
+            if res is not None:
+                best = (*res, sc_b, glim, radius)
         if best is None:
             raise StageError("could not match the stars with Gaia: check the target / coordinates and the image "
                              "scale (focal length, pixel size)")
@@ -176,6 +196,19 @@ class Astrometry(Stage):
             ctx.metric("focal_estimate_mm", round(206.265 * pix / (scale * S), 1))
         ctx.log(f"solved: centre RA {c.ra.deg:.4f} Dec {c.dec.deg:.4f}, {scale:.3f}\"/px, field "
                 f"{W * scale / 3600:.2f} x {H * scale / 3600:.2f} deg, residual {np.median(res):.3f} px on {len(res)} stars")
+
+
+def _blind(ctx, xy, W, H):
+    """All-sky blind solve of the brightest stars: (ra, dec, scale) of the field centre."""
+    from ..core.blindsolve import solve_any
+    ctx.progress(0.05, "all-sky blind solving (first use builds the star index, a few minutes)")
+    r = solve_any(xy[:80], W, H)
+    if r is None:
+        raise StageError("the field could not be identified on the sky: enter the target name or its coordinates")
+    ctx.log(f"blind solve: centre RA {r['ra']:.3f} Dec {r['dec']:+.3f}, {r['scale']:.2f}\"/px, "
+            f"{r['matches']} catalogue stars matched (chance level {r['chance']})")
+    ctx.metric("blind_solved", True)
+    return r["ra"], r["dec"], r["scale"]
 
 
 def _tan(ra, dec, scale, W, H):
