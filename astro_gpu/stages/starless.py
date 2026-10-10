@@ -14,10 +14,11 @@ from .denoise import apply_net, load_model, norm_params
 
 
 class StarlessParams(StageParams):
-    mask_k: float = P(40.0, label="Unreliable core threshold", level=ADVANCED, ge=5, le=500, unit="sigma",
-                      help="Star cores where the model exceeds this many noise sigmas (and saturated cores) are "
-                           "treated as missing data and filled from their surroundings instead of trusting the "
-                           "subtraction of a very bright, imperfectly modelled star.")
+    oversub_k: float = P(4.0, label="Over-subtraction threshold", level=ADVANCED, ge=2, le=20, step=0.5, unit="sigma",
+                         help="Pixels where the subtraction of the star model leaves the image this many noise sigmas "
+                              "below the local sky (an over-subtracted star: nebula cannot be negative) are treated "
+                              "as missing data and filled from their surroundings, like saturated cores. Only the "
+                              "measured evidence decides: the data next to a bright star are kept.")
     wiener_k: float = P(1.0, label="Denoising strength", ge=0.2, le=4.0, step=0.1,
                         help="Strength of the multi-scale Wiener denoiser: at every scale, a structure is kept in "
                              "proportion to how consistently it appears in the two independent half-stacks.",
@@ -42,6 +43,13 @@ class StarlessParams(StageParams):
                          help="Stars brighter than this get their optical halo (blue defocus of the refractor, "
                               "filter reflections) measured and removed from the background, out to a radius growing "
                               "with the star flux.")
+    sharpen: bool = P(True, label="Sharpening network",
+                      help="Fine-tunes the Noise2Noise network into a sharpening network: the star shape measured on "
+                           "the stack is undone towards a sharper target the data can reach (two thirds of the core "
+                           "width, never below 2 px). Learned on your own half-stacks; drives the 'Sharpening "
+                           "(measured star shape)' slider of the final adjustment tab.")
+    sharpen_steps: int = P(4000, label="Sharpening training steps", level=ADVANCED, ge=500, le=20000, step=500,
+                           help="Fine-tuning steps of the sharpening network (a few minutes on a GPU).")
 
 
 class Starless(Stage):
@@ -52,9 +60,9 @@ class Starless(Stage):
                    "repairs over-subtracted dips. Then a multi-scale Wiener filter driven by the two independent "
                    "half-stacks keeps every structure that is really present in both, and removes the rest. No "
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
-    deps = ("stars", "optics", "denoise", "stack", "color")
+    deps = ("stars", "optics", "denoise", "stack", "color", "catalogs")
     Params = StarlessParams
-    version = "14"         # 5: halos from the extended PSF; 6-7: core mask; 9: star zones; 13: + residual glare per star
+    version = "18"         # 15-18: missing data, glare and dip repair decided on the data; sharpening network
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -76,7 +84,7 @@ class Starless(Stage):
         A = ctx.load("optics", "lat_A.npy").astype(np.float32) - model
         B = ctx.load("optics", "lat_B.npy").astype(np.float32) - model
         full = ctx.load("optics", "lat_full.npy", mmap=True)
-        mask = core_mask(full, model_core, A, B, p.mask_k, model_total=model)
+        mask = core_mask(full, A, B, p.oversub_k, model)
         del model_core
         ctx.metric("filled_pct", round(100 * float(mask.mean()), 2))
         rng = np.random.default_rng(1)
@@ -102,22 +110,25 @@ class Starless(Stage):
         final0, _ = clean(wms, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
         del wms
         if has_ext:
-            # the halos are in the star model (empirical extended PSF, amplitude bounded by the flux). Where the light of
-            # a bright star still dominates both the noise and the nebula around it, the measurement is not reliable:
-            # that zone is interpolated from its surroundings with a soft edge (the star is redrawn by the rendering).
-            # A star in a dark sky gets a large zone, a star embedded in a bright nebula a small one.
+            # the halos are in the star model (empirical extended PSF, amplitude bounded by the flux). What is left
+            # around a bright star is either glare the template missed (spikes, a defocus halo that varies from star
+            # to star) or the nebula the star lights. The two are told apart on the data: glare falls off steeply
+            # with the distance to the star, a nebula does not (see glare_gates). Around glare stars, the light left
+            # standing above the surroundings is interpolated (the star is redrawn by the rendering) and the radial
+            # remainder removed; around a star in its nebula nothing is touched
             hp_ = final0[1] - cv2.GaussianBlur(final0[1], (0, 0), 2)
             sig_ = float(1.4826 * np.median(np.abs(hp_[::7, ::7])))
-            fill_w = star_zone_weight(final0, model, x, y, g, sig_)
+            gates = glare_gates(final0, x, y, g, p.halo_gmax, sig_)
+            fill_w = glare_zone_weight(final0, x, y, g, gates, sig_)
             sl_zone = star_zone_fill(final0, fill_w)
             ctx.metric("star_zone_pct", round(100 * float((fill_w > 0.5).mean()), 2))
-            ctx.log(f"bright-star zones interpolated on {100 * (fill_w > 0.5).mean():.2f} % of the field")
-            # what the template leaves of the glare of each bright star (a refractor's blue defocus halo varies from
-            # star to star) is measured on its own radial profile, except around stars embedded in a nebula
-            sl_final, nh = bright_halos(sl_zone, x, y, g, p.halo_gmax, embedded_guard=True)
+            ng = int(sum(v > 0.5 for v in gates.values()))
+            ctx.log(f"{ng} bright stars judged glare (steep fall-off), {len(gates) - ng} embedded in a nebula; "
+                    f"glare zones interpolated on {100 * (fill_w > 0.5).mean():.2f} % of the field")
+            sl_final, nh = bright_halos(sl_zone, x, y, g, p.halo_gmax, gates=gates)
             halo_left = sl_zone - sl_final
             del sl_zone
-            ctx.log(f"residual glare removed around {nh} bright stars (embedded stars left untouched)")
+            ctx.log(f"residual glare removed around {nh} bright stars")
         else:
             sl_final, nh = bright_halos(final0, x, y, g, p.halo_gmax)
             ctx.log(f"optical halos removed around {nh} bright stars")
@@ -142,30 +153,64 @@ class Starless(Stage):
         else:
             n2n_final = refill_cores(bright_halos(n2n_c0, x, y, g, p.halo_gmax)[0], refill)
         ctx.save("n2n_final.npy", n2n_final)
+        del n2n_c0, n2n_final
+        if p.sharpen:
+            # non-blind sharpening: the star shape measured on this stack, undone towards a target it can reach, by
+            # the same network fine-tuned on the two half-stacks (the output, blurred back to the measured shape,
+            # must predict the other half). Same cleaning and glare zones as the detail layer
+            ctx.progress(0.88, "sharpening network")
+            from ..core.sharpen import PSFField, finetune_sharp, target_fwhm, target_to_stack_kernels
+            cat = np.load(ctx.input("catalogs", "gaia_deep.npz"))
+            gsat = float(ctx.metric_of("optics", "g_sat", 10.9))
+            psf = PSFField(full, cat["x"], cat["y"], cat["g"], gsat, log=ctx.log)
+            tf = target_fwhm(psf)
+            Ks, worst = target_to_stack_kernels(psf, tf)
+            ctx.metric("sharpen_target_fwhm", tf)
+            ctx.metric("sharpen_kernel_error_pct", round(100 * worst, 1))
+            ctx.log(f"sharpening target {tf} px (star core {psf.fwhm(1, psf.W / 2, psf.H / 2):.1f} px at the centre); "
+                    f"worst reconstruction of the measured shape {100 * worst:.1f} %")
+            net, bk, sg = load_model(ctx)
+            net, loss = finetune_sharp(net, A + delta, B + delta, nm, bk, sg, Ks, ctx.device, steps=p.sharpen_steps,
+                                       progress=lambda fr, m: ctx.progress(0.88 + 0.08 * fr, m))
+            ctx.metric("sharpen_loss", round(loss, 4))
+            torch.save({"net": net.state_dict(), "bk": bk, "sg": sg, "target_fwhm": tf}, ctx.out("n2n_sharp_model.pt"))
+            sl_sharp = 0.5 * (apply_net(net, A + delta, nm, bk, sg, ctx.device)
+                              + apply_net(net, B + delta, nm, bk, sg, ctx.device))
+            del net
+            if ctx.device.type == "cuda":
+                torch.cuda.empty_cache()
+            sharp_c0, _ = clean(sl_sharp, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
+            del sl_sharp
+            if has_ext:
+                sharp_final = star_zone_fill(sharp_c0, fill_w) - halo_left
+            else:
+                sharp_final = refill_cores(bright_halos(sharp_c0, x, y, g, p.halo_gmax)[0], refill)
+            ctx.save("n2n_sharp_final.npy", sharp_final)
+            del sharp_c0, sharp_final
         from ..core.imgutil import asinh_preview
         ctx.preview("starless", asinh_preview(sl_final, M))
 
 
-def core_mask(full, model, A, B, K, model_total=None):
-    """Unreliable pixels: saturation, very bright model cores, significant residuals on star footprints, and the inner
-    halo of bright stars where their light (``model_total``, extended PSF included) dominates both the noise and the
-    nebula around them (a star in a dark sky is masked further out than a star embedded in a bright nebula)."""
-    raw = 0.5 * (A + B)
-    mask = np.zeros(model.shape[1:], bool)
+def core_mask(full, A, B, K, model):
+    """Missing data, decided by the measurements only: saturated pixels (plus the pixels around them, where the fit of
+    the star core cannot be trusted either) and pixels where the subtraction of the star model leaves the image
+    significantly below the local sky floor (a nebula cannot be negative: an over-subtracted star). The brightness of
+    the model itself is no reason to discard the data next to a bright star: the nebula is brightest there."""
+    raw = 0.5 * (A + B)                                       # star model already subtracted
+    sat = np.zeros(raw.shape[1:], bool)
+    over = np.zeros(raw.shape[1:], bool)
     for c in range(3):
         fc = np.asarray(full[c], np.float32)
         hp = fc - cv2.GaussianBlur(fc, (0, 0), 2)
         sig = 1.4826 * np.median(np.abs(hp[::7, ::7])) * 1.3
         lvl = np.percentile(fc, 99.999)
-        rs = cv2.GaussianBlur(raw[c], (0, 0), 1.0)
-        keep = (model[c] < 1.0 * sig).astype(np.float32)
-        bgl = cv2.GaussianBlur(rs * keep, (0, 0), 6) / np.maximum(cv2.GaussianBlur(keep, (0, 0), 6), 1e-3)
-        z = (rs - bgl) / (sig * 0.55)
-        mask |= (fc > 0.7 * lvl) | (model[c] > K * sig) | ((np.abs(z) > 4) & (model[c] > 2 * sig))
-        if model_total is not None:
-            neb = cv2.GaussianBlur(np.clip(raw[c] - model_total[c], 0, None), (0, 0), 16)
-            mask |= model_total[c] > K * sig + 2 * neb
-    return cv2.dilate(mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))) > 0
+        sat |= fc > 0.7 * lvl
+        rs = cv2.GaussianBlur(raw[c], (0, 0), 1.0)              # noise of the blurred image is about 0.55 sigma
+        floor_c = _local_floor(rs)
+        over |= ((rs - floor_c) < -K * 0.55 * sig) & (model[c] > sig)
+    sat = cv2.dilate(sat.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))) > 0
+    over = cv2.dilate(over.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))) > 0
+    return sat | over
 
 
 def clean(sl, x, y, g, fl, smooth, halos, lift_gmax, log=print):
@@ -191,7 +236,7 @@ def clean(sl, x, y, g, fl, smooth, halos, lift_gmax, log=print):
         xc, yc = int(round(x[i])), int(round(y[i]))
         cut = Y[yc - 10:yc + 11, xc - 10:xc + 11]
         d = cut[core].mean() - np.median(cut[ring])
-        if g[i] < 9.5 or abs(d) > 3 * sig / np.sqrt(core.sum()) * 3:
+        if abs(d) > 3 * sig / np.sqrt(core.sum()) * 3:
             rfix = int(np.clip(3 + 1.0 * (14.5 - g[i]), 3, 9)) if g[i] >= 9.5 else int(np.clip(9 + 4.5 * (9.5 - g[i]), 9, 34))
             cv2.circle(fixm, (xc, yc), rfix, 1, -1)
             nfix += 1
@@ -199,6 +244,7 @@ def clean(sl, x, y, g, fl, smooth, halos, lift_gmax, log=print):
     rd2 = np.hypot(ox2, oy2)
     core2, ring2 = rd2 < 7, (rd2 >= 12) & (rd2 <= 18)
     Ys = cv2.GaussianBlur(Y, (0, 0), 1.5)
+    dipped = []
     for i in np.where((g < 14) & (x > 40) & (x < W - 40) & (y > 40) & (y < H - 40))[0]:
         xc, yc = int(round(x[i])), int(round(y[i]))
         cut = Ys[yc - 18:yc + 19, xc - 18:xc + 19]
@@ -206,13 +252,20 @@ def clean(sl, x, y, g, fl, smooth, halos, lift_gmax, log=print):
         d = cut[core2].mean() - np.median(rg)
         if d < -max(2.5 * 1.4826 * np.median(np.abs(rg - np.median(rg))) / np.sqrt(core2.sum() / 9), 0.15):
             cv2.circle(fixm, (xc, yc), 10, 1, -1)
+            dipped.append(i)
+    dipped_set = set(int(i) for i in dipped)
     m = fixm > 0
     wgt = cv2.GaussianBlur(m.astype(np.float32), (0, 0), 1.0)
     for c in range(3):
         sl[c] = sl[c] * (1 - wgt) + fill_holes(sl[c], m) * wgt
-    # 3. one-sided dip repair: inside the disc of each star the background stays above its surroundings - 0.5 sigma
+    # 3. one-sided dip repair: inside the disc of each star the background stays above its surroundings - 0.5 sigma.
+    # Only around the stars whose centre measurably dips (and the faint ones, whose dip is below the test but whose
+    # disc is small): in a dense field the discs of all the stars would cover most of the image and flatten the real
+    # dark structures of the nebula into plateaus
     disc = np.zeros((H, W), np.uint8)
     for i in np.where((g < lift_gmax) & (x > 0) & (x < W) & (y > 0) & (y < H))[0]:
+        if g[i] < 14 and i not in dipped_set:
+            continue
         rr_ = int(np.clip(8 + 1.5 * (14 - g[i]), 7 if g[i] < 15 else 5, 18))
         cv2.circle(disc, (int(round(x[i])), int(round(y[i]))), rr_, 1, -1)
     dmk = disc > 0
@@ -401,18 +454,15 @@ def wiener(A_cam, B_cam, M, p, star_model, log=print):
     return from_ycc(out), from_ycc(fine)
 
 
-def bright_halos(sl, x, y, g, gmax, rmax_cap=320, embedded_guard=False):
+def bright_halos(sl, x, y, g, gmax, rmax_cap=320, gates=None):
     """Remove the optical halo of every bright star from the starless image (radial profile per star and channel).
 
     The halo radius grows with the square root of the flux (315 px at G = 5 down to 25 px at G = gmax); the
     background is measured just beyond it. No removal inside bright emission (the profile would measure the nebula).
-    With ``embedded_guard``, no removal either around a star whose surroundings stand above the local sky by as much
-    as its halo: a star embedded in a nebula it lights (reflection) - a radial profile cannot tell that nebula from
-    glare.
+    ``gates`` (star index -> 0..1, see glare_gates) scales the removal per star: 0 for a star embedded in the nebula it
+    lights, where a radial profile would measure the nebula.
     """
     sl = sl.astype(np.float32).copy()
-    Ym = sl.mean(0)
-    floor_y = _local_floor(Ym) if embedded_guard else None
     Eg = cv2.GaussianBlur(sl[0] - 0.87 * sl[1], (0, 0), 12)
     q1, q2 = emission_levels(Eg)
     gate = np.clip((q2 - Eg) / max(q2 - q1, 1e-6), 0, 1).astype(np.float32)
@@ -436,19 +486,9 @@ def bright_halos(sl, x, y, g, gmax, rmax_cap=320, embedded_guard=False):
         order = np.argsort(flat_idx, kind="stable")
         bounds = np.concatenate([[0], np.cumsum(counts)])
         rcv = rb[:-1] + 1.0
-        gate_s = 1.0
-        if floor_y is not None:
-            # one decision per star, on the brightness: gating the channels separately would shift the colours
-            vy = Ym[y0:y1, x0:x1].ravel()[order]
-            my = np.array([np.percentile(vy[bounds[k]:bounds[k + 1]], 35) if counts[k] > 5 else np.nan
-                           for k in range(len(rb) - 1)])
-            by = np.nanmedian(my[-8:])
-            py = np.minimum.accumulate(np.nan_to_num(np.clip(my - by, 0, None)))
-            amp_ = float(py[min(int(rmax / 8), len(py) - 1)])
-            emb = float(by - floor_y[min(max(yc, 0), H - 1), min(max(xc, 0), W - 1)])
-            gate_s = float(np.clip(1 - emb / max(amp_, 1e-6), 0, 1))
-            if gate_s <= 0:
-                continue
+        gate_s = 1.0 if gates is None else float(gates.get(int(i), 1.0))
+        if gate_s <= 0:
+            continue
         for c in range(3):
             patch = sl[c, y0:y1, x0:x1]
             vals = patch.ravel()[order]
@@ -474,6 +514,86 @@ def bright_cores(mask, x, y, g, shape) -> np.ndarray:
         cv2.circle(disc, (int(round(x[i])), int(round(y[i]))), int(np.clip(10 + 6 * (11 - g[i]), 10, 90)), 1, -1)
     m = cv2.dilate(mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))) > 0
     return m & (disc > 0)
+
+
+def glare_gates(img, x, y, g, gmax, sig, rmax_cap=320):
+    """One decision per bright star (G < gmax), from the data: is the light left around it glare of the star or the
+    nebula it lights? Glare (PSF wings, spikes, defocus halo) falls off steeply with the distance to the star (the
+    radial profile drops faster than 1/r^3); a nebula lit by its star falls off slowly (1/r to 1/r^2). The fall-off
+    is measured on the radial profile (35th percentile per ring, so spikes do not count) of the light standing above
+    the level just beyond the halo radius, between 1/8 and 1/2 of that radius. Returns star index -> gate in 0..1
+    (1 = glare, 0 = nebula); stars whose excess is too faint to measure get 1 (nothing to lose)."""
+    H, W = img.shape[1:]
+    Ym = img.mean(0)
+    gates = {}
+    for i in np.where((g < gmax) & (x > 20) & (x < W - 20) & (y > 20) & (y < H - 20))[0]:
+        rmax = int(np.clip(25 * 10 ** (0.2 * (gmax - g[i])), 25, rmax_cap))
+        R_ = rmax + 20
+        xc, yc = int(round(x[i])), int(round(y[i]))
+        y0, y1, x0, x1 = max(0, yc - R_), min(H, yc + R_ + 1), max(0, xc - R_), min(W, xc + R_ + 1)
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        rr = np.hypot(xx - x[i], yy - y[i])
+        win = Ym[y0:y1, x0:x1]
+        beyond = (rr >= rmax) & (rr < rmax + 20)
+        if beyond.sum() < 20:
+            gates[int(i)] = 1.0
+            continue
+        by = float(np.median(win[beyond]))
+        rb = np.arange(max(rmax / 8, 4), rmax / 2, 2.0)
+        pv = np.array([np.percentile(win[(rr >= r_) & (rr < r_ + 2)], 35) - by if ((rr >= r_) & (rr < r_ + 2)).sum() > 5
+                       else np.nan for r_ in rb])
+        # an over-subtracted star (profile below its surroundings) is a model error as well: the fall-off of the
+        # absolute excess is judged, a nebula is never negative
+        ok = np.isfinite(pv) & (np.abs(pv) > 3 * sig)
+        if ok.sum() < 4:
+            gates[int(i)] = 1.0
+            continue
+        if np.median(pv[ok]) < 0:
+            gates[int(i)] = 1.0
+            continue
+        slope = np.polyfit(np.log(rb[ok] + 1.0), np.log(np.abs(pv[ok])), 1)[0]
+        gates[int(i)] = float(np.clip((-slope - 2.0) / 1.0, 0, 1))      # 1/r^2 and shallower: nebula; 1/r^3: glare
+    return gates
+
+
+def glare_zone_weight(img, x, y, g, gates, sig, gmax=11.0, rmax_cap=320):
+    """Weight (0..1) of the zones to interpolate around the stars judged glare (gate > 0.5): inside the halo radius
+    of each such star, the pixels deviating (either way: glare left, or wings over-subtracted) from the level just
+    beyond that radius by more than 3 noise sigmas plus half the nebula level around (local minimum over ~60 px),
+    connected to the star. Feathered. Nothing around the stars judged embedded in a nebula, and nothing is decided
+    from the sky floor of the whole field: in a field full of nebula, the nebula is not an excess."""
+    H, W = img.shape[1:]
+    m = img.mean(0)
+    ms = cv2.GaussianBlur(m, (0, 0), 2)
+    loc = cv2.erode(cv2.GaussianBlur(m, (0, 0), 4), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (61, 61)))
+    neb = cv2.GaussianBlur(loc, (0, 0), 16)
+    w = np.zeros((H, W), np.float32)
+    for i, gate in gates.items():
+        if gate <= 0.5:
+            continue
+        rmax = int(np.clip(25 * 10 ** (0.2 * (gmax - g[i])), 25, rmax_cap))
+        R_ = rmax + 20
+        xc, yc = int(round(x[i])), int(round(y[i]))
+        y0, y1, x0, x1 = max(0, yc - R_), min(H, yc + R_ + 1), max(0, xc - R_), min(W, xc + R_ + 1)
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        rr = np.hypot(xx - x[i], yy - y[i])
+        beyond = (rr >= rmax) & (rr < rmax + 20)
+        if beyond.sum() < 20:
+            continue
+        win = ms[y0:y1, x0:x1]
+        by = float(np.median(win[beyond]))
+        T = 3 * sig + 0.5 * np.clip(neb[y0:y1, x0:x1] - by, 0, None)
+        wi = np.clip((np.abs(win - by) - T) / np.maximum(T, 1e-6), 0, 1).astype(np.float32) * (rr < rmax)
+        n, lab = cv2.connectedComponents((wi > 0).astype(np.uint8), connectivity=8)
+        seed = lab[min(max(yc - y0, 0), y1 - y0 - 1), min(max(xc - x0, 0), x1 - x0 - 1)]
+        if seed == 0:
+            continue
+        wi = wi * (lab == seed) * gate
+        w[y0:y1, x0:x1] = np.maximum(w[y0:y1, x0:x1], wi)
+    if not w.any():
+        return w
+    w = np.maximum(w, cv2.dilate(w, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))))
+    return cv2.GaussianBlur(w, (0, 0), 3)
 
 
 def star_zone_weight(img, model, x, y, g, sig, gmax=11.0):

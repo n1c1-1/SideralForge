@@ -30,7 +30,7 @@ XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
                         [0.0556434, -0.2040259, 1.0572252]])
 
 LAYER_KEYS = ("fine_k", "fine_lo_pct", "fine_hi_pct", "faint_smooth", "faint_lo_pct", "faint_hi_pct", "resid_boost",
-              "colour_detail", "oiii_boost", "oiii_threshold", "oiii_smooth")
+              "colour_detail", "oiii_boost", "oiii_threshold", "oiii_smooth", "sharpen", "sharpen_lo_pct")
 NEB_LIN_KEYS = LAYER_KEYS + ("ha_boost", "ha_sigma", "glow_k", "glow_sigma", "g_glow", "speck_k", "white_temp", "tint")
 NEB_KEYS = NEB_LIN_KEYS + ("chroma", "chroma_protect", "hue_target", "hue_shift", "chroma_sigma", "snr_lo", "snr_hi",
                            "sky_level", "dark_level", "toe", "sky_pct", "dark_pct", "white_mult", "hdr_strength",
@@ -63,7 +63,7 @@ class RenderEngine:
         # only uploaded while it is being mixed
         self.layered = (self.dir / "N.npy").exists()
         if self.layered:
-            names = ["N", "Eg0", "dY", "R"] + [n for n in ("chroma_fine",) if (self.dir / f"{n}.npy").exists()]
+            names = ["N", "Eg0", "dY", "R"] + [n for n in ("chroma_fine", "dS") if (self.dir / f"{n}.npy").exists()]
             if (self.dir / "O.npy").exists() and self.prep.get("oiii_sigma"):
                 names.append("O")
                 self.o_vec = torch.tensor(self.prep.get("o_display", self.prep["o"]), dtype=torch.float32,
@@ -123,7 +123,8 @@ class RenderEngine:
         # 'Fine detail' = factor on the network's fine scales already in the base (newer preparations), or amount of
         # network detail added to a Wiener base (older ones)
         kf = s.fine_k - 1.0 if self.prep.get("fine_layer") == "scale" else s.fine_k
-        new = kf != 0 or s.faint_smooth > 0
+        sharpen = s.sharpen if "dS" in self._host else 0.0
+        new = kf != 0 or s.faint_smooth > 0 or sharpen != 0
         if kf != 0:                          # Noise2Noise fine detail (brightness), above a brightness of the signal
             Eg0 = self._layer("Eg0", f)
             q1, q2 = ops.percentile(Eg0, [s.fine_lo_pct, s.fine_hi_pct], valid)
@@ -131,6 +132,13 @@ class RenderEngine:
             del Eg0
             N = N + kf * (wf * self._layer("dY", f))[None] * self.w_cam[:, None, None]
             del wf
+        if sharpen != 0:                     # measured-shape sharpening (brightness), above a brightness of the signal
+            Eg0 = self._layer("Eg0", f)
+            q1, q2 = ops.percentile(Eg0, [s.sharpen_lo_pct, s.fine_hi_pct], valid)
+            ws = ops.gaussian_blur(((Eg0 - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)
+            del Eg0
+            N = N + sharpen * (ws * self._layer("dS", f))[None] * self.w_cam[:, None, None]
+            del ws
         if s.faint_smooth > 0:               # faint areas: only the scales confirmed by the data
             Eg = ops.gaussian_blur(torch.einsum("c,chw->hw", self.lum, N), 8 / f)
             q1, q2 = ops.percentile(Eg, [s.faint_lo_pct, s.faint_hi_pct], valid)

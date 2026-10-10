@@ -123,6 +123,13 @@ class RenderSettings(StageParams):
                               "near white.")
     sharp_white: float = S(1.0, section="Nebula", label="Sharpening limit", level=ADVANCED, ge=0.3, le=1.0, step=0.01,
                            help="Brightness above which sharpening fades out.")
+    sharpen: float = S(0.0, section="Nebula", label="Sharpening (measured star shape)", ge=0.0, le=2.0, step=0.05,
+                       help="Amount of the non-blind sharpening: the star shape measured on your stack, undone towards "
+                            "a sharper target by a network trained on your own half-stacks. Real detail in bright "
+                            "zones; in faint zones it can also sharpen the noise, so it starts above a brightness.",
+                       tip="0 = none (faithful); 1 = as learned; above 1 = accentuated.")
+    sharpen_lo_pct: float = S(50.0, section="Nebula", label="Sharpening start", level=ADVANCED, ge=0, le=99, step=1,
+                              unit="percentile", help="Emission brightness (percentile) where the sharpening starts.")
     fine_k: float = S(1.0, section="Nebula", label="Fine detail", ge=0.0, le=3.0, step=0.05,
                       help="Strength of the finest scales of the denoised nebula (filaments, edges, measured by the "
                            "Noise2Noise network on your data), above the brightness set by 'Fine detail start'.",
@@ -190,6 +197,14 @@ class RenderSettings(StageParams):
 
 PRESETS: dict[str, dict] = {
     "Natural": {},
+    # The two deliverables of every project. Faithful: only what the data prove (measured colours, no hue shift, no
+    # H-alpha boost, no display sharpening, detail layer as measured). Artistic: judged by eye, enhancement allowed.
+    "Faithful": {"chroma": 1.0, "ha_boost": 0.0, "hue_shift": 0.0, "neb_sharp": 0.0, "lc_fine": 1.0, "lc_medium": 1.0,
+                 "lc_large": 1.0, "colour_detail": 1.0, "resid_boost": 0.0},
+    "Artistic": {"sharpen": 1.0, "sharpen_lo_pct": 30.0,
+                 "fine_k": 1.5, "fine_lo_pct": 40.0, "faint_smooth": 10.0, "colour_detail": 1.0, "resid_boost": 0.8,
+                 "chroma": 1.15, "ha_boost": 1.0, "neb_sharp": 1.6, "lc_fine": 1.25, "lc_medium": 1.5, "lc_large": 1.35,
+                 "hdr_strength": 0.9, "star_sat": 0.9, "d10": 3.8, "d7": 8.0},
     "H-alpha emphasised": {"ha_boost": 1.6, "white_mult": 0.58},
     "Prominent stars": {"g_lim": 14.0, "t_lim": 0.28, "d10": 5.4, "star_sat": 0.6, "d7": 11.5},
     "Dense Milky Way": {"g_glow": 17.0, "g_lim": 16.0, "t_lim": 0.18, "d10": 3.8, "d7": 8.0},

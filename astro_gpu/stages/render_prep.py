@@ -67,7 +67,7 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "13"         # 7: full-res base; 8: star depth; 9: fine layers vs star light; 10: guard; 13: N2N fine scales
+    version = "14"         # 13: N2N fine scales; 14: sharpening layer
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -171,10 +171,17 @@ class RenderPrep(Stage):
         det = np.stack([(n2[c] - cv2.GaussianBlur(n2[c], (0, 0), p.fine_sigma))
                         - (0 if fine_scale else b0[c] - cv2.GaussianBlur(b0[c], (0, 0), p.fine_sigma))
                         for c in range(3)])
-        del n2, b0
+        del b0
         # the fine layers are not reliable where the light of the stars dominates (residual spikes, halo streaks)
         ctx.save("dY.npy", (np.tensordot(lum, det, 1) * wstar).astype(np.float16))
         del det
+        # sharpening increment: the sharpening network minus the plain one (brightness), off on star light
+        sp = ctx.project.stage_dir("starless") / "n2n_sharp_final.npy"
+        if sp.exists():
+            n2s = np.load(sp).astype(np.float32) / flat
+            ctx.save("dS.npy", (np.tensordot(lum, n2s - n2, 1) * wstar).astype(np.float16))
+            del n2s
+        del n2
         cf = ctx.project.stage_dir("starless") / "chroma_fine.npy"
         if cf.exists():                           # star residuals are common to both halves: off on star light too
             ctx.save("chroma_fine.npy", (np.load(cf).astype(np.float32) / flat * wstar[None]).astype(np.float16))

@@ -90,7 +90,15 @@ def cmd_render(a):
     from .render.settings import PRESETS, RenderSettings
     p = Project(a.project)
     remember(p)
-    vals = dict(PRESETS.get(a.preset, {})) if a.preset else {}
+    vals = {}
+    if a.preset:
+        key = next((k for k in PRESETS if k.lower() == a.preset.lower()), None)
+        if key is None:
+            raise SystemExit(f"unknown preset '{a.preset}'; available: {', '.join(PRESETS)}")
+        vals = dict(PRESETS[key])
+        if a.name is None:
+            a.name = key.lower().replace(" ", "_").replace(",", "").replace("&", "and")
+    a.name = a.name or "render"
     if a.use_saved:
         vals.update(RenderSettings.from_saved(p.config.render.get("settings", {})).model_dump(exclude_defaults=True))
     for item in a.set or []:
@@ -150,7 +158,7 @@ def main(argv=None):
     re_.add_argument("--preset")
     re_.add_argument("--set", nargs="+")
     re_.add_argument("--use-saved", action="store_true")
-    re_.add_argument("--name", default="render")
+    re_.add_argument("--name", help="result name (default: the preset name, or 'render')")
     re_.add_argument("--orientation", default="as captured")
     re_.set_defaults(fn=cmd_render)
     g = sub.add_parser("gui", help="open the graphical interface")
