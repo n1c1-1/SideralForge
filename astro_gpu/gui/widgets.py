@@ -129,10 +129,10 @@ class ImageView(QGraphicsView):
             self.fit()
 
     def _split_x(self) -> float | None:
+        """Divider position in viewport pixels (a fraction of the window width: always visible when zoomed in)."""
         if self.compare is None or self.item.pixmap().isNull():
             return None
-        r = self.mapFromScene(self.item.sceneBoundingRect()).boundingRect()
-        return r.left() + self.split * r.width()
+        return self.split * self.viewport().width()
 
     def mousePressEvent(self, e):
         sx = self._split_x()
@@ -143,8 +143,7 @@ class ImageView(QGraphicsView):
 
     def mouseMoveEvent(self, e):
         if self._drag_split:
-            r = self.mapFromScene(self.item.sceneBoundingRect()).boundingRect()
-            self.split = float(np.clip((e.position().x() - r.left()) / max(r.width(), 1), 0, 1))
+            self.split = float(np.clip(e.position().x() / max(self.viewport().width(), 1), 0, 1))
             self.viewport().update()
             return
         sx = self._split_x()
@@ -169,15 +168,17 @@ class ImageView(QGraphicsView):
         if self.overlay is not None:
             p.drawPixmap(r, self.overlay, QRectF(self.overlay.rect()))
         if self.compare is not None:
-            x = r.left() + self.split * r.width()
-            src_w = self.compare.width() * self.split
-            p.drawPixmap(QRectF(r.left(), r.top(), x - r.left(), r.height()), self.compare,
-                         QRectF(0, 0, src_w, self.compare.height()))
+            vx = self.split * self.viewport().width()
+            x = self.mapToScene(int(vx), 0).x()                      # divider in scene coordinates
+            xl = max(r.left(), min(x, r.right()))
+            if xl > r.left():
+                f = (xl - r.left()) / r.width()
+                p.drawPixmap(QRectF(r.left(), r.top(), xl - r.left(), r.height()), self.compare,
+                             QRectF(0, 0, self.compare.width() * f, self.compare.height()))
             p.save()
             p.resetTransform()
-            vx = self.mapFromScene(QPointF(x, r.top())).x()
             p.setPen(QPen(QColor(style.ACCENT), 2))
-            p.drawLine(vx, 0, vx, self.viewport().height())
+            p.drawLine(int(vx), 0, int(vx), self.viewport().height())
             p.setPen(QColor(style.FG))
             p.drawText(int(vx) - 110, 22, 100, 20, Qt.AlignRight, self.compare_label[0])
             p.drawText(int(vx) + 10, 22, 100, 20, Qt.AlignLeft, self.compare_label[1])
