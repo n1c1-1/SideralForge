@@ -195,6 +195,11 @@ class MainWindow(QMainWindow):
         self.adv_b.setToolTip("Show every parameter (basic mode shows the few that matter most)")
         self.adv_b.toggled.connect(self.set_advanced)
         tb.addWidget(self.adv_b)
+        guide = QAction("Guide", self)
+        guide.setShortcut("F1")
+        guide.setToolTip("How to use astro_GPU (F1)")
+        guide.triggered.connect(self.show_guide)
+        tb.addAction(guide)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         tb.addWidget(spacer)
@@ -306,6 +311,19 @@ class MainWindow(QMainWindow):
         self.refresh_status()
         self.stage_list.setCurrentRow(0)
         self.render_tab.set_project(p, self.advanced)
+
+    def show_guide(self):
+        from PySide6.QtWidgets import QDialog, QTextBrowser
+        p = Path(__file__).resolve().parents[2] / "docs" / "GUIDE.md"
+        dlg = QDialog(self)
+        dlg.setWindowTitle("astro_GPU guide")
+        dlg.resize(820, 760)
+        v = QVBoxLayout(dlg)
+        tb = QTextBrowser()
+        tb.setOpenExternalLinks(True)
+        tb.setMarkdown(p.read_text(encoding="utf-8") if p.exists() else "Guide not found.")
+        v.addWidget(tb)
+        dlg.exec()
 
     def set_device(self, _=None):
         if self.project:

@@ -239,6 +239,7 @@ class _FloatSlider(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.slider = QSlider(Qt.Horizontal)
+        self.slider.setMinimumWidth(60)
         self.slider.setRange(0, self.n)
         self.spin = QDoubleSpinBox()
         self.spin.setRange(lo, hi)
@@ -319,6 +320,8 @@ class ParamForm(QWidget):
             row = g.rowCount()
             lab = QLabel(d.get("label", name))
             lab.setToolTip(d.get("help", ""))
+            lab.setWordWrap(True)
+            lab.setMinimumWidth(110)
             w = self._make_widget(name, d, self.values.get(name, d["default"]), sliders)
             badge = QLabel()
             reset = QPushButton("↺")
@@ -444,6 +447,7 @@ def scroll(widget: QWidget) -> QScrollArea:
     s = QScrollArea()
     s.setWidget(widget)
     s.setWidgetResizable(True)
+    s.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     s.setFrameShape(QFrame.NoFrame)
     return s
 
@@ -483,8 +487,8 @@ class Histogram(QWidget):
             for a, b in zip(pts[:-1], pts[1:]):
                 p.drawLine(a, b)
         p.setPen(QColor(style.FG2))
-        p.drawText(4, self.height() - 3, f"pure black {self.clip[0]:.3f} %")
-        p.drawText(self.width() - 130, self.height() - 3, f"pure white {self.clip[1]:.3f} %")
+        p.drawText(4, self.height() - 3, "0")
+        p.drawText(self.width() - 26, self.height() - 3, "255")
 
 
 # ---------------------------------------------------------------------- journal

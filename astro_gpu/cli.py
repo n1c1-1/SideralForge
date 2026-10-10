@@ -26,7 +26,7 @@ def cmd_new(a):
     from .core.project import Inputs, Project, Target
     inputs = Inputs(lights=a.lights, darks=a.darks or [], flats=a.flats or [], bias=a.bias or [],
                     flat_darks=a.flat_darks or [])
-    t = Target(name=a.target or "", ra=a.ra, dec=a.dec)
+    t = Target(name=a.target or "", ra=a.ra, dec=a.dec, focal_mm=a.focal)
     p = Project.create(a.project, a.name or Path(a.project).name, inputs, t, a.scratch, a.reference or "")
     print(f"project created: {p.root}")
 
@@ -116,6 +116,7 @@ def main(argv=None):
     n.add_argument("--target")
     n.add_argument("--ra", type=float)
     n.add_argument("--dec", type=float)
+    n.add_argument("--focal", type=float, help="effective focal length in mm (optional)")
     n.add_argument("--scratch")
     n.add_argument("--reference")
     n.set_defaults(fn=cmd_new)

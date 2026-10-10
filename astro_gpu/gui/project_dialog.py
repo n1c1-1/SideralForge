@@ -104,6 +104,9 @@ class NewProjectDialog(QDialog):
         self.dec.setPlaceholderText("degrees (optional)")
         f2.addRow("Centre RA", self.ra)
         f2.addRow("Centre Dec", self.dec)
+        self.focal = QLineEdit()
+        self.focal.setPlaceholderText("mm, with reducer (optional: makes the astrometry immediate)")
+        f2.addRow("Focal length", self.focal)
         v.addWidget(g2)
 
         g3 = QGroupBox("Project")
@@ -216,7 +219,7 @@ class NewProjectDialog(QDialog):
                 return None
         inputs = Inputs(**{k: w.folders() for k, w in self.lists.items()})
         self.project = Project.create(root, self.name.text(), inputs,
-                                      Target(self.target.text(), fnum(self.ra), fnum(self.dec)),
+                                      Target(self.target.text(), fnum(self.ra), fnum(self.dec), fnum(self.focal)),
                                       self.scratch.text() or None, self.reference.text())
         self.accept()
 

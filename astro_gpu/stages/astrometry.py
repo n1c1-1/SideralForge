@@ -17,7 +17,14 @@ class AstrometryParams(StageParams):
                               "width is enough.")
     dec: float | None = P(None, label="Centre Dec", unit="deg", ge=-90, le=90,
                           help="Approximate declination of the field centre (degrees).")
-    scale: float | None = P(None, label="Image scale", unit="arcsec/px", gt=0,
+    focal_mm: float | None = P(None, label="Focal length", unit="mm", gt=0,
+                               help="Effective focal length of the instrument (with reducer / flattener). With the pixel "
+                                    "size of the camera it gives the image scale, which makes the astrometry immediate.",
+                               tip="Read from the files when the camera records it; telescopes usually do not report "
+                                   "it. Leave empty to let the solver search the scale (a few minutes).")
+    pixel_um: float | None = P(None, label="Pixel size", unit="um", gt=0, level=ADVANCED,
+                               help="Physical size of a sensor pixel, from the camera database or the FITS header.")
+    scale: float | None = P(None, label="Image scale", unit="arcsec/px", gt=0, level=ADVANCED,
                             help="Approximate size of a pixel of the stacked image on the sky. Computed from the focal "
                                  "length and the pixel size when they are known; otherwise searched automatically.",
                             tip="206.265 x pixel size (um) / focal length (mm), divided by the drizzle scale.")
@@ -52,12 +59,12 @@ class Astrometry(Stage):
         if name:
             a["target"] = Auto(name, "project / FITS object name")
         pix, foc = ctx.metric_of("inventory", "pixel_um"), ctx.metric_of("inventory", "focal_mm")
-        try:
-            S = float(ctx.load_json("stack", "drz_meta.json")["scale"])
-        except Exception:  # noqa: BLE001
-            S = 1.0
-        if pix and foc:
-            a["scale"] = Auto(round(206.265 * pix / foc / S, 3), f"pixel {pix} um, focal {foc} mm, drizzle x{S}")
+        if pix:
+            a["pixel_um"] = Auto(pix, f"camera {ctx.metric_of('inventory', 'camera')}")
+        if foc:
+            a["focal_mm"] = Auto(foc, "recorded in the files")
+        if ctx.project.config.target.focal_mm:
+            a["focal_mm"] = Auto(ctx.project.config.target.focal_mm, "entered when the project was created")
         return a
 
     def run(self, ctx: Context, p: AstrometryParams) -> None:
@@ -68,6 +75,10 @@ class Astrometry(Stage):
         from scipy.spatial import cKDTree
 
         ra0, dec0 = p.ra, p.dec
+        S_drz = float(ctx.load_json("stack", "drz_meta.json")["scale"])
+        if p.scale is None and p.focal_mm and p.pixel_um:
+            p = p.model_copy(update={"scale": 206.265 * p.pixel_um / p.focal_mm / S_drz})
+            ctx.log(f"image scale {p.scale:.3f}\"/px from focal {p.focal_mm} mm and pixel {p.pixel_um} um")
         if ra0 is None or dec0 is None:
             if not p.target:
                 raise StageError("the approximate field centre is unknown: enter the target name or its RA/Dec")
@@ -90,6 +101,11 @@ class Astrometry(Stage):
         # triangle matching is scale-invariant: a coarse grid of scales is enough when the scale is unknown
         scales = [p.scale] if p.scale else list(np.geomspace(0.4, 40, 22))
         tol = 0.15 if p.scale else 0.13
+        pix = p.pixel_um
+        if not p.scale:
+            # most plausible first: a ~500 mm focal length when the pixel size is known, else ~3"/px
+            typical = 206.265 * pix / 500.0 / S_drz if pix else 3.0
+            scales.sort(key=lambda v: abs(np.log(v / typical)))
         best = None
         for k, sc in enumerate(scales):
             ctx.progress(0.6 * k / len(scales), f"searching the field at {sc:.2f}\"/px")

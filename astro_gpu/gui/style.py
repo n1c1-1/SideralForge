@@ -14,8 +14,8 @@ WARN = "#e0a43c"
 ERR = "#e06c5f"
 RUN = "#5aa0d8"
 
-STATE_COLOURS = {"done": OK, "stale": WARN, "pending": FG2, "failed": ERR, "interrupted": WARN, "running": RUN}
-STATE_SYMBOLS = {"done": "✔", "stale": "↻", "pending": "○", "failed": "✖",
+STATE_COLOURS = {"done": OK, "ready": FG, "stale": WARN, "pending": FG2, "failed": ERR, "interrupted": WARN, "running": RUN}
+STATE_SYMBOLS = {"done": "✔", "ready": "○", "stale": "↻", "pending": "○", "failed": "✖",
                  "interrupted": "⏸", "running": "▶"}
 
 QSS = f"""

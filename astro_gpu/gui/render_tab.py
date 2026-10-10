@@ -399,7 +399,7 @@ class RenderTab(QWidget):
         key = b.property("layer") if b else "final"
         img = self.images[key]
         self.view.set_image(to_qimage(img), keep_view=True, scale_factor=1.0 / max(self.cur_scale, 1e-6))
-        self.hist.set_image(img)
+        self.hist.set_image(img[4:-4, 4:-4])
         mode = self.compare.currentIndex()
         if mode == 1 and self.snapshot is not None:
             snap = self.snapshot[1]
@@ -457,8 +457,9 @@ class RenderTab(QWidget):
         return out
 
     def update_checks(self, info):
-        img = self.images["final"].astype(np.float32) / 255
-        sl = self.images["starless"].astype(np.float32) / 255
+        b = 4                                       # preview edge pixels mix in the uncovered border: ignored
+        img = self.images["final"][b:-b, b:-b].astype(np.float32) / 255
+        sl = self.images["starless"][b:-b, b:-b].astype(np.float32) / 255
         black = 100 * float((img.max(2) <= 0).mean())
         Y = 0.2126 * sl[..., 0] + 0.7152 * sl[..., 1] + 0.0722 * sl[..., 2]
         burnt = 100 * float((Y > 0.92).mean())
@@ -468,7 +469,8 @@ class RenderTab(QWidget):
         def mark(ok):
             sym = OK_SYM if ok else WARN_SYM
             return f"<span style='color:{style.OK if ok else style.WARN}'>{sym}</span>"
-        rows = [f"{mark(black < 0.01)} pure black {black:.3f} %",
+        white = 100 * float((img.min(2) >= 1).mean())
+        rows = [f"{mark(black < 0.01)} pure black {black:.3f} %   {mark(white < 0.01)} pure white {white:.3f} %",
                 f"{mark(burnt < 0.3)} nebula above 92 %: {burnt:.2f} %",
                 f"&nbsp;&nbsp;&nbsp;sky (30th percentile) {sky:.0f}/255"]
         if st:

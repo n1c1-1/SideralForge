@@ -28,7 +28,7 @@ from .stage import Context, Interrupted, Stage, StageError
 class StageStatus:
     name: str
     title: str
-    state: str          # done | stale | pending | failed | interrupted | running
+    state: str          # done | ready | stale | pending | failed | interrupted | running
     reason: str = ""
     duration: float | None = None
     finished: str = ""
@@ -87,7 +87,7 @@ class Pipeline:
                 out[st.name] = StageStatus(st.name, st.title, "running")
                 continue
             if not m:
-                state, reason = ("pending" if deps_bad else "stale"), "never run"
+                state, reason = ("pending" if deps_bad else "ready"), "never run"
             elif m.get("status") in ("failed", "interrupted", "running"):
                 state = "interrupted" if m.get("status") != "failed" else "failed"
                 reason = m.get("error", "")[:300] or "interrupted"
