@@ -69,8 +69,12 @@ class StagePage(QWidget):
         self.run_here = QPushButton("Run up to this stage")
         self.rerun = QPushButton("Recompute this stage")
         self.rerun.setToolTip("Force this stage (and what depends on it) to be computed again")
+        self.frames_b = QPushButton("Frames...")
+        self.frames_b.setToolTip("Every light frame with its weight, transparency, star size and exclusion reason")
+        self.frames_b.clicked.connect(self.show_frames)
         row.addWidget(self.run_here)
         row.addWidget(self.rerun)
+        row.addWidget(self.frames_b)
         v.addLayout(row)
         self.form_host = QVBoxLayout()
         v.addLayout(self.form_host, 3)
@@ -115,6 +119,8 @@ class StagePage(QWidget):
         self.form_scroll = scroll(self.form)
         self.form_host.addWidget(self.form_scroll)
         self.help.show_text(stage.title, stage.description)
+        self.frames_b.setVisible((pipeline.project.stage_dir(stage.name) / "frames.json").exists()
+                                 and stage.name == "stack")
         self.show_metrics(pipeline)
 
     def show_metrics(self, pipeline):
@@ -134,6 +140,40 @@ class StagePage(QWidget):
     def on_focus(self, name):
         d = self.form.desc[name]
         self.help.show_param(d, self.form.values.get(name), self.form.origins.get(name, ""), self.form.reasons.get(name, ""))
+
+    def show_frames(self):
+        from PySide6.QtWidgets import QDialog
+        rows = json.loads((self.main.project.stage_dir("stack") / "frames.json").read_text())
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Light frames")
+        dlg.resize(900, 640)
+        v = QVBoxLayout(dlg)
+        n_ex = sum(1 for r in rows if r["excluded"])
+        lab = QLabel(f"{len(rows)} frames, {len(rows) - n_ex} used, {n_ex} excluded. Weight = (transparency / noise)^2 x "
+                     "sharpness, relative to the best frame. Click a column title to sort.")
+        lab.setWordWrap(True)
+        v.addWidget(lab)
+        t = QTableWidget(len(rows), 6)
+        t.setHorizontalHeaderLabels(["File", "Time", "Weight", "Transparency", "FWHM (px)", "Excluded because"])
+        t.verticalHeader().setVisible(False)
+        t.setEditTriggers(QTableWidget.NoEditTriggers)
+        for i, r in enumerate(rows):
+            vals = [Path(r["path"]).name, (r.get("time") or "")[11:19], r["weight"], r["transparency"], r["fwhm"],
+                    r["excluded"]]
+            for j, val in enumerate(vals):
+                it = QTableWidgetItem()
+                if isinstance(val, float):
+                    it.setData(Qt.DisplayRole, round(val, 3))
+                else:
+                    it.setText(str(val))
+                if r["excluded"]:
+                    it.setForeground(QColor(style.WARN))
+                t.setItem(i, j, it)
+        t.setSortingEnabled(True)
+        t.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        t.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        v.addWidget(t)
+        dlg.exec()
 
     def on_change(self, name, value):
         proj = self.main.project
