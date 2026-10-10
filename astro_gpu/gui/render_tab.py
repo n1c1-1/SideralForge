@@ -281,8 +281,9 @@ class RenderTab(QWidget):
         self.meta = meta
         if not meta.get("layered", True):
             QMessageBox.information(self, "Rendering", "These rendering layers were prepared by an older version: "
-                                    "'Fine detail', 'Faint area smoothing', 'Fine colour' and 'Blue-green / reflection "
-                                    "tones' have no effect until the 'Rendering preparation' stage is run again "
+                                    "'Fine detail', 'Continuum detail', 'Faint area smoothing', 'Fine colour', 'OIII tones' "
+                                    "and 'Blue / reflection tones' have no effect until the 'Rendering preparation' "
+                                    "stage is run again "
                                     "(Processing tab, about a minute).")
         elif not meta.get("fine_colour", True):
             self.status.setText("'Fine colour' needs the 'Star removal and denoising' stage to be run again")

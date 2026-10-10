@@ -34,12 +34,21 @@ class RenderSettings(StageParams):
                         tip="0 = pure calibrated colour; 0.5-1 natural; 1.5+ emphasised emission.")
     ha_sigma: float = S(1.5, section="Colour", label="H-alpha boost smoothing", level=ADVANCED, ge=0, le=10,
                         step=0.1, unit="px", help="Smoothing of the extracted H-alpha before it is added.")
-    resid_boost: float = S(0.0, section="Colour", label="Blue-green / reflection tones", ge=-1.0, le=3.0, step=0.05,
-                           help="Amplifies the part of the nebula colour that is neither H-alpha nor starlight: OIII "
-                                "(teal), H-beta and reflection nebulae (blue), dust (brown). With a colour camera these "
-                                "tones are weak next to H-alpha and easily drowned.",
-                           tip="0 = calibrated; 0.5-1.5 brings out subtle blue-green structures; it also amplifies "
-                               "the colour noise of these tones, watch faint areas.")
+    oiii_boost: float = S(0.0, section="Colour", label="OIII (teal) tones", ge=0.0, le=4.0, step=0.05,
+                          help="Amplifies the OIII emission (496/501 nm, teal), separated from H-alpha and starlight "
+                               "with the spectral response of your camera. In emission nebulae it fills the hot "
+                               "inner regions around the ionising stars; next to H-alpha it is easily drowned.",
+                          tip="0 = calibrated; 1 = OIII doubled; 2-3 = HOO-like rendering. Only OIII above the noise "
+                              "threshold is amplified.")
+    oiii_threshold: float = S(1.0, section="Colour", label="OIII noise threshold", level=ADVANCED, ge=0, le=5, step=0.1,
+                              unit="sigma", help="OIII below this many noise sigmas (measured on the sky) is not "
+                                                 "amplified, so that the background does not turn teal.")
+    resid_boost: float = S(0.0, section="Colour", label="Blue / reflection tones", ge=-1.0, le=3.0, step=0.05,
+                           help="Amplifies the colour component that is neither H-alpha nor starlight nor OIII: bluer "
+                                "than the stars (reflection nebulae, H-beta) or redder (dust). With a colour camera "
+                                "these tones are weak and easily drowned.",
+                           tip="0 = calibrated; 0.5-1.5 brings out blue reflection; it also amplifies the colour noise "
+                               "of these tones, watch faint areas.")
     colour_detail: float = S(0.0, section="Colour", label="Fine colour", ge=0.0, le=1.5, step=0.05,
                              help="Restores the colour variations finer than 8 px. They are kept aside by the "
                                   "denoising and only where both half-stacks agree (real structure, not noise).",
@@ -113,6 +122,14 @@ class RenderSettings(StageParams):
                            tip="80 = bright emission only; 40-60 = most of the nebula, with more denoiser texture.")
     fine_hi_pct: float = S(95.0, section="Nebula", label="Fine detail full", level=ADVANCED, ge=1, le=100, step=1,
                            unit="percentile", help="Emission brightness where the detail injection is complete.")
+    cont_detail: float = S(0.0, section="Nebula", label="Continuum detail", ge=0.0, le=1.5, step=0.05,
+                           help="Fine structure of the part of the nebula that has the colour of starlight: reflection "
+                                "and dust, OIII seen through a colour camera, and most of the fine detail of the "
+                                "denoised image (fine scales carry no colour, and white is close to starlight). It is "
+                                "smoothed at the 'Continuum smoothing' scale of the preparation because star residuals "
+                                "live there; this slider brings it back everywhere except on star footprints.",
+                           tip="0 = previous rendering (smoothest); 1 = full detail, check the surroundings of "
+                               "stars at 100 %. Faint areas still follow 'Faint area smoothing'.")
     faint_smooth: float = S(32.0, section="Nebula", label="Faint area smoothing", ge=0, le=100, step=1, unit="px",
                             help="In faint areas, structures smaller than this are not confirmed by the data (noise "
                                  "and star residuals) and are smoothed; bright nebulosity keeps full resolution.",
@@ -174,6 +191,6 @@ PRESETS: dict[str, dict] = {
     "Prominent stars": {"g_lim": 14.0, "t_lim": 0.28, "d10": 5.4, "star_sat": 0.6, "d7": 11.5},
     "Dense Milky Way": {"g_glow": 17.0, "g_lim": 16.0, "t_lim": 0.18, "d10": 3.8, "d7": 8.0},
     "Starless": {"stars": False},
-    "Rich detail & colour": {"fine_k": 1.3, "fine_lo_pct": 50.0, "faint_smooth": 12.0, "colour_detail": 0.8,
-                             "resid_boost": 0.8, "chroma": 0.95},
+    "Rich detail & colour": {"cont_detail": 1.0, "fine_k": 1.3, "fine_lo_pct": 50.0, "faint_smooth": 12.0,
+                             "colour_detail": 0.8, "oiii_boost": 1.5, "resid_boost": 0.5, "chroma": 0.95},
 }

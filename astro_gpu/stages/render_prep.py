@@ -39,6 +39,11 @@ class RenderPrepParams(StageParams):
                               "together) are preserved.")
     guard_sigma: float = P(1.0, label="Guard tolerance", level=ADVANCED, ge=0, le=5, step=0.1, unit="sigma",
                            help="How far below the local emission level a star footprint may go.")
+    oiii_scale: float = P(6.0, label="OIII map smoothing", level=ADVANCED, ge=0, le=50, unit="px",
+                          help="The OIII emission (teal, 496/501 nm) is separated from H-alpha and starlight with the "
+                               "spectral response of your camera. With a colour camera the three signatures are close, "
+                               "so the separation is noisy at fine scales and is smoothed at this scale. 0 disables "
+                               "the OIII layer.")
 
 
 class RenderPrep(Stage):
@@ -52,7 +57,7 @@ class RenderPrep(Stage):
                    "faint areas, fine colour, blue-green tones) is decided live in the final adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "2"          # 2: separate layers mixed live by the rendering engine
+    version = "4"          # 2: layers mixed live by the rendering engine; 3: unsmoothed continuum; 4: OIII layer
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -85,6 +90,7 @@ class RenderPrep(Stage):
         if p.cont_smooth > 0:
             EC = np.tensordot(np.linalg.pinv(Am), astro, 1)
             resid = astro - np.tensordot(Am, EC, 1)
+            Craw = EC[1].astype(np.float32)
             Cs = cv2.GaussianBlur(EC[1], (0, 0), p.cont_smooth)
             rs_ = np.stack([cv2.GaussianBlur(c, (0, 0), p.resid_smooth) for c in resid]) if p.resid_smooth > 0 else resid
             Ef = EC[0]
@@ -98,15 +104,36 @@ class RenderPrep(Stage):
             ctx.metric("continuum_colour", np.round(k_, 3).tolist())
         else:                                     # no split: everything in the 'rest' layer
             Ef = np.zeros((H, W), np.float32)
-            Cs = np.zeros((H, W), np.float32)
+            Cs = Craw = np.zeros((H, W), np.float32)
             rs_ = resid = astro
         ctx.progress(0.55, "saving the nebula layers")
         ctx.save("E.npy", Ef.astype(np.float32))
         ctx.save("C.npy", Cs.astype(np.float32))
+        # the continuum's fine scales hold the achromatic fine detail of the denoised image (white is mostly
+        # 'starlight colour') and the fine structure of OIII / reflection: kept for the live 'Continuum detail'
+        ctx.save("C_raw.npy", Craw)
+        ctx.save("foot_w.npy", foot_w.astype(np.float16))
         ctx.save("R.npy", rs_.astype(np.float32))
         ctx.save("R_raw.npy", resid.astype(np.float16))
         preview = np.tensordot(Am, np.stack([Ef, Cs]), 1) + rs_
-        del Ef, Cs, rs_, resid
+        del Ef, Cs, Craw, rs_, resid
+        # OIII layer: three signatures (H-alpha, OIII, starlight) at a scale where their separation is reliable
+        o_ = spec["cam_oiii"].astype(np.float64)
+        o_ = o_ / max(o_[1], 1e-9)
+        B3 = np.stack([e_, o_, k_], 1)
+        s_o = None
+        if p.oiii_scale > 0 and np.linalg.cond(B3) < 200:
+            ctx.progress(0.6, "OIII layer")
+            O = cv2.GaussianBlur(np.tensordot(np.linalg.inv(B3)[1], astro, 1).astype(np.float32), (0, 0), p.oiii_scale)
+            Eg_ = cv2.GaussianBlur(astro[0] - 0.87 * astro[1], (0, 0), 8)
+            sky_ = good & (Eg_ < np.percentile(Eg_[good], 50))
+            s_o = float(1.4826 * np.median(np.abs(O[sky_] - np.median(O[sky_]))))
+            ctx.save("O.npy", (O * (1 - foot_w)).astype(np.float32))
+            ctx.metric("oiii_noise", round(s_o, 3))
+            ctx.metric("oiii_peak_snr", round(float(np.percentile(O[good], 99.9)) / max(s_o, 1e-9), 1))
+            ctx.log(f"OIII layer: peak {np.percentile(O[good], 99.9) / max(s_o, 1e-9):.0f} sigma above the sky "
+                    f"(condition number of the separation {np.linalg.cond(B3):.0f})")
+            del O, Eg_
         # fine-detail layer (Noise2Noise small scales minus Wiener small scales), switched off on star footprints
         ctx.progress(0.65, "fine detail layer")
         n2 = ctx.load("starless", "n2n_final.npy").astype(np.float32) / flat
@@ -152,7 +179,8 @@ class RenderPrep(Stage):
         ctx.save_json("prep.json", {"crop": [int(x0), int(x1), int(y0), int(y1)], "alpha": alpha,
                                     "vh": vh.tolist(), "M": M.tolist(), "drizzle_scale": S, "width": W,
                                     "height": H, "mag_offset": dm, "e": e_.tolist(), "Am": Am.tolist(),
-                                    "layers": 2, "split": bool(p.cont_smooth > 0)})
+                                    "layers": 2, "split": bool(p.cont_smooth > 0), "o": o_.tolist(),
+                                    "oiii_sigma": s_o})
         np.savez(ctx.out("profile.npz"), r=r_all, prof=prof)
         from ..core.imgutil import asinh_preview
         ctx.preview("nebula_layer", asinh_preview(preview, M, k=30))

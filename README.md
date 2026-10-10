@@ -18,7 +18,9 @@ What makes it different from the usual stack → stretch → star removal → de
   emission with a professional H-alpha survey (NSNS / Finkbeiner) and from the unresolved starlight predicted by Gaia.
 * **Interactive rendering on the GPU**: tone curve with soft toe, edge-preserving HDR, logarithmic highlight shoulder
   (no burnt cores), OKLab colour handling, star size / density / colour controls, separate layers, automatic
-  quality checks (clipping, burnt highlights, dark dips at stars).
+  quality checks (clipping, burnt highlights, dark dips at stars). Detail in faint areas, Noise2Noise fine detail,
+  fine colour confirmed by both half-stacks and blue-green / reflection tones are live sliders too: the nebula is
+  mixed on the fly from layers prepared once.
 * **Resumable**: every stage stores a manifest; an interrupted run continues where it stopped, a parameter change
   only recomputes what depends on it.
 * **Every parameter is documented** in the interface, with a basic and an advanced mode, and data-driven automatic

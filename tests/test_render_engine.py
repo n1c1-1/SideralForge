@@ -56,11 +56,18 @@ def prep_layers(prep, tmp_path_factory):
     np.save(d / "C.npy", C.astype(np.float32))
     np.save(d / "R.npy", R.astype(np.float32))
     np.save(d / "R_raw.npy", R_raw.astype(np.float16))
+    np.save(d / "C_raw.npy", EC[1].astype(np.float32))
+    O = np.zeros((H, W), np.float32)
+    O[20:60, 30:90] = 5.0
+    np.save(d / "O.npy", O)
+    foot = np.zeros((H, W), np.float32)
+    foot[100:140, 150:200] = 1
+    np.save(d / "foot_w.npy", foot.astype(np.float16))
     np.save(d / "Eg0.npy", cv2.GaussianBlur(astro[0] - 0.87 * astro[1], (0, 0), 8).astype(np.float32))
     np.save(d / "dE.npy", rng.normal(0, 0.8, (H, W)).astype(np.float16))
     np.save(d / "chroma_fine.npy", rng.normal(0, 0.5, (3, H, W)).astype(np.float16))
     pj = json.loads((prep / "prep.json").read_text())
-    pj.update({"Am": Am.tolist(), "layers": 2, "split": True})
+    pj.update({"Am": Am.tolist(), "layers": 2, "split": True, "o": [0.0, 1.0, 0.75], "oiii_sigma": 1.0})
     (d / "prep.json").write_text(json.dumps(pj))
     # the equivalent pre-mixed preparation (version 1)
     d1 = tmp_path_factory.mktemp("render_prep_mixed")
@@ -88,6 +95,16 @@ def test_layers_mix_live(prep_layers):
     r = eng._astro(RenderSettings(fine_k=0, faint_smooth=0, resid_boost=1.0), 1) - base
     R = torch.from_numpy(np.load(prep_layers / "R.npy")).to(eng.dev)
     assert float((r - R).abs().max()) < 1e-3
+    # continuum detail: the unsmoothed continuum comes back, except on star footprints
+    cd = eng._astro(RenderSettings(fine_k=0, faint_smooth=0, cont_detail=1.0), 1)
+    full = np.tensordot(eng.Am.cpu().numpy(), np.stack([np.load(prep_layers / "E.npy"), np.load(prep_layers / "C_raw.npy")]), 1)
+    full = torch.from_numpy(full + np.load(prep_layers / "R.npy")).float().to(eng.dev)
+    assert float((cd - full)[:, :90].abs().max()) < 1e-3
+    assert float((cd - base)[:, 105:135, 155:195].abs().max()) < 1e-3
+    # OIII: added in its own colour above the threshold only
+    ob = eng._astro(RenderSettings(fine_k=0, faint_smooth=0, oiii_boost=2.0, oiii_threshold=1.0), 1) - base
+    assert abs(float(ob[1, 30, 50]) - 2.0 * 4.0) < 1e-3 and abs(float(ob[2, 30, 50]) - 2.0 * 4.0 * 0.75) < 1e-3
+    assert float(ob[0].abs().max()) < 1e-4 and float(ob[:, 100:].abs().max()) < 1e-4
     # faint-area smoothing removes small scales in faint areas only
     sm = eng._astro(RenderSettings(fine_k=0, faint_smooth=32, faint_lo_pct=55, faint_hi_pct=85), 1)
     hp = lambda a: (a[0] - torch.from_numpy(cv2.GaussianBlur(a.cpu().numpy()[0], (0, 0), 2)).to(eng.dev)).abs()  # noqa: E731

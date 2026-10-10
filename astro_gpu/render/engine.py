@@ -30,7 +30,7 @@ XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
                         [0.0556434, -0.2040259, 1.0572252]])
 
 LAYER_KEYS = ("fine_k", "fine_lo_pct", "fine_hi_pct", "faint_smooth", "faint_lo_pct", "faint_hi_pct", "resid_boost",
-              "colour_detail")
+              "colour_detail", "cont_detail", "oiii_boost", "oiii_threshold")
 NEB_LIN_KEYS = LAYER_KEYS + ("ha_boost", "ha_sigma", "glow_k", "glow_sigma", "g_glow", "speck_k", "white_temp", "tint")
 NEB_KEYS = NEB_LIN_KEYS + ("chroma", "chroma_protect", "hue_target", "hue_shift", "chroma_sigma", "snr_lo", "snr_hi",
                            "sky_level", "dark_level", "toe", "sky_pct", "dark_pct", "white_mult", "hdr_strength",
@@ -63,7 +63,11 @@ class RenderEngine:
         # only uploaded while it is being mixed
         self.layered = int(self.prep.get("layers", 1)) >= 2
         if self.layered:
-            names = ["E", "C", "R", "R_raw", "dE", "Eg0"] + (["chroma_fine"] if (self.dir / "chroma_fine.npy").exists() else [])
+            names = ["E", "C", "R", "R_raw", "dE", "Eg0"] + [n for n in ("chroma_fine", "C_raw", "foot_w")
+                                                              if (self.dir / f"{n}.npy").exists()]
+            if (self.dir / "O.npy").exists() and self.prep.get("oiii_sigma"):
+                names.append("O")
+                self.o_vec = torch.tensor(self.prep["o"], dtype=torch.float32, device=self.dev)
             self._host = {n: torch.from_numpy(np.load(self.dir / f"{n}.npy")) for n in names}
             self.Am = torch.tensor(self.prep["Am"], dtype=torch.float32, device=self.dev)
             self.split = bool(self.prep.get("split", True))
@@ -120,6 +124,10 @@ class RenderEngine:
             E = E + s.fine_k * wf * self._layer("dE", f)
             del wf
         R = self._layer("R", f)
+        C = self._layer("C", f)
+        Cd = None
+        if s.cont_detail > 0 and "C_raw" in self._host:   # continuum fine scales, off star footprints
+            Cd = (1 - self._layer("foot_w", f)) * (self._layer("C_raw", f) - C)
         if self.split and s.faint_smooth > 0:             # faint areas: only the scales confirmed by the data
             Eg = ops.gaussian_blur(E, 8 / f)
             q1, q2 = ops.percentile(Eg, [s.faint_lo_pct, s.faint_hi_pct], valid)
@@ -127,12 +135,20 @@ class RenderEngine:
             del Eg
             E = wE * E + (1 - wE) * ops.gaussian_blur(E, s.faint_smooth / f)
             R = wE[None] * R + (1 - wE[None]) * ops.gaussian_blur(self._layer("R_raw", f), s.faint_smooth / f)
+            if Cd is not None:
+                Cd = wE * Cd + (1 - wE) * ops.gaussian_blur(Cd, s.faint_smooth / f)
             del wE
-        astro = self.Am[:, :1, None] * E[None] + self.Am[:, 1:, None] * self._layer("C", f)[None]
+        if Cd is not None:
+            C = C + s.cont_detail * Cd
+            del Cd
+        astro = self.Am[:, :1, None] * E[None] + self.Am[:, 1:, None] * C[None]
         astro += (1 + s.resid_boost) * R
-        del E, R
+        del E, R, C
         if s.colour_detail > 0 and "chroma_fine" in self._host:
             astro += s.colour_detail * self._layer("chroma_fine", f)
+        if s.oiii_boost > 0 and "O" in self._host:        # OIII emission above the noise, in its own colour
+            O = (self._layer("O", f) - s.oiii_threshold * float(self.prep["oiii_sigma"])).clamp(min=0)
+            astro += s.oiii_boost * self.o_vec[:, None, None] * O[None]
         return astro
 
     def white_balance(self, s: RenderSettings) -> np.ndarray:

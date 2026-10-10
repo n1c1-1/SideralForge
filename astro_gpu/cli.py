@@ -95,7 +95,8 @@ def cmd_render(a):
         vals[k] = _parse_value(v)
     s = RenderSettings(**vals)
     col = json.loads((p.stage_dir("color") / "manifest.json").read_text())["params"]
-    eng = RenderEngine(p.stage_dir("render_prep"), calibrated_white=col.get("white_temp", 5778.0))
+    eng = RenderEngine(p.stage_dir("render_prep"), device=p.config.devices.get("main", "cuda:0"),
+                       calibrated_white=col.get("white_temp", 5778.0))
     e = ExportSettings(name=a.name, orientation=a.orientation)
     meta = export(p, eng, s, e, lambda f, m: print(f"  {100 * f:5.1f} %  {m}", flush=True))
     print(json.dumps(meta["qa"], indent=1))
