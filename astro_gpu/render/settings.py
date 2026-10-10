@@ -39,7 +39,8 @@ class RenderSettings(StageParams):
                                "with the spectral response of your camera. In emission nebulae it fills the hot "
                                "inner regions around the ionising stars; next to H-alpha it is easily drowned.",
                           tip="0 = calibrated; 1 = OIII doubled; 2-3 = HOO-like rendering. Only OIII above the noise "
-                              "threshold is amplified.")
+                              "threshold is amplified. With a colour camera, blue reflection nebulae cannot be told "
+                              "from OIII: keep 0 on reflection nebulae (Iris, Pleiades) and galaxies.")
     oiii_smooth: float = S(16.0, section="Colour", label="OIII smoothing", ge=2, le=60, step=1, unit="px",
                            help="Scale of the OIII map. Its separation from H-alpha is noisy with a colour camera: "
                                 "large scales are reliable, fine ones turn into blotches.",
@@ -197,5 +198,7 @@ PRESETS: dict[str, dict] = {
     "Dense Milky Way": {"g_glow": 17.0, "g_lim": 16.0, "t_lim": 0.18, "d10": 3.8, "d7": 8.0},
     "Starless": {"stars": False},
     "Rich detail & colour": {"cont_detail": 1.0, "fine_k": 1.3, "fine_lo_pct": 50.0, "faint_smooth": 12.0,
-                             "colour_detail": 0.8, "oiii_boost": 1.5, "resid_boost": 0.5, "chroma": 0.95},
+                             "colour_detail": 0.8, "resid_boost": 0.5, "chroma": 0.95},
+    "Emission nebula, OIII": {"cont_detail": 1.0, "fine_k": 1.3, "fine_lo_pct": 50.0, "faint_smooth": 12.0,
+                              "colour_detail": 0.8, "oiii_boost": 1.5, "chroma": 0.95},
 }

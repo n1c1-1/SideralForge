@@ -68,3 +68,15 @@ def test_fixed_pattern_recovered_from_drifting_frames():
     # no drift: not applied
     coef[:, 0, 0], coef[:, 1, 0] = W / 2, H / 2
     assert fixed_pattern(frames, np.arange(n), coef, torch.device("cpu"), H, W, 24)[0] is None
+
+
+def test_emission_levels_need_significance():
+    from astro_gpu.stages.starless import emission_levels
+    rng = np.random.default_rng(3)
+    calm = rng.normal(0, 1, (400, 400)).astype(np.float32)               # no emission at all
+    q1, q2 = emission_levels(calm)
+    assert q1 > 2.5 and q2 > 5                                           # no part of the sky is called emission
+    neb = calm.copy()
+    neb[:, 200:] += 50                                                   # half of the field in strong emission
+    q1, q2 = emission_levels(neb)
+    assert q1 > 10 and q2 > 40

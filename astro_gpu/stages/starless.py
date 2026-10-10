@@ -54,7 +54,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "2"          # 2: fine colour kept aside for the rendering
+    version = "3"          # 2: fine colour kept aside for the rendering; 3: ring-wise repair of bright star wings
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -188,24 +188,41 @@ def clean(sl, x, y, g, fl, smooth, halos, lift_gmax, log=print):
         sl[c] = sl[c] + wdisc * (np.maximum(base_, floor_) - base_)
     # bright stars (G < 11): over-subtracted wings = large dark discs -> floor at the outer ring (not in emission)
     Egb = cv2.GaussianBlur(sl[0] - 0.87 * sl[1], (0, 0), 12)
-    qb1, qb2 = np.percentile(Egb[::4, ::4], [55, 80])
+    qb1, qb2 = emission_levels(Egb)
     gate_b = np.clip((qb2 - Egb) / max(qb2 - qb1, 1e-6), 0, 1).astype(np.float32)
     before = sl.copy()
     yyb, xxb = np.mgrid[-90:91, -90:91]
     rdb = np.hypot(xxb, yyb)
+    ring = (rdb / 2).astype(int)                                       # 2 px rings
+    order = np.argsort(ring.ravel(), kind="stable")
+    bounds = np.concatenate([[0], np.cumsum(np.bincount(ring.ravel()))])
     for i in np.where((g < 11) & (x > 95) & (x < W - 95) & (y > 95) & (y < H - 95))[0]:
         rr_ = float(np.clip(22 + 10 * (11 - g[i]), 22, 70))
         xc, yc = int(round(x[i])), int(round(y[i]))
         win = (slice(yc - 90, yc + 91), slice(xc - 90, xc + 91))
-        wd_ = np.clip((rr_ + 4 - rdb) / 16, 0, 1) * gate_b[win]
         ann = (rdb >= rr_ + 4) & (rdb < rr_ + 18)
+        # emission is judged on the surrounding ring: a colour deficit near the star must not look like emission
+        wd_ = np.clip((rr_ + 4 - rdb) / 16, 0, 1) * float(np.median(gate_b[win][ann]))
+        nk = int((rr_ + 4) / 2) + 1
         for c in range(3):
             cut = sl[c][win]
             cs_ = cv2.GaussianBlur(cut, (0, 0), 2.0) if smooth else cut
             hpc = cs_ - cv2.GaussianBlur(cs_, (0, 0), 2)
             sgc = 1.4826 * np.median(np.abs(hpc[ann]))
-            fl_ = np.percentile(cs_[ann], 20) - 0.5 * sgc
-            sl[c][win] = cut + wd_ * (np.maximum(cs_, fl_) - cs_)
+            # each ring of the wing region is brought back to the level of the surroundings when it is significantly
+            # darker on average (over-subtracted PSF wings or halos): a mean shift that pixel floors cannot see
+            target = float(np.median(cs_[ann]))
+            vals = cs_.ravel()[order]
+            lift = np.zeros(nk + 1)
+            for k in range(nk):
+                v = vals[bounds[k]:bounds[k + 1]]
+                if len(v) < 8:
+                    continue
+                d = target - float(np.median(v))
+                if d > 2.5 * 1.25 * sgc / np.sqrt(len(v)):
+                    lift[k] = d
+            lmap = lift[np.minimum(ring, nk)]
+            sl[c][win] = cut + wd_ * lmap
     for c in range(3):
         dl = np.clip(sl[c] - before[c], 0, None)
         sl[c] = before[c] + cv2.GaussianBlur(dl, (0, 0), 6)
@@ -353,7 +370,7 @@ def bright_halos(sl, x, y, g, gmax):
     """
     sl = sl.astype(np.float32).copy()
     Eg = cv2.GaussianBlur(sl[0] - 0.87 * sl[1], (0, 0), 12)
-    q1, q2 = np.percentile(Eg[::4, ::4], [55, 80])
+    q1, q2 = emission_levels(Eg)
     gate = np.clip((q2 - Eg) / max(q2 - q1, 1e-6), 0, 1).astype(np.float32)
     H, W = sl.shape[1:]
     sel = np.where((g < gmax) & (x > -40) & (x < W + 40) & (y > -40) & (y < H + 40))[0]
@@ -388,3 +405,16 @@ def bright_halos(sl, x, y, g, gmax):
             sl[c, y0:y1, x0:x1] = patch - h * gate[y0:y1, x0:x1]
         n += 1
     return sl, n
+
+
+def emission_levels(Eg: np.ndarray) -> tuple[float, float]:
+    """Levels of the emission map where 'bright emission' starts and is complete.
+
+    Percentiles alone assume that the field contains emission: in a field without H-alpha (reflection nebula,
+    galaxy) half of the sky would be called emission. The levels are therefore also required to be significant
+    above the typical level of the field."""
+    sub = Eg[::4, ::4]
+    med = float(np.median(sub))
+    mad = 1.4826 * float(np.median(np.abs(sub - med)))
+    p55, p80 = np.percentile(sub, [55, 80])
+    return max(float(p55), med + 3 * mad), max(float(p80), med + 6 * mad)
