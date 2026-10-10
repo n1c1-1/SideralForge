@@ -1,0 +1,149 @@
+"""Rendering settings: every slider of the final adjustment tab, with its help text, section and level."""
+from __future__ import annotations
+
+from ..core.params import ADVANCED, P, StageParams
+
+SECTIONS = ["Colour", "Sky background", "Nebula", "Highlights", "Stars"]
+
+
+def S(default, *, section: str, **kw):
+    f = P(default, **kw)
+    f.json_schema_extra["section"] = section
+    return f
+
+
+class RenderSettings(StageParams):
+    # ------------------------------------------------------------------ colour
+    white_temp: float = S(5778.0, section="Colour", label="White balance", ge=3500, le=9000, step=50, unit="K",
+                          help="Colour temperature rendered as neutral. The calibrated default (5778 K, the Sun) shows "
+                               "stars and nebulae in their physical colours.",
+                          tip="Lower = cooler (bluer) image, higher = warmer. Departing from 5778 K is an aesthetic "
+                              "choice, not a correction.")
+    tint: float = S(0.0, section="Colour", label="Tint", ge=-0.2, le=0.2, step=0.005,
+                    help="Green / magenta balance. 0 is the calibrated value.")
+    chroma: float = S(0.88, section="Colour", label="Nebula saturation", ge=0.0, le=2.0, step=0.02,
+                      help="Saturation of the nebula and background layer (perceptual OKLab chroma), applied after "
+                           "the tone curve. 1 = calibrated colours.",
+                      tip="Values slightly below 1 look natural on screen; above 1.2 the colours become graphic.")
+    chroma_protect: float = S(0.08, section="Colour", label="Shadow colour protection", level=ADVANCED, ge=0, le=0.4,
+                              step=0.01, help="Darkest tones (OKLab lightness) whose saturation is not increased, "
+                                              "so that colour noise in the sky stays neutral.")
+    ha_boost: float = S(0.8, section="Colour", label="H-alpha boost", ge=0.0, le=4.0, step=0.05,
+                        help="Adds the H-alpha emission extracted from the image (red minus scaled green) with the "
+                             "colour of a real HII spectrum. Brings out faint emission without changing star colours.",
+                        tip="0 = pure calibrated colour; 0.5-1 natural; 1.5+ emphasised emission.")
+    ha_sigma: float = S(1.5, section="Colour", label="H-alpha boost smoothing", level=ADVANCED, ge=0, le=10,
+                        step=0.1, unit="px", help="Smoothing of the extracted H-alpha before it is added.")
+    hue_target: float = S(33.0, section="Colour", label="H-alpha hue", level=ADVANCED, ge=0, le=60, step=1, unit="deg",
+                          help="OKLab hue towards which red emission is pulled (33 = deep red, lower = magenta, "
+                               "higher = orange-red).")
+    hue_shift: float = S(0.6, section="Colour", label="H-alpha hue strength", level=ADVANCED, ge=0, le=1, step=0.05,
+                         help="How strongly reds are pulled towards the H-alpha hue (0 = untouched).")
+    chroma_sigma: float = S(6.0, section="Colour", label="Faint colour smoothing", level=ADVANCED, ge=1, le=30,
+                            unit="px", help="Colour of low signal-to-noise areas is taken from a smoothed version at "
+                                            "this scale (luminance keeps full resolution).")
+    snr_lo: float = S(3.0, section="Colour", label="Colour S/N low", level=ADVANCED, ge=0, le=50,
+                      help="Below this signal-to-noise, colour comes entirely from the smoothed version.")
+    snr_hi: float = S(30.0, section="Colour", label="Colour S/N high", level=ADVANCED, ge=1, le=500,
+                      help="Above this signal-to-noise, colour keeps full resolution.")
+    # ------------------------------------------------------------------ sky background
+    sky_level: float = S(24.0, section="Sky background", label="Sky brightness", ge=0, le=80, step=0.5, unit="/255",
+                         help="Display level of the typical sky (30th percentile of the field). Real skies are never "
+                              "black: unresolved stars and faint emission glow.",
+                         tip="18-30 looks natural on screen; lower = darker, more contrasted; higher = airy.")
+    dark_level: float = S(10.0, section="Sky background", label="Dark cloud level", ge=0, le=60, step=0.5, unit="/255",
+                          help="Display level of the darkest areas (1st percentile): dark nebulae, dust lanes.")
+    toe: float = S(0.015, section="Sky background", label="Shadow softness", ge=0, le=0.08, step=0.001,
+                   help="Below the black point the curve fades out smoothly instead of clipping, so the cores of dark "
+                        "globules keep their gradation.", tip="0 = hard clip.")
+    sky_pct: float = S(30.0, section="Sky background", label="Sky reference", level=ADVANCED, ge=5, le=80, unit="percentile",
+                       help="Percentile of the (smoothed) image defining the 'typical sky'.")
+    dark_pct: float = S(1.0, section="Sky background", label="Dark reference", level=ADVANCED, ge=0.01, le=20,
+                        unit="percentile", help="Percentile of the (smoothed) image defining the 'dark areas'.")
+    glow_k: float = S(0.55, section="Sky background", label="Milky Way glow", ge=0.0, le=2.0, step=0.05,
+                      help="Light of the stars too faint to be drawn individually, added back as a smooth glow (with "
+                           "the Gaia colours). Without it, dense star fields look unnaturally empty.")
+    glow_sigma: float = S(30.0, section="Sky background", label="Glow smoothness", level=ADVANCED, ge=1, le=100,
+                          unit="px", help="Spatial smoothing of the faint star glow.")
+    g_glow: float = S(16.0, section="Sky background", label="Glow / drawn star limit", level=ADVANCED, ge=10, le=21,
+                      step=0.5, unit="G mag", help="Stars fainter than this become glow; brighter ones are drawn.")
+    speck_k: float = S(2.0, section="Sky background", label="Dark speck removal", level=ADVANCED, ge=0, le=10, step=0.5,
+                       help="Isolated dark pixels deeper than this many noise sigmas below their 5x5 median are lifted.")
+    # ------------------------------------------------------------------ nebula
+    white_mult: float = S(0.62, section="Nebula", label="Brightness", ge=0.1, le=2.0, step=0.01,
+                          help="White point of the tone curve relative to the brightest nebula. Lower = brighter "
+                               "nebula (highlights are then compressed, never clipped).")
+    hdr_strength: float = S(0.8, section="Nebula", label="Large-scale compression", ge=0, le=1.0, step=0.05,
+                            help="Compresses the brightness of large bright areas (edge-preserving) so that the core "
+                                 "of the nebula keeps its detail next to faint extensions.")
+    hdr_knee: float = S(0.48, section="Nebula", label="Compression start", level=ADVANCED, ge=0.1, le=1.0, step=0.01,
+                        help="Brightness above which the large-scale compression starts.")
+    hdr_r: int = S(40, section="Nebula", label="Compression scale", level=ADVANCED, ge=4, le=200, unit="px",
+                   help="Radius of the edge-preserving filter of the large-scale compression.")
+    hdr_eps: float = S(0.02, section="Nebula", label="Compression edge sensitivity", level=ADVANCED, ge=0.0001, le=0.5,
+                       help="Lower values follow edges more closely.")
+    lc_fine: float = S(1.05, section="Nebula", label="Fine contrast", ge=0.5, le=2.5, step=0.05,
+                       help="Local contrast at the 2 px scale (texture).")
+    lc_medium: float = S(1.3, section="Nebula", label="Medium contrast", ge=0.5, le=2.5, step=0.05,
+                         help="Local contrast at the 8 px scale (filaments).")
+    lc_large: float = S(1.25, section="Nebula", label="Large contrast", ge=0.5, le=2.5, step=0.05,
+                        help="Local contrast at the 32 px scale (structures, depth).")
+    neb_sharp: float = S(0.9, section="Nebula", label="Sharpening", ge=0, le=3, step=0.05,
+                         help="Sharpening of the small scales, applied only in bright emission (high S/N) and never "
+                              "near white.")
+    sharp_white: float = S(1.0, section="Nebula", label="Sharpening limit", level=ADVANCED, ge=0.3, le=1.0, step=0.01,
+                           help="Brightness above which sharpening fades out.")
+    # ------------------------------------------------------------------ highlights
+    hl_knee: float = S(0.7, section="Highlights", label="Highlight knee", ge=0.3, le=0.95, step=0.01,
+                       help="Brightness above which highlights are compressed by a logarithmic shoulder (with local "
+                            "detail re-injected): bright cores keep their gradations instead of burning out.")
+    hl_max: float = S(0.9, section="Highlights", label="Highlight ceiling", ge=0.6, le=1.0, step=0.01,
+                      help="Brightness reached by the brightest nebula area.")
+    hl_detail: float = S(0.3, section="Highlights", label="Highlight detail", ge=0, le=1.5, step=0.05,
+                         help="Extra local detail restored where the highlights are compressed.")
+    hl_dmin: float = S(0.5, section="Highlights", label="Minimum detail", level=ADVANCED, ge=0, le=1, step=0.05,
+                       help="Floor of the local detail kept in the most compressed areas.")
+    hl_r1: int = S(12, section="Highlights", label="Detail scale 1", level=ADVANCED, ge=2, le=100, unit="px",
+                   help="First radius of the edge-preserving base layer.")
+    hl_r2: int = S(40, section="Highlights", label="Detail scale 2", level=ADVANCED, ge=2, le=300, unit="px",
+                   help="Second radius of the edge-preserving base layer.")
+    hl_eps: float = S(0.01, section="Highlights", label="Detail edge sensitivity", level=ADVANCED, ge=0.0001, le=0.5,
+                      help="Edge sensitivity of the base layer.")
+    hl_shoulder: float = S(0.92, section="Highlights", label="Final shoulder", level=ADVANCED, ge=0.5, le=1.0, step=0.01,
+                           help="Above this value a soft (tanh) roll-off replaces any hard clip.")
+    hl_keep_chroma: float = S(0.0, section="Highlights", label="Keep colour in highlights", level=ADVANCED, ge=0, le=1,
+                              step=0.05, help="Out-of-gamut bright reds: 0 = desaturate towards white, 1 = darken "
+                                              "and keep the hue.")
+    # ------------------------------------------------------------------ stars
+    stars: bool = S(True, section="Stars", label="Show stars",
+                    help="Combine the star layer with the nebula (screen blend). Off = starless image.")
+    g_lim: float = S(15.0, section="Stars", label="Faintest drawn star", ge=8, le=20, step=0.25, unit="G mag",
+                     help="Gaia magnitude of the faintest star drawn with a clearly visible peak.",
+                     tip="Lower = fewer, more prominent stars; higher = denser star field.")
+    t_lim: float = S(0.2, section="Stars", label="Faint star brightness", ge=0.02, le=0.8, step=0.01,
+                     help="Display peak of a star at the faintest drawn magnitude.")
+    d10: float = S(4.4, section="Stars", label="Size of a G=10 star", ge=1.5, le=15, step=0.1, unit="px",
+                   help="Visible diameter of a magnitude-10 star (pixels at sensor scale).")
+    d7: float = S(9.0, section="Stars", label="Size of a G=7 star", ge=2, le=40, step=0.1, unit="px",
+                  help="Visible diameter of a magnitude-7 star; together with the G=10 size it sets how fast star "
+                       "size grows with brightness.")
+    star_sat: float = S(0.7, section="Stars", label="Star colour", ge=0, le=2, step=0.05,
+                        help="Saturation of star colours (measured, or from Gaia for saturated and faint stars).")
+    sat_min: float = S(0.3, section="Stars", label="Faint star colour", level=ADVANCED, ge=0, le=1, step=0.05,
+                       help="Relative saturation kept by the faintest drawn stars.")
+    core_white: float = S(0.6, section="Stars", label="White cores", ge=0, le=1, step=0.05,
+                          help="Bright star cores turn white like on film (0 = keep the colour up to the core).")
+    t9: float = S(0.95, section="Stars", label="Bright star peak", level=ADVANCED, ge=0.5, le=1.0, step=0.01,
+                  help="Display peak of a magnitude-9 star.")
+    bright_halo_desat: float = S(0.0, section="Stars", label="Halo colour removal", level=ADVANCED, ge=0, le=1, step=0.05,
+                                 help="Removes the colour of the background around the brightest stars (G < 9), where "
+                                      "residual optical halos tint the sky.")
+
+
+PRESETS: dict[str, dict] = {
+    "Natural": {},
+    "H-alpha emphasised": {"ha_boost": 1.6, "white_mult": 0.58},
+    "Prominent stars": {"g_lim": 14.0, "t_lim": 0.28, "d10": 5.4, "star_sat": 0.6, "d7": 11.5},
+    "Dense Milky Way": {"g_glow": 17.0, "g_lim": 16.0, "t_lim": 0.18, "d10": 3.8, "d7": 8.0},
+    "Starless": {"stars": False},
+}

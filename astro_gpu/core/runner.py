@@ -1,0 +1,231 @@
+"""Pipeline runner: decides what is up to date, runs what is not, and makes every run resumable.
+
+A stage is *up to date* when its manifest says ``done`` and the stage version, the effective parameters and the
+run ids of its dependencies are unchanged. Anything else (never run, failed, interrupted, parameters changed,
+an upstream stage re-ran) makes it - and everything downstream - *stale*.
+
+Long stages keep checkpoints in ``work/<stage>/_ckpt`` tagged with the parameter hash; an interrupted stage
+restarted with the same parameters continues where it stopped.
+"""
+from __future__ import annotations
+
+import json
+import os
+import time
+import traceback
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+from .journal import Journal
+from .params import params_hash, resolve
+from .project import Project
+from .stage import Context, Interrupted, Stage, StageError
+
+
+@dataclass
+class StageStatus:
+    name: str
+    title: str
+    state: str          # done | stale | pending | failed | interrupted | running
+    reason: str = ""
+    duration: float | None = None
+    finished: str = ""
+
+
+def _manifest_path(project: Project, stage: str) -> Path:
+    return project.stage_dir(stage) / "manifest.json"
+
+
+def read_manifest(project: Project, stage: str) -> dict:
+    p = _manifest_path(project, stage)
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _write_manifest(project: Project, stage: str, m: dict) -> None:
+    p = _manifest_path(project, stage)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(m, indent=1, default=str), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+class Pipeline:
+    def __init__(self, project: Project, stages: list[Stage], journal: Journal | None = None):
+        self.project = project
+        self.stages = stages
+        self.by_name = {s.name: s for s in stages}
+        self.journal = journal or Journal(project.logs)
+
+    # ------------------------------------------------------------------ parameters
+    def effective_params(self, stage: Stage):
+        """(params, origin, auto) for a stage. Dependencies must be done for auto values to be available."""
+        ctx = Context(self.project, stage, self.journal, self._device())
+        try:
+            auto = stage.auto(ctx)
+        except (StageError, FileNotFoundError, KeyError):
+            auto = {}
+        p, origin = resolve(stage.Params, auto, self.project.overrides(stage.name))
+        return p, origin, auto
+
+    def _device(self) -> str:
+        return self.project.config.devices.get("main", "cuda:0")
+
+    # ------------------------------------------------------------------ status
+    def status(self) -> list[StageStatus]:
+        out: dict[str, StageStatus] = {}
+        for st in self.stages:
+            m = read_manifest(self.project, st.name)
+            deps_bad = [d for d in st.deps if out[d].state != "done"]
+            if m.get("status") == "running" and _run_alive(self.project):
+                out[st.name] = StageStatus(st.name, st.title, "running")
+                continue
+            if not m:
+                state, reason = ("pending" if deps_bad else "stale"), "never run"
+            elif m.get("status") in ("failed", "interrupted", "running"):
+                state = "interrupted" if m.get("status") != "failed" else "failed"
+                reason = m.get("error", "")[:300] or "interrupted"
+            elif deps_bad:
+                state, reason = "stale", f"upstream not up to date: {', '.join(deps_bad)}"
+            else:
+                state, reason = "done", ""
+                if m.get("version") != st.version:
+                    state, reason = "stale", f"algorithm updated ({m.get('version')} -> {st.version})"
+                else:
+                    for d in st.deps:
+                        if m.get("inputs", {}).get(d) != read_manifest(self.project, d).get("run_id"):
+                            state, reason = "stale", f"'{d}' was recomputed"
+                            break
+                    else:
+                        p, _, _ = self.effective_params(st)
+                        if params_hash(p) != m.get("params_hash"):
+                            state, reason = "stale", "parameters changed"
+            out[st.name] = StageStatus(st.name, st.title, state, reason, m.get("duration"), m.get("finished", ""))
+        return [out[s.name] for s in self.stages]
+
+    # ------------------------------------------------------------------ run
+    def plan(self, until: str | None = None, force: tuple[str, ...] = ()) -> list[str]:
+        names = [s.name for s in self.stages]
+        last = names.index(until) if until else len(names) - 1
+        needed = _ancestors(self.by_name, names[last]) | {names[last]} if until else set(names)
+        todo, dirty = [], set(force)
+        for st in self.status():
+            if st.name not in needed:
+                continue
+            s = self.by_name[st.name]
+            if st.state != "done" or st.name in dirty or any(d in dirty for d in s.deps):
+                todo.append(st.name)
+                dirty.add(st.name)
+        return todo
+
+    def run(self, until: str | None = None, force: tuple[str, ...] = ()) -> str:
+        lock = self.project.logs / "run.lock"
+        if _run_alive(self.project):
+            raise RuntimeError("a run is already in progress for this project")
+        self.project.logs.mkdir(parents=True, exist_ok=True)
+        (self.project.logs / "STOP").unlink(missing_ok=True)
+        lock.write_text(json.dumps({"pid": os.getpid(), "started": time.time()}))
+        todo = self.plan(until, force)
+        self.journal.emit("run_start", stages=todo)
+        status = "done"
+        try:
+            for name in todo:
+                st = self.by_name[name]
+                res = self._run_stage(st)
+                if res != "done":
+                    status = res
+                    break
+        finally:
+            lock.unlink(missing_ok=True)
+            self.journal.emit("run_end", status=status)
+        return status
+
+    def _run_stage(self, st: Stage) -> str:
+        p, origin, auto = self.effective_params(st)
+        ph = params_hash(p)
+        ctx = Context(self.project, st, self.journal, self._device())
+        # checkpoints are only valid for the same parameters and inputs
+        inputs = {d: read_manifest(self.project, d).get("run_id") for d in st.deps}
+        ck_meta = ctx.dir / "_ckpt" / "meta.json"
+        tag = {"params_hash": ph, "inputs": inputs, "version": st.version}
+        if ck_meta.exists() and json.loads(ck_meta.read_text()) != tag:
+            ctx.clear_ckpt()
+        ctx.ckpt  # noqa: B018  (creates the folder)
+        ck_meta.write_text(json.dumps(tag))
+        m = {"stage": st.name, "title": st.title, "version": st.version, "status": "running",
+             "params": p.model_dump(mode="json"), "origin": origin,
+             "auto_reasons": {k: a.reason for k, a in auto.items()}, "params_hash": ph, "inputs": inputs,
+             "started": datetime.now().isoformat(timespec="seconds")}
+        _write_manifest(self.project, st.name, m)
+        self.journal.emit("stage_start", stage=st.name, title=st.title)
+        t0 = time.time()
+        try:
+            st.run(ctx, p)
+        except Interrupted:
+            m.update(status="interrupted", error="stopped by user", duration=time.time() - t0)
+            _write_manifest(self.project, st.name, m)
+            self.journal.emit("stage_end", stage=st.name, status="interrupted", duration=time.time() - t0)
+            return "interrupted"
+        except Exception as e:  # noqa: BLE001 - report every failure to the user
+            tb = traceback.format_exc()
+            msg = str(e) if isinstance(e, StageError) else f"{type(e).__name__}: {e}"
+            m.update(status="failed", error=msg, traceback=tb, duration=time.time() - t0)
+            _write_manifest(self.project, st.name, m)
+            self.journal.emit("log", stage=st.name, level="error", msg=msg)
+            self.journal.emit("stage_end", stage=st.name, status="failed", duration=time.time() - t0)
+            print(tb, flush=True)
+            return "failed"
+        dur = time.time() - t0
+        m.update(status="done", run_id=uuid.uuid4().hex, duration=dur, metrics=ctx.metrics,
+                 finished=datetime.now().isoformat(timespec="seconds"))
+        _write_manifest(self.project, st.name, m)
+        ctx.clear_ckpt()
+        self.journal.emit("stage_end", stage=st.name, status="done", duration=dur)
+        _record_timing(st.name, dur)
+        return "done"
+
+
+def request_stop(project: Project) -> None:
+    project.logs.mkdir(parents=True, exist_ok=True)
+    (project.logs / "STOP").write_text("stop")
+
+
+def _run_alive(project: Project) -> bool:
+    lock = project.logs / "run.lock"
+    if not lock.exists():
+        return False
+    try:
+        pid = json.loads(lock.read_text())["pid"]
+        import psutil
+        return psutil.pid_exists(pid) and pid != os.getpid()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _ancestors(by_name: dict[str, Stage], name: str) -> set[str]:
+    out, todo = set(), list(by_name[name].deps)
+    while todo:
+        d = todo.pop()
+        if d not in out:
+            out.add(d)
+            todo += list(by_name[d].deps)
+    return out
+
+
+def _record_timing(stage: str, seconds: float) -> None:
+    """Keep a per-machine history of stage durations (used for ETAs before a stage reports progress)."""
+    p = Path.home() / ".astro_gpu" / "timings.json"
+    p.parent.mkdir(exist_ok=True)
+    try:
+        d = json.loads(p.read_text()) if p.exists() else {}
+    except json.JSONDecodeError:
+        d = {}
+    d.setdefault(stage, []).append(round(seconds, 1))
+    d[stage] = d[stage][-20:]
+    p.write_text(json.dumps(d))

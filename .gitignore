@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Data never goes into the repository
+*.npy
+*.npz
+*.f16
+*.pt
+*.fits
+*.fit
+*.fts
+*.ARW
+*.arw
+*.CR2
+*.CR3
+*.NEF
+*.DNG
+*.tif
+*.tiff
+projects/
+scratch/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

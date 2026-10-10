@@ -1,0 +1,112 @@
+"""Inventory: list and check every input frame, read the metadata that drives the automatic settings."""
+from __future__ import annotations
+
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
+
+from ..core.params import ADVANCED, P, StageParams
+from ..core.project import list_frames
+from ..core.stage import Context, Stage, StageError
+from ..io.frames import read_cfa, read_info
+
+
+class InventoryParams(StageParams):
+    max_lights: int = P(0, label="Limit number of light frames", level=ADVANCED, ge=0,
+                        help="Use only the first N light frames (sorted by name). 0 uses all of them.",
+                        tip="Useful for a quick test run of the whole pipeline on a subset; keep 0 for the real run.")
+
+
+class Inventory(Stage):
+    name = "inventory"
+    title = "Inventory"
+    description = ("Lists the light, dark, flat, bias and flat-dark frames, checks that they are consistent (same "
+                   "sensor size, same colour pattern) and reads their metadata: exposure, ISO/gain, time, camera, "
+                   "focal length, pointing. These measurements drive many automatic settings downstream.")
+    Params = InventoryParams
+    version = "1"
+
+    def run(self, ctx: Context, p: InventoryParams) -> None:
+        cfg = ctx.project.config.inputs
+        groups = {k: list_frames(getattr(cfg, k)) for k in ("lights", "darks", "flats", "bias", "flat_darks")}
+        if not groups["lights"]:
+            raise StageError("no light frame found: add at least one folder of light frames")
+        if p.max_lights:
+            groups["lights"] = groups["lights"][: p.max_lights]
+        out = {}
+        total = sum(len(v) for v in groups.values())
+        done = 0
+        with ThreadPoolExecutor(8) as ex:
+            for k, files in groups.items():
+                infos = []
+                for info in ex.map(read_info, files):
+                    infos.append(info.to_dict())
+                    done += 1
+                    ctx.progress(done / total, f"reading metadata {done}/{total}")
+                out[k] = infos
+        lights = out["lights"]
+        sizes = Counter((f["width"], f["height"]) for f in lights)
+        (w, h), _ = sizes.most_common(1)[0]
+        cfas = Counter(f["cfa"] for f in lights)
+        cfa = cfas.most_common(1)[0][0]
+        if not cfa:
+            raise StageError("these light frames are not raw colour (Bayer) frames. Monochrome cameras and already "
+                             "debayered images are not supported in this version.")
+        if cfa not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+            raise StageError(f"unsupported colour pattern {cfa!r} (X-Trans sensors are not supported)")
+        for k in ("darks", "flats", "bias", "flat_darks"):
+            bad = [f["path"] for f in out[k] if (f["width"], f["height"]) != (w, h)]
+            if bad:
+                raise StageError(f"{len(bad)} {k} frame(s) have a different size than the lights, e.g. {bad[0]}")
+        odd = [f["path"] for f in lights if (f["width"], f["height"]) != (w, h) or f["cfa"] != cfa]
+        if odd:
+            ctx.log(f"{len(odd)} light frame(s) with a different size or pattern are ignored", "warning")
+            out["lights"] = [f for f in lights if f["path"] not in set(odd)]
+            lights = out["lights"]
+        ctx.save_json("frames.json", out)
+
+        exp = [f["exposure"] for f in lights if f["exposure"]]
+        texp = float(np.median(exp)) if exp else None
+        times = sorted(f["time"] for f in lights if f["time"])
+        first = lights[0]
+        ctx.metric("n_lights", len(lights))
+        for k in ("darks", "flats", "bias", "flat_darks"):
+            ctx.metric(f"n_{k}", len(out[k]))
+        ctx.metric("width", w)
+        ctx.metric("height", h)
+        ctx.metric("cfa", cfa)
+        ctx.metric("camera", first["camera"])
+        ctx.metric("exposure_s", texp)
+        ctx.metric("integration_h", round(texp * len(lights) / 3600, 2) if texp else None)
+        ctx.metric("iso_gain", first["iso"])
+        ctx.metric("white_level", first["white"])
+        ctx.metric("black_level", first["black"])
+        ctx.metric("focal_mm", first["focal_mm"])
+        ctx.metric("pixel_um", first["pixel_um"])
+        ctx.metric("first_time", times[0] if times else None)
+        ctx.metric("last_time", times[-1] if times else None)
+        hints = [(f["ra"], f["dec"]) for f in lights if f.get("ra") is not None]
+        if hints:
+            ctx.metric("pointing_ra", float(np.median([a for a, _ in hints])))
+            ctx.metric("pointing_dec", float(np.median([b for _, b in hints])))
+        objs = Counter(f["object"] for f in lights if f.get("object"))
+        if objs:
+            ctx.metric("object", objs.most_common(1)[0][0])
+        ctx.log(f"{len(lights)} lights of {texp} s ({ctx.metrics['integration_h']} h), {w}x{h} {cfa}, "
+                f"{len(out['darks'])} darks, {len(out['flats'])} flats, {len(out['bias'])} bias, "
+                f"camera {first['camera'] or 'unknown'}")
+        # quick look at the middle frame (2x2 super-pixels, no calibration)
+        mid = read_cfa(lights[len(lights) // 2]["path"]) - first["black"]
+        ctx.preview("middle_frame", _superpixel_rgb(mid, cfa))
+
+
+def _superpixel_rgb(cfa_img: np.ndarray, pattern: str) -> np.ndarray:
+    from ..core.imgutil import asinh_preview
+    h, w = cfa_img.shape
+    planes = {c: [] for c in "RGB"}
+    for k, c in enumerate(pattern):
+        i, j = divmod(k, 2)
+        planes[c].append(cfa_img[i:h - h % 2:2, j:w - w % 2:2])
+    rgb = np.stack([np.mean(planes[c], axis=0) for c in "RGB"])
+    return asinh_preview(rgb, k=30)
