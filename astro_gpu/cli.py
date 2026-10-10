@@ -91,7 +91,8 @@ def cmd_render(a):
     p = Project(a.project)
     remember(p)
     vals = dict(PRESETS.get(a.preset, {})) if a.preset else {}
-    vals.update(p.config.render.get("settings", {}) if a.use_saved else {})
+    if a.use_saved:
+        vals.update(RenderSettings.from_saved(p.config.render.get("settings", {})).model_dump(exclude_defaults=True))
     for item in a.set or []:
         k, v = item.split("=", 1)
         vals[k] = _parse_value(v)

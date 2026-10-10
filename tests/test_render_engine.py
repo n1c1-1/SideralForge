@@ -39,82 +39,68 @@ def prep(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def prep_layers(prep, tmp_path_factory):
-    """The same scene stored as separate layers (render_prep version 2)."""
+    """The same scene as a layered preparation (render_prep version 7): full-resolution base N + optional layers."""
     import shutil
     d = tmp_path_factory.mktemp("render_prep_layers")
     for n in ("valid.npy", "stars.npz", "profile.npz"):
         shutil.copy(prep / n, d / n)
     astro = np.load(prep / "astro_prep.npy")
     rng = np.random.default_rng(5)
-    Am = np.array([[1.0, 1.2], [0.45, 1.0], [0.25, 0.8]])
-    EC = np.tensordot(np.linalg.pinv(Am), astro, 1)
-    R_raw = astro - np.tensordot(Am, EC, 1)
-    C = cv2.GaussianBlur(EC[1], (0, 0), 24)                 # as render_prep: smooth continuum and rest
-    R = np.stack([cv2.GaussianBlur(c, (0, 0), 6) for c in R_raw])
     H, W = astro.shape[1:]
-    np.save(d / "E.npy", EC[0].astype(np.float32))
-    np.save(d / "C.npy", C.astype(np.float32))
-    np.save(d / "R.npy", R.astype(np.float32))
-    np.save(d / "R_raw.npy", R_raw.astype(np.float16))
-    np.save(d / "C_raw.npy", EC[1].astype(np.float32))
+    np.save(d / "N.npy", astro.astype(np.float32))
+    np.save(d / "R.npy", (0.2 * astro - 0.2 * astro.mean((1, 2), keepdims=True)).astype(np.float32))
     O = np.zeros((H, W), np.float32)
     O[20:60, 30:90] = 5.0
     np.save(d / "O.npy", O + rng.normal(0, 0.05, (H, W)).astype(np.float32))
-    foot = np.zeros((H, W), np.float32)
-    foot[100:140, 150:200] = 1
-    np.save(d / "foot_w.npy", foot.astype(np.float16))
-    np.save(d / "Eg0.npy", cv2.GaussianBlur(astro[0] - 0.87 * astro[1], (0, 0), 8).astype(np.float32))
-    np.save(d / "dE.npy", rng.normal(0, 0.8, (H, W)).astype(np.float16))
+    lum = np.array([0.2126, 0.7152, 0.0722])                 # M = identity in the fixture
+    np.save(d / "Eg0.npy", cv2.GaussianBlur(np.tensordot(lum, astro, 1), (0, 0), 8).astype(np.float32))
+    np.save(d / "dY.npy", rng.normal(0, 0.8, (H, W)).astype(np.float16))
     np.save(d / "chroma_fine.npy", rng.normal(0, 0.5, (3, H, W)).astype(np.float16))
     pj = json.loads((prep / "prep.json").read_text())
-    pj.update({"Am": Am.tolist(), "layers": 2, "split": True, "o": [0.0, 1.0, 0.75], "o_display": [0.0, 1.0, 0.75],
+    pj.update({"layers": 3, "w_cam": [1.0, 1.0, 1.0], "o": [0.0, 1.0, 0.75], "o_display": [0.0, 1.0, 0.75],
                "oiii_sigma": 1.0, "oiii_scale": 4.0})
     (d / "prep.json").write_text(json.dumps(pj))
-    # the equivalent pre-mixed preparation (version 1)
-    d1 = tmp_path_factory.mktemp("render_prep_mixed")
-    for n in ("valid.npy", "stars.npz", "profile.npz", "prep.json"):
-        shutil.copy(prep / n, d1 / n)
-    mix = Am[:, :1, None] * EC[0][None] + Am[:, 1:, None] * C[None] + R
-    np.save(d1 / "astro_prep.npy", mix.astype(np.float32))
-    return d, d1
+    return d
 
 
-def test_layers_mix_live(prep_layers):
-    prep_layers, mixed = prep_layers
+def test_layers_mix_live(prep, prep_layers):
     plain = RenderSettings(fine_k=0, faint_smooth=0)
-    old = RenderEngine(mixed, device=DEV).render(plain, 1.0).final
+    old = RenderEngine(prep, device=DEV).render(plain, 1.0).final
     eng = RenderEngine(prep_layers, device=DEV)
     new = eng.render(plain, 1.0).final
-    assert float((old - new).abs().max()) < 2e-3            # layers without extras = the pre-mixed image
+    assert float((old - new).abs().max()) < 2e-3            # the base layer alone = the calibrated image
     base = eng._astro(plain, 1)
-    # each layer slider changes the image, and only through its own layer
+    # each slider changes the image through its own layer only
     d = eng._astro(RenderSettings(fine_k=1.5, fine_lo_pct=0, fine_hi_pct=1, faint_smooth=0), 1) - base
-    e = eng.Am[:, 0, None, None] * torch.from_numpy(np.load(prep_layers / "dE.npy").astype(np.float32)).to(eng.dev)
+    e = torch.from_numpy(np.load(prep_layers / "dY.npy").astype(np.float32)).to(eng.dev)[None].expand(3, -1, -1)
     assert float((d - 1.5 * e).abs().mean()) < 0.03 * float((1.5 * e).abs().mean())
     c = eng._astro(RenderSettings(fine_k=0, faint_smooth=0, colour_detail=1.0), 1) - base
     assert float(c.abs().mean()) > 0.3
     r = eng._astro(RenderSettings(fine_k=0, faint_smooth=0, resid_boost=1.0), 1) - base
     R = torch.from_numpy(np.load(prep_layers / "R.npy")).to(eng.dev)
     assert float((r - R).abs().max()) < 1e-3
-    # continuum detail: the unsmoothed continuum comes back, except on star footprints
-    cd = eng._astro(RenderSettings(fine_k=0, faint_smooth=0, cont_detail=1.0), 1)
-    full = np.tensordot(eng.Am.cpu().numpy(), np.stack([np.load(prep_layers / "E.npy"), np.load(prep_layers / "C_raw.npy")]), 1)
-    full = torch.from_numpy(full + np.load(prep_layers / "R.npy")).float().to(eng.dev)
-    assert float((cd - full)[:, :90].abs().max()) < 1e-3
-    assert float((cd - base)[:, 105:135, 155:195].abs().max()) < 1e-3
+    # the base layer itself is never modified by the mixing (cached or host tensors)
+    assert float((eng._astro(plain, 1) - base).abs().max()) == 0
     # OIII: added in its own colour above the threshold only
     ob = eng._astro(RenderSettings(fine_k=0, faint_smooth=0, oiii_boost=2.0, oiii_smooth=4, oiii_threshold=3.0), 1) - base
     assert abs(float(ob[1, 40, 60]) - 2.0 * 5.0) < 0.5 and abs(float(ob[2, 40, 60]) / float(ob[1, 40, 60]) - 0.75) < 1e-3
     assert float(ob[0].abs().max()) < 1e-4 and float((ob[1, 120:] > 0).float().mean()) < 0.01   # noise below threshold
-    # faint-area smoothing removes small scales in faint areas only
+    # faint-area smoothing removes small scales in faint areas only (decided on the whole signal)
     sm = eng._astro(RenderSettings(fine_k=0, faint_smooth=32, faint_lo_pct=55, faint_hi_pct=85), 1)
     hp = lambda a: (a[0] - torch.from_numpy(cv2.GaussianBlur(a.cpu().numpy()[0], (0, 0), 2)).to(eng.dev)).abs()  # noqa: E731
     Eg = np.load(prep_layers / "Eg0.npy")
     faint = torch.from_numpy(Eg < np.percentile(Eg, 30)).to(eng.dev)
+    bright = torch.from_numpy(Eg > np.percentile(Eg, 95)).to(eng.dev)
     assert float(hp(sm)[faint].mean()) < 0.5 * float(hp(base)[faint].mean())
+    assert float(hp(sm)[bright].mean()) > 0.8 * float(hp(base)[bright].mean())
     # previews mix the reduced layers
     small = eng.render(RenderSettings(colour_detail=0.8, resid_boost=0.5), 0.5).final
     assert small.shape == (3, 120, 180)
+
+
+def test_saved_settings_of_other_versions():
+    s = RenderSettings.from_saved({"cont_detail": 1.0, "chroma": 0.9, "unknown": 3})
+    assert s.chroma == 0.9
 
 
 def test_render_full_and_preview(prep):

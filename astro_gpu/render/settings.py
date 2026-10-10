@@ -13,6 +13,11 @@ def S(default, *, section: str, **kw):
 
 
 class RenderSettings(StageParams):
+    @classmethod
+    def from_saved(cls, values: dict) -> RenderSettings:
+        """Settings saved by another version: unknown (removed) settings are ignored."""
+        return cls(**{k: v for k, v in (values or {}).items() if k in cls.model_fields})
+
     # ------------------------------------------------------------------ colour
     white_temp: float = S(5778.0, section="Colour", label="White balance", ge=3500, le=9000, step=50, unit="K",
                           help="Colour temperature rendered as neutral. The calibrated default (5778 K, the Sun) shows "
@@ -128,14 +133,6 @@ class RenderSettings(StageParams):
                            tip="80 = bright emission only; 40-60 = most of the nebula, with more denoiser texture.")
     fine_hi_pct: float = S(95.0, section="Nebula", label="Fine detail full", level=ADVANCED, ge=1, le=100, step=1,
                            unit="percentile", help="Emission brightness where the detail injection is complete.")
-    cont_detail: float = S(0.0, section="Nebula", label="Continuum detail", ge=0.0, le=1.5, step=0.05,
-                           help="Fine structure of the part of the nebula that has the colour of starlight: reflection "
-                                "and dust, OIII seen through a colour camera, and most of the fine detail of the "
-                                "denoised image (fine scales carry no colour, and white is close to starlight). It is "
-                                "smoothed at the 'Continuum smoothing' scale of the preparation because star residuals "
-                                "live there; this slider brings it back everywhere except on star footprints.",
-                           tip="0 = previous rendering (smoothest); 1 = full detail, check the surroundings of "
-                               "stars at 100 %. Faint areas still follow 'Faint area smoothing'.")
     faint_smooth: float = S(32.0, section="Nebula", label="Faint area smoothing", ge=0, le=100, step=1, unit="px",
                             help="In faint areas, structures smaller than this are not confirmed by the data (noise "
                                  "and star residuals) and are smoothed; bright nebulosity keeps full resolution.",
@@ -197,8 +194,8 @@ PRESETS: dict[str, dict] = {
     "Prominent stars": {"g_lim": 14.0, "t_lim": 0.28, "d10": 5.4, "star_sat": 0.6, "d7": 11.5},
     "Dense Milky Way": {"g_glow": 17.0, "g_lim": 16.0, "t_lim": 0.18, "d10": 3.8, "d7": 8.0},
     "Starless": {"stars": False},
-    "Rich detail & colour": {"cont_detail": 1.0, "fine_k": 1.3, "fine_lo_pct": 50.0, "faint_smooth": 12.0,
+    "Rich detail & colour": {"fine_k": 1.3, "fine_lo_pct": 50.0, "faint_smooth": 12.0,
                              "colour_detail": 0.8, "resid_boost": 0.5, "chroma": 0.95},
-    "Emission nebula, OIII": {"cont_detail": 1.0, "fine_k": 1.3, "fine_lo_pct": 50.0, "faint_smooth": 12.0,
+    "Emission nebula, OIII": {"fine_k": 1.3, "fine_lo_pct": 50.0, "faint_smooth": 12.0,
                               "colour_detail": 0.8, "oiii_boost": 1.5, "chroma": 0.95},
 }

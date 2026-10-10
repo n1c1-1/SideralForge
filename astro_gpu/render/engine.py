@@ -7,10 +7,10 @@ star layer and their screen blend as display-referred sRGB tensors in [0, 1].
 * ``scale < 1``: fast preview; the nebula is processed on a reduced image with every spatial parameter scaled,
   the stars are always drawn at full resolution and then reduced, so star sizes and brightness match the export.
 
-The nebula is mixed live from the layers of ``render_prep`` (emission, continuum, rest, fine detail, fine colour),
-so detail in faint areas, fine colour and blue-green tones are ordinary sliders. Intermediate results are cached by
-the settings they depend on: moving a star slider only redraws the stars, changing the saturation only redoes the
-last colour step.
+The nebula is the calibrated image at full resolution (star footprints guarded), mixed live with the optional layers
+of ``render_prep`` (fine detail, fine colour, OIII, reflection tones), so these are ordinary sliders. Intermediate
+results are cached by the settings they depend on: moving a star slider only redraws the stars, changing the
+saturation only redoes the last colour step.
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
                         [0.0556434, -0.2040259, 1.0572252]])
 
 LAYER_KEYS = ("fine_k", "fine_lo_pct", "fine_hi_pct", "faint_smooth", "faint_lo_pct", "faint_hi_pct", "resid_boost",
-              "colour_detail", "cont_detail", "oiii_boost", "oiii_threshold", "oiii_smooth")
+              "colour_detail", "oiii_boost", "oiii_threshold", "oiii_smooth")
 NEB_LIN_KEYS = LAYER_KEYS + ("ha_boost", "ha_sigma", "glow_k", "glow_sigma", "g_glow", "speck_k", "white_temp", "tint")
 NEB_KEYS = NEB_LIN_KEYS + ("chroma", "chroma_protect", "hue_target", "hue_shift", "chroma_sigma", "snr_lo", "snr_hi",
                            "sky_level", "dark_level", "toe", "sky_pct", "dark_pct", "white_mult", "hdr_strength",
@@ -61,19 +61,21 @@ class RenderEngine:
         self.calibrated_white = calibrated_white
         # preparation layers stay in host memory; reduced versions are cached on the device, the full resolution is
         # only uploaded while it is being mixed
-        self.layered = int(self.prep.get("layers", 1)) >= 2
+        self.layered = (self.dir / "N.npy").exists()
         if self.layered:
-            names = ["E", "C", "R", "R_raw", "dE", "Eg0"] + [n for n in ("chroma_fine", "C_raw", "foot_w")
-                                                              if (self.dir / f"{n}.npy").exists()]
+            names = ["N", "Eg0", "dY", "R"] + [n for n in ("chroma_fine",) if (self.dir / f"{n}.npy").exists()]
             if (self.dir / "O.npy").exists() and self.prep.get("oiii_sigma"):
                 names.append("O")
                 self.o_vec = torch.tensor(self.prep.get("o_display", self.prep["o"]), dtype=torch.float32,
                                           device=self.dev)
             self._host = {n: torch.from_numpy(np.load(self.dir / f"{n}.npy")) for n in names}
-            self.Am = torch.tensor(self.prep["Am"], dtype=torch.float32, device=self.dev)
-            self.split = bool(self.prep.get("split", True))
-        else:                                                # preparation of version 1: one pre-mixed layer
+            self.w_cam = torch.tensor(self.prep["w_cam"], dtype=torch.float32, device=self.dev)
+            self.lum = torch.tensor(np.array([0.2126, 0.7152, 0.0722]) @ self.M, dtype=torch.float32, device=self.dev)
+        elif (self.dir / "astro_prep.npy").exists():         # preparation of version 1: one pre-mixed layer
             self._host = {"astro": torch.from_numpy(np.load(self.dir / "astro_prep.npy"))}
+        else:
+            raise RuntimeError("these rendering layers were prepared by an older version: run the 'Rendering "
+                               "preparation' stage again (about a minute)")
         self.H, self.W = next(iter(self._host.values())).shape[-2:]
         self.valid = torch.from_numpy(np.load(self.dir / "valid.npy")).to(self.dev)
         st = np.load(self.dir / "stars.npz")
@@ -112,39 +114,29 @@ class RenderEngine:
         return (self.H, self.W) if f == 1 else (self.H // f, self.W // f)
 
     def _astro(self, s: RenderSettings, f: int) -> torch.Tensor:
-        """Calibrated nebula in camera space, mixed from the preparation layers."""
+        """Calibrated nebula in camera space: the full-resolution layer plus the optional layers."""
         if not self.layered:
             return self._layer("astro", f)
         valid = self._valid(f)
-        E = self._layer("E", f)
-        if s.fine_k > 0:                                  # Noise2Noise fine detail, in emission above a brightness
+        N = self._layer("N", f)
+        if s.fine_k > 0:                     # Noise2Noise fine detail (brightness), above a brightness of the signal
             Eg0 = self._layer("Eg0", f)
             q1, q2 = ops.percentile(Eg0, [s.fine_lo_pct, s.fine_hi_pct], valid)
             wf = ops.gaussian_blur(((Eg0 - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)
             del Eg0
-            E = E + s.fine_k * wf * self._layer("dE", f)
+            N = N + s.fine_k * (wf * self._layer("dY", f))[None] * self.w_cam[:, None, None]
             del wf
-        R = self._layer("R", f)
-        C = self._layer("C", f)
-        Cd = None
-        if s.cont_detail > 0 and "C_raw" in self._host:   # continuum fine scales, off star footprints
-            Cd = (1 - self._layer("foot_w", f)) * (self._layer("C_raw", f) - C)
-        if self.split and s.faint_smooth > 0:             # faint areas: only the scales confirmed by the data
-            Eg = ops.gaussian_blur(E, 8 / f)
+        if s.faint_smooth > 0:               # faint areas: only the scales confirmed by the data
+            Eg = ops.gaussian_blur(torch.einsum("c,chw->hw", self.lum, N), 8 / f)
             q1, q2 = ops.percentile(Eg, [s.faint_lo_pct, s.faint_hi_pct], valid)
-            wE = ops.gaussian_blur(((Eg - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)
+            wE = ops.gaussian_blur(((Eg - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)[None]
             del Eg
-            E = wE * E + (1 - wE) * ops.gaussian_blur(E, s.faint_smooth / f)
-            R = wE[None] * R + (1 - wE[None]) * ops.gaussian_blur(self._layer("R_raw", f), s.faint_smooth / f)
-            if Cd is not None:
-                Cd = wE * Cd + (1 - wE) * ops.gaussian_blur(Cd, s.faint_smooth / f)
+            N = wE * N + (1 - wE) * ops.gaussian_blur(N, s.faint_smooth / f)
             del wE
-        if Cd is not None:
-            C = C + s.cont_detail * Cd
-            del Cd
-        astro = self.Am[:, :1, None] * E[None] + self.Am[:, 1:, None] * C[None]
-        astro += (1 + s.resid_boost) * R
-        del E, R, C
+        # cached / host layers are never modified in place: copy unless a step above already made a new tensor
+        astro = N if (s.fine_k > 0 or s.faint_smooth > 0) else N.clone()
+        if s.resid_boost != 0:
+            astro += s.resid_boost * self._layer("R", f)
         if s.colour_detail > 0 and "chroma_fine" in self._host:
             astro += s.colour_detail * self._layer("chroma_fine", f)
         if s.oiii_boost > 0 and "O" in self._host:        # OIII emission above the noise, in its own colour

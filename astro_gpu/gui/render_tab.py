@@ -238,7 +238,8 @@ class RenderTab(QWidget):
         self.project = project
         self.advanced = advanced
         self._stop_worker()
-        self.values = dict(project.config.render.get("settings", {}))
+        self.values = RenderSettings.from_saved(project.config.render.get("settings", {})).model_dump(
+            exclude_defaults=True)
         self.history, self.future = [], []
         self.images = {}
         self.ref_img = None
@@ -281,7 +282,7 @@ class RenderTab(QWidget):
         self.meta = meta
         if not meta.get("layered", True):
             QMessageBox.information(self, "Rendering", "These rendering layers were prepared by an older version: "
-                                    "'Fine detail', 'Continuum detail', 'Faint area smoothing', 'Fine colour', 'OIII tones' "
+                                    "'Fine detail', 'Faint area smoothing', 'Fine colour', 'OIII tones' "
                                     "and 'Blue / reflection tones' have no effect until the 'Rendering preparation' "
                                     "stage is run again "
                                     "(Processing tab, about a minute).")

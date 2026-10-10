@@ -80,3 +80,25 @@ def test_emission_levels_need_significance():
     neb[:, 200:] += 50                                                   # half of the field in strong emission
     q1, q2 = emission_levels(neb)
     assert q1 > 10 and q2 > 40
+
+
+def test_generic_star_guard_any_colour():
+    from astro_gpu.stages.render_prep import guard_generic
+    rng = np.random.default_rng(4)
+    H, W = 160, 160
+    blue = np.array([0.6, 1.0, 1.6], np.float32)                         # a reflection nebula: no H-alpha at all
+    astro = (20 * blue[:, None, None] + rng.normal(0, 0.3, (3, H, W))).astype(np.float32)
+    astro[:, 70:80, 70:80] -= 15                                        # star over-subtracted: a black hole
+    astro[0, 30:36, 30:36] += 25                                        # star residual: a red dot
+    foot = np.zeros((H, W), np.float32)
+    foot[66:84, 66:84] = 1
+    foot[26:40, 26:40] = 1
+    lum = np.array([0.2126, 0.7152, 0.0722], np.float32)
+    w_cam = np.ones(3, np.float32)
+    Y = np.tensordot(lum, astro, 1).astype(np.float32)
+    out = guard_generic(astro, Y, foot, lum, w_cam, 1.0)
+    level = np.tensordot(lum, astro[:, 120:, 120:], 1).mean()
+    assert np.tensordot(lum, out[:, 72:78, 72:78], 1).mean() > level - 1.0      # no hole left
+    col = out[:, 31:35, 31:35].mean((1, 2))
+    assert abs(col[0] / col[1] - 0.6) < 0.1                                     # the red dot takes the nebula colour
+    assert np.abs(out[:, 110:, 110:] - astro[:, 110:, 110:]).max() == 0         # untouched off the footprints
