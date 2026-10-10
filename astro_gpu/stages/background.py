@@ -44,7 +44,7 @@ class Background(Stage):
                    "point. Faint emission (IFN-like structures) is therefore kept with its true brightness.")
     deps = ("starless", "stars", "optics", "surveys", "astrometry", "stack", "color", "catalogs")
     Params = BackgroundParams
-    version = "2"          # 2: bounded, object-rejecting sky fit; physical H-alpha signature; zero-point floor
+    version = "3"          # 2: bounded object-rejecting sky fit, physical H-alpha; 3: zero-point floor on the darkest areas
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
@@ -123,7 +123,7 @@ class Background(Stage):
             want = f_ext[c] * U[c] / (p.bin_px ** 2)
             off = float(np.nanmedian((want - Yc)[low]))
             # physical floor: the sky cannot be darker than nothing - no significant area may end below zero
-            floor = -float(np.nanpercentile(Yc[good], 2))
+            floor = -float(np.nanpercentile(Yc[good], 0.2))       # the darkest areas, not only 98 % of the field
             if floor > off:
                 ctx.log(f"channel {'RGB'[c]}: continuum zero point raised by {floor - off:.2f} ADU so that the darkest "
                         f"areas (dark nebulae) stay above zero")
