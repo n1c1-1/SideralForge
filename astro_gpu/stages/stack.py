@@ -48,6 +48,17 @@ class StackParams(StageParams):
                     help="Electrons per ADU in the calibrated frames, used for the noise model of the rejection.")
     read_noise: float = P(11.9, label="Read noise", level=ADVANCED, ge=0, unit="ADU",
                           help="Noise of a frame without light, used for the noise model of the rejection.")
+    pattern_removal: bool = P(True, label="Fixed pattern removal",
+                              help="The sensor's fixed pattern (residual dark current, hot or cold columns, amplifier "
+                                   "patterns not removed by the darks - or everything when there are no darks) stays "
+                                   "at the same place on the sensor while the sky drifts between frames. Stacked, it "
+                                   "becomes 'walking noise': coloured streaks along the drift. The pattern is measured "
+                                   "as the median of the frames in sensor coordinates (stars and sky removed) and "
+                                   "subtracted from every frame. Skipped automatically when the drift is too small "
+                                   "to tell the pattern from the sky.")
+    pattern_frames: int = P(48, label="Frames for the pattern reference", level=ADVANCED, ge=8, le=400,
+                            help="Number of frames, evenly spread over the session, whose median is the first estimate "
+                                 "of the fixed pattern; the final estimate uses all frames around it.")
 
 
 class Stack(Stage):
@@ -61,7 +72,7 @@ class Stack(Stage):
                    "noise-aware denoising.")
     deps = ("calibrate", "register")
     Params = StackParams
-    version = "1"
+    version = "2"          # 2: fixed pattern (walking noise) removal
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         a: dict[str, Auto] = {}
@@ -178,7 +189,21 @@ class Stack(Stage):
                 cy.append(2 * gy + ky)
             return torch.stack(out), torch.stack(cx), torch.stack(cy)
 
+        fpn = None
+        if p.pattern_removal:
+            ctx.progress(0.0, "measuring the fixed pattern of the sensor")
+            fpn, finfo = fixed_pattern(mm, used, coef, dev, H, W, p.pattern_frames,
+                                       lambda f: ctx.progress(0.1 * f, "measuring the fixed pattern of the sensor"))
+            ctx.metric("fixed_pattern", finfo)
+            ctx.log(finfo["msg"])
+            if fpn is not None:
+                g = fpn[0::2, 1::2].cpu().numpy()                                # one green plane
+                sg = 1.4826 * float(np.median(np.abs(g - np.median(g)))) + 1e-9
+                ctx.preview("fixed_pattern", np.clip(0.5 + g / (8 * sg), 0, 1))
+
         fr = torch.from_numpy(np.asarray(mm[ref], np.float32)).to(dev)
+        if fpn is not None:
+            fr = torch.where(fr > VALID_MAX, fr, fr - fpn)
         Bref_np = block_bkg(fr)[0].cpu().numpy()
         from scipy.ndimage import map_coordinates
 
@@ -190,6 +215,8 @@ class Stack(Stage):
 
         def frame_model(i):
             fr = torch.from_numpy(np.asarray(mm[i], np.float32)).to(dev)
+            if fpn is not None:
+                fr = torch.where(fr > VALID_MAX, fr, fr - fpn)
             X, Y = poly_eval(coef[i], xx, yy)
             Bi, cx, cy = block_bkg(fr)
             Q = torch.zeros(3, 6, dtype=torch.float64)
@@ -295,3 +322,92 @@ class Stack(Stage):
         ctx.log(f"drizzle {Wo}x{Ho} from {len(used)} frames in {(time.time() - t0) / 60:.1f} min, "
                 f"{rej_pct:.2f} % pixels rejected")
         ctx.preview("stack", asinh_preview(drz))
+
+
+def fixed_pattern(mm, used, coef, dev, H, W, nframes, progress=lambda f: None):
+    """Sensor fixed pattern, per Bayer plane, in sensor coordinates.
+
+    The sky drifts across the sensor while the pattern stays: stars and sky structures smaller than the drift fall
+    on a pixel in a few frames only. Pass 1: median over ``nframes`` frames spread over the session (frames minus
+    their smooth sky). Pass 2: mean over all used frames of the values within 3 sigma of that median (stars, cosmic
+    rays and trails rejected), streamed, so that the estimate is precise enough not to add its own noise. Scales
+    above a quarter of the drift are not kept (larger sky structures are not averaged out).
+    Returns (pattern (H, W) on ``dev`` or None, info).
+    """
+    sel = used[np.unique(np.linspace(0, len(used) - 1, min(nframes, len(used))).round().astype(int))]
+    tx, ty = coef[used, 0, 0], coef[used, 1, 0]                            # field-centre position (pixels)
+    drift = float(np.hypot(np.ptp(tx), np.ptp(ty)))
+    if drift < 12 or len(used) < 8:
+        return None, {"applied": False, "drift_px": round(drift, 1), "frames": int(len(used)),
+                      "msg": f"fixed pattern not measured: the sky drifted by {drift:.0f} px only over the session "
+                             f"(too little to tell the pattern from the sky)"}
+    Hh, Wh = H // 2, W // 2
+
+    def residuals(i):
+        """(4, Hh, Wh) frame minus its smooth sky per Bayer plane (NaN where saturated / bad), noise per plane."""
+        fr = torch.from_numpy(np.asarray(mm[i], np.float32)).to(dev)
+        out, sg = [], []
+        for k in range(4):
+            ky, kx = divmod(k, 2)
+            pl = fr[ky::2, kx::2][:Hh, :Wh]
+            pl = torch.where(pl > VALID_MAX, torch.nan, pl)
+            sky = _plane_sky(pl)
+            r = pl - sky
+            sub = r[::7, ::7]
+            sg.append(1.4826 * torch.nanmedian((sub - torch.nanmedian(sub)).abs()))
+            out.append(r)
+        return torch.stack(out), torch.stack(sg)
+
+    planes = np.zeros((len(sel), 4, Hh, Wh), np.float16)
+    for j, i in enumerate(sel):
+        planes[j] = residuals(i)[0].cpu().numpy().astype(np.float16)
+        progress(0.3 * (j + 1) / len(sel))
+    med = torch.zeros(4, Hh, Wh, device=dev)
+    for y0 in range(0, Hh, 128):
+        blk = torch.from_numpy(planes[:, :, y0:y0 + 128].astype(np.float32)).to(dev)
+        med[:, y0:y0 + 128] = torch.nanmedian(blk, dim=0).values.nan_to_num(0.0)
+    del planes
+    acc = torch.zeros(4, Hh, Wh, device=dev)
+    cnt = torch.zeros(4, Hh, Wh, device=dev)
+    for j, i in enumerate(used):
+        r, sg = residuals(i)
+        keep = ((r - med).abs() < 3 * sg[:, None, None]) & torch.isfinite(r)
+        acc += torch.where(keep, r, torch.zeros_like(r))
+        cnt += keep.float()
+        progress(0.3 + 0.7 * (j + 1) / len(used))
+    pat = torch.where(cnt > 0, acc / cnt.clamp(min=1), med)
+    sig = float(np.clip(drift / 2 / 4, 2.0, 16.0))
+    out = torch.zeros(H, W, device=dev)
+    amp = []
+    for k in range(4):
+        ky, kx = divmod(k, 2)
+        hp = pat[k] - _gauss(pat[k], sig)
+        sub = hp[::3, ::3]
+        amp.append(float(1.4826 * torch.median((sub - torch.median(sub)).abs())))
+        out[ky::2, kx::2][:Hh, :Wh] = hp
+    info = {"applied": True, "drift_px": round(drift, 1), "frames": int(len(used)), "scale_px": round(2 * sig, 1),
+            "amplitude_adu": [round(a, 3) for a in amp],
+            "msg": f"fixed pattern measured on {len(used)} frames (sky drift {drift:.0f} px): amplitude "
+                   f"{np.mean(amp):.2f} ADU per pixel, removed from every frame"}
+    return out, info
+
+
+def _plane_sky(pl: torch.Tensor, b: int = 32) -> torch.Tensor:
+    """Smooth sky of a Bayer plane: medians of b x b blocks, bilinearly interpolated."""
+    Hh, Wh = pl.shape
+    nby, nbx = Hh // b, Wh // b
+    blk = pl[: nby * b, : nbx * b].reshape(nby, b, nbx, b).permute(0, 2, 1, 3).reshape(nby, nbx, b * b)
+    m = torch.nanmedian(blk, dim=-1).values
+    m = torch.where(torch.isfinite(m), m, torch.nanmedian(m))
+    up = F.interpolate(m[None, None], size=(nby * b, nbx * b), mode="bilinear", align_corners=False)
+    return F.pad(up, (0, Wh - nbx * b, 0, Hh - nby * b), mode="replicate")[0, 0]
+
+
+def _gauss(x: torch.Tensor, sigma: float) -> torch.Tensor:
+    r = int(4 * sigma + 0.5)
+    t = torch.arange(-r, r + 1, device=x.device, dtype=torch.float32)
+    k = torch.exp(-0.5 * (t / sigma) ** 2)
+    k = k / k.sum()
+    y = F.pad(x[None, None], (r, r, r, r), mode="reflect")
+    y = F.conv2d(y, k.view(1, 1, 1, -1))
+    return F.conv2d(y, k.view(1, 1, -1, 1))[0, 0]

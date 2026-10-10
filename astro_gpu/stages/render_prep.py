@@ -23,6 +23,11 @@ class RenderPrepParams(StageParams):
                               "overlap (edges uncovered because of the drift between frames).")
     edge_frac: float = P(0.995, label="Edge cleanliness", level=ADVANCED, ge=0.9, le=1.0, step=0.001,
                          help="Edges are trimmed until this fraction of every border row/column is well covered.")
+    min_exposure: float = P(0.15, label="Minimum effective exposure", level=ADVANCED, ge=0, le=1, step=0.01,
+                            help="Coverage x vignetting^2 (the signal-to-noise squared, relative to the field centre) "
+                                 "below which the image is not used: in strongly vignetted corners the noise is "
+                                 "amplified and flat-field errors dominate. 0.15 cuts where the flat falls below ~40 % "
+                                 "of the centre; instruments with mild vignetting are not affected.")
     fine_sigma: float = P(3.0, label="Fine detail scale", level=ADVANCED, ge=0.5, le=10, unit="px",
                           help="Scales below this are taken from the Noise2Noise image for the fine-detail layer "
                                "(its amount is set in the final adjustment tab).")
@@ -57,7 +62,7 @@ class RenderPrep(Stage):
                    "faint areas, fine colour, blue-green tones) is decided live in the final adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "5"          # 2: live layers; 3: unsmoothed continuum; 4: OIII layer; 5: OIII display colour
+    version = "6"          # 2: live layers; 3: continuum; 4: OIII; 5: OIII colour; 6: vignetting in the frame
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -66,6 +71,18 @@ class RenderPrep(Stage):
         cov = np.asarray(wt[1], np.float32)
         good = cov > p.cover_min * np.median(cov[cov > 0])
         H, W = good.shape
+        fp = ctx.project.stage_dir("calibrate") / "master_flat.npy"
+        if p.min_exposure > 0 and fp.exists():
+            fl = np.asarray(np.load(fp, mmap_mode="r"), np.float32)
+            fl = cv2.resize(fl, (fl.shape[1] // 2, fl.shape[0] // 2), interpolation=cv2.INTER_AREA)   # Bayer cells
+            fl = cv2.GaussianBlur(fl / np.percentile(fl, 99), (0, 0), 4)
+            eff = cov / np.median(cov[cov > 0]) * cv2.resize(fl, (W, H), interpolation=cv2.INTER_LINEAR) ** 2
+            vig = good & (eff < p.min_exposure)
+            good &= ~vig
+            ctx.metric("vignetted_pct", round(100 * float(vig.mean()), 2))
+            if vig.any():
+                ctx.log(f"{100 * vig.mean():.1f} % of the field left out: effective exposure below "
+                        f"{p.min_exposure:.2f} (strong vignetting)")
         y0, y1, x0, x1 = crop_box(good, p.edge_frac)
         ctx.metric("crop", [int(x0), int(x1), int(y0), int(y1)])
         ctx.log(f"useful frame x {x0}-{x1}, y {y0}-{y1} ({100 * (y1 - y0) * (x1 - x0) / (H * W):.1f} % of the stack)")

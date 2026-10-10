@@ -39,6 +39,13 @@ class ColorParams(StageParams):
                                   "from the Milky Way, few reddened stars) and the free fit is not physical, the "
                                   "profile is used instead - after checking that it predicts the measured star "
                                   "colours of this field.")
+    synthetic_weight: float = P(0.5, label="Synthetic spectra weight", level=ADVANCED, ge=0, le=5, step=0.1,
+                                help="Besides the measured stars, the colour matrix is fitted on spectra predicted with "
+                                     "the sensitivity curves: black bodies from 2500 to 30000 K, unreddened to heavily "
+                                     "reddened. The stars of one field often cover a narrow range of colours (far from "
+                                     "the Milky Way especially); without these spectra the matrix is under-determined "
+                                     "and its large coefficients amplify the colour noise. Relative to the measured "
+                                     "stars; 0 = measured stars only.")
     profile_tolerance: float = P(5.0, label="Profile agreement", level=ADVANCED, ge=1, le=20, step=0.5, unit="%",
                                  help="A camera profile is accepted if it predicts the measured star colours of this "
                                       "field within this scatter (a modified / unmodified camera of the same model "
@@ -54,7 +61,7 @@ class Color(Stage):
                    "nebulae are anchored on the true colour of an H-alpha + H-beta + [NII] + [SII] spectrum.")
     deps = ("catalogs", "stack", "register")
     Params = ColorParams
-    version = "1"          # the physical check only changes unphysical fits: no forced recomputation
+    version = "2"          # 2: physical check, camera profiles, synthetic spectra in the matrix fit
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
@@ -85,23 +92,26 @@ class Color(Stage):
         camera = str(ctx.metric_of("inventory", "camera", "") or "")
         prof = load_profile(camera, lam) if p.camera_profile and camera else None
         source = "fit"
+        agree_fit = colour_agreement(xp["flux"][idx], lam, cam, S)
+        ctx.metric("fit_agreement_pct", round(agree_fit, 2))
         if prof is not None:
             agree = colour_agreement(xp["flux"][idx], lam, cam, prof["S"])
             ctx.metric("profile_agreement_pct", round(agree, 2))
-        if not good:
-            if prof is not None and agree <= p.profile_tolerance:
-                S = prof["S"] * np.median(cam / predict(xp["flux"][idx], lam, prof["S"]), 0)[:, None]
-                rel = [agree / 100] * 3
-                source = f"camera profile ({prof['project']})"
-                ctx.log(f"the free fit of the sensitivity curves is not physical ({why}): the stars of this field are "
-                        f"too similar to determine them. Using the {camera} profile measured on "
-                        f"'{prof['project']}', which predicts the star colours of this field within {agree:.1f} %",
-                        "warning")
-            else:
-                ctx.log(f"the sensitivity curves found are not physical ({why}) and no validated profile of this "
-                        f"camera is available: colours may be wrong. Process a Milky Way field with the same "
-                        f"camera first, or check the colour pattern (Bayer)", "warning")
-                source = "unphysical fit"
+        if prof is not None and agree <= p.profile_tolerance and (not good or agree < agree_fit):
+            # the profile was measured on a field that determines the curves better; it is used when it predicts the
+            # star colours of this field better than the free fit (or when the free fit is not physical)
+            S = prof["S"] * np.median(cam / predict(xp["flux"][idx], lam, prof["S"]), 0)[:, None]
+            rel = [agree / 100] * 3
+            source = f"camera profile ({prof['project']})"
+            reason = (f"the free fit is not physical ({why}): the stars of this field are too similar to determine "
+                      f"the curves" if not good else f"the free fit predicts them within {agree_fit:.1f} % only")
+            ctx.log(f"using the {camera} sensitivity curves measured on '{prof['project']}', which predict the star "
+                    f"colours of this field within {agree:.1f} % ({reason})", "warning" if not good else "info")
+        elif not good:
+            ctx.log(f"the sensitivity curves found are not physical ({why}) and no validated profile of this "
+                    f"camera is available: colours may be wrong. Process a Milky Way field with the same "
+                    f"camera first, or check the colour pattern (Bayer)", "warning")
+            source = "unphysical fit"
         elif p.camera_profile and camera and max(rel) < 0.06:
             save_profile(camera, lam, S, ctx.project.config.name, max(rel))
         ctx.metric("response_source", source)
@@ -111,13 +121,21 @@ class Color(Stage):
         cam_n = cam / cam.sum(1, keepdims=True)
         xyz_n = xyz / xyz.sum(1, keepdims=True)
         anchors = [(cam_hii, xyz_hii, p.hii_weight), (cam_oiii, xyz_oiii, p.hii_weight / 6)]
-        M0 = np.linalg.lstsq(cam_n, xyz_n, rcond=None)[0].T
+        syn = synthetic_spectra(lam)
+        cam_s = predict(syn, lam, S)
+        cam_s = cam_s / cam_s.sum(1, keepdims=True)
+        xyz_s = spectra_xyz(lam, syn)
+        xyz_s = xyz_s / xyz_s.sum(1, keepdims=True)
+        w_s = np.sqrt(p.synthetic_weight * len(cam_n) / len(cam_s))
+        M0 = np.linalg.lstsq(np.r_[cam_n, w_s * cam_s], np.r_[xyz_n, w_s * xyz_s], rcond=None)[0].T
 
         def resid(q):
             Mq = q.reshape(3, 3)
             v = cam_n @ Mq.T
             v = v / v.sum(1, keepdims=True)
-            r = [((v - xyz_n)[:, :2]).ravel()]
+            vs = cam_s @ Mq.T
+            vs = vs / vs.sum(1, keepdims=True)
+            r = [((v - xyz_n)[:, :2]).ravel(), w_s * ((vs - xyz_s)[:, :2]).ravel()]
             for cv, xv, w in anchors:
                 qa = Mq @ (cv / cv.sum())
                 qa = qa / qa.sum()
@@ -148,6 +166,25 @@ class Color(Stage):
                     "warning")
         ctx.log(f"spectral response from {len(idx)} Gaia XP stars, chromaticity residual {np.median(rs):.4f}")
         ctx.preview("spectral_response", response_plot(lam, S, len(idx)))
+
+
+def synthetic_spectra(lam) -> np.ndarray:
+    """Black bodies 2500-30000 K, unreddened to E(B-V) = 2 (A_lambda ~ lambda^-1.3, R_V = 3.1): (N, L) per nm."""
+    T = np.geomspace(2500, 30000, 24)
+    ebv = np.array([0.0, 0.4, 0.8, 1.4, 2.0])
+    lm = lam * 1e-9
+    bb = 1 / (lm[None] ** 5 * (np.exp(1.4388e-2 / (lm[None] * T[:, None])) - 1))
+    bb = bb / bb.max(1, keepdims=True)
+    ext = 10 ** (-0.4 * 3.1 * ebv[:, None] * (550.0 / lam[None]) ** 1.3)
+    return (bb[:, None, :] * ext[None]).reshape(-1, len(lam))
+
+
+def spectra_xyz(lam, spec) -> np.ndarray:
+    """CIE 1931 XYZ of spectra (N, L) sampled on lam (nm)."""
+    import colour
+    cmfs = colour.MSDS_CMFS["CIE 1931 2 Degree Standard Observer"]
+    xbar = np.stack([np.interp(lam, cmfs.wavelengths, cmfs.values[:, i], left=0, right=0) for i in range(3)], 1)
+    return (spec * np.gradient(lam)) @ xbar
 
 
 def predict(spec, lam, S):

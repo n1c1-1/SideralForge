@@ -14,7 +14,8 @@ from ..io.frames import read_cfa, read_info
 
 class InventoryParams(StageParams):
     max_lights: int = P(0, label="Limit number of light frames", level=ADVANCED, ge=0,
-                        help="Use only the first N light frames (sorted by name). 0 uses all of them.",
+                        help="Use only N light frames, evenly spaced over the whole session (so that drift, "
+                             "transparency and sky changes stay representative). 0 uses all of them.",
                         tip="Useful for a quick test run of the whole pipeline on a subset; keep 0 for the real run.")
 
 
@@ -32,8 +33,9 @@ class Inventory(Stage):
         groups = {k: list_frames(getattr(cfg, k)) for k in ("lights", "darks", "flats", "bias", "flat_darks")}
         if not groups["lights"]:
             raise StageError("no light frame found: add at least one folder of light frames")
-        if p.max_lights:
-            groups["lights"] = groups["lights"][: p.max_lights]
+        if p.max_lights and p.max_lights < len(groups["lights"]):
+            keep = np.unique(np.linspace(0, len(groups["lights"]) - 1, p.max_lights).round().astype(int))
+            groups["lights"] = [groups["lights"][i] for i in keep]
         out = {}
         total = sum(len(v) for v in groups.values())
         done = 0

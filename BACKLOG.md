@@ -44,15 +44,19 @@ M33 (A7S, 900 mm, 20 s at ISO 4000, no darks, no dithering, strong vignetting) e
 * colour: at high galactic latitude the stars are too similar to determine the sensitivity curves; the free fit
   gave an unphysical red channel (centred at 576 nm). Fixed: physical check of the curves and camera profiles
   (the profile of the same camera predicted the M33 star colours within 1.8 %);
-* the colour matrix is still fitted on the stars of the field and differs strongly from the one of the same camera
-  on Milky Way fields: derive it from the sensitivity curves over a broad set of spectra (all stellar types,
-  emission lines, reflection) instead, independent of the field;
-* walking noise (fixed pattern dragged by the drift, no darks): diagonal colour streaks dominate the starless
-  image; estimate and remove the fixed pattern from all frames (median of the calibrated frames in sensor
-  coordinates) before registration;
-* sky background: the H-alpha survey follows the galaxy disc, so the regression takes the galaxy for H-alpha and
-  sky; mask extended objects (catalogue size, or bright smooth structures) in the background fit;
-* 9 % pure black after the tone curve, pink frame at the edges (vignetting 0.126 at the corners).
+* colour matrix: done - fitted on the measured stars plus spectra predicted with the sensitivity curves (black bodies
+  2500-30000 K, reddened up to E(B-V) = 2); the matrices of the four test fields are now consistent and no longer
+  amplify the colour noise;
+* walking noise: done - the sensor fixed pattern is measured in sensor coordinates (median, then clipped mean over
+  all frames) and removed before drizzling, when the drift allows it. Possible next step: a pattern per time block
+  (dark current changes with temperature during the night);
+* sky background: done - bounded fit (H-alpha and unresolved light >= 0), objects rejected iteratively, H-alpha
+  signature checked against the camera (imposed when the survey correlates with a galaxy or a reflection nebula),
+  zero-point floor. Still to do: when a smooth object fills most of the frame its faint wings bias the sky (no
+  estimator can tell a smooth halo from a smooth gradient): mask an ellipse of the catalogued size of the target
+  (SIMBAD dimensions) in the sky fit;
+* 9 % pure black after the tone curve (fixed by the sky fit), pink frame at the edges: the useful frame now
+  excludes an effective exposure (coverage x flat^2) below 15 % of the centre.
 
 ## Frame selection
 
