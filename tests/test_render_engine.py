@@ -68,3 +68,22 @@ def test_settings_change_and_cache(prep):
 def test_presets_are_valid():
     for values in PRESETS.values():
         RenderSettings(**values)
+
+
+def test_export_files_and_checks(prep, tmp_path):
+    import tifffile
+
+    from astro_gpu.core.project import Inputs, Project
+    from astro_gpu.render.export import ExportSettings, export
+    proj = Project.create(tmp_path / "proj", "t", Inputs(lights=[]))
+    eng = RenderEngine(prep, device=DEV)
+    meta = export(proj, eng, RenderSettings(), ExportSettings(name="test"))
+    names = sorted(p.name for p in (proj.results / "test").iterdir())
+    assert "test_full_resolution_16bit.tif" in names and "test.png" in names and "test.jpg" in names
+    assert "test_starless.png" in names and "test_stars.png" in names and "test_settings.json" in names
+    with tifffile.TiffFile(proj.results / "test" / "test_full_resolution_16bit.tif") as t:
+        page = t.pages[0]
+        assert page.dtype == np.uint16 and page.shape == (236, 356, 3)
+        assert 34675 in page.tags                     # embedded ICC profile
+    qa = meta["qa"]
+    assert qa["layer_blend_error_255"] < 0.5 and "warnings" in qa
