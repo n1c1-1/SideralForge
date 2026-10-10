@@ -62,7 +62,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color", "catalogs")
     Params = StarlessParams
-    version = "21"         # 15-21: missing data, glare and dip repair decided on the data; sharpening network
+    version = "23"         # 15-23: missing data, glare and dip repair decided on the data; sharpening network
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -118,8 +118,10 @@ class Starless(Stage):
             # remainder removed; around a star in its nebula nothing is touched
             hp_ = rawfill[1] - cv2.GaussianBlur(rawfill[1], (0, 0), 2)
             sig_ = float(1.4826 * np.median(np.abs(hp_[::7, ::7])))      # noise of the data, not of the denoised image
-            gates = glare_gates(final0, x, y, g, p.halo_gmax, sig_)
-            fill_w = glare_zone_weight(final0, x, y, g, gates, sig_)
+            # judged on the raw starless image: the cleaning above fills a disc around every bright star, which
+            # would flatten the profile the decision is based on
+            gates = glare_gates(rawfill, x, y, g, p.halo_gmax, sig_, mask=mask)
+            fill_w = glare_zone_weight(rawfill, x, y, g, gates, sig_)
             sl_zone = star_zone_fill(final0, fill_w)
             ctx.metric("star_zone_pct", round(100 * float((fill_w > 0.5).mean()), 2))
             ng = int(sum(v > 0.5 for v in gates.values()))
@@ -516,7 +518,7 @@ def bright_cores(mask, x, y, g, shape) -> np.ndarray:
     return m & (disc > 0)
 
 
-def glare_gates(img, x, y, g, gmax, sig, rmax_cap=320):
+def glare_gates(img, x, y, g, gmax, sig, mask=None, rmax_cap=320):
     """One decision per bright star (G < gmax), from the data: is the light left around it glare of the star or the
     nebula it lights? Glare (PSF wings, spikes, defocus halo) falls off steeply with the distance to the star (the
     radial profile drops faster than 1/r^3); a nebula lit by its star falls off slowly (1/r to 1/r^2). The fall-off
@@ -543,6 +545,9 @@ def glare_gates(img, x, y, g, gmax, sig, rmax_cap=320):
         rb = np.arange(6.0, rmax / 2, 2.0)
         pv = np.array([np.percentile(win[(rr >= r_) & (rr < r_ + 2)], 35) - by if ((rr >= r_) & (rr < r_ + 2)).sum() > 5
                        else np.nan for r_ in rb])
+        if mask is not None:                  # rings inside the filled core carry no information on the fall-off
+            mk = mask[y0:y1, x0:x1]
+            pv[np.array([mk[(rr >= r_) & (rr < r_ + 2)].mean() > 0.1 for r_ in rb])] = np.nan
         # an over-subtracted star (profile below its surroundings) is a model error as well: the fall-off of the
         # absolute excess is judged, a nebula is never negative
         ok = np.isfinite(pv) & (np.abs(pv) > 3 * sig)
@@ -570,7 +575,9 @@ def glare_zone_weight(img, x, y, g, gates, sig, gmax=11.0, rmax_cap=320):
     from the sky floor of the whole field: in a field full of nebula, the nebula is not an excess."""
     H, W = img.shape[1:]
     m = img.mean(0)
-    ms = cv2.GaussianBlur(m, (0, 0), 2)
+    # per channel: the glare left by the template can be coloured (red and blue in excess, green short) with a small
+    # excess in the mean; the largest deviation over the three channels decides
+    ms = np.stack([cv2.GaussianBlur(img[c], (0, 0), 2) for c in range(img.shape[0])])
     loc = cv2.erode(cv2.GaussianBlur(m, (0, 0), 4), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (61, 61)))
     neb = cv2.GaussianBlur(loc, (0, 0), 16)
     w = np.zeros((H, W), np.float32)
@@ -586,10 +593,11 @@ def glare_zone_weight(img, x, y, g, gates, sig, gmax=11.0, rmax_cap=320):
         beyond = (rr >= rmax) & (rr < rmax + 20)
         if beyond.sum() < 20:
             continue
-        win = ms[y0:y1, x0:x1]
-        by = float(np.median(win[beyond]))
-        T = 3 * sig + 0.5 * np.clip(neb[y0:y1, x0:x1] - by, 0, None)
-        wi = np.clip((np.abs(win - by) - T) / np.maximum(T, 1e-6), 0, 1).astype(np.float32) * (rr < rmax)
+        win = ms[:, y0:y1, x0:x1]
+        by = np.array([np.median(win[c][beyond]) for c in range(win.shape[0])], np.float32)
+        dev = np.abs(win - by[:, None, None]).max(0)
+        T = 3 * sig + 0.5 * np.clip(neb[y0:y1, x0:x1] - float(by.mean()), 0, None)
+        wi = np.clip((dev - T) / np.maximum(T, 1e-6), 0, 1).astype(np.float32) * (rr < rmax)
         n, lab = cv2.connectedComponents((wi > 0).astype(np.uint8), connectivity=8)
         # the zone belongs to the star: the components touching the disc around its (filled) core
         seeds = np.unique(lab[rr < 24])

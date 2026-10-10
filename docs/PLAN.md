@@ -150,10 +150,22 @@ from frame to frame (Heart 3.8-4.3 px, Iris 4.3-5.0 px over the night), and with
 - Lessons: several independent checks, never one; never drop a part without telling the user; no stacked repairs; no
   launch without the user's go; plain language in every report.
 
-## 10. State of the code
+## 10. State of the code (night of 2026-10-11)
 
-- Committed: the processing chain (renders v31 for Heart, NGC 7822 and Iris; the Iris central star shows rings, not
-  acceptable as final); this plan.
-- Not committed, stopped by the user (stacked repairs, replaced by this plan): changes in `starless.py`, `stars.py`,
-  `imgutil.py`, `export.py`.
-- Test bench scripts (outside the repository): `C:\Users\Nicolas\astro_gpu_scratch\bench\`.
+- Star removal (`stages/starless.py`): what is treated as missing data is decided on the measurements only
+  (saturated pixels, and pixels where the subtraction leaves the image below the sky: an over-subtracted star). The
+  old rules (60 px core masks, fill zones wherever the star model is bright) erased the brightest nebula around the
+  Iris central star and produced the rings. Around each bright star, the light left is judged on its fall-off with
+  distance: steeper than 1/r^3 is glare of the star (interpolated, the star is redrawn at render), shallower than
+  1/r^2 is the nebula it lights (kept). The dip repair is applied only where a dip is measured.
+- Sharpening (`core/sharpen.py`, run inside `starless`): the star shape is measured on the stack from Gaia stars,
+  the target is derived from it (two thirds of the core width, at least 2 px), and the Noise2Noise network is
+  fine-tuned so that its output, blurred back to the measured shape, predicts the other half-stack. The result is a
+  render layer (`dS`) behind the control "Sharpening (measured star shape)".
+- Render presets `Faithful` and `Artistic` (`render/settings.py`); `astro-gpu render PROJECT --preset faithful`
+  writes `results/faithful/`.
+- Tried and rejected during the night: one halo amplitude per star for the three channels (large coloured halos
+  around the brightest stars; per-channel amplitudes kept).
+- Earlier work in progress stopped by the user (stacked repairs) is kept in `git stash` and not used.
+- Test bench and night scripts (outside the repository): `C:\Users\Nicolas\astro_gpu_scratch\bench\` and
+  `C:\Users\Nicolas\astro_gpu_scratch\night\`.
