@@ -62,7 +62,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color", "catalogs")
     Params = StarlessParams
-    version = "20"         # 15-20: missing data, glare and dip repair decided on the data; sharpening network
+    version = "21"         # 15-21: missing data, glare and dip repair decided on the data; sharpening network
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -550,6 +550,11 @@ def glare_gates(img, x, y, g, gmax, sig, rmax_cap=320):
             gates[int(i)] = 1.0
             continue
         if np.median(pv[ok]) < 0:
+            gates[int(i)] = 1.0
+            continue
+        # the fall-off is measured where the light is (above a tenth of its maximum), not on its faint tail
+        ok &= pv > 0.1 * np.nanmax(pv)
+        if ok.sum() < 3:
             gates[int(i)] = 1.0
             continue
         slope = np.polyfit(np.log(rb[ok] + 1.0), np.log(np.abs(pv[ok])), 1)[0]
