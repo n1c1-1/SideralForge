@@ -99,6 +99,22 @@ Measured fact to keep in mind: per-frame FWHM spread is narrow (Heart p10-p90 3.
 gain of per-frame PSF modelling may come more from spatial / colour variation and Bayer sampling than from seeing
 changes over the night. J1 / J2 must show it.
 
+Measured at J2 (2026-10-11), to keep for every later step:
+- **The noise of the drizzled stack is coloured**: its power at Nyquist is 0.27x its power at low frequencies (Heart
+  and Iris). Every method that assumes white noise (Wiener with estimated spectra, DPIR / DRUNet) turns it into
+  invented texture. Either whiten (data and operator filtered by the measured noise spectrum) or learn the prior on
+  the data's own noise (Noise2Noise).
+- **On faint nebula the resolution is limited by the noise, not by the PSF**: correlation of the two half-stacks per
+  scale, starless, Iris full depth (1242 frames): 0.00 below 1.2 px, 0.00-0.03 at 1.2-2.4 px, 0.07-0.18 at 2.4-4.8 px,
+  0.3-0.6 at 4.8-9.6 px. At 100 frames there is no reproducible detail below ~5 px. Deconvolution can only gain where
+  the signal is strong (bright zones, features with S/N >= 3).
+- **Level 2 without re-stacking**: for methods that work on the stack, faint features are injected directly into the
+  full-depth stack, convolved with the measured PSF (exact truth at the target PSF). Frame-level injection (twins)
+  stays necessary for methods that work on the frames.
+- **Judges per scale**: noise and half-stack agreement are measured per band-pass scale (a single noise standard
+  deviation is blind to texture changes). Pan-STARRS judges large scales only in dense Milky Way fields: residuals of
+  our star model correlate with its stars even outside star masks.
+
 ## 6. Milestones
 
 Each milestone compares the options (ours, shelf as-is, shelf modified, coupled or not) with the judges, decides, and
