@@ -54,7 +54,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "11"         # 5: halos from the extended PSF; 6-7: core mask; 9: star zones; 11: zones of bright stars only
+    version = "12"         # 5: halos from the extended PSF; 6-7: core mask; 9: star zones; 12: zones of bright stars only
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -460,7 +460,11 @@ def star_zone_weight(img, model, x, y, g, sig, gmax=11.0):
     m = img.mean(0)
     # local sky pedestal (the starless image still holds the sky): large-scale minimum, smoothed
     sky = _local_floor(m)
-    neb = np.clip(cv2.GaussianBlur(m, (0, 0), 16) - sky, 0, None)
+    # nebula level around: the local minimum over ~60 px (smoothed), so that the residual glare of the star itself
+    # does not count as nebula and shrink its own zone; a star embedded in a nebula still gets a small zone
+    ms = cv2.GaussianBlur(m, (0, 0), 4)
+    loc = cv2.erode(ms, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (61, 61)))
+    neb = np.clip(cv2.GaussianBlur(loc, (0, 0), 16) - sky, 0, None)
     # in a dense field the summed wings of thousands of stars make a smooth floor of star light everywhere; an error
     # on it is smooth too, so only the light standing above that floor belongs to a single star
     L = model.max(0)
