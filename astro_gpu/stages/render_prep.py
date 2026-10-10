@@ -67,7 +67,7 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "12"         # 7: full-res base; 8: star depth; 9: fine layers vs star light; 10: guard; 12: N2N fine scales
+    version = "13"         # 7: full-res base; 8: star depth; 9: fine layers vs star light; 10: guard; 13: N2N fine scales
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -165,12 +165,15 @@ class RenderPrep(Stage):
         # fine-detail layer: Noise2Noise small scales minus Wiener small scales, kept as brightness (its colour is
         # noise), off on star footprints
         ctx.progress(0.65, "fine detail layer")
+        # with the network in the base, the layer holds its fine scales and the 'Fine detail' slider scales them
+        # (1 = as measured); otherwise it holds network minus Wiener, injected into the Wiener base
+        fine_scale = p.n2n_base > 0
         det = np.stack([(n2[c] - cv2.GaussianBlur(n2[c], (0, 0), p.fine_sigma))
-                        - (b0[c] - cv2.GaussianBlur(b0[c], (0, 0), p.fine_sigma)) for c in range(3)])
+                        - (0 if fine_scale else b0[c] - cv2.GaussianBlur(b0[c], (0, 0), p.fine_sigma))
+                        for c in range(3)])
         del n2, b0
-        # the fine layers are not reliable where the light of the stars dominates (residual spikes, halo streaks);
-        # where the base already comes from the network its fine scales are in it (not counted twice)
-        ctx.save("dY.npy", (np.tensordot(lum, det, 1) * wstar * (1 - p.n2n_base)).astype(np.float16))
+        # the fine layers are not reliable where the light of the stars dominates (residual spikes, halo streaks)
+        ctx.save("dY.npy", (np.tensordot(lum, det, 1) * wstar).astype(np.float16))
         del det
         cf = ctx.project.stage_dir("starless") / "chroma_fine.npy"
         if cf.exists():                           # star residuals are common to both halves: off on star light too
@@ -214,7 +217,8 @@ class RenderPrep(Stage):
                                     "vh": vh.tolist(), "M": M.tolist(), "drizzle_scale": S, "width": W,
                                     "height": H, "mag_offset": dm, "e": e_.tolist(), "Am": Am.tolist(),
                                     "layers": 3, "w_cam": w_cam.tolist(), "o": o_.tolist(), "depth_shift": depth_shift,
-                                    "o_display": o_disp.tolist(), "oiii_sigma": s_o, "oiii_scale": p.oiii_scale})
+                                    "o_display": o_disp.tolist(), "oiii_sigma": s_o, "oiii_scale": p.oiii_scale,
+                                    "fine_layer": "scale" if fine_scale else "add"})
         np.savez(ctx.out("profile.npz"), r=r_all, prof=prof)
         from ..core.imgutil import asinh_preview
         ctx.preview("nebula_layer", asinh_preview(preview, M, k=30))

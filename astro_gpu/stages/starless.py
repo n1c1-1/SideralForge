@@ -54,7 +54,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "12"         # 5: halos from the extended PSF; 6-7: core mask; 9: star zones; 12: zones of bright stars only
+    version = "14"         # 5: halos from the extended PSF; 6-7: core mask; 9: star zones; 13: + residual glare per star
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -109,9 +109,15 @@ class Starless(Stage):
             hp_ = final0[1] - cv2.GaussianBlur(final0[1], (0, 0), 2)
             sig_ = float(1.4826 * np.median(np.abs(hp_[::7, ::7])))
             fill_w = star_zone_weight(final0, model, x, y, g, sig_)
-            sl_final = star_zone_fill(final0, fill_w)
+            sl_zone = star_zone_fill(final0, fill_w)
             ctx.metric("star_zone_pct", round(100 * float((fill_w > 0.5).mean()), 2))
             ctx.log(f"bright-star zones interpolated on {100 * (fill_w > 0.5).mean():.2f} % of the field")
+            # what the template leaves of the glare of each bright star (a refractor's blue defocus halo varies from
+            # star to star) is measured on its own radial profile, except around stars embedded in a nebula
+            sl_final, nh = bright_halos(sl_zone, x, y, g, p.halo_gmax, embedded_guard=True)
+            halo_left = sl_zone - sl_final
+            del sl_zone
+            ctx.log(f"residual glare removed around {nh} bright stars (embedded stars left untouched)")
         else:
             sl_final, nh = bright_halos(final0, x, y, g, p.halo_gmax)
             ctx.log(f"optical halos removed around {nh} bright stars")
@@ -132,7 +138,7 @@ class Starless(Stage):
         ctx.progress(0.85, "cleaning the detail layer")
         n2n_c0, _ = clean(sl_n2n, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
         if has_ext:
-            n2n_final = star_zone_fill(n2n_c0, fill_w)
+            n2n_final = star_zone_fill(n2n_c0, fill_w) - halo_left
         else:
             n2n_final = refill_cores(bright_halos(n2n_c0, x, y, g, p.halo_gmax)[0], refill)
         ctx.save("n2n_final.npy", n2n_final)
@@ -395,13 +401,18 @@ def wiener(A_cam, B_cam, M, p, star_model, log=print):
     return from_ycc(out), from_ycc(fine)
 
 
-def bright_halos(sl, x, y, g, gmax, rmax_cap=320):
+def bright_halos(sl, x, y, g, gmax, rmax_cap=320, embedded_guard=False):
     """Remove the optical halo of every bright star from the starless image (radial profile per star and channel).
 
     The halo radius grows with the square root of the flux (315 px at G = 5 down to 25 px at G = gmax); the
     background is measured just beyond it. No removal inside bright emission (the profile would measure the nebula).
+    With ``embedded_guard``, no removal either around a star whose surroundings stand above the local sky by as much
+    as its halo: a star embedded in a nebula it lights (reflection) - a radial profile cannot tell that nebula from
+    glare.
     """
     sl = sl.astype(np.float32).copy()
+    Ym = sl.mean(0)
+    floor_y = _local_floor(Ym) if embedded_guard else None
     Eg = cv2.GaussianBlur(sl[0] - 0.87 * sl[1], (0, 0), 12)
     q1, q2 = emission_levels(Eg)
     gate = np.clip((q2 - Eg) / max(q2 - q1, 1e-6), 0, 1).astype(np.float32)
@@ -424,6 +435,20 @@ def bright_halos(sl, x, y, g, gmax, rmax_cap=320):
         counts = np.bincount(flat_idx, minlength=len(rb) - 1)
         order = np.argsort(flat_idx, kind="stable")
         bounds = np.concatenate([[0], np.cumsum(counts)])
+        rcv = rb[:-1] + 1.0
+        gate_s = 1.0
+        if floor_y is not None:
+            # one decision per star, on the brightness: gating the channels separately would shift the colours
+            vy = Ym[y0:y1, x0:x1].ravel()[order]
+            my = np.array([np.percentile(vy[bounds[k]:bounds[k + 1]], 35) if counts[k] > 5 else np.nan
+                           for k in range(len(rb) - 1)])
+            by = np.nanmedian(my[-8:])
+            py = np.minimum.accumulate(np.nan_to_num(np.clip(my - by, 0, None)))
+            amp_ = float(py[min(int(rmax / 8), len(py) - 1)])
+            emb = float(by - floor_y[min(max(yc, 0), H - 1), min(max(xc, 0), W - 1)])
+            gate_s = float(np.clip(1 - emb / max(amp_, 1e-6), 0, 1))
+            if gate_s <= 0:
+                continue
         for c in range(3):
             patch = sl[c, y0:y1, x0:x1]
             vals = patch.ravel()[order]
@@ -433,6 +458,7 @@ def bright_halos(sl, x, y, g, gmax, rmax_cap=320):
             prof = np.minimum.accumulate(np.nan_to_num(np.clip(med - bgv, 0, None)))
             rcv = rb[:-1] + 1.0
             prof = prof * np.clip((rmax - rcv) / (0.4 * rmax), 0, 1) ** 2
+            prof = prof * gate_s
             h = np.interp(rr, rcv, prof, right=0)
             h = np.minimum(h, 0.9 * np.clip(patch - bgv, 0, None))
             sl[c, y0:y1, x0:x1] = patch - h * gate[y0:y1, x0:x1]

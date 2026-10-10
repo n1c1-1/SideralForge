@@ -124,9 +124,9 @@ class RenderSettings(StageParams):
     sharp_white: float = S(1.0, section="Nebula", label="Sharpening limit", level=ADVANCED, ge=0.3, le=1.0, step=0.01,
                            help="Brightness above which sharpening fades out.")
     fine_k: float = S(1.0, section="Nebula", label="Fine detail", ge=0.0, le=3.0, step=0.05,
-                      help="Re-injects the finest scales of the Noise2Noise image (filaments the Wiener denoising "
-                           "smooths) into the emission, above the brightness set by 'Fine detail start'.",
-                      tip="0 = Wiener only (smoothest); 1 = full detail; above 1 = accentuated.")
+                      help="Strength of the finest scales of the denoised nebula (filaments, edges, measured by the "
+                           "Noise2Noise network on your data), above the brightness set by 'Fine detail start'.",
+                      tip="1 = as measured; above 1 = accentuated; 0 = smoothest.")
     fine_lo_pct: float = S(80.0, section="Nebula", label="Fine detail start", ge=0, le=99, step=1, unit="percentile",
                            help="Emission brightness (percentile of the field) where the detail injection starts. "
                                 "Lower it to bring the fine detail into fainter nebulosity.",

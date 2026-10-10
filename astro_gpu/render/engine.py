@@ -120,12 +120,16 @@ class RenderEngine:
             return self._layer("astro", f)
         valid = self._valid(f)
         N = self._layer("N", f)
-        if s.fine_k > 0:                     # Noise2Noise fine detail (brightness), above a brightness of the signal
+        # 'Fine detail' = factor on the network's fine scales already in the base (newer preparations), or amount of
+        # network detail added to a Wiener base (older ones)
+        kf = s.fine_k - 1.0 if self.prep.get("fine_layer") == "scale" else s.fine_k
+        new = kf != 0 or s.faint_smooth > 0
+        if kf != 0:                          # Noise2Noise fine detail (brightness), above a brightness of the signal
             Eg0 = self._layer("Eg0", f)
             q1, q2 = ops.percentile(Eg0, [s.fine_lo_pct, s.fine_hi_pct], valid)
             wf = ops.gaussian_blur(((Eg0 - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)
             del Eg0
-            N = N + s.fine_k * (wf * self._layer("dY", f))[None] * self.w_cam[:, None, None]
+            N = N + kf * (wf * self._layer("dY", f))[None] * self.w_cam[:, None, None]
             del wf
         if s.faint_smooth > 0:               # faint areas: only the scales confirmed by the data
             Eg = ops.gaussian_blur(torch.einsum("c,chw->hw", self.lum, N), 8 / f)
@@ -135,7 +139,7 @@ class RenderEngine:
             N = wE * N + (1 - wE) * ops.gaussian_blur(N, s.faint_smooth / f)
             del wE
         # cached / host layers are never modified in place: copy unless a step above already made a new tensor
-        astro = N if (s.fine_k > 0 or s.faint_smooth > 0) else N.clone()
+        astro = N if new else N.clone()
         if s.resid_boost != 0:
             astro += s.resid_boost * self._layer("R", f)
         if s.colour_detail > 0 and "chroma_fine" in self._host:

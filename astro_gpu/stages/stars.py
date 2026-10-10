@@ -50,7 +50,7 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "8"          # 2: empirical extended 2-D PSF; 3: radial halo with the flux; 4: capped amplitude; 8: physical
+    version = "9"          # 2: empirical extended 2-D PSF; 3: radial halo with the flux; 4: capped amplitude; 9: physical
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device
@@ -540,18 +540,23 @@ def extended_psf(img, model, x, y, g, Fp, fluxes, dm, W, H, radius, log=print, r
     # saturation and is left to the per-star measurement of the starless stage; the non-radial part is kept there.
     rb1 = np.round(rr_t).astype(int)
     w_rad = np.clip((rr_t - 10.0) / 8.0, 0, 1).astype(np.float32)
+    order = np.argsort(rb1.ravel(), kind="stable")
+    bounds = np.concatenate([[0], np.cumsum(np.bincount(rb1.ravel()))])
+    meds = []
+    for c in range(3):
+        vals = text[c].ravel()[order]
+        meds.append(np.array([np.median(vals[bounds[k]:bounds[k + 1]]) if bounds[k + 1] > bounds[k] else 0.0
+                              for k in range(len(bounds) - 1)]))
+    # scattered light is positive and fades with the distance: beyond the maximum of the radial part (12-40 px, the
+    # same radius for the three channels so that the colour is kept) it is replaced by its closest non-increasing,
+    # non-negative profile (what is left of the measurement noise would otherwise be subtracted as light around
+    # every bright star - a negative halo adds a bright disc)
+    tot = np.sum(meds, axis=0)
+    k0 = min(12 + int(np.argmax(tot[12:41])), len(tot) - 1) if len(tot) > 41 else min(12, len(tot) - 1)
     for c in range(3):
         v = text[c]
-        order = np.argsort(rb1.ravel(), kind="stable")
-        bounds = np.concatenate([[0], np.cumsum(np.bincount(rb1.ravel()))])
-        vals = v.ravel()[order]
-        med = np.array([np.median(vals[bounds[k]:bounds[k + 1]]) if bounds[k + 1] > bounds[k] else 0.0
-                        for k in range(len(bounds) - 1)])
-        # scattered light is positive and fades with the distance: from 12 px out the radial part is replaced by its
-        # closest non-increasing, non-negative profile (what is left of the measurement noise would otherwise be
-        # subtracted as light around every bright star - a negative halo adds a bright disc)
+        med = meds[c]
         phys = med.copy()
-        k0 = min(12, len(med) - 1)
         phys[k0:] = np.clip(_non_increasing(med[k0:]), 0, None)
         # the rest (spikes, rings, reflections) is kept with its point symmetry only: the odd part of a template is
         # what remains of the sky gradients of the cutouts, not light of the instrument
