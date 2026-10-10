@@ -1,6 +1,8 @@
 """New project dialog: input folders, target, working folders - with sensible guesses from the lights folder."""
 from __future__ import annotations
 
+import os
+import re
 import shutil
 from pathlib import Path
 
@@ -23,9 +25,31 @@ from PySide6.QtWidgets import (
 
 from ..core.project import Inputs, Project, Target, list_frames
 
+GENERIC = {"raw", "raws", "raw2", "signal", "lights", "light", "brut", "bruts", "ok", "capture", "captures", "images",
+           "serie1", "serie2", "series", "fits", "arw", "data"}
 GUESSES = {"darks": ("dark", "darks", "Dark", "Darks", "DARK"), "flats": ("flat", "flats", "Flat", "Flats", "FLAT"),
            "bias": ("bias", "offset", "offsets", "Bias", "Offset"),
            "flat_darks": ("flatdark", "flat_dark", "flat_darks", "darkflat", "dark_flat", "FlatDarks")}
+
+
+MONTHS = {"jan", "janv", "janvier", "january", "fev", "fevr", "fevrier", "february", "feb", "mar", "mars", "march",
+          "avr", "avril", "april", "apr", "mai", "may", "juin", "june", "jun", "juil", "juillet", "july", "jul",
+          "aout", "august", "aug", "sept", "sep", "septembre", "september", "oct", "octobre", "october", "nov",
+          "novembre", "november", "dec", "decembre", "december"}
+NOISE_WORDS = {"astro", "photo", "photos", "session", "nuit", "night", "test"}
+
+
+def target_guess(folder_name: str) -> str:
+    """Object name from a folder name: drop dates, numbers, month names and generic words (NGC7822 is kept)."""
+    import unicodedata
+    words = [w for w in re.split(r"[_\s-]+", folder_name) if w]
+    keep = []
+    for w in words:
+        plain = unicodedata.normalize("NFKD", w).encode("ascii", "ignore").decode().lower()
+        if re.fullmatch(r"[0-9.]+", plain) or plain in MONTHS or plain in NOISE_WORDS:
+            continue
+        keep.append(w)
+    return " ".join(keep)
 
 
 class FolderList(QWidget):
@@ -54,8 +78,10 @@ class FolderList(QWidget):
                 self.on_change()
 
     def add(self, d: str):
-        if d not in self.folders():
-            self.list.addItem(d)
+        # Windows paths are case-insensitive: 'dark', 'Dark' and 'DARK' are the same folder
+        key = os.path.normcase(os.path.realpath(d))
+        if key not in {os.path.normcase(os.path.realpath(f)) for f in self.folders()}:
+            self.list.addItem(str(Path(d)))
 
     def folders(self) -> list[str]:
         return [self.list.item(i).text() for i in range(self.list.count())]
@@ -168,14 +194,18 @@ class NewProjectDialog(QDialog):
                     c = base / nm
                     if c.is_dir() and list_frames([str(c)]):
                         self.lists[k].add(str(c))
+        # the meaningful name is the first ancestor that is not a generic capture folder name
+        named = lp
+        while named.name.lower() in GENERIC and named.parent != named:
+            named = named.parent
         if not self.name.text():
-            self.name.setText(parent.name if lp.name.lower() in ("lights", "light", "signal", "raw") else lp.name)
+            self.name.setText(named.name)
         if not self.folder.text():
-            self.folder.setText(str(parent / "astro_gpu"))
+            self.folder.setText(str(named / "astro_gpu"))
         if not self.scratch.text():
             self.scratch.setText(str(Path.home() / "astro_gpu_scratch" / (self.name.text() or "project")))
         if not self.target.text():
-            self.target.setText(self.name.text())
+            self.target.setText(target_guess(named.name))
         self._update_space()
 
     def _update_space(self):
