@@ -11,7 +11,6 @@ from __future__ import annotations
 import cv2
 import numpy as np
 import torch
-from scipy.ndimage import median_filter
 
 from ..core.params import ADVANCED, P, StageParams
 from ..core.stage import Context, Stage
@@ -39,8 +38,9 @@ class RenderPrepParams(StageParams):
                          help="On the footprint of each star, the brightness may not dip below the local level and "
                               "the colour is taken from the surroundings: an imperfect star subtraction can create "
                               "neither a black hole nor a coloured dot. The brightness keeps full resolution.")
-    guard_sigma: float = P(1.0, label="Guard tolerance", level=ADVANCED, ge=0, le=5, step=0.1, unit="sigma",
-                           help="How far below the local brightness a star footprint may go.")
+    guard_sigma: float = P(3.0, label="Guard tolerance", level=ADVANCED, ge=0, le=10, step=0.1, unit="sigma",
+                           help="How far below the brightness of the surroundings a star footprint may go before it is "
+                                "lifted (deeper = a hole left by the star subtraction, not noise).")
     oiii_scale: float = P(4.0, label="OIII map base smoothing", level=ADVANCED, ge=0, le=50, unit="px",
                           help="The OIII emission (teal, 496/501 nm) is separated from H-alpha and starlight with the "
                                "spectral response of your camera. With a colour camera the three signatures are close "
@@ -59,7 +59,7 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "7"          # 7: full-resolution base layer, colour-agnostic star guard (no emission/continuum split)
+    version = "10"         # 7: full-res base, generic guard; 8: star depth; 9: fine layers vs star light; 10: guard fill
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -146,11 +146,15 @@ class RenderPrep(Stage):
         det = np.stack([(n2[c] - cv2.GaussianBlur(n2[c], (0, 0), p.fine_sigma))
                         - (b0[c] - cv2.GaussianBlur(b0[c], (0, 0), p.fine_sigma)) for c in range(3)])
         del n2, b0
-        ctx.save("dY.npy", (np.tensordot(lum, det, 1) * (1 - foot_w)).astype(np.float16))
+        # the fine layers are not reliable where the light of the stars dominates (residual spikes, halo streaks):
+        # weight 0 where the modelled / removed star light exceeds 3 noise sigmas of the brightness
+        wstar = star_light_weight(ctx, lum, astro.shape[1:]) * (1 - foot_w)
+        ctx.metric("fine_layers_off_pct", round(100 * float((wstar < 0.5).mean()), 1))
+        ctx.save("dY.npy", (np.tensordot(lum, det, 1) * wstar).astype(np.float16))
         del det
         cf = ctx.project.stage_dir("starless") / "chroma_fine.npy"
-        if cf.exists():                           # star residuals are common to both halves: off on footprints too
-            ctx.save("chroma_fine.npy", (np.load(cf).astype(np.float32) / flat * (1 - foot_w)[None]).astype(np.float16))
+        if cf.exists():                           # star residuals are common to both halves: off on star light too
+            ctx.save("chroma_fine.npy", (np.load(cf).astype(np.float32) / flat * wstar[None]).astype(np.float16))
         np.save(ctx.out("valid.npy"), good)
         ctx.progress(0.75, "star tables")
         mm_ = (fs["g"] - dm > 11) & (fs["g"] - dm < 14)
@@ -177,12 +181,19 @@ class RenderPrep(Stage):
             pr[c] /= np.median(fs["pred"][c][m13] / np.maximum(fs["flux"][c][m13], 1e-9))
         np.savez(ctx.out("stars.npz"), x=X, y=Y, g=G, flux=F.astype(np.float32), pred=pr.astype(np.float32),
                  glow_flux=Fpred.astype(np.float32), n_measured=nb)
+        # depth of the data: magnitude where the measured stars reach S/N = 10. The star settings of the rendering
+        # (faintest drawn star, sizes, brightness) refer to a field where this is G = 15.5; deeper or finer-sampled
+        # data shift them, so that "the faintest drawn star" means the same thing for every instrument
+        depth = star_depth(ctx, fs, dm)
+        depth_shift = float(np.clip(round(((depth if depth else 15.5) - 15.5) * 4) / 4, -3, 6))
+        ctx.metric("star_depth_snr10", depth)
+        ctx.metric("star_depth_shift", depth_shift)
         ctx.progress(0.85, "real star profile")
         r_all, prof = star_profile(torch.load(ctx.input("optics", "psf_model.pt"), weights_only=False))
         ctx.save_json("prep.json", {"crop": [int(x0), int(x1), int(y0), int(y1)], "alpha": alpha,
                                     "vh": vh.tolist(), "M": M.tolist(), "drizzle_scale": S, "width": W,
                                     "height": H, "mag_offset": dm, "e": e_.tolist(), "Am": Am.tolist(),
-                                    "layers": 3, "w_cam": w_cam.tolist(), "o": o_.tolist(),
+                                    "layers": 3, "w_cam": w_cam.tolist(), "o": o_.tolist(), "depth_shift": depth_shift,
                                     "o_display": o_disp.tolist(), "oiii_sigma": s_o, "oiii_scale": p.oiii_scale})
         np.savez(ctx.out("profile.npz"), r=r_all, prof=prof)
         from ..core.imgutil import asinh_preview
@@ -229,6 +240,46 @@ def crop_box(good: np.ndarray, edge_frac: float):
     return y0, y1, x0, x1
 
 
+def star_depth(ctx, fs, dm) -> float | None:
+    """Gaia G magnitude where the median S/N of the measured stars falls to 10 (aperture of radius one FWHM)."""
+    try:
+        S = float(ctx.load_json("stack", "drz_meta.json")["scale"])
+        fwhm = float(ctx.metric_of("register", "fwhm_px")) * S
+        img = ctx.load("optics", "lat_full.npy", mmap=True)
+        a = np.asarray(img[1, ::2, ::2], np.float32)
+        sig = 1.4826 * float(np.median(np.abs(a - cv2.GaussianBlur(a, (0, 0), 2))))
+        snr = fs["flux"][1] / (sig * np.sqrt(np.pi * fwhm ** 2))
+        g = fs["g"] - dm
+        for b in np.arange(9.0, 21.0, 0.25):
+            m = (g >= b) & (g < b + 0.25)
+            if m.sum() > 20 and np.median(snr[m]) < 10:
+                return float(b)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def star_light_weight(ctx, lum, shape) -> np.ndarray:
+    """1 where the light of the stars (model, extended PSF, removed halos) is below 1 noise sigma of the brightness,
+    0 above 3 sigmas."""
+    H, W = shape
+    L = np.zeros((H, W), np.float32)
+    for st, name in (("stars", "stars_model.npy"), ("stars", "stars_model_ext.npy"), ("starless", "halo_removed.npy")):
+        f = ctx.project.stage_dir(st) / name
+        if f.exists():
+            a = np.load(f, mmap_mode="r")
+            if a.shape[1:] == (H, W):
+                L += np.tensordot(lum, np.asarray(a, np.float32), 1)
+    if not L.any():
+        return np.ones((H, W), np.float32)
+    astro = ctx.load("background", "astro.npy", mmap=True)
+    Y = np.tensordot(lum, np.asarray(astro[:, ::2, ::2], np.float32), 1)
+    sY = 1.4826 * float(np.median(np.abs(Y - cv2.GaussianBlur(Y, (0, 0), 2))))
+    L = cv2.GaussianBlur(np.abs(L), (0, 0), 3)
+    w = np.clip((3 * sY - L) / (2 * sY), 0, 1).astype(np.float32)
+    return cv2.GaussianBlur(w, (0, 0), 2)
+
+
 def footprints(ctx, fs, dm, H, W) -> np.ndarray:
     """Weight (0..1) of the star footprints: a disc around every medium / faint star (11.5 < G < 17.5) and every
     filled star core of the starless stage."""
@@ -242,22 +293,19 @@ def footprints(ctx, fs, dm, H, W) -> np.ndarray:
 
 
 def guard_generic(astro, Yl, foot_w, lum, w_cam, guard_sigma):
-    """Star footprints of the calibrated nebula: the brightness keeps full resolution but may not dip below the local
-    level by more than ``guard_sigma`` noise sigmas; the colour is the colour of the surroundings (footprints
-    excluded). Works for any colour of the object: no emission / continuum hypothesis."""
-    def nfill(img):
-        hh_, ww_ = img.shape
-        b_ = cv2.resize(img, (ww_ // 2, hh_ // 2), interpolation=cv2.INTER_AREA)
-        b_ = median_filter(b_, size=9, mode="nearest")
-        return cv2.resize(cv2.GaussianBlur(b_, (0, 0), 1.0), (ww_, hh_), interpolation=cv2.INTER_LINEAR)
+    """Star footprints of the calibrated nebula: the brightness keeps full resolution and is only lifted where it dips
+    more than ``guard_sigma`` noise sigmas below the surroundings (a real hole, not the noise); the colour is the
+    colour of the surroundings, interpolated across footprints of any size. No emission / continuum hypothesis."""
+    from ..core.imgutil import fill_holes
+    hole = foot_w >= 0.5
+    if not hole.any():
+        return astro.astype(np.float32)
     hp = Yl - cv2.GaussianBlur(Yl, (0, 0), 2)
     sY = 1.4826 * float(np.median(np.abs(hp[::7, ::7])))
-    Yg = np.maximum(Yl, nfill(Yl) - guard_sigma * sY)
-    kp = (foot_w < 0.5).astype(np.float32)
-    den = np.maximum(cv2.GaussianBlur(kp, (0, 0), 6), 1e-3)
-    As = np.stack([cv2.GaussianBlur(c * kp, (0, 0), 6) / den for c in astro])     # colour of the surroundings
+    As = np.stack([cv2.GaussianBlur(fill_holes(c, hole), (0, 0), 3) for c in astro])   # surroundings, any hole size
     Ys = np.tensordot(lum, As, 1)
-    Nfp = As + (Yg - Ys)[None] * np.asarray(w_cam, np.float32)[:, None, None]
+    Yg = np.maximum(Yl, Ys - guard_sigma * sY)
+    Nfp = As + (Yg - Ys)[None] * np.asarray(w_cam, np.float32)[:, None, None]   # brightness Yg, colour of As
     return (astro + foot_w[None] * (Nfp - astro)).astype(np.float32)
 
 

@@ -29,6 +29,14 @@ class StarsParams(StageParams):
     faint_model: bool = P(True, label="Model faint stars",
                           help="Render the Gaia stars too faint to be measured from their catalogue magnitude, and "
                                "move them from the nebula layer to the star layer.")
+    extended_psf: bool = P(True, label="Extended PSF (halos, spikes)",
+                           help="The far light of bright stars - halo, diffraction spikes of a Newtonian's spider, "
+                                "reflections - is measured on your own data: the residuals around many bright isolated "
+                                "stars, normalised by their flux, are combined into a 2-D template per colour, which is "
+                                "then subtracted around every bright star. Nothing is assumed about the optics.")
+    extended_radius: int = P(0, label="Extended PSF radius", level=ADVANCED, ge=0, le=600, unit="px",
+                             help="Radius of the extended PSF template. 0 = measured on the data (where the average "
+                                  "halo of the brightest stars falls into the noise).")
 
 
 class Stars(Stage):
@@ -42,7 +50,7 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "1"
+    version = "4"          # 2: empirical extended 2-D PSF; 3: radial halo with the flux; 4: capped amplitude per star
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device
@@ -72,6 +80,19 @@ class Stars(Stage):
             model, fluxes, Fp, info = forced_photometry(img, pm, x, y, g, col, sel, dm, p, W, H, dev, prog)
         ctx.save("stars_model.npy", model)
         np.savez(ctx.out("star_fluxes.npz"), x=x, y=y, g=g, col=col, flux=fluxes, pred=Fp, dx=tdx, dy=tdy)
+        if p.extended_psf:
+            ctx.progress(0.86, "extended PSF (halos, spikes)")
+            ext, einfo = extended_psf(img, model, x, y, g, Fp, fluxes, dm, W, H, p.extended_radius, ctx.log)
+            tpl = einfo.pop("_template", None)
+            for k_, v in einfo.items():
+                ctx.metric(k_, v)
+            if ext is not None:
+                ctx.save("stars_model_ext.npy", ext.astype(np.float32))
+                ctx.save("ext_psf_template.npy", tpl)
+            else:
+                ctx.save("stars_model_ext.npy", np.zeros((3, 1, 1), np.float32))
+        else:
+            ctx.save("stars_model_ext.npy", np.zeros((3, 1, 1), np.float32))
         for k_, v in info.items():
             ctx.metric(k_, v)
         q = star_qc(g, fluxes, Fp)
@@ -335,6 +356,166 @@ def refine_positions(img, mdl, x, y, g, col, fl, pm, W, H, dm, dev):
     msg = (f"{len(sel)} star positions refined, median correction {np.median(np.hypot(dx, dy)):.3f} px "
            f"(per channel {', '.join(f'{m:.3f}' for m in meds)})")
     return out_x, out_y, msg
+
+
+def _shift(a, dx, dy):
+    """Sub-pixel shift of a 2-D array (bilinear), value at (x, y) taken from (x - dx, y - dy)."""
+    Mt = np.float32([[1, 0, dx], [0, 1, dy]])
+    return cv2.warpAffine(a, Mt, (a.shape[1], a.shape[0]), flags=cv2.INTER_LINEAR, borderValue=np.nan)
+
+
+def _star_mask(tree, x, y, gd, i, xc, yc, R, shape, gmax=17.0, k=3.0):
+    msk = np.zeros(shape, np.uint8)
+    for j in tree.query_ball_point([x[i], y[i]], R * 1.42):
+        if j != i and gd[j] < gmax:
+            cv2.circle(msk, (int(round(x[j] - xc + R)), int(round(y[j] - yc + R))),
+                       int(np.clip(3 + k * (gmax - gd[j]), 3, 60)), 1, -1)
+    return msk > 0
+
+
+def _template(img, res_src, x, y, gd, flux, idx, R, tree, gmask, subpixel):
+    """Median of the residual cutouts around the stars ``idx``, background removed, other stars masked, centred
+    to the sub-pixel when ``subpixel``, divided by the flux of the star: (3, 2R+1, 2R+1)."""
+    yy, xx = np.mgrid[-R:R + 1, -R:R + 1]
+    rr = np.hypot(xx, yy)
+    outer = rr > R - 4
+    cuts = np.full((len(idx), 3, 2 * R + 1, 2 * R + 1), np.nan, np.float32)
+    for n, i in enumerate(idx):
+        xc, yc = int(round(x[i])), int(round(y[i]))
+        win = np.s_[:, yc - R:yc + R + 1, xc - R:xc + R + 1]
+        res = res_src(win)
+        msk = _star_mask(tree, x, y, gd, i, xc, yc, R, rr.shape, gmask)
+        for c in range(3):
+            v = res[c].astype(np.float32)
+            v = v - np.median(v[outer & ~msk])
+            v[msk] = np.nan
+            if subpixel:
+                v = _shift(v, xc - x[i], yc - y[i])
+            cuts[n, c] = v / max(float(flux[c][i]), 1e-6)
+    return np.nan_to_num(np.nanmedian(cuts, axis=0)), rr
+
+
+def _add(model, tpl, x, y, scale, idx, subpixel):
+    """Add scale[c, i] x template at the position of every star of ``idx`` (in place)."""
+    H, W = model.shape[1:]
+    R = tpl.shape[1] // 2
+    for i in idx:
+        xc, yc = int(round(x[i])), int(round(y[i]))
+        ya, yb, xa, xb = max(0, yc - R), min(H, yc + R + 1), max(0, xc - R), min(W, xc + R + 1)
+        if ya >= yb or xa >= xb:
+            continue
+        ty, tx = slice(ya - (yc - R), yb - (yc - R)), slice(xa - (xc - R), xb - (xc - R))
+        for c in range(3):
+            t = _shift(tpl[c], x[i] - xc, y[i] - yc) if subpixel else tpl[c]
+            model[c, ya:yb, xa:xb] += float(scale[c, i]) * np.nan_to_num(t[ty, tx])
+
+
+def extended_psf(img, model, x, y, g, Fp, fluxes, dm, W, H, radius, log=print, rmax=400):
+    """Empirical correction of the star model, measured on the data, in two parts.
+
+    1. Intermediate PSF (24 px): the residuals (image - model) around hundreds of unsaturated isolated stars,
+       centred to the sub-pixel and divided by their measured flux, are median-combined. It holds what the core
+       model misses (wider seeing halo, aberrations) and is added around every star where it exceeds the noise.
+    2. Extended PSF (halo, diffraction spikes, reflections): the same on bright isolated stars, out to the radius
+       where their average halo falls into the noise; its amplitude is fitted star by star (saturated cores make the
+       residual not exactly proportional to the flux).
+    Returns (correction model (3, H, W) or None, info).
+    """
+    from scipy.spatial import cKDTree
+    gd = g - dm
+    hp = img[1] - cv2.GaussianBlur(img[1], (0, 0), 2)
+    sig = float(1.4826 * np.median(np.abs(hp[::7, ::7])))
+    tree = cKDTree(np.c_[x, y])
+    corr = np.zeros_like(img)
+    info = {}
+    # ---- 1. intermediate PSF
+    Rm = 24
+    cand = np.where((gd > 9.5) & (gd < 13.0) & (x > Rm + 2) & (x < W - Rm - 2) & (y > Rm + 2) & (y < H - Rm - 2)
+                    & (fluxes[1] > 0))[0]
+    iso = np.array([i for i in cand if all(j == i or gd[j] > gd[i] + 3 for j in tree.query_ball_point([x[i], y[i]], Rm))],
+                   int)[:600]
+    if len(iso) >= 30:
+        tmid, rr = _template(img, lambda w: img[w] - model[w], x, y, gd, fluxes, iso, Rm, tree, 17.0, True)
+        # the core is the photometric fit's job (it would be counted twice): from 4 px out, smoothly
+        tmid *= (np.clip((Rm - 2 - rr) / 4.0, 0, 1) * np.clip((rr - 3.0) / 2.0, 0, 1))[None].astype(np.float32)
+        peak = np.abs(tmid[1]).max()
+        use = np.where(fluxes[1] * peak > 0.3 * sig)[0]
+        _add(corr, tmid, x, y, fluxes, use, True)
+        info["mid_psf_stars"] = int(len(iso))
+        info["mid_psf_applied"] = int(len(use))
+        log(f"intermediate PSF measured on {len(iso)} isolated stars, added around {len(use)} stars")
+    # ---- 2. extended PSF
+    R0 = rmax
+    cand = np.where((gd > 5.0) & (gd < 9.5) & (x > R0) & (x < W - R0) & (y > R0) & (y < H - R0))[0]
+    if len(cand) < 8:
+        R0 = rmax // 2
+        cand = np.where((gd > 5.0) & (gd < 10.0) & (x > R0) & (x < W - R0) & (y > R0) & (y < H - R0))[0]
+    iso = [i for i in cand if all(j == i or gd[j] > gd[i] + 1.5 for j in tree.query_ball_point([x[i], y[i]], R0 * 0.6))]
+    iso = np.array(sorted(iso, key=lambda i: gd[i])[:120], int)
+    if len(iso) < 6:
+        info["extended_psf"] = f"not measured: only {len(iso)} bright isolated stars"
+        return (corr if info.get("mid_psf_stars") else None), info
+    text, rr = _template(img, lambda w: img[w] - model[w] - corr[w], x, y, gd, Fp, iso, R0, tree, 16.0, False)
+    f_ref = float(np.median([Fp[1][i] for i in iso[:5]]))
+    rb = np.arange(0, R0, 4)
+    prof = np.array([np.mean(text[1][(rr >= r) & (rr < r + 4)]) for r in rb]) * f_ref
+    noise_r = sig / np.sqrt(np.maximum(2 * np.pi * (rb + 2) * 4 / 9, 1))
+    above = np.where(np.abs(prof) > 3 * noise_r)[0]
+    Rt = int(radius) if radius > 0 else int(np.clip(rb[above.max()] + 8 if len(above) else 40, 30, R0))
+    r_in = 8.0
+    text = text * (np.clip((Rt - rr) / max(0.25 * Rt, 1), 0, 1) * np.clip((rr - r_in) / 4.0, 0, 1))[None]
+    far = np.clip((rr - 30) / 30, 0, 1).astype(np.float32)
+    text = (text * (1 - far) + np.stack([cv2.GaussianBlur(t, (0, 0), 1.5) for t in text]) * far).astype(np.float32)
+    text = text[:, R0 - Rt:R0 + Rt + 1, R0 - Rt:R0 + Rt + 1]
+    rr_t = rr[R0 - Rt:R0 + Rt + 1, R0 - Rt:R0 + Rt + 1]
+    peak = np.abs(text[1][(rr_t > r_in + 4) & (rr_t < r_in + 12)]).mean()
+    use = np.where(Fp[1] * peak > 0.3 * sig)[0]
+    # the optical halo of a star is proportional to its flux (scattering, diffraction): the template (spikes, ghosts,
+    # radial halo) is subtracted with the predicted flux of each star, so that light in excess of the instrument's
+    # halo (a reflection nebula around the star) stays. Near the core (< 30 px) the radial part depends on
+    # saturation and is left to the per-star measurement of the starless stage; the non-radial part is kept there.
+    rb1 = np.round(rr_t).astype(int)
+    w_rad = np.clip((rr_t - 10.0) / 8.0, 0, 1).astype(np.float32)
+    for c in range(3):
+        v = text[c]
+        order = np.argsort(rb1.ravel(), kind="stable")
+        bounds = np.concatenate([[0], np.cumsum(np.bincount(rb1.ravel()))])
+        vals = v.ravel()[order]
+        med = np.array([np.median(vals[bounds[k]:bounds[k + 1]]) if bounds[k + 1] > bounds[k] else 0.0
+                        for k in range(len(bounds) - 1)])
+        text[c] = v - med[rb1] * (1 - w_rad)
+    # amplitude per star and per channel, measured on ring medians beyond 50 px and capped: never more than the
+    # instrument's halo (Gaia fluxes of very bright stars are unreliable; light in excess is nebula, kept; the
+    # colour of the scattered light may differ from the star's)
+    rings = np.arange(50, min(Rt, 220), 6)
+    ridx = [(rr_t >= r) & (rr_t < r + 6) for r in rings]
+    t_r = np.array([[np.median(text[c][m]) for m in ridx] for c in range(3)])
+    amp = np.ones((3, len(x)))
+    nfit = 0
+    for i in use:
+        if gd[i] > 10.5:
+            continue
+        xc, yc = int(round(x[i])), int(round(y[i]))
+        if xc - Rt < 0 or yc - Rt < 0 or xc + Rt >= W or yc + Rt >= H:
+            continue
+        win = np.s_[yc - Rt:yc + Rt + 1, xc - Rt:xc + Rt + 1]
+        free = ~_star_mask(tree, x, y, gd, i, xc, yc, Rt, rr_t.shape, 16.0)
+        for c in range(3):
+            res = img[c][win] - model[c][win] - corr[c][win]
+            bk = np.median(res[(rr_t > Rt - 6) & free])
+            r_r = np.array([np.median(res[m & free]) - bk if (m & free).sum() > 30 else np.nan for m in ridx])
+            tt = t_r[c] * float(Fp[c][i])
+            ok = np.isfinite(r_r) & (np.abs(tt) > sig / 3)
+            if ok.sum() >= 4:                     # median ratio over the rings: robust to a ring of nebula
+                amp[c, i] = float(np.clip(np.median(r_r[ok] / tt[ok]), 0.0, 1.3))
+        nfit += 1
+    _add(corr, text, x, y, Fp * amp, use, False)
+    info.update({"extended_psf_stars": int(len(iso)), "extended_psf_radius": Rt, "extended_psf_applied": int(len(use)),
+                 "_template": text})
+    log(f"extended PSF measured on {len(iso)} bright isolated stars, radius {Rt} px (spikes, ghosts, halo beyond "
+        f"10 px), subtracted around {len(use)} stars ({nfit} amplitudes measured, median "
+        f"{np.median(amp[1][use]):.2f})")
+    return corr, info
 
 
 def star_qc(g, fl, pr):

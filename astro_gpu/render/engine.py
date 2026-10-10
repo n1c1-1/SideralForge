@@ -79,7 +79,8 @@ class RenderEngine:
         self.H, self.W = next(iter(self._host.values())).shape[-2:]
         self.valid = torch.from_numpy(np.load(self.dir / "valid.npy")).to(self.dev)
         st = np.load(self.dir / "stars.npz")
-        self.X, self.Y, self.G = st["x"], st["y"], st["g"]
+        # magnitudes relative to the depth of the data (0 for a field where S/N = 10 is reached at G = 15.5)
+        self.X, self.Y, self.G = st["x"], st["y"], st["g"] - float(self.prep.get("depth_shift", 0.0))
         self.Fm, self.Fpred, self.Fglow = st["flux"].astype(np.float64), st["pred"].astype(np.float64), st["glow_flux"]
         pr = np.load(self.dir / "profile.npz")
         self.r_all, self.prof_raw = pr["r"], pr["prof"]
