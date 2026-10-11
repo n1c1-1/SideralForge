@@ -172,6 +172,10 @@ class RenderSettings(StageParams):
     # ------------------------------------------------------------------ stars
     stars: bool = S(True, section="Stars", label="Show stars",
                     help="Combine the star layer with the nebula (screen blend). Off = starless image.")
+    real_stars: bool = S(True, section="Stars", label="Saturated stars as photographed",
+                         help="Stars with a saturated core are shown with their real light - halo and diffraction "
+                              "spikes included - instead of being drawn; the measured spikes of the other stars are "
+                              "added. Off = every star drawn, no spikes.")
     g_lim: float = S(15.0, section="Stars", label="Faintest drawn star", ge=8, le=20, step=0.25, unit="G mag",
                      help="Gaia magnitude of the faintest star drawn with a clearly visible peak.",
                      tip="Lower = fewer, more prominent stars; higher = denser star field.")

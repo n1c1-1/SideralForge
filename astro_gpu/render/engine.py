@@ -38,7 +38,7 @@ NEB_KEYS = NEB_LIN_KEYS + ("chroma", "chroma_protect", "hue_target", "hue_shift"
                            "sharp_white", "hl_knee", "hl_max", "hl_detail", "hl_dmin", "hl_r1", "hl_r2", "hl_eps",
                            "hl_shoulder", "hl_keep_chroma", "bright_halo_desat")
 STAR_KEYS = ("stars", "g_glow", "g_lim", "t_lim", "d10", "d7", "star_sat", "sat_min", "core_white", "t9",
-             "white_temp", "tint")
+             "white_temp", "tint", "real_stars")
 
 
 @dataclass
@@ -83,6 +83,11 @@ class RenderEngine:
         st = np.load(self.dir / "stars.npz")
         # magnitudes relative to the depth of the data (0 for a field where S/N = 10 is reached at G = 15.5)
         self.X, self.Y, self.G = st["x"], st["y"], st["g"] - float(self.prep.get("depth_shift", 0.0))
+        # stars shown by their real light (saturated cores, with their halo and spikes) and the measured spikes of the
+        # others: a linear layer added to the drawn stars (preparations of version 18 and later)
+        self.real = st["real"] if "real" in st.files else np.zeros(len(self.X), bool)
+        sr = self.dir / "Sreal.npy"
+        self.Sreal = torch.from_numpy(np.load(sr)) if sr.exists() and "real" in st.files else None
         self.Fm, self.Fpred, self.Fglow = st["flux"].astype(np.float64), st["pred"].astype(np.float64), st["glow_flux"]
         pr = np.load(self.dir / "profile.npz")
         self.r_all, self.prof_raw = pr["r"], pr["prof"]
@@ -353,9 +358,19 @@ class RenderEngine:
         s_g = s.star_sat * np.clip((s.g_lim + 1.0 - Gd) / 3.0, s.sat_min, 1.0)
         Fs = Lum[None] + s_g[None] * (Fs - Lum[None])
         fit = fit_star_curve(self.r_all, self.prof_raw, Gd, Lum, s, self.SC)
+        # the display curve is fitted on every star; the stars shown by their real light are not drawn again
+        use_real = self.Sreal is not None and s.real_stars
+        dr = ~self.real[draw] if use_real else np.ones(int(draw.sum()), bool)
         info["stars"] = {k: v for k, v in fit.items() if k != "prof"}
-        info["stars"]["drawn"] = int(draw.sum())
-        st_lin = draw_stars(self.X[draw], self.Y[draw], Gd, Fs, fit["prof"], self.r_all, self.H, self.W, self.dev)
+        info["stars"]["drawn"] = int(dr.sum())
+        st_lin = draw_stars(self.X[draw][dr], self.Y[draw][dr], Gd[dr], Fs[:, dr], fit["prof"], self.r_all, self.H,
+                            self.W, self.dev)
+        if use_real:
+            sr = torch.tensordot(self.M_eff(s), self.Sreal.to(self.dev).float(), 1)
+            lr = ops.luminance(sr)[None]
+            st_lin += (lr + s.star_sat * (sr - lr)).clamp(min=0)
+            info["stars"]["real_light"] = int((~dr).sum())
+            del sr, lr
         Ys_ = ops.luminance(st_lin)
         Ls = torch.asinh(fit["b"] * Ys_.clamp(min=0) / fit["w"]) / np.arcsinh(fit["b"])
         st_d = ops.color_preserving_stretch_ok(st_lin, Ls.clamp(0, 1))

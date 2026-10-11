@@ -71,7 +71,7 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "16"         # 15: full-resolution base, Wiener base by default; 16: continuum smoothed where star light dominates
+    version = "18"         # 17: continuum smoothed only where safe; 18: saturated stars by their real light, measured spikes
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -138,14 +138,18 @@ class RenderPrep(Stage):
             if p.star_guard else base
         # where the light of the stars dominates the signal (dense fields), the fine structure of the continuum
         # (star-coloured light) is star residual, not nebula: the continuum is smoothed there at cont_smooth, as the
-        # first version of this stage did everywhere. Where the nebula dominates (a reflection nebula, a galaxy)
-        # the continuum is the signal and is kept at full resolution
+        # first version of this stage did everywhere - but only where that is safe (see continuum_smoothing_allowed):
+        # a structured continuum (reflection nebula, galaxy, dust) is the signal and is kept at full resolution
         if p.cont_smooth > 0:
             EC_N = np.tensordot(np.linalg.pinv(Am), N, 1)
             Cs = cv2.GaussianBlur(EC_N[1].astype(np.float32), (0, 0), p.cont_smooth)
-            N = N - Am[:, 1][:, None, None] * ((EC_N[1] - Cs) * (1 - wstar))[None]
-            ctx.metric("continuum_smoothed_pct", round(100 * float((wstar < 0.5).mean()), 1))
-            del EC_N, Cs
+            sm = (1 - wstar) * continuum_smoothing_allowed(EC_N[1].astype(np.float32), wstar)
+            N = N - Am[:, 1][:, None, None] * ((EC_N[1] - Cs) * sm)[None]
+            ctx.metric("continuum_smoothed_pct", round(100 * float((sm > 0.5).mean()), 1))
+            del EC_N, Cs, sm
+        # saturated stars: shown by their real light; the nebula under them interpolated where that is safe
+        ctx.progress(0.42, "real light of the saturated stars")
+        N, fp_all, fp_fill, Sreal = saturated_star_light(ctx, fs, N, flat, lum, ctx.log)
         ctx.save("N.npy", N.astype(np.float32))
         preview = N
         del Yl, base
@@ -155,7 +159,7 @@ class RenderPrep(Stage):
         resid = astro - np.tensordot(Am, EC, 1)
         del EC
         R = np.stack([cv2.GaussianBlur(c, (0, 0), p.resid_smooth) for c in resid]) if p.resid_smooth > 0 else resid
-        ctx.save("R.npy", (R * (1 - foot_w)[None]).astype(np.float32))
+        ctx.save("R.npy", (R * ((1 - foot_w) * (1 - fp_fill))[None]).astype(np.float32))
         del resid, R
         ctx.metric("emission_signature", np.round(e_, 3).tolist())
         ctx.metric("continuum_colour", np.round(k_, 3).tolist())
@@ -169,7 +173,7 @@ class RenderPrep(Stage):
             Eg_ = cv2.GaussianBlur(astro[0] - 0.87 * astro[1], (0, 0), 8)
             sky_ = good & (Eg_ < np.percentile(Eg_[good], 50))
             s_o = float(1.4826 * np.median(np.abs(O[sky_] - np.median(O[sky_]))))
-            ctx.save("O.npy", (O * (1 - foot_w)).astype(np.float32))
+            ctx.save("O.npy", (O * (1 - foot_w) * (1 - fp_fill)).astype(np.float32))
             ctx.metric("oiii_noise", round(s_o, 3))
             ctx.metric("oiii_peak_snr", round(float(np.percentile(O[good], 99.9)) / max(s_o, 1e-9), 1))
             ctx.log(f"OIII layer: peak {np.percentile(O[good], 99.9) / max(s_o, 1e-9):.0f} sigma above the sky "
@@ -187,7 +191,7 @@ class RenderPrep(Stage):
                         for c in range(3)])
         del b0
         # the fine layers are not reliable where the light of the stars dominates (residual spikes, halo streaks)
-        ctx.save("dY.npy", (np.tensordot(lum, det, 1) * wstar).astype(np.float16))
+        ctx.save("dY.npy", (np.tensordot(lum, det, 1) * wstar * (1 - fp_fill)).astype(np.float16))
         del det
         # sharpening increment: the sharpening network minus the plain one (brightness), off on star light
         sp = ctx.project.stage_dir("starless") / "n2n_sharp_final.npy"
@@ -198,7 +202,8 @@ class RenderPrep(Stage):
         del n2
         cf = ctx.project.stage_dir("starless") / "chroma_fine.npy"
         if cf.exists():                           # star residuals are common to both halves: off on star light too
-            ctx.save("chroma_fine.npy", (np.load(cf).astype(np.float32) / flat * wstar[None]).astype(np.float16))
+            ctx.save("chroma_fine.npy", (np.load(cf).astype(np.float32) / flat * (wstar * (1 - fp_fill))[None])
+                     .astype(np.float16))
         np.save(ctx.out("valid.npy"), good)
         ctx.progress(0.75, "star tables")
         mm_ = (fs["g"] - dm > 11) & (fs["g"] - dm < 14)
@@ -223,8 +228,17 @@ class RenderPrep(Stage):
         m13 = (gb > 11) & (gb < 13)
         for c in range(3):
             pr[c] /= np.median(fs["pred"][c][m13] / np.maximum(fs["flux"][c][m13], 1e-9))
+        # stars inside the footprint of a saturated star are shown by its real light, not drawn again; the measured
+        # diffraction spikes of the other stars join the star layer
+        real = (fp_all[np.clip(np.round(Y).astype(int), 0, H - 1), np.clip(np.round(X).astype(int), 0, W - 1)] > 0.5)             & (X >= 0) & (X < W) & (Y >= 0) & (Y < H)
+        spf = ctx.project.stage_dir("starless") / "spikes.npy"
+        if spf.exists():
+            Sreal += np.load(spf).astype(np.float32) / flat * (1 - fp_all)[None]
+        ctx.save("Sreal.npy", Sreal.astype(np.float16))
+        ctx.metric("stars_real_light", int(real.sum()))
+        del Sreal
         np.savez(ctx.out("stars.npz"), x=X, y=Y, g=G, flux=F.astype(np.float32), pred=pr.astype(np.float32),
-                 glow_flux=Fpred.astype(np.float32), n_measured=nb)
+                 glow_flux=Fpred.astype(np.float32), n_measured=nb, real=real)
         # depth of the data: magnitude where the measured stars reach S/N = 10. The star settings of the rendering
         # (faintest drawn star, sizes, brightness) refer to a field where this is G = 15.5; deeper or finer-sampled
         # data shift them, so that "the faintest drawn star" means the same thing for every instrument
@@ -302,6 +316,124 @@ def star_depth(ctx, fs, dm) -> float | None:
     except Exception:  # noqa: BLE001
         return None
     return None
+
+
+def _ring_median(img, xc, yc, r_):
+    H, W = img.shape
+    a = np.linspace(0, 2 * np.pi, max(32, int(2 * np.pi * r_)), endpoint=False)
+    px = np.round(xc + r_ * np.cos(a)).astype(int)
+    py = np.round(yc + r_ * np.sin(a)).astype(int)
+    m = (px >= 0) & (px < W) & (py >= 0) & (py < H)
+    return float(np.median(img[py[m], px[m]])) if m.sum() >= 16 else np.nan
+
+
+def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400):
+    """Stars whose core is saturated cannot be measured nor modelled: when the instrument has diffraction spikes,
+    which a drawn star cannot reproduce, they are shown by their real light (without spikes the drawn stars are
+    kept: the real light of a saturated star is then only its blooming and halo).
+
+    Footprint of such a star: out to where its light (image minus starless) falls below twice the noise. Under the
+    footprint the nebula is
+    interpolated from its edge (membrane fill: the level follows the edge) and everything else - core, halo,
+    diffraction spikes - is star light, image minus nebula, as a manual star separation does. If the star sits in a
+    structured nebula (band-pass structure around the footprint well above the flattest areas of the image), an
+    interpolation would erase it: there the starless image is kept and the star light is image minus starless.
+    Faint pixels of the star light fade out smoothly so that the noise of the image is not carried into the star
+    layer. Returns the nebula base with the footprints interpolated, the footprint weight of every saturated star,
+    the weight of the interpolated ones and the star light (3, H, W, camera space, divided by the flat).
+    """
+    from ..core.imgutil import membrane_fill
+    H, W = flat.shape[1:]
+    if not ctx.metric_of("starless", "spike_directions", []):
+        # without diffraction spikes the drawing of a star loses nothing of it: every star is drawn
+        log("no diffraction spikes in this instrument: every star is drawn from the tables")
+        return N, np.zeros((H, W), np.float32), np.zeros((H, W), np.float32), np.zeros_like(N)
+    full = ctx.load("optics", "lat_full.npy", mmap=True)
+    sl = ctx.load("starless", "sl_final.npy", mmap=True)
+    H, W = flat.shape[1:]
+    xs, ys = fs["x"], fs["y"]
+    ok = (xs > 2) & (xs < W - 3) & (ys > 2) & (ys < H - 3)
+    xi, yi = np.round(xs[ok]).astype(int), np.round(ys[ok]).astype(int)
+    sat = np.zeros(ok.sum(), bool)
+    for c in range(3):
+        a = np.asarray(full[c])
+        lvl = np.percentile(a[::4, ::4], 99.999)
+        v = np.max([a[yi + dy, xi + dx] for dy in (-1, 0, 1) for dx in (-1, 0, 1)], 0)
+        sat |= v > 0.7 * lvl
+    idx_sat = np.where(ok)[0][sat]
+    fp_all = np.zeros((H, W), np.float32)
+    fp_fill = np.zeros((H, W), np.float32)
+    if not len(idx_sat):
+        return N, fp_all, fp_fill, np.zeros_like(N)
+    slf = np.stack([np.asarray(sl[c], np.float32) / flat[c] for c in range(3)])
+    S = np.stack([np.asarray(full[c], np.float32) / flat[c] for c in range(3)]) - slf
+    S = np.stack([cv2.GaussianBlur(S[c], (0, 0), 1.0) for c in range(3)])
+    Ys = np.tensordot(lum, S, 1).astype(np.float32)
+    YL = np.tensordot(lum, N, 1).astype(np.float32)
+    hp = Ys[::3, ::3] - cv2.GaussianBlur(Ys[::3, ::3], (0, 0), 2)
+    sig = 1.4826 * float(np.median(np.abs(hp - np.median(hp))))
+    # structure of the nebula (band-pass 4-16 px) and its level in the flattest areas
+    YN = YL[::2, ::2]
+    bp2 = (cv2.GaussianBlur(YN, (0, 0), 1) - cv2.GaussianBlur(YN, (0, 0), 4)) ** 2
+    floor = float(np.percentile(cv2.GaussianBlur(bp2, (0, 0), 24), 5))
+    N2 = N.copy()
+    n_fill = 0
+    for i in idx_sat[np.argsort(fs["g"][idx_sat])]:
+        R = 4
+        for r_ in range(4, rmax, 2):
+            if not _ring_median(Ys, xs[i], ys[i], r_) >= 2 * sig:
+                break
+            R = r_
+        R = int(R * 1.15) + 4
+        x0_, x1_ = max(0, int(xs[i]) - R - 40), min(W, int(xs[i]) + R + 41)
+        y0_, y1_ = max(0, int(ys[i]) - R - 40), min(H, int(ys[i]) + R + 41)
+        yy, xx = np.mgrid[y0_:y1_, x0_:x1_]
+        rr = np.hypot(xx - xs[i], yy - ys[i])
+        w_ = np.clip((R - rr) / (0.15 * R), 0, 1).astype(np.float32)
+        fp_all[y0_:y1_, x0_:x1_] = np.maximum(fp_all[y0_:y1_, x0_:x1_], w_)
+        ann = (rr >= R) & (rr < R + 40)
+        q = np.sqrt(float(np.median(bp2[np.minimum(yy[ann] // 2, bp2.shape[0] - 1),
+                                        np.minimum(xx[ann] // 2, bp2.shape[1] - 1)])) / max(floor, 1e-12))
+        if q < 2.5:
+            hole = rr < R
+            for c in range(3):
+                win = N2[c, y0_:y1_, x0_:x1_]
+                N2[c, y0_:y1_, x0_:x1_] = win * (1 - w_) + membrane_fill(win, hole) * w_
+            fp_fill[y0_:y1_, x0_:x1_] = np.maximum(fp_fill[y0_:y1_, x0_:x1_], w_)
+            n_fill += 1
+    del Ys, YL
+    # star light: image minus nebula (the interpolated nebula where it was interpolated, the starless elsewhere)
+    Sr = S + np.stack([cv2.GaussianBlur(N[c] - N2[c], (0, 0), 1.0) for c in range(3)])
+    del S, slf
+    fade = np.clip((np.tensordot(lum, Sr, 1) / max(sig, 1e-9) - 1.5) / 2.0, 0, 1)
+    Sr *= (fade * fp_all)[None]
+    log(f"saturated stars: {len(idx_sat)} shown by their own light ({100 * float((fp_all > 0.5).mean()):.2f} % of the "
+        f"field); nebula interpolated under {n_fill} of them, kept under the others (structured nebula around)")
+    return N2, fp_all, fp_fill, Sr
+
+
+def continuum_smoothing_allowed(C, wstar) -> np.ndarray:
+    """Where smoothing the continuum C near the stars is safe (1) or would erase real structure (0).
+
+    Safe where (a) the field is too dense to see the continuum between the stars - star light above the noise on
+    most pixels: smoothing hides their residual mottling - or (b) between the stars the continuum is flat at the
+    scale of the star residuals (4-16 px): its local band-pass power over the star-free pixels is compared with the
+    flattest areas of the image. A continuum with structure of its own between the stars (a reflection nebula, a
+    galaxy, dust) is the signal: smoothed discs around its stars would show as bubbles."""
+    H, W = C.shape
+    c2 = C[::2, ::2]
+    free = (wstar[::2, ::2] > 0.9).astype(np.float32)
+    bp = cv2.GaussianBlur(c2, (0, 0), 2) - cv2.GaussianBlur(c2, (0, 0), 8)
+    den = cv2.GaussianBlur(free, (0, 0), 24)
+    ok = den > 0.15
+    if ok.mean() < 0.02:
+        return np.ones((H, W), np.float32)
+    pf = cv2.GaussianBlur(bp * bp * free, (0, 0), 24) / np.maximum(den, 1e-3)
+    q = np.sqrt(pf / max(float(np.percentile(pf[ok], 5)), 1e-12))
+    flat = np.where(ok, np.clip(2.5 - q, 0, 1), 1.0)
+    dense = np.clip((0.4 - den) / 0.25, 0, 1)
+    allow = cv2.GaussianBlur(np.maximum(flat, dense).astype(np.float32), (0, 0), 8)
+    return cv2.resize(allow, (W, H), interpolation=cv2.INTER_LINEAR)
 
 
 def star_light_weight(ctx, lum, shape) -> np.ndarray:

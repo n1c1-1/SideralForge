@@ -41,6 +41,34 @@ def robust_lstsq(T: np.ndarray, r: np.ndarray, iters: int = 5, k: float = 3.0):
     return q, float(s), ok
 
 
+def membrane_fill(img: np.ndarray, hole: np.ndarray, iters=(2000, 1500, 1000, 800)) -> np.ndarray:
+    """Smooth interpolation of img over ``hole`` matching its edge exactly (Laplace equation, solved coarse to fine).
+
+    Unlike a multi-scale average, the level inside a large hole follows its edge: no darker or brighter disc."""
+    if not hole.any():
+        return img.astype(np.float32)
+    levels = [(img.astype(np.float32), hole.copy())]
+    while min(levels[-1][0].shape) > 16 and levels[-1][1].any():
+        a, h = levels[-1]
+        H2, W2 = a.shape[0] // 2, a.shape[1] // 2
+        v = (~h).astype(np.float32)
+        num = cv2.resize((a * v)[:H2 * 2, :W2 * 2], (W2, H2), interpolation=cv2.INTER_AREA)
+        den = cv2.resize(v[:H2 * 2, :W2 * 2], (W2, H2), interpolation=cv2.INTER_AREA)
+        levels.append((num / np.maximum(den, 1e-6), den < 0.5))
+    k = np.array([[0, .25, 0], [.25, 0, .25], [0, .25, 0]], np.float32)
+    u = None
+    for lev, (a, h) in enumerate(reversed(levels)):
+        cur = a.copy()
+        if u is None:
+            cur[h] = float(np.mean(a[~h])) if (~h).any() else 0.0
+        else:
+            cur[h] = cv2.resize(u, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_LINEAR)[h]
+        for _ in range(iters[min(lev, len(iters) - 1)] if h.any() else 0):
+            cur[h] = cv2.filter2D(cur, -1, k, borderType=cv2.BORDER_REPLICATE)[h]
+        u = cur
+    return u
+
+
 def fill_holes(img: np.ndarray, mask: np.ndarray, scales=(2, 4, 8, 16, 32, 64, 128)) -> np.ndarray:
     """Fill masked pixels by multi-scale normalised convolution of the surrounding valid pixels.
 
