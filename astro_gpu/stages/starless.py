@@ -53,7 +53,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "7"          # 4: dips on the measurements; 7: extended star template subtracted too
+    version = "4"          # dip repair only on measured dips
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -61,12 +61,6 @@ class Starless(Stage):
         x, y, g, fl = fs["x"], fs["y"], fs["g"] - dm, fs["flux"]          # g shifted: thresholds stay meaningful
         M = ctx.load("color", "M.npy")
         model = ctx.load("stars", "stars_model.npy").astype(np.float32) + ctx.load("stars", "stars_model_faint.npy")
-        ext = ctx.project.stage_dir("stars") / "stars_model_ext.npy"
-        if ext.exists():
-            e_ = np.load(ext)
-            if e_.shape == model.shape:
-                model += e_                       # halos, spikes, reflections measured on the data (extended template)
-            del e_
 
         ctx.progress(0.02, "subtracting the star model")
         A = ctx.load("optics", "lat_A.npy").astype(np.float32) - model
