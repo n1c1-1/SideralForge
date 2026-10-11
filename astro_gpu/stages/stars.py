@@ -47,7 +47,7 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "3"          # 2: local star shape, red flux bounded by 4x the prediction; 3: faint stars bounded by the data
+    version = "5"          # 3: faint stars bounded by the data; 5: = 3 (4, every star bounded, doubled the dark specks of Heart)
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device

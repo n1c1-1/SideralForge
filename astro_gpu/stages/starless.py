@@ -53,7 +53,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "12"         # 11: bright-star floor kept on smooth backgrounds; 12: spike model bounded by the strip
+    version = "18"         # = 12 (13-17: spike model variants, no visible gain)
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
