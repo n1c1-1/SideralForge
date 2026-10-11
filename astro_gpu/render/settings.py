@@ -197,12 +197,11 @@ class RenderSettings(StageParams):
 
 PRESETS: dict[str, dict] = {
     "Natural": {},
-    # The two deliverables of every project. Faithful = the rendering of the reference image of 2026-10-10 (all
-    # defaults) with measured colours only: no H-alpha boost, no hue shift, no display sharpening. Artistic = the same
-    # base with a stronger stretch, local contrast and colour, judged by eye. Neither desaturates the halos (that
-    # produced grey discs around bright stars).
-    "Faithful": {"chroma": 1.0, "ha_boost": 0.0, "hue_shift": 0.0, "neb_sharp": 0.0, "lc_fine": 1.0, "lc_medium": 1.0,
-                 "lc_large": 1.0, "colour_detail": 1.0, "resid_boost": 0.0},
+    # The two deliverables of every project. Faithful = the rendering of the reference image of 2026-10-10 10:34 (the
+    # defaults: the user's preferred rendering; measured colours without the H-alpha hue convention came out magenta
+    # and were not what the data look like to the eye). Artistic = the same base with a stronger stretch, local
+    # contrast and colour, judged by eye. Neither desaturates the halos (that produced grey discs around bright stars).
+    "Faithful": {},
     "Artistic": {"sharpen": 1.0, "sharpen_lo_pct": 60.0, "fine_k": 1.3, "fine_lo_pct": 60.0, "colour_detail": 1.0,
                  "resid_boost": 0.3, "chroma": 1.1, "neb_sharp": 1.2, "lc_fine": 1.15, "lc_medium": 1.4,
                  "lc_large": 1.5, "sky_level": 34.0, "dark_level": 11.0, "white_mult": 0.8, "star_sat": 0.8,
