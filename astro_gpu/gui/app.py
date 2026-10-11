@@ -283,6 +283,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(proc, "Processing")
         self.render_tab = RenderTab()
         self.tabs.addTab(self.render_tab, "Final adjustment")
+        from .results_tab import ResultsTab
+        self.results_tab = ResultsTab()
+        self.tabs.addTab(self.results_tab, "Results")
         self.tabs.currentChanged.connect(self.on_tab)
         self.setCentralWidget(self.tabs)
 
@@ -351,6 +354,7 @@ class MainWindow(QMainWindow):
         self.refresh_status()
         self.stage_list.setCurrentRow(0)
         self.render_tab.set_project(p, self.advanced)
+        self.results_tab.set_project(p)
 
     def show_guide(self):
         from PySide6.QtWidgets import QDialog, QTextBrowser
@@ -374,16 +378,16 @@ class MainWindow(QMainWindow):
         """Recently used projects, whether they were opened here or run from the command line."""
         from PySide6.QtWidgets import QMenu
 
-        from ..core.project import recent_projects
+        from ..core.project import recent_projects_described
         m = QMenu(self)
-        items = recent_projects()
-        known = {Path(r).resolve() for _, r in items}
+        items = recent_projects_described()
+        known = {Path(r).resolve() for _, r, _ in items}
         for r in self.settings.value("recent", [], type=list):          # list kept by older versions
             if Path(r, "project.json").exists() and Path(r).resolve() not in known:
-                items.append((Path(r).name, r))
-        for name, r in items[:20]:
-            a = m.addAction(f"{name}    {r}")
-            a.setToolTip(r)
+                items.append((Path(r).name, r, ""))
+        for name, r, desc in items[:20]:
+            a = m.addAction(f"{name}  -  {desc.splitlines()[0][:70]}    ({r})" if desc else f"{name}    {r}")
+            a.setToolTip(desc or r)
             a.triggered.connect(lambda _=False, rr=r: self.load_project(rr))
         if not items:
             m.addAction("(no project yet)").setEnabled(False)
@@ -445,6 +449,8 @@ class MainWindow(QMainWindow):
     def on_tab(self, i):
         if i == 1 and self.project and self.render_tab.worker is None:
             self.render_tab.set_project(self.project, self.advanced)
+        if i == 2 and self.project:
+            self.results_tab.refresh()
 
     # ------------------------------------------------------------------ running
     def start_run(self, until=None, force=None):

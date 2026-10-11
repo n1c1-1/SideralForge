@@ -49,6 +49,7 @@ class ProjectConfig:
     target: Target = field(default_factory=Target)
     scratch_dir: str = ""
     reference_image: str = ""        # optional: a previous processing of the same data, for comparison
+    description: str = ""            # free text: instrument, frames, what was done, what to look at
     params: dict[str, dict[str, Any]] = field(default_factory=dict)
     render: dict[str, Any] = field(default_factory=dict)
     devices: dict[str, str] = field(default_factory=dict)
@@ -82,7 +83,7 @@ class Project:
         d = json.loads(p.read_text(encoding="utf-8"))
         return ProjectConfig(name=d["name"], inputs=Inputs(**d.get("inputs", {})), target=Target(**d.get("target", {})),
                              scratch_dir=d.get("scratch_dir", ""), reference_image=d.get("reference_image", ""),
-                             params=d.get("params", {}), render=d.get("render", {}), devices=d.get("devices", {}),
+                             description=d.get("description", ""), params=d.get("params", {}), render=d.get("render", {}), devices=d.get("devices", {}),
                              created=d.get("created", ""), format=d.get("format", FORMAT))
 
     def save(self) -> None:
@@ -133,7 +134,8 @@ def remember(project: Project) -> None:
     except (OSError, ValueError):
         reg = {}
     key = str(project.root.resolve())
-    reg[key] = {"name": project.config.name, "used": datetime.now().isoformat(timespec="seconds")}
+    reg[key] = {"name": project.config.name, "used": datetime.now().isoformat(timespec="seconds"),
+                "description": project.config.description}
     reg = dict(sorted(reg.items(), key=lambda kv: kv[1]["used"], reverse=True)[:30])
     try:
         REGISTRY.parent.mkdir(parents=True, exist_ok=True)
@@ -146,12 +148,18 @@ def remember(project: Project) -> None:
 
 def recent_projects() -> list[tuple[str, str]]:
     """(name, folder) of the recently used projects that still exist, most recent first."""
+    return [(n, f) for n, f, _ in recent_projects_described()]
+
+
+def recent_projects_described() -> list[tuple[str, str, str]]:
+    """(name, folder, description) of the recently used projects that still exist, most recent first."""
     try:
         reg = json.loads(REGISTRY.read_text(encoding="utf-8")) if REGISTRY.exists() else {}
     except (OSError, ValueError):
         return []
     items = sorted(reg.items(), key=lambda kv: kv[1].get("used", ""), reverse=True)
-    return [(v.get("name", Path(k).name), k) for k, v in items if (Path(k) / "project.json").exists()]
+    return [(v.get("name", Path(k).name), k, v.get("description", "")) for k, v in items
+            if (Path(k) / "project.json").exists()]
 
 
 def list_frames(folders: list[str]) -> list[Path]:
