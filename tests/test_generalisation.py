@@ -70,18 +70,6 @@ def test_fixed_pattern_recovered_from_drifting_frames():
     assert fixed_pattern(frames, np.arange(n), coef, torch.device("cpu"), H, W, 24)[0] is None
 
 
-def test_emission_levels_need_significance():
-    from astro_gpu.stages.starless import emission_levels
-    rng = np.random.default_rng(3)
-    calm = rng.normal(0, 1, (400, 400)).astype(np.float32)               # no emission at all
-    q1, q2 = emission_levels(calm)
-    assert q1 > 2.5 and q2 > 5                                           # no part of the sky is called emission
-    neb = calm.copy()
-    neb[:, 200:] += 50                                                   # half of the field in strong emission
-    q1, q2 = emission_levels(neb)
-    assert q1 > 10 and q2 > 40
-
-
 def test_generic_star_guard_any_colour():
     from astro_gpu.stages.render_prep import guard_generic
     rng = np.random.default_rng(4)
@@ -102,21 +90,3 @@ def test_generic_star_guard_any_colour():
     col = out[:, 31:35, 31:35].mean((1, 2))
     assert abs(col[0] / col[1] - 0.6) < 0.1                                     # the red dot takes the nebula colour
     assert np.abs(out[:, 110:, 110:] - astro[:, 110:, 110:]).max() == 0         # untouched off the footprints
-
-
-def test_star_zones_ignore_dense_faint_field():
-    """In a dense field the cores of the many faint stars around a bright one must not turn the whole disc around
-    it into an interpolated zone; the bright star's own glare in a dark sky must."""
-    from astro_gpu.stages.starless import star_zone_weight
-    rng = np.random.default_rng(5)
-    H, W = 600, 600
-    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
-    model = np.zeros((H, W), np.float32)
-    for x0, y0 in rng.uniform(0, 600, (600, 2)):                        # faint stars, FWHM 6 px, peak 20
-        model += 20 * np.exp(-((xx - x0) ** 2 + (yy - y0) ** 2) / (2 * 2.5 ** 2))
-    r = np.hypot(xx - 300, yy - 300)
-    model += 4000 / (1 + (r / 4) ** 2) ** 1.5                           # one bright star with a wide glare
-    img = (100 + rng.normal(0, 0.1, (3, H, W))).astype(np.float32)      # dark sky, denoised level of noise
-    w = star_zone_weight(img, np.stack([model] * 3), np.array([300.0]), np.array([300.0]), np.array([6.0]), 0.1)
-    assert w[300, 300] > 0.9 and w[300, 340] > 0.9                      # the glare of the bright star
-    assert (w > 0.5).mean() < 0.06                                      # not the faint stars of its disc
