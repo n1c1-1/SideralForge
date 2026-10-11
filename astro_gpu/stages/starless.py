@@ -14,10 +14,11 @@ from .denoise import apply_net, load_model, norm_params
 
 
 class StarlessParams(StageParams):
-    mask_k: float = P(40.0, label="Unreliable core threshold", level=ADVANCED, ge=5, le=500, unit="sigma",
-                      help="Star cores where the model exceeds this many noise sigmas (and saturated cores) are "
-                           "treated as missing data and filled from their surroundings instead of trusting the "
-                           "subtraction of a very bright, imperfectly modelled star.")
+    oversub_k: float = P(4.0, label="Over-subtraction threshold", level=ADVANCED, ge=2, le=20, step=0.5, unit="sigma",
+                         help="Pixels where the subtraction of the star model leaves the image this many noise sigmas "
+                              "below the local sky (an over-subtracted star: nebula cannot be negative) are treated "
+                              "as missing data and filled from their surroundings, like saturated cores. Only the "
+                              "measured evidence decides: the data next to a bright star are kept.")
     wiener_k: float = P(1.0, label="Denoising strength", ge=0.2, le=4.0, step=0.1,
                         help="Strength of the multi-scale Wiener denoiser: at every scale, a structure is kept in "
                              "proportion to how consistently it appears in the two independent half-stacks.",
@@ -53,7 +54,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "1"
+    version = "2"          # 2: missing data = saturation and measured over-subtraction only
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -66,7 +67,7 @@ class Starless(Stage):
         A = ctx.load("optics", "lat_A.npy").astype(np.float32) - model
         B = ctx.load("optics", "lat_B.npy").astype(np.float32) - model
         full = ctx.load("optics", "lat_full.npy", mmap=True)
-        mask = core_mask(full, model, A, B, p.mask_k)
+        mask = core_mask(full, A, B, p.oversub_k, model)
         ctx.metric("filled_pct", round(100 * float(mask.mean()), 2))
         rng = np.random.default_rng(1)
         for X in (A, B):
@@ -109,21 +110,34 @@ class Starless(Stage):
         ctx.preview("starless", asinh_preview(sl_final, M))
 
 
-def core_mask(full, model, A, B, K):
-    """Unreliable pixels: saturation, very bright model cores, significant residuals on star footprints."""
-    raw = 0.5 * (A + B)
-    mask = np.zeros(model.shape[1:], bool)
+def core_mask(full, A, B, K, model):
+    """Missing data, decided by the measurements only: saturated pixels (plus the pixels around them, where the fit of
+    the star core cannot be trusted either) and pixels where the subtraction of the star model leaves the image
+    significantly below the local sky floor (a nebula cannot be negative: an over-subtracted star). The brightness of
+    the model itself is no reason to discard the data next to a bright star: the nebula is brightest there."""
+    raw = 0.5 * (A + B)                                       # star model already subtracted
+    sat = np.zeros(raw.shape[1:], bool)
+    over = np.zeros(raw.shape[1:], bool)
     for c in range(3):
         fc = np.asarray(full[c], np.float32)
         hp = fc - cv2.GaussianBlur(fc, (0, 0), 2)
         sig = 1.4826 * np.median(np.abs(hp[::7, ::7])) * 1.3
         lvl = np.percentile(fc, 99.999)
-        rs = cv2.GaussianBlur(raw[c], (0, 0), 1.0)
-        keep = (model[c] < 1.0 * sig).astype(np.float32)
-        bgl = cv2.GaussianBlur(rs * keep, (0, 0), 6) / np.maximum(cv2.GaussianBlur(keep, (0, 0), 6), 1e-3)
-        z = (rs - bgl) / (sig * 0.55)
-        mask |= (fc > 0.7 * lvl) | (model[c] > K * sig) | ((np.abs(z) > 4) & (model[c] > 2 * sig))
-    return cv2.dilate(mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))) > 0
+        sat |= fc > 0.7 * lvl
+        rs = cv2.GaussianBlur(raw[c], (0, 0), 1.0)              # noise of the blurred image is about 0.55 sigma
+        floor_c = _local_floor(rs)
+        over |= ((rs - floor_c) < -K * 0.55 * sig) & (model[c] > sig)
+    sat = cv2.dilate(sat.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))) > 0
+    over = cv2.dilate(over.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))) > 0
+    return sat | over
+
+
+def _local_floor(m):
+    """Large-scale local minimum of an image (erosion over ~330 px at 1/8 scale), smoothed, at full resolution."""
+    H, W = m.shape
+    d = cv2.GaussianBlur(cv2.resize(m, (max(W // 8, 1), max(H // 8, 1)), interpolation=cv2.INTER_AREA), (0, 0), 2)
+    d = cv2.GaussianBlur(cv2.erode(d, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 41))), (0, 0), 10)
+    return cv2.resize(d, (W, H), interpolation=cv2.INTER_LINEAR)
 
 
 def clean(sl, x, y, g, fl, smooth, halos, lift_gmax, log=print):
