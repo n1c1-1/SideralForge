@@ -31,6 +31,10 @@ class RenderPrepParams(StageParams):
     fine_sigma: float = P(3.0, label="Fine detail scale", level=ADVANCED, ge=0.5, le=10, unit="px",
                           help="Scales below this are taken from the Noise2Noise image for the fine-detail layer "
                                "(its amount is set in the final adjustment tab).")
+    cont_smooth: float = P(24.0, label="Continuum smoothing under star light", level=ADVANCED, ge=0, le=60, unit="px",
+                           help="Where the light of the stars dominates the signal, the fine structure of the "
+                                "star-coloured (continuum) component is star residual: it is smoothed at this scale. "
+                                "Where the nebula dominates, the continuum is kept at full resolution.")
     resid_smooth: float = P(6.0, label="Residual colour smoothing", level=ADVANCED, ge=0, le=50, unit="px",
                             help="Smoothing of the colour component that is neither H-alpha nor starlight, used by the "
                                  "'Blue / reflection tones' slider.")
@@ -67,7 +71,7 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "15"         # rebuild step 6: full-resolution base, Wiener base by default (n2n_base 0), layers live
+    version = "16"         # 15: full-resolution base, Wiener base by default; 16: continuum smoothed where star light dominates
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -132,6 +136,16 @@ class RenderPrep(Stage):
         del d
         N = guard_generic(base, np.tensordot(lum, base, 1).astype(np.float32), foot_w, lum, w_cam, p.guard_sigma) \
             if p.star_guard else base
+        # where the light of the stars dominates the signal (dense fields), the fine structure of the continuum
+        # (star-coloured light) is star residual, not nebula: the continuum is smoothed there at cont_smooth, as the
+        # first version of this stage did everywhere. Where the nebula dominates (a reflection nebula, a galaxy)
+        # the continuum is the signal and is kept at full resolution
+        if p.cont_smooth > 0:
+            EC_N = np.tensordot(np.linalg.pinv(Am), N, 1)
+            Cs = cv2.GaussianBlur(EC_N[1].astype(np.float32), (0, 0), p.cont_smooth)
+            N = N - Am[:, 1][:, None, None] * ((EC_N[1] - Cs) * (1 - wstar))[None]
+            ctx.metric("continuum_smoothed_pct", round(100 * float((wstar < 0.5).mean()), 1))
+            del EC_N, Cs
         ctx.save("N.npy", N.astype(np.float32))
         preview = N
         del Yl, base
