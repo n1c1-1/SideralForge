@@ -69,6 +69,22 @@ def membrane_fill(img: np.ndarray, hole: np.ndarray, iters=(2000, 1500, 1000, 80
     return u
 
 
+def membrane_fill_holes(img: np.ndarray, mask: np.ndarray, pad: int = 6) -> np.ndarray:
+    """membrane_fill over every connected hole of ``mask`` separately (window around the hole, iterations scaled to
+    its size): fast on thousands of small holes, exact edge level on large ones."""
+    out = img.astype(np.float32).copy()
+    n, lab, st, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    H, W = mask.shape
+    for k in range(1, n):
+        x, y, w, h, _ = st[k]
+        x0, y0, x1, y1 = max(0, x - pad), max(0, y - pad), min(W, x + w + pad), min(H, y + h + pad)
+        hole = lab[y0:y1, x0:x1] == k
+        r = max(w, h) / 2.0
+        it = int(np.clip(2 * r * r, 30, 2000))
+        out[y0:y1, x0:x1] = membrane_fill(out[y0:y1, x0:x1], hole, iters=(it, it, it, it))
+    return out
+
+
 def fill_holes(img: np.ndarray, mask: np.ndarray, scales=(2, 4, 8, 16, 32, 64, 128)) -> np.ndarray:
     """Fill masked pixels by multi-scale normalised convolution of the surrounding valid pixels.
 
