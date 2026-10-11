@@ -1,15 +1,16 @@
 """Render preparation: the heavy, rarely changed part of the rendering, computed once.
 
-Produces the calibrated nebula layer (fine detail injected, emission / continuum separated, star footprints
-guarded against artefacts, faint areas smoothed at the scale confirmed by the data), the star tables and the real
-radial profile of the stars. The interactive rendering engine works from these files.
+Produces the layers that the interactive engine mixes live: the calibrated nebula at full resolution with the star
+footprints guarded against artefacts (whatever the colour of the object: emission, reflection, galaxy), the
+fine-detail layer from the Noise2Noise image, the fine colour confirmed by both half-stacks, the optional colour
+components (rest of the colour, OIII) used by the colour sliders; the star tables and the real radial profile of the
+stars.
 """
 from __future__ import annotations
 
 import cv2
 import numpy as np
 import torch
-from scipy.ndimage import median_filter
 
 from ..core.params import ADVANCED, P, StageParams
 from ..core.stage import Context, Stage
@@ -22,49 +23,51 @@ class RenderPrepParams(StageParams):
                               "overlap (edges uncovered because of the drift between frames).")
     edge_frac: float = P(0.995, label="Edge cleanliness", level=ADVANCED, ge=0.9, le=1.0, step=0.001,
                          help="Edges are trimmed until this fraction of every border row/column is well covered.")
-    fine_k: float = P(1.0, label="Fine nebula detail", ge=0.0, le=2.0, step=0.05,
-                      help="Re-injects the finest scales of the Noise2Noise image in the bright emission, where the "
-                           "network keeps filaments that the Wiener filter smooths.",
-                      tip="0 = only the Wiener result (smoothest), 1 = full detail.")
+    min_exposure: float = P(0.15, label="Minimum effective exposure", level=ADVANCED, ge=0, le=1, step=0.01,
+                            help="Coverage x vignetting^2 (the signal-to-noise squared, relative to the field centre) "
+                                 "below which the image is not used: in strongly vignetted corners the noise is "
+                                 "amplified and flat-field errors dominate. 0.15 cuts where the flat falls below ~40 % "
+                                 "of the centre; instruments with mild vignetting are not affected.")
     fine_sigma: float = P(3.0, label="Fine detail scale", level=ADVANCED, ge=0.5, le=10, unit="px",
-                          help="Scales below this are taken from the Noise2Noise image.")
-    fine_lo_pct: float = P(80, label="Fine detail start", level=ADVANCED, ge=0, le=100, unit="percentile",
-                           help="Emission brightness (percentile) where detail injection starts.")
-    fine_hi_pct: float = P(95, label="Fine detail full", level=ADVANCED, ge=0, le=100, unit="percentile",
-                           help="Emission brightness (percentile) where detail injection is complete.")
-    cont_smooth: float = P(24.0, label="Continuum smoothing", level=ADVANCED, ge=0, le=200, unit="px",
-                           help="The nebula is split per pixel into emission (H-alpha signature) and continuum "
-                                "(starlight colour). The continuum's small scales are star residuals and are "
-                                "smoothed at this scale; the emission keeps full resolution. 0 disables the split.")
+                          help="Scales below this are taken from the Noise2Noise image for the fine-detail layer "
+                               "(its amount is set in the final adjustment tab).")
     resid_smooth: float = P(6.0, label="Residual colour smoothing", level=ADVANCED, ge=0, le=50, unit="px",
-                            help="Smoothing of what is neither H-alpha nor starlight (reflection, OIII).")
+                            help="Smoothing of the colour component that is neither H-alpha nor starlight, used by the "
+                                 "'Blue / reflection tones' slider.")
     star_guard: bool = P(True, label="Star artefact guard",
-                         help="At star positions, emission may not dip below its local level and compact colour "
-                              "excesses are pulled back: an imperfect star subtraction can create neither a black "
-                              "hole nor a coloured dot. Real dark globules (which darken emission and continuum "
-                              "together) are preserved.")
-    guard_sigma: float = P(1.0, label="Guard tolerance", level=ADVANCED, ge=0, le=5, step=0.1, unit="sigma",
-                           help="How far below the local emission level a star footprint may go.")
-    faint_smooth: float = P(32.0, label="Faint area smoothing", ge=0, le=200, unit="px",
-                            help="In faint areas, structures smaller than this are not confirmed by the data (noise "
-                                 "and residuals) and are smoothed; bright nebulosity keeps full resolution.",
-                            tip="Lower values show more fine structure in the faint background, with more mottle.")
-    faint_lo_pct: float = P(55, label="Faint area limit", level=ADVANCED, ge=0, le=100, unit="percentile",
-                            help="Below this emission percentile the faint-area smoothing is complete.")
-    faint_hi_pct: float = P(85, label="Bright area limit", level=ADVANCED, ge=0, le=100, unit="percentile",
-                            help="Above this emission percentile the image keeps full resolution.")
+                         help="On the footprint of each star, the brightness may not dip below the local level and "
+                              "the colour is taken from the surroundings: an imperfect star subtraction can create "
+                              "neither a black hole nor a coloured dot. The brightness keeps full resolution.")
+    guard_sigma: float = P(3.0, label="Guard tolerance", level=ADVANCED, ge=0, le=10, step=0.1, unit="sigma",
+                           help="How far below the brightness of the surroundings a star footprint may go before it is "
+                                "lifted (deeper = a hole left by the star subtraction, not noise).")
+    n2n_base: float = P(0.0, label="Noise2Noise in the base", level=ADVANCED, ge=0, le=1, step=0.05,
+                        help="The fine scales of the nebula are taken from the Noise2Noise network trained on your data: "
+                             "a local Wiener filter leaves islands of unfiltered pixel noise ('pepper') wherever its "
+                             "local noise estimate falls short, the network does not. 0 = Wiener everywhere (the 'Fine "
+                             "detail' slider then injects the network's detail).")
+    n2n_scale: float = P(16.0, label="Noise2Noise up to", level=ADVANCED, ge=0, le=200, step=1, unit="px",
+                         help="Scales smaller than this come from the network, larger ones from the Wiener filter (its "
+                              "large-scale level is the best characterised). 0 = the network at every scale.")
+    oiii_scale: float = P(4.0, label="OIII map base smoothing", level=ADVANCED, ge=0, le=50, unit="px",
+                          help="The OIII emission (teal, 496/501 nm) is separated from H-alpha and starlight with the "
+                               "spectral response of your camera. With a colour camera the three signatures are close "
+                               "and the separation is noisy: the map is stored smoothed at this scale (more smoothing "
+                               "is set live in the final adjustment tab). 0 disables the OIII layer.")
 
 
 class RenderPrep(Stage):
     name = "render_prep"
     title = "Rendering preparation"
-    description = ("Prepares the layers used by the interactive rendering: the calibrated nebula with its emission "
-                   "and continuum separated, protected against star-subtraction artefacts, with faint areas smoothed "
-                   "only at scales the data does not confirm; the table of stars to draw with their measured fluxes "
-                   "and colours; and the real radial profile of your stars (core + wings) used to redraw them.")
+    description = ("Prepares the layers used by the interactive rendering: the calibrated nebula at full resolution, "
+                   "protected against star-subtraction artefacts; a fine-detail layer from the Noise2Noise image; the "
+                   "fine colour confirmed by both half-stacks; the colour components used by the colour sliders "
+                   "(OIII, reflection); the table of stars to draw with their measured fluxes and colours; and the "
+                   "real radial profile of your stars. How much of each layer is shown is decided live in the final "
+                   "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "1"
+    version = "15"         # rebuild step 6: full-resolution base, Wiener base by default (n2n_base 0), layers live
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -73,6 +76,18 @@ class RenderPrep(Stage):
         cov = np.asarray(wt[1], np.float32)
         good = cov > p.cover_min * np.median(cov[cov > 0])
         H, W = good.shape
+        fp = ctx.project.stage_dir("calibrate") / "master_flat.npy"
+        if p.min_exposure > 0 and fp.exists():
+            fl = np.asarray(np.load(fp, mmap_mode="r"), np.float32)
+            fl = cv2.resize(fl, (fl.shape[1] // 2, fl.shape[0] // 2), interpolation=cv2.INTER_AREA)   # Bayer cells
+            fl = cv2.GaussianBlur(fl / np.percentile(fl, 99), (0, 0), 4)
+            eff = cov / np.median(cov[cov > 0]) * cv2.resize(fl, (W, H), interpolation=cv2.INTER_LINEAR) ** 2
+            vig = good & (eff < p.min_exposure)
+            good &= ~vig
+            ctx.metric("vignetted_pct", round(100 * float(vig.mean()), 2))
+            if vig.any():
+                ctx.log(f"{100 * vig.mean():.1f} % of the field left out: effective exposure below "
+                        f"{p.min_exposure:.2f} (strong vignetting)")
         y0, y1, x0, x1 = crop_box(good, p.edge_frac)
         ctx.metric("crop", [int(x0), int(x1), int(y0), int(y1)])
         ctx.log(f"useful frame x {x0}-{x1}, y {y0}-{y1} ({100 * (y1 - y0) * (x1 - x0) / (H * W):.1f} % of the stack)")
@@ -87,46 +102,89 @@ class RenderPrep(Stage):
         else:
             e_ = spec["cam_hii"].astype(np.float64)
         e_ = e_ / e_[0]
-        ctx.progress(0.05, "fine detail")
-        if p.fine_k > 0:
-            n2 = ctx.load("starless", "n2n_final.npy").astype(np.float32) / flat
-            b0 = ctx.load("starless", "sl_final.npy").astype(np.float32) / flat
-            det = np.stack([(n2[c] - cv2.GaussianBlur(n2[c], (0, 0), p.fine_sigma))
-                            - (b0[c] - cv2.GaussianBlur(b0[c], (0, 0), p.fine_sigma)) for c in range(3)])
-            del n2, b0
-            Eg0 = cv2.GaussianBlur(astro[0] - 0.87 * astro[1], (0, 0), 8)
-            q1, q2 = np.percentile(Eg0[good], [p.fine_lo_pct, p.fine_hi_pct])
-            wf = cv2.GaussianBlur(np.clip((Eg0 - q1) / max(q2 - q1, 1e-6), 0, 1).astype(np.float32), (0, 0), 6)
-            astro = astro + p.fine_k * wf[None] * det
-            del det
-        if p.cont_smooth > 0:
-            ctx.progress(0.2, "emission / continuum separation")
-            mk = (fs["g"] - dm > 11) & (fs["g"] - dm < 14)
-            k_ = np.array([np.median(fs["flux"][c, mk] / np.maximum(fs["flux"][1, mk], 1e-3)) for c in range(3)])
-            Am = np.stack([e_, k_], 1)
-            EC = np.tensordot(np.linalg.pinv(Am), astro, 1)
-            resid = astro - np.tensordot(Am, EC, 1)
-            Cs = cv2.GaussianBlur(EC[1], (0, 0), p.cont_smooth)
-            rs_ = np.stack([cv2.GaussianBlur(c, (0, 0), p.resid_smooth) for c in resid]) if p.resid_smooth > 0 else resid
-            Ef = EC[0]
-            if p.star_guard:
-                ctx.progress(0.3, "star artefact guard")
-                Ef, rs_, info = guard(ctx, EC, rs_, fs, dm, H, W, p.guard_sigma)
-                for k, v in info.items():
-                    ctx.metric(k, v)
-            if p.faint_smooth > 0:
-                ctx.progress(0.6, "faint area smoothing")
-                Esm = cv2.GaussianBlur(Ef, (0, 0), p.faint_smooth)
-                Eg = cv2.GaussianBlur(Ef, (0, 0), 8)
-                q1, q2 = np.percentile(Eg[good], [p.faint_lo_pct, p.faint_hi_pct])
-                wE = cv2.GaussianBlur(np.clip((Eg - q1) / max(q2 - q1, 1e-6), 0, 1).astype(np.float32), (0, 0), 6)
-                Ef = wE * Ef + (1 - wE) * Esm
-                rs_ = wE[None] * rs_ + (1 - wE[None]) * np.stack([cv2.GaussianBlur(c, (0, 0), p.faint_smooth)
-                                                                  for c in resid])
-            astro = np.tensordot(Am, np.stack([Ef, Cs]), 1) + rs_
-            ctx.metric("emission_signature", np.round(e_, 3).tolist())
-            ctx.metric("continuum_colour", np.round(k_, 3).tolist())
-        ctx.save("astro_prep.npy", astro.astype(np.float32))
+        mk = (fs["g"] - dm > 11) & (fs["g"] - dm < 14)
+        k_ = np.array([np.median(fs["flux"][c, mk] / np.maximum(fs["flux"][1, mk], 1e-3)) for c in range(3)])
+        Am = np.stack([e_, k_], 1)
+        lum = np.array([0.2126, 0.7152, 0.0722]) @ M                # camera -> display luminance
+        w_cam = np.linalg.solve(M, np.ones(3))                       # camera vector of neutral light, luminance 1
+        Yl = np.tensordot(lum, astro, 1).astype(np.float32)
+        # brightness map gating the fine-detail injection and the faint-area blend: the whole signal, whatever its
+        # colour (an H-alpha-only gate would treat reflection nebulae and galaxies as empty sky)
+        ctx.save("Eg0.npy", cv2.GaussianBlur(Yl, (0, 0), 8).astype(np.float32))
+        ctx.progress(0.1, "star footprints")
+        foot_w = footprints(ctx, fs, dm, H, W) if p.star_guard else np.zeros((H, W), np.float32)
+        ctx.metric("guard_footprint_pct", round(100 * float((foot_w > 0.5).mean()), 1))
+        ctx.progress(0.2, "nebula layer")
+        # two denoisers are available: the multi-scale Wiener filter and the Noise2Noise network trained on these data.
+        # A local Wiener filter leaves islands of unfiltered pixel noise wherever its local noise estimate falls short
+        # (dark and bright pepper, worst at the edges of a nebula); the network does not. The fine scales come from the
+        # network, the large ones from the Wiener filter (bright-star zones are interpolated identically in both)
+        wstar = star_light_weight(ctx, lum, astro.shape[1:]) * (1 - foot_w)
+        ctx.metric("fine_layers_off_pct", round(100 * float((wstar < 0.5).mean()), 1))
+        n2 = ctx.load("starless", "n2n_final.npy").astype(np.float32) / flat
+        b0 = ctx.load("starless", "sl_final.npy").astype(np.float32) / flat
+        base = astro.copy()
+        for c in range(3):
+            d = n2[c] - b0[c]
+            if p.n2n_scale > 0:
+                d -= cv2.GaussianBlur(d, (0, 0), p.n2n_scale)
+            base[c] += p.n2n_base * d
+        del d
+        N = guard_generic(base, np.tensordot(lum, base, 1).astype(np.float32), foot_w, lum, w_cam, p.guard_sigma) \
+            if p.star_guard else base
+        ctx.save("N.npy", N.astype(np.float32))
+        preview = N
+        del Yl, base
+        # optional colour components for the colour sliders: the rest (neither H-alpha nor starlight) and OIII
+        ctx.progress(0.45, "colour components")
+        EC = np.tensordot(np.linalg.pinv(Am), astro, 1)
+        resid = astro - np.tensordot(Am, EC, 1)
+        del EC
+        R = np.stack([cv2.GaussianBlur(c, (0, 0), p.resid_smooth) for c in resid]) if p.resid_smooth > 0 else resid
+        ctx.save("R.npy", (R * (1 - foot_w)[None]).astype(np.float32))
+        del resid, R
+        ctx.metric("emission_signature", np.round(e_, 3).tolist())
+        ctx.metric("continuum_colour", np.round(k_, 3).tolist())
+        o_ = spec["cam_oiii"].astype(np.float64)
+        o_ = o_ / max(o_[1], 1e-9)
+        B3 = np.stack([e_, o_, k_], 1)
+        s_o = None
+        if p.oiii_scale > 0 and np.linalg.cond(B3) < 200:
+            ctx.progress(0.6, "OIII layer")
+            O = cv2.GaussianBlur(np.tensordot(np.linalg.inv(B3)[1], astro, 1).astype(np.float32), (0, 0), p.oiii_scale)
+            Eg_ = cv2.GaussianBlur(astro[0] - 0.87 * astro[1], (0, 0), 8)
+            sky_ = good & (Eg_ < np.percentile(Eg_[good], 50))
+            s_o = float(1.4826 * np.median(np.abs(O[sky_] - np.median(O[sky_]))))
+            ctx.save("O.npy", (O * (1 - foot_w)).astype(np.float32))
+            ctx.metric("oiii_noise", round(s_o, 3))
+            ctx.metric("oiii_peak_snr", round(float(np.percentile(O[good], 99.9)) / max(s_o, 1e-9), 1))
+            ctx.log(f"OIII layer: peak {np.percentile(O[good], 99.9) / max(s_o, 1e-9):.0f} sigma above the sky "
+                    f"(condition number of the separation {np.linalg.cond(B3):.0f})")
+            del O, Eg_
+        o_disp = oiii_display_vector(M, o_)
+        # fine-detail layer: Noise2Noise small scales minus Wiener small scales, kept as brightness (its colour is
+        # noise), off on star footprints
+        ctx.progress(0.65, "fine detail layer")
+        # with the network in the base, the layer holds its fine scales and the 'Fine detail' slider scales them
+        # (1 = as measured); otherwise it holds network minus Wiener, injected into the Wiener base
+        fine_scale = p.n2n_base > 0
+        det = np.stack([(n2[c] - cv2.GaussianBlur(n2[c], (0, 0), p.fine_sigma))
+                        - (0 if fine_scale else b0[c] - cv2.GaussianBlur(b0[c], (0, 0), p.fine_sigma))
+                        for c in range(3)])
+        del b0
+        # the fine layers are not reliable where the light of the stars dominates (residual spikes, halo streaks)
+        ctx.save("dY.npy", (np.tensordot(lum, det, 1) * wstar).astype(np.float16))
+        del det
+        # sharpening increment: the sharpening network minus the plain one (brightness), off on star light
+        sp = ctx.project.stage_dir("starless") / "n2n_sharp_final.npy"
+        if sp.exists():
+            n2s = np.load(sp).astype(np.float32) / flat
+            ctx.save("dS.npy", (np.tensordot(lum, n2s - n2, 1) * wstar).astype(np.float16))
+            del n2s
+        del n2
+        cf = ctx.project.stage_dir("starless") / "chroma_fine.npy"
+        if cf.exists():                           # star residuals are common to both halves: off on star light too
+            ctx.save("chroma_fine.npy", (np.load(cf).astype(np.float32) / flat * wstar[None]).astype(np.float16))
         np.save(ctx.out("valid.npy"), good)
         ctx.progress(0.75, "star tables")
         mm_ = (fs["g"] - dm > 11) & (fs["g"] - dm < 14)
@@ -153,14 +211,43 @@ class RenderPrep(Stage):
             pr[c] /= np.median(fs["pred"][c][m13] / np.maximum(fs["flux"][c][m13], 1e-9))
         np.savez(ctx.out("stars.npz"), x=X, y=Y, g=G, flux=F.astype(np.float32), pred=pr.astype(np.float32),
                  glow_flux=Fpred.astype(np.float32), n_measured=nb)
+        # depth of the data: magnitude where the measured stars reach S/N = 10. The star settings of the rendering
+        # (faintest drawn star, sizes, brightness) refer to a field where this is G = 15.5; deeper or finer-sampled
+        # data shift them, so that "the faintest drawn star" means the same thing for every instrument
+        depth = star_depth(ctx, fs, dm)
+        depth_shift = float(np.clip(round(((depth if depth else 15.5) - 15.5) * 4) / 4, -3, 6))
+        ctx.metric("star_depth_snr10", depth)
+        ctx.metric("star_depth_shift", depth_shift)
         ctx.progress(0.85, "real star profile")
         r_all, prof = star_profile(torch.load(ctx.input("optics", "psf_model.pt"), weights_only=False))
         ctx.save_json("prep.json", {"crop": [int(x0), int(x1), int(y0), int(y1)], "alpha": alpha,
                                     "vh": vh.tolist(), "M": M.tolist(), "drizzle_scale": S, "width": W,
-                                    "height": H, "mag_offset": dm, "e": e_.tolist()})
+                                    "height": H, "mag_offset": dm, "e": e_.tolist(), "Am": Am.tolist(),
+                                    "layers": 3, "w_cam": w_cam.tolist(), "o": o_.tolist(), "depth_shift": depth_shift,
+                                    "o_display": o_disp.tolist(), "oiii_sigma": s_o, "oiii_scale": p.oiii_scale,
+                                    "fine_layer": "scale" if fine_scale else "add"})
         np.savez(ctx.out("profile.npz"), r=r_all, prof=prof)
         from ..core.imgutil import asinh_preview
-        ctx.preview("nebula_layer", asinh_preview(astro, M, k=30))
+        ctx.preview("nebula_layer", asinh_preview(preview, M, k=30))
+
+
+def oiii_display_vector(M: np.ndarray, o_cam: np.ndarray) -> np.ndarray:
+    """Camera-space vector whose display colour is the true colour of the [OIII] 495.9 + 500.7 nm lines.
+
+    The colour of the doublet is outside the sRGB gamut; it is brought in by adding white (hue kept). The vector has
+    the same luminance as the OIII signature of the camera, so a boost adds the brightness the OIII really has.
+    """
+    import colour
+
+    from .color import XYZ_TO_SRGB
+    cmfs = colour.MSDS_CMFS["CIE 1931 2 Degree Standard Observer"]
+    wl, v = cmfs.wavelengths, cmfs.values
+    xyz = sum(w * np.array([np.interp(lam, wl, v[:, i]) for i in range(3)]) for lam, w in ((500.7, 1.0), (495.9, 0.33)))
+    rgb = XYZ_TO_SRGB @ xyz
+    rgb = rgb - min(rgb.min(), 0.0)
+    lum = np.array([0.2126, 0.7152, 0.0722])
+    rgb = rgb / (lum @ rgb) * (lum @ (M @ o_cam))
+    return np.linalg.solve(M, rgb)
 
 
 def crop_box(good: np.ndarray, edge_frac: float):
@@ -184,47 +271,73 @@ def crop_box(good: np.ndarray, edge_frac: float):
     return y0, y1, x0, x1
 
 
-def guard(ctx, EC, rs_, fs, dm, H, W, guard_sigma, art_k=2.5, rsig=8.0, tol_k=1.5):
-    """Emission floor and compact colour clamp on star footprints and on the artefact signature.
+def star_depth(ctx, fs, dm) -> float | None:
+    """Gaia G magnitude where the median S/N of the measured stars falls to 10 (aperture of radius one FWHM)."""
+    try:
+        S = float(ctx.load_json("stack", "drz_meta.json")["scale"])
+        fwhm = float(ctx.metric_of("register", "fwhm_px")) * S
+        img = ctx.load("optics", "lat_full.npy", mmap=True)
+        a = np.asarray(img[1, ::2, ::2], np.float32)
+        sig = 1.4826 * float(np.median(np.abs(a - cv2.GaussianBlur(a, (0, 0), 2))))
+        snr = fs["flux"][1] / (sig * np.sqrt(np.pi * fwhm ** 2))
+        g = fs["g"] - dm
+        for b in np.arange(9.0, 21.0, 0.25):
+            m = (g >= b) & (g < b + 0.25)
+            if m.sum() > 20 and np.median(snr[m]) < 10:
+                return float(b)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
-    Footprints: a disc around every medium / faint star (11.5 < G < 17.5), every pixel showing the artefact
-    signature (compact emission dip together with a compact continuum excess) and every filled core.
-    """
+
+def star_light_weight(ctx, lum, shape) -> np.ndarray:
+    """1 where the light of the stars (model, extended PSF, removed halos) is below 1 noise sigma of the brightness,
+    0 above 3 sigmas."""
+    H, W = shape
+    L = np.zeros((H, W), np.float32)
+    for st, name in (("stars", "stars_model.npy"), ("stars", "stars_model_ext.npy"), ("starless", "halo_removed.npy")):
+        f = ctx.project.stage_dir(st) / name
+        if f.exists():
+            a = np.load(f, mmap_mode="r")
+            if a.shape[1:] == (H, W):
+                L += np.tensordot(lum, np.asarray(a, np.float32), 1)
+    if not L.any():
+        return np.ones((H, W), np.float32)
+    astro = ctx.load("background", "astro.npy", mmap=True)
+    Y = np.tensordot(lum, np.asarray(astro[:, ::2, ::2], np.float32), 1)
+    sY = 1.4826 * float(np.median(np.abs(Y - cv2.GaussianBlur(Y, (0, 0), 2))))
+    L = cv2.GaussianBlur(np.abs(L), (0, 0), 3)
+    w = np.clip((3 * sY - L) / (2 * sY), 0, 1).astype(np.float32)
+    return cv2.GaussianBlur(w, (0, 0), 2)
+
+
+def footprints(ctx, fs, dm, H, W) -> np.ndarray:
+    """Weight (0..1) of the star footprints: a disc around every medium / faint star (11.5 < G < 17.5) and every
+    filled star core of the starless stage."""
     disc_ = np.zeros((H, W), np.uint8)
     gx_b, gy_b, gg_b = fs["x"], fs["y"], fs["g"] - dm
     for i_ in np.where((gg_b > 11.5) & (gg_b < 17.5) & (gx_b > -5) & (gx_b < W + 5) & (gy_b > -5) & (gy_b < H + 5))[0]:
         cv2.circle(disc_, (int(round(gx_b[i_])), int(round(gy_b[i_]))), int(round(2.5 + 0.7 * (17.5 - gg_b[i_]))), 1, -1)
-    foot = disc_ > 0
-    Er, Cr = EC[0], EC[1]
-    Ed = cv2.GaussianBlur(Er, (0, 0), 1.0) - median_filter(Er, size=15)
-    Cd = cv2.GaussianBlur(Cr, (0, 0), 1.0) - median_filter(Cr, size=15)
-    sEd = 1.4826 * np.median(np.abs(Ed[::5, ::5]))
-    sCd = 1.4826 * np.median(np.abs(Cd[::5, ::5]))
-    art = (Ed < -art_k * sEd) & (Cd > art_k * sCd)
-    art = cv2.dilate(art.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))) > 0
     msk_ = ctx.load("starless", "sl_mask.npy")
     msk_ = cv2.dilate(msk_.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))) > 0
-    foot = foot | art | msk_
+    return cv2.GaussianBlur(((disc_ > 0) | msk_).astype(np.float32), (0, 0), 1.0)
 
-    def nfill(img):
-        hh_, ww_ = img.shape
-        b_ = cv2.resize(img, (ww_ // 2, hh_ // 2), interpolation=cv2.INTER_AREA)
-        b_ = median_filter(b_, size=9, mode="nearest")
-        return cv2.resize(cv2.GaussianBlur(b_, (0, 0), 1.0), (ww_, hh_), interpolation=cv2.INTER_LINEAR)
-    Ef = EC[0]
-    E_loc = nfill(Ef)
-    hpE = Ef - cv2.GaussianBlur(Ef, (0, 0), 2)
-    sE = 1.4826 * np.median(np.abs(hpE[::7, ::7]))
-    wf_ = cv2.GaussianBlur(foot.astype(np.float32), (0, 0), 1.0)
-    Ef = Ef + wf_ * (np.maximum(Ef, E_loc - guard_sigma * sE) - Ef)
-    r_loc = np.stack([cv2.GaussianBlur(c, (0, 0), rsig) for c in rs_])
-    wa_ = cv2.GaussianBlur(art.astype(np.float32), (0, 0), 1.0)[None]
-    rs_ = rs_ - wa_ * np.clip(rs_ - r_loc, 0, None)
-    tol = np.array([1.4826 * np.median(np.abs((c - cv2.GaussianBlur(c, (0, 0), 2))[::7, ::7])) for c in rs_])[:, None, None]
-    rs_c = np.clip(rs_, r_loc - tol_k * tol, r_loc + tol_k * tol)
-    rs_ = rs_ + wf_[None] * (rs_c - rs_)
-    return Ef, rs_, {"guard_artefact_pct": round(100 * float(art.mean()), 2),
-                     "guard_footprint_pct": round(100 * float(foot.mean()), 1)}
+
+def guard_generic(astro, Yl, foot_w, lum, w_cam, guard_sigma):
+    """Star footprints of the calibrated nebula: the brightness keeps full resolution and is only lifted where it dips
+    more than ``guard_sigma`` noise sigmas below the surroundings (a real hole, not the noise); the colour is the
+    colour of the surroundings, interpolated across footprints of any size. No emission / continuum hypothesis."""
+    from ..core.imgutil import fill_holes
+    hole = foot_w >= 0.5
+    if not hole.any():
+        return astro.astype(np.float32)
+    hp = Yl - cv2.GaussianBlur(Yl, (0, 0), 2)
+    sY = 1.4826 * float(np.median(np.abs(hp[::7, ::7])))
+    As = np.stack([cv2.GaussianBlur(fill_holes(c, hole), (0, 0), 3) for c in astro])   # surroundings, any hole size
+    Ys = np.tensordot(lum, As, 1)
+    Yg = np.maximum(Yl, Ys - guard_sigma * sY)
+    Nfp = As + (Yg - Ys)[None] * np.asarray(w_cam, np.float32)[:, None, None]   # brightness Yg, colour of As
+    return (astro + foot_w[None] * (Nfp - astro)).astype(np.float32)
 
 
 def star_profile(pm):

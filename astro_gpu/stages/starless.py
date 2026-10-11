@@ -53,7 +53,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "5"          # glare vs nebula decided per star on the fall-off
+    version = "4"          # dip repair only on measured dips
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -88,14 +88,7 @@ class Starless(Stage):
         ctx.progress(0.55, "final cleaning")
         final0, _ = clean(wms, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
         del wms
-        # around a bright star, the light left is glare (steep fall-off) or the nebula it lights (slow fall-off):
-        # judged on the raw starless image, outside the filled core; no radial removal around embedded stars
-        hp_ = rawfill[1] - cv2.GaussianBlur(rawfill[1], (0, 0), 2)
-        sig_ = float(1.4826 * np.median(np.abs(hp_[::7, ::7])))
-        gates = glare_gates(rawfill, x, y, g, p.halo_gmax, sig_, mask=mask)
-        ng = int(sum(v > 0.5 for v in gates.values()))
-        ctx.log(f"{ng} bright stars judged glare (steep fall-off), {len(gates) - ng} embedded in a nebula")
-        sl_final, nh = bright_halos(final0, x, y, g, p.halo_gmax, gates=gates)
+        sl_final, nh = bright_halos(final0, x, y, g, p.halo_gmax)
         ctx.log(f"optical halos removed around {nh} bright stars")
         ctx.save("sl_final.npy", sl_final)
         del final0
@@ -110,7 +103,7 @@ class Starless(Stage):
             torch.cuda.empty_cache()
         ctx.progress(0.85, "cleaning the detail layer")
         n2n_c0, _ = clean(sl_n2n, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
-        n2n_final, _ = bright_halos(n2n_c0, x, y, g, p.halo_gmax, gates=gates)
+        n2n_final, _ = bright_halos(n2n_c0, x, y, g, p.halo_gmax)
         ctx.save("n2n_final.npy", n2n_final)
         from ..core.imgutil import asinh_preview
         ctx.preview("starless", asinh_preview(sl_final, M))
@@ -347,13 +340,11 @@ def wiener(A_cam, B_cam, M, p, star_model, log=print):
     return from_ycc(out)
 
 
-def bright_halos(sl, x, y, g, gmax, gates=None):
+def bright_halos(sl, x, y, g, gmax):
     """Remove the optical halo of every bright star from the starless image (radial profile per star and channel).
 
     The halo radius grows with the square root of the flux (315 px at G = 5 down to 25 px at G = gmax); the
     background is measured just beyond it. No removal inside bright emission (the profile would measure the nebula).
-    ``gates`` (star index -> 0..1, see glare_gates) scales the removal per star: 0 for a star embedded in the nebula it
-    lights, where a radial profile would measure the nebula.
     """
     sl = sl.astype(np.float32).copy()
     Eg = cv2.GaussianBlur(sl[0] - 0.87 * sl[1], (0, 0), 12)
@@ -365,9 +356,6 @@ def bright_halos(sl, x, y, g, gmax, gates=None):
     n = 0
     for i in sel:
         rmax = int(np.clip(25 * 10 ** (0.2 * (gmax - g[i])), 25, 320))
-        gate_s = 1.0 if gates is None else float(gates.get(int(i), 1.0))
-        if gate_s <= 0:
-            continue
         R_ = rmax + 20
         xc, yc = int(round(x[i])), int(round(y[i]))
         y0, y1, x0, x1 = max(0, yc - R_), min(H, yc + R_ + 1), max(0, xc - R_), min(W, xc + R_ + 1)
@@ -389,55 +377,9 @@ def bright_halos(sl, x, y, g, gmax, gates=None):
             bgv = np.nanmedian(med[-8:])
             prof = np.minimum.accumulate(np.nan_to_num(np.clip(med - bgv, 0, None)))
             rcv = rb[:-1] + 1.0
-            prof = prof * np.clip((rmax - rcv) / (0.4 * rmax), 0, 1) ** 2 * gate_s
+            prof = prof * np.clip((rmax - rcv) / (0.4 * rmax), 0, 1) ** 2
             h = np.interp(rr, rcv, prof, right=0)
             h = np.minimum(h, 0.9 * np.clip(patch - bgv, 0, None))
             sl[c, y0:y1, x0:x1] = patch - h * gate[y0:y1, x0:x1]
         n += 1
     return sl, n
-
-
-def glare_gates(img, x, y, g, gmax, sig, mask=None, rmax_cap=320):
-    """One decision per bright star (G < gmax), from the data: is the light left around it glare of the star or the
-    nebula it lights? Glare (PSF wings, spikes, defocus halo) falls off steeply with the distance to the star (the
-    radial profile drops faster than 1/r^3); a nebula lit by its star falls off slowly (1/r to 1/r^2). The fall-off
-    is measured on the radial profile (35th percentile per ring, so spikes do not count) of the light standing above
-    the level just beyond the halo radius, from 6 px (outside the core) to half that radius (at most 120 px). Returns
-    star index -> gate in 0..1 (1 = glare, 0 = nebula); stars whose excess is too faint to measure get 1 (nothing to
-    lose); over-subtracted stars (negative profile) count as glare."""
-    H, W = img.shape[1:]
-    Ym = img.mean(0)
-    gates = {}
-    for i in np.where((g < gmax) & (x > 20) & (x < W - 20) & (y > 20) & (y < H - 20))[0]:
-        rmax = min(int(np.clip(25 * 10 ** (0.2 * (gmax - g[i])), 25, rmax_cap)), 120)
-        R_ = rmax + 20
-        xc, yc = int(round(x[i])), int(round(y[i]))
-        y0, y1, x0, x1 = max(0, yc - R_), min(H, yc + R_ + 1), max(0, xc - R_), min(W, xc + R_ + 1)
-        yy, xx = np.mgrid[y0:y1, x0:x1]
-        rr = np.hypot(xx - x[i], yy - y[i])
-        win = Ym[y0:y1, x0:x1]
-        beyond = (rr >= rmax) & (rr < rmax + 20)
-        if beyond.sum() < 20:
-            gates[int(i)] = 1.0
-            continue
-        by = float(np.median(win[beyond]))
-        rb = np.arange(6.0, rmax / 2, 2.0)
-        pv = np.array([np.percentile(win[(rr >= r_) & (rr < r_ + 2)], 35) - by if ((rr >= r_) & (rr < r_ + 2)).sum() > 5
-                       else np.nan for r_ in rb])
-        if mask is not None:                  # rings inside the filled core carry no information on the fall-off
-            mk = mask[y0:y1, x0:x1]
-            pv[np.array([mk[(rr >= r_) & (rr < r_ + 2)].mean() > 0.1 for r_ in rb])] = np.nan
-        ok = np.isfinite(pv) & (np.abs(pv) > 3 * sig)
-        if ok.sum() < 4:
-            gates[int(i)] = 1.0
-            continue
-        if np.median(pv[ok]) < 0:
-            gates[int(i)] = 1.0
-            continue
-        ok &= pv > 0.1 * np.nanmax(pv)        # the fall-off is measured where the light is, not on its faint tail
-        if ok.sum() < 3:
-            gates[int(i)] = 1.0
-            continue
-        slope = np.polyfit(np.log(rb[ok] + 1.0), np.log(np.abs(pv[ok])), 1)[0]
-        gates[int(i)] = float(np.clip((-slope - 2.0) / 1.0, 0, 1))      # 1/r^2 and shallower: nebula; 1/r^3: glare
-    return gates
