@@ -306,7 +306,8 @@ def star_depth(ctx, fs, dm) -> float | None:
 
 def star_light_weight(ctx, lum, shape) -> np.ndarray:
     """1 where the light of the stars (model, extended PSF, removed halos) is below 1 noise sigma of the brightness,
-    0 above 3 sigmas."""
+    0 above 3 sigmas. (Tried on 2026-10-11: "dominates" relative to the nebula brightness instead of the noise -
+    it brought nothing more on a reflection nebula and exposed the star residual mottling in bright emission.)"""
     H, W = shape
     L = np.zeros((H, W), np.float32)
     for st, name in (("stars", "stars_model.npy"), ("stars", "stars_model_ext.npy"), ("starless", "halo_removed.npy")):

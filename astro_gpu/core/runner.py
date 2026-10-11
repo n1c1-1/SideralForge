@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 import traceback
 import uuid
@@ -154,8 +155,9 @@ class Pipeline:
         inputs = {d: read_manifest(self.project, d).get("run_id") for d in st.deps}
         ck_meta = ctx.dir / "_ckpt" / "meta.json"
         tag = {"params_hash": ph, "inputs": inputs, "version": st.version}
-        if ck_meta.exists() and json.loads(ck_meta.read_text()) != tag:
+        if not (ck_meta.exists() and json.loads(ck_meta.read_text()) == tag):
             ctx.clear_ckpt()
+            _clear_outputs(ctx.dir)
         ctx.ckpt  # noqa: B018  (creates the folder)
         ck_meta.write_text(json.dumps(tag))
         m = {"stage": st.name, "title": st.title, "version": st.version, "status": "running",
@@ -189,6 +191,18 @@ class Pipeline:
         self.journal.emit("stage_end", stage=st.name, status="done", duration=dur)
         _record_timing(st.name, dur)
         return "done"
+
+
+def _clear_outputs(d: Path) -> None:
+    """Remove what an earlier run left in the stage folder before a fresh start. An earlier version may have written
+    files the current one does not: a later stage that looks for an optional file must never find a stale one."""
+    for p in d.iterdir():
+        if p.name in ("_ckpt", "manifest.json"):
+            continue
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+        else:
+            p.unlink(missing_ok=True)
 
 
 def _same_params(stage: Stage, p, stored: dict) -> bool:
