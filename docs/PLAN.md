@@ -150,22 +150,33 @@ from frame to frame (Heart 3.8-4.3 px, Iris 4.3-5.0 px over the night), and with
 - Lessons: several independent checks, never one; never drop a part without telling the user; no stacked repairs; no
   launch without the user's go; plain language in every report.
 
-## 10. State of the code (night of 2026-10-11)
+## 10. State of the code (2026-10-11, after the rebuild)
 
-- Star removal (`stages/starless.py`): what is treated as missing data is decided on the measurements only
-  (saturated pixels, and pixels where the subtraction leaves the image below the sky: an over-subtracted star). The
-  old rules (60 px core masks, fill zones wherever the star model is bright) erased the brightest nebula around the
-  Iris central star and produced the rings. Around each bright star, the light left is judged on its fall-off with
-  distance: steeper than 1/r^3 is glare of the star (interpolated, the star is redrawn at render), shallower than
-  1/r^2 is the nebula it lights (kept). The dip repair is applied only where a dip is measured.
-- Sharpening (`core/sharpen.py`, run inside `starless`): the star shape is measured on the stack from Gaia stars,
-  the target is derived from it (two thirds of the core width, at least 2 px), and the Noise2Noise network is
-  fine-tuned so that its output, blurred back to the measured shape, predicts the other half-stack. The result is a
-  render layer (`dS`) behind the control "Sharpening (measured star shape)".
-- Render presets `Faithful` and `Artistic` (`render/settings.py`); `astro-gpu render PROJECT --preset faithful`
-  writes `results/faithful/`.
-- Tried and rejected during the night: one halo amplitude per star for the three channels (large coloured halos
-  around the brightest stars; per-channel amplitudes kept).
+The user's preferred image is the first Heart render of 2026-10-10 10:34 (`results_archive/natural`). The chain was
+rebuilt from the code of that morning (commit 4632904) and the later changes were re-injected one at a time, each
+judged at 100 % against that image on Heart ("equivalent or better") and on Iris ("works": core intact, no holes,
+no patchwork):
+
+| Change | Verdict |
+|---|---|
+| Fixed-pattern (walking noise) removal at stacking (stack v2) | kept (neutral on Heart) |
+| Background: bounded fit, object clipping, zero-point floor (v3) | kept (Iris: no more clipped black) |
+| Missing data decided on the measurements only (no mask by model brightness) | rejected: grey discs and glare residuals on the refractor (the wide mask hides the wing errors of the model) |
+| Dip repair only where a dip is measured | kept (neutral) |
+| Glare vs nebula decided per star on the fall-off | rejected: with the wide masks nothing is left to measure; the Iris G6.9 glare stayed |
+| Full-resolution render base (no emission/continuum model) | needed for reflection nebulae (Iris core), but mottled the dense Heart field |
+| ... with the continuum smoothed only where star light dominates (render_prep v16) | kept: Heart equivalent, Iris core structured |
+| Extended star template (halo, spikes) alone | rejected: large ring around the Iris central star, haze |
+| Nebula-aware core mask | no effect, dropped |
+| Colour calibration v2 (camera profile, synthetic spectra) | kept (neutral on Heart, Iris closer to the reference) |
+
+Not re-injected: the sharpening network (`core/sharpen.py`, kept in the repository, not called by the rebuilt
+starless stage) and the night's glare zones. Known remaining defects: the Iris G6.9 glare (blue blob) and the
+plateau of the filled core around the Iris central star (fill disc of the cleaning step). The founding principle of
+the project, per-frame per-tile deconvolution before stacking, has still not been tried: it is the next session.
+
+- Render presets `Faithful` (reference rendering, measured colours) and `Artistic` (`render/settings.py`);
+  `astro-gpu render PROJECT --preset faithful` writes `results/faithful/`. GUI: "Results" tab, project descriptions.
 - Earlier work in progress stopped by the user (stacked repairs) is kept in `git stash` and not used.
 - Test bench and night scripts (outside the repository): `C:\Users\Nicolas\astro_gpu_scratch\bench\` and
-  `C:\Users\Nicolas\astro_gpu_scratch\night\`.
+  `C:\Users\Nicolas\astro_gpu_scratch\night\` (rebuild patches, judge script, logs).
