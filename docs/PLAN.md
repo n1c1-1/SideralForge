@@ -239,3 +239,36 @@ footprint of the Iris central star grew and its nebula was erased), OpenCV inpai
 Remaining on Iris: about 14 stars of G 9.5-11 have a slight dark disc - their fitted flux is about twice the
 catalogue prediction (core near saturation) and their modelled wings are removed twice too strongly; thin straight
 spike traces cross the Iris core. The user wants to keep the spikes ("the charm of a Newtonian image").
+
+### 11.2 Dark grit on Heart, odd spikes on Iris (2026-10-11, evening)
+
+The user saw dark grit in the Heart nebula and odd spikes on some medium stars of Iris (the Iris nebula itself:
+"excellent").
+
+**Dark grit (Heart) - found and fixed.** The starless image was clean at those places (a slight bright bump on
+filled star cores, never a hole). The render preparation made the holes: on a star footprint the star guard gives
+the brightness it keeps a neutral colour, which is star-coloured light plus a negative emission (neutral light is
+bluer than the average star); the continuum smoothing that followed removed the star-coloured part and left the
+negative part, a dark, slightly coloured hole. Fix: the continuum is smoothed before the guard, on the true colours;
+the guard then fills whatever hole is left on the footprints. Dark specks of the faithful render 235 -> 133 (the
+morning image has 129), deep ones 22 -> 11; a compact bright knot that came out as a black hole is back as in the
+morning image. Iris: no visible change, same speck count within the run-to-run spread.
+
+Rejected on the way, each measured on both data sets: every star bounded by what the image holds (Heart specks
+249 -> 505); lifting the emission under positive star residuals over the whole field (more specks: the lifted
+spots make their surroundings look darker) or on footprints only (235 -> 371, same reason).
+
+**Odd spikes on Iris medium stars - diagnosed, not fixed.** In the user's image these stars are small diamonds (the
+inner part of the spikes merged into the star). Ours are a round drawn star plus a spike that starts about 10 px
+away: the inner part of the spike lies in the filled core of the starless image, and a drawn star is round, so
+neither layer holds it. Tried: a spike profile per colour channel (the widths are equal, 8.5/8/8 px), the direction
+of each spike measured on each star (stars fan by up to 4 degrees; remnants 40 -> 34 stars), the intensity along the
+spike following the data instead of a power law (remnants in the nebula layer 2-3 times weaker, no visible gain in
+the render, a bright stub at the start of some spikes), the stars with measured spikes shown by their real light
+(spike attached, but medium stars swell into soft discs, as saturated stars did on Heart). All removed. The real fix
+is to draw the stars with their measured local shape (the star stage already measures it, cell by cell): it would
+also give the corner stars their coma instead of a white blob with a dark crescent. Waiting for the user's decision.
+
+Noted: rerunning the star and star-removal stages with unchanged code changes the result slightly (Iris specks
+354 -> 379, render preparation almost unchanged): comparisons are made within one run of the upstream stages, never across
+reruns.

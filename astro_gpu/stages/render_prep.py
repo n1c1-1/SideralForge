@@ -71,7 +71,7 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "18"         # 17: continuum smoothed only where safe; 18: saturated stars by their real light, measured spikes
+    version = "22"         # 18: saturated stars by their real light; 22: continuum smoothed before the star guard
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -134,12 +134,14 @@ class RenderPrep(Stage):
                 d -= cv2.GaussianBlur(d, (0, 0), p.n2n_scale)
             base[c] += p.n2n_base * d
         del d
-        N = guard_generic(base, np.tensordot(lum, base, 1).astype(np.float32), foot_w, lum, w_cam, p.guard_sigma) \
-            if p.star_guard else base
+        N = base
         # where the light of the stars dominates the signal (dense fields), the fine structure of the continuum
         # (star-coloured light) is star residual, not nebula: the continuum is smoothed there at cont_smooth, as the
         # first version of this stage did everywhere - but only where that is safe (see continuum_smoothing_allowed):
-        # a structured continuum (reflection nebula, galaxy, dust) is the signal and is kept at full resolution
+        # a structured continuum (reflection nebula, galaxy, dust) is the signal and is kept at full resolution.
+        # This comes before the star guard: the guard gives the brightness it keeps on a star footprint a neutral
+        # colour, i.e. star-coloured light plus a negative emission; smoothing the star-coloured part afterwards left
+        # the negative part, so a bright residual came out as a dark, slightly coloured hole (the grit of Heart)
         if p.cont_smooth > 0:
             EC_N = np.tensordot(np.linalg.pinv(Am), N, 1)
             Cs = cv2.GaussianBlur(EC_N[1].astype(np.float32), (0, 0), p.cont_smooth)
@@ -147,6 +149,8 @@ class RenderPrep(Stage):
             N = N - Am[:, 1][:, None, None] * ((EC_N[1] - Cs) * sm)[None]
             ctx.metric("continuum_smoothed_pct", round(100 * float((sm > 0.5).mean()), 1))
             del EC_N, Cs, sm
+        if p.star_guard:
+            N = guard_generic(N, np.tensordot(lum, N, 1).astype(np.float32), foot_w, lum, w_cam, p.guard_sigma)
         # saturated stars: shown by their real light; the nebula under them interpolated where that is safe
         ctx.progress(0.42, "real light of the saturated stars")
         N, fp_all, fp_fill, Sreal = saturated_star_light(ctx, fs, N, flat, lum, ctx.log)
