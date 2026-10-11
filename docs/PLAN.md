@@ -180,3 +180,39 @@ the project, per-frame per-tile deconvolution before stacking, has still not bee
 - Earlier work in progress stopped by the user (stacked repairs) is kept in `git stash` and not used.
 - Test bench and night scripts (outside the repository): `C:\Users\Nicolas\astro_gpu_scratch\bench\` and
   `C:\Users\Nicolas\astro_gpu_scratch\night\` (rebuild patches, judge script, logs).
+
+## 11. Iris against the user's own image (2026-10-11 afternoon)
+
+The user's full-size Iris processing (3749 x 2514) is registered as the project's reference image and aligned to the
+stack (1284 stars, 0.14 px). `judge_iris.py NAME` compares a render with it at 100 % on six zones, in the reference
+framing (`results/compare_reference/`). What the comparison showed, in order of impact:
+
+1. **Stale files.** The stage engine never deleted the outputs of an earlier version, and the render preparation
+   picks up optional files when they exist. The extended star template of a rejected night version was still in
+   `work/stars/` and classified the whole Iris nebula as "star light": the continuum was smoothed at 24 px over 53 %
+   of the field, the nebula included. Fixed in the runner (`_clear_outputs` at every fresh start of a stage); both
+   projects cleaned by hand. Every verdict of section 10 was made with those files present.
+2. **Reflection nebula = star light.** Even without stale files, "smooth the continuum where star light dominates"
+   is a rule made for emission nebulae: a reflection nebula is scattered star light. Deciding "dominates" against the
+   nebula brightness instead of the noise was tried and rejected (nothing gained on Iris, star-residual mottling
+   back on Heart). The rule stays as in version 16; step 1 alone brought the Iris core structure back
+   (smoothed area 53 % -> 25 %, core contrast 2.0 -> 2.6, user's image 4.7).
+3. **Halo of the bright blue star (G 6.9).** Its halo extends to 300 px; the removal (nominal radius from the
+   magnitude, a refractor scale) covered 130 px, partially. Measuring the extent on each star hollowed the Iris core
+   (seen from one star, a nebula centred on it is a halo). Kept rule: the instrument's typical halo is the median
+   profile of the eight brightest stars normalised by their catalogue flux (fitted and predicted fluxes both fail on
+   saturated stars); each of those eight loses min(its own profile, three times the typical halo), out to where the
+   typical halo falls into the scatter of the far background; every other star keeps the version-4 treatment. Applied
+   to all 1113 bright stars of the Heart field it brightened and yellowed the sky: rejected in that form.
+4. **Spikes.** The diffraction spikes of the two brightest Iris stars are not in the star model and stay in the
+   starless image. A detector (narrow peaks of the azimuthal profile at the same angles over several annuli) finds
+   them; masking and filling the wedges leaves a bright bar (the fill takes the halo's value). Parked: subtract a
+   measured spike profile instead of filling.
+5. **Not defects of the chain but of its design, to decide with the user**: the darkest 1 % of the field is rendered
+   at 10/255 (dark_level); on Iris the darkest region is plain sky in a field that has no empty sky, hence "black
+   patches" that the same policy renders as dark nebulae on Heart. Stars are drawn small and dim compared with the
+   user's image (settings `d10`, `d7`, `star_sat`). The faint dust is rendered yellow-olive where the user's is
+   neutral brown.
+6. **Star flat.** The correction derived from star photometry (-23 to +11 % on Iris, -6 to +24 % on Heart) makes the
+   sky *less* uniform on both data sets (lower envelope range x2.5): it measures aperture losses of the PSF across
+   the field, not a flat error. Present since the first version; to be gated on "makes the sky flatter" later.

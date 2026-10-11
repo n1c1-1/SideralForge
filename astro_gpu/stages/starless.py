@@ -53,7 +53,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "4"          # dip repair only on measured dips
+    version = "5"          # 4: dip repair only on measured dips; 5: halo extent measured per star
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -88,7 +88,7 @@ class Starless(Stage):
         ctx.progress(0.55, "final cleaning")
         final0, _ = clean(wms, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
         del wms
-        sl_final, nh = bright_halos(final0, x, y, g, p.halo_gmax)
+        sl_final, nh = bright_halos(final0, x, y, g, fs["pred"], p.halo_gmax)
         ctx.log(f"optical halos removed around {nh} bright stars")
         ctx.save("sl_final.npy", sl_final)
         del final0
@@ -103,7 +103,7 @@ class Starless(Stage):
             torch.cuda.empty_cache()
         ctx.progress(0.85, "cleaning the detail layer")
         n2n_c0, _ = clean(sl_n2n, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
-        n2n_final, _ = bright_halos(n2n_c0, x, y, g, p.halo_gmax)
+        n2n_final, _ = bright_halos(n2n_c0, x, y, g, fs["pred"], p.halo_gmax)
         ctx.save("n2n_final.npy", n2n_final)
         from ..core.imgutil import asinh_preview
         ctx.preview("starless", asinh_preview(sl_final, M))
@@ -340,11 +340,58 @@ def wiener(A_cam, B_cam, M, p, star_model, log=print):
     return from_ycc(out)
 
 
-def bright_halos(sl, x, y, g, gmax):
-    """Remove the optical halo of every bright star from the starless image (radial profile per star and channel).
+_HALO_STEP = 2.0       # radial bin, px
+_HALO_RMAX = 700       # farthest radius ever examined, px
+_HALO_PCT = 35         # percentile of each annulus taken as the halo level (version 4 value)
+_HALO_K = 3.0          # a star may have up to K times the typical halo of its brightness (saturated stars do)
 
-    The halo radius grows with the square root of the flux (315 px at G = 5 down to 25 px at G = gmax); the
-    background is measured just beyond it. No removal inside bright emission (the profile would measure the nebula).
+
+def _radial_profiles(sl, xi, yi, rsearch):
+    """Low-percentile radial profile of the three channels around (xi, yi) in 2 px annuli out to rsearch + 20 px.
+    Returns the patch bounds, the radius map, the bin centres and the profiles (nan where the annulus is empty)."""
+    H, W = sl.shape[1:]
+    R_ = rsearch + 20
+    xc, yc = int(round(xi)), int(round(yi))
+    y0, y1, x0, x1 = max(0, yc - R_), min(H, yc + R_ + 1), max(0, xc - R_), min(W, xc + R_ + 1)
+    if y1 - y0 < 20 or x1 - x0 < 20:
+        return None
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    rr = np.hypot(xx - xi, yy - yi)
+    rb = np.arange(0, rsearch + 20, _HALO_STEP)
+    idx = np.clip((rr / _HALO_STEP).astype(int), 0, len(rb) - 2)
+    flat_idx = idx.ravel()
+    counts = np.bincount(flat_idx, minlength=len(rb) - 1)
+    order = np.argsort(flat_idx, kind="stable")
+    bounds = np.concatenate([[0], np.cumsum(counts)])
+    rcv = rb[:-1] + _HALO_STEP / 2
+    meds = []
+    for c in range(3):
+        vals = sl[c, y0:y1, x0:x1].ravel()[order]
+        meds.append(np.array([np.percentile(vals[bounds[k]:bounds[k + 1]], _HALO_PCT) if counts[k] > 5 else np.nan
+                              for k in range(len(rb) - 1)]))
+    return (y0, y1, x0, x1), rr, rcv, meds
+
+
+def _decreasing(prof, kb):
+    """Non-increasing profile from its peak inside kb bins (the filled core may be lower than the halo)."""
+    prof = np.nan_to_num(np.clip(prof, 0, None))
+    k0 = int(np.argmax(prof[:max(kb, 1)]))
+    prof[:k0] = prof[k0]
+    return np.minimum.accumulate(prof)
+
+
+def bright_halos(sl, x, y, g, pred, gmax):
+    """Remove the optical halo of every bright star from the starless image.
+
+    The halo of a star cannot be told from a nebula centred on it by looking at that star alone (the Iris nebula is
+    centred on its illuminating star). So the halo shape is measured on all the bright stars of the field: the
+    radial profile of each (low percentile of every annulus, so spikes and neighbours do not count), divided by the
+    star's catalogue flux, and the median over the stars gives the instrument's halo template per channel and radius.
+    Each star then loses min(template x its flux, its own measured profile): never more than a halo of its brightness
+    has, never more than is there. The extent of a star's halo is where its template falls into the scatter of its
+    far background; the background is measured just beyond. No removal inside bright emission. With fewer than five
+    bright stars the template is unknown and each star's own profile is used within the nominal radius (315 px at
+    G = 5 down to 25 px at G = gmax).
     """
     sl = sl.astype(np.float32).copy()
     Eg = cv2.GaussianBlur(sl[0] - 0.87 * sl[1], (0, 0), 12)
@@ -353,30 +400,66 @@ def bright_halos(sl, x, y, g, gmax):
     H, W = sl.shape[1:]
     sel = np.where((g < gmax) & (x > -40) & (x < W + 40) & (y > -40) & (y < H + 40))[0]
     sel = sel[np.argsort(g[sel])]
-    n = 0
-    for i in sel:
-        rmax = int(np.clip(25 * 10 ** (0.2 * (gmax - g[i])), 25, 320))
-        R_ = rmax + 20
-        xc, yc = int(round(x[i])), int(round(y[i]))
-        y0, y1, x0, x1 = max(0, yc - R_), min(H, yc + R_ + 1), max(0, xc - R_), min(W, xc + R_ + 1)
-        if y1 - y0 < 20 or x1 - x0 < 20:
+    nb = len(np.arange(0, _HALO_RMAX + 20, _HALO_STEP)) - 1          # bins of the longest profile
+    # flux scale of each star: the catalogue magnitude (the fitted fluxes and the colour prediction both fail on
+    # saturated stars), with the star's colour from the prediction
+    near10 = (g > 9.5) & (g < 10.5)
+    m10 = float(np.median(pred[1, near10])) if near10.sum() >= 5 else float(np.median(pred[1]))
+    amp = m10 * 10 ** (-0.4 * (g - 10.0)) * pred / np.maximum(pred[1], 1e-3)[None]
+    # pass 1: profiles of every bright star; the template comes from the brightest eight (five at least)
+    stars = []
+    nt = min(8, len(sel))
+    norm = np.full((nt, 3, nb), np.nan, np.float32)
+    for j, i in enumerate(sel):
+        rnom = int(np.clip(25 * 10 ** (0.2 * (gmax - g[i])), 25, 320))
+        rsearch = min(3 * rnom, _HALO_RMAX) if j < nt else rnom     # only the brightest are followed beyond the nominal radius
+        rp = _radial_profiles(sl, x[i], y[i], rsearch)
+        if rp is None:
+            stars.append(None)
             continue
-        yy, xx = np.mgrid[y0:y1, x0:x1]
-        rr = np.hypot(xx - x[i], yy - y[i])
-        rb = np.arange(0, rmax + 20, 2.0)
-        idx = np.clip((rr / 2.0).astype(int), 0, len(rb) - 2)
-        flat_idx = idx.ravel()
-        counts = np.bincount(flat_idx, minlength=len(rb) - 1)
-        order = np.argsort(flat_idx, kind="stable")
-        bounds = np.concatenate([[0], np.cumsum(counts)])
+        stars.append((rsearch, rp))
+        if j >= nt:
+            continue
+        _, _, rcv, meds = rp
+        for c in range(3):
+            far = meds[c][-20:]
+            m = min(len(rcv), nb)
+            norm[j, c, :m] = (meds[c][:m] - np.nanmedian(far)) / max(float(amp[c, i]), 1e-3)
+    enough = np.isfinite(norm[:, 1, :]).sum(0) >= 5
+    template = np.where(enough[None], np.nanmedian(np.where(np.isfinite(norm), norm, np.nan), 0), 0.0) \
+        if enough.any() else None
+    if template is not None:
+        template = np.stack([_decreasing(template[c], nb) for c in range(3)])
+    n = 0
+    for j, i in enumerate(sel):
+        if stars[j] is None:
+            continue
+        rsearch, ((y0, y1, x0, x1), rr, rcv, meds) = stars[j]
+        m = len(rcv)
+        own = [meds[c] for c in range(3)]
+        extended = template is not None and j < nt
+        if extended:
+            halo = [_HALO_K * float(amp[c, i]) * template[c, :m] for c in range(3)]   # bound: K x the typical halo
+            # extent: last radius where the typical halo of this brightness stands above the scatter of the far
+            # background (max over channels). Beyond it a sky gradient would be taken for halo
+            rmax = 25
+            for c in range(3):
+                far = own[c][-20:]
+                scatter = 1.4826 * np.nanmedian(np.abs(far - np.nanmedian(far))) + 1e-6
+                above = np.where(np.nan_to_num(halo[c]) / _HALO_K > 3 * scatter)[0]
+                if len(above):
+                    rmax = max(rmax, int(rcv[above[-1]]))
+            rmax = min(rmax, rsearch - 20)
+        else:                                                   # every other star: as version 4, within the nominal radius
+            rmax = rsearch
+        kb = int(np.searchsorted(rcv, rmax))
         for c in range(3):
             patch = sl[c, y0:y1, x0:x1]
-            vals = patch.ravel()[order]
-            med = np.array([np.percentile(vals[bounds[k]:bounds[k + 1]], 35) if counts[k] > 5 else np.nan
-                            for k in range(len(rb) - 1)])
-            bgv = np.nanmedian(med[-8:])
-            prof = np.minimum.accumulate(np.nan_to_num(np.clip(med - bgv, 0, None)))
-            rcv = rb[:-1] + 1.0
+            bgv = float(np.nanmedian(own[c][kb:kb + 10]))       # just beyond the end of the halo
+            if extended:
+                prof = np.minimum(_decreasing(halo[c], kb), _decreasing(own[c] - bgv, kb))
+            else:
+                prof = np.minimum.accumulate(np.nan_to_num(np.clip(own[c] - bgv, 0, None)))
             prof = prof * np.clip((rmax - rcv) / (0.4 * rmax), 0, 1) ** 2
             h = np.interp(rr, rcv, prof, right=0)
             h = np.minimum(h, 0.9 * np.clip(patch - bgv, 0, None))
