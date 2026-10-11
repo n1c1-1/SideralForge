@@ -29,6 +29,11 @@ class StarsParams(StageParams):
     faint_model: bool = P(True, label="Model faint stars",
                           help="Render the Gaia stars too faint to be measured from their catalogue magnitude, and "
                                "move them from the nebula layer to the star layer.")
+    local_psf: bool = P(True, label="Local star shape correction",
+                        help="Measure on the image how the real star shape departs from the fitted PSF, cell by cell "
+                             "of the field, and refine each star's position, width and flux against it.",
+                        tip="Needed when the star shape changes quickly across the field (coma of a Newtonian, "
+                            "field curvature): otherwise every star leaves a ring or a comma in the starless image.")
 
 
 class Stars(Stage):
@@ -42,7 +47,7 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "1"
+    version = "2"          # 2: local star shape correction, red flux bounded by 4x the prediction
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device
@@ -70,7 +75,6 @@ class Stars(Stage):
             def prog(f, msg, k=k):
                 ctx.progress((k + f) / npass * 0.85, msg)
             model, fluxes, Fp, info = forced_photometry(img, pm, x, y, g, col, sel, dm, p, W, H, dev, prog)
-        ctx.save("stars_model.npy", model)
         np.savez(ctx.out("star_fluxes.npz"), x=x, y=y, g=g, col=col, flux=fluxes, pred=Fp, dx=tdx, dy=tdy)
         for k_, v in info.items():
             ctx.metric(k_, v)
@@ -90,9 +94,20 @@ class Stars(Stage):
             ctx.metric("faint_stars", int(len(ff["g"])))
             ctx.metric("faint_light_adu", [round(float(fm[c].mean()), 3) for c in range(3)])
         else:
-            ctx.save("stars_model_faint.npy", np.zeros_like(model))
+            fm = np.zeros_like(model)
+            ctx.save("stars_model_faint.npy", fm)
             np.savez(ctx.out("faint_fluxes.npz"), x=np.zeros(0), y=np.zeros(0), g=np.zeros(0),
                      flux=np.zeros((3, 0), np.float32), col0=COL0)
+        if p.local_psf:
+            ctx.progress(0.94, "local star shape correction")
+            corr, linfo = local_psf_correction(img - model - fm, x, y, g - dm, col, fluxes, Fp, pm, W, H, dev,
+                                               ctx.log)
+            model = model + corr
+            del corr
+            for k_, v in linfo.items():
+                ctx.metric(k_, v)
+        del fm
+        ctx.save("stars_model.npy", model)
         yy, xx = H // 2, W // 2
         crop = np.s_[:, yy - 300:yy + 300, xx - 300:xx + 300]
         from ..core.imgutil import asinh_preview
@@ -266,6 +281,13 @@ def forced_photometry(img, pm, x, y, g, col, sel, dm, p, W, H, dev, progress):
             progress((c + (outer + 1) / p.solver_passes) / 3, f"photometry channel {'RGB'[c]}, pass {outer + 1}/"
                                                              f"{p.solver_passes} ({time.time() - t0:.0f} s)")
         Fn = Fl.cpu().numpy()
+        if c == 0:
+            # a star cannot be four times brighter than Gaia predicts: such a fit took the light of a brighter
+            # neighbour (the model then digs a hole in it)
+            over = (Fn > 4.0 * Fp[0]) & (g > 11.0 + dm)
+            info["capped_R"] = int(over.sum())
+            Fn = np.where(over, Fp[0], Fn).astype(np.float32)
+            Fl = torch.from_numpy(Fn).to(dev)
         if c > 0 and scale_R is not None:
             # guard: a channel below 35 % (or far above) of the expected value is a failed fit
             exp_c = scale_R * Fp[c]
@@ -287,6 +309,180 @@ def forced_photometry(img, pm, x, y, g, col, sel, dm, p, W, H, dev, progress):
             torch.cuda.empty_cache()
     info["modelled_stars"] = int(len(x))
     return model_all, fluxes, Fp, info
+
+
+LOC_R = 16        # radius of the local shape correction, px
+FIT_R = 9         # radius of the per-star refinement, px
+WING_R = 9.0      # the radial wing model of the bright stars starts here
+
+
+def _sample_stamps(img_t, xs, ys, R, dev):
+    """Bilinear samples of img_t (H, W) on a (2R+1)^2 grid centred on each (x, y) -> (N, 2R+1, 2R+1)."""
+    H, W = img_t.shape
+    K = 2 * R + 1
+    o = torch.arange(-R, R + 1, device=dev, dtype=torch.float32)
+    out = []
+    for k in range(0, len(xs), 4000):
+        gx = (torch.from_numpy(xs[k:k + 4000].astype(np.float32)).to(dev)[:, None, None] + o[None, None, :]).expand(-1, K, K)
+        gy = (torch.from_numpy(ys[k:k + 4000].astype(np.float32)).to(dev)[:, None, None] + o[None, :, None]).expand(-1, K, K)
+        grid = torch.stack([gx / (W - 1) * 2 - 1, gy / (H - 1) * 2 - 1], -1).reshape(1, -1, K, 2)
+        out.append(F.grid_sample(img_t[None, None], grid, mode="bilinear", align_corners=True).reshape(-1, K, K))
+    return torch.cat(out) if out else torch.zeros(0, K, K, device=dev)
+
+
+def _local_templates(res, x, y, g, flux, pred, dev, gmin, gmax, per_cell=30):
+    """Median residual per unit flux around isolated unsaturated stars, on a grid of cells: (ny, nx, 3, K, K)."""
+    from scipy.spatial import cKDTree
+    H, W = res.shape[1:]
+    R = LOC_R
+    m = np.where((g >= gmin) & (g < gmax) & (x > R + 2) & (x < W - R - 3) & (y > R + 2) & (y < H - R - 3)
+                 & (flux[1] > 0.4 * pred[1]) & (flux[1] < 2.5 * pred[1]))[0]
+    if len(m) > 30000:
+        m = np.random.default_rng(0).choice(m, 30000, replace=False)
+    tree = cKDTree(np.c_[x, y])
+    iso = np.array([i for i in m if all(j == i or g[j] > g[i] + 2.0
+                                        for j in tree.query_ball_point([x[i], y[i]], R + 4))], int)
+    if len(iso) < 12:
+        return None, None, None, None
+    n_cells = int(np.clip(len(iso) // per_cell, 1, 48))
+    nx = int(np.clip(round(np.sqrt(n_cells * W / H)), 1, 8))
+    ny = int(np.clip(round(n_cells / nx), 1, 6))
+    cx, cy = (np.arange(nx) + 0.5) * W / nx, (np.arange(ny) + 0.5) * H / ny
+    K = 2 * R + 1
+    oy, ox = np.mgrid[-R:R + 1, -R:R + 1]
+    rr = np.hypot(ox, oy)
+    ring = torch.from_numpy((rr >= R - 2) & (rr <= R)).to(dev)
+    taper = torch.from_numpy(np.clip((R - rr) / 3.0, 0, 1).astype(np.float32)).to(dev)
+    T = torch.zeros(ny, nx, 3, K, K, device=dev)
+    ix = np.clip((x[iso] / W * nx).astype(int), 0, nx - 1)
+    iy = np.clip((y[iso] / H * ny).astype(int), 0, ny - 1)
+    counts = np.zeros((ny, nx), int)
+    for c in range(3):
+        st = _sample_stamps(torch.from_numpy(res[c]).to(dev), x[iso], y[iso], R, dev)
+        st = st - st[:, ring].median(1).values[:, None, None]
+        st = st / torch.from_numpy(np.maximum(flux[c, iso], 1e-6).astype(np.float32)).to(dev)[:, None, None]
+        glob = st.median(0).values * taper
+        for j in range(ny):
+            for i in range(nx):
+                s = np.where((ix == i) & (iy == j))[0]
+                counts[j, i] = len(s)
+                T[j, i, c] = st[torch.from_numpy(s).to(dev)].median(0).values * taper if len(s) >= 12 else glob
+        del st
+    return T, cx, cy, counts
+
+
+def _template_stamps(T, cx, cy, c, xs, ys, dev):
+    """Per unit flux correction of each star: bilinear blend of the four nearest cell templates, shifted to the
+    star's sub-pixel position, on the integer grid around round(x) -> (N, K, K)."""
+    ny, nx, _, K, _ = T.shape
+    fx = np.clip((xs - cx[0]) / (cx[1] - cx[0]), 0, nx - 1) if nx > 1 else np.zeros_like(xs)
+    fy = np.clip((ys - cy[0]) / (cy[1] - cy[0]), 0, ny - 1) if ny > 1 else np.zeros_like(ys)
+    i0, j0 = np.minimum(fx.astype(int), max(nx - 2, 0)), np.minimum(fy.astype(int), max(ny - 2, 0))
+    i1, j1 = np.minimum(i0 + 1, nx - 1), np.minimum(j0 + 1, ny - 1)
+    ax, ay = fx - i0, fy - j0
+    w = [torch.from_numpy(v.astype(np.float32)).to(dev)[:, None, None]
+         for v in ((1 - ax) * (1 - ay), ax * (1 - ay), (1 - ax) * ay, ax * ay)]
+    P = w[0] * T[j0, i0, c] + w[1] * T[j0, i1, c] + w[2] * T[j1, i0, c] + w[3] * T[j1, i1, c]
+    dx, dy = xs - np.round(xs), ys - np.round(ys)
+    o = torch.linspace(-1, 1, K, device=dev)
+    base = torch.stack(torch.meshgrid(o, o, indexing="xy"), -1)[None]
+    sh = torch.from_numpy(np.c_[-dx, -dy].astype(np.float32) * 2 / (K - 1)).to(dev)[:, None, None]
+    return F.grid_sample(P[:, None], base + sh, mode="bilinear", align_corners=True, padding_mode="zeros")[:, 0]
+
+
+def local_psf_correction(res, x, y, g, col, flux, pred, pm, W, H, dev, log, gmin=11.0, gmax=16.5, batch=20000):
+    """What the fitted PSF misses, measured on the image (``g`` already shifted by the setup's magnitude offset).
+
+    The fitted PSF follows the field through a smooth low-order basis and is truncated; the star shape of a
+    Newtonian changes faster than that (sharp at the centre, broader mid-field, comatic in the corners). 1. Around
+    isolated unsaturated stars, the residual (image - model) per unit flux, aligned to a hundredth of a pixel, median
+    over the stars of each cell of a grid (nebula, neighbours and noise average out); every star gets its flux times
+    the blend of the four nearest cell templates (two passes). 2. Each star with enough signal then has its flux,
+    position and width refined against its own residual (linear fit of the model and its derivatives). Stars that
+    already have the radial wing model (G < 11) only get the core of the correction.
+    Returns the correction image to add to the model and metrics.
+    """
+    corr = np.zeros_like(res)
+    info = {}
+    xi, yi = np.round(x).astype(np.int64), np.round(y).astype(np.int64)
+    oyL, oxL = np.mgrid[-LOC_R:LOC_R + 1, -LOC_R:LOC_R + 1]
+    core_only = torch.from_numpy((np.hypot(oxL, oyL) < WING_R).astype(np.float32)).to(dev)
+    T = None
+    for it in range(2):
+        T_, cx, cy, counts = _local_templates(res - corr, x, y, g, flux, pred, dev, gmin, gmax)
+        if T_ is None:
+            break
+        T = T_ if T is None else T + T_
+        if it == 0:
+            info["local_psf_grid"] = [int(counts.shape[1]), int(counts.shape[0])]
+            info["local_psf_stars_per_cell"] = [int(counts.min()), int(counts.max())]
+        for c in range(3):
+            acc = torch.zeros(H * W, device=dev)
+            for k in range(0, len(x), batch):
+                s = slice(k, k + batch)
+                P = _template_stamps(T_, cx, cy, c, x[s], y[s], dev)
+                P = torch.where(torch.from_numpy(g[s] < 11.0).to(dev)[:, None, None], P * core_only, P)
+                Group(P.half(), xi[s], yi[s], LOC_R, W, H, dev).render(
+                    torch.from_numpy(flux[c, s].astype(np.float32)).to(dev), acc)
+                del P
+            corr[c] += acc.reshape(H, W).cpu().numpy()
+    if T is None:
+        log("local star shape correction: not enough isolated stars")
+        return corr, info
+    # per-star refinement of flux, position and width
+    R = FIT_R
+    K = 2 * R + 1
+    oy, ox = np.mgrid[-R:R + 1, -R:R + 1]
+    oxt, oyt = (torch.from_numpy(v.astype(np.float32)).to(dev) for v in (ox, oy))
+    lo = LOC_R - R
+    n_fit = 0
+    for c in range(3):
+        E = pm["E"][c].to(dev)
+        cur = torch.from_numpy(res[c] - corr[c]).to(dev)
+        hp = res[c] - cv2.GaussianBlur(res[c], (0, 0), 2)
+        sig = float(1.4826 * np.median(np.abs(hp[::7, ::7])) * 1.3)
+        cand = np.where((g >= gmin) & (g < gmax) & (flux[c] > 0) & (xi > R) & (xi < W - R - 1) & (yi > R)
+                        & (yi < H - R - 1))[0]
+        for it in range(2):
+            acc = torch.zeros(H * W, device=dev)
+            for k in range(0, len(cand), batch):
+                s = cand[k:k + batch]
+                P = stamps(E, x[s], y[s], col[s], R, W, H, dev)[0].float()
+                P = P + _template_stamps(T, cx, cy, c, x[s], y[s], dev)[:, lo:lo + K, lo:lo + K]
+                m = P * torch.from_numpy(flux[c, s].astype(np.float32)).to(dev)[:, None, None]
+                ok = m.amax((1, 2)) > 5 * sig
+                idx = (torch.from_numpy(yi[s]).to(dev)[:, None, None] + torch.from_numpy(oy).to(dev)[None]) * W + \
+                      (torch.from_numpy(xi[s]).to(dev)[:, None, None] + torch.from_numpy(ox).to(dev)[None])
+                r = cur.reshape(-1)[idx]
+                gx = torch.zeros_like(m)
+                gy = torch.zeros_like(m)
+                gx[:, :, 1:-1] = 0.5 * (m[:, :, 2:] - m[:, :, :-2])
+                gy[:, 1:-1, :] = 0.5 * (m[:, 2:, :] - m[:, :-2, :])
+                gs = oxt * gx + oyt * gy
+                A = torch.stack([m, gx, gy, gs, torch.ones_like(m)], 1).reshape(len(s), 5, -1)
+                N_ = A @ A.transpose(1, 2) + 1e-6 * torch.eye(5, device=dev) * A.pow(2).sum(2).amax(1)[:, None, None]
+                b_ = A @ r.reshape(len(s), -1, 1)
+                cf = torch.linalg.solve(N_, b_)[:, :, 0]
+                cf[:, 0] = cf[:, 0].clamp(-0.5, 1.0)
+                cf[:, 1:3] = cf[:, 1:3].clamp(-0.7, 0.7)
+                cf[:, 3] = cf[:, 3].clamp(-0.3, 0.3)
+                cf = cf * ok.float()[:, None]
+                D = cf[:, 0, None, None] * m + cf[:, 1, None, None] * gx + cf[:, 2, None, None] * gy + \
+                    cf[:, 3, None, None] * gs
+                acc.index_add_(0, idx.reshape(-1), (0.7 * D).reshape(-1))
+                if c == 1 and it == 0:
+                    n_fit += int(ok.sum())
+                del P, m, r, gx, gy, gs, A, N_, b_, D
+            cur = cur - acc.reshape(H, W)
+            corr[c] += acc.reshape(H, W).cpu().numpy()
+        del cur
+        if dev.type == "cuda":
+            torch.cuda.empty_cache()
+    info["local_psf_refined_stars"] = n_fit
+    log(f"local star shape correction: grid {info['local_psf_grid'][0]} x {info['local_psf_grid'][1]} "
+        f"({info['local_psf_stars_per_cell'][0]}..{info['local_psf_stars_per_cell'][1]} isolated stars per cell); "
+        f"flux, position and width refined for {n_fit} stars")
+    return corr, info
 
 
 def refine_positions(img, mdl, x, y, g, col, fl, pm, W, H, dm, dev):

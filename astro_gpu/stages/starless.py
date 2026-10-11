@@ -53,7 +53,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "5"          # 4: dip repair only on measured dips; 5: halo extent measured per star
+    version = "6"          # 5: halo extent per star; 6: diffraction spikes removed, core mask = plausible model errors
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -88,10 +88,19 @@ class Starless(Stage):
         ctx.progress(0.55, "final cleaning")
         final0, _ = clean(wms, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
         del wms
-        sl_final, nh = bright_halos(final0, x, y, g, fs["pred"], p.halo_gmax)
+        sl_final, nh = bright_halos(final0, x, y, g, fs["pred"], p.halo_gmax, mask)
         ctx.log(f"optical halos removed around {nh} bright stars")
-        ctx.save("sl_final.npy", sl_final)
         del final0
+        ctx.progress(0.62, "diffraction spikes")
+        dirs, sig_t = spike_directions(sl_final, mask, x, y, g, log=ctx.log)
+        spikes, ns = spike_model(sl_final, mask, x, y, g, dirs, sig_t)
+        sl_final -= spikes
+        ctx.metric("spike_directions", [round(d) for d in dirs])
+        ctx.metric("stars_with_spikes", int(ns))
+        if dirs:
+            ctx.log(f"diffraction spikes moved from the nebula layer to the star layer for {ns} stars")
+        ctx.save("sl_final.npy", sl_final)
+        ctx.save("spikes.npy", spikes.astype(np.float16))         # star light: rendered with the stars
 
         ctx.progress(0.7, "Noise2Noise detail layer")
         net, bk, sg = load_model(ctx)
@@ -103,7 +112,9 @@ class Starless(Stage):
             torch.cuda.empty_cache()
         ctx.progress(0.85, "cleaning the detail layer")
         n2n_c0, _ = clean(sl_n2n, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
-        n2n_final, _ = bright_halos(n2n_c0, x, y, g, fs["pred"], p.halo_gmax)
+        n2n_final, _ = bright_halos(n2n_c0, x, y, g, fs["pred"], p.halo_gmax, mask)
+        n2n_final -= spikes
+        del spikes
         ctx.save("n2n_final.npy", n2n_final)
         from ..core.imgutil import asinh_preview
         ctx.preview("starless", asinh_preview(sl_final, M))
@@ -122,7 +133,10 @@ def core_mask(full, model, A, B, K):
         keep = (model[c] < 1.0 * sig).astype(np.float32)
         bgl = cv2.GaussianBlur(rs * keep, (0, 0), 6) / np.maximum(cv2.GaussianBlur(keep, (0, 0), 6), 1e-3)
         z = (rs - bgl) / (sig * 0.55)
-        mask |= (fc > 0.7 * lvl) | (model[c] > K * sig) | ((np.abs(z) > 4) & (model[c] > 2 * sig))
+        # a residual is a model error only if the model could be that wrong: beyond 60 % of the model it is the
+        # star's real halo or the nebula, not missing data
+        plausible = np.abs(rs - bgl) < 0.6 * model[c] + 2 * sig
+        mask |= (fc > 0.7 * lvl) | (model[c] > K * sig) | ((np.abs(z) > 4) & (model[c] > 2 * sig) & plausible)
     return cv2.dilate(mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))) > 0
 
 
@@ -372,15 +386,16 @@ def _radial_profiles(sl, xi, yi, rsearch):
     return (y0, y1, x0, x1), rr, rcv, meds
 
 
-def _decreasing(prof, kb):
-    """Non-increasing profile from its peak inside kb bins (the filled core may be lower than the halo)."""
+def _decreasing(prof, kb, kmax=None):
+    """Non-increasing profile from its peak inside kb bins (the filled core may be lower than the halo); the peak is
+    looked for within kmax bins only (just beyond the filled core)."""
     prof = np.nan_to_num(np.clip(prof, 0, None))
-    k0 = int(np.argmax(prof[:max(kb, 1)]))
+    k0 = int(np.argmax(prof[:max(min(kb, kmax if kmax is not None else kb), 1)]))
     prof[:k0] = prof[k0]
     return np.minimum.accumulate(prof)
 
 
-def bright_halos(sl, x, y, g, pred, gmax):
+def bright_halos(sl, x, y, g, pred, gmax, mask=None):
     """Remove the optical halo of every bright star from the starless image.
 
     The halo of a star cannot be told from a nebula centred on it by looking at that star alone (the Iris nebula is
@@ -453,11 +468,17 @@ def bright_halos(sl, x, y, g, pred, gmax):
         else:                                                   # every other star: as version 4, within the nominal radius
             rmax = rsearch
         kb = int(np.searchsorted(rcv, rmax))
+        kfill = None
+        if mask is not None:                                    # radius of the filled core of this star
+            mf = mask[y0:y1, x0:x1].ravel()
+            fr = np.array([mf[np.abs(rr.ravel() - r_) < _HALO_STEP / 2].mean() if k_ < 200 else 0.0
+                           for k_, r_ in enumerate(rcv[:200])])
+            kfill = int(np.argmax(fr < 0.5)) + int(6 / _HALO_STEP) if (fr < 0.5).any() else None
         for c in range(3):
             patch = sl[c, y0:y1, x0:x1]
             bgv = float(np.nanmedian(own[c][kb:kb + 10]))       # just beyond the end of the halo
             if extended:
-                prof = np.minimum(_decreasing(halo[c], kb), _decreasing(own[c] - bgv, kb))
+                prof = np.minimum(_decreasing(halo[c], kb), _decreasing(own[c] - bgv, kb, kfill))
             else:
                 prof = np.minimum.accumulate(np.nan_to_num(np.clip(own[c] - bgv, 0, None)))
             prof = prof * np.clip((rmax - rcv) / (0.4 * rmax), 0, 1) ** 2
@@ -466,3 +487,130 @@ def bright_halos(sl, x, y, g, pred, gmax):
             sl[c, y0:y1, x0:x1] = patch - h * gate[y0:y1, x0:x1]
         n += 1
     return sl, n
+
+
+def _filled_radius(mask, xc, yc, rmax=200):
+    """Radius beyond which less than half of each ring around (xc, yc) is filled core."""
+    H, W = mask.shape
+    for r_ in range(3, rmax, 2):
+        a = np.linspace(0, 2 * np.pi, max(16, int(2 * np.pi * r_)), endpoint=False)
+        px = np.clip(np.round(xc + r_ * np.cos(a)).astype(int), 0, W - 1)
+        py = np.clip(np.round(yc + r_ * np.sin(a)).astype(int), 0, H - 1)
+        if mask[py, px].mean() < 0.5:
+            return r_
+    return rmax
+
+
+def spike_directions(sl, mask, x, y, g, gmax=10.0, log=print):
+    """Directions (degrees) and transverse sigma (px) of the diffraction spikes, measured on the bright stars of the
+    field: the azimuthal profiles just outside their filled cores, normalised and summed, peak where the spikes are.
+    A spider gives four spikes 90 degrees apart; a refractor gives none (empty list)."""
+    H, W = sl.shape[1:]
+    Y = sl.sum(0)
+    acc = np.zeros(360)
+    n = 0
+    for i in np.where((g < gmax) & (x > 160) & (x < W - 160) & (y > 160) & (y < H - 160))[0]:
+        r0 = _filled_radius(mask, x[i], y[i]) + 4
+        if r0 > 100:
+            continue
+        rr = np.arange(r0, r0 + 50, 1.0)
+        a = np.radians(np.arange(360))
+        px = x[i] + rr[:, None] * np.cos(a)[None]
+        py = y[i] + rr[:, None] * np.sin(a)[None]
+        v = cv2.remap(Y, px.astype(np.float32), py.astype(np.float32), cv2.INTER_LINEAR)
+        v = v - np.median(v, 1, keepdims=True)
+        prof = np.median(v, 0)
+        s = 1.4826 * np.median(np.abs(prof - np.median(prof))) + 1e-9
+        acc += np.clip((prof - np.median(prof)) / s, -5, 20)
+        n += 1
+    if n < 3:
+        return [], 0.0
+    acc /= np.sqrt(n)
+    k0 = int(np.argmax(acc))
+    dirs = []
+    for k in range(4):
+        c = (k0 + 90 * k) % 360
+        win = [(c + d) % 360 for d in range(-4, 5)]
+        best = max(win, key=lambda a_: acc[a_])
+        if acc[best] > 6:
+            dirs.append(float(best))
+    if len(dirs) < 2:
+        log(f"diffraction spikes: none detected (peak {acc[k0]:.1f} sigma over {n} bright stars)")
+        return [], 0.0
+    # transverse width: profile across the strongest spike, summed over the stars
+    tw = np.arange(-10, 11)
+    prof_t = np.zeros(len(tw))
+    for i in np.where((g < gmax) & (x > 160) & (x < W - 160) & (y > 160) & (y < H - 160))[0][:40]:
+        r0 = _filled_radius(mask, x[i], y[i]) + 4
+        u = np.array([np.cos(np.radians(dirs[0])), np.sin(np.radians(dirs[0]))])
+        nrm = np.array([-u[1], u[0]])
+        rr = np.arange(r0, r0 + 40, 1.0)
+        px = x[i] + rr[:, None] * u[0] + tw[None] * nrm[0]
+        py = y[i] + rr[:, None] * u[1] + tw[None] * nrm[1]
+        v = cv2.remap(Y, px.astype(np.float32), py.astype(np.float32), cv2.INTER_LINEAR)
+        v = v - np.median(v[:, np.abs(tw) >= 7], 1, keepdims=True)
+        prof_t += np.median(v, 0)
+    prof_t = np.clip(prof_t, 0, None)
+    sig_t = float(np.clip(np.sqrt((prof_t * tw ** 2).sum() / max(prof_t.sum(), 1e-9)), 0.8, 4.0))
+    log(f"diffraction spikes: {len(dirs)} directions " + ", ".join(f"{d:.0f}" for d in dirs) +
+        f" deg (peak {acc[k0]:.1f} sigma over {n} bright stars), width sigma {sig_t:.1f} px")
+    return dirs, sig_t
+
+
+def spike_model(sl, mask, x, y, g, dirs, sig_t, gmax=12.0, rlim=500):
+    """Light of the diffraction spikes of every star brighter than gmax, measured on the image itself: a strip along
+    each spike is sampled; its excess over the background on both sides (the halo and the nebula), smoothed along
+    the spike, is the spike - no assumed profile. The spike ends where its mean excess stays in the noise for 15 px.
+    Returns the model (3, H, W) to subtract and the number of stars with spikes."""
+    from scipy.ndimage import map_coordinates
+    H, W = sl.shape[1:]
+    out = np.zeros_like(sl)
+    if not dirs:
+        return out, 0
+    hw = int(max(3, round(2 * sig_t)))
+    tw = np.arange(-hw - 9, hw + 9.25, 0.5)                 # across the spike, half-pixel steps
+    core_t = np.abs(tw) <= hw
+    side_t = (np.abs(tw) >= hw + 3)
+    sgp = [1.4826 * np.median(np.abs((sl[c] - cv2.GaussianBlur(sl[c], (0, 0), 2))[::7, ::7])) for c in range(3)]
+    ok_ = (g < gmax) & (x > 0) & (x < W) & (y > 0) & (y < H)
+    n = 0
+    for i in np.where(ok_)[0][np.argsort(g[ok_])]:
+        r0 = max(_filled_radius(mask, x[i], y[i]) + 2, 4)
+        rr = np.arange(r0, rlim, 1.0)
+        found = False
+        for d in dirs:
+            u = np.array([np.cos(np.radians(d)), np.sin(np.radians(d))])
+            nrm = np.array([-u[1], u[0]])
+            px = (x[i] + rr[:, None] * u[0] + tw[None] * nrm[0]).astype(np.float32)
+            py = (y[i] + rr[:, None] * u[1] + tw[None] * nrm[1]).astype(np.float32)
+            inside = ((px >= 0) & (px < W - 1) & (py >= 0) & (py < H - 1)).all(1)
+            if inside.mean() < 0.3:
+                continue
+            for c in range(3):
+                v = cv2.remap(sl[c] - out[c], px, py, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+                ex = (v - np.median(v[:, side_t], 1, keepdims=True))[:, core_t]
+                ex[~inside] = 0.0
+                exs = cv2.blur(ex.astype(np.float32), (1, 7))       # 7 px along the spike, none across
+                e = exs.mean(1)
+                noise = sgp[c] / np.sqrt(core_t.sum() / 2 * 7)
+                low = e < 2.5 * noise
+                run = np.convolve(low.astype(float), np.ones(15), "valid") >= 15
+                end = int(np.argmax(run)) if run.any() else len(e)
+                if end < 3:
+                    continue
+                prof = np.clip(exs[:end], 0, None) * np.clip((end - np.arange(end)) / 6.0, 0, 1)[:, None]
+                L = rr[end - 1] + 2
+                x0_, x1_ = int(max(0, np.floor(x[i] - L - hw - 2))), int(min(W, np.ceil(x[i] + L + hw + 3)))
+                y0_, y1_ = int(max(0, np.floor(y[i] - L - hw - 2))), int(min(H, np.ceil(y[i] + L + hw + 3)))
+                yy, xx = np.mgrid[y0_:y1_, x0_:x1_]
+                dx, dy = xx - x[i], yy - y[i]
+                ra = dx * u[0] + dy * u[1]
+                ta = dx * nrm[0] + dy * nrm[1]
+                keep = (ra >= r0) & (ra <= rr[end - 1]) & (np.abs(ta) <= hw)
+                if not keep.any():
+                    continue
+                vals = map_coordinates(prof, [ra[keep] - r0, (ta[keep] + hw) * 2], order=1, mode="nearest")
+                out[c, yy[keep], xx[keep]] += vals
+                found = True
+        n += found
+    return out, n
