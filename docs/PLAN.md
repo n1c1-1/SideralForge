@@ -216,3 +216,26 @@ framing (`results/compare_reference/`). What the comparison showed, in order of 
 6. **Star flat.** The correction derived from star photometry (-23 to +11 % on Iris, -6 to +24 % on Heart) makes the
    sky *less* uniform on both data sets (lower envelope range x2.5): it measures aperture losses of the PSF across
    the field, not a flat error. Present since the first version; to be gated on "makes the sky flatter" later.
+
+### 11.1 Halos around the stars on Iris (2026-10-11, late afternoon)
+
+The user found halos everywhere on Iris at 100 % (around stars in the nebula core, around faint field stars, on
+the spikes of the bright stars) that the zone judge had not caught. Rule since then: every result is inspected at
+100 % on faint stars, stars in the nebula, bright stars with spikes, on both data sets (`night/qc_sheet.py`),
+before being shown. Causes and fixes, all general (no instrument rule), each checked on Iris and Heart:
+
+| Cause | Fix | Commit |
+|---|---|---|
+| Bubbles around every star in the reflection nebula: the render preparation smoothed the continuum at 24 px in a disc around each star | smoothing only where the field is too dense to see the continuum between the stars, or where it is flat between them | 55737bf |
+| Rings / commas around every star: a Newtonian's star shape changes across the field faster than the fitted PSF | local star shape measured on the image (grid of cells) + per-star flux, position, width refinement | a0f9bfa |
+| Grey disc around the Iris central star: its real halo and the nebula counted as model error | a residual is a model error only below 60 % of the model | a0f9bfa |
+| Spikes of the Newton left in the nebula layer, or removed and lost | spikes measured strip by strip and moved to the star layer | a0f9bfa |
+| Bright saturated stars: nothing can model them (saturation, coma, spikes) | with spikes in the optics, saturated stars are shown by their real light (image minus nebula), nebula interpolated under them unless a structured nebula surrounds them; without spikes (refractor) every star is drawn as before - Heart identical | 55737bf |
+
+Rejected on the way (each made one star better and another worse): a 2-D halo-and-spike template for bright stars
+(black disc), disc rules for bright cores (three variants), the halo extent followed in the starless image (the
+footprint of the Iris central star grew and its nebula was erased), OpenCV inpainting (garbage on large holes).
+
+Remaining on Iris: about 14 stars of G 9.5-11 have a slight dark disc - their fitted flux is about twice the
+catalogue prediction (core near saturation) and their modelled wings are removed twice too strongly; thin straight
+spike traces cross the Iris core. The user wants to keep the spikes ("the charm of a Newtonian image").
