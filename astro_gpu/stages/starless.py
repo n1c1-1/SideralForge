@@ -53,7 +53,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "4"          # dip repair only on measured dips
+    version = "8"          # 4: dips on the measurements; 7: extended template; 8: nebula-aware core mask
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -122,7 +122,11 @@ def core_mask(full, model, A, B, K):
         keep = (model[c] < 1.0 * sig).astype(np.float32)
         bgl = cv2.GaussianBlur(rs * keep, (0, 0), 6) / np.maximum(cv2.GaussianBlur(keep, (0, 0), 6), 1e-3)
         z = (rs - bgl) / (sig * 0.55)
-        mask |= (fc > 0.7 * lvl) | (model[c] > K * sig) | ((np.abs(z) > 4) & (model[c] > 2 * sig))
+        # the model is compared with the noise plus the nebula around: a bright star in a dark sky is masked as far
+        # as its wings are bright (their errors stay hidden), a star in the nebula it lights only at its core
+        neb = cv2.GaussianBlur(np.clip(raw[c], 0, None), (0, 0), 16)
+        neb = np.clip(neb - np.percentile(neb[::8, ::8], 5), 0, None)
+        mask |= (fc > 0.7 * lvl) | (model[c] > K * sig + 2 * neb) | ((np.abs(z) > 4) & (model[c] > 2 * sig))
     return cv2.dilate(mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))) > 0
 
 
