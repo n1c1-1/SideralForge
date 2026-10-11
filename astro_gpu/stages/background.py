@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from scipy.optimize import least_squares
+from scipy.optimize import lsq_linear
 from scipy.spatial import cKDTree
 
 from ..core.imgutil import bin_median, normalized_blur, poly_terms, robust_lstsq
@@ -25,6 +25,11 @@ class BackgroundParams(StageParams):
     large_scale_px: float = P(200.0, label="Large-scale correction", level=ADVANCED, ge=0, le=2000, unit="px",
                               help="Above this scale, the H-alpha emission of the image is matched to the survey "
                                    "(multi-scale gradient correction). 0 disables it.")
+    object_clip: float = P(2.5, label="Object rejection", level=ADVANCED, ge=1.0, le=10, step=0.1, unit="sigma",
+                           help="Blocks brighter than the sky model by more than this are taken as objects (galaxy, "
+                                "reflection nebula, dust glow not described by the survey) and left out of the sky fit, "
+                                "iteratively. The sky then passes under the data instead of through extended objects, "
+                                "which would leave the darker areas below zero.")
 
 
 class Background(Stage):
@@ -39,7 +44,7 @@ class Background(Stage):
                    "point. Faint emission (IFN-like structures) is therefore kept with its true brightness.")
     deps = ("starless", "stars", "optics", "surveys", "astrometry", "stack", "color", "catalogs")
     Params = BackgroundParams
-    version = "1"
+    version = "3"          # 2: bounded object-rejecting sky fit, physical H-alpha; 3: zero-point floor on the darkest areas
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
@@ -81,15 +86,16 @@ class Background(Stage):
         sky, coefs = [], {}
         yy, xx = np.mgrid[0:H:16, 0:W:16].astype(np.float64)
         Tfull = poly_terms(xx, yy, W, H, p.sky_order)
+        Yb = np.stack([bin_median(sl[c], p.bin_px) for c in range(3)])
+        h_cam = np.load(ctx.input("color", "specresp.npz"))["cam_hii"].astype(np.float64)
+        sol, used, how = fit_sky(Yb, Hb, U, Tp, good, h_cam / h_cam[0], p.object_clip)
+        ctx.metric("sky_fit_blocks_pct", round(100 * float(used.sum()) / max(int(good.sum()), 1), 1))
+        ctx.metric("ha_fit", how)
+        ctx.log(f"sky fitted on {100 * used.sum() / max(good.sum(), 1):.0f} % of the field (the rest is taken as "
+                f"objects); H-alpha signature: {how}")
+        nh = 1 if Hb is not None else 0
         for c in range(3):
-            Y = bin_median(sl[c], p.bin_px)
-            cols = ([Hb.ravel()] if Hb is not None else []) + [U[c].ravel()]
-            A = np.c_[np.stack(cols, 1), Tp]
-            ok = good.ravel() & np.isfinite(Y.ravel()) & np.isfinite(A).all(1)
-            p0 = np.linalg.lstsq(A[ok], Y.ravel()[ok], rcond=None)[0]
-            s0 = 1.4826 * np.median(np.abs(A[ok] @ p0 - Y.ravel()[ok]))
-            q = least_squares(lambda v: A[ok] @ v - Y.ravel()[ok], p0, loss="huber", f_scale=1.5 * s0).x
-            nh = 1 if Hb is not None else 0
+            q = sol[c]
             coefs[c] = {"k_ha": float(q[0]) if nh else None, "u": float(q[nh]), "poly": q[nh + 1:].tolist()}
             P_ = (Tfull @ q[nh + 1:]).astype(np.float32)
             sky.append(cv2.resize(P_, (W, H), interpolation=cv2.INTER_CUBIC))
@@ -115,7 +121,14 @@ class Background(Stage):
             if Hb is not None:
                 Yc = Yc - coefs[c]["k_ha"] * Hb
             want = f_ext[c] * U[c] / (p.bin_px ** 2)
-            offs.append(float(np.nanmedian((want - Yc)[low])))
+            off = float(np.nanmedian((want - Yc)[low]))
+            # physical floor: the sky cannot be darker than nothing - no significant area may end below zero
+            floor = -float(np.nanpercentile(Yc[good], 0.2))       # the darkest areas, not only 98 % of the field
+            if floor > off:
+                ctx.log(f"channel {'RGB'[c]}: continuum zero point raised by {floor - off:.2f} ADU so that the darkest "
+                        f"areas (dark nebulae) stay above zero")
+                off = floor
+            offs.append(off)
             astro[c] += offs[-1]
         ctx.metric("continuum_zero_offsets", [round(o, 2) for o in offs])
         ctx.metric("unresolved_light_adu", [round(float(np.nanmedian(f_ext[c] * U[c] / p.bin_px ** 2)), 2) for c in range(3)])
@@ -150,6 +163,87 @@ class Background(Stage):
         ctx.metric("emission_dips", emission_dips(astro, fs, W, H, dm))
         from ..core.imgutil import asinh_preview
         ctx.preview("background", asinh_preview(astro, ctx.load("color", "M.npy"), k=30))
+
+
+def fit_sky(Yb, Hb, U, Tp, good, h_cam, clip, iters=10):
+    """Sky model per channel: Yb = k_ha Hb + u U + polynomial, with k_ha >= 0 and u >= 0.
+
+    Blocks brighter than the model by more than ``clip`` robust sigmas are objects and are left out, iteratively
+    (the sky passes under extended objects). The H-alpha colour must be compatible with the camera's HII signature
+    ``h_cam`` (R = 1); otherwise the survey is correlated with something else in the field (reflection nebula,
+    galaxy) and the H-alpha term is refitted with the camera signature imposed.
+    Returns (coefficients per channel, blocks used, description of the H-alpha fit).
+    """
+    nh = 1 if Hb is not None else 0
+    npoly = Tp.shape[1]
+    base = good.ravel() & np.isfinite(Yb).all(0).ravel() & np.isfinite(U).all(0).ravel()
+    if nh:
+        base &= np.isfinite(Hb.ravel())
+
+    def design(c):
+        cols = ([Hb.ravel()] if nh else []) + [U[c].ravel()]
+        return np.c_[np.stack(cols, 1), Tp]
+
+    def solve(mask, shared):
+        """Per-channel bounded least squares, or one shared H-alpha amplitude a (k_ha[c] = a h_cam[c])."""
+        if not shared:
+            out = []
+            for c in range(3):
+                A = design(c)
+                lb = np.r_[np.zeros(nh + 1), -np.inf * np.ones(npoly)]
+                out.append(lsq_linear(A[mask], Yb[c].ravel()[mask], bounds=(lb, np.inf)).x)
+            return out
+        rows, ys = [], []
+        n = 1 + 3 * (1 + npoly)
+        for c in range(3):
+            A = design(c)[mask]
+            sc = 1.4826 * np.median(np.abs(Yb[c].ravel()[mask] - np.median(Yb[c].ravel()[mask]))) + 1e-9
+            M_ = np.zeros((A.shape[0], n))
+            M_[:, 0] = A[:, 0] * h_cam[c]
+            M_[:, 1 + c * (1 + npoly):1 + (c + 1) * (1 + npoly)] = A[:, 1:]
+            rows.append(M_ / sc)
+            ys.append(Yb[c].ravel()[mask] / sc)
+        lb = -np.inf * np.ones(n)
+        lb[0] = 0
+        for c in range(3):
+            lb[1 + c * (1 + npoly)] = 0
+        x = lsq_linear(np.vstack(rows), np.concatenate(ys), bounds=(lb, np.inf)).x
+        return [np.r_[x[0] * h_cam[c], x[1 + c * (1 + npoly):1 + (c + 1) * (1 + npoly)]] for c in range(3)]
+
+    def plausible(sol):
+        if not nh or sol[0][0] <= 0:
+            return True
+        k = np.array([s[0] for s in sol])
+        return k[1] / k[0] <= 2.0 * h_cam[1] and k[2] / k[0] <= 2.5 * h_cam[2]
+
+    def clip_objects(sol, mask):
+        keep = base.copy()
+        for c in range(3):
+            r = Yb[c].ravel() - design(c) @ sol[c]
+            s = 1.4826 * np.median(np.abs(r[mask] - np.median(r[mask]))) + 1e-9
+            obj = (r - np.median(r[mask]) > clip * s).reshape(Yb.shape[1:])
+            obj = cv2.dilate(obj.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+            keep &= ~obj.ravel()
+        return keep if keep.sum() >= 0.1 * base.sum() else mask
+
+    shared = False
+    mask = base
+    sol = solve(mask, shared)
+    for _ in range(iters):
+        if not plausible(sol):
+            shared = True
+            sol = solve(mask, shared)
+        new = clip_objects(sol, mask)
+        if (new == mask).all():
+            break
+        mask = new
+        sol = solve(mask, shared)
+    if not plausible(sol):
+        shared = True
+        sol = solve(mask, shared)
+    how = "none (no survey)" if not nh else ("camera HII signature imposed (the survey correlates with other "
+                                             "structures in this field)" if shared else "fitted")
+    return sol, mask.reshape(Yb.shape[1:]), how
 
 
 def star_flat(fs, img, W, H, dm):

@@ -61,7 +61,9 @@ class RenderEngine:
         self.calibrated_white = calibrated_white
         # preparation layers stay in host memory; reduced versions are cached on the device, the full resolution is
         # only uploaded while it is being mixed
-        self.layered = (self.dir / "N.npy").exists()
+        # layered preparations (version >= 7) write N.npy and describe the layers in prep.json; an older preparation
+        # may share a folder with leftover layer files, so prep.json decides
+        self.layered = (self.dir / "N.npy").exists() and "w_cam" in self.prep
         if self.layered:
             names = ["N", "Eg0", "dY", "R"] + [n for n in ("chroma_fine", "dS") if (self.dir / f"{n}.npy").exists()]
             if (self.dir / "O.npy").exists() and self.prep.get("oiii_sigma"):
