@@ -410,7 +410,7 @@ class RenderTab(QWidget):
         key = b.property("layer") if b else "final"
         img = self.images[key]
         self.view.set_image(to_qimage(img), keep_view=True, scale_factor=1.0 / max(self.cur_scale, 1e-6))
-        self.hist.set_image(img[4:-4, 4:-4])
+        self.hist.set_image(_sample(img[4:-4, 4:-4]))
         mode = self.compare.currentIndex()
         if mode == 1 and self.snapshot is not None:
             snap = self.snapshot[1]
@@ -469,8 +469,10 @@ class RenderTab(QWidget):
 
     def update_checks(self, info):
         b = 4                                       # preview edge pixels mix in the uncovered border: ignored
-        img = self.images["final"][b:-b, b:-b].astype(np.float32) / 255
-        sl = self.images["starless"][b:-b, b:-b].astype(np.float32) / 255
+        # statistics on a fixed-size sample of pixels: on the whole image (several million pixels at full resolution)
+        # they blocked the interface for up to seconds after every change
+        img = _sample(self.images["final"][b:-b, b:-b]).astype(np.float32) / 255
+        sl = _sample(self.images["starless"][b:-b, b:-b]).astype(np.float32) / 255
         black = 100 * float((img.max(2) <= 0).mean())
         Y = 0.2126 * sl[..., 0] + 0.7152 * sl[..., 1] + 0.0722 * sl[..., 2]
         burnt = 100 * float((Y > 0.92).mean())
@@ -533,6 +535,13 @@ class RenderTab(QWidget):
         QMessageBox.information(self, "Export done",
                                 f"{len(meta['files'])} files written to\n{self.project.results / self._export_name}\n\n"
                                 + ("Quality checks passed." if not warn else "Check: " + ", ".join(warn)))
+
+
+def _sample(img: np.ndarray, n: int = 250_000) -> np.ndarray:
+    """Regular subsample of an image with about n pixels (statistics for display: histogram, checks)."""
+    h, w = img.shape[:2]
+    step = max(1, int(np.sqrt(h * w / n)))
+    return img[::step, ::step]
 
 
 def clipping_overlay(final_u8: np.ndarray, starless_u8: np.ndarray) -> QImage:
