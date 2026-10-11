@@ -47,7 +47,7 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "2"          # 2: local star shape correction, red flux bounded by 4x the prediction
+    version = "3"          # 2: local star shape, red flux bounded by 4x the prediction; 3: faint stars bounded by the data
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device
@@ -88,7 +88,8 @@ class Stars(Stage):
         g_deep = float(np.nanmax(g)) if len(g) else 18.5
         if p.faint_model and len(f["g"]):
             ctx.progress(0.9, "modelling the faint stars")
-            fm, ff = faint_model(f, x, y, g, col, Fp, pm, W, H, g_deep, dev)
+            fm, ff = faint_model(f, x, y, g, col, Fp, pm, W, H, g_deep, dev, res=img - model)
+            ctx.metric("faint_stars_bounded_by_data", int(ff.pop("n_bound")))
             ctx.save("stars_model_faint.npy", fm)
             np.savez(ctx.out("faint_fluxes.npz"), **ff)
             ctx.metric("faint_stars", int(len(ff["g"])))
@@ -544,8 +545,13 @@ def star_qc(g, fl, pr):
     return out
 
 
-def faint_model(f, x, y, g, col, Fp, pm, W, H, g_deep, dev):
-    """Faint stars (not fitted): flux from G with the mean colour of the field, rendered with the real PSF."""
+def faint_model(f, x, y, g, col, Fp, pm, W, H, g_deep, dev, res=None):
+    """Faint stars (not fitted): flux from G with the mean colour of the field, rendered with the real PSF.
+
+    With ``res`` (the image minus the fitted stars), the flux of each faint star is bounded, channel by channel, by
+    what the image holds at its position: the light in a small aperture above the local background, plus twice its
+    noise. A faint star behind dust (dimmer and redder than its catalogue magnitude says) would otherwise be
+    subtracted where there is nothing to subtract, leaving a small dark hole."""
     fx, fy, fg = f["x"].astype(np.float64), f["y"].astype(np.float64), f["g"].astype(np.float64)
     ok = np.isfinite(fg) & (fx > -8) & (fx < W + 8) & (fy > -8) & (fy < H + 8)
     fx, fy, fg = fx[ok], fy[ok], fg[ok]
@@ -553,11 +559,31 @@ def faint_model(f, x, y, g, col, Fp, pm, W, H, g_deep, dev):
     col0 = float(np.median(col[m])) if m.any() else COL0
     model = np.zeros((3, H, W), np.float32)
     flux = np.zeros((3, len(fx)), np.float32)
+    n_bound = 0
+    xi_ = np.clip(np.round(fx).astype(int), 0, W - 1)
+    yi_ = np.clip(np.round(fy).astype(int), 0, H - 1)
     for c in range(3):
         kc = float(np.median(Fp[c, m] / 10 ** (-0.4 * g[m]))) if m.any() else 0.0
         fc = (kc * 10 ** (-0.4 * fg)).astype(np.float32)
-        flux[c] = fc
         E = pm["E"][c].to(dev)
+        if res is not None and len(fx):
+            # aperture (5 x 5 px) above the background of a ring (13 to 19 px box), and the PSF fraction it holds
+            r = res[c].astype(np.float32)
+            ap = cv2.boxFilter(r, -1, (5, 5), normalize=False, borderType=cv2.BORDER_REFLECT)
+            b19 = cv2.boxFilter(r, -1, (19, 19), normalize=False, borderType=cv2.BORDER_REFLECT)
+            b13 = cv2.boxFilter(r, -1, (13, 13), normalize=False, borderType=cv2.BORDER_REFLECT)
+            bg = (b19 - b13) / (19 * 19 - 13 * 13)
+            meas = ap[yi_, xi_] - 25 * bg[yi_, xi_]
+            hp = r - cv2.GaussianBlur(r, (0, 0), 2)
+            sig = 1.4826 * float(np.median(np.abs(hp[::7, ::7] - np.median(hp[::7, ::7])))) * 1.3
+            P0 = stamps(E, np.array([W / 2.0]), np.array([H / 2.0]), np.array([col0]), 5, W, H, dev)[0][0].float()
+            frac = float(P0[3:8, 3:8].sum())                     # share of a star's light in the 5 x 5 aperture
+            limit = np.clip(meas + 2 * sig * 5.0, 0, None) / max(frac, 1e-3)
+            capped = fc > limit
+            n_bound = max(n_bound, int(capped.sum()))
+            fc = np.where(capped, limit, fc).astype(np.float32)
+            del r, ap, b19, b13, bg, hp
+        flux[c] = fc
         out = torch.zeros(H * W, device=dev)
         for k in range(0, len(fx), 200000):
             sl = slice(k, k + 200000)
@@ -565,4 +591,4 @@ def faint_model(f, x, y, g, col, Fp, pm, W, H, g_deep, dev):
             Group(Pst, xi, yi, 5, W, H, dev).render(torch.from_numpy(fc[sl]).to(dev), out)
             del Pst
         model[c] = out.reshape(H, W).cpu().numpy()
-    return model, {"x": fx, "y": fy, "g": fg, "flux": flux, "col0": col0}
+    return model, {"x": fx, "y": fy, "g": fg, "flux": flux, "col0": col0, "n_bound": n_bound}

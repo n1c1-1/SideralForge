@@ -53,7 +53,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "6"          # 5: halo extent per star; 6: diffraction spikes removed, core mask = plausible model errors
+    version = "7"          # 6: diffraction spikes removed, core mask = plausible model errors; 7: no peak limit in halo removal
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -88,7 +88,7 @@ class Starless(Stage):
         ctx.progress(0.55, "final cleaning")
         final0, _ = clean(wms, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
         del wms
-        sl_final, nh = bright_halos(final0, x, y, g, fs["pred"], p.halo_gmax, mask)
+        sl_final, nh = bright_halos(final0, x, y, g, fs["pred"], p.halo_gmax)
         ctx.log(f"optical halos removed around {nh} bright stars")
         del final0
         ctx.progress(0.62, "diffraction spikes")
@@ -112,7 +112,7 @@ class Starless(Stage):
             torch.cuda.empty_cache()
         ctx.progress(0.85, "cleaning the detail layer")
         n2n_c0, _ = clean(sl_n2n, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
-        n2n_final, _ = bright_halos(n2n_c0, x, y, g, fs["pred"], p.halo_gmax, mask)
+        n2n_final, _ = bright_halos(n2n_c0, x, y, g, fs["pred"], p.halo_gmax)
         n2n_final -= spikes
         del spikes
         ctx.save("n2n_final.npy", n2n_final)
