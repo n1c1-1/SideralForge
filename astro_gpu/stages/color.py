@@ -1,6 +1,10 @@
 """Colour calibration: spectral response of the sensor from Gaia XP spectra, camera -> sRGB matrix."""
 from __future__ import annotations
 
+import re
+from datetime import datetime
+from pathlib import Path
+
 import numpy as np
 from scipy.optimize import least_squares, nnls
 
@@ -14,6 +18,7 @@ XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
 HII_LINES = {656.3: 1.0, 658.4: 0.30, 654.8: 0.10, 486.1: 1 / 7.0, 434.0: 1 / 7.0 * 0.35, 671.6: 0.08, 673.1: 0.07,
              500.7: 0.05, 495.9: 0.017}
 OIII_LINES = {500.7: 1.0, 495.9: 0.33, 486.1: 0.3}
+PROFILES = Path.home() / ".astro_gpu" / "camera_profiles"
 
 
 class ColorParams(StageParams):
@@ -28,6 +33,23 @@ class ColorParams(StageParams):
     hii_weight: float = P(60.0, label="H-alpha anchor weight", level=ADVANCED, ge=0, le=500,
                           help="How strongly the matrix is constrained to render a typical HII emission spectrum "
                                "with its true colour (stars alone constrain the continuum only).")
+    camera_profile: bool = P(True, label="Camera profile", level=ADVANCED,
+                             help="The sensitivity curves found on a project are kept as the profile of the camera. "
+                                  "When the stars of a field are too similar to determine the curves (fields far "
+                                  "from the Milky Way, few reddened stars) and the free fit is not physical, the "
+                                  "profile is used instead - after checking that it predicts the measured star "
+                                  "colours of this field.")
+    synthetic_weight: float = P(0.5, label="Synthetic spectra weight", level=ADVANCED, ge=0, le=5, step=0.1,
+                                help="Besides the measured stars, the colour matrix is fitted on spectra predicted with "
+                                     "the sensitivity curves: black bodies from 2500 to 30000 K, unreddened to heavily "
+                                     "reddened. The stars of one field often cover a narrow range of colours (far from "
+                                     "the Milky Way especially); without these spectra the matrix is under-determined "
+                                     "and its large coefficients amplify the colour noise. Relative to the measured "
+                                     "stars; 0 = measured stars only.")
+    profile_tolerance: float = P(5.0, label="Profile agreement", level=ADVANCED, ge=1, le=20, step=0.5, unit="%",
+                                 help="A camera profile is accepted if it predicts the measured star colours of this "
+                                      "field within this scatter (a modified / unmodified camera of the same model "
+                                      "fails this test).")
 
 
 class Color(Stage):
@@ -39,7 +61,7 @@ class Color(Stage):
                    "nebulae are anchored on the true colour of an H-alpha + H-beta + [NII] + [SII] spectrum.")
     deps = ("catalogs", "stack", "register")
     Params = ColorParams
-    version = "1"
+    version = "2"          # 2: physical check, camera profiles, synthetic spectra in the matrix fit
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
@@ -66,19 +88,54 @@ class Color(Stage):
             raise StageError(f"only {len(idx)} colour stars could be measured (need 50)")
         ctx.progress(0.3, f"fitting the spectral response on {len(idx)} stars")
         S, rel = fit_response(xp["flux"][idx], lam, cam)
+        good, why = physical_response(lam, S)
+        camera = str(ctx.metric_of("inventory", "camera", "") or "")
+        prof = load_profile(camera, lam) if p.camera_profile and camera else None
+        source = "fit"
+        agree_fit = colour_agreement(xp["flux"][idx], lam, cam, S)
+        ctx.metric("fit_agreement_pct", round(agree_fit, 2))
+        if prof is not None:
+            agree = colour_agreement(xp["flux"][idx], lam, cam, prof["S"])
+            ctx.metric("profile_agreement_pct", round(agree, 2))
+        if prof is not None and agree <= p.profile_tolerance and (not good or agree < agree_fit):
+            # the profile was measured on a field that determines the curves better; it is used when it predicts the
+            # star colours of this field better than the free fit (or when the free fit is not physical)
+            S = prof["S"] * np.median(cam / predict(xp["flux"][idx], lam, prof["S"]), 0)[:, None]
+            rel = [agree / 100] * 3
+            source = f"camera profile ({prof['project']})"
+            reason = (f"the free fit is not physical ({why}): the stars of this field are too similar to determine "
+                      f"the curves" if not good else f"the free fit predicts them within {agree_fit:.1f} % only")
+            ctx.log(f"using the {camera} sensitivity curves measured on '{prof['project']}', which predict the star "
+                    f"colours of this field within {agree:.1f} % ({reason})", "warning" if not good else "info")
+        elif not good:
+            ctx.log(f"the sensitivity curves found are not physical ({why}) and no validated profile of this "
+                    f"camera is available: colours may be wrong. Process a Milky Way field with the same "
+                    f"camera first, or check the colour pattern (Bayer)", "warning")
+            source = "unphysical fit"
+        elif p.camera_profile and camera and max(rel) < 0.06:
+            save_profile(camera, lam, S, ctx.project.config.name, max(rel))
+        ctx.metric("response_source", source)
         cam_hii, xyz_hii = line_vec(S, lam, HII_LINES)
         cam_oiii, xyz_oiii = line_vec(S, lam, OIII_LINES)
         xyz = xp["xyz"][idx]
         cam_n = cam / cam.sum(1, keepdims=True)
         xyz_n = xyz / xyz.sum(1, keepdims=True)
         anchors = [(cam_hii, xyz_hii, p.hii_weight), (cam_oiii, xyz_oiii, p.hii_weight / 6)]
-        M0 = np.linalg.lstsq(cam_n, xyz_n, rcond=None)[0].T
+        syn = synthetic_spectra(lam)
+        cam_s = predict(syn, lam, S)
+        cam_s = cam_s / cam_s.sum(1, keepdims=True)
+        xyz_s = spectra_xyz(lam, syn)
+        xyz_s = xyz_s / xyz_s.sum(1, keepdims=True)
+        w_s = np.sqrt(p.synthetic_weight * len(cam_n) / len(cam_s))
+        M0 = np.linalg.lstsq(np.r_[cam_n, w_s * cam_s], np.r_[xyz_n, w_s * xyz_s], rcond=None)[0].T
 
         def resid(q):
             Mq = q.reshape(3, 3)
             v = cam_n @ Mq.T
             v = v / v.sum(1, keepdims=True)
-            r = [((v - xyz_n)[:, :2]).ravel()]
+            vs = cam_s @ Mq.T
+            vs = vs / vs.sum(1, keepdims=True)
+            r = [((v - xyz_n)[:, :2]).ravel(), w_s * ((vs - xyz_s)[:, :2]).ravel()]
             for cv, xv, w in anchors:
                 qa = Mq @ (cv / cv.sum())
                 qa = qa / qa.sum()
@@ -109,6 +166,74 @@ class Color(Stage):
                     "warning")
         ctx.log(f"spectral response from {len(idx)} Gaia XP stars, chromaticity residual {np.median(rs):.4f}")
         ctx.preview("spectral_response", response_plot(lam, S, len(idx)))
+
+
+def synthetic_spectra(lam) -> np.ndarray:
+    """Black bodies 2500-30000 K, unreddened to E(B-V) = 2 (A_lambda ~ lambda^-1.3, R_V = 3.1): (N, L) per nm."""
+    T = np.geomspace(2500, 30000, 24)
+    ebv = np.array([0.0, 0.4, 0.8, 1.4, 2.0])
+    lm = lam * 1e-9
+    bb = 1 / (lm[None] ** 5 * (np.exp(1.4388e-2 / (lm[None] * T[:, None])) - 1))
+    bb = bb / bb.max(1, keepdims=True)
+    ext = 10 ** (-0.4 * 3.1 * ebv[:, None] * (550.0 / lam[None]) ** 1.3)
+    return (bb[:, None, :] * ext[None]).reshape(-1, len(lam))
+
+
+def spectra_xyz(lam, spec) -> np.ndarray:
+    """CIE 1931 XYZ of spectra (N, L) sampled on lam (nm)."""
+    import colour
+    cmfs = colour.MSDS_CMFS["CIE 1931 2 Degree Standard Observer"]
+    xbar = np.stack([np.interp(lam, cmfs.wavelengths, cmfs.values[:, i], left=0, right=0) for i in range(3)], 1)
+    return (spec * np.gradient(lam)) @ xbar
+
+
+def predict(spec, lam, S):
+    """Camera fluxes (N, 3) predicted for spectra (N, L) with sensitivity curves S (3, L)."""
+    return (spec * np.gradient(lam)) @ S.T
+
+
+def colour_agreement(spec, lam, cam, S) -> float:
+    """Robust scatter (%) of the measured / predicted G/R and B/G colours of the stars."""
+    pr = predict(spec, lam, S)
+    out = []
+    for a, b in ((1, 0), (2, 1)):
+        r = np.log(cam[:, a] / cam[:, b]) - np.log(np.maximum(pr[:, a], 1e-30) / np.maximum(pr[:, b], 1e-30))
+        out.append(1.4826 * np.median(np.abs(r - np.median(r))))
+    return 100 * float(max(out))
+
+
+def physical_response(lam, S) -> tuple[bool, str]:
+    """Bayer sensitivity curves must be ordered blue < green < red, with the red channel mostly above 590 nm."""
+    vis = (lam >= 380) & (lam <= 720)
+    cen = [float((lam[vis] * S[c, vis]).sum() / max(S[c, vis].sum(), 1e-30)) for c in range(3)]
+    red = float(S[0, (lam >= 590) & (lam <= 700)].sum() / max(S[0, vis].sum(), 1e-30))
+    if not cen[2] < cen[1] < cen[0]:
+        return False, f"channel centroids R {cen[0]:.0f}, G {cen[1]:.0f}, B {cen[2]:.0f} nm are not ordered"
+    if cen[0] < 595 or red < 0.5:
+        return False, f"red channel centred at {cen[0]:.0f} nm with {100 * red:.0f} % of its response above 590 nm"
+    return True, ""
+
+
+def _profile_path(camera: str) -> Path:
+    return PROFILES / (re.sub(r"[^A-Za-z0-9_.-]+", "_", camera) + ".npz")
+
+
+def load_profile(camera: str, lam) -> dict | None:
+    p = _profile_path(camera)
+    if not p.exists():
+        return None
+    d = np.load(p)
+    S = np.stack([np.interp(lam, d["lam"], c) for c in d["S"]])
+    return {"S": S, "project": str(d["project"])}
+
+
+def save_profile(camera: str, lam, S, project: str, residual: float) -> None:
+    """Keep the best (lowest residual) physical sensitivity curves found for this camera."""
+    p = _profile_path(camera)
+    if p.exists() and float(np.load(p)["residual"]) <= residual:
+        return
+    PROFILES.mkdir(parents=True, exist_ok=True)
+    np.savez(p, lam=lam, S=S, project=project, residual=residual, date=datetime.now().isoformat(timespec="seconds"))
 
 
 def white_xyz(T: float = 5778.0) -> np.ndarray:
