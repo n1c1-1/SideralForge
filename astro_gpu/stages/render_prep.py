@@ -71,7 +71,7 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "22"         # 18: saturated stars by their real light; 22: continuum smoothed before the star guard
+    version = "24"         # 22: continuum smoothed before the star guard; 24: measured star shape, drawn stars apart
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -232,12 +232,25 @@ class RenderPrep(Stage):
         m13 = (gb > 11) & (gb < 13)
         for c in range(3):
             pr[c] /= np.median(fs["pred"][c][m13] / np.maximum(fs["flux"][c][m13], 1e-9))
-        # stars inside the footprint of a saturated star are shown by its real light, not drawn again; the measured
-        # diffraction spikes of the other stars join the star layer
+        # stars inside the footprint of a saturated star are shown by its real light, not drawn again
         real = (fp_all[np.clip(np.round(Y).astype(int), 0, H - 1), np.clip(np.round(X).astype(int), 0, W - 1)] > 0.5)             & (X >= 0) & (X < W) & (Y >= 0) & (Y < H)
-        spf = ctx.project.stage_dir("starless") / "spikes.npy"
-        if spf.exists():
-            Sreal += np.load(spf).astype(np.float32) / flat * (1 - fp_all)[None]
+        # every star gets the part of its shape that a round drawn star lacks (diamond, diffraction spikes), measured
+        # on the image by the star stage (flux x measured shape), outside the saturated stars' own light. A saturated
+        # star's spikes continue its real light; a drawn star's shape is a layer of its own, drawn by the rendering
+        # like the star's wings (same attenuation as the star size settings give them)
+        shp = ctx.project.stage_dir("stars") / "star_shape.npz"
+        if shp.exists() and ctx.metric_of("starless", "spike_directions", []):
+            from .star_shape import render as render_shape
+            sh = np.load(shp)
+            rf = real[:len(fs["x"])]
+            S_sh, n_r = render_shape(sh["E_render"], fs["x"], fs["y"], sh["flux"], H, W, float(sh["sig"]),
+                                     idx=np.where(rf)[0])
+            Sreal += S_sh / flat * (1 - fp_all)[None]
+            S_sh, n_d = render_shape(sh["E_render"], fs["x"], fs["y"], sh["flux"], H, W, float(sh["sig"]),
+                                     idx=np.where(~rf)[0])
+            ctx.save("Sshape.npy", (S_sh / flat * (1 - fp_all)[None]).astype(np.float16))
+            ctx.metric("stars_with_measured_shape", int(n_r + n_d))
+            del S_sh, sh
         ctx.save("Sreal.npy", Sreal.astype(np.float16))
         ctx.metric("stars_real_light", int(real.sum()))
         del Sreal

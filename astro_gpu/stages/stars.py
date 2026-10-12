@@ -34,6 +34,11 @@ class StarsParams(StageParams):
                              "of the field, and refine each star's position, width and flux against it.",
                         tip="Needed when the star shape changes quickly across the field (coma of a Newtonian, "
                             "field curvature): otherwise every star leaves a ring or a comma in the starless image.")
+    angular_shape: bool = P(True, label="Measured star shape (spikes)",
+                            help="Measure on the image the part of the star shape that is not round - the diamond "
+                                 "of a Newtonian's star, its diffraction spikes, the rays of the mirror clips - once "
+                                 "for all the stars, and give every star its flux times that shape.",
+                            tip="The spikes then leave the nebula with the stars and are drawn attached to them.")
 
 
 class Stars(Stage):
@@ -47,7 +52,7 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "5"          # 3: faint stars bounded by the data; 5: = 3 (4, every star bounded, doubled the dark specks of Heart)
+    version = "8"          # 3: faint stars bounded by the data; 8: measured angular star shape (one for all colours)
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device
@@ -106,7 +111,16 @@ class Stars(Stage):
             model = model + corr
             del corr
             for k_, v in linfo.items():
-                ctx.metric(k_, v)
+                if not k_.startswith("_"):
+                    ctx.metric(k_, v)
+        else:
+            linfo = {}
+        if p.angular_shape:
+            ctx.progress(0.97, "measured star shape (diamond, spikes)")
+            ext = self._angular_shape(ctx, img, model, fm, x, y, g - dm, fluxes, Fp, pm, linfo, W, H, dev)
+            if ext is not None:
+                model = model + ext
+                del ext
         del fm
         ctx.save("stars_model.npy", model)
         yy, xx = H // 2, W // 2
@@ -114,6 +128,42 @@ class Stars(Stage):
         from ..core.imgutil import asinh_preview
         ctx.preview("star_model", np.concatenate([asinh_preview(img[crop]), np.ones((3, 600, 6)) * 0.2,
                                                   asinh_preview(img[crop] - model[crop])], 2))
+
+    @staticmethod
+    def _angular_shape(ctx, img, model, fm, x, y, g, fluxes, Fp, pm, linfo, W, H, dev):
+        """Measured angular star shape: added to the model (and saved apart, so that the star removal can tell it
+        from the core model); the shape used to draw the stars (core diamond + spikes) is saved for the rendering."""
+        from . import star_shape as ss
+        res = img - model - fm
+        E, fsh, info = ss.measure(res, img, x, y, g, fluxes, Fp, ctx.log)
+        for k_, v in info.items():
+            ctx.metric(k_, v)
+        if E is None:
+            return None
+        hp = res[1] - cv2.GaussianBlur(res[1], (0, 0), 2)
+        sig = float(1.4826 * np.median(np.abs(hp[::7, ::7])))
+        del res
+        # the stars with the radial wing model have only the core of the local shape (r < WING_R): the measured shape
+        # takes over from there; the others have the local shape out to LOC_R, tapered over its last 3 px
+        r_from = np.where(g < 11.0, WING_R - 1.5, LOC_R - 3.0)
+        ext, n = ss.render(E, x, y, fsh, H, W, sig, r_from=r_from)
+        ctx.metric("angular_shape_modelled_stars", int(n))
+        ctx.save("stars_model_ext.npy", ext)
+        # shape used to draw the stars: the angular part of the core (fitted PSF + local shape, field centre) inside,
+        # the measured shape outside
+        cx_, cy_, c0_ = np.array([W / 2.0]), np.array([H / 2.0]), np.array([COL0])
+        Pc = np.stack([stamps(pm["E"][c].to(dev), cx_, cy_, c0_, LOC_R, W, H, dev)[0][0].float().cpu().numpy()
+                       for c in range(3)])
+        Tg = linfo.get("_template_global")
+        if Tg is not None:
+            Pc = Pc + Tg
+        Ec = ss.core_angular(Pc)
+        Er = E.copy()
+        nc = Ec.shape[1]
+        wgt = np.clip((np.arange(nc) - (ss.R_IN - 1.0)) / 4.0, 0, 1)[None, :, None]     # core shape -> measured shape
+        Er[:, :nc] = (1 - wgt) * Ec + wgt * E[:, :nc]
+        np.savez(ctx.out("star_shape.npz"), E=E, E_render=Er.astype(np.float32), flux=fsh, sig=sig)
+        return ext
 
 
 def predict_flux(g, col, sel, flux_fit):
@@ -480,6 +530,7 @@ def local_psf_correction(res, x, y, g, col, flux, pred, pm, W, H, dev, log, gmin
         if dev.type == "cuda":
             torch.cuda.empty_cache()
     info["local_psf_refined_stars"] = n_fit
+    info["_template_global"] = T.mean((0, 1)).cpu().numpy() if T is not None else None
     log(f"local star shape correction: grid {info['local_psf_grid'][0]} x {info['local_psf_grid'][1]} "
         f"({info['local_psf_stars_per_cell'][0]}..{info['local_psf_stars_per_cell'][1]} isolated stars per cell); "
         f"flux, position and width refined for {n_fit} stars")

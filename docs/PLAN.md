@@ -272,3 +272,46 @@ also give the corner stars their coma instead of a white blob with a dark cresce
 Noted: rerunning the star and star-removal stages with unchanged code changes the result slightly (Iris specks
 354 -> 379, render preparation almost unchanged): comparisons are made within one run of the upstream stages, never across
 reruns.
+
+### 11.3 Spikes: one measured star shape instead of a spike model (2026-10-12)
+
+The user rejected the spike traces left on Iris after 11.2 ("step back, no tinkering"). Stepping back: a diffraction
+spike is not an object of its own; it is part of the shape the optics give every star (diamond core, four spikes,
+secondary rays of the mirror clips), the same for every star up to its flux. Every earlier attempt cut the star into
+pieces - a round drawn star, a spike fitted star by star on noisy data, a gap between the two - and the pieces did not
+meet. Measured facts that led to the design: the field rotates only 0.27 degree during the night (no fanning); the
+stacked shape of 63 isolated stars shows the diamond and the four spikes cleanly; the spike amplitude fitted star by
+star scatters by 30-70 % around the flux (nebula and neighbours), so no per-star spike fit can be clean; the
+photometry of a saturated star underestimates it (G 6.9 by 4x) and the catalogue is wrong for a very red star
+(G 4.6, BP-RP 5.7).
+
+Design (`stages/star_shape.py`, star stage v8, star removal v19, render preparation v24, engine):
+
+* the angular part of the star shape is measured once on the residual image around the stars brighter than G 11
+  (polar grid, each ring minus its median over the angle), per unit flux, weights flux^2 capped at the 5th brightest
+  star reaching each radius, smoothed along the radius in proportion to it and along the arc at the pixel scale;
+* the stars are split into two halves measured independently; the shape is where both halves show it above twice
+  their noise, the noise being the larger of the pixel noise and the difference between the halves; its value is the
+  mean of the halves; structure broader across than three spike widths is removed; one shape (green) for all colours;
+* cross-check: the shape of one half must be found in the stars of the other half at more than 5 standard errors.
+  Iris: 144 and 238. Heart (refractor): -65 - no shared shape, round stars only, nothing changes;
+* flux scale calibrated on the unsaturated stars; saturated stars get the flux measured on their own spikes;
+* every star's model is its flux times the shape (subtracted from the nebula; the unreliable-core mask ignores it, so
+  spikes are subtracted, never cut out); the strip spike model of the star removal is gone;
+* drawing: saturated stars keep their real light, their spikes continue it outside the footprint; a drawn star gets
+  its measured shape (core diamond from the local templates, spikes outside) attenuated like its wings, i.e. by the
+  same star-size reduction the rendering applies to the round part (at full strength it showed as a ring).
+
+Rejected on the way: a free shape without the halves test (nebula and dense-field neighbours passed as shape: Heart
+1.7 % of the light), one shape per colour channel (coloured streaks), the smaller of the two halves as value (thinned
+the faint spike ends, which stayed in the nebula), the energy explained as cross-check (noise-dominated, 1-6 % even on
+Iris), the shape at full strength on drawn stars (rings).
+
+Result on Iris: the horizontal spike traces of the medium stars are gone from the nebula layer and from the render; the
+messy double star in the corner is clean; dark specks 360 -> 332 (artistic), 232 -> 215 (faithful); zone figures
+against the user's image unchanged; bright stars keep their real spikes.
+
+Heart: the cross-check rejects the shape (-67 and -64 standard errors in two runs), the code path is the one of
+before. Two runs with identical code differ by as much as the new run differs from the previous final (12.5 % of the
+pixels by more than 3/255; dark specks 133 / 153 / 145): the star stage is not deterministic (its star model differs
+on 89 % of the pixels between two runs). Making it deterministic is needed before fine comparisons across reruns.

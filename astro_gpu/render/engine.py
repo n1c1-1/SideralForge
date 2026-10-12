@@ -88,7 +88,10 @@ class RenderEngine:
         self.real = st["real"] if "real" in st.files else np.zeros(len(self.X), bool)
         sr = self.dir / "Sreal.npy"
         self.Sreal = torch.from_numpy(np.load(sr)) if sr.exists() and "real" in st.files else None
-        self.Fm, self.Fpred, self.Fglow = st["flux"].astype(np.float64), st["pred"].astype(np.float64), st["glow_flux"]
+        # measured shape (diamond, spikes) of the drawn stars: drawn with them, attenuated like their wings
+        ss_ = self.dir / "Sshape.npy"
+        self.Sshape = torch.from_numpy(np.load(ss_)) if ss_.exists() and self.Sreal is not None else None
+        self.Fm,self.Fpred, self.Fglow = st["flux"].astype(np.float64), st["pred"].astype(np.float64), st["glow_flux"]
         pr = np.load(self.dir / "profile.npz")
         self.r_all, self.prof_raw = pr["r"], pr["prof"]
         self.alpha = float(self.prep["alpha"])
@@ -367,6 +370,9 @@ class RenderEngine:
                             self.W, self.dev)
         if use_real:
             sr = torch.tensordot(self.M_eff(s), self.Sreal.to(self.dev).float(), 1)
+            if self.Sshape is not None:
+                # a drawn star's measured shape is part of its light beyond the core: same attenuation as its wings
+                sr += fit["wing_scale"] * torch.tensordot(self.M_eff(s), self.Sshape.to(self.dev).float(), 1)
             lr = ops.luminance(sr)[None]
             st_lin += (lr + s.star_sat * (sr - lr)).clamp(min=0)
             info["stars"]["real_light"] = int((~dr).sum())
