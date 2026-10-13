@@ -422,3 +422,8 @@ a bright ring) around sigma Orionis and other bright stars, sky fitted on 46 % o
   footprint covers at least the unreliable core (1.3 x the radius inside which the far halo is flat). Horsehead: 3.5 %
   of the field, interpolated under 40 of 50; G 6.2 and the corner star's companion clean again; the NGC 2023 star
   keeps its clustered core (structured reflection nebula around).
+* Left for next time: three bright stars at the bottom of the Flaming Star (G 4.1, G 5.3) and the NGC 2023 star keep
+  their core residue in the starless layer: their surroundings are judged structured (nebula, the rays of G 4.1), so
+  the nebula is kept under their footprint. Their star layer is clean. Interpolating always within the unreliable
+  core and keeping the nebula only beyond it would remove the residue (tried before the far halo: Iris G 6.9 turned
+  into a blue disc - to be re-tested now that the glare is modelled).
