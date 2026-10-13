@@ -71,8 +71,8 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "25"         # 24: measured star shape, drawn stars apart; 25: real star light without the far halo,
-                           # the far halo as a layer of its own (glow)
+    version = "26"         # 25: real star light without the far halo, the far halo as a layer of its own (glow);
+                           # 26: footprint of a saturated star at least its unreliable core
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -406,12 +406,20 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400):
     floor = float(np.percentile(cv2.GaussianBlur(bp2, (0, 0), 24), 5))
     N2 = N.copy()
     n_fill = 0
+    # with the far halo removed, the footprint must still cover the region where the star model cannot be trusted
+    # (the core the far halo continues flat, x 1.3): else the core residue spills out of it and makes its
+    # surroundings look structured, and the nebula is no longer interpolated under the star
+    from .far_halo import WING_OUT
+    from .starless import _filled_radius
+    smask = ctx.load("starless", "sl_mask.npy", mmap=True) if hf.exists() else None
     for i in idx_sat[np.argsort(fs["g"][idx_sat])]:
         R = 4
         for r_ in range(4, rmax, 2):
             if not _ring_median(Ys, xs[i], ys[i], r_) >= 2 * sig:
                 break
             R = r_
+        if smask is not None:
+            R = max(R, int(1.3 * max(WING_OUT, _filled_radius(np.asarray(smask), xs[i], ys[i], rmax=rmax) + 4)))
         R = int(R * 1.15) + 4
         x0_, x1_ = max(0, int(xs[i]) - R - 40), min(W, int(xs[i]) + R + 41)
         y0_, y1_ = max(0, int(ys[i]) - R - 40), min(H, int(ys[i]) + R + 41)

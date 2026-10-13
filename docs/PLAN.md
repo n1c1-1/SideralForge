@@ -416,3 +416,9 @@ a bright ring) around sigma Orionis and other bright stars, sky fitted on 46 % o
   acts only where the star model holds the star (1.3 x the radius inside which the far halo is flat, ~80 px). AE Aur
   keeps its filaments; Horsehead and Iris keep the v21 gains. Still open: the white disc of the Rosette's central
   star (its filled core), the clustered cores of the Flaming Star G 4.1 and G 5.3 stars, the dip above G 4.9.
+* The real-light footprints of the saturated stars shrank with the far halo out of their light (Horsehead: 5.1 % of
+  the field -> 1.2 %): the core residue spilled out, made the surroundings look structured, and the nebula was no
+  longer interpolated under 14 of 50 stars (clustered white cores, the Horsehead G 6.2 star). Render prep v26: a
+  footprint covers at least the unreliable core (1.3 x the radius inside which the far halo is flat). Horsehead: 3.5 %
+  of the field, interpolated under 40 of 50; G 6.2 and the corner star's companion clean again; the NGC 2023 star
+  keeps its clustered core (structured reflection nebula around).
