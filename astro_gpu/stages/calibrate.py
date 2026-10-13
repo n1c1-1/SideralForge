@@ -57,7 +57,7 @@ class Calibrate(Stage):
                    "cached on the fast scratch disk; an interrupted calibration resumes frame by frame.")
     deps = ("inventory",)
     Params = CalibrateParams
-    version = "2"          # 2: hot pixels also seen in the lights
+    version = "3"          # 2: hot pixels also seen in the lights; 3: a bad pixel stays excluded when saturated
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         n = max(1, min(12, (os.cpu_count() or 4) - 2))
@@ -266,8 +266,10 @@ def _calib_one(args):
     sat = raw >= _G["sat"]
     x = (raw - _G["dark"]) / _G["flat"] * _G["scale"]
     x = np.minimum(x, VALID_MAX - 1)
+    # a bad pixel stays excluded even when it saturates: marked saturated, the stack took a hot pixel for the core
+    # of a bright star and drew the drift of the mount with it (green dotted trails on the Flaming Star)
+    x[sat & ~_G["bad"]] = SAT_MARK
     x[_G["bad"]] = np.nan
-    x[sat] = SAT_MARK
     _G["mm"][idx] = x.astype(np.float16)
     stats = []
     for k in range(4):
