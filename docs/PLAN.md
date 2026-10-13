@@ -405,3 +405,9 @@ a bright ring) around sigma Orionis and other bright stars, sky fitted on 46 % o
   sigma Ori, the G 4.1 star of the Flaming Star) and shallow dips of ~1 ADU that the stretch turns black (above the
   G 4.9 star of the Flaming Star); the central star of the Rosette is a white disc in a dark ring. The Rosette's
   angular shape is still rejected by the cross-check (3.0 and 37 sigma; -10.6 this morning).
+* Regression found on these finals and fixed (starless v21): the per-star cleaning of what is left around the bright
+  stars (bright_halos) is bounded by K x the typical halo of their brightness, measured on the brightest stars; after
+  the far halo that template was nearly zero, so nothing was cleaned any more near the cores of saturated stars (white
+  disc of the Rosette's central star, clustered cores of the Horsehead G 6.2 star). The template is measured with the
+  far halo (on the starless image plus the halo), the cleaning applies to what is left. Iris: the magenta arcs around
+  the blue G 6.9 star are gone too.

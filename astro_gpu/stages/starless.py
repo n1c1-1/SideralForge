@@ -53,7 +53,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "20"         # 19: spikes in the star model (measured star shape); 20: far halo of the stars removed
+    version = "21"         # 20: far halo of the stars removed; 21: the residual halo bound measured with the far halo
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -70,11 +70,11 @@ class Starless(Stage):
         A = ctx.load("optics", "lat_A.npy").astype(np.float32) - model
         B = ctx.load("optics", "lat_B.npy").astype(np.float32) - model
         hf = ctx.project.stage_dir("stars") / "stars_model_halo.npy"
+        halo = None
         if hf.exists():            # the far halo of the stars (glare of the optics) leaves with them; it is kept out
             halo = np.load(hf)     # of the core model, which decides what is filled and where residuals are guarded
             A -= halo
             B -= halo
-            del halo
         full = ctx.load("optics", "lat_full.npy", mmap=True)
         mask = core_mask(full, model_core, A, B, p.mask_k)
         del model_core
@@ -99,7 +99,10 @@ class Starless(Stage):
         ctx.progress(0.55, "final cleaning")
         final0, _ = clean(wms, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
         del wms
-        sl_final, nh = bright_halos(final0, x, y, g, fs["pred"], p.halo_gmax)
+        # what is left around the bright stars (their cores, where the star model fails) is removed star by star,
+        # bounded by the typical halo of their brightness - measured with the far halo, which is what it describes
+        sl_final, nh = bright_halos(final0, x, y, g, fs["pred"], p.halo_gmax,
+                                    ref=None if halo is None else final0 + halo)
         ctx.log(f"optical halos removed around {nh} bright stars")
         del final0
         ctx.progress(0.62, "diffraction spikes")
@@ -121,7 +124,9 @@ class Starless(Stage):
             torch.cuda.empty_cache()
         ctx.progress(0.85, "cleaning the detail layer")
         n2n_c0, _ = clean(sl_n2n, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
-        n2n_final, _ = bright_halos(n2n_c0, x, y, g, fs["pred"], p.halo_gmax)
+        n2n_final, _ = bright_halos(n2n_c0, x, y, g, fs["pred"], p.halo_gmax,
+                                    ref=None if halo is None else n2n_c0 + halo)
+        del halo
         ctx.save("n2n_final.npy", n2n_final)
         from ..core.imgutil import asinh_preview
         ctx.preview("starless", asinh_preview(sl_final, M))
@@ -416,7 +421,7 @@ def _decreasing(prof, kb, kmax=None):
     return np.minimum.accumulate(prof)
 
 
-def bright_halos(sl, x, y, g, pred, gmax, mask=None):
+def bright_halos(sl, x, y, g, pred, gmax, mask=None, ref=None):
     """Remove the optical halo of every bright star from the starless image.
 
     The halo of a star cannot be told from a nebula centred on it by looking at that star alone (the Iris nebula is
@@ -427,7 +432,8 @@ def bright_halos(sl, x, y, g, pred, gmax, mask=None):
     has, never more than is there. The extent of a star's halo is where its template falls into the scatter of its
     far background; the background is measured just beyond. No removal inside bright emission. With fewer than five
     bright stars the template is unknown and each star's own profile is used within the nominal radius (315 px at
-    G = 5 down to 25 px at G = gmax).
+    G = 5 down to 25 px at G = gmax). ``ref``: the image the template is measured on, when ``sl`` has already lost
+    the far halo of the stars (the template of what is left would be nearly zero and bound nothing).
     """
     sl = sl.astype(np.float32).copy()
     Eg = cv2.GaussianBlur(sl[0] - 0.87 * sl[1], (0, 0), 12)
@@ -456,7 +462,7 @@ def bright_halos(sl, x, y, g, pred, gmax, mask=None):
         stars.append((rsearch, rp))
         if j >= nt:
             continue
-        _, _, rcv, meds = rp
+        _, _, rcv, meds = rp if ref is None else _radial_profiles(ref, x[i], y[i], rsearch)
         for c in range(3):
             far = meds[c][-20:]
             m = min(len(rcv), nb)
