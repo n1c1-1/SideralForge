@@ -388,5 +388,13 @@ a bright ring) around sigma Orionis and other bright stars, sky fitted on 46 % o
   beyond their core like the drawn wings, and taking its colour at 4 px - both act on the star layer, where the rays
   are not. Next: the own radial structure of the stars whose glare dominates (sharp across the arc, smooth along
   the radius), measured like the halo and moved to the star light - with care for the Flame next to Alnitak.
-* Open: along Alnitak's horizontal spike, 90-140 px out, spike model + halo remove ~30 ADU too much; these blocks set
-  the background floor (zero point raised by ~5 ADU on Horsehead).
+* The background floor (no significant area below zero) was set by blocks the halo removal leaves uncertain: along
+  Alnitak's horizontal spike 90-140 px out (~30 ADU too much), 400 px south of it (~5 ADU, 10 % of the halo), and the
+  filled core of the corner star: +5 ADU, unequal in the three channels, a blue cast over the whole sky. Background
+  v4: the floor is set only by measured blocks (filled cores excluded) where 20 % of the removed halo (the precision
+  measured around Alnitak: -5 % at 90 px to +25 % at 300 px) cannot explain the deficit. Horsehead: floor 1.0-1.6
+  ADU (as before the halo model), IC 434 red again, the dust lane south of Alnitak black as in the user's own stack;
+  Iris and Heart unchanged (0.6-1.2 ADU).
+* Tried and not kept: the own rays of the dominant stars as angular structure that is the same over a factor 1.5-2
+  in radius (radial median in log r, per channel): fine rays reduced, but the broader dark and blue structure within
+  300 px of Alnitak stays.

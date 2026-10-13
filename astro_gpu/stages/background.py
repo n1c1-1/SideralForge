@@ -11,6 +11,10 @@ from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage
 
 
+HALO_PRECISION = 0.2      # precision of the removal of the far halo of the stars, relative to it (around Alnitak the
+                          # data depart from the model by -5 % at 90 px to +25 % at 300 px)
+
+
 class BackgroundParams(StageParams):
     sky_order: int = P(3, label="Sky gradient complexity", ge=1, le=5,
                        help="Degree of the smooth polynomial describing light pollution and sky gradients.",
@@ -44,7 +48,7 @@ class Background(Stage):
                    "point. Faint emission (IFN-like structures) is therefore kept with its true brightness.")
     deps = ("starless", "stars", "optics", "surveys", "astrometry", "stack", "color", "catalogs")
     Params = BackgroundParams
-    version = "3"          # 2: bounded object-rejecting sky fit, physical H-alpha; 3: zero-point floor on the darkest areas
+    version = "4"          # 3: zero-point floor on the darkest areas; 4: not set where the removed star glare dominates
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
@@ -115,6 +119,18 @@ class Background(Stage):
         zg = max(g_faint, g_deep)
         f_ext = f_ext * rr ** ((zg - g_deep) / 0.5)
         low = good & (Hb < np.nanpercentile(Hb[good], 25)) if Hb is not None else good
+        # what can set the floor below: blocks measured, not interpolated (the filled star cores), and where the far
+        # halo of the stars removed there is small enough that the precision of its removal cannot leave them darker
+        # than nothing (on Horsehead these blocks raised the floor by ~5 ADU, unequally in the three channels: a blue
+        # cast on the whole sky)
+        fill = bin_median(ctx.load("starless", "sl_mask.npy").astype(np.float32), p.bin_px)
+        measured = good & (fill < 0.1)
+        hf = ctx.project.stage_dir("stars") / "stars_model_halo.npy"
+        hb = None
+        if hf.exists():
+            hal = np.load(hf, mmap_mode="r")
+            hb = np.stack([bin_median(np.asarray(hal[c], np.float32), p.bin_px) for c in range(3)])
+            del hal
         offs = []
         for c in range(3):
             Yc = bin_median(astro[c], p.bin_px)
@@ -123,7 +139,16 @@ class Background(Stage):
             want = f_ext[c] * U[c] / (p.bin_px ** 2)
             off = float(np.nanmedian((want - Yc)[low]))
             # physical floor: the sky cannot be darker than nothing - no significant area may end below zero
-            floor = -float(np.nanpercentile(Yc[good], 0.2))       # the darkest areas, not only 98 % of the field
+            floor = -float(np.nanpercentile(Yc[measured], 0.2))   # the darkest areas, not only 98 % of the field
+            if hb is not None:
+                for _ in range(10):
+                    ok_ = measured & (HALO_PRECISION * hb[c] <= max(floor, 0.0))
+                    if ok_.sum() < 0.5 * good.sum():
+                        break
+                    f2 = -float(np.nanpercentile(Yc[ok_], 0.2))
+                    if f2 >= floor - 1e-3:
+                        break
+                    floor = f2
             if floor > off:
                 ctx.log(f"channel {'RGB'[c]}: continuum zero point raised by {floor - off:.2f} ADU so that the darkest "
                         f"areas (dark nebulae) stay above zero")
