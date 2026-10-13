@@ -53,7 +53,8 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "21"         # 20: far halo of the stars removed; 21: the residual halo bound measured with the far halo
+    version = "22"         # 20: far halo of the stars removed; 21: the residual halo bound measured with the far halo;
+                           # 22: residual cleaning only where the star model holds the star
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -101,8 +102,14 @@ class Starless(Stage):
         del wms
         # what is left around the bright stars (their cores, where the star model fails) is removed star by star,
         # bounded by the typical halo of their brightness - measured with the far halo, which is what it describes
+        r_core = None
+        if halo is not None:     # the region the star model holds, as the far halo sees it (flat inside, x 1.3)
+            from .far_halo import WING_OUT
+            r_core = np.zeros(len(x))
+            for i in np.where(g < p.halo_gmax)[0]:
+                r_core[i] = 1.3 * max(WING_OUT, _filled_radius(mask, x[i], y[i], rmax=800) + 4)
         sl_final, nh = bright_halos(final0, x, y, g, fs["pred"], p.halo_gmax,
-                                    ref=None if halo is None else final0 + halo)
+                                    ref=None if halo is None else final0 + halo, r_core=r_core)
         ctx.log(f"optical halos removed around {nh} bright stars")
         del final0
         ctx.progress(0.62, "diffraction spikes")
@@ -125,7 +132,7 @@ class Starless(Stage):
         ctx.progress(0.85, "cleaning the detail layer")
         n2n_c0, _ = clean(sl_n2n, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
         n2n_final, _ = bright_halos(n2n_c0, x, y, g, fs["pred"], p.halo_gmax,
-                                    ref=None if halo is None else n2n_c0 + halo)
+                                    ref=None if halo is None else n2n_c0 + halo, r_core=r_core)
         del halo
         ctx.save("n2n_final.npy", n2n_final)
         from ..core.imgutil import asinh_preview
@@ -421,7 +428,7 @@ def _decreasing(prof, kb, kmax=None):
     return np.minimum.accumulate(prof)
 
 
-def bright_halos(sl, x, y, g, pred, gmax, mask=None, ref=None):
+def bright_halos(sl, x, y, g, pred, gmax, mask=None, ref=None, r_core=None):
     """Remove the optical halo of every bright star from the starless image.
 
     The halo of a star cannot be told from a nebula centred on it by looking at that star alone (the Iris nebula is
@@ -433,7 +440,9 @@ def bright_halos(sl, x, y, g, pred, gmax, mask=None, ref=None):
     far background; the background is measured just beyond. No removal inside bright emission. With fewer than five
     bright stars the template is unknown and each star's own profile is used within the nominal radius (315 px at
     G = 5 down to 25 px at G = gmax). ``ref``: the image the template is measured on, when ``sl`` has already lost
-    the far halo of the stars (the template of what is left would be nearly zero and bound nothing).
+    the far halo of the stars (the template of what is left would be nearly zero and bound nothing). ``r_core``
+    (per star): with the far halo removed, only what the star model was meant to hold is left to clean - out to that
+    radius, beyond it the far halo holds the glare (cleaning further erased the nebula around AE Aurigae).
     """
     sl = sl.astype(np.float32).copy()
     Eg = cv2.GaussianBlur(sl[0] - 0.87 * sl[1], (0, 0), 12)
@@ -494,6 +503,8 @@ def bright_halos(sl, x, y, g, pred, gmax, mask=None, ref=None):
             rmax = min(rmax, rsearch - 20)
         else:                                                   # every other star: as version 4, within the nominal radius
             rmax = rsearch
+        if r_core is not None:
+            rmax = min(rmax, max(int(r_core[i]), 25))
         kb = int(np.searchsorted(rcv, rmax))
         kfill = None
         if mask is not None:                                    # radius of the filled core of this star

@@ -411,3 +411,8 @@ a bright ring) around sigma Orionis and other bright stars, sky fitted on 46 % o
   disc of the Rosette's central star, clustered cores of the Horsehead G 6.2 star). The template is measured with the
   far halo (on the starless image plus the halo), the cleaning applies to what is left. Iris: the magenta arcs around
   the blue G 6.9 star are gone too.
+* That fix brought back the old fault around AE Aurigae (a smooth pink disc where the filaments were): the per-star
+  cleaning acted out to its nominal radius (up to 320 px), where the far halo now holds the glare. Starless v22: it
+  acts only where the star model holds the star (1.3 x the radius inside which the far halo is flat, ~80 px). AE Aur
+  keeps its filaments; Horsehead and Iris keep the v21 gains. Still open: the white disc of the Rosette's central
+  star (its filled core), the clustered cores of the Flaming Star G 4.1 and G 5.3 stars, the dip above G 4.9.
