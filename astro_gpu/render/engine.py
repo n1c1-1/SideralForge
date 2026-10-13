@@ -31,7 +31,8 @@ XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
 
 LAYER_KEYS = ("fine_k", "fine_lo_pct", "fine_hi_pct", "faint_smooth", "faint_lo_pct", "faint_hi_pct", "resid_boost",
               "colour_detail", "oiii_boost", "oiii_threshold", "oiii_smooth", "sharpen", "sharpen_lo_pct")
-NEB_LIN_KEYS = LAYER_KEYS + ("ha_boost", "ha_sigma", "glow_k", "glow_sigma", "g_glow", "speck_k", "white_temp", "tint")
+NEB_LIN_KEYS = LAYER_KEYS + ("ha_boost", "ha_sigma", "glow_k", "glow_sigma", "g_glow", "speck_k", "white_temp", "tint",
+                             "star_glow", "diffuse_cut")
 NEB_KEYS = NEB_LIN_KEYS + ("chroma", "chroma_protect", "hue_target", "hue_shift", "chroma_sigma", "snr_lo", "snr_hi",
                            "sky_level", "dark_level", "toe", "sky_pct", "dark_pct", "white_mult", "hdr_strength",
                            "hdr_knee", "hdr_r", "hdr_eps", "lc_fine", "lc_medium", "lc_large", "neb_sharp",
@@ -65,7 +66,7 @@ class RenderEngine:
         # may share a folder with leftover layer files, so prep.json decides
         self.layered = (self.dir / "N.npy").exists() and "w_cam" in self.prep
         if self.layered:
-            names = ["N", "Eg0", "dY", "R"] + [n for n in ("chroma_fine", "dS") if (self.dir / f"{n}.npy").exists()]
+            names = ["N", "Eg0", "dY", "R"] + [n for n in ("chroma_fine", "dS", "Dglow") if (self.dir / f"{n}.npy").exists()]
             if (self.dir / "O.npy").exists() and self.prep.get("oiii_sigma"):
                 names.append("O")
                 self.o_vec = torch.tensor(self.prep.get("o_display", self.prep["o"]), dtype=torch.float32,
@@ -93,7 +94,8 @@ class RenderEngine:
         self.Sshape = torch.from_numpy(np.load(ss_)) if ss_.exists() and self.Sreal is not None else None
         # far halo of the stars (glare of the optics), taken out of the nebula: drawn back as a glow
         sh_ = self.dir / "Shalo.npy"
-        self.Shalo = torch.from_numpy(np.load(sh_)) if sh_.exists() else None
+        if sh_.exists():
+            self._host["Shalo"] = torch.from_numpy(np.load(sh_))
         self.Fm,self.Fpred, self.Fglow = st["flux"].astype(np.float64), st["pred"].astype(np.float64), st["glow_flux"]
         pr = np.load(self.dir / "profile.npz")
         self.r_all, self.prof_raw = pr["r"], pr["prof"]
@@ -216,11 +218,17 @@ class RenderEngine:
         astro = self._astro(s, f)
         if not self.layered:                               # cached / host tensor: never modified in place
             astro = astro.clone()
+        if s.diffuse_cut > 0 and "Dglow" in self._host:   # the diffuse glow of the field taken as background
+            astro = astro - s.diffuse_cut * self._layer("Dglow", f)
         if s.ha_boost > 0:
             Hex = ops.gaussian_blur(astro[0] - self.alpha * astro[1], s.ha_sigma / f)
             astro = astro + s.ha_boost * Hex.clamp(min=0)[None] * self.vh[:, None, None]
         if s.glow_k > 0:
             astro = astro + s.glow_k * self._glow(s, f)
+        if s.star_glow > 0 and "Shalo" in self._host:
+            # the glare of the optics around the stars, as photographed: under the nebula curve, like the residual
+            # rays of the brightest stars that stay in the nebula (with the stars, the rays stood out of a dark sky)
+            astro = astro + s.star_glow * self._layer("Shalo", f).clamp(min=0)
         if s.speck_k > 0 and f == 1:
             for c in range(3):
                 a_ = astro[c]
@@ -380,12 +388,6 @@ class RenderEngine:
             st_lin += (lr + s.star_sat * (sr - lr)).clamp(min=0)
             info["stars"]["real_light"] = int((~dr).sum())
             del sr, lr
-        if self.Shalo is not None and s.star_glow > 0:
-            # the glare the optics spread around the stars, a fraction of it drawn back as their glow
-            sh = torch.tensordot(self.M_eff(s), self.Shalo.to(self.dev).float(), 1).clamp(min=0)
-            lh = ops.luminance(sh)[None]
-            st_lin += s.star_glow * (lh + s.star_sat * (sh - lh))
-            del sh, lh
         Ys_ = ops.luminance(st_lin)
         Ls = torch.asinh(fit["b"] * Ys_.clamp(min=0) / fit["w"]) / np.arcsinh(fit["b"])
         st_d = ops.color_preserving_stretch_ok(st_lin, Ls.clamp(0, 1))

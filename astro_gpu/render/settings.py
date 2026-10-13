@@ -86,6 +86,12 @@ class RenderSettings(StageParams):
     toe: float = S(0.015, section="Sky background", label="Shadow softness", ge=0, le=0.08, step=0.001,
                    help="Below the black point the curve fades out smoothly instead of clipping, so the cores of dark "
                         "globules keep their gradation.", tip="0 = hard clip.")
+    diffuse_cut: float = S(0.0, section="Sky background", label="Diffuse glow removed", ge=0, le=1, step=0.05,
+                           help="The diffuse glow of the field (large-scale H-alpha, galactic light: the level on which "
+                                "the structures stand, measured over a fifth of the frame) taken as background, as a "
+                                "gradient removal does.",
+                           tip="0 = kept with its true brightness (faithful); 1 = removed: darker backgrounds, the "
+                               "nebula structures stand out.")
     sky_pct: float = S(30.0, section="Sky background", label="Sky reference", level=ADVANCED, ge=5, le=80, unit="percentile",
                        help="Percentile of the (smoothed) image defining the 'typical sky'.")
     dark_pct: float = S(1.0, section="Sky background", label="Dark reference", level=ADVANCED, ge=0.01, le=20,

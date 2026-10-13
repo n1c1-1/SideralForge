@@ -440,3 +440,28 @@ Horsehead finals of 14:21 failed on everything (1-3 / 5).
   streaks along the drift (1.67). The pattern estimate (frames minus their smooth sky, averaged in sensor
   coordinates) also holds the tracks of the faint stars that cross the sensor with the drift; subtracting it from
   every frame redraws them as streaks. It had been neutral on Heart: stack v3 turns it off by default.
+* Saturated star cores rendered "as photographed" (nebula and star light together under the nebula curve, no
+  separation): the shards around Alnitak went, but the nebula curve made a large flat white disc of every bright
+  star and the undenoised stack under the footprints a grainy disc. Removed.
+* The glare of the stars (far halo, star_glow) is drawn with the nebula instead of the stars (engine): the residual
+  rays of the brightest stars stay in the nebula layer, and on a dark base (glare taken out, drawn back with the
+  gentle star curve) they stood out as multicoloured shards with black holes between them. On the glare, as in a
+  photograph, they are soft (Alnitak, sigma Ori, the G 4.9 star with no dark ellipse; Iris G 6.9 a larger glow).
+* Colours: the colour matrix is fitted on the stars and anchored on the camera's response to an HII spectrum,
+  reconstructed from the stars. That response is poorly determined at the lines: green / red at H-alpha 0.04 to 0.43
+  on five fields of the same camera. The emission actually recorded (colour of the band-pass structure of the
+  nebula, zero-point free) is R 1 : G 0.3-0.5 : B 0.17-0.34 on all of them; the Horsehead matrix sent it to blue-violet
+  with a negative luminance (IC 434 and the Horsehead nearly vanished, magenta wash). Render prep v27: the matrix is
+  changed only across the plane of the star colours (rank one), so that the measured emission gets the colour the
+  calibration gives the HII spectrum; the stars keep their colours exactly; not applied when the emission is within
+  the colours of the stars (Iris: unchanged). Horsehead: IC 434 red, Flame salmon, sky neutral; Heart: a slightly more
+  neutral sky. The independent judge ranks it clearly above the previous version (still a fail overall).
+* Reflection nebulae centred on their star (NGC 2023, IC 435) came out hollow with a bright ring: the per-star
+  cleaning of the starless stage removed, for every star but the eight brightest, everything above the level just
+  beyond its nominal radius, unbounded. Starless v23: bounded by K x the typical residual of these stars measured on
+  themselves (median per unit flux). NGC 2023 keeps its core (115 ADU at 15 px instead of 25 flat); IC 435 follows
+  the data (a plateau); no change elsewhere.
+* Render setting "Diffuse glow removed" (render prep layer Dglow: 20th percentile of the nebula over a fifth of the
+  frame, smoothed): the level a gradient removal would take as background. The user's Horsehead treats the diffuse
+  H-alpha west of IC 434 as background (neutral grey where our data have R 4.9, G 2.1); subtracting it is also what
+  turns the dust east of IC 434 teal. 0 in Faithful.

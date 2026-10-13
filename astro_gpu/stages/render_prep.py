@@ -53,6 +53,11 @@ class RenderPrepParams(StageParams):
     n2n_scale: float = P(16.0, label="Noise2Noise up to", level=ADVANCED, ge=0, le=200, step=1, unit="px",
                          help="Scales smaller than this come from the network, larger ones from the Wiener filter (its "
                               "large-scale level is the best characterised). 0 = the network at every scale.")
+    diffuse_scale: float = P(0.2, label="Diffuse glow scale", level=ADVANCED, ge=0.05, le=1.0, step=0.01,
+                             help="Size of the window, as a fraction of the shorter side of the frame, in which the "
+                                  "diffuse glow of the field (the level a gradient removal would take as background) "
+                                  "is measured, as a low percentile of the nebula. Structures smaller than the window "
+                                  "stand above it. How much of it is removed is set live ('Diffuse glow removed').")
     oiii_scale: float = P(4.0, label="OIII map base smoothing", level=ADVANCED, ge=0, le=50, unit="px",
                           help="The OIII emission (teal, 496/501 nm) is separated from H-alpha and starlight with the "
                                "spectral response of your camera. With a colour camera the three signatures are close "
@@ -71,8 +76,8 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "26"         # 25: real star light without the far halo, the far halo as a layer of its own (glow);
-                           # 26: footprint of a saturated star at least its unreliable core
+    version = "27"         # 26: footprint of a saturated star at least its unreliable core; 27: the line emission
+                           # measured on the nebula rendered with the colour of an HII spectrum
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -102,6 +107,13 @@ class RenderPrep(Stage):
         flat = ctx.load("background", "flat.npy")
         coefs = ctx.load_json("background", "coefs.json")["fit"]
         spec = np.load(ctx.input("color", "specresp.npz"))
+        M, e_meas, w_e = emission_anchor(astro, M, spec["cam_hii"].astype(np.float64), fs, dm)
+        if e_meas is not None:
+            ctx.metric("emission_colour_measured", np.round(e_meas, 3).tolist())
+            ctx.metric("emission_anchor_weight", round(w_e, 2))
+            ctx.log(f"line emission measured on the nebula: camera colour R 1 : G {e_meas[1]:.2f} : B {e_meas[2]:.2f}"
+                    + (f"; rendered with the colour of an HII spectrum (weight {w_e:.2f}), the star colours unchanged"
+                       if w_e > 0 else " - within the colours of the stars: no line emission, matrix unchanged"))
         if coefs["0"]["k_ha"] is not None:
             e_ = np.array([coefs[str(c)]["k_ha"] for c in range(3)])
         else:
@@ -156,6 +168,7 @@ class RenderPrep(Stage):
         ctx.progress(0.42, "real light of the saturated stars")
         N, fp_all, fp_fill, Sreal = saturated_star_light(ctx, fs, N, flat, lum, ctx.log)
         ctx.save("N.npy", N.astype(np.float32))
+        ctx.save("Dglow.npy", diffuse_glow(N, good, p.diffuse_scale).astype(np.float16))
         preview = N
         del Yl, base
         # optional colour components for the colour sliders: the rest (neither H-alpha nor starlight) and OIII
@@ -299,6 +312,75 @@ def oiii_display_vector(M: np.ndarray, o_cam: np.ndarray) -> np.ndarray:
     lum = np.array([0.2126, 0.7152, 0.0722])
     rgb = rgb / (lum @ rgb) * (lum @ (M @ o_cam))
     return np.linalg.solve(M, rgb)
+
+
+def emission_anchor(astro, M, cam_hii, fs, dm, block=64):
+    """Colour matrix whose rendering of the line emission of this field is the colour of an HII spectrum.
+
+    The colour calibration fits the matrix on the stars and anchors the HII colour on the camera's response to an HII
+    spectrum, reconstructed from the stars: its value at the lines is poorly determined (the green / red response at
+    H-alpha came out 0.04 to 0.43 on fields of the same camera), and the emission really recorded also holds lines
+    the eye does not see (UV, near infrared). The emission is measured on the nebula instead: the colour of the
+    structure of its brightest, most coherent parts (band-pass 4-32 px, so free of any zero point), the reddest
+    fifth of them. The matrix is changed only across the plane of the star colours (rank-one update along its
+    normal), so every star keeps its calibrated colour; the measured emission gets the colour the calibration gives
+    the HII spectrum. Applied in full when the emission is clearly redder than the reddest stars of the field, not
+    at all when it is within their colours (no emission: reflection nebula, galaxy).
+    Returns (matrix, measured emission colour R = 1 or None, weight)."""
+    g = fs["g"] - dm
+    F = fs["flux"].astype(np.float64)
+    m = (g > 9) & (g < 13.5) & (F > 0).all(0)
+    if m.sum() < 50 or not np.isfinite(cam_hii).all() or cam_hii[0] <= 0:
+        return M, None, 0.0
+    v = F[:, m] / np.linalg.norm(F[:, m], axis=0)
+    n = np.linalg.svd(v.T, full_matrices=False)[2][2]          # normal of the plane of the star colours
+    g_red = float(np.percentile(F[1, m] / F[0, m], 0.5))       # the reddest stars, G / R
+    a = np.stack([np.asarray(astro[c, ::2, ::2], np.float32) for c in range(3)])
+    bp = np.stack([cv2.GaussianBlur(c, (0, 0), 2) - cv2.GaussianBlur(c, (0, 0), 16) for c in a])
+    del a
+    H, W = bp.shape[1:]
+    rows = []
+    for y in range(0, H - block + 1, block):
+        for x in range(0, W - block + 1, block):
+            r, gg, b = (bp[c, y:y + block, x:x + block].ravel().astype(np.float64) for c in range(3))
+            vr = float(r @ r)
+            if vr <= 0 or not np.isfinite(vr):
+                continue
+            rows.append((vr / r.size, (gg @ r) / vr, (b @ r) / vr, np.corrcoef(r, gg)[0, 1]))
+    if len(rows) < 20:
+        return M, None, 0.0
+    rows = np.array(rows)
+    top = rows[(rows[:, 0] > np.percentile(rows[:, 0], 80)) & (rows[:, 3] > 0.8)]
+    if len(top) < 10:
+        return M, None, 0.0
+    red = top[top[:, 1] <= np.percentile(top[:, 1], 20)]
+    e = np.array([1.0, float(np.median(red[:, 1])), float(np.median(red[:, 2]))])
+    w = float(np.clip((g_red - e[1]) / (0.25 * g_red), 0, 1))
+    if w <= 0 or abs(n @ e) < 1e-3:
+        return M, e, 0.0
+    t = M @ (cam_hii / cam_hii[0])
+    return M + w * np.outer(t - M @ e, n) / (n @ e), e, w
+
+
+def diffuse_glow(N, good, frac, q=20.0) -> np.ndarray:
+    """Large-scale lower envelope of the nebula per channel: the q-th percentile in a window of ``frac`` times the
+    shorter side of the frame, smoothed at half the window - the diffuse glow on which the structures stand (diffuse
+    H-alpha, galactic light), that a gradient removal takes as background."""
+    from scipy.ndimage import percentile_filter
+    C, H, W = N.shape
+    f = max(4, min(H, W) // 160)
+    h, w = H // f, W // f
+    ok = cv2.resize(good.astype(np.float32), (w, h), interpolation=cv2.INTER_AREA) > 0.5
+    win = max(3, int(round(frac * min(H, W) / f)) | 1)
+    out = np.zeros((C, H, W), np.float32)
+    for c in range(C):
+        s = cv2.resize(np.asarray(N[c], np.float32), (w, h), interpolation=cv2.INTER_AREA)
+        if ok.any() and not ok.all():
+            from ..core.imgutil import membrane_fill
+            s = membrane_fill(s, ~ok)
+        e = cv2.GaussianBlur(percentile_filter(s, q, size=win, mode="reflect"), (0, 0), win / 2)
+        out[c] = cv2.resize(e, (W, H), interpolation=cv2.INTER_CUBIC)
+    return out
 
 
 def crop_box(good: np.ndarray, edge_frac: float):

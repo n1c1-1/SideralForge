@@ -53,8 +53,9 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "22"         # 20: far halo of the stars removed; 21: the residual halo bound measured with the far halo;
-                           # 22: residual cleaning only where the star model holds the star
+    version = "23"         # 21: the residual halo bound measured with the far halo; 22: residual cleaning only where
+                           # the star model holds the star; 23: the fainter stars' cleaning bounded by their typical
+                           # residual (it erased reflection nebulae centred on their star)
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -457,10 +458,12 @@ def bright_halos(sl, x, y, g, pred, gmax, mask=None, ref=None, r_core=None):
     near10 = (g > 9.5) & (g < 10.5)
     m10 = float(np.median(pred[1, near10])) if near10.sum() >= 5 else float(np.median(pred[1]))
     amp = m10 * 10 ** (-0.4 * (g - 10.0)) * pred / np.maximum(pred[1], 1e-3)[None]
-    # pass 1: profiles of every bright star; the template comes from the brightest eight (five at least)
+    # pass 1: profiles of every bright star; the template comes from the brightest eight (five at least), the template
+    # of the other stars from themselves
     stars = []
     nt = min(8, len(sel))
     norm = np.full((nt, 3, nb), np.nan, np.float32)
+    norm_o = np.full((max(len(sel) - nt, 1), 3, nb), np.nan, np.float32)
     for j, i in enumerate(sel):
         rnom = int(np.clip(25 * 10 ** (0.2 * (gmax - g[i])), 25, 320))
         rsearch = min(3 * rnom, _HALO_RMAX) if j < nt else rnom     # only the brightest are followed beyond the nominal radius
@@ -470,6 +473,13 @@ def bright_halos(sl, x, y, g, pred, gmax, mask=None, ref=None, r_core=None):
             continue
         stars.append((rsearch, rp))
         if j >= nt:
+            # what is left around a fainter star, per unit of its flux, measured on the image cleaned (the far halo
+            # out): the typical residual of the star model, which a nebula centred on one star exceeds
+            _, _, rcv, meds = rp
+            for c in range(3):
+                m = min(len(rcv), nb)
+                far = np.nanmedian(meds[c][max(m - 5, 0):m])
+                norm_o[j - nt, c, :m] = (meds[c][:m] - far) / max(float(amp[c, i]), 1e-3)
             continue
         _, _, rcv, meds = rp if ref is None else _radial_profiles(ref, x[i], y[i], rsearch)
         for c in range(3):
@@ -481,6 +491,9 @@ def bright_halos(sl, x, y, g, pred, gmax, mask=None, ref=None, r_core=None):
         if enough.any() else None
     if template is not None:
         template = np.stack([_decreasing(template[c], nb) for c in range(3)])
+    enough_o = np.isfinite(norm_o[:, 1, :]).sum(0) >= 5
+    template_o = np.stack([_decreasing(np.where(enough_o, np.nanmedian(norm_o[:, c], 0), 0.0), nb)
+                           for c in range(3)]) if enough_o.any() else None
     n = 0
     for j, i in enumerate(sel):
         if stars[j] is None:
@@ -501,8 +514,12 @@ def bright_halos(sl, x, y, g, pred, gmax, mask=None, ref=None, r_core=None):
                 if len(above):
                     rmax = max(rmax, int(rcv[above[-1]]))
             rmax = min(rmax, rsearch - 20)
-        else:                                                   # every other star: as version 4, within the nominal radius
+        else:                                                   # every other star: within the nominal radius
             rmax = rsearch
+            if template_o is not None:
+                # bound: K x the typical residual of these stars (unbounded, the core of a reflection nebula around its
+                # star - NGC 2023, IC 435 - was taken for halo and erased)
+                halo = [_HALO_K * float(amp[c, i]) * template_o[c, :m] for c in range(3)]
         if r_core is not None:
             rmax = min(rmax, max(int(r_core[i]), 25))
         kb = int(np.searchsorted(rcv, rmax))
@@ -515,7 +532,7 @@ def bright_halos(sl, x, y, g, pred, gmax, mask=None, ref=None, r_core=None):
         for c in range(3):
             patch = sl[c, y0:y1, x0:x1]
             bgv = float(np.nanmedian(own[c][kb:kb + 10]))       # just beyond the end of the halo
-            if extended:
+            if extended or template_o is not None:
                 prof = np.minimum(_decreasing(halo[c], kb), _decreasing(own[c] - bgv, kb, kfill))
             else:
                 prof = np.minimum.accumulate(np.nan_to_num(np.clip(own[c] - bgv, 0, None)))
