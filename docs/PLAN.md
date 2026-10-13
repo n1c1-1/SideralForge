@@ -398,3 +398,10 @@ a bright ring) around sigma Orionis and other bright stars, sky fitted on 46 % o
 * Tried and not kept: the own rays of the dominant stars as angular structure that is the same over a factor 1.5-2
   in radius (radial median in log r, per channel): fine rays reduced, but the broader dark and blue structure within
   300 px of Alnitak stays.
+* Finals of the three objects (2026-10-13 13:20, archives of the previous ones in E:stro_gpurchive): Horsehead
+  without the glare and the colour patches, Flame and IC 434 clean; Flaming Star with the filaments around AE Aur (a
+  smoothed disc before) and no glow at the bottom; Rosette with its central cavity (filled by the glare of the cluster
+  before). At 100 %, around the two or three brightest stars of each field: fine rays and colour fringes (Alnitak,
+  sigma Ori, the G 4.1 star of the Flaming Star) and shallow dips of ~1 ADU that the stretch turns black (above the
+  G 4.9 star of the Flaming Star); the central star of the Rosette is a white disc in a dark ring. The Rosette's
+  angular shape is still rejected by the cross-check (3.0 and 37 sigma; -10.6 this morning).
