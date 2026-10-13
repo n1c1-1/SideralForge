@@ -29,6 +29,7 @@ RMAX = 600            # px, longest spike measured
 NT = 1440             # angular samples (0.25 degree)
 DTH = 2 * np.pi / NT
 R_IN = 8              # the shape model starts here (inside, the local core templates hold the star shape)
+CORE_R = 60.0         # px, core of a bright star (its model and its residual dominate there)
 
 
 def _polar(a, xc, yc, R, fill=np.nan):
@@ -136,6 +137,13 @@ def measure(res, img, x, y, g, flux, pred, log=print):
     cal = np.array([np.median(flux[c, calm] / np.maximum(pred[c, calm], 1e-9)) for c in range(C)])
     fl = np.where(issat[None], pred * cal[:, None], flux).astype(np.float64)
     sel = np.where((g < 11.0) & (fl[1] > 0))[0]
+    # a star in the core of a much brighter one has no shape of its own there: its rings, per unit of its flux, carry
+    # the residual of the bright core multiplied by the ratio of the fluxes (the companions of sigma Orionis spoilt
+    # the half of the stars they fell in, and the cross-check then rejected the shape)
+    from scipy.spatial import cKDTree
+    tree = cKDTree(np.c_[x, y])
+    sel = np.array([i for i in sel if not any(j != i and g[j] < g[i] - 1.5
+                                               for j in tree.query_ball_point([x[i], y[i]], CORE_R))], int)
     if len(sel) < 10:
         return None, None, {"angular_shape": "too few bright stars"}
     ref = np.median(flux[1][(g > 10.8) & (g < 11.2) & ~issat]) if ((g > 10.8) & (g < 11.2) & ~issat).any() \

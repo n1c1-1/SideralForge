@@ -39,6 +39,12 @@ class StarsParams(StageParams):
                                  "of a Newtonian's star, its diffraction spikes, the rays of the mirror clips - once "
                                  "for all the stars, and give every star its flux times that shape.",
                             tip="The spikes then leave the nebula with the stars and are drawn attached to them.")
+    far_halo: bool = P(True, label="Far halo of the stars",
+                       help="Measure on the image the faint glare that the optics spread around every star (light "
+                            "scattered by the mirror, the sensor window, dust), the same for all the stars, and give "
+                            "every star its flux times that glare. Around a very bright star it covers a large part "
+                            "of the field.",
+                       tip="The glare then leaves the nebula with the stars; the drawn stars do not carry it.")
 
 
 class Stars(Stage):
@@ -52,7 +58,8 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "8"          # 3: faint stars bounded by the data; 8: measured angular star shape (one for all colours)
+    version = "9"          # 8: measured angular star shape (one for all colours); 9: far halo of the stars, star shape
+                           # measured without the stars sitting in the core of a much brighter one
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device
@@ -115,12 +122,22 @@ class Stars(Stage):
                     ctx.metric(k_, v)
         else:
             linfo = {}
+        # the glare and the angular shape (spikes) are measured in turn, each without the other: around a very bright
+        # star the glare would pass for star shape, and a long spike for an elongated glare
+        halo = ext = None
+        if p.far_halo:
+            ctx.progress(0.95, "far halo of the stars")
+            halo = self._far_halo(ctx, img, model + fm, x, y, g - dm, Fp, W, H)
         if p.angular_shape:
-            ctx.progress(0.97, "measured star shape (diamond, spikes)")
-            ext = self._angular_shape(ctx, img, model, fm, x, y, g - dm, fluxes, Fp, pm, linfo, W, H, dev)
+            ctx.progress(0.965, "measured star shape (diamond, spikes)")
+            ext = self._angular_shape(ctx, img if halo is None else img - halo, model, fm, x, y, g - dm, fluxes, Fp,
+                                      pm, linfo, W, H, dev)
             if ext is not None:
                 model = model + ext
-                del ext
+        if p.far_halo and ext is not None:
+            ctx.progress(0.98, "far halo of the stars, without the spikes")
+            halo = self._far_halo(ctx, img, model + fm, x, y, g - dm, Fp, W, H)
+        del ext, halo
         del fm
         ctx.save("stars_model.npy", model)
         yy, xx = H // 2, W // 2
@@ -128,6 +145,25 @@ class Stars(Stage):
         from ..core.imgutil import asinh_preview
         ctx.preview("star_model", np.concatenate([asinh_preview(img[crop]), np.ones((3, 600, 6)) * 0.2,
                                                   asinh_preview(img[crop] - model[crop])], 2))
+
+    @staticmethod
+    def _far_halo(ctx, img, model, x, y, g, Fp, W, H, gmax=10.5):
+        """Far halo of the stars brighter than gmax (saved apart: the starless image loses it with the stars, the
+        drawn stars do not carry it). Inside the saturated core of a star, where the model does not hold it, the
+        halo is continued flat."""
+        from .far_halo import far_halo
+        from .starless import _filled_radius
+        hs = np.where((g < gmax) & (x > -40) & (x < W + 40) & (y > -40) & (y < H + 40))[0]
+        sat = np.zeros((H, W), bool)
+        for c in range(3):
+            sat |= img[c] > 0.7 * np.percentile(img[c][::4, ::4], 99.999)
+        r_in = np.array([_filled_radius(sat, x[i], y[i], rmax=800) + 4 for i in hs], float)
+        halo, info = far_halo(img - model, x[hs], y[hs], Fp[:, hs], r_in, log=ctx.log)
+        for k_, v in info.items():
+            ctx.metric(k_, v)
+        if halo is not None:
+            ctx.save("stars_model_halo.npy", halo)
+        return halo
 
     @staticmethod
     def _angular_shape(ctx, img, model, fm, x, y, g, fluxes, Fp, pm, linfo, W, H, dev):

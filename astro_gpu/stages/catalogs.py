@@ -45,7 +45,7 @@ class Catalogs(Stage):
                    "between projects.")
     deps = ("inventory", "astrometry", "stack")
     Params = CatalogsParams
-    version = "1"
+    version = "2"          # 2: the bright stars missing from Gaia are added from Hipparcos
     network = True
 
     def run(self, ctx: Context, p: CatalogsParams) -> None:
@@ -67,9 +67,12 @@ class Catalogs(Stage):
         ra_e = c["RA_ICRS"] + np.nan_to_num(c["pmRA"]) / 3.6e6 * dt / np.cos(np.radians(c["DE_ICRS"]))
         x, y = safe_world2pix(w, ra_e, dec_e, W, H)
         inside = (x > -30) & (x < W + 30) & (y > -30) & (y < H + 30) & np.isfinite(c["Gmag"])
-        np.savez(ctx.out("gaia_deep.npz"), source=c["Source"][inside], ra=ra_e[inside], dec=dec_e[inside],
-                 x=x[inside], y=y[inside], g=c["Gmag"][inside], bp=c["BPmag"][inside], rp=c["RPmag"][inside],
-                 xp=c["XPsamp"][inside])
+        deep = dict(source=c["Source"][inside], ra=ra_e[inside], dec=dec_e[inside], x=x[inside], y=y[inside],
+                    g=c["Gmag"][inside], bp=c["BPmag"][inside], rp=c["RPmag"][inside], xp=c["XPsamp"][inside])
+        add = _bright_missing(ctx, w, W, H, scale, epoch, deep)
+        if add is not None:
+            deep = {k: np.concatenate([deep[k], add[k].astype(deep[k].dtype)]) for k in deep}
+        np.savez(ctx.out("gaia_deep.npz"), **deep)
         ctx.metric("stars_deep", int(inside.sum()))
         ctx.log(f"{inside.sum()} Gaia stars G < {p.g_deep} in the field")
         if inside.sum() < 100:
@@ -167,6 +170,83 @@ def _query_cells(ctx, centres, radius, cols, gfilter, label, p0, p1):
     key = np.round(c["RA_ICRS"] * 3.6e5).astype(np.int64) * 10 ** 9 + np.round(c["DE_ICRS"] * 3.6e5).astype(np.int64)
     _, idx = np.unique(key, return_index=True)
     return {k: v[idx] for k, v in c.items()}
+
+
+def _bright_missing(ctx, w, W, H, scale, epoch, deep, vmax=9.0):
+    """The brightest stars of the sky are partly missing from Gaia DR3 (its detector saturates; Alnitak, by the
+    Horsehead, is absent). Missing, such a star is not modelled: its core and its glare stay in the nebula layer.
+    Hipparcos stars of the field with no Gaia counterpart are added. Their Gaia magnitude and colour come from V and
+    B-V through relations fitted on the Hipparcos stars of the same field that Gaia does have (no assumed
+    photometric transformation). Returns the entries to append to the deep catalogue, or None."""
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+    from astroquery.vizier import Vizier
+    from scipy.spatial import cKDTree
+    centre = w.pixel_to_world(W / 2, H / 2)
+    radius = 0.5 * np.hypot(W, H) * scale / 3600 * 1.05
+    cols = ["HIP", "RAICRS", "DEICRS", "Vmag", "B-V", "pmRA", "pmDE"]
+    key = hashlib.sha1(f"hip|{centre.ra.deg:.4f}|{centre.dec.deg:.4f}|{radius:.3f}|{vmax}".encode()).hexdigest()
+    cp = CACHE / "hipparcos" / f"{key}.npz"
+    if cp.exists():
+        t = dict(np.load(cp))
+    else:
+        t = None
+        for attempt in range(4):
+            try:
+                v = Vizier(columns=cols, column_filters={"Vmag": f"<{vmax}"}, row_limit=-1, timeout=300)
+                r = v.query_region(SkyCoord(centre.ra.deg, centre.dec.deg, unit="deg"), radius=radius * u.deg,
+                                   catalog="I/239/hip_main")
+                t = {k: (np.ma.filled(np.ma.asarray(r[0][k]).astype(np.float64), np.nan) if len(r) else np.zeros(0))
+                     for k in cols}
+                cp.parent.mkdir(parents=True, exist_ok=True)
+                np.savez(cp, **t)
+                break
+            except Exception:  # noqa: BLE001 - network errors: retry, then go on without the supplement
+                time.sleep(3 * (attempt + 1))
+        if t is None:
+            ctx.log("Hipparcos query failed: bright stars missing from Gaia are not added", "warning")
+            return None
+    if not len(t["HIP"]):
+        return None
+    dt = epoch - 1991.25
+    dec = t["DEICRS"] + np.nan_to_num(t["pmDE"]) / 3.6e6 * dt
+    ra = t["RAICRS"] + np.nan_to_num(t["pmRA"]) / 3.6e6 * dt / np.cos(np.radians(t["DEICRS"]))
+    x, y = safe_world2pix(w, ra, dec, W, H)
+    V, BV = t["Vmag"], np.nan_to_num(t["B-V"], nan=0.6)
+    ok = (x > -30) & (x < W + 30) & (y > -30) & (y < H + 30) & np.isfinite(V)
+    if not ok.any():
+        return None
+    tree = cKDTree(np.c_[deep["x"], deep["y"]])
+    rpx = max(5.0 / scale, 2.0)
+    gd, col = deep["g"], deep["bp"] - deep["rp"]
+    pairs, missing = [], []
+    for i in np.where(ok)[0]:
+        nb = [j for j in tree.query_ball_point([x[i], y[i]], rpx) if gd[j] < V[i] + 1.0]
+        if nb:
+            j = min(nb, key=lambda j: gd[j])
+            if np.isfinite(col[j]) and np.isfinite(t["B-V"][i]):
+                pairs.append((BV[i], V[i], gd[j], col[j]))
+        else:
+            missing.append(i)
+    if not missing:
+        return None
+    if len(pairs) >= 8:
+        P_ = np.array(pairs)
+        cg = np.polyfit(P_[:, 0], P_[:, 2] - P_[:, 1], 2)
+        cc = np.polyfit(P_[:, 0], P_[:, 3], 2)
+        how = f"relations fitted on {len(pairs)} stars of the field"
+    else:                                   # too few: G - V of Riello et al. 2021, a mean colour relation
+        cg = np.array([-0.2156, 0.01424, -0.02704])
+        cc = np.array([0.0, 1.2, 0.08])
+        how = "mean relations (too few Hipparcos stars matched in the field)"
+    m = np.array(missing)
+    g_new = V[m] + np.polyval(cg, BV[m])
+    c_new = np.polyval(cc, BV[m])
+    for i, gg in zip(m, g_new):
+        ctx.log(f"HIP {int(t['HIP'][i])} (V = {V[i]:.2f}) is missing from Gaia: added with G = {gg:.2f} ({how})")
+    ctx.metric("bright_stars_added", [int(t["HIP"][i]) for i in m])
+    return dict(source=-t["HIP"][m].astype(np.int64), ra=ra[m], dec=dec[m], x=x[m], y=y[m], g=g_new,
+                bp=g_new + c_new / 2, rp=g_new - c_new / 2, xp=np.zeros(len(m)))
 
 
 def _isolated_xp(d, p, W, H, scale):

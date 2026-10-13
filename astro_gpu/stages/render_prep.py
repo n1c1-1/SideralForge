@@ -71,7 +71,8 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "24"         # 22: continuum smoothed before the star guard; 24: measured star shape, drawn stars apart
+    version = "25"         # 24: measured star shape, drawn stars apart; 25: real star light without the far halo,
+                           # the far halo as a layer of its own (glow)
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -252,6 +253,11 @@ class RenderPrep(Stage):
             ctx.metric("stars_with_measured_shape", int(n_r + n_d))
             del S_sh, sh
         ctx.save("Sreal.npy", Sreal.astype(np.float16))
+        hf = ctx.project.stage_dir("stars") / "stars_model_halo.npy"
+        if hf.exists():    # the far halo of the stars, taken out of the nebula: the rendering draws it as their glow
+            hal = np.load(hf, mmap_mode="r")
+            ctx.save("Shalo.npy", np.stack([np.asarray(hal[c], np.float32) / flat[c] for c in range(3)]).astype(np.float16))
+            del hal
         ctx.metric("stars_real_light", int(real.sum()))
         del Sreal
         np.savez(ctx.out("stars.npz"), x=X, y=Y, g=G, flux=F.astype(np.float32), pred=pr.astype(np.float32),
@@ -384,6 +390,11 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400):
         return N, fp_all, fp_fill, np.zeros_like(N)
     slf = np.stack([np.asarray(sl[c], np.float32) / flat[c] for c in range(3)])
     S = np.stack([np.asarray(full[c], np.float32) / flat[c] for c in range(3)]) - slf
+    hf = ctx.project.stage_dir("stars") / "stars_model_halo.npy"
+    if hf.exists():        # the far halo of the stars is not drawn back: their real light is core, spikes and rays
+        hal = np.load(hf, mmap_mode="r")
+        S -= np.stack([np.asarray(hal[c], np.float32) / flat[c] for c in range(3)])
+        del hal
     S = np.stack([cv2.GaussianBlur(S[c], (0, 0), 1.0) for c in range(3)])
     Ys = np.tensordot(lum, S, 1).astype(np.float32)
     YL = np.tensordot(lum, N, 1).astype(np.float32)

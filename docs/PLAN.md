@@ -335,7 +335,11 @@ disc) was flagged as hot: the stack covered the centre at 13 %, rendered black. 
   trail below IC 405 is NOT explained by it: it is in both half-stacks as dots along the drift path, but no sensor
   pixel of the calibrated cache traces it (outliers in 10 % of frames or more, pixels marked saturated in 5 % or more,
   checked against the frame-to-reference mapping on a star), and the stack's fixed-pattern estimate has nothing there
-  (recomputed: features only at the edges and at the brightest stars). It starts at a star; origin still open.
+  (recomputed: features only at the edges and at the brightest stars). It starts at a star. Cause found on
+  2026-10-13: one green sensor pixel, in the bad-pixel map, was marked saturated in most frames - the saturation mark
+  was applied after the bad-pixel exclusion and overwrote it, and the stack takes a saturated pixel for the core of
+  a bright star (drawn along the drift). Calibrate v3: a bad pixel stays excluded when it saturates; the three
+  dotted trails are gone.
 * Runner: adding flats to an existing project was ignored (the inventory did not rerun): the first stage now records
   a fingerprint of the project's input lists.
 * Bright saturated stars in nebula (AE Aurigae): the whole-footprint interpolation smooths the nebula over ~200 px
@@ -343,3 +347,46 @@ disc) was flagged as hot: the stack covered the centre at 13 %, rendered black. 
   a blue disc; structure measured inside the footprint: star residues read as nebula; upper-quartile structure test +
   core interpolation: holes, blooming streak and a starburst of rays around AE Aur and the G 4.1 star). The validated
   rule is kept; the real fix is a better star removal around very bright saturated stars (blooming columns, rays).
+
+### 11.5 The far halo of the stars (2026-10-13)
+
+Horsehead was the worst of the three: a blue glare over a quarter of the frame, colour patches, an "eye" (dark disc in
+a bright ring) around sigma Orionis and other bright stars, sky fitted on 46 % of the field. Diagnosis:
+
+* Alnitak (V 1.74) is missing from Gaia DR3: not modelled, its glare stayed in the nebula. Catalogs v2 adds the
+  Hipparcos stars of the field with no Gaia counterpart, G and BP-RP from V and B-V through relations fitted on the
+  Hipparcos stars of the same field that Gaia has (Horsehead: Alnitak alone, 20 stars for the relations; Iris and
+  Heart: none).
+* The star flat (-33 %..+17 %) is real: aperture photometry of isolated stars gives the same map (-15 to -24 % on
+  the right edge). Not the cause.
+* The glare is part of each star, proportional to its flux. It was modelled out to 60 px only (stars stage) and then
+  cut star by star in the starless image with a local reference level and a taper (the eye). The far halo is now one
+  shape for the instrument, measured on all stars brighter than G 10.5 jointly with a smooth sky, robustly, on a
+  coarse grid: non-increasing in log r, falling at least as 1/r (a free shape levelled off and took the Iris dust
+  for glare), achromatic (the colour of each star; per-channel shapes took the red emission for glare), on an
+  elliptical radius whose axis ratio and angle come from the second angular harmonic of the fit (Horsehead 1.27 at
+  -3 deg). Inside the radius the star model holds (60 px or the saturated core), it is flat. A star whose halo is
+  measurable against its surroundings gets its own amplitude (0 to 1.5: T Cephei by the Iris, a Mira fainter than its
+  Gaia magnitude, would lose a dark disc); a star whose glare dominates them (Alnitak, sigma Ori) also its own
+  elongation, angle and radial slope (Alnitak: elongated at -30 deg, not like the instrument), the candidates being
+  compared on the same trimmed residual (a selection on the pixels kept by one candidate chose that candidate).
+* The halo is measured in the stars stage and saved apart (stars_model_halo.npy): the starless stage subtracts it
+  from the half-stacks with the star model, but not from the core model that decides what is filled and where
+  residuals are guarded (the glare would have been filled away with the Flame). The angular shape (spikes) and the
+  halo are measured in turn, each without the other: a long spike passed for an elongated glare, the glare for
+  star shape.
+* The angular shape was then rejected on Horsehead (cross-check 0.1 sigma for one half): the two companions of
+  sigma Ori, inside its core, carried its residual per unit of their own flux into their half. Stars within 60 px of
+  a star 1.5 mag brighter no longer enter the shape measurement (cross-check back to several hundred sigma).
+* Rendering: the real light of saturated stars no longer includes the far halo (it was drawn out to 400 px and cut);
+  the halo is a layer of its own drawn with the stars as a glow, attenuated like the wings of the drawn stars
+  (setting "Bright star glow", a fraction of the measured halo, 0.3 by default: the wing attenuation of the drawn
+  stars, 0.06 on Horsehead, made it invisible).
+* Open: the fine rays of Alnitak and sigma Ori (and their colour fringes) are star light that the shared angular
+  shape does not hold: they stay in the starless layer, which the render keeps under these stars (structured
+  surroundings), and are stretched as nebula. Tried and removed: attenuating the real light of saturated stars
+  beyond their core like the drawn wings, and taking its colour at 4 px - both act on the star layer, where the rays
+  are not. Next: the own radial structure of the stars whose glare dominates (sharp across the arc, smooth along
+  the radius), measured like the halo and moved to the star light - with care for the Flame next to Alnitak.
+* Open: along Alnitak's horizontal spike, 90-140 px out, spike model + halo remove ~30 ADU too much; these blocks set
+  the background floor (zero point raised by ~5 ADU on Horsehead).

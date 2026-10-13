@@ -53,7 +53,7 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color")
     Params = StarlessParams
-    version = "19"         # 18: = 12; 19: spikes in the star model (measured star shape), no strip model here
+    version = "20"         # 19: spikes in the star model (measured star shape); 20: far halo of the stars removed
 
     def run(self, ctx: Context, p: StarlessParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -69,6 +69,12 @@ class Starless(Stage):
         ctx.progress(0.02, "subtracting the star model")
         A = ctx.load("optics", "lat_A.npy").astype(np.float32) - model
         B = ctx.load("optics", "lat_B.npy").astype(np.float32) - model
+        hf = ctx.project.stage_dir("stars") / "stars_model_halo.npy"
+        if hf.exists():            # the far halo of the stars (glare of the optics) leaves with them; it is kept out
+            halo = np.load(hf)     # of the core model, which decides what is filled and where residuals are guarded
+            A -= halo
+            B -= halo
+            del halo
         full = ctx.load("optics", "lat_full.npy", mmap=True)
         mask = core_mask(full, model_core, A, B, p.mask_k)
         del model_core
