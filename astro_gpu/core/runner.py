@@ -99,12 +99,15 @@ class Pipeline:
                 if m.get("version") != st.version:
                     state, reason = "stale", f"algorithm updated ({m.get('version')} -> {st.version})"
                 else:
+                    stored_fp = m.get("inputs", {}).get("_project_inputs")
                     for d in st.deps:
                         if m.get("inputs", {}).get(d) != read_manifest(self.project, d).get("run_id"):
                             state, reason = "stale", f"'{d}' was recomputed"
                             break
                     else:
                         p, _, _ = self.effective_params(st)
+                        if not st.deps and stored_fp is not None and stored_fp != _inputs_fingerprint(self.project):
+                            state, reason = "stale", "the project's input files changed"
                         if params_hash(p) != m.get("params_hash") and not _same_params(st, p, m.get("params", {})):
                             state, reason = "stale", "parameters changed"
             out[st.name] = StageStatus(st.name, st.title, state, reason, m.get("duration"), m.get("finished", ""))
@@ -153,6 +156,8 @@ class Pipeline:
         ctx = Context(self.project, st, self.journal, self._device())
         # checkpoints are only valid for the same parameters and inputs
         inputs = {d: read_manifest(self.project, d).get("run_id") for d in st.deps}
+        if not st.deps:                      # the first stage reads the project's files: their lists are its input
+            inputs["_project_inputs"] = _inputs_fingerprint(self.project)
         ck_meta = ctx.dir / "_ckpt" / "meta.json"
         tag = {"params_hash": ph, "inputs": inputs, "version": st.version}
         if not (ck_meta.exists() and json.loads(ck_meta.read_text()) == tag):
@@ -203,6 +208,14 @@ def _clear_outputs(d: Path) -> None:
             shutil.rmtree(p, ignore_errors=True)
         else:
             p.unlink(missing_ok=True)
+
+
+def _inputs_fingerprint(project: Project) -> str:
+    """Hash of the project's input file lists (lights, darks, flats...): adding flats to an existing project must
+    make the inventory - and so everything after it - run again (it did not: the flats were silently ignored)."""
+    import hashlib
+    from dataclasses import asdict
+    return hashlib.sha1(json.dumps(asdict(project.config.inputs), sort_keys=True).encode()).hexdigest()[:16]
 
 
 def _same_params(stage: Stage, p, stored: dict) -> bool:

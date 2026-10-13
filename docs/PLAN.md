@@ -315,3 +315,25 @@ Heart: the cross-check rejects the shape (-67 and -64 standard errors in two run
 before. Two runs with identical code differ by as much as the new run differs from the previous final (12.5 % of the
 pixels by more than 3/255; dark specks 133 / 153 / 145): the star stage is not deterministic (its star model differs
 on 89 % of the pixels between two runs). Making it deterministic is needed before fine comparisons across reruns.
+
+### 11.4 Three objects of 28.12.2024 without flats (2026-10-13 night)
+
+Flaming Star (IC 405), Horsehead, Rosette: A7S + Newton 130/900, 15 s ISO 4000, darks found unsorted in the camera
+folder (557 true darks among 722 candidates, 100 used), no flats that night. Projects on E: (C: was nearly full).
+
+* Flats: the star-derived flat (cubic) cannot carry the Newton's vignetting (down to 21 % in the corners): rings and
+  green corners. The flats of Iris (March 2025) and M33 (August 2025) have the same vignetting as this night's star
+  flat (correlation 0.96 / 0.95): calibrate option `flat_scale_px` (40 px) keeps only the large scales of borrowed
+  flats (vignetting, not their dust). Rejected: the star-flat degree chosen by cross-validation (degree 5: the
+  H-alpha fit flipped and the image went green).
+* Hot pixels: calibrate v2 also flags pixels that stand out in the lower quartile of 40 lights in sensor coordinates
+  (skipped if the sky moved less than 12 px): 1247 isolated pixels on the Flaming Star, 1054 on Iris. The green dotted
+  trail below IC 405 is NOT explained by it: it is in both half-stacks as dots along the drift path, but no sensor
+  pixel of the calibrated cache traces it; next suspect: the fixed-pattern estimate of the stack stage.
+* Runner: adding flats to an existing project was ignored (the inventory did not rerun): the first stage now records
+  a fingerprint of the project's input lists.
+* Bright saturated stars in nebula (AE Aurigae): the whole-footprint interpolation smooths the nebula over ~200 px
+  around the star. Three variants were tried and rejected (interpolating only the unreliable core: Iris G 6.9 became
+  a blue disc; structure measured inside the footprint: star residues read as nebula; upper-quartile structure test +
+  core interpolation: holes, blooming streak and a starburst of rays around AE Aur and the G 4.1 star). The validated
+  rule is kept; the real fix is a better star removal around very bright saturated stars (blooming columns, rays).

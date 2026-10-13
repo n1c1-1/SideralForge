@@ -6,6 +6,7 @@ import time
 from multiprocessing import get_context
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from ..core.imgutil import robust_sigma
@@ -27,6 +28,17 @@ class CalibrateParams(StageParams):
                            help="Pixels whose flat response differs from their neighbourhood by more than this fraction "
                                 "(dust specks, dead pixels) are excluded.",
                            tip="0.3 = 30 %. Lower it if dust donuts remain visible after calibration.")
+    hot_from_lights: bool = P(True, label="Hot pixels seen in the lights", level=ADVANCED,
+                              help="Also flag the pixels that stand out from their neighbours in many light frames "
+                                   "taken at different sky positions (the sky drifts across the sensor, a defect "
+                                   "does not). Darks taken at another temperature miss pixels that are hot only "
+                                   "when the sensor is warmer; in the stack they draw the drift path of the mount.",
+                              tip="Skipped automatically when the sky did not move on the sensor during the night.")
+    flat_scale_px: float = P(0.0, label="Flat: large scales only", level=ADVANCED, ge=0, le=500, step=5, unit="px",
+                             help="Keep only the scales of the master flat larger than this (Gaussian sigma, sensor "
+                                  "pixels). 0 = the whole flat. For flat frames borrowed from another night of the "
+                                  "same optics: they hold the vignetting of the instrument, but not this night's dust.",
+                             tip="About 40 px removes dust donuts and keeps the vignetting.")
     saturation: float = P(0.976, label="Saturation level", level=ADVANCED, ge=0.5, le=1.0, step=0.001, unit="x white level",
                           help="Raw values above this fraction of the sensor white level are flagged as saturated; the "
                                "stacker then treats them specially instead of averaging clipped values.",
@@ -45,7 +57,7 @@ class Calibrate(Stage):
                    "cached on the fast scratch disk; an interrupted calibration resumes frame by frame.")
     deps = ("inventory",)
     Params = CalibrateParams
-    version = "1"
+    version = "2"          # 2: hot pixels also seen in the lights
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         n = max(1, min(12, (os.cpu_count() or 4) - 2))
@@ -86,6 +98,12 @@ class Calibrate(Stage):
             else:
                 fdark = np.full((H, W), level, np.float32)   # flats are short: dark current negligible
             flat = _master_flat([f["path"] for f in frames["flats"]], fdark, ctx)
+            if p.flat_scale_px > 0:
+                # borrowed flat: vignetting only (each colour plane smoothed; its dust is not this night's dust)
+                for k in range(4):
+                    i, j = divmod(k, 2)
+                    flat[i::2, j::2] = cv2.GaussianBlur(flat[i::2, j::2], (0, 0), p.flat_scale_px / 2.0)
+                ctx.log(f"master flat kept above {p.flat_scale_px:.0f} px only (vignetting, not dust)")
         else:
             flat = np.ones((H, W), np.float32)
             ctx.log("no flat frames: vignetting and dust will not be corrected (the sky model will absorb part of "
@@ -107,6 +125,11 @@ class Calibrate(Stage):
             v = _plane(flat, k)
             loc = median_filter(v, size=9)
             _plane(bad, k)[...] |= (v < (1 - p.flat_defect) * loc) | (v > (1 + p.flat_defect) * loc)
+        if p.hot_from_lights and len(lights) >= 15:
+            n0 = int(bad.sum())
+            msg = _hot_from_lights([f["path"] for f in lights], dark, flat, bad, median_filter)
+            ctx.metric("hot_pixels_from_lights", int(bad.sum()) - n0)
+            ctx.log(msg)
         ctx.save("badmask.npy", bad)
         ctx.metric("bad_pixels_pct", round(100 * float(bad.mean()), 2))
         ctx.metric("sky_noise_adu", round(sky_noise, 2))
@@ -182,6 +205,33 @@ def _master_flat(paths: list[str], fdark: np.ndarray, ctx: Context) -> np.ndarra
     mad = 1.4826 * np.median(np.abs(fl - med), axis=0) + 1e-6
     keep = np.abs(fl - med) < 3 * mad
     return (np.where(keep, fl, 0).sum(0) / np.maximum(keep.sum(0), 1)).astype(np.float32)
+
+
+def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0) -> str:
+    """Flag in ``bad`` the pixels that stand out from their same-colour neighbours in the lower quartile of ``n``
+    light frames spread over the session, in sensor coordinates: a defect is bright in every frame, the sky has
+    drifted (a star covers a given pixel in a small part of the frames only). Skipped when the sky moved by less
+    than three star widths between the first and the last frame (stars would then look like defects)."""
+    sub = [paths[i] for i in np.linspace(0, len(paths) - 1, min(n, len(paths))).astype(int)]
+    a, b = ((read_cfa(q) - dark) / flat for q in (sub[0], sub[-1]))
+    ga, gb = (cv2.resize(_plane(x, 1), None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA).astype(np.float32)
+              for x in (a, b))
+    hp = [g - cv2.GaussianBlur(g, (0, 0), 8) for g in (ga, gb)]
+    (dx, dy), _ = cv2.phaseCorrelate(hp[0], hp[1])
+    drift = 4.0 * float(np.hypot(dx, dy))                     # sensor pixels (colour plane at half resolution)
+    if drift < 12.0:
+        return f"hot pixels from the lights: skipped, the sky moved by {drift:.0f} px only on the sensor"
+    q = np.percentile(np.stack([(read_cfa(x) - dark) / flat for x in sub]), 25, axis=0)
+    n_new = 0
+    for c in range(4):
+        v = _plane(q, c)
+        h = v - median_filter(v, size=5)
+        s = robust_sigma(h[::2, ::2])[1]
+        hot = (h > k * s) & ~_plane(bad, c)
+        _plane(bad, c)[...] |= hot
+        n_new += int(hot.sum())
+    return (f"hot pixels from the lights: {n_new} more pixels flagged (lower quartile of {len(sub)} frames; the sky "
+            f"moved by {drift:.0f} px on the sensor)")
 
 
 def _sky_noise(path: str, dark: np.ndarray, flat: np.ndarray) -> float:
