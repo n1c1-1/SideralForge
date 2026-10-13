@@ -427,3 +427,16 @@ a bright ring) around sigma Orionis and other bright stars, sky fitted on 46 % o
   the nebula is kept under their footprint. Their star layer is clean. Interpolating always within the unreliable
   core and keeping the nebula only beyond it would remove the residue (tried before the far halo: Iris G 6.9 turned
   into a blue disc - to be re-tested now that the glare is modelled).
+
+### 11.6 Against the user's own images (2026-10-13 night)
+
+The user's finished Horsehead, Flaming Star and Rosette (project reference folders, aligned by the reference stage -
+image features when star matching fails) are the guide; an independent agent judges every render on aligned 100 %
+crops (stars, star field, colour, structure, faint detail, artefacts) and must pass it before it is shown. The
+Horsehead finals of 14:21 failed on everything (1-3 / 5).
+
+* Diagonal streaks (walking noise): they were drawn by the fixed-pattern removal itself. On the star-free background
+  of the Rosette stack, without it the fine structure is isotropic (ratio along / across the drift 0.97); with it,
+  streaks along the drift (1.67). The pattern estimate (frames minus their smooth sky, averaged in sensor
+  coordinates) also holds the tracks of the faint stars that cross the sensor with the drift; subtracting it from
+  every frame redraws them as streaks. It had been neutral on Heart: stack v3 turns it off by default.

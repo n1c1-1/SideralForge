@@ -48,14 +48,17 @@ class StackParams(StageParams):
                     help="Electrons per ADU in the calibrated frames, used for the noise model of the rejection.")
     read_noise: float = P(11.9, label="Read noise", level=ADVANCED, ge=0, unit="ADU",
                           help="Noise of a frame without light, used for the noise model of the rejection.")
-    pattern_removal: bool = P(True, label="Fixed pattern removal",
+    pattern_removal: bool = P(False, label="Fixed pattern removal", level=ADVANCED,
                               help="The sensor's fixed pattern (residual dark current, hot or cold columns, amplifier "
                                    "patterns not removed by the darks - or everything when there are no darks) stays "
                                    "at the same place on the sensor while the sky drifts between frames. Stacked, it "
-                                   "becomes 'walking noise': coloured streaks along the drift. The pattern is measured "
+                                   "can become 'walking noise': streaks along the drift. The pattern is measured "
                                    "as the median of the frames in sensor coordinates (stars and sky removed) and "
                                    "subtracted from every frame. Skipped automatically when the drift is too small "
-                                   "to tell the pattern from the sky.")
+                                   "to tell the pattern from the sky.",
+                              tip="Off by default: on the Rosette the estimate also held the tracks of the faint stars "
+                                  "across the sensor, and subtracting it drew the very streaks it was meant to remove "
+                                  "(without it the stacked background has none; it was neutral on Heart).")
     pattern_frames: int = P(48, label="Frames for the pattern reference", level=ADVANCED, ge=8, le=400,
                             help="Number of frames, evenly spread over the session, whose median is the first estimate "
                                  "of the fixed pattern; the final estimate uses all frames around it.")
@@ -72,7 +75,7 @@ class Stack(Stage):
                    "noise-aware denoising.")
     deps = ("calibrate", "register")
     Params = StackParams
-    version = "2"          # 2: fixed pattern (walking noise) removal
+    version = "3"          # 2: fixed pattern (walking noise) removal; 3: off by default (it drew walking noise)
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         a: dict[str, Auto] = {}
