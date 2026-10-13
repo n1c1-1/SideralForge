@@ -78,6 +78,48 @@ def _poly(u, v, sx, sy):
     return np.stack([a ** i * b ** j for i in range(4) for j in range(4 - i)], -1)
 
 
+def _feature_orientation(ref, gd, S, size=1400, min_inliers=12):
+    """Orientation and similarity transform (oriented stack / S -> reference) from SIFT features of both images,
+    in the format of the star matching result; None when nothing matches."""
+    import cv2
+    from skimage.transform import SimilarityTransform
+
+    def prep(a):
+        a = a - np.percentile(a, 1)
+        a = np.clip(a / max(float(np.percentile(a, 99.5)), 1e-6), 0, 1)
+        return (a * 255).astype(np.uint8)
+
+    sr = size / max(ref.shape)
+    a = cv2.resize(prep(ref), None, fx=sr, fy=sr, interpolation=cv2.INTER_AREA)
+    sift = cv2.SIFT_create(5000)
+    ka, da = sift.detectAndCompute(a, None)
+    if da is None:
+        return None
+    best = None
+    for flip in (False, True):
+        for k in range(4):
+            g = np.rot90(gd[::-1] if flip else gd, k)          # the orientation convention of orient_xy
+            sb = size / max(g.shape)
+            b = cv2.resize(prep(np.ascontiguousarray(g)), None, fx=sb, fy=sb, interpolation=cv2.INTER_AREA)
+            kb, db = sift.detectAndCompute(b, None)
+            if db is None:
+                continue
+            good = [m for m, n in cv2.BFMatcher().knnMatch(db, da, k=2) if m.distance < 0.75 * n.distance]
+            if len(good) < min_inliers:
+                continue
+            pb = np.float32([kb[m.queryIdx].pt for m in good]) / sb / S       # oriented stack, sensor scale
+            pa = np.float32([ka[m.trainIdx].pt for m in good]) / sr           # reference
+            M, inl = cv2.estimateAffinePartial2D(pb, pa, ransacReprojThreshold=3.0 / sr)
+            n_in = int(inl.sum()) if inl is not None else 0
+            if M is None or n_in < min_inliers:
+                continue
+            T = SimilarityTransform(matrix=np.vstack([M, [0, 0, 1]]))
+            score = (abs(np.degrees(T.rotation)) < 5, n_in)
+            if best is None or score > best[4]:
+                best = (flip, k, T, n_in, score)
+    return best
+
+
 def align_reference(path, drz, S, nmax, progress=lambda f, m: None):
     import astroalign as aa
     from PIL import Image
@@ -104,11 +146,26 @@ def align_reference(path, drz, S, nmax, progress=lambda f, m: None):
             score = (abs(np.degrees(T.rotation)) < 5, len(s_))
             if best is None or score > best[4]:
                 best = (flip, k, T, len(s_), score)
+    coarse = False
+    if best is None:
+        # a heavily processed reference (stretched, saturated, sharpened) no longer ranks its stars like the stack:
+        # the star triangles find nothing. Its image features (nebula and star pattern together) still match
+        progress(0.85, "matching image features")
+        best = _feature_orientation(ref, gd, S)
+        coarse = True
     if best is None:
         from ..core.stage import StageError
         raise StageError("the reference image could not be matched with the stack")
     flip, k, T, _, _ = best
     bx, by = orient_xy(Bd[:, 0], Bd[:, 1], H, W, k, flip)
+    if coarse:                     # the feature transform is good to a few pixels: refine it on the stars
+        from skimage.transform import SimilarityTransform
+        for rad in (8.0, 4.0):
+            dd, j = cKDTree(A).query(T(np.c_[bx, by] / S), distance_upper_bound=rad)
+            m = np.isfinite(dd)
+            if m.sum() >= 20:
+                T = SimilarityTransform()
+                T.estimate(np.c_[bx, by][m] / S, A[j[m]])
     Pp = T(np.c_[bx, by] / S)
     dd, j = cKDTree(A).query(Pp, distance_upper_bound=2.0)
     m = np.isfinite(dd)
