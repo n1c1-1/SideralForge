@@ -58,8 +58,9 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "10"         # 9: far halo of the stars, star shape measured without the stars sitting in the core of a
-                           # much brighter one; 10: the fine rays of the stars whose glare dominates, with their halo
+    version = "11"         # 9: far halo of the stars, star shape measured without the stars sitting in the core of a
+                           # much brighter one; 10: the fine rays of the stars whose glare dominates, with their halo;
+                           # 11: the rays bounded by the star's glare (noise far from the star passed for rays)
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device
@@ -179,7 +180,7 @@ class Stars(Stage):
             return
         idx = np.array([i for i, _ in dom])
         r_in = np.array([max(WING_OUT, r) for _, r in dom])
-        rays = own_rays(img - model - halo, x[idx], y[idx], r_in)
+        rays = own_rays(img - model - halo, x[idx], y[idx], r_in, halo)
         ctx.metric("own_rays_stars", [round(float(g[i]), 1) for i in idx])
         ctx.log(f"fine rays of {len(idx)} stars whose glare dominates (G {', '.join(f'{g[i]:.1f}' for i in idx)}) "
                 f"kept with their glare: {100 * float((np.abs(rays[1]) > 0).mean()):.1f} % of the field")
