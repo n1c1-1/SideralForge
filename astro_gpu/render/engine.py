@@ -274,9 +274,16 @@ class RenderEngine:
         ratio = (w[None] * cs / ops.luminance(cs).clamp(min=1e-3 * noise)[None]
                  + (1 - w[None]) * cb / ops.luminance(cb).clamp(min=1e-3 * noise)[None]).clamp(-0.5, 4)
         del cb, cs, Ys
-        Yl = ops.gaussian_blur(Yl_full, 6 / f)
+        # the tone curve is set on the nebula: the glare of the stars drawn back into it (star_glow) is light added
+        # on top, it does not move the sky, the dark areas nor the white of the nebula
+        Yn = Yl_full
+        if s.star_glow > 0 and "Shalo" in self._host:
+            Yn = Yl_full - s.star_glow * ops.luminance(torch.einsum("ij,jhw->ihw", self.M_eff(s),
+                                                                    self._layer("Shalo", f).clamp(min=0)))
+        Yl = ops.gaussian_blur(Yn, 6 / f)
         p_dark, p_sky = ops.percentile(Yl, [s.dark_pct, s.sky_pct], valid)
-        hi = ops.percentile(Yl_full, 99.995, valid)
+        hi = ops.percentile(Yn, 99.995, valid)
+        del Yn
         lo, b, white = fit_tone_curve(p_dark, p_sky, hi * s.white_mult, s.dark_level / 255, s.sky_level / 255, s.toe)
         info["tone_curve"] = {"black": lo, "b": b, "white": white}
         L = tone_curve(Yl_full, lo, b, white, s.toe)
