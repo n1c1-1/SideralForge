@@ -76,8 +76,9 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "28"         # 27: the line emission measured on the nebula rendered with the colour of an HII spectrum;
-                           # 28: the diffuse glow at the darkest areas of its window
+    version = "29"         # 27: the line emission measured on the nebula rendered with the colour of an HII spectrum;
+                           # 28: the diffuse glow at the darkest areas of its window; 29: the star guard wherever star
+                           # light dominates (dark moats around G 9.5-11.5 stars)
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -136,7 +137,8 @@ class RenderPrep(Stage):
         # A local Wiener filter leaves islands of unfiltered pixel noise wherever its local noise estimate falls short
         # (dark and bright pepper, worst at the edges of a nebula); the network does not. The fine scales come from the
         # network, the large ones from the Wiener filter (bright-star zones are interpolated identically in both)
-        wstar = star_light_weight(ctx, lum, astro.shape[1:]) * (1 - foot_w)
+        wsl = star_light_weight(ctx, lum, astro.shape[1:])
+        wstar = wsl * (1 - foot_w)
         ctx.metric("fine_layers_off_pct", round(100 * float((wstar < 0.5).mean()), 1))
         n2 = ctx.load("starless", "n2n_final.npy").astype(np.float32) / flat
         b0 = ctx.load("starless", "sl_final.npy").astype(np.float32) / flat
@@ -163,7 +165,12 @@ class RenderPrep(Stage):
             ctx.metric("continuum_smoothed_pct", round(100 * float((sm > 0.5).mean()), 1))
             del EC_N, Cs, sm
         if p.star_guard:
-            N = guard_generic(N, np.tensordot(lum, N, 1).astype(np.float32), foot_w, lum, w_cam, p.guard_sigma)
+            # the guard covers the footprint discs and filled cores, and wherever the light of a star dominates the
+            # noise: around the stars brighter than the discs (G < 11.5) the slight over-subtraction of their wings
+            # (6-20 px) left dark moats outside the filled core
+            N = guard_generic(N, np.tensordot(lum, N, 1).astype(np.float32), np.maximum(foot_w, 1 - wsl), lum, w_cam,
+                              p.guard_sigma)
+        del wsl
         # saturated stars: shown by their real light; the nebula under them interpolated where that is safe
         ctx.progress(0.42, "real light of the saturated stars")
         N, fp_all, fp_fill, Sreal = saturated_star_light(ctx, fs, N, flat, lum, ctx.log)
