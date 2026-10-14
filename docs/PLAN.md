@@ -499,3 +499,29 @@ Horsehead finals of 14:21 failed on everything (1-3 / 5).
     (Gaussian of R/8 over the footprint) where the star model light exceeds the nebula (weight 0 at half of it, 1 at
     twice it); the finer scales go to the star light. Smoothing everywhere under the footprint washed out the Iris
     around its star (the nebula is 2-3 x the star model there; 5-40 x around the Flaming Star stars).
+
+### 11.7 Star artefacts: the leads (2026-10-14 evening)
+
+The user (Iris G 6.9 star, dark blobs along its spikes): step back and solve the star problem for good. Every star
+artefact so far (notches, rings, discs, blobs) comes from subtracting a model of each star and drawing it back: the
+model never matches each star exactly. Leads, to be sorted at the end (each in its own branch, each judged by an
+independent agent on aligned 100 % crops):
+
+| Lead | Branch / place | Idea | Status |
+|---|---|---|---|
+| 1b real stars | real-stars | stars brighter than G 12: spikes (and saturated cores, rays) shown as photographed = image minus the nebula under them, the nebula interpolated across the spikes; fainter star cores drawn as now | in test |
+| 2 StarNet2 / nox | D:/astro_gpu_diag/starnet_test | off-the-shelf learned star removers on the problem stars | agent running |
+| 3 own network | star-net, D:/astro_gpu_diag/own_starnet | a star remover trained on the project's own data (its real bright stars injected on clean nebula) | agent running |
+
+Lead 1b, first findings on the Iris (G 6.9 star):
+* all stars G < 12 shown by their own light (discs + spikes): the medium stars came out large and soft (their
+  photographed wings escape the star size settings) - only their spikes are taken as real light now, their round
+  core stays drawn;
+* the spike strips were missed on saturated stars (the saturated core broke the spike length measurement at the
+  start): the length is now where less than 60 % of the last 15 px stand above twice the noise;
+* the fine detail, colour and sharpening layers come from the starless images where the shared spike model was
+  subtracted: off under the strips too;
+* the dark blobs left were the star's fine secondary rays beyond its footprint (measured with the ring median, which
+  narrow rays do not move): footprints of saturated stars now out to where the ring's 90th percentile falls below
+  twice the noise (Iris: 4 % -> 14 % of the field). G 6.9 clean, the Iris core unchanged; to check: faint dust under
+  the larger interpolated footprints.
