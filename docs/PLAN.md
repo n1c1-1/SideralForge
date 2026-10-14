@@ -461,7 +461,7 @@ Horsehead finals of 14:21 failed on everything (1-3 / 5).
   beyond its nominal radius, unbounded. Starless v23: bounded by K x the typical residual of these stars measured on
   themselves (median per unit flux). NGC 2023 keeps its core (115 ADU at 15 px instead of 25 flat); IC 435 follows
   the data (a plateau); no change elsewhere.
-* Render setting "Diffuse glow removed" (render prep layer Dglow: 20th percentile of the nebula over a fifth of the
+* Render setting "Diffuse glow removed" (render prep layer Dglow: 3rd percentile of the nebula over a fifth of the
   frame, smoothed): the level a gradient removal would take as background. The user's Horsehead treats the diffuse
   H-alpha west of IC 434 as background (neutral grey where our data have R 4.9, G 2.1); subtracting it is also what
   turns the dust east of IC 434 teal. 0 in Faithful.

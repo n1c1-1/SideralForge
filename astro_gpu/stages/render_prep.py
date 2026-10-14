@@ -76,8 +76,8 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "27"         # 26: footprint of a saturated star at least its unreliable core; 27: the line emission
-                           # measured on the nebula rendered with the colour of an HII spectrum
+    version = "28"         # 27: the line emission measured on the nebula rendered with the colour of an HII spectrum;
+                           # 28: the diffuse glow at the darkest areas of its window
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -362,10 +362,11 @@ def emission_anchor(astro, M, cam_hii, fs, dm, block=64):
     return M + w * np.outer(t - M @ e, n) / (n @ e), e, w
 
 
-def diffuse_glow(N, good, frac, q=20.0) -> np.ndarray:
+def diffuse_glow(N, good, frac, q=3.0) -> np.ndarray:
     """Large-scale lower envelope of the nebula per channel: the q-th percentile in a window of ``frac`` times the
     shorter side of the frame, smoothed at half the window - the diffuse glow on which the structures stand (diffuse
-    H-alpha, galactic light), that a gradient removal takes as background."""
+    H-alpha, galactic light), that a gradient removal takes as background: at the darkest areas, as its samples are
+    (at the 20th percentile, a fifth of the field fell below it and came out as black holes)."""
     from scipy.ndimage import percentile_filter
     C, H, W = N.shape
     f = max(4, min(H, W) // 160)
