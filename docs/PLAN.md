@@ -560,3 +560,9 @@ crosses, smeared neighbours). 1e remaining defect: faint brownish streaks along 
 Shared by all: Iris G 4.6 spikes weak with a sea-urchin halo, a dark depression ~40 px around one star.
 * 1f: the light under a strip averaged along the spike direction over the strip width (normalised by the weights
   that leave the star cores out): the blotches become smooth faint streaks of the star's colour.
+
+Second blind QC 2026-10-15 01:15 (current / 1e / 1f, sheets D:/astro_gpu_diag/qc/blind2): 1f first on all four
+objects, 1e second, current last on all four (its bright spikes: beads, white bars and slivers across the nebula,
+lumps at the spike ends, dark blobs). Remaining in 1e / 1f: the spikes of G 10-12 stars in dark sky appear as faint
+dashed fragments starting away from the core (fainter and greyer in 1f); current shows nothing there. Next: the
+same with real spikes only for stars brighter than G 10 (parameter real_g), for the user's choice.
