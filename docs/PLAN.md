@@ -523,5 +523,7 @@ Lead 1b, first findings on the Iris (G 6.9 star):
   subtracted: off under the strips too;
 * the dark blobs left were the star's fine secondary rays beyond its footprint (measured with the ring median, which
   narrow rays do not move): footprints of saturated stars now out to where the ring's 90th percentile falls below
-  twice the noise (Iris: 4 % -> 14 % of the field). G 6.9 clean, the Iris core unchanged; to check: faint dust under
-  the larger interpolated footprints.
+  twice the noise (Iris: 4 % -> 14 % of the field). G 6.9 clean, the Iris core unchanged - but on the Rosette and the
+  Flaming Star the footprints grew to 33-34 % of the field, interpolated (the ring's 90th percentile of the star light
+  stays above twice the noise wherever star residues fill a nebula): reverted to the ring median. The secondary rays
+  are left to the learned star removal (lead 2: StarNet2 leaves only a faint fine-ray texture).

@@ -530,7 +530,7 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None,
     for i in idx_sat[np.argsort(fs["g"][idx_sat])]:
         R = 4
         for r_ in range(4, rmax, 2):
-            if not _ring_median(Ys, xs[i], ys[i], r_, q=90) >= 2 * sig:
+            if not _ring_median(Ys, xs[i], ys[i], r_) >= 2 * sig:
                 break
             R = r_
         if smask is not None:
