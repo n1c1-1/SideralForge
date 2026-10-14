@@ -92,6 +92,11 @@ class RenderSettings(StageParams):
                                 "gradient removal does.",
                            tip="0 = kept with its true brightness (faithful); 1 = removed: darker backgrounds, the "
                                "nebula structures stand out.")
+    sky_neutral: float = S(0.0, section="Sky background", label="Neutral sky", ge=0, le=1, step=0.05,
+                           help="Makes the typical sky grey (same brightness) by an offset per colour, as a background "
+                                "neutralisation does: in a field filled with faint emission, only its brighter parts "
+                                "keep their colour.",
+                           tip="0 = the sky keeps its measured colour (faithful); 1 = neutral grey sky.")
     sky_pct: float = S(30.0, section="Sky background", label="Sky reference", level=ADVANCED, ge=5, le=80, unit="percentile",
                        help="Percentile of the (smoothed) image defining the 'typical sky'.")
     dark_pct: float = S(1.0, section="Sky background", label="Dark reference", level=ADVANCED, ge=0.01, le=20,
@@ -215,13 +220,15 @@ PRESETS: dict[str, dict] = {
     "Natural": {},
     # The two deliverables of every project. Faithful = the rendering of the reference image of 2026-10-10 10:34 (the
     # defaults: the user's preferred rendering; measured colours without the H-alpha hue convention came out magenta
-    # and were not what the data look like to the eye). Artistic = the same base with a stronger stretch, local
-    # contrast and colour, judged by eye. Neither desaturates the halos (that produced grey discs around bright stars).
+    # and were not what the data look like to the eye). Artistic = the user's own slider settings on the Rosette
+    # (2026-10-13: no large-scale compression, strong medium and large contrast, H-alpha and OIII emphasised, darker
+    # sky, more faint stars) with the diffuse glow of the field partly taken as background, as his finished images do
+    # (the Horsehead's diffuse H-alpha). Neither desaturates the halos (that produced grey discs around bright stars).
     "Faithful": {},
-    "Artistic": {"sharpen": 1.0, "sharpen_lo_pct": 60.0, "fine_k": 1.3, "fine_lo_pct": 60.0, "colour_detail": 1.0,
-                 "resid_boost": 0.3, "chroma": 1.1, "neb_sharp": 1.2, "lc_fine": 1.15, "lc_medium": 1.4,
-                 "lc_large": 1.5, "sky_level": 34.0, "dark_level": 11.0, "white_mult": 0.8, "star_sat": 0.8,
-                 "sat_min": 0.15, "d10": 5.0, "d7": 12.0},
+    "Artistic": {"hdr_strength": 0.0, "white_mult": 2.0, "toe": 0.03, "sky_level": 22.0, "lc_fine": 0.75,
+                 "lc_medium": 1.6, "lc_large": 1.7, "oiii_boost": 0.35, "oiii_smooth": 60.0, "ha_boost": 1.55,
+                 "resid_boost": -0.65, "hl_knee": 0.49, "g_lim": 15.8, "t_lim": 0.22, "d10": 8.0,
+                 "diffuse_cut": 0.6},
     "H-alpha emphasised": {"ha_boost": 1.6, "white_mult": 0.58},
     "Prominent stars": {"g_lim": 14.0, "t_lim": 0.28, "d10": 5.4, "star_sat": 0.6, "d7": 11.5},
     "Dense Milky Way": {"g_glow": 17.0, "g_lim": 16.0, "t_lim": 0.18, "d10": 3.8, "d7": 8.0},

@@ -58,9 +58,10 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "11"         # 9: far halo of the stars, star shape measured without the stars sitting in the core of a
+    version = "12"         # 9: far halo of the stars, star shape measured without the stars sitting in the core of a
                            # much brighter one; 10: the fine rays of the stars whose glare dominates, with their halo;
-                           # 11: the rays bounded by the star's glare (noise far from the star passed for rays)
+                           # 11: the rays bounded by the star's glare (noise far from the star passed for rays);
+                           # 12: the glare of the dominant stars saved apart (the rendering draws back that one only)
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device
@@ -125,10 +126,10 @@ class Stars(Stage):
             linfo = {}
         # the glare and the angular shape (spikes) are measured in turn, each without the other: around a very bright
         # star the glare would pass for star shape, and a long spike for an elongated glare
-        halo = ext = None
+        halo = ext = glow = None
         if p.far_halo:
             ctx.progress(0.95, "far halo of the stars")
-            halo, dominant = self._far_halo(ctx, img, model + fm, x, y, g - dm, Fp, W, H)
+            halo, dominant, glow = self._far_halo(ctx, img, model + fm, x, y, g - dm, Fp, W, H)
         if p.angular_shape:
             ctx.progress(0.965, "measured star shape (diamond, spikes)")
             ext = self._angular_shape(ctx, img if halo is None else img - halo, model, fm, x, y, g - dm, fluxes, Fp,
@@ -137,10 +138,10 @@ class Stars(Stage):
                 model = model + ext
         if p.far_halo and ext is not None:
             ctx.progress(0.98, "far halo of the stars, without the spikes")
-            halo, dominant = self._far_halo(ctx, img, model + fm, x, y, g - dm, Fp, W, H)
+            halo, dominant, glow = self._far_halo(ctx, img, model + fm, x, y, g - dm, Fp, W, H)
         if halo is not None:
             ctx.progress(0.99, "fine rays of the brightest stars")
-            self._own_rays(ctx, img, model + fm, halo, x, y, g - dm, dominant)
+            self._own_rays(ctx, img, model + fm, halo, glow, x, y, g - dm, dominant)
         del ext, halo
         del fm
         ctx.save("stars_model.npy", model)
@@ -164,14 +165,19 @@ class Stars(Stage):
         r_in = np.array([_filled_radius(sat, x[i], y[i], rmax=800) + 4 for i in hs], float)
         halo, info = far_halo(img - model, x[hs], y[hs], Fp[:, hs], r_in, log=ctx.log)
         for k_, v in info.items():
-            ctx.metric(k_, v)
+            if not k_.startswith("_"):
+                ctx.metric(k_, v)
         if halo is not None:
             ctx.save("stars_model_halo.npy", halo)
+            # the glare that the rendering draws back: only that of the stars whose glare dominates their surroundings,
+            # where the star / nebula separation cannot be trusted (the glare of a cluster filled the Rosette's cavity)
+            ctx.save("stars_model_glow.npy", info["_dominant"] if info.get("_dominant") is not None
+                     else np.zeros((3, 1, 1), np.float32))
         # the stars whose glare dominates their surroundings, and the radius their star model holds
-        return halo, [(int(hs[int(k)]), float(r_in[int(k)])) for k in info.get("far_halo_own", {})]
+        return halo, [(int(hs[int(k)]), float(r_in[int(k)])) for k in info.get("far_halo_own", {})],             info.get("_dominant")
 
     @staticmethod
-    def _own_rays(ctx, img, model, halo, x, y, g, dom):
+    def _own_rays(ctx, img, model, halo, glow, x, y, g, dom):
         """The fine rays of the stars whose glare dominates their surroundings, measured on what the star model and
         the far halo leave: star light, saved with the far halo (the star removal takes it out of the nebula, the
         rendering draws it back with the glare)."""
@@ -181,6 +187,7 @@ class Stars(Stage):
         idx = np.array([i for i, _ in dom])
         r_in = np.array([max(WING_OUT, r) for _, r in dom])
         rays = own_rays(img - model - halo, x[idx], y[idx], r_in, halo)
+        ctx.save("stars_model_glow.npy", rays if glow is None else glow + rays)
         ctx.metric("own_rays_stars", [round(float(g[i]), 1) for i in idx])
         ctx.log(f"fine rays of {len(idx)} stars whose glare dominates (G {', '.join(f'{g[i]:.1f}' for i in idx)}) "
                 f"kept with their glare: {100 * float((np.abs(rays[1]) > 0).mean()):.1f} % of the field")

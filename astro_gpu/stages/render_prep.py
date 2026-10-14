@@ -76,8 +76,9 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "30"         # 28: the diffuse glow at the darkest areas of its window; 29: the star guard wherever star
-                           # light dominates (dark moats around G 9.5-11.5 stars); 30: the diffuse part of the star glare
+    version = "31"         # 29: the star guard wherever star light dominates (dark moats around G 9.5-11.5 stars);
+                           # 30: the diffuse part of the star glare; 31: the glare of the dominant stars only, the
+                           # measured emission colour also in the emission / continuum / OIII separation
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -119,6 +120,11 @@ class RenderPrep(Stage):
         else:
             e_ = spec["cam_hii"].astype(np.float64)
         e_ = e_ / e_[0]
+        if e_meas is not None and w_e > 0:
+            # the emission as measured on the nebula also separates it from the continuum and the OIII: with the
+            # reconstructed response, the green of the emission passed for OIII wherever there is H-alpha
+            e_ = (1 - w_e) * e_ + w_e * e_meas
+            ctx.metric("emission_signature_source", "measured on the nebula")
         mk = (fs["g"] - dm > 11) & (fs["g"] - dm < 14)
         k_ = np.array([np.median(fs["flux"][c, mk] / np.maximum(fs["flux"][1, mk], 1e-3)) for c in range(3)])
         Am = np.stack([e_, k_], 1)
@@ -272,9 +278,13 @@ class RenderPrep(Stage):
             ctx.metric("stars_with_measured_shape", int(n_r + n_d))
             del S_sh, sh
         ctx.save("Sreal.npy", Sreal.astype(np.float16))
-        hf = ctx.project.stage_dir("stars") / "stars_model_halo.npy"
-        if hf.exists():    # the far halo of the stars, taken out of the nebula: the rendering draws it as their glow
-            hal = np.load(hf, mmap_mode="r")
+        hf = ctx.project.stage_dir("stars") / "stars_model_glow.npy"
+        if not hf.exists():
+            hf = ctx.project.stage_dir("stars") / "stars_model_halo.npy"
+        # the glare of the stars that dominate their surroundings (with their rays), taken out of the nebula: the
+        # rendering draws it back as their glow. Earlier star stages saved only the glare of all the stars
+        hal = np.load(hf, mmap_mode="r") if hf.exists() else None
+        if hal is not None and hal.shape[1:] == (H, W):
             Sh = np.stack([np.asarray(hal[c], np.float32) / flat[c] for c in range(3)])
             ctx.save("Shalo.npy", Sh.astype(np.float16))
             # its diffuse part, measured like the diffuse glow of the nebula: removed with it ('Diffuse glow removed'),

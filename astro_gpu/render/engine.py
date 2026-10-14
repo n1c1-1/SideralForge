@@ -32,7 +32,7 @@ XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
 LAYER_KEYS = ("fine_k", "fine_lo_pct", "fine_hi_pct", "faint_smooth", "faint_lo_pct", "faint_hi_pct", "resid_boost",
               "colour_detail", "oiii_boost", "oiii_threshold", "oiii_smooth", "sharpen", "sharpen_lo_pct")
 NEB_LIN_KEYS = LAYER_KEYS + ("ha_boost", "ha_sigma", "glow_k", "glow_sigma", "g_glow", "speck_k", "white_temp", "tint",
-                             "star_glow", "diffuse_cut")
+                             "star_glow", "diffuse_cut", "sky_neutral", "sky_pct")
 NEB_KEYS = NEB_LIN_KEYS + ("chroma", "chroma_protect", "hue_target", "hue_shift", "chroma_sigma", "snr_lo", "snr_hi",
                            "sky_level", "dark_level", "toe", "sky_pct", "dark_pct", "white_mult", "hdr_strength",
                            "hdr_knee", "hdr_r", "hdr_eps", "lc_fine", "lc_medium", "lc_large", "neb_sharp",
@@ -237,6 +237,13 @@ class RenderEngine:
                 sg_ = ops.robust_noise(a_, sub=7)
                 astro[c] = torch.maximum(a_, ops.median_filter(a_, 5) - s.speck_k * sg_)
         lin = torch.einsum("ij,jhw->ihw", self.M_eff(s), astro)
+        if s.sky_neutral > 0:
+            # background neutralisation: the typical sky (sky_pct, smoothed) made grey at the same brightness, by an
+            # offset per channel - the faint emission that fills a field stops tinting it, the bright stays coloured
+            sky = torch.tensor([float(ops.percentile(ops.gaussian_blur(lin[c], 8 / f), s.sky_pct, valid)) for c in range(3)],
+                               device=lin.device)
+            y = 0.2126 * sky[0] + 0.7152 * sky[1] + 0.0722 * sky[2]
+            lin = lin - s.sky_neutral * (sky - y)[:, None, None]
         lin[:, ~valid] = 0
         return lin
 

@@ -465,3 +465,24 @@ Horsehead finals of 14:21 failed on everything (1-3 / 5).
   frame, smoothed): the level a gradient removal would take as background. The user's Horsehead treats the diffuse
   H-alpha west of IC 434 as background (neutral grey where our data have R 4.9, G 2.1); subtracting it is also what
   turns the dust east of IC 434 teal. 0 in Faithful.
+* Own rays of the dominant stars (stars v10-v11): radially coherent (running median along the radius over a factor 2),
+  narrow (+-12 px arc high-pass), per channel, significant against the noise of the median, bounded by the star's
+  glare (their contrast to it measured just outside the star model, at most four times it, tapered before 1200 px);
+  saved with the glare. The star below sigma Ori is clean again; a first version without the glare bound drew a
+  ring of dark radial streaks 600-1200 px out. Tried and not kept: +-30 px (no visible gain).
+* Render prep v29: the star guard also covers where star light dominates the noise: dark moats around the G 9.5-11.5
+  stars (their wings slightly over-subtracted 6-20 px out, outside the filled core) and black specks in the Flame.
+* Engine: the tone curve is set on the nebula without the glare (more glare made the whole image hazier and dimmer).
+* Render prep v30: the diffuse part of the glare goes with 'Diffuse glow removed' (the far glare of Alnitak veiled the
+  faint areas when the diffuse glow was removed).
+* Render prep / stars v31 / v12: only the glare of the stars whose glare dominates their surroundings is drawn back
+  (Horsehead: Alnitak, sigma Ori, G 4.9; Flaming Star: the four bright stars at the bottom; Rosette: none). Drawn back
+  for every star, the glare of the cluster filled the Rosette's central cavity. The measured emission colour also
+  separates emission, continuum and OIII (the green of the emission passed for OIII wherever there is H-alpha).
+* Artistic preset = the user's own slider settings on the Rosette (2026-10-13 22:33) + diffuse glow 0.6. New setting
+  'Neutral sky' (background neutralisation, 0 by default).
+* Tried and not kept: render settings fitted automatically on the user's references (OKLab band-pass and colour
+  distances; pixelwise comparisons favour flat grey images, contrast amplitudes still give grey desaturated ones);
+  the Noise2Noise network in the nebula base up to 32 px (the faint dust it shows is real, but star residues came
+  back around the bright stars); stronger OIII boost on the Rosette (our OIII map is not where the user's teal core is:
+  whitish patches in the ring, teal at the frame edges - the OSC separation is not reliable at this signal).

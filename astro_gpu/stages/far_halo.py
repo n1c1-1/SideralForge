@@ -252,6 +252,7 @@ def far_halo(sl, x, y, F, r_in, deg=3, nknots=20, log=print):
     h2, w2 = H // 2, W // 2
     Y2, X2 = (np.mgrid[0:h2, 0:w2] + 0.5) * 2 - 0.5
     out = np.zeros((3, h2, w2), np.float32)
+    dom = np.zeros((3, h2, w2), np.float32)          # the halo of the stars that dominate their surroundings
     for i in range(n):
         re = ell_r(i, X2, Y2, Q[i], PHI[i])
         prof = np.interp(np.log(re), lk, S, right=0.0).astype(np.float32) * pw(re)
@@ -259,13 +260,17 @@ def far_halo(sl, x, y, F, r_in, deg=3, nknots=20, log=print):
             prof *= ((re / RREF[i]) ** BETA[i]).astype(np.float32)
         for c in range(3):
             out[c] += prof * np.float32(kap[i] * F[c, i])
+            if i in strong:
+                dom[c] += prof * np.float32(kap[i] * F[c, i])
     full = np.stack([cv2.resize(out[c], (W, H), interpolation=cv2.INTER_LINEAR) for c in range(3)])
     info = {"far_halo_axis_ratio": round(q, 3), "far_halo_angle_deg": round(float(np.degrees(phi)), 1),
             "far_halo_profile": {str(int(round(rk[j]))): round(float(S[j] * pw(rk[j])), 5) for j in range(0, nr + 1, 2)},
             "far_halo_own": {str(i): [round(float(kap[i]), 2), round(float(Q[i]), 2), round(float(np.degrees(PHI[i]))),
                                       round(float(BETA[i]), 2)] for i in strong},
             "far_halo_own_amplitude": {str(i): round(float(kap[i]), 2) for i in measured},
-            "far_halo_kept_pct": round(100 * float(np.mean([mm.mean() for mm in m])), 1)}
+            "far_halo_kept_pct": round(100 * float(np.mean([mm.mean() for mm in m])), 1),
+            "_dominant": np.stack([cv2.resize(dom[c], (W, H), interpolation=cv2.INTER_LINEAR) for c in range(3)])
+            if strong else None}
     log(f"far halo of the stars: shape measured on {n} stars out to {rmax:.0f} px, elongation {q:.2f} at "
         f"{np.degrees(phi):.0f} deg; {len(strong)} stars dominating their surroundings with their own amplitude and "
         f"elongation, {len(measured)} with their own amplitude")
