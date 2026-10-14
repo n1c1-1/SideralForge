@@ -96,6 +96,8 @@ class RenderEngine:
         sh_ = self.dir / "Shalo.npy"
         if sh_.exists():
             self._host["Shalo"] = torch.from_numpy(np.load(sh_))
+            if (self.dir / "ShaloL.npy").exists():
+                self._host["ShaloL"] = torch.from_numpy(np.load(self.dir / "ShaloL.npy"))
         self.Fm,self.Fpred, self.Fglow = st["flux"].astype(np.float64), st["pred"].astype(np.float64), st["glow_flux"]
         pr = np.load(self.dir / "profile.npz")
         self.r_all, self.prof_raw = pr["r"], pr["prof"]
@@ -228,7 +230,7 @@ class RenderEngine:
         if s.star_glow > 0 and "Shalo" in self._host:
             # the glare of the optics around the stars, as photographed: under the nebula curve, like the residual
             # rays of the brightest stars that stay in the nebula (with the stars, the rays stood out of a dark sky)
-            astro = astro + s.star_glow * self._layer("Shalo", f).clamp(min=0)
+            astro = astro + s.star_glow * self._glare(s, f)
         if s.speck_k > 0 and f == 1:
             for c in range(3):
                 a_ = astro[c]
@@ -237,6 +239,13 @@ class RenderEngine:
         lin = torch.einsum("ij,jhw->ihw", self.M_eff(s), astro)
         lin[:, ~valid] = 0
         return lin
+
+    def _glare(self, s: RenderSettings, f: int) -> torch.Tensor:
+        """The glare of the stars (camera space), without the part taken as background with the diffuse glow."""
+        g = self._layer("Shalo", f)
+        if s.diffuse_cut > 0 and "ShaloL" in self._host:
+            g = g - s.diffuse_cut * self._layer("ShaloL", f)
+        return g.clamp(min=0)
 
     def _oiii(self, s: RenderSettings, f: int, valid: torch.Tensor) -> torch.Tensor:
         """OIII map at the chosen smoothing, minus its sky level, soft-thresholded at the measured sky noise."""
@@ -278,8 +287,7 @@ class RenderEngine:
         # on top, it does not move the sky, the dark areas nor the white of the nebula
         Yn = Yl_full
         if s.star_glow > 0 and "Shalo" in self._host:
-            Yn = Yl_full - s.star_glow * ops.luminance(torch.einsum("ij,jhw->ihw", self.M_eff(s),
-                                                                    self._layer("Shalo", f).clamp(min=0)))
+            Yn = Yl_full - s.star_glow * ops.luminance(torch.einsum("ij,jhw->ihw", self.M_eff(s), self._glare(s, f)))
         Yl = ops.gaussian_blur(Yn, 6 / f)
         p_dark, p_sky = ops.percentile(Yl, [s.dark_pct, s.sky_pct], valid)
         hi = ops.percentile(Yn, 99.995, valid)

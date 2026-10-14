@@ -76,9 +76,8 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "29"         # 27: the line emission measured on the nebula rendered with the colour of an HII spectrum;
-                           # 28: the diffuse glow at the darkest areas of its window; 29: the star guard wherever star
-                           # light dominates (dark moats around G 9.5-11.5 stars)
+    version = "30"         # 28: the diffuse glow at the darkest areas of its window; 29: the star guard wherever star
+                           # light dominates (dark moats around G 9.5-11.5 stars); 30: the diffuse part of the star glare
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -276,7 +275,12 @@ class RenderPrep(Stage):
         hf = ctx.project.stage_dir("stars") / "stars_model_halo.npy"
         if hf.exists():    # the far halo of the stars, taken out of the nebula: the rendering draws it as their glow
             hal = np.load(hf, mmap_mode="r")
-            ctx.save("Shalo.npy", np.stack([np.asarray(hal[c], np.float32) / flat[c] for c in range(3)]).astype(np.float16))
+            Sh = np.stack([np.asarray(hal[c], np.float32) / flat[c] for c in range(3)])
+            ctx.save("Shalo.npy", Sh.astype(np.float16))
+            # its diffuse part, measured like the diffuse glow of the nebula: removed with it ('Diffuse glow removed'),
+            # the glare then keeps its part near the stars (far out it is a gradient, as a gradient removal sees it)
+            ctx.save("ShaloL.npy", diffuse_glow(Sh, good, p.diffuse_scale).astype(np.float16))
+            del Sh
             del hal
         ctx.metric("stars_real_light", int(real.sum()))
         del Sreal
