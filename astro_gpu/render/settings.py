@@ -223,12 +223,14 @@ PRESETS: dict[str, dict] = {
     # and were not what the data look like to the eye). Artistic = the user's own slider settings on the Rosette
     # (2026-10-13: no large-scale compression, strong medium and large contrast, H-alpha and OIII emphasised, darker
     # sky, more faint stars) with the diffuse glow of the field partly taken as background, as his finished images do
-    # (the Horsehead's diffuse H-alpha). Neither desaturates the halos (that produced grey discs around bright stars).
+    # (the Horsehead's diffuse H-alpha), and the saturation his settings gave before the emission took the colour of an
+    # HII spectrum (out of the sRGB gamut, more saturated: 0.7 restores it on the Rosette). Neither desaturates the
+    # halos (that produced grey discs around bright stars).
     "Faithful": {},
     "Artistic": {"hdr_strength": 0.0, "white_mult": 2.0, "toe": 0.03, "sky_level": 22.0, "lc_fine": 0.75,
                  "lc_medium": 1.6, "lc_large": 1.7, "oiii_boost": 0.35, "oiii_smooth": 60.0, "ha_boost": 1.55,
                  "resid_boost": -0.65, "hl_knee": 0.49, "g_lim": 15.8, "t_lim": 0.22, "d10": 8.0,
-                 "diffuse_cut": 0.6},
+                 "diffuse_cut": 0.6, "chroma": 0.7},
     "H-alpha emphasised": {"ha_boost": 1.6, "white_mult": 0.58},
     "Prominent stars": {"g_lim": 14.0, "t_lim": 0.28, "d10": 5.4, "star_sat": 0.6, "d7": 11.5},
     "Dense Milky Way": {"g_glow": 17.0, "g_lim": 16.0, "t_lim": 0.18, "d10": 3.8, "d7": 8.0},
