@@ -76,9 +76,12 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "31"         # 29: the star guard wherever star light dominates (dark moats around G 9.5-11.5 stars);
+    version = "34"         # 29: the star guard wherever star light dominates (dark moats around G 9.5-11.5 stars);
                            # 30: the diffuse part of the star glare; 31: the glare of the dominant stars only, the
-                           # measured emission colour also in the emission / continuum / OIII separation
+                           # measured emission colour also in the emission / continuum / OIII separation; 32: the
+                           # star guard back to the footprints (its extension drew dark discs on the Heart); 33: the
+                           # real light of a saturated star = image minus the nebula rendered under it (dark notches);
+                           # 34: under a saturated star in structured nebula, the nebula kept at large scales only
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -170,15 +173,13 @@ class RenderPrep(Stage):
             ctx.metric("continuum_smoothed_pct", round(100 * float((sm > 0.5).mean()), 1))
             del EC_N, Cs, sm
         if p.star_guard:
-            # the guard covers the footprint discs and filled cores, and wherever the light of a star dominates the
-            # noise: around the stars brighter than the discs (G < 11.5) the slight over-subtraction of their wings
-            # (6-20 px) left dark moats outside the filled core
-            N = guard_generic(N, np.tensordot(lum, N, 1).astype(np.float32), np.maximum(foot_w, 1 - wsl), lum, w_cam,
-                              p.guard_sigma)
+            # (tried 2026-10-14: the guard also wherever the light of a star dominates the noise, for the dark moats
+            # around G 9.5-11.5 stars - in a dense field that is 98 % of it (Heart), and the guard drew dark discs)
+            N = guard_generic(N, np.tensordot(lum, N, 1).astype(np.float32), foot_w, lum, w_cam, p.guard_sigma)
         del wsl
         # saturated stars: shown by their real light; the nebula under them interpolated where that is safe
         ctx.progress(0.42, "real light of the saturated stars")
-        N, fp_all, fp_fill, Sreal = saturated_star_light(ctx, fs, N, flat, lum, ctx.log)
+        N, fp_all, fp_fill, Sreal = saturated_star_light(ctx, fs, N, flat, lum, ctx.log, astro=astro)
         ctx.save("N.npy", N.astype(np.float32))
         ctx.save("Dglow.npy", diffuse_glow(N, good, p.diffuse_scale).astype(np.float16))
         preview = N
@@ -454,7 +455,7 @@ def _ring_median(img, xc, yc, r_):
     return float(np.median(img[py[m], px[m]])) if m.sum() >= 16 else np.nan
 
 
-def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400):
+def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None):
     """Stars whose core is saturated cannot be measured nor modelled: when the instrument has diffraction spikes,
     which a drawn star cannot reproduce, they are shown by their real light (without spikes the drawn stars are
     kept: the real light of a saturated star is then only its blooming and halo).
@@ -541,9 +542,21 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400):
                 N2[c, y0_:y1_, x0_:x1_] = win * (1 - w_) + membrane_fill(win, hole) * w_
             fp_fill[y0_:y1_, x0_:x1_] = np.maximum(fp_fill[y0_:y1_, x0_:x1_], w_)
             n_fill += 1
+        else:
+            # structured nebula around: kept, but only at the scales the star model leaves intact - between its rays
+            # the symmetric star model over-subtracts and left dark notches in a ring around the star. The finer
+            # scales go to the star light (image minus this nebula), which gives the image back
+            for c in range(3):
+                win = N2[c, y0_:y1_, x0_:x1_]
+                N2[c, y0_:y1_, x0_:x1_] = win * (1 - w_) + cv2.GaussianBlur(win, (0, 0), max(R / 8.0, 2.0)) * w_
     del Ys, YL
-    # star light: image minus nebula (the interpolated nebula where it was interpolated, the starless elsewhere)
-    Sr = S + np.stack([cv2.GaussianBlur(N[c] - N2[c], (0, 0), 1.0) for c in range(3)])
+    # star light: the image minus the nebula layer actually rendered under the star, so that nebula + star light give
+    # the image back. Image minus the starless image plus the change made to the nebula (N - N2) missed what the
+    # preparation changed in the starless image itself (smoothing, guard): where the core fill of the starless image
+    # was brighter than the image between the spikes, the star light came out negative - dark notches in a diamond
+    # around the bright stars
+    ref = N if astro is None else astro
+    Sr = S + np.stack([cv2.GaussianBlur(ref[c] - N2[c], (0, 0), 1.0) for c in range(3)])
     del S, slf
     fade = np.clip((np.tensordot(lum, Sr, 1) / max(sig, 1e-9) - 1.5) / 2.0, 0, 1)
     Sr *= (fade * fp_all)[None]

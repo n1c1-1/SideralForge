@@ -486,3 +486,14 @@ Horsehead finals of 14:21 failed on everything (1-3 / 5).
   the Noise2Noise network in the nebula base up to 32 px (the faint dust it shows is real, but star residues came
   back around the bright stars); stronger OIII boost on the Rosette (our OIII map is not where the user's teal core is:
   whitish patches in the ring, teal at the frame edges - the OSC separation is not reliable at this signal).
+* User feedback 2026-10-14 midday: the Heart covered with black spots; dark spots around the spikes of the bright
+  stars of the Rosette and the Flaming Star. Causes and fixes (render prep v32-v34):
+  - Heart: the star guard extended to wherever star light dominates the noise (v29, for the Horsehead's dark moats)
+    covers 98 % of a Milky Way field; the guard's interpolation then drew dark discs (60 spots, 36 before). Reverted.
+  - The real light of a saturated star was image minus the starless image plus the change made to the nebula; it
+    missed what the preparation changed in the starless image itself. Where the core fill of the starless image is
+    brighter than the image between the spikes (Rosette, no spike model), the star light was negative: dark notches
+    in a diamond. Now image minus the nebula rendered under the star: nebula + star light give the image back.
+  - Under a saturated star in structured nebula the nebula was kept as is, with the dark notches the symmetric star
+    model leaves between its rays (Flaming Star G 5.3, 5.9, 6.1, AE Aur). It is now kept at large scales only
+    (Gaussian of R/8 over the footprint); the finer scales go to the star light.
