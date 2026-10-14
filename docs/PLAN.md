@@ -511,7 +511,7 @@ independent agent on aligned 100 % crops):
 |---|---|---|---|
 | 1b real stars | real-stars | stars brighter than G 12: spikes (and saturated cores, rays) shown as photographed = image minus the nebula under them, the nebula interpolated across the spikes; fainter star cores drawn as now | in test |
 | 2 StarNet2 / nox | D:/astro_gpu_diag/starnet_test | off-the-shelf learned star removers on the problem stars | agent running |
-| 3 own network | star-net, D:/astro_gpu_diag/own_starnet | a star remover trained on the project's own data (its real bright stars injected on clean nebula) | agent running |
+| 3 own network | star-net (fb150ed), D:/astro_gpu_diag/own_starnet (REPORT.md) | a star remover trained on the project's own data (its real bright stars injected on clean nebula) | promising, not ready |
 | 1c | real-stars (342f578) | 1b with spikes only where they stand 5 x the noise above the light beside them | tested |
 | 1d / 1e | real-stars-drawn (54f0d78, 408c3d2) | under a spike strip only the spike comes from the image (core model of every star subtracted, star cores left out), the stars along the strips drawn; 1d at 5 x noise, 1e at 2 x | 1e retained for QC |
 | 2b | starnet-hybrid (9543916, 86441cd) | StarNet2's starless image (minus our far halo and sky) under the footprints and strips | rejected |
@@ -566,3 +566,12 @@ objects, 1e second, current last on all four (its bright spikes: beads, white ba
 lumps at the spike ends, dark blobs). Remaining in 1e / 1f: the spikes of G 10-12 stars in dark sky appear as faint
 dashed fragments starting away from the core (fainter and greyer in 1f); current shows nothing there. Next: the
 same with real spikes only for stars brighter than G 10 (parameter real_g), for the user's choice.
+
+Lead 3 (own network, Iris only, report D:/astro_gpu_diag/own_starnet/REPORT.md): five trainings. As first specified
+it dug a crater in the Iris core (it never saw bright nebula: 0.003 % of the trained pixels > 10 sigma) and blurred
+(trained towards a denoised target). Best version: far halo removed first, target keeps the input noise, half the
+patches with their nebula amplified 1-40x, no loss on the real star cores: bright stars removed far cleaner than
+sl_final everywhere measured (spike light 3-5 sigma -> < 0.6, no rings, holes or discs; G 4.6 clean though brighter
+than any training star), Iris core kept. Not ready: its output keeps the image noise (to go through our denoising,
+untested), a physical guard is needed (the star layer may not exceed what the star model allows), trained on the Iris
+only (~35 min per project). It is the route to a star layer that is simply image minus nebula, nothing drawn.
