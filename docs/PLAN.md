@@ -496,4 +496,6 @@ Horsehead finals of 14:21 failed on everything (1-3 / 5).
     in a diamond. Now image minus the nebula rendered under the star: nebula + star light give the image back.
   - Under a saturated star in structured nebula the nebula was kept as is, with the dark notches the symmetric star
     model leaves between its rays (Flaming Star G 5.3, 5.9, 6.1, AE Aur). It is now kept at large scales only
-    (Gaussian of R/8 over the footprint); the finer scales go to the star light.
+    (Gaussian of R/8 over the footprint) where the star model light exceeds the nebula (weight 0 at half of it, 1 at
+    twice it); the finer scales go to the star light. Smoothing everywhere under the footprint washed out the Iris
+    around its star (the nebula is 2-3 x the star model there; 5-40 x around the Flaming Star stars).

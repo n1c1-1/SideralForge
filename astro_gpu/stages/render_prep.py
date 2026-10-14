@@ -76,12 +76,13 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "34"         # 29: the star guard wherever star light dominates (dark moats around G 9.5-11.5 stars);
+    version = "35"         # 29: the star guard wherever star light dominates (dark moats around G 9.5-11.5 stars);
                            # 30: the diffuse part of the star glare; 31: the glare of the dominant stars only, the
                            # measured emission colour also in the emission / continuum / OIII separation; 32: the
                            # star guard back to the footprints (its extension drew dark discs on the Heart); 33: the
                            # real light of a saturated star = image minus the nebula rendered under it (dark notches);
-                           # 34: under a saturated star in structured nebula, the nebula kept at large scales only
+                           # 34: under a saturated star in structured nebula, the nebula kept at large scales only;
+                           # 35: only where the star's model light exceeds the nebula (34 washed out the Iris)
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -517,6 +518,8 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None)
     from .far_halo import WING_OUT
     from .starless import _filled_radius
     smask = ctx.load("starless", "sl_mask.npy", mmap=True) if hf.exists() else None
+    models = [np.load(f, mmap_mode="r") for f in (ctx.project.stage_dir("stars") / "stars_model.npy",
+                                                   ctx.project.stage_dir("stars") / "stars_model_ext.npy") if f.exists()]
     for i in idx_sat[np.argsort(fs["g"][idx_sat])]:
         R = 4
         for r_ in range(4, rmax, 2):
@@ -543,12 +546,19 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None)
             fp_fill[y0_:y1_, x0_:x1_] = np.maximum(fp_fill[y0_:y1_, x0_:x1_], w_)
             n_fill += 1
         else:
-            # structured nebula around: kept, but only at the scales the star model leaves intact - between its rays
-            # the symmetric star model over-subtracts and left dark notches in a ring around the star. The finer
-            # scales go to the star light (image minus this nebula), which gives the image back
+            # structured nebula around: kept - but where the star's model light exceeds the nebula, only at the scales
+            # the model leaves intact: between its rays the symmetric star model over-subtracts, and left dark notches
+            # in a ring around the star (Flaming Star). The finer scales go to the star light (image minus this
+            # nebula), which gives the image back. Where the nebula dominates (the Iris around its star) it is kept as
+            # is: smoothing it there washed out its structure
+            sm = [cv2.GaussianBlur(N2[c, y0_:y1_, x0_:x1_], (0, 0), max(R / 8.0, 2.0)) for c in range(3)]
+            Mw = sum(np.tensordot(lum, np.asarray(m_[:, y0_:y1_, x0_:x1_], np.float32) / flat[:, y0_:y1_, x0_:x1_], 1)
+                     for m_ in models) if models else 0.0
+            Nb = np.maximum(np.tensordot(lum, np.stack(sm), 1), 3 * sig)
+            dom = np.clip((Mw / Nb - 0.5) / 1.5, 0, 1) * w_
             for c in range(3):
                 win = N2[c, y0_:y1_, x0_:x1_]
-                N2[c, y0_:y1_, x0_:x1_] = win * (1 - w_) + cv2.GaussianBlur(win, (0, 0), max(R / 8.0, 2.0)) * w_
+                N2[c, y0_:y1_, x0_:x1_] = win + dom * (sm[c] - win)
     del Ys, YL
     # star light: the image minus the nebula layer actually rendered under the star, so that nebula + star light give
     # the image back. Image minus the starless image plus the change made to the nebula (N - N2) missed what the
