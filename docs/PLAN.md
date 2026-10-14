@@ -512,6 +512,10 @@ independent agent on aligned 100 % crops):
 | 1b real stars | real-stars | stars brighter than G 12: spikes (and saturated cores, rays) shown as photographed = image minus the nebula under them, the nebula interpolated across the spikes; fainter star cores drawn as now | in test |
 | 2 StarNet2 / nox | D:/astro_gpu_diag/starnet_test | off-the-shelf learned star removers on the problem stars | agent running |
 | 3 own network | star-net, D:/astro_gpu_diag/own_starnet | a star remover trained on the project's own data (its real bright stars injected on clean nebula) | agent running |
+| 1c | real-stars (342f578) | 1b with spikes only where they stand 5 x the noise above the light beside them | tested |
+| 1d / 1e | real-stars-drawn (54f0d78, 408c3d2) | under a spike strip only the spike comes from the image (core model of every star subtracted, star cores left out), the stars along the strips drawn; 1d at 5 x noise, 1e at 2 x | 1e retained for QC |
+| 2b | starnet-hybrid (9543916, 86441cd) | StarNet2's starless image (minus our far halo and sky) under the footprints and strips | rejected |
+| 2c | starnet-texture (e0f1d94) | 1d plus StarNet2's texture below 8 px under footprints and strips, the level ours | rejected |
 
 Lead 1b, first findings on the Iris (G 6.9 star):
 * all stars G < 12 shown by their own light (discs + spikes): the medium stars came out large and soft (their
@@ -527,3 +531,23 @@ Lead 1b, first findings on the Iris (G 6.9 star):
   Flaming Star the footprints grew to 33-34 % of the field, interpolated (the ring's 90th percentile of the star light
   stays above twice the noise wherever star residues fill a nebula): reverted to the ring median. The secondary rays
   are left to the learned star removal (lead 2: StarNet2 leaves only a faint fine-ray texture).
+
+Results 2026-10-14 23:00-23:50 (Rosette, Flaming Star, Horsehead, Iris; sheets D:/astro_gpu_diag/qc/leads):
+* 1b (spikes of every star G < 12 from twice the noise, measured against zero): the strips ran 400 px through the
+  nebula (a quarter of the field interpolated) - the spike is now what stands above the light beside it on both
+  sides (5 hw away). Then: bright stars as good or better (Iris G 6.9 clean, Flaming Star G 5.9 without its beaded
+  spike), but the medium stars G 10-12 became soft blobs and smears on all four objects: under a strip the star light
+  is the raw image minus the nebula, so the neighbours whose centre falls in a strip are shown by their raw light
+  (wider than drawn stars), those beside it twice (raw part + drawn), with the image noise.
+* 1c (5 x noise): fewer, shorter strips (Rosette 2034 -> 1856 spikes) - the blobs remain (same cause).
+* 2b (StarNet2 starless as is under the footprints): dark discs around every saturated star, dark bands along the
+  strips: StarNet2 removes part of the halo with the star, the far halo model removes it again.
+* 1d (only the spike from the image under the strips, every star there drawn): the medium stars as compact as now.
+  A first version left the cores of the neighbours (core model never close enough: a G 11 core came back at full
+  brightness over the drawn one) - the star cores (starless fill mask, dilated 2 px) are left out. At 5 x noise
+  the Iris G 6.9 spike got its dark blobs and beads back (the strip stopped before them).
+* 2c (1d + StarNet2 texture below 8 px): coloured noise along every strip (StarNet2 works on the noisy stack, our
+  nebula is denoised).
+* 1e (1d at 2 x noise): Iris G 6.9 spike clean (no blob, no bead), medium stars compact. Known defect: faint
+  coloured noise in the strips in dark sky (the star light under a strip is the raw image, only faded below 1.5-3.5
+  x noise), visible at x5. Strips: 10.75 % of the Iris field (the fine detail and colour layers off under them).
