@@ -551,3 +551,12 @@ Results 2026-10-14 23:00-23:50 (Rosette, Flaming Star, Horsehead, Iris; sheets D
 * 1e (1d at 2 x noise): Iris G 6.9 spike clean (no blob, no bead), medium stars compact. Known defect: faint
   coloured noise in the strips in dark sky (the star light under a strip is the raw image, only faded below 1.5-3.5
   x noise), visible at x5. Strips: 10.75 % of the Iris field (the fine detail and colour layers off under them).
+
+Blind independent QC 2026-10-15 00:30 (versions shown as letters, key kept apart; sheets D:/astro_gpu_diag/qc/blind):
+current / 1b / 1c / 1e on the four objects. 1e first on all four (Rosette 1e > 1b > 1c > current; Flaming Star
+1e > current > 1b >= 1c; Horsehead 1e > 1b > 1c > current; Iris 1e > current > 1b > 1c). Current loses on the bright
+spikes (beads, shards, light bars along the spikes across the nebula, dark blobs), 1b / 1c on the medium stars (soft
+crosses, smeared neighbours). 1e remaining defect: faint brownish streaks along some faint spikes in dark sky (Iris).
+Shared by all: Iris G 4.6 spikes weak with a sea-urchin halo, a dark depression ~40 px around one star.
+* 1f: the light under a strip averaged along the spike direction over the strip width (normalised by the weights
+  that leave the star cores out): the blotches become smooth faint streaks of the star's colour.
