@@ -85,7 +85,7 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "38"         # 29: the star guard wherever star light dominates (dark moats around G 9.5-11.5 stars);
+    version = "40"         # 29: the star guard wherever star light dominates (dark moats around G 9.5-11.5 stars);
                            # 30: the diffuse part of the star glare; 31: the glare of the dominant stars only, the
                            # measured emission colour also in the emission / continuum / OIII separation; 32: the
                            # star guard back to the footprints (its extension drew dark discs on the Heart); 33: the
@@ -93,7 +93,8 @@ class RenderPrep(Stage):
                            # 34: under a saturated star in structured nebula, the nebula kept at large scales only;
                            # 35: only where the star's model light exceeds the nebula (34 washed out the Iris);
                            # 36: every star brighter than real_g shown as photographed, nebula interpolated across spikes;
-                           # 38: under the spike strips only the spikes taken from the image, the stars there drawn
+                           # 38: under the spike strips only the spikes taken from the image, the stars there drawn;
+                           # 40: their light averaged along the spike direction
 
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
@@ -573,9 +574,9 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None,
                 win = N2[c, y0_:y1_, x0_:x1_]
                 N2[c, y0_:y1_, x0_:x1_] = win + dom * (sm[c] - win)
     spiked, n_spk = np.zeros(0, int), 0
-    sw = None
+    sw, axes = None, []
     if g_real is not None:
-        spiked, n_spk, sw = _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sat, g_real, dm,
+        spiked, n_spk, sw, axes = _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sat, g_real, dm,
                                                rmax, spike_snr=spike_snr)
     del Ys, YL
     # star light: the image minus the nebula layer actually rendered under the star, so that nebula + star light give
@@ -595,9 +596,11 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None,
         # core model never matches a core closely enough - a G 11 core came back at full brightness over the drawn one)
         ws = sw * (1 - fp_sat)
         cm = ctx.project.stage_dir("starless") / "sl_mask.npy"
+        q = np.ones((H, W), np.float32)
         if cm.exists():
             cmk = cv2.dilate(np.load(cm).astype(np.uint8), np.ones((5, 5), np.uint8)).astype(np.float32)
-            ws *= 1 - cv2.GaussianBlur(cmk, (0, 0), 1.5)
+            q = 1 - cv2.GaussianBlur(cmk, (0, 0), 1.5)
+            ws *= q
             del cmk
         cf = [ctx.project.stage_dir("stars") / n for n in ("stars_model.npy", "stars_model_faint.npy")]
         ef = ctx.project.stage_dir("stars") / "stars_model_ext.npy"
@@ -607,6 +610,21 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None,
                 core = core - np.asarray(np.load(ef, mmap_mode="r")[c], np.float32)
             Sr[c] -= cv2.GaussianBlur(core / flat[c], (0, 0), 1.0) * ws
             del core
+        # a spike is a line: under its strip the light is averaged along the spike's direction only, over the strip's
+        # width (sharp across it; the raw light left brownish blotches along the faint spikes). The star cores left out
+        # above do not enter the average (weights q)
+        for th, m, L in axes:
+            kern = np.zeros((L, L), np.float32)
+            c0, d = L // 2, (L // 2) * np.array([np.cos(th), np.sin(th)])
+            cv2.line(kern, (int(round(c0 - d[0])), int(round(c0 - d[1]))), (int(round(c0 + d[0])), int(round(c0 + d[1]))),
+                     1.0, 1, cv2.LINE_AA)
+            wk = cv2.GaussianBlur((m > 0).astype(np.float32), (0, 0), 1.5) * (1 - fp_sat)
+            den = np.maximum(cv2.filter2D(q, -1, kern, borderType=cv2.BORDER_REFLECT), 1e-3)
+            for c in range(3):
+                Sd = cv2.filter2D(Sr[c] * q, -1, kern, borderType=cv2.BORDER_REFLECT) / den
+                Sr[c] += wk * (Sd - Sr[c])
+            del wk, den
+        del axes, q
         np.maximum(fp_all, ws, out=fp_all)
         del ws
     fade = np.clip((np.tensordot(lum, Sr, 1) / max(sig, 1e-9) - 1.5) / 2.0, 0, 1)
@@ -631,8 +649,8 @@ def _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sa
     and the star light is image minus that nebula. The round core of a star that is not saturated stays drawn (compact,
     its size set by the star settings: its own light, wings included, made the medium stars look large and soft).
     N2, fp_all and fp_fill (interpolated: the fine detail and colour layers, taken from the starless images where the
-    spike model was subtracted, are off there) are updated in place. Returns the indices of the stars given real spikes
-    and the number of strips."""
+    spike model was subtracted, are off there) are updated in place. Returns the indices of the stars given real spikes,
+    the number of strips, their weight and, per spike direction, (direction, strips, strip width)."""
     from ..core.imgutil import membrane_fill
     H, W = fp_all.shape
     dirs = np.radians(np.asarray(ctx.metric_of("starless", "spike_directions", []), float))
@@ -644,13 +662,14 @@ def _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sa
     sat = set(int(i) for i in idx_sat)
     bright = np.where(ok & (g < g_real))[0]
     strip = np.zeros((H, W), np.uint8)
+    strip_d = [np.zeros((H, W), np.uint8) for _ in dirs]           # the strips of each spike direction
     with_spikes, n_spk = [], 0
     r = np.arange(1, rmax, dtype=np.float32)
     off = np.arange(-1, 2, dtype=np.float32)
     for i in bright[np.argsort(g[bright])]:
         xc, yc = float(xs[i]), float(ys[i])
         got = False
-        for th in dirs:
+        for k_, th in enumerate(dirs):
             ux, uy = float(np.cos(th)), float(np.sin(th))
             px = (xc + r * ux)[:, None] - uy * off[None]
             py = (yc + r * uy)[:, None] + ux * off[None]
@@ -673,6 +692,7 @@ def _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sa
             p0 = (int(round(xc + start * ux)), int(round(yc + start * uy)))
             p1 = (int(round(xc + (L + hw) * ux)), int(round(yc + (L + hw) * uy)))
             cv2.line(strip, p0, p1, 255, thickness=2 * hw + 1)
+            cv2.line(strip_d[k_], p0, p1, 255, thickness=2 * hw + 1)
             n_spk += 1
             got = True
         if got and int(i) not in sat:
@@ -693,7 +713,7 @@ def _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sa
         np.maximum(fp_fill, sw, out=fp_fill)
     else:
         sw = np.zeros((H, W), np.float32)
-    return np.array(with_spikes, int), n_spk, sw
+    return np.array(with_spikes, int), n_spk, sw, [(th, m, 2 * hw + 1) for th, m in zip(dirs, strip_d) if m.any()]
 
 
 def continuum_smoothing_allowed(C, wstar) -> np.ndarray:
