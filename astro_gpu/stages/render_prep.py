@@ -594,8 +594,9 @@ def _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sa
 
     The star removal subtracted from the nebula one spike shape measured for all the stars and the rendering drew it
     back; a star's own spikes differ from it (dark blobs along them where it was too strong, segments where it was
-    weak). Along each spike direction, from the edge of the star's core out to where the light along the spike falls
-    below twice the noise (Ys: image minus starless), a strip: under it the nebula is interpolated across the strip
+    weak). Along each spike direction, from the edge of the star's core out to where the light along the spike stops
+    standing twice the noise above the light beside it on both sides (Ys: image minus starless; a nebula rises on both
+    alike - measured against zero, the strips ran 400 px through the Rosette), a strip: under it the nebula is interpolated across the strip
     and the star light is image minus that nebula. The round core of a star that is not saturated stays drawn (compact,
     its size set by the star settings: its own light, wings included, made the medium stars look large and soft).
     N2, fp_all and fp_fill (interpolated: the fine detail and colour layers, taken from the starless images where the
@@ -623,7 +624,13 @@ def _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sa
             px = (xc + r * ux)[:, None] - uy * off[None]
             py = (yc + r * uy)[:, None] + ux * off[None]
             v = cv2.remap(Ys, px, py, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-            above = (np.median(v, 1) >= 2 * sig).astype(np.float32)
+            # beside the spike, on both sides (a nebula or the star's round wings rise there too: only what stands
+            # above them along the direction is the spike)
+            sd = np.array([-5.0 * hw, 5.0 * hw], np.float32)
+            qx = (xc + r * ux)[:, None] - uy * sd[None]
+            qy = (yc + r * uy)[:, None] + ux * sd[None]
+            vs = cv2.remap(Ys, qx, qy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            above = ((np.median(v, 1) - np.max(vs, 1)) >= 2 * sig).astype(np.float32)
             # the spike ends where less than 60 % of the last 15 px stand above twice the noise (a saturated core or a
             # neighbour may interrupt it near the star)
             frac = np.convolve(above, np.ones(15) / 15, mode="full")[:len(r)]
