@@ -86,6 +86,10 @@ class RenderSettings(StageParams):
     toe: float = S(0.015, section="Sky background", label="Shadow softness", ge=0, le=0.08, step=0.001,
                    help="Below the black point the curve fades out smoothly instead of clipping, so the cores of dark "
                         "globules keep their gradation.", tip="0 = hard clip.")
+    glare_nebula: float = S(1.0, section="Stars", label="Glare with the nebula", level=ADVANCED, ge=0, le=1, step=0.05,
+                            help="Part of the bright stars' glare drawn with the nebula (its curve: wide, as "
+                                 "photographed; it covers what the star removal leaves around them) rather than with the "
+                                 "stars (their gentler curve: the glare fades out close to the star).")
     diffuse_cut: float = S(0.0, section="Sky background", label="Diffuse glow removed", ge=0, le=1, step=0.05,
                            help="The diffuse glow of the field (large-scale H-alpha, galactic light: the level on which "
                                 "the structures stand, measured over a fifth of the frame) taken as background, as a "

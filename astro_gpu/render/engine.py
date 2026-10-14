@@ -32,14 +32,14 @@ XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
 LAYER_KEYS = ("fine_k", "fine_lo_pct", "fine_hi_pct", "faint_smooth", "faint_lo_pct", "faint_hi_pct", "resid_boost",
               "colour_detail", "oiii_boost", "oiii_threshold", "oiii_smooth", "sharpen", "sharpen_lo_pct")
 NEB_LIN_KEYS = LAYER_KEYS + ("ha_boost", "ha_sigma", "glow_k", "glow_sigma", "g_glow", "speck_k", "white_temp", "tint",
-                             "star_glow", "diffuse_cut", "sky_neutral", "sky_pct")
+                             "star_glow", "glare_nebula", "star_sat", "diffuse_cut", "sky_neutral", "sky_pct")
 NEB_KEYS = NEB_LIN_KEYS + ("chroma", "chroma_protect", "hue_target", "hue_shift", "chroma_sigma", "snr_lo", "snr_hi",
                            "sky_level", "dark_level", "toe", "sky_pct", "dark_pct", "white_mult", "hdr_strength",
                            "hdr_knee", "hdr_r", "hdr_eps", "lc_fine", "lc_medium", "lc_large", "neb_sharp",
                            "sharp_white", "hl_knee", "hl_max", "hl_detail", "hl_dmin", "hl_r1", "hl_r2", "hl_eps",
                            "hl_shoulder", "hl_keep_chroma", "bright_halo_desat")
 STAR_KEYS = ("stars", "g_glow", "g_lim", "t_lim", "d10", "d7", "star_sat", "sat_min", "core_white", "t9",
-             "white_temp", "tint", "real_stars")
+             "white_temp", "tint", "real_stars", "star_glow", "glare_nebula", "diffuse_cut")
 
 
 @dataclass
@@ -230,7 +230,12 @@ class RenderEngine:
         if s.star_glow > 0 and "Shalo" in self._host:
             # the glare of the optics around the stars, as photographed: under the nebula curve, like the residual
             # rays of the brightest stars that stay in the nebula (with the stars, the rays stood out of a dark sky)
-            astro = astro + s.star_glow * self._glare(s, f)
+            # it is star light: the saturation of the stars, not of the nebula (a saturated blue disc around Alnitak)
+            g = self._glare(s, f)
+            if self.layered:
+                yg = torch.einsum("c,chw->hw", self.lum, g)[None] * self.w_cam[:, None, None]
+                g = yg + s.star_sat * (g - yg)
+            astro = astro + s.star_glow * s.glare_nebula * g
         if s.speck_k > 0 and f == 1:
             for c in range(3):
                 a_ = astro[c]
@@ -294,7 +299,8 @@ class RenderEngine:
         # on top, it does not move the sky, the dark areas nor the white of the nebula
         Yn = Yl_full
         if s.star_glow > 0 and "Shalo" in self._host:
-            Yn = Yl_full - s.star_glow * ops.luminance(torch.einsum("ij,jhw->ihw", self.M_eff(s), self._glare(s, f)))
+            Yn = Yl_full - s.star_glow * s.glare_nebula * ops.luminance(
+                torch.einsum("ij,jhw->ihw", self.M_eff(s), self._glare(s, f)))
         Yl = ops.gaussian_blur(Yn, 6 / f)
         p_dark, p_sky = ops.percentile(Yl, [s.dark_pct, s.sky_pct], valid)
         hi = ops.percentile(Yn, 99.995, valid)
@@ -410,6 +416,12 @@ class RenderEngine:
             st_lin += (lr + s.star_sat * (sr - lr)).clamp(min=0)
             info["stars"]["real_light"] = int((~dr).sum())
             del sr, lr
+        if s.star_glow > 0 and s.glare_nebula < 1 and "Shalo" in self._host:
+            # the rest of the glare with the stars, under their gentler curve (fades out close to the star)
+            sh = torch.einsum("ij,jhw->ihw", self.M_eff(s), self._glare(s, 1))
+            lh = ops.luminance(sh)[None]
+            st_lin += s.star_glow * (1 - s.glare_nebula) * (lh + s.star_sat * (sh - lh))
+            del sh, lh
         Ys_ = ops.luminance(st_lin)
         Ls = torch.asinh(fit["b"] * Ys_.clamp(min=0) / fit["w"]) / np.arcsinh(fit["b"])
         st_d = ops.color_preserving_stretch_ok(st_lin, Ls.clamp(0, 1))
