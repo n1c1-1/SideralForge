@@ -43,11 +43,10 @@ class RenderPrepParams(StageParams):
                            "minus the nebula under them, the nebula interpolated across their spikes) instead of being "
                            "drawn: the spike shape measured once for all stars never matches each star's own spikes. "
                            "Fainter stars are drawn. 0 = only the saturated stars.")
-    spike_snr: float = P(5.0, label="Spikes kept from", level=ADVANCED, ge=1, le=50, step=0.5, unit="x noise",
+    spike_snr: float = P(2.0, label="Spikes kept from", level=ADVANCED, ge=1, le=50, step=0.5, unit="x noise",
                          help="A spike is shown as photographed out to where it stands this many times the noise above "
-                              "the light beside it; beyond, the drawn star shape continues it. The raw light of a faint "
-                              "spike carries the noise of the image and the light of its neighbours into the star layer "
-                              "(soft smudges around the medium stars at 2 x noise).")
+                              "the light beside it; beyond, the drawn star shape continues it (at 5 x noise the strips "
+                              "stopped short of the dark blobs the shared spike shape leaves along a G 6.9 spike).")
     star_guard: bool = P(True, label="Star artefact guard",
                          help="On the footprint of each star, the brightness may not dip below the local level and "
                               "the colour is taken from the surroundings: an imperfect star subtraction can create "
@@ -469,7 +468,7 @@ def _ring_median(img, xc, yc, r_, q=50):
     return float(np.percentile(img[py[m], px[m]], q)) if m.sum() >= 16 else np.nan
 
 
-def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None, g_real=None, dm=0.0, spike_snr=5.0):
+def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None, g_real=None, dm=0.0, spike_snr=2.0):
     """Stars whose core is saturated cannot be measured nor modelled: when the instrument has diffraction spikes,
     which a drawn star cannot reproduce, they are shown by their real light (without spikes the drawn stars are
     kept: the real light of a saturated star is then only its blooming and halo).
@@ -621,7 +620,7 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None,
     return N2, fp_all, fp_fill, Sr, fp_sat
 
 
-def _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sat, g_real, dm, rmax, spike_snr=5.0):
+def _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sat, g_real, dm, rmax, spike_snr=2.0):
     """The diffraction spikes of every star brighter than g_real are shown by their own light, as photographed.
 
     The star removal subtracted from the nebula one spike shape measured for all the stars and the rendering drew it
