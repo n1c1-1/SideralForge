@@ -12,11 +12,12 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
 def _pipeline(project_dir):
-    from .core.project import Project, remember
+    from .core.project import Project
     from .core.runner import Pipeline
     from .stages import all_stages
+    # not added to the interface's list of projects: the interface does that when a project is opened in it (test
+    # copies run from the command line, with the same names, were mistaken for the real projects)
     p = Project(project_dir)
-    remember(p)
     return p, Pipeline(p, all_stages())
 
 
@@ -84,12 +85,11 @@ def cmd_set(a):
 
 
 def cmd_render(a):
-    from .core.project import Project, remember
+    from .core.project import Project
     from .render.engine import RenderEngine
     from .render.export import ExportSettings, export
     from .render.settings import PRESETS, RenderSettings
     p = Project(a.project)
-    remember(p)
     vals = {}
     if a.preset:
         key = next((k for k in PRESETS if k.lower() == a.preset.lower()), None)
