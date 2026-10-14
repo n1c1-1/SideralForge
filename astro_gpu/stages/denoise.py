@@ -166,7 +166,7 @@ def train(ctx, A, B, nm, bk, sg, p, dev, ck_path):
         opt.load_state_dict(ck["opt"])
         sched.load_state_dict(ck["sched"])
         start, run = ck["it"], ck["run"]
-        torch.set_rng_state(ck["rng"])
+        torch.set_rng_state(ck["rng"].cpu())        # the checkpoint was loaded onto the GPU
         ctx.log(f"resuming the training at step {start}/{steps}")
     t0 = time.time()
     PATCH, BATCH = p.patch, p.batch
