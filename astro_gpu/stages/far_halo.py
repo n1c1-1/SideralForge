@@ -14,7 +14,11 @@ Horsehead frame. It is part of the star, proportional to its flux, so it is mode
 * inside the radius that the star model already describes (its wings, or its saturated core), the halo is
   continued flat: what is left there is the level of the halo at that radius;
 * a star whose halo is measurable against its surroundings gets its own amplitude (a variable star, a wrong
-  catalogue flux); a star whose glare dominates them also its own elongation, orientation and radial slope.
+  catalogue flux); a star whose glare dominates them also its own elongation, orientation and radial slope;
+* those halos, fitted on their own surroundings, never exceed the light the data show there beyond the nebula
+  (a nebula only adds light): per channel, radius and direction, the halo is lowered to the lower envelope of the
+  data around the star (see _envelope). Least squares had let a nebula rising toward its star pull the halo above
+  the data on the other side: a dark ring around sigma Orionis, dark lobes beside Alnitak.
 
 There is no cut at a fixed radius and no local reference level, which drew a dark disc in a bright ring around
 every bright star (the 'eye' of sigma Orionis).
@@ -29,6 +33,134 @@ from scipy.optimize import lsq_linear
 WING_OUT = 60.0      # px, the star model of the stars stage includes the wings out to this radius
 ALPHA_MIN = 1.0      # light scattered by optics falls at least as 1/r (measured: r^-1.5 to r^-1.9 on a Newtonian);
                      # a shape allowed to level off took the dust around the stars for their glare (Iris)
+
+
+ENVELOPE_Q = 0.2     # the lower part of the star's surroundings that bounds its halo (see _envelope)
+
+
+def _ell_polar(X, Y, xc, yc, q, phi):
+    """Elliptical radius and angle (0..2 pi) of the points X, Y around (xc, yc), axis ratio q, major axis at phi."""
+    cp, sp = np.cos(phi), np.sin(phi)
+    dx, dy = X - xc, Y - yc
+    a, b = dx * cp + dy * sp, -dx * sp + dy * cp
+    return np.sqrt(a * a / q + b * b * q), np.arctan2(b * np.sqrt(q), a / np.sqrt(q)) % (2 * np.pi)
+
+
+def _envelope(rest, unit, Fi, sig, ok, D, xc, yc, q_, phi_, r0, rmax, q=ENVELOPE_Q, nr=64, nt=72, win_r=3, win_t=11,
+              snr_min=10.0):
+    """Factors (<= 1, per channel, radius and angle) that keep a star's halo under the light the data show around it
+    beyond the nebula.
+
+    A nebula only adds light: the halo of a star cannot be brighter than the darker part of its surroundings. The
+    fits treat the nebula as noise (and the amplitude of a dominant star is fitted with a free local level), so a
+    nebula that rises toward its star - sigma Orionis in IC 434, the Flame beside Alnitak - pulled the halo above the
+    data on the dark side: dark rings and lobes around the star once the halo is removed. Around the star, on a grid
+    of its elliptical radius (log) and angle: the data divided by the model (what the data allow of this halo at each
+    point), per channel; its lower ``q`` over a window of win_r radii x win_t angles (~55 deg: a nebula that fills
+    less of it does not count) with its noise added back, at most 1; smoothed; then the largest halo under it that
+    does not rise outward, along each direction. Per channel: one factor for the three (the strictest channel) left
+    blue glare around sigma Orionis where the red bound it; the three channels together left Alnitak's red
+    over-subtracted. Per direction: one factor per ring lowered all of Alnitak's ring for a lobe on one side (the
+    Flame on the other had pulled the elongation of its halo).
+
+    Only where the halo stands well above the darker side of its surroundings (snr_min x sig): fainter, the bound
+    followed the dark patches of the sky and cut the halo in wedges. Beyond, the factor of the last such radius,
+    the same in every direction (its median), reached smoothly (the halo still does not rise outward).
+
+    rest (3, h, w): data minus sky minus the other stars' halos, on the coarse grid (pixels of D px); unit (h, w):
+    this star's halo per unit flux; Fi (3,): its flux; sig (3,): how far below its local median the background of a
+    coarse pixel goes (noise and dark structure); ok (h, w): usable pixels;
+    (xc, yc, q_, phi_): the star and the ellipse of its halo; r0, rmax: the radii bounded.
+    Returns the factors {'lr0', 'dlr', 'f' (3, nr, nt)} on the grid, or None where the halo stands nowhere above the
+    noise."""
+    from statistics import NormalDist
+    z = -NormalDist().inv_cdf(q)
+    Fi, sig = np.asarray(Fi, float), np.asarray(sig, float)
+    if rmax <= r0 * 1.2:
+        return None
+    lr = np.linspace(np.log(r0), np.log(rmax), nr)
+    t = np.arange(nt) * (2 * np.pi / nt)
+    re = np.exp(lr)[:, None]
+    a, b = re * np.sqrt(q_) * np.cos(t)[None], re / np.sqrt(q_) * np.sin(t)[None]
+    cp, sp = np.cos(phi_), np.sin(phi_)
+    mx = ((xc + a * cp - b * sp + 0.5) / D - 0.5).astype(np.float32)
+    my = ((yc + a * sp + b * cp + 0.5) / D - 0.5).astype(np.float32)
+
+    def polar(img, fill):
+        return cv2.remap(np.ascontiguousarray(img, np.float32), mx, my, cv2.INTER_LINEAR,
+                         borderMode=cv2.BORDER_CONSTANT, borderValue=fill)
+    up = polar(unit, np.nan)
+    good = (polar(ok.astype(np.float32), 0.0) > 0.99) & np.isfinite(up) & (up > 0)
+    urow = np.array([np.median(up[k][good[k]]) if good[k].any() else np.nan for k in range(nr)])
+    if not np.isfinite(urow).any():
+        return None
+    # windows: win_r radii x win_t angles (periodic)
+    ir = np.clip(np.arange(nr)[:, None] + np.arange(-(win_r // 2), win_r // 2 + 1)[None], 0, nr - 1)
+    it = (np.arange(nt)[:, None] + np.arange(-(win_t // 2), win_t // 2 + 1)[None]) % nt
+    f = np.ones((3, nr, nt))
+    any_sig = False
+    for c in range(3):
+        snr = urow * Fi[c] / sig[c]
+        sig_rows = np.isfinite(snr) & (snr >= snr_min)
+        if not sig_rows.any():
+            continue
+        any_sig = True
+        ratio = np.where(good, polar(rest[c], np.nan) / (Fi[c] * np.where(good, up, 1.0)), np.nan)
+        win = ratio[ir[:, None, :, None], it[None, :, None, :]].reshape(nr, nt, -1)
+        cnt = np.isfinite(win).sum(-1)
+        with np.errstate(all="ignore"):
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                lim = np.nanquantile(win, q, axis=-1) + z / np.maximum(snr, 1e-9)[:, None]
+        lim[(cnt < max(5, win.shape[-1] // 3)) | ~sig_rows[:, None]] = np.nan
+        # cells without a measure: the median of their ring; inside the first measured ring, that ring; beyond the
+        # last one, its median in every direction
+        for k in range(nr):
+            if np.isnan(lim[k]).all():
+                continue
+            lim[k][np.isnan(lim[k])] = np.nanmedian(lim[k])
+        rows = np.where(~np.isnan(lim).all(1))[0]
+        if not len(rows):
+            continue
+        lim[:rows[0]] = lim[rows[0]]
+        lim[rows[-1] + 1:] = np.median(lim[rows[-1]])
+        for k in range(rows[0], rows[-1]):
+            if np.isnan(lim[k]).all():
+                lim[k] = lim[rows[rows <= k][-1]]
+        fc = np.clip(lim, 0.0, 1.0).astype(np.float32)
+        pad = 6
+        fc = cv2.GaussianBlur(np.concatenate([fc[:, -pad:], fc, fc[:, :pad]], 1), (0, 0), sigmaX=1.5, sigmaY=1.0,
+                              borderType=cv2.BORDER_REPLICATE)[:, pad:-pad]
+        f[c] = fc
+    if not any_sig:
+        return None
+    u_ = np.where(np.isfinite(urow), urow, np.nan)
+    u_ = np.interp(np.arange(nr), np.where(np.isfinite(u_))[0], u_[np.isfinite(u_)])[None, :, None]
+    f = np.minimum.accumulate(u_ * f, axis=1) / np.maximum(u_, 1e-30)   # never rising outward, in each direction
+    live = u_[0, :, 0] > 1e-3 * u_.max()               # where the shape has ended, the halo is nothing anyway
+    if not live.all() and live.any():
+        f[:, ~live] = f[:, np.where(live)[0][-1]][:, None]
+    return {"lr0": float(lr[0]), "dlr": float(lr[1] - lr[0]), "q": float(q_), "phi": float(phi_),
+            "f": np.clip(f, 0.0, 1.0).astype(np.float32)}
+
+
+def _fac_at(fac, X, Y, xc, yc):
+    """The factors of _envelope at the points X, Y (3,) + X.shape (inside the first radius: the first ring's)."""
+    shp = np.shape(X)
+    re, t = _ell_polar(np.ravel(X), np.ravel(Y), xc, yc, fac["q"], fac["phi"])
+    nr, nt = fac["f"].shape[1:]
+    npx, wd = re.size, 4096                                     # remap wants images under 32767 px a side
+    pad = (-npx) % wd
+    my = np.clip((np.log(np.maximum(re, 1e-3)) - fac["lr0"]) / fac["dlr"], 0, nr - 1).astype(np.float32)
+    mx = (t / (2 * np.pi) * nt).astype(np.float32)
+    my, mx = np.r_[my, np.zeros(pad, np.float32)].reshape(-1, wd), np.r_[mx, np.zeros(pad, np.float32)].reshape(-1, wd)
+    out = []
+    for c in range(3):
+        fc = np.concatenate([fac["f"][c], fac["f"][c][:, :1]], 1)          # periodic in angle
+        v = cv2.remap(np.ascontiguousarray(fc), mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        out.append(v.ravel()[:npx].reshape(shp))
+    return np.stack(out)
 
 
 def _ramps(r, lk):
@@ -54,7 +186,8 @@ def _solve(Pf, B, yv, m, nonneg):
     channel; nonneg: number of leading halo coefficients bounded below by 0. Normal equations (small system)."""
     nP, nB = Pf.shape[1], B.shape[0]
     n = nP + 3 * nB
-    AtA = np.zeros((n, n)); Atb = np.zeros(n)
+    AtA = np.zeros((n, n))
+    Atb = np.zeros(n)
     for c in range(3):
         mc = m[c]
         sig = 1.4826 * np.median(np.abs(yv[c][mc] - np.median(yv[c][mc]))) + 1e-9
@@ -111,7 +244,7 @@ def _amp_fit(unit, Fi, rest, wr, iters=4, clip=2.5, trim=0.8):
     return float(sol[0]), float(r2[:int(trim * len(r2))].mean())
 
 
-def far_halo(sl, x, y, F, r_in, deg=3, nknots=20, log=print):
+def far_halo(sl, x, y, F, r_in, deg=3, nknots=20, envelope=True, log=print):
     """Model of the far halo of the stars (C, H, W) to subtract from the starless image ``sl``, and metrics.
 
     x, y: positions of the bright stars; F (3, n): their fluxes (camera units, the colour of each star); r_in (n):
@@ -248,6 +381,54 @@ def far_halo(sl, x, y, F, r_in, deg=3, nknots=20, log=print):
         Pf = basis(kap)
         s, m = _robust(Pf, B, yv, use, nr)
     S = np.r_[np.cumsum(s[:nr][::-1])[::-1], 0.0]
+    # 4) no halo above the light the data show beyond the nebula (see _envelope), the brightest halos first: the
+    # halos whose amplitude was fitted on their own surroundings (where a nebula can pull it up; the others, lost
+    # in their surroundings, have the instrument's halo at their catalogue flux)
+    fac = [None] * n
+    if envelope and (strong or measured):
+        nB = B.shape[0]
+        rest = yv - np.stack([B.T @ s[nr + c * nB:nr + (c + 1) * nB] for c in range(3)])
+        units = {}
+        for i in range(n):
+            u_ = (star_basis(i).T @ s[:nr]).astype(np.float32)
+            rest -= kap[i] * F[:, i][:, None] * u_[None]
+            if i in strong or i in measured:              # the halos fitted on their own surroundings
+                units[i] = u_
+        # pixels with data (a frame edge without coverage reads as a deficit of light)
+        cov = cv2.resize((np.isfinite(sl[1]) & (np.asarray(sl[1]) != 0)).astype(np.float32), (w, h),
+                         interpolation=cv2.INTER_AREA).ravel()
+        ok = (use & np.isfinite(yv).all(0) & (cov > 0.999)).reshape(h, w)
+        # how far below its local median the background goes (noise and dark structure: dust, the sky's own
+        # errors), per channel: the median over blocks of 16 x 16 coarse pixels of their median minus their 16th
+        # percentile (the nebula, only above, does not count)
+        sig = np.zeros(3)
+        r3 = rest.reshape(3, h, w)
+        for c in range(3):
+            lows = []
+            for by in range(0, h - 15, 16):
+                for bx in range(0, w - 15, 16):
+                    m_ = ok[by:by + 16, bx:bx + 16]
+                    if m_.mean() > 0.5:
+                        v_ = r3[c, by:by + 16, bx:bx + 16][m_]
+                        lows.append(np.percentile(v_, 50) - np.percentile(v_, 16))
+            sig[c] = float(np.median(lows)) if lows else 1.0
+        for i in sorted(units, key=lambda j: -kap[j] * F[1, j]):
+            hi = kap[i] * F[:, i][:, None] * units[i][None]
+            rest += hi                                   # this star's halo and its surroundings
+            env = _envelope(rest.reshape(3, h, w), units[i].reshape(h, w), kap[i] * F[:, i], sig, ok, D, x[i], y[i],
+                            Q[i], PHI[i], 1.3 * r_in[i], rmax)
+            if env is not None and env["f"].min() < 0.999:
+                fac[i] = env
+                hi = hi * _fac_at(env, xx.ravel(), yy.ravel(), x[i], y[i])
+            rest -= hi
+        del rest, units, r3
+    # per star: the lowest factor of each channel, its radius
+    bounded = {}
+    for i in range(n):
+        if fac[i] is not None:
+            fmin = fac[i]["f"].min(axis=(1, 2))
+            k = np.unravel_index(np.argmin(fac[i]["f"].min(0)), fac[i]["f"].shape[1:])[0]
+            bounded[i] = [round(float(v), 2) for v in fmin] + [int(round(np.exp(fac[i]["lr0"] + k * fac[i]["dlr"])))]
     # full-resolution model: the same sum, evaluated per star on the image grid (coarse in r, so done at 1/2)
     h2, w2 = H // 2, W // 2
     Y2, X2 = (np.mgrid[0:h2, 0:w2] + 0.5) * 2 - 0.5
@@ -258,10 +439,12 @@ def far_halo(sl, x, y, F, r_in, deg=3, nknots=20, log=print):
         prof = np.interp(np.log(re), lk, S, right=0.0).astype(np.float32) * pw(re)
         if BETA[i]:
             prof *= ((re / RREF[i]) ** BETA[i]).astype(np.float32)
+        fi = None if fac[i] is None else _fac_at(fac[i], X2, Y2, x[i], y[i])
         for c in range(3):
-            out[c] += prof * np.float32(kap[i] * F[c, i])
+            pc = prof if fi is None else prof * fi[c]
+            out[c] += pc * np.float32(kap[i] * F[c, i])
             if i in strong:
-                dom[c] += prof * np.float32(kap[i] * F[c, i])
+                dom[c] += pc * np.float32(kap[i] * F[c, i])
     full = np.stack([cv2.resize(out[c], (W, H), interpolation=cv2.INTER_LINEAR) for c in range(3)])
     info = {"far_halo_axis_ratio": round(q, 3), "far_halo_angle_deg": round(float(np.degrees(phi)), 1),
             "far_halo_profile": {str(int(round(rk[j]))): round(float(S[j] * pw(rk[j])), 5) for j in range(0, nr + 1, 2)},
@@ -269,12 +452,43 @@ def far_halo(sl, x, y, F, r_in, deg=3, nknots=20, log=print):
                                       round(float(BETA[i]), 2)] for i in strong},
             "far_halo_own_amplitude": {str(i): round(float(kap[i]), 2) for i in measured},
             "far_halo_kept_pct": round(100 * float(np.mean([mm.mean() for mm in m])), 1),
+            "far_halo_bounded": {str(i): list(v) for i, v in bounded.items()},
             "_dominant": np.stack([cv2.resize(dom[c], (W, H), interpolation=cv2.INTER_LINEAR) for c in range(3)])
-            if strong else None}
+            if strong else None,
+            "_fit": dict(x=np.asarray(x, float), y=np.asarray(y, float), F=F, kap=kap, Q=Q, PHI=PHI, BETA=BETA,
+                         RREF=RREF, r_in=r_in, lk=lk, S=S, r_first=r_first, strong=strong, measured=measured,
+                         sky=np.asarray(s[nr:], float).reshape(3, -1), deg=deg, W=W, H=H, fac=fac)}
     log(f"far halo of the stars: shape measured on {n} stars out to {rmax:.0f} px, elongation {q:.2f} at "
         f"{np.degrees(phi):.0f} deg; {len(strong)} stars dominating their surroundings with their own amplitude and "
-        f"elongation, {len(measured)} with their own amplitude")
+        f"elongation, {len(measured)} with their own amplitude; {len(bounded)} halos lowered to the light the data "
+        f"show around them" + (f" (down to {min(min(v[:3]) for v in bounded.values()):.2f} x)" if bounded else ""))
     return full, info
+
+
+def star_halo(fit, i, X, Y):
+    """The far halo of star i of a fit (``info['_fit']`` of far_halo) at the points X, Y: (3,) + X.shape."""
+    x, y, lk, S = fit["x"], fit["y"], fit["lk"], fit["S"]
+    q, phi = fit["Q"][i], fit["PHI"][i]
+    cp, sp = np.cos(phi), np.sin(phi)
+    dx, dy = X - x[i], Y - y[i]
+    a, b = dx * cp + dy * sp, -dx * sp + dy * cp
+    re = np.maximum(np.sqrt(a * a / q + b * b * q), fit["r_in"][i])
+    prof = np.interp(np.log(re), lk, S, right=0.0) * (re / fit["r_first"]) ** -ALPHA_MIN
+    if fit["BETA"][i]:
+        prof = prof * (re / fit["RREF"][i]) ** fit["BETA"][i]
+    fac = fit.get("fac")
+    fi = None if fac is None or fac[i] is None else _fac_at(fac[i], X, Y, x[i], y[i])
+    return np.stack([prof * fit["kap"][i] * fit["F"][c, i] * (1.0 if fi is None else fi[c])
+                     for c in range(3)]).astype(np.float32)
+
+
+def sky_of(fit, X, Y):
+    """The smooth sky of a fit at the points X, Y: (3,) + X.shape."""
+    deg = fit["deg"]
+    u, v = X / fit["W"] * 2 - 1, Y / fit["H"] * 2 - 1
+    B = [L.legval(u, np.eye(deg + 1)[a]) * L.legval(v, np.eye(deg + 1)[b])
+         for a in range(deg + 1) for b in range(deg + 1 - a)]
+    return np.stack([sum(fit["sky"][c, k] * B[k] for k in range(len(B))) for c in range(3)]).astype(np.float32)
 
 
 def own_rays(res, x, y, r_in, halo, fac=2.0, across=12.0, rmax=1200, nt=1440):
