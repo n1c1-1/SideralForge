@@ -8,6 +8,10 @@ A U-Net learns to remove the stars of ONE stack, from that stack alone:
 * target = the model-based starless image + the input's own noise (the network removes stars, it does not denoise),
            trusted only away from the bright stars and outside the cores of the real stars.
 
+A smooth glow centred on half of the pasted bright stars goes into the input and the target alike: a nebula peaked
+on its star is nebula (the network had taken the bright core of NGC 2023, around a G 7.8 star drawn at rendering,
+for star light).
+
 Everything is measured on the project's own data: background and noise, photon gain, saturation plateaus, how far
 the stars' light reaches (halo and spikes), two hold-out regions (never training targets, they measure the network),
 the colour of the frame's brightest extended nebula.
@@ -210,8 +214,10 @@ def stamp_library(NLh, S, L, x, y, g, R_all, sat99, H, W, seed=0, nfaint=2000, f
         star, the smaller darkness of the two. The far-halo subtraction leaves point-symmetric dark rings and lobes
         around the brightest stars; a network that never saw them in a stamp dug craters there. Nebula lanes, which
         are not point-symmetric, stay out of the stamp.
-    Faint stars inside a stamp stay in it."""
+    Faint stars inside a stamp stay in it. A stamp is saturated as the rendering sees it (3 x 3 max above 0.7 x the
+    99.999th percentile of the frame's 4 x 4 subsample)."""
     from ..core.imgutil import membrane_fill
+    lvl = np.array([np.percentile(np.asarray(L[c, ::4, ::4]), 99.999) for c in range(L.shape[0])])
     bright, faint = [], []
     for i in np.argsort(g):
         if g[i] >= 15:
@@ -249,7 +255,10 @@ def stamp_library(NLh, S, L, x, y, g, R_all, sat99, H, W, seed=0, nfaint=2000, f
             ped = np.median(win[:, ring], axis=1)
             st = np.clip((win - ped[:, None, None]) * w, 0, None).astype(np.float32)
         core = np.asarray(L[:, yi - 4:yi + 5, xi - 4:xi + 5]).reshape(3, -1).max(1)
-        rec = dict(x=float(x[i]), y=float(y[i]), g=float(g[i]), R=Re, sat=core >= 0.75 * sat99,
+        # saturated as the rendering sees it (3 x 3 max above 0.7 x the 99.999th percentile of the frame): above
+        # 0.75 x it, Alnitak's plateau and most of the Rosette's saturated stars passed for unsaturated
+        sat_ = np.asarray(L[:, yi - 1:yi + 2, xi - 1:xi + 2]).reshape(3, -1).max(1) > 0.7 * lvl
+        rec = dict(x=float(x[i]), y=float(y[i]), g=float(g[i]), R=Re, sat=sat_,
                    plateau=core.astype(np.float32), t=st.astype(np.float16) if g[i] >= 11 else st)
         (bright if g[i] < 11 else faint).append(rec)
     if len(faint) > nfaint:
@@ -390,8 +399,14 @@ def patch_centres(WM, x, y, g, H, W, P):
 class Synth:
     """Pastes real star stamps into (3, P, P) patches (on the training device)."""
 
-    def __init__(self, lib, sat99, gain, sg, dev):
+    def __init__(self, lib, sat99, gain, sg, dev, glow=False, neb_col=None):
         self.dev = dev
+        # glow: a smooth glow centred on half of the pasted bright stars, in the input and the target alike: a nebula
+        # peaked on its star is nebula (the network had taken the bright core of NGC 2023 around HD 37903, a G 7.8
+        # star drawn at rendering, for star light: lost)
+        self.glow = glow
+        nc = np.asarray(neb_col if neb_col is not None else [1.0, 1.0, 1.0], np.float64)
+        self.neb_col = nc / nc.mean()
         self.sat99 = np.asarray(sat99, np.float32)
         self.gain = torch.as_tensor(np.asarray(gain, np.float32), device=dev)
         self.sg = torch.as_tensor(np.asarray(sg, np.float32), device=dev)
@@ -404,7 +419,8 @@ class Synth:
 
     def plan(self, rng, P, n_bright=None):
         """1-6 bright stamps (bright ones drawn more often), scale 0.3-2 (saturated: 1-2), anywhere from -0.3 R to
-        P + 0.3 R, 8 % colour jitter, clipped at their plateau; and 0-24 faint stamps."""
+        P + 0.3 R, 8 % colour jitter, clipped at their plateau, half of them (with ``glow``) on a smooth glow centred
+        on them; and 0-24 faint stamps."""
         plan = []
         nb = (rng.integers(1, 7) if n_bright is None else n_bright) if self.n_bright else 0
         for _ in range(nb):
@@ -416,6 +432,13 @@ class Synth:
             cy, cx = rng.uniform(-m, P + m, 2).astype(int)
             col = np.exp(rng.normal(0, 0.08, 3))
             clip = np.where(b["sat"], b["plateau"], self.sat99 * rng.uniform(1.0, 1.35))
+            if self.glow and rng.random() < 0.5:
+                # 2-300 noise sigmas at the centre, scale 15-150 px, exponential or Lorentzian, the nebula's colour or
+                # the star's (a reflection nebula)
+                amp = float(np.exp(rng.uniform(np.log(2.0), np.log(300.0))))
+                gcol = (self.neb_col if rng.random() < 0.5 else np.ones(3)) * np.exp(rng.normal(0, 0.15, 3))
+                plan.insert(0, ("g", None, cy, cx, (amp, float(rng.uniform(15, 150)), int(rng.integers(2))), gcol,
+                                None))
             plan.append(("b", i, cy, cx, s, col, clip))
         nf = (rng.integers(0, 25) if n_bright is None else 0) if self.faint else 0
         for _ in range(nf):
@@ -424,14 +447,28 @@ class Synth:
             plan.append(("f", i, cy, cx, rng.uniform(0.3, 2.0), np.exp(rng.normal(0, 0.08, 3)), None))
         return plan
 
-    def apply(self, X, plan):
+    def apply(self, X, plan, T=None):
         """X (3, P, P) in ADU, modified in place: the stamps added (light never lowers a pixel already brighter than
-        the clip level), then their photon noise (none on clipped pixels). Returns the pasted light."""
+        the clip level), then their photon noise (none on clipped pixels). Returns the pasted light. The glows (see
+        plan) go into the target T too (modified in place), when it is given: the network learns to leave them."""
         P = X.shape[-1]
         light = torch.zeros_like(X)
         clipped = torch.zeros_like(X, dtype=torch.bool)
         for kind, i, cy, cx, s, col, clip in plan:
-            t = (self.bright if kind == "b" else self.faint)[i]["t"]
+            if kind == "g":         # a glow centred on the star that follows: nebula, in the input and the target
+                amp, sc, shape = s
+                ar = torch.arange(P, device=self.dev, dtype=torch.float32)
+                r = torch.sqrt((ar[:, None] - cy) ** 2 + (ar[None, :] - cx) ** 2)
+                prof = torch.exp(-r / sc) if shape == 0 else 1.0 / (1.0 + (r / sc) ** 2)
+                G = (amp * prof[None] * torch.tensor(col, device=self.dev, dtype=torch.float32).view(3, 1, 1)
+                     * self.sg.view(3, 1, 1))
+                G = G + torch.randn_like(G) * torch.sqrt(self.gain.view(3, 1, 1) * G)
+                X += G
+                if T is not None:
+                    T += G
+                continue
+            st_ = (self.bright if kind == "b" else self.faint)[i]
+            t = st_["t"]
             R = t.shape[-1] // 2
             y0, x0 = cy - R, cx - R
             ys0, xs0 = max(0, -y0), max(0, -x0)
@@ -528,15 +565,15 @@ def run_val(net, items, synth, L, T, bk, sg, dev):
     tot, tot0 = 0.0, 0.0
     for ya, xa, P_, w, plan in items:
         X = torch.from_numpy(np.ascontiguousarray(L[:, ya:ya + P_, xa:xa + P_], np.float32)).to(dev)
-        nt = normalise(torch.from_numpy(np.ascontiguousarray(T[:, ya:ya + P_, xa:xa + P_], np.float32)).to(dev)[None],
-                       bk, sg)
+        Tp = torch.from_numpy(np.ascontiguousarray(T[:, ya:ya + P_, xa:xa + P_], np.float32)).to(dev)
+        nt0 = normalise(Tp[None], bk, sg)
         wt = torch.from_numpy(w).to(dev)[None, None]
         out0 = forward(net, X[None], bk, sg)
         torch.manual_seed(0)
-        synth.apply(X, plan)
+        synth.apply(X, plan, Tp)
         out = forward(net, X[None], bk, sg)
-        tot += float(((out - nt).abs() * wt).sum() / (3 * wt.sum()))
-        tot0 += float(((out0 - nt).abs() * wt).sum() / (3 * wt.sum()))
+        tot += float(((out - normalise(Tp[None], bk, sg)).abs() * wt).sum() / (3 * wt.sum()))
+        tot0 += float(((out0 - nt0).abs() * wt).sum() / (3 * wt.sum()))
     net.train()
     return tot / len(items), tot0 / len(items)
 
@@ -605,8 +642,8 @@ def train_net(data, synth, dev, minutes, batch=6, patch=PATCH, lr=3e-4, seed=0, 
         X += delta + nz
         Tt += delta + nz
         del Dn, Vn, delta, nz
-        light = torch.stack([synth.apply(X[b], synth.plan(rng, P)) for b in range(batch)])
-        fp = F.max_pool2d(((light / sg.view(1, 3, 1, 1)).amax(1, keepdim=True) > 1.0).float(), 7, 1, 3)
+        light = torch.stack([synth.apply(X[b], synth.plan(rng, P), Tt[b]) for b in range(batch)])
+        fp = F.max_pool2d(((light.abs() / sg.view(1, 3, 1, 1)).amax(1, keepdim=True) > 1.0).float(), 7, 1, 3)
         wt = Wt * (1 + 4 * fp)
         out = forward(net, X, bk, sg)
         loss = ((out - normalise(Tt, bk, sg)).abs() * wt).sum() / (3 * wt.sum().clamp(min=1))

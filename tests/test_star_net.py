@@ -316,3 +316,32 @@ def test_bright_stamp_keeps_the_nebula_out_and_symmetric_dark_rings_in():
     assert d.max() < 0.5 and d.mean() > -6.5             # the one-sided lane is not star light: never more than
     mirror = (np.abs(Y - 150) < 3) & (X > 80) & (X < 135) & ((rr < 45) | (rr > 60))   # the star, at most its depth less
     assert abs(float((t - star[win])[:, mirror].mean())) < 0.5             # and the other side of the star is exact
+
+
+def test_stamps_are_saturated_as_the_rendering_sees_them():
+    H, c = 301, 150
+    yy, xx = np.mgrid[0:H, 0:H]
+    r = np.hypot(yy - c, xx - c)
+    neb = np.full((3, H, H), 20.0, np.float32)
+    star = np.repeat(np.minimum(5000 * np.exp(-r ** 2 / 50), 1000.0)[None], 3, 0).astype(np.float32)
+    x, y, g = np.array([float(c)]), np.array([float(c)]), np.array([5.0])
+    b = lib.stamp_library(neb + star, neb, neb + star, x, y, g, np.array([100]), np.full(3, 1e5, np.float32), H, H,
+                          fill=np.array([80.0]), filled=np.zeros((H, H), bool))["bright"][0]
+    assert bool(np.asarray(b["sat"]).all())            # its plateau is the frame's brightest: saturated
+
+
+def test_synth_glow_on_bright_stars_goes_into_the_target_too():
+    t = np.zeros((3, 21, 21), np.float32)
+    t[:, 10, 10] = 50.0
+    lib_ = {"bright": [dict(x=0.0, y=0.0, g=6.0, R=10, sat=np.zeros(3, bool), plateau=np.full(3, 1e5, np.float32),
+                            t=t)], "faint": []}
+    sy = lib.Synth(lib_, np.full(3, 1e5), np.full(3, 0.1), np.ones(3), torch.device("cpu"), glow=True,
+                   neb_col=[1.2, 1.0, 0.6])
+    rng = np.random.default_rng(3)
+    plans = [sy.plan(rng, 64) for _ in range(20)]
+    assert any(p_[0][0] == "g" for p_ in plans) and any(p_[0][0] == "b" for p_ in plans)   # about half of them
+    plan = next(p_ for p_ in plans if p_[0][0] == "g")
+    X, T = torch.zeros(3, 64, 64), torch.zeros(3, 64, 64)
+    light = sy.apply(X, plan, T)
+    assert float(T.sum()) > 0                                          # the glow is in the target
+    assert float((X - T).sum()) == pytest.approx(float(light.sum()), rel=0.05)   # the input holds it and the star

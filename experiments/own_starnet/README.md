@@ -162,3 +162,73 @@ Run inputs: read-only snapshots of the project files (`D:/astro_gpu_diag/own_sta
   both dark: the smaller darkness), inside the star's extent. The loss footprint counts the dark parts.
 * `faint_in_glare.py`: faint stars inside the glare stay point-like in the star layer (elongation, radial tail,
   flux) in runs E, F and G alike.
+
+## Compact light only (run H, 2026-10-15, four projects)
+
+The rendering shows a saturated star by its own light inside a footprint only, faded out below 1.5 sigma; the
+learned starless image lacks the whole layer. What the network removed beyond what the rendering shows was lost:
+grey discs with an edge around saturated stars (Rosette G 5.6 north). Run H: the network removes only the compact
+light of the stars; their diffuse glare stays with the far halo model or with the nebula.
+
+* Far halo first (`experiments/halo2/halo_lab.py`, stars stage 13): no halo above the light the data show beyond
+  the nebula (see `astro_gpu/stages/far_halo.py`, `_envelope`). Outputs in `D:/astro_gpu_diag/halo2/<project>`.
+* `make_snap_halo.py`: a project copy with that halo (hard links to the rest) and the model starless image with it
+  (sl_final + old halo - new halo). `same_holdouts.py`: the hold-out boxes and evaluation stars of the earlier runs.
+* `stamps --stamp-variant compact`, `train --stamps compact`: each bright stamp is split into compact light (removed)
+  and diffuse light (pasted into the input and the target alike). Compact: inside a radius - for a saturated star,
+  where its broad light (median of each ring) falls below the pixel noise, at least its saturated core; else the
+  star model's radius (60 px) - and, beyond it, what is narrow across (spikes, rays, stars: the stamp minus its
+  median over half a ring: over 45 degrees, the glare of sigma Orionis' companions passed for diffuse light).
+* `lost_light.py`: the light the rendering loses around each saturated star (footprint rule of
+  render_prep.saturated_star_light, the 1.5 sigma fade, the starless stage's 3 sigma cut of the layer).
+* `compare_GH.py`, `table_GH.py`: run H against the layer a project used (sheets, ring levels, tables).
+* `run_H.sh <project> ...`: the whole chain, GPU 1 only.
+
+Results (runs H against the layers the projects used: run G for the Horsehead and the Flaming Star, run E for the
+Rosette; `D:/astro_gpu_diag/own_starnet/<project>/H`):
+
+* light lost at rendering around the saturated stars, against the light shown: Horsehead 0.18 -> 0.17 %, Flaming
+  Star 0.42 -> 0.39 %, Rosette 1.92 -> 1.28 % (its cluster); Rosette G 5.6 north 0.17 -> 0.16 %. Most of it is not
+  diffuse light beyond the footprints: the G 5.6's is 91 % inside its footprint, where the rendering fades the
+  star's light out below 1.5 sigma per pixel (on the noisy image) - any layer that falls smoothly to zero loses its
+  faint part there; beyond the footprints the losses are rays (Alnitak) and the glow of the Rosette's cluster.
+* the split left ring glows in the starless image around the saturated stars (`ring_glows.py`: stars whose nebula
+  profile rises again by more than 0.5 sigma between 40 and 160 px): Horsehead 5 -> 12 of 40, Flaming Star 2 -> 4 of
+  45, Rosette 5 -> 13 of 61. Not adopted.
+* evaluation stars, hold-outs: as before (residue at Alnitak 0.6 -> 2.7 %, holes 0 in both).
+* NGC 2023 (around HD 37903, G 7.8, drawn at rendering): runs G and H both remove its bright core as star light
+  (layer 109 sigma at 10-30 px from the star, of 117 there; the star model holds 5). Run H2 tests a remedy.
+
+## Run H2 (2026-10-15): the corrected far halo, full stamps, a glow on the pasted stars
+
+`run_H2.sh`: run H's snapshot and prep, the stamps of run G not split (`stamps --stamp-variant full`, saturated as
+the rendering sees it), and a smooth glow centred on half of the pasted bright stars, in the input and the target
+alike (`train --glow`: 2-300 noise sigmas at the centre, scale 15-150 px, the nebula's colour or the star's).
+`post_H2.sh`-style evaluation: `lost_light.py`, `compare_GH.py`, `table_GH.py`, `ring_glows.py`.
+
+Horsehead (run G / run H / run H2):
+
+* NGC 2023: the layer around HD 37903 holds 109 / 110 / 48 sigma at 10-30 px from the star, 51 / 51 / 10 at 30-50,
+  26 / 26 / 2 at 50-70 (the stack minus the far halo: 117, 58, 33; the star model: 5, 1, 0) - the nebula's core is
+  kept.
+* ring glows around the saturated stars: 5 / 12 / 3 stars above 0.5 sigma (median 0.16 / 0.40 / 0.01).
+* sigma Orionis: nebula level at 20-40 px -4.7 / -1.6 / -0.3 sigma (its surroundings at 250-350 px: -4.0 / -3.2 /
+  -3.2): the dark disc of run G is gone, a glow of about 3 sigma (its glare above the lowered far halo) is left.
+* Alnitak: residue in the 20-150 px ring 0.6 / 2.7 / 15 % (the glare above the far halo, +7 sigma at 20-80 px,
+  stays with the nebula); light lost at rendering 0.18 / 0.17 / 0.26 % of the saturated stars' light (Alnitak's
+  rays beyond its footprint).
+* hold-outs: unchanged within 0.1 sigma.
+
+Rosette (run E / run H / run H2): light lost 1.92 / 1.28 / 1.84 % (G 5.6 north 0.17 / 0.16 / 0.19 %, 84-91 % of it
+inside its footprint: the rendering's fade); ring glows 5 / 13 / 3 stars above 0.5 sigma; hold-outs unchanged.
+
+Where the light is lost: around the Rosette's G 5.6 north, at 12-84 px from the star, where its light stands 1.5-3.5
+sigma per pixel - the rendering fades the star light out per pixel there, on the noisy image (stack minus learned
+starless image). Any layer that falls smoothly to zero loses that part; a cut placed higher leaves a ring in the
+starless image instead (run H). Beyond the footprints: the rays of Alnitak, the glow of the Rosette's cluster.
+`post_H.sh`, `post_H2.sh`: the evaluation after a run (paths of D:/astro_gpu_diag).
+
+Iris (run E / run H2): light lost 0.11 / 0.10 %, no ring glow, hold-outs unchanged; but at the Iris's central star
+(HD 200775, G 7.2) run H2 leaves a round glow of about 40 px in the starless image (nebula level 113 sigma at the
+star against 35 with run E; 51 against 35 at 20 px): the glow taught on the pasted stars also keeps the broad core
+of a bright star sitting in its nebula. The stage makes the glow a setting ('Nebula peaked on its star').

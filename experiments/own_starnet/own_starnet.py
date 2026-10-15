@@ -250,7 +250,20 @@ def membrane_stamps(args):
     below the interpolated background at a pixel AND at its mirror through the star (point symmetry: the star's
     optics and the far-halo model are point-symmetric, nebula lanes are not), the smaller darkness of the two. Run F
     showed why: the network dug a crater (-20 sigma) at the brightest stars, its reaction to the dark rings and
-    lobes that the far-halo subtraction leaves around them and that no clipped stamp ever contained."""
+    lobes that the far-halo subtraction leaves around them and that no clipped stamp ever contained.
+
+    --stamp-variant compact (library_nohalo_compact.pt, run H): the agreed stamp split into the star's compact light
+    and its diffuse light. Compact: everything within a radius and, beyond it, what is narrow across (spikes, rays,
+    the faint stars inside the stamp: the stamp minus its median over +-90 deg of arc and +-2 px of radius). The
+    radius: for a saturated star (shown at rendering by its own light, faded out below a few sigmas of the smoothed
+    noise), where its broad light falls below the pixel noise, at least its saturated core + 4 px; for the others
+    the radius the star model holds (60 px, as the far halo sees it). Diffuse: the rest beyond that radius (fully
+    from 1.3 x it), the glare the far halo model did not take. The network removes
+    the compact light only: the diffuse light is pasted into the input and the target alike (the rendering shows a
+    saturated star by its own light inside a footprint; diffuse light the network removed beyond it was lost).
+
+    --stamp-variant full (library_nohalo_full.pt, run H2): the agreed stamp, not split, saturated as the rendering
+    sees it (as compact)."""
     from astro_gpu.core.imgutil import membrane_fill
     lg = PREP / "prep.log"
     meta = json.load(open(PREP / "meta.json"))
@@ -265,8 +278,16 @@ def membrane_stamps(args):
     ext = {int(k): v for k, v in meta.get("star_extent", {}).items()}
     sat99 = np.array(meta["sat99"], np.float32)
     old = torch.load(PREP / lib_name(True), weights_only=False)
-    agreed = args.stamp_variant == "agreed"
+    agreed = args.stamp_variant in ("agreed", "compact", "full")
+    compact = args.stamp_variant == "compact"
+    unified = args.stamp_variant in ("compact", "full")     # saturated as the rendering sees it
     FM = np.load(PROJ / "starless/sl_mask.npy", mmap_mode="r") if agreed else None
+    if unified:                 # the radius the star model holds: the saturated core as the far halo sees it
+        from astro_gpu.stages.starless import _filled_radius
+        satm = np.zeros((H, W), bool)
+        lvl = np.array([np.percentile(np.asarray(L[c, ::4, ::4]), 99.999) for c in range(3)])
+        for c in range(3):
+            satm |= np.asarray(L[c], np.float32) > 0.7 * lvl[c]
     bright = []
     t0 = time.time()
     for i in np.argsort(g):
@@ -301,14 +322,76 @@ def membrane_stamps(args):
         else:
             st = np.clip((win - ped[:, None, None]) * w, 0, None).astype(np.float32)
         core = np.asarray(L[:, yi - 4:yi + 5, xi - 4:xi + 5]).reshape(3, -1).max(1)
-        bright.append(dict(x=float(x[i]), y=float(y[i]), g=float(g[i]), R=Re, fill=float(R_fill),
-                           sat=core >= 0.75 * sat99, plateau=core.astype(np.float32), ped=ped.astype(np.float32),
-                           t=st))
-    variant = "agreed" if agreed else "membrane"
+        # saturated as the rendering sees it (3 x 3 max above 0.7 x the 99.999th percentile): Alnitak's plateau and
+        # most of the Rosette's saturated stars stood below 0.75 x that percentile and passed for unsaturated
+        sat_ = (np.asarray(L[:, yi - 1:yi + 2, xi - 1:xi + 2]).reshape(3, -1).max(1) > 0.7 * lvl if unified
+                else core >= 0.75 * sat99)
+        rec = dict(x=float(x[i]), y=float(y[i]), g=float(g[i]), R=Re, fill=float(R_fill),
+                   sat=sat_, plateau=core.astype(np.float32), ped=ped.astype(np.float32), t=st)
+        if compact:
+            # saturated: shown at rendering by its own light, faded out below the noise - compact out to where its
+            # broad light falls below the pixel noise (at least its saturated core); else the star model's radius
+            r_sat = _filled_radius(satm, x[i], y[i], rmax=800) + 4.0
+            r_c = max(r_sat, bright_radius(st, meta["sg"])) if sat_.any() else max(60.0, r_sat)
+            dif = diffuse_part(st, r_c)
+            rec.update(t=(st - dif).astype(np.float32), d=dif.astype(np.float32), r_c=r_c)
+        bright.append(rec)
+    variant = args.stamp_variant
     torch.save({"bright": bright, "faint": old["faint"]}, PREP / lib_name(True, variant))
+    if compact:
+        log(lg, "compact radius of the saturated stamps: " + ", ".join(
+            f"G{b['g']:.1f} {b['r_c']:.0f} px" for b in bright if b["sat"].any()))
+        fr = [float(np.abs(b["d"]).sum() / max(np.abs(b["t"]).sum() + np.abs(b["d"]).sum(), 1e-9)) for b in bright]
+        log(lg, f"compact stamps: diffuse light {100 * np.median(fr):.1f} % of a stamp's light (median; max "
+                f"{100 * max(fr):.1f} %), compact radius {min(b['r_c'] for b in bright):.0f}-"
+                f"{max(b['r_c'] for b in bright):.0f} px")
     log(lg, f"{variant} stamps: {len(bright)} bright stamps (radius {min(b['R'] for b in bright)}-"
             f"{max(b['R'] for b in bright)} px) against an interpolated background in {time.time() - t0:.0f} s; "
             f"{len(old['faint'])} faint stamps kept")
+
+
+def bright_radius(st, sg, r0=4):
+    """The radius where a stamp's broad light (median of each 1 px ring) first falls below the pixel noise (sg per
+    channel, the mean over the channels in noise units): inside, the star's light stands above the noise; beyond,
+    its faint glare (the rendering fades a star's light out below a few sigmas of its smoothed noise, about one
+    sigma of a pixel's: what the network removed there was lost)."""
+    R = st.shape[-1] // 2
+    yy, xx = np.mgrid[-R:R + 1, -R:R + 1]
+    rk = np.hypot(yy, xx).astype(int).ravel()
+    sig = np.mean([st[c].ravel() / max(float(sg[c]), 1e-9) for c in range(st.shape[0])], 0)
+    order = np.argsort(rk, kind="stable")
+    rs, vs = rk[order], sig[order]
+    bounds = np.searchsorted(rs, np.arange(R + 2))
+    for k in range(r0, R):
+        if np.median(vs[bounds[k]:bounds[k + 1]]) < 1.0:
+            return float(k)
+    return float(R)
+
+
+def diffuse_part(st, r_c, nt=120, arc_deg=180, rad_px=5):
+    """The diffuse part of a stamp (3, 2R+1, 2R+1) beyond the compact radius r_c: its median over +-arc_deg/2 of arc
+    and +-rad_px/2 of radius (broad across: not a spike, a ray nor a star - over half a ring: over 45 degrees the glare of
+    sigma Orionis' companions passed for diffuse light), weighted 0 inside r_c, 1 beyond 1.3 r_c
+    (cosine in between)."""
+    R = st.shape[-1] // 2
+    rr = np.arange(R + 1, dtype=np.float32)[:, None]
+    th = (np.arange(nt) * 2 * np.pi / nt).astype(np.float32)[None]
+    px, py = (R + rr * np.cos(th)).astype(np.float32), (R + rr * np.sin(th)).astype(np.float32)
+    yy, xx = np.mgrid[-R:R + 1, -R:R + 1].astype(np.float32)
+    r = np.hypot(xx, yy)
+    t = ((np.arctan2(yy, xx) % (2 * np.pi)) / (2 * np.pi) * nt).astype(np.float32)
+    rb = np.minimum(r, R).astype(np.float32)
+    k = int(round(arc_deg / 360 * nt)) | 1
+    out = np.zeros_like(st)
+    for c in range(st.shape[0]):
+        pol = cv2.remap(np.ascontiguousarray(st[c]), px, py, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        hk = k // 2                                        # periodic in angle
+        med = median_filter(np.concatenate([pol[:, -hk:], pol, pol[:, :hk]], 1), size=(rad_px, k),
+                            mode="nearest")[:, hk:hk + nt]
+        med = np.concatenate([med, med[:, :1]], 1)
+        out[c] = cv2.remap(np.ascontiguousarray(med), t, rb, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    wt = 0.5 * (1 - np.cos(np.pi * np.clip((r - r_c) / (0.3 * r_c), 0, 1)))
+    return (out * wt[None]).astype(np.float32)
 
 
 def prep(args):
@@ -504,8 +587,13 @@ def prep(args):
 class Synth:
     """Pastes real stamps into (3, P, P) GPU patches."""
 
-    def __init__(self, meta, lib, dev, hold_eval=False):
+    def __init__(self, meta, lib, dev, hold_eval=False, glow=False):
         self.dev = dev
+        # --glow: a smooth glow centred on half of the pasted bright stars, in the input and the target alike (a
+        # nebula peaked on its star - NGC 2023 around HD 37903 - is nebula: runs G and H removed its bright core)
+        self.glow = glow
+        nc = np.asarray(meta.get("neb_col") or [1.0, 1.0, 1.0], np.float64)
+        self.neb_col = nc / nc.mean()
         self.sat99 = torch.tensor(meta["sat99"], device=dev)
         self.gain = torch.tensor(meta["gain"], device=dev)
         self.sg = torch.tensor(meta["sg"], device=dev)
@@ -513,7 +601,9 @@ class Synth:
         if hold_eval:     # leave out every stamp that holds an evaluation star
             ev = meta["eval_stars"]
             br = [b for b in br if all(math.hypot(b["x"] - e["x"], b["y"] - e["y"]) > b["R"] + 60 for e in ev)]
-        self.bright = [dict(b, t=torch.from_numpy(np.asarray(b["t"], np.float32)).to(dev)) for b in br]
+        self.bright = [dict(b, t=torch.from_numpy(np.asarray(b["t"], np.float32)).to(dev),
+                            d=None if b.get("d") is None else torch.from_numpy(np.asarray(b["d"], np.float32)).to(dev))
+                       for b in br]
         self.faint = [dict(f, t=torch.from_numpy(np.asarray(f["t"], np.float32)).to(dev)) for f in lib["faint"]]
         gb = np.array([b["g"] for b in self.bright])
         w = 10 ** (-0.15 * (gb - 11))
@@ -533,6 +623,12 @@ class Synth:
             cy, cx = (rng.uniform(-m, P + m, 2)).astype(int)
             col = np.exp(rng.normal(0, 0.08, 3))
             clip = np.where(b["sat"], b["plateau"], np.array(self.sat99.tolist()) * rng.uniform(1.0, 1.35))
+            if self.glow and rng.random() < 0.5:
+                # amplitude 2-300 noise sigmas at the centre, scale 15-150 px, the nebula's colour or the star's
+                amp = float(np.exp(rng.uniform(np.log(2.0), np.log(300.0))))
+                gcol = (self.neb_col if rng.random() < 0.5 else np.ones(3)) * np.exp(rng.normal(0, 0.15, 3))
+                plan.insert(0, ("g", None, cy, cx, (amp, float(rng.uniform(15, 150)), int(rng.integers(2))), gcol,
+                                None))
             plan.append(("b", i, cy, cx, s, col, clip))
         for _ in range(rng.integers(0, 25) if n_bright is None else 0):
             i = int(rng.integers(len(self.faint)))
@@ -540,12 +636,25 @@ class Synth:
             plan.append(("f", i, cy, cx, rng.uniform(0.3, 2.0), np.exp(rng.normal(0, 0.08, 3)), None))
         return plan
 
-    def apply(self, X, plan):
-        """X (3, P, P) in ADU, modified in place. Returns the pasted light (3, P, P)."""
+    def apply(self, X, plan, T=None):
+        """X (3, P, P) in ADU, modified in place. Returns the pasted light (3, P, P). A stamp's diffuse part (compact
+        stamps) is pasted into the target T too (modified in place), when given."""
         P = X.shape[-1]
         light = torch.zeros_like(X)
         clipped = torch.zeros_like(X, dtype=torch.bool)
         for kind, i, cy, cx, s, col, clip in plan:
+            if kind == "g":         # a glow centred on the star that follows: nebula, in the input and the target
+                amp, sc, shape = s
+                ar = torch.arange(P, device=self.dev, dtype=torch.float32)
+                r = torch.sqrt((ar[:, None] - cy) ** 2 + (ar[None, :] - cx) ** 2)
+                prof = torch.exp(-r / sc) if shape == 0 else 1.0 / (1.0 + (r / sc) ** 2)
+                G = amp * prof[None] * torch.tensor(col, device=self.dev, dtype=torch.float32).view(3, 1, 1) \
+                    * self.sg.view(3, 1, 1)
+                G = G + torch.randn_like(G) * torch.sqrt(self.gain.view(3, 1, 1) * G)
+                X += G
+                if T is not None:
+                    T += G
+                continue
             st = (self.bright if kind == "b" else self.faint)[i]
             t = st["t"]
             R = t.shape[-1] // 2
@@ -554,8 +663,15 @@ class Synth:
             ys1, xs1 = min(t.shape[-2], P - y0), min(t.shape[-1], P - x0)
             if ys1 <= ys0 or xs1 <= xs0:
                 continue
-            sub = t[:, ys0:ys1, xs0:xs1] * torch.tensor(s * col, device=self.dev, dtype=torch.float32).view(3, 1, 1)
+            k_ = torch.tensor(s * col, device=self.dev, dtype=torch.float32).view(3, 1, 1)
+            sub = t[:, ys0:ys1, xs0:xs1] * k_
             sy, sx = slice(y0 + ys0, y0 + ys1), slice(x0 + xs0, x0 + xs1)
+            dd = st.get("d")
+            if dd is not None:
+                dsub = dd[:, ys0:ys1, xs0:xs1] * k_
+                sub = sub + dsub
+                if T is not None:
+                    T[:, sy, sx] += dsub
             reg = X[:, sy, sx]
             new = reg + sub
             if clip is not None:
@@ -614,13 +730,14 @@ def run_val(net, items, synth, L, S, bk, sg, dev):
             X = torch.from_numpy(np.ascontiguousarray(L[:, ya:ya + 256, xa:xa + 256])).to(dev)
             T = torch.from_numpy(np.ascontiguousarray(S[:, ya:ya + 256, xa:xa + 256])).to(dev)[None]
             wt = torch.from_numpy(w).to(dev)[None, None]
-            nt = normalise(T, bk, sg)
+            nt0 = normalise(T, bk, sg)
             out0 = forward(net, X[None], bk, sg)
             torch.manual_seed(0)
-            synth.apply(X, plan)
+            synth.apply(X, plan, T[0])
+            nt = normalise(T, bk, sg)
             out = forward(net, X[None], bk, sg)
             tot += float(((out - nt).abs() * wt).sum() / (3 * wt.sum()))
-            tot0 += float(((out0 - nt).abs() * wt).sum() / (3 * wt.sum()))
+            tot0 += float(((out0 - nt0).abs() * wt).sum() / (3 * wt.sum()))
             n += 1
     net.train()
     return tot / n, tot0 / n
@@ -658,10 +775,11 @@ def train(args):
     meta = json.load(open(PREP / "meta.json"))
     set_radius(meta)
     lib = torch.load(PREP / lib_name(args.minus_halo, args.stamps), weights_only=False)
-    synth = Synth(meta, lib, dev, hold_eval=args.hold_eval)
+    synth = Synth(meta, lib, dev, hold_eval=args.hold_eval, glow=args.glow)
     log(lg, f"run {args.run}: {synth.n_bright} bright stamps (hold-out of evaluation stars: {args.hold_eval}), "
             f"{len(synth.faint)} faint stamps, far halo removed first: {args.minus_halo}, noise-preserving target: "
-            f"{args.noisy_target}, nebula brightness augmentation: {args.bright_aug}, star cores out of the loss: "
+            f"{args.noisy_target}, nebula brightness augmentation: {args.bright_aug}, glow on stars: {args.glow}, "
+            f"star cores out of the loss: "
             f"{args.core_mask}, stamps: {args.stamps or 'starless image'}, "
             f"budget {args.minutes} min, "
             f"patch {args.patch}, batch {args.batch}")
@@ -762,7 +880,7 @@ def train(args):
             del Dn, Vn, delta, nz
         lights = []
         for b in range(args.batch):
-            lights.append(synth.apply(X[b], synth.plan(rng, P)))
+            lights.append(synth.apply(X[b], synth.plan(rng, P), T[b]))
         light = torch.stack(lights)
         fp = ((light.abs() / sg.view(1, 3, 1, 1)).amax(1, keepdim=True) > 1.0).float()   # dark stamp parts too
         fp = F.max_pool2d(fp, 7, 1, 3)
@@ -1054,9 +1172,10 @@ def injection_test(meta, net, synth_all, L, S, A, B, dev):
             torch.manual_seed(1)
             sat = bool(b["sat"].any())
             clip = np.where(b["sat"], b["plateau"], np.array(meta["sat99"]) * 1.15)
-            synth_all.apply(X, [("b", j, P // 2, P // 2, 1.0 if sat else 1.0, np.ones(3), clip)])
+            Td = torch.zeros_like(X)
+            synth_all.apply(X, [("b", j, P // 2, P // 2, 1.0 if sat else 1.0, np.ones(3), clip)], Td)
             o1 = apply_tiled(net, X.cpu().numpy(), bk, sg, dev)
-            d = smooth3(o1 - o0).sum(0)
+            d = smooth3(o1 - o0 - Td.cpu().numpy()).sum(0)       # the diffuse part is meant to stay
             res[f"{bname}:{name}"] = dict(
                 left_rms_sigma=round(float(np.sqrt((d[ann] ** 2).mean()) / ssum), 3),
                 left_mean_sigma=round(float(d[ann].mean() / ssum), 3),
@@ -1183,8 +1302,10 @@ def table(args):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["prep", "stamps", "train", "infer", "layer", "eval", "table"])
-    ap.add_argument("--stamps", default="", help="train: bright stamp library variant ('', 'membrane', 'agreed')")
-    ap.add_argument("--stamp-variant", default="membrane", choices=["membrane", "agreed"], help="stamps: which")
+    ap.add_argument("--stamps", default="",
+                    help="train: bright stamp library variant ('', 'membrane', 'agreed', 'compact')")
+    ap.add_argument("--stamp-variant", default="membrane", choices=["membrane", "agreed", "compact", "full"],
+                    help="stamps: which")
     ap.add_argument("--eval-suffix", default="", help="eval/table: suffix of metrics*.json and sheet_*.jpg")
     ap.add_argument("--inject-stamps", default=None,
                     help="eval: stamp library of the known-truth test (default: the run's own)")
@@ -1192,6 +1313,8 @@ def main():
     ap.add_argument("--out", default=None, help="output folder; default D:/astro_gpu_diag/own_starnet[/<project>]")
     ap.add_argument("--run", default="runA")
     ap.add_argument("--hold-eval", action="store_true", help="leave the evaluation stars out of the stamp library")
+    ap.add_argument("--glow", action="store_true",
+                    help="train: a smooth glow (nebula) centred on half of the pasted bright stars, input and target")
     ap.add_argument("--core-mask", action="store_true",
                     help="no loss on the cores of the real catalogue stars (G < 16) nor on the filled cores")
     ap.add_argument("--bright-aug", action="store_true",

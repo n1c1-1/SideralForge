@@ -58,10 +58,12 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "12"         # 9: far halo of the stars, star shape measured without the stars sitting in the core of a
+    version = "13"         # 9: far halo of the stars, star shape measured without the stars sitting in the core of a
                            # much brighter one; 10: the fine rays of the stars whose glare dominates, with their halo;
                            # 11: the rays bounded by the star's glare (noise far from the star passed for rays);
-                           # 12: the glare of the dominant stars saved apart (the rendering draws back that one only)
+                           # 12: the glare of the dominant stars saved apart (the rendering draws back that one only);
+                           # 13: no halo above the light the data show beyond the nebula (the halos fitted on their
+                           # own surroundings: dark rings around sigma Orionis, lobes around Alnitak)
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device
@@ -174,7 +176,8 @@ class Stars(Stage):
             ctx.save("stars_model_glow.npy", info["_dominant"] if info.get("_dominant") is not None
                      else np.zeros((3, 1, 1), np.float32))
         # the stars whose glare dominates their surroundings, and the radius their star model holds
-        return halo, [(int(hs[int(k)]), float(r_in[int(k)])) for k in info.get("far_halo_own", {})],             info.get("_dominant")
+        return (halo, [(int(hs[int(k)]), float(r_in[int(k)])) for k in info.get("far_halo_own", {})],
+                info.get("_dominant"))
 
     @staticmethod
     def _own_rays(ctx, img, model, halo, glow, x, y, g, dom):
