@@ -625,3 +625,14 @@ trace of the masking circle around the Rosette G 5.6.
   Iris star in the learned version is in the user's own image too. Photographed stars: bloated and doubled at the
   field edges (coma of the Newtonian): an option, not a default. Flaming Star with the learned removal: the coloured
   shards around G 4.1 and G 5.3 are gone.
+* Horsehead blind QC (blind5): learned first (the only version without processing artefacts, IC 434 more vivid);
+  its defect: Alnitak and sigma Ori blown into a large white glare (the network removes more glare than the stars have
+  around these unique stars - the agent measured 37 % holes at Alnitak - and the excess comes back as star light).
+  The learned removal won on all four objects; on by default, deliverables re-rendered.
+* Rejected (2026-10-15 09:10): a physical guard capping the learned layer at 2 x the star model outside the saturated
+  cores. It brought back the star model's errors: the coloured shards around the Flaming Star G 4.1 and G 5.3,
+  beaded spikes on G 5.9, the Horsehead G 5.7 core broken into coloured clumps (the network was right where the
+  model is wrong). Removed, not tuned. The brightest stars' glare and the faint stars smeared into comets inside it
+  come from the training data: the bright stamps are the denoised stack minus sl_final, so a hole of sl_final under
+  a unique bright star becomes extra star light the network learns to remove. Next: build the bright stamps against
+  a background interpolated from the ring around the star, and retrain.
