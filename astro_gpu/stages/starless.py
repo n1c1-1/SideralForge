@@ -198,12 +198,19 @@ class Starless(Stage):
                 fh = fill_holes(X[c], sat)
                 X[c][sat] = fh[sat] + rng.normal(0, sgx, int(sat.sum())).astype(np.float32)
         del hp, fh, full
-        ctx.save("sl_final_learned.npy", wiener(A, B, M, p, model, log=ctx.log))
+        wl = wiener(A, B, M, p, model, log=ctx.log)
+        ctx.save("sl_final_learned.npy", wl)
         net, bk, sg = load_model(ctx)
         _, _, nm = norm_params(ctx.load("stack", "drz_A.npy").astype(np.float32), Wt)
-        ctx.save("n2n_final_learned.npy",
-                 0.5 * (apply_net(net, A, nm, bk, sg, ctx.device) + apply_net(net, B, nm, bk, sg, ctx.device)))
+        n2l = 0.5 * (apply_net(net, A, nm, bk, sg, ctx.device) + apply_net(net, B, nm, bk, sg, ctx.device))
         del net
+        # the filled cores hold no detail: the network turned the fill's noise into a checkered pattern (the Wiener
+        # filter removes it, independent in the two halves) - the detail layer takes the Wiener result there
+        wsat = cv2.GaussianBlur(cv2.dilate(sat.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+                                .astype(np.float32), (0, 0), 2.0)
+        n2l += wsat[None] * (wl - n2l)
+        ctx.save("n2n_final_learned.npy", n2l)
+        del n2l, wl, wsat
         if ctx.device.type == "cuda":
             torch.cuda.empty_cache()
         ctx.log(f"learned star removal: second starless image from {f.name} (chosen at rendering)")
