@@ -176,7 +176,8 @@ class Stars(Stage):
             ctx.save("stars_model_glow.npy", info["_dominant"] if info.get("_dominant") is not None
                      else np.zeros((3, 1, 1), np.float32))
         # the stars whose glare dominates their surroundings, and the radius their star model holds
-        return halo, [(int(hs[int(k)]), float(r_in[int(k)])) for k in info.get("far_halo_own", {})],             info.get("_dominant")
+        return (halo, [(int(hs[int(k)]), float(r_in[int(k)])) for k in info.get("far_halo_own", {})],
+                info.get("_dominant"))
 
     @staticmethod
     def _own_rays(ctx, img, model, halo, glow, x, y, g, dom):

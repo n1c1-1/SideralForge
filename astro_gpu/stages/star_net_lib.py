@@ -8,6 +8,11 @@ A U-Net learns to remove the stars of ONE stack, from that stack alone:
 * target = the model-based starless image + the input's own noise (the network removes stars, it does not denoise),
            trusted only away from the bright stars and outside the cores of the real stars.
 
+The network removes only the compact light of the stars: core and wings out to the radius the star model holds,
+spikes and rays. A bright stamp's diffuse light beyond that radius (the glare the far halo model did not take) is
+pasted into the input and the target alike, so it stays with the nebula: the rendering shows a saturated star by
+its own light inside a footprint only, and diffuse light removed beyond it was lost (a disc with an edge).
+
 Everything is measured on the project's own data: background and noise, photon gain, saturation plateaus, how far
 the stars' light reaches (halo and spikes), two hold-out regions (never training targets, they measure the network),
 the colour of the frame's brightest extended nebula.
@@ -193,7 +198,62 @@ def fill_radii(ext, g, fit):
     return out
 
 
-def stamp_library(NLh, S, L, x, y, g, R_all, sat99, H, W, seed=0, nfaint=2000, fill=None, filled=None):
+def compact_radius(sat, x, y, g, gmax=11.0):
+    """Per star (G < gmax, else 0): its saturated core (``sat``, bool (H, W)) + 4 px, as the far halo sees it."""
+    from .starless import _filled_radius
+    out = np.zeros(len(x))
+    for i in np.where(g < gmax)[0]:
+        out[i] = _filled_radius(sat, x[i], y[i], rmax=800) + 4.0
+    return out
+
+
+def bright_radius(st, sg, r0=4):
+    """The radius where a stamp's broad light (median of each 1 px ring) first falls below the pixel noise (sg per
+    channel, the mean over the channels in noise units): inside, the star's light stands above the noise; beyond,
+    its faint glare (the rendering fades a star's light out below a few sigmas of its smoothed noise, about one
+    sigma of a pixel's: what the network removed there was lost)."""
+    R = st.shape[-1] // 2
+    yy, xx = np.mgrid[-R:R + 1, -R:R + 1]
+    rk = np.hypot(yy, xx).astype(int).ravel()
+    sig = np.mean([st[c].ravel() / max(float(sg[c]), 1e-9) for c in range(st.shape[0])], 0)
+    order = np.argsort(rk, kind="stable")
+    rs, vs = rk[order], sig[order]
+    bounds = np.searchsorted(rs, np.arange(R + 2))
+    for k in range(r0, R):
+        if np.median(vs[bounds[k]:bounds[k + 1]]) < 1.0:
+            return float(k)
+    return float(R)
+
+
+def diffuse_part(st, r_c, nt=120, arc_deg=180, rad_px=5):
+    """The diffuse part of a stamp (C, 2R+1, 2R+1) beyond the compact radius r_c: its median over +-arc_deg/2 of
+    arc and +-rad_px/2 of radius (broad across: not a spike, a ray nor a star - over half a ring: over 45 degrees the glare of
+    sigma Orionis' companions passed for diffuse light), weighted 0 inside r_c and 1 beyond
+    1.3 r_c (cosine in between). The stamp minus it is the star's compact light."""
+    R = st.shape[-1] // 2
+    rr = np.arange(R + 1, dtype=np.float32)[:, None]
+    th = (np.arange(nt) * 2 * np.pi / nt).astype(np.float32)[None]
+    px, py = (R + rr * np.cos(th)).astype(np.float32), (R + rr * np.sin(th)).astype(np.float32)
+    yy, xx = np.mgrid[-R:R + 1, -R:R + 1].astype(np.float32)
+    r = np.hypot(xx, yy)
+    t = ((np.arctan2(yy, xx) % (2 * np.pi)) / (2 * np.pi) * nt).astype(np.float32)
+    rb = np.minimum(r, R).astype(np.float32)
+    k = int(round(arc_deg / 360 * nt)) | 1
+    hk = k // 2
+    out = np.zeros_like(st, dtype=np.float32)
+    for c in range(st.shape[0]):
+        pol = cv2.remap(np.ascontiguousarray(st[c], np.float32), px, py, cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_REPLICATE)
+        med = median_filter(np.concatenate([pol[:, -hk:], pol, pol[:, :hk]], 1), size=(rad_px, k),
+                            mode="nearest")[:, hk:hk + nt]                        # periodic in angle
+        med = np.concatenate([med, med[:, :1]], 1)
+        out[c] = cv2.remap(np.ascontiguousarray(med), t, rb, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    wt = 0.5 * (1 - np.cos(np.pi * np.clip((r - r_c) / (0.3 * r_c), 0, 1)))
+    return (out * wt[None]).astype(np.float32)
+
+
+def stamp_library(NLh, S, L, x, y, g, R_all, sat99, H, W, seed=0, nfaint=2000, fill=None, filled=None,
+                  compact=None, sg=None):
     """Real star stamps cut from the stack: star layer (denoised stack - far halo - background) around every star
     G < 11 with no brighter star within 60 px ("bright"), and up to `nfaint` isolated stars G 11-15 ("faint");
     the median of the outer ring removed, cosine taper, negatives clipped. Saturated cores are flagged with their own
@@ -210,8 +270,15 @@ def stamp_library(NLh, S, L, x, y, g, R_all, sat99, H, W, seed=0, nfaint=2000, f
         star, the smaller darkness of the two. The far-halo subtraction leaves point-symmetric dark rings and lobes
         around the brightest stars; a network that never saw them in a stamp dug craters there. Nebula lanes, which
         are not point-symmetric, stay out of the stamp.
-    Faint stars inside a stamp stay in it."""
+    Faint stars inside a stamp stay in it.
+
+    ``compact`` (radius per star, see compact_radius) and ``sg`` (pixel noise per channel): such a bright stamp is
+    split into its compact light ("t": removed by the network) and its diffuse light ("d", see diffuse_part: pasted
+    into the input and the target alike) beyond a radius: for a saturated star (shown at rendering by its own light,
+    faded out below a few sigmas of the smoothed noise) where its broad light falls below the pixel noise (see
+    bright_radius), at least its saturated core; for the others ``compact``."""
     from ..core.imgutil import membrane_fill
+    lvl = np.array([np.percentile(np.asarray(L[c, ::4, ::4]), 99.999) for c in range(L.shape[0])])
     bright, faint = [], []
     for i in np.argsort(g):
         if g[i] >= 15:
@@ -249,8 +316,17 @@ def stamp_library(NLh, S, L, x, y, g, R_all, sat99, H, W, seed=0, nfaint=2000, f
             ped = np.median(win[:, ring], axis=1)
             st = np.clip((win - ped[:, None, None]) * w, 0, None).astype(np.float32)
         core = np.asarray(L[:, yi - 4:yi + 5, xi - 4:xi + 5]).reshape(3, -1).max(1)
-        rec = dict(x=float(x[i]), y=float(y[i]), g=float(g[i]), R=Re, sat=core >= 0.75 * sat99,
+        # saturated as the rendering sees it (3 x 3 max above 0.7 x the 99.999th percentile of the frame): above
+        # 0.75 x it, Alnitak's plateau and most of the Rosette's saturated stars passed for unsaturated
+        sat_ = np.asarray(L[:, yi - 1:yi + 2, xi - 1:xi + 2]).reshape(3, -1).max(1) > 0.7 * lvl
+        rec = dict(x=float(x[i]), y=float(y[i]), g=float(g[i]), R=Re, sat=sat_,
                    plateau=core.astype(np.float32), t=st.astype(np.float16) if g[i] >= 11 else st)
+        if inside and compact is not None and compact[i] > 0:
+            from .far_halo import WING_OUT
+            r_c = (max(float(compact[i]), bright_radius(st, sg)) if sg is not None and bool(sat_.any())
+                   else max(WING_OUT, float(compact[i])))
+            d = diffuse_part(st, r_c)
+            rec.update(t=(st - d).astype(np.float32), d=d, r_c=r_c)
         (bright if g[i] < 11 else faint).append(rec)
     if len(faint) > nfaint:
         rng = np.random.default_rng(seed)
@@ -395,7 +471,9 @@ class Synth:
         self.sat99 = np.asarray(sat99, np.float32)
         self.gain = torch.as_tensor(np.asarray(gain, np.float32), device=dev)
         self.sg = torch.as_tensor(np.asarray(sg, np.float32), device=dev)
-        self.bright = [dict(b, t=torch.from_numpy(np.asarray(b["t"], np.float32)).to(dev)) for b in lib["bright"]]
+        self.bright = [dict(b, t=torch.from_numpy(np.asarray(b["t"], np.float32)).to(dev),
+                            d=None if b.get("d") is None else torch.from_numpy(np.asarray(b["d"], np.float32)).to(dev))
+                       for b in lib["bright"]]
         self.faint = [dict(f, t=torch.from_numpy(np.asarray(f["t"], np.float32)).to(dev)) for f in lib["faint"]]
         gb = np.array([b["g"] for b in self.bright], float)
         w = 10 ** (-0.15 * (gb - 11)) if gb.size else np.ones(0)
@@ -424,22 +502,31 @@ class Synth:
             plan.append(("f", i, cy, cx, rng.uniform(0.3, 2.0), np.exp(rng.normal(0, 0.08, 3)), None))
         return plan
 
-    def apply(self, X, plan):
+    def apply(self, X, plan, T=None):
         """X (3, P, P) in ADU, modified in place: the stamps added (light never lowers a pixel already brighter than
-        the clip level), then their photon noise (none on clipped pixels). Returns the pasted light."""
+        the clip level), then their photon noise (none on clipped pixels). Returns the pasted light. A stamp's
+        diffuse part (compact stamps) goes into the target T too (modified in place) when it is given: the network
+        learns to leave it."""
         P = X.shape[-1]
         light = torch.zeros_like(X)
         clipped = torch.zeros_like(X, dtype=torch.bool)
         for kind, i, cy, cx, s, col, clip in plan:
-            t = (self.bright if kind == "b" else self.faint)[i]["t"]
+            st_ = (self.bright if kind == "b" else self.faint)[i]
+            t = st_["t"]
             R = t.shape[-1] // 2
             y0, x0 = cy - R, cx - R
             ys0, xs0 = max(0, -y0), max(0, -x0)
             ys1, xs1 = min(t.shape[-2], P - y0), min(t.shape[-1], P - x0)
             if ys1 <= ys0 or xs1 <= xs0:
                 continue
-            sub = t[:, ys0:ys1, xs0:xs1] * torch.tensor(s * col, device=self.dev, dtype=torch.float32).view(3, 1, 1)
+            k_ = torch.tensor(s * col, device=self.dev, dtype=torch.float32).view(3, 1, 1)
+            sub = t[:, ys0:ys1, xs0:xs1] * k_
             sy, sx = slice(y0 + ys0, y0 + ys1), slice(x0 + xs0, x0 + xs1)
+            if st_.get("d") is not None:
+                dsub = st_["d"][:, ys0:ys1, xs0:xs1] * k_
+                sub = sub + dsub
+                if T is not None:
+                    T[:, sy, sx] += dsub
             reg = X[:, sy, sx]
             new = reg + sub
             if clip is not None:
@@ -528,15 +615,15 @@ def run_val(net, items, synth, L, T, bk, sg, dev):
     tot, tot0 = 0.0, 0.0
     for ya, xa, P_, w, plan in items:
         X = torch.from_numpy(np.ascontiguousarray(L[:, ya:ya + P_, xa:xa + P_], np.float32)).to(dev)
-        nt = normalise(torch.from_numpy(np.ascontiguousarray(T[:, ya:ya + P_, xa:xa + P_], np.float32)).to(dev)[None],
-                       bk, sg)
+        Tp = torch.from_numpy(np.ascontiguousarray(T[:, ya:ya + P_, xa:xa + P_], np.float32)).to(dev)
+        nt0 = normalise(Tp[None], bk, sg)
         wt = torch.from_numpy(w).to(dev)[None, None]
         out0 = forward(net, X[None], bk, sg)
         torch.manual_seed(0)
-        synth.apply(X, plan)
+        synth.apply(X, plan, Tp)
         out = forward(net, X[None], bk, sg)
-        tot += float(((out - nt).abs() * wt).sum() / (3 * wt.sum()))
-        tot0 += float(((out0 - nt).abs() * wt).sum() / (3 * wt.sum()))
+        tot += float(((out - normalise(Tp[None], bk, sg)).abs() * wt).sum() / (3 * wt.sum()))
+        tot0 += float(((out0 - nt0).abs() * wt).sum() / (3 * wt.sum()))
     net.train()
     return tot / len(items), tot0 / len(items)
 
@@ -605,8 +692,8 @@ def train_net(data, synth, dev, minutes, batch=6, patch=PATCH, lr=3e-4, seed=0, 
         X += delta + nz
         Tt += delta + nz
         del Dn, Vn, delta, nz
-        light = torch.stack([synth.apply(X[b], synth.plan(rng, P)) for b in range(batch)])
-        fp = F.max_pool2d(((light / sg.view(1, 3, 1, 1)).amax(1, keepdim=True) > 1.0).float(), 7, 1, 3)
+        light = torch.stack([synth.apply(X[b], synth.plan(rng, P), Tt[b]) for b in range(batch)])
+        fp = F.max_pool2d(((light.abs() / sg.view(1, 3, 1, 1)).amax(1, keepdim=True) > 1.0).float(), 7, 1, 3)
         wt = Wt * (1 + 4 * fp)
         out = forward(net, X, bk, sg)
         loss = ((out - normalise(Tt, bk, sg)).abs() * wt).sum() / (3 * wt.sum().clamp(min=1))

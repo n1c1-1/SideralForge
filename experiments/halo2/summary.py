@@ -33,7 +33,7 @@ def main():
                 ex = v[t]["excess_p25_sigma"]       # (h - p25) / block sigma per ring
                 # scale ADU -> pixel sigma from one ring with a non-zero difference
                 sc = None
-                for s, (rr, e) in zip([s for s in rings if s is not None], ex):
+                for s, (_, e) in zip([s for s in rings if s is not None], ex):
                     dd = s["h"][1] - s["p25"][1]
                     if abs(dd) > 1e-6 and abs(e[1]) > 1e-6:
                         sc = e[1] / dd / D

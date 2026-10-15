@@ -102,13 +102,18 @@ class StarNet(Stage):
                    "(scaled, saturated like yours, with their photon noise) and the network learns to give back the "
                    "background, which the star-model removal provides away from the bright stars. Everything is "
                    "measured on your data: noise, saturation, how far the stars' light reaches (halo and spikes), "
-                   "the colour of your brightest nebula, two hold-out regions that check the network. Its star layer "
-                   "goes to the star removal stage, which makes a second, learned starless image from it.")
+                   "the colour of your brightest nebula, two hold-out regions that check the network. It removes "
+                   "the compact light of the stars (core, spikes, rays); their diffuse glare stays with the nebula "
+                   "or with the far halo of the stars, which the rendering draws back. Its star layer goes to the "
+                   "star removal stage, which makes a second, learned starless image from it.")
     deps = ("stars", "optics", "denoise", "color")
     Params = StarNetParams
-    version = "2"          # 2: bright stamps = the star as the input shows it (light agreed by the interpolated and
+    version = "3"          # 2: bright stamps = the star as the input shows it (light agreed by the interpolated and
                            # the model background, point-symmetric darkness), no more the input minus the starless
-                           # image, whose holes the network learnt as star light; dark rings it had never seen
+                           # image, whose holes the network learnt as star light; dark rings it had never seen;
+                           # 3: the network removes only the compact light of the stars (core, spikes, rays); their
+                           # diffuse light beyond the star model's radius stays with the nebula (the rendering lost
+                           # it around the saturated stars: discs with an edge)
 
     def run(self, ctx: Context, p: StarNetParams) -> None:
         if not p.enabled:
@@ -220,12 +225,24 @@ class StarNet(Stage):
                 + ("" if fit is not None else " (too few bright stars to measure: a fixed law)"))
         ctx.metric("star_extent_px", law)
         ctx.progress(0.11, "star stamps")
+        # the radius the star model holds, as the far halo sees it: beyond it a stamp's diffuse light stays
+        sat = np.zeros((H, W), bool)
+        for c in range(3):
+            a_ = np.asarray(L[c], np.float32)
+            sat |= a_ > 0.7 * np.percentile(a_[::4, ::4], 99.999)
+        del a_
+        compact = lib.compact_radius(sat, x, y, g)
+        del sat
         stamps = lib.stamp_library(NLh, target, L, x, y, g, R_all.astype(int), sat99, H, W, seed=p.seed,
-                                   fill=lib.fill_radii(ext, g, fit), filled=filled)
+                                   fill=lib.fill_radii(ext, g, fit), filled=filled, compact=compact, sg=sg)
         del NLh
+        fr = [float(np.abs(b["d"]).sum() / max(float(np.abs(b["t"]).sum() + np.abs(b["d"]).sum()), 1e-9))
+              for b in stamps["bright"] if b.get("d") is not None]
         ctx.log(f"{len(stamps['bright'])} bright star stamps (G < 11, "
                 f"{sum(bool(np.asarray(b['sat']).any()) for b in stamps['bright'])} saturated) and "
-                f"{len(stamps['faint'])} faint ones (G 11-15)")
+                f"{len(stamps['faint'])} faint ones (G 11-15)"
+                + (f"; their diffuse light, left to the nebula, {100 * float(np.median(fr)):.1f} % of a bright "
+                   f"stamp's light (median)" if fr else ""))
         ctx.progress(0.12, "hold-out regions and nebula colour")
         wm, zone4 = lib.reliability(x, y, g, R_all, H, W)
         S4 = lib.down4(target)

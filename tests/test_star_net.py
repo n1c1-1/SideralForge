@@ -316,3 +316,66 @@ def test_bright_stamp_keeps_the_nebula_out_and_symmetric_dark_rings_in():
     assert d.max() < 0.5 and d.mean() > -6.5             # the one-sided lane is not star light: never more than
     mirror = (np.abs(Y - 150) < 3) & (X > 80) & (X < 135) & ((rr < 45) | (rr > 60))   # the star, at most its depth less
     assert abs(float((t - star[win])[:, mirror].mean())) < 0.5             # and the other side of the star is exact
+
+
+def test_compact_stamp_keeps_core_and_spikes_and_leaves_the_diffuse_glow():
+    H, c = 401, 200
+    yy, xx = np.mgrid[0:H, 0:H]
+    r = np.hypot(yy - c, xx - c)
+    neb = np.repeat((20 + 0.02 * xx)[None], 3, 0).astype(np.float32)
+    glow = 300 / (1 + (r / 25) ** 2)                                   # diffuse light left by the far halo model
+    spike = np.where((np.abs(yy - c) < 1.5) & (r > 5), 200 / (1 + r / 30), 0)
+    star = np.repeat((1000 * np.exp(-r ** 2 / 18) + glow + spike)[None], 3, 0).astype(np.float32)
+    x, y, g = np.array([float(c)]), np.array([float(c)]), np.array([6.0])
+    args = (neb + star, neb, neb + star, x, y, g, np.array([150]), np.full(3, 1e5, np.float32), H, H)
+    kw = dict(fill=np.array([150.0]), filled=np.zeros((H, H), bool))
+    b = lib.stamp_library(*args, **kw, compact=np.array([60.0]))["bright"][0]
+    full = lib.stamp_library(*args, **kw)["bright"][0]["t"]                         # the stamp, not split
+    R = b["R"]
+    win = (slice(c - R, c + R + 1), slice(c - R, c + R + 1))
+    rr, Y = r[win], yy[win]
+    w, _ = lib.taper(R)
+    far = (rr > 85) & (rr < 140) & (np.abs(Y - c) > 6)
+    on = (rr > 85) & (rr < 140) & (np.abs(Y - c) < 1)
+    near = rr < 55
+    assert np.allclose(b["t"] + b["d"], full, atol=1e-3)                            # nothing lost in the split
+    assert np.abs(b["t"][:, far]).max() < 0.05 * full[:, far].max()                 # no glow in the compact light
+    assert abs(float(b["d"][:, far].mean() / full[:, far].mean()) - 1) < 0.05       # it is diffuse light
+    assert abs(float((b["t"][:, on]).mean() / (spike[win] * w)[on].mean()) - 1) < 0.1  # the spike is compact light
+    assert np.allclose(b["t"][:, near], full[:, near])                              # the core and wings too
+
+
+def test_synth_pastes_the_diffuse_light_into_the_target_too():
+    t = np.zeros((3, 21, 21), np.float32)
+    t[:, 10, 10] = 50.0
+    d = np.full((3, 21, 21), 2.0, np.float32)
+    lib_ = {"bright": [dict(x=0.0, y=0.0, g=6.0, R=10, sat=np.zeros(3, bool), plateau=np.full(3, 1e5, np.float32),
+                            t=t, d=d)], "faint": []}
+    sy = lib.Synth(lib_, np.full(3, 1e5), np.zeros(3), np.ones(3), torch.device("cpu"))
+    X, T = torch.zeros(3, 64, 64), torch.zeros(3, 64, 64)
+    light = sy.apply(X, [("b", 0, 32, 32, 1.0, np.ones(3), None)], T)
+    assert float(X[0, 32, 32]) == pytest.approx(52.0) and float(X[0, 25, 25]) == pytest.approx(2.0)
+    assert float(T[0, 32, 32]) == pytest.approx(2.0) and float(T[0, 25, 25]) == pytest.approx(2.0)
+    assert float(T[0, 5, 5]) == 0.0 and float(light.sum()) == pytest.approx(3 * (50 + 2 * 441))
+    assert lib.compact_radius(np.zeros((64, 64), bool), np.array([32.0]), np.array([32.0]), np.array([6.0]))[0] == 7
+
+
+def test_a_saturated_stamp_is_compact_only_where_its_light_stands_above_the_noise():
+    H, c = 401, 200
+    yy, xx = np.mgrid[0:H, 0:H]
+    r = np.hypot(yy - c, xx - c)
+    neb = np.full((3, H, H), 20.0, np.float32)
+    glow = 40 / (1 + (r / 10) ** 2)                     # falls below 1 (the pixel noise) at r = 62 px
+    star = np.repeat((np.minimum(5000 * np.exp(-r ** 2 / 50), 3000) + glow)[None], 3, 0).astype(np.float32)
+    x, y, g = np.array([float(c)]), np.array([float(c)]), np.array([5.0])
+    args = (neb + star, neb, neb + star, x, y, g, np.array([150]), np.full(3, 3000.0, np.float32), H, H)
+    kw = dict(fill=np.array([150.0]), filled=np.zeros((H, H), bool), compact=np.array([12.0]))
+    b = lib.stamp_library(*args, **kw, sg=np.ones(3))["bright"][0]
+    assert bool(np.asarray(b["sat"]).all())
+    assert 50 <= b["r_c"] <= 66                         # the pedestal of the window ring lowers the stamp a little
+    b_ = lib.stamp_library(*args, **kw, sg=np.full(3, 4.0))["bright"][0]
+    assert b_["r_c"] < b["r_c"] - 15                    # noisier data: less of the glare is star light
+    w, _ = lib.taper(b["R"])
+    rr = r[c - b["R"]:c + b["R"] + 1, c - b["R"]:c + b["R"] + 1]
+    beyond = (rr > 1.35 * b["r_c"]) & (rr < 0.55 * b["R"])
+    assert float(np.abs(b["t"][:, beyond]).max()) < 0.05      # beyond it, the glare is diffuse light
