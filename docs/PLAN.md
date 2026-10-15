@@ -665,3 +665,13 @@ trace of the masking circle around the Rosette G 5.6.
   rendered with the star model ('Learned star removal' off; its faithful keeps the learned removal, which won there).
   Next: leave the diffuse glare with the nebula in the learned path, as the star model does (the decomposition
   star / glare must be principled: two attempts today failed).
+* Rejected (13:15): the network's light beyond the star model, outside the cores, kept with the nebula (smoothed).
+  Only 1.4 % of the removed light; the Rosette G 5.6 north disc stayed, pink patches elsewhere. Exact mechanism: a
+  saturated star is not drawn from its model - the rendering shows its real light, inside its footprint only - so
+  everything the network removes beyond a saturated star's footprint is lost (the disc's edge). Third star / glare
+  decomposition tried today: stopped here (no stacked repairs).
+* Proposed design (next): the network removes only the compact light of the stars (core, spikes, rays within the
+  star's measured extent); the diffuse glare is left to the far halo model, which is fixed first for the dominant
+  stars (it over-subtracts around sigma Ori at all radii and around Alnitak at 80-150 px). Training stamps then
+  exclude the glare component (measured by the far halo model), and the rendering draws the glare back as now
+  ('Bright star glow'). Until then: 'Learned star removal' is an option per project and per preset.
