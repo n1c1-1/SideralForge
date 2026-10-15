@@ -10,6 +10,8 @@ import numpy as np
 
 old, new = Path(sys.argv[1]), Path(sys.argv[2])
 mo, mn = json.load(open(old / "meta.json")), json.load(open(new / "meta.json"))
+if "struct_box" not in mo:                  # the first experiment (Iris) named its structured box after the nebula
+    mo["struct_box"] = mo["iris_box"]
 wm = np.load(new / "weight_map.npy")
 for key in ("struct_box", "faint_box"):
     for b in (mo[key], mn[key]):
