@@ -605,3 +605,23 @@ trace of the masking circle around the Rosette G 5.6.
   Iris test with the network's star layer and our Wiener filter: G 6.9, G 4.6, G 7.3 removed without rings, discs or
   colour residue; the Iris core keeps its structure without the blue blotches; the dark disc in the dark lanes gone.
   Open: the own rays of dominant stars are subtracted before the network (the Flaming Star spokes may stay).
+* Corrections to the diagnosis above (measured later the same morning):
+  - Iris G 6.9 dark spots: in the raw stack before any star removal (raw minus star models: -1.0 and -0.5 noise
+    sigma against their surroundings at 94 and 113 px from the star) and kept identically by the learned removal:
+    real small dark dust patches, many around the Iris.
+  - Flaming Star G 5.9 (AE Aur): the far halo model there is smooth (no fine rays); the dark radial streaks are in
+    the nebula, beyond the star's rays, and also in the user's own image, where his full glare veils them. Real dark
+    filaments; the 'Bright star glow' setting veils them like his image.
+  - Rosette G 5.6 circle: the membrane fill under the saturated star (smooth disc); gone with the learned removal.
+* Learned removal, integration details found on the Iris (each fixed before any judgement): the network's star layer
+  holds 16 % of the stack's noise, common to both halves, kept by the Wiener filter (starless image twice as grainy):
+  zeroed below 3 x its own noise; the two half-stacks saturate differently (+-40 ADU) and their cores must be filled
+  as missing data, as in the model's path; the Noise2Noise layer is unreliable around bright cores (12-64 in a nebula
+  of 36): the fine detail layers keep the model's masks; in the filled cores the detail layer takes the Wiener
+  result. (Also: 'astro-gpu render --set' takes several key=value after one --set; a second --set replaces the first.)
+* Blind QC (D:/astro_gpu_diag/qc/blind3): Rosette learned > learned + photographed stars > model (model: red-magenta
+  cast of the dark sky, weaker texture, a ridge erased next to G 5.6 north, red blobs at G 5.6); Iris learned > model >
+  photographed (model: dark and red discs, a leftover ray, a blotch at the Iris star). The whitish glow around the
+  Iris star in the learned version is in the user's own image too. Photographed stars: bloated and doubled at the
+  field edges (coma of the Newtonian): an option, not a default. Flaming Star with the learned removal: the coloured
+  shards around G 4.1 and G 5.3 are gone.
