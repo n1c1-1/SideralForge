@@ -693,3 +693,20 @@ matrix: faithful renders redder or greyer with blotches. Measured: the star shap
 Next if pursued: one sharp estimate per frame on the full sensor grid, seen through the colour mosaic (the four
 planes constraining it together; stars between photosites become representable, no rings), the same deconvolution
 for faint and bright stars, star photometry measured after it; then re-judge the field-evening effect.
+
+Version 2 (branch `frame-deconv-sensor`, not merged; report D:/astro_gpu_diag/frame_deconv/v2/REPORT.md): one sharp
+scene per frame and tile on the full sensor grid, seen through the colour mosaic, the same for faint and bright stars
+(no threshold), aim a 2.2 px Gaussian, each tile's star shrinks 15 % at most. It fixes version 1 (no rings: 4/0 of
+1,538 bright stars; flux kept; green -4.4 to -5.7 % in every brightness bin; star photometry back to normal) but does
+not beat an unsharp mask of the finished stack: same star widths (-2.2/-6.0/-5.9 % vs -2.4/-5.9/-5.8 %), noise
++10/+25/+24 % vs +7.5/+19/+25 %, fine nebula S/N 5.0 vs 10.6 (baseline 13.3), stack 9.6 min instead of 1.1. Its only
+advantage, a more even star size across the field (green spread 0.23 vs 0.33 px), should come as well from a per-tile
+deconvolution of the stack with the measured field-dependent shape. Kept off. The bench showed four weaknesses of the
+chain: spikes "detected" on the refractor bench (a one-sided leftover), the second check of the measured spike shape
+not enforced, the white point measured outside the crop (fixed, below), the colour matrix fit poorly constrained.
+
+White point measured on the shown frame (2026-10-15): the tone curve, white point, noise and detail-layer ranges were
+measured on every covered pixel, including the borders the crop removes. On the Heart a bright edge outside the crop
+(top, y < 30) raised the 99.995th percentile of the nebula by 44 % (38.1 vs 26.4), so the bright nebula was rendered
+dimmer than its data allow; on Rosette, Flaming Star, Horsehead and Iris the change is 0-2 %. The render now measures
+them on the covered part of the crop (`_shown`).

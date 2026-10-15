@@ -142,6 +142,17 @@ class RenderEngine:
             self._proxy["valid", f] = F.avg_pool2d(self.valid[None, None, :h, :w].float(), f)[0, 0] > 0.99
         return self._proxy["valid", f]
 
+    def _shown(self, f: int) -> torch.Tensor:
+        """The covered pixels of the cropped frame, the part of the image shown: the statistics of the rendering (tone
+        curve, white point, noise, ranges of the detail layers) are measured there, not on the borders the crop
+        removes (a bright edge outside it set the Heart's white point 44 % too high)."""
+        if ("shown", f) not in self._proxy:
+            x0, x1, y0, y1 = self.crop
+            inside = torch.zeros_like(self._valid(f))
+            inside[y0 // f:y1 // f, x0 // f:x1 // f] = True
+            self._proxy["shown", f] = self._valid(f) & inside
+        return self._proxy["shown", f]
+
     def _spike_w(self, s: RenderSettings, f: int):
         """Weight of the photographed spikes against the drawn ones, per pixel of the strips: 'Photographed spikes'
         times the stars brighter than 'Photographed spikes down to' (0.5 mag transition). None = all drawn."""
@@ -164,7 +175,7 @@ class RenderEngine:
         """Calibrated nebula in camera space: the full-resolution layer plus the optional layers."""
         if not self.layered:
             return self._layer("astro", f)
-        valid = self._valid(f)
+        shown = self._shown(f)
         N = self._layer("N", f)
         # photographed spikes: the nebula interpolated across their strips; there the fine detail layers (taken from
         # the starless images the shared spike shape was subtracted from) are off and the colour layers interpolated
@@ -182,21 +193,21 @@ class RenderEngine:
         new = kf != 0 or s.faint_smooth > 0 or sharpen != 0 or wsp is not None
         if kf != 0:                          # Noise2Noise fine detail (brightness), above a brightness of the signal
             Eg0 = self._layer("Eg0", f)
-            q1, q2 = ops.percentile(Eg0, [s.fine_lo_pct, s.fine_hi_pct], valid)
+            q1, q2 = ops.percentile(Eg0, [s.fine_lo_pct, s.fine_hi_pct], shown)
             wf = ops.gaussian_blur(((Eg0 - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)
             del Eg0
             N = N + kf * (keep * wf * self._layer("dY", f))[None] * self.w_cam[:, None, None]
             del wf
         if sharpen != 0:                     # measured-shape sharpening (brightness), above a brightness of the signal
             Eg0 = self._layer("Eg0", f)
-            q1, q2 = ops.percentile(Eg0, [s.sharpen_lo_pct, s.fine_hi_pct], valid)
+            q1, q2 = ops.percentile(Eg0, [s.sharpen_lo_pct, s.fine_hi_pct], shown)
             ws = ops.gaussian_blur(((Eg0 - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)
             del Eg0
             N = N + sharpen * (keep * ws * self._layer("dS", f))[None] * self.w_cam[:, None, None]
             del ws
         if s.faint_smooth > 0:               # faint areas: only the scales confirmed by the data
             Eg = ops.gaussian_blur(torch.einsum("c,chw->hw", self.lum, N), 8 / f)
-            q1, q2 = ops.percentile(Eg, [s.faint_lo_pct, s.faint_hi_pct], valid)
+            q1, q2 = ops.percentile(Eg, [s.faint_lo_pct, s.faint_hi_pct], shown)
             wE = ops.gaussian_blur(((Eg - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)[None]
             del Eg
             N = wE * N + (1 - wE) * ops.gaussian_blur(N, s.faint_smooth / f)
@@ -208,7 +219,7 @@ class RenderEngine:
         if s.colour_detail > 0 and "chroma_fine" in self._host:
             astro += s.colour_detail * _fill_across(self._layer("chroma_fine", f), wk, f)
         if s.oiii_boost > 0 and "O" in self._host:        # OIII emission above the noise, in its own colour
-            astro += s.oiii_boost * self.o_vec[:, None, None] * _fill_across(self._oiii(s, f, valid), wk, f)[None]
+            astro += s.oiii_boost * self.o_vec[:, None, None] * _fill_across(self._oiii(s, f, shown), wk, f)[None]
         return astro
 
     def white_balance(self, s: RenderSettings) -> np.ndarray:
@@ -283,7 +294,7 @@ class RenderEngine:
         if s.sky_neutral > 0:
             # background neutralisation: the typical sky (sky_pct, smoothed) made grey at the same brightness, by an
             # offset per channel - the faint emission that fills a field stops tinting it, the bright stays coloured
-            sky = torch.tensor([float(ops.percentile(ops.gaussian_blur(lin[c], 8 / f), s.sky_pct, valid)) for c in range(3)],
+            sky = torch.tensor([float(ops.percentile(ops.gaussian_blur(lin[c], 8 / f), s.sky_pct, self._shown(f))) for c in range(3)],
                                device=lin.device)
             y = 0.2126 * sky[0] + 0.7152 * sky[1] + 0.0722 * sky[2]
             lin = lin - s.sky_neutral * (sky - y)[:, None, None]
@@ -323,9 +334,9 @@ class RenderEngine:
 
     def _nebula(self, s: RenderSettings, f: int, info: dict) -> torch.Tensor:
         lin = self._cached("neb_lin", NEB_LIN_KEYS, s, f, lambda: self._nebula_linear(s, f))
-        valid = self._valid(f)
+        valid, shown = self._valid(f), self._shown(f)
         Yl_full = ops.luminance(lin)
-        noise = ops.robust_noise(Yl_full, valid, sub=max(1, 7 // f))
+        noise = ops.robust_noise(Yl_full, shown, sub=max(1, 7 // f))
         Ys = ops.gaussian_blur(Yl_full, 2 / f)
         cb = ops.gaussian_blur(lin, s.chroma_sigma / f)
         cs = ops.gaussian_blur(lin, 1.0 / f)
@@ -340,8 +351,8 @@ class RenderEngine:
             Yn = Yl_full - s.star_glow * s.glare_nebula * ops.luminance(
                 torch.einsum("ij,jhw->ihw", self.M_eff(s), self._glare(s, f)))
         Yl = ops.gaussian_blur(Yn, 6 / f)
-        p_dark, p_sky = ops.percentile(Yl, [s.dark_pct, s.sky_pct], valid)
-        hi = ops.percentile(Yn, 99.995, valid)
+        p_dark, p_sky = ops.percentile(Yl, [s.dark_pct, s.sky_pct], shown)
+        hi = ops.percentile(Yn, 99.995, shown)
         del Yn
         lo, b, white = fit_tone_curve(p_dark, p_sky, hi * s.white_mult, s.dark_level / 255, s.sky_level / 255, s.toe)
         info["tone_curve"] = {"black": lo, "b": b, "white": white}
@@ -358,12 +369,12 @@ class RenderEngine:
         L = out.clamp(min=0)
         if s.neb_sharp > 0:
             Eg1 = ops.gaussian_blur(Yl_full, 8 / f)
-            q1, q2 = ops.percentile(Eg1, [85, 97], valid)
+            q1, q2 = ops.percentile(Eg1, [85, 97], shown)
             wsh = ops.gaussian_blur(((Eg1 - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)
             wsh = wsh * (1 - ((ops.gaussian_blur(L, 3 / f) - s.sharp_white) / 0.15).clamp(0, 1))
             b1, b2, b3 = ops.gaussian_blur(L, 1.2 / f), ops.gaussian_blur(L, 3.0 / f), ops.gaussian_blur(L, 8.0 / f)
             L = (L + s.neb_sharp * wsh * ((L - b1) * 0.5 + (b1 - b2) * 1.0 + (b2 - b3) * 0.6)).clamp(min=0)
-        L = self._highlights(L, s, f, valid, info)
+        L = self._highlights(L, s, f, shown, info)
         neb_raw = ratio * ops.srgb_eotf(L.clamp(0, 1))[None]
         if s.hl_keep_chroma > 0:
             mx = neb_raw.max(0, keepdim=True).values
@@ -387,13 +398,13 @@ class RenderEngine:
         neb_d[:, ~valid] = 0
         return neb_d
 
-    def _highlights(self, L, s, f, valid, info):
+    def _highlights(self, L, s, f, shown, info):
         L = L.clamp(min=0)
         knee, top = s.hl_knee, s.hl_max
         B = 0.5 * ops.guided(L, L, max(1, round(s.hl_r1 / f)), s.hl_eps) + \
             0.5 * ops.guided(L, L, max(1, round(s.hl_r2 / f)), s.hl_eps)
         D = L - B
-        Bmax = ops.percentile(B, 99.995, valid)
+        Bmax = ops.percentile(B, 99.995, shown)
         span = max(Bmax - knee, 1e-3)
         lo_c, hi_c = 1e-4, 1e3
         c_ = 1.0
@@ -410,7 +421,7 @@ class RenderEngine:
         Lt = Bc + gD * D
         sh = s.hl_shoulder
         L = torch.where(Lt > sh, sh + (1 - sh) * torch.tanh((Lt - sh) / (1 - sh)), Lt)
-        info["highlights"] = {"base_max": Bmax, "above_knee_pct": float(100 * (B > knee)[valid].float().mean())}
+        info["highlights"] = {"base_max": Bmax, "above_knee_pct": float(100 * (B > knee)[shown].float().mean())}
         return L.clamp(0, 1)
 
     def _halo_desat(self, neb_d, s, f):
