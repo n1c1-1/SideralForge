@@ -164,6 +164,16 @@ class Starless(Stage):
             return
         ctx.progress(0.9, "learned star removal")
         SL = np.asarray(SL, np.float32)
+        # only the significant star light: the layer the network removes holds a little of the stack's noise (16 % on
+        # the Iris), common to both half-stacks - the Wiener filter kept it as signal and the starless image came out
+        # twice as grainy as the model one. Below 3 x its own noise the layer is zeroed (98.6 % of the star light kept)
+        sb = cv2.GaussianBlur(SL.mean(0), (0, 0), 1.0)
+        s0 = 1.4826 * float(np.median(np.abs(sb[::4, ::4] - np.median(sb[::4, ::4]))))
+        w = np.clip((sb / max(s0, 1e-9) - 3.0) / 3.0, 0, 1)
+        w = cv2.GaussianBlur(cv2.dilate(w, np.ones((3, 3), np.uint8)), (0, 0), 1.0)
+        ctx.metric("learned_layer_kept_pct", round(100 * float((w > 0.5).mean()), 1))
+        SL *= w[None]
+        del sb, w
         A = ctx.load("optics", "lat_A.npy").astype(np.float32) - SL
         B = ctx.load("optics", "lat_B.npy").astype(np.float32) - SL
         del SL
