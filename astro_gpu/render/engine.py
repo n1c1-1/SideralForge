@@ -163,13 +163,15 @@ class RenderEngine:
             return self._layer("astro", f)
         valid = self._valid(f)
         N = self._layer("N", f)
-        # photographed spikes: the nebula interpolated across their strips, where the fine layers (taken from the
-        # starless images the shared spike shape was subtracted from) are off
+        # photographed spikes: the nebula interpolated across their strips; there the fine detail layers (taken from
+        # the starless images the shared spike shape was subtracted from) are off and the colour layers interpolated
+        # from the strips' edges (switched off, the boosted colours left grey bars across the nebula: Rosette)
         wsp = self._spike_w(s, f)
-        keep = 1.0
+        keep, wk = 1.0, None
         if wsp is not None:
             N = N + wsp[None] * self._layer("dNsp", f)
-            keep = 1 - wsp * self._layer("Wsp", f)
+            wk = wsp * self._layer("Wsp", f)
+            keep = 1 - wk
         # 'Fine detail' = factor on the network's fine scales already in the base (newer preparations), or amount of
         # network detail added to a Wiener base (older ones)
         kf = s.fine_k - 1.0 if self.prep.get("fine_layer") == "scale" else s.fine_k
@@ -199,11 +201,11 @@ class RenderEngine:
         # cached / host layers are never modified in place: copy unless a step above already made a new tensor
         astro = N if new else N.clone()
         if s.resid_boost != 0:
-            astro += s.resid_boost * keep * self._layer("R", f)
+            astro += s.resid_boost * _fill_across(self._layer("R", f), wk, f)
         if s.colour_detail > 0 and "chroma_fine" in self._host:
-            astro += s.colour_detail * keep * self._layer("chroma_fine", f)
+            astro += s.colour_detail * _fill_across(self._layer("chroma_fine", f), wk, f)
         if s.oiii_boost > 0 and "O" in self._host:        # OIII emission above the noise, in its own colour
-            astro += s.oiii_boost * self.o_vec[:, None, None] * (keep * self._oiii(s, f, valid))[None]
+            astro += s.oiii_boost * self.o_vec[:, None, None] * _fill_across(self._oiii(s, f, valid), wk, f)[None]
         return astro
 
     def white_balance(self, s: RenderSettings) -> np.ndarray:
@@ -507,6 +509,17 @@ class StarRemovalEngines:
 
     def __getattr__(self, name):
         return getattr(self._cur, name)
+
+
+def _fill_across(L: torch.Tensor, w, f: int, sigma: float = 6.0) -> torch.Tensor:
+    """A layer interpolated across the strips of weight w (1 = inside) from their surroundings (normalised Gaussian
+    of the layer outside them); unchanged where w = 0. w None = no strips."""
+    if w is None:
+        return L
+    m = 1 - w
+    num = ops.gaussian_blur(L * m, sigma / f)
+    den = ops.gaussian_blur(m[None] if L.dim() == 3 else m, sigma / f).clamp(min=1e-3)
+    return L * m + w * (num / den)
 
 
 # ---------------------------------------------------------------------- tone curve
