@@ -163,7 +163,7 @@ class Starless(Stage):
             ctx.log(f"learned star layer ignored: shape {SL.shape} differs from {model.shape}", "warning")
             return
         ctx.progress(0.9, "learned star removal")
-        SL = np.asarray(SL, np.float32)
+        SL = np.array(SL, np.float32)                 # a writable copy of the memory-mapped layer
         # only the significant star light: the layer the network removes holds a little of the stack's noise (16 % on
         # the Iris), common to both half-stacks - the Wiener filter kept it as signal and the starless image came out
         # twice as grainy as the model one. Below 3 x its own noise the layer is zeroed (98.6 % of the star light kept)
