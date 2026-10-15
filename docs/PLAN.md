@@ -737,3 +737,26 @@ star_net 3 (merged): saturation flag as the rendering's, the glow as the setting
 Proposed by the agent and implemented on branch `learned-starlight` (render_prep_learned 42, not merged): in the
 saturated stars' footprints, where the measured light (image minus nebula) sinks into the noise, take the learned
 layer the starless image was cut by (noise-free) instead of fading the light out. To be judged on data.
+
+Integration and blind QC (2026-10-15 night; renders of each deliverable's saved settings, D:/astro_gpu_diag/glare_int,
+sheets D:/astro_gpu_diag/qc/glare, keys in qc/blind_keys/glare_*):
+- Horsehead (faithful; current vs bound + run H2 vs the same at the current white point): bound + H2 at the current
+  white point first, bound + H2 second, current last (grey cross with circles on NGC 2023 - the photographed-spike
+  strips of HD 37903 -, violet mottled veil around sigma Ori). All fail: the glare of Alnitak and sigma Ori stays the
+  first defect (fog, sigma Ori's elliptical disc with an edge).
+- Rosette (faithful: current vs bound + H2; artistic: current vs bound + H2 by the star model vs by the learned
+  removal): the current render won both. The glare the bound leaves in the nebula, per colour, came out as olive and
+  green discs in the cavity and the inner rim (bound + run E: a teal glow around a G 6 star; run H2 removes that one
+  but not the olive discs). The background's large-scale correction also moves with the halo (green sky at the
+  bottom).
+- So the bound is an option of the stars stage, off by default ('Far halo bounded by the data'); the Horsehead uses
+  it with run H2 (its blind QC winner).
+- The white point is the 99.995th percentile of the nebula: ~1,300 pixels. On the Horsehead with run H2 the core of
+  NGC 2023 (kept in the nebula now) is 2.5 x brighter than anything else and sets it: white 16 -> 41, the whole image
+  darker. Measured: outside the surroundings of the G < 9 stars the white comes back to 24.6 (26.4 before) - but the
+  same rule halves the Iris's white point (its nebula really peaks on its star): rejected, no statistic separates the
+  two. Measuring it where the nebula outshines the glare model made it worse (45): rejected (branch
+  rejected-whitepoint-glare). Open design question for the user: should a compact secondary object at the top of the
+  range set the white of the whole image (the highlight shoulder could take it instead)?
+- Learned star light in the saturated footprints (branch learned-starlight): 0.14-0.17 % of the pixels move by more
+  than 2 levels on the Horsehead and the Rosette, nothing visible at 100 %: not merged.
