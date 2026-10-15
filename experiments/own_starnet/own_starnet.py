@@ -366,12 +366,13 @@ def prep(args):
     dirs = [float(t) for t in sman.get("metrics", {}).get("spike_directions", [])]
     S_mm = np.load(PROJ / "starless/sl_final.npy", mmap_mode="r")
 
-    class _Layer:      # star layer NL - S, read window by window
-        shape = NL.shape
+    class _Layer:      # star layer a - b, read window by window
+        def __init__(self, a, b):
+            self.a, self.b = a, b
 
         def __getitem__(self, sl):
-            return np.asarray(NL[sl], np.float32) - np.asarray(S_mm[sl], np.float32)
-    ext = measure_extent(_Layer(), sg, x, y, g, dirs, H, W)
+            return np.asarray(self.a[sl], np.float32) - np.asarray(self.b[sl], np.float32)
+    ext = measure_extent(_Layer(NL, S_mm), sg, x, y, g, dirs, H, W)
     RADIUS_FIT = fit_extent(ext, g)
     log(lg, f"spike directions {dirs}; star extent measured on {len(ext)} bright stars; law R = exp(a + b G): "
             f"{RADIUS_FIT}" + ("" if RADIUS_FIT is None else
@@ -533,7 +534,7 @@ class Synth:
             col = np.exp(rng.normal(0, 0.08, 3))
             clip = np.where(b["sat"], b["plateau"], np.array(self.sat99.tolist()) * rng.uniform(1.0, 1.35))
             plan.append(("b", i, cy, cx, s, col, clip))
-        for k in range(rng.integers(0, 25) if n_bright is None else 0):
+        for _ in range(rng.integers(0, 25) if n_bright is None else 0):
             i = int(rng.integers(len(self.faint)))
             cy, cx = rng.integers(0, P, 2)
             plan.append(("f", i, cy, cx, rng.uniform(0.3, 2.0), np.exp(rng.normal(0, 0.08, 3)), None))
@@ -627,7 +628,8 @@ def run_val(net, items, synth, L, S, bk, sg, dev):
 
 def nebula_boost(Dn, bk, sg, neb_col, valid=None, p=0.5, kmax=40.0):
     """Extra nebula light for a batch of starless patches Dn (B, 3, P, P): smoothed luminance above the sky (noise
-    units, 6 px Gaussian, so that star-sized defects of the starless image are not amplified) x (k - 1), k log-uniform in 1..kmax for a fraction p of the patches (0 for the others),
+    units, 6 px Gaussian, so that star-sized defects of the starless image are not amplified) x (k - 1), k
+    log-uniform in 1..kmax for a fraction p of the patches (0 for the others),
     coloured like neb_col with 15 % jitter; `valid` (B, 1, P, P) = 0 on the filled star cores of the starless
     image, which are interpolated over (normalised convolution). Returns the added light in ADU."""
     dev, nb = Dn.device, Dn.shape[0]

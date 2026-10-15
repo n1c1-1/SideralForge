@@ -138,3 +138,27 @@ after another (prep if missing, train 32 min, infer, eval, sheets), GPU 1 only:
 ```
 bash experiments/own_starnet/run_projects.sh E:/astro_gpu/projects/Rosette E:/astro_gpu/projects/FlamingStar E:/astro_gpu/projects/Horsehead
 ```
+
+## Bright-star stamps (runs F and G, 2026-10-15, Flaming Star and Horsehead)
+
+The learned removal dug more light than the brightest stars have (Alnitak, sigma Ori, Flaming Star G 4.1 / 5.3).
+Run inputs: read-only snapshots of the project files (`D:/astro_gpu_diag/own_starnet/<name>/snapshot`).
+
+* `runF` (`stamps`, `train --stamps membrane`): bright stamps against a background interpolated under the star
+  (membrane fill of sl_final from the ring just outside its measured extent), window 25 % beyond it. The holes of
+  sl_final under the star no longer become "star light" (known-truth test: pasted stars removed without holes on
+  faint sky, fewer on bright nebula) but the craters at the real brightest stars stayed or deepened, and a
+  reflection nebula centred on its star (NGC 2023) was flattened: the smooth background runs below it, so the stamp
+  holds the nebula's glow.
+* Diagnosis (`crater_check.py`): the network removes its own Alnitak stamp pasted on the real surroundings almost
+  perfectly, whatever the tiles, noise or core; with the negative parts of the stamp (clipped at 0 in every stamp so
+  far) put back, the full crater appears (-24 sigma). The input (stack minus the far-halo model) has dark rings and
+  lobes around the brightest stars (the far-halo model is stronger than the star's light there); no stamp ever
+  contained them and the network amplified them about six times.
+* `runG` (`stamps --stamp-variant agreed`, `train --stamps agreed`): a bright stamp is the star as the input shows
+  it, without the nebula. Bright part: light above the higher of the interpolated background and sl_final (a
+  model-based nebula estimate) outside sl_final's filled cores, above the interpolated background inside them.
+  Dark part: point-symmetric darkness below the interpolated background (a pixel and its mirror through the star
+  both dark: the smaller darkness), inside the star's extent. The loss footprint counts the dark parts.
+* `faint_in_glare.py`: faint stars inside the glare stay point-like in the star layer (elongation, radial tail,
+  flux) in runs E, F and G alike.
