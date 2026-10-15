@@ -180,6 +180,24 @@ class Starless(Stage):
         if halo is not None:
             A -= halo
             B -= halo
+        # saturated cores are missing data here too: the two half-stacks saturate differently (+-40 ADU at the core of
+        # the Iris G 6.9 star), which left a hole and a ring in the Noise2Noise layer. Filled from their surroundings,
+        # as the star model's path does
+        full = ctx.load("optics", "lat_full.npy", mmap=True)
+        sat = np.zeros(A.shape[1:], bool)
+        for c in range(3):
+            fc = np.asarray(full[c], np.float32)
+            sat |= fc > 0.7 * np.percentile(fc, 99.999)
+        del fc
+        sat = cv2.dilate(sat.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))) > 0
+        rng = np.random.default_rng(1)
+        for X in (A, B):
+            for c in range(3):
+                hp = X[c] - cv2.GaussianBlur(X[c], (0, 0), 2)
+                sgx = 1.4826 * np.median(np.abs(hp[::7, ::7])) * 1.3
+                f = fill_holes(X[c], sat)
+                X[c][sat] = f[sat] + rng.normal(0, sgx, int(sat.sum())).astype(np.float32)
+        del hp, f
         ctx.save("sl_final_learned.npy", wiener(A, B, M, p, model, log=ctx.log))
         net, bk, sg = load_model(ctx)
         _, _, nm = norm_params(ctx.load("stack", "drz_A.npy").astype(np.float32), Wt)
