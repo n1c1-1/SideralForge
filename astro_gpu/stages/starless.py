@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from ..core.imgutil import fill_holes, starlet
-from ..core.params import ADVANCED, P, StageParams
+from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage
 from .denoise import apply_net, load_model, norm_params
 
@@ -42,7 +42,8 @@ class StarlessParams(StageParams):
                                 "own stack (.npy, 3 x H x W, stack units, the far halo of the stars excluded). It is "
                                 "subtracted from the two half-stacks instead of the star model, and the result goes "
                                 "through the same denoising: a second starless image, chosen at rendering ('Learned "
-                                "star removal'). Empty = the star model only.")
+                                "star removal'). Empty = the layer of the 'Learned star removal network' stage when it "
+                                "made one, else the star model only; 'none' = the star model only.")
     halo_gmax: float = P(10.5, label="Optical halo limit", level=ADVANCED, ge=4, le=15, step=0.5, unit="G mag",
                          help="Stars brighter than this get their optical halo (blue defocus of the refractor, "
                               "filter reflections) measured and removed from the background, out to a radius growing "
@@ -64,68 +65,24 @@ class Starless(Stage):
                            # residual (it erased reflection nebulae centred on their star). The optional learned star
                            # layer (a second starless image) is a parameter: projects without one stay up to date
 
+    def auto(self, ctx: Context) -> dict[str, Auto]:
+        """The learned star layer of the 'star_net' stage, when that stage ran and wrote one (an explicit path set by
+        the user still wins). The value carries the run of 'star_net' that made the layer, so that a new layer makes
+        this stage run again; without a layer nothing changes (projects that do not use it stay up to date)."""
+        from .star_net import stage_layer
+        v = stage_layer(ctx.project)
+        if v is None:
+            return {}
+        return {"learned_stars": Auto(v, "star layer of the learned star removal network (stage 'star_net')")}
+
     def run(self, ctx: Context, p: StarlessParams) -> None:
-        dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
-        fs = np.load(ctx.input("stars", "star_fluxes.npz"))
-        x, y, g, fl = fs["x"], fs["y"], fs["g"] - dm, fs["flux"]          # g shifted: thresholds stay meaningful
-        M = ctx.load("color", "M.npy")
-        model = ctx.load("stars", "stars_model.npy").astype(np.float32) + ctx.load("stars", "stars_model_faint.npy")
-        # the measured angular shape of the stars (spikes) is in the model; the unreliable-core mask is built on the
-        # core model only (spike pixels are subtracted, never cut out: cutting strips left straight traces)
-        exf = ctx.project.stage_dir("stars") / "stars_model_ext.npy"
-        model_core = model - np.load(exf).astype(np.float32) if exf.exists() else model
-
-        ctx.progress(0.02, "subtracting the star model")
-        A = ctx.load("optics", "lat_A.npy").astype(np.float32) - model
-        B = ctx.load("optics", "lat_B.npy").astype(np.float32) - model
-        hf = ctx.project.stage_dir("stars") / "stars_model_halo.npy"
-        halo = None
-        if hf.exists():            # the far halo of the stars (glare of the optics) leaves with them; it is kept out
-            halo = np.load(hf)     # of the core model, which decides what is filled and where residuals are guarded
-            A -= halo
-            B -= halo
-        full = ctx.load("optics", "lat_full.npy", mmap=True)
-        mask = core_mask(full, model_core, A, B, p.mask_k)
-        del model_core
+        r = model_starless(ctx, p)
+        x, y, g, fl, fs, M, model, halo = r["x"], r["y"], r["g"], r["fl"], r["fs"], r["M"], r["model"], r["halo"]
+        A, B, delta, mask, sl_final, r_core = r["A"], r["B"], r["delta"], r["mask"], r["sl_final"], r["r_core"]
+        dirs = r["dirs"]
+        del r
         ctx.metric("filled_pct", round(100 * float(mask.mean()), 2))
-        rng = np.random.default_rng(1)
-        for X in (A, B):
-            for c in range(3):
-                hp = X[c] - cv2.GaussianBlur(X[c], (0, 0), 2)
-                sgx = 1.4826 * np.median(np.abs(hp[::7, ::7])) * 1.3
-                f = fill_holes(X[c], mask)
-                X[c][mask] = f[mask] + rng.normal(0, sgx, int(mask.sum())).astype(np.float32)
         ctx.save("sl_mask.npy", mask)
-        rawfill = 0.5 * (A + B)
-
-        ctx.progress(0.15, "cleaning residual halos and dips")
-        cleanraw, _ = clean(rawfill, x, y, g, fl, smooth=True, halos=True, lift_gmax=15.0, log=ctx.log)
-        delta = cleanraw - rawfill
-        del cleanraw
-
-        ctx.progress(0.35, "multi-scale Wiener denoising")
-        wms = wiener(A + delta, B + delta, M, p, model, log=ctx.log)
-        ctx.progress(0.55, "final cleaning")
-        final0, _ = clean(wms, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
-        del wms
-        # what is left around the bright stars (their cores, where the star model fails) is removed star by star,
-        # bounded by the typical halo of their brightness - measured with the far halo, which is what it describes
-        r_core = None
-        if halo is not None:     # the region the star model holds, as the far halo sees it (flat inside, x 1.3)
-            from .far_halo import WING_OUT
-            r_core = np.zeros(len(x))
-            for i in np.where(g < p.halo_gmax)[0]:
-                r_core[i] = 1.3 * max(WING_OUT, _filled_radius(mask, x[i], y[i], rmax=800) + 4)
-        sl_final, nh = bright_halos(final0, x, y, g, fs["pred"], p.halo_gmax,
-                                    ref=None if halo is None else final0 + halo, r_core=r_core)
-        ctx.log(f"optical halos removed around {nh} bright stars")
-        del final0
-        ctx.progress(0.62, "diffraction spikes")
-        # the spikes left with the star model (measured star shape); their directions tell the rendering that the
-        # optics have spikes (saturated stars are then shown by their real light)
-        with_spikes = sl_final + np.load(exf).astype(np.float32) if exf.exists() else sl_final
-        dirs, _ = spike_directions(with_spikes, mask, x, y, g, log=ctx.log)
-        del with_spikes
         ctx.metric("spike_directions", [round(d) for d in dirs])
         ctx.save("sl_final.npy", sl_final)
 
@@ -153,8 +110,10 @@ class Starless(Stage):
         """The second starless image: the learned star layer subtracted from the two half-stacks, then the same
         Wiener filter and Noise2Noise detail layer. None of the star-model repairs (core fill, residual halos, dip
         repair, bright halos): they correct the model's errors, which this layer does not have."""
-        from pathlib import Path
-        f = Path(p.learned_stars)
+        from .star_net import layer_file
+        f = layer_file(p.learned_stars)
+        if f is None:
+            return
         if not f.exists():
             ctx.log(f"learned star layer not found: {f} - only the star model is used", "warning")
             return
@@ -214,6 +173,75 @@ class Starless(Stage):
         if ctx.device.type == "cuda":
             torch.cuda.empty_cache()
         ctx.log(f"learned star removal: second starless image from {f.name} (chosen at rendering)")
+
+
+def model_starless(ctx: Context, p: StarlessParams, prog=None) -> dict:
+    """The model-based starless image of the two half-stacks: the star model (+ far halo) subtracted, the unreliable
+    cores filled, residual halos and dips cleaned, the multi-scale Wiener filter, the final cleaning and the bright
+    stars' optical halos. Shared by this stage and by 'star_net' (its training target). Nothing is saved here.
+    Returns a dict: x, y, g, fl, fs, M, model, halo, A, B, delta, mask, sl_final, r_core, dirs."""
+    prog = prog or ctx.progress
+    dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
+    fs = np.load(ctx.input("stars", "star_fluxes.npz"))
+    x, y, g, fl = fs["x"], fs["y"], fs["g"] - dm, fs["flux"]          # g shifted: thresholds stay meaningful
+    M = ctx.load("color", "M.npy")
+    model = ctx.load("stars", "stars_model.npy").astype(np.float32) + ctx.load("stars", "stars_model_faint.npy")
+    # the measured angular shape of the stars (spikes) is in the model; the unreliable-core mask is built on the
+    # core model only (spike pixels are subtracted, never cut out: cutting strips left straight traces)
+    exf = ctx.project.stage_dir("stars") / "stars_model_ext.npy"
+    model_core = model - np.load(exf).astype(np.float32) if exf.exists() else model
+
+    prog(0.02, "subtracting the star model")
+    A = ctx.load("optics", "lat_A.npy").astype(np.float32) - model
+    B = ctx.load("optics", "lat_B.npy").astype(np.float32) - model
+    hf = ctx.project.stage_dir("stars") / "stars_model_halo.npy"
+    halo = None
+    if hf.exists():            # the far halo of the stars (glare of the optics) leaves with them; it is kept out
+        halo = np.load(hf)     # of the core model, which decides what is filled and where residuals are guarded
+        A -= halo
+        B -= halo
+    full = ctx.load("optics", "lat_full.npy", mmap=True)
+    mask = core_mask(full, model_core, A, B, p.mask_k)
+    del model_core
+    rng = np.random.default_rng(1)
+    for X in (A, B):
+        for c in range(3):
+            hp = X[c] - cv2.GaussianBlur(X[c], (0, 0), 2)
+            sgx = 1.4826 * np.median(np.abs(hp[::7, ::7])) * 1.3
+            f = fill_holes(X[c], mask)
+            X[c][mask] = f[mask] + rng.normal(0, sgx, int(mask.sum())).astype(np.float32)
+    rawfill = 0.5 * (A + B)
+
+    prog(0.15, "cleaning residual halos and dips")
+    cleanraw, _ = clean(rawfill, x, y, g, fl, smooth=True, halos=True, lift_gmax=15.0, log=ctx.log)
+    delta = cleanraw - rawfill
+    del cleanraw
+
+    prog(0.35, "multi-scale Wiener denoising")
+    wms = wiener(A + delta, B + delta, M, p, model, log=ctx.log)
+    prog(0.55, "final cleaning")
+    final0, _ = clean(wms, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
+    del wms
+    # what is left around the bright stars (their cores, where the star model fails) is removed star by star,
+    # bounded by the typical halo of their brightness - measured with the far halo, which is what it describes
+    r_core = None
+    if halo is not None:     # the region the star model holds, as the far halo sees it (flat inside, x 1.3)
+        from .far_halo import WING_OUT
+        r_core = np.zeros(len(x))
+        for i in np.where(g < p.halo_gmax)[0]:
+            r_core[i] = 1.3 * max(WING_OUT, _filled_radius(mask, x[i], y[i], rmax=800) + 4)
+    sl_final, nh = bright_halos(final0, x, y, g, fs["pred"], p.halo_gmax,
+                                ref=None if halo is None else final0 + halo, r_core=r_core)
+    ctx.log(f"optical halos removed around {nh} bright stars")
+    del final0
+    prog(0.62, "diffraction spikes")
+    # the spikes left with the star model (measured star shape); their directions tell the rendering that the
+    # optics have spikes (saturated stars are then shown by their real light)
+    with_spikes = sl_final + np.load(exf).astype(np.float32) if exf.exists() else sl_final
+    dirs, _ = spike_directions(with_spikes, mask, x, y, g, log=ctx.log)
+    del with_spikes
+    return dict(x=x, y=y, g=g, fl=fl, fs=fs, M=M, model=model, halo=halo, A=A, B=B, delta=delta, mask=mask,
+                sl_final=sl_final, r_core=r_core, dirs=dirs)
 
 
 def core_mask(full, model, A, B, K):

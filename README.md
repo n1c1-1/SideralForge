@@ -79,6 +79,7 @@ The user guide is in [astro_gpu/resources/GUIDE.md](astro_gpu/resources/GUIDE.md
 | denoise | Noise2Noise network trained on the half-stacks |
 | optics | lateral colour correction, saturation magnitude of the setup, empirical PSF |
 | stars | forced PSF photometry of every Gaia star, position refinement, faint-star model |
+| star_net | optional (off by default): star-removal network trained on the project's own stack; its star layer feeds the learned starless image |
 | starless | star subtraction, cleaning, multi-scale Wiener denoising driven by the half-stacks |
 | background | star flat, sky model anchored on H-alpha and unresolved starlight |
 | render_prep | layers and star tables for the interactive rendering |

@@ -138,13 +138,21 @@ class Pipeline:
         todo = self.plan(until, force)
         self.journal.emit("run_start", stages=todo)
         status = "done"
+        order = [s.name for s in self.stages]
+        ran: set[str] = set()
         try:
-            for name in todo:
-                st = self.by_name[name]
-                res = self._run_stage(st)
+            while todo:
+                name = todo[0]
+                res = self._run_stage(self.by_name[name])
+                ran.add(name)
                 if res != "done":
                     status = res
                     break
+                # a stage's data-driven parameters may read an optional output of an earlier stage (the star removal
+                # takes the layer of the learned star removal network when there is one): what is left is planned
+                # again after each stage. A stage never runs twice in one run.
+                later = self.plan(until, tuple(f for f in force if f not in ran))
+                todo = sorted((set(todo[1:]) | set(later)) - ran, key=order.index)
         finally:
             lock.unlink(missing_ok=True)
             self.journal.emit("run_end", status=status)

@@ -605,6 +605,15 @@ trace of the masking circle around the Rosette G 5.6.
   Iris test with the network's star layer and our Wiener filter: G 6.9, G 4.6, G 7.3 removed without rings, discs or
   colour residue; the Iris core keeps its structure without the blue blotches; the dark disc in the dark lanes gone.
   Open: the own rays of dominant stars are subtracted before the network (the Flaming Star spokes may stay).
+* Stage 'Learned star removal network' (star_net, between 'stars' and 'starless', off by default): the own-data
+  network as a pipeline stage (recipe "run E" of experiments/own_starnet, library stages/star_net_lib.py). Its
+  training target is the model-based starless image, computed inside the stage by the same function as 'starless'
+  (model_starless, shared; the refactor gives the same image within float rounding) with the default settings. It
+  writes star_layer.npy (stack units, far halo excluded), the model and a preview; resumable (target, measurements
+  and training state checkpointed). 'starless' takes that layer when its 'Learned star layer' is empty: the value is
+  proposed by Starless.auto() as '<path> (run <id>)', so a new layer re-runs 'starless' through its parameters and
+  nothing changes for projects without one (no formal dependency, which would have made every project stale). The
+  runner now plans again after each stage, so the layer is used in the same run.
 * Corrections to the diagnosis above (measured later the same morning):
   - Iris G 6.9 dark spots: in the raw stack before any star removal (raw minus star models: -1.0 and -0.5 noise
     sigma against their surroundings at 94 and 113 px from the star) and kept identically by the learned removal:
