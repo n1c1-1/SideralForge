@@ -195,9 +195,9 @@ class Starless(Stage):
             for c in range(3):
                 hp = X[c] - cv2.GaussianBlur(X[c], (0, 0), 2)
                 sgx = 1.4826 * np.median(np.abs(hp[::7, ::7])) * 1.3
-                f = fill_holes(X[c], sat)
-                X[c][sat] = f[sat] + rng.normal(0, sgx, int(sat.sum())).astype(np.float32)
-        del hp, f
+                fh = fill_holes(X[c], sat)
+                X[c][sat] = fh[sat] + rng.normal(0, sgx, int(sat.sum())).astype(np.float32)
+        del hp, fh, full
         ctx.save("sl_final_learned.npy", wiener(A, B, M, p, model, log=ctx.log))
         net, bk, sg = load_model(ctx)
         _, _, nm = norm_params(ctx.load("stack", "drz_A.npy").astype(np.float32), Wt)
