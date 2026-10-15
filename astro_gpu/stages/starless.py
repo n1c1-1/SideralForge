@@ -693,7 +693,11 @@ def spike_directions(sl, mask, x, y, g, gmax=10.0, log=print):
         c = (k0 + 90 * k) % 360
         win = [(c + d) % 360 for d in range(-4, 5)]
         best = max(win, key=lambda a_: acc[a_])
-        if acc[best] > 6:
+        # a diffraction spike is point-symmetric: the spike at 180 degrees must stand out as well. A one-sided
+        # excess is a leftover of the star removal (Heart, refractor: 67 and 153 deg without their opposites,
+        # 21 sigma summed over 617 stars - the rendering then showed every saturated star as photographed)
+        opp = max([(c + 180 + d) % 360 for d in range(-4, 5)], key=lambda a_: acc[a_])
+        if acc[best] > 6 and acc[opp] > 6:
             dirs.append(float(best))
     if len(dirs) < 2:
         log(f"diffraction spikes: none detected (peak {acc[k0]:.1f} sigma over {n} bright stars)")
