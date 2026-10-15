@@ -645,3 +645,14 @@ trace of the masking circle around the Rosette G 5.6.
   come from the training data: the bright stamps are the denoised stack minus sl_final, so a hole of sl_final under
   a unique bright star becomes extra star light the network learns to remove. Next: build the bright stamps against
   a background interpolated from the ring around the star, and retrain.
+* Learned network run G (agent, merged cfe3daf): bright stamps built as the star the input shows (light above the
+  higher of an interpolated background and the model starless image outside its filled cores, plus darkness
+  symmetric through the star). Alnitak holes 37 % -> 0, the dark discs at sigma Ori, G 4.1, G 5.3 gone, the
+  Horsehead's bright nebula no longer darkened, NGC 2023 kept; faint stars inside the glare point-like in the layer.
+  The layer is negative where it gives back light the far halo model over-subtracted: the significance threshold is
+  now two-sided (0e126bf). In the render Alnitak stays blown: inside a saturated footprint the glare the network
+  removed beyond the far halo model comes back as star light under the star curve.
+* Rejected (12:20): moving the smooth part of a saturated star's own light beyond its core to the glare layer (learned
+  preparation). Alnitak less blown, but a dark crescent at sigma Ori and a grey disc with beaded spikes at G 5.7.
+  Removed. Root: the far halo model is wrong around the dominant stars (over-subtracts around sigma Ori at all radii,
+  around Alnitak at 80-150 px) - to be fixed there, with the Horsehead's brightest stars (the user's separate topic).
