@@ -36,6 +36,11 @@ class StarNetParams(StageParams):
                    help="Training patches (384 px) per step; lower it if the GPU runs out of memory.")
     seed: int = P(0, label="Random seed", level=ADVANCED, ge=0,
                   help="Seed of the random patches and pasted stars (for reproducible runs).")
+    glow: bool = P(True, label="Nebula peaked on its star", level=ADVANCED,
+                   help="In training, half of the pasted bright stars sit on a smooth glow that the target keeps: "
+                        "a nebula peaked on its star stays nebula.",
+                   tip="On: the core of NGC 2023 is kept (off, the network took it for the light of its G 7.8 "
+                       "star). It also keeps a round glow of about 40 px at the Iris's central star.")
 
 
 # ------------------------------------------------------------------ the layer as seen by the star removal stage
@@ -148,7 +153,7 @@ class StarNet(Stage):
         VAL = cv2.dilate(filled.astype(np.uint8), np.ones((7, 7), np.uint8)) == 0
         cys, cxs = lib.patch_centres(WM, x, y, g, H, W, lib.PATCH)
         m = prep["meta"]
-        synth = lib.Synth(prep["lib"], m["sat99"], m["gain"], m["sg"], dev, glow=True, neb_col=m["neb_col"])
+        synth = lib.Synth(prep["lib"], m["sat99"], m["gain"], m["sg"], dev, glow=p.glow, neb_col=m["neb_col"])
         data = dict(L=Lin, T=T, S_den=target, WM=WM, VAL=VAL, cys=cys, cxs=cxs, bk=m["bk"], sg=m["sg"],
                     neb_col=m["neb_col"], items=lib.val_items(m["boxes"], synth))
         ctx.log(f"{len(cys)} training positions, {synth.n_bright} bright and {len(synth.faint)} faint star stamps")

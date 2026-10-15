@@ -227,3 +227,8 @@ sigma per pixel - the rendering fades the star light out per pixel there, on the
 starless image). Any layer that falls smoothly to zero loses that part; a cut placed higher leaves a ring in the
 starless image instead (run H). Beyond the footprints: the rays of Alnitak, the glow of the Rosette's cluster.
 `post_H.sh`, `post_H2.sh`: the evaluation after a run (paths of D:/astro_gpu_diag).
+
+Iris (run E / run H2): light lost 0.11 / 0.10 %, no ring glow, hold-outs unchanged; but at the Iris's central star
+(HD 200775, G 7.2) run H2 leaves a round glow of about 40 px in the starless image (nebula level 113 sigma at the
+star against 35 with run E; 51 against 35 at 20 px): the glow taught on the pasted stars also keeps the broad core
+of a bright star sitting in its nebula. The stage makes the glow a setting ('Nebula peaked on its star').
