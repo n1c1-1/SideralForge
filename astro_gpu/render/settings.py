@@ -192,6 +192,12 @@ class RenderSettings(StageParams):
                               "spikes included - instead of being drawn; every other star gets its measured shape "
                               "(diamond, spikes) on top of its drawn round core. Off = every star drawn round, no "
                               "spikes.")
+    learned_stars: bool = S(False, section="Stars", label="Learned star removal",
+                            help="The stars removed by the network trained on this project's own stack instead of the "
+                                 "star model: no rings, dark discs, residual rays or smooth discs around the bright "
+                                 "stars, and the nebula under them as photographed. Needs the preparation 'Rendering "
+                                 "preparation, learned star removal' (when the project has a learned star layer).",
+                            tip="Switching loads the other set of layers (a few seconds the first time).")
     spike_photo: float = S(1.0, section="Stars", label="Photographed spikes", ge=0, le=1, step=0.05,
                            help="Diffraction spikes of the bright stars: 0 = drawn with the spike shape measured once "
                                 "for all the stars; 1 = each star's own spikes, as photographed (measured on the image, "

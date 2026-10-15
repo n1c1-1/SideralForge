@@ -97,7 +97,14 @@ class RenderPrep(Stage):
                            # 40: their light averaged along the spike direction; 41: the spikes drawn in the base
                            # layers, the photographed ones in layers of their own (chosen at rendering)
 
+    learned = False        # RenderPrepLearned: the same layers from the learned starless image
+
     def run(self, ctx: Context, p: RenderPrepParams) -> None:
+        if self.learned and not (ctx.project.stage_dir("starless") / "sl_final_learned.npy").exists():
+            ctx.log("no learned star removal for this project (stage 'Star removal and denoising', setting 'Learned "
+                    "star layer'): nothing to prepare")
+            ctx.save_json("none.json", {"learned": False})
+            return
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
         S = float(ctx.load_json("stack", "drz_meta.json")["scale"])
         wt = ctx.load("stack", "drz_weight.npy", mmap=True)
@@ -126,6 +133,14 @@ class RenderPrep(Stage):
         coefs = ctx.load_json("background", "coefs.json")["fit"]
         spec = np.load(ctx.input("color", "specresp.npz"))
         M, e_meas, w_e = emission_anchor(astro, M, spec["cam_hii"].astype(np.float64), fs, dm)
+        sl_name, n2_name = "sl_final.npy", "n2n_final.npy"
+        if self.learned:
+            # the learned starless image with the same sky and large-scale corrections as the model one (the colour
+            # matrix above is measured on the model one: both renderings share their colours)
+            sl_name, n2_name = "sl_final_learned.npy", "n2n_final_learned.npy"
+            for c in range(3):
+                astro[c] += (np.asarray(ctx.load("starless", sl_name, mmap=True)[c], np.float32)
+                             - np.asarray(ctx.load("starless", "sl_final.npy", mmap=True)[c], np.float32)) / flat[c]
         if e_meas is not None:
             ctx.metric("emission_colour_measured", np.round(e_meas, 3).tolist())
             ctx.metric("emission_anchor_weight", round(w_e, 2))
@@ -152,18 +167,19 @@ class RenderPrep(Stage):
         # colour (an H-alpha-only gate would treat reflection nebulae and galaxies as empty sky)
         ctx.save("Eg0.npy", cv2.GaussianBlur(Yl, (0, 0), 8).astype(np.float32))
         ctx.progress(0.1, "star footprints")
-        foot_w = footprints(ctx, fs, dm, H, W) if p.star_guard else np.zeros((H, W), np.float32)
+        # (the learned starless image has no star-subtraction artefacts to guard against)
+        foot_w = footprints(ctx, fs, dm, H, W) if p.star_guard and not self.learned else np.zeros((H, W), np.float32)
         ctx.metric("guard_footprint_pct", round(100 * float((foot_w > 0.5).mean()), 1))
         ctx.progress(0.2, "nebula layer")
         # two denoisers are available: the multi-scale Wiener filter and the Noise2Noise network trained on these data.
         # A local Wiener filter leaves islands of unfiltered pixel noise wherever its local noise estimate falls short
         # (dark and bright pepper, worst at the edges of a nebula); the network does not. The fine scales come from the
         # network, the large ones from the Wiener filter (bright-star zones are interpolated identically in both)
-        wsl = star_light_weight(ctx, lum, astro.shape[1:])
+        wsl = star_light_weight(ctx, lum, astro.shape[1:]) if not self.learned else np.ones((H, W), np.float32)
         wstar = wsl * (1 - foot_w)
         ctx.metric("fine_layers_off_pct", round(100 * float((wstar < 0.5).mean()), 1))
-        n2 = ctx.load("starless", "n2n_final.npy").astype(np.float32) / flat
-        b0 = ctx.load("starless", "sl_final.npy").astype(np.float32) / flat
+        n2 = ctx.load("starless", n2_name).astype(np.float32) / flat
+        b0 = ctx.load("starless", sl_name).astype(np.float32) / flat
         base = astro.copy()
         for c in range(3):
             d = n2[c] - b0[c]
@@ -186,7 +202,7 @@ class RenderPrep(Stage):
             N = N - Am[:, 1][:, None, None] * ((EC_N[1] - Cs) * sm)[None]
             ctx.metric("continuum_smoothed_pct", round(100 * float((sm > 0.5).mean()), 1))
             del EC_N, Cs, sm
-        if p.star_guard:
+        if p.star_guard and not self.learned:
             # (tried 2026-10-14: the guard also wherever the light of a star dominates the noise, for the dark moats
             # around G 9.5-11.5 stars - in a dense field that is 98 % of it (Heart), and the guard drew dark discs)
             N = guard_generic(N, np.tensordot(lum, N, 1).astype(np.float32), foot_w, lum, w_cam, p.guard_sigma)
@@ -194,7 +210,8 @@ class RenderPrep(Stage):
         # saturated stars: shown by their real light; the nebula under them interpolated where that is safe
         ctx.progress(0.42, "real light of the saturated stars")
         N, fp_all, fp_fill, Sreal, strips = saturated_star_light(ctx, fs, N, flat, lum, ctx.log, astro=astro,
-                                                         g_real=p.real_g if p.real_g > 0 else None, dm=dm, spike_snr=p.spike_snr)
+                                                         g_real=p.real_g if p.real_g > 0 else None, dm=dm, spike_snr=p.spike_snr,
+                                                                 starless=sl_name, interpolate=not self.learned)
         ctx.save("N.npy", N.astype(np.float32))
         if strips is not None:              # the photographed spikes, chosen at rendering
             for nm_, a_ in strips.items():
@@ -474,7 +491,8 @@ def _ring_median(img, xc, yc, r_, q=50):
     return float(np.percentile(img[py[m], px[m]], q)) if m.sum() >= 16 else np.nan
 
 
-def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None, g_real=None, dm=0.0, spike_snr=2.0):
+def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None, g_real=None, dm=0.0, spike_snr=2.0,
+                         starless="sl_final.npy", interpolate=True):
     """Stars whose core is saturated cannot be measured nor modelled: when the instrument has diffraction spikes,
     which a drawn star cannot reproduce, they are shown by their real light (without spikes the drawn stars are
     kept: the real light of a saturated star is then only its blooming and halo).
@@ -497,7 +515,7 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None,
         z = np.zeros((H, W), np.float32)
         return N, z, z.copy(), np.zeros_like(N), None
     full = ctx.load("optics", "lat_full.npy", mmap=True)
-    sl = ctx.load("starless", "sl_final.npy", mmap=True)
+    sl = ctx.load("starless", starless, mmap=True)
     H, W = flat.shape[1:]
     xs, ys = fs["x"], fs["y"]
     ok = (xs > 2) & (xs < W - 3) & (ys > 2) & (ys < H - 3)
@@ -557,6 +575,8 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None,
         ann = (rr >= R) & (rr < R + 40)
         q = np.sqrt(float(np.median(bp2[np.minimum(yy[ann] // 2, bp2.shape[0] - 1),
                                         np.minimum(xx[ann] // 2, bp2.shape[1] - 1)])) / max(floor, 1e-12))
+        if not interpolate:          # learned starless image: the nebula under the star is trusted as it is
+            continue
         if q < 2.5:
             hole = rr < R
             for c in range(3):
@@ -584,7 +604,8 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None,
     if g_real is not None:
         N2s, fp_fill_s = N2.copy(), fp_fill.copy()
         spiked, n_spk, sw, axes, gmap = _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sat,
-                                                           g_real, dm, rmax, spike_snr=spike_snr)
+                                                           g_real, dm, rmax, spike_snr=spike_snr,
+                                                           interpolate=interpolate)
     del Ys, YL
     # star light: the image minus the nebula layer actually rendered under the star, so that nebula + star light give
     # the image back. Image minus the starless image plus the change made to the nebula (N - N2) missed what the
@@ -642,7 +663,8 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None,
         # the strip layers, chosen at rendering ('Photographed spikes'): nebula interpolated across the strips (not
         # inside the saturated stars' footprints: their light was measured against the base nebula), the spikes'
         # light averaged along them and raw, where the strips stand, and the magnitude of the star of each strip
-        strips = {"Wsp": sw, "Wsl": ws, "Gsp": gmap, "dNsp": (N2 - N2s) * (1 - fp_sat)[None]}
+        strips = {"Wsp": sw if interpolate else np.zeros_like(sw), "Wsl": ws, "Gsp": gmap,
+                  "dNsp": (N2 - N2s) * (1 - fp_sat)[None]}
         for k_, a_ in (("Ssp", Sr), ("Ssp_raw", Sraw)):
             fd = np.clip((np.tensordot(lum, a_, 1) / max(sig, 1e-9) - 1.5) / 2.0, 0, 1)
             a_ *= (fd * ws)[None]
@@ -657,7 +679,8 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None,
     return N2s, fp_sat, fp_fill_s, Sb, strips
 
 
-def _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sat, g_real, dm, rmax, spike_snr=2.0):
+def _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sat, g_real, dm, rmax, spike_snr=2.0,
+                       interpolate=True):
     """The diffraction spikes of every star brighter than g_real are shown by their own light, as photographed.
 
     The star removal subtracted from the nebula one spike shape measured for all the stars and the rendering drew it
@@ -729,7 +752,9 @@ def _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sa
                 np.minimum(gm, np.where(loc > 0, np.float32(g[i]), np.float32(99)), out=gm)
         if got and int(i) not in sat:
             with_spikes.append(int(i))
-    if n_spk:
+    if n_spk and not interpolate:   # learned starless image: the nebula across the spikes is trusted as it is
+        sw = cv2.GaussianBlur((strip > 0).astype(np.float32), (0, 0), 1.5)
+    elif n_spk:
         hole = strip > 0
         sw = cv2.GaussianBlur(hole.astype(np.float32), (0, 0), 1.5)
         nlab, lab, st, _ = cv2.connectedComponentsWithStats(hole.astype(np.uint8), connectivity=8)
@@ -840,3 +865,13 @@ def star_profile(pm):
     r_all = np.arange(0, 61, 0.25)
     prof = np.where(r_all <= 6, np.interp(r_all, rb, core), k_ * np.interp(r_all, wr, wp))
     return r_all, np.clip(prof, 0, None)
+
+
+class RenderPrepLearned(RenderPrep):
+    name = "render_prep_learned"
+    title = "Rendering preparation, learned star removal"
+    description = ("The same rendering layers from the starless image of the learned star removal (when the project "
+                   "has one: stage 'Star removal and denoising', setting 'Learned star layer'), without the repairs of "
+                   "the star model (guard, interpolation under the stars and across their spikes). The rendering "
+                   "setting 'Learned star removal' chooses between the two preparations.")
+    learned = True

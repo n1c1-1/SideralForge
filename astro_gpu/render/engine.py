@@ -480,6 +480,35 @@ class RenderEngine:
         return st_d
 
 
+class StarRemovalEngines:
+    """The rendering engines of the two star removals: the star model (render_prep) and the learned one
+    (render_prep_learned, when prepared). The setting 'Learned star removal' chooses at each rendering; the learned
+    layers are loaded on first use. Attributes are those of the engine of the last rendering (the model one before)."""
+
+    def __init__(self, prep_dir: str | Path, device: str = "cuda:0", calibrated_white: float = 5778.0):
+        self.dirs = {False: Path(prep_dir), True: Path(prep_dir).parent / "render_prep_learned"}
+        self._args = (device, calibrated_white)
+        self._eng = {False: RenderEngine(prep_dir, device, calibrated_white)}
+        self._cur = self._eng[False]
+
+    @property
+    def has_learned(self) -> bool:
+        return (self.dirs[True] / "N.npy").exists() and (self.dirs[True] / "prep.json").exists()
+
+    def select(self, s: RenderSettings) -> RenderEngine:
+        key = bool(s.learned_stars) and self.has_learned
+        if key not in self._eng:
+            self._eng[key] = RenderEngine(self.dirs[key], *self._args)
+        self._cur = self._eng[key]
+        return self._cur
+
+    def render(self, s: RenderSettings, scale: float = 1.0) -> Layers:
+        return self.select(s).render(s, scale)
+
+    def __getattr__(self, name):
+        return getattr(self._cur, name)
+
+
 # ---------------------------------------------------------------------- tone curve
 def tone_curve(y, lo, b, white, toe):
     if toe <= 0:

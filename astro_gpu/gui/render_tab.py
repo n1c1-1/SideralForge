@@ -49,8 +49,8 @@ class RenderWorker(QObject):
     @Slot()
     def load(self):
         try:
-            from ..render.engine import RenderEngine
-            self.engine = RenderEngine(self.prep_dir, device=self.device, calibrated_white=self.calibrated_white)
+            from ..render.engine import StarRemovalEngines
+            self.engine = StarRemovalEngines(self.prep_dir, device=self.device, calibrated_white=self.calibrated_white)
             self.loaded.emit({"H": self.engine.H, "W": self.engine.W, "crop": self.engine.crop, "SC": self.engine.SC,
                               "layered": self.engine.layered,
                               "fine_colour": "chroma_fine" in getattr(self.engine, "_host", {})})
