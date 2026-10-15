@@ -710,3 +710,30 @@ measured on every covered pixel, including the borders the crop removes. On the 
 (top, y < 30) raised the 99.995th percentile of the nebula by 44 % (38.1 vs 26.4), so the bright nebula was rendered
 dimmer than its data allow; on Rosette, Flaming Star, Horsehead and Iris the change is 0-2 %. The render now measures
 them on the covered part of the crop (`_shown`).
+
+### 11.10 The glare redesign (2026-10-15 evening)
+
+User's go: fix the far halo of the dominant stars, then a network that removes only the compact star light.
+Agent report: D:/astro_gpu_diag/halo2 (halo sheets, summary_old_new.md) and D:/astro_gpu_diag/own_starnet/<project>/H.
+
+Far halo (stars 13, merged): the halos fitted on their own surroundings were least-squares fits with a free local
+level, so a nebula rising toward the star (IC 434 at sigma Ori, the Flame beside Alnitak) pulled the amplitude and
+the elongation up and the model exceeded the data on the dark side. They are now bounded per channel, radius and
+direction by the lower fifth of data / model around the star (3 radii x 55 deg windows, noise added back, at most 1,
+never rising outward), only where the halo stands 10 x above the background's dips. Lower quarter of data - model at
+80-250 px (noise sigmas, G): Alnitak -9.5 -> +3.1, sigma Ori -3.8 -> 0.0, Flaming Star bright stars -0.6..-0.9 ->
+-0.1..-0.3; Iris unchanged; ordinary stars unchanged. The dark disc around sigma Ori in the starless image is gone.
+
+Compact-only network (run H, rejected): the light lost around saturated stars barely moved (Horsehead 0.18 -> 0.17 %,
+Flaming Star 0.42 -> 0.39 %, Rosette 1.92 -> 1.28 %) and the split left ring glows around saturated stars (Horsehead
+5 -> 12 of 40). The loss is mostly the rendering's: 91 % of the Rosette G 5.6 star's lost light lies inside its own
+footprint, 12-84 px, where its light is 1.5-3.5 noise sigmas per pixel and the render fades it out.
+Run H2 (full stamps with the stamps' saturation flag fixed, a glow kept under half of the pasted bright stars): keeps
+NGC 2023's core (runs G and H took it for the light of HD 37903: the layer held 109 of the 117 sigmas at 10-30 px; H2
+48), fewest ring glows (Horsehead 3, Rosette 3), lost light as before; costs: more glare left in the nebula around the
+brightest stars (Alnitak 15 % vs 0.6 %), a 40 px round glow at the Iris's central star (Iris keeps run E).
+star_net 3 (merged): saturation flag as the rendering's, the glow as the setting 'Nebula peaked on its star'.
+
+Proposed by the agent and implemented on branch `learned-starlight` (render_prep_learned 42, not merged): in the
+saturated stars' footprints, where the measured light (image minus nebula) sinks into the noise, take the learned
+layer the starless image was cut by (noise-free) instead of fading the light out. To be judged on data.
