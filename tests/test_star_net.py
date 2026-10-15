@@ -264,3 +264,55 @@ def test_stage_end_to_end_on_a_synthetic_project(tmp_path, monkeypatch):
     (ctx.dir / "manifest.json").write_text(json.dumps({"status": "done", "run_id": "feedbeef00"}))
     auto = Starless().auto(_ctx(proj, Starless()))
     assert layer_file(auto["learned_stars"].value) == ctx.dir / "star_layer.npy"
+
+
+def _stamp_scene(H=301, c=150):
+    yy, xx = np.mgrid[0:H, 0:H]
+    r = np.hypot(yy - c, xx - c)
+    neb = np.repeat((20 + 0.02 * xx)[None], 3, 0).astype(np.float32)                 # smooth nebula
+    star = np.repeat((1000 * np.exp(-r ** 2 / 18) + 30 * np.exp(-r / 15))[None], 3, 0).astype(np.float32)
+    return yy, xx, r, neb, star
+
+
+def _stamps(NL, S, filled, H=301, c=150, fill=80.0):
+    x, y, g = np.array([float(c)]), np.array([float(c)]), np.array([6.0])
+    args = (NL, S, NL, x, y, g, np.array([100]), np.full(3, 1e5, np.float32), H, H)
+    old = lib.stamp_library(*args)["bright"][0]
+    new = lib.stamp_library(*args, fill=np.array([fill]), filled=filled)["bright"][0]
+    return old, new
+
+
+def test_bright_stamp_does_not_take_the_holes_of_the_starless_image():
+    yy, xx, r, neb, star = _stamp_scene()
+    S = neb.copy()
+    S[:, r < 40] -= 5.0                                   # the starless image's hole under the bright star
+    old, new = _stamps(neb + star, S, np.zeros(r.shape, bool))
+    assert old["R"] == 100 and new["R"] == 100           # 80 px + 25 %
+    band = (r[50:251, 50:251] >= 10) & (r[50:251, 50:251] <= 30)
+    truth = star[:, 50:251, 50:251]
+    assert abs(float((old["t"] - truth)[:, band].mean()) - 5.0) < 0.5      # the hole became "star light"
+    assert abs(float((new["t"] - truth)[:, band].mean())) < 0.5            # not any more
+    assert lib.fill_radii({0: (60, 100)}, np.array([6.0, 9.0]), None)[0] == pytest.approx(115.0)
+
+
+def test_bright_stamp_keeps_the_nebula_out_and_symmetric_dark_rings_in():
+    yy, xx, r, neb, star = _stamp_scene()
+    glow = np.repeat((8 * np.exp(-(r / 25) ** 2))[None], 3, 0).astype(np.float32)    # a reflection nebula around it
+    ring = np.repeat((-4.0 * ((r > 45) & (r < 60)))[None], 3, 0).astype(np.float32)  # point-symmetric dark ring
+    lane = np.repeat((-6.0 * ((np.abs(yy - 150) < 4) & (xx > 160) & (xx < 220)))[None], 3, 0).astype(np.float32)
+    NL = neb + glow + star + ring + lane
+    S = neb + glow + lane                                # the model keeps the nebula and the lane
+    filled = r < 8                                       # S's filled core
+    _, new = _stamps(NL, S, filled)
+    t = new["t"]
+    win = (slice(None), slice(50, 251), slice(50, 251))
+    rr, Y, X = r[win[1:]], yy[win[1:]], xx[win[1:]]
+    glow_band = (rr >= 15) & (rr <= 35)
+    assert abs(float((t - star[win])[:, glow_band].mean())) < 0.5           # the glow stays out of the stamp
+    ring_band = (rr > 47) & (rr < 58) & ~((np.abs(Y - 150) < 6) & (X > 150))
+    assert float(t[:, ring_band].mean()) < -3.0                             # the dark ring is in it
+    lane_px = (np.abs(Y - 150) < 3) & (X > 165) & (X < 215) & ((rr < 45) | (rr > 60))
+    d = (t - star[win])[:, lane_px]
+    assert d.max() < 0.5 and d.mean() > -6.5             # the one-sided lane is not star light: never more than
+    mirror = (np.abs(Y - 150) < 3) & (X > 80) & (X < 135) & ((rr < 45) | (rr > 60))   # the star, at most its depth less
+    assert abs(float((t - star[win])[:, mirror].mean())) < 0.5             # and the other side of the star is exact

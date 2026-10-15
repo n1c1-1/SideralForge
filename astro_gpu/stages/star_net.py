@@ -106,7 +106,9 @@ class StarNet(Stage):
                    "goes to the star removal stage, which makes a second, learned starless image from it.")
     deps = ("stars", "optics", "denoise", "color")
     Params = StarNetParams
-    version = "1"
+    version = "2"          # 2: bright stamps = the star as the input shows it (light agreed by the interpolated and
+                           # the model background, point-symmetric darkness), no more the input minus the starless
+                           # image, whose holes the network learnt as star light; dark rings it had never seen
 
     def run(self, ctx: Context, p: StarNetParams) -> None:
         if not p.enabled:
@@ -218,7 +220,8 @@ class StarNet(Stage):
                 + ("" if fit is not None else " (too few bright stars to measure: a fixed law)"))
         ctx.metric("star_extent_px", law)
         ctx.progress(0.11, "star stamps")
-        stamps = lib.stamp_library(NLh, target, L, x, y, g, R_all.astype(int), sat99, H, W, seed=p.seed)
+        stamps = lib.stamp_library(NLh, target, L, x, y, g, R_all.astype(int), sat99, H, W, seed=p.seed,
+                                   fill=lib.fill_radii(ext, g, fit), filled=filled)
         del NLh
         ctx.log(f"{len(stamps['bright'])} bright star stamps (G < 11, "
                 f"{sum(bool(np.asarray(b['sat']).any()) for b in stamps['bright'])} saturated) and "
