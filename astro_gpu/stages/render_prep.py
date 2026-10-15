@@ -175,7 +175,10 @@ class RenderPrep(Stage):
         # A local Wiener filter leaves islands of unfiltered pixel noise wherever its local noise estimate falls short
         # (dark and bright pepper, worst at the edges of a nebula); the network does not. The fine scales come from the
         # network, the large ones from the Wiener filter (bright-star zones are interpolated identically in both)
-        wsl = star_light_weight(ctx, lum, astro.shape[1:]) if not self.learned else np.ones((H, W), np.float32)
+        # (also with the learned star removal: its Noise2Noise layer is not reliable where star light dominates either -
+        # the two half-stacks differ systematically around bright cores, and the network left values of 12 to 64 in
+        # a nebula of 36 around the Iris G 6.9 star)
+        wsl = star_light_weight(ctx, lum, astro.shape[1:])
         wstar = wsl * (1 - foot_w)
         ctx.metric("fine_layers_off_pct", round(100 * float((wstar < 0.5).mean()), 1))
         n2 = ctx.load("starless", n2_name).astype(np.float32) / flat
@@ -591,7 +594,8 @@ def saturated_star_light(ctx, fs, N, flat, lum, log=print, rmax=400, astro=None,
         ann = (rr >= R) & (rr < R + 40)
         q = np.sqrt(float(np.median(bp2[np.minimum(yy[ann] // 2, bp2.shape[0] - 1),
                                         np.minimum(xx[ann] // 2, bp2.shape[1] - 1)])) / max(floor, 1e-12))
-        if not interpolate:          # learned starless image: the nebula under the star is trusted as it is
+        if not interpolate:          # learned starless image: the nebula under the star is trusted as it is (its fine
+            fp_fill[y0_:y1_, x0_:x1_] = np.maximum(fp_fill[y0_:y1_, x0_:x1_], w_)    # detail layers are not)
             continue
         if q < 2.5:
             hole = rr < R
