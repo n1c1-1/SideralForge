@@ -675,3 +675,21 @@ trace of the masking circle around the Rosette G 5.6.
   stars (it over-subtracts around sigma Ori at all radii and around Alnitak at 80-150 px). Training stamps then
   exclude the glare component (measured by the far halo model), and the rendering draws the glare back as now
   ('Bright star glow'). Until then: 'Learned star removal' is an option per project and per preset.
+
+### 11.9 The founding idea tried: per-frame deconvolution before stacking (2026-10-15)
+
+Done as asked (branch `frame-deconv`, not merged; report D:/astro_gpu_diag/frame_deconv/REPORT.md): each of the 100
+bench Heart frames deconvolved tile by tile in the sensor frame, per colour plane, with the star shape measured on
+that frame (per tile, per colour), Richardson-Lucy with damping, then the usual drizzle. Off by default and
+bit-identical to main when off.
+
+Result: not better. Stack stars -1/-6/-5 % FWHM (R/G/B) towards a point, more even across the field, but dark rings
+on ~1/3 of the bright stars; the gain depends on brightness (faint stars unchanged, S/N 400 stars -8 %; without
+damping -12-15 % for all but noise +50-62 %); no new nebula detail (half-stack correlation unchanged). Downstream the
+brightness-dependent star shape breaks the star photometry (green flux scatter 8 % -> 44-49 %) and moves the colour
+matrix: faithful renders redder or greyer with blotches. Measured: the star shape barely changes over the night (green
+2.23-2.38 px per frame) but a lot across the field (1.81-3.19 px); a colour plane is too coarse (one photosite holds
+58-87 % of a star's colour light).
+Next if pursued: one sharp estimate per frame on the full sensor grid, seen through the colour mosaic (the four
+planes constraining it together; stars between photosites become representable, no rings), the same deconvolution
+for faint and bright stars, star photometry measured after it; then re-judge the field-evening effect.
