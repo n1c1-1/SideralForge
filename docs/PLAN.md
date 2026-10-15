@@ -656,3 +656,12 @@ trace of the masking circle around the Rosette G 5.6.
   preparation). Alnitak less blown, but a dark crescent at sigma Ori and a grey disc with beaded spikes at G 5.7.
   Removed. Root: the far halo model is wrong around the dominant stars (over-subtracts around sigma Ori at all radii,
   around Alnitak at 80-150 px) - to be fixed there, with the Horsehead's brightest stars (the user's separate topic).
+* Final blind QC of the artistic renders (blind6, last night's model against today's learned): learned delivered on
+  the Flaming Star, the Horsehead and the Iris; the Rosette's artistic regressed with the learned removal: smooth
+  grey-olive discs around saturated stars (G 5.6 north, about 140 px), an olive cast of the darkest sky. Mechanism:
+  the network also removes the stars' diffuse glare beyond the far halo model; the rendering shows that light again
+  only inside a saturated star's footprint and above its noise fade, elsewhere it is lost - a disc with an edge,
+  revealed by the artistic stretch (the same cause as Alnitak's blown glare). The Rosette's artistic deliverable is
+  rendered with the star model ('Learned star removal' off; its faithful keeps the learned removal, which won there).
+  Next: leave the diffuse glare with the nebula in the learned path, as the star model does (the decomposition
+  star / glare must be principled: two attempts today failed).
