@@ -575,3 +575,33 @@ sl_final everywhere measured (spike light 3-5 sigma -> < 0.6, no rings, holes or
 than any training star), Iris core kept. Not ready: its output keeps the image noise (to go through our denoising,
 untested), a physical guard is needed (the star layer may not exceed what the star model allows), trained on the Iris
 only (~35 min per project). It is the route to a star layer that is simply image minus nebula, nothing drawn.
+
+### 11.8 Every star option kept, chosen at rendering (2026-10-15)
+
+The user, after the triage page: keep all the options and leave the choice to the rendering - one solution will not
+cover every case. Noted on the page: dark spots around the Iris G 6.9 and the Flaming Star G 5.9 in every version, the
+trace of the masking circle around the Rosette G 5.6.
+
+* Photographed spikes at rendering (main 66e4156): the preparation keeps the drawn spikes in its base layers and writes
+  the photographed spikes in layers of their own (nebula interpolated across the strips as a change from the base,
+  strip weights, magnitude of the star of each strip, spike light averaged along the spike and raw). Settings
+  'Photographed spikes' (default 1), 'Photographed spikes down to' (G, default 12), 'Spike smoothing' (default 1).
+  At 0 the Iris rendering is identical to the previous one pixel for pixel; at the defaults it matches the version
+  that won both blind checks (0.09 % of the pixels differ by more than 2/255). Heart (no spikes): unchanged.
+* Artistic preset: the colour layers (residual / reflection colour, fine colour, OIII) were switched off under the
+  strips like the fine detail; boosted by the preset, the strips came out as grey bars across the Rosette's nebula.
+  They are now interpolated from the strips' edges at rendering (e068168); the fine detail stays off there.
+* The three spots: not holes. Iris G 6.9: the star's fine radial rays stay in the model starless image as light
+  streaks of 1.5-4 noise sigmas (on the spikes and around), the gaps between them read as dark blotches. Flaming Star
+  G 5.9 (AE Aur, in real filaments): dark spokes where the own-rays model of the dominant star subtracts too much.
+  Rosette G 5.6: under the saturated star the nebula is interpolated (membrane fill), a smooth disc in textured
+  nebula. Common cause: the star model; remedy: the learned star removal.
+* Learned star removal as a rendering choice (e068168 and before): 'Star removal and denoising' takes an optional
+  learned star layer (network trained on the project's own stack, far halo excluded), subtracts it from the two
+  half-stacks and runs the same Wiener filter and Noise2Noise layer (sl_final_learned, n2n_final_learned; none of the
+  model's repairs). The stage 'Rendering preparation, learned star removal' prepares the same layers from it (same
+  sky, large-scale corrections and colour matrix; no guard, no interpolation under saturated stars nor across
+  spikes). Setting 'Learned star removal' (default off until checked) chooses the preparation (StarRemovalEngines).
+  Iris test with the network's star layer and our Wiener filter: G 6.9, G 4.6, G 7.3 removed without rings, discs or
+  colour residue; the Iris core keeps its structure without the blue blotches; the dark disc in the dark lanes gone.
+  Open: the own rays of dominant stars are subtracted before the network (the Flaming Star spokes may stay).
