@@ -184,17 +184,41 @@ def photon_gain(NL, S, A, B, x, y, g, H, W, log=print):
     return np.array(gain, np.float32)
 
 
-def stamp_library(NLh, S, L, x, y, g, R_all, sat99, H, W, seed=0, nfaint=2000):
-    """Real star stamps cut from the stack: star layer (denoised stack - far halo - starless) around every star
+def fill_radii(ext, g, fit):
+    """Radius of the area each star dominates: its measured extent (1.15 x the larger of its halo and spike radii)
+    when it was measured, else the fitted law."""
+    out = radius_of(g, fit).astype(float)
+    for i, v in ext.items():
+        out[i] = max(12.0, 1.15 * max(v))
+    return out
+
+
+def stamp_library(NLh, S, L, x, y, g, R_all, sat99, H, W, seed=0, nfaint=2000, fill=None, filled=None):
+    """Real star stamps cut from the stack: star layer (denoised stack - far halo - background) around every star
     G < 11 with no brighter star within 60 px ("bright"), and up to `nfaint` isolated stars G 11-15 ("faint");
     the median of the outer ring removed, cosine taper, negatives clipped. Saturated cores are flagged with their own
-    plateau level (re-saturation when pasted)."""
+    plateau level (re-saturation when pasted).
+
+    Background: the starless image S, except for the bright stamps when `fill` (radius per star, see fill_radii) and
+    `filled` (S's filled cores, bool (H, W)) are given. A bright stamp is then the star as the input shows it,
+    without the nebula, inside its fill radius (the window ends 25 %, at least 16 px, beyond it):
+      - interpolated background: membrane fill of S from the ring just outside the radius;
+      - bright part: light above the higher of that background and S (a model-based nebula estimate) outside S's
+        filled cores (dilated 4 px), above the interpolated background inside them. S's holes under the star do not
+        become "star light", and a nebula that S keeps (a reflection nebula around its star) stays out of the stamp;
+      - dark part: where the input is below the interpolated background at a pixel and at its mirror through the
+        star, the smaller darkness of the two. The far-halo subtraction leaves point-symmetric dark rings and lobes
+        around the brightest stars; a network that never saw them in a stamp dug craters there. Nebula lanes, which
+        are not point-symmetric, stay out of the stamp.
+    Faint stars inside a stamp stay in it."""
+    from ..core.imgutil import membrane_fill
     bright, faint = [], []
     for i in np.argsort(g):
         if g[i] >= 15:
             break
         xi, yi = int(round(x[i])), int(round(y[i]))
-        R = int(R_all[i])
+        inside = fill is not None and filled is not None and g[i] < 11
+        R = int(round(fill[i] + max(16.0, 0.25 * fill[i]))) if inside else int(R_all[i])
         Re = min(R, xi, yi, W - 1 - xi, H - 1 - yi)
         if Re < 0.75 * R or Re < 10:
             continue
@@ -207,11 +231,23 @@ def stamp_library(NLh, S, L, x, y, g, R_all, sat99, H, W, seed=0, nfaint=2000):
             if np.any(np.hypot(x[bb] - x[i], y[bb] - y[i]) < R_all[bb] + Re):
                 continue
         sl = (slice(None), slice(yi - Re, yi + Re + 1), slice(xi - Re, xi + Re + 1))
-        win = np.asarray(NLh[sl], np.float32) - np.asarray(S[sl], np.float32)
         w, r = taper(Re)
-        ring = (r >= 0.85) & (r <= 1.0)
-        ped = np.median(win[:, ring], axis=1)
-        st = np.clip((win - ped[:, None, None]) * w, 0, None).astype(np.float32)
+        nl, s_ = np.asarray(NLh[sl], np.float32), np.asarray(S[sl], np.float32)
+        if inside:
+            hole = r * Re < min(fill[i], 0.85 * Re)
+            bg = np.stack([membrane_fill(s_[c], hole) for c in range(3)])
+            ring = (r >= 0.85) & (r <= 1.0)
+            ped = np.median((nl - bg)[:, ring], axis=1)[:, None, None]
+            core = cv2.dilate(np.asarray(filled[sl[1:]]).astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
+            pos = np.clip(nl - np.where(core[None], bg, np.maximum(bg, s_)) - ped, 0, None)
+            neg = np.clip(nl - bg - ped, None, 0)
+            neg = np.where(hole[None], np.maximum(neg, neg[:, ::-1, ::-1]), 0)
+            st = ((pos + neg) * w).astype(np.float32)
+        else:
+            win = nl - s_
+            ring = (r >= 0.85) & (r <= 1.0)
+            ped = np.median(win[:, ring], axis=1)
+            st = np.clip((win - ped[:, None, None]) * w, 0, None).astype(np.float32)
         core = np.asarray(L[:, yi - 4:yi + 5, xi - 4:xi + 5]).reshape(3, -1).max(1)
         rec = dict(x=float(x[i]), y=float(y[i]), g=float(g[i]), R=Re, sat=core >= 0.75 * sat99,
                    plateau=core.astype(np.float32), t=st.astype(np.float16) if g[i] >= 11 else st)
