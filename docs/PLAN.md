@@ -760,3 +760,14 @@ sheets D:/astro_gpu_diag/qc/glare, keys in qc/blind_keys/glare_*):
   range set the white of the whole image (the highlight shoulder could take it instead)?
 - Learned star light in the saturated footprints (branch learned-starlight): 0.14-0.17 % of the pixels move by more
   than 2 levels on the Horsehead and the Rosette, nothing visible at 100 %: not merged.
+- Second round after setting each project to its winner (chain re-run from the stars stage): the Horsehead with the
+  bound + H2 came out visibly different from the first run with the same settings (black point -0.39 -> +0.07, curve
+  strength 10 -> 19: the tone-curve fit jumped; the stars stage is not bit-stable either), but won again in faithful
+  and artistic: its deliverables re-rendered (previous ones in E:/astro_gpu/archive/deliverables_2026-10-16_glare).
+  Rosette, Flaming Star, Iris back to their previous state (differences of a run: star-level dots, invisible at 100 %).
+- The Heart (stars stage last run 2026-10-14) came out worse on re-run (blind QC: bloated soft stars, pink haze, a
+  nebula knot west of the Soul erased): the star removal 'detected' spikes at 67 and 153 deg on this refractor (a
+  one-sided leftover, 21 sigma summed over 617 stars; none on the previous run), so the rendering showed every
+  saturated star as photographed. Fixed: a spike direction counts only if its opposite stands out too (diffraction
+  spikes are point-symmetric; the Newton projects find four directions in opposite pairs, unchanged). Heart re-run
+  from the star removal. Lesson: re-judge a project after any chain re-run before delivering.
