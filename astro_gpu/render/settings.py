@@ -192,6 +192,24 @@ class RenderSettings(StageParams):
                               "spikes included - instead of being drawn; every other star gets its measured shape "
                               "(diamond, spikes) on top of its drawn round core. Off = every star drawn round, no "
                               "spikes.")
+    spike_photo: float = S(1.0, section="Stars", label="Photographed spikes", ge=0, le=1, step=0.05,
+                           help="Diffraction spikes of the bright stars: 0 = drawn with the spike shape measured once "
+                                "for all the stars; 1 = each star's own spikes, as photographed (measured on the image, "
+                                "the nebula interpolated across them; the stars along them stay drawn). In between, a "
+                                "blend. Needs a rendering preparation of version 41 or later.",
+                           tip="The shared shape never matches each star's own spikes: beads, light bars across the "
+                               "nebula and dark blobs along the spikes of the brightest stars. Photographed spikes "
+                               "avoid them; on very faint spikes they show as faint dashed fragments (see the next "
+                               "setting).")
+    spike_g_max: float = S(12.0, section="Stars", label="Photographed spikes down to", ge=4, le=12, step=0.25,
+                           unit="G mag", help="Only the stars brighter than this get their photographed spikes; the "
+                                              "fainter ones keep the drawn shape.",
+                           tip="12 = every spike the preparation measured; 10 = only the clearly visible ones (the "
+                               "spikes of G 10-12 stars are faint: photographed, they show as faint dashed fragments "
+                               "in a dark sky).")
+    spike_smooth: float = S(1.0, section="Stars", label="Spike smoothing", level=ADVANCED, ge=0, le=1, step=0.05,
+                            help="The light of the photographed spikes averaged along each spike (sharp across it): "
+                                 "takes the noise of the image out of the faint spikes. 0 = raw light.")
     g_lim: float = S(15.0, section="Stars", label="Faintest drawn star", ge=8, le=20, step=0.25, unit="G mag",
                      help="Gaia magnitude of the faintest star drawn with a clearly visible peak.",
                      tip="Lower = fewer, more prominent stars; higher = denser star field.")
