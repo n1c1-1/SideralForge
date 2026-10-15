@@ -198,6 +198,12 @@ class RenderSettings(StageParams):
                                  "stars, and the nebula under them as photographed. Needs the preparation 'Rendering "
                                  "preparation, learned star removal' (when the project has a learned star layer).",
                             tip="Switching loads the other set of layers (a few seconds the first time).")
+    stars_photographed: float = S(0.0, section="Stars", label="Stars as photographed", ge=0, le=1, step=0.05,
+                                  help="With the learned star removal: every star shown by its own light (the image "
+                                       "minus the nebula), as photographed, instead of drawn from the catalogue. In "
+                                       "between, a blend. The star size settings then no longer apply.",
+                                  tip="Your stars as you shot them: real sizes, colours and spikes, with the softness "
+                                      "and noise of the data. Needs 'Learned star removal'.")
     spike_photo: float = S(1.0, section="Stars", label="Photographed spikes", ge=0, le=1, step=0.05,
                            help="Diffraction spikes of the bright stars: 0 = drawn with the spike shape measured once "
                                 "for all the stars; 1 = each star's own spikes, as photographed (measured on the image, "

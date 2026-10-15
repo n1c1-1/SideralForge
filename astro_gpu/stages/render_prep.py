@@ -213,6 +213,22 @@ class RenderPrep(Stage):
                                                          g_real=p.real_g if p.real_g > 0 else None, dm=dm, spike_snr=p.spike_snr,
                                                                  starless=sl_name, interpolate=not self.learned)
         ctx.save("N.npy", N.astype(np.float32))
+        if self.learned:
+            # every star as photographed (the learned starless image is trusted everywhere): image minus the nebula
+            # rendered, the far halo excepted (drawn back as the glare), the noise faded out like the saturated stars'
+            full = ctx.load("optics", "lat_full.npy", mmap=True)
+            hf = ctx.project.stage_dir("stars") / "stars_model_halo.npy"
+            hal = np.load(hf, mmap_mode="r") if hf.exists() else None
+            Sall = np.stack([np.asarray(full[c], np.float32) / flat[c] - b0[c]
+                             - (np.asarray(hal[c], np.float32) / flat[c] if hal is not None else 0)
+                             + cv2.GaussianBlur(astro[c] - N[c], (0, 0), 1.0) for c in range(3)])
+            del full, hal
+            Ya = np.tensordot(lum, Sall, 1)
+            hp_ = Ya[::3, ::3] - cv2.GaussianBlur(Ya[::3, ::3], (0, 0), 2)
+            sg_ = 1.4826 * float(np.median(np.abs(hp_ - np.median(hp_))))
+            Sall *= np.clip((cv2.GaussianBlur(Ya, (0, 0), 1.0) / max(sg_, 1e-9) - 1.5) / 2.0, 0, 1)[None]
+            ctx.save("Sall.npy", (Sall * good[None]).astype(np.float16))
+            del Sall, Ya, hp_
         if strips is not None:              # the photographed spikes, chosen at rendering
             for nm_, a_ in strips.items():
                 ctx.save(f"{nm_}.npy", a_.astype(np.float16))

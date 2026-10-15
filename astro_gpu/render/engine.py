@@ -41,7 +41,7 @@ NEB_KEYS = NEB_LIN_KEYS + ("chroma", "chroma_protect", "hue_target", "hue_shift"
                            "hl_shoulder", "hl_keep_chroma", "bright_halo_desat")
 STAR_KEYS = ("stars", "g_glow", "g_lim", "t_lim", "d10", "d7", "star_sat", "sat_min", "core_white", "t9",
              "white_temp", "tint", "real_stars", "star_glow", "glare_nebula", "diffuse_cut", "spike_photo",
-             "spike_g_max", "spike_smooth")
+             "spike_g_max", "spike_smooth", "stars_photographed")
 
 
 @dataclass
@@ -103,6 +103,9 @@ class RenderEngine:
         # photographed spikes (preparations of version 41 and later): the nebula interpolated across the spike strips
         # (dNsp, change from the base), the strips' weight (Wsp; Wsl without the star cores), the magnitude of the star
         # of each strip (Gsp) and the spikes' light averaged along them (Ssp) and raw (Ssp_raw)
+        # every star as photographed (learned preparations only)
+        sa_ = self.dir / "Sall.npy"
+        self.Sall = torch.from_numpy(np.load(sa_)) if sa_.exists() else None
         self.Ssp = self.Ssp_raw = None
         if self.layered and self.Sreal is not None and (self.dir / "Wsp.npy").exists():
             for n in ("Wsp", "Wsl", "Gsp", "dNsp"):
@@ -462,6 +465,11 @@ class RenderEngine:
             st_lin += (lr + s.star_sat * (sr - lr)).clamp(min=0)
             info["stars"]["real_light"] = int((~dr).sum())
             del sr, lr
+        if self.Sall is not None and s.stars_photographed > 0:
+            sa = torch.tensordot(self.M_eff(s), self.Sall.to(self.dev).float(), 1)
+            la = ops.luminance(sa)[None]
+            st_lin = (1 - s.stars_photographed) * st_lin + s.stars_photographed * (la + s.star_sat * (sa - la)).clamp(min=0)
+            del sa, la
         if s.star_glow > 0 and s.glare_nebula < 1 and "Shalo" in self._host:
             # the rest of the glare with the stars, under their gentler curve (fades out close to the star)
             sh = torch.einsum("ij,jhw->ihw", self.M_eff(s), self._glare(s, 1))
