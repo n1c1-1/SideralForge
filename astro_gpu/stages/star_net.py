@@ -20,10 +20,11 @@ from . import star_net_lib as lib
 
 
 class StarNetParams(StageParams):
-    enabled: bool = P(False, label="Learn the star removal",
+    enabled: bool = P(True, label="Learn the star removal",
                       help="Train a star-removal network on this project's own stack and give its star layer to "
-                           "the star removal stage (a second, learned starless image chosen at rendering). Off: "
-                           "the stage does nothing.",
+                           "the star removal stage (a second, learned starless image chosen at rendering). On by "
+                           "default: both removals are computed at the start, to be compared as views. Off: the "
+                           "stage does nothing.",
                       tip="About 35 minutes on one GPU (the training time below plus a few minutes of "
                           "preparation). Worth it with bright stars, spikes and halos.")
     minutes: float = P(32.0, label="Training time", unit="min", ge=1, le=240, step=1,

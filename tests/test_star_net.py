@@ -46,13 +46,13 @@ def test_registered_between_stars_and_starless():
     net = stages[names.index("star_net")]
     assert all(names.index(d) < names.index("star_net") for d in net.deps)
     assert "star_net" not in Starless.deps             # an optional input: no dependency that could make it stale
-    assert StarNetParams().enabled is False and StarNetParams().minutes == 32
+    assert StarNetParams().enabled is True and StarNetParams().minutes == 32      # on by default (2026-10-16)
     assert {d["name"] for d in StarNetParams.describe()} >= {"enabled", "minutes", "device"}
 
 
 def test_disabled_writes_nothing(project):
     ctx = _ctx(project, StarNet())
-    StarNet().run(ctx, StarNetParams())
+    StarNet().run(ctx, StarNetParams(enabled=False))
     assert list(ctx.dir.iterdir()) == []
 
 

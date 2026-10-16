@@ -81,6 +81,19 @@ resolution when you zoom in (double click or **1** for 100 %, **F** to fit).
 * **Stars**: faintest drawn star, sizes of G=10 and G=7 stars, colour, white cores. Stars are drawn with the real
   profile of your optics, measured on the image.
 
+**Views** (the bar above the image): a view is a rendering of the image saved under a name - the processing (main
+or a variant, see the Methods tab) and these settings. No single rendering suits every part of an image: keep at
+least one good view per zone.
+
+* The first views are your delivered renderings (one row each) and, beside each, the alternatives that cost no
+  computing: the glare of the bright stars drawn with the stars, the spikes drawn, the other star removal.
+* Click a view to show it at the same zoom and place; **Left / Right**: previous / next view; **B**: back to the view
+  shown before (press it repeatedly to flip between two views).
+* **+ New view** saves the current settings and processing; right click a view to update it with the current
+  settings, rename, export or delete it. A star (*) marks a view whose settings were changed since it was saved.
+* **Side by side...** renders the same zone of the views at 100 %.
+* A variant computed in the Methods tab gets its own view.
+
 Tools:
 
 * **Presets**: *Natural*, *H-alpha emphasised*, *Prominent stars*, *Dense Milky Way*, *Starless*.

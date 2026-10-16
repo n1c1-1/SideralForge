@@ -26,6 +26,7 @@ QDockWidget::title {{ background: {BG2}; padding: 6px 8px; font-weight: 600; col
 QToolBar {{ background: {BG2}; border: none; spacing: 6px; padding: 4px; }}
 QToolButton, QPushButton {{ background: {BG3}; border: 1px solid #3a3f47; border-radius: 4px; padding: 5px 10px; }}
 QToolButton:hover, QPushButton:hover {{ border-color: {ACCENT}; }}
+QToolButton:checked {{ background: #4a3d22; border: 1px solid {ACCENT}; color: {FG}; font-weight: 600; }}
 QPushButton:default, QPushButton#primary {{ background: {ACCENT}; color: #1b1d21; border: none; font-weight: 600; }}
 QPushButton:disabled, QToolButton:disabled {{ color: #6b7079; }}
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextBrowser {{

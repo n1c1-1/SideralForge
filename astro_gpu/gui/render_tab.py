@@ -180,9 +180,9 @@ class RenderTab(QWidget):
                        "B: back to the view shown before (flip to compare). Right click a view: update, rename, "
                        "export, delete.")
         vb.addWidget(lab)
-        self.view_btns = QHBoxLayout()
-        self.view_btns.setSpacing(4)
-        vb.addLayout(self.view_btns)
+        self.view_rows = QVBoxLayout()           # one row per base view: it and its alternatives
+        self.view_rows.setSpacing(2)
+        vb.addLayout(self.view_rows, 1)
         self.view_group = QButtonGroup(self)
         self.view_group.setExclusive(True)
         new_b = QToolButton()
@@ -428,24 +428,10 @@ class RenderTab(QWidget):
         return self.project.config.render.setdefault("views", {}) if self.project else {}
 
     def _init_views(self):
-        """The first views of a project: its delivered renderings (results/<name>/<name>_settings.json)."""
-        views = self._views()
-        if views or not self.project:
-            return
-        for d in sorted(self.project.results.glob("*/*_settings.json")):
-            try:
-                meta = json.loads(d.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            var = meta.get("variant", "main")
-            var = "" if var == "main" else var
-            if var and var not in self.project.config.variants:
-                continue
-            name = d.parent.name.replace("_", " ").capitalize()
-            views[name] = {"variant": var, "settings": RenderSettings.from_saved(meta.get("settings", {})).model_dump(
-                exclude_defaults=True), "created": meta.get("date", ""), "note": f"from results/{d.parent.name}"}
-        if views:
-            self.project.save()
+        """A project's first views: its delivered renderings and their alternatives that need no computing."""
+        if self.project:
+            from ..render.views import ensure_default_views
+            ensure_default_views(self.project)
 
     def _view_modified(self) -> bool:
         v = self._views().get(self.current_view)
@@ -453,29 +439,57 @@ class RenderTab(QWidget):
                                   or v.get("variant", "") != self.project.config.active_variant)
 
     def _fill_views(self):
-        while self.view_btns.count():
-            w = self.view_btns.takeAt(0).widget()
-            if w is not None:
-                self.view_group.removeButton(w)
-                w.deleteLater()
+        while self.view_rows.count():
+            row = self.view_rows.takeAt(0)
+            lay_ = row.layout()
+            while lay_ is not None and lay_.count():
+                w = lay_.takeAt(0).widget()
+                if w is not None:
+                    if isinstance(w, QToolButton):
+                        self.view_group.removeButton(w)
+                    w.deleteLater()
         known = set(self.project.config.variants) if self.project else set()
-        for i, (name, v) in enumerate(self._views().items()):
-            var = v.get("variant", "")
-            b = QToolButton()
-            b.setCheckable(True)
-            b.setText(f"{chr(65 + i) if i < 26 else i + 1}  {name}" + ("  *" if name == self.current_view
-                                                                        and self._view_modified() else ""))
-            lost = bool(var) and var not in known
-            b.setToolTip(f"Processing: {var or 'main'}{' (deleted)' if lost else ''}\n"
-                         + (f"{v.get('note')}\n" if v.get("note") else "")
-                         + "Right click: update with the current settings, rename, export, delete")
-            b.setEnabled(not lost)
-            b.setChecked(name == self.current_view)
-            b.clicked.connect(lambda _=False, n=name: self.show_view(n))
-            b.setContextMenuPolicy(Qt.CustomContextMenu)
-            b.customContextMenuRequested.connect(lambda pos, n=name, bb=b: self._view_menu(n, bb.mapToGlobal(pos)))
-            self.view_group.addButton(b)
-            self.view_btns.addWidget(b)
+        views = self._views()
+        for key, names in self._view_groups().items():
+            row = QHBoxLayout()
+            row.setSpacing(4)
+            head = QLabel(f"<b>{key}</b>")
+            head.setMinimumWidth(90)
+            row.addWidget(head)
+            for name in names:
+                self._view_button(row, name, views[name], known, key)
+            row.addStretch(1)
+            self.view_rows.addLayout(row)
+        self._fill_state()
+
+    def _view_groups(self) -> dict[str, list[str]]:
+        """Rows of the bar: a view 'X - something' goes with the view 'X'; the others start their own row."""
+        views = self._views()
+        groups: dict[str, list[str]] = {}
+        for name in views:
+            base, _, suffix = name.partition(" - ")
+            groups.setdefault(base if suffix and base in views else name, []).append(name)
+        return groups
+
+    def _view_button(self, row, name, v, known, key):
+        var = v.get("variant", "")
+        b = QToolButton()
+        b.setCheckable(True)
+        short = "as delivered" if name == key else name[len(key) + 3:] if name.startswith(key + " - ") else name
+        b.setText(short + ("  *" if name == self.current_view and self._view_modified() else ""))
+        lost = bool(var) and var not in known
+        b.setToolTip(f"{name}\nProcessing: {var or 'main'}{' (deleted)' if lost else ''}\n"
+                     + (f"{v.get('note')}\n" if v.get("note") else "")
+                     + "Right click: update with the current settings, rename, export, delete")
+        b.setEnabled(not lost)
+        b.setChecked(name == self.current_view)
+        b.clicked.connect(lambda _=False, n=name: self.show_view(n))
+        b.setContextMenuPolicy(Qt.CustomContextMenu)
+        b.customContextMenuRequested.connect(lambda pos, n=name, bb=b: self._view_menu(n, bb.mapToGlobal(pos)))
+        self.view_group.addButton(b)
+        row.addWidget(b)
+
+    def _fill_state(self):
         if not self.current_view:
             self.view_state.setText("current settings (no view)")
         elif self._view_modified():
@@ -513,8 +527,9 @@ class RenderTab(QWidget):
         self._fill_views()
 
     def _step_view(self, d):
-        names = [n for n, v in self._views().items()
-                 if not v.get("variant") or v["variant"] in self.project.config.variants]
+        views = self._views()
+        names = [n for row in self._view_groups().values() for n in row       # the order of the bar, row by row
+                 if not views[n].get("variant") or views[n]["variant"] in self.project.config.variants]
         if not names:
             return
         i = names.index(self.current_view) if self.current_view in names else (-1 if d > 0 else 0)
