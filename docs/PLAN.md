@@ -807,3 +807,17 @@ navigation is between ready results (decided with him: a bar of views above the 
   brightest star there and Alnitak then show the star removal's debris: no global setting suits every star, hence
   the views (Faithful / Artistic - glare with the stars).
 - Next: masks between views (painted or automatic, e.g. around the bright stars).
+
+### 11.13 Reproducible chain (2026-10-16 night)
+
+Report: D:/astro_gpu_diag/repro/REPORT.md (merged, commit bc0edef). Two full runs on the same data now give
+bit-identical results at every stage (final render 0 levels apart; before up to 212, mean 3.3). Causes: the optics
+star-shape fit had no single answer (background vs a flat pedestal of the model: star brightnesses scattered 8 % or
+29 % against the catalogue by run) - now a linear least-squares fit with one solution (optics version 2); GPU
+summation order (deterministic mode in runner and engine); network weights seeded after creation (now before); the
+tone curve's black point on a 200-step grid (now refined smoothly). The sky model's H-alpha colour only followed its
+inputs. The new fit is better by the data (Heart star photometry 5.4/5.6/6.2 % vs 7.0/7.9/62.7 % at best), drawn
+stars smaller and closer to the measured width, fewer coloured blobs in the faint dust (checked at 100 %).
+Remaining: the learned star network trains for a time budget (not reproducible across machines); the background's
+sky model stays sensitive to larger input changes. All five projects re-run from optics; renders judged blind against
+the current deliverables before any re-rendering.
