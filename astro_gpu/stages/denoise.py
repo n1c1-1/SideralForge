@@ -155,11 +155,11 @@ def train(ctx, A, B, nm, bk, sg, p, dev, ck_path):
     bk_t, sg_t = torch.from_numpy(bk).to(dev), torch.from_numpy(sg).to(dev)
     Hh, Ww = tA.shape[1:]
     valid = (tN[0] > 0) & (tN[0] < 1.6)
+    torch.manual_seed(p.seed)                       # before the network is made: its starting weights are drawn too
     net = UNet().to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=p.learning_rate, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=p.learning_rate, total_steps=steps, pct_start=0.05)
     start, run = 0, 0.0
-    torch.manual_seed(p.seed)
     if ck_path.exists():
         ck = torch.load(ck_path, map_location=dev, weights_only=False)
         net.load_state_dict(ck["net"])

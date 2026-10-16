@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 from scipy.optimize import least_squares
 
+from ..core.determinism import deterministic
 from ..core.params import ADVANCED, P, StageParams
 from ..core.stage import Context, Stage
 
@@ -26,8 +27,9 @@ class OpticsParams(StageParams):
                            "(lateral chromatic aberration of the optics) and realigns red and blue onto green.")
     lateral_grid: int = P(7, label="Lateral colour grid", level=ADVANCED, ge=2, le=15,
                           help="Number of zones across the long side of the image in which the colour shift is measured.")
-    psf_iterations: int = P(3000, label="PSF fit iterations", level=ADVANCED, ge=200, le=20000, step=100,
-                            help="Optimisation steps of the empirical PSF model, per colour channel.")
+    psf_iterations: int = P(300, label="PSF fit iterations", level=ADVANCED, ge=50, le=5000, step=50,
+                            help="Conjugate-gradient steps of the empirical PSF model, per colour channel and per "
+                                 "robust round (three rounds).")
     psf_stars_per_cell: int = P(60, label="PSF stars per zone", level=ADVANCED, ge=5, le=500,
                                 help="At most this many stars per zone of a 10x7 grid, so dense areas do not "
                                      "dominate the PSF model.")
@@ -43,7 +45,8 @@ class Optics(Stage):
                    "stars. This real PSF is what the star photometry, the star removal and the star rendering use.")
     deps = ("denoise", "stack", "catalogs")
     Params = OpticsParams
-    version = "1"
+    version = "2"          # 2: the PSF fit posed with one answer (backgrounds from an annulus, linear least squares,
+                           # deterministic sums): the same data gave 8 % or 30 % flux scatter from run to run
 
     def run(self, ctx: Context, p: OpticsParams) -> None:
         dev = ctx.device
@@ -203,53 +206,156 @@ def select_psf_stars(x, y, g, sat, W, H, gmin, gmax, per_cell):
     return np.array(out, int)
 
 
-def fit_channel(img_c, xs, ys, cols, W, H, iters, dev, progress=None):
+def _lower_median(a, dim):
+    """Median along dim (the lower of the two middle values), by sorting: deterministic on the GPU."""
+    return a.sort(dim).values.select(dim, (a.shape[dim] - 1) // 2)
+
+
+def fit_channel(img_c, xs, ys, cols, W, H, iters, dev, progress=None, rounds=3):
+    """Field- and colour-dependent PSF model of one colour, and the flux of each star.
+
+    Posed so that it has one answer, reached the same way every time:
+      - each star's background is a plane fitted (with clipping) to an annulus just outside its stamp. Fitted together
+        with the PSF, it could trade places with a flat part of the PSF model, and the fluxes with it: the same data
+        gave star fluxes scattered by 8 % or by 30 % against their colours depending on the run;
+      - each stamp minus its background is divided by its own sum, and the PSF model E (NB field/colour terms on a
+        grid oversampled OS times) is the regularised weighted least-squares fit of all the normalised stamps at once:
+        linear in E, so a single solution whatever the start or the order of the colours; solved by preconditioned
+        conjugate gradients with sums in a fixed order (bit-identical runs on the same GPU);
+      - stars that disagree with the model (neighbours, defects) weigh less in two further rounds;
+      - each star's flux is then fitted (weighted least squares) with the model's shape at its place and colour, over
+        its stamp, above the annulus background.
+    Returns E (NB, NG, NG), the fluxes and the median residual (fraction of the star flux)."""
+    with deterministic(strict=True):
+        return _fit_channel(img_c, xs, ys, cols, W, H, iters, dev, progress, rounds)
+
+
+def _fit_channel(img_c, xs, ys, cols, W, H, iters, dev, progress, rounds):
+    N = len(xs)
     xi, yi = np.round(xs).astype(int), np.round(ys).astype(int)
     oy, ox = np.mgrid[-ST:ST + 1, -ST:ST + 1]
+    S = 2 * ST + 1
     py = (yi[:, None, None] + oy[None]).astype(np.int64)
     px = (xi[:, None, None] + ox[None]).astype(np.int64)
     data = torch.from_numpy(img_c[py, px].astype(np.float32)).to(dev)
     dx = torch.from_numpy((px - xs[:, None, None]).astype(np.float32)).to(dev)
     dy = torch.from_numpy((py - ys[:, None, None]).astype(np.float32)).to(dev)
+    # background: a plane on the annulus ST+1 .. ST+5 px, three rounds of 2.5-sigma clipping
+    ra0, ra1 = ST + 1, ST + 5
+    ay, ax = np.mgrid[-ra1:ra1 + 1, -ra1:ra1 + 1]
+    ann_m = (np.hypot(ax, ay) >= ra0) & (np.hypot(ax, ay) <= ra1)
+    ay, ax = ay[ann_m], ax[ann_m]
+    Hh, Ww = img_c.shape
+    ayy = np.clip(yi[:, None] + ay[None], 0, Hh - 1)
+    axx = np.clip(xi[:, None] + ax[None], 0, Ww - 1)
+    ann = torch.from_numpy(img_c[ayy, axx].astype(np.float32)).to(dev)
+    adx = torch.from_numpy((axx - xs[:, None]).astype(np.float32)).to(dev)
+    ady = torch.from_numpy((ayy - ys[:, None]).astype(np.float32)).to(dev)
+    A3 = torch.stack([torch.ones_like(adx), adx, ady], -1)
+    w = torch.ones_like(ann)
+    for _ in range(3):
+        AtA = (A3[:, :, :, None] * A3[:, :, None, :] * w[:, :, None, None]).sum(1) + 1e-6 * torch.eye(3, device=dev)
+        Atb = (A3 * (w * ann)[:, :, None]).sum(1)
+        q = torch.linalg.solve(AtA, Atb[..., None])[..., 0]
+        res = ann - (A3 * q[:, None, :]).sum(-1)
+        sig_s = 1.4826 * _lower_median(res.abs(), 1) + 1e-6
+        w = (res.abs() < 2.5 * sig_s[:, None]).float()
+    sub = data - (q[:, 0, None, None] + q[:, 1, None, None] * dx + q[:, 2, None, None] * dy)
+    F0 = sub.sum((1, 2))
+    good = F0 > 10 * sig_s * S
+    D = sub / F0.clamp(min=1e-6)[:, None, None]
+    wpix = (1.0 / ((sig_s / F0.clamp(min=1e-6))[:, None, None] ** 2 + (0.03 * D.clamp(min=0)) ** 2)) * good[:, None, None]
+    # bilinear sampling of the PSF grid (-RAD..RAD, NG nodes) at every stamp pixel: fixed indices and weights
+    h = 2.0 * RAD / (NG - 1)
+    gx, gy = (dx + RAD) / h, (dy + RAD) / h
+    x0, y0 = gx.floor(), gy.floor()
+    fx, fy = gx - x0, gy - y0
+    idx, wts = [], []
+    for ddy, ddx, wv in ((0, 0, (1 - fx) * (1 - fy)), (0, 1, fx * (1 - fy)), (1, 0, (1 - fx) * fy), (1, 1, fx * fy)):
+        xx, yy = x0 + ddx, y0 + ddy
+        ok = (xx >= 0) & (xx < NG) & (yy >= 0) & (yy < NG)
+        idx.append((yy.clamp(0, NG - 1) * NG + xx.clamp(0, NG - 1)).long().reshape(-1))
+        wts.append((wv * ok).reshape(-1))
     u = torch.from_numpy((xs / (W / 2) - 1).astype(np.float32)).to(dev)
     v = torch.from_numpy((ys / (H / 2) - 1).astype(np.float32)).to(dev)
     cc = torch.from_numpy((cols - COL0).astype(np.float32)).to(dev)
-    Bs = basis(u, v, cc)
-    gy, gx = torch.meshgrid(torch.linspace(-RAD, RAD, NG, device=dev), torch.linspace(-RAD, RAD, NG, device=dev),
-                            indexing="ij")
-    E = torch.zeros(NB, NG, NG, device=dev)
-    E[0] = torch.exp(-(gx ** 2 + gy ** 2) / (2 * 1.3 ** 2))
-    E = torch.nn.Parameter(E)
-    edge = torch.cat([data[:, 0], data[:, -1], data[:, :, 0], data[:, :, -1]], 1)
-    b0 = edge.median(1).values
-    f0 = (data - b0[:, None, None]).sum((1, 2)).clamp(min=1.0)
-    logF = torch.nn.Parameter(torch.log(f0))
-    bg = torch.nn.Parameter(torch.stack([b0, torch.zeros_like(b0), torch.zeros_like(b0)], 1))
-    opt = torch.optim.Adam([{"params": [E], "lr": 2e-3}, {"params": [logF], "lr": 1e-2}, {"params": [bg], "lr": 0.05}])
-    sig_bg = float(torch.median((edge - b0[:, None]).abs()).item() * 1.4826) + 1e-3
+    Bp = basis(u, v, cc)[:, None, :].expand(N, S * S, NB).reshape(-1, NB)
+
+    def fwd(E):                                                   # (NB, NG*NG) -> one value per stamp pixel
+        Et = E.T
+        return (sum(wts[c][:, None] * Et[idx[c]] for c in range(4)) * Bp).sum(-1)
+
+    def adj(R, sq=False):                                         # transpose of fwd (sq: of its square, for the diagonal)
+        out = torch.zeros(NG * NG, NB, device=dev)
+        for c in range(4):
+            out.index_add_(0, idx[c], ((wts[c] ** 2 if sq else wts[c]) * R)[:, None] * (Bp * Bp if sq else Bp))
+        return out.T
+
+    def lap(E):
+        G = E.reshape(NB, NG, NG)
+        L = torch.zeros_like(G)
+        L[:, 1:-1, 1:-1] = G[:, 2:, 1:-1] + G[:, :-2, 1:-1] + G[:, 1:-1, 2:] + G[:, 1:-1, :-2] - 4 * G[:, 1:-1, 1:-1]
+        return L
+
+    def lap_t(L):
+        G = torch.zeros_like(L)
+        Li = L[:, 1:-1, 1:-1]
+        G[:, 2:, 1:-1] += Li
+        G[:, :-2, 1:-1] += Li
+        G[:, 1:-1, 2:] += Li
+        G[:, 1:-1, :-2] += Li
+        G[:, 1:-1, 1:-1] -= 4 * Li
+        return G
+
+    Dv = D.reshape(-1)
+    npts = float(good.sum()) * S * S
+    peak = float(D[good].amax((1, 2)).median())
+    mu = 50.0 / peak ** 2 / float((NG - 2) ** 2 * NB)             # the smoothness weight of the former fit
+    star_w = torch.ones(N, device=dev)
+    E = torch.zeros(NB, NG * NG, device=dev)
     t0 = time.time()
-    for it in range(iters):
-        P_ = (sample_E(E, dx, dy) * Bs[:, None, None, :]).sum(-1)
-        Pn = P_ / P_.sum((1, 2), keepdim=True).clamp(min=1e-6)
-        model = (torch.exp(logF)[:, None, None] * Pn + bg[:, 0, None, None] + bg[:, 1, None, None] * dx
-                 + bg[:, 2, None, None] * dy)
-        var = sig_bg ** 2 + (0.03 * model.detach().clamp(min=0)) ** 2
-        chi = ((data - model) ** 2 / var).mean()
-        lap = E[:, 2:, 1:-1] + E[:, :-2, 1:-1] + E[:, 1:-1, 2:] + E[:, 1:-1, :-2] - 4 * E[:, 1:-1, 1:-1]
-        reg = 50.0 * (lap ** 2).mean() / (E[0].abs().max().detach() ** 2 + 1e-9)
-        loss = chi + reg
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
-        if progress and (it + 1) % 100 == 0:
-            progress((it + 1) / iters, f"step {it + 1}/{iters}, chi2 {chi.item():.2f} ({time.time() - t0:.0f} s)")
-    with torch.no_grad():
-        P_ = (sample_E(E, dx, dy) * Bs[:, None, None, :]).sum(-1)
-        Pn = P_ / P_.sum((1, 2), keepdim=True)
-        model = (torch.exp(logF)[:, None, None] * Pn + bg[:, 0, None, None] + bg[:, 1, None, None] * dx
-                 + bg[:, 2, None, None] * dy)
-        frac = (data - model).abs().sum((1, 2)) / torch.exp(logF)
-    return E.detach(), torch.exp(logF).detach().cpu().numpy(), float(frac.median())
+    for rnd in range(rounds):
+        Wv = (wpix * star_w[:, None, None]).reshape(-1) / npts
+
+        dg = adj(Wv, sq=True)
+        # parts of the grid no stamp reaches stay at zero (a tiny ridge): otherwise they continued the PSF smoothly
+        # out to the grid's edge, a pedestal the later stages would read as wings ending in a cliff
+        ridge = 1e-3 * float(dg[dg > 0].median())
+
+        def normal(E_, Wv=Wv, ridge=ridge):
+            return adj(Wv * fwd(E_)) + mu * lap_t(lap(E_)).reshape(NB, -1) + ridge * E_
+
+        b = adj(Wv * Dv)
+        Minv = 1.0 / (dg + 20.0 * mu + ridge).clamp(min=1e-30)
+        r = b - normal(E)
+        z = Minv * r
+        p_ = z.clone()
+        rz = rz0 = float((r * z).sum())
+        for it in range(iters):
+            Ap = normal(p_)
+            alpha = rz / max(float((p_ * Ap).sum()), 1e-30)
+            E = E + alpha * p_
+            r = r - alpha * Ap
+            z = Minv * r
+            rz_new = float((r * z).sum())
+            if rz_new < 1e-12 * rz0:
+                break
+            p_ = z + (rz_new / rz) * p_
+            rz = rz_new
+            if progress and (it + 1) % 100 == 0:
+                progress((rnd + (it + 1) / iters) / rounds, f"round {rnd + 1}/{rounds}, step {it + 1}/{iters} "
+                                                           f"({time.time() - t0:.0f} s)")
+        res = (Dv - fwd(E)).reshape(N, S, S)
+        chi = (wpix * res ** 2).mean((1, 2))
+        star_w = torch.clamp(3 * float(chi[good].median()) / chi.clamp(min=1e-12), max=1.0)
+    P_ = fwd(E).reshape(N, S, S)
+    Pk = P_ / P_.sum((1, 2), keepdim=True).clamp(min=1e-9)
+    fl = F0.clone()
+    for _ in range(2):
+        wd = 1.0 / (sig_s[:, None, None] ** 2 + (0.03 * fl.clamp(min=0)[:, None, None] * Pk) ** 2)
+        fl = (wd * Pk * sub).sum((1, 2)) / (wd * Pk * Pk).sum((1, 2)).clamp(min=1e-12)
+    frac = (sub - fl[:, None, None] * Pk).abs().sum((1, 2)) / fl.clamp(min=1e-6)
+    return E.reshape(NB, NG, NG), fl.cpu().numpy(), float(frac[good].median())
 
 
 def wings(img, x, y, g, W, H, gmin, gmax):

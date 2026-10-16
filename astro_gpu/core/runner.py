@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from .determinism import deterministic
 from .journal import Journal
 from .params import params_hash, resolve
 from .project import Project
@@ -181,7 +182,8 @@ class Pipeline:
         self.journal.emit("stage_start", stage=st.name, title=st.title)
         t0 = time.time()
         try:
-            st.run(ctx, p)
+            with deterministic():                # same inputs, same outputs (core/determinism.py)
+                st.run(ctx, p)
         except Interrupted:
             m.update(status="interrupted", error="stopped by user", duration=time.time() - t0)
             _write_manifest(self.project, st.name, m)

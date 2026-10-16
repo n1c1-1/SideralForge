@@ -596,10 +596,10 @@ def train_net(data, synth, dev, minutes, batch=6, patch=PATCH, lr=3e-4, seed=0, 
     bk = torch.as_tensor(np.asarray(data["bk"], np.float32), device=dev)
     sg = torch.as_tensor(np.asarray(data["sg"], np.float32), device=dev)
     P = patch
+    torch.manual_seed(seed)                         # before the network is made: its starting weights are drawn too
     net = make_net(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
     rng = np.random.default_rng(seed)
-    torch.manual_seed(seed)
     it, run_l, hist, elapsed0 = 0, None, [], 0.0
     if ckpt is not None and Path(ckpt).exists():
         ck = torch.load(ckpt, map_location=dev, weights_only=False)
