@@ -6,14 +6,16 @@ import time
 
 import numpy as np
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QMenu,
     QMessageBox,
     QProgressDialog,
     QPushButton,
@@ -104,6 +106,8 @@ class RenderTab(QWidget):
     _request = Signal(int, dict, float)
     _load = Signal()
     _export = Signal(object, dict, dict)
+    variantRequested = Signal(str)        # a view of another processing variant was chosen
+    compareRequested = Signal(list)       # (label, variant, settings) of the views to compare
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -123,6 +127,11 @@ class RenderTab(QWidget):
         self.ref_img = None
         self.prog = None
         self._export_name = ""
+        self.current_view = ""
+        self._pending_view = None
+        self._last_view = ""                  # the view shown before the current one (B: back to it)
+        self._restore_view = None             # zoom and place to keep when another processing is loaded
+        self.view_cache: dict = {}            # view -> (final image, scale): instant switching
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -162,6 +171,40 @@ class RenderTab(QWidget):
         centre = QWidget()
         cv = QVBoxLayout(centre)
         cv.setContentsMargins(0, 0, 0, 0)
+        # views: named renderings of this image (processing + rendering settings), one button each; no single
+        # rendering suits every part of an image - keep one good view per zone, flip between them, export them
+        vb = QHBoxLayout()
+        lab = QLabel("Views:")
+        lab.setToolTip("A view = the processing (main or a variant, see the Methods tab) and these rendering "
+                       "settings. Click a view to show it at the same place; Left / Right: previous / next view; "
+                       "B: back to the view shown before (flip to compare). Right click a view: update, rename, "
+                       "export, delete.")
+        vb.addWidget(lab)
+        self.view_btns = QHBoxLayout()
+        self.view_btns.setSpacing(4)
+        vb.addLayout(self.view_btns)
+        self.view_group = QButtonGroup(self)
+        self.view_group.setExclusive(True)
+        new_b = QToolButton()
+        new_b.setText("+ New view")
+        new_b.setToolTip("Save the current settings and processing as a new view")
+        new_b.clicked.connect(lambda: self.save_view(new=True))
+        vb.addWidget(new_b)
+        cmp_b = QToolButton()
+        cmp_b.setText("Side by side...")
+        cmp_b.setToolTip("Render the same zone of the views at 100 %, side by side")
+        cmp_b.clicked.connect(self.compare_views)
+        vb.addWidget(cmp_b)
+        vb.addStretch(1)
+        self.view_state = QLabel("")
+        self.view_state.setObjectName("muted")
+        vb.addWidget(self.view_state)
+        cv.addLayout(vb)
+        for key, fn in ((Qt.Key_Left, lambda: self._step_view(-1)), (Qt.Key_Right, lambda: self._step_view(1)),
+                        (Qt.Key_B, self._back_view)):
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(fn)
         bar = QHBoxLayout()
         self.layer_group = QButtonGroup(self)
         for i, (k, lab) in enumerate((("final", "Final"), ("starless", "Starless"), ("stars", "Stars"))):
@@ -243,7 +286,17 @@ class RenderTab(QWidget):
         self.history, self.future = [], []
         self.images = {}
         self.ref_img = None
+        if self._pending_view and not self.view.item.pixmap().isNull():
+            vc = self.view.viewport().rect().center()
+            self._restore_view = (self.view.transform(), self.view.mapToScene(vc), self.view._fitted)
         self.view.set_image(None)
+        self.view_cache.clear()
+        self._init_views()
+        if self._pending_view and self._pending_view in self._views():
+            self.values = dict(self._views()[self._pending_view]["settings"])
+            self.current_view = self._pending_view
+        self._pending_view = None
+        self._fill_views()
         self._build_form()
         prep = project.stage_dir("render_prep") / "manifest.json"
         if not prep.exists() or json.loads(prep.read_text()).get("status") != "done":
@@ -338,6 +391,8 @@ class RenderTab(QWidget):
         self._build_form()
         self.debounce.poke()
         self.saver.poke()
+        if self.project:
+            self._fill_views()
 
     def apply_preset(self):
         self.set_all(dict(PRESETS[self.preset.currentText()]))
@@ -367,6 +422,176 @@ class RenderTab(QWidget):
         if self.project:
             self.project.config.render["settings"] = dict(self.values)
             self.project.save()
+
+    # ------------------------------------------------------------------ views
+    def _views(self) -> dict:
+        return self.project.config.render.setdefault("views", {}) if self.project else {}
+
+    def _init_views(self):
+        """The first views of a project: its delivered renderings (results/<name>/<name>_settings.json)."""
+        views = self._views()
+        if views or not self.project:
+            return
+        for d in sorted(self.project.results.glob("*/*_settings.json")):
+            try:
+                meta = json.loads(d.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            var = meta.get("variant", "main")
+            var = "" if var == "main" else var
+            if var and var not in self.project.config.variants:
+                continue
+            name = d.parent.name.replace("_", " ").capitalize()
+            views[name] = {"variant": var, "settings": RenderSettings.from_saved(meta.get("settings", {})).model_dump(
+                exclude_defaults=True), "created": meta.get("date", ""), "note": f"from results/{d.parent.name}"}
+        if views:
+            self.project.save()
+
+    def _view_modified(self) -> bool:
+        v = self._views().get(self.current_view)
+        return v is not None and (dict(v["settings"]) != dict(self.values)
+                                  or v.get("variant", "") != self.project.config.active_variant)
+
+    def _fill_views(self):
+        while self.view_btns.count():
+            w = self.view_btns.takeAt(0).widget()
+            if w is not None:
+                self.view_group.removeButton(w)
+                w.deleteLater()
+        known = set(self.project.config.variants) if self.project else set()
+        for i, (name, v) in enumerate(self._views().items()):
+            var = v.get("variant", "")
+            b = QToolButton()
+            b.setCheckable(True)
+            b.setText(f"{chr(65 + i) if i < 26 else i + 1}  {name}" + ("  *" if name == self.current_view
+                                                                        and self._view_modified() else ""))
+            lost = bool(var) and var not in known
+            b.setToolTip(f"Processing: {var or 'main'}{' (deleted)' if lost else ''}\n"
+                         + (f"{v.get('note')}\n" if v.get("note") else "")
+                         + "Right click: update with the current settings, rename, export, delete")
+            b.setEnabled(not lost)
+            b.setChecked(name == self.current_view)
+            b.clicked.connect(lambda _=False, n=name: self.show_view(n))
+            b.setContextMenuPolicy(Qt.CustomContextMenu)
+            b.customContextMenuRequested.connect(lambda pos, n=name, bb=b: self._view_menu(n, bb.mapToGlobal(pos)))
+            self.view_group.addButton(b)
+            self.view_btns.addWidget(b)
+        if not self.current_view:
+            self.view_state.setText("current settings (no view)")
+        elif self._view_modified():
+            self.view_state.setText(f"'{self.current_view}' modified: right click it to update it")
+        else:
+            self.view_state.setText(f"processing: {self.project.config.active_variant or 'main'}")
+
+    def show_view(self, name):
+        if name not in self._views():
+            return
+        v = self._views()[name]
+        var = v.get("variant", "")
+        if var and var not in self.project.config.variants:
+            QMessageBox.warning(self, "View", f"The processing '{var}' of this view was deleted.")
+            self._fill_views()
+            return
+        if name != self.current_view:
+            self._last_view = self.current_view
+        if var != self.project.config.active_variant:
+            self._pending_view = name          # applied once the other processing is loaded, at the same place
+            self.variantRequested.emit(var)
+            return
+        self.current_view = name
+        if name in self.view_cache:            # instant: the last image of this view, refreshed just after
+            img, sc = self.view_cache[name]
+            self.images = dict(self.images, final=img) if self.images else {"final": img, "starless": img,
+                                                                             "stars": img}
+            self.cur_scale = sc
+            self.show_current()
+        self.history.append(dict(self.values))
+        self.values = dict(v["settings"])
+        self._build_form()
+        self.debounce.poke()
+        self.saver.poke()
+        self._fill_views()
+
+    def _step_view(self, d):
+        names = [n for n, v in self._views().items()
+                 if not v.get("variant") or v["variant"] in self.project.config.variants]
+        if not names:
+            return
+        i = names.index(self.current_view) if self.current_view in names else (-1 if d > 0 else 0)
+        self.show_view(names[(i + d) % len(names)])
+
+    def _back_view(self):
+        if self._last_view and self._last_view in self._views():
+            self.show_view(self._last_view)
+
+    def _view_menu(self, name, pos):
+        m = QMenu(self)
+        up = m.addAction("Update with the current settings and processing")
+        rn = m.addAction("Rename...")
+        ex = m.addAction("Export...")
+        m.addSeparator()
+        dl = m.addAction("Delete")
+        a = m.exec(pos)
+        if a is up:
+            self._views()[name].update(variant=self.project.config.active_variant, settings=dict(self.values))
+            self.project.save()
+            self.current_view = name
+            self._fill_views()
+        elif a is rn:
+            new, ok = QInputDialog.getText(self, "Rename view", "New name:", text=name)
+            new = new.strip() if ok else ""
+            if new and new != name and new not in self._views():
+                views = self._views()
+                self.project.config.render["views"] = {(new if k == name else k): val for k, val in views.items()}
+                self.project.save()
+                if self.current_view == name:
+                    self.current_view = new
+                self.view_cache.pop(name, None)
+                self._fill_views()
+        elif a is ex:
+            if name != self.current_view:
+                self.show_view(name)
+            if name == self.current_view:
+                self.export_dialog()
+        elif a is dl:
+            if QMessageBox.question(self, "Delete view", f"Delete the view '{name}'? (Its exported images are "
+                                    "kept.)") == QMessageBox.Yes:
+                del self._views()[name]
+                self.project.save()
+                self.view_cache.pop(name, None)
+                if self.current_view == name:
+                    self.current_view = ""
+                self._fill_views()
+
+    def save_view(self, new: bool = False):
+        if not self.project:
+            return
+        name, ok = QInputDialog.getText(self, "New view", "Name of the view:",
+                                        text="" if new else (self.current_view or ""))
+        name = name.strip() if ok else ""
+        if not name:
+            return
+        if name in self._views() and QMessageBox.question(
+                self, "New view", f"Replace the view '{name}'?") != QMessageBox.Yes:
+            return
+        from datetime import datetime
+        self._views()[name] = {"variant": self.project.config.active_variant, "settings": dict(self.values),
+                               "created": datetime.now().isoformat(timespec="seconds")}
+        self.project.save()
+        if name != self.current_view:
+            self._last_view = self.current_view
+        self.current_view = name
+        self._fill_views()
+
+    def compare_views(self):
+        known = set(self.project.config.variants) if self.project else set()
+        entries = [(name, v.get("variant", ""), dict(v["settings"])) for name, v in self._views().items()
+                   if not v.get("variant") or v["variant"] in known]
+        if len(entries) < 2:
+            QMessageBox.information(self, "Compare views", "Save at least two views first (Save view...).")
+            return
+        self.save_settings()
+        self.compareRequested.emit(entries)
 
     # ------------------------------------------------------------------ rendering
     def _proxy_scale(self) -> float:
@@ -398,6 +623,10 @@ class RenderTab(QWidget):
         self.images = out
         self.cur_scale = scale
         self.info = info
+        if self.current_view and not self._view_modified():
+            self.view_cache[self.current_view] = (out["final"], scale)
+            while len(self.view_cache) > 8:
+                self.view_cache.pop(next(iter(self.view_cache)))
         res = "full resolution" if scale >= 1 else f"preview 1/{int(round(1 / scale))}"
         self.status.setText(f"{res} · {info.get('render_ms', 0)} ms")
         self.show_current()
@@ -410,6 +639,13 @@ class RenderTab(QWidget):
         key = b.property("layer") if b else "final"
         img = self.images[key]
         self.view.set_image(to_qimage(img), keep_view=True, scale_factor=1.0 / max(self.cur_scale, 1e-6))
+        if self._restore_view is not None:          # same zoom and place as the view shown before
+            t, c, fitted = self._restore_view
+            self._restore_view = None
+            if not fitted:
+                self.view.setTransform(t)
+                self.view.centerOn(c)
+                self.view._fitted = False
         self.hist.set_image(_sample(img[4:-4, 4:-4]))
         mode = self.compare.currentIndex()
         if mode == 1 and self.snapshot is not None:
@@ -502,10 +738,13 @@ class RenderTab(QWidget):
         v = QVBoxLayout(dlg)
         v_ = self.project.config.active_variant
         init = ExportSettings().model_dump()
-        if v_:                       # a variant's export does not overwrite main's results
+        if self.current_view:        # a view is exported under its own name
+            import re
+            init["name"] = re.sub(r"[^A-Za-z0-9_-]+", "_", self.current_view).strip("_") or init["name"]
+        elif v_:                     # a variant's export does not overwrite main's results
             init["name"] = f"{init['name']}_{self.project.config.variants[v_]['slug']}"
         form = ParamForm(ExportSettings, init, advanced=True)
-        vals: dict = {"name": init["name"]} if v_ else {}
+        vals: dict = {"name": init["name"]} if (v_ or self.current_view) else {}
         form.changed.connect(lambda n, val: vals.__setitem__(n, val))
         help_ = HelpBox()
         form.focused.connect(lambda n: help_.show_param(form.desc[n], form.values.get(n)))

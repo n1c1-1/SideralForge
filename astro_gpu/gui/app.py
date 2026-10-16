@@ -293,6 +293,8 @@ class MainWindow(QMainWindow):
         self.methods_tab.showRendering.connect(lambda: self.tabs.setCurrentWidget(self.render_tab))
         self.tabs.addTab(self.methods_tab, "Methods")
         self.render_tab = RenderTab()
+        self.render_tab.variantRequested.connect(self.switch_variant)
+        self.render_tab.compareRequested.connect(self.open_compare_views)
         self.tabs.addTab(self.render_tab, "Final adjustment")
         from .results_tab import ResultsTab
         self.results_tab = ResultsTab()
@@ -393,11 +395,32 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Compare", "No processing has its rendering preparation computed yet.")
             return
         values = dict(getattr(self.render_tab, "values", {}) or {})
+        self._compare([(v or "main", v, values) for v in ready], "Compare the processings")
+
+    def open_compare_views(self, entries):
+        ready = set(self.methods_tab.ready_processings())
+        entries = [e for e in entries if e[1] in ready]
+        if len(entries) < 2:
+            QMessageBox.information(self, "Compare views", "Fewer than two views have their processing computed.")
+            return
+        self._compare(entries, "Compare the views")
+
+    def _compare(self, entries, title):
         self.render_tab._stop_worker()                  # one rendering engine on the GPU at a time
-        dlg = CompareDialog(self.project, values, ready, self)
+        dlg = CompareDialog(self.project, entries, self, title=title)
         dlg.exec()
         if self.tabs.currentWidget() is self.render_tab:
             self.render_tab.set_project(self.project, self.advanced)
+
+    def switch_variant(self, name):
+        """A view of another processing was chosen in Final adjustment."""
+        if self.runner.is_running():
+            QMessageBox.information(self, "View", "A computation is running: the processing shown cannot change now.")
+            self.render_tab._pending_view = None
+            self.render_tab._fill_views()
+            return
+        self.project.set_active_variant(name)
+        self.on_active_changed()
 
     def show_guide(self):
         from PySide6.QtWidgets import QDialog, QTextBrowser

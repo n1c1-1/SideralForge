@@ -200,10 +200,11 @@ class CompareWorker(QObject):
             self.failed.emit(f"overview: {e}")
         self._free()
 
-    @Slot(list, dict, float, float, int)
-    def render_zone(self, variants, values, fx, fy, size):
+    @Slot(list, float, float, int)
+    def render_zone(self, entries, fx, fy, size):
+        """entries: (label, variant, rendering settings) - the same zone of each, at full resolution."""
         from ..render.settings import RenderSettings
-        for v in variants:
+        for label, v, values in entries:
             try:
                 eng = self._engine(v)
                 lay = eng.render(RenderSettings(**values), 1.0)
@@ -211,10 +212,10 @@ class CompareWorker(QObject):
                 cx, cy = x0 + fx * (x1 - x0), y0 + fy * (y1 - y0)
                 ys, xs = int(max(y0, min(cy - size / 2, y1 - size))), int(max(x0, min(cx - size * 0.75, x1 - 1.5 * size)))
                 img = (lay.final[:, ys:ys + size, xs:xs + int(1.5 * size)].clamp(0, 1) * 255 + 0.5).byte()
-                self.zone.emit(v or "main", img.permute(1, 2, 0).contiguous().cpu().numpy())
+                self.zone.emit(label, img.permute(1, 2, 0).contiguous().cpu().numpy())
                 del eng, lay
             except Exception as e:  # noqa: BLE001
-                self.failed.emit(f"{v or 'main'}: {e}")
+                self.failed.emit(f"{label}: {e}")
             self._free()
         self.finished.emit()
 
@@ -240,24 +241,25 @@ def _qimage(a: np.ndarray) -> QImage:
 
 
 class CompareDialog(QDialog):
-    """The same zone of every processing at 100 %, with the current rendering settings."""
+    """The same zone of several views at 100 %: entries (label, processing variant, rendering settings)."""
 
     _overview = Signal(str, dict)
-    _zone = Signal(list, dict, float, float, int)
+    _zone = Signal(list, float, float, int)
 
-    def __init__(self, project: Project, values: dict, ready: list[str], parent=None):
+    def __init__(self, project: Project, entries: list[tuple[str, str, dict]], parent=None,
+                 title: str = "Compare the processings"):
         super().__init__(parent)
-        self.setWindowTitle("Compare the processings")
+        self.setWindowTitle(title)
         self.resize(1500, 950)
-        self.values, self.fx, self.fy = values, 0.5, 0.5
+        self.entries, self.fx, self.fy = entries, 0.5, 0.5
         v = QHBoxLayout(self)
         left = QVBoxLayout()
-        left.addWidget(_small("Processings to compare (computed ones):", style.FG))
-        self.checks: dict[str, QCheckBox] = {}
-        for name in ready:
-            cb = QCheckBox(name or "main")
+        left.addWidget(_small("To compare:", style.FG))
+        self.checks: list[tuple[QCheckBox, tuple]] = []
+        for e in entries:
+            cb = QCheckBox(e[0])
             cb.setChecked(True)
-            self.checks[name] = cb
+            self.checks.append((cb, e))
             left.addWidget(cb)
         left.addWidget(_small("Click the overview to choose the zone; the crops are at 100 % (one image pixel per "
                               "screen pixel).", style.FG2))
@@ -296,7 +298,7 @@ class CompareDialog(QDialog):
         self.worker.finished.connect(lambda: (self.go.setEnabled(True), self.state.setText("done")))
         self.thread.start()
         self.state.setText("rendering the overview...")
-        self._overview.emit(project.config.active_variant, values)
+        self._overview.emit(entries[0][1], entries[0][2])
 
     def _show_overview(self, img):
         self._ov_img = img
@@ -321,8 +323,8 @@ class CompareDialog(QDialog):
         self._draw_overview()
 
     def _render(self):
-        names = [n for n, cb in self.checks.items() if cb.isChecked()]
-        if not names:
+        chosen = [e for cb, e in self.checks if cb.isChecked()]
+        if not chosen:
             return
         while self.grid.count():
             w = self.grid.takeAt(0).widget()
@@ -330,8 +332,8 @@ class CompareDialog(QDialog):
                 w.deleteLater()
         self.n = 0
         self.go.setEnabled(False)
-        self.state.setText(f"rendering {len(names)} processings at full resolution, one after the other...")
-        self._zone.emit(names, self.values, self.fx, self.fy, self.size.value())
+        self.state.setText(f"rendering {len(chosen)} views at full resolution, one after the other...")
+        self._zone.emit(chosen, self.fx, self.fy, self.size.value())
 
     def _show_zone(self, name, img):
         box = QVBoxLayout()
@@ -501,6 +503,12 @@ class MethodsTab(QWidget):
         except ValueError as e:
             QMessageBox.warning(self, "New variant", str(e))
             return
+        # the new processing gets a view of its own (the current rendering settings), next to the others
+        views = p.config.render.setdefault("views", {})
+        if name.strip() not in views:
+            views[name.strip()] = {"variant": name.strip(), "settings": dict(p.config.render.get("settings", {})),
+                                   "created": datetime.now().isoformat(timespec="seconds"),
+                                   "note": f"'{d.title}' set to '{o.label}'"}
         p.set_active_variant(name.strip())
         self.activeChanged.emit()
         self._offer_run()
