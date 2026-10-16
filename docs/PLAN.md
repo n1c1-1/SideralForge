@@ -771,3 +771,20 @@ sheets D:/astro_gpu_diag/qc/glare, keys in qc/blind_keys/glare_*):
   saturated star as photographed. Fixed: a spike direction counts only if its opposite stands out too (diffraction
   spikes are point-symmetric; the Newton projects find four directions in opposite pairs, unchanged). Heart re-run
   from the star removal. Lesson: re-judge a project after any chain re-run before delivering.
+
+### 11.11 Methods tab and variants (2026-10-16)
+
+User's request: choose the processing options intuitively in the interface; one processing will not suit every
+case. Chosen with the user: variants kept side by side (not recomputed in place), in a new 'Methods' tab.
+- Variant = parameter changes on top of 'main'; the stages it changes and every stage after them live in
+  variants/<slug>/<stage>, the earlier ones are shared (Project.stage_dir, the only way the code reaches a stage
+  folder). The active variant is the one runs, rendering and exports use. Make it main (former main kept as a
+  variant), delete. Disk: about 8.6 GB for a variant from the stars stage on, 2.5 GB for the rendering preparation.
+- core/methods.py: the decisions in plain words with their options, parameters and what was seen on real images
+  (blind comparisons). Render-time choices stay in Final adjustment.
+- Methods tab: processing shown, cost of a change (stages, time from this machine's history, disk), try as a new
+  variant or apply, compare the same zone of every computed processing at 100 % with the current rendering settings.
+- CLI: 'variant' (list/create/activate/delete/promote), --variant on run/status/params/set/render.
+- Tested end to end on the Iris (a temporary 'star flat off' variant: only background and the two rendering
+  preparations computed in their own folders, main's files untouched, comparison rendered; variant deleted).
+- Next: add the deconvolution choice when its test is done; per-variant rendering settings if needed.
