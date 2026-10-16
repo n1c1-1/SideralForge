@@ -788,3 +788,22 @@ case. Chosen with the user: variants kept side by side (not recomputed in place)
 - Tested end to end on the Iris (a temporary 'star flat off' variant: only background and the two rendering
   preparations computed in their own folders, main's files untouched, comparison rendered; variant deleted).
 - Next: add the deconvolution choice when its test is done; per-variant rendering settings if needed.
+
+### 11.12 Views (2026-10-16 evening)
+
+User's direction: the choices are left to the user; the interface offers views of the image, to be combined later
+with masks between views - at least one good view per zone is needed first; all the computing is done at the start,
+navigation is between ready results (decided with him: a bar of views above the image).
+- A view = the processing (main or a variant) + rendering settings, saved under a name (project.json render.views).
+  Final adjustment shows them in rows, one per delivered rendering with its alternatives that cost no computing
+  (glare drawn with the stars, spikes drawn, the other star removal: render/views.py, created for the five projects).
+  Click = same zoom and place (another processing is loaded keeping them); Left / Right; B = back to the previous
+  view (flip); right click: update, rename, export, delete; Side by side at 100 %.
+- Computed by default (his choice): the main processing and the learned star-removal network trained on the image
+  (star_net on by default; the four Newton projects keep their own network layers, star_net off for them; the Heart
+  will train its network once the reproducibility fix is in). Other variants on demand (Methods tab), each gets a view.
+- Trigger: the Flaming Star's bottom blue stars sat in violet elliptical discs = 30 % of the modelled glare drawn under
+  the nebula curve (model shape: elliptical edge, flat plateau). Drawn with the stars they are clean, but the
+  brightest star there and Alnitak then show the star removal's debris: no global setting suits every star, hence
+  the views (Faithful / Artistic - glare with the stars).
+- Next: masks between views (painted or automatic, e.g. around the bright stars).
