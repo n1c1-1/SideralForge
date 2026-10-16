@@ -6,15 +6,23 @@ Layout on disk::
         project.json        inputs, target, user parameter overrides, render settings
         work/<stage>/       outputs of each stage + manifest.json (+ _ckpt/ while a stage can be resumed)
         results/            exported images
+        variants/<slug>/<stage>/  the stages a variant computes its own way (see below)
         logs/events.jsonl   machine-readable journal (progress, metrics, previews) read by the GUI
         logs/journal.md     human-readable log
 
 Large temporary data (the calibrated frames cache) lives in ``scratch_dir``, ideally on a fast local SSD.
+
+Variants: the same data processed another way, kept side by side so that methods can be compared. A variant is a
+set of parameter changes on top of the project's own ('main'); the stages those changes touch, and every stage
+after them, get their own folders under ``variants/<slug>/``; the stages before are shared with main. The active
+variant (``active_variant``, '' = main) is the one the runs, the rendering and the exports use.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -53,6 +61,8 @@ class ProjectConfig:
     params: dict[str, dict[str, Any]] = field(default_factory=dict)
     render: dict[str, Any] = field(default_factory=dict)
     devices: dict[str, str] = field(default_factory=dict)
+    variants: dict[str, dict[str, Any]] = field(default_factory=dict)   # name -> {"params", "note", "created", "slug"}
+    active_variant: str = ""                                            # '' = main
     created: str = ""
     format: int = FORMAT
 
@@ -84,6 +94,7 @@ class Project:
         return ProjectConfig(name=d["name"], inputs=Inputs(**d.get("inputs", {})), target=Target(**d.get("target", {})),
                              scratch_dir=d.get("scratch_dir", ""), reference_image=d.get("reference_image", ""),
                              description=d.get("description", ""), params=d.get("params", {}), render=d.get("render", {}), devices=d.get("devices", {}),
+                             variants=d.get("variants", {}), active_variant=d.get("active_variant", ""),
                              created=d.get("created", ""), format=d.get("format", FORMAT))
 
     def save(self) -> None:
@@ -109,19 +120,157 @@ class Project:
         return Path(self.config.scratch_dir) if self.config.scratch_dir else self.work / "_scratch"
 
     def stage_dir(self, stage: str) -> Path:
+        v = self.config.active_variant
+        if v and v in self.config.variants and stage in self.variant_stages(v):
+            return self.variant_dir(v) / stage
         return self.work / stage
 
     # ------------------------------------------------------------------ parameters
     def overrides(self, stage: str) -> dict[str, Any]:
-        return dict(self.config.params.get(stage, {}))
+        """The user's parameter values of a stage: main's, with the active variant's changes on top (a change to
+        None puts the parameter back to its automatic / default value)."""
+        out = dict(self.config.params.get(stage, {}))
+        v = self.config.active_variant
+        if v and v in self.config.variants:
+            for k, val in self.config.variants[v].get("params", {}).get(stage, {}).items():
+                if val is None:
+                    out.pop(k, None)
+                else:
+                    out[k] = val
+        return out
 
     def set_override(self, stage: str, name: str, value: Any) -> None:
-        self.config.params.setdefault(stage, {})[name] = value
+        """Set a parameter of the active variant, or of main when no variant is active."""
+        v = self.config.active_variant
+        if v and v in self.config.variants:
+            self.config.variants[v].setdefault("params", {}).setdefault(stage, {})[name] = value
+        else:
+            self.config.params.setdefault(stage, {})[name] = value
         self.save()
 
     def clear_override(self, stage: str, name: str) -> None:
-        self.config.params.get(stage, {}).pop(name, None)
+        v = self.config.active_variant
+        if v and v in self.config.variants:
+            vp = self.config.variants[v].setdefault("params", {}).setdefault(stage, {})
+            if name in self.config.params.get(stage, {}):
+                vp[name] = None                  # main sets it: the variant goes back to the automatic value
+            else:
+                vp.pop(name, None)
+                if not vp:
+                    self.config.variants[v]["params"].pop(stage, None)
+        else:
+            self.config.params.get(stage, {}).pop(name, None)
         self.save()
+
+    # ------------------------------------------------------------------ variants
+    def variant_dir(self, name: str) -> Path:
+        return self.root / "variants" / self.config.variants[name]["slug"]
+
+    def variant_stages(self, name: str) -> set[str]:
+        """The stages a variant computes its own way: those whose parameters it changes, and every stage after them
+        (they read what those produce). The others are shared with main."""
+        changed = {st for st, kv in self.config.variants.get(name, {}).get("params", {}).items() if kv}
+        if not changed:
+            return set()
+        graph = stage_graph()
+        out = set(changed)
+        grew = True
+        while grew:
+            grew = False
+            for st, deps in graph.items():
+                if st not in out and any(d in out for d in deps):
+                    out.add(st)
+                    grew = True
+        return out
+
+    def create_variant(self, name: str, params: dict[str, dict[str, Any]], note: str = "", prune: bool = True) -> None:
+        """A new variant (not active): ``params`` = {stage: {parameter: value}} changed from main (None = back to
+        the automatic value). ``prune``: drop the changes to automatic of parameters main leaves automatic (no
+        change, and they would give the variant stages of its own for nothing)."""
+        if prune:
+            params = {st: {k: v for k, v in kv.items() if not (v is None and k not in self.config.params.get(st, {}))}
+                      for st, kv in params.items()}
+        name = name.strip()
+        if not name or name.lower() == "main" or name in self.config.variants:
+            raise ValueError(f"a variant needs a new name (not 'main'): {name!r}")
+        slug = re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_")[:40] or "variant"
+        taken = {v.get("slug") for v in self.config.variants.values()}
+        base, k = slug, 2
+        while slug in taken or (self.root / "variants" / slug).exists():
+            slug, k = f"{base}_{k}", k + 1
+        self.config.variants[name] = {"params": {st: dict(kv) for st, kv in params.items() if kv}, "note": note,
+                                      "created": datetime.now().isoformat(timespec="seconds"), "slug": slug}
+        self.save()
+
+    def set_active_variant(self, name: str) -> None:
+        if name and name not in self.config.variants:
+            raise KeyError(f"no variant named {name!r}")
+        self.config.active_variant = name
+        self.save()
+
+    def delete_variant(self, name: str) -> None:
+        """Remove a variant and everything it computed (main is never touched)."""
+        if name not in self.config.variants:
+            return
+        d = self.variant_dir(name)
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+        del self.config.variants[name]
+        if self.config.active_variant == name:
+            self.config.active_variant = ""
+        self.save()
+
+    def promote_variant(self, name: str, keep_main_as: str = "") -> None:
+        """Make a variant the project's main processing: its parameter changes go into main and its stage folders
+        replace main's. Main's former folders for those stages are kept as a variant named ``keep_main_as``, or
+        deleted when that name is empty."""
+        if name not in self.config.variants:
+            raise KeyError(f"no variant named {name!r}")
+        own = self.variant_stages(name)
+        vparams = self.config.variants[name].get("params", {})
+        vdir = self.variant_dir(name)
+        kdir = None
+        if keep_main_as:
+            old = {st: {k: self.config.params.get(st, {}).get(k) for k in kv} for st, kv in vparams.items()}
+            self.create_variant(keep_main_as, old, note=f"main before '{name}' became main", prune=False)
+            kdir = self.variant_dir(keep_main_as)
+            kdir.mkdir(parents=True, exist_ok=True)
+        for st in own:
+            src, dst = vdir / st, self.work / st
+            if dst.exists():
+                if kdir is not None:
+                    shutil.move(str(dst), str(kdir / st))
+                else:
+                    shutil.rmtree(dst, ignore_errors=True)
+            if src.exists():
+                shutil.move(str(src), str(dst))
+        for st, kv in vparams.items():
+            for k, val in kv.items():
+                if val is None:
+                    self.config.params.get(st, {}).pop(k, None)
+                else:
+                    self.config.params.setdefault(st, {})[k] = val
+        shutil.rmtree(vdir, ignore_errors=True)
+        del self.config.variants[name]
+        if self.config.active_variant == name:
+            self.config.active_variant = ""
+        self.save()
+
+    def variant_size(self, name: str) -> int:
+        """Bytes on disk of what a variant computed."""
+        d = self.variant_dir(name)
+        return sum(f.stat().st_size for f in d.rglob("*") if f.is_file()) if d.exists() else 0
+
+
+_GRAPH: dict[str, tuple[str, ...]] = {}
+
+
+def stage_graph() -> dict[str, tuple[str, ...]]:
+    """{stage: its dependencies}, in pipeline order."""
+    if not _GRAPH:
+        from ..stages import all_stages
+        _GRAPH.update({s.name: tuple(s.deps) for s in all_stages()})
+    return _GRAPH
 
 
 REGISTRY = Path.home() / ".astro_gpu" / "projects.json"

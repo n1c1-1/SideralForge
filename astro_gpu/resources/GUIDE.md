@@ -46,7 +46,27 @@ Select a stage to see what it does, its parameters, its measured results and its
 Changing a parameter marks the stage and everything after it for recomputation. Nothing is lost: only what depends on
 the change is recomputed.
 
-## 4. Final adjustment
+## 4. Methods and variants
+
+No single processing suits every instrument and object. The **Methods** tab lists the choices of method in plain
+words - how the stars are removed (star model or a network trained on the image), the glare of the bright stars,
+the shape of the stars, the faint stars, the flat correction, the H-alpha reference, the repairs around the stars,
+the sensor pattern, the colour fringes - each option with what it does and what was seen on real images.
+
+* **Processing shown** (top): *main* is the project's own processing; the others are **variants**, the same data
+  processed another way, kept side by side. The processing shown is the one the Processing tab, Final adjustment
+  and the exports use (its name is in the toolbar).
+* Choose another option of a decision to see what it would cost (stages computed again, time, disk), then
+  **Try as a new variant** (computed in its own folders, main untouched) or **Apply** to the processing shown.
+* A variant shares with main every stage before the ones it changes: only what differs is computed and stored.
+* **Compare...** renders the same zone of every computed processing at 100 %, with the current Final adjustment
+  settings; click the overview to choose the zone.
+* **Make it main** keeps a variant as the project's processing (the former main is kept as a variant until you
+  delete it); **Delete variant** frees its disk space. A variant's exports get its name in their folder name.
+* Choices that need no computing (star removal used, spikes as photographed, sharpening, glare) are made in Final
+  adjustment.
+
+## 5. Final adjustment
 
 Once *Rendering preparation* is done, the **Final adjustment** tab re-renders the image on the GPU in a fraction of
 a second for every slider. The preview is computed at reduced resolution while you move a slider, and at full
@@ -70,7 +90,7 @@ Tools:
 * The **checks** under the histogram turn amber when something is clipped or burnt.
 * **Undo / Redo**: Ctrl+Z / Ctrl+Y.
 
-## 5. Export
+## 6. Export
 
 **Export...** writes, in `results/<name>/`:
 
@@ -83,7 +103,8 @@ Tools:
 Orientation: *as captured*, *north up* (from the astrometry) or *match reference*; always an exact rotation by
 multiples of 90°, never resampled.
 
-## 6. Command line
+## 7. Command line
 
 Everything is also available from the command line (`astro-gpu --help`): `new`, `run`, `status`, `stop`, `params`,
-`set`, `render`.
+`set`, `render`, `variant` (list, create, activate, delete, promote); `run`, `status`, `params`, `set` and `render`
+take `--variant NAME` (`main` for the project's own processing).

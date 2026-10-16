@@ -500,8 +500,12 @@ class RenderTab(QWidget):
         dlg.setWindowTitle("Export")
         dlg.resize(560, 420)
         v = QVBoxLayout(dlg)
-        form = ParamForm(ExportSettings, ExportSettings().model_dump(), advanced=True)
-        vals: dict = {}
+        v_ = self.project.config.active_variant
+        init = ExportSettings().model_dump()
+        if v_:                       # a variant's export does not overwrite main's results
+            init["name"] = f"{init['name']}_{self.project.config.variants[v_]['slug']}"
+        form = ParamForm(ExportSettings, init, advanced=True)
+        vals: dict = {"name": init["name"]} if v_ else {}
         form.changed.connect(lambda n, val: vals.__setitem__(n, val))
         help_ = HelpBox()
         form.focused.connect(lambda n: help_.show_param(form.desc[n], form.values.get(n)))

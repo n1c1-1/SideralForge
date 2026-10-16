@@ -37,6 +37,7 @@ from ..core.project import Project
 from ..core.runner import Pipeline
 from ..stages import all_stages
 from . import style
+from .methods_tab import CompareDialog, MethodsTab
 from .render_tab import RenderTab
 from .runner import RunController, stage_history_seconds
 from .widgets import HelpBox, ImageView, JournalView, ParamForm, scroll
@@ -235,6 +236,10 @@ class MainWindow(QMainWindow):
         self.adv_b.setToolTip("Show every parameter (basic mode shows the few that matter most)")
         self.adv_b.toggled.connect(self.set_advanced)
         tb.addWidget(self.adv_b)
+        self.variant_label = QLabel("")
+        self.variant_label.setToolTip("The processing shown (main or a variant): choose it in the Methods tab")
+        tb.addSeparator()
+        tb.addWidget(self.variant_label)
         guide = QAction("Guide", self)
         guide.setShortcut("F1")
         guide.setToolTip("How to use astro_GPU (F1)")
@@ -281,6 +286,12 @@ class MainWindow(QMainWindow):
         proc.addWidget(self.page)
         proc.setSizes([950, 560])
         self.tabs.addTab(proc, "Processing")
+        self.methods_tab = MethodsTab(self.runner.is_running)
+        self.methods_tab.activeChanged.connect(self.on_active_changed)
+        self.methods_tab.runRequested.connect(lambda: self.start_run())
+        self.methods_tab.compareRequested.connect(self.open_compare)
+        self.methods_tab.showRendering.connect(lambda: self.tabs.setCurrentWidget(self.render_tab))
+        self.tabs.addTab(self.methods_tab, "Methods")
         self.render_tab = RenderTab()
         self.tabs.addTab(self.render_tab, "Final adjustment")
         from .results_tab import ResultsTab
@@ -355,6 +366,38 @@ class MainWindow(QMainWindow):
         self.stage_list.setCurrentRow(0)
         self.render_tab.set_project(p, self.advanced)
         self.results_tab.set_project(p)
+        self.methods_tab.set_project(p, self.pipeline)
+        self._show_variant()
+
+    def _show_variant(self):
+        v = self.project.config.active_variant if self.project else ""
+        self.variant_label.setText(f"  Processing: <b>{v or 'main'}</b>  ")
+        if self.project:
+            self.setWindowTitle(f"astro_GPU {__version__} - {self.project.config.name}" + (f"  [{v}]" if v else ""))
+
+    def on_active_changed(self):
+        """The processing shown (main or a variant), or its parameters, changed."""
+        self._show_variant()
+        self.refresh_status()
+        self.methods_tab.refresh()
+        self.render_tab._stop_worker()
+        if self.tabs.currentWidget() is self.render_tab:
+            self.render_tab.set_project(self.project, self.advanced)
+        self.results_tab.set_project(self.project)
+
+    def open_compare(self):
+        if not self.project:
+            return
+        ready = self.methods_tab.ready_processings()
+        if len(ready) < 1:
+            QMessageBox.information(self, "Compare", "No processing has its rendering preparation computed yet.")
+            return
+        values = dict(getattr(self.render_tab, "values", {}) or {})
+        self.render_tab._stop_worker()                  # one rendering engine on the GPU at a time
+        dlg = CompareDialog(self.project, values, ready, self)
+        dlg.exec()
+        if self.tabs.currentWidget() is self.render_tab:
+            self.render_tab.set_project(self.project, self.advanced)
 
     def show_guide(self):
         from PySide6.QtWidgets import QDialog, QTextBrowser
@@ -447,10 +490,13 @@ class MainWindow(QMainWindow):
         self.render_tab.set_advanced(v)
 
     def on_tab(self, i):
-        if i == 1 and self.project and self.render_tab.worker is None:
+        w = self.tabs.widget(i)
+        if w is self.render_tab and self.project and self.render_tab.worker is None:
             self.render_tab.set_project(self.project, self.advanced)
-        if i == 2 and self.project:
+        if w is self.results_tab and self.project:
             self.results_tab.refresh()
+        if w is self.methods_tab and self.project:
+            self.methods_tab.refresh()
 
     # ------------------------------------------------------------------ running
     def start_run(self, until=None, force=None):
@@ -479,6 +525,8 @@ class MainWindow(QMainWindow):
             self.cur_bar.setValue(0)
             if self.project:
                 self.refresh_status(keep_page=True)
+        if self.project:
+            self.methods_tab.refresh()
 
     def on_event(self, e):
         t = e.get("type")
@@ -501,7 +549,8 @@ class MainWindow(QMainWindow):
             cur = self.page.stage
             if cur is not None and cur.name == st:
                 self.page.show_metrics(self.pipeline)
-            if t == "run_end" and self.tabs.currentIndex() == 1 or (t == "stage_end" and st == "render_prep"):
+            if t == "run_end" and self.tabs.currentWidget() is self.render_tab or (t == "stage_end"
+                                                                                  and st == "render_prep"):
                 self.render_tab.set_project(self.project, self.advanced)
         elif t == "preview":
             cur = self.page.stage
@@ -525,7 +574,7 @@ class MainWindow(QMainWindow):
             self.journal.add(f"{ts}  {style.STATE_SYMBOLS.get(e.get('status'), '')} {st} {e.get('status')}"
                              + (f" in {_fmt_dur(e.get('duration'))}" if e.get("duration") else ""), lvl)
         elif t == "run_start":
-            self.journal.add(f"{ts}  run: {', '.join(e.get('stages', []))}")
+            self.journal.add(f"{ts}  run ({e.get('variant') or 'main'}): {', '.join(e.get('stages', []))}")
         elif t == "run_end":
             self.journal.add(f"{ts}  run {e.get('status')}")
 

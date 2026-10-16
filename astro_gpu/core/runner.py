@@ -136,7 +136,7 @@ class Pipeline:
         (self.project.logs / "STOP").unlink(missing_ok=True)
         lock.write_text(json.dumps({"pid": os.getpid(), "started": time.time()}))
         todo = self.plan(until, force)
-        self.journal.emit("run_start", stages=todo)
+        self.journal.emit("run_start", stages=todo, variant=self.project.config.active_variant)
         status = "done"
         order = [s.name for s in self.stages]
         ran: set[str] = set()

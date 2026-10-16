@@ -113,7 +113,8 @@ def export(project, engine: RenderEngine, s: RenderSettings, e: ExportSettings, 
     qa = quality_checks(imgs, engine, s)
     meta = {"date": datetime.now().isoformat(timespec="seconds"), "settings": s.model_dump(),
             "export": e.model_dump(), "orientation": {"rot90": k, "flip": flip}, "qa": qa,
-            "files": [str(f) for f in files], "info": _jsonable(lay.info)}
+            "files": [str(f) for f in files], "info": _jsonable(lay.info),
+            "variant": project.config.active_variant or "main"}
     (out_dir / f"{e.name}_settings.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
     progress(1.0, "done")
     return meta

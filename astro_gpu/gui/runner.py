@@ -49,7 +49,8 @@ class RunController(QObject):
     def start(self, until: str | None = None, force: list[str] | None = None) -> bool:
         if not self.project or self.is_running():
             return False
-        args = ["-m", "astro_gpu.cli", "run", str(self.project.root)]
+        args = ["-m", "astro_gpu.cli", "run", str(self.project.root),
+                "--variant", self.project.config.active_variant or "main"]
         if until:
             args += ["--until", until]
         if force:
