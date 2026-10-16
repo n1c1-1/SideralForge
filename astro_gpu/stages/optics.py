@@ -317,11 +317,16 @@ def _fit_channel(img_c, xs, ys, cols, W, H, iters, dev, progress, rounds):
     for rnd in range(rounds):
         Wv = (wpix * star_w[:, None, None]).reshape(-1) / npts
 
-        def normal(E_, Wv=Wv):
-            return adj(Wv * fwd(E_)) + mu * lap_t(lap(E_)).reshape(NB, -1)
+        dg = adj(Wv, sq=True)
+        # parts of the grid no stamp reaches stay at zero (a tiny ridge): otherwise they continued the PSF smoothly
+        # out to the grid's edge, a pedestal the later stages would read as wings ending in a cliff
+        ridge = 1e-3 * float(dg[dg > 0].median())
+
+        def normal(E_, Wv=Wv, ridge=ridge):
+            return adj(Wv * fwd(E_)) + mu * lap_t(lap(E_)).reshape(NB, -1) + ridge * E_
 
         b = adj(Wv * Dv)
-        Minv = 1.0 / (adj(Wv, sq=True) + 20.0 * mu).clamp(min=1e-30)
+        Minv = 1.0 / (dg + 20.0 * mu + ridge).clamp(min=1e-30)
         r = b - normal(E)
         z = Minv * r
         p_ = z.clone()
