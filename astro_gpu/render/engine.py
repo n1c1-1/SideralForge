@@ -249,6 +249,11 @@ class RenderEngine:
     # ------------------------------------------------------------------ public
     @torch.no_grad()
     def render(self, s: RenderSettings, scale: float = 1.0) -> Layers:
+        from ..core.determinism import deterministic
+        with deterministic():                    # the same settings give the same image (stars drawn in a fixed order)
+            return self._render(s, scale)
+
+    def _render(self, s: RenderSettings, scale: float = 1.0) -> Layers:
         f = max(1, int(round(1 / scale)))
         info: dict = {}
         neb = self._cached("neb", NEB_KEYS, s, f, lambda: self._nebula(s, f, info))
@@ -294,8 +299,8 @@ class RenderEngine:
         if s.sky_neutral > 0:
             # background neutralisation: the typical sky (sky_pct, smoothed) made grey at the same brightness, by an
             # offset per channel - the faint emission that fills a field stops tinting it, the bright stays coloured
-            sky = torch.tensor([float(ops.percentile(ops.gaussian_blur(lin[c], 8 / f), s.sky_pct, self._shown(f))) for c in range(3)],
-                               device=lin.device)
+            sky = torch.tensor([float(ops.percentile(ops.gaussian_blur(lin[c], 8 / f), s.sky_pct, self._shown(f)))
+                                for c in range(3)], device=lin.device)
             y = 0.2126 * sky[0] + 0.7152 * sky[1] + 0.0722 * sky[2]
             lin = lin - s.sky_neutral * (sky - y)[:, None, None]
         lin[:, ~valid] = 0
@@ -555,9 +560,13 @@ def tone_curve(y, lo, b, white, toe):
 
 
 def fit_tone_curve(p_dark, p_sky, white, t_dark, t_sky, toe):
-    """Black point lo and strength b such that the sky percentile maps to t_sky and the dark one to t_dark."""
-    best = None
-    for lo in np.linspace(p_dark - 3 * (p_sky - p_dark), p_dark - 0.01 * (p_sky - p_dark), 200):
+    """Black point lo and strength b such that the sky percentile maps to t_sky and the dark one to t_dark.
+
+    For each black point the strength that puts the sky at its level is found by bisection; the black point is then
+    the one that puts the dark reference at its level (the dark error falls steadily with the black point): bracketed
+    on a grid, then refined by bisection, so that the result moves smoothly with its inputs (on the grid alone it moved
+    by steps of 2 % of the sky - dark interval). When no black point reaches the dark level, the closest grid point."""
+    def strength(lo):
         a_, b_ = 1.0, 1e7
         bm = 1.0
         for _ in range(60):
@@ -566,10 +575,31 @@ def fit_tone_curve(p_dark, p_sky, white, t_dark, t_sky, toe):
                 a_ = bm
             else:
                 b_ = bm
-        err = abs(tone_curve(p_dark, lo, bm, white, toe) - t_dark)
-        if best is None or err < best[0]:
-            best = (err, float(lo), float(bm))
-    return best[1], best[2], float(white)
+        return bm
+
+    def dark_err(lo):
+        bm = strength(lo)
+        return tone_curve(p_dark, lo, bm, white, toe) - t_dark, bm
+
+    los = np.linspace(p_dark - 3 * (p_sky - p_dark), p_dark - 0.01 * (p_sky - p_dark), 200)
+    errs = [dark_err(lo) for lo in los]
+    e = np.array([v[0] for v in errs])
+    i = int(np.argmin(np.abs(e)))
+    cross = np.where(np.sign(e[:-1]) != np.sign(e[1:]))[0]
+    if len(cross):
+        j = int(cross[np.argmin(np.abs(cross - i))])            # the sign change next to the best grid point
+        a_, b_ = float(los[j]), float(los[j + 1])
+        ea = e[j]
+        for _ in range(50):
+            m = 0.5 * (a_ + b_)
+            em, _ = dark_err(m)
+            if np.sign(em) == np.sign(ea):
+                a_, ea = m, em
+            else:
+                b_ = m
+        lo = 0.5 * (a_ + b_)
+        return float(lo), float(strength(lo)), float(white)
+    return float(los[i]), float(errs[i][1]), float(white)
 
 
 # ---------------------------------------------------------------------- stars
