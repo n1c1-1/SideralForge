@@ -13,8 +13,9 @@ from __future__ import annotations
 import json
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from astro_gpu.core.journal import Journal
 from astro_gpu.core.project import Project
