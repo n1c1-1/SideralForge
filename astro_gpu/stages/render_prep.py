@@ -85,7 +85,7 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "41"         # 29: the star guard wherever star light dominates (dark moats around G 9.5-11.5 stars);
+    version = "42"         # 29: the star guard wherever star light dominates (dark moats around G 9.5-11.5 stars);
                            # 30: the diffuse part of the star glare; 31: the glare of the dominant stars only, the
                            # measured emission colour also in the emission / continuum / OIII separation; 32: the
                            # star guard back to the footprints (its extension drew dark discs on the Heart); 33: the
@@ -95,7 +95,8 @@ class RenderPrep(Stage):
                            # 36: every star brighter than real_g shown as photographed, nebula interpolated across spikes;
                            # 38: under the spike strips only the spikes taken from the image, the stars there drawn;
                            # 40: their light averaged along the spike direction; 41: the spikes drawn in the base
-                           # layers, the photographed ones in layers of their own (chosen at rendering)
+                           # layers, the photographed ones in layers of their own (chosen at rendering); 42: the
+                           # learned preparation takes the sharpening layer of the learned starless image
 
     learned = False        # RenderPrepLearned: the same layers from the learned starless image
 
@@ -280,7 +281,8 @@ class RenderPrep(Stage):
         ctx.save("dY.npy", (np.tensordot(lum, det, 1) * wstar * (1 - fp_fill)).astype(np.float16))
         del det
         # sharpening increment: the sharpening network minus the plain one (brightness), off on star light
-        sp = ctx.project.stage_dir("starless") / "n2n_sharp_final.npy"
+        sp = ctx.project.stage_dir("starless") / ("n2n_sharp_final_learned.npy" if self.learned
+                                                  else "n2n_sharp_final.npy")
         if sp.exists():
             n2s = np.load(sp).astype(np.float32) / flat
             ctx.save("dS.npy", (np.tensordot(lum, n2s - n2, 1) * wstar * (1 - fp_fill)).astype(np.float16))

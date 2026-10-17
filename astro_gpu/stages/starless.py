@@ -48,6 +48,13 @@ class StarlessParams(StageParams):
                          help="Stars brighter than this get their optical halo (blue defocus of the refractor, "
                               "filter reflections) measured and removed from the background, out to a radius growing "
                               "with the star flux.")
+    sharpen: bool = P(True, label="Sharpening network",
+                      help="Fine-tunes the Noise2Noise network into a sharpening network: the star shape measured on "
+                           "the stack is undone towards a sharper target the data can reach (two thirds of the core "
+                           "width, never below 2 px). Learned on your own half-stacks; drives the rendering setting "
+                           "'Sharpening (measured star shape)', for both star removals.")
+    sharpen_steps: int = P(4000, label="Sharpening training steps", level=ADVANCED, ge=500, le=20000, step=500,
+                           help="Fine-tuning steps of the sharpening network (a few minutes on a GPU).")
 
 
 class Starless(Stage):
@@ -58,12 +65,13 @@ class Starless(Stage):
                    "repairs over-subtracted dips. Then a multi-scale Wiener filter driven by the two independent "
                    "half-stacks keeps every structure that is really present in both, and removes the rest. No "
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
-    deps = ("stars", "optics", "denoise", "stack", "color")
+    deps = ("stars", "optics", "denoise", "stack", "color", "catalogs")
     Params = StarlessParams
-    version = "23"         # 21: the residual halo bound measured with the far halo; 22: residual cleaning only where
+    version = "24"         # 21: the residual halo bound measured with the far halo; 22: residual cleaning only where
                            # the star model holds the star; 23: the fainter stars' cleaning bounded by their typical
                            # residual (it erased reflection nebulae centred on their star). The optional learned star
-                           # layer (a second starless image) is a parameter: projects without one stay up to date
+                           # layer (a second starless image) is a parameter: projects without one stay up to date.
+                           # 24: the sharpening network again (lost in the rebuild of 2026-10-11), for both images
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         """The learned star layer of the 'star_net' stage, when that stage ran and wrote one (an explicit path set by
@@ -101,12 +109,52 @@ class Starless(Stage):
         ctx.save("n2n_final.npy", n2n_final)
         from ..core.imgutil import asinh_preview
         ctx.preview("starless", asinh_preview(sl_final, M))
-        del A, B, delta, n2n_final, n2n_c0, sl_n2n
+        del n2n_final, n2n_c0, sl_n2n
+        sharp = None
+        if p.sharpen:
+            # the same detail layer from the sharpening network, cleaned the same way: the rendering takes the
+            # difference of the two (off on star light) as its sharpening increment
+            sharp = self._sharpen_net(ctx, p, A + delta, B + delta, nm)
+            n2s = 0.5 * (apply_net(sharp[0], A + delta, nm, sharp[1], sharp[2], ctx.device)
+                         + apply_net(sharp[0], B + delta, nm, sharp[1], sharp[2], ctx.device))
+            s_c0, _ = clean(n2s, x, y, g, fl, smooth=False, halos=False, lift_gmax=p.lift_gmax, log=ctx.log)
+            s_final, _ = bright_halos(s_c0, x, y, g, fs["pred"], p.halo_gmax,
+                                      ref=None if halo is None else s_c0 + halo, r_core=r_core)
+            ctx.save("n2n_sharp_final.npy", s_final)
+            del n2s, s_c0, s_final
+            if ctx.device.type == "cuda":
+                torch.cuda.empty_cache()
+        del A, B, delta
         if p.learned_stars:
-            self._learned(ctx, p, M, model, halo, Wt)
+            self._learned(ctx, p, M, model, halo, Wt, sharp)
 
     @staticmethod
-    def _learned(ctx: Context, p: StarlessParams, M, model, halo, Wt) -> None:
+    def _sharpen_net(ctx: Context, p: StarlessParams, A, B, nm):
+        """Non-blind sharpening: the star shape measured on this stack, undone towards a target it can reach, by the
+        Noise2Noise network fine-tuned on the two half-stacks (its output, blurred back to the measured shape, must
+        predict the other half). Returns (network, black level, scale) as load_model does."""
+        from ..core.sharpen import PSFField, finetune_sharp, target_fwhm, target_to_stack_kernels
+        ctx.progress(0.86, "sharpening network")
+        cat = np.load(ctx.input("catalogs", "gaia_deep.npz"))
+        gsat = float(ctx.metric_of("optics", "g_sat", 10.9))
+        full = ctx.load("optics", "lat_full.npy", mmap=True)
+        psf = PSFField(full, cat["x"], cat["y"], cat["g"], gsat, log=ctx.log)
+        tf = target_fwhm(psf)
+        Ks, worst = target_to_stack_kernels(psf, tf)
+        ctx.metric("sharpen_target_fwhm", tf)
+        ctx.metric("sharpen_kernel_error_pct", round(100 * worst, 1))
+        ctx.log(f"sharpening target {tf} px (star core {psf.fwhm(1, psf.W / 2, psf.H / 2):.1f} px at the centre); "
+                f"worst reconstruction of the measured shape {100 * worst:.1f} %")
+        del full
+        net, bk, sg = load_model(ctx)
+        net, loss = finetune_sharp(net, A, B, nm, bk, sg, Ks, ctx.device, steps=p.sharpen_steps,
+                                   progress=lambda fr, m: ctx.progress(0.86 + 0.04 * fr, m))
+        ctx.metric("sharpen_loss", round(loss, 4))
+        torch.save({"net": net.state_dict(), "bk": bk, "sg": sg, "target_fwhm": tf}, ctx.out("n2n_sharp_model.pt"))
+        return net, bk, sg
+
+    @staticmethod
+    def _learned(ctx: Context, p: StarlessParams, M, model, halo, Wt, sharp=None) -> None:
         """The second starless image: the learned star layer subtracted from the two half-stacks, then the same
         Wiener filter and Noise2Noise detail layer. None of the star-model repairs (core fill, residual halos, dip
         repair, bright halos): they correct the model's errors, which this layer does not have."""
@@ -171,7 +219,14 @@ class Starless(Stage):
                                 .astype(np.float32), (0, 0), 2.0)
         n2l += wsat[None] * (wl - n2l)
         ctx.save("n2n_final_learned.npy", n2l)
-        del n2l, wl, wsat
+        del n2l
+        if sharp is not None:                      # the sharpening network on this image too, filled cores alike
+            n2s = 0.5 * (apply_net(sharp[0], A, nm, sharp[1], sharp[2], ctx.device)
+                         + apply_net(sharp[0], B, nm, sharp[1], sharp[2], ctx.device))
+            n2s += wsat[None] * (wl - n2s)
+            ctx.save("n2n_sharp_final_learned.npy", n2s)
+            del n2s
+        del wl, wsat
         if ctx.device.type == "cuda":
             torch.cuda.empty_cache()
         ctx.log(f"learned star removal: second starless image from {f.name} (chosen at rendering)")
