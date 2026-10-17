@@ -46,7 +46,10 @@ def _run(value: dict, stage: str) -> dict:
 
 
 def _ready_to_render(value: dict) -> dict:
-    """Both rendering preparations (star model and learned removal) of the processing, computed if needed."""
+    """Everything a rendering needs, computed if needed: the learned star removal network first (it is optional for
+    the stages after it, so they would not ask for it; the stage does nothing when switched off), then both
+    rendering preparations (star model and learned removal)."""
+    _run(value, "star_net")
     _run(value, "render_prep")
     return _run(value, "render_prep_learned")
 
