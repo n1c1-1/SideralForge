@@ -57,7 +57,8 @@ def convert(api: dict, info: dict) -> dict:
             if is_widget:
                 default = ni["input"].get("required", {}).get(slot_name) or ni["input"].get("optional", {}).get(slot_name)
                 opts = default[1] if len(default) > 1 else {}
-                val = v if (v is not None and not linked) else opts.get("default", (default[0][0] if isinstance(default[0], list) else None))
+                first = default[0][0] if isinstance(default[0], list) else None
+                val = v if (v is not None and not linked) else opts.get("default", first)
                 widgets.append(val)
                 if linked:
                     inputs.append({"name": slot_name, "type": typ, "widget": {"name": slot_name}, "link": None})

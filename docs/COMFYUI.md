@@ -24,6 +24,7 @@ stage computed.
 | Astro: Variant | The nodes after it compute a variant: the same data processed another way, kept in its own folders (variants/<name>/) next to the main processing; the stages before the first change are shared. |
 | Astro: <stage> (one per stage: Inventory ... Rendering preparation) | Computes everything needed up to its stage that is not up to date; a stage already up to date is not touched. |
 | Astro: Render | Renders the image of a processing: outputs final, starless, stars and the settings used. |
+| Astro: Render (live) | The rendering settings as sliders, by section, with a preview in the node that follows them at once (see below). |
 | Astro: Star mask | A mask around the bright stars (Gaia catalogue), framed like a render at the same scale. |
 | Astro: Export | The full export into the project's results/<name>/ (16-bit TIFF with colour profile, PNG, JPEG, layers, reference framing, settings). |
 | Astro: Save 16-bit | Any image (a composite of views...) as a 16-bit TIFF. |
@@ -46,6 +47,13 @@ source); **changes** = settings changed on top, as JSON, e.g. `{"glare_nebula": 
 output size relative to the full drizzled resolution. Several render nodes on the same processing share its layers
 on the GPU.
 
+Live render (Astro: Render (live)): run the graph once; the node then shows the rendering settings as sliders
+(section list, "advanced" for every setting of the section) starting from the chosen source, and a preview. Each
+slider moved re-renders the preview at the node's width in about 0.15 s, without running the graph (the server
+keeps the processing's layers on the GPU). A changed slider is highlighted; double-click a slider to put it back
+to the source's value; Reset puts them all back. The changes are kept in the node (saved with the graph). Running
+the graph gives the image at the chosen scale with the sliders' settings, for the nodes after it (save, masks...).
+
 ## Example graphs (comfyui_astro/workflows/)
 
 Open the files without "_api" by dragging them onto the ComfyUI window (the "_api" files are the same graphs in
@@ -56,15 +64,17 @@ ComfyUI's API format, also accepted, and used by `tools/run_prompt.py`).
 3. **03_compare_variant**: the main processing and a variant (far halo bounded by the data) side by side.
 4. **04_views_mask**: two views of the same image (glare drawn with the nebula / with the stars) combined with a
    mask around the bright stars, saved in 16 bits.
+5. **05_render_live**: the live render node (sliders and preview), its image previewed and saved in 16 bits.
 
 ## Tools
 
 - `comfyui_astro/tools/run_prompt.py WORKFLOW_api.json [--set node.input=value]`: run a graph on the running
   ComfyUI from the command line (tests, batches).
 - `comfyui_astro/tools/api_to_ui.py api.json ui.json`: make an interface graph from an API graph.
+- `comfyui_astro/tools/ui_check.py`, `live_check.py`: check the graphs and the live node in a headless browser
+  (screenshots).
 
 ## Next
 
-- A render node with live sliders and its own preview (no queue while a slider moves).
 - Masks drawn by hand per zone and more automatic masks (by brightness, around the nebula).
 - The interface's views and its Final adjustment moved into ComfyUI.

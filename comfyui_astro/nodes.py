@@ -266,6 +266,49 @@ class AstroExport(io.ComfyNode):
         return io.NodeOutput(folder, ui={"text": [folder]})
 
 
+class AstroRenderLive(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="AstroRenderLive", display_name="Astro: Render (live)", category=CATEGORY, is_output_node=True,
+            description="The rendering with its sliders and a live preview in the node: run the graph once (the "
+                        "sliders then start from the chosen source), then every slider moved re-renders the preview "
+                        "at once, without running the graph. Running the graph gives the image at the chosen scale "
+                        "with the sliders' settings.",
+            inputs=[ASTRO.Input("astro"),
+                    io.Combo.Input("source", options=_source_options(), default="delivered: faithful",
+                                   tooltip="Where the sliders start from (used while the sliders were not moved)"),
+                    io.String.Input("view", default="", tooltip="A view saved in the interface (replaces the source)"),
+                    io.String.Input("settings_json", default="", multiline=True,
+                                    tooltip="The settings changed with the sliders, on top of the source (kept by the "
+                                            "node; empty = the source as it is)"),
+                    io.Float.Input("scale", default=0.5, min=0.1, max=1.0, step=0.05,
+                                   tooltip="Output size relative to the full (drizzled) resolution")],
+            outputs=[io.Image.Output(display_name="final"), io.Image.Output(display_name="starless"),
+                     io.Image.Output(display_name="stars"), io.String.Output(display_name="settings")])
+
+    @classmethod
+    def execute(cls, astro, source, view, settings_json, scale) -> io.NodeOutput:
+        import torch
+
+        from astro_gpu.render.settings import RenderSettings
+        ready = _ready_to_render(astro)
+        eng, p = bridge.engine_for(ready["root"], ready["variant"])
+        base = bridge.render_settings(p, _source(source), view.strip(), "")
+        vals = {**base, **json.loads(settings_json)} if settings_json.strip() else base   # the sliders' changes
+        lay = eng.render(RenderSettings(**vals), float(scale))
+        x0, x1, y0, y1 = eng.crop
+        f = 1.0 / lay.scale
+        sl = (slice(None), slice(int(y0 / f), int(y1 / f)), slice(int(x0 / f), int(x1 / f)))
+        out = [getattr(lay, k)[sl].clamp(0, 1).permute(1, 2, 0).unsqueeze(0).float().cpu() for k in
+               ("final", "starless", "stars")]
+        del lay
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        info = {"root": ready["root"], "variant": ready["variant"], "settings": vals, "source_settings": base}
+        return io.NodeOutput(*out, json.dumps(vals), ui={"astro_live": [info]})
+
+
 class AstroStarMask(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
@@ -356,7 +399,7 @@ class AstroSave16(io.ComfyNode):
 class AstroExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [AstroProject, AstroVariant, *STAGE_NODES, AstroRender, AstroStarMask, AstroExport, AstroSave16]
+        return [AstroProject, AstroVariant, *STAGE_NODES, AstroRender, AstroRenderLive, AstroStarMask, AstroExport, AstroSave16]
 
 
 async def comfy_entrypoint() -> AstroExtension:

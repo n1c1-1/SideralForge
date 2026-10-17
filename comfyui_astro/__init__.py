@@ -4,3 +4,10 @@ Install: link (or copy) this folder into ComfyUI/custom_nodes/ and install the a
 environment (pip install -e <this repository>). See docs/COMFYUI.md.
 """
 from .nodes import comfy_entrypoint  # noqa: F401
+
+WEB_DIRECTORY = "./web"          # the live render node's sliders and preview
+
+try:                             # the routes exist only inside a running ComfyUI
+    from . import server_routes  # noqa: F401
+except ImportError:
+    pass
