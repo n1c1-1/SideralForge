@@ -21,6 +21,7 @@ stage computed.
 | Node | What it does |
 |---|---|
 | Astro: Project | Opens a project folder (the one holding project.json, made by the astro_GPU interface or command line). |
+| Astro: Methods | The processing choices in plain words, as in the heavy client's Methods tab (learned star removal, glare of the bright stars, shape of the stars, faint stars, flat field, H-alpha reference, repairs around the stars, sensor pattern, colour fringes): one list per question, "as main" = unchanged; hover a list for what each option does and what was seen on real data. The choices are computed as a variant (main is never changed), named after them unless named in the node. |
 | Astro: Variant | The nodes after it compute a variant: the same data processed another way, kept in its own folders (variants/<name>/) next to the main processing; the stages before the first change are shared. |
 | Astro: <stage> (one per stage: Inventory ... Rendering preparation) | Computes everything needed up to its stage that is not up to date; a stage already up to date is not touched. |
 | Astro: Render | Renders the image of a processing: outputs final, starless, stars and the settings used. |
@@ -97,6 +98,9 @@ ComfyUI's API format, also accepted, and used by `tools/run_prompt.py`).
 6. **06_zones**: four views of the Flaming Star combined by zones: faithful as the base, more colour and contrast
    in the nebula (brightness mask on the starless layer), glare drawn with the stars around the bright stars (star
    mask, laid over the nebula), and the artistic rendering where it is painted by hand (empty at first: paint it).
+7. **07_methods**: one processing choice (repairs around the stars: as removed) computed as a variant and
+   rendered next to the main processing. Note: some choices act only on one star removal (this one only on the
+   star model: render both with `{"learned_stars": false}` to see it).
 
 ## Tools
 

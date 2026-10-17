@@ -31,7 +31,8 @@ def main():
         k, v = item.split("=", 1)
         node, inp = k.split(".", 1)
         try:
-            v = json.loads(v)
+            d = json.loads(v)
+            v = v if isinstance(d, dict) else d      # JSON objects stay text (settings changes are JSON text)
         except ValueError:
             pass
         wf[node]["inputs"][inp] = v
