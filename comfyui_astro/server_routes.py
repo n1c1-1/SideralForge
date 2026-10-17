@@ -2,7 +2,9 @@
 - GET  /astro/render_schema        every rendering setting by section (label, range, step, default, level, help);
 - GET  /astro/render_sources?root=&variant=   the delivered renderings, the views and the presets of a project;
 - POST /astro/preview              {root, variant, settings, width} -> a JPEG preview rendered at a reduced scale
-                                   (the processing's layers stay loaded on the GPU between previews).
+                                   (the processing's layers stay loaded on the GPU between previews);
+- POST /astro/save_view            {root, variant, name, settings} -> the settings saved as a view of the project
+                                   (the heavy client's views bar shows it too).
 """
 from __future__ import annotations
 
@@ -51,8 +53,8 @@ async def get_render_sources(request):
     except Exception as e:  # noqa: BLE001
         return web.json_response({"error": str(e)}, status=400)
     delivered = sorted(f.parent.name for f in p.results.glob("*/*_settings.json"))
-    return web.json_response({"delivered": delivered, "views": list(p.config.render.get("views", {})),
-                              "presets": list(PRESETS)})
+    views = [k for k, v in p.config.render.get("views", {}).items() if (v.get("variant") or "") == variant]
+    return web.json_response({"delivered": delivered, "views": views, "presets": list(PRESETS)})
 
 
 def _settings_of(root: str, variant: str, source: str) -> dict:
@@ -84,6 +86,28 @@ def _preview(root: str, variant: str, settings: dict, width: int) -> bytes:
     a = (img.permute(1, 2, 0).cpu().numpy() * 255 + 0.5).astype(np.uint8)
     ok, buf = cv2.imencode(".jpg", a[:, :, ::-1], [cv2.IMWRITE_JPEG_QUALITY, 88])
     return buf.tobytes()
+
+
+@routes.post("/astro/save_view")
+async def post_save_view(request):
+    from datetime import datetime
+
+    from astro_gpu.core.project import Project
+    from astro_gpu.render.settings import RenderSettings
+    body = await request.json()
+    try:
+        name = str(body["name"]).strip()
+        if not name:
+            raise ValueError("empty name")
+        settings = RenderSettings(**dict(body.get("settings") or {})).model_dump(exclude_defaults=True)
+        p = Project(body["root"])                      # fresh from disk: what the heavy client saved is kept
+        p.config.render.setdefault("views", {})[name] = {
+            "variant": body.get("variant", "") or "", "settings": settings,
+            "created": datetime.now().isoformat(timespec="seconds"), "note": "saved from ComfyUI"}
+        p.save()
+    except Exception as e:  # noqa: BLE001
+        return web.json_response({"error": f"{type(e).__name__}: {e}"}, status=400)
+    return web.json_response({"saved": name})
 
 
 @routes.post("/astro/preview")

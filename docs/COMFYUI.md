@@ -56,6 +56,10 @@ slider moved re-renders the preview at the node's width in about 0.15 s, without
 keeps the processing's layers on the GPU). A changed slider is highlighted; double-click a slider to put it back
 to the source's value; Reset puts them all back. The changes are kept in the node (saved with the graph). Running
 the graph gives the image at the chosen scale with the sliders' settings, for the nodes after it (save, masks...).
+**start from** lists the project's delivered renderings, its views (of the node's processing) and the presets:
+choosing one sets the node's source or view and starts the sliders from it. **Save as view...** saves the sliders
+as a view of the project, which the heavy client's views bar shows too (and the other way round). **Compare
+(hold)** shows the starting rendering while the button is held.
 
 ## Zones: one good view per part of the image
 

@@ -17,6 +17,8 @@ const CSS = `
 .astro-live select, .astro-live button { background: var(--comfy-input-bg, #222); color: inherit;
   border: 1px solid var(--border-color, #444); border-radius: 4px; padding: 2px 6px; }
 .astro-live .al-state { margin-left: auto; opacity: 0.7; }
+.astro-live .al-from { max-width: 260px; }
+.astro-live .al-cmp.al-held { background: var(--p-primary-color, #e8b04a); color: #111; }
 .astro-live .al-body { display: flex; gap: 8px; flex: 1; min-height: 0; }
 .astro-live .al-sliders { width: 380px; flex: none; overflow-y: auto; padding-right: 4px; }
 .astro-live .al-row { display: grid; grid-template-columns: 170px 1fr 46px; gap: 6px; align-items: center;
@@ -43,7 +45,8 @@ function setup(node) {
     jsonW.computeSize = () => [0, -4];
   }
   const st = { project: null, values: {}, source: {}, schema: null, section: 0, advanced: false,
-               timer: null, busy: false, again: false, url: null };
+               timer: null, busy: false, again: false, url: null, srcUrl: null, holding: false };
+  const widget = (name) => node.widgets?.find((w) => w.name === name);
   function loadSaved() {                     // the sliders' changes kept in the node (restored after creation)
     try { st.values = jsonW && jsonW.value ? JSON.parse(jsonW.value) : {}; } catch { st.values = {}; }
   }
@@ -58,6 +61,12 @@ function setup(node) {
       <button class="al-reset" title="All sliders back to the source's settings">Reset</button>
       <span class="al-state">Run the graph once: the sliders and the preview start then</span>
     </div>
+    <div class="al-bar">
+      <label title="The rendering the sliders start from: a delivered rendering, a saved view, a preset">start from
+        <select class="al-from"></select></label>
+      <button class="al-save" title="Save the sliders as a view of the project (shown in the heavy client too)">Save as view...</button>
+      <button class="al-cmp" title="Hold to see the starting rendering, release to see the sliders' one">Compare (hold)</button>
+    </div>
     <div class="al-body"><div class="al-sliders"></div><div class="al-view"><img class="al-img"/></div></div>`;
   const sec = root.querySelector(".al-sec");
   const adv = root.querySelector(".al-adv");
@@ -66,6 +75,8 @@ function setup(node) {
   const sliders = root.querySelector(".al-sliders");
   const view = root.querySelector(".al-view");
   const img = root.querySelector(".al-img");
+  const from = root.querySelector(".al-from");
+  const cmp = root.querySelector(".al-cmp");
   // the canvas must not take the mouse inside the sliders
   for (const ev of ["pointerdown", "mousedown", "wheel"]) root.addEventListener(ev, (e) => e.stopPropagation());
 
@@ -143,6 +154,19 @@ function setup(node) {
     st.timer = setTimeout(preview, 120);
   }
 
+  async function render(settings) {          // a preview as an object URL, or an error text
+    const width = Math.round(Math.max(400, view.clientWidth) * (window.devicePixelRatio || 1));
+    const r = await api.fetchApi("/astro/preview", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ root: st.project.root, variant: st.project.variant, settings, width }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || String(r.status));
+    }
+    return URL.createObjectURL(await r.blob());
+  }
+
   async function preview() {
     if (!st.project) return;
     if (st.busy) { st.again = true; return; }
@@ -150,22 +174,11 @@ function setup(node) {
     state.textContent = "rendering...";
     const t0 = performance.now();
     try {
-      const settings = Object.assign({}, st.source, st.values);
-      const width = Math.round(Math.max(400, view.clientWidth) * (window.devicePixelRatio || 1));
-      const r = await api.fetchApi("/astro/preview", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ root: st.project.root, variant: st.project.variant, settings, width }),
-      });
-      if (!r.ok) {
-        const e = await r.json().catch(() => ({}));
-        state.textContent = "error: " + (e.error || r.status);
-      } else {
-        const b = await r.blob();
-        if (st.url) URL.revokeObjectURL(st.url);
-        st.url = URL.createObjectURL(b);
-        img.src = st.url;
-        state.textContent = `${st.project.variant || "main"} - preview ${Math.round(performance.now() - t0)} ms`;
-      }
+      const u = await render(Object.assign({}, st.source, st.values));
+      if (st.url) URL.revokeObjectURL(st.url);
+      st.url = u;
+      if (!st.holding) img.src = st.url;
+      state.textContent = `${st.project.variant || "main"} - preview ${Math.round(performance.now() - t0)} ms`;
     } catch (e) {
       state.textContent = "error: " + e;
     } finally {
@@ -173,6 +186,86 @@ function setup(node) {
       if (st.again) { st.again = false; preview(); }
     }
   }
+
+  // the starting rendering: the node's 'source' and 'view' widgets, chosen here from the project's list
+  async function fillFrom() {
+    if (!st.project) return;
+    const q = `root=${encodeURIComponent(st.project.root)}&variant=${encodeURIComponent(st.project.variant)}`;
+    const r = await api.fetchApi(`/astro/render_sources?${q}`);
+    if (!r.ok) return;
+    const s = await r.json();
+    const srcW = widget("source"), viewW = widget("view");
+    const options = srcW?.options?.values || [];
+    from.innerHTML = "";
+    const group = (label, items) => {
+      if (!items.length) return;
+      const g = document.createElement("optgroup");
+      g.label = label;
+      for (const [text, value] of items) g.appendChild(new Option(text, value));
+      from.appendChild(g);
+    };
+    group("Delivered", s.delivered.filter((d) => options.includes(`delivered: ${d}`))
+                                  .map((d) => [d, `source|delivered: ${d}`]));
+    group("Views", s.views.map((v) => [v, `view|${v}`]));
+    group("Presets", s.presets.map((p) => [p, `source|preset: ${p}`]));
+    from.value = viewW?.value ? `view|${viewW.value}` : `source|${srcW?.value}`;
+  }
+
+  async function startFrom(choice) {
+    const [kind, name] = [choice.split("|")[0], choice.slice(choice.indexOf("|") + 1)];
+    const srcW = widget("source"), viewW = widget("view");
+    let source;
+    if (kind === "view") {
+      if (viewW) viewW.value = name;
+      source = "view:" + name;
+    } else {
+      if (srcW) srcW.value = name;
+      if (viewW) viewW.value = "";
+      source = name.startsWith("delivered: ") ? "results/" + name.slice(11) : name.slice(8);
+    }
+    const q = `root=${encodeURIComponent(st.project.root)}&variant=${encodeURIComponent(st.project.variant)}` +
+              `&source=${encodeURIComponent(source)}`;
+    const r = await api.fetchApi(`/astro/source_settings?${q}`);
+    const vals = await r.json();
+    if (!r.ok) { state.textContent = "error: " + (vals.error || r.status); return; }
+    st.source = vals;
+    st.values = {};
+    st.srcUrl = null;
+    save();
+    build();
+    schedule();
+  }
+  from.onchange = () => { if (st.project) startFrom(from.value); };
+
+  root.querySelector(".al-save").onclick = async () => {
+    if (!st.project) return;
+    const viewW = widget("view");
+    const name = (window.prompt("Name of the view:", viewW?.value || "") || "").trim();
+    if (!name) return;
+    const r = await api.fetchApi("/astro/save_view", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ root: st.project.root, variant: st.project.variant, name,
+                             settings: Object.assign({}, st.source, st.values) }),
+    });
+    const e = await r.json().catch(() => ({}));
+    state.textContent = r.ok ? `view '${name}' saved` : "error: " + (e.error || r.status);
+    if (r.ok) await fillFrom();
+  };
+
+  async function hold(on) {                    // Compare: the starting rendering while the button is held
+    if (!st.project) return;
+    st.holding = on;
+    cmp.classList.toggle("al-held", on);
+    if (!on) { if (st.url) img.src = st.url; return; }
+    try {
+      if (!st.srcUrl) st.srcUrl = await render(st.source);
+      if (st.holding) img.src = st.srcUrl;
+    } catch (e) {
+      state.textContent = "error: " + e.message;
+    }
+  }
+  cmp.addEventListener("pointerdown", () => hold(true));
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) cmp.addEventListener(ev, () => hold(false));
 
   sec.onchange = () => { st.section = Number(sec.value); build(); };
   adv.onchange = () => { st.advanced = adv.checked; build(); };
@@ -190,8 +283,10 @@ function setup(node) {
     executed(info) {
       st.project = { root: info.root, variant: info.variant || "" };
       st.source = info.source_settings || {};
+      st.srcUrl = null;
       build();
       preview();
+      fillFrom();
     },
     state: st,
   };
