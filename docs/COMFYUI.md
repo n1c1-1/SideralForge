@@ -101,6 +101,10 @@ ComfyUI's API format, also accepted, and used by `tools/run_prompt.py`).
 7. **07_methods**: one processing choice (repairs around the stars: as removed) computed as a variant and
    rendered next to the main processing. Note: some choices act only on one star removal (this one only on the
    star model: render both with `{"learned_stars": false}` to see it).
+8. **08_glare_zones**: the Horsehead's milky veil comes from the glare of Alnitak drawn with the nebula (its wide
+   wings lift the whole sky). The base view draws a quarter of the glare with the nebula (dark sky, contrast back);
+   around the brightest stars (Gaia G < 2.5) the photographed glare is kept, fading out radially (soft star mask),
+   where the glare drawn with the stars would show a disc and coarse rays.
 
 ## Tools
 

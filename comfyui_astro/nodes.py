@@ -210,7 +210,8 @@ class AstroRender(io.ComfyNode):
                     io.String.Input("changes", default="", multiline=True,
                                     tooltip='Settings changed on top, as JSON, e.g. {"glare_nebula": 0, "chroma": 1.0}'),
                     io.Float.Input("scale", default=0.5, min=0.1, max=1.0, step=0.05,
-                                   tooltip="Output size relative to the full (drizzled) resolution")],
+                                   tooltip="Output size relative to the full (drizzled) resolution, "
+                                           "rounded to 1, 1/2, 1/3, 1/4...")],
             outputs=[io.Image.Output(display_name="final"), io.Image.Output(display_name="starless"),
                      io.Image.Output(display_name="stars"), io.String.Output(display_name="settings")])
 
@@ -283,7 +284,8 @@ class AstroRenderLive(io.ComfyNode):
                                     tooltip="The settings changed with the sliders, on top of the source (kept by the "
                                             "node; empty = the source as it is)"),
                     io.Float.Input("scale", default=0.5, min=0.1, max=1.0, step=0.05,
-                                   tooltip="Output size relative to the full (drizzled) resolution")],
+                                   tooltip="Output size relative to the full (drizzled) resolution, "
+                                           "rounded to 1, 1/2, 1/3, 1/4...")],
             outputs=[io.Image.Output(display_name="final"), io.Image.Output(display_name="starless"),
                      io.Image.Output(display_name="stars"), io.String.Output(display_name="settings")])
 
@@ -319,7 +321,8 @@ class AstroStarMask(io.ComfyNode):
                         "around the bright stars and another elsewhere (e.g. with ImageCompositeMasked).",
             inputs=[ASTRO.Input("astro"),
                     io.Float.Input("scale", default=0.5, min=0.1, max=1.0, step=0.05,
-                                   tooltip="Same scale as the Astro: Render the mask goes with"),
+                                   tooltip="Same scale as the Astro: Render the mask goes with (rounded the "
+                                           "same way: 1, 1/2, 1/3...)"),
                     io.Float.Input("brighter_than", default=9.0, min=2.0, max=14.0, step=0.5,
                                    tooltip="Stars brighter than this Gaia G magnitude"),
                     io.Float.Input("radius_g6", default=120.0, min=5.0, max=2000.0, step=5.0,
@@ -337,7 +340,7 @@ class AstroStarMask(io.ComfyNode):
         ready = _ready_to_render(astro)
         eng, _ = bridge.engine_for(ready["root"], ready["variant"])
         x0, x1, y0, y1 = eng.crop
-        f = 1.0 / float(scale)
+        f = float(max(1, int(round(1.0 / float(scale)))))     # as the rendering engine: 1, 1/2, 1/3...
         w, h = int(x1 / f) - int(x0 / f), int(y1 / f) - int(y0 / f)
         m = np.zeros((h, w), np.float32)
         yy, xx = np.mgrid[0:h, 0:w]
