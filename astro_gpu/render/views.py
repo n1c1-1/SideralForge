@@ -32,9 +32,11 @@ def base_views(project) -> dict[str, dict]:
         if var and var not in project.config.variants:
             continue
         name = f.parent.name.replace("_", " ").capitalize()
-        out[name] = {"variant": var, "settings": RenderSettings.from_saved(meta.get("settings", {})).model_dump(
-            exclude_defaults=True), "created": meta.get("date", ""), "note": f"the delivered rendering "
-                                                                                 f"(results/{f.parent.name})"}
+        settings = RenderSettings.from_saved(meta.get("settings", {})).model_dump(exclude_defaults=True)
+        if meta.get("preparation") == "render_prep":        # rendered by the star model, whatever the setting said
+            settings["learned_stars"] = False
+        out[name] = {"variant": var, "settings": settings, "created": meta.get("date", ""),
+                     "note": f"the delivered rendering (results/{f.parent.name})"}
     return out
 
 
