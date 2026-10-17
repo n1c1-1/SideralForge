@@ -15,6 +15,7 @@ import logging
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -146,6 +147,23 @@ class HookJournal(Journal):
             (self._log_dir / "STOP").write_text("stop requested by ComfyUI")
 
 
+@contextmanager
+def _spawn_without_main():
+    """The calibration and the registration compute in worker processes ('spawn'). On Windows a spawned worker runs
+    the parent's main script again before its work: ComfyUI's main.py, which fails there (the workers die and are
+    started again without end, the stage never finishes). While the pipeline runs, the main module is replaced by an
+    empty one, so the workers only import what their work needs."""
+    import sys
+    import types
+    main = sys.modules.get("__main__")
+    sys.modules["__main__"] = types.ModuleType("__main__")
+    try:
+        yield
+    finally:
+        if main is not None:
+            sys.modules["__main__"] = main
+
+
 def run_up_to(root, variant: str, stage: str, on_progress: Callable | None = None,
               interrupted: Callable | None = None) -> dict:
     """Compute every stage needed up to ``stage`` (in the variant, or main) that is not up to date, then return the
@@ -157,7 +175,7 @@ def run_up_to(root, variant: str, stage: str, on_progress: Callable | None = Non
         import torch
         # ComfyUI runs the nodes without gradients (inference mode): the stages that train a network (denoising,
         # learned star removal, sharpening) need them
-        with torch.inference_mode(False), torch.enable_grad():
+        with torch.inference_mode(False), torch.enable_grad(), _spawn_without_main():
             status = pipe.run(until=stage)
         if status != "done":
             m = read_manifest(p, next((s for s in todo if read_manifest(p, s).get("status") != "done"), stage))
