@@ -9,5 +9,5 @@ WEB_DIRECTORY = "./web"          # the live render node's sliders and preview
 
 try:                             # the routes exist only inside a running ComfyUI
     from . import server_routes  # noqa: F401
-except ImportError:
+except (ImportError, AttributeError):   # no server module, or no server running (tests)
     pass

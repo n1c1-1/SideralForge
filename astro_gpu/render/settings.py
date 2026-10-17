@@ -115,7 +115,7 @@ class RenderSettings(StageParams):
     speck_k: float = S(2.0, section="Sky background", label="Dark speck removal", level=ADVANCED, ge=0, le=10, step=0.5,
                        help="Isolated dark pixels deeper than this many noise sigmas below their 5x5 median are lifted.")
     # ------------------------------------------------------------------ nebula
-    white_mult: float = S(0.62, section="Nebula", label="Brightness", ge=0.1, le=2.0, step=0.01,
+    white_mult: float = S(0.62, section="Nebula", label="White point", ge=0.1, le=2.0, step=0.01,
                           help="White point of the tone curve relative to the brightest nebula. Lower = brighter "
                                "nebula (highlights are then compressed, never clipped).")
     hdr_strength: float = S(0.8, section="Nebula", label="Large-scale compression", ge=0, le=1.0, step=0.05,

@@ -399,7 +399,9 @@ class AstroSave16(io.ComfyNode):
 class AstroExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [AstroProject, AstroVariant, *STAGE_NODES, AstroRender, AstroRenderLive, AstroStarMask, AstroExport, AstroSave16]
+        from .masks import MASK_NODES
+        return [AstroProject, AstroVariant, *STAGE_NODES, AstroRender, AstroRenderLive, AstroStarMask, AstroExport,
+                AstroSave16, *MASK_NODES]
 
 
 async def comfy_entrypoint() -> AstroExtension:

@@ -44,7 +44,10 @@ function setup(node) {
   }
   const st = { project: null, values: {}, source: {}, schema: null, section: 0, advanced: false,
                timer: null, busy: false, again: false, url: null };
-  try { st.values = jsonW && jsonW.value ? JSON.parse(jsonW.value) : {}; } catch { st.values = {}; }
+  function loadSaved() {                     // the sliders' changes kept in the node (restored after creation)
+    try { st.values = jsonW && jsonW.value ? JSON.parse(jsonW.value) : {}; } catch { st.values = {}; }
+  }
+  loadSaved();
 
   const root = document.createElement("div");
   root.className = "astro-live";
@@ -183,6 +186,7 @@ function setup(node) {
   });
 
   node._astroLive = {
+    loadSaved() { loadSaved(); build(); },
     executed(info) {
       st.project = { root: info.root, variant: info.variant || "" };
       st.source = info.source_settings || {};
@@ -207,6 +211,7 @@ app.registerExtension({
     nodeType.prototype.onConfigure = function () {   // a saved graph may hold a smaller size: keep room for the preview
       const ret = configured?.apply(this, arguments);
       this.setSize([Math.max(this.size[0], 960), Math.max(this.size[1], 760)]);
+      this._astroLive?.loadSaved();                     // the widget values are restored only now
       return ret;
     };
     const executed = nodeType.prototype.onExecuted;

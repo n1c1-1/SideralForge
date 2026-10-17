@@ -28,6 +28,9 @@ stage computed.
 | Astro: Star mask | A mask around the bright stars (Gaia catalogue), framed like a render at the same scale. |
 | Astro: Export | The full export into the project's results/<name>/ (16-bit TIFF with colour profile, PNG, JPEG, layers, reference framing, settings). |
 | Astro: Save 16-bit | Any image (a composite of views...) as a 16-bit TIFF. |
+| Astro: Blend views (astro/masks) | Combines up to five views zone by zone: each view laid over the ones before it where its mask is white; outputs the image and a coverage map (which view is used where). |
+| Astro: Brightness mask (astro/masks) | A mask from an image's brightness, smoothed into zones, thresholds in percentiles of the image or in levels. |
+| Astro: Painted mask (astro/masks) | A mask painted by hand with a brush over an image, in the node. |
 
 Stage parameters: every parameter is a widget with its label, range and help (hover it); the advanced ones are in
 the node's advanced section. **settings: project** (the default) keeps the parameters already chosen for the project
@@ -54,6 +57,28 @@ keeps the processing's layers on the GPU). A changed slider is highlighted; doub
 to the source's value; Reset puts them all back. The changes are kept in the node (saved with the graph). Running
 the graph gives the image at the chosen scale with the sliders' settings, for the nodes after it (save, masks...).
 
+## Zones: one good view per part of the image
+
+No single rendering suits every part of an image: the glare drawn with the stars may suit the bright stars and
+the glare drawn with the nebula the rest, the nebula may want more contrast than the sky. Render the views
+(Astro: Render or Astro: Render (live), at the same scale), make one mask per view, and combine them with
+**Astro: Blend views**: the base is used wherever no mask takes another view; each view is laid over the ones before
+it, so put the most local corrections last (a painted correction on top). Its **coverage** output shows which view
+is used where (grey = the base, then orange, cyan, magenta, green): check that every zone has the view wanted.
+
+Masks:
+- **Astro: Star mask**: around the bright stars (Gaia catalogue), radius growing with brightness.
+- **Astro: Brightness mask**: from an image's brightness, e.g. the nebula from the starless layer (percentiles 60
+  to 90), the stars from the stars layer (levels 3 to 15 %, grown), bright cores from the final image (percentiles
+  99.5 to 99.95). Percentiles are measured on each image, so the same graph adapts to another object. Note: the
+  starless layer holds the bright stars' glare (when the glare is drawn with the nebula), so a nebula mask also
+  takes their surroundings: lay the star view over it.
+- **Astro: Painted mask**: run the graph once, the image appears in the node; paint with the left button, erase
+  with the right one (or Erase), mouse wheel = brush size, Undo, Clear, Fill; "overlay" sets how strongly the mask
+  shows. The mask is kept in the node (saved with the graph) and follows the image at any scale.
+
+Sizes (smoothing, growth, soft edges) are in % of the image width, so a graph works at any scale.
+
 ## Example graphs (comfyui_astro/workflows/)
 
 Open the files without "_api" by dragging them onto the ComfyUI window (the "_api" files are the same graphs in
@@ -65,6 +90,9 @@ ComfyUI's API format, also accepted, and used by `tools/run_prompt.py`).
 4. **04_views_mask**: two views of the same image (glare drawn with the nebula / with the stars) combined with a
    mask around the bright stars, saved in 16 bits.
 5. **05_render_live**: the live render node (sliders and preview), its image previewed and saved in 16 bits.
+6. **06_zones**: four views of the Flaming Star combined by zones: faithful as the base, more colour and contrast
+   in the nebula (brightness mask on the starless layer), glare drawn with the stars around the bright stars (star
+   mask, laid over the nebula), and the artistic rendering where it is painted by hand (empty at first: paint it).
 
 ## Tools
 
@@ -76,5 +104,4 @@ ComfyUI's API format, also accepted, and used by `tools/run_prompt.py`).
 
 ## Next
 
-- Masks drawn by hand per zone and more automatic masks (by brightness, around the nebula).
 - The interface's views and its Final adjustment moved into ComfyUI.
