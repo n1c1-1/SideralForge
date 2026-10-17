@@ -33,6 +33,8 @@ def convert(api: dict, info: dict) -> dict:
     for k in api:
         d(k)
     rows: dict[int, int] = {}
+    per_row = 5
+    rows_per_col = max(sum(1 for k in api if depth[k] == c) for c in set(depth.values()))
     links, nodes = [], []
     outputs_links: dict[tuple[str, int], list[int]] = {}
     for k, n in api.items():
@@ -46,6 +48,8 @@ def convert(api: dict, info: dict) -> dict:
         col = depth[k]
         row = rows.get(col, 0)
         rows[col] = row + 1
+        band = max(rows_per_col, 1)
+        col, row = col % per_row, row + (col // per_row) * (band + 1)  # long chains wrap into rows of per_row
         inputs, widgets = [], []
         for slot_name, typ, is_widget in node_inputs(ni):
             v = n["inputs"].get(slot_name)
