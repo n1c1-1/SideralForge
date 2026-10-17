@@ -1,0 +1,200 @@
+{
+ "1": {
+  "class_type": "AstroProject",
+  "inputs": {
+   "project_folder": "E:/astro_gpu/projects/FlamingStar"
+  }
+ },
+ "2": {
+  "class_type": "Astro_inventory",
+  "inputs": {
+   "astro": [
+    "1",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "3": {
+  "class_type": "Astro_calibrate",
+  "inputs": {
+   "astro": [
+    "2",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "4": {
+  "class_type": "Astro_register",
+  "inputs": {
+   "astro": [
+    "3",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "5": {
+  "class_type": "Astro_stack",
+  "inputs": {
+   "astro": [
+    "4",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "6": {
+  "class_type": "Astro_astrometry",
+  "inputs": {
+   "astro": [
+    "5",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "7": {
+  "class_type": "Astro_reference",
+  "inputs": {
+   "astro": [
+    "6",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "8": {
+  "class_type": "Astro_catalogs",
+  "inputs": {
+   "astro": [
+    "7",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "9": {
+  "class_type": "Astro_surveys",
+  "inputs": {
+   "astro": [
+    "8",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "10": {
+  "class_type": "Astro_color",
+  "inputs": {
+   "astro": [
+    "9",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "11": {
+  "class_type": "Astro_denoise",
+  "inputs": {
+   "astro": [
+    "10",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "12": {
+  "class_type": "Astro_optics",
+  "inputs": {
+   "astro": [
+    "11",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "13": {
+  "class_type": "Astro_stars",
+  "inputs": {
+   "astro": [
+    "12",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "14": {
+  "class_type": "Astro_star_net",
+  "inputs": {
+   "astro": [
+    "13",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "15": {
+  "class_type": "Astro_starless",
+  "inputs": {
+   "astro": [
+    "14",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "16": {
+  "class_type": "Astro_background",
+  "inputs": {
+   "astro": [
+    "15",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "17": {
+  "class_type": "Astro_render_prep",
+  "inputs": {
+   "astro": [
+    "16",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "18": {
+  "class_type": "Astro_render_prep_learned",
+  "inputs": {
+   "astro": [
+    "17",
+    0
+   ],
+   "settings": "project"
+  }
+ },
+ "19": {
+  "class_type": "AstroRender",
+  "inputs": {
+   "astro": [
+    "18",
+    0
+   ],
+   "source": "delivered: faithful",
+   "view": "",
+   "changes": "",
+   "scale": 0.5
+  }
+ },
+ "20": {
+  "class_type": "PreviewImage",
+  "inputs": {
+   "images": [
+    "19",
+    0
+   ]
+  }
+ }
+}

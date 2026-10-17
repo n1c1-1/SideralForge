@@ -266,10 +266,97 @@ class AstroExport(io.ComfyNode):
         return io.NodeOutput(folder, ui={"text": [folder]})
 
 
+class AstroStarMask(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="AstroStarMask", display_name="Astro: Star mask", category=CATEGORY,
+            description="A mask of the surroundings of the bright stars (from the Gaia catalogue matched to the image), "
+                        "framed like an Astro: Render of the same processing at the same scale: to take one view "
+                        "around the bright stars and another elsewhere (e.g. with ImageCompositeMasked).",
+            inputs=[ASTRO.Input("astro"),
+                    io.Float.Input("scale", default=0.5, min=0.1, max=1.0, step=0.05,
+                                   tooltip="Same scale as the Astro: Render the mask goes with"),
+                    io.Float.Input("brighter_than", default=9.0, min=2.0, max=14.0, step=0.5,
+                                   tooltip="Stars brighter than this Gaia G magnitude"),
+                    io.Float.Input("radius_g6", default=120.0, min=5.0, max=2000.0, step=5.0,
+                                   tooltip="Radius around a G 6 star, in full-resolution pixels"),
+                    io.Float.Input("growth", default=1.6, min=1.0, max=4.0, step=0.05,
+                                   tooltip="Radius factor per magnitude brighter (1 = the same radius for all)"),
+                    io.Float.Input("feather", default=0.3, min=0.0, max=1.0, step=0.05,
+                                   tooltip="Soft edge, as a fraction of each radius")],
+            outputs=[io.Mask.Output(display_name="mask")])
+
+    @classmethod
+    def execute(cls, astro, scale, brighter_than, radius_g6, growth, feather) -> io.NodeOutput:
+        import numpy as np
+        import torch
+        ready = _ready_to_render(astro)
+        eng, _ = bridge.engine_for(ready["root"], ready["variant"])
+        x0, x1, y0, y1 = eng.crop
+        f = 1.0 / float(scale)
+        w, h = int(x1 / f) - int(x0 / f), int(y1 / f) - int(y0 / f)
+        m = np.zeros((h, w), np.float32)
+        yy, xx = np.mgrid[0:h, 0:w]
+        sel = np.where((eng.G < brighter_than) & (eng.X > x0 - 2000) & (eng.X < x1 + 2000)
+                       & (eng.Y > y0 - 2000) & (eng.Y < y1 + 2000))[0]
+        for i in sel:
+            r = radius_g6 * growth ** (6.0 - float(eng.G[i])) / f
+            cx, cy = eng.X[i] / f - int(x0 / f), eng.Y[i] / f - int(y0 / f)
+            r0 = max(r * (1 - feather), 0.0)
+            xa, xb = int(max(cx - r - 2, 0)), int(min(cx + r + 3, w))
+            ya, yb = int(max(cy - r - 2, 0)), int(min(cy + r + 3, h))
+            if xa >= xb or ya >= yb:
+                continue
+            d = np.hypot(xx[ya:yb, xa:xb] - cx, yy[ya:yb, xa:xb] - cy)
+            v = np.clip((r - d) / max(r - r0, 1e-3), 0, 1)
+            v = v * v * (3 - 2 * v)                       # smooth edge
+            m[ya:yb, xa:xb] = np.maximum(m[ya:yb, xa:xb], v)
+        return io.NodeOutput(torch.from_numpy(m)[None])
+
+
+class AstroSave16(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="AstroSave16", display_name="Astro: Save 16-bit", category=CATEGORY, is_output_node=True,
+            description="Saves any image (a render, a composite of views...) as a 16-bit TIFF with an sRGB colour "
+                        "profile: into the project's results/<name>/ when a project is connected, else into "
+                        "ComfyUI's output folder.",
+            inputs=[io.Image.Input("image"),
+                    io.String.Input("name", default="composite", tooltip="File and folder name"),
+                    ASTRO.Input("astro", optional=True, tooltip="Optional: write into this project's results")],
+            outputs=[io.String.Output(display_name="file")])
+
+    @classmethod
+    def execute(cls, image, name, astro=None) -> io.NodeOutput:
+        from pathlib import Path
+
+        import numpy as np
+        import tifffile
+
+        from astro_gpu.core.project import Project
+        from astro_gpu.render.export import _icc
+        name = (name or "composite").strip()
+        if astro:
+            out = Project(astro["root"]).results / name
+        else:
+            import folder_paths
+            out = Path(folder_paths.get_output_directory()) / "astro"
+        out.mkdir(parents=True, exist_ok=True)
+        files = []
+        for k, img in enumerate(image):
+            a = (np.clip(img.cpu().numpy(), 0, 1) * 65535 + 0.5).astype(np.uint16)
+            f = out / (f"{name}.tif" if len(image) == 1 else f"{name}_{k + 1}.tif")
+            tifffile.imwrite(f, a, photometric="rgb", iccprofile=_icc(), compression="zlib")
+            files.append(str(f))
+        return io.NodeOutput("; ".join(files), ui={"text": files})
+
+
 class AstroExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
-        return [AstroProject, AstroVariant, *STAGE_NODES, AstroRender, AstroExport]
+        return [AstroProject, AstroVariant, *STAGE_NODES, AstroRender, AstroStarMask, AstroExport, AstroSave16]
 
 
 async def comfy_entrypoint() -> AstroExtension:

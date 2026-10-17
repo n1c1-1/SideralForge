@@ -1,7 +1,0 @@
-{
-  "1": {"class_type": "AstroProject", "inputs": {"project_folder": "C:/Users/Nicolas/astro_gpu_scratch/projects/Iris"}},
-  "2": {"class_type": "AstroVariant", "inputs": {"astro": ["1", 0], "name": "Test ComfyUI flat", "note": "temporary test"}},
-  "3": {"class_type": "Astro_background", "inputs": {"astro": ["2", 0], "settings": "this node", "star_flat": false}},
-  "4": {"class_type": "AstroRender", "inputs": {"astro": ["3", 0], "source": "delivered: faithful", "view": "", "changes": "", "scale": 0.5}},
-  "5": {"class_type": "PreviewImage", "inputs": {"images": ["4", 0]}}
-}

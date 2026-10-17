@@ -1,0 +1,74 @@
+{
+ "1": {
+  "class_type": "AstroProject",
+  "inputs": {
+   "project_folder": "E:/astro_gpu/projects/FlamingStar"
+  }
+ },
+ "2": {
+  "class_type": "AstroRender",
+  "inputs": {
+   "astro": [
+    "1",
+    0
+   ],
+   "source": "delivered: faithful",
+   "view": "",
+   "changes": "",
+   "scale": 0.5
+  }
+ },
+ "3": {
+  "class_type": "PreviewImage",
+  "inputs": {
+   "images": [
+    "2",
+    0
+   ]
+  }
+ },
+ "4": {
+  "class_type": "AstroVariant",
+  "inputs": {
+   "astro": [
+    "1",
+    0
+   ],
+   "name": "Halo bounded by the data",
+   "note": "the far halo of the bright stars bounded by the light around them"
+  }
+ },
+ "5": {
+  "class_type": "Astro_stars",
+  "inputs": {
+   "astro": [
+    "4",
+    0
+   ],
+   "settings": "this node",
+   "halo_bound": true
+  }
+ },
+ "6": {
+  "class_type": "AstroRender",
+  "inputs": {
+   "astro": [
+    "5",
+    0
+   ],
+   "source": "delivered: faithful",
+   "view": "",
+   "changes": "",
+   "scale": 0.5
+  }
+ },
+ "7": {
+  "class_type": "PreviewImage",
+  "inputs": {
+   "images": [
+    "6",
+    0
+   ]
+  }
+ }
+}
