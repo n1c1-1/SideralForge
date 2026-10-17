@@ -1,8 +1,7 @@
-"""Continuum smoothing from the gaps between stars (render_prep) and the user's sky zones (background)."""
+"""Continuum smoothing from the gaps between stars (render_prep)."""
 import cv2
 import numpy as np
 
-from astro_gpu.stages.background import sky_zones
 from astro_gpu.stages.render_prep import smooth_from_gaps
 
 
@@ -23,13 +22,3 @@ def test_no_gap_within_reach_falls_back_to_plain():
     c = np.random.default_rng(1).normal(5, 1, (120, 120)).astype(np.float32)
     w = np.zeros_like(c)
     assert np.allclose(smooth_from_gaps(c, w, 10), cv2.GaussianBlur(c, (0, 0), 10), atol=1e-5)
-
-
-def test_sky_zones(tmp_path):
-    m = np.zeros((100, 160), np.uint8)
-    m[:, :40] = 255                                         # left quarter is sky
-    f = tmp_path / "zones.png"
-    cv2.imwrite(str(f), m)
-    z = sky_zones(str(f), 16, 10)
-    assert z.shape == (10, 16) and z[:, :3].all() and not z[:, 5:].any()
-    assert sky_zones(str(tmp_path / "missing.png"), 16, 10) is None
