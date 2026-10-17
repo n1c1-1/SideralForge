@@ -74,7 +74,7 @@ class Stars(Stage):
         dev = ctx.device
         img = ctx.load("optics", "lat_full.npy").astype(np.float32)
         H, W = img.shape[1:]
-        pm = torch.load(ctx.input("optics", "psf_model.pt"), weights_only=False)
+        pm = torch.load(ctx.input("optics", "psf_model.pt"), map_location=dev, weights_only=False)
         dm = float(ctx.metric_of("optics", "mag_offset", 0.0))
         d = np.load(ctx.input("catalogs", "gaia_deep.npz"))
         x0, y0, g0 = d["x"], d["y"], d["g"]

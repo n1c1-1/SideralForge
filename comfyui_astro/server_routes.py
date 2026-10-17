@@ -75,15 +75,21 @@ async def get_source_settings(request):
     return web.json_response(vals)
 
 
-def _preview(root: str, variant: str, settings: dict, width: int) -> bytes:
+def _preview(root: str, variant: str, settings: dict, width: int, clip: bool = False) -> bytes:
     from astro_gpu.render.settings import RenderSettings
     eng, _ = bridge.engine_for(root, variant)
     x0, x1, y0, y1 = eng.crop
     scale = float(np.clip(width / max(x1 - x0, 1), 0.05, 1.0))
     lay = eng.render(RenderSettings(**settings), scale)
     f = 1.0 / lay.scale
-    img = lay.final[:, int(y0 / f):int(y1 / f), int(x0 / f):int(x1 / f)].clamp(0, 1)
-    a = (img.permute(1, 2, 0).cpu().numpy() * 255 + 0.5).astype(np.uint8)
+    sl = (slice(None), slice(int(y0 / f), int(y1 / f)), slice(int(x0 / f), int(x1 / f)))
+
+    def u8(t):
+        return (t[sl].clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255 + 0.5).astype(np.uint8)
+    a = u8(lay.final)
+    if clip:                                    # the heavy client's clipping display (blue, red, amber)
+        from astro_gpu.render.clipping import with_clipping
+        a = with_clipping(a, u8(lay.starless))
     ok, buf = cv2.imencode(".jpg", a[:, :, ::-1], [cv2.IMWRITE_JPEG_QUALITY, 88])
     return buf.tobytes()
 
@@ -116,7 +122,8 @@ async def post_preview(request):
     try:
         async with _LOCK:                       # one preview at a time on the GPU
             data = await asyncio.to_thread(_preview, body["root"], body.get("variant", ""),
-                                           dict(body.get("settings") or {}), int(body.get("width", 1000)))
+                                           dict(body.get("settings") or {}), int(body.get("width", 1000)),
+                                           bool(body.get("clip")))
     except Exception as e:  # noqa: BLE001
         return web.json_response({"error": f"{type(e).__name__}: {e}"}, status=400)
     return web.Response(body=data, content_type="image/jpeg")

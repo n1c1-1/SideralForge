@@ -362,7 +362,8 @@ class RenderPrep(Stage):
         ctx.metric("star_depth_snr10", depth)
         ctx.metric("star_depth_shift", depth_shift)
         ctx.progress(0.85, "real star profile")
-        r_all, prof = star_profile(torch.load(ctx.input("optics", "psf_model.pt"), weights_only=False))
+        r_all, prof = star_profile(torch.load(ctx.input("optics", "psf_model.pt"), map_location=ctx.device,
+                                               weights_only=False))
         ctx.save_json("prep.json", {"crop": [int(x0), int(x1), int(y0), int(y1)], "alpha": alpha,
                                     "vh": vh.tolist(), "M": M.tolist(), "drizzle_scale": S, "width": W,
                                     "height": H, "mag_offset": dm, "e": e_.tolist(), "Am": Am.tolist(),

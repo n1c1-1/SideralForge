@@ -161,9 +161,17 @@ class Context:
     @property
     def device(self):
         import torch
-        if torch.cuda.is_available():
-            return torch.device(self.device_name)
-        return torch.device("cpu")
+        if not torch.cuda.is_available():
+            return torch.device("cpu")
+        d = torch.device(self.device_name)
+        if d.type == "cuda" and (d.index or 0) >= torch.cuda.device_count():
+            # the project names a GPU this machine (or this program) does not see: the first one is used
+            if not getattr(self, "_device_warned", False):
+                self._device_warned = True
+                self.log(f"GPU {self.device_name} not available here ({torch.cuda.device_count()} visible): "
+                         f"cuda:0 used", "warning")
+            return torch.device("cuda:0")
+        return d
 
 
 def _np_default(o: Any) -> Any:

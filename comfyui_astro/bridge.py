@@ -11,6 +11,7 @@ The value carried between the nodes (ComfyUI type "ASTRO") is a small dict:
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
@@ -22,6 +23,7 @@ from astro_gpu.core.project import Project
 from astro_gpu.core.runner import Pipeline, read_manifest
 from astro_gpu.stages import all_stages
 
+LOG = logging.getLogger("astro")          # stage messages, in ComfyUI's console
 STAGES = all_stages()
 BY_NAME = {s.name: s for s in STAGES}
 ORDER = [s.name for s in STAGES]
@@ -113,8 +115,9 @@ def apply_node_params(root, variant: str, stage: str, values: dict[str, Any]) ->
 
 
 class HookJournal(Journal):
-    """The project's journal, with the progress of the running stage forwarded to ``on_progress(stage, frac, msg)``
-    and a stop request when ``interrupted()`` says so (the stage stops at its next checkpoint)."""
+    """The project's journal, with the progress of the running stage forwarded to ``on_progress(stage, frac, msg)``,
+    its messages and the start and end of every stage to ComfyUI's console (logger 'astro'), and a stop request when
+    ``interrupted()`` says so (the stage stops at its next checkpoint)."""
 
     def __init__(self, log_dir: Path, on_progress: Callable | None = None, interrupted: Callable | None = None):
         super().__init__(log_dir, echo=False)
@@ -123,6 +126,17 @@ class HookJournal(Journal):
 
     def emit(self, type_: str, **kw: Any) -> None:
         super().emit(type_, **kw)
+        try:
+            st = kw.get("stage", "")
+            if type_ == "log":
+                level = {"warning": logging.WARNING, "error": logging.ERROR}.get(kw.get("level", ""), logging.INFO)
+                LOG.log(level, f"{st}: {kw.get('msg', '')}")
+            elif type_ == "stage_start":
+                LOG.info(f"{st}: started")
+            elif type_ == "stage_end":
+                LOG.info(f"{st}: {kw.get('status', '')} ({float(kw.get('duration') or 0) / 60:.1f} min)")
+        except Exception:  # noqa: BLE001 - a display problem never stops a computation
+            pass
         if type_ == "progress" and self._on_progress is not None:
             try:
                 self._on_progress(kw.get("stage", ""), float(kw.get("frac", 0.0)), kw.get("msg", ""))

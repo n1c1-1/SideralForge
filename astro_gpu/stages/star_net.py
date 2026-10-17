@@ -210,7 +210,7 @@ class StarNet(Stage):
         pf = ck / "prep.pt"
         if pf.exists():
             ctx.log("measurements taken back from the interrupted run")
-            return torch.load(pf, weights_only=False)
+            return torch.load(pf, map_location=ctx.device, weights_only=False)
         A, B = ctx.load("optics", "lat_A.npy", mmap=True), ctx.load("optics", "lat_B.npy", mmap=True)
         ctx.progress(0.09, "noise, saturation and photon noise")
         bk, sg, sat99 = lib.noise_stats(target, A, B, L)

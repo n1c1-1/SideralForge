@@ -174,6 +174,10 @@ Not re-injected: the sharpening network (`core/sharpen.py`, kept in the reposito
 starless stage) and the night's glare zones. Known remaining defects: the Iris G6.9 glare (blue blob) and the
 plateau of the filled core around the Iris central star (fill disc of the cleaning step). The founding principle of
 the project, per-frame per-tile deconvolution before stacking, has still not been tried: it is the next session.
+(2026-10-17, at the user's request: the sharpening network is back in the starless stage, v24, for both the
+star-model and the learned starless images; the rendering setting 'Sharpening (measured star shape)' stays at 0 by
+default. Flaming Star: identical to the pixel at 0; at 1 crisper filaments, no rings, the sky untouched; at 2 a fine
+grain in the nebula.)
 
 - Render presets `Faithful` (reference rendering, measured colours) and `Artistic` (`render/settings.py`);
   `astro-gpu render PROJECT --preset faithful` writes `results/faithful/`. GUI: "Results" tab, project descriptions.

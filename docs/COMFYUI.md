@@ -61,7 +61,8 @@ the graph gives the image at the chosen scale with the sliders' settings, for th
 **start from** lists the project's delivered renderings, its views (of the node's processing) and the presets:
 choosing one sets the node's source or view and starts the sliders from it. **Save as view...** saves the sliders
 as a view of the project, which the heavy client's views bar shows too (and the other way round). **Compare
-(hold)** shows the starting rendering while the button is held.
+(hold)** shows the starting rendering while the button is held. **clipping** marks, as in the heavy client, the
+pure black (blue), the pure white (red) and the nebula above 92 % where its detail is lost (amber).
 
 ## Zones: one good view per part of the image
 

@@ -66,6 +66,7 @@ function setup(node) {
         <select class="al-from"></select></label>
       <button class="al-save" title="Save the sliders as a view of the project (shown in the heavy client too)">Save as view...</button>
       <button class="al-cmp" title="Hold to see the starting rendering, release to see the sliders' one">Compare (hold)</button>
+      <label title="Blue: pure black   Red: pure white   Amber: nebula above 92 % (detail loss)"><input type="checkbox" class="al-clip"> clipping</label>
     </div>
     <div class="al-body"><div class="al-sliders"></div><div class="al-view"><img class="al-img"/></div></div>`;
   const sec = root.querySelector(".al-sec");
@@ -77,6 +78,7 @@ function setup(node) {
   const img = root.querySelector(".al-img");
   const from = root.querySelector(".al-from");
   const cmp = root.querySelector(".al-cmp");
+  const clip = root.querySelector(".al-clip");
   // the canvas must not take the mouse inside the sliders
   for (const ev of ["pointerdown", "mousedown", "wheel"]) root.addEventListener(ev, (e) => e.stopPropagation());
 
@@ -158,7 +160,8 @@ function setup(node) {
     const width = Math.round(Math.max(400, view.clientWidth) * (window.devicePixelRatio || 1));
     const r = await api.fetchApi("/astro/preview", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ root: st.project.root, variant: st.project.variant, settings, width }),
+      body: JSON.stringify({ root: st.project.root, variant: st.project.variant, settings, width,
+                             clip: clip.checked }),
     });
     if (!r.ok) {
       const e = await r.json().catch(() => ({}));
@@ -236,6 +239,7 @@ function setup(node) {
     schedule();
   }
   from.onchange = () => { if (st.project) startFrom(from.value); };
+  clip.onchange = () => { st.srcUrl = null; schedule(); };
 
   root.querySelector(".al-save").onclick = async () => {
     if (!st.project) return;

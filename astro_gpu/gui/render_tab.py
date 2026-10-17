@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..render.clipping import LEGEND as CLIP_LEGEND
 from ..render.settings import PRESETS, SECTIONS, RenderSettings
 from . import style
 from .widgets import Debouncer, HelpBox, Histogram, ImageView, ParamForm, scroll, to_qimage
@@ -224,7 +225,7 @@ class RenderTab(QWidget):
         self.clip_b = QToolButton()
         self.clip_b.setText("Show clipping")
         self.clip_b.setCheckable(True)
-        self.clip_b.setToolTip("Blue: pure black   Red: pure white   Amber: nebula above 92 % (detail loss)")
+        self.clip_b.setToolTip(CLIP_LEGEND)
         self.clip_b.toggled.connect(lambda _: self.show_current())
         bar.addWidget(self.clip_b)
         bar.addStretch(1)
@@ -803,13 +804,7 @@ def _sample(img: np.ndarray, n: int = 250_000) -> np.ndarray:
 
 
 def clipping_overlay(final_u8: np.ndarray, starless_u8: np.ndarray) -> QImage:
-    h, w, _ = final_u8.shape
-    o = np.zeros((h, w, 4), np.uint8)
-    black = final_u8.max(2) == 0
-    white = final_u8.min(2) == 255
-    sl = starless_u8.astype(np.float32) / 255
-    burnt = (0.2126 * sl[..., 0] + 0.7152 * sl[..., 1] + 0.0722 * sl[..., 2]) > 0.92
-    o[black] = (60, 120, 255, 255)
-    o[burnt] = (230, 170, 60, 200)
-    o[white] = (255, 60, 60, 255)
+    from ..render.clipping import clipping_rgba
+    o = clipping_rgba(final_u8, starless_u8)
+    h, w, _ = o.shape
     return QImage(np.ascontiguousarray(o).data, w, h, 4 * w, QImage.Format_RGBA8888).copy()
