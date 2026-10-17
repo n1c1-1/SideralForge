@@ -31,6 +31,19 @@ SETTINGS_FROM_PROJECT = "project"
 SETTINGS_FROM_NODE = "this node"
 
 
+def project_signature(project_folder) -> str:
+    """Changes when anything of the project changed on disk (its settings, a stage computed by another program)."""
+    root = Path(str(project_folder).strip().strip('"'))
+    sig = []
+    for f in [root / "project.json"] + sorted(root.glob("work/*/manifest.json")) + \
+            sorted(root.glob("variants/*/*/manifest.json")):
+        try:
+            sig.append(f"{f}:{f.stat().st_mtime_ns}")
+        except OSError:
+            pass
+    return "|".join(sig)
+
+
 def astro_value(root, variant: str = "", stage: str | None = None, run_id: str | None = None) -> dict:
     return {"root": str(Path(root)), "variant": variant or "", "stage": stage, "run_id": run_id}
 
@@ -127,7 +140,11 @@ def run_up_to(root, variant: str, stage: str, on_progress: Callable | None = Non
     pipe = Pipeline(p, STAGES, journal=HookJournal(p.logs, on_progress, interrupted))
     todo = pipe.plan(until=stage)
     if todo:
-        status = pipe.run(until=stage)
+        import torch
+        # ComfyUI runs the nodes without gradients (inference mode): the stages that train a network (denoising,
+        # learned star removal, sharpening) need them
+        with torch.inference_mode(False), torch.enable_grad():
+            status = pipe.run(until=stage)
         if status != "done":
             m = read_manifest(p, next((s for s in todo if read_manifest(p, s).get("status") != "done"), stage))
             raise RuntimeError(f"{stage}: the computation {status}" + (f": {m.get('error')}" if m.get("error") else ""))

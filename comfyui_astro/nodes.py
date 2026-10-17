@@ -111,16 +111,7 @@ class AstroProject(io.ComfyNode):
     @classmethod
     def fingerprint_inputs(cls, project_folder):
         # computed again when anything of the project changed on disk (another program, the interface)
-        from pathlib import Path
-        root = Path(project_folder)
-        sig = []
-        for f in [root / "project.json"] + sorted(root.glob("work/*/manifest.json")) + \
-                sorted(root.glob("variants/*/*/manifest.json")):
-            try:
-                sig.append(f"{f}:{f.stat().st_mtime_ns}")
-            except OSError:
-                pass
-        return "|".join(sig)
+        return bridge.project_signature(project_folder)
 
     @classmethod
     def execute(cls, project_folder) -> io.NodeOutput:
@@ -404,8 +395,9 @@ class AstroExtension(ComfyExtension):
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         from .masks import MASK_NODES
         from .methods_node import AstroMethods
-        return [AstroProject, AstroVariant, AstroMethods, *STAGE_NODES, AstroRender, AstroRenderLive, AstroStarMask, AstroExport,
-                AstroSave16, *MASK_NODES]
+        from .project_node import AstroNewProject
+        return [AstroNewProject, AstroProject, AstroVariant, AstroMethods, *STAGE_NODES, AstroRender, AstroRenderLive,
+                AstroStarMask, AstroExport, AstroSave16, *MASK_NODES]
 
 
 async def comfy_entrypoint() -> AstroExtension:

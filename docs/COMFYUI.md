@@ -20,6 +20,7 @@ stage computed.
 
 | Node | What it does |
 |---|---|
+| Astro: New project | Makes a project from the folders of your frames, as the heavy client's New project: the light frames' folder (or files, one per line); the darks, flats, bias and flat darks next to it, the project name, its folder, the scratch folder and the target are guessed when left empty. A folder that already holds a project is opened as it is, never overwritten. |
 | Astro: Project | Opens a project folder (the one holding project.json, made by the astro_GPU interface or command line). |
 | Astro: Methods | The processing choices in plain words, as in the heavy client's Methods tab (learned star removal, glare of the bright stars, shape of the stars, faint stars, flat field, H-alpha reference, repairs around the stars, sensor pattern, colour fringes): one list per question, "as main" = unchanged; hover a list for what each option does and what was seen on real data. The choices are computed as a variant (main is never changed), named after them unless named in the node. |
 | Astro: Variant | The nodes after it compute a variant: the same data processed another way, kept in its own folders (variants/<name>/) next to the main processing; the stages before the first change are shared. |
@@ -105,6 +106,9 @@ ComfyUI's API format, also accepted, and used by `tools/run_prompt.py`).
    wings lift the whole sky). The base view draws a quarter of the glare with the nebula (dark sky, contrast back);
    around the brightest stars (Gaia G < 2.5) the photographed glare is kept, fading out radially (soft star mask),
    where the glare drawn with the stars would show a disc and coarse rays.
+9. **09_new_project**: a new project from your frames (fill in the light frames' folder): computed from the
+   calibration to the rendering, previewed and exported as results/faithful. The whole chain takes one to two hours
+   on a large session (the denoising and star removal networks are trained on the data).
 
 ## Tools
 
