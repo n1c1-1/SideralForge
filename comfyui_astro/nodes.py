@@ -1,0 +1,276 @@
+"""ComfyUI nodes of astro_GPU: the processing chain as nodes, variants as branches, the rendering and the export.
+
+Every node passes on an ASTRO value (project folder, variant, last stage computed: see bridge.py).
+- 'Astro: Project' opens a project folder (made by the astro_GPU interface or command line).
+- 'Astro: Variant' makes the nodes after it compute a variant: the same data processed another way, in its own
+  folders next to the main processing (the stages before the first change are shared).
+- One node per processing stage ('Astro: Stacking', 'Astro: Star photometry'...). A stage node computes everything
+  needed up to its stage that is not up to date; a stage already up to date is not touched. Its parameters come from
+  the project ('settings: project', the default: what was chosen before) or from the node's widgets ('settings: this
+  node': a widget left at its default value means 'automatic', the value the stage derives from the data).
+- 'Astro: Render' renders the image (final, starless, stars) with rendering settings; 'Astro: Export' writes the
+  16-bit TIFF, PNG, JPEG, layers and reference framing into the project's results folder.
+"""
+from __future__ import annotations
+
+import json
+import time
+
+from comfy_api.latest import ComfyExtension, io
+from typing_extensions import override
+
+from . import bridge
+
+ASTRO = io.Custom("ASTRO")
+CATEGORY = "astro"
+
+
+def _hooks():
+    import comfy.model_management as mm
+    from comfy.utils import ProgressBar
+    bar = ProgressBar(1000)
+
+    def on_progress(stage, frac, msg):
+        bar.update_absolute(int(1000 * min(max(frac, 0.0), 1.0)))
+    return on_progress, mm.processing_interrupted
+
+
+def _run(value: dict, stage: str) -> dict:
+    import comfy.model_management as mm
+    on_progress, interrupted = _hooks()
+    try:
+        return bridge.run_up_to(value["root"], value["variant"], stage, on_progress, interrupted)
+    except RuntimeError:
+        mm.throw_exception_if_processing_interrupted()
+        raise
+
+
+def _ready_to_render(value: dict) -> dict:
+    """Both rendering preparations (star model and learned removal) of the processing, computed if needed."""
+    _run(value, "render_prep")
+    return _run(value, "render_prep_learned")
+
+
+def _tooltip(d: dict) -> str:
+    parts = [d.get("help", "")]
+    if d.get("tip"):
+        parts.append(d["tip"])
+    if d.get("unit"):
+        parts.append(f"Unit: {d['unit']}.")
+    parts.append(f"Default: {d.get('default')!r} (left at the default = automatic, chosen from the data).")
+    return "\n".join(p for p in parts if p)
+
+
+def _widget(d: dict):
+    """A ComfyUI widget for a stage parameter description (Params.describe())."""
+    name, typ, default = d["name"], d.get("type", ""), d.get("default")
+    common = {"display_name": d.get("label") or name, "tooltip": _tooltip(d), "advanced": d.get("level") == "advanced",
+              "optional": True}                   # a parameter left out of a graph is automatic
+    if typ == "bool":
+        return io.Boolean.Input(name, default=bool(default), **common)
+    if typ == "int" and isinstance(default, int):
+        return io.Int.Input(name, default=default, min=int(d["ge"]) if "ge" in d else None,
+                            max=int(d["le"]) if "le" in d else None, step=int(d.get("step") or 1), **common)
+    if typ == "float" and isinstance(default, (int, float)):
+        return io.Float.Input(name, default=float(default), min=float(d["ge"]) if "ge" in d else None,
+                              max=float(d["le"]) if "le" in d else None, step=float(d.get("step") or 0.01),
+                              round=False, **common)
+    if d.get("choices"):
+        return io.Combo.Input(name, options=[str(c) for c in d["choices"]], default=str(default), **common)
+    if typ == "str" and (default is None or isinstance(default, str)):
+        return io.String.Input(name, default=default or "", **common)
+    # anything else (lists, optional numbers): JSON text
+    return io.String.Input(name, default=json.dumps(default), **{**common, "tooltip": common["tooltip"] + "\n(JSON)"})
+
+
+def _parse(d: dict, value):
+    """Back from the widget to the parameter's value."""
+    typ, default = d.get("type", ""), d.get("default")
+    if typ in ("bool", "int", "float") and not isinstance(value, str):
+        return value
+    if d.get("choices") or (typ == "str" and (default is None or isinstance(default, str))):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return value
+
+
+# ---------------------------------------------------------------------- project and variant
+class AstroProject(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="AstroProject", display_name="Astro: Project", category=CATEGORY,
+            description="Opens an astro_GPU project folder (the one holding project.json). Connect it to the first "
+                        "processing node, or straight to a later one: a stage node computes what it needs first.",
+            inputs=[io.String.Input("project_folder", default="",
+                                    tooltip="Folder of the project (made by the astro_GPU interface or command line)")],
+            outputs=[ASTRO.Output(display_name="astro"), io.String.Output(display_name="status")])
+
+    @classmethod
+    def fingerprint_inputs(cls, project_folder):
+        # computed again when anything of the project changed on disk (another program, the interface)
+        from pathlib import Path
+        root = Path(project_folder)
+        sig = []
+        for f in [root / "project.json"] + sorted(root.glob("work/*/manifest.json")) + \
+                sorted(root.glob("variants/*/*/manifest.json")):
+            try:
+                sig.append(f"{f}:{f.stat().st_mtime_ns}")
+            except OSError:
+                pass
+        return "|".join(sig)
+
+    @classmethod
+    def execute(cls, project_folder) -> io.NodeOutput:
+        from astro_gpu.core.project import Project
+        p = Project(project_folder.strip().strip('"'))
+        return io.NodeOutput(bridge.astro_value(p.root), bridge.status_text(p.root))
+
+
+class AstroVariant(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="AstroVariant", display_name="Astro: Variant", category=CATEGORY,
+            description="The nodes after this one compute a variant: the same data processed another way, kept in "
+                        "its own folders next to the main processing (empty name = the main processing). Set the "
+                        "parameters that differ on the following nodes ('settings: this node').",
+            inputs=[ASTRO.Input("astro"),
+                    io.String.Input("name", default="", tooltip="Name of the variant (empty = main processing)"),
+                    io.String.Input("note", default="", tooltip="What this variant tries (shown in the interface)")],
+            outputs=[ASTRO.Output(display_name="astro")])
+
+    @classmethod
+    def execute(cls, astro, name, note) -> io.NodeOutput:
+        name = name.strip()
+        bridge.ensure_variant(astro["root"], name, note)
+        return io.NodeOutput(bridge.astro_value(astro["root"], name, astro.get("stage"), astro.get("run_id")))
+
+
+# ---------------------------------------------------------------------- one node per processing stage
+def _stage_node(stage) -> type[io.ComfyNode]:
+    descs = stage.Params.describe()
+    by = {d["name"]: d for d in descs}
+
+    def define_schema(cls) -> io.Schema:
+        inputs = [ASTRO.Input("astro", tooltip="The project (and variant) to compute, from the previous node"),
+                  io.Combo.Input("settings", options=[bridge.SETTINGS_FROM_PROJECT, bridge.SETTINGS_FROM_NODE],
+                                 default=bridge.SETTINGS_FROM_PROJECT,
+                                 tooltip="'project': the parameters already chosen for this project (the widgets "
+                                         "below are ignored). 'this node': the widgets below; a widget left at its "
+                                         "default value means automatic (chosen from the data).")]
+        inputs += [_widget(d) for d in descs]
+        return io.Schema(node_id=f"Astro_{stage.name}", display_name=f"Astro: {stage.title}",
+                         category=f"{CATEGORY}/processing", description=stage.description,
+                         inputs=inputs, outputs=[ASTRO.Output(display_name="astro")])
+
+    def execute(cls, astro, settings, **params) -> io.NodeOutput:
+        if settings == bridge.SETTINGS_FROM_NODE:
+            bridge.apply_node_params(astro["root"], astro["variant"], stage.name,
+                                     {k: _parse(by[k], v) for k, v in params.items() if k in by})
+        return io.NodeOutput(_run(astro, stage.name))
+
+    return type(f"Astro_{stage.name}", (io.ComfyNode,),
+                {"define_schema": classmethod(define_schema), "execute": classmethod(execute),
+                 "__doc__": stage.description})
+
+
+STAGE_NODES = [_stage_node(s) for s in bridge.STAGES]
+
+
+# ---------------------------------------------------------------------- rendering and export
+def _source_options() -> list[str]:
+    from astro_gpu.render.settings import PRESETS
+    return ["delivered: faithful", "delivered: artistic", "interface settings"] + [f"preset: {k}" for k in PRESETS]
+
+
+def _source(opt: str) -> str:
+    if opt.startswith("delivered: "):
+        return "results/" + opt.split(": ", 1)[1]
+    if opt.startswith("preset: "):
+        return opt.split(": ", 1)[1]
+    return "project"
+
+
+class AstroRender(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="AstroRender", display_name="Astro: Render", category=CATEGORY,
+            description="Renders the image of a processing (main or variant) with rendering settings: the delivered "
+                        "renderings' settings, the interface's last settings or a preset, then a saved view, then "
+                        "your own JSON changes. Several render nodes on the same processing share its layers.",
+            inputs=[ASTRO.Input("astro"),
+                    io.Combo.Input("source", options=_source_options(), default="delivered: faithful",
+                                   tooltip="Where the rendering settings start from"),
+                    io.String.Input("view", default="", tooltip="A view saved in the interface (its settings replace "
+                                                                "the source); empty = none"),
+                    io.String.Input("changes", default="", multiline=True,
+                                    tooltip='Settings changed on top, as JSON, e.g. {"glare_nebula": 0, "chroma": 1.0}'),
+                    io.Float.Input("scale", default=0.5, min=0.1, max=1.0, step=0.05,
+                                   tooltip="Output size relative to the full (drizzled) resolution")],
+            outputs=[io.Image.Output(display_name="final"), io.Image.Output(display_name="starless"),
+                     io.Image.Output(display_name="stars"), io.String.Output(display_name="settings")])
+
+    @classmethod
+    def execute(cls, astro, source, view, changes, scale) -> io.NodeOutput:
+        import torch
+
+        from astro_gpu.render.settings import RenderSettings
+        ready = _ready_to_render(astro)
+        eng, p = bridge.engine_for(ready["root"], ready["variant"])
+        vals = bridge.render_settings(p, _source(source), view.strip(), changes)
+        t0 = time.time()
+        lay = eng.render(RenderSettings(**vals), float(scale))
+        x0, x1, y0, y1 = eng.crop
+        f = 1.0 / lay.scale
+        sl = (slice(None), slice(int(y0 / f), int(y1 / f)), slice(int(x0 / f), int(x1 / f)))
+        out = [getattr(lay, k)[sl].clamp(0, 1).permute(1, 2, 0).unsqueeze(0).float().cpu() for k in
+               ("final", "starless", "stars")]
+        del lay
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print(f"[astro] rendered {ready['root']} [{ready['variant'] or 'main'}] in {time.time() - t0:.1f} s")
+        return io.NodeOutput(*out, json.dumps(vals))
+
+
+class AstroExport(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        return io.Schema(
+            node_id="AstroExport", display_name="Astro: Export", category=CATEGORY, is_output_node=True,
+            description="Writes the rendering at full resolution into the project's results/<name>/: 16-bit TIFF "
+                        "with colour profile, 16-bit PNG and JPEG at sensor scale, starless and stars layers, the "
+                        "framing of your reference image, and the settings used.",
+            inputs=[ASTRO.Input("astro"),
+                    io.String.Input("settings", default="{}", force_input=True,
+                                    tooltip="Rendering settings: connect the 'settings' output of an Astro: Render"),
+                    io.String.Input("name", default="comfy", tooltip="Folder name in results/"),
+                    io.Combo.Input("orientation", options=["as captured", "north up", "match reference"],
+                                   default="as captured")],
+            outputs=[io.String.Output(display_name="folder")])
+
+    @classmethod
+    def execute(cls, astro, settings, name, orientation) -> io.NodeOutput:
+        from astro_gpu.render.export import ExportSettings, export
+        from astro_gpu.render.settings import RenderSettings
+        ready = _ready_to_render(astro)
+        eng, p = bridge.engine_for(ready["root"], ready["variant"])
+        on_progress, _ = _hooks()
+        export(p, eng, RenderSettings(**json.loads(settings or "{}")),
+               ExportSettings(name=name.strip() or "comfy", orientation=orientation),
+               lambda frac, msg: on_progress("export", frac, msg))
+        folder = str(p.results / (name.strip() or "comfy"))
+        return io.NodeOutput(folder, ui={"text": [folder]})
+
+
+class AstroExtension(ComfyExtension):
+    @override
+    async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        return [AstroProject, AstroVariant, *STAGE_NODES, AstroRender, AstroExport]
+
+
+async def comfy_entrypoint() -> AstroExtension:
+    return AstroExtension()
