@@ -821,3 +821,23 @@ stars smaller and closer to the measured width, fewer coloured blobs in the fain
 Remaining: the learned star network trains for a time budget (not reproducible across machines); the background's
 sky model stays sensitive to larger input changes. All five projects re-run from optics; renders judged blind against
 the current deliverables before any re-rendering.
+
+### 11.14 After the reproducible chain (2026-10-17 night)
+
+- Blind QC of the five projects re-run with the reproducible chain against their deliverables: Flaming Star better
+  (re-rendered); Rosette, Horsehead, Iris tied (kept); Heart worse by the star model (pink veil, flatter knots).
+- Heart veil (report D:/astro_gpu_diag/heart_full/REPORT.md): not the star wings (the removal model covers them) nor
+  new holes; the star flat of the background stage is built from star brightnesses measured with the star-shape
+  model, whose captured share varies by a few percent across the field and changed with the new fit; on the Heart's
+  150-250 ADU sky that is several ADU of false large-scale light, which moves the sky / nebula split and the stretch.
+- Redesign tried (report D:/astro_gpu_diag/flat_nonreg/REPORT.md): a star flat from aperture photometry, independent
+  of the model (two fits agree within 1 %, better on the stars of all five objects) and a steadier sky / nebula
+  split - both removed: applied to the sky and nebula they made four of five renders clearly worse (the stars'
+  brightness across the field is not the instrument's response to diffuse light).
+- Heart: variant 'Flat as calibrated' (background.star_flat off) computed; blind QC: it with the learned removal
+  first, the old deliverable second, it with the star model last -> promoted to main (former main kept as a variant),
+  deliverables re-rendered (previous in E:/astro_gpu/archive/deliverables_2026-10-17_heart_flat). Exports now record
+  the preparation used (star model or learned) so that 'as delivered' views keep it.
+- Defects seen by the judges in every version, to work on: Horsehead milky veil (white point set by NGC 2023's core),
+  grey bars beside medium stars, a salmon streak through the Iris central star, a colour mosaic in the Iris's faint
+  NE dust, the Heart's brown sky and single-colour knots, dark holes beside some stars (catalogue-predicted fluxes).
