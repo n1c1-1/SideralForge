@@ -21,7 +21,7 @@ def node_inputs(info: dict) -> list[tuple[str, str, bool]]:
     return out
 
 
-def convert(api: dict, info: dict) -> dict:
+def convert(api: dict, info: dict, per_row: int = 5) -> dict:
     ids = {k: i + 1 for i, k in enumerate(api)}
     depth: dict[str, int] = {}
 
@@ -33,7 +33,6 @@ def convert(api: dict, info: dict) -> dict:
     for k in api:
         d(k)
     rows: dict[int, int] = {}
-    per_row = 5
     rows_per_col = max(sum(1 for k in api if depth[k] == c) for c in set(depth.values()))
     links, nodes = [], []
     outputs_links: dict[tuple[str, int], list[int]] = {}
@@ -86,11 +85,12 @@ def main():
     ap.add_argument("api")
     ap.add_argument("ui")
     ap.add_argument("--server", default="http://127.0.0.1:8188")
+    ap.add_argument("--per-row", type=int, default=5, help="columns before a long graph wraps")
     a = ap.parse_args()
     api = json.load(open(a.api, encoding="utf-8"))
     with urllib.request.urlopen(f"{a.server}/object_info") as r:
         info = json.loads(r.read())
-    json.dump(convert(api, info), open(a.ui, "w", encoding="utf-8"), indent=1)
+    json.dump(convert(api, info, a.per_row), open(a.ui, "w", encoding="utf-8"), indent=1)
     print("written", a.ui)
 
 

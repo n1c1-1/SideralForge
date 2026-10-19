@@ -27,7 +27,7 @@ stage computed.
 | Astro: Project | Opens a project folder (the one holding project.json, made by the astro_GPU interface or command line). |
 | Astro: Methods | The processing choices in plain words, as in the heavy client's Methods tab (learned star removal, glare of the bright stars, shape of the stars, faint stars, flat field, H-alpha reference, repairs around the stars, sensor pattern, colour fringes): one list per question, "as main" = unchanged; hover a list for what each option does and what was seen on real data. The choices are computed as a variant (main is never changed), named after them unless named in the node. |
 | Astro: Variant | The nodes after it compute a variant: the same data processed another way, kept in its own folders (variants/<name>/) next to the main processing; the stages before the first change are shared. |
-| Astro: <stage> (one per stage: Inventory ... Rendering preparation) | Computes everything needed up to its stage that is not up to date; a stage already up to date is not touched. |
+| Astro: <stage> (one per stage: Inventory ... Rendering preparation) | Computes everything needed up to its stage that is not up to date; a stage already up to date is not touched. It has one input per step it depends on directly (e.g. Optics takes Denoising and Catalogues), so a graph draws the real dependencies; or just the project ('astro'). |
 | Astro: Render | Renders the image of a processing: outputs final, starless, stars and the settings used. |
 | Astro: Render (live) | The rendering settings as sliders, by section, with a preview in the node that follows them at once (see below). |
 | Astro: Star mask | A mask around the bright stars (Gaia catalogue), framed like a render at the same scale. |
@@ -95,7 +95,10 @@ Open the files without "_api" by dragging them onto the ComfyUI window (the "_ap
 ComfyUI's API format, also accepted, and used by `tools/run_prompt.py`).
 
 1. **01_render_project**: a project rendered with its delivered faithful settings, previews, 16-bit save.
-2. **02_full_chain**: every stage as a node, in order, then the render: change a stage's parameters there.
+2. **02_full_chain**: every stage as a node, wired by its real dependencies (after the stack the astrometry, the
+   denoising and the reference branch out and meet again at the optics; at the end the two star removals give two
+   renders): change a stage's parameters there. ComfyUI computes one node at a time, in an order that respects the
+   wires; changing a stage recomputes only the branches after it.
 3. **03_compare_variant**: the main processing and a variant (far halo bounded by the data) side by side.
 4. **04_views_mask**: two views of the same image (glare drawn with the nebula / with the stars) combined with a
    mask around the bright stars, saved in 16 bits.

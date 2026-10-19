@@ -8,174 +8,208 @@
  "2": {
   "class_type": "Astro_inventory",
   "inputs": {
+   "settings": "project",
    "astro": [
     "1",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "3": {
   "class_type": "Astro_calibrate",
   "inputs": {
-   "astro": [
+   "settings": "project",
+   "inventory": [
     "2",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "4": {
   "class_type": "Astro_register",
   "inputs": {
-   "astro": [
+   "settings": "project",
+   "calibrate": [
     "3",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "5": {
   "class_type": "Astro_stack",
   "inputs": {
-   "astro": [
+   "settings": "project",
+   "register": [
     "4",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "6": {
   "class_type": "Astro_astrometry",
   "inputs": {
-   "astro": [
+   "settings": "project",
+   "stack": [
     "5",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "7": {
   "class_type": "Astro_reference",
   "inputs": {
-   "astro": [
-    "6",
+   "settings": "project",
+   "stack": [
+    "5",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "8": {
   "class_type": "Astro_catalogs",
   "inputs": {
-   "astro": [
-    "7",
+   "settings": "project",
+   "astrometry": [
+    "6",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "9": {
   "class_type": "Astro_surveys",
   "inputs": {
-   "astro": [
-    "8",
+   "settings": "project",
+   "astrometry": [
+    "6",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "10": {
   "class_type": "Astro_color",
   "inputs": {
-   "astro": [
-    "9",
+   "settings": "project",
+   "catalogs": [
+    "8",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "11": {
   "class_type": "Astro_denoise",
   "inputs": {
-   "astro": [
-    "10",
+   "settings": "project",
+   "stack": [
+    "5",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "12": {
   "class_type": "Astro_optics",
   "inputs": {
-   "astro": [
+   "settings": "project",
+   "denoise": [
     "11",
     0
    ],
-   "settings": "project"
+   "catalogs": [
+    "8",
+    0
+   ]
   }
  },
  "13": {
   "class_type": "Astro_stars",
   "inputs": {
-   "astro": [
+   "settings": "project",
+   "optics": [
     "12",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "14": {
   "class_type": "Astro_star_net",
   "inputs": {
-   "astro": [
+   "settings": "project",
+   "stars": [
     "13",
     0
    ],
-   "settings": "project"
+   "color": [
+    "10",
+    0
+   ]
   }
  },
  "15": {
   "class_type": "Astro_starless",
   "inputs": {
-   "astro": [
+   "settings": "project",
+   "star_net": [
     "14",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "16": {
   "class_type": "Astro_background",
   "inputs": {
-   "astro": [
+   "settings": "project",
+   "starless": [
     "15",
     0
    ],
-   "settings": "project"
+   "surveys": [
+    "9",
+    0
+   ]
   }
  },
  "17": {
   "class_type": "Astro_render_prep",
   "inputs": {
-   "astro": [
+   "settings": "project",
+   "background": [
     "16",
     0
-   ],
-   "settings": "project"
+   ]
   }
  },
  "18": {
   "class_type": "Astro_render_prep_learned",
   "inputs": {
+   "settings": "project",
+   "background": [
+    "16",
+    0
+   ]
+  }
+ },
+ "19": {
+  "class_type": "AstroRender",
+  "inputs": {
    "astro": [
     "17",
     0
    ],
-   "settings": "project"
+   "source": "delivered: faithful",
+   "view": "",
+   "changes": "{\"learned_stars\": false}",
+   "scale": 0.5
   }
  },
- "19": {
+ "20": {
+  "class_type": "PreviewImage",
+  "inputs": {
+   "images": [
+    "19",
+    0
+   ]
+  }
+ },
+ "21": {
   "class_type": "AstroRender",
   "inputs": {
    "astro": [
@@ -188,11 +222,11 @@
    "scale": 0.5
   }
  },
- "20": {
+ "22": {
   "class_type": "PreviewImage",
   "inputs": {
    "images": [
-    "19",
+    "21",
     0
    ]
   }

@@ -144,27 +144,71 @@ class AstroVariant(io.ComfyNode):
 
 
 # ---------------------------------------------------------------------- one node per processing stage
+# dependencies that the stages declare only through an automatic parameter: the star removal takes the layer of the
+# learned network when that stage made one
+SOFT_DEPS = {"starless": ("star_net",)}
+
+
+def direct_deps(name: str) -> list[str]:
+    """The steps a stage depends on directly: its declared ones (and the soft ones) minus those already implied by
+    another of them, so that a graph draws each dependency once."""
+    deps = list(BY_NAME_DEPS[name]) + list(SOFT_DEPS.get(name, ()))
+
+    def upstream(n, seen):
+        for d in list(BY_NAME_DEPS[n]) + list(SOFT_DEPS.get(n, ())):
+            if d not in seen:
+                seen.add(d)
+                upstream(d, seen)
+        return seen
+    implied = set()
+    for d in deps:
+        implied |= upstream(d, set())
+    return [d for d in deps if d not in implied]
+
+
+BY_NAME_DEPS = {s.name: tuple(s.deps) for s in bridge.STAGES}
+TITLES = {s.name: s.title for s in bridge.STAGES}
+
+
+def _one_value(values: list[dict], stage: str) -> dict:
+    """The project (and variant) of a stage node, from whichever of its inputs are connected - they must agree."""
+    values = [v for v in values if v]
+    if not values:
+        raise ValueError(f"{TITLES[stage]}: connect the project (Astro: Project) or the steps it depends on")
+    keys = {(v["root"], v.get("variant", "")) for v in values}
+    if len(keys) > 1:
+        raise ValueError(f"{TITLES[stage]}: its inputs come from different projects or variants: {sorted(keys)}")
+    return values[0]
+
+
 def _stage_node(stage) -> type[io.ComfyNode]:
     descs = stage.Params.describe()
     by = {d["name"]: d for d in descs}
+    deps = direct_deps(stage.name)
 
     def define_schema(cls) -> io.Schema:
-        inputs = [ASTRO.Input("astro", tooltip="The project (and variant) to compute, from the previous node"),
-                  io.Combo.Input("settings", options=[bridge.SETTINGS_FROM_PROJECT, bridge.SETTINGS_FROM_NODE],
-                                 default=bridge.SETTINGS_FROM_PROJECT,
-                                 tooltip="'project': the parameters already chosen for this project (the widgets "
-                                         "below are ignored). 'this node': the widgets below; a widget left at its "
-                                         "default value means automatic (chosen from the data).")]
+        inputs = [ASTRO.Input("astro", optional=True,
+                              tooltip="The project (from Astro: Project, or Astro: Variant), when none of the steps "
+                                      "below is connected")]
+        inputs += [ASTRO.Input(d, optional=True, display_name=TITLES[d],
+                               tooltip=f"'{TITLES[d]}': this step depends on it (computed first if needed)")
+                   for d in deps]
+        inputs += [io.Combo.Input("settings", options=[bridge.SETTINGS_FROM_PROJECT, bridge.SETTINGS_FROM_NODE],
+                                  default=bridge.SETTINGS_FROM_PROJECT,
+                                  tooltip="'project': the parameters already chosen for this project (the widgets "
+                                          "below are ignored). 'this node': the widgets below; a widget left at its "
+                                          "default value means automatic (chosen from the data).")]
         inputs += [_widget(d) for d in descs]
         return io.Schema(node_id=f"Astro_{stage.name}", display_name=f"Astro: {stage.title}",
                          category=f"{CATEGORY}/processing", description=stage.description,
                          inputs=inputs, outputs=[ASTRO.Output(display_name="astro")])
 
-    def execute(cls, astro, settings, **params) -> io.NodeOutput:
+    def execute(cls, settings, astro=None, **params) -> io.NodeOutput:
+        value = _one_value([astro] + [params.pop(d, None) for d in deps], stage.name)
         if settings == bridge.SETTINGS_FROM_NODE:
-            bridge.apply_node_params(astro["root"], astro["variant"], stage.name,
+            bridge.apply_node_params(value["root"], value["variant"], stage.name,
                                      {k: _parse(by[k], v) for k, v in params.items() if k in by})
-        return io.NodeOutput(_run(astro, stage.name))
+        return io.NodeOutput(_run(value, stage.name))
 
     return type(f"Astro_{stage.name}", (io.ComfyNode,),
                 {"define_schema": classmethod(define_schema), "execute": classmethod(execute),

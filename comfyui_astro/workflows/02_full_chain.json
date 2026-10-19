@@ -1,6 +1,6 @@
 {
- "last_node_id": 20,
- "last_link_id": 19,
+ "last_node_id": 22,
+ "last_link_id": 24,
  "nodes": [
   {
    "id": 1,
@@ -97,6 +97,11 @@
     {
      "name": "astro",
      "type": "ASTRO",
+     "link": null
+    },
+    {
+     "name": "inventory",
+     "type": "ASTRO",
      "link": 2
     }
    ],
@@ -141,6 +146,11 @@
     {
      "name": "astro",
      "type": "ASTRO",
+     "link": null
+    },
+    {
+     "name": "calibrate",
+     "type": "ASTRO",
      "link": 3
     }
    ],
@@ -182,6 +192,11 @@
     {
      "name": "astro",
      "type": "ASTRO",
+     "link": null
+    },
+    {
+     "name": "register",
+     "type": "ASTRO",
      "link": 4
     }
    ],
@@ -190,7 +205,9 @@
      "name": "astro",
      "type": "ASTRO",
      "links": [
-      5
+      5,
+      6,
+      10
      ],
      "slot_index": 0
     }
@@ -217,8 +234,8 @@
    "id": 6,
    "type": "Astro_astrometry",
    "pos": [
-    40,
-    700
+    2140,
+    40
    ],
    "size": [
     380,
@@ -231,6 +248,11 @@
     {
      "name": "astro",
      "type": "ASTRO",
+     "link": null
+    },
+    {
+     "name": "stack",
+     "type": "ASTRO",
      "link": 5
     }
    ],
@@ -239,7 +261,8 @@
      "name": "astro",
      "type": "ASTRO",
      "links": [
-      6
+      7,
+      8
      ],
      "slot_index": 0
     }
@@ -264,19 +287,24 @@
    "id": 7,
    "type": "Astro_reference",
    "pos": [
-    460,
-    700
+    2140,
+    370
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 6,
+   "order": 5,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
+     "type": "ASTRO",
+     "link": null
+    },
+    {
+     "name": "stack",
      "type": "ASTRO",
      "link": 6
     }
@@ -285,9 +313,7 @@
     {
      "name": "astro",
      "type": "ASTRO",
-     "links": [
-      7
-     ],
+     "links": [],
      "slot_index": 0
     }
    ],
@@ -303,19 +329,24 @@
    "id": 8,
    "type": "Astro_catalogs",
    "pos": [
-    880,
-    700
+    2560,
+    40
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 7,
+   "order": 6,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
+     "type": "ASTRO",
+     "link": null
+    },
+    {
+     "name": "astrometry",
      "type": "ASTRO",
      "link": 7
     }
@@ -325,7 +356,8 @@
      "name": "astro",
      "type": "ASTRO",
      "links": [
-      8
+      9,
+      12
      ],
      "slot_index": 0
     }
@@ -348,19 +380,24 @@
    "id": 9,
    "type": "Astro_surveys",
    "pos": [
-    1300,
-    700
+    2560,
+    370
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 8,
+   "order": 6,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
+     "type": "ASTRO",
+     "link": null
+    },
+    {
+     "name": "astrometry",
      "type": "ASTRO",
      "link": 8
     }
@@ -370,7 +407,7 @@
      "name": "astro",
      "type": "ASTRO",
      "links": [
-      9
+      18
      ],
      "slot_index": 0
     }
@@ -388,19 +425,24 @@
    "id": 10,
    "type": "Astro_color",
    "pos": [
-    1720,
-    700
+    2980,
+    40
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 9,
+   "order": 7,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
+     "type": "ASTRO",
+     "link": null
+    },
+    {
+     "name": "catalogs",
      "type": "ASTRO",
      "link": 9
     }
@@ -410,7 +452,7 @@
      "name": "astro",
      "type": "ASTRO",
      "links": [
-      10
+      15
      ],
      "slot_index": 0
     }
@@ -432,19 +474,24 @@
    "id": 11,
    "type": "Astro_denoise",
    "pos": [
-    40,
-    1360
+    2140,
+    700
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 10,
+   "order": 5,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
+     "type": "ASTRO",
+     "link": null
+    },
+    {
+     "name": "stack",
      "type": "ASTRO",
      "link": 10
     }
@@ -476,21 +523,31 @@
    "id": 12,
    "type": "Astro_optics",
    "pos": [
-    460,
-    1360
+    2980,
+    370
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 11,
+   "order": 7,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
      "type": "ASTRO",
+     "link": null
+    },
+    {
+     "name": "denoise",
+     "type": "ASTRO",
      "link": 11
+    },
+    {
+     "name": "catalogs",
+     "type": "ASTRO",
+     "link": 12
     }
    ],
    "outputs": [
@@ -498,7 +555,7 @@
      "name": "astro",
      "type": "ASTRO",
      "links": [
-      12
+      13
      ],
      "slot_index": 0
     }
@@ -518,21 +575,26 @@
    "id": 13,
    "type": "Astro_stars",
    "pos": [
-    880,
-    1360
+    3400,
+    40
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 12,
+   "order": 8,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
      "type": "ASTRO",
-     "link": 12
+     "link": null
+    },
+    {
+     "name": "optics",
+     "type": "ASTRO",
+     "link": 13
     }
    ],
    "outputs": [
@@ -540,7 +602,7 @@
      "name": "astro",
      "type": "ASTRO",
      "links": [
-      13
+      14
      ],
      "slot_index": 0
     }
@@ -565,21 +627,31 @@
    "id": 14,
    "type": "Astro_star_net",
    "pos": [
-    1300,
-    1360
+    3820,
+    40
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 13,
+   "order": 9,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
      "type": "ASTRO",
-     "link": 13
+     "link": null
+    },
+    {
+     "name": "stars",
+     "type": "ASTRO",
+     "link": 14
+    },
+    {
+     "name": "color",
+     "type": "ASTRO",
+     "link": 15
     }
    ],
    "outputs": [
@@ -587,7 +659,7 @@
      "name": "astro",
      "type": "ASTRO",
      "links": [
-      14
+      16
      ],
      "slot_index": 0
     }
@@ -609,21 +681,26 @@
    "id": 15,
    "type": "Astro_starless",
    "pos": [
-    1720,
-    1360
+    4240,
+    40
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 14,
+   "order": 10,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
      "type": "ASTRO",
-     "link": 14
+     "link": null
+    },
+    {
+     "name": "star_net",
+     "type": "ASTRO",
+     "link": 16
     }
    ],
    "outputs": [
@@ -631,7 +708,7 @@
      "name": "astro",
      "type": "ASTRO",
      "links": [
-      15
+      17
      ],
      "slot_index": 0
     }
@@ -649,28 +726,40 @@
     3,
     17.5,
     "",
-    10.5
+    10.5,
+    true,
+    4000
    ]
   },
   {
    "id": 16,
    "type": "Astro_background",
    "pos": [
-    40,
-    2020
+    4660,
+    40
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 15,
+   "order": 11,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
      "type": "ASTRO",
-     "link": 15
+     "link": null
+    },
+    {
+     "name": "starless",
+     "type": "ASTRO",
+     "link": 17
+    },
+    {
+     "name": "surveys",
+     "type": "ASTRO",
+     "link": 18
     }
    ],
    "outputs": [
@@ -678,7 +767,8 @@
      "name": "astro",
      "type": "ASTRO",
      "links": [
-      16
+      19,
+      20
      ],
      "slot_index": 0
     }
@@ -699,21 +789,26 @@
    "id": 17,
    "type": "Astro_render_prep",
    "pos": [
-    460,
-    2020
+    5080,
+    40
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 16,
+   "order": 12,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
      "type": "ASTRO",
-     "link": 16
+     "link": null
+    },
+    {
+     "name": "background",
+     "type": "ASTRO",
+     "link": 19
     }
    ],
    "outputs": [
@@ -721,7 +816,7 @@
      "name": "astro",
      "type": "ASTRO",
      "links": [
-      17
+      21
      ],
      "slot_index": 0
     }
@@ -751,21 +846,26 @@
    "id": 18,
    "type": "Astro_render_prep_learned",
    "pos": [
-    880,
-    2020
+    5080,
+    370
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 17,
+   "order": 12,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
      "type": "ASTRO",
-     "link": 17
+     "link": null
+    },
+    {
+     "name": "background",
+     "type": "ASTRO",
+     "link": 20
     }
    ],
    "outputs": [
@@ -773,7 +873,7 @@
      "name": "astro",
      "type": "ASTRO",
      "links": [
-      18
+      23
      ],
      "slot_index": 0
     }
@@ -803,21 +903,21 @@
    "id": 19,
    "type": "AstroRender",
    "pos": [
-    1300,
-    2020
+    5500,
+    40
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 18,
+   "order": 13,
    "mode": 0,
    "inputs": [
     {
      "name": "astro",
      "type": "ASTRO",
-     "link": 18
+     "link": 21
     }
    ],
    "outputs": [
@@ -825,7 +925,100 @@
      "name": "final",
      "type": "IMAGE",
      "links": [
-      19
+      22
+     ],
+     "slot_index": 0
+    },
+    {
+     "name": "starless",
+     "type": "IMAGE",
+     "links": [],
+     "slot_index": 1
+    },
+    {
+     "name": "stars",
+     "type": "IMAGE",
+     "links": [],
+     "slot_index": 2
+    },
+    {
+     "name": "settings",
+     "type": "STRING",
+     "links": [],
+     "slot_index": 3
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "AstroRender"
+   },
+   "widgets_values": [
+    "delivered: faithful",
+    "",
+    "{\"learned_stars\": false}",
+    0.5
+   ]
+  },
+  {
+   "id": 20,
+   "type": "PreviewImage",
+   "pos": [
+    5920,
+    40
+   ],
+   "size": [
+    380,
+    280
+   ],
+   "flags": {},
+   "order": 14,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 22
+    }
+   ],
+   "outputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "links": [],
+     "slot_index": 0
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "PreviewImage"
+   },
+   "widgets_values": []
+  },
+  {
+   "id": 21,
+   "type": "AstroRender",
+   "pos": [
+    5500,
+    370
+   ],
+   "size": [
+    380,
+    280
+   ],
+   "flags": {},
+   "order": 13,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "astro",
+     "type": "ASTRO",
+     "link": 23
+    }
+   ],
+   "outputs": [
+    {
+     "name": "final",
+     "type": "IMAGE",
+     "links": [
+      24
      ],
      "slot_index": 0
     },
@@ -859,24 +1052,24 @@
    ]
   },
   {
-   "id": 20,
+   "id": 22,
    "type": "PreviewImage",
    "pos": [
-    1720,
-    2020
+    5920,
+    370
    ],
    "size": [
     380,
     280
    ],
    "flags": {},
-   "order": 19,
+   "order": 14,
    "mode": 0,
    "inputs": [
     {
      "name": "images",
      "type": "IMAGE",
-     "link": 19
+     "link": 24
     }
    ],
    "outputs": [
@@ -907,7 +1100,7 @@
    2,
    0,
    3,
-   0,
+   1,
    "ASTRO"
   ],
   [
@@ -915,7 +1108,7 @@
    3,
    0,
    4,
-   0,
+   1,
    "ASTRO"
   ],
   [
@@ -923,7 +1116,7 @@
    4,
    0,
    5,
-   0,
+   1,
    "ASTRO"
   ],
   [
@@ -931,47 +1124,47 @@
    5,
    0,
    6,
-   0,
+   1,
    "ASTRO"
   ],
   [
    6,
+   5,
+   0,
+   7,
+   1,
+   "ASTRO"
+  ],
+  [
+   7,
    6,
    0,
-   7,
-   0,
-   "ASTRO"
-  ],
-  [
-   7,
-   7,
-   0,
    8,
-   0,
+   1,
    "ASTRO"
   ],
   [
    8,
+   6,
+   0,
+   9,
+   1,
+   "ASTRO"
+  ],
+  [
+   9,
    8,
    0,
-   9,
-   0,
-   "ASTRO"
-  ],
-  [
-   9,
-   9,
-   0,
    10,
-   0,
+   1,
    "ASTRO"
   ],
   [
    10,
-   10,
+   5,
    0,
    11,
-   0,
+   1,
    "ASTRO"
   ],
   [
@@ -979,70 +1172,110 @@
    11,
    0,
    12,
-   0,
+   1,
    "ASTRO"
   ],
   [
    12,
+   8,
+   0,
+   12,
+   2,
+   "ASTRO"
+  ],
+  [
+   13,
    12,
    0,
    13,
-   0,
+   1,
    "ASTRO"
   ],
   [
+   14,
    13,
-   13,
    0,
    14,
-   0,
-   "ASTRO"
-  ],
-  [
-   14,
-   14,
-   0,
-   15,
-   0,
+   1,
    "ASTRO"
   ],
   [
    15,
+   10,
+   0,
+   14,
+   2,
+   "ASTRO"
+  ],
+  [
+   16,
+   14,
+   0,
+   15,
+   1,
+   "ASTRO"
+  ],
+  [
+   17,
    15,
    0,
    16,
-   0,
+   1,
    "ASTRO"
   ],
   [
+   18,
+   9,
+   0,
    16,
+   2,
+   "ASTRO"
+  ],
+  [
+   19,
    16,
    0,
    17,
-   0,
+   1,
    "ASTRO"
   ],
   [
-   17,
-   17,
+   20,
+   16,
    0,
    18,
-   0,
+   1,
    "ASTRO"
   ],
   [
-   18,
-   18,
+   21,
+   17,
    0,
    19,
    0,
    "ASTRO"
   ],
   [
-   19,
+   22,
    19,
    0,
    20,
+   0,
+   "IMAGE"
+  ],
+  [
+   23,
+   18,
+   0,
+   21,
+   0,
+   "ASTRO"
+  ],
+  [
+   24,
+   21,
+   0,
+   22,
    0,
    "IMAGE"
   ]
