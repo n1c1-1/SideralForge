@@ -22,7 +22,7 @@ from typing_extensions import override
 from . import bridge
 
 ASTRO = io.Custom("ASTRO")
-CATEGORY = "astro"
+CATEGORY = "astro/old - projects"
 
 
 def _hooks():
@@ -440,11 +440,12 @@ class AstroSave16(io.ComfyNode):
 class AstroExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
+        from .blocks import BLOCK_NODES
         from .masks import MASK_NODES
         from .methods_node import AstroMethods
         from .project_node import AstroNewProject
         return [AstroNewProject, AstroProject, AstroVariant, AstroMethods, *STAGE_NODES, AstroRender, AstroRenderLive,
-                AstroStarMask, AstroExport, AstroSave16, *MASK_NODES]
+                AstroStarMask, AstroExport, AstroSave16, *MASK_NODES, *BLOCK_NODES]
 
 
 async def comfy_entrypoint() -> AstroExtension:

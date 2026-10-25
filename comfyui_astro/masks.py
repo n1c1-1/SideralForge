@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from comfy_api.latest import io
 
-CATEGORY = "astro/masks"
+CATEGORY = "astro/old - projects/masks"
 N_VIEWS = 4                                    # views over the base in Astro: Blend views
 COLOURS = [(0.45, 0.45, 0.45), (1.0, 0.55, 0.1), (0.15, 0.8, 1.0), (1.0, 0.25, 0.8), (0.4, 1.0, 0.3)]
 

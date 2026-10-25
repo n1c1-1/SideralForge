@@ -1,0 +1,698 @@
+{
+ "last_node_id": 14,
+ "last_link_id": 12,
+ "nodes": [
+  {
+   "id": 1,
+   "type": "AstroLights",
+   "pos": [
+    40,
+    40
+   ],
+   "size": [
+    400,
+    300
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "frames",
+     "type": "ASTRO_FRAMES",
+     "links": [
+      1
+     ],
+     "slot_index": 0
+    },
+    {
+     "name": "middle frame",
+     "type": "IMAGE",
+     "links": [
+      7
+     ],
+     "slot_index": 1
+    },
+    {
+     "name": "summary",
+     "type": "STRING",
+     "links": [],
+     "slot_index": 2
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "AstroLights"
+   },
+   "widgets_values": [
+    "D:/photos/2.3.25_Nebuleuse_iris/raw/signal",
+    24
+   ]
+  },
+  {
+   "id": 2,
+   "type": "AstroMasterDark",
+   "pos": [
+    40,
+    380
+   ],
+   "size": [
+    400,
+    160
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [
+    {
+     "name": "dark",
+     "type": "ASTRO_MASTER",
+     "links": [
+      2
+     ],
+     "slot_index": 0
+    },
+    {
+     "name": "view",
+     "type": "IMAGE",
+     "links": [],
+     "slot_index": 1
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "AstroMasterDark"
+   },
+   "widgets_values": [
+    "D:/photos/2.3.25_Nebuleuse_iris/raw/dark"
+   ]
+  },
+  {
+   "id": 3,
+   "type": "AstroMasterFlat",
+   "pos": [
+    40,
+    580
+   ],
+   "size": [
+    400,
+    260
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "offset",
+     "type": "ASTRO_MASTER",
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "name": "flat",
+     "type": "ASTRO_MASTER",
+     "links": [
+      3
+     ],
+     "slot_index": 0
+    },
+    {
+     "name": "view",
+     "type": "IMAGE",
+     "links": [
+      8
+     ],
+     "slot_index": 1
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "AstroMasterFlat"
+   },
+   "widgets_values": [
+    "D:/photos/2.3.25_Nebuleuse_iris/raw/flat",
+    "",
+    0.0
+   ]
+  },
+  {
+   "id": 4,
+   "type": "AstroCalibrate",
+   "pos": [
+    500,
+    40
+   ],
+   "size": [
+    400,
+    420
+   ],
+   "flags": {},
+   "order": 1,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "lights",
+     "type": "ASTRO_FRAMES",
+     "link": 1
+    },
+    {
+     "name": "dark",
+     "type": "ASTRO_MASTER",
+     "link": 2
+    },
+    {
+     "name": "flat",
+     "type": "ASTRO_MASTER",
+     "link": 3
+    },
+    {
+     "name": "offset",
+     "type": "ASTRO_MASTER",
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "name": "calibrated",
+     "type": "ASTRO_CALIBRATED",
+     "links": [
+      4
+     ],
+     "slot_index": 0
+    },
+    {
+     "name": "calibrated frame",
+     "type": "IMAGE",
+     "links": [],
+     "slot_index": 1
+    },
+    {
+     "name": "summary",
+     "type": "STRING",
+     "links": [],
+     "slot_index": 2
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "AstroCalibrate"
+   },
+   "widgets_values": [
+    0.6,
+    0.3,
+    true,
+    0.976,
+    8
+   ]
+  },
+  {
+   "id": 5,
+   "type": "AstroAlign",
+   "pos": [
+    960,
+    40
+   ],
+   "size": [
+    400,
+    300
+   ],
+   "flags": {},
+   "order": 2,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "calibrated",
+     "type": "ASTRO_CALIBRATED",
+     "link": 4
+    }
+   ],
+   "outputs": [
+    {
+     "name": "aligned",
+     "type": "ASTRO_ALIGNED",
+     "links": [
+      5
+     ],
+     "slot_index": 0
+    },
+    {
+     "name": "frame quality",
+     "type": "IMAGE",
+     "links": [
+      9
+     ],
+     "slot_index": 1
+    },
+    {
+     "name": "summary",
+     "type": "STRING",
+     "links": [],
+     "slot_index": 2
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "AstroAlign"
+   },
+   "widgets_values": [
+    8.0,
+    2500,
+    8
+   ]
+  },
+  {
+   "id": 6,
+   "type": "AstroFrameSelection",
+   "pos": [
+    1420,
+    40
+   ],
+   "size": [
+    400,
+    200
+   ],
+   "flags": {},
+   "order": 3,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "aligned",
+     "type": "ASTRO_ALIGNED",
+     "link": 5
+    }
+   ],
+   "outputs": [
+    {
+     "name": "selected",
+     "type": "ASTRO_ALIGNED",
+     "links": [
+      6
+     ],
+     "slot_index": 0
+    },
+    {
+     "name": "summary",
+     "type": "STRING",
+     "links": [
+      12
+     ],
+     "slot_index": 1
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "AstroFrameSelection"
+   },
+   "widgets_values": [
+    0.6,
+    2.0
+   ]
+  },
+  {
+   "id": 7,
+   "type": "AstroStackBlock",
+   "pos": [
+    1880,
+    40
+   ],
+   "size": [
+    420,
+    560
+   ],
+   "flags": {},
+   "order": 4,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "aligned",
+     "type": "ASTRO_ALIGNED",
+     "link": 6
+    }
+   ],
+   "outputs": [
+    {
+     "name": "linear",
+     "type": "ASTRO_LINEAR",
+     "links": [],
+     "slot_index": 0
+    },
+    {
+     "name": "view",
+     "type": "IMAGE",
+     "links": [
+      10
+     ],
+     "slot_index": 1
+    },
+    {
+     "name": "summary",
+     "type": "STRING",
+     "links": [
+      11
+     ],
+     "slot_index": 2
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "AstroStackBlock"
+   },
+   "widgets_values": [
+    1.5,
+    0.7,
+    0.6,
+    2.0,
+    5.0,
+    0.5,
+    20,
+    0.13,
+    11.9,
+    false,
+    48
+   ]
+  },
+  {
+   "id": 8,
+   "type": "PreviewImage",
+   "pos": [
+    500,
+    520
+   ],
+   "size": [
+    400,
+    340
+   ],
+   "flags": {},
+   "order": 1,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 7
+    }
+   ],
+   "outputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "links": [],
+     "slot_index": 0
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "PreviewImage"
+   },
+   "widgets_values": []
+  },
+  {
+   "id": 9,
+   "type": "PreviewImage",
+   "pos": [
+    40,
+    880
+   ],
+   "size": [
+    400,
+    340
+   ],
+   "flags": {},
+   "order": 1,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 8
+    }
+   ],
+   "outputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "links": [],
+     "slot_index": 0
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "PreviewImage"
+   },
+   "widgets_values": []
+  },
+  {
+   "id": 10,
+   "type": "PreviewImage",
+   "pos": [
+    960,
+    400
+   ],
+   "size": [
+    420,
+    340
+   ],
+   "flags": {},
+   "order": 3,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 9
+    }
+   ],
+   "outputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "links": [],
+     "slot_index": 0
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "PreviewImage"
+   },
+   "widgets_values": []
+  },
+  {
+   "id": 11,
+   "type": "PreviewImage",
+   "pos": [
+    1880,
+    640
+   ],
+   "size": [
+    520,
+    400
+   ],
+   "flags": {},
+   "order": 5,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "link": 10
+    }
+   ],
+   "outputs": [
+    {
+     "name": "images",
+     "type": "IMAGE",
+     "links": [],
+     "slot_index": 0
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "PreviewImage"
+   },
+   "widgets_values": []
+  },
+  {
+   "id": 12,
+   "type": "PreviewAny",
+   "pos": [
+    2340,
+    40
+   ],
+   "size": [
+    360,
+    200
+   ],
+   "flags": {},
+   "order": 5,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "source",
+     "type": "*",
+     "link": 11
+    }
+   ],
+   "outputs": [
+    {
+     "name": "STRING",
+     "type": "STRING",
+     "links": [],
+     "slot_index": 0
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "PreviewAny"
+   },
+   "widgets_values": []
+  },
+  {
+   "id": 13,
+   "type": "PreviewAny",
+   "pos": [
+    1420,
+    280
+   ],
+   "size": [
+    400,
+    140
+   ],
+   "flags": {},
+   "order": 4,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "source",
+     "type": "*",
+     "link": 12
+    }
+   ],
+   "outputs": [
+    {
+     "name": "STRING",
+     "type": "STRING",
+     "links": [],
+     "slot_index": 0
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "PreviewAny"
+   },
+   "widgets_values": []
+  },
+  {
+   "id": 14,
+   "type": "Note",
+   "pos": [
+    40,
+    -380
+   ],
+   "size": [
+    1100,
+    330
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [],
+   "properties": {},
+   "widgets_values": [
+    "ETAPE 1 : des poses brutes a l'image empilee\n\n1. 'Light frames' : le dossier de tes poses (une ligne par dossier). 'max_frames' = 0 pour toutes (ici 24 pour un essai rapide).\n2. 'Master dark', 'Master flat' (et 'Master offset' si tu en as) : chacun recoit son dossier.\n3. 'Calibrate' : retire le dark, divise par le flat, ecarte les pixels chauds et les poussieres.\n4. 'Align' : aligne toutes les poses sur la plus nette ; courbes de transparence et de taille d'etoiles par pose.\n5. 'Frame selection' : ecarte les poses voilees ou floues (seuils reglables). Facultatif.\n6. 'Stack' : empile (drizzle), rejette satellites et avions ; sort l'image lineaire et sa vue etiree.\n\nChaque bloc garde son resultat sur disque (E:/astro_gpu/blocks) : en changeant un reglage, seuls ce bloc et ceux d'apres sont recalcules.\nBrancher deux blocs differents a la meme sortie fait une branche (par ex. deux selections -> deux empilements a comparer).\n\nReglages : une valeur laissee a sa valeur par defaut veut dire AUTOMATIQUE (le bloc la choisit d'apres tes donnees ; le resume en dessous dit ce qu'il a fait). Change-la pour imposer ton choix."
+   ]
+  }
+ ],
+ "links": [
+  [
+   1,
+   1,
+   0,
+   4,
+   0,
+   "ASTRO_FRAMES"
+  ],
+  [
+   2,
+   2,
+   0,
+   4,
+   1,
+   "ASTRO_MASTER"
+  ],
+  [
+   3,
+   3,
+   0,
+   4,
+   2,
+   "ASTRO_MASTER"
+  ],
+  [
+   4,
+   4,
+   0,
+   5,
+   0,
+   "ASTRO_CALIBRATED"
+  ],
+  [
+   5,
+   5,
+   0,
+   6,
+   0,
+   "ASTRO_ALIGNED"
+  ],
+  [
+   6,
+   6,
+   0,
+   7,
+   0,
+   "ASTRO_ALIGNED"
+  ],
+  [
+   7,
+   1,
+   1,
+   8,
+   0,
+   "IMAGE"
+  ],
+  [
+   8,
+   3,
+   1,
+   9,
+   0,
+   "IMAGE"
+  ],
+  [
+   9,
+   5,
+   1,
+   10,
+   0,
+   "IMAGE"
+  ],
+  [
+   10,
+   7,
+   1,
+   11,
+   0,
+   "IMAGE"
+  ],
+  [
+   11,
+   7,
+   2,
+   12,
+   0,
+   "*"
+  ],
+  [
+   12,
+   6,
+   1,
+   13,
+   0,
+   "*"
+  ]
+ ],
+ "groups": [],
+ "config": {},
+ "extra": {},
+ "version": 0.4
+}

@@ -59,7 +59,7 @@ class AstroMethods(io.ComfyNode):
                                               display_name=f"{d.title}: file",
                                               tooltip="The file the option asks for (a .npy layer...)"))
         return io.Schema(
-            node_id="AstroMethods", display_name="Astro: Methods", category="astro",
+            node_id="AstroMethods", display_name="Astro: Methods", category="astro/old - projects",
             description="The processing choices in plain words, as in the heavy client's Methods tab: one list per "
                         "question ('as main' = what the main processing does; hover a list for what each option "
                         "does and what was seen on real data). The choices are computed as a variant next to the "

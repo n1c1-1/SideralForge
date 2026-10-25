@@ -36,7 +36,7 @@ class AstroNewProject(io.ComfyNode):
     def define_schema(cls) -> io.Schema:
         multi = {"multiline": True, "optional": True}
         return io.Schema(
-            node_id="AstroNewProject", display_name="Astro: New project", category="astro",
+            node_id="AstroNewProject", display_name="Astro: New project", category="astro/old - projects",
             description="Makes a project from the folders of your frames (as the heavy client's New project): give "
                         "the light frames' folder; the darks, flats, bias and flat darks next to it, the project "
                         "name, its folder, the scratch folder and the target are guessed when left empty. A folder "

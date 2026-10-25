@@ -16,7 +16,32 @@ its Final adjustment and views will move to ComfyUI later.
 - Start: `ComfyUI_astro.bat` (this repository), then open http://127.0.0.1:8188. Restart after changing the nodes'
   code: `comfyui_astro/tools/restart_comfy.ps1`.
 
-## The nodes (category "astro")
+## The processing blocks (categories "astro/1 sources", "astro/2 calibration", "astro/3 alignment", "astro/4 stacking")
+
+Elementary blocks: the data travels on the wires, each block does one thing and shows what it did (an image and a
+one-line summary). Wire them in the order you want, and branch: two blocks fed by the same output give two
+versions to compare.
+
+| Block | In -> out | What it does |
+|---|---|---|
+| Light frames | folders -> frames | The light frames of a session (RAW or FITS), checked; shows the middle frame. |
+| Master offset / Master dark / Master flat | folder -> master | One calibration master from its own folder (the flat can take flat darks or the offset). |
+| Calibrate | frames + masters -> calibrated frames | Dark subtracted, flat divided, hot / cold / dusty pixels excluded; cached on the scratch disk. |
+| Align | calibrated -> aligned | Polynomial alignment on the sharpest frame; transparency and star size curves. |
+| Frame selection | aligned -> aligned | Which frames are stacked and their weight (optional: without it the stack applies the same rule). |
+| Stack | aligned -> linear image | Drizzle without debayering, outliers rejected, two half-stacks for the denoising; stretched view. |
+
+Each block keeps its result on disk (folders set in `comfyui_astro/blocks_config.json`: work E:/astro_gpu/blocks,
+large caches C:/Users/Nicolas/astro_gpu_scratch/blocks), under a fingerprint of its inputs and settings: a block is
+not computed again (even after a restart) while nothing upstream changed. A setting left at its default value means
+automatic (chosen from the data; the block's summary says what it did).
+
+Starting graph: **Etape 1 - poses brutes a empilement** (comfyui_astro/workflows/stage1.json). The next stages
+(astrometry and linear corrections, denoising and stars, rendering in small blocks) come as blocks too.
+
+The project nodes below (category "astro/old - projects") are the first design, kept for the existing projects.
+
+## The nodes (category "astro/old - projects")
 
 All the nodes pass on an **ASTRO** value: the project folder, the variant ("" = the main processing) and the last
 stage computed.
