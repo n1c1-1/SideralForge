@@ -1,6 +1,6 @@
 # astro_GPU in ComfyUI
 
-This code base (C:/Users/Nicolas/sandbox/astro_comfy, cloned from astro_GPU on 2026-10-17, which stays untouched as
+This code base (C:/Users/Nicolas/sandbox/astro, cloned from astro_GPU on 2026-10-17, which stays untouched as
 it was) is the reference from now on. The processing chain runs as ComfyUI nodes; the astro_gpu library underneath
 is the same (stages, variants, rendering engine). The heavy client (astro-gpu-gui) still works on the same projects;
 its Final adjustment and views will move to ComfyUI later.
@@ -10,7 +10,7 @@ its Final adjustment and views will move to ComfyUI later.
 - ComfyUI: C:/Users/Nicolas/sandbox/ComfyUI (version 0.41), with its own Python environment (.venv: Python 3.12,
   PyTorch 2.11 CUDA 12.8) in which this repository is installed in editable mode (`uv pip install -e`).
 - The nodes: `comfyui_astro/`, linked into `ComfyUI/custom_nodes/comfyui_astro` (a folder junction).
-- The heavy client of this code base: `astro_GPU.bat` (this repository; it runs in ComfyUI's environment, with the
+- The heavy client of this code base: `astro_client.bat` (this repository; it runs in ComfyUI's environment, with the
   same code as the nodes). The old launcher (sandbox/astro_GPU) runs the old code: since 2026-10-17 the projects
   hold stage versions it does not know (it would see them out of date and compute them again the old way).
 - Start: `ComfyUI_astro.bat` (this repository), then open http://127.0.0.1:8188. Restart after changing the nodes'
