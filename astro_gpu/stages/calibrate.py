@@ -65,123 +65,144 @@ class Calibrate(Stage):
 
     def run(self, ctx: Context, p: CalibrateParams) -> None:
         frames = ctx.load_json("inventory", "frames.json")
-        lights = frames["lights"]
         H, W = int(ctx.metric_of("inventory", "height")), int(ctx.metric_of("inventory", "width"))
-        cfa = ctx.metric_of("inventory", "cfa")
-        white = float(ctx.metric_of("inventory", "white_level"))
         black = float(ctx.metric_of("inventory", "black_level"))
-        t0 = time.time()
+        bias = master_bias([f["path"] for f in frames["bias"]], ctx)
+        dark, dark_noise = master_dark([f["path"] for f in frames["darks"]], bias, H, W, black, ctx)
+        flat = master_flat([f["path"] for f in frames["flats"]], [f["path"] for f in frames["flat_darks"]], bias,
+                           float(np.median(dark)), H, W, p.flat_scale_px, ctx)
+        calibrate_lights(ctx, p, frames["lights"], dark, flat, bool(frames["darks"]), dark_noise,
+                         ctx.metric_of("inventory", "cfa"), float(ctx.metric_of("inventory", "white_level")))
 
-        # ---------------- bias and dark
-        bias = _median_stack([f["path"] for f in frames["bias"]], ctx, "bias") if frames["bias"] else None
-        if frames["darks"]:
-            dark = _median_stack([f["path"] for f in frames["darks"]], ctx, "darks")
-            one = read_cfa(frames["darks"][0]["path"])
-            dark_noise = robust_sigma(one[::3, ::3])[1]
+
+def master_bias(paths: list[str], ctx: Context) -> np.ndarray | None:
+    """Master bias (offset): median of the bias frames, or None without any."""
+    return _median_stack(paths, ctx, "bias") if paths else None
+
+
+def master_dark(paths: list[str], bias: np.ndarray | None, H: int, W: int, black: float,
+                ctx: Context) -> tuple[np.ndarray, float | None]:
+    """Master dark (median of the darks) and the noise of one dark frame; without darks, the master bias or the black
+    level stands for it."""
+    if paths:
+        dark = _median_stack(paths, ctx, "darks")
+        one = read_cfa(paths[0])
+        return dark, robust_sigma(one[::3, ::3])[1]
+    dark = bias.copy() if bias is not None else np.full((H, W), black, np.float32)
+    ctx.log("no dark frames: using " + ("the master bias" if bias is not None else "the black level") +
+            " as dark (hot pixels will not be removed by calibration)", "warning")
+    return dark, None
+
+
+def master_flat(paths: list[str], flat_dark_paths: list[str], bias: np.ndarray | None, dark_level: float, H: int,
+                W: int, flat_scale_px: float, ctx: Context) -> np.ndarray:
+    """Master flat normalised to 1 at the centre of each Bayer plane (all ones without flats)."""
+    if paths:
+        if flat_dark_paths:
+            fdark = _median_stack(flat_dark_paths, ctx, "flat darks")
+        elif bias is not None:
+            fdark = bias
         else:
-            dark = bias.copy() if bias is not None else np.full((H, W), black, np.float32)
-            dark_noise = None
-            ctx.log("no dark frames: using " + ("the master bias" if bias is not None else "the black level") +
-                    " as dark (hot pixels will not be removed by calibration)", "warning")
-        level = float(np.median(dark))
-        ctx.save("master_dark.npy", dark)
-        ctx.metric("dark_level", round(level, 1))
-        if dark_noise:
-            ctx.metric("dark_frame_noise", round(dark_noise, 2))
+            fdark = np.full((H, W), dark_level, np.float32)   # flats are short: dark current negligible
+        flat = _master_flat(paths, fdark, ctx)
+        if flat_scale_px > 0:
+            # borrowed flat: vignetting only (each colour plane smoothed; its dust is not this night's dust)
+            for k in range(4):
+                i, j = divmod(k, 2)
+                flat[i::2, j::2] = cv2.GaussianBlur(flat[i::2, j::2], (0, 0), flat_scale_px / 2.0)
+            ctx.log(f"master flat kept above {flat_scale_px:.0f} px only (vignetting, not dust)")
+    else:
+        flat = np.ones((H, W), np.float32)
+        ctx.log("no flat frames: vignetting and dust will not be corrected (the sky model will absorb part of "
+                "the vignetting)", "warning")
+    for k in range(4):
+        v = _plane(flat, k)
+        c = v[v.shape[0] // 2 - 100:v.shape[0] // 2 + 100, v.shape[1] // 2 - 100:v.shape[1] // 2 + 100]
+        v /= np.median(c)
+    return flat
 
-        # ---------------- flat
-        if frames["flats"]:
-            if frames["flat_darks"]:
-                fdark = _median_stack([f["path"] for f in frames["flat_darks"]], ctx, "flat darks")
-            elif bias is not None:
-                fdark = bias
-            else:
-                fdark = np.full((H, W), level, np.float32)   # flats are short: dark current negligible
-            flat = _master_flat([f["path"] for f in frames["flats"]], fdark, ctx)
-            if p.flat_scale_px > 0:
-                # borrowed flat: vignetting only (each colour plane smoothed; its dust is not this night's dust)
-                for k in range(4):
-                    i, j = divmod(k, 2)
-                    flat[i::2, j::2] = cv2.GaussianBlur(flat[i::2, j::2], (0, 0), p.flat_scale_px / 2.0)
-                ctx.log(f"master flat kept above {p.flat_scale_px:.0f} px only (vignetting, not dust)")
-        else:
-            flat = np.ones((H, W), np.float32)
-            ctx.log("no flat frames: vignetting and dust will not be corrected (the sky model will absorb part of "
-                    "the vignetting)", "warning")
-        for k in range(4):
-            v = _plane(flat, k)
-            c = v[v.shape[0] // 2 - 100:v.shape[0] // 2 + 100, v.shape[1] // 2 - 100:v.shape[1] // 2 + 100]
-            v /= np.median(c)
-        ctx.save("master_flat.npy", flat)
-        ctx.metric("vignetting_min", round(float(flat.min()), 3))
 
-        # ---------------- bad pixels: hot (dark), cold / dust (flat)
-        sky_noise = _sky_noise(lights[len(lights) // 2]["path"], dark, flat)
-        bad = np.zeros((H, W), bool)
-        if frames["darks"]:
-            bad |= (dark - level) > p.hot_sigma * sky_noise
-        from scipy.ndimage import median_filter
-        for k in range(4):
-            v = _plane(flat, k)
-            loc = median_filter(v, size=9)
-            _plane(bad, k)[...] |= (v < (1 - p.flat_defect) * loc) | (v > (1 + p.flat_defect) * loc)
-        if p.hot_from_lights and len(lights) >= 15:
-            n0 = int(bad.sum())
-            msg = _hot_from_lights([f["path"] for f in lights], dark, flat, bad, median_filter)
-            ctx.metric("hot_pixels_from_lights", int(bad.sum()) - n0)
-            ctx.log(msg)
-        ctx.save("badmask.npy", bad)
-        ctx.metric("bad_pixels_pct", round(100 * float(bad.mean()), 2))
-        ctx.metric("sky_noise_adu", round(sky_noise, 2))
-        ctx.log(f"master dark level {level:.1f} ADU, flat min {flat.min():.3f}, {100 * bad.mean():.2f} % pixels "
-                f"excluded, sky noise {sky_noise:.1f} ADU")
+def calibrate_lights(ctx: Context, p: CalibrateParams, lights: list[dict], dark: np.ndarray, flat: np.ndarray,
+                     have_darks: bool, dark_noise: float | None, cfa: str, white: float) -> None:
+    """Bad pixel map and calibrated cache of the light frames from the given masters (saved with them in the
+    stage's folder: master_dark, master_flat, badmask, frame_stats, cache.json)."""
+    H, W = dark.shape
+    t0 = time.time()
+    level = float(np.median(dark))
+    ctx.save("master_dark.npy", dark)
+    ctx.metric("dark_level", round(level, 1))
+    if dark_noise:
+        ctx.metric("dark_frame_noise", round(dark_noise, 2))
+    ctx.save("master_flat.npy", flat)
+    ctx.metric("vignetting_min", round(float(flat.min()), 3))
 
-        # ---------------- calibrated cache (float16 memmap on the scratch disk)
-        # values are scaled so that the brightest valid value stays below the float16 range
-        scale = float(min(1.0, 16000.0 / max(white - level, 1.0)))
-        n = len(lights)
-        cache = ctx.scratch / "lights.f16"
-        done_p = ctx.ckpt / "done.npy"
-        stats_p = ctx.ckpt / "stats.npy"
-        resume = cache.exists() and done_p.exists() and cache.stat().st_size == n * H * W * 2
-        if resume:
-            done = np.load(done_p)
-            stats = np.load(stats_p)
-            ctx.log(f"resuming calibration: {int(done.sum())}/{n} frames already done")
-        else:
-            done = np.zeros(n, bool)
-            stats = np.zeros((n, 4, 2), np.float32)
-            mm = np.memmap(cache, dtype=np.float16, mode="w+", shape=(n, H, W))
-            del mm
-        paths_dir = ctx.ckpt
-        np.save(paths_dir / "dark.npy", dark)
-        np.save(paths_dir / "flat.npy", flat)
-        np.save(paths_dir / "bad.npy", bad)
-        todo = [(i, lights[i]["path"]) for i in range(n) if not done[i]]
-        sat_raw = p.saturation * white
-        init = (str(cache), n, H, W, str(paths_dir), sat_raw, scale)
-        with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
-            for c, (idx, st) in enumerate(pool.imap_unordered(_calib_one, todo, chunksize=2)):
-                stats[idx] = st
-                done[idx] = True
-                if (c + 1) % 20 == 0 or c + 1 == len(todo):
-                    np.save(done_p, done)
-                    np.save(stats_p, stats)
-                ctx.progress(done.mean(), f"{int(done.sum())}/{n} frames calibrated")
-        for f in ("dark.npy", "flat.npy", "bad.npy"):
-            (paths_dir / f).unlink(missing_ok=True)
-        ctx.save("frame_stats.npy", stats)
-        ctx.save_json("cache.json", {"path": str(cache), "n": n, "height": H, "width": W, "scale": scale,
-                                     "cfa": cfa, "sat_mark": SAT_MARK, "valid_max": VALID_MAX,
-                                     "white_level": white, "dark_level": level})
-        ctx.metric("cache_scale", scale)
-        ctx.metric("cache_gb", round(n * H * W * 2 / 1e9, 1))
-        ctx.log(f"{n} frames calibrated in {(time.time() - t0) / 60:.1f} min (cache {n * H * W * 2 / 1e9:.1f} GB)")
-        from .inventory import _superpixel_rgb
-        ctx.preview("master_flat", _flat_view(flat, cfa))
-        mm = np.memmap(cache, dtype=np.float16, mode="r", shape=(n, H, W))
-        fr = np.nan_to_num(np.asarray(mm[n // 2], np.float32))
-        ctx.preview("calibrated_frame", _superpixel_rgb(np.where(fr > VALID_MAX, 0, fr), cfa))
+    # ---------------- bad pixels: hot (dark), cold / dust (flat)
+    sky_noise = _sky_noise(lights[len(lights) // 2]["path"], dark, flat)
+    bad = np.zeros((H, W), bool)
+    if have_darks:
+        bad |= (dark - level) > p.hot_sigma * sky_noise
+    from scipy.ndimage import median_filter
+    for k in range(4):
+        v = _plane(flat, k)
+        loc = median_filter(v, size=9)
+        _plane(bad, k)[...] |= (v < (1 - p.flat_defect) * loc) | (v > (1 + p.flat_defect) * loc)
+    if p.hot_from_lights and len(lights) >= 15:
+        n0 = int(bad.sum())
+        msg = _hot_from_lights([f["path"] for f in lights], dark, flat, bad, median_filter)
+        ctx.metric("hot_pixels_from_lights", int(bad.sum()) - n0)
+        ctx.log(msg)
+    ctx.save("badmask.npy", bad)
+    ctx.metric("bad_pixels_pct", round(100 * float(bad.mean()), 2))
+    ctx.metric("sky_noise_adu", round(sky_noise, 2))
+    ctx.log(f"master dark level {level:.1f} ADU, flat min {flat.min():.3f}, {100 * bad.mean():.2f} % pixels "
+            f"excluded, sky noise {sky_noise:.1f} ADU")
+
+    # ---------------- calibrated cache (float16 memmap on the scratch disk)
+    # values are scaled so that the brightest valid value stays below the float16 range
+    scale = float(min(1.0, 16000.0 / max(white - level, 1.0)))
+    n = len(lights)
+    cache = ctx.scratch / "lights.f16"
+    done_p = ctx.ckpt / "done.npy"
+    stats_p = ctx.ckpt / "stats.npy"
+    resume = cache.exists() and done_p.exists() and cache.stat().st_size == n * H * W * 2
+    if resume:
+        done = np.load(done_p)
+        stats = np.load(stats_p)
+        ctx.log(f"resuming calibration: {int(done.sum())}/{n} frames already done")
+    else:
+        done = np.zeros(n, bool)
+        stats = np.zeros((n, 4, 2), np.float32)
+        mm = np.memmap(cache, dtype=np.float16, mode="w+", shape=(n, H, W))
+        del mm
+    paths_dir = ctx.ckpt
+    np.save(paths_dir / "dark.npy", dark)
+    np.save(paths_dir / "flat.npy", flat)
+    np.save(paths_dir / "bad.npy", bad)
+    todo = [(i, lights[i]["path"]) for i in range(n) if not done[i]]
+    sat_raw = p.saturation * white
+    init = (str(cache), n, H, W, str(paths_dir), sat_raw, scale)
+    with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
+        for c, (idx, st) in enumerate(pool.imap_unordered(_calib_one, todo, chunksize=2)):
+            stats[idx] = st
+            done[idx] = True
+            if (c + 1) % 20 == 0 or c + 1 == len(todo):
+                np.save(done_p, done)
+                np.save(stats_p, stats)
+            ctx.progress(done.mean(), f"{int(done.sum())}/{n} frames calibrated")
+    for f in ("dark.npy", "flat.npy", "bad.npy"):
+        (paths_dir / f).unlink(missing_ok=True)
+    ctx.save("frame_stats.npy", stats)
+    ctx.save_json("cache.json", {"path": str(cache), "n": n, "height": H, "width": W, "scale": scale,
+                                 "cfa": cfa, "sat_mark": SAT_MARK, "valid_max": VALID_MAX,
+                                 "white_level": white, "dark_level": level})
+    ctx.metric("cache_scale", scale)
+    ctx.metric("cache_gb", round(n * H * W * 2 / 1e9, 1))
+    ctx.log(f"{n} frames calibrated in {(time.time() - t0) / 60:.1f} min (cache {n * H * W * 2 / 1e9:.1f} GB)")
+    from .inventory import _superpixel_rgb
+    ctx.preview("master_flat", _flat_view(flat, cfa))
+    mm = np.memmap(cache, dtype=np.float16, mode="r", shape=(n, H, W))
+    fr = np.nan_to_num(np.asarray(mm[n // 2], np.float32))
+    ctx.preview("calibrated_frame", _superpixel_rgb(np.where(fr > VALID_MAX, 0, fr), cfa))
 
 
 def _plane(a: np.ndarray, k: int) -> np.ndarray:

@@ -130,16 +130,13 @@ class Stack(Stage):
         S, PIX = p.scale, p.pixfrac
         Ho, Wo = int(round(H * S)), int(round(W * S))
 
-        sig = stats[:, :, 1].mean(1)
-        weight = (transp / sig) ** 2 * (np.percentile(fwhm, 5) / fwhm) ** 2
-        weight = np.where(np.isfinite(rms) & np.isfinite(weight), weight, 0.0)
-        weight /= weight.max()
-        tmin = p.min_transparency * np.percentile(transp[np.isfinite(rms)], 90)
-        reasons = np.full(n, "", dtype=object)
-        reasons[~np.isfinite(rms)] = "not aligned"
-        reasons[(reasons == "") & (transp < tmin)] = "low transparency"
-        reasons[(reasons == "") & (fwhm > p.max_fwhm_ratio * np.median(fwhm))] = "large stars"
-        weight[reasons != ""] = 0.0
+        sel_f = ctx.project.stage_dir("register") / "selection.npz"
+        if sel_f.exists():                       # a selection made by its own block (frame selection)
+            sel = np.load(sel_f)
+            weight, reasons = sel["weight"].astype(float), sel["reasons"].astype(object)
+            ctx.log("frame selection given by the selection block")
+        else:
+            weight, reasons = select_frames(transp, fwhm, rms, stats, p.min_transparency, p.max_fwhm_ratio)
         used = np.where(weight > 0)[0]
         if len(used) < 2:
             raise StageError("fewer than 2 usable frames after selection; relax the selection thresholds")
@@ -325,6 +322,24 @@ class Stack(Stage):
         ctx.log(f"drizzle {Wo}x{Ho} from {len(used)} frames in {(time.time() - t0) / 60:.1f} min, "
                 f"{rej_pct:.2f} % pixels rejected")
         ctx.preview("stack", asinh_preview(drz))
+
+
+def select_frames(transp, fwhm, rms, stats, min_transparency: float, max_fwhm_ratio: float):
+    """Weight of every frame, (transparency / noise)^2 x sharpness, and the reason a frame is left out ('' = kept):
+    not aligned, transparency below ``min_transparency`` x the best frames, stars larger than ``max_fwhm_ratio`` x
+    the median."""
+    n = len(transp)
+    sig = stats[:, :, 1].mean(1)
+    weight = (transp / sig) ** 2 * (np.percentile(fwhm, 5) / fwhm) ** 2
+    weight = np.where(np.isfinite(rms) & np.isfinite(weight), weight, 0.0)
+    weight /= weight.max()
+    tmin = min_transparency * np.percentile(transp[np.isfinite(rms)], 90)
+    reasons = np.full(n, "", dtype=object)
+    reasons[~np.isfinite(rms)] = "not aligned"
+    reasons[(reasons == "") & (transp < tmin)] = "low transparency"
+    reasons[(reasons == "") & (fwhm > max_fwhm_ratio * np.median(fwhm))] = "large stars"
+    weight[reasons != ""] = 0.0
+    return weight, reasons
 
 
 def fixed_pattern(mm, used, coef, dev, H, W, nframes, progress=lambda f: None):
