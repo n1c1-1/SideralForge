@@ -16,7 +16,8 @@ its Final adjustment and views will move to ComfyUI later.
 - Start: `ComfyUI_astro.bat` (this repository), then open http://127.0.0.1:8188. Restart after changing the nodes'
   code: `comfyui_astro/tools/restart_comfy.ps1`.
 
-## The processing blocks (categories "astro/1 sources", "astro/2 calibration", "astro/3 alignment", "astro/4 stacking")
+## The processing blocks (categories "astro/1 sources", "astro/2 calibration", "astro/3 alignment", "astro/4 stacking",
+"astro/5 field and colour")
 
 Elementary blocks: the data travels on the wires, each block does one thing and shows what it did (an image and a
 one-line summary). Wire them in the order you want, and branch: two blocks fed by the same output give two
@@ -30,14 +31,19 @@ versions to compare.
 | Align | calibrated -> aligned | Polynomial alignment on the sharpest frame; transparency and star size curves. |
 | Frame selection | aligned -> aligned | Which frames are stacked and their weight (optional: without it the stack applies the same rule). |
 | Stack | aligned -> linear image | Drizzle without debayering, outliers rejected, two half-stacks for the denoising; stretched view. |
+| Identify the field | linear -> linear | Where the image points on the sky (stars matched to Gaia); immediate with the object name and focal length, blind otherwise. |
+| Gaia stars | linear -> stars | The Gaia stars of the field placed on the image (positions, brightness, colours, spectra); needs the identified field. |
+| Hydrogen survey | linear -> survey | A professional H-alpha survey of the field reprojected onto the image (reference for the sky background). |
+| Colour calibration | linear + stars -> linear | The camera's colour response measured on the Gaia spectra; the colour matrix to true sky colours. |
 
 Each block keeps its result on disk (folders set in `comfyui_astro/blocks_config.json`: work E:/astro_gpu/blocks,
 large caches C:/Users/Nicolas/astro_gpu_scratch/blocks), under a fingerprint of its inputs and settings: a block is
 not computed again (even after a restart) while nothing upstream changed. A setting left at its default value means
 automatic (chosen from the data; the block's summary says what it did).
 
-Starting graph: **Etape 1 - poses brutes a empilement** (comfyui_astro/workflows/stage1.json). The next stages
-(astrometry and linear corrections, denoising and stars, rendering in small blocks) come as blocks too.
+Starting graphs: **Etape 1 - poses brutes a empilement** (comfyui_astro/workflows/stage1.json) and **Etape 2 -
+champ et couleur** (stage2.json: stage 1 plus the field and colour blocks). The next stages (denoising and stars,
+rendering in small blocks) come as blocks too.
 
 The project nodes below (category "astro/old - projects") are the first design, kept for the existing projects.
 

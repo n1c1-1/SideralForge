@@ -27,11 +27,14 @@ MASTER = io.Custom("ASTRO_MASTER")
 CALIBRATED = io.Custom("ASTRO_CALIBRATED")
 ALIGNED = io.Custom("ASTRO_ALIGNED")
 LINEAR = io.Custom("ASTRO_LINEAR")
+STARS = io.Custom("ASTRO_STARS")
+SURVEY = io.Custom("ASTRO_SURVEY")
 
 CAT_SOURCES = "astro/1 sources"
 CAT_CALIB = "astro/2 calibration"
 CAT_ALIGN = "astro/3 alignment"
 CAT_STACK = "astro/4 stacking"
+CAT_FIELD = "astro/5 field and colour"
 CONFIG = Path(__file__).with_name("blocks_config.json")
 
 
@@ -62,7 +65,8 @@ class _BlockProject:
         self.logs.mkdir(parents=True, exist_ok=True)
         self.scratch = scratch
         self.results = out / "results"
-        self.config = SimpleNamespace(inputs=inputs or Inputs(), params={}, render={}, devices={}, variants={},
+        self.config = SimpleNamespace(name="blocks", inputs=inputs or Inputs(), params={}, render={}, devices={},
+                                      variants={},
                                       active_variant="", target=SimpleNamespace(name="", ra=None, dec=None,
                                                                                 focal_mm=None))
 
@@ -432,5 +436,130 @@ class AstroStackBlock(io.ComfyNode):
         return io.NodeOutput(v, _preview(out, "stack"), summary)
 
 
+# ---------------------------------------------------------------------- 5. field and colour
+def _same_stack(*values) -> dict:
+    """The folders of several inputs, which must come from the same stack (one image, several results on it)."""
+    stacks = {v["dirs"].get("stack") for v in values}
+    if len(stacks) > 1:
+        raise ValueError("these inputs come from different stacks: connect results of the same image")
+    dirs: dict = {}
+    for v in values:
+        dirs.update(v["dirs"])
+    return dirs
+
+
+def _need_field(v: dict) -> None:
+    if "astrometry" not in v["dirs"]:
+        raise ValueError("identify the field first (block 'Identify the field')")
+
+
+class AstroIdentifyField(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        st = _stage("astrometry")
+        return io.Schema(
+            node_id="AstroIdentifyField", display_name="Identify the field", category=CAT_FIELD,
+            description="Finds exactly where the image points on the sky (its stars matched to the Gaia catalogue). "
+                        "The object name, or its coordinates, and the focal length make it immediate; without them "
+                        "the field is searched blind (a few minutes). Every later step that uses the sky (Gaia "
+                        "stars, colour, surveys) relies on it.",
+            inputs=[LINEAR.Input("linear")] + _param_widgets(st),
+            outputs=[LINEAR.Output(display_name="linear"), io.String.Output(display_name="summary")])
+
+    @classmethod
+    def execute(cls, linear, **kw) -> io.NodeOutput:
+        st = _stage("astrometry")
+        widgets = _parsed(st, kw)
+        key = _key("field", st.version, linear["key"], widgets)
+        out = _run(st, linear["dirs"], key, widgets)
+        m = _metrics(out)
+        summary = (f"centre RA {m.get('ra')} Dec {m.get('dec')}, {m.get('scale_arcsec')} arcsec/px, field "
+                   f"{m.get('field_deg')} deg, residual {m.get('residual_px')} px on {m.get('stars_used')} stars"
+                   + (f", focal about {m.get('focal_estimate_mm')} mm" if m.get("focal_estimate_mm") else ""))
+        return io.NodeOutput({"kind": "linear", "key": key, "dirs": {**linear["dirs"], "astrometry": str(out)}},
+                             summary)
+
+
+class AstroGaiaStars(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        st = _stage("catalogs")
+        return io.Schema(
+            node_id="AstroGaiaStars", display_name="Gaia stars", category=CAT_FIELD,
+            description="The Gaia stars of the field placed on the image (positions, brightness, colours, spectra of "
+                        "the brighter ones), down to the faintest the image can show. Needs the identified field. "
+                        "Downloaded once (internet), then kept.",
+            inputs=[LINEAR.Input("linear", tooltip="An image whose field is identified")] + _param_widgets(st),
+            outputs=[STARS.Output(display_name="stars"), io.String.Output(display_name="summary")])
+
+    @classmethod
+    def execute(cls, linear, **kw) -> io.NodeOutput:
+        _need_field(linear)
+        st = _stage("catalogs")
+        widgets = _parsed(st, kw)
+        key = _key("gaia", st.version, linear["key"], widgets)
+        out = _run(st, linear["dirs"], key, widgets)
+        m = _metrics(out)
+        summary = (f"{m.get('stars_deep')} stars measured, {m.get('stars_faint')} fainter, "
+                   f"{m.get('xp_spectra')} spectra")
+        return io.NodeOutput({"kind": "stars", "key": key, "dirs": {**linear["dirs"], "catalogs": str(out)}},
+                             summary)
+
+
+class AstroHalphaSurvey(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        st = _stage("surveys")
+        return io.Schema(
+            node_id="AstroHalphaSurvey", display_name="Hydrogen survey", category=CAT_FIELD,
+            description="A professional H-alpha survey of the field (NSNS in the north, Finkbeiner elsewhere) "
+                        "reprojected onto the image: the absolute reference of the faint emission, used by the sky "
+                        "background. Needs the identified field; downloaded once (internet).",
+            inputs=[LINEAR.Input("linear", tooltip="An image whose field is identified")] + _param_widgets(st),
+            outputs=[SURVEY.Output(display_name="survey"), io.Image.Output(display_name="view"),
+                     io.String.Output(display_name="summary")])
+
+    @classmethod
+    def execute(cls, linear, **kw) -> io.NodeOutput:
+        _need_field(linear)
+        st = _stage("surveys")
+        widgets = _parsed(st, kw)
+        key = _key("survey", st.version, linear["key"], widgets)
+        out = _run(st, linear["dirs"], key, widgets)
+        m = _metrics(out)
+        summary = f"survey {m.get('survey')}, coverage {m.get('coverage')}, H-alpha p50/p99 {m.get('ha_p50_p99')}"
+        return io.NodeOutput({"kind": "survey", "key": key, "dirs": {**linear["dirs"], "surveys": str(out)}},
+                             _preview(out, "halpha_reference"), summary)
+
+
+class AstroColourCalibration(io.ComfyNode):
+    @classmethod
+    def define_schema(cls) -> io.Schema:
+        st = _stage("color")
+        return io.Schema(
+            node_id="AstroColourCalibration", display_name="Colour calibration", category=CAT_FIELD,
+            description="Measures the colour response of your camera on the Gaia stars of the field (their measured "
+                        "spectra) and gives the image its true colours: the colour matrix from camera to sky. The "
+                        "measured response is shown.",
+            inputs=[LINEAR.Input("linear"), STARS.Input("stars", tooltip="Gaia stars of the same image")]
+                   + _param_widgets(st),
+            outputs=[LINEAR.Output(display_name="linear"), io.Image.Output(display_name="camera response"),
+                     io.String.Output(display_name="summary")])
+
+    @classmethod
+    def execute(cls, linear, stars, **kw) -> io.NodeOutput:
+        st = _stage("color")
+        widgets = _parsed(st, kw)
+        dirs = _same_stack(linear, stars)
+        key = _key("colour", st.version, linear["key"], stars["key"], widgets)
+        out = _run(st, dirs, key, widgets)
+        m = _metrics(out)
+        summary = (f"colour matrix from {m.get('stars')} stars, residual {m.get('fit_residual')}, response "
+                   f"{m.get('response_source')}")
+        return io.NodeOutput({"kind": "linear", "key": key, "dirs": {**dirs, "color": str(out)}},
+                             _preview(out, "spectral_response"), summary)
+
+
 BLOCK_NODES = [AstroLights, AstroMasterBias, AstroMasterDark, AstroMasterFlat, AstroCalibrate, AstroAlign,
-               AstroFrameSelection, AstroStackBlock]
+               AstroFrameSelection, AstroStackBlock, AstroIdentifyField, AstroGaiaStars, AstroHalphaSurvey,
+               AstroColourCalibration]
