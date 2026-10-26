@@ -52,7 +52,11 @@ _TAG = re.compile(r"^(.*\.npy) \(run [0-9a-fA-F]*\)$")
 def stage_layer(project) -> str | None:
     """The star layer of this stage when it ran to the end and wrote one, as '<path> (run <id>)' (the run id makes a
     new layer a new value for the star removal stage), else None."""
-    d = project.stage_dir("star_net")
+    from ..core.stage import StageError
+    try:
+        d = project.stage_dir("star_net")
+    except StageError:          # a context without this stage (a ComfyUI block not wired to it)
+        return None
     f = d / "star_layer.npy"
     try:
         m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))

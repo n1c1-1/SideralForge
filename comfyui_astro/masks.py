@@ -1,9 +1,9 @@
 """Masks between views: several renderings of the same processing (views) combined zone by zone.
 
-- 'Astro: Blend views' lays views over a base view, each through its mask, and shows which view is used where.
-- 'Astro: Brightness mask' makes a mask from an image's brightness (a nebula from the starless layer, the stars from
+- 'Blend versions' lays views over a base view, each through its mask, and shows which view is used where.
+- 'Brightness mask' makes a mask from an image's brightness (a nebula from the starless layer, the stars from
   the stars layer, bright cores from the final image), with thresholds measured on the image itself (percentiles).
-- 'Astro: Painted mask' is a mask painted by hand with a brush over an image, in the node (web/astro_paint.js).
+- 'Painted mask' is a mask painted by hand with a brush over an image, in the node (web/astro_paint.js).
 
 Sizes are given as a percentage of the image width, so a mask made at one scale works at any other; a mask of another
 size than the image it is used with is resized to it.
@@ -17,8 +17,8 @@ import numpy as np
 import torch
 from comfy_api.latest import io
 
-CATEGORY = "astro/old - projects/masks"
-N_VIEWS = 4                                    # views over the base in Astro: Blend views
+CATEGORY = "astro/8 combine"
+N_VIEWS = 4                                    # views over the base in Blend versions
 COLOURS = [(0.45, 0.45, 0.45), (1.0, 0.55, 0.1), (0.15, 0.8, 1.0), (1.0, 0.25, 0.8), (0.4, 1.0, 0.3)]
 
 
@@ -70,7 +70,7 @@ class AstroBlendViews(io.ComfyNode):
         inputs.append(io.Float.Input("feather", default=0.0, min=0.0, max=5.0, step=0.05,
                                      tooltip="Extra soft edge on every mask, in % of the image width"))
         return io.Schema(
-            node_id="AstroBlendViews", display_name="Astro: Blend views", category=CATEGORY,
+            node_id="AstroBlendViews", display_name="Blend versions", category=CATEGORY,
             description="Combines views of the same image zone by zone: each view is laid over the ones before it "
                         "where its mask is white (soft edges blend). The views must have the same size (render them "
                         "at the same scale). 'coverage' shows which view is used where: grey = the base, then "
@@ -115,7 +115,7 @@ class AstroBrightnessMask(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
-            node_id="AstroBrightnessMask", display_name="Astro: Brightness mask", category=CATEGORY,
+            node_id="AstroBrightnessMask", display_name="Brightness mask", category=CATEGORY,
             description="A mask from an image's brightness, smoothed into zones: 0 below 'low', 1 above 'high', a "
                         "soft ramp between (low above high selects the dark parts). Thresholds in percentiles of the "
                         "image (they adapt to each image) or in levels (% of white). Examples: the nebula = the "
@@ -178,7 +178,7 @@ class AstroPaintedMask(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
-            node_id="AstroPaintedMask", display_name="Astro: Painted mask", category=CATEGORY, is_output_node=True,
+            node_id="AstroPaintedMask", display_name="Painted mask", category=CATEGORY, is_output_node=True,
             description="A mask painted by hand over an image: run the graph once to show the image in the node, "
                         "then paint (left button) or erase (right button or Erase). The mask is kept in the node "
                         "(saved with the graph) and follows the image at any scale.",

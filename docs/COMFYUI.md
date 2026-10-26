@@ -17,7 +17,7 @@ its Final adjustment and views will move to ComfyUI later.
   code: `comfyui_astro/tools/restart_comfy.ps1`.
 
 ## The processing blocks (categories "astro/1 sources", "astro/2 calibration", "astro/3 alignment", "astro/4 stacking",
-"astro/5 field and colour")
+"astro/5 field and colour", "astro/6 denoising and stars")
 
 Elementary blocks: the data travels on the wires, each block does one thing and shows what it did (an image and a
 one-line summary). Wire them in the order you want, and branch: two blocks fed by the same output give two
@@ -35,15 +35,21 @@ versions to compare.
 | Gaia stars | linear -> stars | The Gaia stars of the field placed on the image (positions, brightness, colours, spectra); needs the identified field. |
 | Hydrogen survey | linear -> survey | A professional H-alpha survey of the field reprojected onto the image (reference for the sky background). |
 | Colour calibration | linear + stars -> linear | The camera's colour response measured on the Gaia spectra; the colour matrix to true sky colours. |
+| Denoise (two half-stacks) | linear -> linear | A network trained on the image to predict one half-stack from the other: denoises without inventing. |
+| Star shape and colour fringes | linear + stars -> linear | The star shape across the field (core, wings, spikes) and the colour fringes, corrected. |
+| Measure the stars | linear + stars -> star model | Every Gaia star measured with that shape: the light of the stars alone. |
+| Learned star removal | linear + star model -> star layer | Optional (about 35 min): a star-removal network trained on the image itself. |
+| Remove stars | linear + star model (+ star layer) -> starless | Stars subtracted, starless image denoised; with a star layer also the learned starless image; trains the sharpening network used at rendering. |
+| Sky background | starless + survey -> sky | The real sky separated from the instrument and the atmosphere (residual flat, sky glow). |
 
 Each block keeps its result on disk (folders set in `comfyui_astro/blocks_config.json`: work E:/astro_gpu/blocks,
 large caches C:/Users/Nicolas/astro_gpu_scratch/blocks), under a fingerprint of its inputs and settings: a block is
 not computed again (even after a restart) while nothing upstream changed. A setting left at its default value means
 automatic (chosen from the data; the block's summary says what it did).
 
-Starting graphs: **Etape 1 - poses brutes a empilement** (comfyui_astro/workflows/stage1.json) and **Etape 2 -
-champ et couleur** (stage2.json: stage 1 plus the field and colour blocks). The next stages (denoising and stars,
-rendering in small blocks) come as blocks too.
+Starting graphs: **Etape 1 - poses brutes a empilement** (comfyui_astro/workflows/stage1.json) **Etape 2 -
+champ et couleur** (stage2.json: stage 1 plus the field and colour blocks) and **Etape 3 - debruitage et etoiles**
+(stage3.json: stages 1 and 2 plus the denoising and star blocks). Rendering in small blocks comes next.
 
 The project nodes below (category "astro/old - projects") are the first design, kept for the existing projects.
 

@@ -1,4 +1,4 @@
-// Painted mask node (Astro: Painted mask): a brush over the image in the node. The mask is the alpha channel of a
+// Painted mask node (Painted mask): a brush over the image in the node. The mask is the alpha channel of a
 // canvas at the image's size (at most 1600 pixels wide), shown in red over the image, and kept in the node as a PNG
 // ('painted' widget): the Python side resizes it to the image it is used with.
 import { app } from "../../scripts/app.js";

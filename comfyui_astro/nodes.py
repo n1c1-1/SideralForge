@@ -441,11 +441,12 @@ class AstroExtension(ComfyExtension):
     @override
     async def get_node_list(self) -> list[type[io.ComfyNode]]:
         from .blocks import BLOCK_NODES
+        from .blocks_render import RENDER_NODES
         from .masks import MASK_NODES
         from .methods_node import AstroMethods
         from .project_node import AstroNewProject
         return [AstroNewProject, AstroProject, AstroVariant, AstroMethods, *STAGE_NODES, AstroRender, AstroRenderLive,
-                AstroStarMask, AstroExport, AstroSave16, *MASK_NODES, *BLOCK_NODES]
+                AstroStarMask, AstroExport, AstroSave16, *MASK_NODES, *BLOCK_NODES, *RENDER_NODES]
 
 
 async def comfy_entrypoint() -> AstroExtension:
