@@ -1,0 +1,413 @@
+{
+ "1": {
+  "class_type": "AstroLights",
+  "inputs": {
+   "folders": "D:/photos/2.3.25_Nebuleuse_iris/raw/signal",
+   "max_frames": 24
+  }
+ },
+ "2": {
+  "class_type": "AstroMasterDark",
+  "inputs": {
+   "folder": "D:/photos/2.3.25_Nebuleuse_iris/raw/dark"
+  }
+ },
+ "3": {
+  "class_type": "AstroMasterFlat",
+  "inputs": {
+   "folder": "D:/photos/2.3.25_Nebuleuse_iris/raw/flat",
+   "flat_darks": "",
+   "large_scales_only": 0.0
+  }
+ },
+ "4": {
+  "class_type": "AstroCalibrate",
+  "inputs": {
+   "lights": [
+    "1",
+    0
+   ],
+   "dark": [
+    "2",
+    0
+   ],
+   "flat": [
+    "3",
+    0
+   ]
+  }
+ },
+ "5": {
+  "class_type": "AstroAlign",
+  "inputs": {
+   "calibrated": [
+    "4",
+    0
+   ]
+  }
+ },
+ "6": {
+  "class_type": "AstroFrameSelection",
+  "inputs": {
+   "aligned": [
+    "5",
+    0
+   ],
+   "min_transparency": 0.6,
+   "max_star_size": 2.0
+  }
+ },
+ "7": {
+  "class_type": "AstroStackBlock",
+  "inputs": {
+   "aligned": [
+    "6",
+    0
+   ]
+  }
+ },
+ "14": {
+  "class_type": "AstroIdentifyField",
+  "inputs": {
+   "linear": [
+    "7",
+    0
+   ],
+   "target": "NGC 7023",
+   "focal_mm": "893"
+  }
+ },
+ "15": {
+  "class_type": "AstroGaiaStars",
+  "inputs": {
+   "linear": [
+    "14",
+    0
+   ]
+  }
+ },
+ "16": {
+  "class_type": "AstroHalphaSurvey",
+  "inputs": {
+   "linear": [
+    "14",
+    0
+   ]
+  }
+ },
+ "17": {
+  "class_type": "AstroColourCalibration",
+  "inputs": {
+   "linear": [
+    "14",
+    0
+   ],
+   "stars": [
+    "15",
+    0
+   ]
+  }
+ },
+ "24": {
+  "class_type": "AstroDenoise",
+  "inputs": {
+   "linear": [
+    "7",
+    0
+   ]
+  }
+ },
+ "25": {
+  "class_type": "AstroStarShape",
+  "inputs": {
+   "linear": [
+    "24",
+    0
+   ],
+   "stars": [
+    "15",
+    0
+   ]
+  }
+ },
+ "26": {
+  "class_type": "AstroMeasureStars",
+  "inputs": {
+   "linear": [
+    "25",
+    0
+   ],
+   "stars": [
+    "15",
+    0
+   ]
+  }
+ },
+ "27": {
+  "class_type": "AstroLearnedStarRemoval",
+  "inputs": {
+   "linear": [
+    "17",
+    0
+   ],
+   "star_model": [
+    "26",
+    0
+   ],
+   "minutes": 32.0
+  }
+ },
+ "28": {
+  "class_type": "AstroRemoveStars",
+  "inputs": {
+   "linear": [
+    "17",
+    0
+   ],
+   "star_model": [
+    "26",
+    0
+   ],
+   "learned_layer": [
+    "27",
+    0
+   ]
+  }
+ },
+ "29": {
+  "class_type": "AstroSkyBackground",
+  "inputs": {
+   "starless": [
+    "28",
+    0
+   ],
+   "survey": [
+    "16",
+    0
+   ]
+  }
+ },
+ "42": {
+  "class_type": "AstroPrepareRendering",
+  "inputs": {
+   "sky": [
+    "29",
+    0
+   ]
+  }
+ },
+ "60": {
+  "class_type": "AstroRenderingPreset",
+  "inputs": {
+   "rendering": [
+    "42",
+    0
+   ],
+   "preset": "Faithful"
+  }
+ },
+ "61": {
+  "class_type": "AstroWhiteBalance",
+  "inputs": {
+   "rendering": [
+    "60",
+    0
+   ]
+  }
+ },
+ "62": {
+  "class_type": "AstroStretch",
+  "inputs": {
+   "rendering": [
+    "61",
+    0
+   ]
+  }
+ },
+ "63": {
+  "class_type": "AstroSkyGlow",
+  "inputs": {
+   "rendering": [
+    "62",
+    0
+   ]
+  }
+ },
+ "64": {
+  "class_type": "AstroEmissionColours",
+  "inputs": {
+   "rendering": [
+    "63",
+    0
+   ]
+  }
+ },
+ "65": {
+  "class_type": "AstroSaturation",
+  "inputs": {
+   "rendering": [
+    "64",
+    0
+   ]
+  }
+ },
+ "66": {
+  "class_type": "AstroContrast",
+  "inputs": {
+   "rendering": [
+    "65",
+    0
+   ]
+  }
+ },
+ "67": {
+  "class_type": "AstroSharpening",
+  "inputs": {
+   "rendering": [
+    "66",
+    0
+   ]
+  }
+ },
+ "68": {
+  "class_type": "AstroDetailAndSmoothing",
+  "inputs": {
+   "rendering": [
+    "67",
+    0
+   ]
+  }
+ },
+ "69": {
+  "class_type": "AstroHighlights",
+  "inputs": {
+   "rendering": [
+    "68",
+    0
+   ]
+  }
+ },
+ "70": {
+  "class_type": "AstroStarRemovalChoice",
+  "inputs": {
+   "rendering": [
+    "69",
+    0
+   ]
+  }
+ },
+ "71": {
+  "class_type": "AstroStarLook",
+  "inputs": {
+   "rendering": [
+    "70",
+    0
+   ]
+  }
+ },
+ "72": {
+  "class_type": "AstroShowRendering",
+  "inputs": {
+   "rendering": [
+    "71",
+    0
+   ],
+   "scale": 0.33
+  }
+ },
+ "73": {
+  "class_type": "PreviewImage",
+  "inputs": {
+   "images": [
+    "72",
+    0
+   ]
+  }
+ },
+ "80": {
+  "class_type": "AstroRenderingPreset",
+  "inputs": {
+   "rendering": [
+    "42",
+    0
+   ],
+   "preset": "Artistic"
+  }
+ },
+ "81": {
+  "class_type": "AstroShowRendering",
+  "inputs": {
+   "rendering": [
+    "80",
+    0
+   ],
+   "scale": 0.33
+  }
+ },
+ "82": {
+  "class_type": "PreviewImage",
+  "inputs": {
+   "images": [
+    "81",
+    0
+   ]
+  }
+ },
+ "90": {
+  "class_type": "AstroBrightStarMask",
+  "inputs": {
+   "rendering": [
+    "42",
+    0
+   ],
+   "scale": 0.33
+  }
+ },
+ "91": {
+  "class_type": "AstroBlendViews",
+  "inputs": {
+   "base": [
+    "81",
+    0
+   ],
+   "view_2": [
+    "72",
+    0
+   ],
+   "mask_2": [
+    "90",
+    0
+   ],
+   "feather": 0.0
+  }
+ },
+ "92": {
+  "class_type": "PreviewImage",
+  "inputs": {
+   "images": [
+    "91",
+    0
+   ]
+  }
+ },
+ "93": {
+  "class_type": "PreviewImage",
+  "inputs": {
+   "images": [
+    "91",
+    1
+   ]
+  }
+ },
+ "94": {
+  "class_type": "AstroSaveImage",
+  "inputs": {
+   "image": [
+    "91",
+    0
+   ],
+   "name": "blend",
+   "folder": ""
+  }
+ }
+}

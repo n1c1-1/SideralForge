@@ -1,0 +1,21 @@
+TRAITEMENT COMPLET : des poses brutes aux deux rendus (fidèle et artistique)
+
+Chaque boîte est un bloc qui fait une seule chose ; les données passent par les fils. Sous chaque bloc : ce qu'il a produit (image) et ce qu'il a fait (résumé).
+Pour tes données : change les dossiers des trois blocs de gauche (une ligne par dossier). 'max_frames' = 24 ici pour un essai rapide ; mets 0 pour toutes les poses.
+
+1. Poses et calibration (rangée du haut)
+   Light frames → Calibrate ← Master dark, Master flat (et Master offset si tu en as) → Align → Frame selection (facultatif) → Stack (drizzle, rejet des satellites, deux demi-piles).
+
+2. Champ et couleur
+   Identify the field (nom de l'objet ou coordonnées + focale = immédiat, sinon recherche à l'aveugle) → Gaia stars, Hydrogen survey ; Colour calibration mesure la réponse de ton capteur sur les spectres Gaia.
+
+3. Débruitage et étoiles
+   Denoise (un réseau apprend sur ta pile à prédire une demi-pile à partir de l'autre : il débruite sans inventer) → Star shape and colour fringes → Measure the stars (le modèle d'étoiles) → Remove stars (+ Learned star removal, facultatif, ~35 min : débranche-le pour t'en passer) → Sky background (s'appuie sur la carte hydrogène).
+
+4. Rendu
+   Prepare the rendering → deux branches : la version fidèle (réglages par défaut) et la version artistique (bloc 'Rendering preset'). 'Show the rendering' affiche, 'Save the image' écrit en pleine résolution (TIFF 16 bits + JPEG) dans E:/astro_gpu/blocks/images.
+   Les réglages fins sont dans les petits blocs de la catégorie 'astro/7 rendering' : voir le graphe 'Rendu en détail et combinaison'.
+
+Chaque bloc garde son résultat sur disque : en changeant un réglage, seuls ce bloc et ceux d'après sont recalculés (même après un redémarrage).
+Brancher deux blocs à la même sortie fait une branche, pour comparer deux versions.
+Réglages des blocs de traitement : une valeur laissée à sa valeur par défaut veut dire AUTOMATIQUE (choisie d'après tes données ; le résumé dit ce qui a été fait).

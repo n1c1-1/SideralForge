@@ -17,7 +17,7 @@ its Final adjustment and views will move to ComfyUI later.
   code: `comfyui_astro/tools/restart_comfy.ps1`.
 
 ## The processing blocks (categories "astro/1 sources", "astro/2 calibration", "astro/3 alignment", "astro/4 stacking",
-"astro/5 field and colour", "astro/6 denoising and stars")
+"astro/5 field and colour", "astro/6 denoising and stars", "astro/7 rendering", "astro/8 combine")
 
 Elementary blocks: the data travels on the wires, each block does one thing and shows what it did (an image and a
 one-line summary). Wire them in the order you want, and branch: two blocks fed by the same output give two
@@ -47,9 +47,58 @@ large caches C:/Users/Nicolas/astro_gpu_scratch/blocks), under a fingerprint of 
 not computed again (even after a restart) while nothing upstream changed. A setting left at its default value means
 automatic (chosen from the data; the block's summary says what it did).
 
-Starting graphs: **Etape 1 - poses brutes a empilement** (comfyui_astro/workflows/stage1.json) **Etape 2 -
-champ et couleur** (stage2.json: stage 1 plus the field and colour blocks) and **Etape 3 - debruitage et etoiles**
-(stage3.json: stages 1 and 2 plus the denoising and star blocks). Rendering in small blocks comes next.
+### Rendering blocks ("astro/7 rendering")
+
+What travels on the wires after **Prepare the rendering** is a *rendering*: the layers the rendering engine works on
+plus the settings chosen so far. Each setting block sets its own settings on the rendering it receives and passes it
+on; a block left out keeps the faithful rendering's values. The engine applies the settings in its own physical
+order (colour in linear light, then stretch, contrast, highlights, stars): the order of the blocks on the wire does
+not change the image. Two chains from the same preparation are two versions.
+
+| Block | What it sets |
+|---|---|
+| Prepare the rendering | sky -> rendering: the layers (nebula at full resolution, detail and colour layers, stars as photographed, star profile); also the learned star removal's layers when it was made. About a minute. |
+| Rendering preset | All the settings of a ready-made rendering (Faithful, Artistic, H-alpha emphasised...): put it first. |
+| White balance | Colour temperature shown as neutral, tint. |
+| Stretch | Sky brightness, darkest clouds level, shadow softness, white point. |
+| Sky glow and specks | Milky Way glow of the undrawn stars, diffuse glow removed, neutral sky, dark specks removed. |
+| Emission colours | H-alpha red (strength, hue), OIII teal, blue of the reflection nebulae. |
+| Saturation | Nebula saturation, fine colour, colour of the faint areas smoothed by their signal-to-noise. |
+| Contrast | Local contrast at three scales, compression of the large bright areas. |
+| Sharpening | Classic sharpening and the sharpening network (measured star shape undone), from a brightness on. |
+| Fine detail and smoothing | Fine detail brought back in the bright areas, faint areas smoothed. |
+| Highlights | Highlight compression, its ceiling, detail and colour. |
+| Stars: removal and spikes | Stars shown or not, which starless image (learned or star model), saturated stars and spikes as photographed, glare kept with the nebula. |
+| Stars: size and colour | Faintest drawn star, sizes, glow, colour, white cores. |
+| Show the rendering | rendering -> final, starless, stars images at a scale (0.33 by default; 1 = full resolution). |
+| Save the image | A rendering (full resolution, with its starless and stars layers and its settings) or any image, as 16-bit TIFF with sRGB profile and JPEG; default folder <work>/images. |
+
+### Combining versions ("astro/8 combine")
+
+| Block | What it does |
+|---|---|
+| Bright star mask | A mask around the bright stars (Gaia), framed like 'Show the rendering' of the same preparation at the same scale. |
+| Brightness mask | A mask from an image's brightness, smoothed into zones, thresholds in percentiles of the image or in levels. |
+| Painted mask | A mask painted by hand with a brush over an image, in the node. |
+| Blend versions | Up to five versions laid over a base, each where its mask is white; a coverage view shows which version is used where. |
+
+### Starting graphs (ComfyUI library, folder "astro")
+
+1. **1 - Traitement complet** (comfyui_astro/workflows/full_chain.json): from the raw frames to the two renderings
+   (faithful and artistic), every block with its view and summary underneath, in four labelled groups (frames to
+   stack, field and colour, denoising and stars, rendering). 24 frames for a quick test ('max_frames' 0 = all).
+2. **2 - Rendu en detail et combinaison** (render_detail.json): the same processing (already computed, not
+   recomputed), then every setting block chained after a preset, and two versions combined (faithful around the
+   bright stars, artistic elsewhere).
+
+The graphs used to test the stages one by one are in the library's sub-folder "etapes (essais)" (stage1.json to
+stage3.json). Graphs are built from their API version with `tools/build_ui_graph.py <graph>_spec.json` (layout,
+groups and note in the spec).
+
+Note on small tests: with a few tens of frames, the drizzle leaves each colour plane of each half-stack unevenly
+covered (blobs of low coverage a few hundred pixels across); the star removal, which keeps what the two halves agree
+on, then shows them as coloured patches on a regular pattern. They are a property of the subset, not of the blocks:
+judge the image on a full session.
 
 The project nodes below (category "astro/old - projects") are the first design, kept for the existing projects.
 
@@ -70,9 +119,9 @@ stage computed.
 | Astro: Star mask | A mask around the bright stars (Gaia catalogue), framed like a render at the same scale. |
 | Astro: Export | The full export into the project's results/<name>/ (16-bit TIFF with colour profile, PNG, JPEG, layers, reference framing, settings). |
 | Astro: Save 16-bit | Any image (a composite of views...) as a 16-bit TIFF. |
-| Astro: Blend views (astro/masks) | Combines up to five views zone by zone: each view laid over the ones before it where its mask is white; outputs the image and a coverage map (which view is used where). |
-| Astro: Brightness mask (astro/masks) | A mask from an image's brightness, smoothed into zones, thresholds in percentiles of the image or in levels. |
-| Astro: Painted mask (astro/masks) | A mask painted by hand with a brush over an image, in the node. |
+| Blend versions (now astro/8 combine) | Combines up to five views zone by zone: each view laid over the ones before it where its mask is white; outputs the image and a coverage map (which view is used where). |
+| Brightness mask (now astro/8 combine) | A mask from an image's brightness, smoothed into zones, thresholds in percentiles of the image or in levels. |
+| Painted mask (now astro/8 combine) | A mask painted by hand with a brush over an image, in the node. |
 
 Stage parameters: every parameter is a widget with its label, range and help (hover it); the advanced ones are in
 the node's advanced section. **settings: project** (the default) keeps the parameters already chosen for the project
@@ -109,24 +158,24 @@ pure black (blue), the pure white (red) and the nebula above 92 % where its deta
 No single rendering suits every part of an image: the glare drawn with the stars may suit the bright stars and
 the glare drawn with the nebula the rest, the nebula may want more contrast than the sky. Render the views
 (Astro: Render or Astro: Render (live), at the same scale), make one mask per view, and combine them with
-**Astro: Blend views**: the base is used wherever no mask takes another view; each view is laid over the ones before
+**Blend versions**: the base is used wherever no mask takes another view; each view is laid over the ones before
 it, so put the most local corrections last (a painted correction on top). Its **coverage** output shows which view
 is used where (grey = the base, then orange, cyan, magenta, green): check that every zone has the view wanted.
 
 Masks:
 - **Astro: Star mask**: around the bright stars (Gaia catalogue), radius growing with brightness.
-- **Astro: Brightness mask**: from an image's brightness, e.g. the nebula from the starless layer (percentiles 60
+- **Brightness mask**: from an image's brightness, e.g. the nebula from the starless layer (percentiles 60
   to 90), the stars from the stars layer (levels 3 to 15 %, grown), bright cores from the final image (percentiles
   99.5 to 99.95). Percentiles are measured on each image, so the same graph adapts to another object. Note: the
   starless layer holds the bright stars' glare (when the glare is drawn with the nebula), so a nebula mask also
   takes their surroundings: lay the star view over it.
-- **Astro: Painted mask**: run the graph once, the image appears in the node; paint with the left button, erase
+- **Painted mask**: run the graph once, the image appears in the node; paint with the left button, erase
   with the right one (or Erase), mouse wheel = brush size, Undo, Clear, Fill; "overlay" sets how strongly the mask
   shows. The mask is kept in the node (saved with the graph) and follows the image at any scale.
 
 Sizes (smoothing, growth, soft edges) are in % of the image width, so a graph works at any scale.
 
-## Example graphs (comfyui_astro/workflows/)
+## Example graphs of the project nodes (comfyui_astro/workflows/, library sub-folder "anciens (projets)")
 
 Open the files without "_api" by dragging them onto the ComfyUI window (the "_api" files are the same graphs in
 ComfyUI's API format, also accepted, and used by `tools/run_prompt.py`).
@@ -158,7 +207,8 @@ ComfyUI's API format, also accepted, and used by `tools/run_prompt.py`).
 
 - `comfyui_astro/tools/run_prompt.py WORKFLOW_api.json [--set node.input=value]`: run a graph on the running
   ComfyUI from the command line (tests, batches).
-- `comfyui_astro/tools/api_to_ui.py api.json ui.json`: make an interface graph from an API graph.
+- `comfyui_astro/tools/api_to_ui.py api.json ui.json`: make an interface graph from an API graph (automatic
+  layout); `build_ui_graph.py spec.json`: the same with a hand layout, groups and a note.
 - `comfyui_astro/tools/ui_check.py`, `live_check.py`: check the graphs and the live node in a headless browser
   (screenshots).
 

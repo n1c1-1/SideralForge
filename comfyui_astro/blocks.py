@@ -1,7 +1,8 @@
 """Elementary processing blocks for ComfyUI: data travels on the wires, each block does one thing.
 
-Stage 1 of the block library: sources (light frames, master offset / dark / flat from their folders), calibration,
-alignment, frame selection, stacking. Each block runs the processing code of astro_gpu (the same as the heavy
+The processing blocks: sources (light frames, master offset / dark / flat from their folders), calibration,
+alignment, frame selection, stacking, field and colour, denoising and stars (the rendering blocks are in
+blocks_render.py). Each block runs the processing code of astro_gpu (the same as the heavy
 client) in a small context made of the folders of the blocks wired upstream: no project, nothing hidden. Its result
 is kept on disk under a fingerprint of its inputs and settings (work folder, see blocks_config.json), so a block is
 not computed again after a restart of ComfyUI as long as nothing upstream changed.
