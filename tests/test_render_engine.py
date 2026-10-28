@@ -153,3 +153,20 @@ def test_export_files_and_checks(prep, tmp_path):
         assert 34675 in page.tags                     # embedded ICC profile
     qa = meta["qa"]
     assert qa["layer_blend_error_255"] < 0.5 and "warnings" in qa
+
+
+def test_the_white_point_can_leave_out_a_small_very_bright_object(prep, tmp_path):
+    import shutil
+    for n in ("valid.npy", "stars.npz", "profile.npz", "prep.json"):
+        shutil.copy(prep / n, tmp_path / n)
+    astro = np.load(prep / "astro_prep.npy")
+    astro[:, 100:106, 150:156] += 3000.0                     # 36 px, 0.04 % of the image, far above the nebula
+    np.save(tmp_path / "astro_prep.npy", astro)
+    eng = RenderEngine(tmp_path, device=DEV)
+    s = RenderSettings(stars=False)
+    w_default = eng.render(s, 1.0).info["tone_curve"]["white"]
+    w_ignored = eng.render(RenderSettings(stars=False, white_ignore_pct=0.3), 1.0).info["tone_curve"]["white"]
+    w_plain = RenderEngine(prep, device=DEV).render(s, 1.0).info["tone_curve"]["white"]
+    assert w_default > 5 * w_plain                           # by default the object sets the white point
+    assert abs(w_ignored - w_plain) < 0.2 * w_plain          # left out, the nebula sets it again
+    assert RenderSettings().white_ignore_pct == 0.005 and 100.0 - 0.005 == 99.995   # default = the former rule
