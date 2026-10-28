@@ -435,6 +435,8 @@ def forced_photometry(img, pm, x, y, g, col, sel, dm, p, W, H, dev, progress):
 
 
 LOC_R = 16        # radius of the local shape correction, px
+MAX_CORRECTION = 0.5  # a cell's shape correction moving more light than this (fraction of the star's flux)
+                      # and 3x the field's typical one is rejected
 FIT_R = 9         # radius of the per-star refinement, px
 WING_R = 9.0      # the radial wing model of the bright stars starts here
 
@@ -490,6 +492,12 @@ def _local_templates(res, x, y, g, flux, pred, dev, gmin, gmax, per_cell=30):
                 s = np.where((ix == i) & (iy == j))[0]
                 counts[j, i] = len(s)
                 T[j, i, c] = st[torch.from_numpy(s).to(dev)].median(0).values * taper if len(s) >= 12 else glob
+        # a cell whose correction moves far more light than the others' is measuring its background (a galaxy's
+        # gradient across the stamps), not the star: it takes the field's correction instead
+        norm = T[:, :, c].abs().sum((-1, -2))
+        bad = norm > max(MAX_CORRECTION, 3 * float(norm.median()))
+        if bad.any():
+            T[:, :, c][bad] = glob
         del st
     return T, cx, cy, counts
 

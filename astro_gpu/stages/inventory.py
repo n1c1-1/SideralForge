@@ -86,7 +86,7 @@ class Inventory(Stage):
         ctx.metric("exposure_s", texp)
         ctx.metric("integration_h", round(texp * len(lights) / 3600, 2) if texp else None)
         ctx.metric("iso_gain", first["iso"])
-        ctx.metric("white_level", first["white"])
+        ctx.metric("white_level", _clip_level(ctx, lights, float(first["white"])))
         ctx.metric("black_level", first["black"])
         ctx.metric("focal_mm", first["focal_mm"])
         ctx.metric("pixel_um", first["pixel_um"])
@@ -116,3 +116,27 @@ def _superpixel_rgb(cfa_img: np.ndarray, pattern: str) -> np.ndarray:
         planes[c].append(cfa_img[i:h - h % 2:2, j:w - w % 2:2])
     rgb = np.stack([np.mean(planes[c], axis=0) for c in "RGB"])
     return asinh_preview(rgb, k=30)
+
+
+def _clip_level(ctx, lights, white: float) -> float:
+    """The saturation level of FITS frames whose header does not give it (no DATAMAX: the type's maximum is
+    assumed): a plateau of clipped pixels at the same highest value in a few frames is the real one (a 14-bit camera
+    saved in 16-bit FITS saturates at 16383, not 65535)."""
+    fits_l = [f for f in lights if str(f["path"]).lower().endswith((".fit", ".fits", ".fts"))]
+    if not fits_l:
+        return white
+    from astropy.io import fits
+    if "DATAMAX" in fits.getheader(fits_l[0]["path"]):
+        return white
+    tops = []
+    for f in fits_l[:: max(1, len(fits_l) // 5)][:5]:
+        d = np.asarray(fits.getdata(f["path"]))
+        m = float(d.max())
+        tops.append((m, int(np.count_nonzero(d == m))))
+    plateau = [m for m, n in tops if n >= 20]
+    if plateau and max(plateau) < white:
+        level = max(plateau)
+        ctx.log(f"saturation level {level:.0f} ADU found in the frames (a plateau of clipped pixels; the file type "
+                f"allows {white:.0f})")
+        return level
+    return white

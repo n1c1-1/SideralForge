@@ -255,19 +255,14 @@ _GAIA_CACHE: dict = {}
 
 def gaia_bright(ra, dec, radius, glim):
     """Gaia DR3 stars brighter than glim within radius (deg) of (ra, dec): (SkyCoord, G)."""
-    import astropy.units as u
     from astropy.coordinates import SkyCoord
-    from astroquery.vizier import Vizier
+
+    from ..core.gaia_archive import gaia_cone
     key = (round(ra, 2), round(dec, 2), round(radius, 1), round(glim, 1))
     if key not in _GAIA_CACHE:
-        v = Vizier(columns=["RA_ICRS", "DE_ICRS", "Gmag"], column_filters={"Gmag": f"<{glim:.2f}"}, row_limit=-1,
-                   timeout=600)
-        r = v.query_region(SkyCoord(ra, dec, unit="deg"), radius=radius * u.deg, catalog="I/355/gaiadr3")
-        if not len(r):
-            _GAIA_CACHE[key] = (SkyCoord([], [], unit="deg"), np.zeros(0))
-        else:
-            t = r[0]
-            _GAIA_CACHE[key] = (SkyCoord(t["RA_ICRS"], t["DE_ICRS"], unit="deg"), np.asarray(t["Gmag"], float))
+        t = gaia_cone(ra, dec, radius, ["RA_ICRS", "DE_ICRS", "Gmag"], f"<{glim:.2f}", timeout=600)
+        ok = np.isfinite(t["RA_ICRS"]) & np.isfinite(t["DE_ICRS"])
+        _GAIA_CACHE[key] = (SkyCoord(t["RA_ICRS"][ok], t["DE_ICRS"][ok], unit="deg"), t["Gmag"][ok])
     return _GAIA_CACHE[key]
 
 

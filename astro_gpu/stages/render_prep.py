@@ -113,6 +113,16 @@ class RenderPrep(Stage):
         wt = ctx.load("stack", "drz_weight.npy", mmap=True)
         cov = np.asarray(wt[1], np.float32)
         good = cov > p.cover_min * np.median(cov[cov > 0])
+        # low coverage inside the image is not an edge: pixels saturated in part of the frames (a galaxy's core, a
+        # bright star) or rejected in some (a satellite trail) are stacked from the others; only the low-coverage
+        # regions reaching the border of the stack (frame edges, dithering) are left out
+        from scipy import ndimage
+        lab, n_lab = ndimage.label(~good)
+        if n_lab:
+            border = np.unique(np.r_[lab[0], lab[-1], lab[:, 0], lab[:, -1]])
+            inner = (lab > 0) & ~np.isin(lab, border[border > 0]) & (cov > 0)
+            good |= inner
+            ctx.metric("inner_low_coverage_kept_px", int(inner.sum()))
         H, W = good.shape
         fp = ctx.project.stage_dir("calibrate") / "master_flat.npy"
         if p.min_exposure > 0 and fp.exists():
@@ -366,6 +376,15 @@ class RenderPrep(Stage):
         ctx.progress(0.85, "real star profile")
         r_all, prof = star_profile(torch.load(ctx.input("optics", "psf_model.pt"), map_location=ctx.device,
                                                weights_only=False))
+        # a measured profile hollow at its centre is not the image of a star but that of the defocused pupil (the
+        # shadow of the central obstruction): the stars are then drawn with a focused profile, as sharp as the
+        # sharpening network makes the nebula (its target), so that the stars and the nebula share one resolution
+        if prof[0] < HOLLOW * prof.max():
+            fw = float(ctx.metric_of("starless", "sharpen_target_fwhm", 0) or 0) or 2.5 * S
+            prof = moffat_profile(r_all, fw)
+            ctx.metric("star_profile", f"focused, FWHM {fw:.2f} px (the measured stars are defocused rings)")
+            ctx.log(f"the measured star profile is hollow at its centre (defocus): stars drawn with a focused "
+                    f"profile of FWHM {fw:.2f} px")
         ctx.save_json("prep.json", {"crop": [int(x0), int(x1), int(y0), int(y1)], "alpha": alpha,
                                     "vh": vh.tolist(), "M": M.tolist(), "drizzle_scale": S, "width": W,
                                     "height": H, "mag_offset": dm, "e": e_.tolist(), "Am": Am.tolist(),
@@ -885,6 +904,16 @@ def guard_generic(astro, Yl, foot_w, lum, w_cam, guard_sigma):
     Yg = np.maximum(Yl, Ys - guard_sigma * sY)
     Nfp = As + (Yg - Ys)[None] * np.asarray(w_cam, np.float32)[:, None, None]   # brightness Yg, colour of As
     return (astro + foot_w[None] * (Nfp - astro)).astype(np.float32)
+
+
+HOLLOW = 0.7          # a star profile whose centre is below this fraction of its maximum is a defocused ring
+MOFFAT_BETA = 3.0     # wings of a focused, seeing-limited star (Trujillo et al. 2001: beta 2.5-4.5)
+
+
+def moffat_profile(r, fwhm, beta=MOFFAT_BETA):
+    """Moffat profile of a focused star with this FWHM (peak 1) at the radii r."""
+    alpha = fwhm / (2 * np.sqrt(2 ** (1 / beta) - 1))
+    return (1 + (np.asarray(r, float) / alpha) ** 2) ** -beta
 
 
 def star_profile(pm):
