@@ -85,7 +85,7 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "43"         # 29: the star guard wherever star light dominates (dark moats around G 9.5-11.5 stars);
+    version = "44"         # 29: the star guard wherever star light dominates (dark moats around G 9.5-11.5 stars);
                            # 30: the diffuse part of the star glare; 31: the glare of the dominant stars only, the
                            # measured emission colour also in the emission / continuum / OIII separation; 32: the
                            # star guard back to the footprints (its extension drew dark discs on the Heart); 33: the
@@ -98,7 +98,9 @@ class RenderPrep(Stage):
                            # layers, the photographed ones in layers of their own (chosen at rendering); 42: the
                            # learned preparation takes the sharpening layer of the learned starless image; 43: the
                            # continuum under star light smoothed from the gaps between the stars only (a plain average
-                           # took the stars' residual light in: dark worms in the gaps, Wizard Nebula)
+                           # took the stars' residual light in: dark worms in the gaps, Wizard Nebula); 44: low
+                           # coverage inside the image kept (only the regions reaching the border left out), a hollow
+                           # measured star profile (defocus) replaced by a focused one (M31 of 2026-09-12)
 
     learned = False        # RenderPrepLearned: the same layers from the learned starless image
 
@@ -329,7 +331,8 @@ class RenderPrep(Stage):
         for c in range(3):
             pr[c] /= np.median(fs["pred"][c][m13] / np.maximum(fs["flux"][c][m13], 1e-9))
         # stars inside the footprint of a saturated star are shown by its real light, not drawn again
-        real = (fp_all[np.clip(np.round(Y).astype(int), 0, H - 1), np.clip(np.round(X).astype(int), 0, W - 1)] > 0.5)             & (X >= 0) & (X < W) & (Y >= 0) & (Y < H)
+        real = ((fp_all[np.clip(np.round(Y).astype(int), 0, H - 1), np.clip(np.round(X).astype(int), 0, W - 1)] > 0.5)
+                & (X >= 0) & (X < W) & (Y >= 0) & (Y < H))
         # every star gets the part of its shape that a round drawn star lacks (diamond, diffraction spikes), measured
         # on the image by the star stage (flux x measured shape), outside the saturated stars' own light. A saturated
         # star's spikes continue its real light; a drawn star's shape is a layer of its own, drawn by the rendering
@@ -731,9 +734,10 @@ def _bright_stars_real(ctx, fs, N2, fp_all, fp_fill, Ys, sig, xs, ys, ok, idx_sa
     back; a star's own spikes differ from it (dark blobs along them where it was too strong, segments where it was
     weak). Along each spike direction, from the edge of the star's core out to where the light along the spike stops
     standing twice the noise above the light beside it on both sides (Ys: image minus starless; a nebula rises on both
-    alike - measured against zero, the strips ran 400 px through the Rosette), a strip: under it the nebula is interpolated across the strip
-    and the star light is image minus that nebula. The round core of a star that is not saturated stays drawn (compact,
-    its size set by the star settings: its own light, wings included, made the medium stars look large and soft).
+    alike - measured against zero, the strips ran 400 px through the Rosette), a strip: under it the nebula is
+    interpolated across the strip and the star light is image minus that nebula. The round core of a star that is not
+    saturated stays drawn (compact, its size set by the star settings: its own light, wings included, made the medium
+    stars look large and soft).
     N2, fp_all and fp_fill (interpolated: the fine detail and colour layers, taken from the starless images where the
     spike model was subtracted, are off there) are updated in place. Returns the indices of the stars given real spikes,
     the number of strips, their weight and, per spike direction, (direction, strips, strip width)."""

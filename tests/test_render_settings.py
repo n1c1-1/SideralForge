@@ -8,5 +8,5 @@ def test_defaults_are_plain_values():
 
 
 def test_presets_are_valid():
-    for name, values in PRESETS.items():
+    for values in PRESETS.values():
         RenderSettings(**values)

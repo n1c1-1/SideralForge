@@ -78,7 +78,7 @@ def _combine(stk, members, Rs, Fw, sig_c, c, ref=None):
     for r in range(RMAX):
         f = np.sort(Farr[Rarr > r])
         cap[r] = f[-min(5, len(f))] if len(f) else 1.0
-    num = np.zeros((RMAX, NT)); den = np.zeros((RMAX, NT)); var = np.zeros((RMAX, NT))
+    num, den, var = np.zeros((RMAX, NT)), np.zeros((RMAX, NT)), np.zeros((RMAX, NT))
     for i in members:
         v, fl = stk[i][c]
         R = v.shape[0]
@@ -175,7 +175,8 @@ def measure(res, img, x, y, g, flux, pred, log=print):
             E1, _ = _combine(stk, hm, Rs, Fw, sig[1], 1, E0)
             E2, S2 = _combine(stk, hm, Rs, Fw, sig[1], 1, E1)
             nwin = np.maximum(2.5 * 0.05 * np.arange(RMAX), 1.0) * 1.75
-            Eh.append(_smooth(E2.astype(np.float32))[None]); Sh.append((S2 / np.sqrt(nwin)[:, None])[None])
+            Eh.append(_smooth(E2.astype(np.float32))[None])
+            Sh.append((S2 / np.sqrt(nwin)[:, None])[None])
         # a spike is a line: at each radius, structure broader across than three spike widths is not star shape
         prof = np.nanmean(0.5 * (Eh[0][0] + Eh[1][0])[20:40], 0)
         j0 = int(np.argmax(prof))
@@ -208,7 +209,8 @@ def measure(res, img, x, y, g, flux, pred, log=print):
                 t = T[:v.shape[0]] * Fw[i]
                 ok = np.isfinite(v) & (t > 0)
                 if ok.sum():
-                    vs.append(v[ok]); ts.append(t[ok])
+                    vs.append(v[ok])
+                    ts.append(t[ok])
             if not vs:
                 cv.append(0.0)
                 continue

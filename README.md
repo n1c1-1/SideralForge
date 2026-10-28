@@ -12,8 +12,9 @@ What makes it different from the usual stack → stretch → star removal → de
   reconstructed from Gaia XP spectra, physical colour matrix (G2V white).
 * **Noise2Noise denoiser trained on your own half-stacks**: it cannot invent detail that is not in both halves.
 * **Stars are measured, not erased**: empirical variable chromatic PSF, forced photometry of every Gaia star with a
-  colour prior, faint-star model. The starless image is obtained by subtraction (no neural star removal), so faint
-  nebulosity under the stars is preserved, and stars are redrawn with the real profile of your optics.
+  colour prior, faint-star model. The starless image is obtained by subtracting that model, so faint nebulosity under
+  the stars is preserved, and stars are redrawn with the real profile of your optics. A second starless image can come
+  from a star-removal network trained on the project's own stack; both are kept and chosen at rendering.
 * **Physical sky background**: star flat (flat-field errors measured on the stars), sky gradient separated from the
   emission with a professional H-alpha survey (NSNS / Finkbeiner) and from the unresolved starlight predicted by Gaia.
 * **Interactive rendering on the GPU**: tone curve with soft toe, edge-preserving HDR, logarithmic highlight shoulder
@@ -29,12 +30,14 @@ What makes it different from the usual stack → stretch → star removal → de
 ## Install
 
 Requires Windows or Linux, Python 3.11-3.12, an NVIDIA GPU (8 GB+ recommended) and [uv](https://docs.astral.sh/uv/).
+The code is not published (no GitHub repository for now); from a copy of this folder:
 
 ```
-git clone https://github.com/n1c1-1/astro_GPU.git
-cd astro_GPU
 uv sync
 ```
+
+On the development PC the package is installed in editable mode in the Python environment of
+`C:\Users\Nicolas\sandbox\ComfyUI\.venv`; `astro_client.bat` starts the graphical interface from it.
 
 ## Use
 
@@ -79,7 +82,7 @@ The user guide is in [astro_gpu/resources/GUIDE.md](astro_gpu/resources/GUIDE.md
 | denoise | Noise2Noise network trained on the half-stacks |
 | optics | lateral colour correction, saturation magnitude of the setup, empirical PSF |
 | stars | forced PSF photometry of every Gaia star, position refinement, faint-star model |
-| star_net | optional (off by default): star-removal network trained on the project's own stack; its star layer feeds the learned starless image |
+| star_net | optional: star-removal network trained on the project's own stack; its star layer feeds the learned starless image (default at rendering when it exists) |
 | starless | star subtraction, cleaning, multi-scale Wiener denoising driven by the half-stacks |
 | background | star flat, sky model anchored on H-alpha and unresolved starlight |
 | render_prep | layers and star tables for the interactive rendering |
@@ -94,6 +97,18 @@ same data (Sony A7S, TS 61 EDPH with reducer, 7.5 x 5 deg fields):
 | NGC 7822 (2026-08) | 602 x 30 s, 446 kept | same image as the reference processing (mean difference 5.6/255); blind astrometry without focal length; 1 dark dip on 152 000 stars |
 | Heart & Soul (2026-08) | 721 x 15 s | same image (mean difference 4.1/255), on an 8 GB GPU |
 
+Since then the whole chain has run from the raw frames on seven more sessions, each judged blind against the
+previous version and, when there is one, the user's own finished image:
+
+| Data | Setup | Notes |
+|---|---|---|
+| Iris nebula (2025-03) | Newton 130/900, Sony A7S, 1242 x 15 s | reference for the Newtonian (diffraction spikes kept) |
+| M33 (2025-08) | Newton 130/900, Sony A7S, no darks, no dithering | strong vignetting, walking noise |
+| Horsehead, Flaming Star, Rosette (2024-12-28) | Newton 130/900, Sony A7S, 15 s, no flats that night | darks chosen by uniformity, flats of another night for the vignetting |
+| Wizard nebula NGC 7380 | Newton 130/900, Sony A7S | blind astrometry; variable transparency |
+| M31 (2023-08) | Newton 130/900, Sony A7S, no darks | large smooth object: sky fit still open |
+| M31 (2026-09-12) | Newton 150/750, 6000 x 4000 14-bit colour camera (FITS), 30 x 60 s | strongly defocused stars (rings) |
+
 Typical durations on an RTX 4060 Ti: about 1 h 15 for 600 frames of 12 Mpx (Noise2Noise training: 35 min);
 interactive rendering: 0.15-0.35 s per adjustment in preview, 2 s at full resolution.
 
@@ -101,3 +116,8 @@ interactive rendering: 0.15-0.35 s per adjustment in preview, 2 s at full resolu
 
 Version 0.1 - colour sensors only (monochrome + filters planned). Tested on Windows 11 with RTX 4060 Ti (16 GB)
 and RTX 3070 (8 GB).
+
+Interfaces: the graphical interface (`astro-gpu-gui`), the command line, and processing blocks
+(`comfyui_astro/`, see [docs/COMFYUI.md](docs/COMFYUI.md)). Decision of 2026-10-28: ComfyUI is no longer the target;
+the next step is a heavy client with a completely rethought ergonomics, which will reuse the processing blocks.
+Plan and history: [docs/PLAN.md](docs/PLAN.md).

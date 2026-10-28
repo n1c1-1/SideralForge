@@ -93,7 +93,8 @@ class Project:
         d = json.loads(p.read_text(encoding="utf-8"))
         return ProjectConfig(name=d["name"], inputs=Inputs(**d.get("inputs", {})), target=Target(**d.get("target", {})),
                              scratch_dir=d.get("scratch_dir", ""), reference_image=d.get("reference_image", ""),
-                             description=d.get("description", ""), params=d.get("params", {}), render=d.get("render", {}), devices=d.get("devices", {}),
+                             description=d.get("description", ""), params=d.get("params", {}), render=d.get("render", {}),
+                             devices=d.get("devices", {}),
                              variants=d.get("variants", {}), active_variant=d.get("active_variant", ""),
                              created=d.get("created", ""), format=d.get("format", FORMAT))
 

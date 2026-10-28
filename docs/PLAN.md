@@ -1,6 +1,6 @@
 # astro_GPU – processing plan
 
-*Revised 2026-10-11. A plain-language report with images, in French, explains where things stand and the decision
+*Revised 2026-10-11; step table and sections 11.15-11.16 updated 2026-10-28. A plain-language report with images, in French, explains where things stand and the decision
 in progress: `F:\photos\heart_nebula\rapport\rapport.md`.*
 
 ## 1. Goal
@@ -92,12 +92,12 @@ How a method is judged:
 |---|---|---|---|---|
 | 1 | Test bench | our chain, StarNet2, nox | the bench reproduces known numbers; table "who wins what" | done |
 | 2 | Star-shape measurement | one shape for the whole image, per place, per frame, per colour | predicts stars kept aside | done |
-| 3 | Sharpening (deconvolution) | on the stack (classic filter, existing tools, our network with the measured blur); from all frames together | sharper on fake objects, closer to the truth, nothing invented, faint signal kept | 5 attempts, none passes; decision pending |
-| 4 | Noise reduction | our network, GraXpert, others | less noise, no loss of detail or faint signal, no over-brightening | to do |
-| 5 | Stars | our model of each star, StarNet2, nox, mixed | no ring and no hole around bright stars; faint nebula kept | to do |
-| 6 | Sky background | our physical model, separation by motion, GraXpert | faint nebula kept, even background | to do |
-| 7 | Colour | our camera response from Gaia spectra, Siril colour calibration | Gaia star colours recovered | to do |
-| 8 | Final image | best chain from steps 2-7 | 100 % crops of all bright stars and fixed zones; comparison with full.png and the Iris reference | to do |
+| 3 | Sharpening (deconvolution) | on the stack (classic filter, existing tools, our network with the measured blur); from all frames together | sharper on fake objects, closer to the truth, nothing invented, faint signal kept | in use: the sharpening network with the measured blur, a render setting (0 Faithful, 1 Artistic); per-frame deconvolution before stacking tried twice (11.9), no better; per-tile deconvolution of the stack proposed, not started |
+| 4 | Noise reduction | our network, GraXpert, others | less noise, no loss of detail or faint signal, no over-brightening | in use: Noise2Noise network on the half-stacks, multi-scale Wiener step on the starless image |
+| 5 | Stars | our model of each star, StarNet2, nox, mixed | no ring and no hole around bright stars; faint nebula kept | in use: star model subtracted, or the learned removal (own network), chosen at rendering (11.7-11.10); open: glare of the brightest stars |
+| 6 | Sky background | our physical model, separation by motion, GraXpert | faint nebula kept, even background | in use: star flat (optional) and sky anchored on the H-alpha survey and the unresolved starlight; open: a smooth object filling the frame (M31) |
+| 7 | Colour | our camera response from Gaia spectra, Siril colour calibration | Gaia star colours recovered | in use: camera response from Gaia XP spectra with a physical check, matrix anchored on the measured emission colour |
+| 8 | Final image | best chain from steps 2-7 | 100 % crops of all bright stars and fixed zones; comparison with full.png and the Iris reference | in use: Faithful and Artistic renders of each project, judged blind; open defects in 11.14 |
 
 ## 7. What we have measured so far
 
@@ -852,3 +852,32 @@ the current deliverables before any re-rendering.
 - Defects seen by the judges in every version, to work on: Horsehead milky veil (white point set by NGC 2023's core),
   grey bars beside medium stars, a salmon streak through the Iris central star, a colour mosaic in the Iris's faint
   NE dust, the Heart's brown sky and single-colour knots, dark holes beside some stars (catalogue-predicted fluxes).
+
+### 11.15 ComfyUI (2026-10-17 to 2026-10-28)
+
+- 2026-10-17: this repository became the reference code base (the former astro_GPU repository, with all its trial
+  branches, is archived in `E:\astro_gpu\archive\code_astro_GPU`). First design: "project" nodes - a hidden project
+  on the wires, each stage node computing everything upstream, one render node with about 70 sliders, nine example
+  graphs. Proven from the raw frames on the Wizard nebula (NGC 7380) and on M31 (2023).
+- 2026-10-25: the user found it very confusing. Redesign as elementary blocks that pass data (frames, masters,
+  linear image, stars, masks, rendering): one block does one thing, branches make versions; two starting graphs.
+  Done on 2026-10-26 and run on 300 Iris frames through every block (1 h 30).
+- 2026-10-28, decision of the user: ComfyUI is not the target interface. Next: a heavy client with a completely
+  rethought ergonomics, using the processing blocks (`comfyui_astro/blocks.py`, `blocks_render.py`) outside ComfyUI.
+- Open from the Iris run: a dark disc around the G 4.6 red star = its far halo subtracted about 4 times too strongly
+  (model 2.7 ADU at 50 px, data about 0.6). The bound set by the data applies only to strong or measured halos;
+  proposed: apply it to every star.
+
+### 11.16 M31 with defocused stars and another camera (2026-10-28)
+
+- Data: 30 x 60 s FITS, 9 darks, no flats; 6000 x 4000 pixels, 14-bit colour sensor, Newton 150/750 (1.02"/px);
+  stars defocused into rings about 6 px in radius.
+- Changes in the code, driven by the data: the ESA Gaia archive when the CDS servers do not answer; the saturation
+  level read from the plateau of clipped pixels (FITS without DATAMAX); a local star-shape cell moving more than half
+  the star's flux and 3 times the typical cell takes the field's correction (stars 14); a star profile hollow at its
+  centre is drawn as a focused Moffat profile; low coverage inside the image is kept, only the regions reaching the
+  border are left out (render prep 44).
+- Delivered in `F:\astro-photo`. Remaining at 100 %: grain and dark specks in the faint disc, a slight green tint.
+- The two version numbers were raised on the night of 2026-10-28 (the code had changed without them), so the
+  existing projects now see these stages as out of date. The check of these changes on four reference projects is in
+  the report of that night.

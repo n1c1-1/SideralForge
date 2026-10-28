@@ -10,7 +10,6 @@ from ..core.imgutil import bin_median, normalized_blur, poly_terms, robust_lstsq
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage
 
-
 HALO_PRECISION = 0.2      # precision of the removal of the far halo of the stars, relative to it (around Alnitak the
                           # data depart from the model by -5 % at 90 px to +25 % at 300 px)
 

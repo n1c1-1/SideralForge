@@ -1,5 +1,9 @@
 # astro_GPU in ComfyUI
 
+**Decision of 2026-10-28: ComfyUI is no longer the target interface.** The next interface is a heavy client with a
+completely rethought ergonomics; it will use the processing blocks described below (`blocks.py`,
+`blocks_render.py`) outside ComfyUI. This page stays valid for running them in ComfyUI meanwhile.
+
 This code base (C:/Users/Nicolas/sandbox/astro, cloned from astro_GPU on 2026-10-17, which stays untouched as
 it was) is the reference from now on. The processing chain runs as ComfyUI nodes; the astro_gpu library underneath
 is the same (stages, variants, rendering engine). The heavy client (astro-gpu-gui) still works on the same projects;
@@ -42,8 +46,8 @@ versions to compare.
 | Remove stars | linear + star model (+ star layer) -> starless | Stars subtracted, starless image denoised; with a star layer also the learned starless image; trains the sharpening network used at rendering. |
 | Sky background | starless + survey -> sky | The real sky separated from the instrument and the atmosphere (residual flat, sky glow). |
 
-Each block keeps its result on disk (folders set in `comfyui_astro/blocks_config.json`: work E:/astro_gpu/blocks,
-large caches C:/Users/Nicolas/astro_gpu_scratch/blocks), under a fingerprint of its inputs and settings: a block is
+Each block keeps its result on disk (folders set in `comfyui_astro/blocks_config.json`: work D:/astro_gpu/blocks,
+large caches D:/astro_gpu/scratch, since 2026-10-28 because E: is full), under a fingerprint of its inputs and settings: a block is
 not computed again (even after a restart) while nothing upstream changed. A setting left at its default value means
 automatic (chosen from the data; the block's summary says what it did).
 
@@ -214,4 +218,5 @@ ComfyUI's API format, also accepted, and used by `tools/run_prompt.py`).
 
 ## Next
 
-- The interface's views and its Final adjustment moved into ComfyUI.
+- A heavy client with a new ergonomics, built on the processing blocks (decision of 2026-10-28); the views and the
+  Final adjustment are no longer to be moved into ComfyUI.
