@@ -7,6 +7,7 @@ installed (on the development PC: `C:\Users\Nicolas\sandbox\ComfyUI\.venv\Script
 |---|---|
 | `nonreg.py` | Copies a project, renders its deliverables with their saved settings, recomputes the out-of-date stages, renders again, and measures the difference (`nonreg.json`, a map of the changes). Never writes to the source project. |
 | `blind.py` | Blind comparison sheets: candidate renders under letters, the key saved apart; the user's reference first when the project has one; bright and medium stars and chosen zones at 100 %. |
+| `changed_zones.py` | The zones where two renders differ most (as fractions, for `blind.py --zones`). |
 | `judge.py` | Sheets in the framing of the user's reference image (overview and fixed zones per project); used by `blind.py`. |
 | `variants_sheet.py` | Stars and zones of several renders side by side; used by `blind.py`. |
 | `qc_prompt.md` | The instruction given to the independent judges. |
