@@ -79,3 +79,11 @@ Found by reading one frame of each with `io/frames.py`:
 * monochrome cameras: no colour pattern, not processed (one stack per filter, then colour combination: the largest
   piece of work);
 * smart telescopes on alt-azimuth mounts: the field rotates during the night (registration and stacking to check).
+
+## Reproducibility: the learned star removal is trained for a time, not a number of steps (found 2026-10-29)
+
+`star_net` trains for `minutes` (32 by default), so the number of training steps depends on what else uses the GPU:
+two runs of the Heart on identical inputs (same star model, bit for bit) made 11 181 and 11 408 steps and gave
+different star layers; the renders then differ by up to ~60 levels on ~2 % of the pixels (inside the nebulae, at
+star positions). Fix: train for a fixed number of steps (the time setting converted once), stage version raised -
+every project using the learned layer would then retrain once.
