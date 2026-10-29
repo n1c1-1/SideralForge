@@ -74,7 +74,10 @@ DECISIONS: tuple[Decision, ...] = (
                    "direction (a nebula rising toward the star had pulled it up: dark rings, dark lobes).",
                    {"stars": {"far_halo": None, "halo_bound": True}},
                    evidence="Won on the Horsehead (with its own network layer); lost on the Rosette (olive and green "
-                            "discs in the cavity) and the Flaming Star (red smear at the bottom star)."),
+                            "discs in the cavity) and the Flaming Star (red smear at the bottom star). Since "
+                            "2026-10-29 it bounds every star's halo, also those drawn at their catalogue flux: the "
+                            "dark disc around a variable star (T Cephei by the Iris) is gone, the Horsehead was "
+                            "preferred blind again, the Rosette still shows the olive discs."),
         )),
     Decision(
         "star_shape", "Shape of the stars",

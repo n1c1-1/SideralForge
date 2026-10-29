@@ -881,3 +881,19 @@ the current deliverables before any re-rendering.
 - The two version numbers were raised on the night of 2026-10-28 (the code had changed without them), so the
   existing projects now see these stages as out of date. The check of these changes on four reference projects is in
   the report of that night.
+
+### 11.17 Night of 2026-10-28: the M31 changes checked, the far-halo bound for every star
+
+- The M31 changes (render prep 44, stars 14) were run on copies of the Heart, Iris, Rosette and Horsehead (tool
+  `tools/qc/nonreg.py`; the real projects untouched): Horsehead and Rosette identical to the eye, Iris and Heart
+  judged blind "nearly identical", the new version very slightly better on both (Iris sky less olive, a cleaner halo
+  at the Heart's G 6.1 star). The Heart's automatic framing moves by a few pixels (useful field recomputed).
+- Far-halo bound (option 'Far halo bounded by the data', stars 15): it now bounds every star's halo, also those
+  drawn at their catalogue flux, and a colour too faint to bound takes the factor of the measured ones. On the Iris
+  300-frame session the dark disc around T Cephei (a red variable fainter than its Gaia magnitude) is gone, and the
+  sky colour of the whole image is more neutral (the disc had been setting the background zero point). Horsehead
+  (bound on) preferred blind with the extension. Rosette with the bound turned on: the olive and green discs in the
+  cavity come back, so the option stays off by default.
+- Render setting 'Brightest area ignored' (white point reference, default 0.005 % = the former rule): on the
+  Horsehead, 0.05 to 0.2 % brightens the bright nebula (top fifth from 96 to 109-117 / 255) without moving the sky.
+- Test data for other sensors and instruments: `D:\astro_donnees_test` (BACKLOG, "Generalisation").
