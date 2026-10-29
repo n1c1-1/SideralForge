@@ -41,10 +41,12 @@ def main():
     prep = json.loads(cache.read_text())
     SC = prep["drizzle_scale"]
     x0, x1, y0, y1 = prep["crop"]
-    fs = np.load(P / "work/stars/star_fluxes.npz")
+    with np.load(P / "work/stars/star_fluxes.npz") as fs:          # read once: an npz reads an array at each access
+        fs = {k: fs[k] for k in ("x", "y", "g")}
     g = fs["g"]
     ims = [(n, Image.open(f).convert("RGB")) for n, f in vars_]
-    sel = [i for i in np.argsort(g) if x0 + 150 < fs["x"][i] < x1 - 150 and y0 + 150 < fs["y"][i] < y1 - 150]
+    inside = (fs["x"] > x0 + 150) & (fs["x"] < x1 - 150) & (fs["y"] > y0 + 150) & (fs["y"] < y1 - 150)
+    sel = [int(i) for i in np.argsort(g) if inside[i]]
     if grange:
         sel = [i for i in sel if grange[0] <= g[i] < grange[1]]
         sel = [sel[int(k)] for k in np.linspace(0, len(sel) - 1, nstars)] if len(sel) > nstars else sel
