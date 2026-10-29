@@ -118,6 +118,12 @@ class RenderSettings(StageParams):
     white_mult: float = S(0.62, section="Nebula", label="White point", ge=0.1, le=2.0, step=0.01,
                           help="White point of the tone curve relative to the brightest nebula. Lower = brighter "
                                "nebula (highlights are then compressed, never clipped).")
+    white_ignore_pct: float = S(0.005, section="Nebula", label="Brightest area ignored", level=ADVANCED, ge=0.001,
+                                le=0.5, step=0.001, unit="%",
+                                help="The white point is measured on the nebula once this share of the image, the very "
+                                     "brightest, is left out. Raise it when a small, very bright object (a compact "
+                                     "core, a reflection nebula around its star) sets the white point and darkens the "
+                                     "whole image.")
     hdr_strength: float = S(0.8, section="Nebula", label="Large-scale compression", ge=0, le=1.0, step=0.05,
                             help="Compresses the brightness of large bright areas (edge-preserving) so that the core "
                                  "of the nebula keeps its detail next to faint extensions.")

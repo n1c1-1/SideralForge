@@ -15,10 +15,11 @@ Horsehead frame. It is part of the star, proportional to its flux, so it is mode
   continued flat: what is left there is the level of the halo at that radius;
 * a star whose halo is measurable against its surroundings gets its own amplitude (a variable star, a wrong
   catalogue flux); a star whose glare dominates them also its own elongation, orientation and radial slope;
-* those halos, fitted on their own surroundings, never exceed the light the data show there beyond the nebula
-  (a nebula only adds light): per channel, radius and direction, the halo is lowered to the lower envelope of the
-  data around the star (see _envelope). Least squares had let a nebula rising toward its star pull the halo above
-  the data on the other side: a dark ring around sigma Orionis, dark lobes beside Alnitak.
+* optionally, no halo exceeds the light the data show around its star beyond the nebula (a nebula only adds
+  light): per channel, radius and direction, the halo is lowered to the lower envelope of the data around the star
+  (see _envelope). Least squares had let a nebula rising toward its star pull the halo above the data on the other
+  side: a dark ring around sigma Orionis, dark lobes beside Alnitak; and a star fainter than its catalogue flux (a
+  variable) kept a halo above the data: a dark disc.
 
 There is no cut at a fixed radius and no local reference level, which drew a dark disc in a bright ring around
 every bright star (the 'eye' of sigma Orionis).
@@ -36,6 +37,7 @@ ALPHA_MIN = 1.0      # light scattered by optics falls at least as 1/r (measured
 
 
 ENVELOPE_Q = 0.2     # the lower part of the star's surroundings that bounds its halo (see _envelope)
+ENVELOPE_SNR = 10.0  # a halo is bounded only where it stands this many times above the noise of its surroundings
 
 
 def _ell_polar(X, Y, xc, yc, q, phi):
@@ -47,7 +49,7 @@ def _ell_polar(X, Y, xc, yc, q, phi):
 
 
 def _envelope(rest, unit, Fi, sig, ok, D, xc, yc, q_, phi_, r0, rmax, q=ENVELOPE_Q, nr=64, nt=72, win_r=3, win_t=11,
-              snr_min=10.0):
+              snr_min=ENVELOPE_SNR):
     """Factors (<= 1, per channel, radius and angle) that keep a star's halo under the light the data show around it
     beyond the nebula.
 
@@ -61,7 +63,8 @@ def _envelope(rest, unit, Fi, sig, ok, D, xc, yc, q_, phi_, r0, rmax, q=ENVELOPE
     does not rise outward, along each direction. Per channel: one factor for the three (the strictest channel) left
     blue glare around sigma Orionis where the red bound it; the three channels together left Alnitak's red
     over-subtracted. Per direction: one factor per ring lowered all of Alnitak's ring for a lobe on one side (the
-    Flame on the other had pulled the elongation of its halo).
+    Flame on the other had pulled the elongation of its halo). A channel where the halo is too faint to be bounded
+    takes the factor of the others (the halo of a very red star is measurable in red only).
 
     Only where the halo stands well above the darker side of its surroundings (snr_min x sig): fainter, the bound
     followed the dark patches of the sky and cut the halo in wedges. Beyond, the factor of the last such radius,
@@ -98,13 +101,12 @@ def _envelope(rest, unit, Fi, sig, ok, D, xc, yc, q_, phi_, r0, rmax, q=ENVELOPE
     ir = np.clip(np.arange(nr)[:, None] + np.arange(-(win_r // 2), win_r // 2 + 1)[None], 0, nr - 1)
     it = (np.arange(nt)[:, None] + np.arange(-(win_t // 2), win_t // 2 + 1)[None]) % nt
     f = np.ones((3, nr, nt))
-    any_sig = False
+    measured = []
     for c in range(3):
         snr = urow * Fi[c] / sig[c]
         sig_rows = np.isfinite(snr) & (snr >= snr_min)
         if not sig_rows.any():
             continue
-        any_sig = True
         ratio = np.where(good, polar(rest[c], np.nan) / (Fi[c] * np.where(good, up, 1.0)), np.nan)
         win = ratio[ir[:, None, :, None], it[None, :, None, :]].reshape(nr, nt, -1)
         cnt = np.isfinite(win).sum(-1)
@@ -133,8 +135,17 @@ def _envelope(rest, unit, Fi, sig, ok, D, xc, yc, q_, phi_, r0, rmax, q=ENVELOPE
         fc = cv2.GaussianBlur(np.concatenate([fc[:, -pad:], fc, fc[:, :pad]], 1), (0, 0), sigmaX=1.5, sigmaY=1.0,
                               borderType=cv2.BORDER_REPLICATE)[:, pad:-pad]
         f[c] = fc
-    if not any_sig:
+        measured.append(c)
+    if not measured:
         return None
+    # a channel too faint to bound takes the factor of the channels bounded: the glare has the colour of its star,
+    # and a wrong catalogue flux (a variable star) is wrong in every channel. Left at 1, the green and blue halos of
+    # a very red star (T Cephei) stayed over-subtracted around it once its red was bounded: a red disc
+    if len(measured) < 3:
+        fm = f[measured].min(0)
+        for c in range(3):
+            if c not in measured:
+                f[c] = fm
     u_ = np.where(np.isfinite(urow), urow, np.nan)
     u_ = np.interp(np.arange(nr), np.where(np.isfinite(u_))[0], u_[np.isfinite(u_)])[None, :, None]
     f = np.minimum.accumulate(u_ * f, axis=1) / np.maximum(u_, 1e-30)   # never rising outward, in each direction
@@ -381,19 +392,19 @@ def far_halo(sl, x, y, F, r_in, deg=3, nknots=20, envelope=True, log=print):
         Pf = basis(kap)
         s, m = _robust(Pf, B, yv, use, nr)
     S = np.r_[np.cumsum(s[:nr][::-1])[::-1], 0.0]
-    # 4) no halo above the light the data show beyond the nebula (see _envelope), the brightest halos first: the
-    # halos whose amplitude was fitted on their own surroundings (where a nebula can pull it up; the others, lost
-    # in their surroundings, have the instrument's halo at their catalogue flux)
+    # 4) no halo above the light the data show beyond the nebula (see _envelope), the brightest halos first, for
+    # every star: the halos fitted on their own surroundings (a nebula can pull them up) and the halos of the stars
+    # lost in their surroundings, drawn at their catalogue flux. Those had no bound: a variable star fainter than its
+    # Gaia magnitude (T Cephei by the Iris, on 300 frames) kept a halo 4 times the light around it - a dark disc
     fac = [None] * n
-    if envelope and (strong or measured):
+    if envelope:
         nB = B.shape[0]
         rest = yv - np.stack([B.T @ s[nr + c * nB:nr + (c + 1) * nB] for c in range(3)])
-        units = {}
+        peak = np.zeros(n)                               # each halo's highest level per unit flux
         for i in range(n):
             u_ = (star_basis(i).T @ s[:nr]).astype(np.float32)
             rest -= kap[i] * F[:, i][:, None] * u_[None]
-            if i in strong or i in measured:              # the halos fitted on their own surroundings
-                units[i] = u_
+            peak[i] = float(u_.max())
         # pixels with data (a frame edge without coverage reads as a deficit of light)
         cov = cv2.resize((np.isfinite(sl[1]) & (np.asarray(sl[1]) != 0)).astype(np.float32), (w, h),
                          interpolation=cv2.INTER_AREA).ravel()
@@ -412,16 +423,19 @@ def far_halo(sl, x, y, F, r_in, deg=3, nknots=20, envelope=True, log=print):
                         v_ = r3[c, by:by + 16, bx:bx + 16][m_]
                         lows.append(np.percentile(v_, 50) - np.percentile(v_, 16))
             sig[c] = float(np.median(lows)) if lows else 1.0
-        for i in sorted(units, key=lambda j: -kap[j] * F[1, j]):
-            hi = kap[i] * F[:, i][:, None] * units[i][None]
+        # only a halo that can stand above the noise of its surroundings can be bounded (see _envelope)
+        cand = [i for i in range(n) if (kap[i] * F[:, i] * peak[i] >= ENVELOPE_SNR * sig).any()]
+        for i in sorted(cand, key=lambda j: -kap[j] * F[1, j]):
+            u_ = (star_basis(i).T @ s[:nr]).astype(np.float32)
+            hi = kap[i] * F[:, i][:, None] * u_[None]
             rest += hi                                   # this star's halo and its surroundings
-            env = _envelope(rest.reshape(3, h, w), units[i].reshape(h, w), kap[i] * F[:, i], sig, ok, D, x[i], y[i],
+            env = _envelope(rest.reshape(3, h, w), u_.reshape(h, w), kap[i] * F[:, i], sig, ok, D, x[i], y[i],
                             Q[i], PHI[i], 1.3 * r_in[i], rmax)
             if env is not None and env["f"].min() < 0.999:
                 fac[i] = env
                 hi = hi * _fac_at(env, xx.ravel(), yy.ravel(), x[i], y[i])
             rest -= hi
-        del rest, units, r3
+        del rest, r3
     # per star: the lowest factor of each channel, its radius
     bounded = {}
     for i in range(n):

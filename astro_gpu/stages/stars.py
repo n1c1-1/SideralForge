@@ -46,10 +46,11 @@ class StarsParams(StageParams):
                             "of the field.",
                        tip="The glare then leaves the nebula with the stars; the drawn stars do not carry it.")
     halo_bound: bool = P(False, label="Far halo bounded by the data", level=ADVANCED,
-                         help="Keep the halo of the stars fitted on their own surroundings under the light the data "
-                              "show around them, per colour and direction (a nebula rising toward its star had pulled "
-                              "it up: dark rings around sigma Orionis, lobes beside Alnitak). Off by default: on the "
-                              "Rosette the glare it leaves in the nebula came out as olive and green discs.")
+                         help="Keep the halo of every star under the light the data show around it, per colour and "
+                              "direction (a nebula rising toward its star had pulled it up: dark rings around sigma "
+                              "Orionis, lobes beside Alnitak; a variable star fainter than its catalogue kept a halo "
+                              "above the data: a dark disc). Off by default: on the Rosette the glare it leaves in the "
+                              "nebula came out as olive and green discs.")
 
 
 class Stars(Stage):
@@ -63,14 +64,15 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "14"         # 9: far halo of the stars, star shape measured without the stars sitting in the core of a
+    version = "15"         # 9: far halo of the stars, star shape measured without the stars sitting in the core of a
                            # much brighter one; 10: the fine rays of the stars whose glare dominates, with their halo;
                            # 11: the rays bounded by the star's glare (noise far from the star passed for rays);
                            # 12: the glare of the dominant stars saved apart (the rendering draws back that one only);
                            # 13: optionally no halo above the light the data show beyond the nebula (the halos
                            # fitted on their own surroundings: dark rings around sigma Orionis, lobes around Alnitak);
                            # 14: a local shape correction cell moving far more light than the others takes the
-                           # field's correction (a galaxy's gradient drew magenta rectangles on M31)
+                           # field's correction (a galaxy's gradient drew magenta rectangles on M31); 15: the
+                           # optional bound applies to every star's halo, also those drawn at their catalogue flux
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device

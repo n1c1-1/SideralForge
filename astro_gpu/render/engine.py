@@ -35,8 +35,8 @@ LAYER_KEYS = ("fine_k", "fine_lo_pct", "fine_hi_pct", "faint_smooth", "faint_lo_
 NEB_LIN_KEYS = LAYER_KEYS + ("ha_boost", "ha_sigma", "glow_k", "glow_sigma", "g_glow", "speck_k", "white_temp", "tint",
                              "star_glow", "glare_nebula", "star_sat", "diffuse_cut", "sky_neutral", "sky_pct")
 NEB_KEYS = NEB_LIN_KEYS + ("chroma", "chroma_protect", "hue_target", "hue_shift", "chroma_sigma", "snr_lo", "snr_hi",
-                           "sky_level", "dark_level", "toe", "sky_pct", "dark_pct", "white_mult", "hdr_strength",
-                           "hdr_knee", "hdr_r", "hdr_eps", "lc_fine", "lc_medium", "lc_large", "neb_sharp",
+                           "sky_level", "dark_level", "toe", "sky_pct", "dark_pct", "white_mult", "white_ignore_pct",
+                           "hdr_strength", "hdr_knee", "hdr_r", "hdr_eps", "lc_fine", "lc_medium", "lc_large", "neb_sharp",
                            "sharp_white", "hl_knee", "hl_max", "hl_detail", "hl_dmin", "hl_r1", "hl_r2", "hl_eps",
                            "hl_shoulder", "hl_keep_chroma", "bright_halo_desat")
 STAR_KEYS = ("stars", "g_glow", "g_lim", "t_lim", "d10", "d7", "star_sat", "sat_min", "core_white", "t9",
@@ -264,7 +264,8 @@ class RenderEngine:
         final = ops.screen(neb, st)
         valid = self._valid(f)
         final[:, ~valid] = 0
-        info.update(self.last_info)
+        # the parts taken from the cache keep the information of their last computation; the fresh parts' wins
+        info = {**self.last_info, **info}
         self.last_info = info
         return Layers(final, neb, st, 1.0 / f, info)
 
@@ -357,7 +358,7 @@ class RenderEngine:
                 torch.einsum("ij,jhw->ihw", self.M_eff(s), self._glare(s, f)))
         Yl = ops.gaussian_blur(Yn, 6 / f)
         p_dark, p_sky = ops.percentile(Yl, [s.dark_pct, s.sky_pct], shown)
-        hi = ops.percentile(Yn, 99.995, shown)
+        hi = ops.percentile(Yn, 100.0 - s.white_ignore_pct, shown)
         del Yn
         lo, b, white = fit_tone_curve(p_dark, p_sky, hi * s.white_mult, s.dark_level / 255, s.sky_level / 255, s.toe)
         info["tone_curve"] = {"black": lo, "b": b, "white": white}

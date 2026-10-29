@@ -145,7 +145,7 @@ SETTING_BLOCKS = [
     ("AstroStretch", "Stretch",
      "Brings the linear image to the screen: how bright the sky background is, how dark the darkest clouds go, the "
      "softness of the shadows and the white point of the nebula.",
-     ["sky_level", "dark_level", "toe", "white_mult", "sky_pct", "dark_pct"]),
+     ["sky_level", "dark_level", "toe", "white_mult", "white_ignore_pct", "sky_pct", "dark_pct"]),
     ("AstroSkyGlow", "Sky glow and specks",
      "The diffuse light of the sky: the Milky Way glow of the stars too faint to draw, the diffuse glow removed, a "
      "neutral (grey) sky, the dark specks removed.",
