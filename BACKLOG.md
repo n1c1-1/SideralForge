@@ -62,3 +62,20 @@ M33 (A7S, 900 mm, 20 s at ISO 4000, no darks, no dithering, strong vignetting) e
 
 * The automatic transparency rule excluded 36 % of the M33 frames: refine the rule and flag large exclusions in
   the interface.
+
+## Generalisation: other sensors and instruments (test data downloaded 2026-10-28 night)
+
+Fifteen public raw sessions are in `D:\astro_donnees_test` (catalogue `CATALOGUE.md`, what the chain reads of
+them `LECTURE_PAR_LA_CHAINE.md`): Canon 6D / 40D (CR2), Canon EOS Ra (CR3), Nikon D810A, Fujifilm GFX 50R (Bayer),
+Pentax 645Z, ZWO ASI2600MC, two Stellina and two Seestar smart telescopes, ASI1600MM mono in LRGB / RGB+H-alpha /
+SHO, the LCO 0.4 m network (mono, B V r' H-alpha) and an Apogee CCD. Still missing: Fuji X-Trans, RASA, SCT.
+
+Found by reading one frame of each with `io/frames.py`:
+
+* compressed FITS (`.fits.fz`, `.fit.gz`) are not listed as frames;
+* CR3 and RAF: camera, exposure and ISO not read (exifread does not parse them);
+* Stellina writes EXPTIME in milliseconds (read as 10 000 s);
+* Pentax 645Z: black level 0, the background noise is clipped at zero in the raw file;
+* monochrome cameras: no colour pattern, not processed (one stack per filter, then colour combination: the largest
+  piece of work);
+* smart telescopes on alt-azimuth mounts: the field rotates during the night (registration and stacking to check).
