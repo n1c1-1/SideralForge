@@ -886,8 +886,9 @@ the current deliverables before any re-rendering.
 
 - The M31 changes (render prep 44, stars 14) were run on copies of the Heart, Iris, Rosette and Horsehead (tool
   `tools/qc/nonreg.py`; the real projects untouched): Horsehead and Rosette identical to the eye, Iris and Heart
-  judged blind "nearly identical", the new version very slightly better on both (Iris sky less olive, a cleaner halo
-  at the Heart's G 6.1 star). The Heart's automatic framing moves by a few pixels (useful field recomputed).
+  judged blind "nearly identical", the new version very slightly better on the Iris (sky less olive). The Heart's small
+  differences come mostly from its learned star removal, retrained and not reproducible: it trains for a time
+  (32 min), not a number of steps (11 181 and 11 408 steps on identical inputs; BACKLOG). The Heart's automatic framing moves by a few pixels (useful field recomputed).
 - Far-halo bound (option 'Far halo bounded by the data', stars 15): it now bounds every star's halo, also those
   drawn at their catalogue flux, and a colour too faint to bound takes the factor of the measured ones. On the Iris
   300-frame session the dark disc around T Cephei (a red variable fainter than its Gaia magnitude) is gone, and the
