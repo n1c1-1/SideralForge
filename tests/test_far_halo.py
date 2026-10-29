@@ -73,6 +73,20 @@ def test_factors_where_the_halo_is_lost_in_the_noise_leave_it_alone():
     assert _factors(rest, unit, F * 1e-4, sig, ok) is None
 
 
+def test_a_channel_too_faint_to_bound_takes_the_factor_of_the_others():
+    # a very red star 4 times fainter than its catalogue: its halo is measurable in red only
+    rest, unit, F, sig, ok, t, r = _scene(true_amp=0.25)
+    F2 = np.array([400.0, 4.0, 3.0])
+    rest[1:] = np.stack([0.25 * F2[c] * unit + np.random.default_rng(c).normal(0, 1.0, unit.shape) for c in (1, 2)])
+    env = _factors(rest, unit, F2, sig, ok)
+    yy, xx = (np.mgrid[0:N, 0:N] + 0.5) * D - 0.5
+    f = fh._fac_at(env, xx, yy, XC, YC)
+    dark = (t > 150) & (t < 330) & (r > 90) & (r < 600)
+    assert abs(float(np.median(f[0][dark])) - 0.25) < 0.05
+    for c in (1, 2):                                          # not left at 1: the same factor as the red
+        assert abs(float(np.median(f[c][dark])) - float(np.median(f[0][dark]))) < 0.02
+
+
 def _field(seed=0):
     """A 1600 x 1600 px field: eight stars with their true halo, and in the middle a variable star 4 times fainter
     than its catalogue flux, inside a patchy nebula that hides its halo from the per-star fits (it stays at its

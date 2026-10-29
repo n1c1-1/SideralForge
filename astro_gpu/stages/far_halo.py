@@ -63,7 +63,8 @@ def _envelope(rest, unit, Fi, sig, ok, D, xc, yc, q_, phi_, r0, rmax, q=ENVELOPE
     does not rise outward, along each direction. Per channel: one factor for the three (the strictest channel) left
     blue glare around sigma Orionis where the red bound it; the three channels together left Alnitak's red
     over-subtracted. Per direction: one factor per ring lowered all of Alnitak's ring for a lobe on one side (the
-    Flame on the other had pulled the elongation of its halo).
+    Flame on the other had pulled the elongation of its halo). A channel where the halo is too faint to be bounded
+    takes the factor of the others (the halo of a very red star is measurable in red only).
 
     Only where the halo stands well above the darker side of its surroundings (snr_min x sig): fainter, the bound
     followed the dark patches of the sky and cut the halo in wedges. Beyond, the factor of the last such radius,
@@ -100,13 +101,12 @@ def _envelope(rest, unit, Fi, sig, ok, D, xc, yc, q_, phi_, r0, rmax, q=ENVELOPE
     ir = np.clip(np.arange(nr)[:, None] + np.arange(-(win_r // 2), win_r // 2 + 1)[None], 0, nr - 1)
     it = (np.arange(nt)[:, None] + np.arange(-(win_t // 2), win_t // 2 + 1)[None]) % nt
     f = np.ones((3, nr, nt))
-    any_sig = False
+    measured = []
     for c in range(3):
         snr = urow * Fi[c] / sig[c]
         sig_rows = np.isfinite(snr) & (snr >= snr_min)
         if not sig_rows.any():
             continue
-        any_sig = True
         ratio = np.where(good, polar(rest[c], np.nan) / (Fi[c] * np.where(good, up, 1.0)), np.nan)
         win = ratio[ir[:, None, :, None], it[None, :, None, :]].reshape(nr, nt, -1)
         cnt = np.isfinite(win).sum(-1)
@@ -135,8 +135,17 @@ def _envelope(rest, unit, Fi, sig, ok, D, xc, yc, q_, phi_, r0, rmax, q=ENVELOPE
         fc = cv2.GaussianBlur(np.concatenate([fc[:, -pad:], fc, fc[:, :pad]], 1), (0, 0), sigmaX=1.5, sigmaY=1.0,
                               borderType=cv2.BORDER_REPLICATE)[:, pad:-pad]
         f[c] = fc
-    if not any_sig:
+        measured.append(c)
+    if not measured:
         return None
+    # a channel too faint to bound takes the factor of the channels bounded: the glare has the colour of its star,
+    # and a wrong catalogue flux (a variable star) is wrong in every channel. Left at 1, the green and blue halos of
+    # a very red star (T Cephei) stayed over-subtracted around it once its red was bounded: a red disc
+    if len(measured) < 3:
+        fm = f[measured].min(0)
+        for c in range(3):
+            if c not in measured:
+                f[c] = fm
     u_ = np.where(np.isfinite(urow), urow, np.nan)
     u_ = np.interp(np.arange(nr), np.where(np.isfinite(u_))[0], u_[np.isfinite(u_)])[None, :, None]
     f = np.minimum.accumulate(u_ * f, axis=1) / np.maximum(u_, 1e-30)   # never rising outward, in each direction
