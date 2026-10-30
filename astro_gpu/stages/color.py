@@ -229,7 +229,11 @@ def load_profile(camera: str, lam) -> dict | None:
 
 
 def save_profile(camera: str, lam, S, project: str, residual: float) -> None:
-    """Keep the best (lowest residual) physical sensitivity curves found for this camera."""
+    """Keep the best (lowest residual) physical sensitivity curves found for this camera. Only curves over the full
+    range of the XP spectra (336-1020 nm) are kept: curves fitted on the 400-800 nm spectra of the GAVO service
+    would be extended flat outside it when another project reads them."""
+    if float(np.min(lam)) > 340.0 or float(np.max(lam)) < 1000.0:
+        return
     p = _profile_path(camera)
     if p.exists() and float(np.load(p)["residual"]) <= residual:
         return
