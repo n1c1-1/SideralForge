@@ -81,6 +81,9 @@ class Stack(Stage):
         a: dict[str, Auto] = {}
         reg = np.load(ctx.input("register", "reg.npz"))
         n = len(reg["fwhm"])
+        hb = int(max(1, min(20, n // 4)))
+        a["half_block"] = Auto(hb, f"{n} frames: blocks of {hb} give two half-stacks of about {n // 2} frames"
+                               + ("" if hb == 20 else " (blocks of 20 need 80 frames)"))
         f = float(np.median(reg["fwhm"]))
         if f < 3.0 and n >= 150:
             a["scale"] = Auto(2.0, f"small stars (FWHM {f:.1f} px) and {n} frames")
