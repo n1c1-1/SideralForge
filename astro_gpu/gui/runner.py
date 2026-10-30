@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import sys
 import time
-from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 
@@ -95,7 +94,8 @@ class RunController(QObject):
 
 
 def stage_history_seconds(stage: str) -> float | None:
-    p = Path.home() / ".astro_gpu" / "timings.json"
+    from ..core.project import STATE
+    p = STATE / "timings.json"
     try:
         d = json.loads(p.read_text())
         v = d.get(stage)

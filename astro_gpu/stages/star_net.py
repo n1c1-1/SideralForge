@@ -25,11 +25,13 @@ class StarNetParams(StageParams):
                            "the star removal stage (a second, learned starless image chosen at rendering). On by "
                            "default: both removals are computed at the start, to be compared as views. Off: the "
                            "stage does nothing.",
-                      tip="About 35 minutes on one GPU (the training time below plus a few minutes of "
+                      tip="About 35 minutes on one GPU (the training steps below plus a few minutes of "
                           "preparation). Worth it with bright stars, spikes and halos.")
-    minutes: float = P(32.0, label="Training time", unit="min", ge=1, le=240, step=1,
-                       help="Wall-clock training budget of the network (the learning rate decays over it).",
-                       tip="32 min gave the results measured on four projects; much less leaves faint halos.")
+    steps: int = P(11000, label="Training steps", ge=10, le=100000, step=500,
+                   help="Training steps of the network (the learning rate decays over them). A number of steps, not "
+                        "a time, so that the same data always give the same network.",
+                   tip="11 000 steps take about 32 minutes on an RTX 4060 Ti; it is what the training time of "
+                       "32 min gave on four projects. Much less leaves faint halos.")
     device: str = P("auto", label="GPU", level=ADVANCED, choices=["auto", "main", "aux"],
                     help="Where to train: 'aux' = the second GPU of the project ('aux' in its devices), 'main' = "
                          "the main one, 'auto' = the second GPU when one is configured, else the main one.")
@@ -116,18 +118,20 @@ class StarNet(Stage):
                    "goes to the star removal stage, which makes a second, learned starless image from it.")
     deps = ("stars", "optics", "denoise", "color")
     Params = StarNetParams
-    version = "3"          # 2: bright stamps = the star as the input shows it (light agreed by the interpolated and
+    version = "4"          # 2: bright stamps = the star as the input shows it (light agreed by the interpolated and
                            # the model background, point-symmetric darkness), no more the input minus the starless
                            # image, whose holes the network learnt as star light; dark rings it had never seen;
                            # 3: stamps saturated as the rendering sees it (Alnitak, most of the Rosette's saturated
                            # stars passed for unsaturated); a glow centred on half of the pasted bright stars, in the
                            # input and the target alike (the network took the core of NGC 2023 for star light)
+                           # 4: a number of training steps instead of a training time (two identical runs of the
+                           # Heart made 11 181 and 11 408 steps and gave different star layers)
 
     def run(self, ctx: Context, p: StarNetParams) -> None:
         if not p.enabled:
             return
         dev = choose_device(ctx, p.device)
-        ctx.log(f"learned star removal: training on {dev}, {p.minutes:.0f} min")
+        ctx.log(f"learned star removal: training on {dev}, {p.steps} steps")
         ck = ctx.ckpt
         target, filled, dirs = self._target(ctx, ck)
         L = ctx.load("optics", "lat_full.npy", mmap=True)
@@ -163,7 +167,7 @@ class StarNet(Stage):
                     neb_col=m["neb_col"], items=lib.val_items(m["boxes"], synth))
         ctx.log(f"{len(cys)} training positions, {synth.n_bright} bright and {len(synth.faint)} faint star stamps")
 
-        net, hist, steps = lib.train_net(data, synth, dev, p.minutes, batch=p.batch, patch=lib.PATCH, seed=p.seed,
+        net, hist, steps = lib.train_net(data, synth, dev, p.steps, batch=p.batch, patch=lib.PATCH, seed=p.seed,
                                          progress=lambda f, msg: ctx.progress(0.15 + 0.77 * f, msg), log=ctx.log,
                                          ckpt=ck / "train.pt")
         torch.save({"net": net.state_dict(), "bk": m["bk"], "sg": m["sg"], "widths": lib.WIDTHS,

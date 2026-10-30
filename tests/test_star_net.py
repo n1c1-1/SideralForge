@@ -46,8 +46,8 @@ def test_registered_between_stars_and_starless():
     net = stages[names.index("star_net")]
     assert all(names.index(d) < names.index("star_net") for d in net.deps)
     assert "star_net" not in Starless.deps             # an optional input: no dependency that could make it stale
-    assert StarNetParams().enabled is True and StarNetParams().minutes == 32      # on by default (2026-10-16)
-    assert {d["name"] for d in StarNetParams.describe()} >= {"enabled", "minutes", "device"}
+    assert StarNetParams().enabled is True and StarNetParams().steps == 11000      # on by default (2026-10-16)
+    assert {d["name"] for d in StarNetParams.describe()} >= {"enabled", "steps", "device"}
 
 
 def test_disabled_writes_nothing(project):
@@ -173,11 +173,11 @@ def test_training_resumes_and_inference_runs(tmp_path):
     def stop(frac, msg):
         raise Interrupted("stop")
     with pytest.raises(Interrupted):
-        lib.train_net(data, synth, dev, minutes=5, batch=2, patch=64, progress=stop, ckpt=ck, report_every=1,
+        lib.train_net(data, synth, dev, steps=5, batch=2, patch=64, progress=stop, ckpt=ck, report_every=1,
                       log=lambda m: None)
     assert ck.exists() and torch.load(ck, weights_only=False)["it"] == 1
     logs = []
-    net, hist, steps = lib.train_net(data, synth, dev, minutes=5, batch=2, patch=64, ckpt=ck, max_steps=2,
+    net, hist, steps = lib.train_net(data, synth, dev, steps=5, batch=2, patch=64, ckpt=ck, max_steps=2,
                                      log=logs.append)
     assert steps == 2 and any("resumed at step 1" in m for m in logs)
     assert np.isfinite(hist[-1]["loss"]) and np.isfinite(hist[-1]["val"])
@@ -255,7 +255,7 @@ def test_stage_end_to_end_on_a_synthetic_project(tmp_path, monkeypatch):
     proj = _synthetic_project(tmp_path / "synthetic")
     st = StarNet()
     ctx = _ctx(proj, st)
-    p = StarNetParams.model_construct(enabled=True, minutes=0.02, device="auto", batch=1, seed=0)   # ~1 s training
+    p = StarNetParams.model_construct(enabled=True, steps=3, device="auto", batch=1, seed=0)
     st.run(ctx, p)
     layer = np.load(ctx.dir / "star_layer.npy")
     assert layer.shape == (3, 416, 544) and layer.dtype == np.float32 and np.isfinite(layer).all()

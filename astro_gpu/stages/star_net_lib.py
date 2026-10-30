@@ -578,10 +578,12 @@ def run_val(net, items, synth, L, T, bk, sg, dev):
     return tot / len(items), tot0 / len(items)
 
 
-def train_net(data, synth, dev, minutes, batch=6, patch=PATCH, lr=3e-4, seed=0, progress=None, log=print,
+def train_net(data, synth, dev, steps, batch=6, patch=PATCH, lr=3e-4, seed=0, progress=None, log=print,
               ckpt: Path | None = None, max_steps=None, report_every=20):
-    """Train for a wall-clock budget (warm-up 300 steps, cosine decay over the budget), L1 loss in the asinh space,
-    weight 0 where the target is not trusted and x5 on the pasted stars' footprints.
+    """Train for a number of steps (warm-up 300 steps, cosine decay over them), L1 loss in the asinh space, weight 0
+    where the target is not trusted and x5 on the pasted stars' footprints. A number of steps, not a time: the same
+    inputs give the same network whatever else uses the GPU (a time budget made 11 181 and 11 408 steps on two
+    identical runs of the Heart).
 
     data: L (input, (3, H, W)), T (target), S_den (denoised starless, for the brightness augmentation), WM (weight
     map (H, W)), VAL (bool (H, W), outside the filled cores), cys / cxs (patch centres), bk, sg, neb_col, items
@@ -608,8 +610,7 @@ def train_net(data, synth, dev, minutes, batch=6, patch=PATCH, lr=3e-4, seed=0, 
         it, run_l, hist, elapsed0 = ck["it"], ck["run"], ck["hist"], ck["elapsed"]
         rng.bit_generator.state = ck["rng"]
         torch.set_rng_state(ck["torch_rng"].cpu())
-        log(f"training resumed at step {it} ({elapsed0 / 60:.1f} of {minutes:.0f} min done)")
-    budget = minutes * 60.0
+        log(f"training resumed at step {it} of {steps} ({elapsed0 / 60:.1f} min done)")
     t0 = time.time()
 
     def save_ckpt():
@@ -622,7 +623,7 @@ def train_net(data, synth, dev, minutes, batch=6, patch=PATCH, lr=3e-4, seed=0, 
 
     while True:
         el = elapsed0 + time.time() - t0
-        frac = el / budget
+        frac = it / max(steps, 1)
         if frac >= 1 or (max_steps is not None and it >= max_steps):
             break
         lr_ = lr * min(1.0, (it + 1) / 300) * 0.5 * (1 + math.cos(math.pi * min(frac, 1.0)))
@@ -656,7 +657,7 @@ def train_net(data, synth, dev, minutes, batch=6, patch=PATCH, lr=3e-4, seed=0, 
         if it % 500 == 0 and data.get("items"):
             v, v0 = run_val(net, data["items"], synth, L, T, bk, sg, dev)
             hist.append(dict(step=it, minutes=round(el / 60, 2), loss=run_l, val=v, val0=v0))
-            log(f"step {it}, {el / 60:.1f} of {minutes:.0f} min: loss {run_l:.4f}, hold-out regions {v:.4f} with "
+            log(f"step {it} of {steps}, {el / 60:.1f} min: loss {run_l:.4f}, hold-out regions {v:.4f} with "
                 f"pasted stars, {v0:.4f} without")
         if it % 1000 == 0:
             save_ckpt()

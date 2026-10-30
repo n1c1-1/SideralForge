@@ -272,8 +272,9 @@ def _ancestors(by_name: dict[str, Stage], name: str) -> set[str]:
 
 def _record_timing(stage: str, seconds: float) -> None:
     """Keep a per-machine history of stage durations (used for ETAs before a stage reports progress)."""
-    p = Path.home() / ".astro_gpu" / "timings.json"
-    p.parent.mkdir(exist_ok=True)
+    from .project import STATE
+    p = STATE / "timings.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
     try:
         d = json.loads(p.read_text()) if p.exists() else {}
     except json.JSONDecodeError:

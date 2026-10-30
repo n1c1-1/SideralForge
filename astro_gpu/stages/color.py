@@ -9,6 +9,7 @@ import numpy as np
 from scipy.optimize import least_squares, nnls
 
 from ..core.params import ADVANCED, Auto, P, StageParams
+from ..core.project import STATE
 from ..core.stage import Context, Stage, StageError
 
 XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
@@ -18,7 +19,7 @@ XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
 HII_LINES = {656.3: 1.0, 658.4: 0.30, 654.8: 0.10, 486.1: 1 / 7.0, 434.0: 1 / 7.0 * 0.35, 671.6: 0.08, 673.1: 0.07,
              500.7: 0.05, 495.9: 0.017}
 OIII_LINES = {500.7: 1.0, 495.9: 0.33, 486.1: 0.3}
-PROFILES = Path.home() / ".astro_gpu" / "camera_profiles"
+PROFILES = STATE / "camera_profiles"   # per-user state (core/project.py)
 
 
 class ColorParams(StageParams):

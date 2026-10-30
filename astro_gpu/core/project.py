@@ -274,7 +274,11 @@ def stage_graph() -> dict[str, tuple[str, ...]]:
     return _GRAPH
 
 
-REGISTRY = Path.home() / ".astro_gpu" / "projects.json"
+#: per-user state: the list of recent projects, the stage durations, the camera colour profiles. ASTRO_GPU_HOME moves
+#: it elsewhere, so that test runs (tools/qc) neither appear among the user's projects nor teach the user's camera
+#: profiles (the download cache stays in ~/.astro_gpu/cache, shared)
+STATE = Path(os.environ.get("ASTRO_GPU_HOME") or Path.home() / ".astro_gpu")
+REGISTRY = STATE / "projects.json"
 
 
 def remember(project: Project) -> None:
