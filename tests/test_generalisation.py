@@ -90,3 +90,12 @@ def test_generic_star_guard_any_colour():
     col = out[:, 31:35, 31:35].mean((1, 2))
     assert abs(col[0] / col[1] - 0.6) < 0.1                                     # the red dot takes the nebula colour
     assert np.abs(out[:, 110:, 110:] - astro[:, 110:, 110:]).max() == 0         # untouched off the footprints
+
+
+def test_nested_healpix_index_splits_into_tile_coordinates():
+    from astro_gpu.stages.surveys import _compact
+    x, y = np.arange(512, dtype=np.int64), np.arange(511, -1, -1, dtype=np.int64)
+    idx = np.zeros_like(x)
+    for b in range(9):                                   # interleave: x on even bits, y on odd bits
+        idx |= ((x >> b) & 1) << (2 * b) | ((y >> b) & 1) << (2 * b + 1)
+    assert np.array_equal(_compact(idx), x) and np.array_equal(_compact(idx >> 1), y)
