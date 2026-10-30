@@ -31,6 +31,18 @@ from typing import Any
 FORMAT = 1
 RAW_EXT = {".arw", ".cr2", ".cr3", ".nef", ".dng", ".orf", ".rw2", ".pef", ".srw", ".raf"}
 FITS_EXT = {".fit", ".fits", ".fts"}
+FITS_PACKED = {".fz", ".gz"}         # compressed FITS: .fits.fz (tile-compressed), .fit.gz (gzip)
+
+
+def frame_kind(path: str | Path) -> str:
+    """'raw', 'fits' (compressed FITS included) or '' for a file that is not a frame."""
+    name = Path(path).name.lower()
+    ext = Path(name).suffix
+    if ext in RAW_EXT:
+        return "raw"
+    if ext in FITS_EXT or ext == ".fz" or (ext in FITS_PACKED and Path(name[:-len(ext)]).suffix in FITS_EXT):
+        return "fits"
+    return ""
 
 
 @dataclass
@@ -324,5 +336,5 @@ def list_frames(folders: list[str]) -> list[Path]:
         if p.is_file():
             out.append(p)
         elif p.is_dir():
-            out += [q for q in p.iterdir() if q.suffix.lower() in RAW_EXT | FITS_EXT]
+            out += [q for q in p.iterdir() if q.is_file() and frame_kind(q)]
     return sorted(set(out))

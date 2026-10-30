@@ -7,9 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 from ..core.params import ADVANCED, P, StageParams
-from ..core.project import list_frames
+from ..core.project import frame_kind, list_frames
 from ..core.stage import Context, Stage, StageError
-from ..io.frames import read_cfa, read_info
+from ..io.frames import fits_header, read_cfa, read_info
 
 
 class InventoryParams(StageParams):
@@ -122,15 +122,14 @@ def _clip_level(ctx, lights, white: float) -> float:
     """The saturation level of FITS frames whose header does not give it (no DATAMAX: the type's maximum is
     assumed): a plateau of clipped pixels at the same highest value in a few frames is the real one (a 14-bit camera
     saved in 16-bit FITS saturates at 16383, not 65535)."""
-    fits_l = [f for f in lights if str(f["path"]).lower().endswith((".fit", ".fits", ".fts"))]
+    fits_l = [f for f in lights if frame_kind(f["path"]) == "fits"]
     if not fits_l:
         return white
-    from astropy.io import fits
-    if "DATAMAX" in fits.getheader(fits_l[0]["path"]):
+    if "DATAMAX" in fits_header(fits_l[0]["path"]):
         return white
     tops = []
     for f in fits_l[:: max(1, len(fits_l) // 5)][:5]:
-        d = np.asarray(fits.getdata(f["path"]))
+        d = read_cfa(f["path"])
         m = float(d.max())
         tops.append((m, int(np.count_nonzero(d == m))))
     plateau = [m for m, n in tops if n >= 20]
