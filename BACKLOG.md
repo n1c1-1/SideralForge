@@ -80,6 +80,21 @@ Found by reading one frame of each with `io/frames.py`:
   piece of work);
 * smart telescopes on alt-azimuth mounts: the field rotates during the night (registration and stacking to check).
 
+First pass on nine test sets, 2026-10-30 night (PLAN 11.18; sets in `F:\astro_essais`, `tools/qc/jeux.py`). Fixed:
+compressed FITS, CR3 / RAF metadata, ms exposures, turned fields, colour without a camera profile, star flat under
+coma, H-alpha amplitude collapse in emission fields, catalogue / name / survey services down. Still open:
+
+* stars with coma (Newtonian without corrector, Canon 6D) leave white / black blobs in the starless layer;
+* smart telescopes (Seestar, Stellina): star-model residual 23-55 % in red and blue (undersampled stars drizzled
+  x1.5 with 40 frames; the drizzle rule asks for 40 frames only) - stars left orange in the starless layer;
+  a test without drizzle is in PLAN 11.18;
+* the H-alpha boost of the rendering (R - alpha G) takes a large-scale red excess of the sky for emission (Seestar
+  M31); telling a line from a red continuum needs the blue channel or the survey;
+* astrometry with an unknown scale queries Gaia once per trial scale (22 scales, ~1 min each while VizieR is down);
+  the local blind solver could give the scale first;
+* dense Milky Way fields (M8): the catalogue stage is impractical without VizieR;
+* Stellina NGC 891 (frames already processed by the telescope, light-pollution filter): magenta sky, colour fit 8 %.
+
 ## Reproducibility: the learned star removal is trained for a time, not a number of steps (found 2026-10-29)
 
 `star_net` trains for `minutes` (32 by default), so the number of training steps depends on what else uses the GPU:

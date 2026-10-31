@@ -13,6 +13,8 @@ installed (on the development PC: `C:\Users\Nicolas\sandbox\ComfyUI\.venv\Script
 | `qc_prompt.md` | The instruction given to the independent judges. |
 | `render_saved.py` | Renders a project's deliverables again with their saved settings. |
 | `run_stage.py` | Runs given stages of a test copy, with parameters changed in memory only. |
+| `jeux.py` | Test sets: chosen frames of other cameras' sessions (and of the user's) copied to `F:\astro_essais`, processed as projects kept apart from the user's (`ASTRO_GPU_HOME`), rendered with 'Natural'. `build`, `run`, `list`. |
+| `bulletin.py` | Report card of a processed set: the stages' measurements, the export's checks, sky flatness and colour cast, star size and elongation measured on the render; `--sheet` adds a sheet (whole image and 100 % crops). |
 
 ## How a change is judged
 

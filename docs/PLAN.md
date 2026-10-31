@@ -898,3 +898,38 @@ the current deliverables before any re-rendering.
 - Render setting 'Brightest area ignored' (white point reference, default 0.005 % = the former rule): on the
   Horsehead, 0.05 to 0.2 % brightens the bright nebula (top fifth from 96 to 109-117 / 255) without moving the sky.
 - Test data for other sensors and instruments: `D:\astro_donnees_test` (BACKLOG, "Generalisation").
+
+### 11.18 Night of 2026-10-30: test sets of other cameras, first pass and fixes
+
+Nine test sets of 15-60 frames (`F:\astro_essais`, tool `tools/qc/jeux.py`, report card `tools/qc/bulletin.py`),
+processed as projects apart from the user's (ASTRO_GPU_HOME), learned star removal off, denoiser 6 000 steps.
+VizieR, SIMBAD and the CDS cut-out service were down all night, the ESA Gaia archive answered errors 500: the
+catalogues now come from GAVO (Heidelberg), object names from NED, the H-alpha survey from its own server.
+
+Prerequisites: star_net trains a number of steps (bit-identical on the GPU); ASTRO_GPU_HOME keeps test runs apart.
+Reading: CR3 / RAF metadata, Stellina exposures in ms, compressed FITS.
+
+What broke and was fixed (each change replayed read-only on the user's projects; none of their results moves
+except where written):
+
+| Set | Symptom | Cause | Fix |
+|---|---|---|---|
+| Seestar M31 | (none: aligned) | field turned 4.4 deg; translation-only start failed from 3 deg | rotation search when a translation matches < 30 % |
+| Stellina (both) | stack blurred, field not solved | the rotation search locked on chance pairs in a dense field | kept only with a small residual; far-off frames left out |
+| Canon 6D M51 | pink sky, red cast | no camera profile + unphysical fitted curves -> H-alpha signature 1 : 1.48 : 3.16 | typical colour sensor curves (A7S) scaled to the stars |
+| Canon 6D M51 | bright band on a third of the image | star flat from star models: coma at the edges read as -52 % sensitivity | wide apertures when the models scatter 2x more (background 5) |
+| Canon 40D Rosette | teal nebula, black centre | sky-fit rejection removed the nebula itself, H-alpha amplitude 0.019 -> 0.0021 | in emission fields (survey >= 200 R), rejection on green/blue when it collapses |
+| Stellina IC 1318 | optics stage crashed | lateral colour fit from a negative peak | patch skipped |
+| Stellina NGC 891 | astrometry failed | SIMBAD down, field too small for the blind solver | NED |
+
+Open (diagnosed, not changed - they touch the user's renders or need their eye):
+
+- Canon 6D: stars with coma at the edges leave white / black blobs in the starless layer (local shape correction
+  stops at WING_R - 1.5 px for G < 11; the unreliable-core mask refuses residuals of a mis-shaped star).
+- Seestar M31: red blotches and black holes at rendering. The H-alpha boost (R - alpha G) takes a large-scale red
+  excess of the sky for emission (boost 0 removes them; a noise threshold did not).
+- Smart telescopes: star-model residual 23-26 % (Stellina) and 55 % (Seestar) in red and blue against 10-12 % on the
+  user's data: undersampled stars (FWHM 1.7 px) drizzled x1.5 with 40 frames. Stars left orange in the starless
+  layer of IC 1318.
+- Stellina NGC 891 (frames pre-processed by the telescope): magenta sky, olive blobs.
+- ASI2600MC M8: catalogue stage impractical with GAVO only (dense Milky Way: 10 min per 1-degree cell).
