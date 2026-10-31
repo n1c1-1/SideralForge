@@ -48,7 +48,9 @@ class Background(Stage):
     deps = ("starless", "stars", "optics", "surveys", "astrometry", "stack", "color", "catalogs")
     Params = BackgroundParams
     version = "5"          # 3: zero-point floor on the darkest areas; 4: not set where the removed star glare dominates;
-                           # 5: star flat from wide apertures when the star models' fluxes scatter twice as much
+                           # 5: star flat from wide apertures when the star models' fluxes scatter twice as much;
+                           # in an emission field, objects rejected on green and blue when the H-alpha amplitude
+                           # collapses
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
@@ -196,6 +198,11 @@ class Background(Stage):
         ctx.preview("background", asinh_preview(astro, ctx.load("color", "M.npy"), k=30))
 
 
+#: an emission field: the H-alpha survey reaches this brightness (99th percentile, rayleigh) - the user's emission
+#: fields 400-1250 R, the galaxies and reflection nebulae 3-110 R
+EMISSION_FIELD_R = 200.0
+
+
 def fit_sky(Yb, Hb, U, Tp, good, h_cam, clip, iters=10):
     """Sky model per channel: Yb = k_ha Hb + u U + polynomial, with k_ha >= 0 and u >= 0.
 
@@ -247,9 +254,9 @@ def fit_sky(Yb, Hb, U, Tp, good, h_cam, clip, iters=10):
         k = np.array([s[0] for s in sol])
         return k[1] / k[0] <= 2.0 * h_cam[1] and k[2] / k[0] <= 2.5 * h_cam[2]
 
-    def clip_objects(sol, mask):
+    def clip_objects(sol, mask, channels=(0, 1, 2)):
         keep = base.copy()
-        for c in range(3):
+        for c in channels:
             r = Yb[c].ravel() - design(c) @ sol[c]
             s = 1.4826 * np.median(np.abs(r[mask] - np.median(r[mask]))) + 1e-9
             obj = (r - np.median(r[mask]) > clip * s).reshape(Yb.shape[1:])
@@ -257,23 +264,43 @@ def fit_sky(Yb, Hb, U, Tp, good, h_cam, clip, iters=10):
             keep &= ~obj.ravel()
         return keep if keep.sum() >= 0.1 * base.sum() else mask
 
-    shared = False
-    mask = base
-    sol = solve(mask, shared)
-    for _ in range(iters):
+    def fit(channels):
+        shared = False
+        mask = base
+        sol = solve(mask, shared)
+        k_all = float(sol[0][0]) if nh else 0.0
+        for _ in range(iters):
+            if not plausible(sol):
+                shared = True
+                sol = solve(mask, shared)
+                if _ == 0 and nh:
+                    k_all = float(sol[0][0])
+            new = clip_objects(sol, mask, channels)
+            if (new == mask).all():
+                break
+            mask = new
+            sol = solve(mask, shared)
         if not plausible(sol):
             shared = True
             sol = solve(mask, shared)
-        new = clip_objects(sol, mask)
-        if (new == mask).all():
-            break
-        mask = new
-        sol = solve(mask, shared)
-    if not plausible(sol):
-        shared = True
-        sol = solve(mask, shared)
+        return sol, mask, shared, k_all
+
+    sol, mask, shared, k_all = fit((0, 1, 2))
+    kept = ""
+    if nh and k_all > 0 and sol[0][0] < 0.3 * k_all and np.nanpercentile(Hb.ravel()[base], 99) >= EMISSION_FIELD_R:
+        # in an emission field the rejection took the H-alpha nebula for objects, down to less than 30 % of the
+        # amplitude found on all the blocks: objects (galaxies, reflection nebulae) are bright in green and blue, an
+        # H-alpha excess is red (Canon 40D on the Rosette: 0.019 -> 0.0021 ADU/R with every channel, 0.015 with
+        # green and blue; the red excess of the image against the survey says 0.012-0.016). The fields where the
+        # survey is faint are left alone: there it correlates with the galaxy or the reflection nebula, and the
+        # rejection is right to lower it (Iris, M31, M33: 5 %, 0 %, 0 % of the first amplitude kept).
+        sol2, mask2, shared2, _ = fit((1, 2))
+        if sol2[0][0] > sol[0][0]:
+            kept = (f"; the rejection on all channels left {100 * sol[0][0] / k_all:.0f} % of the H-alpha amplitude "
+                    f"of the whole field: objects rejected on green and blue only")
+            sol, mask, shared = sol2, mask2, shared2
     how = "none (no survey)" if not nh else ("camera HII signature imposed (the survey correlates with other "
-                                             "structures in this field)" if shared else "fitted")
+                                             "structures in this field)" if shared else "fitted") + kept
     return sol, mask.reshape(Yb.shape[1:]), how
 
 
