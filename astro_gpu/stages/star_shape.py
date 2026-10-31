@@ -259,6 +259,15 @@ def measure(res, img, x, y, g, flux, pred, log=print):
             if np.isfinite(a) and snr > 20:
                 ratios.append(a / fl[1, i])
     scale2 = float(np.median(ratios)) if len(ratios) >= 5 else 1.0
+    if not 1 / 3 <= scale * scale2 <= 3:
+        # the shape is not the stars' own light: its amplitude has to be multiplied by thousands to match their
+        # photometry (40 frames of the Heart, a refractor without spikes: x2196, 59 % of the light "beyond 12 px",
+        # and drawing every star out to hundreds of pixels never ended). The user's projects: x0.96-1.28
+        log(f"star shape: the angular shape found needs a flux scale of {scale * scale2:.3g} to match the stars' "
+            f"photometry (about 1 expected): it is not the stars' light, round stars only")
+        info["angular_shape"] = "none"
+        info["angular_flux_scale_rejected"] = round(scale * scale2, 3)
+        return None, None, info
     E *= scale2
     fshape = flux.astype(np.float64).copy()
     for i in np.where(issat)[0]:
