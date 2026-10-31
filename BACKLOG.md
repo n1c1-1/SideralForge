@@ -92,7 +92,8 @@ coma, H-alpha amplitude collapse in emission fields, catalogue / name / survey s
   M31); telling a line from a red continuum needs the blue channel or the survey;
 * astrometry with an unknown scale queries Gaia once per trial scale (22 scales, ~1 min each while VizieR is down);
   the local blind solver could give the scale first;
-* dense Milky Way fields (M8): the catalogue stage is impractical without VizieR;
+* dense Milky Way fields (M8) and wide fields (135 mm lens: 234 catalogue cells): the catalogue stage is
+  impractical without VizieR; its depth (G 18.5 / 20.5) should follow the field and the exposure;
 * Stellina NGC 891 (frames already processed by the telescope, light-pollution filter): magenta sky, colour fit 8 %.
 
 ## Reproducibility: the learned star removal is trained for a time, not a number of steps (found 2026-10-29)

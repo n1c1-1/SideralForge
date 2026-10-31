@@ -934,3 +934,7 @@ Open (diagnosed, not changed - they touch the user's renders or need their eye):
   (31-36 %) and the stars turn to purple blobs: the drizzle is not the cause.
 - Stellina NGC 891 (frames pre-processed by the telescope): magenta sky, olive blobs.
 - ASI2600MC M8: catalogue stage impractical with GAVO only (dense Milky Way: 10 min per 1-degree cell).
+- Canon EOS Ra, 135 mm lens (16 x 11 deg): read correctly (CR3); with an unknown focal length the scale search
+  passed the right scale without a match and went on (stopped after 35 min); with 135 mm entered it solved
+  (0.11 px on 4 547 stars), but the catalogue asks 234 cells of G < 18.5 and the faint stars to G 20.5: hours
+  without VizieR, for stars far below what a 135 mm lens records. The catalogue depth does not follow the field.
