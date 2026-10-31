@@ -929,7 +929,8 @@ Open (diagnosed, not changed - they touch the user's renders or need their eye):
 - Seestar M31: red blotches and black holes at rendering. The H-alpha boost (R - alpha G) takes a large-scale red
   excess of the sky for emission (boost 0 removes them; a noise threshold did not).
 - Smart telescopes: star-model residual 23-26 % (Stellina) and 55 % (Seestar) in red and blue against 10-12 % on the
-  user's data: undersampled stars (FWHM 1.7 px) drizzled x1.5 with 40 frames. Stars left orange in the starless
-  layer of IC 1318.
+  user's data, undersampled stars (FWHM 1.7 px). Stars left orange in the starless layer of IC 1318, and its
+  H-alpha nebulosity is not there. Without drizzle (x1.0 instead of x1.5 with 40 frames) the residual is worse
+  (31-36 %) and the stars turn to purple blobs: the drizzle is not the cause.
 - Stellina NGC 891 (frames pre-processed by the telescope): magenta sky, olive blobs.
 - ASI2600MC M8: catalogue stage impractical with GAVO only (dense Milky Way: 10 min per 1-degree cell).

@@ -85,9 +85,9 @@ compressed FITS, CR3 / RAF metadata, ms exposures, turned fields, colour without
 coma, H-alpha amplitude collapse in emission fields, catalogue / name / survey services down. Still open:
 
 * stars with coma (Newtonian without corrector, Canon 6D) leave white / black blobs in the starless layer;
-* smart telescopes (Seestar, Stellina): star-model residual 23-55 % in red and blue (undersampled stars drizzled
-  x1.5 with 40 frames; the drizzle rule asks for 40 frames only) - stars left orange in the starless layer;
-  a test without drizzle is in PLAN 11.18;
+* smart telescopes (Seestar, Stellina): star-model residual 23-55 % in red and blue (undersampled stars, FWHM
+  1.7 px) - stars left orange in the starless layer of IC 1318, its nebulosity lost; not the drizzle (without it
+  the residual is 31-36 %);
 * the H-alpha boost of the rendering (R - alpha G) takes a large-scale red excess of the sky for emission (Seestar
   M31); telling a line from a red continuum needs the blue channel or the survey;
 * astrometry with an unknown scale queries Gaia once per trial scale (22 scales, ~1 min each while VizieR is down);
