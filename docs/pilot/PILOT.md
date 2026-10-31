@@ -83,6 +83,17 @@ A working client on the current algorithms is worth more than new methods withou
   2. Only blocking or important points, verified in the code or the data, are applied.
   3. Correct, do not redesign: change lines, keep the plan.
 
+- **Agent model: frugal but quality first** (the user, 2026-10-31: "qualité avant tout… mais sans gaspiller avec des
+  agents lourds pour des tâches qui n'en valent pas la peine"):
+  - **opus** where a mistake costs results or data: the runner (P3), the import of real projects (P6), the
+    projects' runs (P8), integration (P13), the final independent evaluation;
+  - **sonnet** for well-specified work: the API (P5), engine texts (P16), the end-to-end test (P7), the ports of
+    mockup views (P9b, P10–P12), the QC tools port (P17), QC judging (P14);
+  - **haiku** for simple look-ups and checks only, never for code;
+  - give sonnet agents sharper briefs (exact files, exact acceptance);
+  - this split is a starting point, not a rule (the user: "pas à graver dans le marbre… ajuste en fonction du retour
+    d'expérience"). If a lighter agent's work needs heavy rework, move that kind of task up. If an opus agent's task
+    turns out routine, move it down. Note each change in JOURNAL.md.
 - **Delegate** reading and coding to agents with precise briefs. Keep only conclusions here. Never read big files or
   transcripts into this context.
 - **One owner per file at a time**: never two agents on the same files.

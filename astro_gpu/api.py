@@ -1,0 +1,1916 @@
+"""The engine API: the only door between the client (``astro_gpu/client``) and the engine (DESIGN §4).
+
+Every function takes the project definition (``Project2``) first, and a workflow by its integer id (a ``Workflow``
+object also works wherever the function only reads: that is how what-ifs are asked). Edits change the definition in
+memory; ``save(p)`` writes it (the client autosaves, debounced). Nothing here imports Qt.
+
+Threading (DESIGN §5.3). Nothing slow runs on import: torch, the stages and the renderers load on the first call that
+needs them. The calls fall into four groups:
+
+* memory only (the GUI thread may call them): the editing functions (``add_workflow``, ``set_option``, ``set_param``,
+  ``set_workflows``, ``make_variant``...), ``workflows``, ``methods``, ``sliders_of``, ``running``, ``cancel``;
+* the stage graph and the keys: ``chain``, ``deps``, ``blocks``, ``stage_key``, ``sharing``, ``states``, ``plan_*``,
+  ``cost``, ``estimate``. The first call imports the stages (seconds); the parts of the keys that read the disk (the
+  frame files of the sessions, the reference image) come from an ``InputScan`` cached per project, so only the first
+  call after ``open_project`` (or after ``refresh(p, scan=True)``) scans. Call ``warm(p)`` from the worker thread
+  when a project opens; the GUI thread then finds everything cached. ``states`` reads manifests (small files);
+* worker thread only (they scan, load arrays or compute): ``warm``, ``scan_folder``, ``add_frames``, ``health_checks``,
+  ``frame_table``, ``selection_preview``, ``frame_thumb``, ``describe``, ``stage_outputs``, ``stage_array``,
+  ``cache_usage``, ``clear_unused``, ``machine``, ``list_projects``, ``import_v1`` (preview and import);
+* the render worker: ``render_layer``, ``post_masks``, ``export_image``, ``export_workflow``.
+
+A run is a detached process (``start_run``); the client follows ``read_events`` and calls ``refresh(p)`` when a stage
+ends so that cached "done" answers are read again. ``states(p)`` records the done keys in ``state.json`` (the "previous
+result" of a stage that later goes Outdated); ``states(p, update=False)`` writes nothing: use it on a project that must
+stay read-only.
+
+For tests and tools, ``use_rules(p, rules)`` replaces the stage graph (toy stages); the spec ``'module:function'``
+also reaches the detached worker through ``Plan.rules``.
+"""
+from __future__ import annotations
+
+import copy
+import hashlib
+import importlib
+import json
+import os
+import re
+import shutil
+import tempfile
+import threading
+import weakref
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from .core import estimate as est
+from .core import project2 as p2
+from .core import workflow as wfl
+from .core.project import Target
+from .core.project2 import KINDS, Project2, Session, Workflow
+from .core.store import InputScan, KeyRules, Keys, Store, StoreProject
+
+if TYPE_CHECKING:
+    import numpy as np
+
+    from .core.import_v1 import ImportReport
+    from .core.runner2 import Plan, RunInfo
+    from .render.layers import LayerImage
+
+TEMPLATES = wfl.TEMPLATES
+OptionRefused = wfl.OptionRefused
+LegacyProject = p2.LegacyProject          # open_project raises it on a v1 folder
+Estimate = est.Estimate
+
+# reasons of the stage states (English; the client translates them)
+REASON_NEVER = "never run"
+REASON_SETTINGS = "its settings changed since this result"
+REASON_UPSTREAM = "an upstream result changed since this result"
+REASON_ALGORITHM = "the algorithm was updated since this result"
+REASON_UPSTREAM_FAILED = "upstream failed"
+REASON_INTERRUPTED = "interrupted"
+STATES = ("done", "pending", "stale", "running", "failed", "interrupted", "skipped")
+
+
+class NotDone(FileNotFoundError):
+    """A result that is asked for is not computed (yet): the message names the stage."""
+
+
+class RunInProgress(RuntimeError):
+    """The project has a live run: what was asked would pull the files away from it."""
+
+
+# ---------------------------------------------------------------------------------------------- return types
+
+@dataclass
+class ProjectSummary:
+    """A Home card. ``state``: empty (no workflow), never_run, has_results (cheap scan) or, with ``deep``,
+    up_to_date, outdated, running."""
+
+    name: str
+    root: str
+    description: str = ""
+    target: str = ""
+    nights: int = 0
+    workflows: int = 0
+    integration_h: float | None = None
+    last: str = ""                       # ISO time of the last change (definition, state or events)
+    state: str = "empty"
+    done: int = 0                        # workflows with results
+    outdated: int | None = None          # deep only
+    running: bool = False
+    thumb: str = ""                      # cache/thumb.jpg when there is one
+    error: str = ""                      # the definition cannot be read
+
+
+@dataclass
+class ScanResult:
+    """What a folder holds: the frames of each kind (the folder itself holds the lights) and the calibration folders
+    found next to it."""
+
+    folder: str
+    name: str = ""
+    target: str = ""
+    folders: dict[str, list[str]] = field(default_factory=dict)         # kind -> folders
+    frames: dict[str, list[Any]] = field(default_factory=dict)          # kind -> [io.frames.FrameInfo]
+    errors: list[str] = field(default_factory=list)                     # unreadable files
+
+
+@dataclass
+class GroupingCriteria:
+    """What splits the frames into sessions: the night (noon to noon), the exposure, the ISO or gain."""
+
+    night: bool = True
+    exposure: bool = True
+    iso: bool = True
+
+
+@dataclass
+class SessionGroup:
+    name: str
+    night: str
+    exposure: float | None
+    iso: float | None
+    paths: list[str]
+    start: str = ""
+    end: str = ""
+
+    @property
+    def count(self) -> int:
+        return len(self.paths)
+
+
+@dataclass
+class Check:
+    """A health check: ``level`` ok | warn | info; ``key`` a code; ``text`` English; ``args`` the numbers in it."""
+
+    level: str
+    key: str
+    text: str
+    args: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class FrameRow:
+    index: int
+    path: str
+    name: str
+    session: int | None
+    time: str | None
+    fwhm: float
+    transparency: float
+    rms: float
+    weight: float
+    status: str                          # '' kept, else the reason ("low transparency", "excluded by hand"...)
+    excluded: bool                       # excluded by hand (the project's list)
+
+
+@dataclass
+class FrameTable:
+    rows: list[FrameRow]
+    kept: int
+    min_transparency: float
+    max_fwhm_ratio: float
+    source: str                          # "stack" (what the stack used) or "preview" (these thresholds)
+
+    @property
+    def total(self) -> int:
+        return len(self.rows)
+
+
+@dataclass
+class MethodInfo:
+    """A way to compute a block. ``new``: ◇, not in the engine yet (Spec mode only, disabled)."""
+
+    key: str
+    name: str
+    short: str
+    runs_on: str                         # gpu | cpu | both
+    stage: str
+    new: bool = False
+    what: str = ""
+
+
+@dataclass
+class BlockRef:
+    block: str
+    stages: tuple[str, ...]
+    key: tuple[str, ...]
+
+
+@dataclass
+class StageState:
+    """``state`` is one of STATES. ``previous_key``: the result an Outdated stage had, still in the store."""
+
+    state: str
+    reason: str = ""
+    key: str = ""
+    previous_key: str | None = None
+
+
+@dataclass
+class Cost:
+    seconds: float
+    measured: bool                       # every time comes from this machine's history (else ≈)
+    disk_gb: float
+    jobs: int
+    keys: list[str] = field(default_factory=list)
+    skipped: dict[int, str] = field(default_factory=dict)
+
+
+@dataclass
+class Gpu:
+    device: str                          # "cuda:0"
+    name: str
+    memory_gb: float
+
+
+@dataclass
+class MachineInfo:
+    gpus: list[Gpu] = field(default_factory=list)
+    cores: int = 0
+    memory_gb: float = 0.0
+
+    @property
+    def cuda(self) -> bool:
+        return bool(self.gpus)
+
+
+@dataclass
+class CacheItem:
+    """Something in the store or the scratch folder that no workflow needs. ``kind``: result, tmp, trash, scratch.
+    ``resumable``: a ``.tmp`` folder of the key a workflow has now (its checkpoints let the next run resume)."""
+
+    kind: str
+    stage: str
+    key: str
+    path: str
+    bytes: int
+    resumable: bool = False
+
+
+@dataclass
+class CacheUsage:
+    used_bytes: int
+    unused: list[CacheItem] = field(default_factory=list)
+
+    @property
+    def unused_bytes(self) -> int:
+        return sum(i.bytes for i in self.unused)
+
+
+@dataclass
+class StageOutputs:
+    """A done result: its folder, previews {name: jpg path}, and the manifest's metrics, parameters, origins and
+    reasons as they are (the reasons are the engine's templates; ``manifest`` is the whole file)."""
+
+    stage: str
+    key: str
+    which: str                           # current | previous
+    dir: str
+    previews: dict[str, str] = field(default_factory=dict)
+    metrics: dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
+    origin: dict[str, str] = field(default_factory=dict)
+    auto_reasons: dict[str, Any] = field(default_factory=dict)
+    duration: float | None = None
+    finished: str = ""
+    manifest: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SpectralCurves:
+    lam: Any                             # wavelengths (nm)
+    S: Any                               # (3, N) response of R, G, B
+    cam_hii: Any = None
+    cam_oiii: Any = None
+
+
+@dataclass
+class ParamInfo:
+    """A setting of a stage for the panel. ``value`` is the effective one; ``origin`` default | auto | user;
+    ``suggested`` the value without the user's (``suggestion_known`` False: the stage cannot compute it yet, the
+    upstream results are not done). ``reason`` / ``reason_args``: the engine's ``Auto.template`` and ``Auto.args``,
+    unformatted (``reason_en`` is ``Auto.reason``). ``drift``: the done result used another value
+    (``result_value``); ``locked``: the workflow's options or the project's exclusions set it."""
+
+    name: str
+    label: str
+    help: str
+    tip: str
+    type: str
+    default: Any
+    value: Any
+    suggested: Any
+    suggestion_known: bool
+    origin: str
+    reason: str = ""
+    reason_args: Any = None
+    reason_en: str = ""
+    level: str = "basic"
+    unit: str = ""
+    ge: float | None = None
+    le: float | None = None
+    gt: float | None = None
+    lt: float | None = None
+    step: float | None = None
+    choices: list[str] | None = None
+    locked: bool = False
+    drift: bool = False
+    result_value: Any = None
+
+
+@dataclass
+class MetricInfo:
+    """How to show a metric (the catalogue of ``texts.py``): label, unit, number format spec ('d', '.2f'...), one-line
+    meaning, in the language asked. ``known`` is False for a key the catalogue lacks (the label is the key spelled
+    out). ``texts.format_metric(key, value, lang)`` writes a value."""
+
+    stage: str
+    key: str
+    label: str
+    unit: str = ""
+    format: str = ""
+    meaning: str = ""
+    known: bool = True
+
+
+@dataclass
+class SliderInfo:
+    key: str
+    name: str
+    group: str
+    ends: tuple[str, str]
+    available: bool
+    reason: str = ""
+
+
+# ---------------------------------------------------------------------------------------------- per-project cache
+
+class _NullJournal:
+    """Where a resolve writes its events: nowhere."""
+
+    def emit(self, *a: Any, **k: Any) -> None:
+        pass
+
+
+class _Ctx:
+    """What the API keeps for one project object: the cached disk parts of the keys, the Keys of the current
+    definition, the store's folders and the automatic values already computed."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.scan = InputScan()
+        self.rules_obj: KeyRules | None = None
+        self.spec: str | None = None
+        self.fp: str | None = None
+        self.keys: Keys | None = None
+        self.store: Store | None = None
+        self.store_root: str | None = None
+        self.autos: dict[tuple, dict] = {}
+        self.stretch: dict[tuple, tuple[float, float, float]] = {}
+        self.warm_entries: set[tuple] = set()
+
+    def rules(self) -> KeyRules:
+        if self.rules_obj is None:
+            from .core.store import key_rules
+            self.rules_obj = key_rules()
+        return self.rules_obj
+
+
+_CTXS: dict[int, _Ctx] = {}
+_CTX_LOCK = threading.Lock()
+
+
+def _ctx(p: Project2) -> _Ctx:
+    k = id(p)
+    c = _CTXS.get(k)
+    if c is None:
+        with _CTX_LOCK:
+            c = _CTXS.get(k)
+            if c is None:
+                c = _CTXS[k] = _Ctx()
+                weakref.finalize(p, _CTXS.pop, k, None)
+    return c
+
+
+def _keys(p: Project2) -> Keys:
+    """The Keys of the project's current definition: a snapshot (so a worker thread never sees a half-made edit), made
+    again when the definition changes. Its ``project`` is the snapshot."""
+    c = _ctx(p)
+    d = p.to_dict()
+    fp = hashlib.sha1(json.dumps([str(p.root), d], sort_keys=True, default=str).encode()).hexdigest()
+    with c.lock:
+        if c.keys is None or c.fp != fp:
+            c.keys = Keys(Project2.from_dict(d, p.root), c.rules(), c.scan)
+            c.fp = fp
+        return c.keys
+
+
+def _store(p: Project2) -> Store | None:
+    if p.root is None:
+        return None
+    c = _ctx(p)
+    root = os.path.abspath(p.root)
+    with c.lock:
+        if c.store is None or c.store_root != root:
+            c.store, c.store_root = Store(root), root
+        return c.store
+
+
+def _r2() -> Any:
+    from .core import runner2
+    return runner2
+
+
+def _load_rules(rules: KeyRules | str | None) -> KeyRules | None:
+    """A KeyRules, or the one a spec ``'module:function'`` builds."""
+    if isinstance(rules, str):
+        mod, _, fn = rules.partition(":")
+        return getattr(importlib.import_module(mod), fn)()
+    return rules
+
+
+def use_rules(p: Project2, rules: KeyRules | str | None, spec: str | None = None) -> None:
+    """Replace the stage graph of this project (tests and tools): ``rules`` is a KeyRules, or a ``'module:function'``
+    spec building one. ``spec`` names the same rules for the detached worker (``Plan.rules``)."""
+    c = _ctx(p)
+    with c.lock:
+        if isinstance(rules, str):
+            c.rules_obj, c.spec = _load_rules(rules), rules
+        else:
+            c.rules_obj, c.spec = rules, spec
+        c.fp = None
+        c.autos.clear()
+
+
+def refresh(p: Project2, scan: bool = False) -> None:
+    """Forget what was cached about the disk: the 'usable' answers and the automatic values (after a run or a stage
+    end). ``scan=True`` also forgets the frame files and file ids (the raws changed on disk)."""
+    c = _ctx(p)
+    with c.lock:
+        if c.store is not None:
+            c.store.forget()
+        c.autos.clear()
+        if scan:
+            c.scan.forget()
+            c.warm_entries.clear()
+        c.fp = None
+
+
+def warm(p: Project2, progress: Callable[[float, str], None] | None = None) -> None:
+    """Fill every disk cache the keys, states and plans use (worker thread): the stage graph, each session's frame
+    files, the reference image, the keys of every workflow, the sensor size the estimates need and the 'usable'
+    answers of the done inventory and calibrate results. Afterwards those calls read manifests only."""
+    say = progress or (lambda f, m: None)
+    say(0.0, "loading the stage graph")
+    keys = _keys(p)
+    store = _store(p)
+    c = _ctx(p)
+    ws = keys.project.workflows
+    for i, w in enumerate(ws):
+        say(0.1 + 0.8 * i / max(len(ws), 1), f"keys of {w.name}")
+        for s in keys.chain(w):
+            k = keys.key(w, s)
+            if store is not None and s in ("inventory", "calibrate") and store.done(s, k):
+                store.usable_as_input(s, k)
+        est.facts(keys, w, store)                       # reads one raw header (the sensor size) for the estimates
+    with c.lock:
+        c.warm_entries = {_entries(keys.project, s) for s in keys.project.sessions}
+    say(1.0, "ready")
+
+
+def _entries(project: Project2, session: Session) -> tuple:
+    return tuple(tuple(project.abspath(f) for f in getattr(session, k)) for k in KINDS)
+
+
+def is_warm(p: Project2) -> bool:
+    """Whether the frame files of every session are cached (``warm`` ran, and the sessions did not change since)."""
+    c = _ctx(p)
+    return all(_entries(p, s) in c.warm_entries for s in p.sessions) if p.root is not None else True
+
+
+# ---------------------------------------------------------------------------------------------- projects
+
+def list_projects(workspace: str | Path, deep: bool = False) -> list[ProjectSummary]:
+    """The projects of a workspace folder, most recent first (Home cards). Skips ``_*`` folders and folders without
+    ``project.astroproj``; a definition that cannot be read gives a summary with ``error``. A cheap scan: the state is
+    read from state.json and the store (never the raws); ``deep=True`` computes the true states (worker thread)."""
+    ws = Path(workspace)
+    out: list[ProjectSummary] = []
+    if not ws.is_dir():
+        return out
+    for d in sorted(ws.iterdir()):
+        if d.is_dir() and not d.name.startswith("_") and (d / p2.FILE).is_file():
+            out.append(_summary(d, deep))
+    out.sort(key=lambda s: s.last, reverse=True)
+    return out
+
+
+def _mtime(*paths: Path) -> float:
+    best = 0.0
+    for f in paths:
+        try:
+            best = max(best, f.stat().st_mtime)
+        except OSError:
+            pass
+    return best
+
+
+def _lock_alive(root: Path) -> bool:
+    try:
+        holder = json.loads((root / "logs" / "run.lock").read_text(encoding="utf-8"))
+        import psutil
+        return psutil.pid_exists(int(holder["pid"]))
+    except Exception:  # noqa: BLE001 - no lock, an unreadable one, no psutil: no live run
+        return False
+
+
+def _summary(d: Path, deep: bool) -> ProjectSummary:
+    last = datetime.fromtimestamp(_mtime(d / p2.FILE, d / p2.STATE_FILE, d / "logs" / "events.jsonl"))
+    s = ProjectSummary(name=d.name, root=str(d), last=last.isoformat(timespec="seconds"))
+    try:
+        p = p2.load(d)
+    except Exception as e:  # noqa: BLE001 - a broken definition still gets its card
+        s.error = f"{type(e).__name__}: {e}"
+        return s
+    s.name, s.description, s.target = p.name, p.description, p.target.name
+    s.nights, s.workflows = len(p.sessions), len(p.workflows)
+    s.running = _lock_alive(d)
+    thumb = d / "cache" / "thumb.jpg"
+    s.thumb = str(thumb) if thumb.is_file() else ""
+    store = Store(d)
+    last_keys = p2.read_state(d)["last_keys"]
+
+    def done(stage: str, key: Any) -> bool:
+        try:
+            return store.done(stage, key)
+        except ValueError:                       # not a key: state.json was edited by hand
+            return False
+    for w in p.workflows:
+        if any(done(st, k) for st, k in (last_keys.get(str(w.id)) or {}).items()):
+            s.done += 1
+    for lk in last_keys.values():
+        k = lk.get("inventory")
+        m = (store.manifest("inventory", k).get("metrics") or {}) if k and done("inventory", k) else {}
+        if m.get("n_lights") and m.get("exposure_s"):
+            s.integration_h = round(m["n_lights"] * m["exposure_s"] / 3600, 1)
+            break
+    s.state = "empty" if not p.workflows else ("has_results" if s.done else "never_run")
+    if deep and p.workflows:
+        try:
+            st = states(p, update=False)
+        except Exception as e:  # noqa: BLE001
+            s.error = f"{type(e).__name__}: {e}"
+            return s
+        bad = {wid for (wid, _), x in st.items() if x.state != "done"}
+        s.outdated = len(bad)
+        s.state = "running" if s.running else ("never_run" if not s.done else ("outdated" if bad else "up_to_date"))
+    return s
+
+
+def create_project(root: str | Path, name: str, target: Target | dict | str | None = None) -> Project2:
+    """A new, empty v2 project folder (no sessions, no workflows). ``target``: a Target, its fields, or its name."""
+    if isinstance(target, str):
+        target = Target(name=target)
+    elif isinstance(target, dict):
+        target = Target(**target)
+    return p2.create(root, name, target)
+
+
+def open_project(root: str | Path) -> Project2:
+    """Open a v2 project (nothing is written). A v1 folder raises ``LegacyProject``: import it (``import_v1``)."""
+    return p2.load(root)
+
+
+def save(p: Project2) -> Path:
+    """Write the definition atomically; returns the file."""
+    return p2.save(p)
+
+
+def save_as(p: Project2, root: str | Path) -> Project2:
+    """Copy the definition to a new folder (definition only: no results) and return that project; ``p`` stays where
+    it was. Relative paths become absolute, so that the copy still finds the frames and the reference image."""
+    root = Path(root)
+    if (root / p2.FILE).exists():
+        raise FileExistsError(f"a project already exists in {root}")
+    q = Project2.from_dict(p.to_dict(), None)
+    for s in q.sessions:
+        for kind in KINDS:
+            setattr(s, kind, [p.abspath(f) for f in getattr(s, kind)])
+    if q.reference_image:
+        q.reference_image = p.reference_path()
+    if q.scratch_dir:
+        q.scratch_dir = p.abspath(q.scratch_dir)
+    q.created = datetime.now().isoformat(timespec="seconds")
+    p2.save(q, root)
+    return q
+
+
+def import_v1(old_root: str | Path, new_root: str | Path, path_map: dict[str, Any] | None = None,
+              dry_run: bool = False, *, rules: KeyRules | str | None = None,
+              progress: Callable[[str], None] | None = None) -> ImportReport:
+    """Import a v1 project and its results into a new v2 folder (copy only; nothing is ever written into the old
+    project). ``path_map`` says where the raw frames are now ({old folder or file: new place, or a list of places}).
+    ``dry_run=True`` is the preview: the same checks, nothing written, the report says per workflow and stage what is
+    adopted (with its key) or recomputed (why), the bytes to copy and the free space (``report.enough_space``).
+    The real import raises ``NotEnoughSpace`` before it copies anything when the disk is too small, and
+    ``WriteRefused`` if anything tried to write into the old project. ``progress(text)`` gets short messages.
+    ``rules``: toy stages for tests (a KeyRules, or the spec ``'module:function'``). Worker thread: it reads every
+    frame's header and copies tens of GB. Open the result with ``open_project(new_root)``."""
+    from .core import import_v1 as iv
+    return iv.import_v1(old_root, new_root, path_map, dry_run, rules=_load_rules(rules), progress=progress)
+
+
+# ---------------------------------------------------------------------------------------------- frames and sessions
+
+def scan_folder(folder: str | Path, progress: Callable[[float, str], None] | None = None) -> ScanResult:
+    """Read a folder of light frames and the calibration folders found next to it (darks, flats, bias, dark flats,
+    by their usual names): every frame with its header. Slow on a big card: worker thread. ``progress(fraction,
+    text)`` may raise to stop."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .core.newproject import guess_calibration, guess_names
+    from .core.project import list_frames
+    from .io.frames import read_info
+    folder = Path(folder)
+    if not folder.is_dir():
+        raise FileNotFoundError(f"not a folder: {folder}")
+    say = progress or (lambda f, m: None)
+    names = guess_names(str(folder))
+    res = ScanResult(str(folder), names["name"], names["target"])
+    res.folders = {"lights": [str(folder)], **guess_calibration(str(folder))}
+    files = {k: list_frames(fs) for k, fs in res.folders.items()}
+    total, done = max(sum(len(v) for v in files.values()), 1), 0
+    with ThreadPoolExecutor(8) as ex:
+        for kind, fl in files.items():
+            res.frames[kind] = []
+            if not fl:
+                continue
+            first = None
+            for f in fl:                                  # the first readable frame is decoded; the others by header
+                try:
+                    first = read_info(f)
+                    break
+                except Exception as e:  # noqa: BLE001
+                    res.errors.append(f"{f}: {e}")
+            if first is None:
+                continue
+
+            def read(f: Path, like=first) -> Any:
+                try:
+                    return read_info(f, like=like)
+                except Exception as e:  # noqa: BLE001 - one bad file does not stop the scan
+                    return f"{f}: {e}"
+            for r in ex.map(read, fl):
+                (res.frames[kind].append(r) if not isinstance(r, str) else res.errors.append(r))
+                done += 1
+                say(done / total, f"reading headers {done}/{total}")
+    return res
+
+
+def _when(info: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(info.time).replace("Z", "+00:00")).replace(tzinfo=None)
+    except (TypeError, ValueError):
+        return None
+
+
+def group_sessions(infos: Sequence[Any], criteria: GroupingCriteria | None = None) -> list[SessionGroup]:
+    """Split frames (``FrameInfo``) into sessions: one per night (noon to noon), then by exposure and ISO / gain as
+    the criteria say. Groups come in time order."""
+    c = criteria or GroupingCriteria()
+    groups: dict[tuple, list[Any]] = {}
+    for i in infos:
+        t = _when(i)
+        night = (t - timedelta(hours=12)).date().isoformat() if t else "unknown"
+        key = (night if c.night else "", i.exposure if c.exposure else None, i.iso if c.iso else None)
+        groups.setdefault(key, []).append(i)
+    out: list[SessionGroup] = []
+    order = sorted(groups.items(), key=lambda kv: (kv[0][0], -1 if kv[0][1] is None else kv[0][1],
+                                                   -1 if kv[0][2] is None else kv[0][2]))
+    for (night, exp, iso), fl in order:
+        times = sorted(t.isoformat(timespec="seconds") for t in map(_when, fl) if t)
+        name = night or "all frames"
+        more = sum(1 for k in groups if k[0] == night) > 1
+        if more and c.exposure and exp is not None:
+            name += f" · {exp:g} s"
+        if more and c.iso and iso is not None:
+            name += f" · ISO {iso:g}"
+        out.append(SessionGroup(name, night, exp, iso, sorted(i.path for i in fl),
+                                times[0] if times else "", times[-1] if times else ""))
+    return out
+
+
+def add_session(p: Project2, lights: Iterable[str | Path] = (), darks: Iterable[str | Path] = (),
+                flats: Iterable[str | Path] = (), bias: Iterable[str | Path] = (),
+                flat_darks: Iterable[str | Path] = (), name: str = "") -> Session:
+    """A new session from folders or files (no header is read)."""
+    sid = max((s.id for s in p.sessions), default=0) + 1
+    s = Session(sid, name or f"Session {sid}", lights=[str(x) for x in lights], darks=[str(x) for x in darks],
+                flats=[str(x) for x in flats], bias=[str(x) for x in bias], flat_darks=[str(x) for x in flat_darks])
+    p.sessions.append(s)
+    p.validate()
+    return s
+
+
+def _same(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+def _put(lst: list[str], item: str) -> None:
+    if not any(_same(item, x) for x in lst):
+        lst.append(item)
+
+
+def add_frames(p: Project2, scan: ScanResult, session: int | None = None) -> list[Session]:
+    """Add a scanned folder to the project. Without ``session``, one session per night is made (noon to noon); the
+    calibration folders go to the session nearest in time. With a session id, everything goes into it. Returns the
+    sessions made or changed."""
+    lights = scan.frames.get("lights") or []
+    if session is not None:
+        s = p.session(session)
+        for kind in KINDS:
+            for f in scan.folders.get(kind, []):
+                if scan.frames.get(kind):
+                    _put(getattr(s, kind), f)
+        p.validate()
+        return [s]
+    groups = group_sessions(lights, GroupingCriteria(night=True, exposure=False, iso=False)) if lights else []
+    if not groups:
+        groups = [SessionGroup(scan.name or Path(scan.folder).name, "", None, None, [])]
+    made: list[Session] = []
+    whole = len(groups) == 1
+    for g in groups:
+        s = add_session(p, name=g.night if g.night and g.night != "unknown" else g.name)
+        s.lights = [scan.folders["lights"][0]] if whole else list(g.paths)
+        made.append(s)
+    mids = [datetime.fromisoformat(g.start) if g.start else None for g in groups]
+    for kind in KINDS[1:]:
+        for f in scan.folders.get(kind, []):
+            fl = [i for i in scan.frames.get(kind, []) if _same(str(Path(i.path).parent), f)]
+            if not fl:
+                continue
+            ts = sorted(t for t in map(_when, fl) if t)
+            if whole or not ts or not any(mids):
+                target = made[0]
+            else:
+                mid = ts[len(ts) // 2]
+                target = made[min((i for i, m in enumerate(mids) if m), key=lambda i: abs(mids[i] - mid))]
+            _put(getattr(target, kind), f)
+    p.validate()
+    return made
+
+
+def remove_session(p: Project2, session: int) -> Session:
+    """Remove a session and the frames of it excluded by hand; returns it."""
+    s = p.session(session)
+    p.sessions.remove(s)
+    p.excluded = [pair for pair in p.excluded if pair[0] != session]
+    p.validate()
+    return s
+
+
+def set_excluded(p: Project2, pairs: Iterable[tuple[int, str]], excluded: bool = True) -> None:
+    """Exclude (or keep again) light frames by hand: ``(session id, file name)`` pairs. Only Stacking and the stages
+    after it change (the stack's ``exclude`` setting)."""
+    pairs = [(int(sid), str(name)) for sid, name in pairs]
+    for sid, _ in pairs:
+        p.session(sid)
+    cur = list(p.excluded)
+    if excluded:
+        cur += [t for t in dict.fromkeys(pairs) if t not in cur]
+    else:
+        cur = [t for t in cur if t not in set(pairs)]
+    p.excluded = cur
+    p.validate()
+
+
+def health_checks(p: Project2) -> list[Check]:
+    """What to look at before running: no lights, no bias, flats of several sessions merged into one master, the star
+    size per session (once Registration is done) and the disk the calibrated cache needs; the rest of the spec's
+    checks are ◇. Worker thread (it reads the frame lists and one header)."""
+    out: list[Check] = []
+    inp = p.inputs()
+    n = {k: len(getattr(inp, k)) for k in KINDS}
+    if not p.sessions or not n["lights"]:
+        return [Check("warn", "no_lights", "No light frames yet")]
+    if not n["bias"]:
+        out.append(Check("info", "no_bias", "No bias frames"))
+    with_flats = [s for s in p.sessions if s.flats]
+    if len(with_flats) > 1:
+        out.append(Check("warn", "flats_merged", f"The flats of {len(with_flats)} sessions are merged into one master "
+                         "flat", {"n": len(with_flats), "sessions": [s.name for s in with_flats]}))
+    try:
+        for name, v in _fwhm_per_session(p).items():
+            out.append(Check("info", "fwhm", f"Star size in {name}: {v:.1f} px", {"session": name, "fwhm": v}))
+    except Exception:  # noqa: BLE001 - a hint: not measured yet
+        pass
+    out.append(_disk_check(p))
+    if not any(c.level == "warn" for c in out):
+        out.insert(0, Check("ok", "ok", "Nothing to worry about"))
+    return out
+
+
+def _disk_check(p: Project2) -> Check:
+    keys = _keys(p)
+    lights = [f for s in keys.project.sessions for f, _ in keys.scan.session_frames(keys.project, s)["lights"]]
+    scratch = str(keys.project.scratch)
+    if not lights:
+        return Check("info", "disk", "No light frames to size the cache on")
+    mpx = est._sensor_mpx(str(lights[0]))
+    need = len(lights) * (mpx or 0) * 1e6 * 2 / 1e9
+    probe = Path(scratch)
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    free = shutil.disk_usage(probe).free / 1e9
+    args = {"need_gb": round(need, 1), "free_gb": round(free)}
+    text = f"Calibrated cache: about {need:.1f} GB on the scratch disk ({free:.0f} GB free)."
+    if need > free * 0.9:
+        return Check("warn", "disk", text + " Not enough space!", args)
+    return Check("ok", "disk", text, args)
+
+
+def _fwhm_per_session(p: Project2) -> dict[str, float]:
+    import numpy as np
+    for w in p.workflows:
+        if _dir(p, w.id, "register") is not None:
+            t = frame_table(p, w.id)
+            by: dict[int, list[float]] = {}
+            for r in t.rows:
+                if r.session is not None and np.isfinite(r.fwhm):
+                    by.setdefault(r.session, []).append(r.fwhm)
+            return {p.session(sid).name: float(np.median(v)) for sid, v in by.items()}
+    return {}
+
+
+# ---------------------------------------------------------------------------------------------- frame table, thumbs
+
+def _light_sessions(p: Project2) -> dict[str, int]:
+    """{normalised path: session id} of the light frames (the first session that lists a file)."""
+    keys = _keys(p)
+    out: dict[str, int] = {}
+    for s in keys.project.sessions:
+        for f, _ in keys.scan.session_frames(keys.project, s)["lights"]:
+            out.setdefault(os.path.normcase(os.path.normpath(str(f))), s.id)
+    return out
+
+
+def _dir(p: Project2, wf: int | Workflow, stage: str, which: str = "current") -> Path | None:
+    """The folder of a done result of the workflow's stage (``which`` current, or previous: the result an Outdated
+    stage had), else None."""
+    store = _store(p)
+    if store is None:
+        return None
+    keys = _keys(p)
+    w = keys.project.workflow(wf)
+    if stage not in keys.chain(w):
+        return None
+    k = keys.key(w, stage)
+    if which == "previous":
+        k = (p2.read_state(p.root)["last_keys"].get(str(w.id)) or {}).get(stage)
+        if not k or k == keys.key(w, stage):
+            return None
+    return store.dir(stage, k) if store.done(stage, k) else None
+
+
+def _need(p: Project2, wf: int | Workflow, stage: str, which: str = "current") -> Path:
+    d = _dir(p, wf, stage, which)
+    if d is None:
+        raise NotDone(f"the {stage} result of workflow {_wid(wf)} is not computed ({which})")
+    return d
+
+
+def _wid(wf: int | Workflow) -> int:
+    return wf.id if isinstance(wf, Workflow) else wf
+
+
+def _table(p: Project2, wf: int | Workflow, min_t: float | None, max_f: float | None, source: str) -> FrameTable:
+    import numpy as np
+    inv = json.loads((_need(p, wf, "inventory") / "frames.json").read_text(encoding="utf-8"))["lights"]
+    reg = np.load(_need(p, wf, "register") / "reg.npz")
+    n = len(reg["fwhm"])
+    stack = _dir(p, wf, "stack") if source == "stack" else None
+    source = "stack" if stack is not None else "preview"
+    sess = _light_sessions(p)
+    ex = set(p.excluded)
+    names = [Path(f["path"]).name for f in inv[:n]]
+    sid = [sess.get(os.path.normcase(os.path.normpath(f["path"]))) for f in inv[:n]]
+    by_hand = np.array([(s, nm) in ex for s, nm in zip(sid, names)], bool)
+    if stack is not None:
+        sf = json.loads((stack / "frames.json").read_text(encoding="utf-8"))
+        weight = np.array([float(f["weight"]) for f in sf])
+        reasons = [str(f.get("excluded") or "") for f in sf]
+        min_t, max_f = _stack_thresholds(p, wf)
+    else:
+        from .stages.stack import select_frames
+        stats = np.load(_need(p, wf, "calibrate") / "frame_stats.npy")
+        if min_t is None or max_f is None:
+            d_min, d_max = _stack_thresholds(p, wf)
+            min_t, max_f = d_min if min_t is None else min_t, d_max if max_f is None else max_f
+        weight, reasons_a = select_frames(reg["transp"].astype(float), reg["fwhm"], reg["rms"], stats, min_t, max_f,
+                                          exclude=by_hand)
+        reasons = [str(r) for r in reasons_a]
+    rows = [FrameRow(i, inv[i]["path"], names[i], sid[i], inv[i].get("time"), float(reg["fwhm"][i]),
+                     float(reg["transp"][i]), float(reg["rms"][i]), float(weight[i]), reasons[i], bool(by_hand[i]))
+            for i in range(n)]
+    return FrameTable(rows, sum(1 for r in rows if not r.status), float(min_t), float(max_f), source)
+
+
+def _stack_thresholds(p: Project2, wf: int | Workflow) -> tuple[float, float]:
+    """The stack's selection thresholds as it has them now (user, automatic or default)."""
+    infos = {i.name: i for i in describe(p, wf, "stack")}
+    return float(infos["min_transparency"].value), float(infos["max_fwhm_ratio"].value)
+
+
+def frame_table(p: Project2, wf: int | Workflow) -> FrameTable:
+    """One row per light frame, with its star size, transparency, registration residual, weight and the reason it is
+    left out (what the stack used when Stacking is done, else the selection the current thresholds give). Needs
+    Registration done (``NotDone`` otherwise)."""
+    return _table(p, wf, None, None, "stack")
+
+
+def selection_preview(p: Project2, wf: int | Workflow, min_transparency: float,
+                      max_fwhm_ratio: float) -> FrameTable:
+    """The frame table the given thresholds would give (Selection's sliders), with the frames excluded by hand; the
+    thresholds are measured on all the frames, as the stack does."""
+    return _table(p, wf, float(min_transparency), float(max_fwhm_ratio), "preview")
+
+
+def _mtf(m: float, x: Any) -> Any:
+    return ((m - 1) * x) / ((2 * m - 1) * x - m)
+
+
+def _superpixel(mosaic: Any, cfa: str, black: float) -> Any:
+    """The mosaic as (h/2, w/2, 3): each 2x2 cell is one pixel (the green cells averaged), black level removed."""
+    import numpy as np
+
+    from .io.frames import cfa_channel_map
+    a = np.asarray(mosaic, np.float32) - np.float32(black)
+    H, W = a.shape[0] // 2 * 2, a.shape[1] // 2 * 2
+    if not cfa:
+        g = a[:H, :W].reshape(H // 2, 2, W // 2, 2).mean((1, 3))
+        return np.repeat(g[:, :, None], 3, axis=2)
+    out = np.zeros((H // 2, W // 2, 3), np.float32)
+    cnt = np.zeros(3, np.float32)
+    for k, c in enumerate(cfa_channel_map(cfa)):
+        out[:, :, c] += a[k // 2:H:2, k % 2:W:2]
+        cnt[c] += 1
+    return out / np.maximum(cnt, 1)
+
+
+def frame_thumb(p: Project2, path: str | Path, size: int = 256) -> Any:
+    """A thumbnail of a raw frame: (h, w, 3) uint8, its long side ``size``. One stretch per session (measured on its
+    middle frame), so that blinking the frames of a session shows real differences. Worker thread."""
+    import cv2
+    import numpy as np
+
+    from .io.frames import read_cfa, read_info
+    path = Path(path)
+    info = read_info(path)
+    img = _superpixel(read_cfa(path), info.cfa, info.black)
+    sid = _light_sessions(p).get(os.path.normcase(os.path.normpath(str(path))))
+    st = None
+    if sid is not None:
+        keys = _keys(p)
+        s = keys.project.session(sid)
+        ck = (sid, _entries(keys.project, s))
+        c = _ctx(p)
+        st = c.stretch.get(ck)
+        if st is None:
+            files = [f for f, _ in keys.scan.session_frames(keys.project, s)["lights"]]
+            ref = files[len(files) // 2]
+            ri = read_info(ref)
+            st = c.stretch[ck] = _stretch_of(_superpixel(read_cfa(ref), ri.cfa, ri.black))
+    if st is None:
+        st = _stretch_of(img)
+    bp, wp, mb = st
+    x = np.clip((img - bp) / (wp - bp), 0, 1)
+    y = np.clip(_mtf(mb, x), 0, 1)
+    f = size / max(y.shape[:2])
+    if f < 1:
+        y = cv2.resize(y, (max(1, round(y.shape[1] * f)), max(1, round(y.shape[0] * f))),
+                       interpolation=cv2.INTER_AREA)
+    return (y * 255 + 0.5).astype(np.uint8)
+
+
+def _stretch_of(img: Any) -> tuple[float, float, float]:
+    """(black point, white point, midtone balance) putting the sky of a superpixel image at 0.25."""
+    import numpy as np
+    y = img.mean(2)[::2, ::2]
+    m = float(np.median(y))
+    sig = 1.4826 * float(np.median(np.abs(y - m)))
+    bp = m - 2.8 * sig
+    wp = float(np.percentile(y, 99.9))
+    if wp <= bp + 1e-6:
+        wp = bp + 1.0
+    mn = float(np.clip((m - bp) / (wp - bp), 1e-4, 0.99))
+    return bp, wp, float(_mtf(0.25, mn))
+
+
+# ---------------------------------------------------------------------------------------------- workflows
+
+def _ids(p: Project2, wf_ids: int | Iterable[int]) -> list[int]:
+    ids = [wf_ids] if isinstance(wf_ids, int) else list(wf_ids)
+    for i in ids:
+        p.workflow(i)
+    return list(dict.fromkeys(ids))
+
+
+def workflows(p: Project2) -> list[Workflow]:
+    """The workflows (copies: changing them changes nothing; ``set_workflows`` takes such a list back)."""
+    return copy.deepcopy(p.workflows)
+
+
+def set_current(p: Project2, wf: int) -> None:
+    p.workflow(wf)
+    p.current = wf
+
+
+def _options_of(options: dict[str, Any] | str | None) -> dict[str, Any] | None:
+    if isinstance(options, str):
+        if options not in wfl.TEMPLATES:
+            raise ValueError(f"unknown workflow template {options!r} (known: {list(wfl.TEMPLATES)})")
+        return dict(wfl.TEMPLATES[options])
+    return dict(options) if options is not None else None
+
+
+def add_workflow(p: Project2, name: str, options: dict[str, Any] | str | None = None,
+                 params: dict[str, dict[str, Any]] | None = None, copy_of: int | None = None) -> Workflow:
+    """A new workflow: from a template (its name, or the options), or a copy of another (``copy_of``: its options,
+    stored settings and exit; ``options`` and ``params`` then change the copy). Returns a copy of it."""
+    opts = _options_of(options)
+    end = None
+    merged: dict[str, dict[str, Any]] = {}
+    if copy_of is not None:
+        src = p.workflow(copy_of)
+        opts = {**src.options, **(opts or {})}
+        merged = copy.deepcopy(src.params)
+        end = src.end
+    if opts is None:
+        opts = dict(wfl.DEFAULT_OPTIONS)
+    for st, kv in (params or {}).items():
+        merged.setdefault(st, {}).update(copy.deepcopy(kv))
+    w = p.add_workflow(name, opts, merged, end=end)
+    return copy.deepcopy(w)
+
+
+def rename_workflow(p: Project2, wf: int, name: str) -> None:
+    if not str(name).strip():
+        raise ValueError("a workflow needs a name")
+    p.workflow(wf).name = str(name).strip()
+
+
+def duplicate_workflow(p: Project2, wf: int, name: str | None = None) -> Workflow:
+    src = p.workflow(wf)
+    return add_workflow(p, name or f"{src.name} copy", None, None, copy_of=wf)
+
+
+def delete_workflow(p: Project2, wf: int) -> Workflow:
+    """Remove a workflow (its results stay in the store until the cache is cleared); the workflows that were variants
+    of it become plain workflows. Returns it."""
+    w = p.remove_workflow(wf)
+    for o in p.workflows:
+        if o.variant_of == wf:
+            o.variant_of = None
+    return copy.deepcopy(w)
+
+
+def set_workflows(p: Project2, workflows: list[Workflow], current: int | None = None) -> None:
+    """Put the workflows back as a list taken earlier (Undo / Redo). Ids are never reused: a workflow deleted since
+    comes back with its own id."""
+    old = (p.workflows, p.next_workflow_id, p.current)
+    try:
+        p.workflows = copy.deepcopy(list(workflows))
+        p.next_workflow_id = max([p.next_workflow_id] + [w.id + 1 for w in p.workflows])
+        ids = [w.id for w in p.workflows]
+        p.current = current if current in ids else (p.current if p.current in ids else (ids[0] if ids else None))
+        p.validate()
+    except Exception:
+        p.workflows, p.next_workflow_id, p.current = old
+        raise
+
+
+def set_option(p: Project2, wf_ids: int | Iterable[int], key: str, value: Any) -> list[str]:
+    """Add or remove an optional block, or change a method, in these workflows (the rules of ``workflow.set_option``).
+    Returns the notes on what came or went with it (toasts). Raises ``OptionRefused`` and changes nothing when a
+    workflow's rules forbid it."""
+    new: dict[int, dict[str, Any]] = {}
+    notes: list[str] = []
+    for wid in _ids(p, wf_ids):
+        w = p.workflow(wid)
+        new[wid], n = wfl.set_option(w.options, key, value, w.end)
+        notes += [x for x in n if x not in notes]
+    for wid, o in new.items():
+        p.workflow(wid).options = o
+    return notes
+
+
+def _check_param(keys: Keys, stage: str, name: str, value: Any) -> Any:
+    """The value as the stage's Params read it (JSON form); ValueError naming the setting if it is not valid."""
+    stages = keys.rules.chains.stages
+    if stage not in stages:
+        raise ValueError(f"unknown stage {stage!r}")
+    model = keys.rules.params(stage)
+    if name not in model.model_fields:
+        raise ValueError(f"{stage} has no setting {name!r}")
+    if (model.model_fields[name].json_schema_extra or {}).get("level") == "internal":
+        raise ValueError(f"{stage}.{name} is set by the project, not by the user")
+    try:
+        return model(**{name: value}).model_dump(mode="json")[name]
+    except ValueError as e:
+        from pydantic import ValidationError
+        msg = "; ".join(x["msg"] for x in e.errors()) if isinstance(e, ValidationError) else str(e)
+        raise ValueError(f"{stage}.{name}: {msg}") from None
+
+
+def _suggestion(p: Project2, w: Workflow, stage: str, name: str) -> tuple[bool, Any]:
+    """(known, value): what the setting would be without the user's value (see ``describe``)."""
+    keys = _keys(p)
+    if name not in keys.rules.auto_fields(stage):
+        return True, keys.rules.defaults(stage).get(name)
+    r = _resolve(p, w, stage)
+    return r.known[name], r.suggested[name]
+
+
+def _params_with(p: Project2, w: Workflow, stage: str, name: str, value: Any) -> dict[str, dict[str, Any]]:
+    """The stored settings of ``w`` once ``stage.name`` is set to ``value``. None goes back to the suggestion; a value
+    equal to the suggestion is dropped only when the suggestion is known (the upstream results are done, or the
+    setting has no automatic rule): otherwise it stays stored, as an override."""
+    keys = _keys(p)
+    v = None if value is None else _check_param(keys, stage, name, value)
+    params = copy.deepcopy(w.params)
+    d = params.setdefault(stage, {})
+    drop = v is None
+    if not drop:
+        known, sug = _suggestion(p, w, stage, name)
+        drop = known and sug == v
+    if drop:
+        d.pop(name, None)
+    else:
+        d[name] = v
+    if not d:
+        params.pop(stage, None)
+    return params
+
+
+def set_param(p: Project2, wf_ids: int | Iterable[int], stage: str, name: str, value: Any = None) -> None:
+    """Store a setting in these workflows (``sharing()`` gives the ones that share a block). ``value`` None goes
+    back to the suggestion. A value equal to the suggestion is dropped only when the suggestion is known; while the
+    upstream results are not done it stays stored (typing the default is how a user overrides an automatic value).
+    Raises ValueError naming the setting when the value is not valid."""
+    keys = _keys(p)
+    new = {wid: _params_with(p, keys.project.workflow(wid), stage, name, value) for wid in _ids(p, wf_ids)}
+    for wid, params in new.items():
+        p.workflow(wid).params = params
+
+
+# a change is {"kind": "opt", "key", "value"} or {"kind": "param", "stage", "name", "value"} (the mockup's)
+Change = dict[str, Any]
+
+
+def _changed(p: Project2, w: Workflow, change: Change) -> tuple[Workflow, list[str]]:
+    """A copy of ``w`` with the change made, and the notes."""
+    c = copy.deepcopy(w)
+    notes: list[str] = []
+    if change.get("kind") == "opt":
+        c.options, notes = wfl.set_option(c.options, change["key"], change["value"], c.end)
+    elif change.get("kind") == "param":
+        c.params = _params_with(p, c, change["stage"], change["name"], change.get("value"))
+    else:
+        raise ValueError(f"unknown change {change!r}: kind is 'opt' or 'param'")
+    return c, notes
+
+
+def with_change(p: Project2, wf: int | Workflow, change: Change) -> Workflow:
+    """What-if: a copy of the workflow with the change made (it is not in the project; ``cost`` and ``stage_key`` take
+    it)."""
+    return _changed(p, _keys(p).project.workflow(wf), change)[0]
+
+
+def apply_change(p: Project2, wf_ids: int | Iterable[int], change: Change) -> list[str]:
+    """Make the change in these workflows (Replace); returns the notes."""
+    keys = _keys(p)
+    done = {wid: _changed(p, keys.project.workflow(wid), change) for wid in _ids(p, wf_ids)}
+    notes: list[str] = []
+    for wid, (c, n) in done.items():
+        w = p.workflow(wid)
+        w.options, w.params = c.options, c.params
+        notes += [x for x in n if x not in notes]
+    return notes
+
+
+def throws_away(p: Project2, wf_ids: int | Iterable[int], change: Change) -> bool:
+    """Whether the change would make a done result of these workflows Outdated (then Replace or Try as variant)."""
+    keys, store = _keys(p), _store(p)
+    if store is None:
+        return False
+    for wid in _ids(p, wf_ids):
+        w = keys.project.workflow(wid)
+        c, _ = _changed(p, w, change)
+        now = set(keys.chain(c))
+        for s in keys.chain(w):
+            if store.done(s, keys.key(w, s)) and (s not in now or keys.key(c, s) != keys.key(w, s)):
+                return True
+    return False
+
+
+def make_variant(p: Project2, wf: int, change: Change, name: str) -> Workflow:
+    """Try as variant: a copy of the workflow with the change, linked to it (``variant_of``); the original stays as it
+    is. Returns the variant."""
+    src = p.workflow(wf)
+    c, _ = _changed(p, _keys(p).project.workflow(wf), change)
+    w = p.add_workflow(name, c.options, c.params, end=c.end, variant_of=src.id)
+    return copy.deepcopy(w)
+
+
+def keep_variant(p: Project2, variant: int) -> Workflow:
+    """Keep: the variant replaces its original and takes its name (the original's id is retired). Returns it."""
+    v = p.workflow(variant)
+    if v.variant_of is None:
+        raise ValueError(f"workflow {variant} is not a variant")
+    orig = p.workflow(v.variant_of)
+    v.name = orig.name
+    v.variant_of = orig.variant_of
+    for o in p.workflows:
+        if o.variant_of == orig.id and o.id != v.id:
+            o.variant_of = v.id
+    p.workflows.remove(orig)
+    p.current = v.id
+    p.validate()
+    return copy.deepcopy(v)
+
+
+def discard_variant(p: Project2, variant: int) -> None:
+    """Discard: remove the variant; its original becomes the current workflow."""
+    v = p.workflow(variant)
+    if v.variant_of is None:
+        raise ValueError(f"workflow {variant} is not a variant")
+    parent = v.variant_of
+    p.remove_workflow(variant)
+    for o in p.workflows:
+        if o.variant_of == variant:
+            o.variant_of = parent
+    p.current = parent
+    p.validate()
+
+
+def add_exit(p: Project2, wf: int, block: str, name: str) -> Workflow:
+    """A workflow that copies another up to ``block`` (Stacking), then goes to its own simple output. Only the
+    settings of the stages it runs are kept."""
+    src = p.workflow(wf)
+    if block not in wfl.EXITS:
+        raise ValueError(f"no early output at {block!r} (allowed: {list(wfl.EXITS)})")
+    chain = wfl.chain(src.options, block, reference=bool(p.reference_image))
+    params = {s: copy.deepcopy(kv) for s, kv in src.params.items() if s in chain}
+    return copy.deepcopy(p.add_workflow(name, dict(src.options), params, end=block))
+
+
+_METHODS: dict[str, list[MethodInfo]] = {
+    "denoise": [
+        MethodInfo("n2n", "Noise2Noise on this image", "Noise2Noise", "gpu", "denoise", False,
+                   "A network learns, on this image alone, to predict one half-stack from the other: the noise goes, "
+                   "nothing is invented."),
+        MethodInfo("finetuned", "Pretrained + fine-tuned", "fine-tuned", "both", "denoise_ft", True,
+                   "Starts from a network trained on earlier projects and fine-tunes it on the half-stacks."),
+        MethodInfo("pretrained", "Pretrained (GraXpert-like)", "pretrained", "both", "denoise_ai", True,
+                   "A pretrained network applied as is: the fastest. May smooth or invent detail: compare."),
+        MethodInfo("nlbayes", "NL-Bayes (as in Siril)", "NL-Bayes", "cpu", "denoise_cl", True,
+                   "Averages similar patches after stabilising the photon noise. Classic, predictable."),
+    ],
+    "gradient": [
+        MethodInfo("halpha", "H-alpha survey", "H-alpha survey", "cpu", "background", False,
+                   "Tells the sky background from the instrument's defects with a professional H-alpha survey."),
+        MethodInfo("polynomial", "Polynomial (as in Siril)", "polynomial", "cpu", "background_poly", False,
+                   "A smooth surface fitted on dark samples."),
+    ],
+    "stars": [
+        MethodInfo("psf", "PSF model (Gaia)", "PSF model", "both", "stars", False,
+                   "Each star measured with the optics' real PSF, positioned by Gaia, then subtracted: star sliders "
+                   "in Post."),
+        MethodInfo("psf_neural", "PSF model + neural removal", "PSF + neural", "gpu", "star_net", False,
+                   "Adds a star-removal network trained on this stack (StarNet-like): a second starless image, "
+                   "cleaner around bright stars."),
+    ],
+    "deconvolution": [
+        MethodInfo("rl", "Measured PSF (Richardson-Lucy)", "Richardson-Lucy", "both", "deconv", True,
+                   "Classic deconvolution with the PSF measured across the field."),
+        MethodInfo("neural", "Neural (BlurXTerminator-like)", "neural", "both", "deconv", True,
+                   "A pretrained network that corrects the PSF locally, stars included."),
+    ],
+}
+
+
+def methods(block: str) -> list[MethodInfo]:
+    """The methods of a block (denoise, gradient, stars, deconvolution). ``new`` marks the ones that are not in the
+    engine yet; ``key`` is the workflow option value that selects it; ``stage`` the stage that implements it (with
+    Stars, the polynomial gradient is the ``background`` stage with the survey off)."""
+    if block not in _METHODS:
+        raise ValueError(f"block {block!r} has no methods (known: {list(_METHODS)})")
+    return copy.deepcopy(_METHODS[block])
+
+
+def chain(p: Project2, wf: int | Workflow) -> list[str]:
+    """The stages of a workflow, in order."""
+    return list(_keys(p).chain(wf))
+
+
+def deps(p: Project2, wf: int | Workflow, stage: str) -> tuple[str, ...]:
+    """What a stage reads in this workflow (optional and extra dependencies only when present)."""
+    return _keys(p).deps(wf, stage)
+
+
+def blocks(p: Project2, wf: int | Workflow) -> list[BlockRef]:
+    """The blocks of a workflow in graph order: ``stages`` in its chain, ``key`` the tuple of their keys (Astrometry
+    leaves out the survey; Output adds the workflow id; Selection has no stage and so an empty key)."""
+    keys = _keys(p)
+    return [BlockRef(b, tuple(ss), keys.block_key(wf, b))
+            for b, ss in keys.rules.chains.blocks_in(keys.chain(wf))]
+
+
+# ---------------------------------------------------------------------------------------------- keys, states, cache
+
+def stage_key(p: Project2, wf: int | Workflow, stage: str) -> str:
+    return _keys(p).key(wf, stage)
+
+
+def sharing(p: Project2, wf: int | Workflow, stage: str) -> list[int]:
+    """The workflows that compute this stage exactly as ``wf`` does (``wf`` included)."""
+    keys = _keys(p)
+    w = keys.project.workflow(wf)
+    k = keys.key(w, stage)
+    out = [o.id for o in keys.project.workflows if o.id != w.id and stage in keys.chain(o) and keys.key(o, stage) == k]
+    return sorted(out + [w.id])
+
+
+def _why_stale(keys: Keys, store: Store, w: Workflow, stage: str, previous: str) -> str:
+    old = store.manifest(stage, previous).get("key_parts")
+    try:
+        cur = json.loads(json.dumps(keys.key_parts(w, stage)))
+    except ValueError:
+        return REASON_SETTINGS
+    if not isinstance(old, dict):
+        return REASON_UPSTREAM
+    if old.get("v") != cur.get("v"):
+        return REASON_ALGORITHM
+    if old.get("p") != cur.get("p") or old.get("x") != cur.get("x"):
+        return REASON_SETTINGS
+    return REASON_UPSTREAM
+
+
+def states(p: Project2, update: bool = True) -> dict[tuple[int, str], StageState]:
+    """The state of every stage of every workflow: done, pending (never run), stale (Outdated: it has a previous
+    result in the store), running, failed, interrupted, skipped (an upstream stage failed, or the workflow is blocked).
+    Reads manifests, not the raws. ``update=True`` writes ``state.json``: the key of every done stage, the "previous
+    result" of a stage that later goes Outdated."""
+    keys, store, r2 = _keys(p), _store(p), _r2()
+    proj = keys.project
+    root = p.root
+    last = p2.read_state(root) if root is not None else {"last_keys": {}}
+    last_keys: dict[str, dict[str, str]] = last["last_keys"]
+    new_last = {w: dict(kv) for w, kv in last_keys.items()}
+    run = r2.running(root) if root is not None else None
+    live: set[str] = set()
+    if run is not None:
+        try:
+            live = {j["key"] for j in json.loads(Path(run.plan_file).read_text(encoding="utf-8")).get("jobs") or []}
+        except (OSError, ValueError):
+            pass
+    planner = r2.Planner(proj, keys=keys, store=store, history={})
+    out: dict[tuple[int, str], StageState] = {}
+    for w in proj.workflows:
+        chain_ = keys.chain(w)
+        blocked = planner.blocked(w)
+        bad: set[str] = set()
+        prev_keys = last_keys.get(str(w.id)) or {}
+        for s in chain_:
+            try:
+                k = keys.key(w, s)
+            except ValueError as e:                    # a stored setting is not valid
+                out[(w.id, s)] = StageState("failed", str(e))
+                bad.add(s)
+                continue
+            if store is not None and store.done(s, k):
+                out[(w.id, s)] = StageState("done", "", k)
+                new_last.setdefault(str(w.id), {})[s] = k
+                continue
+            prev = prev_keys.get(s)
+            if prev == k or not prev or store is None or not store.done(s, prev):
+                prev = None
+            tmp = _tmp_manifest(store, s, k)
+            status = tmp.get("status")
+            if status == "running" and k in live:
+                out[(w.id, s)] = StageState("running", "", k, prev)
+            elif status == "failed":
+                out[(w.id, s)] = StageState("failed", str(tmp.get("error") or ""), k, prev)
+                bad.add(s)
+            elif status in ("interrupted", "running"):
+                out[(w.id, s)] = StageState("interrupted", REASON_INTERRUPTED, k, prev)
+            elif blocked:
+                out[(w.id, s)] = StageState("skipped", blocked, k, prev)
+            elif any(a in bad for a in keys.ancestors(w, s)):
+                out[(w.id, s)] = StageState("skipped", REASON_UPSTREAM_FAILED, k, prev)
+                bad.add(s)
+            elif prev:
+                out[(w.id, s)] = StageState("stale", _why_stale(keys, store, w, s, prev), k, prev)
+            else:
+                out[(w.id, s)] = StageState("pending", REASON_NEVER, k)
+    if update and root is not None and new_last != last_keys and Path(root).is_dir():
+        p2.write_state(root, {**last, "last_keys": new_last})
+    return out
+
+
+def _tmp_manifest(store: Store | None, stage: str, key: str) -> dict:
+    if store is None:
+        return {}
+    try:
+        return json.loads((store.tmp_dir(stage, key) / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _tree_bytes(path: Path) -> int:
+    total = 0
+    try:
+        with os.scandir(path) as it:
+            for e in it:
+                if e.is_dir(follow_symlinks=False):
+                    total += _tree_bytes(Path(e.path))
+                else:
+                    try:
+                        total += e.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+    return total
+
+
+_HEX16 = re.compile(r"^[0-9a-f]{16}$")
+
+
+def cache_usage(p: Project2) -> CacheUsage:
+    """What the store and the scratch folder hold, and what no workflow needs: results whose key no workflow has now
+    or had last, the ``.tmp`` folders of unfinished jobs (``resumable`` when a workflow has that key now), ``_trash``
+    and scratch caches. Walks the folders: worker thread."""
+    keys, store = _keys(p), _store(p)
+    if store is None:
+        return CacheUsage(0)
+    now: set[tuple[str, str]] = set()
+    for w in keys.project.workflows:
+        for s in keys.chain(w):
+            now.add((s, keys.key(w, s)))
+    ref = set(now)
+    for kv in p2.read_state(p.root)["last_keys"].values():
+        ref |= {(s, k) for s, k in kv.items()}
+    use = CacheUsage(0)
+    if store.path.is_dir():
+        for sd in sorted(store.path.iterdir()):
+            if not sd.is_dir():
+                continue
+            if sd.name == "_trash":
+                for t in sorted(sd.iterdir()):
+                    use.unused.append(CacheItem("trash", t.name.split("-")[0], "", str(t), _tree_bytes(t)))
+                continue
+            if sd.name.startswith("_"):
+                continue
+            for d in sorted(sd.iterdir()):
+                if not d.is_dir():
+                    continue
+                tmp = d.name.endswith(".tmp")
+                k = d.name[:-4] if tmp else d.name
+                size = _tree_bytes(d)
+                if tmp:
+                    use.unused.append(CacheItem("tmp", sd.name, k, str(d), size, resumable=(sd.name, k) in now))
+                elif (sd.name, k) in ref:
+                    use.used_bytes += size
+                else:
+                    use.unused.append(CacheItem("result", sd.name, k, str(d), size))
+    scratch = Path(keys.project.scratch)
+    own = _inside(scratch, Path(p.root))
+    if scratch.is_dir():
+        refkeys = {k for _, k in ref}
+        for d in sorted(scratch.iterdir()):
+            if not (d.is_dir() and _HEX16.match(d.name)):
+                continue
+            size = _tree_bytes(d)
+            if d.name in refkeys:
+                use.used_bytes += size
+            elif own or any(_in_store(store, st.name, d.name) for st in d.iterdir() if st.is_dir()):
+                use.unused.append(CacheItem("scratch", "", d.name, str(d), size))
+    return use
+
+
+def _in_store(store: Store, stage: str, key: str) -> bool:
+    return (store.path / stage / key).exists() or (store.path / stage / (key + ".tmp")).exists()
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        return os.path.commonpath([os.path.abspath(path), os.path.abspath(root)]) == os.path.abspath(root)
+    except ValueError:                       # another drive
+        return False
+
+
+def clear_unused(p: Project2, items: Iterable[CacheItem] | None = None, include_resumable: bool = False) -> int:
+    """Delete what ``cache_usage`` lists as unused (or the given ``items``, those still unused), after the client's
+    confirmation; returns the bytes freed. Refuses during a run. The ``.tmp`` folders a workflow could resume from are
+    kept unless ``include_resumable``. Only folders inside the store and the scratch folder are ever deleted."""
+    root = Path(p.root)
+    if _r2().running(root) is not None:
+        raise RunInProgress("a run is in progress: stop it before clearing results")
+    usage = cache_usage(p)
+    wanted = {i.path for i in items} if items is not None else None
+    store, scratch = _store(p).path, Path(_keys(p).project.scratch)
+    freed = 0
+    for it in usage.unused:
+        if wanted is not None and it.path not in wanted:
+            continue
+        if it.resumable and not include_resumable:
+            continue
+        d = Path(it.path)
+        if not (_inside(d, store) or _inside(d, scratch)) or d == store or d == scratch:
+            continue
+        try:
+            shutil.rmtree(d)
+            freed += it.bytes
+        except OSError:
+            pass
+    _store(p).forget()
+    return freed
+
+
+# ---------------------------------------------------------------------------------------------- plans and runs
+
+def _gpu(p: Project2, device: str | None = None) -> bool:
+    d = (device or p.devices.get("main") or "auto").strip().lower()
+    if d == "cpu":
+        return False
+    return True if d.startswith("cuda") else machine().cuda
+
+
+def _plan_kw(p: Project2, device: str | None, history: dict | None) -> dict[str, Any]:
+    keys = _keys(p)
+    return {"keys": keys, "store": _store(p), "gpu": _gpu(p, device), "history": history}
+
+
+def _stamp(p: Project2, plan: Plan) -> Plan:
+    plan.rules = _ctx(p).spec
+    return plan
+
+
+def plan_all(p: Project2, device: str | None = None, history: dict | None = None) -> Plan:
+    """Run all: every stage of every workflow, each result once (shared jobs), cheap workflows first."""
+    r2 = _r2()
+    return _stamp(p, r2.plan_all(_keys(p).project, **_plan_kw(p, device, history)))
+
+
+def plan_workflows(p: Project2, workflows: Sequence[int | Workflow], device: str | None = None,
+                   history: dict | None = None) -> Plan:
+    """The plan computing every stage of these workflows (ids, or what-if Workflow objects)."""
+    return _stamp(p, _r2().plan_workflows(_keys(p).project, list(workflows), **_plan_kw(p, device, history)))
+
+
+def plan_to_block(p: Project2, wf: int | Workflow, block: str, device: str | None = None,
+                  history: dict | None = None) -> Plan:
+    """Run to here: the stages of a block in the workflow's chain (Selection: Registration) and what they need."""
+    return _stamp(p, _r2().plan_to_block(_keys(p).project, wf, block, **_plan_kw(p, device, history)))
+
+
+def cost(p: Project2, workflows: Sequence[int | Workflow] | None = None, device: str | None = None,
+         history: dict | None = None) -> Cost:
+    """What computing these workflows would take, on this machine: the plan's totals (jobs not done yet, each key
+    once). Give what-if Workflow objects (``with_change``, a new workflow, a variant) to ask before changing."""
+    plan = (plan_all(p, device, history) if workflows is None else plan_workflows(p, workflows, device, history))
+    return Cost(plan.seconds, plan.measured, plan.disk_gb, len(plan), plan.keys, dict(plan.skipped))
+
+
+def estimate(p: Project2, wf: int | Workflow, stage: str, device: str | None = None) -> Estimate:
+    """Seconds (and disk) of one stage job in this workflow on this machine, and whether the figure was measured."""
+    keys = _keys(p)
+    return est.estimate(stage, est.facts(keys, wf, _store(p)), _gpu(p, device))
+
+
+_MACHINE: list[MachineInfo] = []
+
+
+def machine(force: bool = False) -> MachineInfo:
+    """The GPUs (in CUDA's order, named as the engine names them), the CPU cores and the memory. Imports torch the
+    first time: worker thread."""
+    if _MACHINE and not force:
+        return _MACHINE[0]
+    gpus: list[Gpu] = []
+    try:
+        import torch
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                pr = torch.cuda.get_device_properties(i)
+                gpus.append(Gpu(f"cuda:{i}", " ".join(w for w in pr.name.split() if w != "GeForce"),
+                                pr.total_memory / 2 ** 30))
+    except Exception:  # noqa: BLE001 - no torch or no driver
+        pass
+    mem = 0.0
+    try:
+        import psutil
+        mem = psutil.virtual_memory().total / 2 ** 30
+    except Exception:  # noqa: BLE001
+        pass
+    _MACHINE[:] = [MachineInfo(gpus, os.cpu_count() or 0, mem)]
+    return _MACHINE[0]
+
+
+def start_run(p: Project2, plan: Plan, device: str | None = None) -> RunInfo:
+    """Launch a plan in a detached worker process; returns at once. Follow it with ``read_events(p, info.offset,
+    info.run_id)``. Raises ``RunInProgress`` when the project already has a live run."""
+    r2 = _r2()
+    if r2.running(p.root) is not None:
+        raise RunInProgress("a run is already in progress for this project")
+    if plan.rules is None:
+        plan.rules = _ctx(p).spec
+    info = r2.launch(p, plan, device)
+    refresh(p)
+    return info
+
+
+def running(p: Project2) -> RunInfo | None:
+    """The live run of the project (to reattach), or None."""
+    return _r2().running(p.root)
+
+
+def cancel(p: Project2) -> None:
+    """Ask the run to stop at its next check: the job in progress keeps its checkpoints for the next run."""
+    _r2().cancel(p.root)
+
+
+def read_events(p: Project2, offset: int = 0, run_id: str | None = None) -> tuple[list[dict], int]:
+    """The events appended to ``logs/events.jsonl`` since byte ``offset`` (those of one run if ``run_id``), and the
+    new offset."""
+    return _r2().read_events(p.root, offset, run_id)
+
+
+# ---------------------------------------------------------------------------------------------- outputs
+
+def stage_outputs(p: Project2, wf: int | Workflow, stage: str, which: str = "current") -> StageOutputs | None:
+    """The previews, metrics, parameters, origins, reasons, duration and date of a done result; ``which="previous"``
+    for the result an Outdated stage had. None when there is none."""
+    d = _dir(p, wf, stage, which)
+    if d is None:
+        return None
+    m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+    pv = d / "previews"
+    previews = {f.stem: str(f) for f in sorted(pv.glob("*.jpg"))} if pv.is_dir() else {}
+    return StageOutputs(stage, d.name, which, str(d), previews, m.get("metrics") or {}, m.get("params") or {},
+                        m.get("origin") or {}, m.get("auto_reasons") or {}, m.get("duration"),
+                        m.get("finished") or "", m)
+
+
+def _reduce(a: Any, f: int) -> Any:
+    import numpy as np
+    if f <= 1 or a.ndim < 2:
+        return a
+    h, w = a.shape[-2] // f * f, a.shape[-1] // f * f
+    b = a[..., :h, :w].astype(np.float32)
+    return b.reshape(*b.shape[:-2], h // f, f, w // f, f).mean((-3, -1))
+
+
+def stage_array(p: Project2, wf: int | Workflow, stage: str, name: str, scale: float = 1.0,
+                which: str = "current") -> np.ndarray:
+    """A linear array of a done result (``name`` with or without ``.npy``), read whole (never memory-mapped, so a
+    re-run can replace the file); ``scale`` 1/2, 1/4... averages blocks over the last two axes."""
+    import numpy as np
+    d = _need(p, wf, stage, which)
+    f = d / (name if name.endswith((".npy", ".npz")) else name + ".npy")
+    if not f.is_file():
+        raise NotDone(f"{stage} has no array {name!r}")
+    return _reduce(np.load(f), max(1, int(round(1 / scale))))
+
+
+_WCS: dict[str, tuple[float, Any]] = {}
+
+
+def pixel_to_sky(p: Project2, wf: int | Workflow, x: float, y: float, which: str = "current") -> tuple[float, float]:
+    """(RA, Dec) in degrees of a pixel of the stack grid (0-based), from the astrometric solution."""
+    f = _need(p, wf, "astrometry", which) / "wcs.fits"
+    mt = f.stat().st_mtime
+    hit = _WCS.get(str(f))
+    if hit is None or hit[0] != mt:
+        from astropy.io import fits
+        from astropy.wcs import WCS
+        hit = _WCS[str(f)] = (mt, WCS(fits.getheader(f)))
+    ra, dec = hit[1].pixel_to_world_values(x, y)
+    return float(ra), float(dec)
+
+
+def spectral_response(p: Project2, wf: int | Workflow, which: str = "current") -> SpectralCurves:
+    """The camera's R, G, B response curves the Color stage fitted (for the Color chart)."""
+    import numpy as np
+    z = np.load(_need(p, wf, "color", which) / "specresp.npz")
+    return SpectralCurves(z["lam"], z["S"], z["cam_hii"] if "cam_hii" in z else None,
+                          z["cam_oiii"] if "cam_oiii" in z else None)
+
+
+# ---------------------------------------------------------------------------------------------- describe
+
+@dataclass
+class _Resolved:
+    values: dict[str, Any]
+    origin: dict[str, str]
+    suggested: dict[str, Any]
+    known: dict[str, bool]
+    autos: dict[str, Any]
+    auto_ok: bool
+
+
+def _autos(p: Project2, keys: Keys, w: Workflow, stage: str) -> tuple[dict[str, Any], bool]:
+    """(the stage's automatic values, whether they could be computed): needs the stages it reads done. Computed on
+    the CPU in a throw-away folder, so that nothing is written."""
+    store = _store(p)
+    if store is None:
+        return {}, False
+    anc = keys.ancestors(w, stage)
+    if not all(store.done(a, keys.key(w, a)) for a in anc):
+        return {}, False
+    st = keys.rules.chains.stages[stage]
+    c = _ctx(p)
+    ck = (stage, keys.key(w, stage))
+    if ck in c.autos:
+        return c.autos[ck], True
+    from .core.stage import Context
+    try:
+        with tempfile.TemporaryDirectory(prefix="astro_auto_", ignore_cleanup_errors=True) as tmp:
+            sp = StoreProject(keys, w, stage, own_dir=tmp)
+            auto = st.auto(Context(sp, st, _NullJournal(), "cpu"))
+    except Exception:  # noqa: BLE001 - the upstream files are not readable: no suggestion
+        return {}, False
+    c.autos[ck] = auto
+    return auto, True
+
+
+def _resolve(p: Project2, wf: int | Workflow, stage: str) -> _Resolved:
+    from .core.params import resolve
+    keys = _keys(p)
+    w = keys.project.workflow(wf)
+    if stage not in keys.chain(w):
+        raise ValueError(f"workflow {w.name!r} has no {stage!r} stage")
+    model = keys.rules.params(stage)
+    autos, ok = _autos(p, keys, w, stage)
+    given = keys.overrides(w, stage)
+    try:
+        params, origin = resolve(model, autos, given)
+        sug, _ = resolve(model, autos, {})
+    except ValueError:                                 # an automatic value the settings refuse: as if unknown
+        autos, ok = {}, False
+        params, origin = resolve(model, autos, given)
+        sug, _ = resolve(model, autos, {})
+    auto_f = keys.rules.auto_fields(stage)
+    known = {n: (n in autos) or ok or (n not in auto_f) for n in model.model_fields}
+    return _Resolved(params.model_dump(mode="json"), origin, sug.model_dump(mode="json"), known, autos, ok)
+
+
+def describe(p: Project2, wf: int | Workflow, stage: str) -> list[ParamInfo]:
+    """The settings of a stage in a workflow, for the panel: label, help, bounds, the effective value, the suggestion
+    and whether it is known, where the value comes from, the engine's reason (template and arguments, as the Auto
+    object has them) and any drift from the done result. Worker thread (it may read the upstream results)."""
+    keys, store = _keys(p), _store(p)
+    w = keys.project.workflow(wf)
+    r = _resolve(p, w, stage)
+    model = keys.rules.params(stage)
+    locked = set(keys.rules.implied(w.options, stage)) | ({"exclude"} if keys.rules.injects_exclude(stage) else set())
+    used: dict[str, Any] = {}
+    if store is not None and store.done(stage, keys.key(w, stage)):
+        used = store.manifest(stage, keys.key(w, stage)).get("params") or {}
+    skip = keys.rules.non_key(stage)
+    out = []
+    for d in model.describe():
+        n = d["name"]
+        a = r.autos.get(n) if r.origin[n] == "auto" else None
+        drift = bool(used) and n in used and n not in skip and used[n] != r.values[n]
+        english = getattr(a, "reason", "")
+        out.append(ParamInfo(
+            n, d.get("label", n), d.get("help", ""), d.get("tip", ""), d["type"], d["default"], r.values[n],
+            r.suggested[n], r.known[n], r.origin[n],
+            reason=getattr(a, "template", english), reason_args=getattr(a, "args", None), reason_en=english,
+            level=d.get("level", "basic"), unit=d.get("unit", ""), ge=d.get("ge"), le=d.get("le"), gt=d.get("gt"),
+            lt=d.get("lt"), step=d.get("step"), choices=d.get("choices"), locked=n in locked, drift=drift,
+            result_value=used.get(n) if drift else None))
+    return out
+
+
+def metric_info(stage: str, key: str, lang: str = "en") -> MetricInfo:
+    """The label, unit, format and meaning of a metric a stage writes (the catalogue is ``texts.py``), in ``lang``
+    ('en' or 'fr')."""
+    from . import texts
+    m = texts.metric(key)
+    return MetricInfo(stage, key, texts.metric_label(key, lang), texts.metric_unit(key, lang), m.fmt if m else "",
+                      texts.metric_meaning(key, lang), m is not None)
+
+
+# ---------------------------------------------------------------------------------------------- rendering and export
+
+def sliders_of(p: Project2, wf: int | Workflow) -> list[SliderInfo]:
+    """The nine Post sliders of a workflow's layer and which ones it offers (the reason when it does not)."""
+    from .render.sliders import SLIDERS, availability
+    w = _keys(p).project.workflow(wf)
+    kind = "stacking" if w.end == "stacking" else ("engine" if w.options.get("stars") else "simple")
+    why = availability(kind, bool(w.options.get("denoise")))
+    return [SliderInfo(s.key, s.name, s.group, s.ends, not why[s.key], why[s.key]) for s in SLIDERS]
+
+
+_SERVICES: dict[str, Any] = {}
+
+
+def layer_service(device: str = "cpu") -> Any:
+    """The shared ``LayerService`` of a device (engines kept, least recently used dropped); the render worker may
+    pass its own to ``render_layer``."""
+    from .render.layers import LayerService
+    if device not in _SERVICES:
+        _SERVICES[device] = LayerService(device)
+    return _SERVICES[device]
+
+
+def _output(p: Project2, wf: int | Workflow) -> tuple[str, Path]:
+    keys = _keys(p)
+    w = keys.project.workflow(wf)
+    outs = [s for s in keys.chain(w) if keys.rules.chains.block_of(s) == "output"]
+    if not outs:
+        raise NotDone(f"workflow {w.name!r} has no output stage")
+    return outs[-1], _need(p, w, outs[-1])
+
+
+def _base_of(p: Project2, base: Any) -> Any:
+    return p.render_bases[base] if isinstance(base, str) and base in p.render_bases else base
+
+
+def render_layer(p: Project2, wf: int | Workflow, base: Any = None, sliders: dict[str, float] | None = None,
+                 scale: float = 0.25, region: tuple[int, int, int, int] | None = None, part: str | None = None,
+                 *, service: Any = None, device: str = "cpu") -> LayerImage:
+    """A workflow's layer on the whole stack grid (or the region (x0, x1, y0, y1) of it at full resolution), uncropped,
+    with the useful frame in ``crop``. ``base``: a name of ``render_bases``, a preset, settings or None (the
+    suggestion); ``sliders``: positions 0-4 (2 = the base); ``part``: None, 'stars' or 'starless'. ``NotDone`` when the
+    output stage is not computed."""
+    _, d = _output(p, wf)
+    return (service or layer_service(device)).render(d, _base_of(p, base), sliders, scale, region, part)
+
+
+def post_masks(p: Project2, wf: int | Workflow, scale: float = 0.25, region: tuple[int, int, int, int] | None = None,
+               *, service: Any = None, device: str = "cpu") -> dict[str, Any]:
+    """Post's data masks of a layer: ``stars`` (None for a layer without Stars) and ``halpha``, float32 in [0, 1]."""
+    _, d = _output(p, wf)
+    return (service or layer_service(device)).masks(d, scale, region)
+
+
+def _slug(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "image"
+
+
+def export_image(p: Project2, rgb: np.ndarray, meta: dict[str, Any] | None = None,
+                 options: dict[str, Any] | Any = None, progress: Callable[[float, str], None] | None = None) -> list[Path]:
+    """Write a composed image (3, H, W), display sRGB in [0, 1]: TIFF 16 / 32f, PNG 16, JPEG, FITS 32f with the WCS, at
+    full size or reduced, in a v1 orientation, with a history file. ``options``: ``ExportOptions`` or its fields.
+    ``meta``: ``wf`` (the workflow whose solution goes in the FITS), ``origin`` (grid pixel of ``rgb[:, 0, 0]``),
+    ``history`` (dict), ``out_dir`` (default ``export/<name>/``). Returns the files."""
+    from .render.layers import ExportOptions, export_rgb
+    meta = dict(meta or {})
+    o = options if isinstance(options, ExportOptions) else ExportOptions(**(options or {}))
+    out_dir = Path(meta.get("out_dir") or Path(p.export) / _slug(o.name))
+    wcs = meta.get("wcs")
+    if wcs is None and meta.get("wf") is not None:
+        f = _dir(p, meta["wf"], "astrometry")
+        wcs = f / "wcs.fits" if f is not None and (f / "wcs.fits").is_file() else None
+    return export_rgb(rgb, out_dir, o, wcs, tuple(meta.get("origin") or (0, 0)), meta.get("history"),
+                      progress or (lambda f, m: None))
+
+
+def export_workflow(p: Project2, wf: int | Workflow, base: Any = None, sliders: dict[str, float] | None = None,
+                    options: dict[str, Any] | Any = None, progress: Callable[[float, str], None] | None = None,
+                    *, service: Any = None, device: str = "cpu") -> list[Path]:
+    """Headless export of one workflow's layer at full resolution, cropped to its useful frame, without Post's
+    composition. The folder is ``export/<name>/`` (name: the options' name, else the workflow's)."""
+    keys = _keys(p)
+    w = keys.project.workflow(wf)
+    opts = dict(options or {}) if not hasattr(options, "model_dump") else options.model_dump()
+    opts.setdefault("name", _slug(w.name))
+    lay = render_layer(p, w, base, sliders, 1.0, service=service, device=device)
+    x0, x1, y0, y1 = lay.crop
+    hist = {"project": p.name, "workflow": {"id": w.id, "name": w.name, "options": w.options},
+            "base": base, "sliders": sliders or {}, "created": datetime.now().isoformat(timespec="seconds"),
+            "keys": keys.keys(w), "render": lay.info}
+    return export_image(p, lay.rgb[:, y0:y1, x0:x1], {"wf": w.id, "origin": (x0, y0), "history": hist}, opts, progress)
+
+
+# ---------------------------------------------------------------------------------------------- lazy re-exports
+
+def __getattr__(name: str) -> Any:
+    """``Plan``, ``Job``, ``RunInfo`` (runner2), ``LayerImage`` and ``ExportOptions`` (render/layers), ``ImportReport``,
+    ``WriteRefused`` and ``NotEnoughSpace`` (core/import_v1) without loading torch at import."""
+    if name in ("Plan", "Job", "RunInfo"):
+        return getattr(_r2(), name)
+    if name in ("LayerImage", "ExportOptions", "LayerService"):
+        from .render import layers
+        return getattr(layers, name)
+    if name in ("ImportReport", "WriteRefused", "NotEnoughSpace", "WriteGuard"):
+        from .core import import_v1 as iv
+        return getattr(iv, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
