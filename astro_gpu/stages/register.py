@@ -80,7 +80,8 @@ class Register(Stage):
             ctx.progress(0.9 + 0.1 * (i + 1) / n, f"aligning frame {i + 1}/{n}")
         fin = np.isfinite(rms)
         if fin.sum() >= 3:
-            lim = max(1.0, 4 * float(np.median(rms[fin])))
+            # a wrong match (6.5 px on the Stellina), not a softer frame (M33: 35 stacked frames at 1.0-1.9 px)
+            lim = max(2.5, 8 * float(np.median(rms[fin])))
             off = np.where(fin & (rms > lim))[0]
             for i in off:                   # a residual far above the others: a wrong match, not a sharper frame
                 failed.append(meta[i]["path"])
