@@ -56,7 +56,7 @@ class Background(Stage):
         try:
             sc = float(ctx.metric_of("astrometry", "scale_arcsec"))
             px = round(14 * 60 / sc / 10) * 10
-            return {"large_scale_px": Auto(float(px), f"14 arcmin at {sc:.2f}\"/px")}
+            return {"large_scale_px": Auto(float(px), "14 arcmin at {scale:.2f}\"/px", {"scale": sc})}
         except Exception:  # noqa: BLE001
             return {}
 

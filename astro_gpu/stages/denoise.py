@@ -47,7 +47,7 @@ class Denoise(Stage):
             m = ctx.load_json("stack", "drz_meta.json")
             mp = m["width"] * m["height"] / 1e6
             it = int(np.clip(round(24000 * np.sqrt(mp / 27.3) / 1000) * 1000, 6000, 30000))
-            return {"iterations": Auto(it, f"{mp:.0f} Mpx stack")}
+            return {"iterations": Auto(it, "{mpx:.0f} Mpx stack", {"mpx": mp})}
         except Exception:  # noqa: BLE001
             return {}
 

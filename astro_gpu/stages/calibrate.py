@@ -62,7 +62,7 @@ class Calibrate(Stage):
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         n = max(1, min(12, (os.cpu_count() or 4) - 2))
-        return {"workers": Auto(n, f"{os.cpu_count()} CPU cores detected")}
+        return {"workers": Auto(n, "{cores} CPU cores detected", {"cores": os.cpu_count()})}
 
     def run(self, ctx: Context, p: CalibrateParams) -> None:
         frames = ctx.load_json("inventory", "frames.json")

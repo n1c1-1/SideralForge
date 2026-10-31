@@ -66,7 +66,7 @@ class Astrometry(Stage):
             a["target"] = Auto(name, "project / FITS object name")
         pix, foc = ctx.metric_of("inventory", "pixel_um"), ctx.metric_of("inventory", "focal_mm")
         if pix:
-            a["pixel_um"] = Auto(pix, f"camera {ctx.metric_of('inventory', 'camera')}")
+            a["pixel_um"] = Auto(pix, "camera {camera}", {"camera": ctx.metric_of('inventory', 'camera')})
         if foc:
             a["focal_mm"] = Auto(foc, "recorded in the files")
         if ctx.project.config.target.focal_mm:

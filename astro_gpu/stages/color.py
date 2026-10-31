@@ -68,7 +68,8 @@ class Color(Stage):
         try:
             S = float(ctx.load_json("stack", "drz_meta.json")["scale"])
             f = float(ctx.metric_of("register", "fwhm_px"))
-            return {"aperture": Auto(round(max(4.0, 0.7 * f * S), 1), f"star FWHM {f:.1f} px x drizzle {S}")}
+            return {"aperture": Auto(round(max(4.0, 0.7 * f * S), 1), "star FWHM {fwhm:.1f} px x drizzle {scale}",
+                                    {"fwhm": f, "scale": S})}
         except Exception:  # noqa: BLE001
             return {}
 

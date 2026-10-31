@@ -63,12 +63,36 @@ def _type_name(annotation: Any) -> str:
     return text.replace("typing.", "")
 
 
-@dataclass
+@dataclass(init=False)
 class Auto:
-    """A data-driven default value and the reason it was chosen."""
+    """A data-driven default value and the reason it was chosen.
+
+    The reason is a *template* (English, ``str.format`` fields, a format spec for numbers) and its *arguments*, so that
+    a client can translate the template and write the numbers its own way (decimal comma in French): see
+    ``astro_gpu/texts.py``. ``Auto(value, "text")`` without arguments is a fixed text, used as it is. Every template
+    has its French in ``client/locale/fr/engine.json`` (``tests/test_texts.py`` checks it).
+
+        Auto(2.0, "small stars (FWHM {fwhm:.1f} px) and {n} frames", {"fwhm": f, "n": n})
+    """
 
     value: Any
-    reason: str
+    template: str
+    args: dict | None
+
+    def __init__(self, value: Any, template: str = "", args: dict | None = None, *, reason: str | None = None):
+        self.value = value
+        self.template = template if reason is None else reason     # ``reason=`` : the old keyword
+        self.args = args
+
+    @property
+    def reason(self) -> str:
+        """The reason in English (what v1 stores and shows)."""
+        return self.template if self.args is None else self.template.format(**self.args)
+
+    def text(self, lang: str = "en") -> str:
+        """The reason in a language ("fr": translated template, decimal comma)."""
+        from .. import texts
+        return texts.format_reason(self.template, self.args, lang)
 
 
 def resolve(model: type[StageParams], auto: dict[str, Auto], overrides: dict[str, Any]) -> tuple[StageParams, dict]:

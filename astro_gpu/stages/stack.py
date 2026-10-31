@@ -90,24 +90,27 @@ class Stack(Stage):
         reg = np.load(ctx.input("register", "reg.npz"))
         n = len(reg["fwhm"])
         hb = int(max(1, min(20, n // 4)))
-        a["half_block"] = Auto(hb, f"{n} frames: blocks of {hb} give two half-stacks of about {n // 2} frames"
-                               + ("" if hb == 20 else " (blocks of 20 need 80 frames)"))
+        a["half_block"] = Auto(hb, "{n} frames: blocks of {hb} give two half-stacks of about {half} frames" if hb == 20
+                               else "{n} frames: blocks of {hb} give two half-stacks of about {half} frames "
+                                    "(blocks of 20 need 80 frames)", {"n": n, "hb": hb, "half": n // 2})
         f = float(np.median(reg["fwhm"]))
         if f < 3.0 and n >= 150:
-            a["scale"] = Auto(2.0, f"small stars (FWHM {f:.1f} px) and {n} frames")
+            a["scale"] = Auto(2.0, "small stars (FWHM {fwhm:.1f} px) and {n} frames", {"fwhm": f, "n": n})
         elif f < 5.5 and n >= 40:
-            a["scale"] = Auto(1.5, f"FWHM {f:.1f} px with {n} frames: under-sampled, enough frames to drizzle")
+            a["scale"] = Auto(1.5, "FWHM {fwhm:.1f} px with {n} frames: under-sampled, enough frames to drizzle",
+                              {"fwhm": f, "n": n})
         else:
-            a["scale"] = Auto(1.0, f"FWHM {f:.1f} px / {n} frames: drizzling would add noise without detail")
+            a["scale"] = Auto(1.0, "FWHM {fwhm:.1f} px / {n} frames: drizzling would add noise without detail",
+                              {"fwhm": f, "n": n})
         ok = np.isfinite(reg["rms"])
         t = reg["transp"]
         frac = float(np.mean(t[ok] < 0.6 * np.percentile(t[ok], 90)))
         if frac > 0.5:
-            a["min_transparency"] = Auto(0.3, f"{100 * frac:.0f} % of frames are below 60 % transparency: only the "
-                                              "worst (below 30 %) are excluded")
+            a["min_transparency"] = Auto(0.3, "{pct:.0f} % of frames are below 60 % transparency: only the "
+                                              "worst (below 30 %) are excluded", {"pct": 100 * frac})
         elif frac > 0:
-            a["min_transparency"] = Auto(0.6, f"{100 * frac:.0f} % of frames lost more than 40 % of the signal "
-                                              "(clouds or haze): excluded")
+            a["min_transparency"] = Auto(0.6, "{pct:.0f} % of frames lost more than 40 % of the signal "
+                                              "(clouds or haze): excluded", {"pct": 100 * frac})
         else:
             a["min_transparency"] = Auto(0.6, "transparency is stable: no frame falls below 60 %")
         st = np.load(ctx.input("calibrate", "frame_stats.npy"))
