@@ -33,3 +33,7 @@ Newest entries at the bottom. Times are local.
   - import reuses old results (7 of 9 projects);
   - work packages P1-P15.
 - Independent design review launched (DESIGN_REVIEW.md), as the user asked. Then: judge it, apply, dispatch.
+- The user worried that reviews could overcorrect work already done. Answer: the earlier reviews judged the GUI; this
+  one checks the technical plan (store keys, invalidation, reuse of old results, run order), which nobody had
+  reviewed. Triage rules added to PILOT.md §4: spec frozen, only verified blocking/important points, correct without
+  redesigning.

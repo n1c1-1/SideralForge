@@ -65,7 +65,9 @@ Co-Authored-By; never push.
   Anything that fails its QC stays a non-default method and is reported.
 - **E. Projects**: copy each real project's inputs into clean folders on F:, build its workflows, run, and check at
   100 %.
-- **F. Final QC**:
+- **F. Final QC.** The user's explicit request: at the END OF IMPLEMENTATION, an independent agent evaluates the
+  result. The orchestrator judges that evaluation with distance and applies the changes that hold, before handing
+  back. This is in addition to the design review done in A2. The checks are:
   - an independent GUI review on screenshots;
   - blind judges on the renders against the previous results;
   - a final report in French for the user, plain language, with images.
@@ -74,6 +76,12 @@ Order of priority if time runs short: B and C (the client on the real engine) > 
 A working client on the current algorithms is worth more than new methods without a client.
 
 ## 4. Rules for the orchestrator
+
+- **Reviews must not overcorrect** (the user's worry, 2026-10-31). When triaging any independent review:
+  1. The spec (mockup alt3) and the product decisions taken with the user are frozen. A remark that reopens them
+     is set aside.
+  2. Only blocking or important points, verified in the code or the data, are applied.
+  3. Correct, do not redesign: change lines, keep the plan.
 
 - **Delegate** reading and coding to agents with precise briefs. Keep only conclusions here. Never read big files or
   transcripts into this context.
