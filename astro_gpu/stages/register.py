@@ -78,6 +78,16 @@ class Register(Stage):
             else:
                 coef[i], nmatch[i], rms[i], transp[i] = r
             ctx.progress(0.9 + 0.1 * (i + 1) / n, f"aligning frame {i + 1}/{n}")
+        fin = np.isfinite(rms)
+        if fin.sum() >= 3:
+            # a wrong match (6.5 px on the Stellina), not a softer frame (M33: 35 stacked frames at 1.0-1.9 px)
+            lim = max(2.5, 8 * float(np.median(rms[fin])))
+            off = np.where(fin & (rms > lim))[0]
+            for i in off:                   # a residual far above the others: a wrong match, not a sharper frame
+                failed.append(meta[i]["path"])
+                rms[i] = np.inf
+            if len(off):
+                ctx.log(f"{len(off)} frame(s) aligned with a residual above {lim:.1f} px are left out", "warning")
         if failed:
             ctx.log(f"{len(failed)} frame(s) could not be aligned and will be ignored, e.g. {failed[0]}", "warning")
         np.savez(ctx.out("reg.npz"), coef=coef, fwhm=fwhm, transp=transp, nmatch=nmatch, rms=rms, ref=ref,
@@ -129,13 +139,63 @@ def initial_shift(a, b, W, H):
     return s
 
 
+def _rotate(xy, ang_deg, W, H):
+    """Positions turned by ang_deg about the centre of the frame."""
+    t = np.deg2rad(ang_deg)
+    c = np.array([W / 2.0, H / 2.0])
+    R = np.array([[np.cos(t), -np.sin(t)], [np.sin(t), np.cos(t)]])
+    return (xy - c) @ R.T + c
+
+
+def initial_rotation(a, b, W, H, max_deg=45.0, step=0.5):
+    """(angle, shift) such that b turned by the angle about the frame centre, minus the shift, falls on a: the field of
+    an alt-azimuth mount turns during the night. Votes on pair differences for each trial angle (6 px bins, the angle
+    is only known to the step), the angle of the highest vote kept, its shift refined on nearest neighbours."""
+    span = max(W, H) / 2.0
+    bins = int(2 * span / 6)
+    best = (0, None, None)
+    for ang in np.arange(-max_deg, max_deg + step / 2, step):
+        bb = _rotate(b[:150, :2], ang, W, H)
+        d = (bb[:, None, :] - a[None, :150, :2]).reshape(-1, 2)
+        hh, xe, ye = np.histogram2d(d[:, 0], d[:, 1], bins=bins, range=[[-span, span], [-span, span]])
+        k = hh.max()
+        if k > best[0]:
+            i, j = np.unravel_index(hh.argmax(), hh.shape)
+            best = (k, float(ang), np.array([(xe[i] + xe[i + 1]) / 2, (ye[j] + ye[j + 1]) / 2]))
+    k, ang, s = best
+    if k < 8:
+        return None, None
+    rb = _rotate(b[:, :2], ang, W, H)
+    dd, jj = cKDTree(a[:, :2]).query(rb - s, distance_upper_bound=12.0)
+    m = np.isfinite(dd)
+    if m.sum() > 10:
+        s = s + np.median((rb[m] - s) - a[jj[m], :2], axis=0)
+    return ang, s
+
+
 def fit_frame(cat, ref, tree, W, H):
+    """Registration polynomial of a frame on the reference: from a translation (the usual case), or, when that matches
+    few stars, from a rotation and a translation (alt-azimuth mounts: the field turns). The turned fit is kept when it
+    matches more stars with a small residual: in a dense field a loose start can lock on chance pairs (Stellina, 1 800
+    stars a frame: 330 chance pairs at 6.5 px beat 138 true ones at 0.3 px)."""
     if cat is None or len(cat) < 30:
         return None
-    s = initial_shift(ref, cat, W, H)
+    r = _fit_from(cat, ref, tree, W, H, np.c_[cat[:, 0], cat[:, 1]] - initial_shift(ref, cat, W, H), 4.0)
+    if r is not None and r[1] >= 0.3 * min(len(cat), len(ref)):
+        return r
+    ang, s = initial_rotation(ref, cat, W, H)
+    if ang is None:
+        return r
+    r2 = _fit_from(cat, ref, tree, W, H, _rotate(cat[:, :2], ang, W, H) - s, 8.0)
+    if r2 is not None and r2[2] < max(1.0, 2 * (r[2] if r is not None else 0.5)) and (r is None or r2[1] > r[1]):
+        return r2
+    return r
+
+
+def _fit_from(cat, ref, tree, W, H, pred, tol):
+    """Cubic polynomial from a first guess of the frame's stars on the reference (pred), the matching tolerance
+    shrinking with the residuals."""
     T = poly_terms(cat[:, 0], cat[:, 1], W, H)
-    pred = np.c_[cat[:, 0], cat[:, 1]] - s
-    tol = 4.0
     cx = cy = None
     for _ in range(6):
         d, j = tree.query(pred, distance_upper_bound=tol)

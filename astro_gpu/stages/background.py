@@ -47,7 +47,10 @@ class Background(Stage):
                    "point. Faint emission (IFN-like structures) is therefore kept with its true brightness.")
     deps = ("starless", "stars", "optics", "surveys", "astrometry", "stack", "color", "catalogs")
     Params = BackgroundParams
-    version = "4"          # 3: zero-point floor on the darkest areas; 4: not set where the removed star glare dominates
+    version = "5"          # 3: zero-point floor on the darkest areas; 4: not set where the removed star glare dominates;
+                           # 5: star flat from wide apertures when the star models' fluxes scatter twice as much;
+                           # in an emission field, objects rejected on green and blue when the H-alpha amplitude
+                           # collapses
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
@@ -68,8 +71,14 @@ class Background(Stage):
         g_deep = float(np.nanmax(fs["g"]))
         ctx.progress(0.05, "star flat")
         if p.star_flat:
-            flat, finfo = star_flat(fs, ctx.load("optics", "lat_full.npy", mmap=True), W, H, dm)
+            fw = float(ctx.metric_of("register", "fwhm_px")) * float(ctx.load_json("stack", "drz_meta.json")["scale"])
+            flat, finfo = star_flat(fs, ctx.load("optics", "lat_full.npy", mmap=True), W, H, dm, fw)
             ctx.metric("flat_error_pct", [round(100 * float(flat.min() - 1), 1), round(100 * float(flat.max() - 1), 1)])
+            ctx.metric("star_flat_photometry", finfo["photometry"])
+            if finfo["photometry"] == "aperture":
+                ctx.log(f"star flat from wide apertures (radius {finfo['aperture_px']:.0f} px): the fluxes of the star "
+                        f"models scatter {finfo['scatter_psf']:.3f} around the flat, the apertures "
+                        f"{finfo['scatter_aperture']:.3f} (star shapes change across the field)")
             ctx.log(f"star flat: the flat field was wrong by {100 * (flat.min() - 1):+.1f} to {100 * (flat.max() - 1):+.1f} %")
         else:
             flat, finfo = np.ones_like(sl), {}
@@ -189,6 +198,11 @@ class Background(Stage):
         ctx.preview("background", asinh_preview(astro, ctx.load("color", "M.npy"), k=30))
 
 
+#: an emission field: the H-alpha survey reaches this brightness (99th percentile, rayleigh) - the user's emission
+#: fields 400-1250 R, the galaxies and reflection nebulae 3-110 R
+EMISSION_FIELD_R = 200.0
+
+
 def fit_sky(Yb, Hb, U, Tp, good, h_cam, clip, iters=10):
     """Sky model per channel: Yb = k_ha Hb + u U + polynomial, with k_ha >= 0 and u >= 0.
 
@@ -240,9 +254,9 @@ def fit_sky(Yb, Hb, U, Tp, good, h_cam, clip, iters=10):
         k = np.array([s[0] for s in sol])
         return k[1] / k[0] <= 2.0 * h_cam[1] and k[2] / k[0] <= 2.5 * h_cam[2]
 
-    def clip_objects(sol, mask):
+    def clip_objects(sol, mask, channels=(0, 1, 2)):
         keep = base.copy()
-        for c in range(3):
+        for c in channels:
             r = Yb[c].ravel() - design(c) @ sol[c]
             s = 1.4826 * np.median(np.abs(r[mask] - np.median(r[mask]))) + 1e-9
             obj = (r - np.median(r[mask]) > clip * s).reshape(Yb.shape[1:])
@@ -250,27 +264,54 @@ def fit_sky(Yb, Hb, U, Tp, good, h_cam, clip, iters=10):
             keep &= ~obj.ravel()
         return keep if keep.sum() >= 0.1 * base.sum() else mask
 
-    shared = False
-    mask = base
-    sol = solve(mask, shared)
-    for _ in range(iters):
+    def fit(channels):
+        shared = False
+        mask = base
+        sol = solve(mask, shared)
+        k_all = float(sol[0][0]) if nh else 0.0
+        for _ in range(iters):
+            if not plausible(sol):
+                shared = True
+                sol = solve(mask, shared)
+                if _ == 0 and nh:
+                    k_all = float(sol[0][0])
+            new = clip_objects(sol, mask, channels)
+            if (new == mask).all():
+                break
+            mask = new
+            sol = solve(mask, shared)
         if not plausible(sol):
             shared = True
             sol = solve(mask, shared)
-        new = clip_objects(sol, mask)
-        if (new == mask).all():
-            break
-        mask = new
-        sol = solve(mask, shared)
-    if not plausible(sol):
-        shared = True
-        sol = solve(mask, shared)
+        return sol, mask, shared, k_all
+
+    sol, mask, shared, k_all = fit((0, 1, 2))
+    kept = ""
+    if nh and k_all > 0 and sol[0][0] < 0.3 * k_all and np.nanpercentile(Hb.ravel()[base], 99) >= EMISSION_FIELD_R:
+        # in an emission field the rejection took the H-alpha nebula for objects, down to less than 30 % of the
+        # amplitude found on all the blocks: objects (galaxies, reflection nebulae) are bright in green and blue, an
+        # H-alpha excess is red (Canon 40D on the Rosette: 0.019 -> 0.0021 ADU/R with every channel, 0.015 with
+        # green and blue; the red excess of the image against the survey says 0.012-0.016). The fields where the
+        # survey is faint are left alone: there it correlates with the galaxy or the reflection nebula, and the
+        # rejection is right to lower it (Iris, M31, M33: 5 %, 0 %, 0 % of the first amplitude kept).
+        sol2, mask2, shared2, _ = fit((1, 2))
+        if sol2[0][0] > sol[0][0]:
+            kept = (f"; the rejection on all channels left {100 * sol[0][0] / k_all:.0f} % of the H-alpha amplitude "
+                    f"of the whole field: objects rejected on green and blue only")
+            sol, mask, shared = sol2, mask2, shared2
     how = "none (no survey)" if not nh else ("camera HII signature imposed (the survey correlates with other "
-                                             "structures in this field)" if shared else "fitted")
+                                             "structures in this field)" if shared else "fitted") + kept
     return sol, mask.reshape(Yb.shape[1:]), how
 
 
-def star_flat(fs, img, W, H, dm):
+def star_flat(fs, img, W, H, dm, fwhm=None):
+    """Smooth map (3, H, W) of the stars' measured / Gaia-predicted flux: the residual error of the flat field.
+
+    Red and green from the star models' fluxes, or from wide apertures (radius 3 FWHM, 18 px at least) on isolated
+    stars when the models' fluxes scatter at least twice as much around the map: where the star shapes change across
+    the field (coma of a Newtonian without corrector) the models lose a part of the light of the stars that does not
+    fit them, which then passes for a loss of sensitivity (Canon 6D on a Newton 200/1000: the models gave -52 %, the
+    apertures -11 % with a scatter of 0.015 against 0.068, and the sky over-corrected became a bright band)."""
     x, y, g, fl, pr = fs["x"], fs["y"], fs["g"] - dm, fs["flux"], fs["pred"]
     m = (g > 9.5) & (g < 13.0) & (x > 50) & (x < W - 50) & (y > 50) & (y < H - 50)
     yy, xx = np.mgrid[0:H:16, 0:W:16].astype(np.float64)
@@ -280,10 +321,30 @@ def star_flat(fs, img, W, H, dm):
         q, s, ok = robust_lstsq(poly_terms(x[m], y[m], W, H, 3), r)
         maps.append(poly_terms(xx, yy, W, H, 3) @ q)
         info[c] = {"n": int(ok.sum()), "scatter": float(s)}
-    # blue: wide aperture on bright isolated stars as a check; the map uses the mean R/G shape (the very spread
-    # blue PSF of the corners biases blue PSF photometry)
     from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture, aperture_photometry
     t = cKDTree(np.c_[x, y])
+    info["photometry"], info["scatter_psf"] = "star models", info[1]["scatter"]
+    R = max(18.0, 3.0 * fwhm) if fwhm else 18.0
+    cand = np.where((g > 9.5) & (g < 12.5) & (x > R + 20) & (x < W - R - 20) & (y > R + 20) & (y < H - R - 20))[0]
+    iso = np.array([i for i in cand if all((j == i) or (g[j] > g[i] + 3.0)
+                                           for j in t.query_ball_point([x[i], y[i]], 1.3 * R))], int)
+    if len(iso) >= 40:
+        xy = np.c_[x[iso], y[iso]]
+        ap, an = CircularAperture(xy, r=R), CircularAnnulus(xy, r_in=1.3 * R, r_out=1.8 * R)
+        amaps, sc = [], []
+        for c in (0, 1):
+            im = np.asarray(img[c], np.float32)
+            fa = aperture_photometry(im, ap)["aperture_sum"].data - ApertureStats(im, an).median * ap.area
+            q, s, ok = robust_lstsq(poly_terms(xy[:, 0], xy[:, 1], W, H, 3), np.log(np.clip(fa, 1e-3, None) / pr[c, iso]))
+            amaps.append(poly_terms(xx, yy, W, H, 3) @ q)
+            sc.append(float(s))
+        info["scatter_aperture"], info["aperture_px"] = sc[1], R
+        if info[1]["scatter"] > 2.0 * sc[1]:
+            maps, info["photometry"] = amaps, "aperture"
+            for c in (0, 1):
+                info[c] = {"n": int(len(iso)), "scatter": sc[c]}
+    # blue: wide aperture on bright isolated stars as a check; the map uses the mean R/G shape (the very spread
+    # blue PSF of the corners biases blue PSF photometry)
     cand = np.where((g > 8.5) & (g < 11.0) & (x > 60) & (x < W - 60) & (y > 60) & (y < H - 60))[0]
     iso = np.array([i for i in cand if all((j == i) or (g[j] > g[i] + 3.5) for j in t.query_ball_point([x[i], y[i]], 22))],
                    int)

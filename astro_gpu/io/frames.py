@@ -5,13 +5,14 @@ such as ``"RGGB"`` describing the top-left 2x2 block.
 """
 from __future__ import annotations
 
+import io
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 
-from ..core.project import FITS_EXT, RAW_EXT
+from ..core.project import frame_kind
 
 #: pixel pitch (micrometres) of common sensors, used to guess the plate scale when the file does not say
 PIXEL_PITCH_UM = {
@@ -22,7 +23,8 @@ PIXEL_PITCH_UM = {
     "NIKON D810A": 4.88, "NIKON D810": 4.88, "NIKON D750": 5.95, "NIKON Z 6": 5.94, "NIKON Z 6_2": 5.94,
     "NIKON D5300": 3.89, "ZWO ASI2600MC Pro": 3.76, "ZWO ASI533MC Pro": 3.76, "ZWO ASI294MC Pro": 4.63,
     "ZWO ASI071MC Pro": 4.78, "ZWO ASI183MC Pro": 2.40, "ZWO ASI585MC": 2.90, "ZWO ASI2400MC Pro": 5.94,
-    "QHY268C": 3.76, "QHY600C": 3.76,
+    "QHY268C": 3.76, "QHY600C": 3.76, "Canon EOS 40D": 5.70, "Canon EOS 5D Mark II": 6.41, "Canon EOS 700D": 4.30,
+    "PENTAX 645Z": 5.32, "GFX 50R": 5.31, "GFX 50S": 5.31, "GFX100S": 3.76, "ILCE-7RM2": 4.51,
 }
 
 
@@ -62,7 +64,8 @@ def read_info(path: str | Path, like: FrameInfo | None = None) -> FrameInfo:
     only their EXIF header is read and the sensor properties are copied (much faster on slow disks)."""
     path = Path(path)
     ext = path.suffix.lower()
-    if ext in RAW_EXT:
+    kind = frame_kind(path)
+    if kind == "raw":
         if like is not None and like.kind == "raw" and Path(like.path).suffix.lower() == ext:
             info = FrameInfo(str(path), "raw", like.width, like.height, like.cfa, like.black, like.white)
             _exif_into(info, path)
@@ -70,7 +73,7 @@ def read_info(path: str | Path, like: FrameInfo | None = None) -> FrameInfo:
                 return _raw_info(path)
             return info
         return _raw_info(path)
-    if ext in FITS_EXT:
+    if kind == "fits":
         return _fits_info(path)
     raise ValueError(f"unsupported file type: {path.name}")
 
@@ -78,14 +81,14 @@ def read_info(path: str | Path, like: FrameInfo | None = None) -> FrameInfo:
 def read_cfa(path: str | Path) -> np.ndarray:
     """Raw mosaic (H, W) float32 in ADU, top row first, black level NOT subtracted."""
     path = Path(path)
-    ext = path.suffix.lower()
-    if ext in RAW_EXT:
+    kind = frame_kind(path)
+    if kind == "raw":
         import rawpy
         with rawpy.imread(str(path)) as r:
             return r.raw_image_visible.astype(np.float32)
-    if ext in FITS_EXT:
+    if kind == "fits":
         from astropy.io import fits
-        with fits.open(path, memmap=False) as h:
+        with fits.open(path, memmap=False) as h:          # compressed FITS: the image is in the first extension
             hdu = next(x for x in h if x.data is not None)
             a = np.asarray(hdu.data, np.float32)
             hd = hdu.header
@@ -109,11 +112,35 @@ def _raw_info(path: Path) -> FrameInfo:
     return info
 
 
-def _exif_into(info: FrameInfo, path: Path) -> None:
+def exif_tags(path: Path) -> dict:
+    """The EXIF tags of a RAW file, named as exifread names them ('Image Model', 'EXIF ExposureTime'...). exifread reads
+    the TIFF-based files (ARW, CR2, NEF, PEF, DNG...) itself; a Canon CR3 keeps them in two ISO-media boxes (CMT1: the
+    main directory, CMT2: the EXIF directory), a Fujifilm RAF in its JPEG preview."""
     import exifread
+    ext = path.suffix.lower()
+    with open(path, "rb") as f:
+        if ext == ".cr3":
+            head = f.read(1 << 20)
+            tags = {}
+            for box, group in ((b"CMT1", "Image"), (b"CMT2", "EXIF")):
+                k = head.find(box)
+                if k < 4:
+                    continue
+                size = int.from_bytes(head[k - 4:k], "big")
+                t = exifread.process_file(io.BytesIO(head[k + 4:k - 4 + size]), details=False)
+                tags.update({f"{group} {key.split(' ', 1)[1]}": v for key, v in t.items() if " " in key})
+            return tags
+        if ext == ".raf":
+            head = f.read(92)
+            off, n = int.from_bytes(head[84:88], "big"), int.from_bytes(head[88:92], "big")
+            f.seek(off)
+            return exifread.process_file(io.BytesIO(f.read(n)), details=False)
+        return exifread.process_file(f, details=False)
+
+
+def _exif_into(info: FrameInfo, path: Path) -> None:
     try:
-        with open(path, "rb") as f:
-            t = exifread.process_file(f, details=False)
+        t = exif_tags(path)
         dt = t.get("EXIF DateTimeOriginal")
         if dt:
             info.time = datetime.strptime(str(dt), "%Y:%m:%d %H:%M:%S").isoformat()
@@ -125,7 +152,7 @@ def _exif_into(info: FrameInfo, path: Path) -> None:
         info.camera = str(t.get("Image Model", "")).strip()
     except Exception:  # noqa: BLE001 - metadata is optional
         pass
-    if info.time is None:
+    if info.time is None:          # no capture time in the file: its date on disk (a copy's is the copy's date)
         info.time = datetime.fromtimestamp(path.stat().st_mtime).isoformat()
     info.pixel_um = PIXEL_PITCH_UM.get(info.camera)
 
@@ -143,9 +170,30 @@ def _ratio(v) -> float | None:
         return None
 
 
-def _fits_info(path: Path) -> FrameInfo:
+def fits_header(path: str | Path):
+    """The header of the image of a FITS file (of its first extension for a compressed one, whose primary part is
+    empty)."""
     from astropy.io import fits
-    hd = fits.getheader(path)
+    with fits.open(path, memmap=False) as h:
+        for hdu in h:
+            if hdu.header.get("NAXIS", 0) >= 2:
+                return hdu.header.copy()
+        return h[0].header.copy()
+
+
+def _exposure_s(hd) -> float | None:
+    """Exposure in seconds: EXPTIME or EXPOSURE, converted when the header gives it in milliseconds (Stellina:
+    'EXPOSURE = 10000 / [ms] Total Exposure Time')."""
+    for key in ("EXPTIME", "EXPOSURE"):
+        v = _num(hd.get(key))
+        if v is not None:
+            unit = (hd.comments[key] or "").lower()
+            return v / 1000.0 if "[ms]" in unit or "millisec" in unit or unit.startswith("ms") else v
+    return None
+
+
+def _fits_info(path: Path) -> FrameInfo:
+    hd = fits_header(path)
     naxis = int(hd.get("NAXIS", 0))
     w, h = int(hd.get("NAXIS1", 0)), int(hd.get("NAXIS2", 0))
     pat = str(hd.get("BAYERPAT", "")).strip().upper() if naxis == 2 else ""
@@ -156,13 +204,13 @@ def _fits_info(path: Path) -> FrameInfo:
     bitpix = int(hd.get("BITPIX", 16))
     white = float(hd.get("DATAMAX", 2 ** 16 - 1 if bitpix in (16, 32) else 1.0))
     info = FrameInfo(str(path), "fits", w, h, pat, float(hd.get("PEDESTAL", hd.get("OFFSET", 0)) or 0), white)
-    info.exposure = _num(hd.get("EXPTIME", hd.get("EXPOSURE")))
+    info.exposure = _exposure_s(hd)
     info.iso = _num(hd.get("GAIN", hd.get("ISOSPEED")))
     info.time = str(hd.get("DATE-OBS", "")) or datetime.fromtimestamp(path.stat().st_mtime).isoformat()
     info.camera = str(hd.get("INSTRUME", "")).strip()
-    info.focal_mm = _num(hd.get("FOCALLEN"))
-    info.pixel_um = _num(hd.get("XPIXSZ")) or PIXEL_PITCH_UM.get(info.camera)
-    info.temperature = _num(hd.get("CCD-TEMP", hd.get("SET-TEMP")))
+    info.focal_mm = _num(hd.get("FOCALLEN", hd.get("FOCAL")))
+    info.pixel_um = _num(hd.get("XPIXSZ", hd.get("PIXSZ"))) or PIXEL_PITCH_UM.get(info.camera)
+    info.temperature = _num(hd.get("CCD-TEMP", hd.get("SET-TEMP", hd.get("TEMP"))))
     info.object = str(hd.get("OBJECT", "")).strip()
     try:
         import astropy.units as u

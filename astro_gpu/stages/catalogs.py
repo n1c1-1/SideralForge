@@ -290,15 +290,25 @@ def _xp_spectra(ctx, sources, p0, p1):
         for i, r in enumerate(ex.map(fetch, ids)):
             rows.append(r)
             ctx.progress(p0 + (p1 - p0) * (i + 1) / len(sources), f"XP spectra {i + 1}/{len(sources)}")
-    if ga.vizier_down():                    # the spectra VizieR did not give, from the ESA archive in batches
+    if ga.vizier_down():                    # the spectra VizieR did not give: from GAVO, else the ESA archive
         todo = [k for k, sid in enumerate(ids) if rows[k] is None and not cached(sid)[0]]
-        if todo:
-            ctx.log(f"VizieR does not answer: {len(todo)} XP spectra from the ESA Gaia archive")
-            got = ga.xp_spectra_esa([ids[k] for k in todo])
+        for name, get in (("GAVO (Heidelberg)", ga.xp_spectra_gavo), ("the ESA Gaia archive", ga.xp_spectra_esa)):
+            if not todo:
+                break
+            ctx.log(f"VizieR does not answer: {len(todo)} XP spectra from {name}")
+            try:
+                got = get([ids[k] for k in todo])
+            except Exception as e:  # noqa: BLE001 - this service fails too: the next one
+                ctx.log(f"{name} failed: {str(e)[:200]}", "warning")
+                continue
             for k in todo:
-                rows[k] = got.get(ids[k])
-                store(ids[k], rows[k])
-    return rows
+                if ids[k] in got:
+                    rows[k] = got[ids[k]]
+                    store(ids[k], rows[k])
+            todo = [k for k in todo if rows[k] is None]
+    if len({len(r[0]) for r in rows if r is not None}) > 1:
+        ctx.log("XP spectra from services with different wavelength grids: all brought to 400-800 nm")
+    return ga.common_grid(rows)
 
 
 def _xyz(lam, flux):

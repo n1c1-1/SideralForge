@@ -29,3 +29,27 @@ def test_colour_agreement():
     assert colour_agreement(spec, lam, cam, S) < 2.5
     other = _bands((640, 30), (530, 35), (455, 30), lam)                                   # another camera
     assert colour_agreement(spec, lam, cam, other) > colour_agreement(spec, lam, cam, S)
+
+
+def test_spectra_of_two_grids_are_brought_to_one_and_narrow_profiles_are_not_kept(tmp_path, monkeypatch):
+    from astro_gpu.core import gaia_archive as ga
+    from astro_gpu.stages import color
+    wide = (ga.XP_WAVELENGTHS.copy(), np.linspace(1, 2, ga.XP_WAVELENGTHS.size))
+    narrow = (ga.GAVO_XP_WAVELENGTHS.copy(), np.linspace(1.1, 1.5, 41))
+    rows = ga.common_grid([wide, None, narrow])
+    assert rows[1] is None and all(len(r[0]) == 41 for r in (rows[0], rows[2]))
+    assert np.allclose(rows[0][1], np.interp(ga.GAVO_XP_WAVELENGTHS, *wide))
+    assert ga.common_grid([wide, wide])[0] is wide
+    monkeypatch.setattr(color, "PROFILES", tmp_path)
+    color.save_profile("Cam X", ga.GAVO_XP_WAVELENGTHS, np.ones((3, 41)), "p", 0.01)
+    assert not list(tmp_path.iterdir())
+    color.save_profile("Cam X", ga.XP_WAVELENGTHS, np.ones((3, ga.XP_WAVELENGTHS.size)), "p", 0.01)
+    assert color.load_profile("Cam X", ga.GAVO_XP_WAVELENGTHS)["S"].shape == (3, 41)
+
+
+def test_the_generic_colour_sensor_is_physical():
+    from astro_gpu.core.gaia_archive import GAVO_XP_WAVELENGTHS, XP_WAVELENGTHS
+    from astro_gpu.stages.color import generic_response
+    for lam in (XP_WAVELENGTHS, GAVO_XP_WAVELENGTHS):
+        S = generic_response(lam)
+        assert S.shape == (3, len(lam)) and physical_response(lam, S)[0]

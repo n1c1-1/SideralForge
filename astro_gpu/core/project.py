@@ -31,6 +31,18 @@ from typing import Any
 FORMAT = 1
 RAW_EXT = {".arw", ".cr2", ".cr3", ".nef", ".dng", ".orf", ".rw2", ".pef", ".srw", ".raf"}
 FITS_EXT = {".fit", ".fits", ".fts"}
+FITS_PACKED = {".fz", ".gz"}         # compressed FITS: .fits.fz (tile-compressed), .fit.gz (gzip)
+
+
+def frame_kind(path: str | Path) -> str:
+    """'raw', 'fits' (compressed FITS included) or '' for a file that is not a frame."""
+    name = Path(path).name.lower()
+    ext = Path(name).suffix
+    if ext in RAW_EXT:
+        return "raw"
+    if ext in FITS_EXT or ext == ".fz" or (ext in FITS_PACKED and Path(name[:-len(ext)]).suffix in FITS_EXT):
+        return "fits"
+    return ""
 
 
 @dataclass
@@ -274,7 +286,11 @@ def stage_graph() -> dict[str, tuple[str, ...]]:
     return _GRAPH
 
 
-REGISTRY = Path.home() / ".astro_gpu" / "projects.json"
+#: per-user state: the list of recent projects, the stage durations, the camera colour profiles. ASTRO_GPU_HOME moves
+#: it elsewhere, so that test runs (tools/qc) neither appear among the user's projects nor teach the user's camera
+#: profiles (the download cache stays in ~/.astro_gpu/cache, shared)
+STATE = Path(os.environ.get("ASTRO_GPU_HOME") or Path.home() / ".astro_gpu")
+REGISTRY = STATE / "projects.json"
 
 
 def remember(project: Project) -> None:
@@ -320,5 +336,5 @@ def list_frames(folders: list[str]) -> list[Path]:
         if p.is_file():
             out.append(p)
         elif p.is_dir():
-            out += [q for q in p.iterdir() if q.suffix.lower() in RAW_EXT | FITS_EXT]
+            out += [q for q in p.iterdir() if q.is_file() and frame_kind(q)]
     return sorted(set(out))

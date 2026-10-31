@@ -102,6 +102,8 @@ def _centroid_fit(pch):
 
     def f(t):
         return (t[0] * np.exp(-((xx - t[1]) ** 2 + (yy - t[2]) ** 2) / (2 * t[3] ** 2)) + t[4] - pch).ravel()
+    if not np.isfinite(pch).all() or pch.max() <= 0:     # no star in this colour (a frame edge, a gap): no fit
+        return 0.0, 0.0, False
     r = least_squares(f, [pch.max(), 0, 0, 1.5, 0], bounds=([0, -3, -3, 0.4, -np.inf], [np.inf, 3, 3, 6, np.inf]))
     return r.x[1], r.x[2], r.success
 

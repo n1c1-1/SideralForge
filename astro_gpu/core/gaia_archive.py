@@ -1,9 +1,14 @@
-"""Star catalogues from VizieR (CDS), or from the ESA Gaia archive when VizieR does not answer.
+"""Star catalogues from VizieR (CDS), or from the GAVO data centre (Heidelberg) and the ESA Gaia archive when VizieR
+does not answer.
 
-The same data under the same (VizieR) column names either way: Gaia DR3 stars in a cone, the sampled XP spectra of
-Gaia DR3 stars (343 points, 336-1020 nm, W m^-2 nm^-1) and the Hipparcos stars. VizieR is asked first; after one
-failure the rest of the session goes straight to the ESA archive (CDS was unreachable for days on 2026-10-28 while
-the ESA archive answered).
+The same data under the same (VizieR) column names whatever the source: Gaia DR3 stars in a cone, the sampled XP
+spectra of Gaia DR3 stars and the Hipparcos stars. VizieR is asked first; after one failure the rest of the session
+goes to the other services (CDS was unreachable for days on 2026-10-28; on 2026-10-30 the ESA archive answered its
+asynchronous queries with errors 500 or in minutes, while GAVO gave 10 000 stars in 6 s).
+
+XP spectra: VizieR and the ESA archive give 343 points, 336-1020 nm every 2 nm; GAVO gives the same spectra on 41
+points, 400-800 nm every 10 nm (equal to the ESA values within 0.3 %). Spectra of both kinds are brought to the
+common 400-800 nm grid (``common_grid``).
 """
 from __future__ import annotations
 
@@ -12,6 +17,7 @@ import threading
 import numpy as np
 
 _VIZIER_DOWN = threading.Event()
+_GAVO_SLOTS = threading.Semaphore(2)      # GAVO dropped the connection with the catalogue stage's 6 parallel queries
 
 # VizieR I/355/gaiadr3 column -> gaiadr3.gaia_source column (positions are the same epoch 2016.0 ICRS ones)
 GAIA_COLS = {"Source": "source_id", "RA_ICRS": "ra", "DE_ICRS": "dec", "Gmag": "phot_g_mean_mag",
@@ -21,6 +27,22 @@ GAIA_COLS = {"Source": "source_id", "RA_ICRS": "ra", "DE_ICRS": "dec", "Gmag": "
 HIP_COLS = {"HIP": "hip", "RAICRS": "ra", "DEICRS": "de", "Vmag": "vmag", "B-V": "b_v", "pmRA": "pmra",
             "pmDE": "pmde"}
 XP_WAVELENGTHS = np.arange(336.0, 1020.0 + 1e-6, 2.0)
+GAVO_TAP = "https://dc.zah.uni-heidelberg.de/tap"
+GAVO_XP_WAVELENGTHS = np.arange(400.0, 800.0 + 1e-6, 10.0)
+XP_SAMPLED_G = 17.65            # Gaia DR3 published sampled XP spectra for the sources brighter than this
+
+
+def _gavo(query: str):
+    """GAVO TAP: a synchronous query, or an asynchronous job when it takes more than the ~20 s the service allows a
+    synchronous one (dense Milky Way fields)."""
+    import pyvo
+    svc = pyvo.dal.TAPService(GAVO_TAP)
+    try:
+        return svc.run_sync(query, maxrec=50_000_000).to_table()
+    except pyvo.dal.DALQueryError as e:
+        if "timed out" not in str(e).lower() and "too long" not in str(e).lower():
+            raise
+        return svc.run_async(query, maxrec=50_000_000).to_table()
 
 
 def _column(t, k) -> np.ndarray:
@@ -65,11 +87,45 @@ def gaia_cone(ra: float, dec: float, radius: float, cols: list[str], gfilter: st
                     for k in cols}
         except Exception:  # noqa: BLE001 - VizieR unreachable: the ESA archive
             _VIZIER_DOWN.set()
-    sel = ", ".join(GAIA_COLS[k] for k in cols)
-    q = (f"SELECT {sel} FROM gaiadr3.gaia_source WHERE 1=CONTAINS(POINT('ICRS', ra, dec), "
-         f"CIRCLE('ICRS', {ra:.8f}, {dec:.8f}, {radius:.6f})) AND {_range_sql('phot_g_mean_mag', gfilter)}")
-    t = _esa(q)
+    where = (f"WHERE 1=CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', {ra:.8f}, {dec:.8f}, {radius:.6f})) AND "
+             f"{_range_sql('phot_g_mean_mag', gfilter)}")
+    try:                    # GAVO's gaia.dr3lite: the same columns but has_xp_sampled, which follows from G
+        need = [k for k in cols if k != "XPsamp"] + (["Gmag"] if "XPsamp" in cols and "Gmag" not in cols else [])
+        t = _gavo_cone(need, ra, dec, radius, gfilter)
+        out = {k: _column(t, GAIA_COLS[k]) for k in need}
+        if "XPsamp" in cols:
+            out["XPsamp"] = (out["Gmag"] < XP_SAMPLED_G).astype(np.float64)
+        return {k: out[k] for k in cols}
+    except Exception:  # noqa: BLE001 - GAVO unreachable: the ESA archive
+        pass
+    t = _esa(f"SELECT {', '.join(GAIA_COLS[k] for k in cols)} FROM gaiadr3.gaia_source {where}")
     return {k: _column(t, GAIA_COLS[k]) for k in cols}
+
+
+def _gavo_cone(need: list[str], ra: float, dec: float, radius: float, gfilter: str, depth: int = 0):
+    """A Gaia cone from GAVO; when the service fails on it (dense Milky Way fields), the cone is covered by 7 cones of
+    half its radius (one at the centre, six around at 0.866 of the radius: the smallest cover), twice at most, and the
+    stars found twice are kept once."""
+    sel = ", ".join(GAIA_COLS[k] for k in dict.fromkeys(need + ["Source", "RA_ICRS", "DE_ICRS"]))
+    try:
+        with _GAVO_SLOTS:
+            return _gavo(f"SELECT {sel} FROM gaia.dr3lite WHERE 1=CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', "
+                         f"{ra:.8f}, {dec:.8f}, {radius:.6f})) AND {_range_sql('phot_g_mean_mag', gfilter)}")
+    except Exception:  # noqa: BLE001
+        if depth >= 2:
+            raise
+    from astropy.table import unique, vstack
+    d = 0.866 * radius
+    parts = [_gavo_cone(need, ra, dec, 0.52 * radius, gfilter, depth + 1)]
+    for a in np.radians(np.arange(0, 360, 60)):
+        dd = dec + d * np.sin(a)
+        parts.append(_gavo_cone(need, ra + d * np.cos(a) / max(np.cos(np.radians(dd)), 1e-3), dd, 0.52 * radius,
+                                gfilter, depth + 1))
+    t = unique(vstack([p for p in parts if len(p)]), keys="source_id") if any(len(p) for p in parts) else parts[0]
+    c = np.radians
+    sep = np.degrees(np.arccos(np.clip(np.sin(c(dec)) * np.sin(c(np.asarray(t["dec"]))) + np.cos(c(dec)) *
+                                       np.cos(c(np.asarray(t["dec"]))) * np.cos(c(np.asarray(t["ra"]) - ra)), -1, 1)))
+    return t[sep <= radius]
 
 
 def hipparcos_cone(ra: float, dec: float, radius: float, cols: list[str], vmax: float) -> dict:
@@ -100,6 +156,30 @@ def xp_spectrum_vizier(sid: int):
         o = np.argsort(lam)
         return lam[o], np.asarray(rr[0]["Flux"], float)[o]
     return None
+
+
+def xp_spectra_gavo(sids: list[int], batch: int = 500) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """Sampled XP spectra of Gaia DR3 stars from GAVO (400-800 nm every 10 nm), by batches: {source id: (wavelength,
+    flux)}."""
+    out: dict = {}
+    for i in range(0, len(sids), batch):
+        part = ",".join(str(int(s)) for s in sids[i:i + batch])
+        t = _gavo(f"SELECT source_id, flux FROM gdr3spec.spectra WHERE source_id IN ({part})")
+        for row in t:
+            f = np.asarray(row["flux"], float)
+            if f.size == GAVO_XP_WAVELENGTHS.size:
+                out[int(row["source_id"])] = (GAVO_XP_WAVELENGTHS.copy(), f)
+    return out
+
+
+def common_grid(rows: list) -> list:
+    """XP spectra (wavelength, flux) or None, all on one wavelength grid: unchanged when they share one, else every
+    spectrum resampled on the GAVO grid (400-800 nm every 10 nm), which the finer ESA grid covers."""
+    grids = {len(r[0]) for r in rows if r is not None}
+    if len(grids) <= 1:
+        return rows
+    g = GAVO_XP_WAVELENGTHS
+    return [None if r is None else (g.copy(), np.interp(g, r[0], r[1])) for r in rows]
 
 
 def xp_spectra_esa(sids: list[int], batch: int = 500) -> dict[int, tuple[np.ndarray, np.ndarray]]:
