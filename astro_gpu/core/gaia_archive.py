@@ -17,6 +17,7 @@ import threading
 import numpy as np
 
 _VIZIER_DOWN = threading.Event()
+_GAVO_SLOTS = threading.Semaphore(2)      # GAVO dropped the connection with the catalogue stage's 6 parallel queries
 
 # VizieR I/355/gaiadr3 column -> gaiadr3.gaia_source column (positions are the same epoch 2016.0 ICRS ones)
 GAIA_COLS = {"Source": "source_id", "RA_ICRS": "ra", "DE_ICRS": "dec", "Gmag": "phot_g_mean_mag",
@@ -90,7 +91,7 @@ def gaia_cone(ra: float, dec: float, radius: float, cols: list[str], gfilter: st
              f"{_range_sql('phot_g_mean_mag', gfilter)}")
     try:                    # GAVO's gaia.dr3lite: the same columns but has_xp_sampled, which follows from G
         need = [k for k in cols if k != "XPsamp"] + (["Gmag"] if "XPsamp" in cols and "Gmag" not in cols else [])
-        t = _gavo(f"SELECT {', '.join(GAIA_COLS[k] for k in need)} FROM gaia.dr3lite {where}")
+        t = _gavo_cone(need, ra, dec, radius, gfilter)
         out = {k: _column(t, GAIA_COLS[k]) for k in need}
         if "XPsamp" in cols:
             out["XPsamp"] = (out["Gmag"] < XP_SAMPLED_G).astype(np.float64)
@@ -99,6 +100,32 @@ def gaia_cone(ra: float, dec: float, radius: float, cols: list[str], gfilter: st
         pass
     t = _esa(f"SELECT {', '.join(GAIA_COLS[k] for k in cols)} FROM gaiadr3.gaia_source {where}")
     return {k: _column(t, GAIA_COLS[k]) for k in cols}
+
+
+def _gavo_cone(need: list[str], ra: float, dec: float, radius: float, gfilter: str, depth: int = 0):
+    """A Gaia cone from GAVO; when the service fails on it (dense Milky Way fields), the cone is covered by 7 cones of
+    half its radius (one at the centre, six around at 0.866 of the radius: the smallest cover), twice at most, and the
+    stars found twice are kept once."""
+    sel = ", ".join(GAIA_COLS[k] for k in dict.fromkeys(need + ["Source", "RA_ICRS", "DE_ICRS"]))
+    try:
+        with _GAVO_SLOTS:
+            return _gavo(f"SELECT {sel} FROM gaia.dr3lite WHERE 1=CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', "
+                         f"{ra:.8f}, {dec:.8f}, {radius:.6f})) AND {_range_sql('phot_g_mean_mag', gfilter)}")
+    except Exception:  # noqa: BLE001
+        if depth >= 2:
+            raise
+    from astropy.table import unique, vstack
+    d = 0.866 * radius
+    parts = [_gavo_cone(need, ra, dec, 0.52 * radius, gfilter, depth + 1)]
+    for a in np.radians(np.arange(0, 360, 60)):
+        dd = dec + d * np.sin(a)
+        parts.append(_gavo_cone(need, ra + d * np.cos(a) / max(np.cos(np.radians(dd)), 1e-3), dd, 0.52 * radius,
+                                gfilter, depth + 1))
+    t = unique(vstack([p for p in parts if len(p)]), keys="source_id") if any(len(p) for p in parts) else parts[0]
+    c = np.radians
+    sep = np.degrees(np.arccos(np.clip(np.sin(c(dec)) * np.sin(c(np.asarray(t["dec"]))) + np.cos(c(dec)) *
+                                       np.cos(c(np.asarray(t["dec"]))) * np.cos(c(np.asarray(t["ra"]) - ra)), -1, 1)))
+    return t[sep <= radius]
 
 
 def hipparcos_cone(ra: float, dec: float, radius: float, cols: list[str], vmax: float) -> dict:
