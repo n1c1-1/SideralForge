@@ -37,7 +37,10 @@ listed below.
 Each phase ends with a commit on branch `pro-client` and an entry in JOURNAL.md. Commits are by Nicolas with
 Co-Authored-By; never push.
 
-- **A. Groundwork**: architecture map, engine knowledge, spec (three agents). Then decide the client architecture.
+- **A. Groundwork**: architecture map, engine knowledge, spec (three agents). Then the design (DESIGN.md).
+  - **The user asked (2026-10-31)**: when the design is written, an independent agent reviews it (documents only).
+    The orchestrator then judges the review with distance, applies the changes that hold, and only then dispatches
+    the work packages.
 - **B. Engine contract** (what the client needs, before any algorithm change):
   - workflows per project with settings per workflow, and stage caching keyed by the settings up to the stage, so
     that a shared block is computed once;

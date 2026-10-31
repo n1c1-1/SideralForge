@@ -23,3 +23,13 @@ Newest entries at the bottom. Times are local.
   - 41 NEW settings, 6 NEW methods / stages;
   - missing in the engine: workflows as options, the settings-keyed store, sessions, Post composition, …
 - Next: phase A2, the design of the engine contract and the client (design agent), then dispatch.
+
+## Phase A2: design
+- DESIGN.md:
+  - v2 projects beside v1;
+  - a content-addressed store with the existing stages run through an adapter;
+  - 2 new stages (polynomial gradient, simple output);
+  - the graph shows the real engine order;
+  - import reuses old results (7 of 9 projects);
+  - work packages P1-P15.
+- Independent design review launched (DESIGN_REVIEW.md), as the user asked. Then: judge it, apply, dispatch.
