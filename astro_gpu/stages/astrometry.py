@@ -88,7 +88,7 @@ class Astrometry(Stage):
         if (ra0 is None or dec0 is None) and p.target:
             try:
                 ra0, dec0 = resolve_name(p.target)
-                ctx.log(f"'{p.target}' resolved by SIMBAD: RA {ra0:.4f} Dec {dec0:.4f}")
+                ctx.log(f"'{p.target}' resolved by SIMBAD or NED: RA {ra0:.4f} Dec {dec0:.4f}")
             except StageError as e:
                 ctx.log(str(e), "warning")
         d = ctx.load("stack", "drz_full.npy", mmap=True)
@@ -282,4 +282,12 @@ def resolve_name(name: str) -> tuple[float, float]:
                 return float(t[cols["ra"]][0]), float(t[cols["dec"]][0])
             sc = SkyCoord(t[cols.get("ra", "RA")][0], t[cols.get("dec", "DEC")][0], unit=(u.hourangle, u.deg))
             return float(sc.ra.deg), float(sc.dec.deg)
-    raise StageError(f"SIMBAD does not know '{name}': enter the RA/Dec of the field centre")
+    for c in candidates:            # NED (NASA/IPAC) when SIMBAD (CDS) does not answer - down on 2026-10-30
+        try:
+            from astroquery.ipac.ned import Ned
+            t = Ned.query_object(c)
+            if t is not None and len(t):
+                return float(t["RA"][0]), float(t["DEC"][0])
+        except Exception:  # noqa: BLE001
+            continue
+    raise StageError(f"neither SIMBAD nor NED knows '{name}': enter the RA/Dec of the field centre")
