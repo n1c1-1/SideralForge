@@ -921,6 +921,7 @@ except where written):
 | Canon 40D Rosette | teal nebula, black centre | sky-fit rejection removed the nebula itself, H-alpha amplitude 0.019 -> 0.0021 | in emission fields (survey >= 200 R), rejection on green/blue when it collapses |
 | Stellina IC 1318 | optics stage crashed | lateral colour fit from a negative peak | patch skipped |
 | Stellina NGC 891 | astrometry failed | SIMBAD down, field too small for the blind solver | NED |
+| Heart (40 frames) | star stage never ended | angular shape found by chance on a refractor, flux scale x2196 | rejected outside 1/3-3 (user's projects: 0.96-1.28) |
 
 Open (diagnosed, not changed - they touch the user's renders or need their eye):
 
