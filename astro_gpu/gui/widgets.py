@@ -314,6 +314,8 @@ class ParamForm(QWidget):
             g.setHorizontalSpacing(8)
             groups[sec] = g
         for name, d in self.desc.items():
+            if d.get("level") == "internal":        # set by the project itself (stack.exclude): never a form field
+                continue
             if d.get("level") == "advanced" and not advanced:
                 continue
             sec = d.get("section") if sections else None

@@ -1,6 +1,7 @@
 """Calibration of the raw Bayer frames (no debayering): master dark / bias / flat, bad pixel map, calibrated cache."""
 from __future__ import annotations
 
+import json
 import os
 import time
 from multiprocessing import get_context
@@ -65,6 +66,11 @@ class Calibrate(Stage):
 
     def run(self, ctx: Context, p: CalibrateParams) -> None:
         frames = ctx.load_json("inventory", "frames.json")
+        given = given_masters(ctx, p)
+        if given is not None:                # the masters of an earlier result: rebuild the calibrated cache only
+            rebuild_cache(ctx, p, frames["lights"], given, ctx.metric_of("inventory", "cfa"),
+                          float(ctx.metric_of("inventory", "white_level")))
+            return
         H, W = int(ctx.metric_of("inventory", "height")), int(ctx.metric_of("inventory", "width"))
         black = float(ctx.metric_of("inventory", "black_level"))
         bias = master_bias([f["path"] for f in frames["bias"]], ctx)
@@ -156,8 +162,58 @@ def calibrate_lights(ctx: Context, p: CalibrateParams, lights: list[dict], dark:
     ctx.metric("sky_noise_adu", round(sky_noise, 2))
     ctx.log(f"master dark level {level:.1f} ADU, flat min {flat.min():.3f}, {100 * bad.mean():.2f} % pixels "
             f"excluded, sky noise {sky_noise:.1f} ADU")
+    _calibrated_cache(ctx, p, lights, dark, flat, bad, cfa, white, t0)
 
-    # ---------------- calibrated cache (float16 memmap on the scratch disk)
+
+#: what a v2 runner copies from an earlier result whose calibrated cache was lost, with MASTERS (their settings
+#: and metrics): calibrate then rebuilds the cache only (``given_masters``)
+MASTER_FILES = ("master_dark.npy", "master_flat.npy", "badmask.npy")
+MASTERS = "masters.json"
+
+
+def result_params(p: CalibrateParams) -> dict:
+    """The settings that decide the result (the worker count does not)."""
+    d = p.model_dump(mode="json")
+    d.pop("workers", None)
+    return d
+
+
+def given_masters(ctx: Context, p: CalibrateParams) -> dict | None:
+    """{"params", "metrics"} of masters placed in the stage's folder with MASTERS, when they were made with the same
+    settings; None otherwise (a full calibration, which replaces them)."""
+    f = ctx.dir / MASTERS
+    if not f.exists():
+        return None
+    try:
+        d = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        d = {}
+    if d.get("params") == result_params(p) and all((ctx.dir / n).is_file() for n in MASTER_FILES):
+        return d
+    f.unlink(missing_ok=True)
+    ctx.log("the masters of the earlier result were made with other settings: full calibration", "warning")
+    return None
+
+
+def rebuild_cache(ctx: Context, p: CalibrateParams, lights: list[dict], given: dict, cfa: str, white: float) -> None:
+    """The cache-only path: the calibrated frames from the masters already in the stage's folder (the same files,
+    so the same cache as a full run), their metrics restored."""
+    t0 = time.time()
+    dark, flat, bad = (np.load(ctx.out(n)) for n in MASTER_FILES)
+    for k, v in (given.get("metrics") or {}).items():
+        if k not in ("cache_scale", "cache_gb"):
+            ctx.metric(k, v)
+    ctx.log("calibrated frames rebuilt with the masters of the earlier result (same settings)")
+    _calibrated_cache(ctx, p, lights, dark, flat, bad, cfa, white, t0)
+    (ctx.dir / MASTERS).unlink(missing_ok=True)
+
+
+def _calibrated_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark: np.ndarray, flat: np.ndarray,
+                      bad: np.ndarray, cfa: str, white: float, t0: float) -> None:
+    """The calibrated cache of the light frames (float16 memmap on the scratch disk), its frame statistics and
+    cache.json, from the masters and the bad pixel map."""
+    H, W = dark.shape
+    level = float(np.median(dark))
     # values are scaled so that the brightest valid value stays below the float16 range
     scale = float(min(1.0, 16000.0 / max(white - level, 1.0)))
     n = len(lights)

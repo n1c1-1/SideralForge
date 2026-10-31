@@ -159,7 +159,9 @@ class Pipeline:
             self.journal.emit("run_end", status=status)
         return status
 
-    def _run_stage(self, st: Stage) -> str:
+    def _run_stage(self, st: Stage, run_id: str | None = None) -> str:
+        """Run one stage in its folder. ``run_id``: the id its manifest gets when done (a fresh random one by
+        default; a v2 job passes its key, so that results reading it stay the same when it is recomputed)."""
         p, origin, auto = self.effective_params(st)
         ph = params_hash(p)
         ctx = Context(self.project, st, self.journal, self._device())
@@ -199,7 +201,7 @@ class Pipeline:
             print(tb, flush=True)
             return "failed"
         dur = time.time() - t0
-        m.update(status="done", run_id=uuid.uuid4().hex, duration=dur, metrics=ctx.metrics,
+        m.update(status="done", run_id=run_id or uuid.uuid4().hex, duration=dur, metrics=ctx.metrics,
                  finished=datetime.now().isoformat(timespec="seconds"))
         _write_manifest(self.project, st.name, m)
         ctx.clear_ckpt()
@@ -274,11 +276,32 @@ def _record_timing(stage: str, seconds: float) -> None:
     """Keep a per-machine history of stage durations (used for ETAs before a stage reports progress)."""
     from .project import STATE
     p = STATE / "timings.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
     try:
-        d = json.loads(p.read_text()) if p.exists() else {}
-    except json.JSONDecodeError:
-        d = {}
-    d.setdefault(stage, []).append(round(seconds, 1))
-    d[stage] = d[stage][-20:]
-    p.write_text(json.dumps(d))
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            d = json.loads(p.read_text()) if p.exists() else {}
+        except json.JSONDecodeError:
+            d = {}
+        d.setdefault(stage, []).append(round(seconds, 1))
+        d[stage] = d[stage][-20:]
+        write_json_atomic(p, d)
+    except OSError:                          # the history is a hint: never fail a stage over it
+        pass
+
+
+def write_json_atomic(path: Path, obj) -> None:
+    """Write a JSON file through a temporary file and a rename: a reader never sees half a file, and two runs that
+    write it at once leave one whole version."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(json.dumps(obj), encoding="utf-8")
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:          # Windows: a reader has the file open for a moment
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    finally:
+        tmp.unlink(missing_ok=True)
