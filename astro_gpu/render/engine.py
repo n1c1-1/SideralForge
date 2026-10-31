@@ -11,10 +11,17 @@ The nebula is the calibrated image at full resolution (star footprints guarded),
 of ``render_prep`` (fine detail, fine colour, OIII, reflection tones), so these are ordinary sliders. Intermediate
 results are cached by the settings they depend on: moving a star slider only redraws the stars, changing the
 saturation only redoes the last colour step.
+
+Regions (``render(s, scale, region=...)``): a part of the grid is rendered with a margin, the statistics of the whole
+image (tone curve, white point, detail thresholds) taken from the *fit* of a 1/4 rendering, so that a 100 % view never
+renders the whole grid. The fit of each rendering is kept in ``last_fit``; ``fit_of(s)`` gives the 1/4 one.
 """
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,17 +50,38 @@ STAR_KEYS = ("stars", "g_glow", "g_lim", "t_lim", "d10", "d7", "star_sat", "sat_
              "white_temp", "tint", "real_stars", "star_glow", "glare_nebula", "diffuse_cut", "spike_photo",
              "spike_g_max", "spike_smooth", "stars_photographed")
 
+#: margin rendered around a region (full-resolution pixels): the widest spatial supports of the rendering (faint area
+#: smoothing, glow, large-scale contrast, highlight filters) stay inside it, and it is cropped away
+REGION_MARGIN = 256
+#: a region whose padded area shows fewer pixels than this takes even its resolution-dependent statistics (the noise)
+#: from the fit
+REGION_MIN_SHOWN = 4096
+#: resolution of the fit a region uses
+FIT_SCALE = 0.25
+
+
+def settings_key(s) -> str:
+    """A short digest of the settings a fit depends on: every statistic of the fit is the nebula's (NEB_KEYS), so a
+    star slider moved at 100 % keeps the fit."""
+    blob = json.dumps({k: getattr(s, k) for k in NEB_KEYS}, sort_keys=True, default=str)
+    return hashlib.sha1(blob.encode()).hexdigest()[:16]
+
 
 @dataclass
 class Layers:
     final: torch.Tensor
     starless: torch.Tensor
-    stars: torch.Tensor
+    stars: torch.Tensor | None
     scale: float
     info: dict
 
 
 class RenderEngine:
+    # statistics taken from a fit (region renderings, see _stat); a plain rendering measures them all
+    _fit_in: dict | None = None
+    _fit_f: int = 0
+    _local_ok: bool = True
+
     def __init__(self, prep_dir: str | Path, device: str = "cuda:0", calibrated_white: float = 5778.0):
         self.dir = Path(prep_dir)
         self.dev = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -120,8 +148,25 @@ class RenderEngine:
         self._proxy: dict[int, tuple] = {}
         self._cache: dict[str, tuple] = {}
         self.last_info: dict = {}
+        self._fits: dict[int, dict] = {}                    # resolution factor -> statistics last measured there
+        self.last_fit: dict | None = None
+        self._fit_memo: OrderedDict = OrderedDict()         # (settings key, f) -> fit
+        self._view_cache: tuple | None = None               # (key, engine view) of the last region
 
     # ------------------------------------------------------------------ helpers
+    def _stat(self, name: str, f: int, fn, scale_free: bool = True):
+        """A statistic of the whole image (percentiles, noise): measured, or taken from the fit of another rendering.
+        A region uses the fit of the 1/4 rendering, so that its tone curve and thresholds are those of the whole
+        image; a statistic that depends on the resolution (the noise) is measured on the region itself, unless the
+        region shows too few pixels or the fit has the region's resolution."""
+        fit = self._fit_in
+        if fit is not None and name in fit and (scale_free or self._fit_f == f or not self._local_ok):
+            v = fit[name]
+        else:
+            v = fn()
+        self._fits.setdefault(f, {})[name] = v
+        return v
+
     def _layer(self, name: str, f: int) -> torch.Tensor:
         """One preparation layer on the device in float32, reduced by an integer factor f (1 = full resolution)."""
         if (name, f) in self._proxy:
@@ -193,21 +238,21 @@ class RenderEngine:
         new = kf != 0 or s.faint_smooth > 0 or sharpen != 0 or wsp is not None
         if kf != 0:                          # Noise2Noise fine detail (brightness), above a brightness of the signal
             Eg0 = self._layer("Eg0", f)
-            q1, q2 = ops.percentile(Eg0, [s.fine_lo_pct, s.fine_hi_pct], shown)
+            q1, q2 = self._stat("fine_q", f, lambda e=Eg0: ops.percentile(e, [s.fine_lo_pct, s.fine_hi_pct], shown))
             wf = ops.gaussian_blur(((Eg0 - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)
             del Eg0
             N = N + kf * (keep * wf * self._layer("dY", f))[None] * self.w_cam[:, None, None]
             del wf
         if sharpen != 0:                     # measured-shape sharpening (brightness), above a brightness of the signal
             Eg0 = self._layer("Eg0", f)
-            q1, q2 = ops.percentile(Eg0, [s.sharpen_lo_pct, s.fine_hi_pct], shown)
+            q1, q2 = self._stat("sharpen_q", f, lambda e=Eg0: ops.percentile(e, [s.sharpen_lo_pct, s.fine_hi_pct], shown))
             ws = ops.gaussian_blur(((Eg0 - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)
             del Eg0
             N = N + sharpen * (keep * ws * self._layer("dS", f))[None] * self.w_cam[:, None, None]
             del ws
         if s.faint_smooth > 0:               # faint areas: only the scales confirmed by the data
             Eg = ops.gaussian_blur(torch.einsum("c,chw->hw", self.lum, N), 8 / f)
-            q1, q2 = ops.percentile(Eg, [s.faint_lo_pct, s.faint_hi_pct], shown)
+            q1, q2 = self._stat("faint_q", f, lambda e=Eg: ops.percentile(e, [s.faint_lo_pct, s.faint_hi_pct], shown))
             wE = ops.gaussian_blur(((Eg - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)[None]
             del Eg
             N = wE * N + (1 - wE) * ops.gaussian_blur(N, s.faint_smooth / f)
@@ -248,10 +293,95 @@ class RenderEngine:
 
     # ------------------------------------------------------------------ public
     @torch.no_grad()
-    def render(self, s: RenderSettings, scale: float = 1.0) -> Layers:
+    def render(self, s: RenderSettings, scale: float = 1.0, region=None, fit: dict | None = None) -> Layers:
+        """The layers at a resolution (``scale`` 1, 1/2, 1/4...).
+
+        ``region`` (x0, x1, y0, y1), in full-resolution pixels of the grid: only that part, rendered with a margin and
+        with the statistics of ``fit`` (the ``last_fit`` of a rendering with the same settings; by default the 1/4 one,
+        ``fit_of``). A fit without a region renders the whole grid with the fit's statistics."""
         from ..core.determinism import deterministic
         with deterministic():                    # the same settings give the same image (stars drawn in a fixed order)
-            return self._render(s, scale)
+            if region is None and fit is None:
+                return self._render(s, scale)
+            return self._render_region(s, scale, region, fit)
+
+    def fit_of(self, s: RenderSettings, scale: float = FIT_SCALE) -> dict:
+        """The fit of the rendering of ``s`` at ``scale``: {key, f, stats}, the statistics of the whole image (tone
+        curve percentiles, white point, detail thresholds, noise). Remembered from an earlier rendering, or rendered."""
+        f = max(1, int(round(1 / scale)))
+        k = (settings_key(s), f)
+        if k not in self._fit_memo:
+            self.render(s, 1.0 / f)
+        return self._fit_memo[k]
+
+    def _remember_fit(self, fit: dict) -> None:
+        k = (fit["key"], fit["f"])
+        self._fit_memo[k] = fit
+        self._fit_memo.move_to_end(k)
+        while len(self._fit_memo) > 8:
+            self._fit_memo.popitem(last=False)
+
+    def _render_region(self, s: RenderSettings, scale: float, region, fit: dict | None) -> Layers:
+        f = max(1, int(round(1 / scale)))
+        Hf, Wf = self.H // f * f, self.W // f * f            # the part of the grid a reduced rendering covers
+        if region is None:
+            x0, x1, y0, y1 = 0, Wf, 0, Hf
+            box = (0, self.W, 0, self.H)
+        else:
+            x0, x1, y0, y1 = (int(round(float(v))) for v in region)
+            x0, x1 = sorted((min(max(x0, 0), Wf), min(max(x1, 0), Wf)))
+            y0, y1 = sorted((min(max(y0, 0), Hf), min(max(y1, 0), Hf)))
+            x0, y0 = x0 // f * f, y0 // f * f                  # aligned on the reduced pixels
+            x1, y1 = min(-(-x1 // f) * f, Wf), min(-(-y1 // f) * f, Hf)
+            if x1 <= x0 or y1 <= y0:
+                raise ValueError(f"empty region {list(region)} on a {self.W} x {self.H} grid")
+            pad = -(-REGION_MARGIN // f) * f
+            box = (max(0, x0 - pad), min(Wf, x1 + pad), max(0, y0 - pad), min(Hf, y1 + pad))
+        if fit is None or fit.get("key") != settings_key(s):
+            fit = self.fit_of(s)
+        view = self._region_view(box, fit, f)
+        lay = view._render(s, scale)
+        bx0, _, by0, _ = box
+        sl = (slice(None), slice((y0 - by0) // f, (y1 - by0) // f), slice((x0 - bx0) // f, (x1 - bx0) // f))
+        info = {**lay.info, "region": [x0, x1, y0, y1], "fit_scale": 1.0 / fit["f"]}
+        return Layers(lay.final[sl], lay.starless[sl], lay.stars[sl], 1.0 / f, info)
+
+    def _region_view(self, box: tuple[int, int, int, int], fit: dict, f: int) -> RenderEngine:
+        """This engine cut to a box (x0, x1, y0, y1) of the grid: its layers, stars and masks cut to the box, its own
+        caches, and the statistics of ``fit``. Kept for the next rendering of the same box and fit, so that moving a
+        star slider at 100 % only redraws the stars."""
+        key = (box, fit["key"], fit["f"], f)
+        if self._view_cache is not None and self._view_cache[0] == key:
+            return self._view_cache[1]
+        self._view_cache = None
+        x0, x1, y0, y1 = box
+        v = copy.copy(self)
+        v._host = {n: t[..., y0:y1, x0:x1] for n, t in self._host.items()}
+        for n in ("Sreal", "Sshape", "Sall", "Ssp", "Ssp_raw"):
+            t = getattr(self, n, None)
+            if t is not None:
+                setattr(v, n, t[..., y0:y1, x0:x1])
+        v.valid = self.valid[y0:y1, x0:x1]
+        v.H, v.W = y1 - y0, x1 - x0
+        cx0, cx1, cy0, cy1 = self.crop
+        v.crop = [min(max(cx0 - x0, 0), v.W), min(max(cx1 - x0, 0), v.W),
+                  min(max(cy0 - y0, 0), v.H), min(max(cy1 - y0, 0), v.H)]
+        # the stars near the box, in its coordinates (the glow and halo stamps of the others stay in the margin)
+        m = (self.X > x0 - 200) & (self.X < x1 + 200) & (self.Y > y0 - 200) & (self.Y < y1 + 200)
+        v.X, v.Y, v.G, v.real = self.X[m] - x0, self.Y[m] - y0, self.G[m], self.real[m]
+        v.Fm, v.Fpred, v.Fglow = self.Fm[:, m], self.Fpred[:, m], self.Fglow[:, m]
+        # the star display curve is fitted on every star of the field, as in the whole rendering
+        v._star_fit = lambda s, Gd, Lum: self._field_star_fit(s)
+        v._proxy, v._cache, v.last_info, v._fits = {}, {}, {}, {}
+        v._fit_memo, v._view_cache, v.last_fit = OrderedDict(), None, None
+        v._fit_in, v._fit_f = fit["stats"], fit["f"]
+        v._local_ok = int(v._shown(f).sum()) >= REGION_MIN_SHOWN
+        self._view_cache = (key, v)
+        return v
+
+    def _field_star_fit(self, s: RenderSettings) -> dict:
+        Gd, _, Lum = self._star_light(s, self._star_draw(s))
+        return self._star_fit(s, Gd, Lum)
 
     def _render(self, s: RenderSettings, scale: float = 1.0) -> Layers:
         f = max(1, int(round(1 / scale)))
@@ -267,6 +397,9 @@ class RenderEngine:
         # the parts taken from the cache keep the information of their last computation; the fresh parts' wins
         info = {**self.last_info, **info}
         self.last_info = info
+        # the statistics behind this image (the cached parts' from their computation, made with the same settings)
+        self.last_fit = {"key": settings_key(s), "f": f, "stats": dict(self._fits.get(f, {}))}
+        self._remember_fit(self.last_fit)
         return Layers(final, neb, st, 1.0 / f, info)
 
     # ------------------------------------------------------------------ nebula
@@ -300,8 +433,9 @@ class RenderEngine:
         if s.sky_neutral > 0:
             # background neutralisation: the typical sky (sky_pct, smoothed) made grey at the same brightness, by an
             # offset per channel - the faint emission that fills a field stops tinting it, the bright stays coloured
-            sky = torch.tensor([float(ops.percentile(ops.gaussian_blur(lin[c], 8 / f), s.sky_pct, self._shown(f)))
-                                for c in range(3)], device=lin.device)
+            sky = torch.tensor(self._stat("sky_neutral", f, lambda: [
+                float(ops.percentile(ops.gaussian_blur(lin[c], 8 / f), s.sky_pct, self._shown(f))) for c in range(3)]),
+                device=lin.device)
             y = 0.2126 * sky[0] + 0.7152 * sky[1] + 0.0722 * sky[2]
             lin = lin - s.sky_neutral * (sky - y)[:, None, None]
         lin[:, ~valid] = 0
@@ -321,9 +455,9 @@ class RenderEngine:
         if extra > 0:
             O = ops.gaussian_blur(O, extra / f)
         Eg0 = self._layer("Eg0", f)
-        sky = valid & (Eg0 < ops.percentile(Eg0, 50, valid))
-        o0 = ops.percentile(O, 50, sky)
-        sig = 1.4826 * ops.percentile((O - o0).abs(), 50, sky)
+        sky = valid & (Eg0 < self._stat("oiii_eg0", f, lambda: ops.percentile(Eg0, 50, valid)))
+        o0 = self._stat("oiii_o0", f, lambda: ops.percentile(O, 50, sky))
+        sig = self._stat("oiii_sig", f, lambda: 1.4826 * ops.percentile((O - o0).abs(), 50, sky))
         return (O - o0 - s.oiii_threshold * sig).clamp(min=0)
 
     def _glow(self, s: RenderSettings, f: int) -> torch.Tensor:
@@ -342,7 +476,7 @@ class RenderEngine:
         lin = self._cached("neb_lin", NEB_LIN_KEYS, s, f, lambda: self._nebula_linear(s, f))
         valid, shown = self._valid(f), self._shown(f)
         Yl_full = ops.luminance(lin)
-        noise = ops.robust_noise(Yl_full, shown, sub=max(1, 7 // f))
+        noise = self._stat("noise", f, lambda: ops.robust_noise(Yl_full, shown, sub=max(1, 7 // f)), scale_free=False)
         Ys = ops.gaussian_blur(Yl_full, 2 / f)
         cb = ops.gaussian_blur(lin, s.chroma_sigma / f)
         cs = ops.gaussian_blur(lin, 1.0 / f)
@@ -356,9 +490,9 @@ class RenderEngine:
         if s.star_glow > 0 and "Shalo" in self._host:
             Yn = Yl_full - s.star_glow * s.glare_nebula * ops.luminance(
                 torch.einsum("ij,jhw->ihw", self.M_eff(s), self._glare(s, f)))
-        Yl = ops.gaussian_blur(Yn, 6 / f)
-        p_dark, p_sky = ops.percentile(Yl, [s.dark_pct, s.sky_pct], shown)
-        hi = ops.percentile(Yn, 100.0 - s.white_ignore_pct, shown)
+        p_dark, p_sky = self._stat("tone_p", f, lambda y=Yn: ops.percentile(ops.gaussian_blur(y, 6 / f),
+                                                                            [s.dark_pct, s.sky_pct], shown))
+        hi = self._stat("tone_hi", f, lambda y=Yn: ops.percentile(y, 100.0 - s.white_ignore_pct, shown))
         del Yn
         lo, b, white = fit_tone_curve(p_dark, p_sky, hi * s.white_mult, s.dark_level / 255, s.sky_level / 255, s.toe)
         info["tone_curve"] = {"black": lo, "b": b, "white": white}
@@ -375,7 +509,7 @@ class RenderEngine:
         L = out.clamp(min=0)
         if s.neb_sharp > 0:
             Eg1 = ops.gaussian_blur(Yl_full, 8 / f)
-            q1, q2 = ops.percentile(Eg1, [85, 97], shown)
+            q1, q2 = self._stat("sharp_q", f, lambda: ops.percentile(Eg1, [85, 97], shown))
             wsh = ops.gaussian_blur(((Eg1 - q1) / max(q2 - q1, 1e-6)).clamp(0, 1), 6 / f)
             wsh = wsh * (1 - ((ops.gaussian_blur(L, 3 / f) - s.sharp_white) / 0.15).clamp(0, 1))
             b1, b2, b3 = ops.gaussian_blur(L, 1.2 / f), ops.gaussian_blur(L, 3.0 / f), ops.gaussian_blur(L, 8.0 / f)
@@ -410,7 +544,7 @@ class RenderEngine:
         B = 0.5 * ops.guided(L, L, max(1, round(s.hl_r1 / f)), s.hl_eps) + \
             0.5 * ops.guided(L, L, max(1, round(s.hl_r2 / f)), s.hl_eps)
         D = L - B
-        Bmax = ops.percentile(B, 99.995, shown)
+        Bmax = self._stat("hl_bmax", f, lambda: ops.percentile(B, 99.995, shown))
         span = max(Bmax - knee, 1e-3)
         lo_c, hi_c = 1e-4, 1e3
         c_ = 1.0
@@ -443,18 +577,30 @@ class RenderEngine:
         return ops.srgb_oetf(ops.gamut_map_oklab(ops.oklab_to_lin(lab)))
 
     # ------------------------------------------------------------------ stars
-    def _stars(self, s: RenderSettings, f: int, info: dict) -> torch.Tensor:
+    def _star_draw(self, s: RenderSettings) -> np.ndarray:
+        """The stars drawn: brighter than the glow limit, near the cropped frame."""
         x0, x1, y0, y1 = self.crop
-        G = self.G
-        draw = (G < s.g_glow) & (self.X > x0 - 60) & (self.X < x1 + 60) & (self.Y > y0 - 60) & (self.Y < y1 + 60)
-        Fd, Gd, pr = self.Fm[:, draw], G[draw], self.Fpred[:, draw]
+        return (self.G < s.g_glow) & (self.X > x0 - 60) & (self.X < x1 + 60) & (self.Y > y0 - 60) & (self.Y < y1 + 60)
+
+    def _star_light(self, s: RenderSettings, draw: np.ndarray):
+        """(G, linear display flux (3, n), luminance) of the drawn stars."""
+        Fd, Gd, pr = self.Fm[:, draw], self.G[draw], self.Fpred[:, draw]
         wch = (np.clip((15.5 - Gd) / 3.0, 0, 1) * np.clip((Gd - 8.5) / 1.5, 0, 1))[None]
         chrom = wch * Fd / np.maximum(Fd.sum(0), 1e-6)[None] + (1 - wch) * pr / np.maximum(pr.sum(0), 1e-6)[None]
         Fs = self.M_eff(s).cpu().numpy().astype(np.float64) @ (chrom * np.clip(Fd.sum(0), 0, None)[None])
         Lum = 0.2126 * Fs[0] + 0.7152 * Fs[1] + 0.0722 * Fs[2]
+        return Gd, Fs, Lum
+
+    def _star_fit(self, s: RenderSettings, Gd: np.ndarray, Lum: np.ndarray) -> dict:
+        """The star profile and display curve, fitted on every drawn star (a region uses the whole field's)."""
+        return fit_star_curve(self.r_all, self.prof_raw, Gd, Lum, s, self.SC)
+
+    def _stars(self, s: RenderSettings, f: int, info: dict) -> torch.Tensor:
+        draw = self._star_draw(s)
+        Gd, Fs, Lum = self._star_light(s, draw)
         s_g = s.star_sat * np.clip((s.g_lim + 1.0 - Gd) / 3.0, s.sat_min, 1.0)
         Fs = Lum[None] + s_g[None] * (Fs - Lum[None])
-        fit = fit_star_curve(self.r_all, self.prof_raw, Gd, Lum, s, self.SC)
+        fit = self._star_fit(s, Gd, Lum)
         # the display curve is fitted on every star; the stars shown by their real light are not drawn again
         use_real = self.Sreal is not None and s.real_stars
         dr = ~self.real[draw] if use_real else np.ones(int(draw.sum()), bool)
@@ -529,8 +675,11 @@ class StarRemovalEngines:
         self._cur = self._eng[key]
         return self._cur
 
-    def render(self, s: RenderSettings, scale: float = 1.0) -> Layers:
-        return self.select(s).render(s, scale)
+    def render(self, s: RenderSettings, scale: float = 1.0, region=None, fit: dict | None = None) -> Layers:
+        return self.select(s).render(s, scale, region, fit)
+
+    def fit_of(self, s: RenderSettings, scale: float = FIT_SCALE) -> dict:
+        return self.select(s).fit_of(s, scale)
 
     def __getattr__(self, name):
         return getattr(self._cur, name)
