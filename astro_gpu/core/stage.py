@@ -99,6 +99,14 @@ class Context:
     def metric_of(self, stage: str, key: str, default: Any = None) -> Any:
         return self.manifest(stage).get("metrics", {}).get(key, default)
 
+    def has(self, stage: str) -> bool:
+        """Whether there is a result of ``stage`` to read. In a v2 workflow, a stage its chain does not have (an
+        optional input) resolves to a folder that does not exist (core/store.py)."""
+        try:
+            return self.project.stage_dir(stage).is_dir()
+        except StageError:                   # a ComfyUI block not wired to that stage
+            return False
+
     @property
     def scratch(self) -> Path:
         p = self.project.scratch / self.stage.name
