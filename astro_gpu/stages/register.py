@@ -78,6 +78,15 @@ class Register(Stage):
             else:
                 coef[i], nmatch[i], rms[i], transp[i] = r
             ctx.progress(0.9 + 0.1 * (i + 1) / n, f"aligning frame {i + 1}/{n}")
+        fin = np.isfinite(rms)
+        if fin.sum() >= 3:
+            lim = max(1.0, 4 * float(np.median(rms[fin])))
+            off = np.where(fin & (rms > lim))[0]
+            for i in off:                   # a residual far above the others: a wrong match, not a sharper frame
+                failed.append(meta[i]["path"])
+                rms[i] = np.inf
+            if len(off):
+                ctx.log(f"{len(off)} frame(s) aligned with a residual above {lim:.1f} px are left out", "warning")
         if failed:
             ctx.log(f"{len(failed)} frame(s) could not be aligned and will be ignored, e.g. {failed[0]}", "warning")
         np.savez(ctx.out("reg.npz"), coef=coef, fwhm=fwhm, transp=transp, nmatch=nmatch, rms=rms, ref=ref,
@@ -165,8 +174,9 @@ def initial_rotation(a, b, W, H, max_deg=45.0, step=0.5):
 
 def fit_frame(cat, ref, tree, W, H):
     """Registration polynomial of a frame on the reference: from a translation (the usual case), or, when that matches
-    few stars, from a rotation and a translation (alt-azimuth mounts: the field turns). The fit with the most matched
-    stars is kept."""
+    few stars, from a rotation and a translation (alt-azimuth mounts: the field turns). The turned fit is kept when it
+    matches more stars with a small residual: in a dense field a loose start can lock on chance pairs (Stellina, 1 800
+    stars a frame: 330 chance pairs at 6.5 px beat 138 true ones at 0.3 px)."""
     if cat is None or len(cat) < 30:
         return None
     r = _fit_from(cat, ref, tree, W, H, np.c_[cat[:, 0], cat[:, 1]] - initial_shift(ref, cat, W, H), 4.0)
@@ -175,8 +185,8 @@ def fit_frame(cat, ref, tree, W, H):
     ang, s = initial_rotation(ref, cat, W, H)
     if ang is None:
         return r
-    r2 = _fit_from(cat, ref, tree, W, H, _rotate(cat[:, :2], ang, W, H) - s, 12.0)
-    if r2 is not None and (r is None or r2[1] > r[1]):
+    r2 = _fit_from(cat, ref, tree, W, H, _rotate(cat[:, :2], ang, W, H) - s, 8.0)
+    if r2 is not None and r2[2] < max(1.0, 2 * (r[2] if r is not None else 0.5)) and (r is None or r2[1] > r[1]):
         return r2
     return r
 
