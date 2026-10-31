@@ -109,10 +109,19 @@ class Color(Stage):
             ctx.log(f"using the {camera} sensitivity curves measured on '{prof['project']}', which predict the star "
                     f"colours of this field within {agree:.1f} % ({reason})", "warning" if not good else "info")
         elif not good:
-            ctx.log(f"the sensitivity curves found are not physical ({why}) and no validated profile of this "
-                    f"camera is available: colours may be wrong. Process a Milky Way field with the same "
-                    f"camera first, or check the colour pattern (Bayer)", "warning")
-            source = "unphysical fit"
+            # no profile of this camera: the curves of a typical colour sensor, each scaled to this field's stars.
+            # A wrong shape costs some accuracy; unphysical curves gave H-alpha a blue signature and pink skies
+            # (Canon 6D on M51, 2026-10-31)
+            gen = generic_response(lam)
+            agree = colour_agreement(xp["flux"][idx], lam, cam, gen)
+            S = gen * np.median(cam / predict(xp["flux"][idx], lam, gen), 0)[:, None]
+            rel = [agree / 100] * 3
+            source = "generic colour sensor"
+            ctx.metric("generic_agreement_pct", round(agree, 2))
+            ctx.log(f"the sensitivity curves found are not physical ({why}) and no validated profile of this camera "
+                    f"is available: the curves of a typical colour sensor are used, scaled to this field's stars "
+                    f"(they predict them within {agree:.1f} %). Processing a Milky Way field with the same camera "
+                    f"first gives it its own profile", "warning")
         elif p.camera_profile and camera and max(rel) < 0.06:
             save_profile(camera, lam, S, ctx.project.config.name, max(rel))
         ctx.metric("response_source", source)
@@ -213,6 +222,13 @@ def physical_response(lam, S) -> tuple[bool, str]:
     if cen[0] < 595 or red < 0.5:
         return False, f"red channel centred at {cen[0]:.0f} nm with {100 * red:.0f} % of its response above 590 nm"
     return True, ""
+
+
+def generic_response(lam) -> np.ndarray:
+    """Sensitivity curves of a typical colour (Bayer) sensor on lam: those measured for an unmodified Sony A7S
+    (resources/generic_bayer_response.npz), used when a camera has neither physical fitted curves nor a profile."""
+    d = np.load(Path(__file__).resolve().parents[1] / "resources" / "generic_bayer_response.npz")
+    return np.stack([np.interp(lam, d["lam"], c) for c in d["S"]])
 
 
 def _profile_path(camera: str) -> Path:

@@ -45,3 +45,11 @@ def test_spectra_of_two_grids_are_brought_to_one_and_narrow_profiles_are_not_kep
     assert not list(tmp_path.iterdir())
     color.save_profile("Cam X", ga.XP_WAVELENGTHS, np.ones((3, ga.XP_WAVELENGTHS.size)), "p", 0.01)
     assert color.load_profile("Cam X", ga.GAVO_XP_WAVELENGTHS)["S"].shape == (3, 41)
+
+
+def test_the_generic_colour_sensor_is_physical():
+    from astro_gpu.core.gaia_archive import GAVO_XP_WAVELENGTHS, XP_WAVELENGTHS
+    from astro_gpu.stages.color import generic_response
+    for lam in (XP_WAVELENGTHS, GAVO_XP_WAVELENGTHS):
+        S = generic_response(lam)
+        assert S.shape == (3, len(lam)) and physical_response(lam, S)[0]

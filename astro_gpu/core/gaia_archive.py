@@ -32,8 +32,16 @@ XP_SAMPLED_G = 17.65            # Gaia DR3 published sampled XP spectra for the 
 
 
 def _gavo(query: str):
+    """GAVO TAP: a synchronous query, or an asynchronous job when it takes more than the ~20 s the service allows a
+    synchronous one (dense Milky Way fields)."""
     import pyvo
-    return pyvo.dal.TAPService(GAVO_TAP).run_sync(query, maxrec=50_000_000).to_table()
+    svc = pyvo.dal.TAPService(GAVO_TAP)
+    try:
+        return svc.run_sync(query, maxrec=50_000_000).to_table()
+    except pyvo.dal.DALQueryError as e:
+        if "timed out" not in str(e).lower() and "too long" not in str(e).lower():
+            raise
+        return svc.run_async(query, maxrec=50_000_000).to_table()
 
 
 def _column(t, k) -> np.ndarray:
