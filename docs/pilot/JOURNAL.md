@@ -617,6 +617,18 @@ Newest entries at the bottom. Times are local.
       (equal). Our current drizzle (scale 1, drop 0.7) is sharper (12.95″) but noisier (24.495);
     - 30 frames: about 1.5–2 min on the 4060 Ti.
     - The integration agent was told to wire it.
+  - **Phase 2 done and committed (493df42):**
+    - every switch wired, Classic included;
+    - all defaults = the old version bit for bit (15/15 files on heart Express), 573 stage keys unchanged across 21
+      projects (a setting added later, at its default, stays out of the key), no version bump;
+    - level 2: only the 21 known failures (outdated heart_a7s copies).
+    - Note: sep varies with what a worker process extracted before, so registration can vary from run to run (the
+      old code too).
+  - **Phase 3 dispatched at 21:15 (opus):**
+    - the crossed bench, Express on 6 cases, about 17 configurations: OLD, each change alone (with transparency off),
+      V2 drizzle, V2-auto, all but one;
+    - then Base for the best configuration by a written criterion; the BENCH.md tables.
+    - Expected: Express about 2–3 h, Base about 1 h, so early morning.
 
 ### Queue for the end of P8 (engine unfrozen)
 1. Apply patches 1–3, run the tests and the 4-dataset non-regression, recompute only render_simple (Classic and Raw
