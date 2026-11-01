@@ -610,6 +610,13 @@ Newest entries at the bottom. Times are local.
     Lanczos-4 with clamping, WBPP rejection by frame count), in new files.
   - **Phase 2 dispatched (opus):** the five modules behind switches in stack.py and register.py, all defaults = the
     old version bit for bit with the same keys, and a hook for method = classic.
+  - **Classic module done and committed:**
+    - RCD as librtprocess (Siril's own): 4e-7 from Siril's debayer;
+    - Lanczos-4 with clamping; WBPP rejection by frame count; GESDT;
+    - heart Express with Siril's recipe: FWHM 13.78″ against 13.77″, noise 24.598 against 24.601 mag/arcsec²
+      (equal). Our current drizzle (scale 1, drop 0.7) is sharper (12.95″) but noisier (24.495);
+    - 30 frames: about 1.5–2 min on the 4060 Ti.
+    - The integration agent was told to wire it.
 
 ### Queue for the end of P8 (engine unfrozen)
 1. Apply patches 1–3, run the tests and the 4-dataset non-regression, recompute only render_simple (Classic and Raw

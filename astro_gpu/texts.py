@@ -36,6 +36,12 @@ LANGUAGES = ("en", "fr")
 DECIMAL_COMMA = frozenset({"fr"})
 LOCALE = Path(__file__).parent / "client" / "locale"
 STAGES_DIR = Path(__file__).parent / "stages"
+CORE_DIR = Path(__file__).parent / "core"
+#: the core modules of stacking v2 whose reasons reach the user (core/coverage.py writes ``Auto``s with plain
+#: templates; core/frame_weights.py and core/normalize_local.py list theirs in ``REASON_TEMPLATES``,
+#: core/rejection_classic.py in ``REASONS``)
+REASON_MODULES = ("coverage.py", "frame_weights.py", "normalize_local.py", "rejection_classic.py")
+DECLARED = ("REASON_TEMPLATES", "REASONS")
 
 # ------------------------------------------------------------------------------------------------------ catalogues
 _cat: dict[str, dict[str, str]] = {}
@@ -168,6 +174,12 @@ _METRIC_ROWS: list[tuple] = [
     ("drift_px", "Drift", "px", ".1f", "How far the field moved on the sensor during the session."),
     ("photometry_aperture_px", "Photometry aperture", "px", "g",
      "Diameter of the aperture the transparency of each frame is measured in."),
+    ("fwhm_moffat_px", "Star FWHM (Moffat)", "px", ".2f",
+     "Median width of the stars from a Moffat fit on the green pixels, at full resolution."),
+    ("roundness_moffat", "Star roundness (Moffat)", "", ".2f",
+     "Median ratio of the smallest to the largest width of the stars (1 is round)."),
+    ("channel_alignment", "Color alignment", "", "",
+     "How the red and blue images of the stars were put on the green one, per block of frames over the night."),
     # stack
     ("frames_used", "Frames stacked", "", "d", "Frames kept in the stack."),
     ("integration_used_h", "Stacked exposure", "h", ".2f", "Exposure time of the frames kept in the stack."),
@@ -179,6 +191,12 @@ _METRIC_ROWS: list[tuple] = [
      "atmospheric dispersion), corrected in the stack."),
     ("near_saturation_pct", "Near saturation", "%", ".4f",
      "Share of the pixels of the stack with samples near saturation (star cores)."),
+    ("untested_pct", "Untested pixels", "%", ".3f",
+     "Share of pixels covered by fewer than 3 frames in their colour: they cannot be tested for outliers."),
+    ("coverage_variation_pct", "Coverage variation", "%", ".1f",
+     "How much the weight of the pixels of the stack varies, red / green / blue (under 20 % is even enough)."),
+    ("normalisation_spread_sigma", "Background spread", "σ", ".1f",
+     "Largest difference of background between frames from edge to edge, in noise sigmas, before normalisation."),
     # astrometry
     ("ra", "Centre RA", "deg", ".4f", "Right ascension of the image centre."),
     ("dec", "Centre Dec", "deg", ".4f", "Declination of the image centre."),
@@ -489,6 +507,14 @@ def format_metric(key: str, value: Any, lang: str = "en") -> str:
 CHOICE_TEXTS: dict[str, str] = {
     "auto": "Automatic", "none": "None", "nsns": "NSNS", "finkbeiner": "Finkbeiner",
     "main": "Main GPU", "aux": "Second GPU",
+    # the switches of stacking v2 (stages/stack.py, stages/register.py)
+    "legacy": "Previous version", "moffat": "Moffat fit", "per_block": "Per block of frames",
+    "coverage": "Coverage rule", "hubble": "Hubble (driz_cr)", "noise": "Noise", "sharp": "Sharp stars",
+    "sota": "k × σ filters", "local": "Local", "global": "Global (like Siril)", "on": "On", "off": "Off",
+    "drizzle": "Bayer drizzle", "classic": "Classic",
+    "rcd": "RCD", "bilinear": "Bilinear", "lanczos4": "Lanczos-4", "siril": "Siril", "pixinsight": "PixInsight",
+    "percentile": "Percentile clipping", "winsorized": "Winsorized sigma clipping", "linear_fit": "Linear fit clipping",
+    "gesdt": "Generalized ESD test",
 }
 
 _stage_index: dict[str, dict] | None = None
@@ -559,15 +585,40 @@ class ReasonSite(NamedTuple):
     arg_names: set[str] | None  # the keys of the arguments dictionary written there; None: no arguments
 
 
+def _declared_templates(path: Path, tree: ast.Module) -> list[str] | None:
+    """The templates a module lists in its top-level ``REASON_TEMPLATES`` or ``REASONS`` (a dict of them, or a
+    sequence), None when it has none. Read as a literal when it is one (no import: core/normalize_local.py and
+    core/rejection_classic.py need torch), else from the module itself (core/frame_weights.py builds its tuple; it
+    imports numpy only)."""
+    for node in tree.body:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            name = next((t.id for t in targets if isinstance(t, ast.Name) and t.id in DECLARED), None)
+            if name is not None:
+                try:
+                    value = ast.literal_eval(node.value)
+                except ValueError:
+                    import importlib
+                    value = getattr(importlib.import_module(f"{__package__}.core.{path.stem}"), name)
+                return list(value.values()) if isinstance(value, dict) else list(value)
+    return None
+
+
 def reason_sites() -> list[ReasonSite]:
-    """Every ``Auto(...)`` written in ``stages/*.py``, found in the source (for the tests and the coverage report).
+    """Every ``Auto(...)`` written in ``stages/*.py`` and in the core modules of REASON_MODULES, found in the source;
+    for a module that lists its templates in ``REASON_TEMPLATES`` (its ``Auto``s take them from variables), one site
+    per template listed (for the tests and the coverage report).
 
     Raises ``ValueError`` for a reason that is still an f-string or a concatenation: a reason must be a plain string
     (or a choice between plain strings) with its arguments apart.
     """
     sites: list[ReasonSite] = []
-    for path in sorted(STAGES_DIR.glob("*.py")):
+    for path in sorted(STAGES_DIR.glob("*.py")) + [CORE_DIR / m for m in REASON_MODULES]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
+        declared = _declared_templates(path, tree) if path.parent == CORE_DIR else None
+        if declared is not None:
+            sites += [ReasonSite(f"{path.name}:REASON_TEMPLATES", [t], template_fields(t)) for t in declared]
+            continue
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Auto"):
                 continue

@@ -26,6 +26,18 @@ level3 = [
     "tests/test_layers.py::test_layer_service_renders_engine_and_simple_layers",                   # heavy: 720x1080, 6 s
     "tests/test_layers.py::test_masks",                                                            # heavy: 720x1080, 5 s
     "tests/test_star_net.py::test_stage_end_to_end_on_a_synthetic_project",                        # heavy: trains a network, 7 s
+    # stacking v2: the two fixtures of normalize_local (2.4-5 s, the module's report), and the toy-night stacks over 4 s
+    "tests/test_normalize_local.py::test_scale_is_measured_per_colour_on_the_stars",
+    "tests/test_normalize_local.py::test_normalised_backgrounds_match_the_reference_within_noise",
+    "tests/test_normalize_local.py::test_two_frames_normalised_as_stack_py_does_differ_by_their_noise_only",
+    "tests/test_normalize_local.py::test_the_reference_integrates_the_best_frames",
+    "tests/test_normalize_local.py::test_diagnostic_measures_the_spread_of_the_backgrounds",
+    "tests/test_normalize_local.py::test_flat_set_from_float16_frames",
+    "tests/test_normalize_local.py::test_global_mode_is_sirils_additive_with_scaling",
+    "tests/test_stacking_v2.py::test_colour_alignment_per_block_is_applied_in_the_drizzle",          # heavy: 3 stacks, 6 s
+    "tests/test_stacking_v2.py::test_api_serves_what_the_switches_add",                              # heavy: 2 stacks, 5 s
+    "tests/test_stacking_v2.py::test_selection_at_k_sigma_with_reasons",                             # heavy: 2 stacks, 5 s
+    "tests/test_stacking_v2.py::test_every_switch_at_its_default_is_the_previous_stack_bit_for_bit[drizzle 1.5, pattern, by hand]",  # 2 stacks at 1.5
     "tests/test_qc_v2.py::test_a_large_render_is_reduced_first_so_that_all_are_sampled_alike",     # heavy: 4 s
     "tests/test_qc_v2.py::test_pair_sheets_find_candidates_by_name_and_say_what_cannot_be_compared",  # heavy: 3.4 s
     "tests/test_qc_v2.py::test_two_old_images_paired_with_one_workflow_get_two_renders",           # heavy: 2.6 s

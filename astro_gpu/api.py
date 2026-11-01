@@ -417,15 +417,28 @@ class RegRow:
     transparency: float = float("nan")   # star flux relative to the reference frame
     reference: bool = False
     reason: str = ""
+    # stacking v2 (None for a result made without the switch): register's fwhm_method = moffat, the Moffat fit on the
+    # green samples (FWHM px, roundness minor / major, beta); channel_align = per_block, the frame's block and the
+    # correction applied to its red and blue samples at the centre of the sensor (R dx, R dy, B dx, B dy, sensor px)
+    fwhm_moffat: float | None = None
+    roundness_moffat: float | None = None
+    beta_moffat: float | None = None
+    colour_block: int | None = None
+    colour_shift: tuple[float, float, float, float] | None = None
 
 
 class RegTable(list):
-    """``registration_table``'s answer: a list of RegRow, with ``missing`` and ``notes``."""
+    """``registration_table``'s answer: a list of RegRow, with ``missing`` and ``notes``; with stacking v2's
+    switches, ``fwhm_method`` ("legacy" or "moffat") and ``channel_alignment`` (register's chan.npz: its summary, the
+    blocks of frames with their shift and error; None without)."""
 
-    def __init__(self, rows: Iterable[RegRow] = (), missing: Iterable[str] = (), notes: Iterable[str] = ()):
+    def __init__(self, rows: Iterable[RegRow] = (), missing: Iterable[str] = (), notes: Iterable[str] = (),
+                 fwhm_method: str = "legacy", channel_alignment: dict | None = None):
         super().__init__(rows)
         self.missing = list(missing)
         self.notes = list(notes)
+        self.fwhm_method = fwhm_method
+        self.channel_alignment = channel_alignment
 
 
 @dataclass
@@ -456,6 +469,32 @@ class StackDiag:
     grid: tuple[int, int] | None = None              # (width, height) of the stack
     missing: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # ---- stacking v2 (filled for every stack; what a switch adds is there only when it was on)
+    #: the switches the stack was made with ({} for a stack made before they existed: the previous version)
+    switches: dict[str, str] = field(default_factory=dict)
+    #: {"method": "legacy" | "hubble", "rejected_pct", "untested_pct" (Hubble: fewer than 3 samples around),
+    #: "reference_pct": Siril's mark [0.1, 0.5], "prediction" (Hubble: samples per point and median / minmed per colour)}
+    rejection: dict[str, Any] = field(default_factory=dict)
+    #: (h, w) counts of the samples left untested (Hubble), on the rejection maps' grid; None otherwise
+    rejection_untested: Any = None
+    #: the coverage per colour: "maps" (3, h, w) the drizzle weight map reduced ``factor`` times (block means),
+    #: "variation" {R, G, B} its std / median (DrizzlePac's statistic, under 20 % is even), and with the v2 switches
+    #: "estimate" (core/coverage's fast estimate at the scale and drop used) and "rule" (the coverage rule's scale,
+    #: drop and method, each {value, template, args, reason})
+    coverage: dict[str, Any] = field(default_factory=dict)
+    #: per frame name, its weight in each colour (R, G, B)
+    weights_rgb: dict[str, tuple[float, float, float]] = field(default_factory=dict)
+    #: per excluded frame name, why: [{"code", "template", "args"}] (texts.format_reason translates them)
+    exclusions: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: the v2 frame selection and weights (core/frame_weights): the filters' medians, sigmas and limits, the costs, the
+    #: guarded weights, the automatic reasons; None for the previous selection and weights
+    selection: dict[str, Any] | None = None
+    #: the v2 normalisation (core/normalize_local): mode, the frames of its reference, its stars, the diagnostic and
+    #: its reason; None for the previous normalisation
+    normalisation: dict[str, Any] | None = None
+    #: the colour alignment applied: "mode" ("legacy": one correction measured on the mean; "per_block": register's)
+    #: and its summary
+    channel_alignment: dict[str, Any] | None = None
 
 
 @dataclass
@@ -2146,19 +2185,41 @@ def registration_table(p: Project2, wf: int | Workflow, which: str = "current") 
         dx, dy, rot, sc = dg.frame_geometry(reg["coef"], width, height, aligned)
     rnd = reg.get("roundness")
     ref = int(reg["ref"]) if "ref" in reg else -1
+    # stacking v2: the Moffat fit (fwhm_method = moffat) and the colour alignment per block (channel_align = per_block)
+    from .stages.register import CHAN
+    chan = None
+    if (d / CHAN).is_file():
+        from .core.channel_align import ChannelAlignment
+        with np.load(d / CHAN) as z:
+            info, block_of = json.loads(str(z["info"])), np.asarray(z["block_of"], int)
+            align = ChannelAlignment.from_npz(z)
+        chan = {**info, "blocks_detail": align.blocks if align is not None else []}
+
+    def opt(name, i):
+        a = reg.get(name)
+        return None if a is None or not np.isfinite(a[i]) else float(a[i])
+
     rows = []
     for i in range(n):
         f = lights[i] if i < len(lights) else {}
         r = None if rnd is None or not np.isfinite(rnd[i]) else float(rnd[i])
-        rows.append(RegRow(Path(f.get("path", f"frame {i + 1}")).name, f.get("time"), float(dx[i]), float(dy[i]),
-                           float(rot[i]), float(sc[i]), int(reg["nmatch"][i]) if aligned[i] else 0,
-                           int(reg["nstars"][i]) if "nstars" in reg else 0, float(reg["fwhm"][i]), r, bool(aligned[i]),
-                           i, f.get("path", ""), float(rms[i]), float(reg["transp"][i]), i == ref,
-                           "" if aligned[i] else "not aligned"))
+        row = RegRow(Path(f.get("path", f"frame {i + 1}")).name, f.get("time"), float(dx[i]), float(dy[i]),
+                     float(rot[i]), float(sc[i]), int(reg["nmatch"][i]) if aligned[i] else 0,
+                     int(reg["nstars"][i]) if "nstars" in reg else 0, float(reg["fwhm"][i]), r, bool(aligned[i]),
+                     i, f.get("path", ""), float(rms[i]), float(reg["transp"][i]), i == ref,
+                     "" if aligned[i] else "not aligned")
+        row.fwhm_moffat, row.roundness_moffat, row.beta_moffat = (opt(k, i) for k in ("fwhm_moffat",
+                                                                                       "roundness_moffat",
+                                                                                       "beta_moffat"))
+        if chan is not None and align is not None and i < len(block_of):
+            row.colour_block = int(block_of[i])
+            q = align.coefs[i]                           # at the centre of the sensor only the constant term remains
+            row.colour_shift = (float(q[0, 0, 0]), float(q[0, 1, 0]), float(q[2, 0, 0]), float(q[2, 1, 0]))
+        rows.append(row)
     missing = [] if "roundness" in reg else [_missing("roundness", "register")]
     if "nstars" not in reg:
         missing.append(_missing("stars detected", "register"))
-    return RegTable(rows, missing, notes)
+    return RegTable(rows, missing, notes, "moffat" if "fwhm_moffat" in reg else "legacy", chan)
 
 
 def stack_diagnostics(p: Project2, wf: int | Workflow, which: str = "current") -> StackDiag:
@@ -2214,9 +2275,78 @@ def stack_diagnostics(p: Project2, wf: int | Workflow, which: str = "current") -
         with np.load(d / REJECTION) as z:
             out.rejection_low, out.rejection_high = z["low"], z["high"]
             out.rejection_factor = int(z["factor"])
+            if "untested" in z.files:
+                out.rejection_untested = z["untested"]
     else:
         out.missing.append(_missing("rejection maps", "stack"))
+    _stack_v2(out, d, m, sf, names, diag)
     return out
+
+
+#: the coverage maps of the stacks made before stacking v2 kept them, computed again from drz_weight.npy: one at a
+#: time (a stack's weight map is large); (folder, its mtime) -> the record
+_COVERAGE: dict[tuple, dict] = {}
+
+
+def _stack_v2(out: StackDiag, d: Path, m: dict, sf: list, names: list[str], diag: dict | None) -> None:
+    """StackDiag's stacking-v2 part: the switches, the rejection's rates, the coverage per colour, the weights per
+    colour, the reasons of the frames left out, the selection, the normalisation and the colour alignment. A stack made
+    with the previous version (every switch at its default) gets the same fields from what it has."""
+    import numpy as np
+
+    from .stages.stack import COVERAGE, LEGACY_CODES, SWITCHES, reduce_map
+    metrics = m.get("metrics") or {}
+    diag = diag or {}
+    out.switches = dict(diag.get("switches") or {k: v[0] for k, v in SWITCHES.items()})
+    rej = dict(diag.get("rejection") or {})
+    summ = rej.get("summary") or {}
+    out.rejection = {"method": rej.get("method", "legacy"), "rejected_pct": _num(metrics.get("rejected_pct")),
+                     "untested_pct": _num(metrics.get("untested_pct")), "reference_pct": [0.1, 0.5]}
+    for k in ("low_pct", "high_pct", "exempt_pct", "z_spread_median"):
+        if k in summ:
+            out.rejection[k] = summ[k]
+    if rej.get("prediction"):
+        out.rejection["prediction"] = rej["prediction"]
+    # ---- weights per colour, the reasons of the frames left out
+    for i, f in enumerate(sf):
+        w = float(f.get("weight") or 0)
+        out.weights_rgb[names[i]] = tuple(float(v) for v in (f.get("weights_rgb") or [w, w, w]))
+        if w <= 0:
+            if "exclusions" in f:
+                out.exclusions[names[i]] = [dict(r) for r in f["exclusions"]]
+            elif f.get("excluded"):
+                r = str(f["excluded"])
+                out.exclusions[names[i]] = [{"code": LEGACY_CODES.get(r, "selection"), "template": r, "args": None}]
+    out.selection = diag.get("selection")
+    out.normalisation = diag.get("normalisation")
+    ca = diag.get("channel_alignment")
+    if ca is None and metrics.get("channel_offsets") is not None:
+        ca = {**metrics["channel_offsets"], "mode": "legacy"}
+    out.channel_alignment = ca
+    # ---- the coverage per colour: kept by the v2 stack (coverage.npz), else from its weight map
+    cov: dict[str, Any] = {}
+    if (d / COVERAGE).is_file():
+        with np.load(d / COVERAGE) as z:
+            cov = {"factor": int(z["factor"]), "maps": z["measured"],
+                   "variation": {c: _num(v) for c, v in zip("RGB", z["variation"])},
+                   "estimate_map": z["estimate_map"]}
+        rec = diag.get("coverage") or {}
+        cov["estimate"] = {k: rec.get(k) for k in ("estimate_cv", "estimate_cv_max", "scale", "pixfrac", "limit")}
+        if rec.get("rule"):
+            cov["rule"] = rec["rule"]
+    elif (d / "drz_weight.npy").is_file():
+        ck = (str(d), (d / "drz_weight.npy").stat().st_mtime_ns)
+        cov = _COVERAGE.get(ck)
+        if cov is None:
+            from .core.coverage import map_variation
+            w = np.load(d / "drz_weight.npy", mmap_mode="r")
+            f = out.rejection_factor if out.rejection_low is not None else max(1, -(-max(w.shape[1:]) // 4096))
+            cov = {"factor": int(f), "maps": reduce_map(w, f),
+                   "variation": {c: _num(v) for c, v in map_variation(np.asarray(w)).items()}}
+            del w
+            _COVERAGE.clear()
+            _COVERAGE[ck] = cov
+    out.coverage = cov                              # {} without a weight map (a stack made before it kept one)
 
 
 def color_fit(p: Project2, wf: int | Workflow, which: str = "current") -> ColorFit:
@@ -2351,7 +2481,7 @@ def _resolve(p: Project2, wf: int | Workflow, stage: str) -> _Resolved:
         autos, ok = {}, False
         params, origin = resolve(model, autos, given)
         sug, _ = resolve(model, autos, {})
-    auto_f = keys.rules.auto_fields(stage)
+    auto_f = keys.rules.auto_fields(stage, params.model_dump(mode="json"))
     known = {n: (n in autos) or ok or (n not in auto_f) for n in model.model_fields}
     return _Resolved(params.model_dump(mode="json"), origin, sug.model_dump(mode="json"), known, autos, ok)
 

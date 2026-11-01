@@ -19,6 +19,12 @@ AUTO_FIELDS: dict[str, frozenset[str]] = {
     "starless": frozenset({"learned_stars"}),
     "background": frozenset({"large_scale_px"}),
 }
+#: fields an ``auto()`` sets only under another setting: {stage: {field: (setting, values that select its rule)}}.
+#: Automatic (kept in a key at their default) only where that setting has one of those values; elsewhere a field like
+#: any other, dropped at its default (core/store.py). ``stack.pixfrac``: the coverage rule of stacking v2 sets it
+AUTO_WHEN: dict[str, dict[str, tuple[str, tuple]]] = {
+    "stack": {"pixfrac": ("scale_rule", ("coverage",))},
+}
 #: fields naming a file: keyed by the file (name, size, modification time), not by the path string
 PATH_FIELDS: dict[str, frozenset[str]] = {
     "starless": frozenset({"learned_stars"}),

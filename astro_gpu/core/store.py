@@ -11,9 +11,16 @@ the result, and nothing else::
 validated through the stage's Params (2, 2.0 and "2" hash the same; an invalid value is a ValueError naming the
 setting), and path settings replaced by their file (name, size, mtime). The rule on defaults:
 
-- a field with an automatic rule (``AUTO_FIELDS``) is never dropped: a stored value equal to the static default
-  overrides the automatic value, so it may be another result;
+- a field with an automatic rule is never dropped: a stored value equal to the static default overrides the automatic
+  value, so it may be another result. A field has an automatic rule when it is in ``AUTO_FIELDS``, or in
+  ``AUTO_WHEN`` and the setting its rule depends on has a value that selects the rule (``stack.pixfrac`` is automatic
+  only under ``scale_rule = coverage``): read on the definition's own values, defaults included;
 - a field without one is dropped at its static default: the effective value is the same.
+
+Hence a setting added to a stage later, whose static default keeps the previous behaviour and which has no automatic
+rule at that default, never enters the key of a definition that leaves it at its default, stored or not: every key
+computed before it existed stays the same (tests/test_stacking_v2.py). That is how a new option goes in beside the old
+behaviour without a version bump.
 
 Automatic values are not in the key: they follow from the upstream results, which the upstream keys stand for.
 Settings that never change a result (worker counts, the training GPU) are left out. The key is the same in every
@@ -104,16 +111,19 @@ def _split_tag(value: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------------------------- rules
 
 class KeyRules:
-    """What the key needs to know of the stages: their graph (``Chains``), the fields an ``auto()`` can set, the
+    """What the key needs to know of the stages: their graph (``Chains``), the fields an ``auto()`` can set (always:
+    ``auto_fields``; under a setting: ``auto_when`` {stage: {field: (setting, values that select its rule)}}), the
     path fields, the fields that never change a result, and the values workflow options imply.
     ``auto_fields`` None counts every field as automatic: nothing is ever dropped (the safe side)."""
 
     def __init__(self, chains: Chains, auto_fields: Mapping[str, Iterable[str]] | None = None,
                  path_fields: Mapping[str, Iterable[str]] | None = None,
                  non_key: Mapping[str, Iterable[str]] | None = None,
-                 implied: Callable[[dict[str, Any], str], dict[str, Any]] = wfl.implied):
+                 implied: Callable[[dict[str, Any], str], dict[str, Any]] = wfl.implied,
+                 auto_when: Mapping[str, Mapping[str, tuple[str, Iterable[Any]]]] | None = None):
         self.chains = chains
         self._auto = None if auto_fields is None else {s: frozenset(f) for s, f in auto_fields.items()}
+        self._when = {s: {f: (str(c[0]), tuple(c[1])) for f, c in d.items()} for s, d in (auto_when or {}).items()}
         self._paths = {s: frozenset(f) for s, f in (PATH_FIELDS if path_fields is None else path_fields).items()}
         self._non_key = {s: frozenset(f) for s, f in (NON_KEY if non_key is None else non_key).items()}
         self.implied = implied
@@ -125,10 +135,17 @@ class KeyRules:
     def version(self, stage: str) -> str:
         return str(self.chains.stages[stage].version)
 
-    def auto_fields(self, stage: str) -> frozenset[str]:
+    def auto_fields(self, stage: str, values: Mapping[str, Any] | None = None) -> frozenset[str]:
+        """The fields an ``auto()`` can set in a definition whose (validated, defaults included) ``values`` are given:
+        the AUTO_FIELDS, and the AUTO_WHEN fields whose setting selects their rule there. Without ``values``, every
+        field that can ever be automatic (the safe side)."""
         if self._auto is None:
             return frozenset(self.params(stage).model_fields)
-        return self._auto.get(stage, frozenset())
+        out = self._auto.get(stage, frozenset())
+        when = self._when.get(stage)
+        if when:
+            out = out | {f for f, (s, sel) in when.items() if values is None or values.get(s) in sel}
+        return out
 
     def path_fields(self, stage: str) -> frozenset[str]:
         return self._paths.get(stage, frozenset())
@@ -155,7 +172,8 @@ def key_rules() -> KeyRules:
     that module exists, every field counts as automatic and PATH_FIELDS is the design's list."""
     if not _RULES:
         v2 = _v2_module()
-        _RULES.append(KeyRules(wfl.chains(), getattr(v2, "AUTO_FIELDS", None), getattr(v2, "PATH_FIELDS", None)))
+        _RULES.append(KeyRules(wfl.chains(), getattr(v2, "AUTO_FIELDS", None), getattr(v2, "PATH_FIELDS", None),
+                               auto_when=getattr(v2, "AUTO_WHEN", None)))
     return _RULES[0]
 
 
@@ -293,7 +311,7 @@ class Keys:
         for k in r.path_fields(stage) & p.keys():
             if isinstance(p[k], str) and wfl.names_file(p[k]):
                 p[k] = self.scan.file_id(_absolute(self.project, _split_tag(p[k])[0]))
-        auto, default = r.auto_fields(stage), r.defaults(stage)
+        auto, default = r.auto_fields(stage, m), r.defaults(stage)
         p = {k: x for k, x in p.items() if k in auto or x != default.get(k)}
         if "exclude" in p and pairs:
             p["exclude"] = [list(t) for t in pairs]    # (session, name): the same after the raws move

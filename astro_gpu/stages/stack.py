@@ -1,18 +1,45 @@
-"""Weighted Bayer drizzle on the GPU with predictive outlier rejection and two independent half-stacks."""
+"""Weighted Bayer drizzle on the GPU with predictive outlier rejection and two independent half-stacks.
+
+Stacking v2 (docs/spec/STACKING.md): each change sits behind a switch of its own, beside the previous version, which
+the defaults keep to the bit (the same files, the same store keys, no version bump):
+
+- ``scale_rule = coverage``: the drizzle scale and drop size from the Moffat FWHM and the coverage of the red and blue
+  samples (core/coverage.py, DrizzlePac's 20 % rule), instead of the frame-count rule;
+- ``rejection = hubble``: AstroDrizzle's driz_cr against a median / minmed prediction (core/rejection_hubble.py),
+  instead of the k-sigma test against a cleaned weighted mean;
+- ``weighting = noise | sharp | none``: per-colour inverse-variance weights, Annis et al. 2014 or equal weights
+  (core/frame_weights.py), instead of one (transparency / noise)^2 x sharpness weight per frame;
+- ``selection = sota``: Siril's k x sigma filters at 2.5 on FWHM, roundness and transparency (``selection_transparency
+  = off`` drops the last) and WBPP's minimum weight 0.05, instead of the 0.6 transparency and 2 x FWHM thresholds;
+- ``normalisation = local | global``: a photometric scale and a degree-2 background per colour against an integration
+  of the best frames, or Siril's additive with scaling (core/normalize_local.py), instead of one scale and a
+  background against one frame;
+- register's ``channel_align = per_block`` (its chan.npz): the colours registered per block of frames, each sample
+  placed before the registration polynomial (core/channel_align.py), instead of one correction measured on the mean;
+- ``method = classic``: debayering and interpolated registration (``stack_classic``, the hook of the Classic path).
+
+What they add to the outputs, only when one of them is on: coverage.npz (the weight map per colour, reduced, its
+variation and the coverage rule's estimate), the Hubble rejection maps with the untested samples, the weights per
+colour and the reasons of the frames left out (frames.json, diagnostics.json "selection"), the normalisation's
+diagnostic, the colour alignment applied (diagnostics.json).
+"""
 from __future__ import annotations
 
+import importlib.util
 import os
 import time
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+from pydantic import field_validator
 
 from ..core.imgutil import asinh_preview
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage, StageError
 from ..io.frames import cfa_channel_map
 from .calibrate import VALID_MAX, open_cache
+from .register import CHAN, check_choice
 
 #: the level of a parameter the project sets itself: never shown in a settings form
 INTERNAL = "internal"
@@ -30,6 +57,30 @@ SATURATION = "saturation.npy"
 NEAR_SATURATION = 0.85
 #: the rejection maps are reduced by a whole factor until their longer side is at most this
 REJECTION_SIDE = 4096
+#: stacking v2: the drizzle weight map per colour reduced as the rejection maps are (block means), its variation per
+#: colour (std / median, DrizzlePac's statistic), and the coverage rule's estimate at the scale and drop used
+COVERAGE = "coverage.npz"
+#: the switches of stacking v2 (the first value of each: the previous version, the default)
+METHODS = ("drizzle", "classic")
+SCALE_RULES = ("legacy", "coverage")
+REJECTIONS = ("legacy", "hubble")
+WEIGHTINGS = ("legacy", "noise", "sharp", "none")
+SELECTIONS = ("legacy", "sota")
+ON_OFF = ("on", "off")
+NORMALISATIONS = ("legacy", "local", "global")
+SWITCHES = {"method": METHODS, "scale_rule": SCALE_RULES, "rejection": REJECTIONS, "weighting": WEIGHTINGS,
+            "selection": SELECTIONS, "selection_transparency": ON_OFF, "normalisation": NORMALISATIONS}
+#: the modules of the Classic method (RCD debayering, Lanczos-4 registration with clamping, WBPP's rejection by frame
+#: count, and core/stack_classic.py which runs them); the function ``stack_classic`` below is its hook
+CLASSIC_MODULES = ("debayer", "resample", "rejection_classic", "stack_classic")
+#: the Classic method's own settings (core/debayer.METHODS, core/resample.METHODS and CLAMPINGS,
+#: core/rejection_classic.METHODS; their first value is the module's published default)
+CLASSIC_CHOICES = {"classic_debayer": ("rcd", "bilinear"), "classic_interpolation": ("lanczos4", "bilinear"),
+                   "classic_clamping": ("siril", "pixinsight", "none"),
+                   "classic_rejection": ("auto", "none", "percentile", "winsorized", "linear_fit", "gesdt")}
+#: the codes of the previous version's reasons (frames.json "excluded"), in frame_weights' vocabulary
+LEGACY_CODES = {"not aligned": "not_aligned", "excluded by hand": "by_hand", "low transparency": "transparency",
+                "large stars": "fwhm"}
 
 
 class StackParams(StageParams):
@@ -80,9 +131,88 @@ class StackParams(StageParams):
     pattern_frames: int = P(48, label="Frames for the pattern reference", level=ADVANCED, ge=8, le=400,
                             help="Number of frames, evenly spread over the session, whose median is the first estimate "
                                  "of the fixed pattern; the final estimate uses all frames around it.")
+    # ---- stacking v2: each switch beside the previous version (its first choice, the default)
+    method: str = P("drizzle", label="Stacking method", level=ADVANCED, choices=list(METHODS),
+                    help="Bayer drizzle: every raw red, green or blue pixel is dropped at its exact registered position, "
+                         "with no debayering and no interpolation. Classic: each frame is debayered (RCD) and "
+                         "registered by interpolation (Lanczos-4, clamped), then the frames are combined with a "
+                         "rejection chosen by their number, as Siril does.",
+                    tip="Classic suits few or barely dithered frames, whose red and blue pixels leave holes in a "
+                        "drizzle.")
+    scale_rule: str = P("legacy", label="Scale rule", level=ADVANCED, choices=list(SCALE_RULES),
+                        help="How the drizzle scale and drop size are suggested. Previous version: 1.5 from 40 frames "
+                             "and 2 from 150 frames when the stars are small, with drops of 0.7. Coverage: scale 1 and "
+                             "drops of 1, unless the stars are under 2 px (Moffat fit) and the coverage of the red and "
+                             "blue pixels still varies by less than 20 % at a finer scale (the DrizzlePac rule); the "
+                             "drop is then the smallest that keeps it.",
+                        tip="The coverage rule reads the Moffat star size: set the registration's star size measure "
+                            "to Moffat fit.")
+    rejection: str = P("legacy", label="Rejection method", level=ADVANCED, choices=list(REJECTIONS),
+                       help="How outliers (satellites, planes, cosmic rays, hot pixels) are found. Previous version: a "
+                            "test in noise sigmas against a cleaned weighted mean. Hubble: the method of the Hubble "
+                            "Space Telescope (AstroDrizzle driz_cr) against the median of the frames, or their minimum "
+                            "where only 3 to 5 frames cover a place; 3.5 then 3.0 sigmas of the sensor noise, plus a "
+                            "share of the local slope so that the edges of the stars are kept.",
+                       tip="Where fewer than 3 frames cover a place nothing can be rejected; the stage says how much "
+                           "of the image that is.")
+    weighting: str = P("legacy", label="Frame weights", level=ADVANCED, choices=list(WEIGHTINGS),
+                       help="How much each frame counts. Previous version: (transparency / noise)² × sharpness, one "
+                            "weight per frame. Noise: the inverse of the variance in each colour, the best for "
+                            "nebulae. Sharp stars: the same divided by the star size squared (Annis et al. 2014). "
+                            "None: equal weights. A weight above 10 times the upper quartile is brought back to the "
+                            "median (PixInsight).")
+    selection: str = P("legacy", label="Frame selection", level=ADVANCED, choices=list(SELECTIONS),
+                       help="Which frames are left out. Previous version: a transparency under the minimum times the "
+                            "best frames', or stars larger than the maximum times the median. k × σ: the frames more "
+                            "than 2.5 robust sigmas worse than the night's median in star size, roundness or "
+                            "transparency (Siril's filters), and those weighing less than 5 % of the best one (WBPP); "
+                            "each with its reason.")
+    selection_transparency: str = P("on", label="Transparency filter", level=ADVANCED, choices=list(ON_OFF),
+                                    help="With the k × σ frame selection: whether frames are also left out for a low "
+                                         "transparency. Off keeps them, with the lower weight their transparency "
+                                         "gives them.")
+    normalisation: str = P("legacy", label="Normalisation", level=ADVANCED, choices=list(NORMALISATIONS),
+                           help="How each frame is matched to the others before stacking. Previous version: one "
+                                "photometric scale for the three colours and a smooth background of degree 2, against "
+                                "one frame. Local: a scale per colour measured on the stars and a background of degree "
+                                "2 per colour, against an integration of the 20 best frames (as WBPP). Global: "
+                                "Siril's additive with scaling, per colour.",
+                           tip="Local and Global read every frame once more before stacking.")
+    classic_debayer: str = P("rcd", label="Debayering (Classic)", level=ADVANCED,
+                             choices=list(CLASSIC_CHOICES["classic_debayer"]),
+                             help="With the Classic method: how the missing colours of each pixel are interpolated. "
+                                  "RCD as Siril and librtprocess run it, or bilinear.")
+    classic_interpolation: str = P("lanczos4", label="Interpolation (Classic)", level=ADVANCED,
+                                   choices=list(CLASSIC_CHOICES["classic_interpolation"]),
+                                   help="With the Classic method: how each debayered frame is resampled onto the "
+                                        "reference grid. Lanczos-4 as Siril, or bilinear.")
+    classic_clamping: str = P("siril", label="Clamping (Classic)", level=ADVANCED,
+                              choices=list(CLASSIC_CHOICES["classic_clamping"]),
+                              help="With the Classic method: how the dark rings Lanczos-4 draws around bright stars are "
+                                   "held back. Siril's clamping, PixInsight's, or none.")
+    classic_rejection: str = P("auto", label="Rejection (Classic)", level=ADVANCED,
+                               choices=list(CLASSIC_CHOICES["classic_rejection"]),
+                               help="With the Classic method: how outliers are rejected pixel by pixel. Automatic: "
+                                    "PixInsight's rule by the number of frames (percentile under 6 frames, winsorized "
+                                    "sigma clipping from 6 to 15, linear fit clipping from 16), with the published "
+                                    "thresholds.")
     exclude: list[str] = P([], label="Frames excluded by hand", level=INTERNAL,
                            help="Light frames left out of the stack whatever their quality (their files). Set by the "
                                 "project from the frames the user excluded; not a setting of its own.")
+
+    @field_validator(*SWITCHES, *CLASSIC_CHOICES)
+    @classmethod
+    def _switch(cls, v: str, info) -> str:
+        return check_choice(info.field_name, v, {**SWITCHES, **CLASSIC_CHOICES}[info.field_name])
+
+    @property
+    def v2(self) -> bool:
+        """Whether a switch of stacking v2 is off its previous-version default (``selection_transparency`` acts only
+        with the k × σ selection, which is one)."""
+        return any(getattr(self, k) != SWITCHES[k][0] for k in SWITCHES if k != "selection_transparency")
+
+    def switches(self) -> dict[str, str]:
+        return {k: getattr(self, k) for k in SWITCHES}
 
 
 class Stack(Stage):
@@ -111,7 +241,11 @@ class Stack(Stage):
                                else "{n} frames: blocks of {hb} give two half-stacks of about {half} frames "
                                     "(blocks of 20 need 80 frames)", {"n": n, "hb": hb, "half": n // 2})
         f = float(np.median(reg["fwhm"]))
-        if f < 3.0 and n >= 150:
+        if _given(ctx, "stack").get("scale_rule", SCALE_RULES[0]) == "coverage":
+            # stacking v2: DrizzlePac's rule on the Moffat FWHM (core/coverage.py); the reasons are its own
+            s = drizzle_suggestion(reg, ctx.load_json("calibrate", "cache.json"))
+            a["scale"], a["pixfrac"] = s.scale, s.pixfrac
+        elif f < 3.0 and n >= 150:
             a["scale"] = Auto(2.0, "small stars (FWHM {fwhm:.1f} px) and {n} frames", {"fwhm": f, "n": n})
         elif f < 5.5 and n >= 40:
             a["scale"] = Auto(1.5, "FWHM {fwhm:.1f} px with {n} frames: under-sampled, enough frames to drizzle",
@@ -146,6 +280,8 @@ class Stack(Stage):
 
     def run(self, ctx: Context, p: StackParams) -> None:
         t0 = time.time()
+        if p.method == "classic" and classic_missing():
+            raise StageError(CLASSIC_NOT_YET)
         dev = ctx.device
         mm, info = open_cache(ctx)
         n, H, W = info["n"], info["height"], info["width"]
@@ -177,20 +313,80 @@ class Stack(Stage):
         else:
             weight, reasons = select_frames(transp, fwhm, rms, stats, p.min_transparency, p.max_fwhm_ratio,
                                             exclude=excl, noise=reg["noise"] if "noise" in reg.files else None)
-        used = np.where(weight > 0)[0]
-        if len(used) < 2:
+        v2f = p.selection != "legacy" or p.weighting != "legacy" or p.normalisation != "legacy"
+        if p.scale_rule == "coverage" and "fwhm_moffat" not in reg.files:
+            ctx.log("the coverage rule found no Moffat star size: set the registration's star size measure to Moffat "
+                    "fit", "warning")
+        # stacking v2: the frames the normalisation and the k x sigma selection look at, before they decide (with the
+        # previous selection, the frames it keeps); the fixed pattern is measured on them
+        pre = np.where(weight > 0)[0] if (not v2f or sel_f.exists() or p.selection == "legacy") else \
+            np.where(np.isfinite(rms) & ~excl)[0]
+        W3 = None                                   # (n, 3) weights per colour (v2); None: ``weight`` per frame
+        nres = None                                 # the v2 normalisation (core/normalize_local.Normalisation)
+        fws = None                                  # what core/frame_weights did (v2)
+        if not v2f:
+            used = np.where(weight > 0)[0]
+            if len(used) < 2:
+                raise StageError("fewer than 2 usable frames after selection; relax the selection thresholds")
+            ctx.save_json("frames.json", [{"path": meta[i]["path"], "time": meta[i].get("time"),
+                                           "weight": float(weight[i]), "transparency": float(transp[i]),
+                                           "fwhm": float(fwhm[i]), "excluded": reasons[i]} for i in range(n)])
+            for r in ("low transparency", "large stars", "not aligned", EXCLUDED):
+                k = int((reasons == r).sum())
+                if k:
+                    ctx.log(f"{k} frame(s) excluded: {r}")
+            used_metrics(ctx, used, Wo, Ho)
+        elif len(pre) < 2:
             raise StageError("fewer than 2 usable frames after selection; relax the selection thresholds")
-        ctx.save_json("frames.json", [{"path": meta[i]["path"], "time": meta[i].get("time"), "weight": float(weight[i]),
-                                       "transparency": float(transp[i]), "fwhm": float(fwhm[i]),
-                                       "excluded": reasons[i]} for i in range(n)])
-        for r in ("low transparency", "large stars", "not aligned", EXCLUDED):
-            k = int((reasons == r).sum())
-            if k:
-                ctx.log(f"{k} frame(s) excluded: {r}")
-        texp = ctx.metric_of("inventory", "exposure_s") or 0
-        ctx.metric("frames_used", int(len(used)))
-        ctx.metric("integration_used_h", round(len(used) * texp / 3600, 2))
-        ctx.metric("grid", [Wo, Ho])
+
+        fpn = None
+        if p.pattern_removal:
+            ctx.progress(0.0, "measuring the fixed pattern of the sensor")
+            fpn, finfo = fixed_pattern(mm, pre, coef, dev, H, W, p.pattern_frames,
+                                       lambda f: ctx.progress(0.1 * f, "measuring the fixed pattern of the sensor"))
+            ctx.metric("fixed_pattern", finfo)
+            ctx.log(finfo["msg"])
+            if fpn is not None:
+                g = fpn[0::2, 1::2].cpu().numpy()                                # one green plane
+                sg = 1.4826 * float(np.median(np.abs(g - np.median(g)))) + 1e-9
+                ctx.preview("fixed_pattern", np.clip(0.5 + g / (8 * sg), 0, 1))
+
+        if v2f:
+            if p.normalisation != "legacy":
+                from ..core import normalize_local as nl
+
+                def load(i):                        # the calibrated CFA frame, fixed pattern removed as frame_model does
+                    fr = torch.from_numpy(np.asarray(mm[i], np.float32)).to(dev)
+                    return fr if fpn is None else torch.where(fr > VALID_MAX, fr, fr - fpn)
+
+                raw_w = legacy_weights(transp, fwhm, rms, stats, reg["noise"] if "noise" in reg.files else None)[0]
+                f_ap = v2_fwhm(reg, fwhm)[0][pre]
+                nres = nl.normalize(load, coef, np.where(np.isin(np.arange(n), pre), raw_w, 0.0), ch_of_k, H, W,
+                                    fwhm=float(np.nanpercentile(f_ap, 90)) if np.isfinite(f_ap).any() else 4.0,
+                                    frames=pre, device=dev, sat_level=satval, mode=p.normalisation, ref_frame=ref,
+                                    progress=lambda f, msg: ctx.progress(0.15 * f, msg))
+                dg = nres.diagnostic
+                ctx.log(f"normalisation ({p.normalisation}): " + english(dg["reason"], dg["params"]))
+                if dg.get("max_sigma") is not None:
+                    ctx.metric("normalisation_spread_sigma", round(float(dg["max_sigma"]), 2))
+            fws = v2_frames(p, reg, transp, fwhm, rms, stats, ch_of_k, excl, weight, reasons, nres,
+                            given=sel_f.exists())
+            weight, reasons, W3 = fws.weight, fws.reasons, fws.weights_rgb
+            used = np.where(weight > 0)[0]
+            if len(used) < 2:
+                raise StageError("fewer than 2 usable frames after selection; relax the selection thresholds")
+            rows = [{"path": meta[i]["path"], "time": meta[i].get("time"), "weight": float(weight[i]),
+                     "transparency": float(transp[i]), "fwhm": float(fwhm[i]), "excluded": reasons[i],
+                     "weights_rgb": [float(v) for v in fws.weights3[i]], "exclusion_codes": fws.codes[i],
+                     "exclusions": fws.exclusions.get(i, [])} for i in range(n)]
+            if fws.fwhm_moffat is not None:
+                for i, r in enumerate(rows):
+                    r["fwhm_moffat"] = _num(fws.fwhm_moffat[i])
+            ctx.save_json("frames.json", rows)
+            for code, k in sorted(fws.counts().items()):
+                ctx.log(f"{k} frame(s) excluded: {code.replace('_', ' ')}")
+            ctx.log(fws.describe())
+            used_metrics(ctx, used, Wo, Ho)
 
         yy, xx = torch.meshgrid(torch.arange(H, device=dev, dtype=torch.float32),
                                 torch.arange(W, device=dev, dtype=torch.float32), indexing="ij")
@@ -198,6 +394,28 @@ class Stack(Stage):
         chmap = torch.tensor(ch_of_k, device=dev)[kmap]
         h = PIX * S / 2.0
         nby, nbx = (H // 2) // 32, (W // 2) // 32
+        # stacking v2, register's channel_align = per_block: each colour's samples placed by the block's correction
+        chan_mode, align = "legacy", None
+        chan_f = ctx.project.stage_dir("register") / CHAN
+        if chan_f.exists():
+            from ..core.channel_align import ChannelAlignment
+            chan_mode = "per_block"
+            with np.load(chan_f) as z:
+                align = ChannelAlignment.from_npz(z)
+            ctx.log(align.describe() if align is not None else
+                    "colours not registered on each other: the registration found too few isolated stars")
+
+        def wt(i):
+            """The weight of frame i: a number, or (v2, per colour) the weight of each sample's colour."""
+            if W3 is None:
+                return float(weight[i])
+            return torch.as_tensor(W3[i], dtype=torch.float32, device=dev)[chmap]
+
+        def tscale(i):
+            """What frame i is divided by: its transparency, or (v2 normalisation) its scale in each sample's colour."""
+            if nres is None:
+                return float(transp[i])
+            return nl.scale_at(nres.frames[int(i)].scale, chmap)
 
         def poly_eval(c, x, y):
             u = x / (W / 2) - 1.0
@@ -227,18 +445,6 @@ class Stack(Stage):
                 cx.append(2 * gx + kx)
                 cy.append(2 * gy + ky)
             return torch.stack(out), torch.stack(cx), torch.stack(cy)
-
-        fpn = None
-        if p.pattern_removal:
-            ctx.progress(0.0, "measuring the fixed pattern of the sensor")
-            fpn, finfo = fixed_pattern(mm, used, coef, dev, H, W, p.pattern_frames,
-                                       lambda f: ctx.progress(0.1 * f, "measuring the fixed pattern of the sensor"))
-            ctx.metric("fixed_pattern", finfo)
-            ctx.log(finfo["msg"])
-            if fpn is not None:
-                g = fpn[0::2, 1::2].cpu().numpy()                                # one green plane
-                sg = 1.4826 * float(np.median(np.abs(g - np.median(g)))) + 1e-9
-                ctx.preview("fixed_pattern", np.clip(0.5 + g / (8 * sg), 0, 1))
 
         fr = torch.from_numpy(np.asarray(mm[ref], np.float32)).to(dev)
         if fpn is not None:
@@ -284,6 +490,18 @@ class Stack(Stage):
             norm[int(i)] = (Q, bkg_level)
             return norm[int(i)]
 
+        if p.method == "classic":                   # v2: debayered, interpolated (core/stack_classic.py), its hook
+            def load(i):
+                fr = torch.from_numpy(np.asarray(mm[i], np.float32)).to(dev)
+                return fr if fpn is None else torch.where(fr > VALID_MAX, fr, fr - fpn)
+            if nres is None:                        # the previous normalisation: frame_norm's backgrounds
+                for c_, i in enumerate(used):
+                    frame_norm(i, load(i))
+                    ctx.progress(0.05 * (c_ + 1) / len(used), "normalisation")
+            return stack_classic(ctx, p, load=load, coef=coef, used=used, weight=weight, W3=W3, nres=nres, norm=norm,
+                                 transp=transp, meta=meta, fws=fws, ch_of_k=ch_of_k, H=H, W=W, satval=satval,
+                                 dev=dev, t0=t0)
+
         def frame_model(i):
             """The frame normalised to the reference (value, ADU of the reference), where its samples land on the
             output grid (Xo, Yo), its saturated and bad samples, its additive sky difference in its own ADU (grad,
@@ -291,18 +509,31 @@ class Stack(Stage):
             fr = torch.from_numpy(np.asarray(mm[i], np.float32)).to(dev)
             if fpn is not None:
                 fr = torch.where(fr > VALID_MAX, fr, fr - fpn)
-            X, Y = poly_eval(coef[i], xx, yy)
-            Q, bkg_level = frame_norm(i, fr)
-            a = X / (W / 2) - 1.0
-            b = Y / (H / 2) - 1.0
-            terms = torch.stack([torch.ones_like(a), a, b, a * a, a * b, b * b])
-            Qs = torch.from_numpy(Q).to(dev, torch.float32)[chmap]
-            grad = (Qs.permute(2, 0, 1) * terms).sum(0)
+            if align is not None:                     # v2: the colour's correction of the block, before the polynomial
+                dx, dy = align.shift(i, xx, yy, chmap)
+                X, Y = poly_eval(coef[i], xx - dx, yy - dy)
+                del dx, dy
+            else:
+                X, Y = poly_eval(coef[i], xx, yy)
+            if nres is None:
+                Q, bkg_level = frame_norm(i, fr)
+                a = X / (W / 2) - 1.0
+                b = Y / (H / 2) - 1.0
+                terms = torch.stack([torch.ones_like(a), a, b, a * a, a * b, b * b])
+                Qs = torch.from_numpy(Q).to(dev, torch.float32)[chmap]
+                grad = (Qs.permute(2, 0, 1) * terms).sum(0)
+            else:                                     # v2: the background and the scale of each colour
+                fn = nres.frames[int(i)]
+                grad = nl.background_at(fn.Q, X, Y, chmap, W, H)
+                bkg_level = fn.sky
             sat = fr > VALID_MAX
             bad = torch.isnan(fr)
             near = sat | (fr > NEAR_SATURATION * satval)
             val = torch.where(sat, satval, fr)
-            val = (val - grad) / transp[i]
+            if nres is None:
+                val = (val - grad) / transp[i]
+            else:
+                val = (val - grad) / tscale(i)
             Xo, Yo = (X + 0.5) * S - 0.5, (Y + 0.5) * S - 0.5
             if chan_fix is not None:                  # each colour's own image placed on the green one
                 dx, dy = chan_fix.at(Xo, Yo, chmap)
@@ -312,6 +543,8 @@ class Stack(Stage):
         def deposit(num, den, val, Xo, Yo, w, keep):
             v = val[keep]
             xo, yo, c = Xo[keep], Yo[keep], chmap[keep]
+            if torch.is_tensor(w):                    # v2: a weight per sample (its colour's)
+                w = w[keep]
             jx0 = torch.floor(xo - h + 0.5)
             iy0 = torch.floor(yo - h + 0.5)
             for di in range(3):
@@ -328,68 +561,107 @@ class Stack(Stage):
                         den.index_add_(0, idx, ww[ok])
 
         chan_fix = None
-        # ---------------- pass 1: weighted mean (the first prediction)
-        num = torch.zeros(3 * Ho * Wo, device=dev)
-        den = torch.zeros(3 * Ho * Wo, device=dev)
-        for c_, i in enumerate(used):
-            val, Xo, Yo, sat, bad, _, _, _ = frame_model(i)
-            deposit(num, den, val, Xo, Yo, float(weight[i]), ~bad)
-            ctx.progress(0.3 * (c_ + 1) / len(used), f"pass 1: {c_ + 1}/{len(used)} frames")
-        model = Prediction(num, den, len(used), Ho, Wo, dev)
-        del num, den
-        # ---------------- the colours registered on each other: the offsets of the red and blue images of the stars
-        # from the green one (lateral chromatic aberration, atmospheric dispersion), measured on the first mean
-        chan_fix = ChannelOffsets.measure(model, float(satval.median()), S, float(np.median(fwhm)))
-        ctx.metric("channel_offsets", chan_fix.summary())
-        ctx.log(chan_fix.describe())
-        if chan_fix.applied:
-            model.shift_channels(chan_fix)
-        else:
-            chan_fix = None
+        hubble = p.rejection == "hubble"
+        model = None
+        if not hubble or chan_mode == "legacy":
+            # ---------------- pass 1: weighted mean (the first prediction; v2: only for the previous rejection or the
+            # previous colour registration, which is measured on it)
+            num = torch.zeros(3 * Ho * Wo, device=dev)
+            den = torch.zeros(3 * Ho * Wo, device=dev)
+            for c_, i in enumerate(used):
+                val, Xo, Yo, sat, bad, _, _, _ = frame_model(i)
+                deposit(num, den, val, Xo, Yo, wt(i), ~bad)
+                ctx.progress(0.3 * (c_ + 1) / len(used), f"pass 1: {c_ + 1}/{len(used)} frames")
+            model = Prediction(num, den, len(used), Ho, Wo, dev)
+            del num, den
+        if chan_mode == "legacy":
+            # ---------------- the colours registered on each other: the offsets of the red and blue images of the
+            # stars from the green one (lateral chromatic aberration, atmospheric dispersion), measured on the first mean
+            chan_fix = ChannelOffsets.measure(model, float(satval.median()), S, float(np.median(fwhm)))
+            chan_info = chan_fix.summary()
+            ctx.metric("channel_offsets", chan_info)
+            ctx.log(chan_fix.describe())
+            if chan_fix.applied:
+                if not hubble:                        # (the Hubble rejection does not judge against this mean)
+                    model.shift_channels(chan_fix)
+            else:
+                chan_fix = None
 
         def judge(i, model, kappa, edge, diag=None):
             """The samples of frame i rejected against the prediction ``model`` (``reject``)."""
             val, Xo, Yo, sat, bad, grad, _, near = frame_model(i)
             pr = model.sample(Xo, Yo, chmap)
-            hi, lo, inside = reject(val, pr, sat, bad, grad, chmap, float(transp[i]), p, kappa, edge, diag)
+            hi, lo, inside = reject(val, pr, sat, bad, grad, chmap, tscale(i), p, kappa, edge, diag)
             return val, Xo, Yo, bad, hi, lo, inside, near, sat
 
-        # ---------------- pass 2: the strong outliers (satellites, planes, cosmic rays, hot pixels) left out of the
-        # prediction, so that the final pass does not judge the other frames against a mean they pulled up or down
-        num = torch.zeros(3 * Ho * Wo, device=dev)
-        den = torch.zeros(3 * Ho * Wo, device=dev)
-        for c_, i in enumerate(used):
-            val, Xo, Yo, bad, hi, lo, _, _, _ = judge(i, model, CLEAN_FACTOR * p.kappa, False)
-            deposit(num, den, val, Xo, Yo, float(weight[i]), ~bad & ~hi & ~lo)
-            ctx.progress(0.3 + 0.3 * (c_ + 1) / len(used), f"pass 2: {c_ + 1}/{len(used)} frames")
-        model = model.cleaned(num, den)
-        del num, den
+        hpred = hpred_summary = None
+        if hubble:
+            # ---------------- pass 2 (v2, Hubble): the median of the frames' single drizzles, then the prediction
+            # (median, or minmed where 3 to 5 samples cover a point); bad samples stay out of the store (keep = ~bad)
+            from ..core import rejection_hubble as rh
+            if model is not None:
+                del model
+                model = None
+            pick = rh.median_frames(len(used), Ho, Wo)
+            store = rh.new_store(len(pick), Ho, Wo, device="cpu")
+            t_pick, offs = np.zeros(len(pick)), np.zeros((len(pick), 3))
+            for k, j in enumerate(pick):
+                val, Xo, Yo, sat, bad, grad, _, _ = frame_model(used[j])
+                rh.add_to_store(store, k, val, Xo, Yo, chmap, ~bad, S, PIX)
+                t_pick[k], offs[k] = frame_scale_offset(int(used[j]), transp, norm, nres)
+                ctx.progress(0.3 * (k + 1) / len(pick), f"median: {k + 1}/{len(pick)} frames")
+            hpred = rh.build_prediction(store, t_pick, offs, p.gain, p.read_noise, device=dev)
+            del store
+            hpred_summary = hpred.summary
+            ctx.log(hpred.describe())
+        else:
+            # ---------------- pass 2: the strong outliers (satellites, planes, cosmic rays, hot pixels) left out of
+            # the prediction, so that the final pass does not judge the other frames against a mean they pulled up or
+            # down
+            num = torch.zeros(3 * Ho * Wo, device=dev)
+            den = torch.zeros(3 * Ho * Wo, device=dev)
+            for c_, i in enumerate(used):
+                val, Xo, Yo, bad, hi, lo, _, _, _ = judge(i, model, CLEAN_FACTOR * p.kappa, False)
+                deposit(num, den, val, Xo, Yo, wt(i), ~bad & ~hi & ~lo)
+                ctx.progress(0.3 + 0.3 * (c_ + 1) / len(used), f"pass 2: {c_ + 1}/{len(used)} frames")
+            model = model.cleaned(num, den)
+            del num, den
 
         # ---------------- pass 3: rejection against the cleaned prediction + half-stacks
         accA = [torch.zeros(3 * Ho * Wo, device=dev) for _ in range(2)]
         accB = [torch.zeros(3 * Ho * Wo, device=dev) for _ in range(2)]
         rej_tot = tested = 0
-        rmap = RejectionMap(Ho, Wo, dev)
+        rmap = rh.RejectionTally(Ho, Wo, dev) if hubble else RejectionMap(Ho, Wo, dev)
         rej_frames: dict[int, tuple[int, int, int]] = {}
         judged: dict[int, dict] = {}
         near_acc = torch.zeros(3 * Ho * Wo, device=dev)     # the weight of the samples near saturation
         clip_acc = torch.zeros(3 * Ho * Wo, device=dev)     # and of the clipped ones
         for c_, i in enumerate(used):
-            rows: list = []
-            val, Xo, Yo, bad, hi, lo, inside, near, sat = judge(i, model, p.kappa, True, rows)
-            judged[int(i)] = rows[0]
+            if hubble:                                # v2: driz_cr against the median / minmed prediction
+                val, Xo, Yo, sat, bad, grad, _, near = frame_model(i)
+                r = rh.driz_cr(val, Xo, Yo, chmap, hpred, tscale(i), grad, p.gain, p.read_noise, exempt=sat)
+                hi, lo = r.high, r.low
+                judged[int(i)] = {k: r.counts[k] for k in ("tested", "untested", "exempt", "z_spread")}
+                rej_frames[int(i)] = rmap.add(Xo, Yo, r)
+                del r
+            else:
+                rows: list = []
+                val, Xo, Yo, bad, hi, lo, inside, near, sat = judge(i, model, p.kappa, True, rows)
+                judged[int(i)] = rows[0]
+                rej_tot += int((hi | lo).sum())
+                tested += int((inside & ~bad).sum())
+                rej_frames[int(i)] = rmap.add(Xo, Yo, hi, lo)
             keep = ~bad & ~hi & ~lo
-            rej_tot += int((hi | lo).sum())
-            tested += int((inside & ~bad).sum())
-            rej_frames[int(i)] = rmap.add(Xo, Yo, hi, lo)
             acc = accA if (i // p.half_block) % 2 == 0 else accB
-            deposit(acc[0], acc[1], val, Xo, Yo, float(weight[i]), keep)
+            w_i = wt(i)
+            deposit(acc[0], acc[1], val, Xo, Yo, w_i, keep)
             if near.any():
-                deposit(near_acc, None, near.float(), Xo, Yo, float(weight[i]), keep & near)
-                deposit(clip_acc, None, sat.float(), Xo, Yo, float(weight[i]), keep & sat)
+                deposit(near_acc, None, near.float(), Xo, Yo, w_i, keep & near)
+                deposit(clip_acc, None, sat.float(), Xo, Yo, w_i, keep & sat)
+            pct = rmap.summary()["rejected_pct"] if hubble else 100 * rej_tot / max(tested, 1)
             ctx.progress(0.6 + 0.4 * (c_ + 1) / len(used), f"pass 3: {c_ + 1}/{len(used)} frames, "
-                                                          f"rejected {100 * rej_tot / max(tested, 1):.2f} %")
-        del model
+                                                          f"rejected {pct:.2f} %")
+        del model, hpred
 
         def finish(a):
             img = (a[0] / a[1].clamp(min=1e-12)).view(3, Ho, Wo)
@@ -410,28 +682,72 @@ class Stack(Stage):
         ctx.save(SATURATION, torch.ceil(255 * frac.clamp(0, 1)).to(torch.uint8).cpu().numpy())
         ctx.metric("near_saturation_pct", round(100 * float((frac[0] > 0).float().mean()), 4))
         del near_acc, clip_acc, frac
-        rej_pct = 100 * rej_tot / max(tested, 1)          # of the samples landing on the stack (the others: no data)
-        ctx.metric("rejected_pct", round(rej_pct, 3))
-        ctx.save_json("drz_meta.json", {"scale": S, "pixfrac": PIX, "n": int(len(used)), "reject_pct": rej_pct,
-                                        "width": Wo, "height": Ho, "sensor": [W, H]})
+        rsum = None
+        if hubble:                                  # v2: the rates in % of the samples landing on the stack
+            rsum = rmap.summary()
+            rej_pct = rsum["rejected_pct"]
+            ctx.metric("rejected_pct", round(rej_pct, 3))
+            ctx.metric("untested_pct", round(rsum["untested_pct"], 3))
+        else:
+            rej_pct = 100 * rej_tot / max(tested, 1)      # of the samples landing on the stack (the others: no data)
+            ctx.metric("rejected_pct", round(rej_pct, 3))
+        meta_d = {"scale": S, "pixfrac": PIX, "n": int(len(used)), "reject_pct": rej_pct,
+                  "width": Wo, "height": Ho, "sensor": [W, H]}
+        cov = None
+        if p.v2 or chan_mode != "legacy":           # v2: the coverage per colour, measured and as the rule estimates it
+            cov = coverage_record(full[1].view(3, Ho, Wo), rmap.f, coef[used], W, H, info["cfa"], S, PIX,
+                                  weight[used], reg, p.scale_rule == "coverage")
+            np.savez_compressed(ctx.out(COVERAGE), **cov.pop("arrays"))
+            ctx.metric("coverage_variation_pct", [None if v is None else round(100 * v, 1) for v in cov["measured_cv"]])
+            meta_d["switches"] = {**p.switches(), "channel_align": chan_mode}
+        ctx.save_json("drz_meta.json", meta_d)
         rmap.save(ctx.out(REJECTION))
         in_a = {int(i): (int(i) // p.half_block) % 2 == 0 for i in used}
-        w_a = float(sum(weight[i] for i in used if in_a[int(i)]))
-        w_b = float(sum(weight[i] for i in used if not in_a[int(i)]))
+        if W3 is None:
+            w_a = float(sum(weight[i] for i in used if in_a[int(i)]))
+            w_b = float(sum(weight[i] for i in used if not in_a[int(i)]))
+        else:                                       # v2: the weights of each colour
+            w_a = W3[[int(i) for i in used if in_a[int(i)]]].sum(0)
+            w_b = W3[[int(i) for i in used if not in_a[int(i)]]].sum(0)
         frames_d = []
         for i in used:
-            q, sky = norm[int(i)]
             lo, hi_n, outside = rej_frames.get(int(i), (0, 0, 0))
-            frames_d.append({"index": int(i), "path": meta[i]["path"], "weight": float(weight[i]),
-                             "transparency": float(transp[i]), "scale": [float(1.0 / transp[i])] * 3,
-                             "offset": [float(v) for v in q[:, 0]], "gradient": q.tolist(), "sky": sky.tolist(),
-                             "half": "A" if in_a[int(i)] else "B", "rejected_low": lo, "rejected_high": hi_n,
-                             "rejected_outside": outside, **judged.get(int(i), {})})
+            if nres is None:
+                q, sky = norm[int(i)]
+                nd = {"scale": [float(1.0 / transp[i])] * 3, "offset": [float(v) for v in q[:, 0]],
+                      "gradient": q.tolist(), "sky": sky.tolist()}
+            else:                                   # v2: the per-colour normalisation (scale: 1 / the divisor)
+                nd = nres.frames[int(i)].as_dict()
+                nd["divisor"] = nd.pop("scale")
+                nd["scale"] = [float(1.0 / s) for s in nres.frames[int(i)].scale]
+            rec = {"index": int(i), "path": meta[i]["path"], "weight": float(weight[i]),
+                   "transparency": float(transp[i]), **nd,
+                   "half": "A" if in_a[int(i)] else "B", "rejected_low": lo, "rejected_high": hi_n,
+                   "rejected_outside": 0 if hubble else outside, **judged.get(int(i), {})}
+            if W3 is not None:
+                rec["weights_rgb"] = [float(v) for v in W3[i]]
+            frames_d.append(rec)
         noise = {c: (v if np.isfinite(v) else None) for c, v in halves_noise(halves[0], halves[1], w_a, w_b).items()}
-        ctx.save_json(DIAG, {"frames": frames_d, "noise": noise,
-                             "noise_sample_step": step, "half_weights": [w_a, w_b], "kappa": p.kappa,
-                             "rejection": {"file": REJECTION, "factor": rmap.f, "grid": [Wo, Ho],
-                                           "shape": [rmap.Hr, rmap.Wr]}})
+        diag = {"frames": frames_d, "noise": noise, "noise_sample_step": step,
+                "half_weights": [w_a, w_b] if W3 is None else [w_a.tolist(), w_b.tolist()], "kappa": p.kappa,
+                "rejection": {"file": REJECTION, "factor": rmap.f, "grid": [Wo, Ho], "shape": [rmap.Hr, rmap.Wr]}}
+        if p.v2 or chan_mode != "legacy":           # v2: what each switch did
+            diag["switches"] = meta_d["switches"]
+            diag["rejection"]["method"] = p.rejection
+            if rsum is not None:
+                diag["rejection"].update(summary=rsum, prediction=hpred_summary)
+            if fws is not None:
+                diag["selection"] = fws.as_dict()
+            if nres is not None:
+                diag["normalisation"] = {**nres.as_dict(), "reason": {"template": nres.diagnostic["reason"],
+                                                                      "args": nres.diagnostic["params"]}}
+            diag["coverage"] = cov
+            if chan_mode == "per_block":
+                info_c = dict(align.summary()) if align is not None else {"applied": False}
+            else:
+                info_c = dict(chan_info)
+            diag["channel_alignment"] = {**info_c, "mode": chan_mode}
+        ctx.save_json(DIAG, diag)
         del halves
         ctx.log(f"drizzle {Wo}x{Ho} from {len(used)} frames in {(time.time() - t0) / 60:.1f} min, "
                 f"{rej_pct:.2f} % pixels rejected")
@@ -725,30 +1041,43 @@ def halves_noise(A: np.ndarray, B: np.ndarray, w_a: float, w_b: float) -> dict[s
     half-stacks (3, h, w), zero where empty: A - B holds no signal, only the noise of both halves, and the full stack,
     their weighted mean, has sigma(A - B) x sqrt(w_a w_b) / (w_a + w_b) (the frame weights are inverse variances).
     NaN without two halves."""
-    f = float(np.sqrt(w_a * w_b) / (w_a + w_b)) if w_a > 0 and w_b > 0 else float("nan")
     out = {}
+    if np.ndim(w_a) == 0 and np.ndim(w_b) == 0:
+        f = float(np.sqrt(w_a * w_b) / (w_a + w_b)) if w_a > 0 and w_b > 0 else float("nan")
+        fs = [f] * 3
+    else:                                       # stacking v2: the weights of each colour
+        fs = [float(np.sqrt(a * b) / (a + b)) if a > 0 and b > 0 else float("nan")
+              for a, b in zip(np.broadcast_to(np.asarray(w_a, float), 3), np.broadcast_to(np.asarray(w_b, float), 3))]
     for c, name in enumerate("RGB"):
+        f = fs[c]
         a, b = np.asarray(A[c], np.float64), np.asarray(B[c], np.float64)
         d = (a - b)[(a != 0) & (b != 0) & np.isfinite(a) & np.isfinite(b)]
         out[name] = float(1.4826 * np.median(np.abs(d - np.median(d))) * f) if d.size else float("nan")
     return out
 
 
-def select_frames(transp, fwhm, rms, stats, min_transparency: float, max_fwhm_ratio: float, exclude=None,
-                  noise=None):
-    """Weight of every frame, (transparency / noise)^2 x sharpness, and the reason a frame is left out ('' = kept):
-    not aligned, excluded by hand (``exclude``: a boolean per frame), transparency below ``min_transparency`` x the
-    best frames, stars larger than ``max_fwhm_ratio`` x the median. The thresholds are measured on all the frames,
-    so excluding a frame by hand never changes the fate of another. The noise: the registration's (``noise``, reg.npz
-    since version 2: the pixel noise alone), else the spread of the frame's pixels (``stats``, frame_stats.npy:
-    the nebulae and stars of the field in it too)."""
-    n = len(transp)
+def legacy_weights(transp, fwhm, rms, stats, noise=None) -> tuple[np.ndarray, np.ndarray]:
+    """The previous version's weight of every aligned frame, (transparency / noise)^2 x sharpness, the best = 1 (0 when
+    not aligned), before any frame is left out; and the noise it used: the registration's (``noise``, reg.npz since
+    version 2: the pixel noise alone), else the spread of the frame's pixels (``stats``, frame_stats.npy: the nebulae
+    and stars of the field in it too)."""
     sig = stats[:, :, 1].mean(1)
     if noise is not None and np.isfinite(noise).all() and (np.asarray(noise) > 0).all():
         sig = np.asarray(noise, float)
     weight = (transp / sig) ** 2 * (np.percentile(fwhm, 5) / fwhm) ** 2
     weight = np.where(np.isfinite(rms) & np.isfinite(weight), weight, 0.0)
     weight /= weight.max()
+    return weight, sig
+
+
+def select_frames(transp, fwhm, rms, stats, min_transparency: float, max_fwhm_ratio: float, exclude=None,
+                  noise=None):
+    """Weight of every frame, (transparency / noise)^2 x sharpness (``legacy_weights``), and the reason a frame is
+    left out ('' = kept): not aligned, excluded by hand (``exclude``: a boolean per frame), transparency below
+    ``min_transparency`` x the best frames, stars larger than ``max_fwhm_ratio`` x the median. The thresholds are
+    measured on all the frames, so excluding a frame by hand never changes the fate of another."""
+    n = len(transp)
+    weight, _ = legacy_weights(transp, fwhm, rms, stats, noise)
     tmin = min_transparency * np.percentile(transp[np.isfinite(rms)], 90)
     reasons = np.full(n, "", dtype=object)
     reasons[~np.isfinite(rms)] = "not aligned"
@@ -767,6 +1096,294 @@ def excluded_mask(paths: list[str], exclude: list[str]) -> np.ndarray:
         return os.path.normcase(os.path.normpath(str(f)))
     ex = {norm(f) for f in exclude}
     return np.array([norm(f) in ex for f in paths], bool)
+
+
+# ---------------------------------------------------------------------------------------------- stacking v2
+
+CLASSIC_NOT_YET = ("The Classic stacking method (debayering, then registration by interpolation) is not available "
+                   "yet: set the stacking method to Bayer drizzle.")
+
+
+def classic_missing() -> list[str]:
+    """The modules of the Classic method not there yet (CLASSIC_MODULES in astro_gpu/core)."""
+    return [m for m in CLASSIC_MODULES if importlib.util.find_spec(f"..core.{m}", __package__) is None]
+
+
+def stack_classic(ctx: Context, p: StackParams, *, load, coef, used, weight, W3, nres, norm, transp, meta, fws,
+                  ch_of_k, H: int, W: int, satval, dev, t0: float) -> None:
+    """The hook of the Classic method (``method = classic``, docs/spec/STACKING.md point 1: RCD debayering, Lanczos-4
+    registration with Siril's clamping, WBPP's rejection by frame count; core/stack_classic.py and the modules it
+    uses). ``Stack.run`` calls it once the part both methods share is done: the frames ``used`` with their weights
+    (``weight`` per frame, ``W3`` per colour or None), the normalisation (``nres``, core/normalize_local's, or the
+    previous one: ``norm`` {frame: (Q, sky)} of frame_norm and ``transp``), ``load(i)`` the calibrated CFA frame. It
+    writes what the drizzle writes (drz_full / drz_A / drz_B / drz_weight.npy, saturation.npy, drz_meta.json,
+    rejection.npz, diagnostics.json), at the sensor's resolution, so that the stages after it read them unchanged.
+    Without the Classic modules it says so (StageError)."""
+    if classic_missing():
+        raise StageError(CLASSIC_NOT_YET)
+    from ..core import stack_classic as sc
+    nm = sc.Norm.of(nres, len(transp)) if nres is not None else sc.Norm.from_drizzle(norm, transp)
+    cp = sc.ClassicParams(debayer=p.classic_debayer, interpolation=p.classic_interpolation,
+                          clamping=p.classic_clamping, rejection=p.classic_rejection, half_block=p.half_block)
+    res = sc.stack_classic(load, coef, bad=None, norm=nm, weights=W3 if W3 is not None else weight, params=cp,
+                           device=dev, used=used, ch_of_k=ch_of_k, H=H, W=W, sat_level=satval,
+                           progress=lambda f, msg: ctx.progress(0.05 + 0.95 * f, msg))
+    for name, a in res.arrays().items():
+        ctx.save(name, a)
+    res.save_rejection(ctx.out(REJECTION))
+    ctx.metric("grid", [W, H])
+    ctx.metric("rejected_pct", round(float(res.rejected_pct), 3))
+    ctx.metric("near_saturation_pct", round(100 * float((res.saturation[0] > 0).mean()), 4))
+    switches = {**p.switches(), "channel_align": "legacy", **{k: getattr(p, k) for k in CLASSIC_CHOICES}}
+    ctx.save_json("drz_meta.json", {**res.meta(), "switches": switches})
+    frames_d = []
+    for f in res.frames:                    # the drizzle's record of each frame (its normalisation), and Classic's
+        i = int(f["index"])
+        if nres is None:
+            q, sky = norm[i]
+            nd = {"scale": [float(1.0 / transp[i])] * 3, "offset": [float(v) for v in q[:, 0]],
+                  "gradient": q.tolist(), "sky": sky.tolist()}
+        else:
+            nd = nres.frames[i].as_dict()
+            nd["divisor"] = nd.pop("scale")
+            nd["scale"] = [float(1.0 / s) for s in nres.frames[i].scale]
+        frames_d.append({"index": i, "path": meta[i]["path"], "weight": float(weight[i]),
+                         "transparency": float(transp[i]), **nd, **f})
+    diag = {**res.diagnostics(), "frames": frames_d, "kappa": p.kappa, "switches": switches}
+    diag["rejection"].update(method="classic", classic=res.choice.method,
+                             reason_template={"template": res.choice.template, "args": res.choice.args})
+    if fws is not None:
+        diag["selection"] = fws.as_dict()
+    if nres is not None:
+        diag["normalisation"] = {**nres.as_dict(), "reason": {"template": nres.diagnostic["reason"],
+                                                              "args": nres.diagnostic["params"]}}
+    ctx.save_json(DIAG, diag)
+    ctx.log(f"Classic stack {W}x{H} from {len(used)} frames in {(time.time() - t0) / 60:.1f} min: "
+            f"{res.choice.reason}; {res.rejected_pct:.2f} % pixels rejected")
+    ctx.preview("stack", asinh_preview(res.full))
+
+
+def _given(ctx, stage: str) -> dict:
+    """The values the user (or the workflow) set for a stage, as an ``auto()`` may read them: none without a project."""
+    ov = getattr(getattr(ctx, "project", None), "overrides", None)
+    return dict(ov(stage) or {}) if callable(ov) else {}
+
+
+def _files(z) -> list[str]:
+    return list(getattr(z, "files", None) or z.keys())
+
+
+def _num(x) -> float | None:
+    return float(x) if x is not None and np.isfinite(x) else None
+
+
+def english(template: str, args: dict | None) -> str:
+    """A reason (a template of core/frame_weights.py or core/normalize_local.py and its arguments) in English."""
+    return template if args is None else template.format(**args)
+
+
+def used_metrics(ctx: Context, used, Wo: int, Ho: int) -> None:
+    texp = ctx.metric_of("inventory", "exposure_s") or 0
+    ctx.metric("frames_used", int(len(used)))
+    ctx.metric("integration_used_h", round(len(used) * texp / 3600, 2))
+    ctx.metric("grid", [Wo, Ho])
+
+
+def v2_fwhm(reg, fwhm) -> tuple[np.ndarray, np.ndarray | None, str]:
+    """(star size per frame, roundness per frame or None, where they come from) for stacking v2: register's Moffat fit
+    when it made one (``fwhm_method = moffat``), else its 2 x 2 measures."""
+    if "fwhm_moffat" in _files(reg):
+        return reg["fwhm_moffat"].astype(float), reg["roundness_moffat"].astype(float), "moffat"
+    rnd = reg["roundness"].astype(float) if "roundness" in _files(reg) else None
+    return np.asarray(fwhm, float), rnd, "registration"
+
+
+def drizzle_suggestion(reg, info: dict, use=None, weights=None):
+    """core/coverage.suggest_drizzle on the frames ``use`` (default: the aligned ones; ``weights``: per frame, all n),
+    with register's Moffat FWHM (their median; NaN without a Moffat fit: 'star size not measured', scale 1)."""
+    from ..core.coverage import suggest_drizzle
+    ok = np.isfinite(reg["rms"]) if use is None else np.asarray(use, bool)
+    f = float("nan")
+    if "fwhm_moffat" in _files(reg):
+        fm = reg["fwhm_moffat"][ok]
+        fm = fm[np.isfinite(fm)]
+        if fm.size:
+            f = float(np.median(fm))
+    return suggest_drizzle(reg["coef"][ok], int(info["width"]), int(info["height"]), info["cfa"], f,
+                           weights=None if weights is None else np.asarray(weights, float)[ok])
+
+
+def _auto_dict(a: Auto) -> dict:
+    return {"value": a.value, "template": a.template, "args": a.args, "reason": a.reason}
+
+
+class FramesV2:
+    """The frames of a stacking-v2 stack: the weight of each (``weight``: frames.json's, the mean of its colours;
+    ``weights_rgb`` (n, 3) per colour, None for the previous weighting), the reason each left-out frame has (English,
+    ``reasons``; ``codes``; ``exclusions``: per frame, [{code, template, args}] to translate), and what
+    core/frame_weights did (``fw``)."""
+
+    def __init__(self, p, weight, reasons, codes, weights_rgb, exclusions, fw, fwhm_moffat, measures):
+        self.selection, self.weighting, self.transparency_filter = p.selection, p.weighting, p.selection_transparency
+        self.weight, self.reasons, self.codes, self.weights_rgb = weight, reasons, codes, weights_rgb
+        self.exclusions, self.fw, self.fwhm_moffat, self.measures = exclusions, fw, fwhm_moffat, measures
+
+    @property
+    def weights3(self) -> np.ndarray:
+        return self.weights_rgb if self.weights_rgb is not None else np.repeat(self.weight[:, None], 3, 1)
+
+    def counts(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for rows in self.exclusions.values():
+            for code in {r["code"] for r in rows}:
+                out[code] = out.get(code, 0) + 1
+        return out
+
+    def describe(self) -> str:
+        sel = {"legacy": "previous thresholds", "sota": "k x sigma filters"}[self.selection]
+        if self.selection == "sota" and self.transparency_filter == "off":
+            sel += " (no transparency filter)"
+        return (f"frames: {int((self.weight > 0).sum())} of {len(self.weight)} kept ({sel}); weights: {self.weighting}; "
+                f"star size from {self.measures['fwhm']}")
+
+    def as_dict(self) -> dict:
+        d = {"selection": self.selection, "weighting": self.weighting, "transparency_filter": self.transparency_filter,
+             "measures": self.measures, "kept": int((self.weight > 0).sum()),
+             "excluded": {str(i): rows for i, rows in sorted(self.exclusions.items())}}
+        if self.fw is not None:
+            d["frame_weights"] = self.fw.as_dict()
+            d["auto"] = {k: _auto_dict(a) for k, a in self.fw.auto.items()}
+            d["suggestion"] = _auto_dict(self.fw.suggestion)
+        return d
+
+
+def v2_frames(p: StackParams, reg, transp, fwhm, rms, stats, ch_of_k, excl, weight0, reasons0, nres,
+              given: bool = False) -> FramesV2:
+    """Stacking v2's frame selection and weights (core/frame_weights.py), each behind its switch.
+
+    ``selection = sota``: Siril's k x sigma filters (2.5 on FWHM, roundness and transparency; transparency off with
+    ``selection_transparency = off``) and WBPP's minimum weight, on the per-colour transparency and noise of the
+    normalisation (``nres``) when it was made, else on the registration's; otherwise (or when a selection block gave
+    the frames, ``given``) the previous selection (``weight0``, ``reasons0``). ``weighting``: noise, sharp or none per
+    colour; legacy keeps the previous formula (``legacy_weights``), the minimum weight then tested on that formula
+    (Annis et al., the "sharp" scheme without the guard). A frame the normalisation could not measure is left out
+    (no measure). FWHM and roundness: register's Moffat fit when there is one."""
+    from ..core.frame_weights import DEFAULT_FILTERS, MIN_WEIGHT, NO_FILTERS, NO_MEASURE, planes_to_colours, weigh_frames
+    n = len(transp)
+    aligned = np.isfinite(rms)
+    f_sel, r_sel, src = v2_fwhm(reg, fwhm)
+    raw, sig = legacy_weights(transp, fwhm, rms, stats, reg["noise"] if "noise" in _files(reg) else None)
+    if nres is not None:
+        ok = nres.ok
+        T = np.where(ok[:, None], nres.scale, np.nan)
+        S = np.where(ok[:, None], nres.noise, np.nan)
+    else:
+        T, S = np.asarray(transp, float), sig
+    B = planes_to_colours(stats[:, :, 0], ch_of_k)
+    measures = {"fwhm": src, "transparency": "normalisation" if nres is not None else "registration"}
+    exclusions: dict[int, list] = {}
+
+    def note(i, code, template, args=None):
+        exclusions.setdefault(int(i), []).append({"code": code, "template": template, "args": args})
+
+    fw = None
+    if p.selection == "sota" and not given:
+        filters = dict(DEFAULT_FILTERS)
+        if p.selection_transparency == "off":
+            filters["transparency"] = ""
+        scheme = p.weighting if p.weighting != "legacy" else "sharp"
+        fw = weigh_frames(T, S, f_sel, r_sel, B, aligned=aligned, exclude=excl, weighting=scheme, filters=filters,
+                          min_weight=MIN_WEIGHT, guard=p.weighting != "legacy")
+        kept = fw.kept.copy()
+        for r in fw.exclusions:
+            note(r.frame, r.code, r.template, r.args)
+    else:
+        kept = np.asarray(weight0) > 0
+        for i in np.where(~kept)[0]:
+            r = str(reasons0[i])
+            note(i, LEGACY_CODES.get(r, "selection"), r or "frame selection")
+    if p.weighting == "legacy":
+        W3 = None
+        weight = np.where(kept, raw, 0.0)
+    elif fw is not None:
+        W3, weight = fw.weights.copy(), fw.frame_weight.copy()
+    else:
+        fw = weigh_frames(T, S, f_sel, r_sel, B, aligned=aligned, exclude=aligned & ~kept, weighting=p.weighting,
+                          filters=NO_FILTERS, min_weight=0.0)
+        W3, weight = fw.weights.copy(), fw.frame_weight.copy()
+        for i in np.where(kept & ~fw.kept)[0]:      # kept by the selection, but nothing to weigh it with
+            note(i, "no_measure", NO_MEASURE)
+        kept &= fw.kept
+    if nres is not None:                            # not measured by the normalisation: it cannot be normalised
+        for i in np.where(kept & ~nres.ok)[0]:
+            if not any(r["code"] == "no_measure" for r in exclusions.get(int(i), [])):
+                note(i, "no_measure", NO_MEASURE)
+        kept &= nres.ok
+    weight = np.where(kept, weight, 0.0)
+    if W3 is not None:
+        W3 = np.where(kept[:, None], W3, 0.0)
+    reasons = np.array(["; ".join(english(r["template"], r["args"]) for r in exclusions.get(i, []))
+                        for i in range(n)], dtype=object)
+    codes = np.array([",".join(r["code"] for r in exclusions.get(i, [])) for i in range(n)], dtype=object)
+    fm = reg["fwhm_moffat"].astype(float) if src == "moffat" else None
+    return FramesV2(p, weight, reasons, codes, W3, exclusions, fw, fm, measures)
+
+
+def frame_scale_offset(i: int, transp, norm: dict, nres) -> tuple[float, np.ndarray]:
+    """What the Hubble prediction needs of a stored frame: its photometric scale (the transparency, or the mean of
+    the normalisation's per-colour scales: rejection_hubble.build_prediction takes one per frame) and its additive sky
+    difference per colour (frame ADU, the constant term of its background)."""
+    if nres is None:
+        return float(transp[i]), np.asarray(norm[int(i)][0][:, 0], float)
+    fn = nres.frames[int(i)]
+    return float(np.mean(fn.scale)), np.asarray(fn.Q[:, 0], float)
+
+
+def reduce_map(a: np.ndarray, f: int) -> np.ndarray:
+    """(C, H, W) reduced by a whole factor ``f`` (the rejection maps' grid): the mean of each f x f block (of its
+    pixels inside the image), float32."""
+    a = np.asarray(a, np.float32)
+    if f <= 1:
+        return a.copy()
+    C, H, W = a.shape
+    Hr, Wr = -(-H // f), -(-W // f)
+    out = np.empty((C, Hr, Wr), np.float32)
+    cnt = np.zeros((Hr, Wr), np.float32)
+    ones = np.ones((H, W), np.float32)
+    pad = ((0, Hr * f - H), (0, Wr * f - W))
+    cnt[:] = np.pad(ones, pad).reshape(Hr, f, Wr, f).sum((1, 3))
+    for c in range(C):
+        out[c] = np.pad(a[c], pad).reshape(Hr, f, Wr, f).sum((1, 3), dtype=np.float64) / cnt
+    return out
+
+
+def coverage_record(wmap: torch.Tensor, f: int, coef_used, W: int, H: int, cfa: str, S: float, PIX: float,
+                    w_used, reg, rule: bool) -> dict:
+    """The coverage of a stack for Inspect and the bench (core/coverage.py): its weight map ``wmap`` (3, Ho, Wo) per
+    colour reduced by ``f`` and its variation (std / median, DrizzlePac's statistic, without 10 % margins), the fast
+    estimate at the scale and drop used, and with ``rule`` the coverage rule's advice (scale, drop, method).
+    ``arrays`` go to coverage.npz, the rest to diagnostics.json."""
+    from ..core import coverage as cv
+    w = wmap.cpu().numpy()
+    measured = cv.map_variation(w)
+    red = reduce_map(w, f)
+    del w
+    est = cv.coverage(coef_used, W, H, cfa, S, PIX, weights=w_used)
+    rec = {"factor": int(f), "scale": float(S), "pixfrac": float(PIX), "limit": cv.LIMIT,
+           "measured_cv": [measured[c] for c in cv.CHANNELS],
+           "estimate_cv": [est.cv.get(c) for c in cv.CHANNELS], "estimate_cv_max": [est.cv_max.get(c) for c in cv.CHANNELS]}
+    rec["measured_cv"] = [_num(v) for v in rec["measured_cv"]]
+    rec["estimate_cv"] = [_num(v) for v in rec["estimate_cv"]]
+    rec["estimate_cv_max"] = [_num(v) for v in rec["estimate_cv_max"]]
+    if rule:
+        s = drizzle_suggestion(reg, {"width": W, "height": H, "cfa": cfa})
+        rec["rule"] = {"fwhm": _num(s.fwhm), "scale": _auto_dict(s.scale), "pixfrac": _auto_dict(s.pixfrac),
+                       "method": _auto_dict(s.method)}
+    rec["arrays"] = {"measured": red, "variation": np.array([np.nan if v is None else v for v in rec["measured_cv"]]),
+                     "estimate_map": np.stack([est.cv_map.get(c, np.full(est.cv_map["R"].shape, np.nan))
+                                               for c in cv.CHANNELS]).astype(np.float32),
+                     "factor": int(f)}
+    return rec
 
 
 def fixed_pattern(mm, used, coef, dev, H, W, nframes, progress=lambda f: None):
