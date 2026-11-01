@@ -573,6 +573,43 @@ Newest entries at the bottom. Times are local.
   normalize_local and channel_align, in new files only. Hourly heartbeat recreated for this plan.
   - Estimate: phase 1 by about 22:00–23:00; integration about 1 h; crossed Express bench about 2 h; Base and table
     about 1.5 h. **Results expected tomorrow early morning.**
+  - frame_weights done and committed:
+    - inverse variance per colour, the Annis option, the guard and a 0.05 minimum;
+    - filters at k = 2.5 σ in Siril's form (the only shipped value: Siril's Seestar script, `-filter-round=2.5k`);
+    - on a clear night, 2.5 σ on transparency drops frames that still carry about 88 % of the best weight (Zackay &
+      Ofek warn against it);
+    - **phase 3 adds a configuration "transparency filter off"**;
+    - integration must add the French of REASON_TEMPLATES to engine.json.
+  - normalize_local done and committed:
+    - per-colour scales within 0.16 %, backgrounds matched within 0.12 σ (11 σ before);
+    - global option = Siril's IKSSlite (checked in Siril's code);
+    - it adds one pass over the frames before the stack;
+    - aperture of 3 FWHM: a computed choice (under 1 % of the light lost), not a shipped default;
+    - its 2 fixtures take 2.4–5 s, so they go to level 3 at integration.
+  - channel_align done and committed:
+    - per block: 0.02–0.03 px error, against 0.23–0.32 px with one correction for the night (synthetic);
+    - Heart Base: 5 blocks of 49 min; red up to 0.73 px in a corner; the blue drift follows refraction (ratio 0.94,
+      site assumed to be France);
+    - measuring takes 0.18 s per frame;
+    - sources: Filippenko 1982, Edlén 1953, Meeus 1998, WBPP Separated RGB, ChannelMatch, Siril rgbalign.
+  - rejection_hubble done and committed:
+    - catches all cosmic rays and trails above 6 σ, and 798/800 hot pixels; 0 of 10,448 star samples rejected (36 %
+      without the slope term);
+    - clean data: 0.0064 % rejected, as expected from the thresholds (well under Siril's 0.1–0.5 % mark, since the
+      slope term absorbs the median's noise);
+    - minmed (3–5 samples) lets a dead pixel through, so `keep = ~bad` must stay;
+    - at scale 1.5 and 40 frames, R/B fall into minmed and 0.33 % of star samples are rejected;
+    - few frames: 8 % of samples untestable at 14 frames, 43 % at 6;
+    - speed: 11 s for 30 × 24 Mpx on the 4060 Ti (6.9 GB peak).
+  - psf_moffat and coverage done and committed (8f1a1a4):
+    - true FWHM: heart 1.69 px (the old measure read 3.97), seestar 1.78, iris 3.32, m51 5.21, m8 2.69, rosette 2.70;
+    - coverage rule on Express: 1× everywhere; **Classic advised for heart (22 %) and rosette (26 %)**; drizzle for
+      iris, m51, m8 and seestar.
+  - **Phase 1 done at 20:24.**
+  - The Classic path was not in phase 1, and the rule needs it: a 6th module agent (opus) writes it (RCD debayer,
+    Lanczos-4 with clamping, WBPP rejection by frame count), in new files.
+  - **Phase 2 dispatched (opus):** the five modules behind switches in stack.py and register.py, all defaults = the
+    old version bit for bit with the same keys, and a hook for method = classic.
 
 ### Queue for the end of P8 (engine unfrozen)
 1. Apply patches 1–3, run the tests and the 4-dataset non-regression, recompute only render_simple (Classic and Raw
