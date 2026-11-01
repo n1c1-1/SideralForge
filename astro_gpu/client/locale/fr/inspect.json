@@ -274,5 +274,6 @@
   "Siril (reference) · gradient removed": "Siril (référence) · gradient retiré",
   "Siril (reference) · colour-calibrated": "Siril (référence) · calibré en couleur",
   "Siril (reference) · final image": "Siril (référence) · image finale",
-  "Leaves every suspicious frame out of the master in one go: Calibration is then computed again. Include takes a frame back; a folder left empty comes back with Add a folder.": "Retire du master toutes les images suspectes d'un coup : la calibration est alors recalculée. Inclure remet une image ; un dossier vidé revient avec Ajouter un dossier."
+  "Leaves every suspicious frame out of the master in one go: Calibration is then computed again. Include takes a frame back; a folder left empty comes back with Add a folder.": "Retire du master toutes les images suspectes d'un coup : la calibration est alors recalculée. Inclure remet une image ; un dossier vidé revient avec Ajouter un dossier.",
+  "Shown with the channels linked, from zero to its highest value: the colours are the model's own, not stretched apart. Untick Linked channels to see the shape of each channel.": "Affiché canaux liés, de zéro à sa valeur la plus haute : les couleurs sont celles du modèle, sans écart exagéré. Décochez Canaux liés pour voir la forme de chaque canal."
 }

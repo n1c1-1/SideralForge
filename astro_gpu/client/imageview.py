@@ -154,6 +154,10 @@ class ViewImage:
     stretched: bool = False
     #: Neutral sky at first: None follows ``camera``; False shows a camera-colour image as it is (its cast and all)
     neutral: bool | None = None
+    #: what the image is, for its automatic stretch (``stretch.auto_for``): "" or "lights" (a light, a stack), "darks",
+    #: "bias", "flat_darks", "flats", or "model" (a sky model, a gradient surface, a star flat). "Same stretch for all
+    #: frames" keeps one stretch per kind, never across kinds.
+    kind: str = ""
 
     def identity(self):
         if self.key is not None:
@@ -391,9 +395,9 @@ def quick_thumbnail(vi: ViewImage, side: int = 160) -> np.ndarray:
     lv = sm.superpixel(arr, cfa) if arr.ndim == 2 and cfa else planar(arr)
     while max(lv.shape[1:]) > side * 2 and min(lv.shape[1:]) >= 4:
         lv = sm.reduce2(lv)
-    stats = sm.compute_stats(lv)
+    stats = sm.compute_stats(lv, smooth=lv)
     camera = vi.camera if vi.camera is not None else (bool(arr.ndim == 2 and cfa) or sm.looks_camera(stats))
-    st = sm.auto_stretch(stats, "mtf", True, camera)
+    st = sm.auto_for(stats, vi.kind, neutral=camera if sm.rule_of(vi.kind) == "light" else False)
     img = sm.render(sm.quantize(lv, stats.lo, stats.hi), sm.luts(st, stats))
     if img.ndim == 2:
         img = np.repeat(img[:, :, None], 3, axis=2)
@@ -418,7 +422,7 @@ def prepare(vi: ViewImage) -> Prepared:
         factor = 1
         cfa = ""
     levels = sm.pyramid(level0)
-    stats = sm.compute_stats(level0)
+    stats = sm.compute_stats(level0, smooth=levels[-1])
     return Prepared(vi, data, levels, factor, stats, cfa, wcs)
 
 
@@ -438,22 +442,31 @@ def thumbnail_of(prep: Prepared, st: sm.Stretch | None = None, side: int = 160) 
     return np.ascontiguousarray(img)
 
 
-def default_stretch(prep: Prepared, mode: str = "mtf", linked: bool = True, neutral: bool | None = None,
+def default_stretch(prep: Prepared, mode: str | None = None, linked: bool | None = None, neutral: bool | None = None,
                     vi: ViewImage | None = None) -> sm.Stretch:
-    """The automatic stretch of an image; ``vi``: how the caller describes it now (default: as when it was read)."""
-    if (vi or prep.vi).stretched and mode == "mtf" and neutral is None:
+    """The automatic stretch of an image, the one of its kind (``stretch.auto_for``); ``vi``: how the caller describes
+    it now (default: as when it was read). ``mode``, ``linked``, ``neutral``: None for the kind's own."""
+    v = vi or prep.vi
+    if v.stretched and (mode or "mtf") == "mtf" and neutral is None:
         c = prep.channels
-        white = (vi or prep.vi).white_level()
+        white = v.white_level()
         return sm.Stretch("linear", np.zeros(c), np.full(c, white / 2), np.full(c, white), np.ones(c), np.zeros(c),
                           True, False, False)
     if neutral is None:
-        v = vi or prep.vi
-        if v.neutral is not None:
+        if sm.rule_of(v.kind) != "light":
+            neutral = False                     # a calibration frame or a model: no sky to make grey
+        elif v.neutral is not None:
             neutral = bool(v.neutral)
         else:
             cam = v.camera
             neutral = bool(prep.cfa) or (cam if cam is not None else sm.looks_camera(prep.stats))
-    return sm.auto_stretch(prep.stats, mode, linked, neutral)
+    return sm.auto_for(prep.stats, v.kind, mode, linked, neutral)
+
+
+def kind_of(vi: ViewImage | None) -> str:
+    """The kind of an image for "Same stretch for all frames" (one stretch per kind): its ``kind``, or "lights"."""
+    k = str(vi.kind or "").lower() if vi is not None else ""
+    return "lights" if k in ("", "light") else k
 
 
 # ---------------------------------------------------------------------------------------------- the loader
@@ -1555,6 +1568,8 @@ class StretchPanel(QFrame):
         self.setEnabled(True)
         if prep.channels == 1:
             self.channel = -1
+        self.auto_b.setToolTip(_(sm.auto_text(self.vi.kind if self.vi is not None else "")).format(
+            k=number(sm.SHADOWS, 1)))
         self.set_stretch(st)
 
     def set_stretch(self, st: sm.Stretch):
@@ -1589,7 +1604,8 @@ class StretchPanel(QFrame):
         stats = self.prep.stats
         span = stats.hi - stats.lo
         dec = int(np.clip(4 - math.floor(math.log10(max(span, 1e-12))), 1, 6))
-        lo, hi = stats.lo - span, stats.hi + span
+        lo = min(stats.lo - span, float(np.min(self.st.black)))        # a model's black at zero shows as zero
+        hi = max(stats.hi + span, float(np.max(self.st.white)))
         for which, f in self.fields.items():
             f.blockSignals(True)
             f.setDecimals(dec)
@@ -1645,9 +1661,10 @@ class StretchPanel(QFrame):
         self.changed.emit(st.copy())
 
     def _auto_for(self, mode=None, linked=None, neutral=None) -> sm.Stretch:
+        """The automatic stretch of the image's kind, with the choices shown (or the ones given)."""
         st = self.st
-        return sm.auto_stretch(self.prep.stats, mode or st.mode, st.linked if linked is None else linked,
-                               st.neutral if neutral is None else neutral)
+        return sm.auto_for(self.prep.stats, self.vi.kind if self.vi is not None else "", mode or st.mode,
+                           st.linked if linked is None else linked, st.neutral if neutral is None else neutral)
 
     # ------------------------------------------------------------ the controls
     def reset(self):
@@ -2081,7 +2098,9 @@ class ImageView(QWidget):
         self._same = False
         self._frames: list[ViewImage] = []
         self._index = 0
-        self._lock = True
+        self._lock = False                        # "Same stretch for all frames": off, each frame its own stretch
+        self._locked: dict[str, sm.Stretch] = {}  # with it on: kind -> the stretch its frames are shown with
+        self._st_kind: str | None = None          # the kind of the image the stretch was made for
         self._units = "adu"
         self._syncing = False
         self._shown_at: float | None = None
@@ -2269,8 +2288,9 @@ class ImageView(QWidget):
         self.blink_b.toggled.connect(self._blink_toggled)
         row.addWidget(self.blink_b)
         self.lock_c = QCheckBox(_("Same stretch for all frames"))
-        self.lock_c.setToolTip(_("Keeps the stretch of the first frame shown, so that blinking shows what changes"))
-        self.lock_c.setChecked(True)
+        self.lock_c.setToolTip(_("Keeps the stretch of the frame shown for the next frames of the same kind, so that "
+                                 "blinking shows what changes. Off: each frame gets its own automatic stretch."))
+        self.lock_c.setChecked(False)
         self.lock_c.toggled.connect(self.set_lock_stretch)
         row.addWidget(self.lock_c)
         row.addSpacing(14)
@@ -2371,18 +2391,29 @@ class ImageView(QWidget):
     _cmp_failed = None
 
     def _show(self, prep: Prepared):
+        """Show a prepared image. Its stretch: the automatic one of its kind, computed for it (the mode and the linked
+        channels the user chose for the image before, when it was of the same kind); with "Same stretch for all
+        frames", the stretch the frames of its kind were shown with (each kind its own: a dark's stretch never shows a
+        flat)."""
         keep_view, keep_stretch = self._keep
         self._prep = prep
         old = self._st
-        if old is not None and (keep_stretch or (self._frames and self._lock)):
+        kind = kind_of(self._vi)
+        same = old is not None and self._st_kind == kind
+        locked = self._locked.get(kind) if self._frames and self._lock else None
+        if locked is not None:
+            st = locked.adapted(prep.channels)
+        elif same and keep_stretch and not self._frames:
             st = old.adapted(prep.channels)
-            if not self._lock and st.auto and self._frames:
-                st = sm.auto_stretch(prep.stats, st.mode, st.linked, st.neutral)
-        elif old is not None and old.auto:
-            st = default_stretch(prep, old.mode, old.linked if prep.channels > 1 else True, None, self._vi)
+        elif same and old.auto:
+            st = default_stretch(prep, old.mode, old.linked if prep.channels > 1 and old.channels > 1 else None, None,
+                                 self._vi)
         else:
             st = default_stretch(prep, vi=self._vi)
         self._st = st
+        self._st_kind = kind
+        if self._frames and self._lock and locked is None:
+            self._locked[kind] = st.copy()
         if self._main is not None:
             self._main.release()
         self._main = Display(prep, st)
@@ -2437,23 +2468,32 @@ class ImageView(QWidget):
         self._main.set_stretch(self._st)
         self.panel.set_stretch(self._st)
         self._sync_auto_button()
+        self._keep_locked()
         self._apply_same()
         self.canvas.update()
         self.canvas2.update()
         if emit:
             self.stretchChanged.emit(self._st.copy())
 
+    def _keep_locked(self):
+        """With "Same stretch for all frames", the stretch now shown is the one of the frames of its kind."""
+        if self._frames and self._lock and self._st is not None and self._prep is not None:
+            self._locked[kind_of(self._vi)] = self._st.copy()
+
+    def _kind_auto(self, mode: str | None, linked: bool | None, neutral: bool | None) -> sm.Stretch:
+        return sm.auto_for(self._prep.stats, self._vi.kind if self._vi is not None else "", mode, linked, neutral)
+
     def auto_stretch(self):
-        """The automatic stretch again, with the Neutral sky choice the image had (after Auto-stretch off, which shows
-        the data linear and plain, the choice made before it: once, turning Auto-stretch off and on again switched a
-        stack shown with a neutral sky to its camera colours)."""
+        """The automatic stretch of the image's kind again, with the Neutral sky choice the image had (after
+        Auto-stretch off, which shows the data linear and plain, the choice made before it: once, turning Auto-stretch
+        off and on again switched a stack shown with a neutral sky to its camera colours)."""
         if self._prep is not None:
             st = self._st
             neutral = st.neutral
-            if st.mode == "linear" and not st.auto and self._neutral_before is not None:
+            off = st.mode == "linear" and not st.auto           # after Auto-stretch off: the kind's own stretch
+            if off and self._neutral_before is not None:
                 neutral = self._neutral_before
-            self.set_stretch(sm.auto_stretch(self._prep.stats, st.mode if st.mode != "linear" else "mtf", st.linked,
-                                             neutral), emit=True)
+            self.set_stretch(self._kind_auto(None if off else st.mode, None if off else st.linked, neutral), emit=True)
 
     _neutral_before: bool | None = None
 
@@ -2462,8 +2502,8 @@ class ImageView(QWidget):
         if self._prep is None or self._st is None or bool(self._st.neutral) == bool(on):
             return
         st = self._st
-        self.set_stretch(sm.auto_stretch(self._prep.stats, st.mode if st.mode != "linear" else "mtf", st.linked,
-                                         bool(on)), emit=True)
+        self.set_stretch(self._kind_auto(st.mode if st.mode != "linear" or st.auto else None, st.linked, bool(on)),
+                         emit=True)
 
     def reset_stretch(self):
         if self._prep is not None:
@@ -2474,6 +2514,7 @@ class ImageView(QWidget):
         if self._main is not None:
             self._main.set_stretch(self._st)
         self._sync_auto_button()
+        self._keep_locked()
         self._apply_same()
         self.canvas.update()
         self.canvas2.update()
@@ -2693,9 +2734,9 @@ class ImageView(QWidget):
             return self._st.adapted(prep.channels)
         st = self._st
         vi = self._targets[self._cmp_i] if self._cmp_i is not None and self._cmp_i < len(self._targets) else None
-        if st is None:
-            return default_stretch(prep, vi=vi)
-        mode = st.mode if st.mode != "linear" else "mtf"
+        if st is None or kind_of(vi or prep.vi) != kind_of(self._vi):
+            return default_stretch(prep, vi=vi)               # another kind of image: its own automatic stretch
+        mode = st.mode if st.mode != "linear" else None
         # Neutral sky is the user's choice for both sides: "before" in the camera's colours stays as it is unless the
         # main picture is shown with a neutral sky (a mosaic and a mono picture keep their own default)
         neutral = None
@@ -2746,6 +2787,7 @@ class ImageView(QWidget):
     def set_sequence(self, frames: list[ViewImage], index: int = 0):
         """Show a sequence of frames (paths or loaders, with the caller's ``info``)."""
         self._frames = list(frames)
+        self._locked = {}
         self.seq.setVisible(bool(self._frames))
         if not self._frames:
             self._blink.stop()
@@ -2853,9 +2895,22 @@ class ImageView(QWidget):
         self.excludeToggled.emit(i, now)
 
     def set_lock_stretch(self, on: bool):
-        self._lock = bool(on)
+        """"Same stretch for all frames": on, the stretch shown is kept for the next frames of the same kind (each
+        kind its own); off, each frame gets its own automatic stretch, the one shown now at once."""
+        on = bool(on)
+        changed = on != self._lock
+        self._lock = on
         if self.lock_c.isChecked() != self._lock:
             self.lock_c.setChecked(self._lock)
+        if not changed:
+            return
+        self._locked = {}
+        if on:
+            self._keep_locked()
+        elif self._prep is not None and self._st is not None and self._st.auto:
+            st = self._st
+            self.set_stretch(default_stretch(self._prep, st.mode, st.linked if st.channels > 1 else None, None,
+                                             self._vi), emit=True)
 
     def _want_thumbs(self, i0: int, i1: int):
         for i in range(max(0, i0 - 4), min(len(self._frames), i1 + 4)):

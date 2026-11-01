@@ -123,5 +123,9 @@
  "Include annotations:": "Inclure les annotations :",
  "Object names": "Noms des objets",
  "Sky grid": "Grille du ciel",
- "Drawn into a picture of the stretched view only: a FITS file and the linear data stay clean.": "Dessinées seulement dans une image de la vue étirée : un fichier FITS et les données linéaires restent propres."
+ "Drawn into a picture of the stretched view only: a FITS file and the linear data stay clean.": "Dessinées seulement dans une image de la vue étirée : un fichier FITS et les données linéaires restent propres.",
+ "Keeps the stretch of the frame shown for the next frames of the same kind, so that blinking shows what changes. Off: each frame gets its own automatic stretch.": "Garde l'étirement de l'image affichée pour les images suivantes du même type, pour que le clignotement montre ce qui change. Décoché : chaque image a son propre étirement automatique.",
+ "Linear, each channel from the lowest to the highest value of the smoothed flat: its vignetting and its dust shadows (A)": "Linéaire, chaque canal de la plus basse à la plus haute valeur de la flat lissée : son vignettage et ses ombres de poussières (A)",
+ "Linear, channels linked, from zero to the model's brightest point: the colour shown is the model's own (A)": "Linéaire, canaux liés, de zéro au point le plus clair du modèle : la couleur affichée est celle du modèle (A)",
+ "Each channel centred on its own level: black {k} σ under the median, the median at mid grey, white at the 99.99th percentile (A)": "Chaque canal centré sur son propre niveau : noir à {k} σ sous la médiane, la médiane en gris moyen, blanc au 99,99e centile (A)"
 }

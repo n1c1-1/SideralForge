@@ -612,10 +612,17 @@ def test_sequence_keys_box_strip_band_and_exclude(qapp, loader):
     assert v.band.cells["fwhm"][1].text() == "3.00 px" and v.band.cells["transparency"][1].text() == "100 %"
     assert v.band.cells["temperature"][1].text() == "12.5 °C" and v.band.state.text() == "Included"
     first = v.stretch()
+    assert first.auto and not v.lock_c.isChecked()                       # by default each frame its own stretch
     loader.wait(30)
     assert loader.cached(("f", 1)) is not None                          # the next one, ahead of time
     v.activateWindow()
     v.canvas.setFocus()
+    QTest.keyClick(v.canvas, Qt.Key_Right)
+    assert v.wait(30) and v.index() == 1
+    assert v.stretch().auto and not np.allclose(v.stretch().black, first.black)     # its own automatic stretch
+    QTest.keyClick(v.canvas, Qt.Key_Left)
+    assert v.wait(30) and v.index() == 0
+    v.lock_c.setChecked(True)                                            # locked: the stretch of the frame shown
     QTest.keyClick(v.canvas, Qt.Key_Right)
     assert v.wait(30) and v.index() == 1
     assert np.allclose(v.stretch().black, first.black)                  # the same stretch for all frames
@@ -641,6 +648,136 @@ def test_sequence_keys_box_strip_band_and_exclude(qapp, loader):
     assert not np.allclose(v.stretch().black, first.black)
     loader.wait(30)
     assert v.strip.thumbs                                                # made from the frames loaded
+
+
+def dark_frame(seed=1, level=512.0, h=300, w=400) -> np.ndarray:
+    """A colour dark (superpixels of a mosaic): its level, read noise, an amp glow in one corner, hot pixels."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    glow = 60.0 * np.exp(-np.hypot(xx, yy) / 60.0)
+    img = level + glow + rng.normal(0, 4, (3, h, w)).astype(np.float32)
+    for _i in range(40):
+        img[:, rng.integers(0, h), rng.integers(0, w)] = rng.uniform(2000, 16000)
+    return img.astype(np.float32)
+
+
+def flat_frame(h=300, w=400, peak=(18000.0, 30000.0, 22000.0)) -> np.ndarray:
+    """A colour flat: vignetting to 70 % in the corners, a dust shadow, the light source's colour, a hot pixel."""
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    r2 = ((xx - w / 2) / (w / 2)) ** 2 + ((yy - h / 2) / (h / 2)) ** 2
+    shape = 1.0 - 0.15 * r2
+    shape *= 1.0 - 0.08 * np.exp(-((xx - 120) ** 2 + (yy - 90) ** 2) / (2 * 12.0 ** 2))
+    rng = np.random.default_rng(3)
+    img = np.stack([p * shape for p in peak]) + rng.normal(0, 40, (3, h, w))
+    img[:, 200, 300] = 65535.0
+    return img.astype(np.float32)
+
+
+def model_surface(h=300, w=400) -> np.ndarray:
+    """A sky model as the Seestar's M31 had it: smooth, nearly constant, blue above the other two (display RGB)."""
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    g = 6.0 * (xx / w) + 4.0 * (yy / h)
+    return np.stack([260.0 + g, 268.0 + g, 408.0 + g]).astype(np.float32)
+
+
+def test_each_kind_of_frame_has_its_automatic_stretch():
+    # a dark, a bias: each channel centred on its own level (STF unlinked, the median at mid grey), no neutral sky
+    for kind in ("darks", "bias", "flat_darks"):
+        img = dark_frame()
+        img[2] -= 2.0                                                            # a channel 2 ADU lower: no tint
+        prep = iv.prepare(iv.ViewImage(img, "dark", camera=True, kind=kind))
+        st = iv.default_stretch(prep)
+        s = prep.stats
+        assert st.auto and st.mode == "mtf" and not st.linked and not st.neutral
+        assert np.allclose(st.black, s.median - sm.SHADOWS * s.sigma, rtol=1e-6)
+        cv = sm.curves(st, s)
+        for c in range(3):
+            q = sm.quantize(np.float32(s.median[c]), s.lo, s.hi)
+            assert cv[c][q] == pytest.approx(sm.LEVEL_TARGET, abs=0.03)          # each median at mid grey
+        hot = sm.quantize(np.float32(15000), s.lo, s.hi)
+        assert cv[1][hot] == 1.0                                                 # the hot pixels white
+        glow = sm.quantize(np.float32(s.median[1] + 40), s.lo, s.hi)
+        assert 0.75 < cv[1][glow] < 0.99                                         # the glow shaded, not clipped
+    # a flat: linear, each channel from the lowest to the highest value of its smoothed field (a hot pixel ignored)
+    img = flat_frame()
+    prep = iv.prepare(iv.ViewImage(img, "flat", camera=True, kind="flats"))
+    st = iv.default_stretch(prep)
+    assert st.auto and st.mode == "linear" and not st.linked and not st.neutral
+    for c, peak in enumerate((18000.0, 30000.0, 22000.0)):
+        assert st.white[c] == pytest.approx(peak, rel=0.02)                     # the centre, not the hot pixel
+        assert peak * 0.68 < st.black[c] < peak * 0.78                           # the corners
+    out = sm.render(sm.quantize(img, prep.stats.lo, prep.stats.hi), sm.luts(st, prep.stats))
+    assert out[150, 200].min() > 230 and out[5, 5].max() < 40                  # its shape fills the range
+    # a model: linear, linked, from zero: its colour is its own, not blown up into a saturated one
+    img = model_surface()
+    prep = iv.prepare(iv.ViewImage(img, "Sky model", camera=False, kind="model"))
+    st = iv.default_stretch(prep)
+    assert st.auto and st.mode == "linear" and st.linked and np.all(st.black == 0)
+    assert st.white[0] == pytest.approx(float(img.max()), rel=0.01)
+    out = sm.render(sm.quantize(img, prep.stats.lo, prep.stats.hi), sm.luts(st, prep.stats)).reshape(-1, 3)
+    shown = out.mean(0)
+    assert shown[2] / shown[0] == pytest.approx(img[2].mean() / img[0].mean(), rel=0.03)     # ratios kept
+    assert shown.min() > 140                                                     # a pale blue, not pure blue
+    light = sm.render(sm.quantize(img, prep.stats.lo, prep.stats.hi),
+                      sm.luts(sm.auto_stretch(prep.stats, "mtf", True), prep.stats)).reshape(-1, 3).mean(0)
+    assert light[0] < 10 and light[1] < 10 and light[2] > 240                  # what the light rule made of it
+    unlinked = sm.auto_for(prep.stats, "model", linked=False)
+    assert np.all(unlinked.black > 250)                                          # unlinked: each channel's shape
+    # a light (or no kind): the standard auto-stretch
+    prep = iv.prepare(iv.ViewImage(sky(), "light", kind="lights"))
+    assert iv.default_stretch(prep).black[0] == pytest.approx(
+        iv.default_stretch(iv.prepare(iv.ViewImage(sky(), "light"))).black[0])
+    assert sm.rule_of("lights") == sm.rule_of("") == sm.rule_of("anything") == "light"
+
+
+def test_a_model_shows_from_zero_in_the_panel(qapp, loader):
+    v = make_view(qapp, loader)
+    show(v, iv.ViewImage(model_surface(), "Sky model", camera=False, kind="model"))
+    assert v.panel.fields["black"].value() == 0.0 and v.auto_b.isChecked()
+    assert v.panel.fields["white"].value() == pytest.approx(float(model_surface().max()), rel=0.01)
+    assert "model's own" in v.panel.auto_b.toolTip()
+    v.auto_b.setChecked(False)                                   # Auto-stretch off, then on: the model's own again
+    v.auto_b.setChecked(True)
+    assert v.stretch().mode == "linear" and v.stretch().linked and np.all(v.stretch().black == 0)
+
+
+def test_the_lock_keeps_one_stretch_per_kind(qapp, loader):
+    """"Same stretch for all frames" within one kind only: a dark's stretch never shows a flat; unlocked, each frame
+    its own; the stretch panel's Auto says what the kind's automatic stretch does."""
+    v = make_view(qapp, loader)
+    frames = [iv.ViewImage(lambda s=i: dark_frame(seed=s, level=500 + 40 * s), f"D{i}", key=("d", i), camera=True,
+                           kind="darks") for i in range(2)]
+    frames += [iv.ViewImage(lambda s=i: flat_frame(peak=(18000.0 + 3000 * s, 30000.0, 22000.0)), f"F{i}",
+                            key=("fl", i), camera=True, kind="flats") for i in range(2)]
+    v.set_sequence(frames, 0)
+    assert v.wait(30)
+    d0 = v.stretch()
+    assert d0.mode == "mtf" and "own level" in v.panel.auto_b.toolTip()
+    v.set_index(1)
+    assert v.wait(30)
+    assert not np.allclose(v.stretch().black, d0.black)                      # unlocked: its own
+    v.set_index(0)
+    assert v.wait(30)
+    v.set_lock_stretch(True)
+    v.set_index(1)
+    assert v.wait(30)
+    assert np.allclose(v.stretch().black, d0.black)                          # locked: the darks' stretch
+    v.set_index(2)
+    assert v.wait(30)
+    f0 = v.stretch()
+    assert f0.mode == "linear" and f0.black[1] > 15000                       # a flat: never the dark's stretch
+    assert "smoothed flat" in v.panel.auto_b.toolTip()
+    v.set_index(3)
+    assert v.wait(30)
+    assert np.allclose(v.stretch().black, f0.black)                          # the flats' stretch
+    v.set_index(1)
+    assert v.wait(30)
+    assert np.allclose(v.stretch().black, d0.black)                          # back to the darks': theirs
+    v.set_lock_stretch(False)                                                # unlocked: the frame's own, at once
+    assert not np.allclose(v.stretch().black, d0.black)
+    v.set_index(3)
+    assert v.wait(30)
+    assert v.stretch().white[0] == pytest.approx(21000.0, rel=0.02)         # the second flat's own range
 
 
 def test_blink_plays_the_loaded_frames(qapp, loader):

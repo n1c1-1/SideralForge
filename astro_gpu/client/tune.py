@@ -84,7 +84,7 @@ from .imageview import ImageView, ViewImage, quick_thumbnail
 from .panel import STATE_COLOR, STATE_WORD, Panel
 from .services import inspect as si
 from .services.inspect import CATALOGUE_G_MAX, VisualSpec
-from .steps import CAMERA_NOTE, Steps
+from .steps import CAMERA_NOTE, MODEL_COLOURS_NOTE, Steps
 from .widgets import ACCENT, WARN, clear, label
 
 STATE_COL = dict(STATE_COLOR, pending="#5d6470")      # the strip: a block not computed yet is a dark grey
@@ -623,7 +623,8 @@ class TuneView(QWidget):
         if note:                                            # what this picture is, when its role is not obvious
             row = QHBoxLayout()
             row.setSpacing(14)
-            nt = label(_(note), "small", wrap=True)
+            text = _(note) + (" " + _(MODEL_COLOURS_NOTE) if spec.display == "model" else "")   # what its colours mean
+            nt = label(text, "small", wrap=True)
             nt.setContentsMargins(2, 0, 2, 0)
             row.addWidget(nt, 1)
             self.center.addLayout(row)
@@ -878,7 +879,7 @@ class TuneView(QWidget):
         if spec.sky:
             self._sky_bar(spec)
         v = self._new_view(k, spec)
-        if self._note_row is not None and spec.kind != "preview":
+        if self._note_row is not None and spec.kind != "preview" and spec.display != "model":   # a model: its own colours
             if spec.camera:                               # camera colours: Neutral sky, an explicit display option
                 self._note_row.addWidget(self._neutral_box(v))
             elif spec.kind == "color":                    # before / after: the option is the before's
@@ -1166,7 +1167,8 @@ class TuneView(QWidget):
             frames.append(ViewImage(si.array_source(self.s.p, p.pid, "calibrate", mk, which), _(caption),
                                     key=("inspect", "master", key, mk), cfa="" if mk == "badmask" else data.cfa,
                                     camera=mk != "badmask", units="norm" if norm else "adu",
-                                    white=1.0 if norm else None, info=info, stretched=mk == "badmask"))
+                                    white=1.0 if norm else None, info=info, stretched=mk == "badmask",
+                                    kind=kind or "mask"))       # each master the automatic stretch of its kind
         v = self._new_view("calibration", spec)
         v.set_exclude_mode("off")
         v.set_sequence(frames, 0)
@@ -1257,8 +1259,9 @@ class TuneView(QWidget):
         frames = []
         for it in shown:
             vi = ViewImage(it.path, it.name, cfa=it.cfa or data.cfa, camera=True, white=it.white,
-                           info=self._cal_info(it))
-            vi.thumb = partial(quick_thumbnail, ViewImage(it.path, cfa=it.cfa or data.cfa, camera=True))
+                           info=self._cal_info(it), kind=spec.name)
+            vi.thumb = partial(quick_thumbnail, ViewImage(it.path, cfa=it.cfa or data.cfa, camera=True,
+                                                          kind=spec.name))
             frames.append(vi)
         v = self._new_view("calibration", spec)
         self._on(v, v.excludeToggled, lambda i, ex, its=shown, grp=items: self._cal_exclude(its, i, ex, grp))

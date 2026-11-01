@@ -18,6 +18,25 @@ clipped fractions come from it.
 This replaces, for the viewer, ``services/inspect.stretch_params / neutral_params / render8 / histogram8 /
 stretch_image`` (one fixed 8-bit rendering made by the worker); the automatic numbers are the same (black 2.8 sigma
 under the sky, white at the 99.99th percentile, sky at a quarter of the range).
+
+The automatic stretch depends on what the image is (``auto_for``, the ``kind`` of ``imageview.ViewImage``), each rule a
+known display of its kind of frame:
+
+* a light (and anything not said otherwise): the ScreenTransferFunction auto-stretch of PixInsight, the autostretch of
+  Siril (their defaults: shadows clipped at the median - 2.8 x 1.4826 MAD, the background at 0.25 through the midtones
+  transfer function);
+* a dark, a bias (offset) or a dark flat: the same STF with the target background at 0.5, its median at mid grey,
+  each channel on its own (unlinked, as STF's unlinked mode): the frame centred on its own level, the noise and the
+  fixed patterns around grey, the cold pixels towards black, the amp glow compressed towards white with its shape
+  kept (a linear window of a few sigma would saturate the glow), the hot pixels white; a channel offset of one or two
+  ADU, which a linked stretch turns into a colour cast of the whole frame, does not tint it;
+* a flat: linear, each channel from the lowest to the highest value of its smoothed field (Siril's min / max cut levels,
+  taken on a coarse level of the display pyramid, median-filtered, so that single defective pixels do not set them):
+  the vignetting and the dust shadows fill the whole range;
+* a model (a sky model, a gradient surface, a star flat): linear, the channels linked, from zero to the brightest point
+  of the smoothed model: the channels keep their ratios, so the colour shown is the model's own. A smooth, nearly
+  constant model through the light frames' auto-stretch (a black point a few hundredths under the median) turns tiny
+  channel differences into saturated colour.
 """
 from __future__ import annotations
 
@@ -29,6 +48,16 @@ Q = 65535                                  # the top of the 16-bit quantization
 MODES = ("linear", "mtf", "asinh", "histogram")
 TARGET = 0.25                              # where the automatic stretch puts the sky (0 black, 1 white)
 SHADOWS = 2.8                              # the automatic black point, in noise sigmas under the sky
+LEVEL_TARGET = 0.5                         # darks and bias: their median at mid grey (STF target background 0.5)
+#: what the viewer is told an image is (``ViewImage.kind``, the frame groups' names) -> the rule of its automatic stretch
+KIND_RULE = {"": "light", "light": "light", "lights": "light", "dark": "dark", "darks": "dark", "flat_dark": "dark",
+             "flat_darks": "dark", "bias": "bias", "offset": "bias", "flat": "flat", "flats": "flat",
+             "model": "model"}
+
+
+def rule_of(kind: str | None) -> str:
+    """The rule of the automatic stretch for an image of ``kind``: light, dark, bias, flat or model."""
+    return KIND_RULE.get(str(kind or "").lower(), "light")
 
 
 # ---------------------------------------------------------------------------------------------- quantization
@@ -76,10 +105,18 @@ class Stats:
     vmin: np.ndarray                # (C,) the data's own minimum and maximum
     vmax: np.ndarray
     _vals: np.ndarray | None = field(default=None, repr=False)
+    smin: np.ndarray | None = None  # (C,) the lowest and highest value of the smoothed field (``smooth_range``)
+    smax: np.ndarray | None = None
 
     @property
     def channels(self) -> int:
         return int(self.hist.shape[0])
+
+    def smooth(self) -> tuple[np.ndarray, np.ndarray]:
+        """(lowest, highest) of the smoothed field per channel (the 0.01th and 99.99th percentiles when not counted)."""
+        if self.smin is None or self.smax is None:
+            return self.low.copy(), self.high.copy()
+        return self.smin.copy(), self.smax.copy()
 
     @property
     def values(self) -> np.ndarray:
@@ -130,10 +167,33 @@ def _channel_numbers(vals: np.ndarray, hk: np.ndarray) -> tuple[float, ...]:
             _weighted_pct(vals, hk, 0.995))
 
 
-def compute_stats(level0: np.ndarray, target_samples: float = 1.5e6) -> Stats:
+def smooth_range(coarse: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Per channel, the lowest and the highest value of the smoothed field. ``coarse``: (C, h, w), a coarse level of the
+    display pyramid (each pixel the mean of a block of the image), median-filtered 3 x 3 here so that one block
+    holding a defective pixel does not set them. NaN are left out."""
+    import cv2
+    lo, hi = [], []
+    for k in range(coarse.shape[0]):
+        x = np.ascontiguousarray(coarse[k], np.float32)
+        ok = np.isfinite(x)
+        if not ok.all():
+            if not ok.any():
+                lo.append(0.0)
+                hi.append(1.0)
+                continue
+            x = np.where(ok, x, np.float32(np.median(x[ok]))).astype(np.float32)
+        if min(x.shape) >= 3:
+            x = cv2.medianBlur(x, 3)
+        lo.append(float(x.min()))
+        hi.append(float(x.max()))
+    return np.array(lo), np.array(hi)
+
+
+def compute_stats(level0: np.ndarray, target_samples: float = 1.5e6, smooth: np.ndarray | None = None) -> Stats:
     """The statistics of a (C, H, W) float image: its true minimum and maximum, then the histogram of a regular sample
     (about ``target_samples`` values per channel), from which the median, the noise and the percentiles are read. The
-    channels are counted in parallel."""
+    channels are counted in parallel. ``smooth``: a coarse level of its pyramid, for the range of the smoothed field
+    (default: the sample, reduced)."""
     c, h, w = level0.shape
     step = max(1, int(np.sqrt(h * w / target_samples)))
     ex = pool()
@@ -158,7 +218,12 @@ def compute_stats(level0: np.ndarray, target_samples: float = 1.5e6) -> Stats:
         hist, vals, num = count(lo, hi)
     med, sig, low, high, ref = (num[:, i].copy() for i in range(5))
     sig = np.maximum(sig, (hi - lo) * 1e-7)
-    return Stats(lo, hi, hist, med, sig, low, high, ref, vmin, vmax, vals)
+    if smooth is None:
+        smooth = sample
+        while max(smooth.shape[1:]) > 320 and min(smooth.shape[1:]) >= 4:
+            smooth = reduce2(smooth)
+    smin, smax = smooth_range(smooth)
+    return Stats(lo, hi, hist, med, sig, low, high, ref, vmin, vmax, vals, smin=smin, smax=smax)
 
 
 # ---------------------------------------------------------------------------------------------- the stretch
@@ -290,6 +355,55 @@ def auto_stretch(stats: Stats, mode: str = "mtf", linked: bool = True, neutral: 
         mid = 0.5 * (b + w)
     return Stretch(mode if mode in MODES else "mtf", b, mid, w, gain, shift, linked and c > 1, neutral and c == 3,
                    True)
+
+
+def range_stretch(stats: Stats, black: np.ndarray, white: np.ndarray, mode: str = "linear",
+                  linked: bool = False) -> Stretch:
+    """An automatic stretch between given black and white points per channel (linked: the lowest black and the
+    highest white for all). ``linear`` by default; with ``mtf`` or ``asinh`` the median is shown as mid grey (a mild
+    stretch)."""
+    c = stats.channels
+    b, w = np.asarray(black, np.float64).copy(), np.asarray(white, np.float64).copy()
+    if linked and c > 1:
+        b, w = np.full(c, b.min()), np.full(c, w.max())
+    eps = max((stats.hi - stats.lo) * 1e-6, 1e-12)
+    w = np.maximum(w, b + 2 * eps)
+    med = np.full(c, stats.median.mean()) if linked and c > 1 else stats.median.astype(np.float64)
+    mode = mode if mode in MODES else "linear"
+    mid = np.clip(med, b + eps, w - eps) if mode in ("mtf", "asinh") else 0.5 * (b + w)
+    return Stretch(mode, b, mid, w, np.ones(c), np.zeros(c), linked and c > 1, False, True)
+
+
+def auto_for(stats: Stats, kind: str | None = "", mode: str | None = None, linked: bool | None = None,
+             neutral: bool | None = None) -> Stretch:
+    """The automatic stretch of an image of ``kind`` (see the module's docstring; ``rule_of``). ``mode``, ``linked``
+    and ``neutral``: the user's choices, None for the rule's own (a light MTF and linked; a dark or a bias MTF and
+    unlinked; a flat linear and unlinked; a model linear and linked; no Neutral sky). Neutral sky applies to the
+    light and dark rules only."""
+    rule = rule_of(kind)
+    if rule in ("dark", "bias"):                       # unlinked: each channel centred on its own level
+        return auto_stretch(stats, mode or "mtf", False if linked is None else bool(linked), bool(neutral),
+                            target=LEVEL_TARGET)
+    if rule in ("flat", "model"):
+        lo, hi = stats.smooth()
+        link = (rule == "model") if linked is None else bool(linked)
+        if rule == "model" and link:
+            lo = np.minimum(lo, 0.0)                      # from zero: the channels keep their ratios
+        return range_stretch(stats, lo, hi, mode or "linear", link)  # unlinked: each channel's own shape
+    return auto_stretch(stats, mode or "mtf", True if linked is None else bool(linked), bool(neutral))
+
+
+def auto_text(kind: str | None) -> str:
+    """What the automatic stretch of ``kind`` does, in English (translated where shown; ``{k}``: the shadows)."""
+    return {"dark": "Each channel centred on its own level: black {k} σ under the median, the median at mid grey, "
+                    "white at the 99.99th percentile (A)",
+            "bias": "Each channel centred on its own level: black {k} σ under the median, the median at mid grey, "
+                    "white at the 99.99th percentile (A)",
+            "flat": "Linear, each channel from the lowest to the highest value of the smoothed flat: its vignetting "
+                    "and its dust shadows (A)",
+            "model": "Linear, channels linked, from zero to the model's brightest point: the colour shown is the "
+                     "model's own (A)",
+            }.get(rule_of(kind), "Black {k} σ under the sky, white at the 99.99th percentile, the sky at a quarter (A)")
 
 
 def manual(st: Stretch, which: str, value: float, channel: int = -1, stats: Stats | None = None) -> Stretch:
@@ -459,5 +573,6 @@ def cfa_letter(cfa: str, x: int, y: int) -> str:
 
 
 __all__ = ["Q", "MODES", "Stats", "Stretch", "quantize", "level_values", "compute_stats", "mtf", "asinh_beta",
-           "neutral_transform", "looks_camera", "auto_stretch", "manual", "curves", "luts", "render", "clipped", "apply",
+           "neutral_transform", "looks_camera", "auto_stretch", "auto_for", "range_stretch", "rule_of", "auto_text",
+           "smooth_range", "manual", "curves", "luts", "render", "clipped", "apply",
            "reduce2", "pyramid", "superpixel", "cfa_letter"]

@@ -84,6 +84,9 @@ SKY_MODEL_FULL_NOTE = ("What the block removed from the starless image (its inpu
 GRADIENT_SURFACE_NOTE = ("The smooth surface of light pollution the block fitted, channel by channel, in the camera's "
                          "colours.")
 STAR_FLAT_NOTE = "The correction of the flat field measured on the stars (1: no change)."
+#: the line after the note of a model (display "model"): what its colours mean
+MODEL_COLOURS_NOTE = ("Shown with the channels linked, from zero to its highest value: the colours are the model's own, "
+                      "not stretched apart. Untick Linked channels to see the shape of each channel.")
 
 
 def fnum(x, d=1) -> str:
@@ -259,13 +262,14 @@ class Steps(QObject):
                           camera=False, base=("background", "astro"), compare=("starless_calibrated",),
                           note=STARLESS_BG_NOTE),
                         V("removed", "Sky model", "removed", st, "", True, True, camera=True,
-                          note=SKY_MODEL_FULL_NOTE),
+                          note=SKY_MODEL_FULL_NOTE, display="model"),
                         V("sky", "Gradient", "array", "background", "sky", True, True, camera=True,
-                          note=GRADIENT_SURFACE_NOTE),
+                          note=GRADIENT_SURFACE_NOTE, display="model"),
                         V("star_flat", "Star flat", "array", "background", "flat", True, True, camera=False,
-                          note=STAR_FLAT_NOTE)]
+                          note=STAR_FLAT_NOTE, display="model")]
             else:
-                out.append(V("removed", "Sky model", "removed", st, "", True, True, camera=False, note=SKY_MODEL_NOTE))
+                out.append(V("removed", "Sky model", "removed", st, "", True, True, camera=False, note=SKY_MODEL_NOTE,
+                             display="model"))
             return out
         if k == "post":
             stage = next((x for x in ("render_prep_learned", "render_prep", "render_simple") if x in stages),
@@ -353,7 +357,7 @@ class Steps(QObject):
         # option the user ticks, never the default (the earlier default made the stack look colour-calibrated)
         return ViewImage(src, name, key=ident, wcs=wcs, camera=spec.camera, units=spec.units,
                          neutral=False if spec.camera and spec.kind != "preview" else None,
-                         header={"HISTORY": [f"astro_gpu: {spec.caption} of workflow {p.name}"]})
+                         header={"HISTORY": [f"astro_gpu: {spec.caption} of workflow {p.name}"]}, kind=spec.display)
 
     def overlay(self, k: str, spec: VisualSpec, sky: SkyData | None = None, show: dict | None = None):
         """What is drawn over a picture: the sky grid and the catalogue stars of the solution (``show`` says which

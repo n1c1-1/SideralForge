@@ -114,6 +114,8 @@ class VisualSpec:
     units: str = "adu"
     shown: str = ""          # its name in the viewer (the split's tag), when it is not the caption (English)
     compare_names: tuple = ()        # the names of the pictures of ``compare`` in the viewer, when not their captions
+    display: str = ""        # the viewer's kind of image (``ViewImage.kind``): "model" for a sky model, a gradient
+    #                          surface, a star flat (linked, from zero: its colour is its own); "" a light
 
 
 @dataclass

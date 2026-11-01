@@ -647,9 +647,11 @@ class SourcesView(QWidget):
         frames = []
         for i in idx:
             f = self.items[i]
-            vi = ViewImage(f.path, f.name, camera=True, cfa=f.cfa or cfa, white=f.white, info=self._info(i))
+            # the kind of frame: its automatic stretch (a dark centred on its level, a flat its shape)
+            vi = ViewImage(f.path, f.name, camera=True, cfa=f.cfa or cfa, white=f.white, info=self._info(i),
+                           kind=self.group)
             vi.thumb = light_thumb(self.s.p, f.path) if lights else \
-                partial(quick_thumbnail, ViewImage(f.path, cfa=f.cfa or cfa, camera=True))
+                partial(quick_thumbnail, ViewImage(f.path, cfa=f.cfa or cfa, camera=True, kind=self.group))
             frames.append(vi)
         self.viewer.set_exclude_mode("on")
         ok = False
