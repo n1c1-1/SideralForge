@@ -116,6 +116,9 @@ Three lanes run in parallel:
 Plus the **engine fixes**: patches 1–3, store mtime ceil-to-even, manifest replace retry, catalogs reload, timings2
 lock.
 
+**No heavy run (the user's projects, a full bench) starts without a review pass done together with the user**
+(their rule, 2026-11-01 18:20).
+
 **PRIORITY 1 since 11:00 (the user, angry, rightly so): the assembled GUI.** They asked for it three times ("n'oublie
 pas le GUI") and found standalone pieces on return.
 - Rule: every GUI evolution ships wired into the client. Never "built standalone, wired later" when the user will

@@ -515,6 +515,51 @@ Newest entries at the bottom. Times are local.
     - flats ≤ 7 stars; bias ≤ 7;
     - seestar has no calibration frames;
     - **all real.** Rosette's Siril runs use variant B (the Iris darks); C was ours only.
+  - **GUI round 2 committed (ca79449):**
+    - Home sections and bench cards; Siril reference in the viewers;
+    - Selection splitter and CSV button; "Copy image";
+    - camera-colour stack; Colour's before and after; Gradient as the whole image;
+    - named objects (OpenNGC and Sharpless) burned into exports;
+    - bad calibration frames red, with one-click exclusion.
+    - Checked on home_fr_full, gradient_full_result_fr and siril_final_side_fr. Rosette is not in the bench yet:
+      the bench agent is still running.
+  - A sonnet agent recomputes the dev test copies on cuda:1 (heart_a7s v2, p10, the v1 heart_a7s; store copied to
+    p11, p12 and tour where the keys match), then runs levels 2 and 3.
+  - **Bench final pass done (86ec818)**, on the patched engine, 6 cases:
+    - calibration checks: all clean except Rosette's old sky "darks"; **B confirmed** (A equal within 0.05 mag; the
+      Iris darks hold 99 % of the lights' hot pixels);
+    - Base against Siril: depth level on heart, m51, rosette and seestar; ahead on m8 (+0.19 mag); star colours
+      1.2–3× better; **iris still loses** (noise +0.11–0.17 mag, SNR −12 to −20 %);
+    - **regression found: single-colour dots**, ours 14–191 per deg² against Siril's 0–6; on Rosette the patched
+      engine leaves 77 against 23 before. Suspect base-1 or base-3.
+    - Two GUI-agent test copies moved out of the bench folders into F:/astro_essais/v2/.
+  - Test-copy recompute stopped, to avoid computing twice. A dots-fix agent (opus) is dispatched. **The night run of
+    the 9 projects waits for this fix.**
+  - 17:50 the user asked for an end time. Time-box given:
+    - culprit identified by about 18:05;
+    - fix verified on the 6 cases by **18:45**, otherwise the fallback (revert only the culprit part);
+    - night run of the 9 projects started at about 19:00, about 11–13 h on both GPUs, **done tomorrow 7–9 h**.
+    - Lesson: always give an estimate with a deadline and a fallback.
+    - **Corrected by the user: an end time, not a deadline; "je ne veux pas que tu bâcles".** Time-box and fallback
+      withdrawn; the agent does the proper fix and gives its own estimate.
+  - Culprit found: **base-3** (luminance detail). Rosette Express 76.7 dots per deg² at HEAD, 24.6 with base-3
+    reverted (24.4 before the patches). Its noise gate keeps the single-colour noise peaks (photon-noise tails of
+    1–2 frames). The agent is fixing the gate.
+  - The agent's ETA: **about 20:15** (gate design by about 18:40; the 6-case Express bench and measures about 60 min;
+    tests and BENCH.md about 20 min). First gate fix (cross-colour detail power): Rosette dots 77 → 40, colour grain
+    kept. Night run of the 9 projects from about 20:30, done tomorrow about 8–10 h.
+  - **The user: "you launch nothing until we have done a pass together."** The night run of the 9 projects waits for a
+    joint review after the dots fix (the bench, after the fix, in the client). Nothing heavy starts without their OK.
+  - 18:30 **the user: "arrête tout".** They rightly see the dots work as tuning a home-made hybrid (base-3) on our
+    test images, launched without asking: they had only asked for a state of affairs against Siril.
+    - Stopped: the dots agent, every bench and test-copy run process (by PID, with their trees), and the hourly
+      heartbeat (CronDelete). Nothing runs.
+    - Left uncommitted in the working tree: the agent's gate experiment in astro_gpu/stages/stack.py and a test in
+      tests/test_diagnostics.py. Not reverted, awaiting the user.
+    - Bench Express state is mixed: seestar was re-run with the gate experiment, heart, m8 and m51 were interrupted,
+      iris and rosette were not started.
+    - The user's direction: understand before acting. Their proposal: a standard "like Siril" stack (debayer, Lanczos
+      registration, stack with rejection) as the normal method, the Bayer drizzle as an option; drop the hybrid.
 
 ### Queue for the end of P8 (engine unfrozen)
 1. Apply patches 1–3, run the tests and the 4-dataset non-regression, recompute only render_simple (Classic and Raw

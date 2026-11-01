@@ -86,9 +86,8 @@ folders and of the G: archive done the same day.
     Rosette field shot with the telescope open (26–410 stars each; 520–524 ADU against 508–512 for real darks of this
     camera). The master dark carries star trails, which show as diagonal streaks in Rosette's results. That is so
     since v1 (2026-10-13). None of the 1,233 raws of 957MSDCF is a real dark.
-  - Options: the 48 real darks of the Iris night (same camera, 15 s, ISO 4000), or no darks with cosmetic
-    correction; compared on the bench (BENCH.md, "Rosette et ses darks"). The check in core/diagnostics.py now flags a
-    calibration frame with stars.
+  - Settled by the user: **the 48 Iris-night darks are the right ones.** The user keeps a dark library and reuses it
+    across nights. The check in core/diagnostics.py now flags a calibration frame with stars.
 - No flats that night: the Iris flats give the vignetting only, smoothed (calibrate.flat_scale_px 40).
 - The project.json input paths (`F:\backup_pc\...`) are dead. Second copy on `I:\backup_pc_LENOVO\photos` (bad zone).
   His Siril stacks: `D:\astro_gpu_diag\siril_ref`.
