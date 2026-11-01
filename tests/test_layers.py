@@ -262,6 +262,9 @@ def test_exports_reopen_with_the_right_dtype_and_size(tmp_path):
         assert im.size == (500, 300) and im.mode == "RGB" and im.info.get("icc_profile")
     with fits.open(tmp_path / "t.fits") as h:
         assert h[0].data.dtype.kind == "f" and h[0].data.dtype.itemsize == 4 and h[0].data.shape == (3, 300, 500)
+        # the rows bottom up, as FITS (and Siril) have them; the history in the header
+        assert np.array_equal(h[0].data[:, ::-1], rgb) and h[0].header["ROWORDER"] == "BOTTOM-UP"
+        assert any("layer" in str(x) or "astro_gpu" in str(x) for x in h[0].header["HISTORY"])
     # reduced (long side) and turned
     small = export_rgb(rgb, tmp_path / "s", {"name": "s", "formats": ["tiff16"], "size": 2048})
     assert tifffile.imread(small[0]).shape == (300, 500, 3)                       # never enlarged
@@ -314,7 +317,32 @@ def test_export_writes_the_wcs_of_the_grid(tmp_path):
     rgb = np.random.default_rng(0).random((3, 120, 200)).astype(np.float32)
     f = export_rgb(rgb, tmp_path, ExportOptions(name="w", formats=["fits32f"]), wcs=w, origin=(10, 5))
     w2 = WCS(fits.getheader(f[0])).celestial
-    assert np.allclose(w.pixel_to_world_values(60, 45), w2.pixel_to_world_values(50, 40))
+    # the image's pixel (50, 40) from the top is the FITS row 120 - 1 - 40 from the bottom
+    assert np.allclose(w.pixel_to_world_values(60, 45), w2.pixel_to_world_values(50, 79), atol=1e-12)
+
+
+def test_reversing_the_rows_keeps_every_sky_position_with_the_distortion():
+    """flip_rows_wcs: the solution of the image with its rows reversed, SIP terms included, gives each pixel the sky
+    position it had (the FITS export writes its rows bottom up)."""
+    from astropy.wcs import WCS
+
+    from astro_gpu.render.layers import flip_rows_wcs
+    w = WCS(naxis=2)
+    w.wcs.ctype = ["RA---TAN-SIP", "DEC--TAN-SIP"]
+    w.wcs.crval, w.wcs.crpix = [40.0, 61.0], [300.5, 210.5]
+    w.wcs.cd = [[-2.0e-4, 0.3e-4], [0.4e-4, 2.0e-4]]
+    hdr = w.to_header(relax=True)
+    for name, terms in (("A", {(2, 0): 3e-6, (1, 1): -2e-6, (0, 2): 4e-6, (0, 3): 2e-9, (2, 1): -1e-9}),
+                        ("B", {(2, 0): -1e-6, (1, 1): 5e-6, (0, 2): 2e-6, (3, 0): 1e-9, (1, 2): 3e-9})):
+        hdr[f"{name}_ORDER"] = 3
+        for (p_, q_), v in terms.items():
+            hdr[f"{name}_{p_}_{q_}"] = v
+    H = 420
+    w1, w2 = WCS(hdr), WCS(flip_rows_wcs(hdr, H))
+    assert w1.sip is not None and w2.sip is not None
+    rng = np.random.default_rng(2)
+    for x, y in rng.uniform(0, [600, H - 1], (20, 2)):
+        assert np.allclose(w1.all_pix2world([[x, y]], 0), w2.all_pix2world([[x, H - 1 - y]], 0), atol=1e-11, rtol=0)
 
 
 def test_budgets_are_reported(preps):

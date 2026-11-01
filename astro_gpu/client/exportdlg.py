@@ -3,8 +3,8 @@
 The image is the whole composition of Post at full resolution (each layer rendered by the engine on the whole grid, as
 the previous version did), composed in the render worker. Files go into the folder of the File line and nowhere else
 (the layers and the masks into its subfolders ``layers`` and ``masks``); a folder inside the project's results is
-refused. What the engine does not have yet (XISF, other colour profiles, the linear outputs, the history in the header)
-is shown in Spec mode only, disabled, marked ◇.
+refused. The FITS file has the astrometric solution (WCS) and the processing history in its header. What the engine
+does not have yet (XISF, other colour profiles, the linear outputs) is shown in Spec mode only, disabled, marked ◇.
 """
 from __future__ import annotations
 
@@ -126,12 +126,13 @@ class ExportDialog(QDialog):
         v.addWidget(self.warn)
         v.addWidget(label(_("Include"), "h2"))
         self.c_wcs = self._check(v, _("Astrometric solution (WCS) in the header"), True)
-        self.c_hist = self._check(v, _("Processing history (a file next to the image)"), True)
+        self.c_hist = self._check(v, _("Processing history (a file next to the image; in the header too for FITS)"),
+                                  True)
         self.c_layers = self._check(v, _("Each layer as a separate file"), False)
         self.c_masks = self._check(v, _("The masks"), False)
         self.spec_boxes = []
         if spec:
-            for text in (_("Processing history in the header"), _("Each workflow's output, linear (FITS)")):
+            for text in (_("Each workflow's output, linear (FITS)"),):
                 c = self._check(v, text + "  ◇", False)
                 c.setEnabled(False)
                 c.setToolTip("◇ " + _("Not in the engine yet."))

@@ -101,17 +101,21 @@ def median_filter(x: torch.Tensor, k: int = 5, rows: int = 512) -> torch.Tensor:
 
 
 def percentile(x: torch.Tensor, q, mask: torch.Tensor | None = None):
-    """Percentile(s) exactly like numpy's default (linear interpolation), via one GPU sort."""
+    """Percentile(s) exactly like numpy's default (linear interpolation): one GPU sort, or on the CPU a selection of
+    the order statistics needed (numpy's partition, O(n): the same values a sort puts there, several times faster)."""
     v = x[mask] if mask is not None else x.reshape(-1)
-    v = torch.sort(v).values
     n = v.numel()
     qs = [q] if isinstance(q, (int, float)) else list(q)
+    pos = [qq / 100 * (n - 1) for qq in qs]
+    idx = [(int(math.floor(p)), min(int(math.floor(p)) + 1, n - 1)) for p in pos]
+    if v.device.type == "cpu" and v.dtype == torch.float32 and n > 4096 and not bool(torch.isnan(v).any()):
+        import numpy as np
+        v = torch.from_numpy(np.partition(v.detach().numpy(), sorted({k for pair in idx for k in pair})))
+    else:
+        v = torch.sort(v).values
     out = []
-    for qq in qs:
-        pos = qq / 100 * (n - 1)
-        i0 = int(math.floor(pos))
-        i1 = min(i0 + 1, n - 1)
-        out.append(float(v[i0] + (pos - i0) * (v[i1] - v[i0])))
+    for p, (i0, i1) in zip(pos, idx):              # the same float32 arithmetic on the same two values as before
+        out.append(float(v[i0] + (p - i0) * (v[i1] - v[i0])))
     return out[0] if isinstance(q, (int, float)) else out
 
 

@@ -8,8 +8,9 @@ the composed image.
 * The service keeps the engines it opened and drops the least recently used one when host memory runs short (or a
   byte budget is reached). A GPU out-of-memory error renders again on the CPU, with a note.
 * ``masks(folder, scale, region)``: the star mask and the H-alpha map of Post's mask parts.
-* ``export_rgb(rgb, out_dir, options, wcs, origin, history)``: TIFF 16 / 32f, PNG 16, JPEG, FITS 32f with the WCS, in
-  sRGB, at full size or reduced, in an orientation of v1 (rot90 / flip), with a history file.
+* ``export_rgb(rgb, out_dir, options, wcs, origin, history)``: TIFF 16 / 32f, PNG 16, JPEG, FITS 32f with the WCS and
+  the history in its header (ROWORDER TOP-DOWN: Siril shows it the right way up), in sRGB, at full size or reduced, in
+  an orientation of v1 (rot90 / flip), with a history file.
 """
 from __future__ import annotations
 
@@ -142,27 +143,30 @@ class LayerService:
         return availability(layer_kind(folder), has_denoise(folder))
 
     # ------------------------------------------------------------------ rendering
-    def _render(self, folder, s, scale, region=None, fit=None):
+    def _render(self, folder, s, scale, region=None, fit=None, **kw):
         """(Layers, note): rendered on the service's device; on a GPU out-of-memory error, again on the CPU."""
         eng = self.engine(folder)
         try:
-            return eng.render(s, scale, region, fit), ""
+            return eng.render(s, scale, region, fit, **kw), ""
         except torch.OutOfMemoryError:
             if eng.dev.type != "cuda":
                 raise
         k = self._key(folder)
         self.evict(k)
         self._on_cpu.add(k)
-        return self.engine(k).render(s, scale, region, fit), NOTE_CPU
+        return self.engine(k).render(s, scale, region, fit, **kw), NOTE_CPU
 
     def settings(self, folder, base: Any = None, sliders: dict[str, float] | None = None):
         """The render settings of a layer: its base moved by its slider positions."""
         return settings_at(layer_kind(folder), base, sliders, has_denoise(folder))
 
     def render(self, folder, base: Any = None, sliders: dict[str, float] | None = None, scale: float = 0.25,
-               region=None, part: str | None = None, fit: dict | None = None) -> LayerImage:
+               region=None, part: str | None = None, fit: dict | None = None, *, draft: bool = False,
+               stop=None) -> LayerImage:
         """A workflow layer at a scale (1, 1/2, 1/4...), or a region (x0, x1, y0, y1) of the full-resolution grid.
-        ``part``: None, 'stars' (the layer minus its starless image, clipped at 0) or 'starless' (engine layers)."""
+        ``part``: None, 'stars' (the layer minus its starless image, clipped at 0) or 'starless' (engine layers).
+        ``draft``: a quick look while a slider moves (engine layers draw their stars on a reduced grid); ``stop()``:
+        True abandons the rendering between two of its stages (``engine.Cancelled``)."""
         if part not in PARTS:
             raise ValueError(f"unknown layer part {part!r} (allowed: {PARTS})")
         kind = layer_kind(folder)
@@ -170,7 +174,7 @@ class LayerService:
             raise ValueError("only a layer with a star model splits into stars and starless")
         s = self.settings(folder, base, sliders)
         t0 = time.perf_counter()
-        lay, note = self._render(folder, s, scale, region, fit)
+        lay, note = self._render(folder, s, scale, region, fit, draft=draft and region is None and scale < 1, stop=stop)
         if part == "starless":
             img = lay.starless
         elif part == "stars":
@@ -179,7 +183,7 @@ class LayerService:
             img = lay.final
         rgb = img.float().cpu().numpy()
         eng = self.engine(folder)
-        info = {"kind": kind, "scale": lay.scale, "region": lay.info.get("region"), "part": part,
+        info = {"kind": kind, "scale": lay.scale, "region": lay.info.get("region"), "part": part, "draft": draft,
                 "grid": [int(eng.W), int(eng.H)], "drizzle_scale": float(eng.SC), "device": str(eng.dev),
                 "render_ms": round(1000 * (time.perf_counter() - t0), 1), "note": note,
                 "settings": s.model_dump(mode="json")}
@@ -197,8 +201,18 @@ class LayerService:
         out: dict[str, np.ndarray | None] = {"stars": None, "halpha": None}
         with torch.no_grad():
             if isinstance(eng, RenderEngine):
-                lay, _ = self._render(folder, RenderSettings(), scale, region)
-                st = _smoothstep(ops.luminance(lay.stars.float()), 0.03, 0.15)
+                # the star layer alone (not the nebula), in caches of its own: the images shown stay cached
+                try:
+                    stars = eng.stars_only(RenderSettings(), scale, region)
+                except torch.OutOfMemoryError:
+                    if eng.dev.type != "cuda":
+                        raise
+                    k = self._key(folder)
+                    self.evict(k)
+                    self._on_cpu.add(k)
+                    eng = self.engine(k)
+                    stars = eng.stars_only(RenderSettings(), scale, region)
+                st = _smoothstep(ops.luminance(stars.float()), 0.03, 0.15)
                 st = F.max_pool2d(st[None, None], 3, 1, 1)[0, 0]
                 out["stars"] = ops.gaussian_blur(st, 1.0).clamp(0, 1).cpu().numpy()
             out["halpha"] = self._halpha(eng, f, region)
@@ -356,8 +370,17 @@ def export_rgb(rgb: np.ndarray, out_dir: str | Path, options: ExportOptions | di
             hdr = fits.Header()
             if wcs is not None:
                 hdr = oriented_wcs(_wcs_header(wcs), H, W, origin, o.rot90, o.flip, zoom)
+            # the rows bottom up, as FITS has them (Siril shows the first row at the bottom and ignores ROWORDER for
+            # display): the solution follows, exactly (the SIP distortion terms too)
+            hdr = flip_rows_wcs(hdr, img.shape[1]) if wcs is not None else hdr
             hdr["COLORSPC"] = ("sRGB", "display-referred, non-linear")
-            fits.PrimaryHDU(img.astype(np.float32), header=hdr).writeto(p, overwrite=True)
+            hdr["ROWORDER"] = ("BOTTOM-UP", "first row is the bottom of the image")
+            hdr["PROGRAM"] = ("astro_gpu", "Post export")
+            if history is not None:
+                hdr["DATE"] = (str(history.get("created") or "")[:19], "export date")
+                for line in history_lines(history):
+                    hdr.add_history(line)
+            fits.PrimaryHDU(np.ascontiguousarray(img[:, ::-1], np.float32), header=hdr).writeto(p, overwrite=True)
         files.append(p)
     if history is not None:
         p = out_dir / f"{o.name}_history.json"
@@ -365,6 +388,82 @@ def export_rgb(rgb: np.ndarray, out_dir: str | Path, options: ExportOptions | di
         files.append(p)
     progress(1.0, "done")
     return files
+
+
+def flip_rows_wcs(header, H: int):
+    """The WCS header of an image whose H rows are put in the reverse order (row y becomes H - 1 - y): CRPIX2 mirrored,
+    the second column of CD negated and each SIP term multiplied by the sign its power of v takes (v becomes -v'), so
+    that every pixel keeps its exact sky position."""
+    import re
+
+    from astropy.io import fits
+    h = fits.Header(header, copy=True)
+    h["CRPIX2"] = H + 1 - float(h["CRPIX2"])
+    form = "CD" if any(f"CD{i}_{j}" in h for i in (1, 2) for j in (1, 2)) else "PC"
+    for i in (1, 2):                                     # (a PC matrix left out is the identity)
+        h[f"{form}{i}_2"] = -float(h.get(f"{form}{i}_2", 1.0 if form == "PC" and i == 2 else 0.0))
+    for key in list(h.keys()):
+        m = re.fullmatch(r"(A|B|AP|BP)_(\d+)_(\d+)", key)
+        if not m:
+            continue
+        q = int(m.group(3))
+        sign = (-1) ** q * (-1 if m.group(1) in ("B", "BP") else 1)   # B and BP are corrections of v: one sign more
+        h[key] = sign * float(h[key])
+    return h
+
+
+def _ascii(text) -> str:
+    """A FITS header holds ASCII only: accents dropped, the rest replaced."""
+    import unicodedata
+    t = unicodedata.normalize("NFKD", str(text)).encode("ascii", "ignore").decode("ascii")
+    return t if t.strip() else "?"
+
+
+def history_lines(history: dict) -> list[str]:
+    """The processing history of an export as the HISTORY lines of a FITS header: the project, the canvas, then the
+    composition from the bottom up (each layer, its settings, its own filters, the filters on everything below)."""
+    def fmt(d: dict) -> str:
+        return ", ".join(f"{k}={v:g}" if isinstance(v, (int, float)) and not isinstance(v, bool) else f"{k}={v}"
+                         for k, v in sorted((d or {}).items()))
+
+    lines = [f"astro_gpu Post export, {history.get('created', '')}", f"project: {history.get('project', '')}"]
+    cv = history.get("canvas")
+    if cv:
+        lines.append(f"canvas {cv['width']} x {cv['height']} px at {tuple(cv['origin'])} of the stack grid")
+    wf = history.get("workflow")
+    if isinstance(wf, dict):                              # one workflow's export (api.export_workflow)
+        sl = fmt({k: round(float(v) - 2, 2) for k, v in (history.get("sliders") or {}).items()})
+        lines.append(f"workflow {wf.get('id')} {wf.get('name', '')}; base {history.get('base')}"
+                     + (f"; sliders {sl}" if sl else ""))
+    layers = list(history.get("layers") or [])
+    wfs = history.get("workflows") or {}
+    for lay in reversed(layers):                          # bottom first: the order of the composition
+        if not isinstance(lay, dict):
+            lines.append(f"layer {lay}")
+            continue
+        if lay.get("kind") == "filter" and lay.get("target"):
+            continue
+        state = "" if lay.get("visible", True) else " (hidden)"
+        blend = f"{lay.get('mode', 'Normal')} {float(lay.get('opacity', 100)):g}%"
+        mask = ", masked" if lay.get("mask") else ""
+        if lay.get("kind") == "filter":
+            lines.append(f"filter on everything below: {lay.get('name')}{state}, {blend}{mask}; {fmt(lay.get('params'))}")
+            continue
+        if lay.get("kind") == "workflow":
+            w = wfs.get(str(lay.get("pid"))) or {}
+            src = f"workflow {lay.get('pid')}" + (f" ({w['folder']})" if w.get("folder") else "")
+            extra = f"; base {lay['base']}" if lay.get("base") else ""
+            extra += f"; part {lay['part']}" if lay.get("part") else ""
+        else:
+            src = f"stage image {lay.get('key')}"
+            extra = "" if lay.get("linked", True) else "; channels stretched apart"
+        sl = fmt({k: round(v - 2, 2) for k, v in (lay.get("sliders") or {}).items()})
+        lines.append(f"layer {lay.get('name')}{state}: {src}, {blend}{mask}{extra}" + (f"; sliders {sl}" if sl else ""))
+        for f in [x for x in layers if x.get("kind") == "filter" and x.get("target") == lay.get("id")][::-1]:
+            fs = "" if f.get("visible", True) else " (hidden)"
+            lines.append(f"  its filter {f.get('name')}{fs}, {f.get('mode', 'Normal')} {float(f.get('opacity', 100)):g}%"
+                         f"{', masked' if f.get('mask') else ''}; {fmt(f.get('params'))}")
+    return [_ascii(x) for x in lines]
 
 
 def _wcs_header(wcs):

@@ -2,10 +2,13 @@
 
 * ``LayerSource`` is the ``postengine.Provider`` on the engine: a workflow's output folder rendered by a ``LayerService``
   (render/layers.py) with a base and slider positions, on the canvas every layer covers. The release render, the 100 %
-  region and the export are the engine's own renderings; nothing here changes a pixel of them.
-* ``Renderer`` runs a request (a draft at 1/4, the screen at 1/2, a region at full resolution, the before image, the
-  thumbnails) and an export. ``RenderWorker`` is the QThread that owns one: requests are coalesced by lane, the newest of
-  a lane wins, and a request being computed is abandoned at its next checkpoint when a newer one arrives.
+  region and the export are the engine's own renderings; nothing here changes a pixel of them. It also renders the
+  image layers: a stage result's linear image (an array, a file, or a function giving one, registered under its key;
+  else found from the key by ``image_resolver``), stretched by the simple rendering (render/simple.py).
+* ``Renderer`` runs a request (a draft while a slider moves, the screen at 1/2 - first the 1/4 when ``refine`` -, a
+  region at full resolution, the before image, the thumbnails) and an export. ``RenderWorker`` is the QThread that owns
+  one: requests are coalesced by lane, the newest of a lane wins, and a request being computed is abandoned at its next
+  checkpoint (between two layers, or two stages of the engine) when a newer one arrives.
 * The device: a GPU that no run is using, else the CPU; a GPU out-of-memory error renders again on the CPU, with a note.
 
     w = RenderWorker(project)
@@ -33,7 +36,9 @@ from ..postengine import (
     Composer,
     Provider,
     Superseded,
+    is_pixel,
     only_layer,
+    source_id,
     thumb_of,
 )
 
@@ -42,6 +47,11 @@ OUTPUT_STAGES = ("render_prep", "render_prep_learned", "render_simple")
 #: the budgets of DESIGN §5.3, in seconds
 BUDGET = {"draft": 0.15, "half": 1.0, "region": 2.0}
 DRAFT_LEVEL, HALF_LEVEL = 2, 1
+#: the draft's level on the CPU: an eighth of the image (the nebula of a 6000-pixel image in about 0.3 s)
+CPU_DRAFT_LEVEL = 3
+#: the main arrays of the stage results an image layer's key can name without its file (``store_image_resolver``)
+STAGE_IMAGES = {"stack": "drz_full", "background": "astro", "denoise": "n2n_full", "starless": "sl_final",
+                "render_simple": "lin", "render_prep": "N", "color": None}
 NOTE_CPU_TEXT = "GPU memory full: rendered on the CPU"
 
 
@@ -133,6 +143,54 @@ def api_resolver(project) -> Callable[[int], Folder | None]:
     return resolve
 
 
+def load_image(source) -> np.ndarray:
+    """The pixels of an image layer's source: an array (numpy or torch), a file (.npy, .fits, .tif, .png, .jpg) or a
+    function returning either (called here, in the render worker)."""
+    if callable(source):
+        source = source()
+    if hasattr(source, "detach") and hasattr(source, "cpu"):
+        source = source.detach().cpu().numpy()
+    if isinstance(source, np.ndarray):
+        return source
+    path = Path(source)
+    suf = path.suffix.lower()
+    if suf == ".npy":
+        return np.load(path)
+    if suf in (".fits", ".fit", ".fts"):
+        from astropy.io import fits
+        with fits.open(path) as h:
+            hdu = next(x for x in h if x.data is not None and x.data.ndim >= 2)
+            return np.asarray(hdu.data, np.float32)
+    if suf in (".tif", ".tiff"):
+        import tifffile
+        return tifffile.imread(path)
+    a = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if a is None:
+        raise OSError(f"cannot read the image {path}")
+    return a[..., ::-1] if a.ndim == 3 else a
+
+
+def store_image_resolver(root) -> Callable[[str], Any]:
+    """key -> the file of a stage result in the project's store: "<stage>/<store key>[/<array>]" (the array's name with
+    or without .npy; without it, the stage's main image, STAGE_IMAGES), or None when it is not there."""
+    store = Path(root) / "store"
+
+    def resolve(key: str):
+        parts = [x for x in str(key).replace("\\", "/").split("/") if x]
+        if len(parts) < 2 or any(x in ("..", ".") for x in parts):
+            return None
+        d = store / parts[0] / parts[1]
+        if not (d / "manifest.json").is_file():
+            return None
+        name = parts[2] if len(parts) > 2 else STAGE_IMAGES.get(parts[0])
+        if name is None:
+            big = sorted(d.glob("*.npy"), key=lambda f: f.stat().st_size, reverse=True)
+            return big[0] if big else None
+        f = d / (name if name.endswith((".npy", ".fits", ".tif")) else name + ".npy")
+        return f if f.is_file() else None
+    return resolve
+
+
 def bases_of(project) -> Callable[[Any], Any]:
     """A named rendering of the project -> its settings; anything else (a preset, settings, None) as it is."""
     def base(b):
@@ -155,8 +213,13 @@ class LayerSource(Provider):
         self._masks: dict[tuple, dict] = {}
         self._cv: Canvas | None = None
         self._ref: Grid | None = None
-        self._pids: list[int] = []
+        self._pids: list = []
         self.engine_ms = 0.0                                  # time the engine spent since the last reset
+        # the image layers: their sources by key (set from the GUI through the worker), the images loaded
+        self.image_sources: dict[str, Any] = {}
+        self.image_resolver: Callable[[str], Any] | None = None
+        self._img: dict[str, Any] = {}                       # key -> (SimpleRenderEngine, Grid), or None: not there
+        self._img_epoch: dict[str, int] = {}
 
     # ------------------------------------------------------------ the results on disk
     def folder(self, pid: int) -> Folder | None:
@@ -179,22 +242,67 @@ class LayerSource(Provider):
             self._epoch[pid] = self._epoch.get(pid, 0) + 1
             if old is not None:
                 self.service.evict(old.path)
+        for key in [k for k, ent in self._img.items() if ent is None]:   # a missing image may be there now
+            del self._img[key]                        # (found, it changes the layers composed: a new canvas)
         if changed:
             self._masks.clear()
             self._cv = None
         return changed
 
-    def version(self, pid: int) -> int:
+    # ------------------------------------------------------------ the image layers
+    @staticmethod
+    def _is_image(sid) -> bool:
+        return isinstance(sid, tuple) and len(sid) == 2 and sid[0] == "image"
+
+    def set_image(self, key: str, source) -> None:
+        """The source of an image layer (an array, a file, a function); a new source for a key replaces its image."""
+        self.image_sources[key] = source
+        if key in self._img:
+            self._img.pop(key)
+            self._img_epoch[key] = self._img_epoch.get(key, 0) + 1     # (a new version: the canvas is measured again)
+
+    def image(self, key: str):
+        """(engine, grid) of an image layer's key, loaded once; None when its source cannot be found or read."""
+        if key not in self._img:
+            src = self.image_sources.get(key)
+            if src is None and self.image_resolver is not None:
+                try:
+                    src = self.image_resolver(key)
+                except Exception:  # noqa: BLE001 - a key that cannot be resolved: the layer says its image is missing
+                    src = None
+            ent = None
+            if src is not None:
+                from ...render.simple import SimpleRenderEngine
+                try:
+                    eng = SimpleRenderEngine.from_array(load_image(src), device="cpu")
+                    ent = (eng, Grid(eng.W, eng.H, (0, eng.W, 0, eng.H), "image"))
+                except Exception:  # noqa: BLE001 - an unreadable source: the same (the other layers are composed)
+                    ent = None
+            self._img[key] = ent
+        return self._img[key]
+
+    def version(self, pid) -> int:
+        if self._is_image(pid):
+            return self._img_epoch.get(pid[1], 0)
         return self._epoch.get(pid, 0)
 
-    def available(self, pid: int) -> bool:
+    def available(self, pid) -> bool:
+        if self._is_image(pid):
+            return self.image(pid[1]) is not None
         return self.folder(pid) is not None
 
-    def previous(self, pid: int) -> bool:
+    def previous(self, pid) -> bool:
+        if self._is_image(pid):
+            return False
         f = self.folder(pid)
         return bool(f and f.previous)
 
-    def grid(self, pid: int) -> Grid:
+    def grid(self, pid) -> Grid:
+        if self._is_image(pid):
+            ent = self.image(pid[1])
+            if ent is None:
+                raise FileNotFoundError(f"the image {pid[1]!r} is not there")
+            return ent[1]
         f = self.folder(pid)
         if f is None:
             raise FileNotFoundError(f"workflow {pid} has no result to show")
@@ -203,7 +311,7 @@ class LayerSource(Provider):
             self._grids[k] = read_grid(f.path)
         return self._grids[k]
 
-    def kind(self, pid: int) -> str:
+    def kind(self, pid) -> str:
         return self.grid(pid).kind
 
     # ------------------------------------------------------------ geometry
@@ -251,7 +359,9 @@ class LayerSource(Provider):
         return arr
 
     # ------------------------------------------------------------ images
-    def layer(self, lay: dict, level: int, box) -> np.ndarray:
+    def layer(self, lay: dict, level: int, box, draft: bool = False, stop=None) -> np.ndarray:
+        if lay["kind"] == "image":
+            return self._image_layer(lay, level, box)
         pid = lay["pid"]
         f = self.folder(pid)
         cv = self._cv
@@ -260,14 +370,18 @@ class LayerSource(Provider):
         base = self.bases(lay.get("base"))
         part = lay.get("part")
         full = tuple(box) == (0, 0, *whole)
+        from ...render.engine import Cancelled
         try:
             if level == 0 and not full:
                 li = self.service.render(f.path, base, lay.get("sliders"), 1.0,
-                                         region=tuple(int(round(v)) for v in region), part=part)
+                                         region=tuple(int(round(v)) for v in region), part=part, stop=stop)
                 arr = self._cut(li.rgb, 1, region, size, False)
             else:                                           # the whole grid at 1/fi: v1's rendering, cut to the canvas
-                li = self.service.render(f.path, base, lay.get("sliders"), 1.0 / fi, part=part)
+                li = self.service.render(f.path, base, lay.get("sliders"), 1.0 / fi, part=part, draft=draft,
+                                         stop=stop)
                 arr = self._cut(li.rgb, fi, region, size, True)
+        except Cancelled:
+            raise Superseded() from None
         except ValueError:                                  # a part of a layer that has no star model any more
             if part is None:
                 raise
@@ -280,14 +394,33 @@ class LayerSource(Provider):
         self.engine_ms += float(li.info.get("render_ms") or 0.0)
         return np.ascontiguousarray(np.moveaxis(arr, 0, -1), np.float32)
 
+    def _image_layer(self, lay: dict, level: int, box) -> np.ndarray:
+        """An image layer: the stage result stretched like a simple layer (Sky, Contrast, Saturation), linked or each
+        channel apart, cut to the canvas."""
+        from ...render.sliders import settings_at
+        sid = source_id(lay)
+        eng = self.image(lay["key"])[0]
+        eng.prep["linked"] = bool(lay.get("linked", True))
+        s = settings_at("simple", None, lay.get("sliders"), has_denoise=False)
+        fi, region, size = self._window(sid, level, box)
+        t0 = time.perf_counter()
+        if level == 0 and tuple(box) != (0, 0, *self._cv.size(0)):
+            reg = tuple(int(round(v)) for v in region)
+            arr = self._cut(eng.render(s, 1.0, region=reg).final.cpu().numpy(), 1, region, size, False)
+        else:
+            arr = self._cut(eng.render(s, 1.0 / fi).final.cpu().numpy(), fi, region, size, True)
+        self.engine_ms += 1000 * (time.perf_counter() - t0)
+        return np.ascontiguousarray(np.moveaxis(arr, 0, -1), np.float32)
+
     def has(self, name: str) -> bool:
+        wf = [p for p in self._pids if not self._is_image(p)]
         if name == "stars":
-            return any(self.kind(p) == "engine" for p in self._pids if self.available(p))
-        return any(self.available(p) for p in self._pids)
+            return any(self.kind(p) == "engine" for p in wf if self.available(p))
+        return any(self.available(p) for p in wf)
 
     def _mask_pid(self, name: str) -> int | None:
-        for p in self._pids:                                  # bottom first
-            if self.available(p) and (name != "stars" or self.kind(p) == "engine"):
+        for p in self._pids:                                  # bottom first (the workflows: the images have no map)
+            if not self._is_image(p) and self.available(p) and (name != "stars" or self.kind(p) == "engine"):
                 return p
         return None
 
@@ -330,6 +463,7 @@ class Request:
     thumbs: bool = False                                # also the mask thumbnails
     overlay: bool = False                               # a red overlay of the first wanted mask
     need_thumbs: tuple = ()                             # (thumbs kind) the ids of the workflow layers to thumbnail
+    refine: bool = False                                # (half) first the exact 1/4, shown at once ("refine")
     seq: int = 0
     tag: Any = None
 
@@ -353,11 +487,12 @@ class Result:
     notes: set = field(default_factory=set)
     device: str = "cpu"
     tag: Any = None
+    missing: tuple = ()                                 # image layers' keys whose image was not found
 
 
 _RETIRED: list = []                    # workers asked to stop that were still busy: kept until their thread ends
-LANES = {"draft": "main", "half": "main", "region": "region", "before": "before", "inspect": "inspect",
-         "thumbs": "thumbs"}
+LANES = {"draft": "main", "half": "main", "refine": "main", "region": "region", "before": "before",
+         "inspect": "inspect", "thumbs": "thumbs"}
 PRIORITY = ("main", "region", "before", "inspect", "thumbs")
 
 
@@ -386,7 +521,10 @@ class Renderer:
         self.wcs_of: Callable[[int], Any] | None = None      # pid -> the wcs.fits of the workflow (the FITS export)
         self.writer: Callable | None = None                  # (rgb, folder, ExportOptions, meta) -> files
 
-    def run(self, req: Request, stop: Callable[[], bool] | None = None) -> Result:
+    def run(self, req: Request, stop: Callable[[], bool] | None = None,
+            emit: Callable[[Result], None] | None = None) -> Result:
+        """The request's image. ``emit``: where a "refine" result goes before the half image (the exact 1/4, when
+        ``req.refine``)."""
         t0 = time.perf_counter()
         cp = self.composer
         self.source.engine_ms = 0.0
@@ -395,7 +533,14 @@ class Renderer:
         layers = req.layers
         if req.kind == "before":
             layers = self._before_layers(layers)
-        comp = cp.compose(layers, req.level, req.box, want=req.want, thumbs=req.thumbs, stop=stop)
+        if req.kind == "half" and req.refine and req.box is None and emit is not None:
+            first = Request(kind="refine", layers=layers, level=req.level + 1, want=req.want, overlay=req.overlay,
+                            seq=req.seq, tag=req.tag)
+            emit(self.run(first, stop))
+            t0 = time.perf_counter()
+            self.source.engine_ms = 0.0
+        comp = cp.compose(layers, req.level, req.box, want=req.want, thumbs=req.thumbs, stop=stop,
+                          draft=req.kind == "draft")
         if stop is not None and stop():                       # a newer request came meanwhile: this answer is stale
             raise Superseded()
         if comp is None:
@@ -407,28 +552,32 @@ class Renderer:
             res.overlay = red_overlay(comp.masks[req.want[0]])
         res.previews = {lay["pid"] for lay in layers if lay["kind"] == "workflow" and self.source.available(lay["pid"])
                         and self.source.previous(lay["pid"])}
-        if req.kind == "half" and req.box is None:                    # thumbnails of what was just drawn, for free
+        res.missing = tuple(sorted({lay["key"] for lay in layers if lay["kind"] == "image"
+                                    and not self.source.available(source_id(lay))}))
+        if req.kind in ("half", "refine") and req.box is None:        # thumbnails of what was just drawn, for free
             res.layer_thumbs = self._visible_thumbs(layers, cp.canvas_of(layers))
         res.ms = 1000 * (time.perf_counter() - t0)
         return res
 
     def _before_layers(self, layers: list[dict]) -> list[dict]:
-        """The bottom workflow layer alone: its base, every slider at the suggestion, no filter, no mask. The others
-        stay in the list, hidden, so that the canvas is the same as the composition's."""
-        wl = [lay for lay in layers if lay["kind"] == "workflow" and self.source.available(lay["pid"])]
+        """The bottom pixel layer alone: its base, every slider at the suggestion, no filter, no mask. The others stay
+        in the list, hidden, so that the canvas is the same as the composition's. Its id is its own (negative), so that
+        its image is cached beside the composition's, not instead of it."""
+        wl = [lay for lay in layers if is_pixel(lay) and self.source.available(source_id(lay))]
         if not wl:
             return []
         bottom = wl[-1]
-        out = [dict(lay, visible=False) for lay in layers if lay["kind"] == "workflow" and lay is not bottom]
-        return out + [dict(bottom, visible=True, opacity=100.0, mode="Normal", sliders={}, mask=None, part=None)]
+        out = [dict(lay, visible=False) for lay in layers if is_pixel(lay) and lay is not bottom]
+        return out + [dict(bottom, id=-abs(bottom["id"]), visible=True, opacity=100.0, mode="Normal", sliders={},
+                           mask=None, part=None)]
 
     def _visible_thumbs(self, layers, canvas) -> dict:
-        """The thumbnails of the workflow layers whose quarter-resolution image is in the cache (the draft's)."""
+        """The thumbnails of the pixel layers whose quarter-resolution image is in the cache (the refine's)."""
         out = {}
         if canvas is None:
             return out
         for lay in layers:
-            if lay["kind"] != "workflow" or not self.source.available(lay["pid"]):
+            if not is_pixel(lay) or not self.source.available(source_id(lay)):
                 continue
             a = self.composer.cached(lay, 2, canvas)
             if a is not None:
@@ -445,7 +594,7 @@ class Renderer:
         for lay in req.layers:
             if stop and stop():
                 raise Superseded()
-            if lay["id"] in req.need_thumbs and lay["kind"] == "workflow" and self.source.available(lay["pid"]):
+            if lay["id"] in req.need_thumbs and is_pixel(lay) and self.source.available(source_id(lay)):
                 res.layer_thumbs[lay["id"]] = thumb_of(self.composer.layer_rgb(lay, 2, (0, 0, W, H), cv))
         res.notes = self.source.notes()
         res.ms = 1000 * (time.perf_counter() - t0)
@@ -487,7 +636,8 @@ def history_of(job: ExportJob, renderer: Renderer, canvas: Canvas | None) -> dic
             "canvas": None if canvas is None else {"width": canvas.W, "height": canvas.H, "origin": list(canvas.origin)},
             "workflows": {str(lay["pid"]): {"folder": str(src.folder(lay["pid"]).path),
                                             "outdated": src.previous(lay["pid"])}
-                          for lay in job.layers if lay["kind"] == "workflow" and src.available(lay["pid"])}}
+                          for lay in job.layers if lay["kind"] == "workflow" and src.available(lay["pid"])},
+            "images": {lay["key"]: lay["name"] for lay in job.layers if lay["kind"] == "image"}}
 
 
 def run_export(renderer: Renderer, job: ExportJob, progress, stop=None,
@@ -507,7 +657,7 @@ def run_export(renderer: Renderer, job: ExportJob, progress, stop=None,
     opts = {"name": job.name, "formats": formats, "size": job.size, "jpeg_quality": job.jpeg_quality}
     ids_with_mask = [lay["id"] for lay in layers if lay.get("mask") is not None]
     stop = stop or (lambda: False)
-    n_steps = 1 + (sum(1 for lay in layers if lay["kind"] == "workflow") if job.each_layer else 0) \
+    n_steps = 1 + (sum(1 for lay in layers if is_pixel(lay)) if job.each_layer else 0) \
         + (len(ids_with_mask) if job.masks else 0)
     done = 0
 
@@ -517,16 +667,23 @@ def run_export(renderer: Renderer, job: ExportJob, progress, stop=None,
     step("composing the image")
     comp = cp.compose(layers, 0, want=(), stop=stop, cache=False)
     files: list[Path] = []
+    # the solution of the bottom layer's grid (the canvas is in its pixels): a workflow's astrometry; an image layer of
+    # the stack grid has none of its own, the first workflow's then (the same grid when the drizzle scales agree)
     pids = [lay["pid"] for lay in reversed(layers) if lay["kind"] == "workflow" and renderer.source.available(lay["pid"])]
-    ref_pid = pids[0]
-    wcs = renderer.wcs_of(ref_pid) if job.wcs and getattr(renderer, "wcs_of", None) else None
+    bottom = next((lay for lay in reversed(layers) if is_pixel(lay) and renderer.source.available(source_id(lay))), None)
+    ref_pid = pids[0] if pids else None
+    if bottom is not None and bottom["kind"] == "image" and ref_pid is not None:
+        ga, gb = renderer.source.grid(ref_pid), renderer.source.grid(source_id(bottom))
+        if (ga.W, ga.H) != (gb.W, gb.H):
+            ref_pid = None
+    wcs = renderer.wcs_of(ref_pid) if job.wcs and ref_pid is not None and getattr(renderer, "wcs_of", None) else None
     meta = {"wcs": wcs, "origin": canvas.origin, "wf": ref_pid if job.wcs else None,
             "history": history_of(job, renderer, canvas) if job.history else None}
     files += write(np.ascontiguousarray(np.moveaxis(comp.rgb, -1, 0)), folder, ExportOptions(**opts), meta)
     done += 1
     del comp
     if job.each_layer:
-        for lay in [x for x in layers if x["kind"] == "workflow"]:
+        for lay in [x for x in layers if is_pixel(x)]:
             step(f"layer {lay['name']}")
             c = cp.compose(only_layer(layers, lay["id"]), 0, cache=False, stop=stop)
             o = dict(opts, name=f"{job.name}_layer_{_slug(lay['name'])}")
@@ -582,6 +739,8 @@ class RenderWorker(QThread):
         self.device = ""
         self._busy_at = 0.0
         self._last_busy: str | None = None
+        self._images: dict[str, Any] = {}                     # image sources to hand to the source (GUI -> worker)
+        self._resolver_img: Callable[[str], Any] | None = None
         self.stats: list[tuple[str, float, float]] = []     # (kind, total ms, engine ms), the last ones
         self.start()
 
@@ -603,6 +762,18 @@ class RenderWorker(QThread):
         """The results on disk may have changed (a run ended): look again before the next request."""
         with self._cond:
             self._refresh = True
+
+    def set_image(self, key: str, source) -> None:
+        """The source of an image layer (an array, a file, a function returning one): given to the worker's source
+        before its next request; the pixels are read there, never in the GUI thread."""
+        with self._cond:
+            self._images[key] = source
+
+    def set_image_resolver(self, fn: Callable[[str], Any] | None) -> None:
+        """key -> source for the image layers whose source was not given (a composition opened again)."""
+        with self._cond:
+            self._resolver_img = fn
+            self._images.setdefault("", None)                 # (an empty key: the resolver is applied at the next turn)
 
     def export(self, job: ExportJob):
         with self._cond:
@@ -652,6 +823,8 @@ class RenderWorker(QThread):
         resolver = self._resolver or api_resolver(self.project)
         bases = self._bases or (bases_of(self.project) if self.project is not None else None)
         self.renderer = Renderer(LayerSource(resolver, service, bases), device=dev)
+        root = getattr(self.project, "root", None)
+        self.renderer.source.image_resolver = store_image_resolver(root) if root else None
         if self.project is not None:
             self.renderer.wcs_of = self._wcs_of
             self.renderer.writer = self._write
@@ -768,12 +941,14 @@ class RenderWorker(QThread):
                     self._refresh = False
                     if self.renderer.source.refresh():
                         self.renderer.composer.forget()
+                self._take_images()
                 if lane == "export":
                     self._run_export(work)
                 else:
                     if work.kind in ("half", "inspect"):
                         self._recheck_device()
-                    res = self.renderer.run(work, lambda l=lane, s=work.seq, k=work.kind: self._superseded(l, s, k))
+                    res = self.renderer.run(work, lambda l=lane, s=work.seq, k=work.kind: self._superseded(l, s, k),
+                                            self.rendered.emit)
                     self.stats = (self.stats + [(work.kind, res.ms, res.layer_ms)])[-50:]
                     self.rendered.emit(res)
             except Superseded:
@@ -790,6 +965,24 @@ class RenderWorker(QThread):
             finally:
                 with self._cond:
                     self._running = None
+
+    def _take_images(self):
+        """The image sources and resolver the GUI gave since the last request, into the source (worker thread)."""
+        with self._cond:
+            images, self._images = self._images, {}
+            fn = self._resolver_img
+        if not images:
+            return
+        src = self.renderer.source
+        if fn is not None:
+            store = src.image_resolver
+            src.image_resolver = (lambda key, a=fn, b=store: a(key) or (b(key) if b else None))
+            self._resolver_img = None
+            for key in [k for k, ent in src._img.items() if ent is None]:   # looked for before: look again
+                del src._img[key]
+        for key, source in images.items():
+            if key:
+                src.set_image(key, source)
 
     def _run_export(self, job: ExportJob):
         try:

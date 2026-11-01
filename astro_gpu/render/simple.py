@@ -92,6 +92,47 @@ class SimpleRenderEngine:
         self._proxy: dict = {}
         self.last_fit = None
 
+    @classmethod
+    def from_array(cls, rgb, device: str = "cpu", linked: bool = True, sample: int = 2) -> SimpleRenderEngine:
+        """An engine on a linear image in memory (a stage result Post shows as a layer): (H, W), (H, W, 3) or (3, H, W),
+        any dtype. The covered pixels are the finite ones that are not 0 in every channel; the statistics of the
+        stretch are measured on every ``sample``-th pixel of them (the median and the spreads move by a fraction of a
+        level)."""
+        a = np.asarray(rgb)
+        if a.ndim == 2:
+            a = a[None]
+        elif a.ndim == 3 and a.shape[0] not in (1, 3) and a.shape[2] in (1, 3):
+            a = np.moveaxis(a, -1, 0)
+        if a.ndim != 3 or a.shape[0] not in (1, 3):
+            raise ValueError(f"expected an image (H, W), (H, W, 3) or (3, H, W), got {a.shape}")
+        a = np.ascontiguousarray(a, np.float32)
+        if a.shape[0] == 1:
+            a = np.repeat(a, 3, 0)
+        finite = np.isfinite(a).all(0)
+        if not finite.all():
+            a = np.where(finite[None], a, 0).astype(np.float32)
+        valid = finite & (a != 0).any(0)
+        if not valid.any():
+            valid = finite
+        eng = cls.__new__(cls)
+        eng.dir = None
+        eng.dev = torch.device(device if torch.cuda.is_available() else "cpu")
+        H, W = a.shape[1:]
+        sl = (slice(None), slice(None, None, sample), slice(None, None, sample))
+        v = valid[sl[1:]]
+        eng.prep = {"M": np.eye(3).tolist(), "crop": [0, W, 0, H], "drizzle_scale": 1.0, "linked": bool(linked),
+                    "stats": image_stats(a[sl], v if v.any() else np.ones_like(v)), "exit": "image"}
+        eng.M = np.eye(3)
+        eng.SC = 1.0
+        eng.crop = eng.prep["crop"]
+        eng._host = {"lin": torch.from_numpy(a)}
+        eng.H, eng.W = H, W
+        eng.valid_host = torch.from_numpy(valid)
+        eng.has_raw = False
+        eng._proxy = {}
+        eng.last_fit = None
+        return eng
+
     @property
     def nbytes(self) -> int:
         return sum(t.numel() * t.element_size() for t in self._host.values()) + self.valid_host.numel()
@@ -119,7 +160,9 @@ class SimpleRenderEngine:
 
     # ------------------------------------------------------------------ public
     @torch.no_grad()
-    def render(self, s: SimpleSettings, scale: float = 1.0, region=None, fit: dict | None = None) -> Layers:
+    def render(self, s: SimpleSettings, scale: float = 1.0, region=None, fit: dict | None = None, *,
+               draft: bool = False, stop=None) -> Layers:
+        """``draft`` and ``stop`` are accepted for the engine's interface: a simple rendering is quick and exact."""
         from ..core.determinism import deterministic
         with deterministic():
             return self._render(s, scale, region)

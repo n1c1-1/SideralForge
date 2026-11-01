@@ -462,7 +462,7 @@ class ToyProvider(Provider):
         x0, y0, x1, y1 = box
         return np.ascontiguousarray(a[y0:y1, x0:x1])
 
-    def layer(self, lay, level, box):
+    def layer(self, lay, level, box, draft=False, stop=None):
         self.calls.append((lay["pid"], level, tuple(box)))
         a = self.img[lay["pid"]]
         k = lay["sliders"].get("sky", 2.0) - 2
@@ -700,6 +700,64 @@ def test_the_layer_rules_normalize_and_the_composition_is_saved():
     assert got[0]["mask"]["parts"] == []
 
 
+def test_the_layer_tree_and_its_moves_follow_affinity_photo():
+    """A filter applying to one layer is its child (just above it in the list, under it in the panel); one applying to
+    everything below is a top-level row. postengine.move nests, un-nests and reorders as a drop does, a layer moving
+    with its children; reading the panel from the bottom up is the order of the composition."""
+    pr = ToyProvider()
+    cp = Composer(pr)
+    a, b = new_workflow_layer(1, "A", True), new_workflow_layer(2, "B", False)
+    lo, top = new_filter_layer("levels", a["id"]), new_filter_layer("curves", a["id"])
+    lo["params"].update(black=0.2)
+    top["params"].update(midtones=0.15)
+    g = new_filter_layer("saturation", None)
+    layers = normalize([g, b, top, lo, a])
+    assert [(x["name"], d) for x, d in postengine.rows(layers)] == [
+        ("Saturation", 0), ("B", 0), ("A", 0), ("Curves", 1), ("Levels", 1)]
+    assert [x["name"] for x, _k in postengine.tree(layers)] == ["Saturation", "B", "A"]
+    assert [x["name"] for x, d in postengine.rows(layers, collapsed={a["id"]})] == ["Saturation", "B", "A"]
+    # the bottom-up reading: A, then Levels (its lower child), then Curves, then Saturation on everything below
+    out = cp.compose(layers, 0).rgb
+    ctx = postengine.Ctx(cp, 0, (0, 0, 320, 200))
+    want = postengine.f_curves(postengine.f_levels(pr.img[1], lo["params"], ctx), top["params"], ctx)
+    assert np.allclose(out, np.clip(want, 0, 1), atol=1e-6)
+    # moves: nest, reorder among the children, un-nest to a row of its own, a layer with its children
+    L = postengine.move(layers, g["id"], a["id"], 2)                    # Saturation becomes A's lowest child
+    assert [(x["name"], d) for x, d in postengine.rows(L)] == [("B", 0), ("A", 0), ("Curves", 1), ("Levels", 1),
+                                                             ("Saturation", 1)] and g["target"] == a["id"]
+    L = postengine.move(L, lo["id"], None, 0)                           # Levels out, at the top: everything below
+    assert [(x["name"], d) for x, d in postengine.rows(L)] == [("Levels", 0), ("B", 0), ("A", 0), ("Curves", 1),
+                                                             ("Saturation", 1)] and lo["target"] is None
+    L = postengine.move(L, a["id"], None, 0)                            # A to the top, with its children
+    assert [x["name"] for x in L] == ["Curves", "Saturation", "A", "Levels", "B"]
+    assert L == normalize(list(L))                                      # always a valid list
+    with pytest.raises(ValueError):
+        postengine.move(L, a["id"], b["id"], 0)                         # a pixel layer is never nested
+    with pytest.raises(ValueError):
+        postengine.move(L, lo["id"], g["id"], 0)                        # nor in a filter
+
+
+def test_a_composition_saved_by_the_previous_version_opens_as_it_was():
+    """The saved format is the same list (a filter's target), with a new kind (image): a project saved before the
+    Affinity panel opens with its filters nested where they applied, and composes the same image."""
+    old = [{"id": 7, "kind": "filter", "filter": "sharpen", "name": "Sharpen", "visible": True, "opacity": 100.0,
+            "mode": "Normal", "params": {"strength": 0.6, "radius": 1.2}, "mask": None, "target": None},
+           {"id": 3, "kind": "workflow", "pid": 2, "part": None, "name": "Classic", "visible": True, "opacity": 40.0,
+            "mode": "Screen", "base": None, "sliders": {}, "mask": None},
+           {"id": 5, "kind": "filter", "filter": "saturation", "name": "Saturation", "visible": True, "opacity": 100.0,
+            "mode": "Normal", "params": {"strength": 55.0, "hues": "All"}, "mask": None, "target": 4},
+           {"id": 4, "kind": "workflow", "pid": 1, "part": None, "name": "Full", "visible": True, "opacity": 100.0,
+            "mode": "Normal", "base": None, "sliders": {"sky": 3.0}, "mask": None}]
+    back = postengine.load_layers(json.loads(json.dumps(old)), {1, 2})
+    assert [(x["name"], d) for x, d in postengine.rows(back)] == [("Sharpen", 0), ("Classic", 0), ("Full", 0),
+                                                                ("Saturation", 1)]
+    assert postengine.save_layers(back) == old                          # saved again: the same file
+    pr = ToyProvider()
+    a = Composer(pr).compose(back, 1).rgb
+    b = Composer(pr).compose(postengine.snapshot(old), 1).rgb
+    assert np.array_equal(a, b)
+
+
 def test_a_newer_request_stops_the_composition():
     pr = ToyProvider()
     cp = Composer(pr)
@@ -784,6 +842,50 @@ def test_a_region_at_full_resolution_is_the_engines_region(preps):
     assert np.array_equal(whole, np.moveaxis(full[:, oy:oy + cv.H, ox:ox + cv.W], 0, -1))
     d = np.abs(got - whole[60:300, 100:420]) * 255                           # P4: a region is the crop within 2 levels
     assert float(np.percentile(d[64:-64, 64:-64], 99.9)) <= 2.0
+
+
+def test_a_draft_is_a_quick_look_the_release_stays_the_engines_and_a_newer_request_stops_it(tmp_path):
+    """The draft of an engine layer draws its stars on a reduced grid (the nebula is the exact one at its scale); the
+    release is RenderEngine.render as before, bit for bit, whatever was cached by the drafts; the caches are kept per
+    resolution (a quarter after a half is not computed again); stop() abandons a rendering between two stages and what
+    was finished is reused."""
+    from astro_gpu.render.engine import Cancelled
+    preps = {"full": engine_prep(tmp_path / "small", 240, 360)}               # small: six engines render it
+    s = RenderSettings.from_saved({"sky_level": 26.0, "d10": 5.0})
+    eng = RenderEngine(preps["full"], device=DEV)
+    d = eng.render(s, 0.125, draft=True)
+    e8 = eng.render(s, 0.125)
+    assert torch.equal(d.starless, e8.starless) and not torch.equal(d.stars, e8.stars)
+    corr = float(np.corrcoef(d.stars.mean(0).flatten().numpy(), e8.stars.mean(0).flatten().numpy())[0, 1])
+    assert corr > 0.7 and float(d.stars.max()) > 0.2, corr                                # the same stars, roughly
+    fresh = RenderEngine(preps["full"], device=DEV)
+    for sc in (0.5, 0.25, 0.5):
+        assert torch.equal(eng.render(s, sc).final, fresh.render(s, sc).final), sc
+    t0 = time.perf_counter()
+    again = eng.render(s, 0.25)                                         # kept per resolution: no work
+    assert time.perf_counter() - t0 < 0.2 and torch.equal(again.final, fresh.render(s, 0.25).final)
+    # a slider moved: the stages before it are reused, the image is the fresh engine's
+    s2 = RenderSettings.from_saved({"sky_level": 30.0, "d10": 5.0})
+    assert torch.equal(eng.render(s2, 0.5).final, RenderEngine(preps["full"], device=DEV).render(s2, 0.5).final)
+    # stopped after its first stage, then rendered: the same image
+    n = {"k": 0}
+
+    def stop():
+        n["k"] += 1
+        return n["k"] > 1
+    s3 = RenderSettings.from_saved({"sky_level": 18.0, "chroma": 1.1})
+    with pytest.raises(Cancelled):
+        eng.render(s3, 0.5, stop=stop)
+    assert torch.equal(eng.render(s3, 0.5).final, RenderEngine(preps["full"], device=DEV).render(s3, 0.5).final)
+    # through the layer source: a draft is cached apart and a stopped request says Superseded
+    src = LayerSource(lambda pid: {1: Folder(preps["full"])}.get(pid), LayerService(DEV))
+    cv = src.canvas([1])
+    lay = new_workflow_layer(1, "Full", True)
+    w, h = cv.size(3)
+    a = src.layer(lay, 3, (0, 0, w, h), draft=True)
+    assert a.shape == (h, w, 3) and a.dtype == np.float32
+    with pytest.raises(Superseded):
+        src.layer(dict(lay, sliders={"sky": 3.3}), 1, (0, 0, *cv.size(1)), stop=lambda: True)
 
 
 def test_masks_come_from_the_layer_with_stars(preps):
@@ -965,6 +1067,8 @@ def reference(post, layers=None, level=1, box=None, want=()):
     """The same request rendered apart, by a renderer of its own: what the page shows must be this."""
     svc = LayerService(DEV)
     src = LayerSource(lambda pid: post.folders.get(pid), svc)
+    if post.worker.renderer is not None:                                    # the image layers' sources
+        src.image_sources = dict(post.worker.renderer.source.image_sources)
     return Renderer(src).run(Request(kind="half", layers=snapshot(layers or post.view.layers), level=level, box=box,
                                      want=want))
 
@@ -1034,9 +1138,11 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     assert sat["target"] == full["id"]
     assert [lay["name"] for lay in v.layers] == ["Classic", "Saturation", "Full"]     # just above the layer it applies to
     rows = {r.lay["id"]: r for r in v.rows}
-    assert rows[sat["id"]].sub.text() == 'on "Full" · Normal · 100%'
-    assert any(lb.text() == "↳" for lb in rows[sat["id"]].findChildren(QLabel))
-    assert not any(lb.text() == "↳" for lb in rows[full["id"]].findChildren(QLabel))
+    # the panel (Affinity Photo's): the filter is a child of its layer, indented under it
+    assert [(r.lay["name"], r.depth) for r in v.rows] == [("Classic", 0), ("Full", 0), ("Saturation", 1)]
+    assert rows[sat["id"]].sub.text() == "Normal · 100%" and rows[sat["id"]].toolTip() == 'Applies to "Full" only'
+    assert rows[full["id"]].toggle is not None and rows[full["id"]].toggle.text() == "▾"
+    assert rows[classic["id"]].toggle is None
     # another one, on everything below
     v.select(classic["id"], "layer")
     sh = v.add_filter("sharpen")
@@ -1044,6 +1150,8 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     v.set_target(sh, None)
     assert sh["target"] is None and [lay["name"] for lay in v.layers] == ["Sharpen", "Classic", "Saturation", "Full"]
     assert next(r for r in v.rows if r.lay["id"] == sh["id"]).sub.text() == "on everything below · Normal · 100%"
+    assert [(r.lay["name"], r.depth) for r in v.rows] == [("Sharpen", 0), ("Classic", 0), ("Full", 0),
+                                                         ("Saturation", 1)]
     # the properties of a filter: where it applies, its settings
     v.select(sat["id"], "layer")
     texts = [b.text() for b in widgets_of(v, QPushButton)]
@@ -1276,25 +1384,86 @@ def test_undo_and_redo_one_step_per_action(post):
     assert v.b_undo.isEnabled() and v.sel is not None and v.layer(v.sel[0]) is not None
 
 
-def test_dragging_a_row_reorders_and_retargets_a_filter(post):
+def _drag(v, row, target_row, rel=0.5, x=None):
+    """Drag ``row`` and drop it over ``target_row`` at ``rel`` of its height (and x in the panel, default: left)."""
+    from PySide6.QtCore import QPoint
+    holder = v.lbox.parentWidget()
+    v.lbox.activate()                                                                    # the rows laid out, as on screen
+    QApplication.processEvents()
+    g = target_row.geometry()
+    pt = QPoint(int(x if x is not None else g.left() + 20), int(g.top() + rel * g.height()))
+    v.drag_start(row)
+    v.drag_move(row, holder.mapToGlobal(pt))
+    framed = [r for r in v.rows if r.property("drop")]                                  # a nest: the row says it
+    text = v.drop_text.text() if v.drop_text.isVisible() else (framed[0].sub.text() if framed else "")
+    seen = dict(v._drop or {}), v.drop_line.isVisible(), text, [bool(r.property("drop")) for r in v.rows]
+    v.drag_end(row, holder.mapToGlobal(pt))
+    return seen
+
+
+def test_dragging_a_row_nests_or_unnests_a_filter_with_clear_hints(post):
+    """Affinity Photo's drops: onto a layer nests a filter (the row is framed), between top-level rows it applies to
+    everything below (a full-width line), between a layer's children it joins them (an indented line); a short label
+    says which. A layer moves with its children and is never nested."""
     v = post.view
     full, classic = named(v, "Full"), named(v, "Classic")
     classic["visible"] = True
     v.select(full["id"], "layer")
     f = v.add_filter("scnr")
-    assert [lay["name"] for lay in v.layers] == ["Classic", "SCNR (green removal)", "Full"]
-    v.move_layer(f["id"], 0)                                                             # to the top of the list
-    assert [lay["name"] for lay in v.layers][0] == "SCNR (green removal)" and f["target"] == classic["id"]
-    v.move_layer(f["id"], 3)                                                             # to the bottom
-    assert f["target"] is None and v.layers[-1]["id"] == f["id"]
-    v.move_layer(f["id"], 1)                                                             # just above the Full row
-    assert f["target"] == full["id"] and [lay["name"] for lay in v.layers] == [
-        "Classic", "SCNR (green removal)", "Full"]
-    v.move_layer(full["id"], 0)                                                          # the filter follows its layer
-    assert [lay["name"] for lay in v.layers][:2] == ["SCNR (green removal)", "Full"]
+    v.add_filter("curves")
+    for _i in range(3):
+        post.qapp.processEvents()
+    order = lambda: [(r.lay["name"], r.depth) for r in v.rows]                          # noqa: E731
+    assert order() == [("Classic", 0), ("Full", 0), ("Curves", 1), ("SCNR (green removal)", 1)]
+    row = lambda lid: next(r for r in v.rows if r.lay["id"] == lid)                     # noqa: E731
+    # to the top, between rows: a row of its own, on everything below
+    d, line, text, frames = _drag(v, row(f["id"]), row(classic["id"]), 0.1)
+    assert d["parent"] is None and d["index"] == 0 and line and text == "Applies to everything below"
+    assert not any(frames) and f["target"] is None
+    assert order() == [("SCNR (green removal)", 0), ("Classic", 0), ("Full", 0), ("Curves", 1)]
+    # onto the Classic row: nested in it, the row framed
+    d, line, text, frames = _drag(v, row(f["id"]), row(classic["id"]), 0.5)
+    assert d["parent"] == classic["id"] and not line and text == 'Applies to "Classic" only' and any(frames)
+    assert f["target"] == classic["id"] and order() == [("Classic", 0), ("SCNR (green removal)", 1), ("Full", 0),
+                                                       ("Curves", 1)]
+    # between Full's children (the indented line): it joins them, under Curves (applied before it)
+    rows_now = v.rows
+    d, line, text, _f = _drag(v, row(f["id"]), rows_now[-1], 0.9, x=200)
+    assert d["parent"] == full["id"] and d["index"] == 1 and text == 'Applies to "Full" only'
+    assert d["x0"] > v.rows[0].geometry().left() + 40                                     # the line is indented
+    assert order() == [("Classic", 0), ("Full", 0), ("Curves", 1), ("SCNR (green removal)", 1)]
+    assert [x["name"] for x in v.layers] == ["Classic", "Curves", "SCNR (green removal)", "Full"]
+    # a layer moves with its children; dropped among another layer's children it goes after that group
+    _drag(v, row(full["id"]), row(classic["id"]), 0.1)
+    assert order() == [("Full", 0), ("Curves", 1), ("SCNR (green removal)", 1), ("Classic", 0)]
+    assert full["visible"] and classic["visible"]
+    # one undo step per drop, nothing when it lands where it was
     n = len(v.undo)
-    v.move_layer(classic["id"], v.index(classic["id"]))                                  # dropped where it is: nothing
+    _drag(v, row(classic["id"]), row(classic["id"]), 0.2)
     assert len(v.undo) == n
+    v.do_undo()
+    assert [(r.lay["name"], r.depth) for r in v.rows][0] == ("Classic", 0)
+    # the composition follows the panel: read from the bottom up
+    assert post.settle() and np.array_equal(shown(v), reference(post).rgb)
+    # ▾ / ▸ hides a layer's children in the panel only
+    v.toggle_children(full["id"])
+    assert [r.lay["name"] for r in v.rows] == ["Classic", "Full"] and row(full["id"]).toggle.text() == "▸"
+    assert "2 filters" in row(full["id"]).sub.text()
+    v.toggle_children(full["id"])
+    assert len(v.rows) == 4
+
+
+def test_the_context_menu_and_the_properties_nest_and_unnest(post):
+    v = post.view
+    full, classic = named(v, "Full"), named(v, "Classic")
+    v.select(classic["id"], "layer")
+    f = v.add_filter("levels")
+    assert v.scope_choices(f) == [('"Classic" only', classic["id"]), ("Everything below", None)]
+    v.set_target(f, None)                                                                # out: just above its layer
+    assert [(r.lay["name"], r.depth) for r in v.rows][:2] == [("Levels", 0), ("Classic", 0)]
+    assert v.scope_choices(f)[0] == ('"Classic" only', classic["id"])                    # the layer just under it
+    v.set_target(f, full["id"])
+    assert f["target"] == full["id"] and [(r.lay["name"], r.depth) for r in v.rows][-1] == ("Levels", 1)
 
 
 def test_duplicate_delete_and_rename_follow_the_rules(post):
@@ -1313,7 +1482,7 @@ def test_duplicate_delete_and_rename_follow_the_rules(post):
     v.select(named(v, "Classic")["id"], "layer")
     v.delete()
     v.select(full["id"], "layer")
-    v.delete()                                                                           # the last workflow layer stays
+    v.delete()                                                                           # the last pixel layer stays
     assert [lay["name"] for lay in v.layers] == ["Sharpen", "Full"]
     v.rename(v.layer(full["id"]), "Kept")
     assert v.layers[-1]["name"] == "Kept"
@@ -1378,7 +1547,10 @@ def test_a_slider_drag_is_a_draft_then_the_screen_image(post):
     assert post.settle()
     drafts = [i for i, x in enumerate(log) if x[0] == "draft"]
     halves = [i for i, x in enumerate(log) if x[0] == "half"]
-    assert drafts and ("draft", 2) in log and halves and halves[-1] > drafts[-1]       # the screen image comes last
+    refines = [i for i, x in enumerate(log) if x[0] == "refine"]
+    # on the CPU: drafts at an eighth while it moves, then the exact quarter, then the screen image (the half)
+    assert v.draft_level == 3 and drafts and ("draft", 3) in log and halves and halves[-1] > drafts[-1]
+    assert refines and ("refine", 2) in log and drafts[-1] < refines[-1] < halves[-1]
     assert len(v.undo) == n + 1 and full["sliders"] == {"sky": pytest.approx(3.4)}
     assert np.array_equal(shown(v), reference(post).rgb)
     d = reference(post, level=2).rgb                                                     # the draft is only a draft
@@ -1428,6 +1600,132 @@ def test_before_and_after(post):
     assert v.hint.text().startswith("Drag the divider")
     v.b_cmp.setChecked(False)
     assert v.viewer.compare is None
+
+
+def _stage_image(preps):
+    """A stage's linear image on the grid of the Full layer (3, 480, 720): its calibrated nebula, as a stack is."""
+    return np.load(preps["full"] / "N.npy")
+
+
+def test_an_image_sent_from_a_stage_is_a_normal_layer(post, preps, tmp_path):
+    """add_image_layer: Inspect sends a stage's image (an array, a file or a function); it is a layer on top, stretched
+    automatically and moved by Sky, Contrast and Saturation (linked or each channel), with a blend mode, a mask and
+    filters of its own; the project keeps its key, never its pixels, and finds the image again from the store."""
+    from astro_gpu.client.post3 import ContSlider
+    from astro_gpu.render.simple import SimpleRenderEngine
+    from astro_gpu.render.sliders import settings_at
+    v = post.view
+    arr = _stage_image(preps)
+    lay = post.page.add_image_layer("Stack", arr, "stack/0123abcd")
+    assert v.layers[0] is lay and lay["kind"] == "image" and lay["visible"] and v.sel == (lay["id"], "layer")
+    assert post.settle()
+    assert np.array_equal(shown(v), reference(post).rgb)
+    # its pixels: the simple rendering's automatic stretch of the array, cut to the canvas
+    eng = SimpleRenderEngine.from_array(arr)
+    want = eng.render(settings_at("simple", None, {}, False), 0.5).final.numpy()
+    ox, oy = 24, 8
+    W2, H2 = v.src.canvas[0] // 2, v.src.canvas[1] // 2
+    ref = np.moveaxis(want[:, oy // 2:oy // 2 + H2, ox // 2:ox // 2 + W2], 0, -1)
+    got = post.worker.renderer.source.layer(lay, 1, (0, 0, W2, H2))
+    assert np.array_equal(got, ref)
+    # its settings: the channels and three sliders, nothing that needs a workflow
+    names = [x.name.text() for x in widgets_of(v, ContSlider) if x.name.text() not in ("Opacity",)]
+    assert names == ["Sky", "Contrast", "Saturation"]
+    from PySide6.QtWidgets import QComboBox
+    combos = [[c.itemText(i) for i in range(c.count())] for c in widgets_of(v, QComboBox)]
+    assert ["Linked", "Each channel"] in combos
+    before = shown(v).copy()
+    lay["sliders"]["sky"] = 3.4
+    v.request(final_only=True)
+    assert post.settle() and not np.array_equal(shown(v), before)
+    assert np.array_equal(shown(v), reference(post).rgb)
+    v._set(lay, "linked", False)
+    assert post.settle() and np.array_equal(shown(v), reference(post).rgb)
+    # blendable, maskable, its own filters
+    lay["mode"], lay["opacity"] = "Screen", 60.0
+    v.add_mask(lay)
+    v.add_part(lay, "gradient")
+    v.select(lay["id"], "layer")
+    f = v.add_filter("curves")
+    assert f["target"] == lay["id"] and [(r.lay["name"], r.depth) for r in v.rows][:2] == [("Stack", 0),
+                                                                                        ("Curves", 1)]
+    assert post.settle() and np.array_equal(shown(v), reference(post).rgb)
+    assert "image" in next(r for r in v.rows if r.lay["id"] == lay["id"]).sub.text()
+    # saved by its key, no pixels
+    saved = post.model.p.post["layers"]
+    img = next(x for x in saved if x["kind"] == "image")
+    assert img["key"] == "stack/0123abcd" and img["linked"] is False and len(json.dumps(saved)) < 20_000
+    # a file, a function
+    np.save(tmp_path / "den.npy", arr[:, :, ::-1].copy())
+    lay2 = post.page.add_image_layer("Denoised", tmp_path / "den.npy", "denoise/feed")
+    lay3 = post.page.add_image_layer("Mono", lambda: arr[1] * 2, "fn:mono")
+    assert post.settle() and not v._missing_images
+    assert np.array_equal(shown(v), reference(post).rgb)
+    assert [x["name"] for x in v.layers][:2] == ["Mono", "Denoised"] and lay2["visible"] and lay3["visible"]
+
+
+def test_an_image_layer_is_found_again_from_the_store_or_said_missing(preps, qapp, tmp_path):
+    root = tmp_path / "proj"
+    d = root / "store" / "stack" / "0123abcd"
+    d.mkdir(parents=True)
+    (d / "manifest.json").write_text("{}")
+    arr = _stage_image(preps)
+    np.save(d / "drz_full.npy", arr)
+    assert rsv.store_image_resolver(root)("stack/0123abcd") == d / "drz_full.npy"
+    assert rsv.store_image_resolver(root)("stack/0123abcd/drz_full") == d / "drz_full.npy"
+    assert rsv.store_image_resolver(root)("stack/nothere") is None
+    assert rsv.store_image_resolver(root)("../stack/0123abcd") is None
+    s = Setup(preps, qapp)
+    s2 = s3 = None
+    try:
+        assert s.settle()
+        lay = s.page.add_image_layer("Stack", arr, "stack/0123abcd")
+        lay["sliders"]["contrast"] = 3.0
+        s.view.push()
+        assert s.settle()
+        img = shown(s.view).copy()
+        model = s.model
+        s.close()
+        # opened again: the key is read from the project's store
+        s2 = Setup.__new__(Setup)
+        s2.qapp, s2.folders, s2.model = qapp, s.folders, model
+        s2.worker = RenderWorker(None, resolver=lambda pid: s2.folders.get(pid), device=DEV)
+        s2.page = PostPage3(model, worker=s2.worker)
+        s2.page.set_image_resolver(rsv.store_image_resolver(root))
+        s2.page.resize(1500, 900)
+        s2.page.show()
+        s2.view = s2.page.view
+        assert s2.settle()
+        assert s2.view.layers[0]["kind"] == "image" and np.array_equal(shown(s2.view), img)
+        s2.close()
+        s2 = None
+        # without its result: the layer stays, said not found; the others are composed
+        s3 = Setup.__new__(Setup)
+        s3.qapp, s3.folders, s3.model = qapp, s.folders, model
+        s3.worker = RenderWorker(None, resolver=lambda pid: s3.folders.get(pid), device=DEV)
+        s3.page = PostPage3(model, worker=s3.worker)
+        s3.page.resize(1500, 900)
+        s3.page.show()
+        s3.view = s3.page.view
+        assert s3.settle()
+        row = next(r for r in s3.view.rows if r.lay["kind"] == "image")
+        assert "not found" in row.sub.text() and s3.view.src.img1 is not None
+    finally:
+        for x in (s2, s3):
+            if x is not None:
+                x.close()
+
+
+def test_post_opens_on_an_image_layer_alone(preps, qapp):
+    s = Setup(preps, qapp, rendered=False)
+    try:
+        assert s.page.pages.currentIndex() == 0
+        s.page.add_image_layer("Stack", _stage_image(preps), "stack/0123abcd")
+        assert s.page.pages.currentIndex() == 1
+        assert s.settle()
+        assert s.view.src.canvas == (720, 480) and shown(s.view).shape == (240, 360, 3)
+    finally:
+        s.close()
 
 
 def test_the_composition_is_kept_in_the_project(preps, qapp):
@@ -1579,7 +1877,7 @@ def test_the_export_dialog_follows_the_spec_and_refuses_the_results_folder(expor
     d = ExportDialog(s.view)
     try:
         items = [d.fmt.itemText(i) for i in range(d.fmt.count())]
-        assert "XISF 32-bit float  ◇" in items and len(d.spec_boxes) == 2
+        assert "XISF 32-bit float  ◇" in items and len(d.spec_boxes) == 1                  # (the history is in the header now)
         assert not any(c.isEnabled() for c in d.spec_boxes)
         assert [d.prof.itemText(i) for i in range(d.prof.count())] == [
             "sRGB", "Adobe RGB (1998)  ◇", "Display P3  ◇", "Linear sRGB  ◇"]
@@ -1635,7 +1933,7 @@ def test_the_export_writes_only_into_the_folder_chosen_and_it_reads_back(exporti
             d = ExportDialog(s.view)
             d.dest.setText((s.out / "heart_16bit.tif").as_posix())
             d.fmt.setCurrentIndex(d.fmt.findData(fmt))
-            d.c_hist.setChecked(False)
+            d.c_hist.setChecked(fmt == "fits32f")                                            # (FITS: in its header too)
             run_dialog(s, d)
             assert d.error == "" and (s.out / name).is_file(), (fmt, d.error)
             d.accept()
@@ -1652,9 +1950,16 @@ def test_the_export_writes_only_into_the_folder_chosen_and_it_reads_back(exporti
     with fits.open(s.out / "heart.fits") as h:                                               # 32-bit float with the WCS
         assert h[0].data.dtype.kind == "f" and h[0].data.dtype.itemsize == 4 and h[0].data.shape == (3, cv[1], cv[0])
         w2 = WCS(h[0].header, naxis=2).celestial
+        # the rows bottom up (FITS, Siril), the history of the composition in the header
+        assert h[0].header["ROWORDER"] == "BOTTOM-UP"
+        assert np.abs(np.moveaxis(h[0].data[:, ::-1], 0, -1) - np.clip(expect, 0, 1)).max() < 1e-6
+        hist_lines = [str(x) for x in h[0].header["HISTORY"]]
+    assert any(x.startswith("layer Full") for x in hist_lines) and any("its filter Saturation" in x for x in hist_lines)
+    assert any("sky=1" in x for x in hist_lines), hist_lines
     ox, oy = 24, 8                                                                           # where the canvas starts on the grid
     for x, y in ((0, 0), (300, 200), (cv[0] - 1, cv[1] - 1)):
-        assert np.allclose(w.pixel_to_world_values(ox + x, oy + y), w2.pixel_to_world_values(x, y), atol=1e-9)
+        assert np.allclose(w.pixel_to_world_values(ox + x, oy + y), w2.pixel_to_world_values(x, cv[1] - 1 - y),
+                           atol=1e-9)
     # nothing was written but the files, in the folder chosen: the project and everything else is as it was
     after = tree(s.out.parent)
     new = sorted(set(after) - set(before))
@@ -1891,7 +2196,7 @@ def test_the_new_modules_have_no_mockup_leftovers_and_import_only_the_client():
             if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 top = node.module.split(".")[0]
                 assert top in {"__future__", "collections", "dataclasses", "datetime", "json", "math", "os", "pathlib", "re",
-                               "threading", "time", "typing", "PySide6", "numpy", "cv2", "torch",
+                               "threading", "time", "typing", "PySide6", "numpy", "cv2", "torch", "astropy",
                                "astro_gpu"}, (name, node.module)
     # the GUI thread never renders: no engine, no composition in the widgets' module
     gui = (CLIENT / "post3.py").read_text(encoding="utf-8")
@@ -2190,7 +2495,7 @@ def test_real_the_exports_read_back_with_their_wcs_and_the_reduced_one_matches_t
     ox, oy = 120, 24                                                                   # where the canvas starts on the grid
     for x, y in ((0, 0), (cw // 2, ch // 2), (cw - 1, ch - 1)):
         ra, dec = api.pixel_to_sky(s.project, 1, ox + x, oy + y)
-        ra2, dec2 = w2.pixel_to_world_values(x, y)
+        ra2, dec2 = w2.pixel_to_world_values(x, ch - 1 - y)                                   # (FITS rows bottom up)
         assert abs(ra - ra2) < 2e-5 and abs(dec - dec2) < 2e-5, (x, y, ra, ra2, dec, dec2)
     assert all(p.name.startswith("heart") for p in out.iterdir())
 
