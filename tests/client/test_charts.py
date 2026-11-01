@@ -80,6 +80,9 @@ SHOWN: list = []
 
 @pytest.fixture(autouse=True)
 def env(tmp_path, monkeypatch, qapp):
+    # nothing in this file may block on a modal menu or file dialog (offscreen, nobody to close them)
+    monkeypatch.setattr(cv.ChartView, "run_menu", lambda self, menu, pos: None)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: ("", "")))
     monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
     prefs.load()
     i18n.set_language("en")
@@ -398,13 +401,15 @@ def test_png_export_is_the_chart_at_twice_the_size_without_the_cursor(tmp_path):
 def test_the_context_menu_exports_and_the_dialogs_name_a_default_file(monkeypatch, tmp_path):
     v = synthetic()
     v.add_action("Do the thing", lambda: None)
-    menus, asked = [], []
-    monkeypatch.setattr(cv.ChartView, "run_menu", lambda self, m, pos: menus.append(m))
-    QApplication.sendEvent(v, QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(120, 120), v.mapToGlobal(QPoint(120, 120))))
-    m = menus[-1]
+    asked, shown = [], []
+    m = v.build_menu()                                                           # built, never shown: nothing can block
     assert [a.text() for a in m.actions() if not a.isSeparator()] == ["Do the thing", "Reset zoom", "Export CSV…",
                                                                       "Export PNG…"]
     assert not next(a for a in m.actions() if a.text() == "Reset zoom").isEnabled()
+    # the right click goes through the same menu (the one place that would block is replaced)
+    monkeypatch.setattr(cv.ChartView, "run_menu", lambda self, menu, pos: shown.append(menu))
+    QApplication.sendEvent(v, QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(120, 120), v.mapToGlobal(QPoint(120, 120))))
+    assert len(shown) == 1 and [a.text() for a in shown[0].actions()] == [a.text() for a in m.actions()]
 
     def fake(parent, title, start, filt):
         asked.append((title, Path(start).name, filt))
@@ -418,8 +423,7 @@ def test_the_context_menu_exports_and_the_dialogs_name_a_default_file(monkeypatc
     assert v.export_csv() is None and v.export_png() is None
     i18n.set_language("fr")
     w = synthetic()
-    QApplication.sendEvent(w, QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(9, 9), w.mapToGlobal(QPoint(9, 9))))
-    assert [a.text() for a in menus[-1].actions() if not a.isSeparator()] == [
+    assert [a.text() for a in w.build_menu().actions() if not a.isSeparator()] == [
         "Réinitialiser le zoom", "Exporter en CSV…", "Exporter en PNG…"]
 
 

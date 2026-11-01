@@ -1322,7 +1322,8 @@ class ChartView(QWidget):
         """Show a menu at the mouse and return the action chosen (None: closed): the one place that blocks."""
         return menu.exec(global_pos)
 
-    def contextMenuEvent(self, e):                                       # noqa: N802
+    def build_menu(self) -> QMenu:
+        """The context menu, built and not shown: a test (or a caller) reads and triggers its actions without exec."""
         m = QMenu(self)
         for text, cb in self.actions:
             m.addAction(text).triggered.connect(lambda _c=False, f=cb: f())
@@ -1334,7 +1335,10 @@ class ChartView(QWidget):
         m.addSeparator()
         m.addAction(_("Export CSV…")).triggered.connect(lambda: self.export_csv())
         m.addAction(_("Export PNG…")).triggered.connect(lambda: self.export_png())
-        self.run_menu(m, e.globalPos())
+        return m
+
+    def contextMenuEvent(self, e):                                       # noqa: N802
+        self.run_menu(self.build_menu(), e.globalPos())
 
     def _default_path(self, ext: str) -> str:
         base = _slug(self.export_name or self.title or "chart") + "_" + _time.strftime("%Y%m%d")
