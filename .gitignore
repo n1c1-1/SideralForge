@@ -35,3 +35,6 @@ Thumbs.db
 
 # review images (copies of F:/astro_projets/_review, too big for git)
 docs/pilot/point_etape/
+
+# bench sheets (copies of F:/astro_essais/bench/<case>/sheet_<level>.jpg, too big for git)
+docs/pilot/bench/
