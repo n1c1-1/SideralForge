@@ -1,5 +1,8 @@
 # Banc de qualité : notre moteur face à Siril 1.4
 
+> **Note du 1er novembre, 18 h 45 :** la correction n° 3 (détail fin) a été retirée du moteur. Les chiffres ci-dessous datent d'avant ce retrait et seront refaits avec l'empilement « comme Siril ».
+
+
 *Passe finale, 2026-11-01 : le moteur du dépôt avec les 8 correctifs du chemin de base (commit 8d450c1), six cas,
 Express et Base. Les mesures, les tableaux et les planches se refont avec `tools/bench/` (voir la fin).*
 
