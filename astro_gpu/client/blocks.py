@@ -183,6 +183,7 @@ class Node:
     children: list = field(default_factory=list)
     col: int = 0
     y: float = 0.0
+    w: float = 0.0                             # its width in the graph (the column's)
     _bk: object = None
 
     @property

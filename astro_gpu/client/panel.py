@@ -42,6 +42,9 @@ from .widgets import ACCENT, BAD, NEW, WARN, clear, hline, label
 STATE_COLOR = {"done": "#5fbf7f", "pending": "#8b93a1", "stale": WARN, "running": ACCENT, "failed": BAD,
                "interrupted": WARN, "skipped": "#8b93a1"}
 OPTIONAL_BLOCKS = ("debruitage", "etoiles", "deconv")
+EDITOR_W = 104                      # every editor of a row has this width...
+BACK_W = 22                         # ...then the unit column, then the ↺ button (its room kept when hidden)
+UNIT_MAX = 76                       # a longer unit wraps on two lines
 
 
 def fnum(x, d=1) -> str:
@@ -59,6 +62,42 @@ def kv(rows, pad=14) -> QLabel:
     return lb
 
 
+def unit_column(units) -> int:
+    """The width of the unit column of a panel: its longest unit (a longer one than UNIT_MAX wraps), 0 without any.
+    The same width on every row puts every editor at the same x."""
+    units = [u for u in units if u]
+    if not units:
+        return 0
+    probe = label("", "small")
+    probe.ensurePolished()
+    return min(UNIT_MAX, max(probe.fontMetrics().horizontalAdvance(u) for u in units) + 6)
+
+
+def unit_label(text: str, width: int) -> QLabel:
+    u = label(text or "", "small")
+    u.setFixedWidth(width)
+    u.ensurePolished()
+    u.setWordWrap(bool(text) and u.fontMetrics().horizontalAdvance(text) > width)
+    u.setToolTip(text or "")
+    return u
+
+
+def name_label(text: str) -> QLabel:
+    """The name of a setting: on two lines when the row has no room for it (long French names), never cut."""
+    n = QLabel(text)
+    n.setWordWrap(True)
+    return n
+
+
+def retain(w: QWidget, shown: bool) -> QWidget:
+    """Hidden, the widget keeps its room, so that the columns after it do not move."""
+    sp = w.sizePolicy()
+    sp.setRetainSizeWhenHidden(True)
+    w.setSizePolicy(sp)
+    w.setVisible(shown)
+    return w
+
+
 def spec_mark(row_layout, new):
     """The ◇ mark of what the engine does not have yet: only in Spec mode."""
     if new and prefs.spec():
@@ -72,9 +111,11 @@ class CompactRow(SettingRow):
     """A setting on one line: name, value, back to the suggestion."""
     focused = Signal(dict)
 
-    def __init__(self, r: dict, parent=None):
+    def __init__(self, r: dict, unit_w: int | None = None, parent=None):
         QFrame.__init__(self, parent)
         self.r = r
+        if unit_w is None:
+            unit_w = unit_column([r.get("unit")])
         self.setObjectName("row")
         self.setStyleSheet("QFrame#row { background: transparent; border-radius: 4px; }"
                            "QFrame#row:hover { background: #20242c; } QLabel { background: transparent; }")
@@ -85,7 +126,7 @@ class CompactRow(SettingRow):
         h.setContentsMargins(4, 2, 2, 2)
         h.setSpacing(6)
         outer.addLayout(h)
-        name = QLabel(r["label"])
+        name = name_label(r["label"])
         name.setStyleSheet(f"color: {WARN};" if r["changed"] else "")
         h.addWidget(name, 1)
         spec_mark(h, r["kind"] == "new")
@@ -97,32 +138,22 @@ class CompactRow(SettingRow):
             line.setContentsMargins(4, 0, 2, 4)
             line.addWidget(ed, 1)
             line.addWidget(self._back(r, back))
-            if not back:
-                line.addSpacing(22)
             outer.addLayout(line)
             self.setToolTip(r.get("help") or "")
             return
-        if ed.width() > 90:
-            ed.setFixedWidth(104)
+        ed.setFixedWidth(EDITOR_W)
         h.addWidget(ed)
-        u = label(r.get("unit") or "", "small")
-        u.ensurePolished()
-        u.setFixedWidth(max(60, u.fontMetrics().horizontalAdvance(r["unit"]) + 8) if r.get("unit") else 0)
-        u.setToolTip(r.get("unit") or "")
-        h.addWidget(u)
+        h.addWidget(unit_label(r.get("unit") or "", unit_w))
         h.addWidget(self._back(r, back))
-        if not back:
-            h.addSpacing(22)
         self.setToolTip(r.get("help") or "")
 
     def _back(self, r, shown: bool) -> QPushButton:
         rb = QPushButton("↺")
-        rb.setFixedSize(22, 22)
+        rb.setFixedSize(BACK_W, BACK_W)
         rb.setStyleSheet("padding: 0;")
         rb.setToolTip(_("Back to the suggested value: {v}").format(v=fmt(r["suggested"], r["type"], r.get("choices"))))
         rb.clicked.connect(lambda: self.changed.emit(self.r, None))
-        rb.setVisible(shown)
-        return rb
+        return retain(rb, shown)
 
     def mousePressEvent(self, e):                       # noqa: N802 - Qt's name
         self.focused.emit(self.r)
@@ -226,6 +257,7 @@ class Panel(QWidget):
         self.expert = False
         self.focus_key = None
         self.node = None
+        self._unit_w = 0                    # the unit column of the rows shown
         self.setObjectName("panel")
         self.setFixedWidth(390)
         v = QVBoxLayout(self)
@@ -415,13 +447,18 @@ class Panel(QWidget):
                 self.bv.addSpacing(6)
         if k in ("fond", "debruitage", "etoiles", "deconv"):
             self.methods(p, k)
+        groups = self._groups(p, k)
+        units = [r.get("unit") for _t, rs in groups for r in rs]          # hidden rows too: the column stays put
+        if k == "selection":
+            units += [_("% of the best"), "px", _("× median")]
+        self._unit_w = unit_column(units)
         if k == "selection":
             self.selection(p)
         if k == "empilement" and len(s.sessions) > 1:
             self.stack_sessions()
         if k == "post" and p.end:
             self.bv.addWidget(kv([(_("Output of"), block_title(p, p.end))]))
-        self.settings(p, k)
+        self.settings(p, k, groups)
         self.bv.addStretch(1)
 
     def stack_sessions(self):
@@ -601,21 +638,23 @@ class Panel(QWidget):
                 (_("Minimum transparency"), t, _("% of the best"), 0, 100, 1, "t"),
                 (_("Maximum FWHM") if px else _("Maximum star size"), f, "px" if px else _("× median"),
                  1 if px else 1, 20 if px else 5, 0.1, "f")):
-            row = QHBoxLayout()
+            row = QHBoxLayout()                        # the columns of a setting row (CompactRow)
             row.setContentsMargins(4, 2, 2, 2)
-            row.addWidget(QLabel(name), 1)
+            row.setSpacing(6)
+            row.addWidget(name_label(name), 1)
             e = QDoubleSpinBox()
             e.setLocale(QLocale())                     # a decimal comma in French
             e.setDecimals(0 if which == "t" else 1)
             e.setRange(lo, hi)
             e.setSingleStep(step)
             e.setValue(val)
-            e.setFixedWidth(90)
+            e.setFixedWidth(EDITOR_W)
             e.editingFinished.connect(lambda ed=e, wh=which: self._sel(ed.value(), wh))
             row.addWidget(e)
-            u = label(unit, "small")
-            u.setFixedWidth(90)
-            row.addWidget(u)
+            row.addWidget(unit_label(unit, self._unit_w))
+            room = QWidget()                               # where the ↺ of a setting row is
+            room.setFixedSize(BACK_W, BACK_W)
+            row.addWidget(room)
             self.bv.addLayout(row)
         s.request_selection()
         if s.state(p, "register") == "done":
@@ -641,7 +680,9 @@ class Panel(QWidget):
             t=f"{tmin:.0f}", f=fnum(fmax), unit=unit),
             _("selection {t} % / {f} {unit}").format(t=f"{tmin:.0f}", f=fnum(fmax), unit=unit))
 
-    def settings(self, p, k):
+    def _groups(self, p, k) -> list:
+        """[(group title, [resolved settings])] of the block, with the half-stacks, the neural removal and the
+        starless image where they belong."""
         s = self.s
         groups = list(step_settings(s, p, k))
         if k == "empilement" and p.opts["debruitage"]:
@@ -651,6 +692,11 @@ class Panel(QWidget):
             if p.opts.get("appris"):
                 groups += [(_("Neural removal") + f" · {g}", rs) for g, rs in step_settings(s, p, "appris")]
             groups += [(_("Starless image") + f" · {g}", rs) for g, rs in step_settings(s, p, "sans_etoiles")]
+        return groups
+
+    def settings(self, p, k, groups=None):
+        s = self.s
+        groups = self._groups(p, k) if groups is None else groups
         if settings_loading(s, p, k) and not groups:
             err = next((s.params_error(p, st) for st in needed_stages(s, p, k) if s.params_error(p, st)), "")
             self.bv.addWidget(label(_("The settings cannot be read: {why}").format(why=err) if err else
@@ -679,7 +725,7 @@ class Panel(QWidget):
             self.bv.addWidget(ex)
 
     def add_row(self, r):
-        row = CompactRow(r)
+        row = CompactRow(r, self._unit_w)
         row.changed.connect(self.set_setting)
         row.focused.connect(self._focus)
         self.bv.addWidget(row)

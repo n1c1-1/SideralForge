@@ -24,14 +24,18 @@ if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")      # the offscreen platform has no fonts else
 
 pytest.importorskip("PySide6")
-from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt  # noqa: E402
+from PySide6.QtGui import QFont, QFontMetricsF  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractButton,
+    QAbstractSpinBox,
     QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QGraphicsPathItem,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -44,7 +48,7 @@ from astro_gpu import api  # noqa: E402
 from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import i18n, prefs  # noqa: E402
 from astro_gpu.client.blocks import COLUMNS, Graph, block_state  # noqa: E402
-from astro_gpu.client.graph import BH, BW, BlockItem, GraphPage  # noqa: E402
+from astro_gpu.client.graph import BH, BW, MIN_SCALE, BlockItem, GraphPage  # noqa: E402
 from astro_gpu.client.i18n import hm  # noqa: E402
 from astro_gpu.client.model import ProjectModel  # noqa: E402
 from astro_gpu.client.panel import CompactRow, MethodCard  # noqa: E402
@@ -243,6 +247,49 @@ def cut_texts(root: QWidget) -> list[str]:
             if w.width() + 1 < w.sizeHint().width():
                 out.append(w.text())
     return out
+
+
+def graph_faults(page) -> list[str]:
+    """What is wrong in the graph as drawn: a block outside the view or drawn smaller than 80 % (off Show all), a
+    title that does not fit its block, a wire that runs behind a block it does not join."""
+    gv = page.graph
+    out = []
+    items = [it for it in gv.scene().items() if isinstance(it, BlockItem)]
+    if not gv.b_all.isChecked():
+        if gv.transform().m11() < MIN_SCALE - 1e-6:
+            out.append(f"scale {gv.transform().m11():.3f}")
+        vp = QRectF(gv.viewport().rect())
+        for it in items:
+            r = QRectF(gv.mapFromScene(it.sceneBoundingRect()).boundingRect())
+            if not vp.contains(r):
+                out.append(f"{it.title} outside the view")
+    f = QFont("Segoe UI", 10)
+    f.setBold(True)
+    for it in items:
+        if it.node.key != "post" and QFontMetricsF(f).horizontalAdvance(it.title) > it.w - 18:
+            out.append(f"title {it.title!r} wider than its block")
+    rects = [QRectF(it.pos().x(), it.pos().y(), it.w, BH).adjusted(1, 1, -1, -1) for it in items]
+    for wire in gv.scene().items():
+        if isinstance(wire, QGraphicsPathItem) and wire.zValue() == 1:
+            path = wire.path()
+            for i in range(1, 200):
+                pt = path.pointAtPercent(i / 200)
+                hit = next((r for r in rects if r.contains(pt)), None)
+                if hit is not None:
+                    out.append(f"a wire runs behind the block at x={hit.x():.0f}, y={hit.y():.0f}")
+                    break
+    return out
+
+
+def panel_faults(page) -> list[str]:
+    """The editors of the panel's setting rows do not all start at the same x."""
+    panel = page.panel
+    host = panel.findChildren(QScrollArea)[0].widget()
+    eds = [w for w in host.findChildren(QWidget) if w.isVisibleTo(panel) and (
+        isinstance(w, QAbstractSpinBox) or (isinstance(w, QCheckBox) and not w.text()) or
+        (isinstance(w, (QLineEdit, QPushButton)) and isinstance(w.parent(), CompactRow) and w.text() != "↺"))]
+    xs = sorted({w.mapTo(panel, QPoint(0, 0)).x() for w in eds})
+    return [f"editors at x = {xs}"] if len(xs) > 1 else []
 
 
 def button(root: QWidget, start: str) -> QPushButton:
@@ -872,7 +919,7 @@ def test_shots(world, model, page, tmp_path):
         settle(w, page, 8)
         page.root.grab().save(str(out / f"{name}.png"))
         assert (out / f"{name}.png").stat().st_size > 5000
-        c = cut_texts(page.root)
+        c = cut_texts(page.root) + graph_faults(page) + panel_faults(page)
         if c:
             cut[name] = c
         if i18n.language() == "fr":

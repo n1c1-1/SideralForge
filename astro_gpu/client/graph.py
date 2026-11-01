@@ -28,7 +28,19 @@ Wiring (app.py, P13)::
 from __future__ import annotations
 
 from PySide6.QtCore import QMimeData, QPoint, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QDrag, QFont, QFontMetrics, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
+from PySide6.QtGui import (
+    QBrush,
+    QColor,
+    QDrag,
+    QFont,
+    QFontMetrics,
+    QFontMetricsF,
+    QKeySequence,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -53,10 +65,14 @@ from .model import TEMPLATES, NotInEngine
 from .panel import Panel
 from .widgets import ACCENT, BAD, NEW, OK, WARN, clear, label
 
-BW, BH = 124, 54            # block size
-COLW = 142                  # column pitch
+BW, BH = 120, 54            # block size (a column is wider when its title needs it: TITLE_PAD)
+GAP = 12                    # between two columns: where the branches split
+COLW = BW + GAP             # column pitch
 LANE = 80                   # lane pitch
 TOP = 74                    # room for the phase labels
+MARGIN = 8                  # around the graph, left and right
+MIN_SCALE = 0.8             # below, the text cannot be read: the view scrolls instead (off Show all)
+TITLE_PAD = 22              # a block's title, its state stripe and its padding
 STATE_COL = {"done": OK, "pending": "#5d6470", "stale": WARN, "running": ACCENT, "failed": BAD,
              "interrupted": WARN, "skipped": "#5d6470"}
 # the blocks whose output can go straight to the post: only where it gives an image no workflow already gives
@@ -70,9 +86,9 @@ def elide(text, font, width):
 
 
 class BlockItem(QGraphicsItem):
-    def __init__(self, view, node: Node, title, summary, state, selected, dim, removable):
+    def __init__(self, view, node: Node, title, summary, state, selected, dim, removable, w: float = BW):
         super().__init__()
-        self.view, self.node = view, node
+        self.view, self.node, self.w = view, node, w
         self.title, self.summary, self.state = title, summary, state
         self.selected, self.dim, self.removable = selected, dim, removable
         self.hover = False
@@ -87,18 +103,19 @@ class BlockItem(QGraphicsItem):
         self.setToolTip(tip.strip())
 
     def boundingRect(self):                                           # noqa: N802 - Qt's name
-        return QRectF(-2, -2, BW + 14, BH + 4)
+        return QRectF(-2, -2, self.w + (10 if self.port else 4), BH + 4)
 
     def _x_rect(self):
-        return QRectF(BW - 20, 4, 16, 16)
+        return QRectF(self.w - 20, 4, 16, 16)
 
     def _on_port(self, pos):
-        return self.port and (pos - QPointF(BW, BH / 2)).manhattanLength() < 14
+        return self.port and (pos - QPointF(self.w, BH / 2)).manhattanLength() < 14
 
     def paint(self, p: QPainter, opt, widget=None):
         p.setRenderHint(QPainter.Antialiasing)
         p.setOpacity(0.55 if self.dim else 1.0)
-        r = QRectF(0, 0, BW, BH)
+        w = self.w
+        r = QRectF(0, 0, w, BH)
         ghost = self.node.key == "sources" and self.state == "pending"
         fill = "#1d2129" if ghost else ("#2b3446" if self.selected or self.target else
                                         ("#272c36" if self.hover else "#22262e"))
@@ -119,12 +136,12 @@ class BlockItem(QGraphicsItem):
         f.setBold(True)
         p.setFont(f)
         p.setPen(QColor("#e8ebf0"))
-        tw = BW - 18 - (18 if self.removable and self.hover else 0)
+        tw = w - 18 - (18 if self.removable and self.hover else 0)
         p.drawText(QRectF(11, 6, tw, 20), Qt.AlignLeft | Qt.AlignVCenter, elide(self.title, f, tw))
         f2 = QFont("Segoe UI", 8.5)
         p.setFont(f2)
         p.setPen(QColor("#8b93a1"))
-        p.drawText(QRectF(11, 28, BW - 15, 18), Qt.AlignLeft | Qt.AlignVCenter, elide(self.summary, f2, BW - 15))
+        p.drawText(QRectF(11, 28, w - 15, 18), Qt.AlignLeft | Qt.AlignVCenter, elide(self.summary, f2, w - 15))
         if self.removable and self.hover:
             p.setPen(QPen(QColor("#e06c6c"), 1.6))
             xr = self._x_rect().adjusted(4, 4, -4, -4)
@@ -134,7 +151,7 @@ class BlockItem(QGraphicsItem):
             big = self.hover or self.selected or self._wire
             p.setPen(QPen(QColor(ACCENT if big else "#4a5263"), 1.5))
             p.setBrush(QColor("#15171c" if not big else ACCENT))
-            p.drawEllipse(QPointF(BW, BH / 2), 5.5 if big else 3.5, 5.5 if big else 3.5)
+            p.drawEllipse(QPointF(w, BH / 2), 5.5 if big else 3.5, 5.5 if big else 3.5)
 
     def hoverEnterEvent(self, e):                                     # noqa: N802
         self.hover = True
@@ -260,6 +277,7 @@ class GraphView(QGraphicsView):
         self.graph: Graph | None = None
         self._sel_item = None
         self.final_item = None
+        self._next_x: dict[str, float] = {}
         self.toast = QLabel(self)
         self.toast.setStyleSheet("background: #262a33; border: 1px solid #3a4150; border-radius: 6px; "
                                  "padding: 6px 10px; color: #e8ebf0;")
@@ -284,6 +302,30 @@ class GraphView(QGraphicsView):
             used.add(TOOL_COLUMN[self.drag_tool])
         return [c for c in COLUMNS if c not in OPTIONAL or c in used]
 
+    @staticmethod
+    def column_width(key: str) -> float:
+        """A column is as wide as a block, or wider when its title needs it in the language shown ("Post-traitement").
+        The outputs carry the workflows' names, which are shortened with "…" instead."""
+        if key == "post":
+            return BW
+        f = QFont("Segoe UI", 10)
+        f.setBold(True)
+        return max(BW, min(BW + 40, QFontMetricsF(f).horizontalAdvance(block_title(None, key)) + TITLE_PAD))
+
+    @staticmethod
+    def lane_order(g: Graph) -> list[int]:
+        """The workflows' lanes in the order of the tree (depth first): the workflows of every block sit on lanes next
+        to each other, so that a block is drawn between its own lanes only, and a workflow that leaves the trunk before
+        a block never runs behind it."""
+        out: list[int] = []
+        todo = [g.root]
+        while todo:
+            n = todo.pop()
+            if not n.children:
+                out += [p.pid for p in n.paths if p.pid not in out]
+            todo += reversed(n.children)
+        return out + [p.pid for p in g.s.paths if p.pid not in out]
+
     def rebuild(self):
         sc = self.scene()
         sc.clear()
@@ -297,8 +339,13 @@ class GraphView(QGraphicsView):
         g = Graph(s, self.steps)
         self.graph = g
         cols = self.columns(g)
-        cx = {c: i * COLW for i, c in enumerate(cols)}
-        lanes = {p.pid: TOP + i * LANE for i, p in enumerate(s.paths)}
+        cw = {c: self.column_width(c) for c in cols}
+        cx, x = {}, 0.0
+        for c in cols:
+            cx[c] = x
+            x += cw[c] + GAP
+        self._next_x = {c: cx[c] + cw[c] + GAP for c in cols}       # where the column after it starts
+        lanes = {pid: TOP + i * LANE for i, pid in enumerate(self.lane_order(g))}
         n_lanes = max(1, len(s.paths))
         mid = TOP + (n_lanes - 1) * LANE / 2 if s.paths else TOP + LANE / 2
         for n in g.nodes:
@@ -308,11 +355,13 @@ class GraphView(QGraphicsView):
                 ys = [lanes[p.pid] for p in n.paths]
                 n.y = (min(ys) + max(ys)) / 2
             n.col = cx[n.key]
+            n.w = cw[n.key]
         bottom = TOP + n_lanes * LANE + LANE
         # phase bands
         for title, a, b in PHASES:
             span = [c for c in COLUMNS[COLUMNS.index(a): COLUMNS.index(b) + 1] if c in cx]
-            x0, x1 = cx[span[0]] - 8, cx[span[-1]] + BW + 8
+            pad = GAP / 2 - 1                                         # two bands never touch
+            x0, x1 = cx[span[0]] - pad, cx[span[-1]] + cw[span[-1]] + pad
             sc.addItem(BandItem(QRectF(x0, 0, x1 - x0, bottom), _(title)))
         cur = s.path
         sel = g.node_of(cur, s.sel_step) if s.sel_step not in ("sources", "final") else (
@@ -336,7 +385,7 @@ class GraphView(QGraphicsView):
             title = block_title(n.paths[0] if n.paths else None, n.key)
             removable = n.key in OPTIONAL_BLOCKS
             dim = cur is not None and n.key not in ("sources", "final") and cur not in n.paths
-            it = BlockItem(self, n, title, g.summary(n), g.state(n), n is sel, dim, removable)
+            it = BlockItem(self, n, title, g.summary(n), g.state(n), n is sel, dim, removable, n.w)
             it.setPos(n.col, n.y - BH / 2)
             it.setZValue(5)
             sc.addItem(it)
@@ -347,7 +396,7 @@ class GraphView(QGraphicsView):
         # the next workflow
         y = TOP + len(s.paths) * LANE - BH / 2 if s.paths else mid - BH / 2
         x0 = cx["calibration"]
-        x1 = cx["post"] + BW
+        x1 = cx["post"] + cw["post"]
         gh = GhostItem(QRectF(x0, y, x1 - x0, BH), "+  " + _("New workflow"), self.newWorkflow.emit)
         sc.addItem(gh)
         # where the dragged tool can go
@@ -358,11 +407,12 @@ class GraphView(QGraphicsView):
                     continue
                 x = cx[TOOL_COLUMN[key]]
                 short = block_title(None, TOOL_COLUMN[key])
-                gh = GhostItem(QRectF(x + 4, lanes[p.pid] - BH / 2 + 4, BW - 8, BH - 8), short, None, p.pid)
+                gh = GhostItem(QRectF(x + 4, lanes[p.pid] - BH / 2 + 4, cw[TOOL_COLUMN[key]] - 8, BH - 8), short,
+                               None, p.pid)
                 gh.setZValue(8)
                 sc.addItem(gh)
                 self.ghosts.append(gh)
-        r = sc.itemsBoundingRect().adjusted(-24, -10, 24, 24)
+        r = sc.itemsBoundingRect().adjusted(-MARGIN, -10, MARGIN, 24)
         sc.setSceneRect(r)
         self.show_wait()
         self.fit()
@@ -390,7 +440,7 @@ class GraphView(QGraphicsView):
         return fi is not None and fi.sceneBoundingRect().adjusted(-16, -16, 16, 16).contains(pos)
 
     def move_wire(self, pos):
-        a = self._pull.mapToScene(QPointF(BW, BH / 2))
+        a = self._pull.mapToScene(QPointF(self._pull.w, BH / 2))
         path = QPainterPath(a)
         dx = max(30.0, (pos.x() - a.x()) * 0.5)
         path.cubicTo(QPointF(a.x() + dx, a.y()), QPointF(pos.x() - dx, pos.y()), pos)
@@ -412,20 +462,24 @@ class GraphView(QGraphicsView):
             QTimer.singleShot(0, lambda: self.sendToPost.emit(node))
 
     def _wire(self, a: Node, b: Node, strong: bool):
-        x1, y1 = a.col + BW, a.y
+        """A wire from a block to the next block of its workflows. A branch bends in the gap right after the block it
+        leaves (the last one its workflows share), then runs straight on its own lane past the columns it skips, as
+        the mockup draws a workflow that leaves the trunk early."""
+        x1, y1 = a.col + a.w, a.y
         x2, y2 = b.col, b.y
         path = QPainterPath(QPointF(x1, y1))
-        dx = max(30.0, (x2 - x1) * 0.5) if abs(y2 - y1) > 1 else 0
+        xb = min(x2, self._next_x.get(a.key, x2)) if b.key != "final" else x2     # where the bend ends
+        dx = max(30.0, (xb - x1) * 0.5) if abs(y2 - y1) > 1 else 0
         if dx:
-            path.cubicTo(QPointF(x1 + dx, y1), QPointF(x2 - dx, y2), QPointF(x2, y2))
-        else:
+            path.cubicTo(QPointF(x1 + dx, y1), QPointF(xb - dx, y2), QPointF(xb, y2))
+        if xb < x2 or not dx:
             path.lineTo(QPointF(x2, y2))
         it = self.scene().addPath(path, QPen(QColor("#9aa3b2" if strong else "#3d4452"), 2.2 if strong else 1.6))
         it.setZValue(1)
 
     def _side_wire(self, a: Node, b: Node, lab: str):
-        x1, y1 = a.col + BW / 2, a.y + BH / 2
-        x2, y2 = b.col + BW / 2, b.y + BH / 2
+        x1, y1 = a.col + a.w / 2, a.y + BH / 2
+        x2, y2 = b.col + b.w / 2, b.y + BH / 2
         low = max(y1, y2) + 34
         path = QPainterPath(QPointF(x1, y1))
         path.cubicTo(QPointF(x1, low), QPointF(x2, low), QPointF(x2, y2))
@@ -441,9 +495,9 @@ class GraphView(QGraphicsView):
         r = self.scene().sceneRect()
         if r.isEmpty():
             return
-        k = min(1.3, (self.viewport().width() - 10) / r.width(), (self.viewport().height() - 10) / r.height())
+        k = min(1.3, (self.viewport().width() - 4) / r.width(), (self.viewport().height() - 10) / r.height())
         if not self.b_all.isChecked():
-            k = max(k, 0.8)                            # below, the text cannot be read: scroll instead
+            k = max(k, MIN_SCALE)                      # below, the text cannot be read: scroll instead
         self.resetTransform()
         self.scale(k, k)
         self.centerOn(r.center())
