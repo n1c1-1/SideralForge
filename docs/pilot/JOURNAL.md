@@ -560,6 +560,19 @@ Newest entries at the bottom. Times are local.
       iris and rosette were not started.
     - The user's direction: understand before acting. Their proposal: a standard "like Siril" stack (debayer, Lanczos
       registration, stack with rejection) as the normal method, the Bayer drizzle as an option; drop the hybrid.
+- 18:45 base patch 3 withdrawn and archived (docs/pilot/archive/bricolages/); stack version 5. Lesson recorded: no
+  tinkering, state of the art only (PILOT.md, ENGINE_KNOWLEDGE 4b, memory).
+- 19:00 Inspect fixes committed (c2fb8df): an auto-stretch per kind of frame; the M31 sky model was a display
+  artefact.
+- State of the art on stacking (35a0dbc); stacking spec v2 (835f72b). The user's decisions:
+  - drizzle by default; colour alignment on;
+  - **better than Siril**;
+  - keep the concept of a selection threshold, with state-of-the-art values;
+  - all changes together behind switches, beside the old version, then crossed tests.
+- 19:55 **Stacking v2, phase 1 dispatched (opus)**: modules psf_moffat with coverage, rejection_hubble, frame_weights,
+  normalize_local and channel_align, in new files only. Hourly heartbeat recreated for this plan.
+  - Estimate: phase 1 by about 22:00–23:00; integration about 1 h; crossed Express bench about 2 h; Base and table
+    about 1.5 h. **Results expected tomorrow early morning.**
 
 ### Queue for the end of P8 (engine unfrozen)
 1. Apply patches 1–3, run the tests and the 4-dataset non-regression, recompute only render_simple (Classic and Raw
