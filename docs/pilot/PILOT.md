@@ -116,6 +116,23 @@ Three lanes run in parallel:
 Plus the **engine fixes**: patches 1–3, store mtime ceil-to-even, manifest replace retry, catalogs reload, timings2
 lock.
 
+**Evening of 2026-11-01, autonomous: stacking v2** (docs/spec/STACKING.md; state of the art in
+docs/pilot/STATE_OF_THE_ART_STACKING.md).
+- The 6 changes are coded together, each behind a switch, beside the old version. All switches off must give the
+  old version bit for bit, with the same store keys. The defaults are OFF until the user decides.
+- Phase 1: one agent per module, in new files, with no edit to stack.py or register.py:
+  - core/psf_moffat.py with core/coverage.py;
+  - core/rejection_hubble.py;
+  - core/frame_weights.py (inverse-variance weights, state-of-the-art selection thresholds, minimum weight);
+  - core/normalize_local.py;
+  - core/channel_align.py.
+- Phase 2: one integration agent wires them into stack.py and register.py behind the switches and proves "all off =
+  bit for bit".
+- Phase 3: the crossed bench, Express on 6 cases: the old version, each change alone, all on, all minus one. Then
+  Base for the chosen combination, and the table in BENCH.md.
+- Nothing else: no recompute of the user's projects, no removal of the old version, before the user decides on the
+  table.
+
 **No tinkering (the user's lesson, 2026-11-01 18:35): this is generic processing software.**
 - Every engine method rests on the state of the art: a known algorithm (Siril, PixInsight, a paper), named with its
   source before any code.
