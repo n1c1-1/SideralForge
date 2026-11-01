@@ -139,6 +139,12 @@ class BlockItem(QGraphicsItem):
         left = 12 if self.bp is not None else 2         # the review dot sits on the corner
         return QRectF(-left, -left, self.w + left + (10 if self.port else 2), BH + left + 2)
 
+    def _x_rect(self):
+        return QRectF(self.w - 20, 4, 16, 16)
+
+    def _on_port(self, pos):
+        return self.port and (pos - QPointF(self.w, BH / 2)).manhattanLength() < 14
+
     def paint_review(self, p: QPainter):
         """The review point, on the block's top-left corner like a debugger's dot: red while the run will stop here,
         yellow with the pause bars while it is stopped here for the user, a green tick once the user checked these

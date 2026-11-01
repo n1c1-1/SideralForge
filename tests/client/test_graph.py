@@ -705,6 +705,31 @@ def test_outputs_pulled_to_post_make_a_raw_stack_workflow(world, model, page):
     assert model.slider_state(model.view(1), "stars_number")[0] is True
 
 
+def test_the_mouse_over_and_on_every_block_works(world, model, page):
+    """Hovering a block and pressing it (on its body and on its output port) is what the user does first; a lost helper
+    method once broke it in the real client while no test moved the mouse."""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QGraphicsSceneHoverEvent, QGraphicsSceneMouseEvent
+    items = [it for it in page.graph.scene().items() if isinstance(it, BlockItem)]
+    assert items
+    for it in items:
+        for pos in (QPointF(it.w / 2, BH / 2), QPointF(it.w, BH / 2)):           # the body, then the port's place
+            ev = QGraphicsSceneHoverEvent(QEvent.GraphicsSceneHoverMove)
+            ev.setPos(pos)
+            it.hoverMoveEvent(ev)
+            assert it.cursor().shape() == (Qt.CrossCursor if it.port and pos.x() == it.w else Qt.PointingHandCursor)
+        assert isinstance(it._x_rect(), QRectF)
+    stacking = next(it for it in items if it.port)
+    press = QGraphicsSceneMouseEvent(QEvent.GraphicsSceneMousePress)
+    press.setButton(Qt.LeftButton)
+    press.setPos(QPointF(stacking.w, BH / 2))
+    stacking.mousePressEvent(press)                                               # starts pulling the output
+    assert stacking._wire
+    page.graph.end_wire(QPointF(-1e4, -1e4))                                      # dropped on nothing
+    stacking._wire = False
+    settle(world["w"], page)
+
+
 def test_new_workflow_duplicate_rename_delete(world, model, page, monkeypatch):
     from astro_gpu.client import graph as graphmod
 
