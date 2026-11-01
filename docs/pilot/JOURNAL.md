@@ -432,6 +432,54 @@ Newest entries at the bottom. Times are local.
   - 12:22 level 2 on the assembled whole: **608 passed in 72 s**.
   - Final tour agent (opus) dispatched: walkthrough of every new feature EN+FR, small fixes, NOUVEAUTES.md in French
     with embedded images.
+  - **13:04 GUI delivered** (b43418e):
+    - the final tour: 74 screens EN+FR, no problem; fixed: the lost last Post edit, green images sent to Post,
+      overlapping frame numbers, the scrolled layer list, set_calibration_excluded;
+    - level 2: 610 passed (rerun by the orchestrator); level 3: 670 passed, 1 native Qt crash in parallel (also at
+      HEAD, passes alone);
+    - **NOUVEAUTES.md** for the user (French, 13 images).
+    - Left: an intermittent access violation in parallel GUI tests; an astropy warning on FITS export; the near-empty
+      run window after Continue with nothing left; a brush stroke can differ after reopening.
+  - Still running: base-quality engine work against Siril (patches in a scratch copy).
+  - 14:40 the user hit a crash on hovering a block: `_on_port` and `_x_rect` were deleted by B3's commit. Restored;
+    a test now hovers and presses every block; an AST scan found no other missing private method (f954aab).
+  - **Base-quality patches ready** (opus, scratch copy; 8 patches base-1..8 in docs/pilot/patches/; a "Corrections
+    du chemin de base" section in BENCH.md; NOT applied):
+    1. R/B fine noise: sub-pixel detail from all three colours, gated to noise: 0.02–0.04 mag, SNR +2–4 %, colour
+       grain 2–3× lower;
+    2. weights: the transparency estimate followed the seeing; now a fixed aperture: Iris +0.03 depth;
+    3. rejection: the star allowance applied to the sky (16–28σ); per-frame noise, borders kept, a true rejected %
+       (0.001–0.05 %): depth +0.03 to +0.06;
+    4. hot pixels M8: 57 → 9 per deg² (Siril 11); M8 depth +0.18;
+    5. and 9. per-colour registration on green (dispersion and lateral CA up to 0.8 px): crescents gone, roundness
+       0.92 → 0.95;
+    6. background samples from the whole field (66 % against 18 %): Heart flatness −0.08 → +0.23;
+    7. colour-star saturation from the saturation map: more stars used;
+    8. registration: an affine fit before the cubic.
+    - Versions bumped (calibrate 4, register 2, stack 4, color 3, background_poly 2, render_simple 4): **everything
+      recomputes**, including the user's projects and the heart_a7s test copies (20 tests wait for that recompute).
+    - Still worse than Siril:
+      - Iris noise +11–15 % (cause not found);
+      - fine R/B noise at 4 px;
+      - centre roundness with drizzle 1.5;
+      - M51 SNR −8 %;
+      - star-colour error rose slightly (still 1.5–3× better than Siril);
+      - M8 nebula more magenta.
+    - Not applied while the user tests the client on their projects. Present the patches and propose: apply, then
+      re-run the test copies and the 9 projects tonight.
+  - 15:00 the user's second round of remarks (Rosette): darks show stars; Selection needs a splitter and a CSV
+    button; "Copy view" is unclear; the stack display switches colours; Colour's "before" is not the stack; Gradient
+    shows a "soup"; named objects in Astrometry and in export.
+    - GUI agent (opus) dispatched for all of them (sky_objects in the engine);
+    - darks agent (opus) dispatched: the 28.12.24 darks, plus an absolute check (stars in a dark).
+    - The orchestrator looked at Rosette's background previews: **parallel dark diagonal streaks over the whole
+      frame**, the signature of a master dark containing star trails. Calibrate was adopted from v1, so v1 was
+      affected too. Passed to the darks agent.
+    - **No base patches and no recompute until the darks are settled.** The user is away for 2 h.
+    - The user: "I must see at a glance in the GUI which test projects we work on." Item 8 added to the GUI agent:
+      Home sections (My projects / Bench against Siril / Test copies), bench cards with instrument and level, and
+      Siril's results as "Siril (reference)" in every viewer's compare list. Rosette is NOT a bench case (the bench
+      is heart, iris, m51, m8, seestar); propose adding it once its darks are fixed.
   - Ownership: B1 owns app.py, tune, steps, services/inspect, frames, sources, viewer and imageview; B2 owns post*,
     exportdlg, services/render and render/; B3 owns graph, blocks, model, runs, services/run and project2.
 

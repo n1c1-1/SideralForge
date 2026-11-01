@@ -119,6 +119,91 @@ def test_flats_give_their_level_vignetting_and_exposure_problems(tmp_path):
     assert "underexposed" in [c["key"] for c in got["under"][2]] and "only" in got["under"][1]
 
 
+def starry(rng, n, h=512, w=768, level=520.0, noise=8.0, amp=400.0, sigma=2.0):
+    """A frame of the sky: ``n`` stars on a jittered grid inside the part of the frame the star count looks at (the
+    border of two tiles of 2x2-binned pixels is left out), on a sky ``level`` (raw pixels)."""
+    a = level + rng.normal(0, noise, (h, w))
+    m = 4 * dg.STAR_TILE + 8
+    cols = int(np.ceil(np.sqrt(n * (w - 2 * m) / (h - 2 * m))))
+    rows = int(np.ceil(n / cols))
+    yy, xx = np.mgrid[-10:11, -10:11]
+    for k in range(n):
+        i, j = divmod(k, cols)
+        y = m + (i + 0.5) * (h - 2 * m) / rows + rng.uniform(-3, 3)
+        x = m + (j + 0.5) * (w - 2 * m) / cols + rng.uniform(-3, 3)
+        yi, xi = int(y), int(x)
+        a[yi - 10:yi + 11, xi - 10:xi + 11] += amp * np.exp(-((xx + xi - x) ** 2 + (yy + yi - y) ** 2)
+                                                             / (2 * sigma ** 2))
+    return a
+
+
+def binned(a):
+    return a.reshape(a.shape[0] // 2, 2, a.shape[1] // 2, 2).mean((1, 3))
+
+
+def test_the_star_count_sees_stars_but_not_hot_pixels_glow_or_dust():
+    rng = np.random.default_rng(11)
+    h, w = 512, 768
+    assert dg.count_stars(binned(starry(rng, 40))) == 40
+    assert dg.count_stars(binned(starry(rng, 40, amp=60.0))) >= 36            # faint ones: 60 ADU on a noise of 8
+    d = dark(rng, h, w, 508.0)
+    d.flat[rng.choice(h * w, 3000, replace=False)] += 800                       # single hot pixels
+    pairs = rng.choice(h * (w - 1), 300, replace=False)
+    d.flat[pairs] += 600
+    d.flat[pairs + 1] += 600                                                     # hot pairs
+    d += glow(h, w, 40, 120)                                                     # the growing central light
+    yy, xx = np.mgrid[0:h, 0:w]
+    d += 80 * np.exp(-np.hypot(xx, yy) / 40)                                     # amp glow in a corner
+    assert dg.count_stars(binned(d)) == 0
+    f = vignetted(rng, 20000, h, w, noise=100.0)                                 # a flat with dust shadows
+    for _ in range(30):
+        cy, cx = rng.uniform(140, h - 140), rng.uniform(140, w - 140)
+        r = np.hypot(xx - cx, yy - cy)
+        f -= 600 * (r < 14) - 250 * ((r >= 14) & (r < 18))                      # dark core, bright diffraction rim
+    assert dg.count_stars(binned(f)) < dg.STARS_NOT_CALIBRATION
+    assert dg.count_stars(binned(dark(rng, 128, 192))) == 0                      # too small to say: none
+
+
+def test_a_whole_set_of_sky_frames_given_as_darks_is_flagged_though_they_agree(tmp_path):
+    """The 28.12.24 night: 100 "darks" that were frames of the sky (the Rosette, telescope open): alike, so the
+    comparison with the others of their kind saw nothing (docs/pilot/DARKS_28_12_24.md)."""
+    rng = np.random.default_rng(12)
+    sky = []
+    for i in range(5):
+        f = write_fits(tmp_path / "sky" / f"S{i}.fits", starry(rng, 30 + 10 * i), EXPTIME=15.0)
+        sky.append(dict(dg.raw_stats(f, 65535.0), exposure=15.0))
+    real = [dict(dg.raw_stats(write_fits(tmp_path / "real" / f"D{i}.fits", dark(rng, 512, 768, 508.0)), 65535.0),
+                 exposure=15.0) for i in range(5)]
+    assert [s["stars"] for s in sky] == [30, 40, 50, 60, 70] and all(s["stars"] == 0 for s in real)
+    assert not sky[0]["camera_raw"]                                              # FITS: its black level is not the camera's
+    for kind, one, cap in (("darks", "dark", True), ("bias", "bias frame", True), ("flat_darks", "flat dark", True),
+                           ("flats", "flat", False)):
+        got = dg.flag_frames(kind, sky)
+        assert [g[0] for g in got] == ["bad"] * 5, kind
+        flag, reason, checks = got[0]
+        assert checks[0]["key"] == "stars" and checks[0]["value"] == 30
+        assert reason.startswith("Contains stars (30 found): a frame of the sky, not a " + one)
+        assert ("cap" in reason) == cap
+        assert [g[0] for g in dg.flag_frames(kind, real)] == ["ok"] * 5
+    assert [g[0] for g in dg.flag_frames("lights", sky)] == ["ok"] * 5           # lights hold stars
+    mixed = dg.flag_frames("darks", real + sky[:1])                              # and the relative flags still work
+    assert [g[0] for g in mixed] == ["ok"] * 5 + ["bad"]
+
+
+def test_a_camera_raw_dark_far_above_the_black_level_is_flagged():
+    base = {"median": 508.0, "noise": 8.4, "black": 512.0, "white": 16383.0, "camera_raw": True, "stars": 0,
+            "exposure": 15.0}
+    lit = dict(base, median=1612.0, noise=40.0)                                  # a flat put among the darks
+    got = dg.flag_frames("darks", [base, dict(base), lit])
+    assert [g[0] for g in got] == ["ok", "ok", "bad"]
+    assert got[2][2][0]["key"] == "sky_level" and got[2][2][0]["value"] == pytest.approx(1100.0)
+    assert "1100 ADU above the camera's black level (512 ADU), 28x its noise" in got[2][1] and "not a dark" in got[2][1]
+    assert dg.flag_frames("bias", [lit])[0][0] == "bad"
+    assert dg.flag_frames("darks", [dict(lit, camera_raw=False)])[0][0] == "ok"   # a FITS offset is no black level
+    assert dg.flag_frames("darks", [dict(base, median=520.0)])[0][0] == "ok"      # the 28.12.24 sky: 8 ADU, 1x the noise
+    assert dg.flag_frames("flats", [dict(lit, level_pct=7.0)])[0][0] != "bad"     # a flat is meant to be lit
+
+
 def test_the_measures_of_a_frame_are_kept_in_memory(tmp_path, monkeypatch):
     f = write_fits(tmp_path / "d.fits", dark(np.random.default_rng(3)))
     a = dg.raw_stats(f, 65535.0)
@@ -412,6 +497,22 @@ def test_calibration_frames_gives_the_masters_the_frame_measures_and_the_calibra
     assert any("no longer on the scratch disk" in n for n in rep.notes)
     with pytest.raises(api.NotDone):
         api.calibrated_light([f for f in rep.frames if f.kind == "lights"][0])
+
+
+def test_calibration_frames_flags_darks_that_are_frames_of_the_sky(tmp_path):
+    rng = np.random.default_rng(13)
+    raw = tmp_path / "raw"
+    for i in range(3):
+        write_fits(raw / "lights" / f"L{i}.fits", starry(rng, 60, level=1500.0), EXPTIME=15.0)
+        write_fits(raw / "darks" / f"D{i}.fits", starry(rng, 25, level=520.0), EXPTIME=15.0)
+    p = api.create_project(tmp_path / "p", "p")
+    api.add_session(p, lights=[str(raw / "lights")], darks=[str(raw / "darks")])
+    api.save(p)
+    rep = api.calibration_frames(p, 1, require_done=False)
+    darks = [f for f in rep.frames if f.kind == "darks"]
+    assert [f.flag for f in darks] == ["bad"] * 3 and all(f.stats["stars"] == 25 for f in darks)
+    assert darks[0].reason.startswith("Contains stars (25 found): a frame of the sky, not a dark")
+    assert darks[0].checks[0]["key"] == "stars"
 
 
 def test_an_older_calibration_without_the_master_bias_says_to_recompute(project, tmp_path):

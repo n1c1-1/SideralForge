@@ -6,6 +6,7 @@ calls them from its worker thread. The measures of a raw frame are cached in mem
 """
 from __future__ import annotations
 
+import numbers
 import threading
 from collections.abc import Sequence
 from pathlib import Path
@@ -22,6 +23,24 @@ RINGS = 10
 HOT_SIGMA = 10.0
 #: an outlier is this many robust sigmas away from the other frames of its kind (and past the tolerance of the measure)
 OUTLIER_SIGMA = 5.0
+#: a star: a compact source of STAR_MIN_AREA binned pixels at least, STAR_SIGMA x the noise above the local background,
+#: in the 2x2-binned frame after a 3x3 median (a hot pixel or a small cosmic-ray hit does not survive the median)
+STAR_SIGMA = 6.0
+STAR_MIN_AREA = 6
+#: the local background of the star count: medians of STAR_TILE x STAR_TILE binned pixels, interpolated; the frame's
+#: border (two tiles) is left out
+STAR_TILE = 32
+#: a dark, bias, flat dark or flat with this many stars or more is a frame of the sky, whatever the other frames say.
+#: Real ones hold 0 to 8 (hot pixel clusters, cosmic rays, dust: darks, bias and flats of the Sony A7S, Canon 6D / 40D /
+#: Ra, ASI2600MC); the 100 "darks" of 28.12.24 (the Rosette field, shot with the telescope open) hold 26 to 410, lights
+#: hundreds to thousands (docs/pilot/DARKS_28_12_24.md)
+STARS_NOT_CALIBRATION = 20
+#: a dark, bias or flat dark of a camera raw this far above the camera's black level (both: x its noise and % of the
+#: sensor's range) holds light, not only the sensor's offset and dark current
+SKY_LEVEL_NOISE = 20.0
+SKY_LEVEL_RANGE_PCT = 3.0
+
+KIND_ONE = {"darks": "dark", "flats": "flat", "bias": "bias frame", "flat_darks": "flat dark", "lights": "light"}
 
 KIND_PLURAL = {"darks": "darks", "flats": "flats", "bias": "bias frames", "flat_darks": "flat darks",
                "lights": "lights"}
@@ -47,16 +66,19 @@ def raw_stats(path: str | Path, white: float) -> dict[str, Any]:
     * ``hot_pixels``: pixels above their same-colour 5x5 neighbourhood by HOT_SIGMA x the noise;
     * ``rings``: median level in RINGS rings from the centre to the corners; ``centre`` (inner fifth) and ``edge``
       (outer 15 %, the corners) and ``gradient`` = centre - edge (positive: the centre is brighter);
-    * ``saturated_pct``: pixels at or above SATURATION x ``white``; ``max``.
+    * ``saturated_pct``: pixels at or above SATURATION x ``white``; ``max``;
+    * ``stars``: compact sources of the frame (``count_stars``): about none in a dark, bias or flat, many in a frame
+      of the sky; ``camera_raw``: the file is a camera raw (its black level is the camera's, not a FITS keyword).
     """
     key = _file_key(path, white)
     with _LOCK:
         hit = _STATS.get(key)
     if hit is not None:
         return dict(hit)
-    from ..io.frames import read_cfa
+    from ..io.frames import frame_kind, read_cfa
     raw = read_cfa(path)
     out = _measure(raw, white)
+    out["camera_raw"] = frame_kind(path) == "raw"
     with _LOCK:
         _STATS[key] = out
     return dict(out)
@@ -89,7 +111,45 @@ def _measure(raw: np.ndarray, white: float) -> dict[str, Any]:
     return {"median": float(np.median(raw[::3, ::3])), "planes": planes, "noise": float(np.median(noises)),
             "hot_pixels": hot, "rings": rings, "centre": centre, "edge": edge, "gradient": centre - edge,
             "saturated_pct": float(100.0 * np.count_nonzero(raw >= SATURATION * white) / raw.size),
-            "max": float(raw.max())}
+            "max": float(raw.max()), "stars": count_stars(sp)}
+
+
+def count_stars(binned: np.ndarray) -> int:
+    """The stars of a 2x2-binned frame: compact sources STAR_SIGMA x the noise above the local background and
+    STAR_MIN_AREA binned pixels at least, after a 3x3 median. A dark, bias or flat holds none: hot pixels and small
+    cosmic-ray hits are one or two pixels and do not survive the median; a smooth glow (amp glow, the growing central
+    light, vignetting) is in the background. Left out: the border (two STAR_TILE: the sharp edge of the vignetting of a
+    full-frame sensor lies there), long or hollow shapes (a dust ring, a column), and the bright rim of a dust shadow
+    or of a sharp vignetting edge (something much darker than the background lies next to it). Numbers on real
+    frames: STARS_NOT_CALIBRATION."""
+    a = np.asarray(binned, np.float32)
+    t = STAR_TILE
+    th, tw = a.shape[0] // t, a.shape[1] // t
+    if th < 5 or tw < 5:
+        return 0
+    a = a[:th * t, :tw * t]
+    bg = np.median(a.reshape(th, t, tw, t).transpose(0, 2, 1, 3).reshape(th, tw, t * t), axis=2).astype(np.float32)
+    res = np.ascontiguousarray(a - cv2.resize(bg, (tw * t, th * t), interpolation=cv2.INTER_LINEAR))
+    res = cv2.medianBlur(res, 3)[2 * t:-2 * t, 2 * t:-2 * t]
+    v = res[::2, ::2]
+    s = float(1.4826 * np.median(np.abs(v - np.median(v))))
+    s = s if s > 0 else float(np.std(v))
+    if not s > 0:
+        return 0
+    n, lab, st, cen = cv2.connectedComponentsWithStats((res > STAR_SIGMA * s).astype(np.uint8), connectivity=8)
+    if n <= 1:
+        return 0
+    area, bw, bh = st[1:, cv2.CC_STAT_AREA], st[1:, cv2.CC_STAT_WIDTH], st[1:, cv2.CC_STAT_HEIGHT]
+    big, small = np.maximum(bw, bh), np.minimum(bw, bh)
+    ok = (area >= STAR_MIN_AREA) & (big <= 3 * small + 2) & (area >= 0.4 * bw * bh) & (big <= 2 * t)
+    if not ok.any():
+        return 0
+    # the darkest of the smoothed surroundings: noise stays above -1 x s; a dust shadow or a vignetting edge does not
+    low = cv2.erode(cv2.GaussianBlur(res, (0, 0), 2.0), np.ones((21, 21), np.uint8))
+    x = np.clip(np.round(cen[1:, 0]).astype(int), 0, res.shape[1] - 1)
+    y = np.clip(np.round(cen[1:, 1]).astype(int), 0, res.shape[0] - 1)
+    ok &= low[y, x] > -3.0 * s
+    return int(np.count_nonzero(ok))
 
 
 def raw_temperature(path: str | Path) -> float | None:
@@ -132,13 +192,25 @@ def _off(v: float | None, c: float, s: float, tol: float) -> bool:
     return v is not None and np.isfinite(v) and np.isfinite(c) and abs(v - c) > max(OUTLIER_SIGMA * s, tol)
 
 
+def _finite(*v: Any) -> bool:
+    return all(isinstance(x, numbers.Real) and not isinstance(x, bool) and np.isfinite(x) for x in v)
+
+
 def flag_frames(kind: str, stats: list[dict[str, Any]]) -> list[tuple[str, str, list[dict[str, Any]]]]:
-    """(flag, reason, checks) of each frame of one kind: flag "warn" with the reason in plain words when the frame is
-    an outlier against the other frames of its kind (three at least: exposure, temperature, level, noise, hot pixels,
-    centre-to-corner gradient; for lights the calibrated sky level and noise only) or, for a flat, badly exposed; "ok"
-    otherwise. Nothing is excluded: the stage still uses every frame. ``checks``: [{"key", "text", numbers}] for
-    translation."""
+    """(flag, reason, checks) of each frame of one kind, the reason in plain words:
+
+    * "bad": the frame is not of its kind, whatever the other frames say (a whole set of wrong frames looks normal
+      against itself): a dark, bias, flat dark or flat with stars (``stars`` >= STARS_NOT_CALIBRATION: a frame of the
+      sky), or a dark, bias or flat dark of a camera raw whose level is far above the camera's black level (light
+      reached the sensor);
+    * "warn": an outlier against the other frames of its kind (three at least: exposure, temperature, level, noise, hot
+      pixels, centre-to-corner gradient; for lights the calibrated sky level and noise only) or, for a flat, badly
+      exposed;
+    * "ok" otherwise.
+
+    Nothing is excluded: the stage still uses every frame. ``checks``: [{"key", "text", numbers}] for translation."""
     plural = KIND_PLURAL.get(kind, kind)
+    one = KIND_ONE.get(kind, kind)
     out = []
     many = len(stats) >= 3
     cen = {}
@@ -150,6 +222,21 @@ def flag_frames(kind: str, stats: list[dict[str, Any]]) -> list[tuple[str, str, 
 
         def add(key: str, text: str, **args: Any) -> None:
             checks.append({"key": key, "text": text, **args})
+
+        # ---- absolute: is it a calibration frame at all?
+        n = s.get("stars")
+        if kind in ("darks", "bias", "flat_darks", "flats") and _finite(n) and n >= STARS_NOT_CALIBRATION:
+            add("stars", f"contains stars ({n:.0f} found): a frame of the sky, not a {one}"
+                + (" (was the cap on?)" if kind != "flats" else ""), value=int(n), limit=STARS_NOT_CALIBRATION)
+        black, white, med, noise = s.get("black"), s.get("white"), s.get("median"), s.get("noise")
+        if kind in ("darks", "bias", "flat_darks") and s.get("camera_raw") and _finite(black, white, med, noise) \
+                and noise > 0 and white > black:
+            above = med - black
+            if above > max(SKY_LEVEL_NOISE * noise, SKY_LEVEL_RANGE_PCT / 100.0 * (white - black)):
+                add("sky_level", f"its level is {above:.0f} ADU above the camera's black level ({black:.0f} ADU), "
+                                 f"{above / noise:.0f}x its noise: light reached the sensor, not a {one}",
+                    value=above, black=black, noise=noise)
+        absolute = len(checks)
 
         if many:
             v, (c, sg) = s.get("exposure"), cen["exposure"]
@@ -197,7 +284,7 @@ def flag_frames(kind: str, stats: list[dict[str, Any]]) -> list[tuple[str, str, 
                 elif lvl > 85:
                     add("overexposed", f"its level is {lvl:.0f} % of full scale: close to saturation, where the "
                                        "sensor is no longer linear", value=lvl)
-        flag = "warn" if checks else "ok"
+        flag = "bad" if absolute else "warn" if checks else "ok"
         reason = "; ".join(c["text"] for c in checks)
         out.append((flag, (reason[0].upper() + reason[1:]) if reason else "", checks))
     return out
