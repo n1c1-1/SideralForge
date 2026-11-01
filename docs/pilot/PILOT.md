@@ -132,6 +132,21 @@ docs/pilot/STATE_OF_THE_ART_STACKING.md).
   Base for the chosen combination, and the table in BENCH.md.
 - Nothing else: no recompute of the user's projects, no removal of the old version, before the user decides on the
   table.
+- **Phase 4, asked by the user at 22:45, to start ONLY after phase 3 is reported.** The user wants a Post tool good
+  enough that no third-party tool is needed to finish an image.
+  - **4a, GUI fixes** (one agent, on the client's Inspect files):
+    - the x/y track of the session ("Lissajous") must be visible in Registration;
+    - side-by-side and split comparisons must show both images on the same sky (on M31: Gradient against the
+      photometric colour output, and Astrometry): align the compared images on a common grid (scale, crop, WCS);
+    - on M31, explain or fix why "final image" (Output) is not the same as "gradient removed": it looks like the
+      gradient image with more noise.
+  - **4b, Post tools** (another agent, on the Post files only):
+    - first a short state-of-the-art inventory of PixInsight's and Siril's post-processing tools against our 13
+      filters;
+    - then a real Curves tool (manual control points, per channel and luminance, the presets of the pro tools);
+    - then add the missing PixInsight and Siril filters that fit a layer-based Post, each from its published
+      method, each tested and shown in the client (EN and FR screenshots).
+  - Same rules: state of the art only; nothing else touched; agents never commit.
 
 **No tinkering (the user's lesson, 2026-11-01 18:35): this is generic processing software.**
 - Every engine method rests on the state of the art: a known algorithm (Siril, PixInsight, a paper), named with its
