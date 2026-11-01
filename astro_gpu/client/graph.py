@@ -86,7 +86,8 @@ COLW = BW + GAP             # column pitch
 LANE = 80                   # lane pitch
 TOP = 74                    # room for the phase labels
 MARGIN = 8                  # around the graph, left and right
-MIN_SCALE = 0.8             # below, the text cannot be read: the view scrolls instead (off Show all)
+MIN_SCALE = 0.6             # the smallest the default view goes to show the whole chain; below, the text cannot be read:
+#                             the view keeps this scale, shows the left end (Frames) and scrolls right. Show all goes lower
 TITLE_PAD = 22              # a block's title, its state stripe and its padding
 OUT_MAX = BW + 30           # the widest Output column: a longer workflow name fades out (whole in the tooltip)
 FADE = 18                   # the width over which a name too long for its block fades out
@@ -352,6 +353,7 @@ class GraphView(QGraphicsView):
         self.graph: Graph | None = None
         self._sel_item = None
         self.final_item = None
+        self._fitting = False
         self._next_x: dict[str, float] = {}
         self.toast = QLabel(self)
         self.toast.setStyleSheet("background: #262a33; border: 1px solid #3a4150; border-radius: 6px; "
@@ -570,18 +572,32 @@ class GraphView(QGraphicsView):
         t.setZValue(3)
 
     def fit(self):
+        """The default view shows the whole chain, from Frames to Post, at any window width: the scale that fits (at most
+        1.3), lowered down to MIN_SCALE; when even that does not fit, the left end (Frames) is shown, top left, and the
+        user scrolls right (or down). It is done again whenever the view changes size (the window, the panel)."""
         r = self.scene().sceneRect()
-        if r.isEmpty():
+        if r.isEmpty() or self._fitting:
             return
-        k = min(1.3, (self.viewport().width() - 4) / r.width(), (self.viewport().height() - 10) / r.height())
-        if not self.b_all.isChecked():
-            k = max(k, MIN_SCALE)                      # below, the text cannot be read: scroll instead
-        self.resetTransform()
-        self.scale(k, k)
-        self.centerOn(r.center())
-        it = self._sel_item
-        if it is not None and it.scene() is self.scene():
-            self.ensureVisible(it, 80, 40)               # the chosen block stays in view when the graph scrolls
+        self._fitting = True
+        try:
+            vw, vh = self.viewport().width(), self.viewport().height()
+            k = min(1.3, (vw - 4) / r.width(), (vh - 10) / r.height())
+            if not self.b_all.isChecked():
+                k = max(k, MIN_SCALE)
+            self.resetTransform()
+            self.scale(k, k)
+            # the middle of the view, in the scene: the scene's own middle when it fits, else its left / top edge at the
+            # view's edge
+            x = r.center().x() if r.width() * k <= vw else r.left() + vw / (2 * k)
+            y = r.center().y() if r.height() * k <= vh else r.top() + vh / (2 * k)
+            self.centerOn(QPointF(x, y))
+            it = self._sel_item
+            if it is not None and it.scene() is self.scene() and r.height() * k > vh:
+                seen = self.mapToScene(self.viewport().rect()).boundingRect()
+                box = it.sceneBoundingRect()                    # the chosen lane stays in view when the graph scrolls down
+                self.ensureVisible(QRectF(seen.left(), box.top(), 1, box.height()), 0, 40)
+        finally:
+            self._fitting = False
 
     def resizeEvent(self, e):                                         # noqa: N802
         super().resizeEvent(e)

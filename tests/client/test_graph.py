@@ -1444,6 +1444,70 @@ def test_the_pause_in_french_on_the_graph(world, model, page, monkeypatch):
     settle(world["w"], page)
 
 
+def whole_chain_or_left(page, where: str):
+    """The default view's rule: every block in view and the scale at least MIN_SCALE; when the chain is wider than the view
+    at MIN_SCALE, the scale is MIN_SCALE, the left end (Frames) is in view, the view is scrolled to its left edge, and
+    only the right end (Post) is cut."""
+    gv = page.graph
+    k = gv.transform().m11()
+    assert k >= MIN_SCALE - 1e-6 and k <= 1.3 + 1e-6, (where, k)
+    vp = QRectF(gv.viewport().rect())
+    box = lambda it: QRectF(gv.mapFromScene(it.sceneBoundingRect()).boundingRect())          # noqa: E731
+    frames = next(it for it in block_items(page) if it.node.key == "sources")
+    post = page.graph.final_item
+    assert vp.contains(box(frames)), (where, "Frames is cut", box(frames), vp)
+    if gv.horizontalScrollBar().maximum() == 0:                                             # it fits: both ends in view
+        assert vp.contains(box(post)), (where, "Post is cut", box(post), vp)
+        assert all(vp.contains(box(it)) for it in block_items(page)), where
+    else:                                                                                   # it does not: left, scrolling right
+        bar = gv.horizontalScrollBar()
+        assert abs(k - MIN_SCALE) < 1e-6 and bar.value() == bar.minimum(), (where, k, bar.value())
+    return k, gv.horizontalScrollBar().maximum() == 0
+
+
+def test_the_default_view_shows_the_whole_chain_from_frames_to_post_at_any_width_and_in_both_languages(world, model, page):
+    from astro_gpu.client.graph import GraphView
+    shots = Path(os.environ.get("TEMP", ".")) / "b3_shots"
+    shots.mkdir(parents=True, exist_ok=True)
+    fits = {}
+    try:
+        for lang in ("en", "fr"):
+            appmod.apply_language(lang)
+            page.refresh()
+            for width in (1280, 1600, 1920):
+                page.root.resize(width, 934)
+                settle(world["w"], page)
+                fits[(lang, width)] = whole_chain_or_left(page, f"{lang} {width}")
+                assert page.graph.grab().save(str(shots / f"fit_{width}_{lang}.png"))
+                assert page.root.grab().save(str(shots / f"fit_{width}_{lang}_window.png"))
+            # the panel changes width (a wider one): the graph is fitted again to what is left of the window
+            page.root.resize(1600, 934)
+            settle(world["w"], page)
+            before = page.graph.viewport().width()
+            page.panel.setFixedWidth(520)
+            settle(world["w"], page)
+            assert page.graph.viewport().width() < before
+            whole_chain_or_left(page, f"{lang} 1600, panel 520")
+            page.panel.setFixedWidth(260)
+            settle(world["w"], page)
+            assert page.graph.viewport().width() > before
+            whole_chain_or_left(page, f"{lang} 1600, panel 260")
+            page.panel.setFixedWidth(390)
+            settle(world["w"], page)
+    finally:
+        appmod.apply_language("en")
+        page.panel.setFixedWidth(390)
+        page.refresh()
+    assert isinstance(page.graph, GraphView)
+    assert fits[("en", 1920)][1] and fits[("fr", 1920)][1]                          # a wide window shows all of it
+    # Show all goes below the floor, as before
+    page.graph.b_all.setChecked(True)
+    page.root.resize(1280, 934)
+    settle(world["w"], page)
+    assert page.graph.horizontalScrollBar().maximum() == 0 and page.graph.transform().m11() <= MIN_SCALE + 1e-6
+    page.graph.b_all.setChecked(False)
+
+
 # ---------------------------------------------------------------------------------------------- last
 def test_the_test_project_is_untouched():
     """Run last (pytest keeps the order of the file): nothing above wrote into the test project or its store."""

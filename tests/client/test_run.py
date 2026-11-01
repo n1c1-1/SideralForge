@@ -1666,7 +1666,7 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
         assert block(1, "calibration").bp == ("paused", 2, 2) and block(1, "alignement").bp == ("pending", 2, 2)
         both("4_paused_recap", lambda: w.run.dialog)
         both("5_graph_paused", lambda: w)
-        for lang in ("en", "fr"):                                          # the menu of the paused block: checked, and Mark as reviewed
+        for lang in ("en", "fr"):                          # the menu of the paused block: checked, with Mark as reviewed
             w.change_language(lang)
             settle()
             w.graph.graph.block_menu(graph().node_of(s.view(1), "calibration"), None)
@@ -1717,6 +1717,6 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
         w.deleteLater()
         QApplication.processEvents()
     assert _fingerprint(F_COPY / "project.astroproj") == before            # the copy was only read
-    shots = sorted(p.name for p in B3.glob("*.png"))
+    shots = sorted(p.name for p in B3.glob("*.png") if not p.name.startswith("fit_"))      # fit_*: test_graph's
     assert len(shots) == 17, shots
 
