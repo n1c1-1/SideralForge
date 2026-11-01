@@ -1,5 +1,12 @@
 # Spec : l'empilement, deux méthodes standard
 
+**Décisions de l'utilisateur (1er novembre, 19 h), qui remplacent ce qui suit là où ça diffère :**
+- le **drizzle est la méthode par défaut** ;
+- le **recalage des couleurs (ChannelMatch) est activé par défaut** : c'est un atout majeur ;
+- le but n'est pas de faire comme Siril, mais **mieux que Siril**. Siril est le plancher, pas le modèle ;
+- avant d'aller plus loin : **une passe d'état de l'art sur l'empilement** (PixInsight, Siril, APP, DSS,
+  publications), puis cette spec sera réécrite, avec les paramètres à exposer.
+
 Statut : **à valider par l'utilisateur avant tout code.** Règle du projet (ENGINE_KNOWLEDGE 4b) : chaque méthode
 repose sur un algorithme publié et utilisé, nommé ici. Rien n'est réglé sur nos images de test.
 
