@@ -13,6 +13,14 @@ Layout under BENCH (F:/astro_essais/bench):
     <case>/ours_<level>/        our v2 project (workflow "Classic stack") and its exports
     <case>/measures_<level>.json, sheet_<level>.jpg
 
+A case with VARIANTS (rosette: the same lights calibrated three ways) adds, per variant V:
+    <case>/data/<kind>_<V>/     the calibration frames of that variant only (darks_B, darks_C)
+    <case>/ours_<level>_<V>/, siril_<level>_<V>/, measures_<level>_<V>.json
+except for its MAIN variant (rosette: B, the user's choice), whose folders and files carry no suffix (ours_<level>,
+siril_<level>, measures_<level>.json: the case's main projects, as Home lists them); measures_<level>_all.json
+measures every variant of a level on the same sky, and one sheet per level shows them all (sheet_<level>.jpg). A
+variant may skip Siril or a level.
+
 The sources are only read.
 """
 from __future__ import annotations
@@ -70,7 +78,85 @@ CASES: dict[str, dict] = {
         camera="ZWO Seestar S50 (FITS, IRCUT filter)", scope="Seestar S50 (250 mm, alt-azimuth)",
         centre_from="the frames' FITS header (RA, DEC)",
         note="no calibration frames exist for this set (the Seestar takes none)"),
+    # the darks of the 28.12.24 projects turned out to be sky frames (docs/pilot/DARKS_28_12_24.md): the user's fix is
+    # B, the 48 real darks of the Iris night. The flats are the Iris flats (same Newton and camera), as in the user's
+    # project. Variants A (no darks) and C (the sky frames as darks) were run once with the engine before the base
+    # patches and set aside (rosette/_variants: projects, measures, the sheet showing C's damage); only B is kept.
+    "rosette": dict(
+        lights="F:/astro_projets/_raw/Rosette/lights", flats="F:/astro_projets/_raw/Rosette/flats", ext=(".arw",),
+        target="NGC 2237", ra=97.98, dec=4.99, obj=(97.98, 4.94), focal=893.0, pixel=8.4,
+        camera="Sony A7S (astro-modified), lossy ARW", scope="Newton 130/900 (~893 mm)",
+        centre_from="the user's Rosette project (its astrometry), rounded",
+        note="28.12.24, ISO 4000, 15 s; darks: the 48 real darks of the Iris night (the night's own 'darks' are sky "
+             "frames)",
+        main="B",                      # the user's choice: its folders are the case's main ones (ours_<level>)
+        variants={
+            "B": dict(darks="F:/astro_projets/_raw/Iris/darks",
+                      label="the 48 real darks of the Iris night (same camera, 15 s, ISO 4000, 2 March 2025)",
+                      short="Iris darks"),
+        }),
 }
+
+
+def variants_of(case: str) -> list[str]:
+    """The variants of a case ([""] for a case without)."""
+    return list(CASES[case].get("variants") or {}) or [""]
+
+
+def variant_levels(case: str, variant: str) -> tuple[str, ...]:
+    v = (CASES[case].get("variants") or {}).get(variant) or {}
+    return tuple(v.get("levels") or LEVELS)
+
+
+def variant_has_siril(case: str, variant: str) -> bool:
+    v = (CASES[case].get("variants") or {}).get(variant) or {}
+    return bool(v.get("siril", True))
+
+
+def norm_variant(case: str, variant: str | None) -> str:
+    """The variant as the case spells it ("a" -> "A"); "" for a case without variants."""
+    vs = CASES[case].get("variants") or {}
+    if not vs:
+        if variant:
+            raise SystemExit(f"{case} has no variants")
+        return ""
+    if not variant and CASES[case].get("main"):
+        return CASES[case]["main"]                   # no variant given: the case's main one
+    for k in vs:
+        if variant and k.lower() == variant.lower():
+            return k
+    raise SystemExit(f"{case}: give a variant ({', '.join(vs)})")
+
+
+def suffix(variant: str) -> str:
+    return f"_{variant}" if variant else ""
+
+
+def tag(case: str, variant: str) -> str:
+    """The folder and file suffix of a variant: none for the case's main variant (rosette: B, the user's choice), so
+    that its projects are the case's main ones (ours_<level>, siril_<level>, measures_<level>.json)."""
+    return "" if variant and variant == CASES[case].get("main") else suffix(variant)
+
+
+def ours_dir(case: str, level: str, variant: str = "") -> Path:
+    return BENCH / case / f"ours_{level}{tag(case, variant)}"
+
+
+def siril_dir(case: str, level: str, variant: str = "") -> Path:
+    return BENCH / case / f"siril_{level}{tag(case, variant)}"
+
+
+def calibration(man: dict, variant: str = "") -> dict:
+    """The calibration frames a run reads: the case's shared ones (flats) and the variant's own (darks)."""
+    cal = dict(man.get("calibration") or {})
+    if variant:
+        cal.update({k: v for k, v in ((man.get("variants") or {}).get(variant, {}).get("calibration") or {}).items()})
+    return cal
+
+
+def offline_env() -> None:
+    """Our engine reads the bench's local Gaia extracts (Siril's) before any network service."""
+    os.environ.setdefault("ASTRO_GPU_SIRIL_CATALOGUES", str(BENCH / "_siril" / "catalogues"))
 
 
 def data_dir(case: str) -> Path:

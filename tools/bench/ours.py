@@ -1,15 +1,17 @@
 """Our engine on the bench: a v2 project per case and level, workflow "Classic stack", run on a GPU, then exported.
 
-    python tools/bench/ours.py CASE LEVEL [--device cuda:0] [--no-export]
+    python tools/bench/ours.py CASE LEVEL [--variant V] [--device cuda:0] [--no-export]
 
-The project is F:/astro_essais/bench/<case>/ours_<level>/ (created once through the engine API; afterwards it is only
-re-run: the store recomputes what changed, e.g. after engine fixes). Its single session reads the same frozen copies
-as Siril (data/lights_<level>, data/darks, flats, bias); the target carries the same approximate centre and focal
-length Siril is given. Everything stays at the engine's suggested settings.
+The project is F:/astro_essais/bench/<case>/ours_<level>/ (ours_<level>_<V> for a case with variants; created once
+through the engine API; afterwards it is only re-run: the store recomputes what changed, e.g. after engine fixes).
+Its single session reads the same frozen copies as Siril (data/lights_<level>, data/darks, flats, bias; a variant's
+own darks from data/darks_<V>); the target carries the same approximate centre and focal length Siril is given.
+Everything stays at the engine's suggested settings.
 
 Environment of the run: USERPROFILE = bench/_home (the engine's catalogue cache, ~/.astro_gpu/cache, lands in
 bench/_home/.astro_gpu/cache instead of the user's), ASTRO_GPU_HOME = bench/_home/.astro_gpu (camera profiles copied
-from the user's), CUDA_VISIBLE_DEVICES chosen per run by the engine's runner from --device.
+from the user's), ASTRO_GPU_SIRIL_CATALOGUES = bench/_siril/catalogues (local Gaia extracts first),
+CUDA_VISIBLE_DEVICES chosen per run by the engine's runner from --device.
 
 Writes ours_<level>/bench_run.json: the run's status, wall time, the duration of every stage (computed or reused),
 the stage metrics the bench reads, and the exported final (export/bench_final/: TIFF 16 bits and PNG 16 bits).
@@ -30,6 +32,7 @@ import cases as C  # noqa: E402
 os.environ["USERPROFILE"] = str(C.HOME)          # before astro_gpu is imported: Path.home() -> the bench home
 os.environ["ASTRO_GPU_HOME"] = str(C.AG_HOME)
 os.environ["PYTHONUNBUFFERED"] = "1"
+C.offline_env()
 sys.path.insert(0, str(C.REPO))
 C.utf8_console()
 
@@ -39,21 +42,24 @@ from astro_gpu.core.project import Target  # noqa: E402
 WF_NAME = "Classic stack"
 
 
-def project(case: str, level: str):
+def project(case: str, level: str, variant: str = ""):
     man = json.loads((C.BENCH / case / "manifest.json").read_text(encoding="utf-8"))
-    root = C.BENCH / case / f"ours_{level}"
+    root = C.ours_dir(case, level, variant)
     if (root / "project.astroproj").exists():
         p = api.open_project(root)
     else:
         lv = man["levels"][level]
-        cal = man["calibration"]
-        p = api.create_project(root, f"bench {case} {level}",
+        cal = C.calibration(man, variant)
+        tag = f" {variant}" if variant else ""
+        p = api.create_project(root, f"bench {case} {level}{tag}",
                                Target(name=man["target"], ra=man["ra"], dec=man["dec"], focal_mm=man["focal_mm"]))
         api.add_session(p, lights=[lv["folder"]], darks=[cal["darks"]["folder"]] if "darks" in cal else [],
                         flats=[cal["flats"]["folder"]] if "flats" in cal else [],
-                        bias=[cal["bias"]["folder"]] if "bias" in cal else [], name=f"{case} {level}")
+                        bias=[cal["bias"]["folder"]] if "bias" in cal else [], name=f"{case} {level}{tag}")
         api.add_workflow(p, WF_NAME, WF_NAME)
         p.description = f"Quality bench (tools/bench): {man['camera_label']}, {man['scope']}; {lv['count']} lights"
+        if variant:
+            p.description += f"; variant {variant}: {man['variants'][variant]['label']}"
         api.save(p)
     w = next(w for w in p.workflows if w.name == WF_NAME)
     return p, w, man
@@ -119,8 +125,13 @@ def main() -> int:
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--no-export", action="store_true")
     ap.add_argument("--stop-before", help="run only the stages before this one (e.g. catalogs)")
+    ap.add_argument("--variant", help="the variant of a case that has some (rosette: A, B, C)")
     a = ap.parse_args()
-    p, w, man = project(a.case, a.level)
+    variant = C.norm_variant(a.case, a.variant)
+    if variant and a.level not in C.variant_levels(a.case, variant):
+        print(f"{a.case} {variant}: no {a.level} level")
+        return 1
+    p, w, man = project(a.case, a.level, variant)
     if man["levels"][a.level].get("same_as"):
         print(f"{a.case} {a.level}: same lights as {man['levels'][a.level]['same_as']}: nothing to run")
         return 0
@@ -148,7 +159,7 @@ def main() -> int:
     hist["runs"].append(r)
     hist["last"] = r
     rec_f.write_text(json.dumps(hist, indent=1, default=str), encoding="utf-8")
-    log(f"{a.case} {a.level}: {r['status']} in {r.get('wall_s', 0) / 60:.1f} min")
+    log(f"{a.case} {a.level}{C.suffix(variant)}: {r['status']} in {r.get('wall_s', 0) / 60:.1f} min")
     return 0 if r["status"] in ("done", "up to date") else 1
 
 

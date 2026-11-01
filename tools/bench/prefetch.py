@@ -103,12 +103,79 @@ def covered(c, r, cones: np.ndarray, rads: np.ndarray, fd: dict | None = None) -
     return True
 
 
+def _cone_of(ra: np.ndarray, dec: np.ndarray) -> tuple[float, float, float]:
+    """The centre and (a lower bound of the) radius of a cached cone, from its stars."""
+    r, d = np.radians(ra), np.radians(dec)
+    v = np.c_[np.cos(d) * np.cos(r), np.cos(d) * np.sin(r), np.sin(d)].mean(0)
+    c_ra = float(np.degrees(np.arctan2(v[1], v[0])) % 360)
+    c_dec = float(np.degrees(np.arcsin(v[2] / np.linalg.norm(v))))
+    return c_ra, c_dec, float(np.max(_sep(ra, dec, c_ra, c_dec)))
+
+
+def pool_cones(case: str, dst: str) -> int:
+    """Every cone file of the cache that touches the field (whatever solution it was cut for: an earlier run of the
+    bench) pooled, and the target project's cones written from it where the pool covers them."""
+    cache = C.AG_HOME / "cache"
+    fd = field(case, dst)
+    p = fd["p"]
+    centre = fd["wcs"].pixel_to_world(fd["W"] / 2, fd["H"] / 2)
+    reach = 0.5 * np.hypot(fd["W"], fd["H"]) * float(np.abs(np.linalg.det(fd["wcs"].pixel_scale_matrix)) ** 0.5) + 1.5
+    report = {}
+    for label, cols, gf in (("deep", DEEP_COLS, f"<{p.g_deep}"), ("faint", FAINT_COLS, f"{p.g_deep}..{p.g_faint}")):
+        if label == "faint" and not p.g_faint > p.g_deep:
+            continue
+        parts, cones = [], []
+        for f in (cache / "gaia").glob("*.npz"):
+            try:
+                z = dict(np.load(f))
+            except (OSError, ValueError):
+                continue
+            if set(z) != set(cols) or not len(z["Gmag"]):
+                continue
+            if label == "faint" and float(np.nanmin(z["Gmag"])) < p.g_deep - 0.05:
+                continue                                   # a bright-limited cone (astrometry), not the faint list
+            c = _cone_of(z["RA_ICRS"], z["DE_ICRS"])
+            if _sep(c[0], c[1], centre.ra.deg, centre.dec.deg) > reach + c[2]:
+                continue
+            parts.append(z)
+            cones.append(c)
+        if not parts:
+            report[label] = "no cached cone near the field"
+            continue
+        pl = {k: np.concatenate([q[k] for q in parts]) for k in cols}
+        key = np.round(pl["RA_ICRS"] * 3.6e5).astype(np.int64) * 10 ** 9 + np.round(pl["DE_ICRS"] * 3.6e5).astype(np.int64)
+        _, idx = np.unique(key, return_index=True)
+        pl = {k: v[idx] for k, v in pl.items()}
+        cc = np.array([[c[0], c[1]] for c in cones])
+        rr = np.array([c[2] for c in cones])
+        made = kept = out = 0
+        for c in fd["centres"]:
+            f = cache / "gaia" / f"{gaia_key(cols, gf, c, fd['radius'])}.npz"
+            if f.exists():
+                kept += 1
+                continue
+            if not covered(c, fd["radius"], cc, rr, fd):
+                out += 1
+                continue
+            sel = _sep(pl["RA_ICRS"], pl["DE_ICRS"], c[0], c[1]) <= fd["radius"]
+            np.savez(f, **{k: v[sel] for k, v in pl.items()})
+            made += 1
+        report[label] = {"cached_cones_used": len(parts), "pool_stars": int(len(idx)), "made": made, "already": kept,
+                         "left_to_network": out}
+    print(json.dumps({"case": case, "to": dst, "pool": True, **report}), flush=True)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("case", choices=list(C.CASES))
     ap.add_argument("--from", dest="src", default="express")
     ap.add_argument("--to", dest="dst", default="base")
+    ap.add_argument("--pool", action="store_true", help="cut the target's cones from every cached cone of the field "
+                                                       "(earlier runs of the bench), not from one project's")
     a = ap.parse_args()
+    if a.pool:
+        return pool_cones(a.case, a.dst)
     cache = C.AG_HOME / "cache"
     fs, fd = field(a.case, a.src), field(a.case, a.dst)
     p = fs["p"]

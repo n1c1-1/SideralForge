@@ -1,11 +1,12 @@
 """Build the quality bench: choose and copy the frames of each case, write its manifest, prepare the bench homes.
 
-    python tools/bench/build.py [CASE ...]          (all five cases by default)
+    python tools/bench/build.py [CASE ...]          (every case by default; bench.json keeps the others' lines)
 
 For each case (tools/bench/cases.py):
 - the lights of each level are chosen evenly over the session (sorted by file name: 30 for Express, 100 for Base, all
   of them when there are fewer) and copied to <case>/data/lights_<level>/;
-- every calibration frame of the source folders (darks, flats, bias) is copied to <case>/data/<kind>/;
+- every calibration frame of the source folders (darks, flats, bias) is copied to <case>/data/<kind>/; a variant's
+  own frames (rosette: the darks of B and C) to <case>/data/<kind>_<variant>/, listed under "variants";
 - <case>/manifest.json lists the files with their sizes, the camera read from the headers, and the calibration the
   case expects.
 Both programs then read exactly these copies. A file already copied with the same size is not copied again.
@@ -121,8 +122,27 @@ def build_case(name: str) -> dict:
     man["calibration_info"] = {k: info(C.kind_dir(name, k) / v["files"][0]["name"])
                                for k, v in man["calibration"].items()}
     man["expected_calibration"] = expected_calibration(c, man["camera"]["black"])
+    # variants: the same lights, each with its own calibration frames (data/<kind>_<variant>)
+    for vname, v in (c.get("variants") or {}).items():
+        ve: dict = {"label": v["label"], "short": v.get("short", ""), "levels": list(C.variant_levels(name, vname)),
+                    "siril": C.variant_has_siril(name, vname), "calibration": {}, "calibration_info": {}}
+        for kind in C.KINDS:
+            if not v.get(kind):
+                continue
+            fl = frames(v[kind], c["ext"])
+            dst = C.data_dir(name) / f"{kind}_{vname}"
+            ve["calibration"][kind] = {"count": len(fl), "folder": dst.as_posix(), "files": copy(fl, dst)}
+            ve["calibration_info"][kind] = info(dst / fl[0].name)
+            (root / f"{kind}_{vname}.txt").write_text("\n".join(p.name for p in fl) + "\n", encoding="utf-8")
+            print(f"{name} {vname}: {len(fl)} {kind}", flush=True)
+        ve["expected_calibration"] = expected_calibration({**c, **v}, man["camera"]["black"])
+        man.setdefault("variants", {})[vname] = ve
+    if c.get("main"):
+        man["main_variant"] = c["main"]            # its projects are the case's main ones: ours_<level>, siril_<level>
     man["bytes"] = sum(f["size"] for lv in man["levels"].values() for f in lv.get("files", [])) + \
-        sum(f["size"] for k in man["calibration"].values() for f in k["files"])
+        sum(f["size"] for k in man["calibration"].values() for f in k["files"]) + \
+        sum(f["size"] for v in (man.get("variants") or {}).values() for k in v["calibration"].values()
+            for f in k["files"])
     (root / "manifest.json").write_text(json.dumps(man, indent=1), encoding="utf-8")
     return man
 
@@ -159,15 +179,22 @@ def homes() -> None:
 def main() -> int:
     names = sys.argv[1:] or list(C.CASES)
     homes()
-    summary = {}
+    bj = C.BENCH / "bench.json"
+    old = json.loads(bj.read_text(encoding="utf-8")) if bj.exists() else {}
+    summary = dict(old.get("cases") or {})           # building one case keeps the others' lines
     for n in names:
         m = build_case(n)
         summary[n] = {lv: e["count"] for lv, e in m["levels"].items()}
         summary[n].update({k: v["count"] for k, v in m["calibration"].items()})
+        for vname, v in (m.get("variants") or {}).items():
+            summary[n].setdefault("variants", {})[vname] = {
+                "short": v["short"], "levels": v["levels"], "siril": v["siril"],
+                **{k: e["count"] for k, e in v["calibration"].items()}}
         summary[n]["GB"] = round(m["bytes"] / 1e9, 2)
         print(f"{n}: {summary[n]}; calibration: {m['expected_calibration']}", flush=True)
-    (C.BENCH / "bench.json").write_text(json.dumps({"built": datetime.now().isoformat(timespec="seconds"),
-                                                     "cases": summary}, indent=1), encoding="utf-8")
+    bj.write_text(json.dumps({"built": old.get("built") or datetime.now().isoformat(timespec="seconds"),
+                              "updated": datetime.now().isoformat(timespec="seconds"),
+                              "cases": {k: summary[k] for k in C.CASES if k in summary}}, indent=1), encoding="utf-8")
     return 0
 
 

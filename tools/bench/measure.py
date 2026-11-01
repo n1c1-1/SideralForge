@@ -1,6 +1,10 @@
 """Measures of the bench: our linear stacks against Siril's, on the same sky, plus the side-by-side sheet of the finals.
 
-    python tools/bench/measure.py CASE LEVEL [--no-sheet]
+    python tools/bench/measure.py CASE LEVEL [--variant V [--siril-variant W]] [--no-sheet]
+
+A case with variants (rosette) measures our project of variant V against Siril's of the same variant (or of W: a
+variant without Siril, C, is measured against Siril's A); the level's sheet with every variant is sheet.py's
+(make_variants), once all are measured.
 
 Both images keep their own pixel grid (ours is drizzled, Siril's is not): every measure is placed on the sky with each
 image's own astrometric solution, and sizes are angular. The star list is Gaia DR3 (the catalogue our engine
@@ -23,6 +27,15 @@ On the gradient-removed, colour-calibrated linear images (ours: render_simple/li
   brightness (mag/arcsec2 through the zero point: higher = flatter);
 - star colours: -2.5 log10(B/R) and -2.5 log10(G/R) of isolated stars against Gaia BP-RP: robust scatter around a
   straight line (mag: lower = more faithful), the slope, and the BP-RP that comes out white.
+Also on the raw linear stacks:
+- streaks along the drift (walking noise, a dark's star trails): the drift of the frames on the sensor (our
+  registration) is turned into a direction in each image through both astrometric solutions. The background residual
+  (stars masked, binned to ~3.9") is averaged along lines of 160" at every angle; the spread of these line means
+  along the drift over their median spread at all angles is 1 for a noise without direction (higher = streaks). The
+  streak component (along minus across, in quadrature) as a surface brightness (mag/arcsec2: higher = fainter). On
+  the darker half of the sky (outside the brightest nebulosity).
+- coloured spots: compact spots above 6 sigma in one colour and below 2 sigma in the other two (hot pixels of one
+  Bayer colour left by the calibration and the rejection; stars are seen in all three), per degree2.
 Writes <case>/measures_<level>.json and <case>/sheet_<level>.jpg.
 """
 from __future__ import annotations
@@ -41,9 +54,11 @@ import cases as C  # noqa: E402
 
 os.environ["USERPROFILE"] = str(C.HOME)
 os.environ["ASTRO_GPU_HOME"] = str(C.AG_HOME)
+C.offline_env()
 sys.path.insert(0, str(C.REPO))
 C.utf8_console()
 
+import cv2  # noqa: E402
 from astropy.io import fits  # noqa: E402
 from astropy.wcs import WCS  # noqa: E402
 from scipy import ndimage as ndi  # noqa: E402
@@ -102,8 +117,8 @@ def common_cover(a: Img, b: Img) -> np.ndarray:
     return a.cover & full
 
 
-def load_siril(case: str, level: str, which: str) -> Img:
-    f = C.BENCH / case / f"siril_{level}" / f"{which}.fit"
+def load_siril(case: str, level: str, which: str, variant: str = "") -> Img:
+    f = C.siril_dir(case, level, variant) / f"{which}.fit"
     with fits.open(f, memmap=False) as h:
         data = np.asarray(h[0].data, np.float32)
         hdr = h[0].header
@@ -113,9 +128,9 @@ def load_siril(case: str, level: str, which: str) -> Img:
     return Img(f"Siril {which}", data, WCS(hdr, naxis=2), cover)
 
 
-def ours_dirs(case: str, level: str) -> dict[str, Path]:
+def ours_dirs(case: str, level: str, variant: str = "") -> dict[str, Path]:
     from astro_gpu import api
-    root = C.BENCH / case / f"ours_{level}"
+    root = C.ours_dir(case, level, variant)
     p = api.open_project(root)
     w = next(w for w in p.workflows if w.name == "Classic stack")
     out = {}
@@ -669,6 +684,112 @@ def colours(im: Img, st: dict, sel: np.ndarray, fwhm_px: float) -> dict:
     return out
 
 
+def drift_direction(d: dict[str, Path]) -> dict:
+    """The drift of the frames on the sensor, from our registration (the position of the reference frame's centre in
+    every frame): unit vector (x, y) in sensor pixels (our stack's grid has the reference frame's orientation), the
+    length of the drift (px) and the angle (degrees, x right, y down)."""
+    z = np.load(d["register"] / "reg.npz")
+    ok = np.isfinite(z["rms"])
+    c = z["coef"][ok][:, :, 0]
+    P = c - c.mean(0)
+    v = np.linalg.svd(P, full_matrices=False)[2][0]
+    t = P @ v
+    return {"v": v, "length_px": float(np.ptp(t)), "angle_deg": float(np.degrees(np.arctan2(v[1], v[0])) % 180),
+            "straightness": float(np.std(t) / max(np.std(P - np.outer(t, v)), 1e-9))}
+
+
+def angle_in(im: Img, ref: Img, v: np.ndarray) -> float:
+    """The direction v of ref's pixel grid as an angle in im's grid (through both solutions)."""
+    x0, y0 = ref.W / 2, ref.H / 2
+    ra, dec = ref.wcs.all_pix2world([x0, x0 + 60 * v[0]], [y0, y0 + 60 * v[1]], 0)
+    x, y = im.wcs.all_world2pix(ra, dec, 0)
+    return float(np.degrees(np.arctan2(y[1] - y[0], x[1] - x[0])) % 180)
+
+
+def _line_kernel(half: int, angle_deg: float, width: float = 1.2) -> np.ndarray:
+    """A line of length 2 half + 1 at the angle, with a Gaussian cross-profile (sigma = width px, so that every angle
+    averages about the same number of pixels), normalised to a sum of 1."""
+    yy, xx = np.mgrid[-half - 3:half + 4, -half - 3:half + 4].astype(np.float32)
+    a = np.radians(angle_deg)
+    along = xx * np.cos(a) + yy * np.sin(a)
+    perp = -xx * np.sin(a) + yy * np.cos(a)
+    k = np.exp(-0.5 * (perp / width) ** 2) * np.clip(half + 0.5 - np.abs(along), 0, 1)
+    return (k / k.sum()).astype(np.float32)
+
+
+def streaks(im: Img, R: np.ndarray, mask: np.ndarray, Bg: np.ndarray, drift_deg: float, zp: float,
+            bin_arcsec: float = 3.9, line_arcsec: float = 160.0) -> dict:
+    """Directional noise of the background residual R (see the module's doc): line means at every 5 degrees and at
+    the drift's angle, on the darker half of the sky."""
+    b = max(1, int(round(bin_arcsec / im.scale)))
+    ok = (im.cover & ~mask).astype(np.float32)
+    H, W = R.shape
+    hb, wb = H // b, W // b
+
+    def binned(a):
+        return a[: hb * b, : wb * b].reshape(hb, b, wb, b).mean((1, 3), dtype=np.float64).astype(np.float32)
+    w = binned(ok)
+    s = binned(np.where(ok > 0, R, 0).astype(np.float32))
+    valid = w > 0.7
+    rb = np.where(valid, s / np.maximum(w, 1e-6), 0).astype(np.float32)
+    bg = binned(np.where(ok > 0, Bg, np.nan_to_num(np.nanmedian(Bg))).astype(np.float32))
+    dark = valid & (bg <= np.percentile(bg[valid], 50))
+    half = max(5, int(round(line_arcsec / (b * im.scale) / 2)))
+    vf = valid.astype(np.float32)
+
+    def spread(angle):
+        """The spread of the line means, over what a noise without direction would give (sqrt of the sum of the
+        squared weights): equal at every angle for such a noise."""
+        k = _line_kernel(half, angle)
+        num = cv2.filter2D(rb, -1, k, borderType=cv2.BORDER_CONSTANT)
+        den = cv2.filter2D(vf, -1, k, borderType=cv2.BORDER_CONSTANT)
+        good = dark & (den > 0.8)
+        if good.sum() <= 1000:
+            return float("nan"), float("nan")
+        raw = rstd((num / np.maximum(den, 1e-6))[good])
+        return raw / float(np.sqrt((k.astype(np.float64) ** 2).sum())), raw
+    angles = np.arange(0, 180, 5.0)
+    sp = np.array([spread(a)[0] for a in angles])
+    med = float(np.nanmedian(sp))
+    (along, along_raw), (across, across_raw) = spread(drift_deg), spread((drift_deg + 90) % 180)
+    # the streaks' own brightness: the line means along the drift beyond those across it (in quadrature)
+    streak = float(np.sqrt(max(along_raw ** 2 - across_raw ** 2, 0.0)))
+    k = int(np.nanargmax(sp))
+    return {"bin_px": b, "line_px": 2 * half + 1, "drift_deg_image": drift_deg, "along": along, "across": across,
+            "median_all": med, "ratio_along": along / med, "ratio_across": across / med,
+            "max_ratio": float(sp[k] / med), "max_angle_deg": float(angles[k]),
+            "streak_sb": float(zp - 2.5 * np.log10(streak / im.pixarea)) if streak > 0 else float("inf"),
+            "profile": [round(float(x / med), 3) for x in sp]}
+
+
+def coloured_spots(im: Img, mask: np.ndarray, fwhm_px: float) -> dict:
+    """Compact spots above 6 sigma in one colour and below 2 sigma in the other two (3 x 3 mean of each colour's
+    high-pass, over its own noise), outside the masked stars: hot pixels of one Bayer colour."""
+    ok = im.cover & ~mask
+    size = max(5, int(2 * fwhm_px) | 1)
+    z = []
+    for c in range(3):
+        ch = im.rgb[c]
+        hp = cv2.blur(ch - ndi.median_filter(ch, size=size), (3, 3))
+        z.append(np.where(ok, hp / rstd(hp[ok][:: max(1, ok.sum() // 2_000_000)]), 0).astype(np.float32))
+    z = np.stack(z)
+    out = {}
+    area_deg2 = ok.sum() * im.pixarea / 3600 ** 2
+    tot = 0
+    for c, name in enumerate("RGB"):
+        others = np.delete(z, c, 0).max(0)
+        lab, n = ndi.label((z[c] > 6) & (others < 2))
+        if n:
+            sizes = ndi.sum_labels(np.ones_like(z[c]), lab, np.arange(1, n + 1))
+            n = int((sizes <= max(9, (2 * fwhm_px) ** 2)).sum())
+        out[f"{name}_per_deg2"] = n / area_deg2
+        tot += n
+    out["all_per_deg2"] = tot / area_deg2
+    out["count"] = tot
+    out["area_deg2"] = float(area_deg2)
+    return out
+
+
 def cross(a: np.ndarray, b: np.ndarray, r: float) -> int:
     """How many points of a have no point of b within r (both in the same coordinates)."""
     if len(a) == 0:
@@ -689,12 +810,12 @@ def to_sky(im: Img, xy: np.ndarray, dec0: float) -> np.ndarray:
 
 # ---------------------------------------------------------------------------------------------- main
 
-def measure(case: str, level: str) -> dict:
+def measure(case: str, level: str, variant: str = "", siril_variant: str = "") -> dict:
     t0 = time.time()
-    d = ours_dirs(case, level)
-    res: dict = {"case": case, "level": level}
+    d = ours_dirs(case, level, variant)
+    res: dict = {"case": case, "level": level, "variant": variant, "siril_variant": siril_variant}
     so = load_ours(d, "stack")
-    ss = load_siril(case, level, "stack_linear")
+    ss = load_siril(case, level, "stack_linear", siril_variant)
     st = gaia(d, so)
     so.cover, ss.cover = common_cover(so, ss), common_cover(ss, so)    # every measure on the sky both cover
     res["gaia_stars"] = int(len(st["g"]))
@@ -772,11 +893,21 @@ def measure(case: str, level: str) -> dict:
         noise[key] = bn
     res["noise"] = noise
     res["box_arcsec"] = bs * ss.scale
-    sc = load_siril(case, level, "color_linear")
+    sc = load_siril(case, level, "color_linear", siril_variant)
     res["target"] = target_snr(sc, ss, so, masks["siril"], masks["ours"], bs, bo, bo_exact, noise["siril"]["zp"],
                                noise["ours"]["zp"])
     del sc
     print(f"noise {noise} target {res['target']} ({time.time() - t0:.0f} s)", flush=True)
+    # streaks along the drift (walking noise, a dark's star trails) and spots of one colour (hot pixels)
+    dr = drift_direction(d)
+    res["drift"] = {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in dr.items()}
+    res["streaks"], res["coloured_spots"] = {}, {}
+    for key, im in (("ours", so), ("siril", ss)):
+        ang = dr["angle_deg"] if key == "ours" else angle_in(ss, so, dr["v"])
+        res["streaks"][key] = streaks(im, phot[key]["R"], masks[key], phot[key]["B"], ang, phot[key]["zp"])
+        res["coloured_spots"][key] = coloured_spots(im, masks[key], shapes[key].get("fwhm_px", 3.0))
+    print(f"drift {res['drift']} streaks {res['streaks']} coloured spots {res['coloured_spots']} "
+          f"({time.time() - t0:.0f} s)", flush=True)
     # residual spots and trails
     rs = {key: residuals(im, masks[key], shapes[key].get("fwhm_px", 3.0)) for key, im in (("ours", so), ("siril", ss))}
     match_r = 3 * fwhm_as
@@ -808,7 +939,7 @@ def measure(case: str, level: str) -> dict:
     del phot
     # gradient-removed colour images
     so2 = load_ours(d, "lin")
-    ss2 = load_siril(case, level, "color_linear")
+    ss2 = load_siril(case, level, "color_linear", siril_variant)
     so2.dx, so2.dy, ss2.dx, ss2.dy = so.dx, so.dy, ss.dx, ss.dy
     del so, ss
     flat, col = {}, {}
@@ -826,17 +957,165 @@ def measure(case: str, level: str) -> dict:
     return res
 
 
+def _g50(found: np.ndarray, g: np.ndarray) -> float:
+    bins = np.arange(np.floor(g.min() * 4) / 4, 21.01, 0.25)
+    frac, centres = [], []
+    for lo in bins[:-1]:
+        m = (g >= lo) & (g < lo + 0.25)
+        if m.sum() >= 20:
+            frac.append(found[m].mean())
+            centres.append(lo + 0.125)
+    frac, centres = np.array(frac), np.array(centres)
+    below = np.where(frac < 0.5)[0]
+    if len(below) and below[0] > 0:
+        k = below[0]
+        return float(np.interp(0.5, [frac[k], frac[k - 1]], [centres[k], centres[k - 1]]))
+    return float("nan")
+
+
+def measure_variants(case: str, level: str) -> dict:
+    """Every variant of a level, ours and Siril's, measured on the same sky: the coverage common to all the images,
+    one star set, one target (chosen on the first Siril variant's colour image, the reference), boxes of the same
+    angular size. The pairwise files (measure) compare each of ours with its Siril; this one compares the variants
+    with each other."""
+    t0 = time.time()
+    names, ims, dirs = [], [], {}
+    for v in C.variants_of(case):
+        if level not in C.variant_levels(case, v):
+            continue
+        if C.variant_has_siril(case, v) and (C.siril_dir(case, level, v) / "color_linear.fit").exists():
+            names.append(f"siril_{v}")
+            ims.append(load_siril(case, level, "stack_linear", v))
+        if (C.ours_dir(case, level, v) / "project.astroproj").exists():
+            dirs[v] = ours_dirs(case, level, v)
+            if "render_simple" in dirs[v]:
+                names.append(f"ours_{v}")
+                ims.append(load_ours(dirs[v], "stack"))
+    ref_i = next(i for i, n in enumerate(names) if n.startswith("siril_"))
+    ref = ims[ref_i]
+    first_ours = next(n for n in names if n.startswith("ours_"))
+    d0 = dirs[first_ours.split("_", 1)[1]]
+    st = gaia(d0, ims[names.index(first_ours)])
+    covers = [im.cover.copy() for im in ims]
+    for i, im in enumerate(ims):
+        for j, other in enumerate(ims):
+            if i != j:
+                covers[i] &= common_cover(im, other)
+    for im, cv in zip(ims, covers):
+        im.cover = cv
+    res: dict = {"case": case, "level": level, "images": names, "reference": names[ref_i],
+                 "gaia_stars": int(len(st["g"]))}
+    print(f"{names}: loaded, common sky ({time.time() - t0:.0f} s)", flush=True)
+    inside = []
+    for im in ims:
+        x, y = im.pix(st["ra"], st["dec"])
+        inside.append(im.inside(x, y, 40))
+    common = np.logical_and.reduce(inside)
+    bright = common & (st["g"] < 14) & (st["g"] > 9)
+    for im in ims:
+        refine_shift(im, st, bright)
+    iso_shape = isolated(st, common & (st["g"] < 16.5) & (st["g"] > 8), 40 / 3600, 3.0)
+    shapes = {n: star_shapes(im, st, iso_shape, ref) for n, im in zip(names, ims)}
+    fwhm_as = max(s.get("fwhm_arcsec", 5) for s in shapes.values())
+    masks = {n: star_mask(im, st, fwhm_as) for n, im in zip(names, ims)}
+    gmin = max(s.get("max_g_unsaturated_bright", 10) for s in shapes.values())
+    iso_f = isolated(st, common & (st["g"] > gmin), 3 * fwhm_as / 3600, 1.5)
+    iso_z = isolated(st, common & (st["g"] > gmin + 0.3) & (st["g"] < gmin + 3.5), 30 / 3600, 2.5)
+    for n, im in zip(names, ims):
+        normalise_channels(im, st, iso_z, shapes[n].get("fwhm_px", 3.0))
+    phot = {n: photometry(im, st, iso_f, shapes[n].get("fwhm_px", 3.0), masks[n], gmin) for n, im in zip(names, ims)}
+    common_f = np.logical_and.reduce([p["fsel"] for p in phot.values()])
+    print(f"stars and photometry ({time.time() - t0:.0f} s)", flush=True)
+    bs = 4
+    dr = drift_direction(d0)
+    res["drift"] = {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in dr.items()}
+    sc = load_siril(case, level, "color_linear", names[ref_i].split("_", 1)[1])
+    out = {}
+    for n, im in zip(names, ims):
+        e: dict = {"stars": shapes[n]}
+        snr = np.full(len(st["g"]), np.nan)
+        snr[phot[n]["fsel"]] = phot[n]["snr"]
+        s = snr[common_f]
+        e["faint_stars"] = {"found": int((s >= 5).sum()), "of": int(len(s)),
+                            "g50": _g50(s >= 5, st["g"][common_f])}
+        bex = bs * ref.scale / im.scale
+        b = max(2, int(round(bex)))
+        bn = box_noise(im, phot[n]["R"], masks[n], b, bex)
+        zp = phot[n]["zp"]
+        bn["sb_mag_arcsec2"] = float(zp - 2.5 * np.log10(bn["sigma_box"] / im.pixarea))
+        bn["sb_large_mag_arcsec2"] = float(zp - 2.5 * np.log10(
+            box_noise(im, phot[n]["R"], masks[n], max(2, int(round(4 * bex))), 4 * bex)["sigma_box"] / im.pixarea))
+        sky = float(np.median(phot[n]["B"][im.cover & ~masks[n]]))
+        bn["sky_sb"] = float(zp - 2.5 * np.log10(sky / im.pixarea)) if sky > 0 else float("nan")
+        bn.update({k: phot[n][k] for k in ("zp", "zp_stars", "r_det_px", "depth5_mag")})
+        e["noise"] = bn
+        # the target and its sky band chosen once on the reference; this image's boxes take the reference's choice
+        t = target_snr(sc, ref, im, masks[names[ref_i]], masks[n], bs, b, bex, phot[names[ref_i]]["zp"], zp)
+        e["target"] = {"snr": t.get("snr_ours"), "signal_sb": t.get("signal_sb_ours"),
+                       "noise_sb": t.get("noise_sb_ours"), "boxes": t.get("target_boxes_ours"),
+                       "ref_snr": t.get("snr_siril")}
+        ang = dr["angle_deg"] if n.startswith("ours_") else angle_in(im, ims[names.index(first_ours)], dr["v"])
+        e["streaks"] = streaks(im, phot[n]["R"], masks[n], phot[n]["B"], ang, zp)
+        e["coloured_spots"] = coloured_spots(im, masks[n], shapes[n].get("fwhm_px", 3.0))
+        rs = residuals(im, masks[n], shapes[n].get("fwhm_px", 3.0))
+        e["residuals"] = {"trails": len(rs["trails"]), "area_deg2": rs["area_deg2"],
+                          "trail_length_arcmin": float(sum(x["length_arcmin"] for x in rs["trails"])),
+                          "hot_spots_per_deg2": len(rs["spots"]["hot"]) / max(rs["area_deg2"], 1e-6),
+                          "cold_spots_per_deg2": len(rs["spots"]["cold"]) / max(rs["area_deg2"], 1e-6)}
+        out[n] = e
+        print(f"{n}: noise {bn['sb_mag_arcsec2']:.2f}/{bn['sb_large_mag_arcsec2']:.2f} depth {bn['depth5_mag']:.2f} "
+              f"faint {e['faint_stars']} snr {e['target']['snr']} streaks {e['streaks']['ratio_along']:.3f} "
+              f"spots {e['coloured_spots']['all_per_deg2']:.0f} ({time.time() - t0:.0f} s)", flush=True)
+    del sc, phot
+    iso_c = isolated(st, common & np.isfinite(st["bp"]) & (st["g"] > gmin + 0.3) & (st["g"] < gmin + 5), 30 / 3600,
+                     2.5)
+    for n, im in zip(names, ims):
+        v = n.split("_", 1)[1]
+        im2 = load_siril(case, level, "color_linear", v) if n.startswith("siril_") else load_ours(dirs[v], "lin")
+        im2.dx, im2.dy, im2.cover = im.dx, im.dy, im.cover & im2.cover
+        fw = shapes[n].get("fwhm_px", 3.0)
+        out[n]["colours"] = colours(im2, st, iso_c, fw)
+        normalise_channels(im2, st, iso_z, fw)
+        ph = photometry(im2, st, iso_f, fw, masks[n], gmin)
+        out[n]["flatness"] = flatness(im2, masks[n], ph["zp"], out[n]["noise"]["sky_sb"])
+        print(f"{n}: flat {out[n]['flatness'].get('spread_sb')} colours "
+              f"{(out[n]['colours'].get('b_r') or {}).get('scatter_bp_rp')} ({time.time() - t0:.0f} s)", flush=True)
+        del im2
+    res["by_image"] = out
+    res["seconds"] = round(time.time() - t0, 1)
+    return res
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("case", choices=list(C.CASES))
     ap.add_argument("level", choices=list(C.LEVELS))
     ap.add_argument("--no-sheet", action="store_true")
+    ap.add_argument("--all", action="store_true", help="a case with variants: every variant of the level, ours and "
+                                                       "Siril's, on the same sky (measures_<level>_all.json)")
+    ap.add_argument("--variant", help="the variant of a case that has some (rosette: A, B, C)")
+    ap.add_argument("--siril-variant", help="Siril's variant to measure against (default: the same, or A)")
     a = ap.parse_args()
-    out = C.BENCH / a.case / f"measures_{a.level}.json"
-    r = measure(a.case, a.level)
+    if a.all:
+        out = C.BENCH / a.case / f"measures_{a.level}_all.json"
+        r = measure_variants(a.case, a.level)
+        out.write_text(json.dumps(r, indent=1, default=float), encoding="utf-8")
+        print(f"written {out}")
+        if not a.no_sheet:
+            import sheet
+            sheet.make_variants(a.case, a.level)
+        return 0
+    variant = C.norm_variant(a.case, a.variant)
+    sv = ""
+    if variant:
+        sv = C.norm_variant(a.case, a.siril_variant) if a.siril_variant else variant
+        if not C.variant_has_siril(a.case, sv):
+            sv = next(v for v in C.variants_of(a.case) if C.variant_has_siril(a.case, v))
+    out = C.BENCH / a.case / f"measures_{a.level}{C.tag(a.case, variant)}.json"
+    r = measure(a.case, a.level, variant, sv)
     out.write_text(json.dumps(r, indent=1, default=float), encoding="utf-8")
     print(f"written {out}")
-    if not a.no_sheet:
+    if not a.no_sheet and not C.tag(a.case, variant):           # the case's main projects: the usual sheet
         import sheet
         sheet.make(a.case, a.level)
     return 0
