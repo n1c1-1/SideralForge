@@ -49,6 +49,12 @@ def _(s: str) -> str:
     return t
 
 
+def maybe(s: str) -> str:
+    """A text the program made that may have no translation (a file name, an image layer's name): translated when the
+    catalogue has it, else as it is (not counted as missing)."""
+    return _cat.get(s, s) if _lang != "en" and s else s
+
+
 def missing() -> set[str]:
     """The texts asked for since the last change of language that have no translation (for the tests)."""
     return set(_missing)

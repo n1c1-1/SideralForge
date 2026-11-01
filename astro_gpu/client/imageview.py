@@ -1816,6 +1816,7 @@ class InfoBand(QFrame):
                 while lay.count():
                     w = lay.takeAt(0).widget()
                     if w is not None:
+                        w.hide()                  # not drawn again under the next frame's numbers before it goes
                         w.deleteLater()
         for cap_t, text in info.get("extra") or []:
             c = QVBoxLayout()

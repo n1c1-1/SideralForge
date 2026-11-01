@@ -26,6 +26,19 @@ each run went on.
 ``--short`` (the test) skips the runs, the export and the import of the previous version: the project is created,
 its frames read, its workflows edited, every screen shown in both languages.
 
+``--project FOLDER`` is the other tour, the one of the features asked for on 2026-11-01, on a COMPUTED test copy (for
+example F:/astro_essais/v2/heart_a7s_tour, a fresh copy of heart_a7s_p10), in English then in French:
+- Inspect, every tab of every block in the common viewer: the calibration masters and the darks and flats browsable
+  with their measures, the calibrated lights; the registration charts (quality, drift, drift path, distribution) and
+  the frame table; Selection with a frame picked; the stack, its rejection map, coverage and weights; Astrometry, the
+  stack with its RA / Dec grid, and the survey; Colour before / after, the sensor response, the per-star fit against
+  Gaia; Denoise, Stars, Gradient; Output, the final image;
+- Send to Post from Inspect (an image layer), a filter nested under its layer (neutral settings), the export to FITS;
+- Graph: the method cards with their duration on the GPU and on the CPU, a breakpoint (pause after a block, the
+  review in the Run window, Continue when nothing is left to compute), taken off again.
+Nothing is computed (a Continue that would start a run is not clicked); the copy is changed (Post's layers, the
+export folder, the reviews), so make a fresh copy for each tour.
+
 Rules: CPU only (CUDA_VISIBLE_DEVICES=-1); the settings file and the engine's state folder are temporary; nothing is
 deleted outside the walkthrough's workspace (default F:/astro_essais/p13) and temporary folders; never F:/astro_projets.
 """
@@ -807,6 +820,226 @@ class Walk:
         from astro_gpu.client import i18n
         self.missing_fr |= {t for t in i18n.missing() if re.search(r"[A-Za-z]{3}", t)}
 
+    # ------------------------------------------------------------ the features tour (--project): a computed copy
+    #: (block, tab, shot): every tab of Inspect the 2026-11-01 review asked for, in the order of the chain
+    FEATURE_TABS = (
+        ("calibration", "masters", "calibration_masters"),
+        ("calibration", "darks", "calibration_darks"),
+        ("calibration", "flats", "calibration_flats"),
+        ("calibration", "calibrated", "calibration_lights"),
+        ("alignement", "reference", "registration_reference"),
+        ("alignement", "quality", "registration_quality"),
+        ("alignement", "drift", "registration_drift"),
+        ("alignement", "track", "registration_track"),
+        ("alignement", "distribution", "registration_distribution"),
+        ("alignement", "table", "registration_table"),
+        ("selection", None, "selection"),
+        ("empilement", "stack", "stack"),
+        ("empilement", "rejection", "stack_rejection"),
+        ("empilement", "coverage", "stack_coverage"),
+        ("empilement", "weights", "stack_weights"),
+        ("astrometrie", "solution", "astrometry_grid"),
+        ("astrometrie", "survey", "astrometry_survey"),
+        ("couleur", "colors", "color_before_after"),
+        ("couleur", "spectral", "color_response"),
+        ("couleur", "fit", "color_fit"),
+        ("debruitage", "denoised", "denoise"),
+        ("etoiles", "starless", "stars_starless"),
+        ("fond", "result", "gradient"),
+        ("fond", "removed", "gradient_sky_model"),
+        ("post", "output", "output_final"),
+    )
+
+    @staticmethod
+    def _view_done(v) -> bool:
+        """A viewer of Inspect shows what it was asked (or says why not); one asked nothing waits only on a message
+        that ends with "…" (Loading…, Rendering the final image…)."""
+        try:
+            if v._want is not None:
+                return v.wait(0.02)
+            return not (v.canvas.message or "").endswith("…")
+        except RuntimeError:                                     # gone with a rebuild
+            return True
+
+    def wait_tab(self, what: str, timeout: float = 300.0) -> bool:
+        """Until the tab shown has its data (the worker's), its pictures and its compared pictures."""
+        tune = self.w.tune
+        reading = (self._("Reading the results…"),)
+        end = time.time() + timeout
+        while time.time() < end:
+            self.settle(60)
+            views = list(tune.views)
+            if all(self._view_done(v) for v in views) and \
+                    not any(t in " ".join(texts_of(tune)) for t in reading):
+                self.pump(0.3)
+                self.settle(30)
+                if list(tune.views) == views and all(self._view_done(v) for v in views):
+                    return True
+            self.pump(0.2)
+        self.problem(f"timed out after {timeout:.0f} s: {what}")
+        return False
+
+    def show_tab(self, step: str, key: str | None, name: str, pid: int):
+        w = self.w
+        self.select(step, pid)
+        w.set_mode(1)
+        tune = w.tune
+        if key is not None:
+            keys = [v.key for v in tune.visuals(w.s.path, step)]
+            if key not in keys:
+                self.problem(f"no tab {key!r} in {step}: {keys}")
+                return None
+            tune.tab_of[step] = key
+        tune.refresh()
+        if step == "selection":
+            self.until(lambda: tune.chart is not None, 120, "the frames chart")
+            self.settle()
+            tune._pick(10)                                     # a frame picked on the chart: shown below it
+        t0 = time.time()
+        self.wait_tab(f"{step} / {key}")
+        self.timings[f"{name}_{self.lang}"] = time.time() - t0
+        return self.shot(name)
+
+    def features_inspect(self):
+        print("Features: Inspect", flush=True)
+        w = self.w
+        p = w.s.paths[0]
+        for step, key, name in self.FEATURE_TABS:
+            self.guarded(self.show_tab, step, key, name, p.pid)
+        w.tune.tab_of.clear()
+
+    def features_post(self, first: bool):
+        """Send to Post from Inspect (the stack: an image layer), a filter nested under the workflow's layer, Export
+        to FITS. The second time (French) the composition is there already: it is shown, and the dialog cancelled."""
+        print("Features: Post", flush=True)
+        w = self.w
+        p = w.s.paths[0]
+        w.set_mode(2)
+        self.until(lambda: w.render is not None and not w.render.busy(), 300, "the Post render")
+        self.settle()
+        self.shot("post_layers")
+        if first:
+            self.show_tab("empilement", "stack", "stack_send_to_post", p.pid)
+            v = w.tune.view
+            if v is None or v.image() is None:
+                self.problem("no stack in Inspect to send to Post")
+            else:
+                v._send_post()                                    # the viewer's Send to Post button
+                self.settle()
+                self.until(lambda: w.mode == 2 and w.render is not None and not w.render.busy(), 300,
+                           "the Post render with the image layer")
+                self.settle()
+                if not any(lay["kind"] == "image" for lay in w.post.view.layers):
+                    self.problem("Send to Post made no image layer")
+        view = w.post.view
+        self.shot("post_image_layer")
+        wl = next((lay for lay in view.layers if lay["kind"] == "workflow"), None)
+        if wl is None:
+            self.problem("no workflow layer in Post")
+            return
+        if first:
+            view.select(wl["id"], "layer")
+            view.add_filter("curves")                             # nested under the layer, its settings neutral
+            self.until(lambda: not w.render.busy(), 300, "the Post render")
+        fl = next((lay for lay in view.layers if lay["kind"] == "filter" and lay.get("target") == wl["id"]), None)
+        if fl is None:
+            self.problem("no filter nested under the workflow's layer")
+        else:
+            view.select(fl["id"], "layer")
+            self.until(lambda: not w.render.busy(), 300, "the Post render")
+        self.shot("post_filter_nested")
+
+        def export(d):
+            d.fmt.setCurrentIndex(max(0, d.fmt.findData("fits32f")))
+            self.shot("export_fits", d)
+            if not first:
+                d.reject()
+                return
+            t0 = time.time()
+            d.go.click()
+            self.until(lambda: bool(d.files) or bool(d.error) or not d.running and d.go.text() == self._("Close"),
+                       600, "the export")
+            self.timings["export_fits"] = time.time() - t0
+            self.shot("export_fits_done", d)
+            if not d.files:
+                self.problem(f"the export wrote nothing: {d.error or d.status.text()}")
+            d.accept()
+        self.modal(w.export, export, "Export to FITS")
+        self.settle()
+
+    def features_graph(self, block: str):
+        """The method cards (GPU and CPU durations), then a breakpoint on ``block``: the graph, the Run window's
+        review, Continue (only when it starts nothing), and the breakpoint taken off."""
+        print("Features: Graph", flush=True)
+        w = self.w
+        s = w.s
+        p = s.paths[0]
+        w.set_mode(0)
+        self.select("debruitage", p.pid)
+        self.shot("graph_method_cards")
+        self.select(block, p.pid)
+        node = w.graph.graph.graph.node_of(p, block)
+        w.graph.toggle_pause(node)
+        self.settle()
+        if s.review_state(p, block) != "paused":
+            self.problem(f"the breakpoint on {block} is {s.review_state(p, block)!r}, not 'paused'")
+        self.shot("graph_breakpoint")
+        w.launch()
+        self.until(lambda: w.run.dialog is not None and w.run.dialog.isVisible(), 30, "the Run window")
+        self.settle()
+        d = w.run.dialog
+        if not d.paused():
+            self.problem("the Run window does not ask for the review")
+        self.shot("run_paused", d)
+        rest = s.plan_all()
+        if not rest.jobs:                                       # Continue starts nothing: it is clicked
+            d.b_continue.click()
+            self.settle()
+            if w.run.dialog is not None:
+                self.shot("run_continued", w.run.dialog)
+        else:
+            print(f"  Continue not clicked: it would run {len(rest.jobs)} job(s)", flush=True)
+        if w.run.dialog is not None:
+            w.run.dialog.close()
+        self.settle()
+        node = w.graph.graph.graph.node_of(p, block)
+        if s.has_breakpoint(p, block):
+            w.graph.toggle_pause(node)
+        self.settle()
+
+    def features(self, root: Path):
+        """The tour of the features of 2026-11-01 on a computed copy, in English then in French."""
+        t0 = time.time()
+        g = self.guarded
+        w = self.w
+        g(self.step_home)
+        w.open_project(root)
+        self.wait_ready()
+        s = w.s
+        if s is None or not s.paths:
+            self.problem(f"the project {root} did not open")
+            return self.report()
+        from astro_gpu.client.blocks import block_state
+        p = s.paths[0]
+        states = {k: block_state(s, p, k) for k in s.block_keys(p)}
+        print("  blocks:", states, flush=True)
+        if any(v != "done" for v in states.values()):
+            self.problem(f"blocks not done in the copy: {states}")
+        self.shot("graph")
+        for lang, block in (("en", "calibration"), ("fr", "empilement")):
+            if lang == "fr":
+                g(self.step_settings, "fr")
+            g(self.features_inspect)
+            g(self.features_post, lang == "en")
+            g(self.features_graph, block)
+        from astro_gpu.client import i18n
+        self.missing_fr |= {t for t in i18n.missing() if re.search(r"[A-Za-z]{3}", t)}
+        g(self.step_settings, "en")
+        self.w.close()
+        self.pump(0.5)
+        self.timings["total"] = time.time() - t0
+        return self.report()
+
     # ------------------------------------------------------------ all of it
     def run(self, raw: Path, name: str):
         t0 = time.time()
@@ -875,8 +1108,12 @@ class _Collect:
 #: - the offscreen platform has no window manager: it cannot resize a window to its hint or raise it;
 #: - a run is a detached process that outlives the object that launched it (core/runner2.launch, by design): Python
 #:   notes it with a ResourceWarning, which it hides by default (the tour shows every warning)
+#: - the FITS export: the engine's ``render/layers.oriented_wcs`` builds its WCS from the header-only wcs.fits (NAXIS
+#:   0), which astropy notes; the WCS written is right (checked with astropy and siril-cli). Engine side, to quiet there.
 HARMLESS = (re.compile(r"^Qt: This plugin does not support (propagateSizeHints|raise)\(\)$"),
-            re.compile(r"^ResourceWarning: subprocess \d+ is still running \(subprocess\.py:\d+\)$"))
+            re.compile(r"^ResourceWarning: subprocess \d+ is still running \(subprocess\.py:\d+\)$"),
+            re.compile(r"^log WARNING: FITSFixedWarning: The WCS transformation has more axes \(2\) than the image it "
+                       r"is associated with \(0\)$"))
 
 
 def _harmless(message: str) -> bool:
@@ -890,10 +1127,15 @@ def main(argv=None) -> int:
     ap.add_argument("--out", default=str(Path(os.environ.get("TEMP", tempfile.gettempdir())) / "p13_walk"))
     ap.add_argument("--workspace", default=str(ESSAIS / "p13"))
     ap.add_argument("--name", default="Heart")
+    ap.add_argument("--project", default="", help="the features tour, on this computed test copy (see above)")
     a = ap.parse_args(argv)
     ws = Path(a.workspace)
-    if FORBIDDEN.as_posix().lower() in ws.resolve().as_posix().lower():
-        raise SystemExit("the walkthrough never works in the user's projects")
+    project = Path(a.project) if a.project else None
+    for folder in (ws, project):
+        if folder is not None and FORBIDDEN.as_posix().lower() in folder.resolve().as_posix().lower():
+            raise SystemExit("the walkthrough never works in the user's projects")
+    if project is not None and not (project / "project.astroproj").is_file():
+        raise SystemExit(f"no project in {project}")
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     for f in out.glob("*.png"):
@@ -901,15 +1143,15 @@ def main(argv=None) -> int:
     tmp = Path(tempfile.mkdtemp(prefix="p13_walk_"))
     setup_environment(tmp)
     ws.mkdir(parents=True, exist_ok=True)
-    for leftover in (ws / a.name, ws / PREVIOUS.name):            # the projects of an earlier tour (inside ws)
-        if leftover.exists():
-            shutil.rmtree(leftover)
-    raw = raw_lights()
+    if project is None:
+        for leftover in (ws / a.name, ws / PREVIOUS.name):        # the projects of an earlier tour (inside ws)
+            if leftover.exists():
+                shutil.rmtree(leftover)
     import faulthandler
     faulthandler.dump_traceback_later(900, repeat=True)            # a tour that hangs says where
     walk = Walk(out, ws, a.short, tmp)
     try:
-        rep = walk.run(raw, a.name)
+        rep = walk.features(project) if project is not None else walk.run(raw_lights(), a.name)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(json.dumps(rep, indent=1, ensure_ascii=False))

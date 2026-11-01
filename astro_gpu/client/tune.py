@@ -786,12 +786,17 @@ class TuneView(QWidget):
 
     def _send(self, v: ImageView, key):
         """Send to Post: the image shown becomes a layer of Post (its source read in Post's worker, its key kept in
-        the project: ``services/inspect.post_key``)."""
+        the project: ``services/inspect.post_key``). The tab's own picture is named by its English caption, which
+        Post shows translated (the layer keeps one name whatever the language); a camera-colour image shown with a
+        neutral sky keeps it in Post."""
         vi = v.image()
         p = self.s.path
         if vi is None:
             return
-        self.sendToPost.emit(vi.name, si.post_source(vi), si.post_key(vi, p.pid if p is not None else None))
+        spec = self._cur[2] if self._cur is not None else None
+        name = spec.caption if spec is not None and vi.name == _(spec.caption) else vi.name
+        self.sendToPost.emit(name, si.post_source(vi, si.shown_neutral(v)),
+                             si.post_key(vi, p.pid if p is not None else None))
 
     def _targets(self, p, k: str, spec: VisualSpec) -> list[ViewImage]:
         """What a picture is compared with: the previous steps of the workflow, then the same picture of the other

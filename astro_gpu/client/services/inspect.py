@@ -789,7 +789,7 @@ def inventory_headers(p, wid: int | None, kind: str) -> dict[str, dict]:
 
 def calibration_left_out(p, kind: str, seen: set[str]) -> list[tuple[int, Path]]:
     """The calibration frames of a kind that were left out by hand: the files of the folders a session lists frame
-    by frame (``set_calibration_excluded``) that no session lists. (session id, path)."""
+    by frame (``ProjectModel.set_calibration_excluded``) that no session lists. (session id, path)."""
     from ...core.project import list_frames
     out = []
     for s in p.sessions:
@@ -807,38 +807,15 @@ def calibration_left_out(p, kind: str, seen: set[str]) -> list[tuple[int, Path]]
 
 
 def set_calibration_excluded(model, item: FrameItem, excluded: bool, group: list[FrameItem]) -> bool:
-    """Leave a calibration frame out of its master (or take it back): the session lists the frames of the folder one
-    by one, without that one (GUI thread, memory only: ``group`` is the worker's listing of the kind, left-out frames
-    included). When every frame of a folder is listed again the folder itself is listed, as it was. The model saves
-    the definition and reads the frames again; Calibration and what follows it become Outdated.
-
-    The model has no method for this yet (``ProjectModel.set_calibration_excluded`` is asked for): its edit context
-    is used, as its own edits do."""
-    p = model.p
-    try:
-        s = p.session(item.session)
-    except (KeyError, ValueError):
+    """Leave a calibration frame out of its master (or take it back): ``ProjectModel.set_calibration_excluded``, given
+    the frames of the item's folder as the worker listed them (``group``: the kind's listing, left-out frames
+    included), so that the GUI thread reads no folder. False: the last frame of a folder stays."""
+    if item.session is None:
         return False
-    kind = item.kind
-    lst = list(getattr(s, kind))
-    me = os.path.normcase(os.path.normpath(item.path))
-    folder = os.path.normcase(os.path.normpath(str(Path(item.path).parent)))
-    in_folder = [g for g in group if os.path.normcase(os.path.normpath(str(Path(g.path).parent))) == folder
-                 and g.session == item.session]
-    keep = [g.path for g in in_folder if (os.path.normcase(os.path.normpath(g.path)) != me and not g.excluded)
-            or (os.path.normcase(os.path.normpath(g.path)) == me and not excluded)]
-    rest = [e for e in lst if os.path.normcase(os.path.normpath(p.abspath(e))) != folder
-            and os.path.normcase(os.path.normpath(str(Path(p.abspath(e)).parent))) != folder]
-    if not keep:
-        return False                               # the last frame of a folder stays: remove the folder instead
-    whole = len(keep) == len(in_folder)
-    original = next((e for e in lst if os.path.normcase(os.path.normpath(p.abspath(e))) == folder), None)
-    new = rest + ([original or str(Path(item.path).parent)] if whole else sorted(keep))
-    with model._edit():
-        setattr(s, kind, new)
-        p.validate()
-    model.reload_sources()
-    return True
+    here = os.path.normcase(os.path.normpath(str(Path(item.path).parent)))
+    folder = [(g.path, g.excluded) for g in group if g.session == item.session
+              and os.path.normcase(os.path.normpath(str(Path(g.path).parent))) == here]
+    return model.set_calibration_excluded(item.session, item.kind, item.path, excluded, folder=folder)
 
 
 def frame_stats(path: str) -> dict[str, float]:
@@ -1155,15 +1132,26 @@ def _debayered(load, cfa: str = ""):
     return get
 
 
-def post_source(vi):
+def post_source(vi, neutral: bool = False):
     """What Post reads for an image of a viewer: its source, read in Post's render worker (a raw or calibrated mosaic
-    made a colour image)."""
+    made a colour image). ``neutral``: the viewer showed it with a neutral sky (still in the camera's colours), so Post
+    stretches its channels apart (``PostView.add_image_layer``)."""
     from ..imageview import _read
 
     def load():
         arr, cfa, _wcs = _read(vi)
         return _debayered(lambda: arr, cfa)()
+    load.neutral = bool(neutral)
     return load
+
+
+def shown_neutral(viewer) -> bool:
+    """Whether a viewer shows its image with a neutral sky now (its stretch's Neutral sky)."""
+    try:
+        st = viewer.stretch()
+    except (AttributeError, RuntimeError):
+        return False
+    return bool(getattr(st, "neutral", False))
 
 
 def resolve_key(p, key: str):

@@ -56,6 +56,7 @@ TEMPLATES = {
 }
 DN_SUMMARY = {"affine": "fine-tuned", "generique": "pretrained", "nlbayes": "NL-Bayes"}
 MACHINES = {True: "GPU", False: "CPU only (no GPU)"}
+CALIBRATION_KINDS = ("darks", "flats", "bias", "flat_darks")    # the session's lists a frame can be left out of
 #: seconds of the methods the engine does not have yet (the spec's estimates)
 EXTRA_SECONDS = {"denoise_ft": 180.0, "denoise_ai": 45.0, "denoise_cl": 300.0, "deconv": 150.0}
 NOT_IN_ENGINE = "Not in the engine yet."
@@ -1389,6 +1390,47 @@ class ProjectModel(QObject):
             api.set_excluded(self.p, pairs, excluded)
         self._sel, self._sel_want = None, None
         self.sourcesChanged.emit()
+
+    def set_calibration_excluded(self, session: int, kind: str, path: str, excluded: bool,
+                                 folder: list[tuple[str, bool]] | None = None) -> bool:
+        """Leave a calibration frame out of its master, or take it back (``kind``: darks, flats, bias or flat_darks).
+        The engine's lists take folders and files, so the session lists the frames of that frame's folder one by one,
+        without it; when every frame of the folder is in again, the folder itself is listed, as it was. ``folder``: the
+        frames of that folder and whether each is left out now, as the worker listed them
+        (``services/inspect.browse_group``); None: the folder is listed here (a directory listing in the GUI thread).
+        One change, saved, the frames scanned again; Calibration and what follows become Outdated. False when nothing is
+        done: the last frame of a folder stays (remove the folder instead), or the session is not known."""
+        import os
+        if kind not in CALIBRATION_KINDS:
+            raise ValueError(f"not a kind of calibration frame: {kind!r}")
+        p = self.p
+        try:
+            s = p.session(session)
+        except (KeyError, ValueError):
+            return False
+
+        def norm(x) -> str:
+            return os.path.normcase(os.path.normpath(str(x)))
+        me, here = norm(path), norm(Path(path).parent)
+        lst = list(getattr(s, kind))
+        if folder is None:
+            from ..core.project import list_frames
+            listed = {norm(p.abspath(e)) for e in lst}
+            folder = [(str(f), not (here in listed or norm(f) in listed)) for f in list_frames([str(Path(path).parent)])]
+        in_folder = [(x, left) for x, left in folder if norm(Path(x).parent) == here]
+        if not any(norm(x) == me for x, _left in in_folder):
+            in_folder.append((str(path), excluded))
+        keep = [x for x, left in in_folder if (norm(x) == me and not excluded) or (norm(x) != me and not left)]
+        if not keep:
+            return False
+        rest = [e for e in lst if norm(p.abspath(e)) != here and norm(Path(p.abspath(e)).parent) != here]
+        original = next((e for e in lst if norm(p.abspath(e)) == here), None)
+        whole = len(keep) == len(in_folder)
+        with self._edit():
+            setattr(s, kind, rest + ([original or str(Path(path).parent)] if whole else sorted(keep)))
+            p.validate()
+        self.reload_sources()
+        return True
 
     def request_selection(self, tmin: float | None = None, fmax: float | None = None):
         """Ask the worker how many frames these thresholds keep (answer: ``selectionChanged``, ``kept_frames``)."""

@@ -1742,11 +1742,13 @@ def test_the_composition_is_kept_in_the_project(preps, qapp):
         v._stroke(100.0, 100.0, True)
         v._stroke_end()
         full["sliders"]["sky"] = 3.2
-        v.push()
-        assert s.model.touched >= 3                                                      # the model is told to save
+        v.push()                                 # (a slider let go: the change, then the undo step)
+        qapp.processEvents()                     # the composition is saved just after the edit, with it
+        assert s.model.touched >= 1                                                      # the model is told to save
         saved = s.model.p.post["layers"]
         assert [lay["name"] for lay in saved] == ["Classic", "Saturation", "Full"] and json.dumps(saved)
         assert saved[1]["mask"]["parts"][0]["strokes"]
+        assert saved[2]["sliders"]["sky"] == 3.2
         assert s.settle()
         img = shown(v).copy()
         s.close()
@@ -1766,6 +1768,65 @@ def test_the_composition_is_kept_in_the_project(preps, qapp):
     finally:
         if s2 is not None:
             s2.close()
+
+
+def test_an_edit_is_saved_with_its_change_not_the_state_before_it(post, qapp):
+    """push() takes the undo step before a change; the composition is saved after it (it used to be saved before it,
+    so that the last edit was lost when the project closed or the language changed)."""
+    v = post.view
+
+    def saved():
+        qapp.processEvents()
+        return [lay["name"] for lay in post.model.p.post["layers"]]
+    v.select(named(v, "Full")["id"], "layer")
+    f = v.add_filter("saturation")
+    assert saved() == ["Classic", "Saturation", "Full"]
+    v.select(f["id"], "layer")
+    v.delete()
+    assert saved() == ["Classic", "Full"]
+    v.rename(named(v, "Classic"), "Mine")
+    assert saved() == ["Mine", "Full"]
+    v.do_undo()
+    assert saved() == ["Classic", "Full"]
+
+
+def test_the_layer_list_is_as_tall_as_its_rows_and_opens_unscrolled(post, qapp):
+    v = post.view
+    full = named(v, "Full")
+    for key in ("curves", "levels", "saturation"):
+        v.select(full["id"], "layer")
+        v.add_filter(key)
+    v.select(full["id"], "layer")                              # the bottom layer selected: the list is made to show it
+    for _i in range(3):
+        qapp.processEvents()
+    sb = v.lsc.verticalScrollBar()
+    assert len(v.rows) == 5 and sb.maximum() == 0 and sb.value() == 0     # 5 rows fit: nothing hidden, nothing cut
+    assert v.rows[0].geometry().top() >= 0
+    assert v.lsc.height() >= v.lsc.widget().sizeHint().height()
+
+
+def test_an_image_from_inspect_keeps_its_neutral_sky_and_its_name_follows_the_language(post, preps, qapp):
+    from astro_gpu.client import i18n
+
+    def src():
+        return np.ones((3, 64, 96), np.float32)
+    src.neutral = True                                          # shown with a neutral sky in Inspect (services/inspect)
+    lay = post.page.add_image_layer("Stack", src, "stack/feed")             # Inspect names it in English (tune._send)
+    assert lay["linked"] is False                                           # its channels stretched apart
+    i18n.set_language("fr")
+    try:
+        post.view.rebuild()
+        row = next(r for r in post.view.rows if r.lay["id"] == lay["id"])
+        assert row.n.text() == i18n._("Stack") != "Stack"                  # shown in French
+        assert not {t for t in i18n.missing() if "DSC" in t}
+        named_file = post.page.add_image_layer("DSC0001.ARW", src, "file:DSC0001.ARW")
+        post.view.rebuild()
+        assert next(r for r in post.view.rows if r.lay["id"] == named_file["id"]).n.text() == "DSC0001.ARW"
+        assert "DSC0001.ARW" not in i18n.missing()                         # a file name is not asked for
+    finally:
+        i18n.set_language("en")
+    plain = post.page.add_image_layer("Denoised stack", lambda: np.ones((3, 64, 96), np.float32), "denoise/feed")
+    assert plain["linked"] is True
 
 
 def test_a_workflow_that_goes_takes_its_layer_and_the_filters_retarget(post):

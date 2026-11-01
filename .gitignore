@@ -38,3 +38,6 @@ docs/pilot/point_etape/
 
 # bench sheets (copies of F:/astro_essais/bench/<case>/sheet_<level>.jpg, too big for git)
 docs/pilot/bench/
+
+# screenshots of NOUVEAUTES.md (copies of the client's final tour, too big for git)
+docs/pilot/nouveautes/

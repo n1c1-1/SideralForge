@@ -685,10 +685,10 @@ class SourcesView(QWidget):
 
     def _send(self, key):
         """Send to Post: the frame shown becomes a layer of Post (debayered, read in Post's worker)."""
-        from .services.inspect import post_key, post_source
+        from .services.inspect import post_key, post_source, shown_neutral
         vi = self.viewer.image()
         if vi is not None:
-            self.sendToPost.emit(vi.name, post_source(vi), post_key(vi, None))
+            self.sendToPost.emit(vi.name, post_source(vi, shown_neutral(self.viewer)), post_key(vi, None))
 
     def _marks(self):
         """The excluded frames are shown as such, in place."""

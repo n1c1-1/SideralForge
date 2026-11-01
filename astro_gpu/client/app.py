@@ -451,6 +451,7 @@ class Main(QMainWindow):
                 self.run.deleteLater()
                 self.run = None
             self._leave_thumbnail()
+            self._flush_post()
             if self.s is not None:
                 from .services.inspect import _services
                 sv = _services.get(self.s)
@@ -587,6 +588,17 @@ class Main(QMainWindow):
     def post(self):
         """The Post page, made now if it was not yet."""
         return self.post_holder.ensure() if self.post_holder is not None else None
+
+    def _flush_post(self):
+        """Post's last edit into the project's definition (it is saved just after an edit, when the event loop comes
+        back: a close or a rebuild may come first)."""
+        page = self.post_holder.page if self.post_holder is not None else None
+        view = getattr(page, "view", None)
+        if view is not None and hasattr(view, "flush"):
+            try:
+                view.flush()
+            except RuntimeError:                     # gone with the window
+                pass
 
     @staticmethod
     def _post_takes_images() -> bool:
@@ -932,6 +944,7 @@ class Main(QMainWindow):
             self.home = None
         self.show_home(last)
         if self.project is not None:
+            self._flush_post()                       # Post is made again from the project: its last edit first
             self.build_project()
             if on_home:
                 self.show_home()

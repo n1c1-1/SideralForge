@@ -1039,7 +1039,9 @@ def test_a_calibration_frame_is_left_out_frame_by_frame_and_taken_back(tmp_path)
     p = api.create_project(tmp_path / "proj", "T")
     s = api.add_session(p, lights=[str(tmp_path / "lights")], darks=[str(darks)])
 
-    class Model:
+    class Model:                                   # the model's own method, on a model with no worker
+        set_calibration_excluded = ProjectModel.set_calibration_excluded
+
         def __init__(self):
             self.p, self.edits, self.reloads = p, 0, 0
 
@@ -1064,6 +1066,13 @@ def test_a_calibration_frame_is_left_out_frame_by_frame_and_taken_back(tmp_path)
     items = si.browse_group(p, None, "darks")
     assert si.set_calibration_excluded(m, items[1], False, items)
     assert s.darks == [str(darks)]                                           # the folder, as it was
+    # the model's method alone lists the folder itself when it is not given the worker's listing
+    assert m.set_calibration_excluded(s.id, "darks", str(darks / "D2.ARW"), True)
+    assert sorted(Path(x).name for x in s.darks) == ["D0.ARW", "D1.ARW"]
+    assert m.set_calibration_excluded(s.id, "darks", str(darks / "D2.ARW"), False)
+    assert s.darks == [str(darks)]
+    with pytest.raises(ValueError):
+        m.set_calibration_excluded(s.id, "lights", str(darks / "D2.ARW"), True)
 
 
 def test_the_tables_and_the_charts_of_the_blocks(qapp):

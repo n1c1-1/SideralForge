@@ -363,6 +363,77 @@ Newest entries at the bottom. Times are local.
   - Next: B1 Inspect integration (viewer, charts, diagnostics of the basics), B2 Post (Affinity layers, export
     formats), B3 graph breakpoints, in parallel on disjoint files, then one checked client.bat and a French "what
     changed" page.
+- A1 committed (858edb4), with the orchestrator's fix for the console windows (runner2: CREATE_NO_WINDOW instead of
+  DETACHED_PROCESS, since its multiprocessing children popped up consoles):
+  - Output shows the final image (checked on inspect_output_fr), but its "Measures" panel says "available" on every
+    line: passed to B1.
+- Dispatched in parallel:
+  - **B1** Inspect assembled (opus): the common viewer in every block, the chart tabs, the diagnostics of the basics
+    through the new API, export and send to Post, app.py wiring;
+  - **B2** Post (opus): Affinity layers, export FITS/TIFF/PNG/JPG, add_image_layer, CPU speed with release renders
+    bit for bit;
+  - **B3** breakpoints (sonnet): graph, run, project2 field outside the keys.
+  - Diagnostics engine agent done:
+    - API: calibration_frames, registration_table, stack_diagnostics, color_fit, calibrated_light;
+      core/diagnostics.py; images bit-identical;
+    - it had bumped calibrate, register, stack and color, which invalidates every result (17 failures in the test
+      copies). Asked to revert the bumps and rely on `.missing` ("recompute to get it").
+    - **Base-quality defects it found (to fix after the bench verdict):**
+      - the stack's "rejected %" counts samples falling outside the stack: 1.9 % reported against 0.035 % actually
+        rejected (heart);
+      - the stack's border pixels get rejected;
+      - a low outlier (a dark hole in one frame) makes the other frames look high, and they get rejected there;
+      - colour calibration rejects 1121 of 4000 Gaia stars as "saturated" (heart): suspicious;
+      - registration loses its fit when a 0.2 % scale change comes with a rotation;
+      - hot pixels in the heart darks fall from 60k to 50k across the series (the sensor cooling: possible dark
+        mismatch).
+  - Diagnostics committed (435a033) with the versions unchanged.
+  - Offline-first astrometry and catalogues committed (a15db41), on opus:
+    - HEALPix tile caches under ASTRO_GPU_HOME; probes and short timeouts; Siril's local Gaia catalogues;
+      remembered focal lengths; tiled star detection;
+    - timings:
+      - a cached field offline: 4–5 s (was about 2 min);
+      - m8 astrometry: 10 min → 10 s;
+      - NGC 7822: 747 s → 45 s;
+      - a silent server: 12 s;
+    - WCS within 0.01 px of before; no version change;
+    - still slow: a new wide Milky Way field's catalogues (Heart) take more than 2 min through GAVO, since the CDS
+      is down today;
+    - the bench needs `ASTRO_GPU_SIRIL_CATALOGUES=F:/astro_essais/bench/_siril/catalogues`.
+  - **Bench Base verdict** (committed ba72c2d, BENCH.md):
+    - heart: level or better (stars 11.7″ against 13.3″, colours 3× more faithful); slightly less round at the centre
+      with drizzle 1.5, coloured star edges in the corners;
+    - **iris: we lose** (15–20 % more noise, depth −0.15 to −0.19 mag, SNR −17 to −24 %; about 8 % from the frame
+      weights);
+    - m51: depth level, fine noise −0.12 mag, SNR −15 to −18 %; flatter background, fewer hot pixels;
+    - m8: near tie; a blue-cyan crescent on saturated stars; 57 hot-pixel dots per deg² against 7;
+    - **seestar: Siril wins visually** (the sky fit erases the disc, purple sky);
+    - fine-scale R/B noise comes from the debayer (Siril smooths with RCD and Lanczos);
+    - corrected: Express heart depth is −0.14 mag, not +0.3;
+    - timings without the network are about Siril's.
+    - Side effects to tell the user: Siril's `config.1.4.ini` `wd=` line was changed by the first bench run (old
+      value unknown), and Siril refreshes its own venv on each start.
+  - Base-quality engine agent (opus) dispatched: it works in a scratch copy (F:/astro_essais/basequality/src) and
+    delivers patches (docs/pilot/patches/base-*.patch), so as not to disturb the GUI wave; 9 defects ranked by
+    impact, measured on the Express bench.
+  - B3 breakpoints committed (6cc6c20, then the fit fix 0717241). The default graph view now shows the whole chain
+    at 1600 and 1920 px; at 1280 it aligns left.
+  - **B1 Inspect assembled, committed (70392ec)**:
+    - every block uses the common viewer; charts; calibration frames browsable with measures; per-star colour fit;
+      rejection, coverage and weights; export and send to Post everywhere;
+    - the orchestrator looked at calibration_darks_fr, couleur_fit_fr and fond_result_fr: real data, pro level. The
+      colour fit shows the "saturated" rejections of G 7.5 stars, the defect found by the diagnostics.
+    - Open item: `ProjectModel.set_calibration_excluded`. Meanwhile, excluding a calibration frame lists its folder
+      file by file (reversible).
+  - **B2 Post committed (b0d09cf)**:
+    - Affinity-like layers (checked on post_layers_fr), FITS export checked with astropy and siril-cli, add_image_layer;
+    - CPU drafts 0.15–0.45 s (were 3–7 s); CPU 1/2 on release 0.7–8.9 s (target of 3 s missed for the star and
+      detail sliders); release renders bit for bit.
+  - 12:22 level 2 on the assembled whole: **608 passed in 72 s**.
+  - Final tour agent (opus) dispatched: walkthrough of every new feature EN+FR, small fixes, NOUVEAUTES.md in French
+    with embedded images.
+  - Ownership: B1 owns app.py, tune, steps, services/inspect, frames, sources, viewer and imageview; B2 owns post*,
+    exportdlg, services/render and render/; B3 owns graph, blocks, model, runs, services/run and project2.
 
 ### Queue for the end of P8 (engine unfrozen)
 1. Apply patches 1–3, run the tests and the 4-dataset non-regression, recompute only render_simple (Classic and Raw

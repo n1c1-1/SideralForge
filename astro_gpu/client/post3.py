@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 
 import numpy as np
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
@@ -47,7 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .i18n import _, language, plural
+from .i18n import _, language, maybe, plural
 from .postengine import (
     DIRECTIONS,
     FAMILIES,
@@ -91,14 +92,30 @@ QUARTER_SCALE = 0.26                                     # zoomed out to this, t
 TOGGLE_W = 16                                            # the ▾ / ▸ of a layer's children
 
 
-def tr_name(n: str) -> str:
+def tr_name(n: str, image: bool = False) -> str:
     """A layer's name as shown: the pieces the program built it from (a filter's name, "stars", "starless", "(copy)")
-    translated; the name of a workflow, or a name typed by the user, as it is (the graph shows it so)."""
+    translated; the name of a workflow, or a name typed by the user, as it is (the graph shows it so). ``image``: an
+    image layer, named by Inspect in English (``tune.TuneView._send``): every piece the catalogue has is translated
+    (a file name stays as it is)."""
     k = 0
     while n.endswith(COPY):
         n, k = n[:-len(COPY)], k + 1
+    if image:
+        return _pieces(n, maybe) + _(COPY) * k
     known = {f["name"] for f in FILTERS.values()} | {STARS, STARLESS}
     return " · ".join(_(b) if b in known else b for b in n.split(" · ")) + _(COPY) * k
+
+
+def layer_name(lay: dict) -> str:
+    """The name of a layer as shown (``tr_name``)."""
+    return tr_name(lay["name"], lay.get("kind") == "image")
+
+
+def _pieces(n: str, fn) -> str:
+    """``fn`` applied to each piece of a name made of pieces joined by "·" (the separators kept as they are)."""
+    parts = re.split(r"(\s*·\s*)", n)
+    return "".join(p if i % 2 else fn(p) for i, p in enumerate(parts))
+
 
 
 def dec(s: str) -> str:
@@ -264,7 +281,7 @@ class LayerRow(QFrame):
             h.addWidget(self.m)
         v = QVBoxLayout()
         v.setSpacing(0)
-        self.n = QLabel(tr_name(lay["name"]))
+        self.n = QLabel(layer_name(lay))
         self.n.setStyleSheet("font-weight: 600;" + ("" if lay["visible"] else " color: #8b93a1;"))
         v.addWidget(self.n)
         self.sub = label(panel.sub_text(lay), "small")
@@ -272,7 +289,7 @@ class LayerRow(QFrame):
         h.addLayout(v, 1)
         if depth:
             tgt = panel.layer(lay.get("target"))
-            self.setToolTip(_('Applies to "{name}" only').format(name=tr_name(tgt["name"])) if tgt else "")
+            self.setToolTip(_('Applies to "{name}" only').format(name=layer_name(tgt)) if tgt else "")
         elif lay["kind"] == "filter":
             self.setToolTip(_("Applies to everything below"))
 
@@ -561,6 +578,9 @@ class PostView(QWidget):
         self._region_t = QTimer(self)
         self._region_t.setSingleShot(True)
         self._region_t.timeout.connect(self._send_region)
+        self._save_t = QTimer(self)                      # the composition into the project, just after an edit (push)
+        self._save_t.setSingleShot(True)
+        self._save_t.timeout.connect(self._save)
         self.worker.rendered.connect(self._on_result)
         self.worker.failed.connect(self._on_failed)
         self.worker.deviceChanged.connect(self._on_device)
@@ -580,7 +600,14 @@ class PostView(QWidget):
         return self.s.view(pid)
 
     def shutdown(self):
+        self.flush()
         self.worker.stop()
+
+    def flush(self):
+        """The last edit into the project now (before the project is saved and closed)."""
+        if self._save_t.isActive():
+            self._save_t.stop()
+            self._save()
 
     # ------------------------------------------------------------ layers from the workflows
     def sync_paths(self, initial=False):
@@ -848,10 +875,12 @@ class PostView(QWidget):
 
     # ------------------------------------------------------------ undo
     def push(self, before=None):
+        """One undo step: the composition before a change. The change itself follows in the same call (or came just
+        before it, for a slider let go), so the composition is saved when the event loop comes back, with the change."""
         self.undo.append(before if before is not None else snapshot(self.layers))
         self.redo.clear()
         self._undo_buttons()
-        self._save()
+        self._save_t.start(0)
 
     def _undo_buttons(self):
         self.b_undo.setEnabled(bool(self.undo))
@@ -960,7 +989,13 @@ class PostView(QWidget):
             b.clicked.connect(lambda _=False, pid=p.pid: self.goResults.emit(pid))
             self.lbox.addWidget(b)
         self.lbox.addStretch(1)
-        self.lsc.setFixedHeight(int(min(382, 48 * (len(self.rows) + len(waiting) * 0.6) + 22)))
+        # as tall as the rows really are (styled first: a row is about 52 px, not a fixed guess; they are not shown yet,
+        # so the layout would not count them), up to 382 px: a list that fits never opens scrolled, its first row cut
+        kids = [w for w in (self.lbox.itemAt(i).widget() for i in range(self.lbox.count())) if w is not None]
+        self.lsc.widget().ensurePolished()
+        m = self.lbox.contentsMargins()
+        want = sum(w.sizeHint().height() for w in kids) + self.lbox.spacing() * len(kids) + m.top() + m.bottom()
+        self.lsc.setFixedHeight(int(min(382, want + 2 * self.lsc.frameWidth())))
         sel_row = next((r for r in self.rows if self.sel and r.lay["id"] == self.sel[0]), None)
         if sel_row is not None:
             QTimer.singleShot(0, lambda: self.lsc.ensureWidgetVisible(sel_row, 0, 10))
@@ -1033,7 +1068,7 @@ class PostView(QWidget):
                 rel = (y - g.top()) / max(1, g.height())
                 if is_f and is_pixel(r.lay) and r.lay["id"] != lay.get("target", -1) and 0.28 <= rel <= 0.72:
                     return {"parent": r.lay["id"], "index": 0, "row": i,
-                            "text": _('Applies to "{name}" only').format(name=tr_name(r.lay["name"]))}
+                            "text": _('Applies to "{name}" only').format(name=layer_name(r.lay))}
                 if is_f and is_pixel(r.lay) and 0.28 <= rel <= 0.72:
                     return None                         # onto its own layer: where it is
                 gap = i if rel < 0.5 else i + 1
@@ -1059,7 +1094,7 @@ class PostView(QWidget):
             before = [r.lay["id"] for r in rs[:gap] if r.depth and r.lay.get("target") == parent and
                       r.lay["id"] not in mine]
             index = len([k for k in kids if k in before])
-            text = _('Applies to "{name}" only').format(name=tr_name(self.layer(parent)["name"]))
+            text = _('Applies to "{name}" only').format(name=layer_name(self.layer(parent)))
             depth = 1
         else:
             index = len([r for r in rs[:gap] if not r.depth and r.lay["id"] not in mine])
@@ -1142,7 +1177,7 @@ class PostView(QWidget):
             t = tree(self.layers)
             i = next(k for k, (x, _kids) in enumerate(t) if x["id"] == fl["id"])
             tgt = next((x for x, _kids in t[i + 1:] if is_pixel(x)), None)
-        out = [(_('"{name}" only').format(name=tr_name(tgt["name"])), tgt["id"])] if tgt else []
+        out = [(_('"{name}" only').format(name=layer_name(tgt)), tgt["id"])] if tgt else []
         return out + [(_("Everything below"), None)]
 
     def layer_menu(self, lay, gpos):
@@ -1156,7 +1191,7 @@ class PostView(QWidget):
             m.addSeparator()
             for _txt, val in self.scope_choices(lay):
                 a = m.addAction(_("Applies to everything below") if val is None else
-                                _('Applies to "{name}" only').format(name=tr_name(self.layer(val)["name"])))
+                                _('Applies to "{name}" only').format(name=layer_name(self.layer(val))))
                 a.setCheckable(True)
                 a.setChecked(lay.get("target") == val)
                 a.triggered.connect(lambda _c=False, t=val: self.set_target(lay, t) if lay.get("target") != t else None)
@@ -1175,7 +1210,7 @@ class PostView(QWidget):
         m.exec(gpos)
 
     def rename(self, lay, new: str | None = None):
-        old = tr_name(lay["name"])
+        old = layer_name(lay)
         if new is None:
             from .dialogs import ask_name
             new = ask_name(self.window(), _("Rename layer"), old)
@@ -1186,11 +1221,16 @@ class PostView(QWidget):
 
     # ------------------------------------------------------------ layer actions
     def add_image_layer(self, name: str, source, key: str) -> dict:
-        """A stage's image as a layer, on top: stretched automatically, blendable, maskable (see PostPage3)."""
+        """A stage's image as a layer, on top: stretched automatically, blendable, maskable (see PostPage3). Its name
+        is shown translated where the catalogue has it (Inspect gives it in English); an image Inspect showed with a
+        neutral sky (``source.neutral``: still in the camera's colours) has its channels stretched apart, so that its
+        sky is neutral here too."""
         self.worker.set_image(key, source)
         self._missing_images.discard(key)
         self.push()
         lay = new_image_layer(key, name)
+        if getattr(source, "neutral", False):
+            lay["linked"] = False
         self.layers.insert(0, lay)
         self.layers = normalize(self.layers)
         self.sel = (lay["id"], "layer")
@@ -1351,7 +1391,7 @@ class PostView(QWidget):
         self.pbox.addWidget(g)
 
     def layer_props(self, lay):
-        self.pbox.addWidget(label(tr_name(lay["name"]), "h2"))
+        self.pbox.addWidget(label(layer_name(lay), "h2"))
         row = QHBoxLayout()
         row.addWidget(label(_("Blend mode"), "dim"))
         cb = QComboBox()
@@ -1531,7 +1571,7 @@ class PostView(QWidget):
     def mask_props(self, lay):
         m = lay["mask"]
         top = QHBoxLayout()
-        top.addWidget(label(_('Mask of "{name}"').format(name=tr_name(lay["name"])), "h2"), 1)
+        top.addWidget(label(_('Mask of "{name}"').format(name=layer_name(lay)), "h2"), 1)
         rm = QPushButton(_("Delete"))
         rm.clicked.connect(lambda: self.remove_mask(lay))
         top.addWidget(rm)
@@ -1789,7 +1829,9 @@ class PostPage3(QWidget):
         apart), with a blend mode, an opacity, a mask and filters of its own.
 
         ``source``: the linear image - an array (H, W), (H, W, 3) or (3, H, W), a file (.npy, .fits, .tif, .png) or a
-        function returning one (called in the render worker, never in the GUI thread). ``key``: the stage result it
+        function returning one (called in the render worker, never in the GUI thread); a function with ``neutral =
+        True`` (``services/inspect.post_source``) is an image still in the camera's colours: its channels are
+        stretched apart. ``key``: the stage result it
         is, saved in the project instead of the pixels; when the project is opened again the image is found from it:
         "<stage>/<store key>[/<array>]" is read from the project's store (``store/<stage>/<store key>/``, the array's
         name with or without .npy; without it, the stage's main image), any other key through ``image_resolver``.
