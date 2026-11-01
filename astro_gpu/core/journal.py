@@ -39,9 +39,20 @@ class Journal:
                 with open(self.md, "a", encoding="utf-8") as f:
                     f.write(_md_line(ev) + "\n")
         if self.echo and type_ != "progress":
-            print(_md_line(ev), flush=True)
+            _echo(_md_line(ev))
         elif self.echo and type_ == "progress" and kw.get("msg"):
-            print(f"    [{kw.get('stage')}] {100 * kw.get('frac', 0):5.1f} %  {kw['msg']}", flush=True)
+            _echo(f"    [{kw.get('stage')}] {100 * kw.get('frac', 0):5.1f} %  {kw['msg']}")
+
+
+def _echo(text: str) -> None:
+    """Print to the console. A worker's stdout redirected to a file on Windows has the locale's code page, which has no
+    σ: the line is then written with a replacement character instead of failing the stage."""
+    import sys
+    try:
+        print(text, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(text.encode(enc, errors="replace").decode(enc), flush=True)
 
 
 def _jsonable(o: Any) -> Any:
