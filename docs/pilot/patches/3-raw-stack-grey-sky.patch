@@ -1,0 +1,173 @@
+diff --git a/astro_gpu/client/locale/fr/engine.json b/astro_gpu/client/locale/fr/engine.json
+index 400c578..e9dcabb 100644
+--- a/astro_gpu/client/locale/fr/engine.json
++++ b/astro_gpu/client/locale/fr/engine.json
+@@ -554,6 +554,7 @@
+  "measured on the nebula": "mesurée sur la nébuleuse",
+  "simple polynomial background": "fond polynomial simple",
+  "median of each channel": "médiane de chaque canal",
++ "smooth sky of each channel, made grey": "fond lisse de chaque canal, rendu gris",
+  "camera profile ({project})": "profil de l'appareil ({project})",
+  "{head}; the rejection on all channels left {pct} % of the H-alpha amplitude of the whole field: objects rejected on green and blue only": "{head} ; le rejet sur tous les canaux a laissé {pct} % de l'amplitude H-alpha de tout le champ : objets rejetés sur le vert et le bleu seulement",
+  "focused, FWHM {fwhm} px (the measured stars are defocused rings)": "nette, FWHM {fwhm} px (les étoiles mesurées sont des anneaux défocalisés)",
+diff --git a/astro_gpu/stages/render_simple.py b/astro_gpu/stages/render_simple.py
+index 07eaaef..1a9408d 100644
+--- a/astro_gpu/stages/render_simple.py
++++ b/astro_gpu/stages/render_simple.py
+@@ -7,8 +7,10 @@ The output of the workflows without Stars (Classic stack, Classic + denoise) and
+ * with Color, M is the colour stage's matrix with the emission anchor of render_prep (``anchor_matrix``): the line
+   emission measured on the stack gets the colour of an HII spectrum, the star colours are unchanged. Without it the
+   matrix, fitted on the stars, rendered the H-alpha of an astro-modified camera violet (heart_a7s);
+-* without Color (the Raw stack exit), M is the identity and the sky the median of each channel; the channels are then
+-  scaled to the same sky spread, so that the camera's colour balance does not tint the preview;
++* without Color (the Raw stack exit), M is the identity; the sky of each channel (a smooth polynomial) is subtracted,
++  the channels are scaled to the same sky spread, and the sky's brightness is added back grey: the camera's colour
++  balance and the colour of the light pollution do not tint the preview, the gradient stays visible (it is the
++  Gradient block's job), the colours of the objects stay camera colours;
+ * lin_raw.npy (with Denoise): the same from the raw stack, for the noise slider of Post;
+ * valid.npy, the covered pixels, and prep_simple.json: M, the crop, the statistics of the stretch (median, MAD and
+   99.995th percentile of the luminance and of each channel), the settings.
+@@ -20,7 +22,7 @@ from pydantic import field_validator
+ 
+ from ..core.params import P, StageParams
+ from ..core.stage import Context, Stage, StageError
+-from .background_poly import coverage, has_input, sky_of, stack_source
++from .background_poly import LUM, coverage, has_input, sky_of, stack_source
+ from .render_prep import anchor_matrix, crop_box
+ 
+ STRETCHES = ["auto"]                       # the other stretches of the spec (GHS, arcsinh, STF, none) are not in v1
+@@ -37,6 +39,20 @@ def sky_spread(v: np.ndarray) -> float:
+     return 1.4826 * float(np.median(below)) if below.size else 0.0
+ 
+ 
++def raw_exit_sky(ctx: Context, cam: np.ndarray, valid: np.ndarray) -> tuple[np.ndarray, str]:
++    """The sky of the Raw stack exit, per camera channel: the Gradient block's polynomial with its default settings
++    (in camera colours). The exit does not remove it: the stage subtracts it per channel and adds back its brightness,
++    grey. Where it cannot be fitted (a tiny stack), the median of each channel."""
++    from .background_poly import BackgroundPolyParams, fit_poly_sky, poly_sky
++    bp = BackgroundPolyParams()
++    try:
++        fit = fit_poly_sky(cam, valid, bp.degree, bp.samples, bp.object_clip)
++    except StageError as exc:
++        ctx.log(f"the sky could not be modelled ({exc}): the median of each channel is taken", "warning")
++        return np.array([np.median(cam[c][valid]) for c in range(3)], np.float32)[:, None, None], "channel medians"
++    return poly_sky(fit["coefs"], bp.degree, *cam.shape[1:]), "camera-colour polynomial, made grey"
++
++
+ def emission_colour(cam: np.ndarray, shown: np.ndarray, block: int = EMISSION_BLOCK) -> np.ndarray | None:
+     """Camera colour (R = 1) of the line emission of a stack that still has its stars, its sky removed.
+ 
+@@ -120,7 +136,8 @@ class RenderSimple(Stage):
+                    "stretch. Post renders it with its sliders (sky, contrast, saturation, noise).")
+     deps = ("stack",)
+     Params = RenderSimpleParams
+-    version = "2"          # 2: the emission anchor of render_prep (the H-alpha of Classic was violet on heart_a7s)
++    version = "3"          # 2: the emission anchor of render_prep (the H-alpha of Classic was violet on heart_a7s);
++                           # 3: the Raw stack exit's sky made grey (it had the green of the light pollution)
+ 
+     def run(self, ctx: Context, p: RenderSimpleParams) -> None:
+         from ..render.simple import SimpleRenderEngine, SimpleSettings, image_stats
+@@ -137,8 +154,15 @@ class RenderSimple(Stage):
+         M = ctx.load("color", "M.npy").astype(np.float64) if color else np.eye(3)
+         lin = np.tensordot(M.astype(np.float32), src, 1)
+         ctx.progress(0.2, "sky")
++        sky_name = "background_poly" if poly else "channel medians"
++        if not color:
++            # the spread of the sky of each channel, for the gains below, measured on the stack (the objects keep the
++            # scaling they had before the sky was made grey)
++            spread = np.array([sky_spread(lin[c][shown]) for c in range(3)])
+         if poly:
+             sky = sky_of(ctx, H, W)
++        elif not color:                             # the Raw stack exit: a grey sky (below)
++            sky, sky_name = raw_exit_sky(ctx, lin, valid)
+         else:                                       # no Gradient block: the median of each channel
+             sky = np.array([np.median(lin[c][shown]) for c in range(3)], np.float32)[:, None, None]
+         lin -= sky
+@@ -165,10 +189,15 @@ class RenderSimple(Stage):
+         if not color:
+             # the camera's channels have different sensitivities: scaled to the same spread of the sky, the stretch
+             # shows a neutral background (the spread below the median: the objects of the field are above it)
+-            spread = np.array([sky_spread(lin[c][shown]) for c in range(3)])
+             gains = spread[1] / np.maximum(spread, 1e-12)
+             lin *= gains.astype(np.float32)[:, None, None]
+-            ctx.log("no colour calibration: camera colours, each channel's sky set to zero and scaled to the same "
++            if sky.ndim == 3 and sky.shape[1] > 1:
++                # the brightness of the sky kept, grey: its variations (light pollution, the Moon, vignetting) stay
++                # visible, without the colour of that light in camera RGB (the green corner of heart_a7s)
++                grey = np.tensordot((LUM * gains).astype(np.float32), sky, 1)
++                lin += (grey - np.median(grey[shown]))[None]
++                del grey
++            ctx.log("no colour calibration: camera colours, each channel's sky made grey and scaled to the same "
+                     f"spread (gains {', '.join(f'{g:.3f}' for g in gains)})")
+         lin[:, ~valid] = 0
+         ctx.progress(0.5, "statistics")
+@@ -177,7 +206,7 @@ class RenderSimple(Stage):
+         prep = {"M": (np.diag(gains) @ M).tolist(), "crop": [int(x0), int(x1), int(y0), int(y1)],
+                 "median": stats["lum"]["median"], "mad": stats["lum"]["mad"], "p99995": stats["lum"]["p99995"],
+                 "stats": stats, "stretch": p.stretch, "linked": p.linked, "denoised": denoised, "color": color,
+-                "sky": "background_poly" if poly else "channel medians", "source": name, "gains": gains.tolist(),
++                "sky": sky_name, "source": name, "gains": gains.tolist(),
+                 "exit": None if color else "stacking", "width": W, "height": H,
+                 "emission": None if e is None else e.tolist(), "emission_anchor_weight": w,
+                 "drizzle_scale": float(ctx.load_json("stack", "drz_meta.json").get("scale", 1.0))}
+diff --git a/astro_gpu/texts.py b/astro_gpu/texts.py
+index aeaf6c1..a6aaf12 100644
+--- a/astro_gpu/texts.py
++++ b/astro_gpu/texts.py
+@@ -336,6 +336,7 @@ VALUE_TEXTS: dict[str, str] = {
+     "measured on the nebula": "measured on the nebula",
+     "background_poly": "simple polynomial background",
+     "channel medians": "median of each channel",
++    "camera-colour polynomial, made grey": "smooth sky of each channel, made grey",
+ }
+ #: texts of the interface the formatting needs
+ UI_TEXTS = ("Yes", "No", "{n} values")
+diff --git a/tests/test_integration_v2.py b/tests/test_integration_v2.py
+index 87ab304..45cc99b 100644
+--- a/tests/test_integration_v2.py
++++ b/tests/test_integration_v2.py
+@@ -389,9 +389,17 @@ def test_toy_v2_run_equals_v1_bit_for_bit(tmp_path, state):
+     # a slider moved away from 2 does change the layer
+     moved = api.render_layer(p, classic, None, {"sky": 4.0}, 0.5, device="cpu").rgb
+     assert moved.mean() > api.render_layer(p, classic, None, None, 0.5, device="cpu").rgb.mean()
+-    # the Raw stack exit has no colour cast
+-    sk = smoke.sanity(api.render_layer(p, raw, None, None, 0.5, device="cpu").rgb)["median_rgb"]
+-    assert max(sk) / max(min(sk), 1e-9) < 1.05
++    # the Raw stack exit has no colour cast: its sky is grey in every corner (the median pixel of this scene is nebula).
++    # Before the sky was made grey the corners were 39 to 100 % off. The sky samples of this 192 x 256 toy are 4 px
++    # blocks: taking the darkest of them biases the green sky a few ADU low (up to 8 here, against a noise of 15), hence
++    # 15 %; real frames use blocks of 30-70 px (heart_a7s: corners within 1.4 levels of 255)
++    lay = api.render_layer(p, raw, None, None, 0.5, device="cpu")
++    x0, x1, y0, y1 = (v // 2 for v in lay.crop)
++    img = lay.rgb[:, y0:y1, x0:x1]
++    h, w = img.shape[1:]
++    for c in (img[:, :h // 5, :w // 5], img[:, :h // 5, -w // 5:], img[:, -h // 5:, :w // 5], img[:, -h // 5:, -w // 5:]):
++        sk = np.median(c.reshape(3, -1), axis=1)
++        assert sk.max() / max(sk.min(), 1e-9) < 1.15, sk
+ 
+     # the comparison catches a v2 that differs: one value of the stack changed in a copy
+     out = Path(api.stage_outputs(p, classic, "stack").dir)
+diff --git a/tests/test_simple_stages.py b/tests/test_simple_stages.py
+index 681a965..6013177 100644
+--- a/tests/test_simple_stages.py
++++ b/tests/test_simple_stages.py
+@@ -222,11 +222,16 @@ def test_raw_stack_exit_has_no_colour_cast(tmp_path):
+     proj, _ = make_project(tmp_path / "p", denoise=False, color=False)
+     out = run_stage(proj, RenderSimple(), RenderSimpleParams())
+     prep = json.loads((out.dir / "prep_simple.json").read_text())
+-    assert prep["exit"] == "stacking" and prep["sky"] == "channel medians" and not prep["color"]
++    assert prep["exit"] == "stacking" and prep["sky"] == "camera-colour polynomial, made grey" and not prep["color"]
+     x0, x1, y0, y1 = prep["crop"]
+     img = SimpleRenderEngine(out.dir, DEV).render(SimpleSettings(), 1.0).final.cpu().numpy()[:, y0:y1, x0:x1]
+-    med = np.median(img, axis=(1, 2))
+-    assert float(med.max() - med.min()) < 0.02 * float(med.mean())        # channel medians equal within 2 %
++    # the sky gradient (another colour in each channel) stays visible but grey: every corner is neutral (the median
++    # pixel of this scene is not sky: its nebulae are red)
++    h, w = img.shape[1:]
++    corners = [img[:, :h // 5, :w // 5], img[:, :h // 5, -w // 5:], img[:, -h // 5:, :w // 5], img[:, -h // 5:, -w // 5:]]
++    cm_ = np.array([np.median(c.reshape(3, -1), axis=1) for c in corners])
++    assert float((cm_.max(1) - cm_.min(1)).max()) < 0.01                  # 2.5 levels of 255
++    assert float(cm_.mean(1).max() - cm_.mean(1).min()) > 0.01             # its brightness is kept
+     # without the normalisation, camera RGB under a linked stretch is tinted: the sky of the scene is green-dominated
+     cam = np.load(proj.stage_dir("stack") / "drz_full.npy")[:, y0:y1, x0:x1]
+     cm = np.median(cam, axis=(1, 2))

@@ -94,6 +94,12 @@ A working client on the current algorithms is worth more than new methods withou
   - this split is a starting point, not a rule (the user: "pas à graver dans le marbre… ajuste en fonction du retour
     d'expérience"). If a lighter agent's work needs heavy rework, move that kind of task up. If an opus agent's task
     turns out routine, move it down. Note each change in JOURNAL.md.
+- **No Monitor tool in agents' work** (lesson of 2026-11-01): three agents waited 3 h on Monitor conditions that
+  never came true. Every brief says: do not use Monitor, never wait more than 10 minutes, run long commands in the
+  background and check them with quick commands. To detect a stall, look at the mtimes of the agent's own files: the
+  task output files do not grow while an agent runs.
+- **CPU only means `CUDA_VISIBLE_DEVICES=-1`.** On this Windows machine an empty value does NOT hide the GPUs:
+  torch still sees 2 (checked on 2026-11-01).
 - **Delegate** reading and coding to agents with precise briefs. Keep only conclusions here. Never read big files or
   transcripts into this context.
 - **One owner per file at a time**: never two agents on the same files.

@@ -476,7 +476,7 @@ Shown in Spec mode only, disabled, with "◇ Not in the engine yet"; hidden othe
 - **Tests**: during a wave, each package runs its own tests (`pytest tests/test_<its files> -q`). The full fast suite
   (`-m "not slow and not network"`) runs at the end of the wave.
 - **During P8**:
-  - tests run on the CPU (`CUDA_VISIBLE_DEVICES=""`);
+  - tests run on the CPU (`CUDA_VISIBLE_DEVICES=-1`: on this Windows machine an empty value does NOT hide the GPUs);
   - walkthroughs and client tests never open P8's projects: they use the F:/astro_essais/v2 projects;
   - client renders run on the CPU.
 - **Engine freeze**: from P8's start (commit tagged `p8-engine`) to its end, nothing under `astro_gpu/` outside

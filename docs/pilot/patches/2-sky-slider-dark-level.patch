@@ -1,0 +1,89 @@
+diff --git a/astro_gpu/render/sliders.py b/astro_gpu/render/sliders.py
+index aeb8067..8d35edf 100644
+--- a/astro_gpu/render/sliders.py
++++ b/astro_gpu/render/sliders.py
+@@ -5,8 +5,8 @@ its slider positions:
+ 
+ * engine layers (render_prep, render_prep_learned): each slider moves engine settings. The table gives their values
+   at positions 0-4 for the default rendering; for another base the table's *step* from position 2 is added (sky_level,
+-  faint_smooth, g_lim, d10, d7) or its *ratio* to position 2 multiplies the base (lc_*, chroma, neb_sharp, fine_k,
+-  star_sat, star_glow). Between integer positions the value is linear. Values stay inside the settings' bounds;
++  dark_level, faint_smooth, g_lim, d10, d7) or its *ratio* to position 2 multiplies the base (lc_*, chroma, neb_sharp,
++  fine_k, star_sat, star_glow). Between integer positions the value is linear. Values stay inside the settings' bounds;
+ * simple layers (render_simple): the tables of the classic layers of mockup/alt2/build/prepare.py, on the simple
+   rendering's settings, with the same rule (the defaults of ``SimpleSettings`` are those tables' position 2).
+ 
+@@ -23,7 +23,8 @@ from .simple import SimpleSettings
+ #: the kinds of workflow layers: engine (with Stars), simple (without Stars), stacking (pulled from Stacking)
+ KINDS = ("engine", "simple", "stacking")
+ #: settings moved by a step (the others by a ratio)
+-ADDITIVE = frozenset({"sky_level", "faint_smooth", "g_lim", "d10", "d7", "sky", "contrast", "noise_mix", "smooth_px"})
++ADDITIVE = frozenset({"sky_level", "dark_level", "faint_smooth", "g_lim", "d10", "d7", "sky", "contrast", "noise_mix",
++                      "smooth_px"})
+ SUGGESTED = 2.0
+ LO, HI = 0.0, 4.0
+ 
+@@ -51,8 +52,12 @@ class Slider:
+ 
+ NEBULA, STARS = "Nebula and background", "Stars"
+ SLIDERS: tuple[Slider, ...] = (
++    # the background has two levels in the engine's tone curve, the dark clouds and the typical sky, and the curve keeps
++    # the dark level first: where the sky lies close above the darkest areas (a field filled with nebula) the sky level
++    # cannot be reached and has no effect (heart_a7s: no change below 34.6 /255, the faithful rendering asks 24). The
++    # slider moves both in proportion, so it always moves a level the curve holds
+     Slider("sky", "Sky", NEBULA, ("darker", "brighter"),
+-           {"sky_level": (12, 18, 24, 30, 36)},
++           {"sky_level": (12, 18, 24, 30, 36), "dark_level": (5, 7.5, 10, 12.5, 15)},
+            {"sky": (0.10, 0.15, 0.20, 0.26, 0.32)}),
+     Slider("contrast", "Contrast", NEBULA, ("softer", "stronger"),
+            {"lc_fine": (0.95, 1.0, 1.05, 1.15, 1.3), "lc_medium": (1.0, 1.15, 1.3, 1.55, 1.85),
+diff --git a/tests/test_sliders.py b/tests/test_sliders.py
+index 0679a45..e3543ea 100644
+--- a/tests/test_sliders.py
++++ b/tests/test_sliders.py
+@@ -89,6 +89,28 @@ def test_steps_and_ratios():
+     assert S.base_settings("engine", "Artistic").sky_level == PRESETS["Artistic"]["sky_level"]
+ 
+ 
++def test_the_sky_slider_never_falls_in_the_dead_zone_of_the_tone_curve():
++    """The tone curve keeps the dark level first: when the sky lies close above the darkest areas, sky levels below a
++    floor give one curve (heart_a7s: 34.6 /255 for anything asked below, the faithful default 24 included). Every
++    position of the slider must still move the sky, and position 2 must keep the base's curve exactly."""
++    from astro_gpu.render.engine import fit_tone_curve, tone_curve
++    # the statistics of heart_a7s (P7, Full, faithful and Artistic at 1/4): dark and sky percentiles, white
++    for base, (p_dark, p_sky, white) in ((None, (1.6264, 2.9055, 14.816)), ("Artistic", (1.4968, 2.8013, 18.741))):
++        sky = []
++        for pos in POSITIONS:
++            s = S.settings_at("engine", base, {"sky": pos})
++            lo, b, w = fit_tone_curve(p_dark, p_sky, white, s.dark_level / 255, s.sky_level / 255, s.toe)
++            sky.append(float(tone_curve(p_sky, lo, b, w, s.toe)))
++            if pos == 2:
++                b0 = S.base_settings("engine", base)
++                assert (lo, b, w) == fit_tone_curve(p_dark, p_sky, white, b0.dark_level / 255, b0.sky_level / 255,
++                                                    b0.toe)
++        assert all(b > a + 1e-4 for a, b in zip(sky, sky[1:])), (base, [round(255 * v, 1) for v in sky])
++    # the levels the curve cannot reach: with the sky level alone the slider was dead from 0 to 2 here
++    lo, b, w = fit_tone_curve(1.6264, 2.9055, 14.816, 10 / 255, 12 / 255, 0.015)
++    assert (lo, b, w) == fit_tone_curve(1.6264, 2.9055, 14.816, 10 / 255, 24 / 255, 0.015) and b == 1.0
++
++
+ def test_greyed_sliders_give_their_reasons():
+     eng = S.availability("engine", True)
+     assert all(v == "" for v in eng.values())
+diff --git a/tests/client/test_post.py b/tests/client/test_post.py
+index bdb6a8f..b8c324e 100644
+--- a/tests/client/test_post.py
++++ b/tests/client/test_post.py
+@@ -721,10 +721,10 @@ def test_the_release_render_is_the_engines_bit_for_bit(preps):
+         got = src.layer(lay, level, (0, 0, w, h))
+         ref = np.moveaxis(want[:, oy // f: oy // f + h, ox // f: ox // f + w], 0, -1)
+         assert np.array_equal(got, ref), level
+-    # a slider away from 2 moves the settings the table says, nothing else
++    # a slider away from 2 moves the settings the table says, nothing else (the sky slider moves the dark level too)
+     lay["sliders"] = {"sky": 3}
+     moved = src.layer(lay, 1, (0, 0, *cv.size(1)))
+-    s30 = RenderSettings.from_saved({"sky_level": 30.0})
++    s30 = RenderSettings.from_saved({"sky_level": 30.0, "dark_level": 12.5})
+     ref = eng.render(s30, 0.5).final.numpy()[:, oy // 2: oy // 2 + cv.size(1)[1], ox // 2: ox // 2 + cv.size(1)[0]]
+     assert np.array_equal(moved, np.moveaxis(ref, 0, -1))
+     # the parts: stars alone is the layer minus its starless image
