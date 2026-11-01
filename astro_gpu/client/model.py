@@ -1,0 +1,1207 @@
+"""ProjectModel: the one adapter between the views and the engine API (DESIGN §5.2).
+
+It keeps the surface of the mockup's ``Project`` (the views were drawn on it), each member a thin call on
+``astro_gpu.api``: the workflows (``WorkflowView`` replaces the mockup's PathDef), their stages, keys and states, what a
+change costs, the Replace / Try as variant choice, variants, undo and redo, the sessions, the selection thresholds and
+the settings of a stage. Edits autosave, debounced 300 ms.
+
+What the GUI thread may do, and what it may not (DESIGN §5.3):
+
+* it edits the workflows, and reads keys, states, plans and costs, which the API answers from caches once ``warm`` has
+  run: the model submits that to the ApiWorker when a project opens (``ready`` turns True, ``readyChanged`` fires);
+* it never scans the disk, loads an array or computes an automatic value: ``describe`` (the settings of a stage), the
+  counts of the sessions and the facts of the done results come from the worker. ``params(p, stage)`` answers from a
+  cache and asks the worker for what it lacks; ``paramsChanged`` says when it arrives.
+
+Vocabulary. The views speak the mockup's: a workflow's ``opts`` are ``debruitage`` / ``dn``, ``etoiles`` / ``appris``,
+``fond`` and ``deconv``; its blocks are ``calibration``, ``alignement``, ``selection``, ``empilement``, ``astrometrie``,
+``couleur``, ``deconv``, ``debruitage``, ``etoiles``, ``fond``, ``post`` (blocks.py). Stage names, settings and the
+stored ``params`` are the engine's. The model translates at the API's door (``to_engine`` / ``from_engine``).
+
+A change is a dict: ``{"kind": "param", "stage", "name", "value", "suggested"}`` (value None: back to the suggestion),
+``{"kind": "opt", "key", "value"}`` (a method: ``dn``, ``appris``, ``fond``) or ``{"kind": "params", "items": [...]}``
+(the Selection thresholds: two settings at once).
+"""
+from __future__ import annotations
+
+import copy
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from PySide6.QtCore import QObject, QTimer, Signal
+
+from .. import api
+from ..core import workflow as wfl
+from ..core.project2 import Workflow
+from .blocks import ENGINE_BLOCK as ENGINE_KEY
+from .blocks import KEY_ENGINE_BLOCK, TOOLS, TRUNK  # noqa: F401  (TOOLS: the views import it from here)
+from .i18n import _, hm  # noqa: F401  (hm: the views import it from here, as from the mockup's model)
+from .services.worker import ApiWorker
+
+SAVE_DELAY_MS = 300
+#: the output stages (the last one of a chain is the workflow's layer)
+BY_OUTPUT = ("render_prep", "render_prep_learned", "render_simple")
+
+# ---------------------------------------------------------------------------------------------- vocabulary
+#: the starting points of the New workflow dialog, by the mockup's keys (dialogs.TEMPLATE_NAME gives their names)
+TEMPLATES = {
+    "Vierge": dict(debruitage=False, etoiles="garder", appris=False, fond="simple"),
+    "Classique + débruitage": dict(debruitage=True, etoiles="garder", appris=False, fond="simple"),
+    "Complet": dict(debruitage=True, etoiles="mesurer", appris=False, fond="halpha"),
+}
+DN_SUMMARY = {"affine": "fine-tuned", "generique": "pretrained", "nlbayes": "NL-Bayes"}
+MACHINES = {True: "GPU", False: "CPU only (no GPU)"}
+#: seconds of the methods the engine does not have yet (the spec's estimates)
+EXTRA_SECONDS = {"denoise_ft": 180.0, "denoise_ai": 45.0, "denoise_cl": 300.0, "deconv": 150.0}
+NOT_IN_ENGINE = "Not in the engine yet."
+#: the block of the views → the engine's block of ``api.methods``, and the option each method sets
+METHOD_BLOCK = {"debruitage": "denoise", "fond": "gradient", "etoiles": "stars", "deconv": "deconvolution"}
+METHOD_OPT = {"debruitage": "dn", "fond": "fond", "etoiles": "appris", "deconv": "deconv_m"}
+#: the engine's method keys → the views'
+METHOD_KEY = {"debruitage": {"n2n": "appris", "finetuned": "affine", "pretrained": "generique", "nlbayes": "nlbayes"},
+              "fond": {"halpha": "halpha", "polynomial": "simple"},
+              "etoiles": {"psf": "psf", "psf_neural": "psf_neural"},
+              "deconv": {"rl": "psf", "neural": "neural"}}
+#: the toolbox: key of a tool → (engine option, value that adds it, value that removes it)
+TOOL_OPTION = {"debruitage": ("denoise", "n2n", None), "etoiles": ("stars", "psf", None),
+               "appris": ("stars", "psf_neural", "psf"), "halpha": ("gradient", "halpha", "polynomial"),
+               "simple": ("gradient", "polynomial", None)}
+#: the stages whose settings the summaries of the blocks quote: asked of the worker for each workflow
+PREFETCH = ("stack", "denoise", "star_net")
+
+
+class NotInEngine(ValueError):
+    """What was asked is ◇: the engine does not have it yet."""
+
+
+def to_engine(o: dict) -> dict:
+    """The mockup's options of a workflow as the engine's (core/workflow)."""
+    stars = None
+    if o.get("etoiles") == "mesurer":
+        stars = "psf_neural" if o.get("appris") else "psf"
+    return {"denoise": "n2n" if o.get("debruitage") else None, "stars": stars,
+            "gradient": "halpha" if o.get("fond") == "halpha" else "polynomial", "deconvolution": None}
+
+
+def from_engine(o: dict) -> dict:
+    """The engine's options as the mockup's (``dn`` is always the engine's Noise2Noise)."""
+    return {"debruitage": bool(o.get("denoise")), "dn": "appris", "etoiles": "mesurer" if o.get("stars") else "garder",
+            "appris": o.get("stars") == "psf_neural", "fond": "halpha" if o.get("gradient") == "halpha" else "simple",
+            "deconv": bool(o.get("deconvolution"))}
+
+
+def methods_of(block: str) -> list[dict]:
+    """The methods of a block of the views, as the panel's cards show them: key (the views'), name, short, runs
+    (gpu | cpu | both), what, new (◇), stage (the engine's)."""
+    return [dict(key=METHOD_KEY[block][m.key], name=m.name, short=m.short, runs=m.runs_on, what=m.what, new=m.new,
+                 stage=m.stage, engine_key=m.key) for m in api.methods(METHOD_BLOCK[block])]
+
+
+def method_of(p: WorkflowView, block: str) -> str:
+    if block == "fond":
+        return p.opts["fond"]
+    if block == "etoiles":
+        return "psf_neural" if p.opts.get("appris") else "psf"
+    if block == "deconv":
+        return p.opts.get("deconv_m", "psf")
+    return p.opts.get("dn", "appris")
+
+
+def method_value(block: str, key: str):
+    """The option value that selects a method."""
+    if block == "etoiles":
+        return key == "psf_neural"
+    return key
+
+
+@dataclass
+class WorkflowView:
+    """A workflow as the views see it (replaces the mockup's PathDef): ``pid`` is the workflow's id."""
+
+    pid: int
+    name: str
+    opts: dict
+    params: dict = field(default_factory=dict)           # stage -> {setting: value} the user stored
+    end: str | None = None                               # the block the layer leaves from ("empilement"), or None
+    variant_of: int | None = None
+    computed: bool = False                               # every stage is done
+    rendered: bool = False                               # has a result to show in Post (now or earlier)
+    layer: str = ""                                      # unused: the layers are the engine's
+    provisional: bool = False
+    model: Any = field(default=None, repr=False, compare=False)
+
+    @property
+    def id(self) -> int:
+        return self.pid
+
+    def __deepcopy__(self, memo):
+        """A copy shares the model (a QObject is never copied)."""
+        return WorkflowView(self.pid, self.name, copy.deepcopy(self.opts, memo), copy.deepcopy(self.params, memo),
+                            self.end, self.variant_of, self.computed, self.rendered, self.layer, self.provisional,
+                            self.model)
+
+
+@dataclass
+class Facts:
+    """What the done results say, read by the worker: the metrics of the stages the views quote."""
+
+    inventory: dict = field(default_factory=dict)
+    register: dict = field(default_factory=dict)
+    stack: dict = field(default_factory=dict)
+    sessions: dict = field(default_factory=dict)         # session id -> {kind: file count}
+
+
+# ---------------------------------------------------------------------------------------------- worker jobs
+def _warm_job(p) -> tuple[dict, Facts]:
+    """Fill every disk cache of the API, the machine and the timing history (worker thread)."""
+    from ..core import estimate as est
+    api.warm(p)
+    api.machine()
+    return est.load_history(), _facts_job(p)
+
+
+def _facts_job(p) -> Facts:
+    from ..core.project import list_frames
+    f = Facts()
+    for w in p.workflows:
+        for stage in ("inventory", "register", "stack"):
+            if getattr(f, stage):
+                continue
+            try:
+                out = api.stage_outputs(p, w.id, stage) or api.stage_outputs(p, w.id, stage, "previous")
+            except (OSError, ValueError, KeyError):
+                out = None
+            if out is not None:
+                setattr(f, stage, dict(out.metrics))
+    for s in p.sessions:
+        counts = {}
+        for kind in ("lights", "darks", "flats", "bias", "flat_darks"):
+            try:
+                counts[kind] = len(list_frames([p.abspath(x) for x in getattr(s, kind)])) if getattr(s, kind) else 0
+            except (OSError, ValueError):
+                counts[kind] = 0
+        f.sessions[s.id] = counts
+    return f
+
+
+def _describe_job(p, wid: int, stage: str):
+    key = api.stage_key(p, wid, stage)
+    return wid, stage, key, api.describe(p, wid, stage)
+
+
+def _selection_job(p, wid: int, tmin: float, ratio: float):
+    t = api.selection_preview(p, wid, tmin, ratio)
+    return wid, round(tmin, 6), round(ratio, 6), t.kept, t.total, [r.status != "" for r in t.rows]
+
+
+def _sig(rows) -> tuple:
+    return tuple((r.name, repr(r.value), repr(r.suggested), r.origin, r.reason, repr(r.reason_args), r.drift,
+                  r.locked) for r in rows or [])
+
+
+class ProjectModel(QObject):
+    pathsChanged = Signal()                # the workflows, their options or settings, or what is computed, changed
+    currentChanged = Signal()              # the current workflow or the selected block
+    costChanged = Signal()                 # what is to compute changed, without a new workflow or option
+    sourcesChanged = Signal()              # the sessions or the frames changed
+    testChanged = Signal()                 # the test area (Preview on a region, ◇)
+    readyChanged = Signal()                # the disk caches are filled: keys, states and plans may be asked
+    paramsChanged = Signal(int, str)       # the settings of this stage of this workflow arrived (workflow id, stage)
+    factsChanged = Signal()                # the facts of the done results (info) changed
+    selectionChanged = Signal()            # the count of kept frames changed
+
+    def __init__(self, project, worker: ApiWorker | None = None, *, readonly: bool = False,
+                 history: list | None = None, gpu: bool = True, device: str | None = None):
+        super().__init__()
+        self.p = project                                   # the definition (api.Project2): the source of truth
+        self.root = Path(project.root) if project.root is not None else None
+        self.readonly = readonly                           # never write the project (tests, fixtures)
+        self._own_worker = worker is None
+        self.worker = worker or ApiWorker(self)
+        self.worker.done.connect(self._worker_done)
+        self.worker.failed.connect(self._worker_failed)
+        self.paths: list[WorkflowView] = []
+        self.current = 0
+        self.sel_step = "sources"
+        self.scope: list[int] | None = None
+        self.pending_change: dict | None = None
+        self.gpu = gpu
+        self.device = device if device else (None if gpu else "cpu")
+        self.history = history if history is not None else []
+        self.ready = False
+        self.error = ""                                    # why the project could not be read
+        self.test_on = False
+        self.test_zone = (0.25, 0.25, 0.6, 0.6)
+        self.test_frames = 1.0
+        self._facts = Facts()
+        self._history_est: dict | None = None
+        self._states: dict = {}
+        self._chains: dict[int, list[str]] = {}
+        self._blocks: dict[int, list] = {}
+        self._cache: dict = {}                             # costs and durations, forgotten at each sync
+        self._pc: dict[tuple[int, str], dict] = {}         # the settings of a stage of a workflow (describe)
+        self._reasons: dict[tuple[str, str], tuple] = {}   # the last reason an automatic value had
+        self._sel: dict | None = None                      # the last selection preview
+        self._sel_want = None                              # what the last preview was asked for
+        self._epoch = 0                                    # bumped when results change on disk
+        self._undo: list = []
+        self._redo: list = []
+        self._depth = 0
+        self._dirty = False
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(SAVE_DELAY_MS)
+        self._save_timer.timeout.connect(self.flush)
+        self._rebuild_views()
+        if self.paths:
+            self.current = max(0, next((i for i, v in enumerate(self.paths) if v.pid == project.current), 0))
+            self.sel_step = "empilement"
+        self._start_warm()
+
+    # ------------------------------------------------------------ the definition, as the views see it
+    @property
+    def name(self) -> str:
+        return self.p.name
+
+    @property
+    def target(self) -> str:
+        return self.p.target.name or ""
+
+    @property
+    def path(self) -> WorkflowView | None:
+        return self.paths[self.current] if 0 <= self.current < len(self.paths) else None
+
+    @property
+    def stack_mode(self) -> str:
+        return self.p.stack_mode
+
+    @property
+    def sources_loaded(self) -> bool:
+        return any(s.lights for s in self.p.sessions)
+
+    @property
+    def sessions(self) -> list[dict]:
+        """The sessions as the views list them: id, name, night, and the count of each kind of frame."""
+        out = []
+        for s in self.p.sessions:
+            c = self._facts.sessions.get(s.id, {})
+            lights = c.get("lights", 0)
+            ex = sum(1 for sid, _n in self.p.excluded if sid == s.id)
+            out.append(dict(id=s.id, name=s.name, night=s.name, lights=lights, kept=max(lights - ex, 0),
+                            flats=c.get("flats", 0), darks=c.get("darks", 0), bias=c.get("bias", 0),
+                            dark_flats=c.get("flat_darks", 0), exposure=self._facts.inventory.get("exposure_s"),
+                            iso=self._facts.inventory.get("iso_gain"), temp=None, filter="OSC", rotation=0.0,
+                            fwhm=self._facts.register.get("fwhm_px"), flat_note=""))
+        return out
+
+    @property
+    def frames_excluded(self) -> set[tuple[int, str]]:
+        """The light frames excluded by hand: (session id, file name) pairs (DESIGN §1.2)."""
+        return {(int(a), str(b)) for a, b in self.p.excluded}
+
+    def n_lights(self) -> int:
+        n = sum(s["kept"] for s in self.sessions)
+        return n or int(self._facts.inventory.get("n_lights") or 0)
+
+    def index_of(self, pid: int) -> int:
+        return next(i for i, q in enumerate(self.paths) if q.pid == pid)
+
+    def view(self, pid: int) -> WorkflowView | None:
+        return next((q for q in self.paths if q.pid == pid), None)
+
+    def _rebuild_views(self):
+        """The WorkflowViews from the definition; a view keeps its identity as long as its workflow exists."""
+        by = {v.pid: v for v in self.paths}
+        out = []
+        for w in self.p.workflows:
+            v = by.get(w.id) or WorkflowView(w.id, w.name, {}, model=self)
+            v.name, v.opts = w.name, from_engine(w.options)
+            v.params, v.variant_of = copy.deepcopy(w.params), w.variant_of
+            v.end = "empilement" if w.end == "stacking" else None
+            out.append(v)
+        self.paths[:] = out
+        self.current = min(max(self.current, 0), len(self.paths) - 1) if self.paths else -1
+
+    def select(self, index: int | None = None, step: str | None = None):
+        if index is not None:
+            self.current = index
+        if step is not None:
+            self.sel_step = step
+        v = self.path
+        if v is not None and self.p.current != v.pid:
+            self.p.current = v.pid                          # kept with the next save: not an edit
+        self.currentChanged.emit()
+
+    # ------------------------------------------------------------ the worker: warm, facts, settings
+    def _start_warm(self):
+        self.ready = False
+        self.worker.submit(f"model.warm:{id(self)}", _warm_job, self.p)
+
+    def _worker_done(self, channel: str, _n: int, result):
+        me = f":{id(self)}"
+        if channel == "model.warm" + me:
+            self._history_est, self._facts = result
+            self.ready = True
+            self.error = ""
+            self._sync()
+            self.readyChanged.emit()
+            self.sourcesChanged.emit()
+            self.pathsChanged.emit()
+        elif channel == "model.facts" + me:
+            self._facts = result
+            self._cache.clear()
+            self.factsChanged.emit()
+            self.costChanged.emit()
+        elif channel.startswith("model.describe" + me + ":"):
+            wid, stage, key, rows = result
+            self._got_params(wid, stage, key, rows)
+        elif channel == "model.selection" + me:
+            new = dict(zip(("wid", "tmin", "ratio", "kept", "total", "excluded"), result))
+            changed = self._sel is None or (new["kept"], new["total"]) != (self._sel["kept"], self._sel["total"])
+            self._sel = new
+            if changed:
+                self.selectionChanged.emit()
+
+    def _worker_failed(self, channel: str, _n: int, text: str):
+        why = text.splitlines()[0] if text else "?"
+        if channel == f"model.warm:{id(self)}":
+            self.error = why
+            self.readyChanged.emit()
+        elif channel.startswith(f"model.describe:{id(self)}:"):
+            _head, _id, pid, stage = channel.split(":", 3)
+            v = self.view(int(pid))
+            e = self._pc.get((int(pid), stage))
+            if v is None or e is None:
+                return
+            e["asked"], e["tries"] = None, e.get("tries", 0) + 1
+            if e["tries"] <= 2:                                  # an edit raced the worker: ask again, twice at most
+                QTimer.singleShot(400, lambda: self.params(v, stage))
+            else:
+                e["error"] = why
+                self.paramsChanged.emit(int(pid), stage)
+
+    def reload_sources(self):
+        """The sessions or the frames changed (Import folder, a new session): scan again, then rebuild the keys.
+        Until the worker is done the model answers from what it knew (no disk access in the GUI thread)."""
+        api.refresh(self.p, scan=True)
+        self._cache.clear()
+        self._start_warm()
+
+    def results_changed(self):
+        """A stage ended or a run is over: the done results on disk changed. States, costs, the settings of the
+        stages (their automatic values read the upstream results) and the facts are read again."""
+        api.refresh(self.p)
+        self._epoch += 1
+        self._cache.clear()
+        if self.ready:
+            self._sync()
+            self.worker.submit(f"model.facts:{id(self)}", _facts_job, self.p)
+        self.pathsChanged.emit()
+
+    def mark_stages(self, items=None, emit: bool = True):
+        """The mockup's 'a run is over' (the views call it): the states are read again from disk."""
+        self.results_changed()
+
+    def set_machine(self, gpu: bool, device: str | None = None):
+        """The machine the durations are for: with a GPU or without, and the device asked (cuda:N, cpu, None: auto)."""
+        self.gpu = gpu
+        self.device = device if device else (None if gpu else "cpu")
+        self._cache.clear()
+        self.costChanged.emit()
+        self.pathsChanged.emit()
+
+    def close(self):
+        """Save what is pending and let go of the worker (the project is closed)."""
+        self.flush()
+        self.worker.cancel(f"model.warm:{id(self)}")
+        for sig, slot in ((self.worker.done, self._worker_done), (self.worker.failed, self._worker_failed)):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        if self._own_worker:
+            self.worker.stop()
+
+    # ------------------------------------------------------------ saving
+    def flush(self):
+        """Write the definition now (the edits are saved 300 ms after the last one)."""
+        self._save_timer.stop()
+        if self._dirty and not self.readonly and self.root is not None:
+            if self.path is not None:
+                self.p.current = self.path.pid
+            api.save(self.p)
+        self._dirty = False
+
+    def _touch(self):
+        self._dirty = True
+        if not self.readonly:
+            self._save_timer.start()
+
+    # ------------------------------------------------------------ the sync: states, chains, blocks
+    def _sync(self):
+        """The views, states, chains and block keys read again (GUI thread: caches and manifests only)."""
+        self._rebuild_views()
+        self._cache.clear()
+        if not self.ready:
+            return
+        try:
+            self._states = api.states(self.p, update=not self.readonly)
+        except (OSError, ValueError, KeyError):
+            self._states = {}
+        self._chains, self._blocks = {}, {}
+        for w in self.p.workflows:
+            try:
+                self._chains[w.id] = api.chain(self.p, w.id)
+                self._blocks[w.id] = api.blocks(self.p, w.id)
+            except (ValueError, KeyError):
+                self._chains[w.id], self._blocks[w.id] = [], []
+        for v in self.paths:
+            stages = self._chains.get(v.pid, [])
+            v.computed = bool(stages) and all(self.state(v, s) == "done" for s in stages)
+            out = next((s for s in reversed(stages) if s in BY_OUTPUT), None)
+            st = self._states.get((v.pid, out)) if out else None
+            v.rendered = bool(st) and (st.state == "done" or bool(st.previous_key))
+        for v in self.paths:
+            for stage in PREFETCH:
+                if stage in self._chains.get(v.pid, []):
+                    self.params(v, stage)
+
+    @contextmanager
+    def _edit(self):
+        """One change of the workflows, for Undo: the first level takes the snapshot, and after it saves, reads the
+        keys and states again and says what changed."""
+        top = self._depth == 0
+        before = self._snapshot() if top else None
+        self._depth += 1
+        try:
+            yield
+        finally:
+            self._depth -= 1
+            if top:
+                if self._snapshot() != before:
+                    self._undo.append(before)
+                    del self._undo[:-200]
+                    self._redo.clear()
+                    self._touch()
+                self._sync()
+                self.pathsChanged.emit()
+
+    def _snapshot(self):
+        return (api.workflows(self.p), self.p.current, self.p.stack_mode)
+
+    # ------------------------------------------------------------ undo and redo
+    def can_undo(self) -> bool:
+        return bool(self._undo)
+
+    def can_redo(self) -> bool:
+        return bool(self._redo)
+
+    def undo(self) -> bool:
+        return self._restore(self._undo, self._redo)
+
+    def redo(self) -> bool:
+        return self._restore(self._redo, self._undo)
+
+    def _restore(self, src: list, dst: list) -> bool:
+        """Put the workflows back as an earlier snapshot had them (computed results are never removed)."""
+        if not src:
+            return False
+        dst.append(self._snapshot())
+        ws, current, mode = src.pop()
+        api.set_workflows(self.p, ws, current)
+        self.p.stack_mode = mode
+        self.pending_change = None
+        self._touch()
+        self._sync()
+        if self.paths:
+            self.current = next((i for i, v in enumerate(self.paths) if v.pid == self.p.current), 0)
+            keys = self.block_keys(self.path)
+            if self.sel_step not in ("sources", "final") and self.sel_step not in keys:
+                self.sel_step = keys[-1] if keys else "sources"
+        self.pathsChanged.emit()
+        self.currentChanged.emit()
+        return True
+
+    # ------------------------------------------------------------ stages, keys, states
+    def all_stages(self, p: WorkflowView | None = None) -> list[str]:
+        p = p or self.path
+        return list(self._chains.get(p.pid, [])) if p is not None else []
+
+    def path_stages(self, p: WorkflowView | None = None) -> list[str]:
+        return [s for s in self.all_stages(p) if s not in TRUNK]
+
+    def block_keys(self, p: WorkflowView) -> list[str]:
+        """The views' block keys of a workflow, in order (the frames and Post excluded; Output last)."""
+        return [ENGINE_KEY[b.block] for b in self._blocks.get(p.pid, []) if b.block in ENGINE_KEY]
+
+    def block_key(self, p: WorkflowView, key: str):
+        """What two workflows must have equal to share a block (with everything before it): the keys of its stages
+        (the engine's ``blocks``); Selection is the thresholds (it has no stage of its own); Output has the
+        workflow's id."""
+        if key == "selection":
+            st = p.params.get("stack") or {}
+            return ("selection", st.get("min_transparency"), st.get("max_fwhm_ratio"))
+        ref = next((b for b in self._blocks.get(p.pid, []) if ENGINE_KEY.get(b.block) == key), None)
+        return (key, ref.key if ref is not None else ())
+
+    def title(self, stage: str) -> str:
+        names = {"inventory": "Inventory", "calibrate": "Calibration", "register": "Registration",
+                 "stack": "Stacking", "astrometry": "Astrometry", "reference": "Reference image",
+                 "catalogs": "Gaia catalogues", "surveys": "H-alpha survey", "color": "Color", "denoise": "Denoise",
+                 "optics": "Optics", "stars": "Star measurement", "star_net": "Neural star removal",
+                 "starless": "Starless image", "background": "Background", "background_poly": "Polynomial background",
+                 "render_prep": "Output prep", "render_prep_learned": "Output prep (neural removal)",
+                 "render_simple": "Output prep (simple)", "deconv": "Deconvolution"}
+        return _(names.get(stage, stage))
+
+    def state(self, p: WorkflowView | None, stage: str) -> str:
+        """done | pending (never computed) | stale (computed once, a setting changed since) | running | failed |
+        interrupted | skipped."""
+        p = p or self.path
+        st = self._states.get((p.pid, stage)) if p is not None else None
+        return st.state if st is not None else "pending"
+
+    def state_info(self, p: WorkflowView | None, stage: str):
+        """The API's StageState (state, reason, key, previous key) of a stage, or None."""
+        p = p or self.path
+        return self._states.get((p.pid, stage)) if p is not None else None
+
+    def previous_key(self, p: WorkflowView | None, stage: str) -> str | None:
+        st = self.state_info(p, stage)
+        return st.previous_key if st is not None else None
+
+    def stage_key(self, p: WorkflowView, stage: str):
+        """Two workflows compute a stage the same way when this key is equal (the engine's, from the definition)."""
+        st = self._states.get((p.pid, stage))
+        return st.key if st is not None and st.key else (stage, p.pid)
+
+    def sharing(self, p: WorkflowView, stage: str) -> list[WorkflowView]:
+        """The workflows that compute this stage exactly as p does (p included), in list order."""
+        k = self.stage_key(p, stage)
+        return [q for q in self.paths if stage in self._chains.get(q.pid, []) and self.stage_key(q, stage) == k]
+
+    def owner(self, p: WorkflowView, stage: str) -> WorkflowView | None:
+        """The first workflow (in list order) that computes this stage the same way, or None."""
+        s = self.sharing(p, stage)
+        return s[0] if s else None
+
+    def is_pending(self, p: WorkflowView | None, stage: str) -> bool:
+        return self.state(p, stage) != "done"
+
+    def pending(self, p: WorkflowView) -> list[str]:
+        return [s for s in self.all_stages(p) if self.state(p, s) != "done"]
+
+    def deps(self, p: WorkflowView, stage: str) -> list[str]:
+        if not self.ready or stage not in self._chains.get(p.pid, []):
+            return []
+        return list(api.deps(self.p, p.pid, stage))
+
+    def upstream(self, p: WorkflowView, stage: str) -> set[str]:
+        out, todo = set(), list(self.deps(p, stage))
+        while todo:
+            s = todo.pop()
+            if s not in out:
+                out.add(s)
+                todo += self.deps(p, s)
+        return out
+
+    def downstream(self, p: WorkflowView, stage: str) -> list[str]:
+        """The stages of the workflow that follow (depend on) this one, in order, the stage included."""
+        return [s for s in self.all_stages(p) if s == stage or stage in self.upstream(p, s)]
+
+    def pending_upto(self, p: WorkflowView, stages) -> list[tuple[WorkflowView, str]]:
+        """What 'Run to here' computes: the given stages and everything they need, when not done yet."""
+        want = set()
+        for s in stages:
+            want |= {s} | self.upstream(p, s)
+        return [(p, x) for x in self.all_stages(p) if x in want and self.state(p, x) != "done"]
+
+    def all_pending(self) -> list[tuple[WorkflowView, str]]:
+        """What 'Run all' computes: each distinct result once, with the workflow that runs it."""
+        out = []
+        for j in self.plan_all().jobs:
+            v = self.view(j.run_wf)
+            if v is not None:
+                out.append((v, j.stage))
+        return out
+
+    # ------------------------------------------------------------ durations and costs
+    def seconds(self, stage: str, p: WorkflowView | None = None) -> float:
+        """What a stage takes on this machine (the engine's estimate; ≈ for the methods it does not have yet)."""
+        if stage in EXTRA_SECONDS:
+            return EXTRA_SECONDS[stage]
+        p = p or self.path
+        if p is None or not self.ready:
+            return 0.0
+        k = ("sec", p.pid, stage, self.stage_key(p, stage), self.device)
+        if k not in self._cache:
+            try:
+                self._cache[k] = float(api.estimate(self.p, p.pid, stage, self.device).seconds)
+            except (ValueError, KeyError, OSError):
+                self._cache[k] = 0.0
+        return self._cache[k]
+
+    def path_seconds(self, p: WorkflowView) -> float:
+        return sum(self.seconds(s, p) for s in self.all_stages(p))
+
+    def _what_if(self, opts: dict, params: dict | None = None, end: str | None = None) -> Workflow:
+        return Workflow(-1, "", wfl.check_options(to_engine(opts)), copy.deepcopy(params or {}),
+                        "stacking" if end else None)
+
+    def opts_seconds(self, opts: dict, params: dict | None = None) -> float:
+        """A workflow with these options, from scratch (nothing reused): the sum of its stages' durations."""
+        if not self.ready:
+            return 0.0
+        k = ("opts", repr(sorted(opts.items())), self.device)
+        if k not in self._cache:
+            w = self._what_if(opts, params)
+            try:
+                self._cache[k] = sum(float(api.estimate(self.p, w, s, self.device).seconds)
+                                     for s in api.chain(self.p, w))
+            except (ValueError, KeyError, OSError):
+                self._cache[k] = 0.0
+        return self._cache[k]
+
+    def method_seconds(self, p: WorkflowView, block: str, method: str) -> tuple[float, bool]:
+        """(seconds, measured) of a block of the views computed with this method, on this machine: the stages of the
+        block in the workflow that has the method. The methods the engine does not have yet (◇) are the spec's
+        estimates."""
+        from .blocks import BY_KEY
+        m = next((x for x in methods_of(block) if x["key"] == method), None)
+        if m is not None and m["stage"] in EXTRA_SECONDS:
+            return EXTRA_SECONDS[m["stage"]], False
+        if not self.ready:
+            return 0.0, False
+        tool = {"fond": {"halpha": "halpha", "simple": "simple"}, "etoiles": {"psf": "etoiles", "psf_neural": "appris"},
+                "debruitage": {"appris": "debruitage"}}.get(block, {}).get(method)
+        try:
+            opts = self.with_tool(p.opts, tool)[0] if tool else dict(p.opts)      # the options the method needs
+        except wfl.OptionRefused:
+            return 0.0, False
+        k = ("method", block, repr(sorted(opts.items())), self.device)
+        if k not in self._cache:
+            w = self._what_if(opts, p.params)
+            try:
+                chain = api.chain(self.p, w)
+                est = [api.estimate(self.p, w, s, self.device) for s in BY_KEY[block]["stages"] if s in chain]
+                self._cache[k] = (sum(e.seconds for e in est), all(e.measured for e in est))
+            except (ValueError, KeyError, OSError):
+                self._cache[k] = (0.0, False)
+        return self._cache[k]
+
+    def cost_of(self, opts: dict, params: dict | None = None) -> tuple[float, list[str], list[str]]:
+        """Cost of a workflow with these options: (seconds to compute, stages to compute, stages reused)."""
+        if not self.ready:
+            return 0.0, [], []
+        w = self._what_if(opts, params)
+        plan = api.plan_workflows(self.p, [w], self.device, self._history_est)
+        todo = [j.stage for j in plan.jobs]
+        return float(plan.seconds), todo, [s for s in api.chain(self.p, w) if s not in todo]
+
+    def cost(self, workflows=None) -> api.Cost:
+        """What running these workflows (ids or what-if Workflows; None: all) would take: the plan's totals."""
+        if not self.ready:
+            return api.Cost(0.0, True, 0.0, 0)
+        k = None
+        if workflows is None or not any(isinstance(w, Workflow) for w in workflows):
+            k = ("cost", None if workflows is None else tuple(workflows), self.device)
+            if k in self._cache:
+                return self._cache[k]
+        try:
+            c = api.cost(self.p, workflows, self.device, self._history_est)
+        except (ValueError, KeyError, OSError):
+            c = api.Cost(0.0, True, 0.0, 0)
+        if k is not None:
+            self._cache[k] = c
+        return c
+
+    def total_seconds(self) -> float:
+        """The time of Run all (the Run button)."""
+        return self.cost().seconds
+
+    def plan_all(self):
+        """The plan of Run all (api.Plan): the distinct jobs not done yet."""
+        return api.plan_all(self.p, self.device, self._history_est) if self.ready else api.Plan()
+
+    def plan_to_block(self, p: WorkflowView, key: str):
+        """The plan of Run to here for a block of the views."""
+        if not self.ready:
+            return api.Plan()
+        return api.plan_to_block(self.p, p.pid, KEY_ENGINE_BLOCK[key], self.device, self._history_est)
+
+    # ------------------------------------------------------------ the toolbox: options and their rules
+    @staticmethod
+    def has_tool(o: dict, key: str) -> bool:
+        return {"debruitage": bool(o.get("debruitage")), "etoiles": o.get("etoiles") == "mesurer",
+                "appris": bool(o.get("appris")), "halpha": o.get("fond") == "halpha",
+                "simple": o.get("fond") == "simple", "deconv": bool(o.get("deconv"))}[key]
+
+    @staticmethod
+    def with_tool(o: dict, key: str) -> tuple[dict, list[str]]:
+        """The options with this tool added, and what came with it (the notes are English texts to translate)."""
+        if key == "deconv":
+            return dict(o), [NOT_IN_ENGINE]
+        opt, add, _rm = TOOL_OPTION[key]
+        new, notes = wfl.set_option(to_engine(o), opt, add)
+        return {**o, **from_engine(new)}, list(notes)
+
+    @staticmethod
+    def without_tool(o: dict, key: str) -> tuple[dict | None, list[str]]:
+        """The options with this tool removed and what went with it, or (None, [reason]) when it cannot go."""
+        if key == "deconv":
+            return dict(o), []
+        opt, _add, rm = TOOL_OPTION[key]
+        try:
+            new, notes = wfl.set_option(to_engine(o), opt, rm)
+        except wfl.OptionRefused as e:
+            return None, [str(e)]
+        return {**o, **from_engine(new)}, list(notes)
+
+    def tool_cost(self, o: dict, key: str) -> float:
+        """What adding this tool to a workflow costs: the difference of the two workflows' durations."""
+        new, _notes = self.with_tool(o, key)
+        return self.opts_seconds(new) - self.opts_seconds(o)
+
+    def set_opts(self, p: WorkflowView, opts: dict):
+        """The options of a workflow, replaced as a whole (the rules were applied by with_tool / without_tool)."""
+        with self._edit():
+            ws = api.workflows(self.p)
+            w = next(x for x in ws if x.id == p.pid)
+            w.options = wfl.check_options(to_engine(opts))
+            api.set_workflows(self.p, ws, self.p.current)
+
+    # ------------------------------------------------------------ workflows
+    def unique_name(self, base: str) -> str:
+        names = {p.name for p in self.paths}
+        if base not in names:
+            return base
+        n = 2
+        while f"{base} {n}" in names:
+            n += 1
+        return f"{base} {n}"
+
+    def add_path(self, name: str, opts: dict, params: dict | None = None) -> WorkflowView:
+        """A new workflow. Without settings of its own it joins the current one's pre-processing (the settings of
+        Calibration to Stacking are copied), so that the two share those blocks."""
+        params = copy.deepcopy(params or {})
+        if not params and self.path is not None:
+            params = {s: dict(v) for s, v in self.path.params.items() if s in TRUNK}
+        with self._edit():
+            w = api.add_workflow(self.p, name, wfl.check_options(to_engine(opts)), params)
+        return self.view(w.id)
+
+    def batch(self):
+        """Several edits that Undo takes back as one: ``with model.batch(): ...``."""
+        return self._edit()
+
+    def duplicate(self, src: WorkflowView, name: str) -> WorkflowView:
+        """A copy of a workflow: its options, settings and exit."""
+        with self._edit():
+            w = api.add_workflow(self.p, self.unique_name(name), None, None, copy_of=src.pid)
+        return self.view(w.id)
+
+    def rename(self, pid: int, name: str):
+        with self._edit():
+            api.rename_workflow(self.p, pid, name)
+
+    def remove_path(self, i: int):
+        pid = self.paths[i].pid
+        with self._edit():
+            api.delete_workflow(self.p, pid)
+        self.current = min(self.current, len(self.paths) - 1)
+        self.currentChanged.emit()
+
+    def add_exit(self, src: WorkflowView, end: str, name: str) -> WorkflowView:
+        """A new workflow: the same blocks as src up to ``end`` (Stacking), whose output goes straight to Post."""
+        with self._edit():
+            w = api.add_exit(self.p, src.pid, KEY_ENGINE_BLOCK.get(end, end), self.unique_name(name))
+        return self.view(w.id)
+
+    def scope_paths(self) -> list[WorkflowView]:
+        if self.scope:
+            out = [q for q in self.paths if q.pid in self.scope]
+            if out:
+                return out
+        return [self.path] if self.path is not None else []
+
+    # ------------------------------------------------------------ changes and variants
+    @staticmethod
+    def _api_changes(ch: dict) -> list[dict]:
+        """A change of the views as the engine's changes (``api.Change``); ◇ raises NotInEngine."""
+        if ch["kind"] == "params":
+            return [{"kind": "param", "stage": st, "name": nm, "value": v} for st, nm, v in ch["items"]]
+        if ch["kind"] == "param":
+            v = ch.get("value")
+            if v is not None and ch.get("suggested") is not None and v == ch["suggested"]:
+                v = None
+            return [{"kind": "param", "stage": ch["stage"], "name": ch["name"], "value": v}]
+        key, v = ch["key"], ch["value"]
+        if key == "dn":
+            if v != "appris":
+                raise NotInEngine(NOT_IN_ENGINE)
+            return [{"kind": "opt", "key": "denoise", "value": "n2n"}]
+        if key == "appris":
+            return [{"kind": "opt", "key": "stars", "value": "psf_neural" if v else "psf"}]
+        if key == "fond":
+            return [{"kind": "opt", "key": "gradient", "value": "halpha" if v == "halpha" else "polynomial"}]
+        if key == "debruitage":
+            return [{"kind": "opt", "key": "denoise", "value": "n2n" if v else None}]
+        if key == "etoiles":
+            return [{"kind": "opt", "key": "stars", "value": "psf" if v == "mesurer" else None}]
+        raise NotInEngine(NOT_IN_ENGINE)
+
+    def _changed(self, p: WorkflowView, ch: dict) -> Workflow:
+        """What-if: a copy of the workflow with the change made. Each step is copied again: the API keeps its keys
+        by object, and ``with_change`` has already asked the keys of the copy before changing it (the suggestion of
+        an automatic setting needs them), so that the copy it returns still answers the keys it had."""
+        w = p.pid
+        for c in self._api_changes(ch):
+            w = copy.deepcopy(api.with_change(self.p, w, c))
+        return w
+
+    def throws_away(self, paths, ch) -> bool:
+        """Whether the change would make something already computed in one of these workflows Outdated. (A stage
+        name, as the mockup asked, means: something computed at or after that stage.)"""
+        if not self.ready:
+            return False
+        if isinstance(ch, str):
+            return any(self.state(q, x) != "pending" for q in paths for x in self.downstream(q, ch))
+        try:
+            for q in paths:
+                c = self._changed(q, ch)
+                now = set(api.chain(self.p, c))
+                for stage in self.all_stages(q):
+                    if self.state(q, stage) == "done" and (
+                            stage not in now or api.stage_key(self.p, c, stage) != self.stage_key(q, stage)):
+                        return True
+        except NotInEngine:
+            return False
+        return False
+
+    def cost_with(self, paths, ch) -> float:
+        """What would have to be computed, in seconds, once the change is made in these workflows."""
+        return self.cost_of_change(paths, ch).seconds
+
+    def cost_of_change(self, paths, ch) -> api.Cost:
+        """The plan's totals (seconds, measured or ≈, disk) once the change is made in these workflows."""
+        if not self.ready:
+            return api.Cost(0.0, True, 0.0, 0)
+        try:
+            return self.cost([self._changed(q, ch) for q in paths])
+        except NotInEngine:
+            return api.Cost(0.0, True, 0.0, 0)
+
+    def apply_change(self, paths, ch) -> list[str]:
+        """Replace: the change goes to these workflows; returns the notes (English texts to translate)."""
+        notes: list[str] = []
+        with self._edit():
+            for c in self._api_changes(ch):
+                notes += [n for n in api.apply_change(self.p, [q.pid for q in paths], c) if n not in notes]
+        for q in paths:
+            if ch["kind"] == "param":
+                self._patch_rows([q.pid], ch["stage"], ch["name"], ch.get("value"))
+        return notes
+
+    def add_variant(self, p: WorkflowView, ch, title: str) -> WorkflowView:
+        """A copy of p with the change; p stays as it was. Both share everything before the changed block."""
+        cs = self._api_changes(ch)
+        with self._edit():
+            w = api.make_variant(self.p, p.pid, cs[0], self.unique_name(title))
+            for c in cs[1:]:
+                api.apply_change(self.p, [w.id], c)
+        return self.view(w.id)
+
+    def keep_variant(self, q: WorkflowView):
+        """The variant replaces its original, and takes its name."""
+        with self._edit():
+            api.keep_variant(self.p, q.pid)
+        self.current = self.index_of(q.pid)
+        self.currentChanged.emit()
+
+    def drop_variant(self, q: WorkflowView):
+        with self._edit():
+            api.discard_variant(self.p, q.pid)
+        v = self.view(self.p.current) if self.p.current is not None else None
+        self.current = self.paths.index(v) if v in self.paths else min(self.current, len(self.paths) - 1)
+        self.currentChanged.emit()
+
+    # ------------------------------------------------------------ the settings of a stage
+    def params(self, p: WorkflowView, stage: str, request: bool = True) -> list | None:
+        """The settings of a stage of a workflow (api.ParamInfo list, from ``describe``), or None while the worker
+        has not answered. After a change to the stage the last rows are kept, with the new value patched in, until
+        the worker's answer replaces them."""
+        if not self.ready or stage not in self._chains.get(p.pid, []):
+            return None
+        key = self.stage_key(p, stage)
+        e = self._pc.get((p.pid, stage))
+        fresh = e is not None and e["key"] == key and e["epoch"] == self._epoch
+        if not fresh and request and not (e is not None and e.get("asked") == (key, self._epoch)):
+            e = self._pc.setdefault((p.pid, stage), {"key": None, "epoch": -1, "rows": None, "asked": None})
+            e["asked"] = (key, self._epoch)
+            self.worker.submit(f"model.describe:{id(self)}:{p.pid}:{stage}", _describe_job, self.p, p.pid, stage)
+        e = self._pc.get((p.pid, stage))
+        return e["rows"] if e is not None else None
+
+    def params_error(self, p: WorkflowView, stage: str) -> str:
+        """Why the settings of a stage cannot be read (the worker failed three times), or ''."""
+        e = self._pc.get((p.pid, stage))
+        return (e or {}).get("error", "")
+
+    def param_info(self, p: WorkflowView, stage: str, name: str):
+        rows = self.params(p, stage)
+        return next((r for r in rows if r.name == name), None) if rows else None
+
+    def _got_params(self, wid: int, stage: str, key: str, rows: list):
+        v = self.view(wid)
+        if v is None:
+            return
+        for r in rows:
+            if r.reason and r.origin == "auto":
+                self._reasons[(stage, r.name)] = (r.reason, r.reason_args)
+        old = self._pc.get((wid, stage))
+        cur = self.stage_key(v, stage) if stage in self._chains.get(wid, []) else None
+        self._pc[(wid, stage)] = {"key": key, "epoch": self._epoch, "rows": rows, "asked": None, "tries": 0}
+        if cur is not None and cur != key:
+            self.params(v, stage)                               # an edit came meanwhile: ask again
+        if old is None or _sig(old.get("rows")) != _sig(rows):
+            self.paramsChanged.emit(wid, stage)
+            if stage in PREFETCH:
+                self.costChanged.emit()
+
+    def reason_for(self, stage: str, name: str):
+        """The last reason an automatic value had (template, args): shown for the suggestion of a setting the user
+        has since set."""
+        return self._reasons.get((stage, name))
+
+    def param_value(self, p: WorkflowView, stage: str, name: str):
+        """The effective value of a setting: the stored one, else the one the engine gave (settings of the stage in
+        the cache), else the static default."""
+        st = p.params.get(stage) or {}
+        if name in st:
+            return st[name]
+        e = self._pc.get((p.pid, stage))
+        info = next((r for r in (e["rows"] or []) if r.name == name), None) if e else None
+        return info.value if info is not None else self.default_of(stage, name)
+
+    def default_of(self, stage: str, name: str):
+        if not self.ready:                                  # the stage graph is imported by the worker (warm)
+            return None
+        try:
+            return wfl.chains().stages[stage].Params.model_fields[name].default
+        except (KeyError, AttributeError):
+            return None
+
+    def set_param(self, p: WorkflowView | None, stage: str, name: str, value, suggested=None):
+        """Store a setting in the scope workflows (or in p). ``value`` None, or equal to the suggestion, goes back
+        to the suggestion. Raises ValueError naming the setting when the value is not valid."""
+        ids = [q.pid for q in (self.scope_paths() if p is None else [p])]
+        if value is not None and suggested is not None and value == suggested:
+            value = None
+        with self._edit():
+            api.set_param(self.p, ids, stage, name, value)
+        self._patch_rows(ids, stage, name, value)
+
+    def _patch_rows(self, ids, stage, name, value):
+        """The cached rows show the new value at once; the worker's answer will confirm it."""
+        for wid in ids:
+            e = self._pc.get((wid, stage))
+            if not e or not e.get("rows"):
+                continue
+            rows = []
+            for r in e["rows"]:
+                if r.name == name:
+                    r = copy.copy(r)
+                    r.value = r.suggested if value is None else value
+                    r.origin = "default" if value is None else "user"
+                rows.append(r)
+            e["rows"] = rows
+
+    def set_trunk_param(self, stage: str, name: str, value) -> bool:
+        """A decision taken in the sources: it counts for every workflow. False when the engine has no such setting
+        (◇)."""
+        try:
+            with self._edit():
+                api.set_param(self.p, [q.pid for q in self.paths], stage, name, value)
+        except ValueError:
+            return False
+        return True
+
+    # ------------------------------------------------------------ frame selection (Selection and Stacking)
+    def fwhm_median(self) -> float | None:
+        """The median star size of the registered frames, when Registration is done."""
+        v = self._facts.register.get("fwhm_px")
+        return float(v) if v else None
+
+    def thresholds_unit(self) -> str:
+        return "px" if self.fwhm_median() else "× median"
+
+    def thresholds_now(self) -> tuple[float, float]:
+        """(minimum transparency in % of the best frames, maximum star size in px, or × the median while unknown)."""
+        p = self.path
+        if p is None:
+            return 60.0, 2.0
+        t = float(self.param_value(p, "stack", "min_transparency") or 0.0)
+        r = float(self.param_value(p, "stack", "max_fwhm_ratio") or 2.0)
+        m = self.fwhm_median()
+        return 100 * t, r * m if m else r
+
+    def suggested_thresholds(self) -> tuple[float, float]:
+        p = self.path
+        it = self.param_info(p, "stack", "min_transparency") if p is not None else None
+        ir = self.param_info(p, "stack", "max_fwhm_ratio") if p is not None else None
+        t = it.suggested if it is not None else self.default_of("stack", "min_transparency")
+        r = ir.suggested if ir is not None else self.default_of("stack", "max_fwhm_ratio")
+        return 100 * float(t or 0.0), float(r or 2.0) * (self.fwhm_median() or 1.0)
+
+    def set_selection(self, tmin: float | None = None, fmax: float | None = None, hand=None):
+        """The Selection thresholds (for the scope workflows) and the frames excluded by hand (for the project:
+        (session id, file name) pairs)."""
+        if hand is not None:
+            cur = self.frames_excluded
+            self.set_excluded(set(hand) - cur, True)
+            self.set_excluded(cur - set(hand), False)
+        t0, f0 = self.thresholds_now()
+        tmin = t0 if tmin is None else tmin
+        fmax = f0 if fmax is None else fmax
+        if abs(tmin - t0) > 1e-9 or abs(fmax - f0) > 1e-9:
+            m = self.fwhm_median()
+            self.apply_change(self.scope_paths(), {"kind": "params", "items": [
+                ("stack", "min_transparency", round(tmin / 100, 4)),
+                ("stack", "max_fwhm_ratio", round(fmax / m if m else fmax, 4))]})
+        self.costChanged.emit()
+
+    def set_excluded(self, pairs, excluded: bool = True):
+        """Exclude (or keep again) light frames by hand, for the whole project: (session id, file name) pairs."""
+        pairs = list(pairs)
+        if not pairs:
+            return
+        with self._edit():
+            api.set_excluded(self.p, pairs, excluded)
+        self._sel, self._sel_want = None, None
+        self.sourcesChanged.emit()
+
+    def request_selection(self, tmin: float | None = None, fmax: float | None = None):
+        """Ask the worker how many frames these thresholds keep (answer: ``selectionChanged``, ``kept_frames``)."""
+        p = self.path
+        if p is None or not self.ready or self.state(p, "register") != "done":
+            return
+        t0, f0 = self.thresholds_now()
+        m = self.fwhm_median()
+        tmin = t0 if tmin is None else tmin
+        fmax = f0 if fmax is None else fmax
+        want = (p.pid, round(tmin / 100, 6), round(fmax / m if m else fmax, 6), tuple(sorted(self.p.excluded)),
+                self._epoch)
+        if want == self._sel_want:
+            return                                          # asked already: the answer is on its way, or here
+        self._sel_want = want
+        self.worker.submit(f"model.selection:{id(self)}", _selection_job, self.p, p.pid, want[1], want[2])
+
+    def kept_frames(self) -> int:
+        """The count of frames the thresholds keep (the last preview), else the lights of the project."""
+        return int(self._sel["kept"]) if self._sel is not None else self.n_lights()
+
+    def selection_total(self) -> int:
+        return int(self._sel["total"]) if self._sel is not None else self.n_lights()
+
+    def excluded_mask(self):
+        """Which frames (in the order of the registered frames) the last preview leaves out."""
+        import numpy as np
+        return np.array(self._sel["excluded"] if self._sel is not None else [], bool)
+
+    # ------------------------------------------------------------ sessions and the project's facts
+    def info(self) -> dict:
+        """The project's facts, replacing the mockup's ``s.data``: from the done inventory result when there is one,
+        else from the sessions. Keys: name, target, n_lights, n_darks, n_flats, n_bias, exposure_s, width, height,
+        iso_gain, integration_h, camera, fwhm_px, grid."""
+        inv = self._facts.inventory
+        ses = self.sessions
+        return dict(name=self.name, target=self.target,
+                    n_lights=int(inv.get("n_lights") or sum(s["lights"] for s in ses)),
+                    n_darks=int(inv.get("n_darks") or sum(s["darks"] for s in ses)),
+                    n_flats=int(inv.get("n_flats") or sum(s["flats"] for s in ses)),
+                    n_bias=int(inv.get("n_bias") or sum(s["bias"] for s in ses)),
+                    exposure_s=inv.get("exposure_s"), width=inv.get("width"), height=inv.get("height"),
+                    iso_gain=inv.get("iso_gain"), integration_h=inv.get("integration_h"),
+                    camera=inv.get("camera", ""), fwhm_px=self._facts.register.get("fwhm_px"),
+                    grid=self._facts.stack.get("grid"))
+
+    def image_size(self) -> tuple[int, int] | None:
+        """(width, height) of the stack grid, once Stacking is done."""
+        g = self._facts.stack.get("grid")
+        return (int(g[0]), int(g[1])) if g else None
+
+    def load_sources(self):
+        """Frames were added (Import folder): read them, then the keys again."""
+        self.reload_sources()
+
+    def add_session(self, *a, **k) -> bool:
+        """Sessions are added through the Import folder dialog (api.add_frames, then ``reload_sources``)."""
+        return False
+
+    def set_stack_mode(self, mode: str) -> bool:
+        """All sessions together is the only mode of this version (one stack per session is ◇)."""
+        return mode == self.p.stack_mode
+
+    @property
+    def trunk_params(self) -> dict:
+        """The stored settings the pre-processing reads: the current workflow's (each workflow has its own)."""
+        p = self.path
+        return p.params if p is not None else {}
+
+    def trunk_pending(self) -> list[str]:
+        """The pre-processing stages still to compute for the current workflow (the mockup had a common trunk)."""
+        p = self.path
+        return [x for x in self.pending(p) if x in TRUNK] if p is not None else []
+
+    def trunk_seconds(self) -> float:
+        p = self.path
+        return sum(self.seconds(x, p) for x in TRUNK) if p is not None else 0.0
+
+    def zone_fraction(self) -> float:
+        zx0, zy0, zx1, zy1 = self.test_zone
+        return max(1e-4, (zx1 - zx0) * (zy1 - zy0))
+
+    # ------------------------------------------------------------ what a workflow gives in Post
+    def slider_infos(self, p: WorkflowView) -> list:
+        """The Post sliders of a workflow's layer (api.SliderInfo list: key, name, group, ends, available, reason)."""
+        return api.sliders_of(self.p, p.pid)
+
+    def slider_state(self, p: WorkflowView, key: str):
+        """(available, reason why not, options that would unlock it: None when no change of the options would)."""
+        info = next((x for x in self.slider_infos(p) if x.key == key), None)
+        if info is None or info.available:
+            return True, "", None
+        need = None
+        if p.end is None:
+            for tool in ("etoiles", "debruitage"):
+                cand = self.with_tool(p.opts, tool)[0]
+                if key in self.available_sliders(cand):
+                    need = cand
+                    break
+        return False, _(info.reason), need
+
+    def available_sliders(self, opts: dict) -> list[str]:
+        return [s.key for s in api.sliders_of(self.p, self._what_if(opts)) if s.available]
+
+    def unlock_text(self, p: WorkflowView, need: dict) -> str:
+        sec, _todo, reused = self.cost_of(need, p.params)
+        stars = need["etoiles"] != p.opts["etoiles"]
+        dn = need["debruitage"] != p.opts["debruitage"]
+        what = _("Stars and Denoise") if stars and dn else _("Stars") if stars else _("Denoise") if dn else ""
+        t = _("Add {what} to the workflow: +{t}").format(what=what, t=hm(sec))
+        if [s for s in reused if s not in set(self.all_stages(p))]:
+            t += _(", the rest is already computed by another workflow")
+        return t
+
+    # ------------------------------------------------------------ the log
+    def log(self, template: str, **args):
+        """A history line: an English template and its arguments, translated when shown."""
+        self.history.append((time.strftime("%H:%M:%S"), template, args))
+
+
+# the mockup's names, for the views ported from it
+PathDef = WorkflowView
+Session = ProjectModel
