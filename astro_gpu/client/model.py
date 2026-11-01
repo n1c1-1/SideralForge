@@ -25,6 +25,8 @@ A change is a dict: ``{"kind": "param", "stage", "name", "value", "suggested"}``
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -35,9 +37,9 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from .. import api
 from ..core import workflow as wfl
-from ..core.project2 import Workflow
+from ..core.project2 import Workflow, read_state, write_state
+from .blocks import COLUMNS, KEY_ENGINE_BLOCK, TOOLS, TRUNK, block_state  # noqa: F401  (TOOLS: the views import it from here)
 from .blocks import ENGINE_BLOCK as ENGINE_KEY
-from .blocks import KEY_ENGINE_BLOCK, TOOLS, TRUNK  # noqa: F401  (TOOLS: the views import it from here)
 from .i18n import _, hm  # noqa: F401  (hm: the views import it from here, as from the mockup's model)
 from .services.worker import ApiWorker
 
@@ -145,6 +147,22 @@ class WorkflowView:
 
 
 @dataclass
+class Pause:
+    """A review a run stops at: the block of the views, the workflows that pause after it, and whether it is already
+    computed (then there is nothing to run before the review). ``later``: the blocks that will pause the run after
+    this one, in the graph's order."""
+
+    block: str
+    pids: list[int]
+    done: bool = False
+    later: list[str] = field(default_factory=list)
+
+
+#: the reviews kept in state.json (the newest): enough for any project, small for the file
+REVIEWED_KEPT = 400
+
+
+@dataclass
 class Facts:
     """What the done results say, read by the worker: the metrics of the stages the views quote."""
 
@@ -152,6 +170,7 @@ class Facts:
     register: dict = field(default_factory=dict)
     stack: dict = field(default_factory=dict)
     sessions: dict = field(default_factory=dict)         # session id -> {kind: file count}
+    reviewed: list = field(default_factory=list)         # the results the user marked as checked (state.json)
 
 
 # ---------------------------------------------------------------------------------------------- worker jobs
@@ -184,6 +203,8 @@ def _facts_job(p) -> Facts:
             except (OSError, ValueError):
                 counts[kind] = 0
         f.sessions[s.id] = counts
+    if p.root is not None:
+        f.reviewed = [str(x) for x in read_state(p.root).get("reviewed") or []]
     return f
 
 
@@ -250,6 +271,7 @@ class ProjectModel(QObject):
         self._sel: dict | None = None                      # the last selection preview
         self._sel_want = None                              # what the last preview was asked for
         self._epoch = 0                                    # bumped when results change on disk
+        self._reviewed: list[str] = []                     # "<block>:<fingerprint>" of the results marked as checked
         self._undo: list = []
         self._redo: list = []
         self._depth = 0
@@ -347,6 +369,7 @@ class ProjectModel(QObject):
         me = f":{id(self)}"
         if channel == "model.warm" + me:
             self._history_est, self._facts = result
+            self._take_reviewed(self._facts.reviewed)
             self.ready = True
             self.error = ""
             self._sync(prefetch=False)
@@ -363,6 +386,7 @@ class ProjectModel(QObject):
             self.costChanged.emit()
         elif channel == "model.facts" + me:
             self._facts = result
+            self._take_reviewed(result.reviewed)
             self._cache.clear()
             self.factsChanged.emit()
             self.costChanged.emit()
@@ -538,6 +562,7 @@ class ProjectModel(QObject):
         finally:
             self._depth -= 1
             if top:
+                self._prune_breakpoints()
                 if self._snapshot() != before:
                     self._undo.append(before)
                     del self._undo[:-200]
@@ -858,6 +883,160 @@ class ProjectModel(QObject):
             return api.Plan()
         return api.plan_to_block(self.p, p.pid, KEY_ENGINE_BLOCK[key], self.device, self._history_est)
 
+    # ------------------------------------------------------------ breakpoints: pause for the user to check
+    # A breakpoint is a block of one workflow ("Pause here for review"): a run stops after it, and goes on only when
+    # the user says so (Continue). It lives in the definition (``Workflow.breakpoints``, engine names) and is no part of
+    # any key. What is reviewed is tied to the block's results: a fingerprint of its stage keys, kept in state.json.
+    def has_breakpoint(self, p: WorkflowView, key: str) -> bool:
+        """Whether this workflow pauses after this block (a block of the views)."""
+        eb = KEY_ENGINE_BLOCK.get(key)
+        return eb is not None and eb in self.p.workflow(p.pid).breakpoints
+
+    def breakpoints(self, p: WorkflowView) -> list[str]:
+        """The blocks (of the views) this workflow pauses after, in the graph's order; only those it has."""
+        have = {ENGINE_KEY[b] for b in self.p.workflow(p.pid).breakpoints if b in ENGINE_KEY}
+        return [k for k in self.block_keys(p) if k in have]
+
+    def set_breakpoint(self, paths, key: str, on: bool = True):
+        """Pause after this block in these workflows (or no longer). One change for Undo; saved with the project."""
+        eb = KEY_ENGINE_BLOCK.get(key)
+        if eb is None:
+            raise ValueError(f"no breakpoint on {key!r}: it is not a block of the engine")
+        order = list(wfl.BLOCKS)
+        with self._edit():
+            for q in paths:
+                w = self.p.workflow(q.pid)
+                have = set(w.breakpoints)
+                w.breakpoints = sorted(have | {eb} if on else have - {eb}, key=order.index)
+
+    def _prune_breakpoints(self):
+        """A block that left a workflow takes its breakpoint with it (it would otherwise come back with the block)."""
+        if not self.ready:
+            return
+        for w in self.p.workflows:
+            if not w.breakpoints:
+                continue
+            try:
+                inside = {b.block for b in api.blocks(self.p, w.id)}
+            except (ValueError, KeyError, OSError):
+                continue
+            if any(b not in inside for b in w.breakpoints):
+                w.breakpoints = [b for b in w.breakpoints if b in inside]
+
+    def review_key(self, p: WorkflowView, key: str) -> str:
+        """What a review is tied to: the block's results, that is the keys of its stages (the engine's ``blocks``);
+        for Selection, which has no stage, the Registration it follows, the thresholds and the frames excluded by hand."""
+        k = ("rk", p.pid, key)
+        if k not in self._cache:
+            def ref(view_key):
+                return next((b for b in self._blocks.get(p.pid, []) if ENGINE_KEY.get(b.block) == view_key), None)
+            b = ref(key)
+            parts: list = [KEY_ENGINE_BLOCK.get(key, key), list(b.key) if b is not None else []]
+            if key == "selection":
+                reg, st = ref("alignement"), p.params.get("stack") or {}
+                parts += [list(reg.key) if reg is not None else [], st.get("min_transparency"),
+                          st.get("max_fwhm_ratio"), sorted(list(x) for x in self.frames_excluded)]
+            raw = json.dumps(parts, sort_keys=True, default=str)
+            self._cache[k] = f"{KEY_ENGINE_BLOCK.get(key, key)}:{hashlib.sha1(raw.encode()).hexdigest()[:16]}"
+        return self._cache[k]
+
+    def is_reviewed(self, p: WorkflowView, key: str) -> bool:
+        """Whether the user marked the block's present results as checked."""
+        return self.review_key(p, key) in self._reviewed
+
+    def review_state(self, p: WorkflowView, key: str) -> str | None:
+        """None (no breakpoint here) | "pending" (the run will stop here) | "paused" (computed, waiting for the user:
+        the first review of the workflow) | "reviewed" (computed, checked: the run goes through)."""
+        if not self.has_breakpoint(p, key):
+            return None
+        if not self.ready or block_state(self, p, key) != "done":
+            return "pending"
+        if self.is_reviewed(p, key):
+            return "reviewed"
+        first = next((k for k in self.breakpoints(p) if not self.is_reviewed(p, k)), None)
+        return "paused" if key == first else "pending"
+
+    def pause_point(self, only: WorkflowView | None = None, upto: str | None = None) -> Pause | None:
+        """The review a run stops at: the first block, in the graph's order, that has a breakpoint whose results are
+        not reviewed, in any workflow (``only``: in this one, up to the block ``upto``). None when the run goes
+        through."""
+        if not self.ready:
+            return None
+        found: list[tuple[int, int, WorkflowView, str]] = []
+        later: set[str] = set()
+        for i, q in enumerate(self.paths if only is None else [only]):
+            keys = self.block_keys(q)
+            reach = keys[:keys.index(upto) + 1] if upto in keys else keys
+            todo = [k for k in self.breakpoints(q) if k in reach and not self.is_reviewed(q, k)]
+            if todo:
+                found.append((COLUMNS.index(todo[0]), i, q, todo[0]))
+                later |= set(todo[1:])
+        if not found:
+            return None
+        col, _i, _q, block = min(found, key=lambda t: t[:2])
+        pids = [q.pid for _c, _j, q, k in found if k == block]
+        later |= {k for _c, _j, _q, k in found if k != block}
+        mine = [q for q in self.paths if q.pid in pids]
+        return Pause(block, pids, all(block_state(self, q, block) == "done" for q in mine),
+                     sorted((k for k in later if COLUMNS.index(k) > col), key=COLUMNS.index))
+
+    def mark_reviewed(self, pause: Pause):
+        """Continue: the results the user has looked at are marked as checked. Only a block that is computed now is
+        marked, with the results it has now: if the user changed something that made it Outdated meanwhile, the
+        breakpoint applies again to the new results."""
+        for pid in pause.pids:
+            q = self.view(pid)
+            if q is not None and self.ready and block_state(self, q, pause.block) == "done":
+                k = self.review_key(q, pause.block)
+                if k not in self._reviewed:
+                    self._reviewed.append(k)
+        self._save_reviewed()
+        self._cache.clear()
+        self.pathsChanged.emit()
+
+    def _take_reviewed(self, kept):
+        """The reviews read from state.json (worker): added to what this session marked."""
+        new = [k for k in kept if k not in self._reviewed]
+        if new:
+            self._reviewed = [*new, *self._reviewed]
+            self._cache.clear()
+
+    def _save_reviewed(self):
+        del self._reviewed[:-REVIEWED_KEPT]
+        if self.readonly or self.root is None:
+            return
+        try:
+            state = read_state(self.root)
+            state["reviewed"] = list(self._reviewed)
+            write_state(self.root, state)
+        except OSError:
+            pass                                             # the review is kept for this session
+
+    def plan_run(self) -> tuple[api.Plan, Pause | None]:
+        """Run all, with the breakpoints: up to the first review not yet done (every workflow that pauses there), else
+        everything. Returns the plan and the pause it ends at (None: the whole project)."""
+        pause = self.pause_point()
+        return (self.plan_all(), None) if pause is None else (self._plan_pause(pause), pause)
+
+    def plan_run_to(self, p: WorkflowView, key: str) -> tuple[api.Plan, Pause | None]:
+        """Run to here, with the breakpoints: the block, or the first review of this workflow before it."""
+        pause = self.pause_point(only=p, upto=key)
+        return (self.plan_to_block(p, key), None) if pause is None else (self._plan_pause(pause), pause)
+
+    def _plan_pause(self, pause: Pause) -> api.Plan:
+        """The plans to the block of every workflow that pauses there, as one plan: a job two plans share is kept once
+        (the jobs of a plan come after those they read, so the concatenation stays in order)."""
+        plans = [self.plan_to_block(q, pause.block) for q in self.paths if q.pid in pause.pids]
+        jobs: dict = {}
+        for pl in plans:
+            for j in pl.jobs:
+                jobs.setdefault(j.key, j)
+        out = api.Plan(list(jobs.values()), [t for pl in plans for t in pl.targets], {},
+                       plans[0].rules if plans else None)
+        for pl in plans:
+            out.skipped.update(pl.skipped)
+        return out
+
     # ------------------------------------------------------------ the toolbox: options and their rules
     @staticmethod
     def has_tool(o: dict, key: str) -> bool:
@@ -927,6 +1106,7 @@ class ProjectModel(QObject):
         """A copy of a workflow: its options, settings and exit."""
         with self._edit():
             w = api.add_workflow(self.p, self.unique_name(name), None, None, copy_of=src.pid)
+            self.p.workflow(w.id).breakpoints = list(self.p.workflow(src.pid).breakpoints)
         return self.view(w.id)
 
     def rename(self, pid: int, name: str):
@@ -1036,6 +1216,7 @@ class ProjectModel(QObject):
         cs = self._api_changes(ch)
         with self._edit():
             w = api.make_variant(self.p, p.pid, cs[0], self.unique_name(title))
+            self.p.workflow(w.id).breakpoints = list(self.p.workflow(p.pid).breakpoints)
             for c in cs[1:]:
                 api.apply_change(self.p, [w.id], c)
         return self.view(w.id)

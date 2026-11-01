@@ -574,6 +574,354 @@ def test_the_dialog_in_french(toy):
     d.close()
 
 
+# ---------------------------------------------------------------------------------------------- breakpoints
+def in_process(monkeypatch):
+    """The run service starts the worker in this process, the toy stages and all (a detached worker is level 3)."""
+    from astro_gpu.client.services import run as run_service
+
+    def start(snapshot, plan, device):
+        info = runner2.prepare_run(snapshot, plan, "cpu")
+        assert runner2.run_plan(snapshot.root, info.plan_file, rules=toy_rules(), echo=False) == "done"
+        return info
+    monkeypatch.setattr(run_service, "_start_job", start)
+    real_init = run_service.RunFollower.__init__
+    monkeypatch.setattr(run_service.RunFollower, "__init__",
+                        lambda self, project, worker, track, info, offset=None, interval=20, parent=None:
+                        real_init(self, project, worker, track, info, offset, 20, parent))        # polls every 20 ms
+
+
+def finish(w, timeout: float = 60.0):
+    assert pump(lambda: w.track is not None and w.track.finished and not w.ctl.running, timeout), "the run did not end"
+
+
+def states_of(w):
+    return {(v.pid, s): w.model.state(v, s) for v in w.model.paths for s in w.model.all_stages(v)}
+
+
+def test_a_breakpoint_stops_the_run_after_its_block_and_continue_goes_on(toy, monkeypatch):
+    in_process(monkeypatch)
+    m, ctl = toy.model, toy.ctl
+    plain, trained = m.view(1), m.view(2)
+    m.set_breakpoint([plain], "calibration")
+    assert m.p.workflow(1).breakpoints == ["calibration"] and m.p.workflow(2).breakpoints == []
+    # the plan: Calibration only, and it says why
+    d = ctl.launch()
+    assert [j.stage for j in d.plan.jobs] == ["inventory"] and [r.row.title for r in d.rows] == ["Calibration"]
+    assert d.pause_note.isVisibleTo(d) and d.pause_note.text() == "Stops after Calibration for your review"
+    assert d.pause_more.isVisibleTo(d) and d.pause_more.text() == "Workflow: Plain"      # one of the two workflows
+    assert not d.review.isVisibleTo(d) and d.b_run.isEnabled()
+    assert ctl.pause is not None and ctl.pause.block == "calibration" and ctl.pause.pids == [1]
+    # the graph before the run: the dot is there, red (the run will stop), on the block both workflows share
+    g = Graph(m, None)
+    assert g.breakpoint(g.node_of(plain, "calibration")) == ("pending", 1, 2)
+    assert g.breakpoint(g.node_of(plain, "empilement")) is None and g.breakpoint(g.root) is None
+    d.start()
+    finish(toy)
+    t = toy.track
+    assert t.status == "done" and [j.stage for j in t.jobs] == ["inventory"]
+    assert states_of(toy)[(1, "inventory")] == "done" and states_of(toy)[(1, "stack")] == "pending"
+    # the recap: paused, with its two buttons; the graph says paused
+    assert d.phase() == "end" and d.paused() and d.review.isVisibleTo(d)
+    assert d.review_text.text() == "Paused for your review at Calibration: check it in Inspect, then Continue."
+    assert d.b_continue.isVisibleTo(d) and d.b_continue.text() == "Continue"
+    assert d.b_inspect.isVisibleTo(d) and d.b_inspect.text() == "Open in Inspect"
+    assert d.summary.text() == "Paused for your review" and not d.pause_note.isVisibleTo(d)
+    assert [r.mark.state for r in d.rows] == [DONE]
+    assert Graph(m, None).breakpoint(Graph(m, None).node_of(plain, "calibration")) == ("paused", 1, 2)
+    assert m.review_state(plain, "calibration") == "paused" and m.review_state(trained, "calibration") is None
+    assert "Paused for your review at Calibration: check it in Inspect, then Continue." in toy.console()
+    assert m.history[-1][1] == "{text}"
+    assert m.history[-1][2]["text"].startswith("Run paused for your review at Calibration: 1 stage in")
+    # Continue: the review is marked, and the run goes on to the end, in a new dialog, at once
+    d.b_continue.click()
+    assert ctl.pause is None and ctl.running and ctl.dialog is not d and m.is_reviewed(plain, "calibration")
+    finish(toy)
+    assert sorted(j.stage for j in toy.track.jobs) == sorted(["stack", "color", "render_prep", "denoise", "color",
+                                                               "render_prep"])
+    assert all(s == "done" for s in states_of(toy).values())
+    d2 = ctl.dialog
+    assert not d2.paused() and not d2.review.isVisibleTo(d2) and d2.summary.text().startswith("Done in ")
+    assert Graph(m, None).breakpoint(Graph(m, None).node_of(plain, "calibration")) == ("reviewed", 1, 2)
+    assert len(m.plan_all()) == 0 and m.pause_point() is None
+
+
+def test_each_continue_runs_on_to_the_next_pause_and_the_plan_counts_them(toy, monkeypatch):
+    in_process(monkeypatch)
+    m, ctl = toy.model, toy.ctl
+    plain = m.view(1)
+    m.set_breakpoint([plain], "calibration")
+    m.set_breakpoint([plain], "empilement")
+    m.set_breakpoint([plain], "post")
+    d = ctl.launch()
+    assert d.pause_note.text() == "Stops after Calibration for your review"
+    assert d.pause_more.text() == "Workflow: Plain · 2 more pauses after it: Stacking, Output"
+    assert ctl.pause.later == ["empilement", "post"]
+    d.start()
+    finish(toy)
+    assert [j.stage for j in toy.track.jobs] == ["inventory"] and d.paused()
+    assert d.review_more.text() == "Workflow: Plain · 2 more pauses after it: Stacking, Output"
+    d.b_continue.click()                                       # to the second pause
+    finish(toy)
+    d2 = ctl.dialog
+    assert [j.stage for j in toy.track.jobs] == ["stack"] and d2.paused()
+    assert d2.review_text.text() == "Paused for your review at Stacking: check it in Inspect, then Continue."
+    assert d2.review_more.text() == "Workflow: Plain · 1 more pause after it: Output"
+    assert [m.review_state(plain, k) for k in ("calibration", "empilement", "post")] == ["reviewed", "paused", "pending"]
+    d2.b_continue.click()                                      # to the third (the Output of Plain)
+    finish(toy)
+    d3 = ctl.dialog
+    assert [j.stage for j in toy.track.jobs] == ["color", "render_prep"] and d3.paused()
+    assert d3.review_text.text() == "Paused for your review at Output: check it in Inspect, then Continue."
+    assert d3.review_more.text() == "Workflow: Plain"
+    d3.b_continue.click()                                      # nothing is left but the other workflow
+    finish(toy)
+    assert all(s == "done" for s in states_of(toy).values())
+    assert [m.review_state(plain, k) for k in ("calibration", "empilement", "post")] == ["reviewed"] * 3
+
+
+def test_reviewed_is_tied_to_the_results_of_the_block(toy, monkeypatch):
+    in_process(monkeypatch)
+    m, ctl = toy.model, toy.ctl
+    plain = m.view(1)
+    m.set_breakpoint([plain], "calibration")
+    d = ctl.launch()
+    d.start()
+    finish(toy)
+    d.b_continue.click()
+    finish(toy)
+    assert m.review_state(plain, "calibration") == "reviewed" and m.pause_point() is None
+    before = m.review_key(plain, "calibration")
+    # a setting of Calibration changes: its results are no longer these ones, so the breakpoint applies again
+    m.apply_change(m.paths, {"kind": "param", "stage": "inventory", "name": "max_lights", "value": 2})
+    assert m.review_key(plain, "calibration") != before and not m.is_reviewed(plain, "calibration")
+    assert m.review_state(plain, "calibration") == "pending"
+    pause = m.pause_point()
+    assert pause is not None and pause.block == "calibration" and not pause.done
+    plan, pause = m.plan_run()
+    assert [j.stage for j in plan.jobs] == ["inventory"] and pause is not None
+    # the old results are back with Undo: the same results, already reviewed, the run goes through
+    assert m.undo()
+    assert m.review_key(plain, "calibration") == before and m.review_state(plain, "calibration") == "reviewed"
+    assert m.pause_point() is None and m.plan_run()[1] is None
+    # Continue while the block is Outdated (settings changed during the review) marks nothing, and pauses again
+    m.apply_change(m.paths, {"kind": "param", "stage": "inventory", "name": "max_lights", "value": 2})
+    stale = m.review_key(plain, "calibration")
+    d2 = ctl.launch()
+    assert [j.stage for j in d2.plan.jobs][:1] == ["inventory"] and d2.pause_note.text().startswith("Stops after")
+    d2.start()
+    finish(toy)
+    assert d2.paused() and m.review_state(plain, "calibration") == "paused" and m.review_key(plain, "calibration") == stale
+    m.apply_change(m.paths, {"kind": "param", "stage": "inventory", "name": "max_lights", "value": 1})
+    assert m.review_state(plain, "calibration") == "pending"
+    ctl.pause.pids = [1]
+    m.mark_reviewed(ctl.pause)                                  # the block is not computed now: nothing is marked
+    assert not m.is_reviewed(plain, "calibration") and m.pause_point().block == "calibration"
+
+
+def test_a_block_done_and_not_reviewed_opens_the_dialog_on_the_pause(toy, monkeypatch):
+    in_process(monkeypatch)
+    m, ctl = toy.model, toy.ctl
+    toy.run_all()                                              # everything computed, no breakpoint yet
+    assert len(m.plan_all()) == 0
+    plain = m.view(1)
+    keys_before = {(v.pid, s): m.stage_key(v, s) for v in m.paths for s in m.all_stages(v)}
+    states_before = states_of(toy)
+    m.set_breakpoint([plain], "empilement")                    # a breakpoint changes no key and makes nothing Outdated
+    assert {(v.pid, s): m.stage_key(v, s) for v in m.paths for s in m.all_stages(v)} == keys_before
+    assert {(v.pid, s): api.stage_key(m.p, v.pid, s) for v in m.paths for s in m.all_stages(v)} == keys_before
+    assert states_of(toy) == states_before and len(m.plan_all()) == 0
+    assert m.review_state(plain, "empilement") == "paused"
+    inspected = []
+    ctl.openInspect.connect(lambda pid, block: inspected.append((pid, block)))
+    d = ctl.launch()
+    assert d.phase() == "plan" and d.paused() and d.review.isVisibleTo(d) and not d.pause_note.isVisibleTo(d)
+    assert not d.b_run.isVisibleTo(d) and d.b_cancel.text() == "Close" and d.summary.text() == "Waiting for your review"
+    assert d.review_text.text() == "Paused for your review at Stacking: check it in Inspect, then Continue."
+    # Open in Inspect: the block is selected for the window, which routes it (the graph page's openBlock)
+    m.select(step="sources")
+    d.b_inspect.click()
+    assert inspected == [(1, "empilement")] and m.sel_step == "empilement" and m.path is plain and m.scope == [1]
+    assert not d.isVisible()
+    # Continue: it is marked, and there is nothing left to run
+    d = ctl.launch()
+    d.b_continue.click()
+    assert m.review_state(plain, "empilement") == "reviewed" and not ctl.running
+    assert ctl.dialog.summary.text() == "Nothing to run" and not ctl.dialog.review.isVisibleTo(ctl.dialog)
+
+
+def test_open_in_inspect_uses_the_windows_graph_page(toy, monkeypatch):
+    """The window's GraphPage already routes ``openBlock`` to Inspect: the recap selects the block there and emits it."""
+    in_process(monkeypatch)
+    m = toy.model
+    toy.run_all()
+    window = QWidget()                                         # the main window: it holds its GraphPage as .graph
+    page = GraphPage(m)
+    page.setParent(window)
+    window.graph = page
+    toy.ctl.window = window
+    opened = []
+    page.openBlock.connect(lambda: opened.append(m.sel_step))
+    m.set_breakpoint([m.view(2)], "debruitage")
+    d = toy.ctl.launch()
+    assert d.paused() and toy.ctl.pause.pids == [2]
+    m.select(index=0, step="sources")
+    d.b_inspect.click()
+    assert opened == ["debruitage"] and m.path is m.view(2) and m.scope == [2]
+    toy.ctl.window = None
+    window.deleteLater()
+
+
+def test_run_to_here_stops_at_the_first_review_before_the_block(toy, monkeypatch):
+    in_process(monkeypatch)
+    m, ctl = toy.model, toy.ctl
+    plain = m.view(1)
+    m.set_breakpoint([plain], "calibration")
+    m.select(step="empilement")
+    d = ctl.run_to_here()
+    assert d.windowTitle() == 'Run "Plain" to Stacking'
+    assert [j.stage for j in d.plan.jobs] == ["inventory"]
+    assert d.pause_note.text() == "Stops after Calibration for your review"
+    d.start()
+    finish(toy)
+    assert d.paused()
+    d.b_continue.click()                                       # the same way: on to Stacking, the block asked for
+    finish(toy)
+    assert [j.stage for j in toy.track.jobs] == ["stack"] and not ctl.dialog.paused()
+    assert states_of(toy)[(1, "stack")] == "done" and states_of(toy)[(1, "color")] == "pending"
+    # a review after the block asked for does not matter
+    m.set_breakpoint([plain], "post")
+    d3 = ctl.run_to_here()
+    assert d3.pause is None and len(d3.plan.jobs) == 0
+    d3.close()
+
+
+def test_several_workflows_pausing_at_one_block_are_planned_together_and_the_earliest_block_goes_first(toy):
+    m = toy.model
+    plain, trained = m.view(1), m.view(2)
+    m.set_breakpoint([plain, trained], "empilement")
+    m.set_breakpoint([trained], "calibration")
+    pause = m.pause_point()
+    assert (pause.block, pause.pids, pause.later, pause.done) == ("calibration", [2], ["empilement"], False)
+    plan, _ = m.plan_run()
+    assert [j.stage for j in plan.jobs] == ["inventory"]
+    m.set_breakpoint([trained], "calibration", False)
+    pause = m.pause_point()
+    assert (pause.block, pause.pids, pause.later) == ("empilement", [1, 2], [])
+    plan, pause2 = m.plan_run()
+    assert pause2.block == "empilement" and [j.stage for j in plan.jobs] == ["inventory", "stack"]    # shared: once
+    assert plan.jobs[1].wf == [1, 2] and set(plan.targets) == {(1, "stack"), (2, "stack")}
+    d = toy.ctl.launch()
+    assert d.pause_note.text() == "Stops after Stacking for your review" and not d.pause_more.isVisibleTo(d)   # both
+    d.close()
+    m.set_breakpoint([trained], "empilement", False)
+    d = toy.ctl.launch()
+    assert d.pause_note.text() == "Stops after Stacking for your review" and d.pause_more.text() == "Workflow: Plain"
+    d.close()
+    assert [Graph(m, None).breakpoint(n)[:3] for n in Graph(m, None).nodes if n.key == "empilement"] == [("pending", 1, 2)]
+
+
+def test_a_review_is_kept_with_the_project_and_the_breakpoints_too(env, monkeypatch):
+    in_process(monkeypatch)
+    p = toy_project(env["tmp"] / "toy")
+    worker = ApiWorker()
+    m = ProjectModel(p, worker, gpu=False, device="cpu")                  # one that saves
+    assert worker.wait(120) and m.ready
+    ctl = RunController(m, None, None)
+    plain = m.view(1)
+    m.set_breakpoint([plain], "calibration")
+    m.set_breakpoint([m.view(2)], "post")
+    m.flush()
+    assert api.open_project(p.root).workflows[0].breakpoints == ["calibration"]           # saved with the definition
+    assert api.open_project(p.root).workflows[1].breakpoints == ["output"]
+    d = ctl.launch()
+    d.start()
+    assert pump(lambda: ctl.track is not None and ctl.track.finished and not ctl.running, 60)
+    d.b_continue.click()
+    assert m.is_reviewed(plain, "calibration")
+    assert pump(lambda: ctl.track.finished and not ctl.running, 60)               # on to the Output of Trained
+    assert m.review_state(m.view(2), "post") == "paused"
+    state = json.loads((Path(p.root) / "state.json").read_text(encoding="utf-8"))
+    assert state["reviewed"] == [m.review_key(plain, "calibration")] and "last_keys" in state   # beside the old keys
+    ctl.close()
+    m.close()
+    # another session: the review is read again by the worker, the run goes through Calibration
+    worker2 = ApiWorker()
+    q = api.open_project(p.root)
+    api.use_rules(q, SPEC)
+    m2 = ProjectModel(q, worker2, gpu=False, device="cpu")
+    assert worker2.wait(120) and m2.ready
+    assert m2.is_reviewed(m2.view(1), "calibration") and m2.review_state(m2.view(1), "calibration") == "reviewed"
+    assert m2.pause_point().block == "post" and m2.pause_point().pids == [2]
+    m2.close()
+
+
+def test_nothing_changes_for_a_project_without_breakpoints(toy):
+    m = toy.model
+    assert m.pause_point() is None
+    plan, pause = m.plan_run()
+    assert pause is None and [j.key for j in plan.jobs] == [j.key for j in m.plan_all().jobs]
+    d = toy.ctl.launch()
+    assert toy.ctl.pause is None and not d.pause_note.isVisibleTo(d) and not d.review.isVisibleTo(d) and not d.paused()
+    assert d.b_run.isVisibleTo(d)
+    d.close()
+    assert Graph(m, None).breakpoint(Graph(m, None).root) is None
+    assert all(Graph(m, None).breakpoint(n) is None for n in Graph(m, None).nodes)
+
+
+def test_the_pause_in_french(toy, monkeypatch):
+    in_process(monkeypatch)
+    appmod.apply_language("fr")
+    m, ctl = toy.model, toy.ctl
+    plain = m.view(1)
+    for k in ("calibration", "empilement", "post"):
+        m.set_breakpoint([plain], k)
+    d = ctl.launch()
+    t = texts_of(d)
+    assert "S'arrête après Calibration pour votre vérification" in t, t
+    assert "Workflow : Plain · 2 autres pauses ensuite : Empilement, Sortie" in t, t
+    assert untranslated(t) == []
+    d.start()
+    finish(toy)
+    seen = texts_of(d)
+    assert "En pause pour votre vérification à Calibration : vérifiez-le dans Inspection, puis cliquez sur Continuer." in seen
+    assert "Continuer" in seen and "Ouvrir dans Inspection" in seen and "En pause pour vérification" in seen
+    assert "Workflow : Plain · 2 autres pauses ensuite : Empilement, Sortie" in seen
+    assert "En pause pour votre vérification à Calibration : vérifiez-le dans Inspection, puis cliquez sur Continuer." \
+        in toy.console()
+    assert m.history[-1][2]["text"].startswith("Exécution en pause pour votre vérification à Calibration : 1 étape en")
+    assert untranslated(seen) == [], untranslated(seen)
+    d.b_continue.click()
+    finish(toy)
+    d2 = ctl.dialog
+    assert "Workflow : Plain · 1 autre pause ensuite : Sortie" in texts_of(d2)
+    assert untranslated(texts_of(d2)) == []
+    # the zero / one rule of French: "0 étape" and "1 étape" are singular, "2 étapes" is not
+    one, many = "{n} more pause after it: {blocks}", "{n} more pauses after it: {blocks}"
+    assert i18n.plural(0, one, many, blocks="x") == "0 autre pause ensuite : x"
+    assert i18n.plural(1, one, many, blocks="x") == "1 autre pause ensuite : x"
+    assert i18n.plural(2, one, many, blocks="x") == "2 autres pauses ensuite : x"
+
+
+def test_every_plural_of_the_pause_has_its_french_in_both_forms():
+    """The two English forms of every `plural()` of the modules that make the pause, and the texts of the pause
+    (Continue, Open in Inspect...), are in the French catalogue, with two different forms."""
+    import ast
+    appmod.apply_language("fr")
+    cat = i18n._cat
+    root = HERE.parents[1] / "astro_gpu" / "client"
+    missing, forms = [], 0
+    for name in ("runs.py", "services/run.py", "graph.py", "blocks.py", "model.py"):
+        for n in ast.walk(ast.parse((root / name).read_text(encoding="utf-8"))):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "plural" and len(n.args) >= 3:
+                one, many = (a.value for a in n.args[1:3] if isinstance(a, ast.Constant))
+                missing += [s for s in (one, many) if s not in cat]
+                forms += 1
+                assert one == many or cat.get(one) != cat.get(many), (one, many)
+    assert not missing and forms >= 6, (missing, forms)
+    for text in ("Continue", "Open in Inspect", "Waiting for your review", "Paused for your review"):
+        assert text in cat and cat[text] != text
+
+
 # ---------------------------------------------------------------------------------------------- a real run
 def test_run_all_follows_a_detached_worker_without_blocking_the_gui(toy, monkeypatch):
     threads = []
@@ -1204,3 +1552,171 @@ def test_screenshots_of_the_failed_run_and_the_stopped_run_on_the_real_plan(env)
             appmod.apply_language("en")
     finally:
         w.close()
+
+B3 = Path(os.environ.get("TEMP", ".")) / "b3_shots"
+
+
+@real
+def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_fr(env, monkeypatch):
+    """The real client (the main window, offscreen) on the definition of the heart_a7s_p11 copy, in a scratch folder
+    (the copy itself is only read: its results are other tests'), on the CPU: Pause here for review on Calibration and
+    Registration; Run all stops after Calibration (the real stages run in a detached worker); the recap asks for the
+    review; Open in Inspect shows the block; Continue runs Registration and stops again. The breakpoints and the reviews
+    are saved with the project and read again. Screenshots in English and in French under %TEMP%/b3_shots."""
+    from PySide6.QtWidgets import QMenu
+
+    from astro_gpu.client import graph as graphmod
+    from astro_gpu.client.services.worker import Gpu, Machine
+    from astro_gpu.core import project2
+    B3.mkdir(parents=True, exist_ok=True)
+    ws = env["tmp"] / "ws"
+    ws.mkdir()
+    prefs.set("workspace", ws.as_posix())                                    # never the user's own workspace
+    prefs.set("cache_dir", (env["tmp"] / "scratch").as_posix())
+    prefs.set("device", "cpu")
+    monkeypatch.setattr(appmod, "machine_info", lambda: Machine([Gpu("cuda:0", "NVIDIA RTX 4060 Ti", 16.0)], 16, 64.0))
+    proj = env["tmp"] / "heart"                                             # a scratch project: the definition of the copy
+    proj.mkdir()
+    shutil.copy(F_COPY / "project.astroproj", proj / "project.astroproj")
+    before = _fingerprint(F_COPY / "project.astroproj")
+    w = appmod.Main()
+    w.resize(1600, 950)
+    w.show()
+    menus = []
+
+    class Menu(QMenu):
+        def exec(self, *a, **k):
+            menus.append(self)
+    monkeypatch.setattr(graphmod, "QMenu", Menu)
+
+    def settle(n=15):
+        for _i in range(n):
+            w.worker.wait(30)
+            QApplication.processEvents()
+            time.sleep(0.01)
+
+    def shot(widget, name):
+        QApplication.processEvents()
+        assert widget.grab().save(str(B3 / f"{name}_{i18n.language()}.png"))
+
+    def both(name, widget):
+        """The same state in English and in French (the project screen is built again for the language)."""
+        for lang in ("en", "fr"):
+            w.change_language(lang)
+            settle()
+            shot(widget() if callable(widget) else widget, name)
+        w.change_language("en")
+        settle()
+
+    def graph():
+        return w.graph.graph.graph
+
+    def block(pid, key):
+        return next(it for it in w.graph.graph.scene().items() if isinstance(it, BlockItem)
+                    and it.node is graph().node_of(w.s.view(pid), key))
+    try:
+        assert w.worker.wait(60)
+        assert w.open_project(proj)
+        s = w.s
+        w.set_device("cpu")
+        s.add_path("Classic stack", {"debruitage": False, "etoiles": "garder", "appris": False, "fond": "simple"})
+        w.set_mode(0)
+        settle()
+        assert s.ready and len(s.paths) == 2 and not w.run.running
+        # 1. the context menu of a block, and the dot once chosen
+        for lang in ("en", "fr"):
+            w.change_language(lang)
+            settle()
+            w.graph.graph.block_menu(graph().node_of(s.view(1), "calibration"), None)
+            menus[-1].show()
+            QApplication.processEvents()
+            names = [a.text() for a in menus[-1].actions()]
+            assert i18n._("Pause here for review") in names
+            shot(menus[-1], "1_block_menu")
+            menus[-1].hide()
+        w.change_language("en")
+        settle()
+        for key in ("calibration", "alignement"):
+            w.graph.graph.block_menu(graph().node_of(s.view(1), key), None)
+            next(a for a in menus[-1].actions() if a.text() == "Pause here for review").trigger()
+            settle()
+        assert [x.breakpoints for x in s.p.workflows] == [["calibration", "registration"]] * 2
+        assert block(1, "calibration").bp == ("pending", 2, 2) and block(1, "alignement").bp == ("pending", 2, 2)
+        both("2_graph_breakpoints", lambda: w)
+        # 2. Run all: the plan stops after Calibration
+        w.launch()
+        d = w.run.dialog
+        assert d.pause_note.text() == "Stops after Calibration for your review" and d.pause_more.text().startswith(
+            "1 more pause after it: Registration")
+        assert [j.stage for j in d.plan.jobs] == ["inventory", "calibrate"] and not d.review.isVisibleTo(d)
+        both("3_plan_dialog", lambda: w.run.dialog)
+        # 3. Run: the real calibration, in a detached worker
+        d = w.run.dialog
+        d.b_run.click()
+        assert pump(lambda: w.run.track is not None and w.run.track.finished and not w.run.running, 400), \
+            "the run did not end"
+        settle(30)
+        t = w.run.track
+        assert t.status == "done" and [j.stage for j in t.jobs] == ["inventory", "calibrate"], t.error
+        d = w.run.dialog
+        assert d.paused() and d.review.isVisibleTo(d) and d.b_continue.isVisibleTo(d) and d.b_inspect.isVisibleTo(d)
+        assert d.review_text.text() == "Paused for your review at Calibration: check it in Inspect, then Continue."
+        assert [s.state(s.view(1), x) for x in ("inventory", "calibrate", "register", "stack")] == \
+            ["done", "done", "pending", "pending"]
+        assert block(1, "calibration").bp == ("paused", 2, 2) and block(1, "alignement").bp == ("pending", 2, 2)
+        both("4_paused_recap", lambda: w.run.dialog)
+        both("5_graph_paused", lambda: w)
+        for lang in ("en", "fr"):                                          # the menu of the paused block: checked, and Mark as reviewed
+            w.change_language(lang)
+            settle()
+            w.graph.graph.block_menu(graph().node_of(s.view(1), "calibration"), None)
+            menus[-1].show()
+            QApplication.processEvents()
+            checked = [a for a in menus[-1].actions() if a.isChecked()]
+            assert [a.text() for a in checked] == [i18n._("Pause here for review")]
+            assert i18n._("Mark as reviewed") in [a.text() for a in menus[-1].actions()]
+            shot(menus[-1], "5b_block_menu_paused")
+            menus[-1].hide()
+        # 4. Open in Inspect: the window shows the block in Inspect
+        w.change_language("en")
+        settle()
+        d = w.run.dialog
+        d.show()
+        d.b_inspect.click()
+        settle()
+        assert w.mode == 1 and s.sel_step == "calibration" and not d.isVisible()
+        shot(w, "6_inspect_calibration")
+        w.set_mode(0)
+        settle()
+        # 5. Continue: the review is marked, Registration runs for real, and the run stops again at its breakpoint
+        w.launch()
+        d = w.run.dialog
+        assert d.paused() and d.phase() == "plan" and d.summary.text() == "Waiting for your review"
+        d.b_continue.click()
+        assert w.run.running or w.run.track.finished
+        assert pump(lambda: w.run.track.finished and not w.run.running, 400), "the second run did not end"
+        settle(30)
+        t = w.run.track
+        assert t.status == "done" and [j.stage for j in t.jobs] == ["register"], t.error
+        d = w.run.dialog
+        assert d.paused() and d.review_text.text() == \
+            "Paused for your review at Registration: check it in Inspect, then Continue."
+        assert [s.review_state(s.view(1), k) for k in ("calibration", "alignement")] == ["reviewed", "paused"]
+        assert [s.state(s.view(1), x) for x in ("calibrate", "register", "stack")] == ["done", "done", "pending"]
+        both("7_second_pause_recap", lambda: w.run.dialog)
+        both("8_graph_reviewed_and_paused", lambda: w)
+        assert block(1, "calibration").bp == ("reviewed", 2, 2) and block(1, "alignement").bp == ("paused", 2, 2)
+        # 6. saved with the project, and read again: the definition has the breakpoints, state.json the review
+        s.flush()
+        assert [x.breakpoints for x in project2.load(proj).workflows] == [["calibration", "registration"]] * 2
+        state = json.loads((proj / "state.json").read_text(encoding="utf-8"))
+        assert state["reviewed"] == [s.review_key(s.view(1), "calibration")] or len(state["reviewed"]) == 2
+        assert s.is_reviewed(s.view(1), "calibration") and not s.is_reviewed(s.view(1), "alignement")
+    finally:
+        w.close()
+        w.deleteLater()
+        QApplication.processEvents()
+    assert _fingerprint(F_COPY / "project.astroproj") == before            # the copy was only read
+    shots = sorted(p.name for p in B3.glob("*.png"))
+    assert len(shots) == 17, shots
+

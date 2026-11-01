@@ -21,6 +21,12 @@ Wiring, for the window (P13)::
     language changed, project screen rebuilt (new Log panel, new graph): self.run.retranslate()
     project closed: self.run.close()                          # the run goes on; opening the project follows it again
 
+Breakpoints ("Pause here for review", set on the blocks of the graph): ``launch`` and ``run_to_here`` plan the run up to
+the first review not done yet (``ProjectModel.plan_run``); the dialog says "Stops after Calibration for your review", and
+at the end of the run its recap offers Continue (``continue_run``: the review is marked, the run goes on to the next pause
+or to the end) and Open in Inspect (``open_in_inspect``: selects the block, then the window's graph page emits the
+``openBlock`` it already routes; ``openInspect(workflow id, block)`` is emitted too, for a window that prefers it).
+
 The console of the last run is the Log panel's right pane (``set_console`` / ``append_console``); the controller keeps
 its lines, so that a rebuilt panel is filled again (``sync_console``) and a change of language translates them.
 """
@@ -36,7 +42,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from ... import api
 from ...core.project2 import Project2
-from ..i18n import _, hm, number
+from ..i18n import _, hm, number, plural
 from .worker import ApiWorker
 
 # job states (what the events say; the graph's states come from the engine through the model)
@@ -453,6 +459,10 @@ def render_line(line: Line, title=lambda stage: stage) -> str:
         else:
             text = _("Run failed: {failed} failed, {skipped} not run").format(
                 failed=d[FAILED], skipped=d[SKIPPED] + d[NOT_STARTED])
+    elif kind == "paused":
+        from ..blocks import review_title
+        text = _("Paused for your review at {block}: check it in Inspect, then Continue.").format(
+            block=review_title(d["block"]))
     elif kind == "run_lost":
         text = _("The run stopped without warning: its process ended")
     elif kind == "not_started":
@@ -598,6 +608,7 @@ class RunController(QObject):
     updated = Signal()                       # the track changed: the dialog, the status widget and the graph redraw
     finished = Signal(str, str)              # status (done | failed | interrupted), one line to flash
     logRequested = Signal()                  # "Show the log" of the recap
+    openInspect = Signal(int, str)           # "Open in Inspect" of a paused run: workflow id, block (of the views)
 
     def __init__(self, model, window=None, console=None, worker: ApiWorker | None = None):
         super().__init__(window)
@@ -611,6 +622,8 @@ class RunController(QObject):
         self.track: RunTrack | None = None   # the run in progress, or the last one
         self.plan = None
         self.title = None                    # the heading of the run's dialog: a text, or a function giving it
+        self.pause = None                    # the review the plan stops at (model.Pause), or None: it runs to the end
+        self._planner = None                 # how the plan was made (Continue makes the next one the same way)
         self.names: dict[int, str] = {}      # workflow names of the run's frozen definition (when the model has moved on)
         self.follower: RunFollower | None = None
         self.dialog = None
@@ -659,17 +672,15 @@ class RunController(QObject):
 
     # ------------------------------------------------------------ planning
     def launch(self):
-        """Run all (F5): the dialog of the plan, or the progress of the run in progress."""
+        """Run all (F5): the dialog of the plan, or the progress of the run in progress. With breakpoints the plan
+        stops after the first review not done yet."""
         if self.running:
             return self.show_dialog()
-        try:
-            plan = self.model.plan_all()
-        except (ValueError, KeyError, OSError):
-            plan = api.Plan()
-        return self.open_plan(plan, lambda: _("Run project"), show_done=True)
+        return self._plan_and_open(self.model.plan_run, lambda: _("Run project"), show_done=True)
 
     def run_to_here(self):
-        """Run to the selected block (Shift+F5): the blocks it needs, in the current workflow."""
+        """Run to the selected block (Shift+F5): the blocks it needs, in the current workflow (or the first review of
+        this workflow before it)."""
         m = self.model
         p = m.path
         if self.running:
@@ -678,17 +689,25 @@ class RunController(QObject):
             return None
         from ..blocks import block_title
         key = m.sel_step
-        plan = m.plan_to_block(p, key)
-        return self.open_plan(plan, lambda: _('Run "{name}" to {block}').format(
+        return self._plan_and_open(lambda: m.plan_run_to(p, key), lambda: _('Run "{name}" to {block}').format(
             name=p.name, block=_("Output") if key == "post" else block_title(p, key)))
 
-    def open_plan(self, plan, title, show_done: bool = False):
+    def _plan_and_open(self, planner, title, show_done: bool = False):
+        """``planner()`` gives (plan, pause); the dialog of that plan."""
+        try:
+            plan, pause = planner()
+        except (ValueError, KeyError, OSError):
+            plan, pause = api.Plan(), None
+        self._planner = planner
+        return self.open_plan(plan, title, show_done, pause)
+
+    def open_plan(self, plan, title, show_done: bool = False, pause=None):
         """The plan dialog (a snapshot of the definition is taken now: the plan is frozen). ``title``: the text, or a
-        function giving it (so that a change of language rewrites it)."""
+        function giving it (so that a change of language rewrites it). ``pause``: the review the plan stops at."""
         from ..runs import RunDialog
         self._snapshot = Project2.from_dict(self.model.p.to_dict(), self.model.p.root)
         self._drop_dialog()
-        self.plan, self.title = plan, title
+        self.plan, self.title, self.pause = plan, title, pause
         self.dialog = RunDialog(self.model, plan, title, show_done, self, self.window)
         self._free = None
         self._free_asked = False
@@ -710,6 +729,43 @@ class RunController(QObject):
             self.dialog.show()
             self.dialog.raise_()
         return self.dialog
+
+    # ------------------------------------------------------------ pause: continue, or look first
+    def continue_run(self):
+        """Continue, in the recap of a pause: the results the user checked are marked as reviewed, and the run goes on to
+        the next pause, or to the end. If they changed meanwhile (the block is Outdated) it computes them again and
+        pauses again."""
+        if self.running or self.pause is None:
+            return None
+        self.model.mark_reviewed(self.pause)
+        d = self._plan_and_open(self._planner or self.model.plan_run, self.title or (lambda: _("Run project")))
+        if self.plan and d is not None:
+            self.begin(self.plan)
+            d.refresh()
+        return d
+
+    def open_in_inspect(self):
+        """Open in Inspect, in the recap of a pause: the block is selected, and the window shows it in Inspect."""
+        pa, m = self.pause, self.model
+        q = m.view(pa.pids[0]) if pa is not None and pa.pids else None
+        if q is None:
+            return
+        page = getattr(self.window, "graph", None)            # the window's GraphPage: it routes openBlock to Inspect
+        if page is not None and hasattr(page, "select"):
+            page.select(index=m.index_of(q.pid), step=pa.block)
+        else:
+            m.select(index=m.index_of(q.pid), step=pa.block)
+            m.scope = list(pa.pids)
+        if self.dialog is not None:
+            self.dialog.hide()
+        self.openInspect.emit(q.pid, pa.block)
+        if page is not None and hasattr(page, "openBlock"):
+            page.openBlock.emit()
+
+    def pause_text(self) -> str:
+        """The block the run stopped at, for a line of text."""
+        from ..blocks import review_title
+        return review_title(self.pause.block) if self.pause is not None else ""
 
     def _make_dialog(self):
         from ..runs import RunDialog
@@ -809,7 +865,14 @@ class RunController(QObject):
         self._refresh_due, self._refresh_at = False, time.monotonic()
         self.model.results_changed()
         n, c = t.elapsed(), t.counts or t.count()
-        if t.status == "done":
+        if t.status == "done" and self.pause is not None:
+            text = plural(c[DONE], "Run paused for your review at {block}: {n} stage in {t}",
+                          "Run paused for your review at {block}: {n} stages in {t}", block=self.pause_text(), t=hm(n))
+            self.model.log("{text}", text=text)
+            line = (time.time(), "paused", {"block": self.pause.block})       # the console says what comes next
+            t.lines.append(line)
+            self.append_console([line])
+        elif t.status == "done":
             text = _("Run finished: {n} stages in {t}").format(n=c[DONE], t=hm(n))
             self.model.log("Run: {n} stages · {t}", n=c[DONE], t=hm(n))
         elif t.status == "interrupted":
@@ -864,6 +927,7 @@ class RunController(QObject):
             return
         info, plan, names, events, offset = result
         self.plan, self.names, self.title = plan, names, lambda: _("Run in progress")
+        self.pause = None
         self.track = RunTrack.of_plan(plan, info.run_id)
         self.track.plan, self.track.pid = plan, info.pid
         b = self.track.apply(events)

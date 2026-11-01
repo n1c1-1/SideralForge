@@ -9,6 +9,7 @@ file in every test; the user's settings file is checked untouched. ASTRO_GPU_SHO
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -1194,6 +1195,253 @@ def test_no_setting_of_the_engine_is_out_of_reach(world, model, page):
             got |= set(keys)
     page.panel.expert = False
     assert not (want - got), sorted(want - got)
+
+
+# ---------------------------------------------------------------------------------------------- breakpoints
+def block_items(page):
+    return [it for it in page.graph.scene().items() if isinstance(it, BlockItem)]
+
+
+def item_of(page, key, pid=None):
+    n = node(page, key, pid)
+    return next(it for it in block_items(page) if it.node is n)
+
+
+def menu_of(page, n, monkeypatch):
+    """The context menu of a block, as built (QMenu.exec is not run: it would wait for a click)."""
+    from PySide6.QtWidgets import QMenu
+
+    from astro_gpu.client import graph as graphmod
+    seen = []
+
+    class Menu(QMenu):
+        def exec(self, *a, **k):
+            seen.append(self)
+    monkeypatch.setattr(graphmod, "QMenu", Menu)
+    page.graph.block_menu(n, QPoint(0, 0))
+    return seen[-1] if seen else None
+
+
+def pixel_near(page, it, colour: str, radius: float = 9.0, tol: int = 36) -> bool:
+    """Whether the view draws something of this colour around the corner of a block (where its review dot sits)."""
+    from PySide6.QtGui import QColor
+    QApplication.processEvents()
+    img = page.graph.viewport().grab().toImage()
+    c = page.graph.mapFromScene(it.mapToScene(2, 2))
+    want = QColor(colour)
+    for dx in range(-int(radius), int(radius) + 1):
+        for dy in range(-int(radius), int(radius) + 1):
+            x, y = c.x() + dx, c.y() + dy
+            if 0 <= x < img.width() and 0 <= y < img.height() and dx * dx + dy * dy <= radius * radius:
+                got = img.pixelColor(x, y)
+                if abs(got.red() - want.red()) + abs(got.green() - want.green()) + abs(got.blue() - want.blue()) <= tol:
+                    return True
+    return False
+
+
+_API_STATES = api.states
+
+
+def pin(model, monkeypatch, *done):
+    """The engine's states with these blocks (of the views) computed and every other stage not, whatever is on the disk
+    (the keys stay the real ones: the settings of a stage are asked by them)."""
+    from astro_gpu.client.blocks import ENGINE_BLOCK
+
+    def states(p, update=True):
+        out = dict(_API_STATES(p, update=False))
+        block_of = {(w.id, st): ENGINE_BLOCK[b.block] for w in p.workflows for b in api.blocks(p, w.id) for st in b.stages}
+        for (wid, stage), st in out.items():
+            if block_of.get((wid, stage)) in done:
+                out[(wid, stage)] = api.StageState("done", "", st.key)
+            else:
+                out[(wid, stage)] = api.StageState("pending", "never computed", st.key)
+        return out
+    monkeypatch.setattr(api, "states", states)
+    model._sync(prefetch=False)
+    model.pathsChanged.emit()
+
+
+def test_every_block_has_pause_here_for_review_and_the_dot_shows(world, model, page, monkeypatch):
+    from astro_gpu.client.blocks import BREAK_COL
+    pin(model, monkeypatch)                                                     # nothing computed
+    settle(world["w"], page)
+    # no menu, no dot, on the Frames and Post blocks
+    assert menu_of(page, page.graph.graph.root, monkeypatch) is None
+    assert menu_of(page, page.graph.graph.final, monkeypatch) is None
+    assert all(it.bp is None for it in block_items(page))
+    keys = [n.key for n in page.graph.graph.nodes if n.key not in ("sources", "final")]
+    assert {"calibration", "alignement", "selection", "empilement", "astrometrie", "couleur", "debruitage", "etoiles",
+            "fond", "post"} <= set(keys)
+    for n in page.graph.graph.nodes:
+        if n.key in ("sources", "final"):
+            continue
+        m = menu_of(page, n, monkeypatch)
+        act = next(a for a in m.actions() if a.text() == "Pause here for review")
+        assert act.isCheckable() and not act.isChecked(), n.key
+        assert not any(a.text() == "Mark as reviewed" for a in m.actions())
+    # choose it on Calibration: every workflow going through the block gets the breakpoint (the block is shared)
+    cal = node(page, "calibration")
+    assert len(cal.paths) == len(model.paths) == 4
+    act = next(a for a in menu_of(page, cal, monkeypatch).actions() if a.text() == "Pause here for review")
+    act.trigger()
+    settle(world["w"], page)
+    assert [w.breakpoints for w in model.p.workflows] == [["calibration"]] * 4
+    it = item_of(page, "calibration")
+    assert it.bp == ("pending", 4, 4) and all(i.bp is None for i in block_items(page) if i is not it)
+    assert "Review point: the run stops here for your review." in it.toolTip()
+    assert pixel_near(page, it, BREAK_COL)                                      # a red dot, on the block's corner
+    assert any(h[1] == "Pause set after {block}" for h in model.history)
+    assert graph_faults(page) == []                                             # the dot hides nothing and cuts nothing
+    # the menu now shows it checked, and choosing it again takes it off
+    again = next(a for a in menu_of(page, cal, monkeypatch).actions() if a.text() == "Pause here for review")
+    assert again.isChecked()
+    again.trigger()
+    settle(world["w"], page)
+    assert [w.breakpoints for w in model.p.workflows] == [[]] * 4 and item_of(page, "calibration").bp is None
+    assert not pixel_near(page, item_of(page, "calibration"), BREAK_COL)
+    # on a block of one workflow only
+    leaf = node(page, "post", 2)
+    next(a for a in menu_of(page, leaf, monkeypatch).actions() if a.text() == "Pause here for review").trigger()
+    settle(world["w"], page)
+    assert [w.breakpoints for w in model.p.workflows] == [[], ["output"], [], []]
+    assert item_of(page, "post", 2).bp == ("pending", 1, 1)
+
+
+def test_the_dot_says_pending_paused_or_reviewed_and_the_graph_follows(world, model, page, monkeypatch):
+    from astro_gpu.client.blocks import BREAK_COL, PAUSE_COL, REVIEWED_COL
+    p = model.view(1)
+    pin(model, monkeypatch)
+    model.set_breakpoint([p], "calibration")
+    settle(world["w"], page)
+    assert model.review_state(p, "calibration") == "pending" and item_of(page, "calibration").bp[0] == "pending"
+    # the block is computed and nobody has checked it: paused (yellow, with a menu entry to say it was checked)
+    pin(model, monkeypatch, "calibration")
+    settle(world["w"], page)
+    assert model.review_state(p, "calibration") == "paused"
+    it = item_of(page, "calibration")
+    assert it.bp == ("paused", 1, 4)
+    assert pixel_near(page, it, PAUSE_COL) and not pixel_near(page, it, BREAK_COL, 5)
+    assert "Paused: check this block (Inspect), then Continue from the Run window." in it.toolTip()
+    assert "Pause set in 1 workflow of 4." in it.toolTip()                      # only one of the four workflows
+    m = menu_of(page, node(page, "calibration"), monkeypatch)
+    assert "Mark as reviewed" in [a.text() for a in m.actions()]
+    # a second breakpoint, further on, waits (red) until the first is checked
+    model.set_breakpoint([p], "empilement")
+    pin(model, monkeypatch, "calibration", "empilement")
+    settle(world["w"], page)
+    assert [model.review_state(p, k) for k in ("calibration", "empilement")] == ["paused", "pending"]
+    # Mark as reviewed: green, and the next one is the one the run will wait at
+    next(a for a in m.actions() if a.text() == "Mark as reviewed").trigger()
+    settle(world["w"], page)
+    assert [model.review_state(p, k) for k in ("calibration", "empilement")] == ["reviewed", "paused"]
+    assert item_of(page, "calibration").bp[0] == "reviewed" and pixel_near(page, item_of(page, "calibration"), REVIEWED_COL)
+    assert item_of(page, "empilement").bp[0] == "paused"
+    assert any(h[1] == "{block} marked as reviewed" for h in model.history)
+    state = json.loads((Path(world["folder"]) / "state.json").read_text(encoding="utf-8"))
+    assert state["reviewed"] == [model.review_key(p, "calibration")]
+    # a block that is not computed any more shows as waiting again (the run will go through it, and stop after it)
+    pin(model, monkeypatch)
+    assert [model.review_state(p, k) for k in ("calibration", "empilement")] == ["pending", "pending"]
+    model._reviewed.clear()
+    st = project2.read_state(world["folder"])
+    st.pop("reviewed", None)
+    project2.write_state(world["folder"], st)
+
+
+def test_the_pause_is_stored_per_workflow_undone_copied_and_leaves_with_its_block(world, model, page):
+    p, dn = model.view(1), model.view(3)
+    assert "denoise" in model.all_stages(dn)
+    model.set_breakpoint([p], "calibration")
+    model.set_breakpoint([dn], "debruitage")
+    model.set_breakpoint([dn], "empilement")
+    assert model.p.workflow(3).breakpoints == ["stacking", "denoise"]            # kept in the graph's order
+    assert model.breakpoints(dn) == ["empilement", "debruitage"] and model.breakpoints(model.view(2)) == []
+    model.flush()
+    saved = project2.load(world["folder"])
+    assert [w.breakpoints for w in saved.workflows] == [["calibration"], [], ["stacking", "denoise"], []]
+    # Undo takes a breakpoint back, as any edit
+    assert model.undo() and model.p.workflow(3).breakpoints == ["denoise"]
+    assert model.redo() and model.p.workflow(3).breakpoints == ["stacking", "denoise"]
+    # a copy keeps them
+    cp = model.duplicate(dn, "Copy of denoise")
+    settle(world["w"], page)
+    assert model.p.workflow(cp.pid).breakpoints == ["stacking", "denoise"]
+    # a block that leaves the workflow takes its breakpoint away; Undo brings both back
+    page.remove_tool(node(page, "debruitage", cp.pid), [cp.pid])
+    settle(world["w"], page)
+    assert "denoise" not in model.all_stages(cp) and model.p.workflow(cp.pid).breakpoints == ["stacking"]
+    assert model.p.workflow(3).breakpoints == ["stacking", "denoise"]            # the other workflow keeps its own
+    assert model.undo() and model.p.workflow(cp.pid).breakpoints == ["stacking", "denoise"]
+    assert "denoise" in model.all_stages(model.view(cp.pid))
+    # only blocks of the engine can hold one
+    with pytest.raises(ValueError):
+        model.set_breakpoint([p], "sources")
+
+
+def test_breakpoints_change_no_key_and_no_state(world, model, page):
+    """The same rule as the engine's: the keys the engine makes, and so the states it reads, are what they were."""
+    def snapshot():
+        return ({(w.id, s): api.stage_key(model.p, w.id, s) for w in model.p.workflows for s in api.chain(model.p, w.id)},
+                {k: (v.state, v.key, v.previous_key) for k, v in api.states(model.p, update=False).items()},
+                {w.id: [(b.block, b.key) for b in api.blocks(model.p, w.id)] for w in model.p.workflows},
+                [(j.key, j.stage) for j in model.plan_all().jobs])
+    before = snapshot()
+    model.set_breakpoint(model.paths, "calibration")
+    model.set_breakpoint(model.paths, "post")
+    model.set_breakpoint([model.view(1)], "selection")
+    assert any(w.breakpoints for w in model.p.workflows)
+    assert snapshot() == before
+    model.undo()
+    model.undo()
+    model.undo()
+    assert snapshot() == before and not any(w.breakpoints for w in model.p.workflows)
+
+
+def test_selection_is_reviewed_with_its_thresholds_and_runs_to_registration(world, model, page):
+    p = model.view(1)
+    model.set_breakpoint([p], "selection")
+    pause = model.pause_point()
+    assert pause.block == "selection" and pause.pids == [1]
+    plan, pause2 = model.plan_run()
+    assert pause2.block == "selection" and (not plan.jobs or plan.jobs[-1].stage == "register")
+    assert all(j.stage != "stack" for j in plan.jobs)                              # before stacking, as asked
+    k0 = model.review_key(p, "selection")
+    model.apply_change([p], {"kind": "params", "items": [("stack", "min_transparency", 0.73)]})
+    assert model.review_key(p, "selection") != k0                                  # other thresholds, other selection
+    model.apply_change([p], {"kind": "params", "items": [("stack", "min_transparency", None)]})
+    assert model.review_key(p, "selection") == k0
+    model.set_excluded([(1, "DSC00001.ARW")], True)
+    assert model.review_key(p, "selection") != k0                                  # a frame excluded by hand too
+    model.set_excluded([(1, "DSC00001.ARW")], False)
+    assert model.review_key(p, "selection") == k0
+
+
+def test_the_pause_in_french_on_the_graph(world, model, page, monkeypatch):
+    p = model.view(1)
+    appmod.apply_language("fr")
+    pin(model, monkeypatch)
+    model.set_breakpoint([p], "calibration")
+    page.refresh()
+    settle(world["w"], page)
+    it = item_of(page, "calibration")
+    assert "Point de vérification : l'exécution s'arrête ici pour votre vérification." in it.toolTip()
+    assert "Pause définie dans 1 workflow sur 4." in it.toolTip()
+    m = menu_of(page, node(page, "calibration"), monkeypatch)
+    names = [a.text() for a in m.actions()]
+    assert "Pause ici pour vérification" in names and "Pause here for review" not in names
+    next(a for a in m.actions() if a.text() == "Pause ici pour vérification").trigger()
+    assert page.graph.toast.text() == "L'exécution s'arrêtera après Calibration pour votre vérification dans 4 workflows"
+    for text in ("Pause here for review", "Mark as reviewed", "No more pause after {block}",
+                 "The run will stop after {block} for your review in {n} workflows", "{block} marked as reviewed",
+                 "Pause set after {block}", "Pause removed after {block}",
+                 "Paused: check this block (Inspect), then Continue from the Run window.",
+                 "Reviewed: the run goes through while these results stay as they are."):
+        assert text in i18n._cat and i18n._cat[text] != text, text
+    assert untranslated(texts_of(page)) == []
+    model.undo()
+    appmod.apply_language("en")
+    page.refresh()
+    settle(world["w"], page)
 
 
 # ---------------------------------------------------------------------------------------------- last

@@ -17,6 +17,7 @@
  "Waiting": "En attente",
  "Done": "Terminé",
  "Not run": "Non exécuté",
+ "{n} stage computed in {t}.": "{n} étape calculée en {t}.",
  "{n} stages computed in {t}.": "{n} étapes calculées en {t}.",
  "Layers ready in Post: {names}": "Calques prêts dans le post-traitement : {names}",
  "Stopped. What was computed is kept; the next run goes on from where this one stopped.": "Arrêtée. Ce qui a été calculé est conservé ; la prochaine exécution reprend là où celle-ci s'est arrêtée.",
@@ -131,5 +132,19 @@
  "resuming the training at step {0}/{1}": "reprise de l'entraînement à l'étape {0}/{1}",
  "training done in {0} min, final loss {1}": "entraînement terminé en {0} min, perte finale {1}",
  "sky fitted on {0} of {1} sky samples ({2} px blocks); gradient {3} on a sky of {4} ({5})": "ciel ajusté sur {0} échantillons sur {1} (blocs de {2} px) ; gradient {3} sur un ciel de {4} ({5})",
- "simple output {0} x {1} from {2}, useful frame x {3}-{4}, y {5}-{6}; sky: {7}": "rendu simple {0} x {1} à partir de {2}, zone utile x {3}-{4}, y {5}-{6} ; ciel : {7}"
+ "simple output {0} x {1} from {2}, useful frame x {3}-{4}, y {5}-{6}; sky: {7}": "rendu simple {0} x {1} à partir de {2}, zone utile x {3}-{4}, y {5}-{6} ; ciel : {7}",
+ "Open in Inspect": "Ouvrir dans Inspection",
+ "Continue": "Continuer",
+ "{n} more pause after it: {blocks}": "{n} autre pause ensuite : {blocks}",
+ "{n} more pauses after it: {blocks}": "{n} autres pauses ensuite : {blocks}",
+ "Workflow: {names}": "Workflow : {names}",
+ "Workflows: {names}": "Workflows : {names}",
+ "Stops after {block} for your review": "S'arrête après {block} pour votre vérification",
+ "Paused for your review at {block}: check it in Inspect, then Continue.": "En pause pour votre vérification à {block} : vérifiez-le dans Inspection, puis cliquez sur Continuer.",
+ "Continue goes on with the run.": "Continuer reprend l'exécution.",
+ "Waiting for your review": "En attente de votre vérification",
+ "Paused for your review": "En pause pour vérification",
+ "Run paused for your review at {block}: {n} stage in {t}": "Exécution en pause pour votre vérification à {block} : {n} étape en {t}",
+ "Run paused for your review at {block}: {n} stages in {t}": "Exécution en pause pour votre vérification à {block} : {n} étapes en {t}",
+ "{text}": "{text}"
 }

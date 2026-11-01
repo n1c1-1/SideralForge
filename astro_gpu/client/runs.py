@@ -8,6 +8,11 @@ progress stays in the status bar and on the graph), and Stop ends it so that the
 end the rows keep their final state and a recap says what was computed, what failed and which blocks were not run
 because of it, in plain words.
 
+When the plan stops at a breakpoint ("Pause here for review") the dialog says so before the run ("Stops after
+Calibration for your review"), and once the run is over a yellow box asks for the review: Continue (the results are
+marked as checked, the run goes on to the next pause or the end) and Open in Inspect. With nothing to compute before
+the review (the block is done already) the dialog opens on that box.
+
 The dialog is not modal. ``RunDialog`` reads a ``RunTrack`` (services/run.py) through the controller and redraws when
 it changes.
 """
@@ -28,8 +33,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .blocks import ENGINE_BLOCK, Graph, Node, block_title
-from .i18n import _, all_workflows, hm
+from .blocks import ENGINE_BLOCK, PAUSE_COL, Graph, Node, block_title, review_title
+from .i18n import _, all_workflows, hm, plural
 from .services.run import (
     DONE,
     FAILED,
@@ -275,11 +280,33 @@ class RunDialog(QDialog):
         self.done_note = label("", "small")
         self.done_note.setStyleSheet(f"color: {OK}; font-size: 9pt;")
         v.addWidget(self.done_note)
+        self.pause_note = label("", None, wrap=True)                   # "Stops after Calibration for your review"
+        self.pause_note.setStyleSheet(f"color: {PAUSE_COL};")
+        v.addWidget(self.pause_note)
+        self.pause_more = label("", "small", wrap=True)                # which workflows, which pauses come after
+        v.addWidget(self.pause_more)
         self.hint = label("", "small", wrap=True)
         v.addWidget(self.hint)
         self.recap = Box(OK)
         self.recap.hide()
         v.addWidget(self.recap)
+        self.review = Box(PAUSE_COL)                                   # the pause: what to do now
+        self.review_text = label("", None, wrap=True)
+        self.review_more = label("", "small", wrap=True)
+        self.review.v.addWidget(self.review_text)
+        self.review.v.addWidget(self.review_more)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        self.b_inspect = QPushButton(_("Open in Inspect"))
+        self.b_inspect.clicked.connect(self._inspect)
+        self.b_continue = QPushButton(_("Continue"))
+        self.b_continue.setObjectName("primary")
+        self.b_continue.clicked.connect(self._continue)
+        buttons.addWidget(self.b_inspect)
+        buttons.addWidget(self.b_continue)
+        self.review.v.addLayout(buttons)
+        self.review.hide()
+        v.addWidget(self.review)
         v.addSpacing(8)
         foot = QHBoxLayout()
         col = QVBoxLayout()
@@ -322,6 +349,46 @@ class RunDialog(QDialog):
         if self.c is not None:
             self.c.stop()
         self.refresh()
+
+    def _continue(self):
+        """Continue: the review is done, the run goes on (the controller makes the next plan and starts it)."""
+        if self.c is not None:
+            self.c.continue_run()
+
+    def _inspect(self):
+        if self.c is not None:
+            self.c.open_in_inspect()
+
+    # ------------------------------------------------------------ the pause
+    @property
+    def pause(self):
+        """The review this dialog's plan stops at (model.Pause), or None."""
+        return self.c.pause if self.c is not None and self.c.plan is self.plan else None
+
+    def paused(self) -> bool:
+        """Whether the dialog asks for a review now: the run ended at its breakpoint, or the block is computed already
+        and there is nothing to run before it."""
+        pa, t = self.pause, self.track
+        if pa is None:
+            return False
+        if t is None:
+            return not (self.plan is not None and self.plan.jobs)
+        return t.finished and t.status == "done"
+
+    def _pause_lines(self) -> tuple[str, str]:
+        """(what the plan says about the pause, its second line): the block it stops after; the workflows that pause
+        here when not all of them do, and the later pauses."""
+        pa = self.pause
+        if pa is None:
+            return "", ""
+        later = ", ".join(review_title(k) for k in pa.later)
+        more = plural(len(pa.later), "{n} more pause after it: {blocks}", "{n} more pauses after it: {blocks}",
+                      blocks=later) if pa.later else ""
+        names = [q.name for q in self.s.paths if q.pid in pa.pids]
+        who = plural(len(names), "Workflow: {names}", "Workflows: {names}", names=", ".join(names)) \
+            if names and len(names) < len(self.s.paths) else ""
+        return (_("Stops after {block} for your review").format(block=review_title(pa.block)),
+                " · ".join(x for x in (who, more) if x))
 
     def finish_now(self):
         """For scripted walkthroughs: wait until the run is over."""
@@ -391,6 +458,18 @@ class RunDialog(QDialog):
                                             "project's drive.").format(need=size_text(need), free=size_text(free)),
                                           "warn", wrap=True))
                 self.warn.itemAt(self.warn.count() - 1).widget().show()
+        paused = self.paused()
+        stops, more = self._pause_lines()
+        self.pause_note.setVisible(bool(stops) and ph in ("plan", "run") and not paused)
+        self.pause_note.setText(stops)
+        self.pause_more.setVisible(bool(stops) and bool(more) and ph in ("plan", "run") and not paused)
+        self.pause_more.setText(more)
+        self.review.setVisible(paused)
+        if paused:
+            self.review_text.setText(_("Paused for your review at {block}: check it in Inspect, then Continue.").format(
+                block=review_title(self.pause.block)))
+            self.review_more.setText(more or _("Continue goes on with the run."))
+            self.b_continue.setEnabled(self.c is not None and not self.c.running)
         # the notes under the rows
         n_done = self._up_to_date() if ph == "plan" and self.show_done else 0
         self.done_note.setText(_("Already up to date: {n} blocks").format(n=n_done) if n_done else "")
@@ -404,7 +483,10 @@ class RunDialog(QDialog):
         # the footer
         self.summary.setStyleSheet("")
         self.detail.setText("")
-        if ph == "plan":
+        if ph == "plan" and paused:
+            self.summary.setText(_("Waiting for your review"))
+            self.summary.setStyleSheet(f"color: {PAUSE_COL};")
+        elif ph == "plan":
             tot = self.plan.seconds if self.plan is not None else 0.0
             self.summary.setText(_("Duration: {t} · disk: {gb} GB").format(
                 t=duration_text(tot, self.plan.measured), gb=size_text(self.plan.disk_gb)) if n else _("Nothing to run"))
@@ -413,12 +495,12 @@ class RunDialog(QDialog):
         else:
             self._fill_end(t)
         stopping = self.c is not None and self.c.phase == "stopping"
-        self.b_cancel.setText(_("Cancel") if ph == "plan" else _("Close"))
+        self.b_cancel.setText(_("Cancel") if ph == "plan" and not paused else _("Close"))
         self.b_cancel.setVisible(ph != "end")
         self.b_stop.setVisible(ph == "run")
         self.b_stop.setEnabled(self.c is not None and self.c.phase == "running")
         self.b_stop.setText(_("Stopping…") if stopping else _("Stop"))
-        self.b_run.setVisible(ph == "plan")
+        self.b_run.setVisible(ph == "plan" and not paused)
         self.b_run.setEnabled(bool(n) and self.s.sources_loaded and (self.c is None or not self.c.running))
         self.b_done.setVisible(ph == "end")
         self.b_log.setVisible(ph == "end" and t is not None and (t.count()[FAILED] > 0 or t.lost or t.status == "failed"))
@@ -447,6 +529,8 @@ class RunDialog(QDialog):
         color = {"done": OK, "failed": BAD, "interrupted": WARN}[t.status]
         text = {"done": _("Done in {t}").format(t=hm(t.elapsed())),
                 "failed": _("Failed"), "interrupted": _("Run stopped")}[t.status]
+        if self.paused():
+            color, text = PAUSE_COL, _("Paused for your review")
         self.summary.setText(text)
         self.summary.setStyleSheet(f"color: {color};")
 
@@ -470,7 +554,8 @@ class RunDialog(QDialog):
         notrun = [(r, js) for r, js in by_row if js and all(j.state in (SKIPPED, NOT_STARTED) for j in js)]
         col = {"done": OK, "interrupted": WARN}.get(t.status, BAD)
         if t.status == "done":
-            lines.append((_("{n} stages computed in {t}.").format(n=c["computed"], t=hm(t.elapsed())), OK))
+            lines.append((plural(c["computed"], "{n} stage computed in {t}.", "{n} stages computed in {t}.",
+                                 t=hm(t.elapsed())), OK))
             names = [v.name for v in self.s.paths if v.rendered and v.pid in self._plan_wf()]
             if names:
                 lines.append((_("Layers ready in Post: {names}").format(names=", ".join(names)), ""))

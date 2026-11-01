@@ -64,7 +64,11 @@ class Session:
 @dataclass
 class Workflow:
     """One way to process the project: its options, the values the user stored ({stage: {param: value}}), an
-    optional early exit, and the workflow it is a variant of (Keep / Discard pending)."""
+    optional early exit, and the workflow it is a variant of (Keep / Discard pending).
+
+    ``breakpoints``: the blocks (engine names: "calibration", "stacking"...) after which a run pauses for the user to
+    check the results. It is how the user wants to work, not a way to compute: no key reads it (core/store.py and
+    core/workflow.py never see it), so adding or removing one never makes a result Outdated."""
 
     id: int
     name: str
@@ -72,6 +76,7 @@ class Workflow:
     params: dict[str, dict[str, Any]] = field(default_factory=dict)
     end: str | None = None
     variant_of: int | None = None
+    breakpoints: list[str] = field(default_factory=list)
 
     def stored(self, stage: str) -> dict[str, Any]:
         """The values stored for a stage (a copy)."""
@@ -232,6 +237,7 @@ class Project2:
             if not isinstance(w.params, dict) or not all(isinstance(k, str) and isinstance(v, dict)
                                                          for k, v in w.params.items()):
                 raise ValueError(f"workflow {w.id}: params must be {{stage: {{param: value}}}}")
+            check_breakpoints(w.breakpoints, f"workflow {w.id}")
         if self.current is not None and self.current not in wids:
             raise ValueError(f"current workflow {self.current} does not exist")
         if not isinstance(self.devices, dict):
@@ -257,7 +263,8 @@ class Project2:
                     for s in d.get("sessions") or []]
         workflows = [Workflow(id=w["id"], name=w.get("name", ""), options=wfl.check_options(w.get("options") or {}),
                               params=_copy_params(w.get("params") or {}), end=w.get("end"),
-                              variant_of=w.get("variant_of"))
+                              variant_of=w.get("variant_of"),
+                              breakpoints=_breakpoints(w.get("breakpoints")))      # absent in older projects: none
                      for w in d.get("workflows") or []]
         nxt = d.get("next_workflow_id") or (max((w.id for w in workflows), default=0) + 1)
         p = cls(name=d.get("name", ""), description=d.get("description", ""), created=d.get("created", ""),
@@ -279,6 +286,32 @@ def _is_int(v: Any) -> bool:
 def _copy_params(params: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """A deep copy, without the stages that store nothing."""
     return {st: copy.deepcopy(dict(kv)) for st, kv in params.items() if kv}
+
+
+def check_breakpoints(blocks: Any, where: str = "breakpoints") -> list[str]:
+    """The breakpoints as they are stored: a list of distinct block names of the engine (core/workflow.BLOCKS)."""
+    if not isinstance(blocks, list) or not all(isinstance(b, str) for b in blocks):
+        raise ValueError(f"{where}: breakpoints must be a list of block names")
+    unknown = [b for b in blocks if b not in wfl.BLOCKS]
+    if unknown:
+        raise ValueError(f"{where}: no such block to pause after: {unknown} (known: {list(wfl.BLOCKS)})")
+    if len(set(blocks)) != len(blocks):
+        raise ValueError(f"{where}: a breakpoint is listed twice: {blocks}")
+    return blocks
+
+
+def _breakpoints(raw: Any) -> list[str]:
+    """The breakpoints of a workflow from JSON: none when the key is absent (a project saved before breakpoints),
+    each block once, in the graph's order."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"breakpoints must be a list of block names, not {raw!r}")
+    seen = [b for b in raw if isinstance(b, str)]
+    if len(seen) != len(raw):
+        raise ValueError(f"breakpoints must be a list of block names: {raw!r}")
+    order = list(wfl.BLOCKS)
+    return sorted(dict.fromkeys(seen), key=lambda b: order.index(b) if b in order else len(order))
 
 
 def _target(d: dict[str, Any]) -> Target:

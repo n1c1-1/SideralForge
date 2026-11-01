@@ -171,6 +171,98 @@ def test_state_file(tmp_path):
     assert p2.read_state(root)["last_keys"]["1"]["stack"] == "0123456789abcdef"
 
 
+# ---------------------------------------------------------------------------------------------- breakpoints
+
+def _keyed_project(root: Path) -> Project2:
+    """A saved project of the real stages with two workflows and three raws (the keys read the frame list)."""
+    raws = root.parent / "raw" / "lights"
+    raws.mkdir(parents=True)
+    for i in range(3):
+        (raws / f"IMG_{i:03d}.ARW").write_bytes(b"\0" * (100 + 10 * i))
+    p = p2.create(root, "Keyed", Target(name="IC 1805"))
+    p.sessions = [Session(1, "night 1", lights=[str(raws)])]
+    p.add_workflow("Full", FULL, {"stack": {"scale": 2.0}, "denoise": {"iterations": 6000}})
+    p.add_workflow("Classic stack", CLASSIC)
+    return p
+
+
+def test_breakpoints_are_saved_loaded_and_empty_by_default(tmp_path):
+    p = _keyed_project(tmp_path / "k")
+    assert all(w.breakpoints == [] for w in p.workflows)
+    p.workflows[0].breakpoints = ["calibration", "stacking"]
+    p2.save(p)
+    d = json.loads((p.root / p2.FILE).read_text(encoding="utf-8"))
+    assert [w["breakpoints"] for w in d["workflows"]] == [["calibration", "stacking"], []]
+    q = p2.load(p.root)
+    assert q.workflows[0].breakpoints == ["calibration", "stacking"] and q.workflows[1].breakpoints == []
+    assert q == p and q.to_dict() == p.to_dict()
+
+
+def test_a_project_saved_before_breakpoints_loads_with_none(tmp_path):
+    p = _keyed_project(tmp_path / "k")
+    p2.save(p)
+    f = p.root / p2.FILE
+    d = json.loads(f.read_text(encoding="utf-8"))
+    for w in d["workflows"]:
+        del w["breakpoints"]                                  # the file of an earlier version
+    f.write_text(json.dumps(d), encoding="utf-8")
+    q = p2.load(p.root)
+    assert [w.breakpoints for w in q.workflows] == [[], []]
+    p2.save(q)                                                # and it is saved with the field from now on
+    assert [w["breakpoints"] for w in json.loads(f.read_text(encoding="utf-8"))["workflows"]] == [[], []]
+
+
+def test_breakpoints_are_checked_and_kept_in_the_graph_order(tmp_path):
+    p = _keyed_project(tmp_path / "k")
+    p.workflows[0].breakpoints = ["stacking", "calibration", "stacking"]
+    d = p.to_dict()
+    assert Project2.from_dict(d, p.root).workflows[0].breakpoints == ["calibration", "stacking"]   # once, in order
+    for bad, why in ((["nowhere"], "no such block"), ("calibration", "list"), ([3], "list"),
+                     (["calibration", "calibration"], "twice")):
+        p.workflows[0].breakpoints = bad
+        with pytest.raises(ValueError, match=why):
+            p.validate()
+    d["workflows"][0]["breakpoints"] = ["nowhere"]
+    with pytest.raises(ValueError, match="no such block"):
+        Project2.from_dict(d, p.root)
+    d["workflows"][0]["breakpoints"] = "calibration"
+    with pytest.raises(ValueError, match="list"):
+        Project2.from_dict(d, p.root)
+
+
+def test_breakpoints_never_enter_a_key(tmp_path):
+    """A breakpoint is how the user works, not how the image is computed: every stage key, every key part and every block
+    key is what it was without them, and what the file of an earlier version (no field at all) gives."""
+    from astro_gpu.core.store import Keys
+    p = _keyed_project(tmp_path / "k")
+
+    def everything(proj):
+        k = Keys(proj)
+        return {w.id: {"keys": k.keys(w.id), "parts": {s: k.key_parts(w.id, s) for s in k.chain(w.id)},
+                       "blocks": {b: k.block_key(w.id, b) for b, _s in k.rules.chains.blocks_in(k.chain(w.id))}}
+                for w in proj.workflows}
+    without = everything(p)
+    p2.save(p)
+    old = json.loads((p.root / p2.FILE).read_text(encoding="utf-8"))
+    for w in old["workflows"]:
+        del w["breakpoints"]
+    assert everything(Project2.from_dict(old, p.root)) == without                  # an earlier version's file
+    for w in p.workflows:
+        w.breakpoints = list(wfl.BLOCKS)                                           # a pause after every block
+    assert everything(p) == without
+    p.workflows[0].breakpoints = ["calibration"]
+    assert everything(p) == without
+    assert len({k for w in without.values() for k in w["keys"].values()}) > 14     # the keys do tell stages apart
+
+
+def test_no_engine_module_that_makes_keys_or_plans_reads_breakpoints():
+    """The rule written down: only the definition (project2) and the client know of breakpoints."""
+    core = Path(p2.__file__).parent
+    for name in ("store.py", "workflow.py", "runner2.py", "estimate.py", "params.py", "stage.py"):
+        assert "breakpoint" not in (core / name).read_text(encoding="utf-8").lower(), name
+    assert "breakpoint" not in (core.parent / "api.py").read_text(encoding="utf-8").lower()
+
+
 # ---------------------------------------------------------------------------------------------- v1 folders
 
 def _write_v1(root: Path, params: dict, variants: dict | None = None, active: str = "") -> None:

@@ -45,5 +45,20 @@
   "Undone": "Annulé",
   "Redone": "Rétabli",
   "The settings cannot be read: {why}": "Les paramètres ne peuvent pas être lus : {why}",
-  "{label}: {old} → {new}": "{label} : {old} → {new}"
+  "{label}: {old} → {new}": "{label} : {old} → {new}",
+  "Review point: the run stops here for your review.": "Point de vérification : l'exécution s'arrête ici pour votre vérification.",
+  "Paused: check this block (Inspect), then Continue from the Run window.": "En pause : vérifiez ce bloc (Inspection), puis continuez depuis la fenêtre d'exécution.",
+  "Reviewed: the run goes through while these results stay as they are.": "Vérifié : l'exécution passe tant que ces résultats ne changent pas.",
+  "Pause set in {n} workflow of {total}.": "Pause définie dans {n} workflow sur {total}.",
+  "Pause set in {n} workflows of {total}.": "Pause définie dans {n} workflows sur {total}.",
+  "Pause here for review": "Pause ici pour vérification",
+  "The run stops after this block, so that you can check it before it goes on.": "L'exécution s'arrête après ce bloc, pour que vous le vérifiiez avant de continuer.",
+  "Mark as reviewed": "Marquer comme vérifié",
+  "The run will stop after {block} for your review": "L'exécution s'arrêtera après {block} pour votre vérification",
+  "The run will stop after {block} for your review in {n} workflow": "L'exécution s'arrêtera après {block} pour votre vérification dans {n} workflow",
+  "The run will stop after {block} for your review in {n} workflows": "L'exécution s'arrêtera après {block} pour votre vérification dans {n} workflows",
+  "No more pause after {block}": "Plus de pause après {block}",
+  "{block} marked as reviewed": "{block} marqué comme vérifié",
+  "Pause set after {block}": "Pause définie après {block}",
+  "Pause removed after {block}": "Pause retirée après {block}"
 }
