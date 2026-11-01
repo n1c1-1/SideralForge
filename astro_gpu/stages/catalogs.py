@@ -96,7 +96,10 @@ class Catalogs(Stage):
         ctx.log(f"{len(fg)} faint Gaia stars {p.g_deep} < G < {p.g_faint} modelled")
 
         # ---------------- XP spectra of isolated stars (colour calibration)
-        d = np.load(ctx.out("gaia_deep.npz"))
+        # read once: indexing an npz file reads its array from the archive again at every access (in _isolated_xp's
+        # loop over the candidates that cost 4-5 min of CPU per run)
+        with np.load(ctx.out("gaia_deep.npz")) as z:
+            d = {k: z[k] for k in z.files}
         sel = _isolated_xp(d, p, W, H, scale)
         ctx.log(f"{len(sel)} isolated stars with an XP spectrum selected for the colour calibration")
         rows = _xp_spectra(ctx, d["source"][sel].astype(np.int64), 0.85, 1.0)
@@ -240,15 +243,15 @@ def _bright_missing(ctx, w, W, H, scale, epoch, deep, vmax=9.0):
 
 def _isolated_xp(d, p, W, H, scale):
     from scipy.spatial import cKDTree
-    g = d["g"]
+    g, x, y = d["g"], d["x"], d["y"]         # once: d may be an npz file, which reads an array at every access
     xp = np.nan_to_num(d["xp"]) == 1
-    cand = np.where(xp & (g > p.xp_gmin) & (g < p.xp_gmax) & (d["x"] > 60) & (d["x"] < W - 60)
-                    & (d["y"] > 60) & (d["y"] < H - 60))[0]
-    tree = cKDTree(np.c_[d["x"], d["y"]])
+    cand = np.where(xp & (g > p.xp_gmin) & (g < p.xp_gmax) & (x > 60) & (x < W - 60)
+                    & (y > 60) & (y < H - 60))[0]
+    tree = cKDTree(np.c_[x, y])
     keep = []
     rpx = 40.0 / scale                     # isolation: no star brighter than G + 3 within 40"
     for i in cand:
-        nb = tree.query_ball_point([d["x"][i], d["y"][i]], rpx)
+        nb = tree.query_ball_point([x[i], y[i]], rpx)
         if all(j == i or g[j] >= g[i] + 3 for j in nb):
             keep.append(i)
     keep = np.array(keep, int)

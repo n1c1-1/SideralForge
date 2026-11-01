@@ -596,6 +596,83 @@ def test_record_keeps_the_last_20_and_v1_timings_are_written_atomically(state):
     assert sorted(p.name for p in state.iterdir()) == ["timings.json", "timings2.json"]     # no temporary file left
 
 
+def test_workers_recording_at_once_all_keep_their_entries(tmp_path, monkeypatch):
+    """The GPU queues' workers finish stages at the same time: each read-change-write of timings2.json holds a lock
+    file, so no writer rewrites the file from a copy older than another one's entry. A lock left by a dead process
+    (old) is removed; a live one is waited for LOCK_WAIT at most, then the entry is written anyway."""
+    import threading
+    p = tmp_path / "timings2.json"
+    go = threading.Barrier(8)
+
+    def worker(i):
+        go.wait()
+        for k in range(10):
+            est.record(f"s{i}", 1.0 + k, 1.0, True, path=p)
+
+    ts = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    h = est.load_history(p)
+    assert {s: [r[0] for r in rows] for s, rows in h.items()} == {f"s{i}": [1.0 + k for k in range(10)] for i in range(8)}
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["timings2.json"]                # the lock is gone
+    lock = tmp_path / "timings2.json.lock"
+    lock.write_text("")
+    old = time.time() - est.LOCK_STALE - 5
+    os.utime(lock, (old, old))
+    est.record("stale", 1.0, 1.0, True, path=p)
+    assert "stale" in est.load_history(p) and not lock.exists()
+    lock.write_text("")                                                                  # a live writer
+    monkeypatch.setattr(est, "LOCK_WAIT", 0.3)
+    t0 = time.monotonic()
+    est.record("waited", 1.0, 1.0, True, path=p)
+    assert 0.3 <= time.monotonic() - t0 < 3 and "waited" in est.load_history(p) and lock.exists()
+
+
+def test_a_manifest_a_reader_holds_open_is_replaced_once_it_lets_go(tmp_path, monkeypatch):
+    """Windows refuses to replace a file that a reader has open (the client reading a job's manifest): the runners'
+    JSON writes retry the replace for a few seconds instead of failing the job, and leave no temporary file."""
+    import threading
+    from types import SimpleNamespace
+
+    from astro_gpu.core import runner as runner_mod
+    mf = tmp_path / "manifest.json"
+    mf.write_text(json.dumps({"status": "running"}))
+    reader = open(mf, "rb")
+    if os.name == "nt":                                   # the condition the retry is for
+        probe = tmp_path / "probe.json"
+        probe.write_text("{}")
+        with pytest.raises(PermissionError):
+            os.replace(probe, mf)
+        probe.unlink()
+    threading.Timer(0.4, reader.close).start()
+    runner2._write_json(mf, {"status": "done"})                                      # runner2: the commit
+    assert json.loads(mf.read_text()) == {"status": "done"}
+    reader = open(mf, "rb")
+    threading.Timer(0.4, reader.close).start()
+    runner_mod._write_manifest(SimpleNamespace(stage_dir=lambda s: tmp_path), "x", {"status": "failed"})   # v1's
+    assert json.loads(mf.read_text()) == {"status": "failed"}
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["manifest.json"]
+    # a reader that never lets go: the error comes after the retries, and the temporary file is removed
+    if os.name == "nt":
+        with open(mf, "rb"):
+            src = tmp_path / "new.json"
+            src.write_text("{}")
+            with pytest.raises(PermissionError):
+                runner_mod.replace_file(src, mf, attempts=3)
+            src.unlink()
+
+    def refuse(src, dst):
+        raise PermissionError("held")
+
+    monkeypatch.setattr(runner2, "replace_file", refuse)
+    with pytest.raises(PermissionError):
+        runner2._write_json(mf, {"status": "x"})
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["manifest.json"]
+    assert json.loads(mf.read_text()) == {"status": "failed"}
+
+
 def test_the_reference_is_heart_from_the_mockup_data():
     data = json.loads((TESTS.parent / "mockup" / "alt2" / "data" / "data.json").read_text(encoding="utf-8"))
     for s, d in data["stages"].items():

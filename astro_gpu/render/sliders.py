@@ -5,8 +5,8 @@ its slider positions:
 
 * engine layers (render_prep, render_prep_learned): each slider moves engine settings. The table gives their values
   at positions 0-4 for the default rendering; for another base the table's *step* from position 2 is added (sky_level,
-  faint_smooth, g_lim, d10, d7) or its *ratio* to position 2 multiplies the base (lc_*, chroma, neb_sharp, fine_k,
-  star_sat, star_glow). Between integer positions the value is linear. Values stay inside the settings' bounds;
+  dark_level, faint_smooth, g_lim, d10, d7) or its *ratio* to position 2 multiplies the base (lc_*, chroma, neb_sharp,
+  fine_k, star_sat, star_glow). Between integer positions the value is linear. Values stay inside the settings' bounds;
 * simple layers (render_simple): the tables of the classic layers of mockup/alt2/build/prepare.py, on the simple
   rendering's settings, with the same rule (the defaults of ``SimpleSettings`` are those tables' position 2).
 
@@ -23,7 +23,8 @@ from .simple import SimpleSettings
 #: the kinds of workflow layers: engine (with Stars), simple (without Stars), stacking (pulled from Stacking)
 KINDS = ("engine", "simple", "stacking")
 #: settings moved by a step (the others by a ratio)
-ADDITIVE = frozenset({"sky_level", "faint_smooth", "g_lim", "d10", "d7", "sky", "contrast", "noise_mix", "smooth_px"})
+ADDITIVE = frozenset({"sky_level", "dark_level", "faint_smooth", "g_lim", "d10", "d7", "sky", "contrast", "noise_mix",
+                      "smooth_px"})
 SUGGESTED = 2.0
 LO, HI = 0.0, 4.0
 
@@ -51,8 +52,12 @@ class Slider:
 
 NEBULA, STARS = "Nebula and background", "Stars"
 SLIDERS: tuple[Slider, ...] = (
+    # the background has two levels in the engine's tone curve, the dark clouds and the typical sky, and the curve keeps
+    # the dark level first: where the sky lies close above the darkest areas (a field filled with nebula) the sky level
+    # cannot be reached and has no effect (heart_a7s: no change below 34.6 /255, the faithful rendering asks 24). The
+    # slider moves both in proportion, so it always moves a level the curve holds
     Slider("sky", "Sky", NEBULA, ("darker", "brighter"),
-           {"sky_level": (12, 18, 24, 30, 36)},
+           {"sky_level": (12, 18, 24, 30, 36), "dark_level": (5, 7.5, 10, 12.5, 15)},
            {"sky": (0.10, 0.15, 0.20, 0.26, 0.32)}),
     Slider("contrast", "Contrast", NEBULA, ("softer", "stronger"),
            {"lc_fine": (0.95, 1.0, 1.05, 1.15, 1.3), "lc_medium": (1.0, 1.15, 1.3, 1.55, 1.85),

@@ -341,6 +341,7 @@ VALUE_TEXTS: dict[str, str] = {
     "measured on the nebula": "measured on the nebula",
     "background_poly": "simple polynomial background",
     "channel medians": "median of each channel",
+    "camera-colour polynomial, made grey": "smooth sky of each channel, made grey",
 }
 #: texts of the interface the formatting needs
 UI_TEXTS = ("Yes", "No", "{n} values")

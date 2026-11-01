@@ -78,14 +78,7 @@ class Color(Stage):
         img = ctx.load("stack", "drz_full.npy").astype(np.float32)
         xp = np.load(ctx.input("catalogs", "gaia_xp.npz"))
         lam = xp["lam"]
-        Hh, Ww = img.shape[1:]
-        x, y = xp["x"], xp["y"]
-        m = (x > 50) & (x < Ww - 50) & (y > 50) & (y < Hh - 50)
-        flux, peak = star_photometry(img, np.c_[x[m], y[m]], p.aperture)
-        chmax = np.array([np.nanpercentile(img[c], 99.999) for c in range(3)])
-        ok = (flux > 0).all(1) & (peak < 0.45 * chmax).all(1) & np.isfinite(flux).all(1)
-        idx = np.where(m)[0][ok]
-        cam = flux[ok]
+        idx, cam = colour_stars(img, xp["x"], xp["y"], p.aperture)
         if len(idx) < 50:
             raise StageError(f"only {len(idx)} colour stars could be measured (need 50)")
         ctx.progress(0.3, f"fitting the spectral response on {len(idx)} stars")
@@ -177,6 +170,17 @@ class Color(Stage):
                     "warning")
         ctx.log(f"spectral response from {len(idx)} Gaia XP stars, chromaticity residual {np.median(rs):.4f}")
         ctx.preview("spectral_response", response_plot(lam, S, len(idx)))
+
+
+def colour_stars(img, x, y, aperture):
+    """The colour stars of a stack: the catalogue stars at (x, y) away from the edges, measured in the aperture,
+    positive in every channel and unsaturated. Returns (their indices in x, their camera fluxes (N, 3))."""
+    Hh, Ww = img.shape[1:]
+    m = (x > 50) & (x < Ww - 50) & (y > 50) & (y < Hh - 50)
+    flux, peak = star_photometry(img, np.c_[x[m], y[m]], aperture)
+    chmax = np.array([np.nanpercentile(img[c], 99.999) for c in range(3)])
+    ok = (flux > 0).all(1) & (peak < 0.45 * chmax).all(1) & np.isfinite(flux).all(1)
+    return np.where(m)[0][ok], flux[ok]
 
 
 def synthetic_spectra(lam) -> np.ndarray:

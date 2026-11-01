@@ -68,16 +68,25 @@ def canonical_json(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+def mtime_key(mtime_ns: int) -> int:
+    """A file's mtime as a key holds it: in seconds, rounded UP to an even second. exFAT keeps modification times to
+    2 s and rounds a copied file's time up to the next even second, so a copy from NTFS to an exFAT disk gets a
+    different time; rounded up to the even second, both give the same. A time already on an even second (every file
+    written on exFAT) keeps its value, so the keys already computed there do not move."""
+    return -(-mtime_ns // 2_000_000_000) * 2
+
+
 def file_id(path: str | Path) -> list:
-    """What stands for a file in a key: [name, size, mtime in whole seconds], or [name, None, None] when it does not
-    exist. The folder is left out, so a copy elsewhere that keeps the date keeps the key."""
+    """What stands for a file in a key: [name, size, mtime in seconds rounded up to even (``mtime_key``)], or
+    [name, None, None] when it does not exist. The folder is left out, so a copy elsewhere (on NTFS or exFAT) that
+    keeps the date keeps the key."""
     p = Path(path)
     name = os.path.normcase(p.name)
     try:
         st = p.stat()
     except OSError:
         return [name, None, None]
-    return [name, st.st_size, st.st_mtime_ns // 1_000_000_000]
+    return [name, st.st_size, mtime_key(st.st_mtime_ns)]
 
 
 def _absolute(project: Project2, path: str | Path) -> str:

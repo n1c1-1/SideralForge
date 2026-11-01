@@ -4,8 +4,13 @@ The output of the workflows without Stars (Classic stack, Classic + denoise) and
 
 * lin.npy = M x stack - sky, in display RGB: the denoised stack when the workflow has Denoise, else the stack; the sky
   of the Gradient block (background_poly) when there is one;
-* without Color (the Raw stack exit), M is the identity and the sky the median of each channel; the channels are then
-  scaled to the same sky spread, so that the camera's colour balance does not tint the preview;
+* with Color, M is the colour stage's matrix with the emission anchor of render_prep (``anchor_matrix``): the line
+  emission measured on the stack gets the colour of an HII spectrum, the star colours are unchanged. Without it the
+  matrix, fitted on the stars, rendered the H-alpha of an astro-modified camera violet (heart_a7s);
+* without Color (the Raw stack exit), M is the identity; the sky of each channel (a smooth polynomial) is subtracted,
+  the channels are scaled to the same sky spread, and the sky's brightness is added back grey: the camera's colour
+  balance and the colour of the light pollution do not tint the preview, the gradient stays visible (it is the
+  Gradient block's job), the colours of the objects stay camera colours;
 * lin_raw.npy (with Denoise): the same from the raw stack, for the noise slider of Post;
 * valid.npy, the covered pixels, and prep_simple.json: M, the crop, the statistics of the stretch (median, MAD and
   99.995th percentile of the luminance and of each channel), the settings.
@@ -16,11 +21,14 @@ import numpy as np
 from pydantic import field_validator
 
 from ..core.params import P, StageParams
-from ..core.stage import Context, Stage
-from .background_poly import coverage, has_input, sky_of, stack_source
-from .render_prep import crop_box
+from ..core.stage import Context, Stage, StageError
+from .background_poly import LUM, coverage, has_input, sky_of, stack_source
+from .render_prep import anchor_matrix, crop_box
 
 STRETCHES = ["auto"]                       # the other stretches of the spec (GHS, arcsinh, STF, none) are not in v1
+#: side of the blocks the emission colour is measured in (stack pixels): the area of render_prep's blocks (64 px of the
+#: image reduced by 2)
+EMISSION_BLOCK = 128
 
 
 def sky_spread(v: np.ndarray) -> float:
@@ -29,6 +37,78 @@ def sky_spread(v: np.ndarray) -> float:
     med = float(np.median(v))
     below = med - v[v < med]
     return 1.4826 * float(np.median(below)) if below.size else 0.0
+
+
+def raw_exit_sky(ctx: Context, cam: np.ndarray, valid: np.ndarray) -> tuple[np.ndarray, str]:
+    """The sky of the Raw stack exit, per camera channel: the Gradient block's polynomial with its default settings
+    (in camera colours). The exit does not remove it: the stage subtracts it per channel and adds back its brightness,
+    grey. Where it cannot be fitted (a tiny stack), the median of each channel."""
+    from .background_poly import BackgroundPolyParams, fit_poly_sky, poly_sky
+    bp = BackgroundPolyParams()
+    try:
+        fit = fit_poly_sky(cam, valid, bp.degree, bp.samples, bp.object_clip)
+    except StageError as exc:
+        ctx.log(f"the sky could not be modelled ({exc}): the median of each channel is taken", "warning")
+        return np.array([np.median(cam[c][valid]) for c in range(3)], np.float32)[:, None, None], "channel medians"
+    return poly_sky(fit["coefs"], bp.degree, *cam.shape[1:]), "camera-colour polynomial, made grey"
+
+
+def emission_colour(cam: np.ndarray, shown: np.ndarray, block: int = EMISSION_BLOCK) -> np.ndarray | None:
+    """Camera colour (R = 1) of the line emission of a stack that still has its stars, its sky removed.
+
+    render_prep measures it on the starless image, on the structure of the nebula (a band-pass, free of any zero
+    point). With the stars in, their light dominates that structure everywhere (heart_a7s: G / R 1.06, a star colour,
+    against 0.35 on the starless image), so the emission is never found. With the sky removed, the diffuse light
+    itself can be measured: the median of each channel in blocks (the stars cover a minority of the pixels and do not
+    move it), and as in render_prep the reddest fifth (lowest G / R) of the brightest fifth of the blocks (in red).
+    heart_a7s: (1, 0.39, 0.24) here, (1, 0.35-0.37, 0.19-0.21) on the starless image. None if too few blocks."""
+    C, H, W = cam.shape
+    hb, wb = H // block, W // block
+    if hb * wb < 20:
+        return None
+    ok = shown[:hb * block, :wb * block].reshape(hb, block, wb, block).mean(axis=(1, 3)) >= 0.99
+    med = np.stack([np.median(cam[c, :hb * block, :wb * block].reshape(hb, block, wb, block).transpose(0, 2, 1, 3)
+                              .reshape(hb, wb, -1)[ok], axis=-1) for c in range(C)]).astype(np.float64)
+    if med.shape[1] < 20:
+        return None
+    bright = (med[0] > np.percentile(med[0], 80)) & (med[0] > 0)
+    if bright.sum() < 10:
+        return None
+    gr, br = med[1, bright] / med[0, bright], med[2, bright] / med[0, bright]
+    red = gr <= np.percentile(gr, 20)
+    return np.array([1.0, float(np.median(gr[red])), float(np.median(br[red]))])
+
+
+def emission_matrix(ctx: Context, M: np.ndarray, stack: np.ndarray, valid: np.ndarray, shown: np.ndarray):
+    """The colour matrix with the emission anchor of render_prep (``anchor_matrix``), measured on the raw stack: the
+    star colours are those the colour stage fitted the matrix on (``color.colour_stars``), the emission is measured
+    against the stack's own sky, a polynomial in camera colours with the Gradient block's default settings (a camera
+    colour is measured in camera colours: the Gradient block fits each display channel apart). The workflow's
+    denoiser and Gradient settings do not change it: Classic and Classic + denoise get the same matrix.
+    Returns (matrix, measured emission colour or None, weight)."""
+    from .background_poly import BackgroundPolyParams, fit_poly_sky, poly_sky
+    from .color import colour_stars
+    try:
+        cam_hii = np.load(ctx.input("color", "specresp.npz"))["cam_hii"].astype(np.float64)
+        xp = np.load(ctx.input("catalogs", "gaia_xp.npz"))
+    except StageError:
+        return M, None, 0.0
+    if not np.isfinite(cam_hii).all() or cam_hii[0] <= 0:
+        return M, None, 0.0
+    aperture = float(ctx.manifest("color").get("params", {}).get("aperture", 5.0))
+    _, F = colour_stars(stack, xp["x"], xp["y"], aperture)
+    if len(F) < 50:
+        return M, None, 0.0
+    bp = BackgroundPolyParams()
+    try:
+        fit = fit_poly_sky(stack, valid, bp.degree, bp.samples, bp.object_clip)
+    except StageError:
+        return M, None, 0.0
+    e = emission_colour(stack - poly_sky(fit["coefs"], bp.degree, *stack.shape[1:]), shown)
+    if e is None:
+        return M, None, 0.0
+    Ma, w = anchor_matrix(M, cam_hii, F.T.astype(np.float64), e)
+    return Ma, e, w
 
 
 class RenderSimpleParams(StageParams):
@@ -56,7 +136,8 @@ class RenderSimple(Stage):
                    "stretch. Post renders it with its sliders (sky, contrast, saturation, noise).")
     deps = ("stack",)
     Params = RenderSimpleParams
-    version = "1"
+    version = "3"          # 2: the emission anchor of render_prep (the H-alpha of Classic was violet on heart_a7s);
+                           # 3: the Raw stack exit's sky made grey (it had the green of the light pollution)
 
     def run(self, ctx: Context, p: RenderSimpleParams) -> None:
         from ..render.simple import SimpleRenderEngine, SimpleSettings, image_stats
@@ -72,21 +153,51 @@ class RenderSimple(Stage):
         shown &= valid
         M = ctx.load("color", "M.npy").astype(np.float64) if color else np.eye(3)
         lin = np.tensordot(M.astype(np.float32), src, 1)
-        del src
         ctx.progress(0.2, "sky")
+        sky_name = "background_poly" if poly else "channel medians"
+        if not color:
+            # the spread of the sky of each channel, for the gains below, measured on the stack (the objects keep the
+            # scaling they had before the sky was made grey)
+            spread = np.array([sky_spread(lin[c][shown]) for c in range(3)])
         if poly:
             sky = sky_of(ctx, H, W)
+        elif not color:                             # the Raw stack exit: a grey sky (below)
+            sky, sky_name = raw_exit_sky(ctx, lin, valid)
         else:                                       # no Gradient block: the median of each channel
             sky = np.array([np.median(lin[c][shown]) for c in range(3)], np.float32)[:, None, None]
         lin -= sky
+        e, w = None, 0.0
+        if color:
+            ctx.progress(0.3, "emission colour")
+            stack = src if name == "stack/drz_full" else ctx.load("stack", "drz_full.npy").astype(np.float32)
+            Ma, e, w = emission_matrix(ctx, M, stack, valid, shown)
+            del stack
+            if w > 0:
+                # the same image and sky in the colours of the anchored matrix: Ma x stack - T x sky = T x lin
+                T = (Ma @ np.linalg.inv(M)).astype(np.float32)
+                lin = np.tensordot(T, lin, 1)
+                sky = np.tensordot(T, sky, 1)
+                M = Ma
+            if e is not None:
+                ctx.metric("emission_colour_measured", np.round(e, 3).tolist())
+                ctx.metric("emission_anchor_weight", round(w, 2))
+                ctx.log(f"line emission measured on the stack: camera colour R 1 : G {e[1]:.2f} : B {e[2]:.2f}"
+                        + (f"; rendered with the colour of an HII spectrum (weight {w:.2f}), the star colours "
+                           f"unchanged" if w > 0 else " - within the colours of the stars: matrix unchanged"))
+        del src
         gains = np.ones(3)
         if not color:
             # the camera's channels have different sensitivities: scaled to the same spread of the sky, the stretch
             # shows a neutral background (the spread below the median: the objects of the field are above it)
-            spread = np.array([sky_spread(lin[c][shown]) for c in range(3)])
             gains = spread[1] / np.maximum(spread, 1e-12)
             lin *= gains.astype(np.float32)[:, None, None]
-            ctx.log("no colour calibration: camera colours, each channel's sky set to zero and scaled to the same "
+            if sky.ndim == 3 and sky.shape[1] > 1:
+                # the brightness of the sky kept, grey: its variations (light pollution, the Moon, vignetting) stay
+                # visible, without the colour of that light in camera RGB (the green corner of heart_a7s)
+                grey = np.tensordot((LUM * gains).astype(np.float32), sky, 1)
+                lin += (grey - np.median(grey[shown]))[None]
+                del grey
+            ctx.log("no colour calibration: camera colours, each channel's sky made grey and scaled to the same "
                     f"spread (gains {', '.join(f'{g:.3f}' for g in gains)})")
         lin[:, ~valid] = 0
         ctx.progress(0.5, "statistics")
@@ -95,8 +206,9 @@ class RenderSimple(Stage):
         prep = {"M": (np.diag(gains) @ M).tolist(), "crop": [int(x0), int(x1), int(y0), int(y1)],
                 "median": stats["lum"]["median"], "mad": stats["lum"]["mad"], "p99995": stats["lum"]["p99995"],
                 "stats": stats, "stretch": p.stretch, "linked": p.linked, "denoised": denoised, "color": color,
-                "sky": "background_poly" if poly else "channel medians", "source": name, "gains": gains.tolist(),
+                "sky": sky_name, "source": name, "gains": gains.tolist(),
                 "exit": None if color else "stacking", "width": W, "height": H,
+                "emission": None if e is None else e.tolist(), "emission_anchor_weight": w,
                 "drizzle_scale": float(ctx.load_json("stack", "drz_meta.json").get("scale", 1.0))}
         del lin
         if denoised:

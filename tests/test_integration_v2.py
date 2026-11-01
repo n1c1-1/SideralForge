@@ -389,9 +389,17 @@ def test_toy_v2_run_equals_v1_bit_for_bit(tmp_path, state):
     # a slider moved away from 2 does change the layer
     moved = api.render_layer(p, classic, None, {"sky": 4.0}, 0.5, device="cpu").rgb
     assert moved.mean() > api.render_layer(p, classic, None, None, 0.5, device="cpu").rgb.mean()
-    # the Raw stack exit has no colour cast
-    sk = smoke.sanity(api.render_layer(p, raw, None, None, 0.5, device="cpu").rgb)["median_rgb"]
-    assert max(sk) / max(min(sk), 1e-9) < 1.05
+    # the Raw stack exit has no colour cast: its sky is grey in every corner (the median pixel of this scene is nebula).
+    # Before the sky was made grey the corners were 39 to 100 % off. The sky samples of this 192 x 256 toy are 4 px
+    # blocks: taking the darkest of them biases the green sky a few ADU low (up to 8 here, against a noise of 15), hence
+    # 15 %; real frames use blocks of 30-70 px (heart_a7s: corners within 1.4 levels of 255)
+    lay = api.render_layer(p, raw, None, None, 0.5, device="cpu")
+    x0, x1, y0, y1 = (v // 2 for v in lay.crop)
+    img = lay.rgb[:, y0:y1, x0:x1]
+    h, w = img.shape[1:]
+    for c in (img[:, :h // 5, :w // 5], img[:, :h // 5, -w // 5:], img[:, -h // 5:, :w // 5], img[:, -h // 5:, -w // 5:]):
+        sk = np.median(c.reshape(3, -1), axis=1)
+        assert sk.max() / max(sk.min(), 1e-9) < 1.15, sk
 
     # the comparison catches a v2 that differs: one value of the stack changed in a copy
     out = Path(api.stage_outputs(p, classic, "stack").dir)

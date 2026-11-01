@@ -50,12 +50,26 @@ def read_manifest(project: Project, stage: str) -> dict:
         return {}
 
 
+def replace_file(src: Path, dst: Path, attempts: int = 10) -> None:
+    """os.replace of a file over another, retried for about 5 s on PermissionError: on Windows a file cannot be
+    replaced while a reader has it open (the client reading a manifest, an antivirus, the indexer), usually for a
+    moment only. Without it a job failed when the client read its manifest at that instant."""
+    for i in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(min(0.05 * 2 ** i, 1.0))
+
+
 def _write_manifest(project: Project, stage: str, m: dict) -> None:
     p = _manifest_path(project, stage)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(m, indent=1, default=str), encoding="utf-8")
-    os.replace(tmp, p)
+    replace_file(tmp, p)
 
 
 class Pipeline:

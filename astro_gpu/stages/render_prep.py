@@ -436,9 +436,6 @@ def emission_anchor(astro, M, cam_hii, fs, dm, block=64):
     m = (g > 9) & (g < 13.5) & (F > 0).all(0)
     if m.sum() < 50 or not np.isfinite(cam_hii).all() or cam_hii[0] <= 0:
         return M, None, 0.0
-    v = F[:, m] / np.linalg.norm(F[:, m], axis=0)
-    n = np.linalg.svd(v.T, full_matrices=False)[2][2]          # normal of the plane of the star colours
-    g_red = float(np.percentile(F[1, m] / F[0, m], 0.5))       # the reddest stars, G / R
     a = np.stack([np.asarray(astro[c, ::2, ::2], np.float32) for c in range(3)])
     bp = np.stack([cv2.GaussianBlur(c, (0, 0), 2) - cv2.GaussianBlur(c, (0, 0), 16) for c in a])
     del a
@@ -459,11 +456,24 @@ def emission_anchor(astro, M, cam_hii, fs, dm, block=64):
         return M, None, 0.0
     red = top[top[:, 1] <= np.percentile(top[:, 1], 20)]
     e = np.array([1.0, float(np.median(red[:, 1])), float(np.median(red[:, 2]))])
+    M2, w = anchor_matrix(M, cam_hii, F[:, m], e)
+    return M2, e, w
+
+
+def anchor_matrix(M, cam_hii, F, e):
+    """The update of ``emission_anchor``, for an emission colour e (camera, R = 1) measured on the image and the camera
+    fluxes F (3, N) of bright unsaturated stars: M changed only across the plane of the star colours (rank one, along
+    its normal), so that every star keeps its calibrated colour and e gets the colour M gives the HII spectrum. Weight
+    1 when the emission is clearly redder (lower G / R) than the reddest stars, 0 within their colours.
+    Returns (matrix, weight)."""
+    v = F / np.linalg.norm(F, axis=0)
+    n = np.linalg.svd(v.T, full_matrices=False)[2][2]          # normal of the plane of the star colours
+    g_red = float(np.percentile(F[1] / F[0], 0.5))             # the reddest stars, G / R
     w = float(np.clip((g_red - e[1]) / (0.25 * g_red), 0, 1))
     if w <= 0 or abs(n @ e) < 1e-3:
-        return M, e, 0.0
+        return M, 0.0
     t = M @ (cam_hii / cam_hii[0])
-    return M + w * np.outer(t - M @ e, n) / (n @ e), e, w
+    return M + w * np.outer(t - M @ e, n) / (n @ e), w
 
 
 def diffuse_glow(N, good, frac, q=3.0) -> np.ndarray:

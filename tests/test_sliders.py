@@ -89,6 +89,28 @@ def test_steps_and_ratios():
     assert S.base_settings("engine", "Artistic").sky_level == PRESETS["Artistic"]["sky_level"]
 
 
+def test_the_sky_slider_never_falls_in_the_dead_zone_of_the_tone_curve():
+    """The tone curve keeps the dark level first: when the sky lies close above the darkest areas, sky levels below a
+    floor give one curve (heart_a7s: 34.6 /255 for anything asked below, the faithful default 24 included). Every
+    position of the slider must still move the sky, and position 2 must keep the base's curve exactly."""
+    from astro_gpu.render.engine import fit_tone_curve, tone_curve
+    # the statistics of heart_a7s (P7, Full, faithful and Artistic at 1/4): dark and sky percentiles, white
+    for base, (p_dark, p_sky, white) in ((None, (1.6264, 2.9055, 14.816)), ("Artistic", (1.4968, 2.8013, 18.741))):
+        sky = []
+        for pos in POSITIONS:
+            s = S.settings_at("engine", base, {"sky": pos})
+            lo, b, w = fit_tone_curve(p_dark, p_sky, white, s.dark_level / 255, s.sky_level / 255, s.toe)
+            sky.append(float(tone_curve(p_sky, lo, b, w, s.toe)))
+            if pos == 2:
+                b0 = S.base_settings("engine", base)
+                assert (lo, b, w) == fit_tone_curve(p_dark, p_sky, white, b0.dark_level / 255, b0.sky_level / 255,
+                                                    b0.toe)
+        assert all(b > a + 1e-4 for a, b in zip(sky, sky[1:])), (base, [round(255 * v, 1) for v in sky])
+    # the levels the curve cannot reach: with the sky level alone the slider was dead from 0 to 2 here
+    lo, b, w = fit_tone_curve(1.6264, 2.9055, 14.816, 10 / 255, 12 / 255, 0.015)
+    assert (lo, b, w) == fit_tone_curve(1.6264, 2.9055, 14.816, 10 / 255, 24 / 255, 0.015) and b == 1.0
+
+
 def test_greyed_sliders_give_their_reasons():
     eng = S.availability("engine", True)
     assert all(v == "" for v in eng.values())

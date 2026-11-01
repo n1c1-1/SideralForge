@@ -21,13 +21,19 @@ history (``seed``) before its first v2 run.
 from __future__ import annotations
 
 import json
+import os
 import statistics
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 HISTORY_FILE = "timings2.json"
 KEEP = 20                                      # entries kept per stage
+LOCK_WAIT = 5.0                                # seconds a writer of the history waits for another one
+LOCK_STALE = 30.0                              # a lock file older than this was left by a process that died
 
 #: the reference project, Heart: (seconds, GB in the stage folder) per stage, from mockup/alt2/data/data.json (its
 #: manifests of 2026-10-17); the two stages v2 adds are design guesses at Heart size (60 s and 30 s)
@@ -116,29 +122,72 @@ def record(stage: str, seconds: float, n_units: float, gpu: bool, path: str | Pa
     seed([(stage, seconds, n_units, _kind(gpu))], path, dedupe=False)
 
 
+@contextmanager
+def _locked(p: Path) -> Iterator[None]:
+    """Hold ``<history>.lock`` (created with O_EXCL) while the history is read, changed and written: the workers of
+    the GPU queues finish stages at the same time, and without it the second writer rewrote the file from what it
+    had read before the first one wrote, losing the first one's entry. A lock older than ``LOCK_STALE`` was left by a
+    process that died: it is removed. After ``LOCK_WAIT`` the update goes ahead without it (a job never waits long
+    for a hint)."""
+    lock = p.with_name(p.name + ".lock")
+    deadline = time.monotonic() + LOCK_WAIT
+    fd = None
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            break
+        except (FileExistsError, PermissionError):   # held (Windows: PermissionError while it is being deleted)
+            pass
+        except OSError:                                # no lock possible there
+            break
+        try:
+            if time.time() - lock.stat().st_mtime > LOCK_STALE:
+                lock.unlink()
+                continue
+        except OSError:
+            pass
+        if time.monotonic() > deadline:
+            break
+        time.sleep(0.01)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+            try:
+                lock.unlink()
+            except OSError:
+                pass
+
+
 def seed(entries: list[tuple[str, float, float, str]], path: str | Path | None = None, dedupe: bool = True) -> int:
     """Add (stage, seconds, units, "gpu" | "cpu") entries to the history; ``dedupe`` skips those already there.
-    Returns the number added. Never raises: the history is a hint."""
+    The read and the write are one step under a lock file (``_locked``), so workers that record at once all keep
+    their entries. Returns the number added. Never raises: the history is a hint."""
     from .runner import write_json_atomic
     p = Path(path or history_path())
-    d = load_history(p)
-    added = 0
-    for stage, s, u, kind in entries:
-        if not (s and u and s > 0 and u > 0):
-            continue
-        e = [round(float(s), 3), round(float(u), 3), kind]
-        rows = d.setdefault(stage, [])
-        if dedupe and e in rows:
-            continue
-        rows.append(e)
-        d[stage] = rows[-KEEP:]
-        added += 1
-    if added:
-        try:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            write_json_atomic(p, d)
-        except OSError:
-            return 0
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return 0
+    with _locked(p):
+        d = load_history(p)
+        added = 0
+        for stage, s, u, kind in entries:
+            if not (s and u and s > 0 and u > 0):
+                continue
+            e = [round(float(s), 3), round(float(u), 3), kind]
+            rows = d.setdefault(stage, [])
+            if dedupe and e in rows:
+                continue
+            rows.append(e)
+            d[stage] = rows[-KEEP:]
+            added += 1
+        if added:
+            try:
+                write_json_atomic(p, d)
+            except OSError:
+                return 0
     return added
 
 

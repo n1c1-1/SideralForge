@@ -554,6 +554,7 @@
  "measured on the nebula": "mesurée sur la nébuleuse",
  "simple polynomial background": "fond polynomial simple",
  "median of each channel": "médiane de chaque canal",
+ "smooth sky of each channel, made grey": "fond lisse de chaque canal, rendu gris",
  "camera profile ({project})": "profil de l'appareil ({project})",
  "{head}; the rejection on all channels left {pct} % of the H-alpha amplitude of the whole field: objects rejected on green and blue only": "{head} ; le rejet sur tous les canaux a laissé {pct} % de l'amplitude H-alpha de tout le champ : objets rejetés sur le vert et le bleu seulement",
  "focused, FWHM {fwhm} px (the measured stars are defocused rings)": "nette, FWHM {fwhm} px (les étoiles mesurées sont des anneaux défocalisés)",

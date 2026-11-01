@@ -246,6 +246,40 @@ def test_path_field_is_keyed_by_its_file(proj, tmp_path):
     assert file_id(tmp_path / "missing.pt") == ["missing.pt", None, None]
 
 
+def test_file_id_rounds_the_mtime_up_to_the_even_second_as_exfat_does(tmp_path):
+    """exFAT (the F: disk) keeps mtimes to 2 s and rounds a copied file's time UP to the next even second: the key
+    takes the time rounded up the same way, so an NTFS file and its copy on exFAT have the same id, and a file whose
+    time is already on an even second (anything written on exFAT) keeps the id the older rule (whole seconds) gave."""
+    f = tmp_path / "m.pt"
+    f.write_bytes(b"x" * 7)
+    base = 1_700_000_000 * 1_000_000_000                       # an even second, in ns
+    S = 1_000_000_000
+
+    def fid(ns: int) -> list:
+        os.utime(f, ns=(ns, ns))
+        assert f.stat().st_mtime_ns == ns                      # NTFS keeps it to 100 ns
+        return file_id(f)
+
+    want = {base: 1_700_000_000, base + 100: 1_700_000_002, base + S // 2: 1_700_000_002, base + S: 1_700_000_002,
+            base + 13 * S // 10: 1_700_000_002, base + 2 * S: 1_700_000_002, base + 2 * S + 100: 1_700_000_004}
+    for ns, s in want.items():
+        assert fid(ns) == ["m.pt", 7, s], ns
+    # NTFS time → the exFAT copy's time (rounded up to even): the same id
+    for frac in (0, 1, 3, 5, 9):
+        ns = base + S + frac * S // 10                         # an odd second plus a fraction
+        on_ntfs = fid(ns)
+        assert fid(-(-ns // (2 * S)) * 2 * S) == on_ntfs, frac
+    # an even-second time (every key computed from a file on exFAT): the same as whole seconds, the rule before
+    for k in range(0, 20, 2):
+        ns = base + k * S
+        assert fid(ns)[2] == ns // S
+    # what os.utime then stat gave on F: (exFAT), P8 2026-10-31 (docs: astro_projets/_p8/exfat_mtime_test.txt)
+    from astro_gpu.core.store import mtime_key
+    for set_ms, got_s in ((1_000_000_001_500, 1_000_000_002), (1_000_000_002_300, 1_000_000_004),
+                          (1_000_000_003_000, 1_000_000_004), (1_000_000_004_990, 1_000_000_006)):
+        assert mtime_key(set_ms * 1_000_000) == mtime_key(got_s * S) == got_s
+
+
 def test_excluded_pairs_are_keyed_by_session_and_name(proj, raws, tmp_path):
     none = K(proj).keys(CLASSIC)
     proj.excluded = [(1, "f2.ARW")]

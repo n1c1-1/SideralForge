@@ -146,17 +146,92 @@ def test_render_simple_without_denoise(tmp_path):
     out = run_stage(proj, RenderSimple(), RenderSimpleParams())
     prep = json.loads((out.dir / "prep_simple.json").read_text())
     assert not (out.dir / "lin_raw.npy").exists() and not prep["denoised"] and prep["source"] == "stack/drz_full"
+    assert prep["emission"] is None and prep["emission_anchor_weight"] == 0.0     # no catalogue: matrix unchanged
+
+
+# a star-fitted matrix of an astro-modified camera (heart_a7s, rounded): it renders the HII spectrum the colour stage
+# anchored red, and the emission the camera really records violet
+M_HEART = np.array([[0.13, 1.69, -1.96], [-0.50, 1.36, -0.39], [0.17, -0.94, 3.02]])
+CAM_HII = np.array([1.0, 0.403, 0.124])
+EMISSION = np.array([1.0, 0.35, 0.20])
+
+
+def emission_project(root: Path, denoise: bool):
+    """A stack with stars of many colours (on a plane of camera colours), a red line-emission nebula off that plane,
+    a sky gradient and noise, its colour stage (matrix, response at the HII lines) and its Gaia XP stars."""
+    rng = np.random.default_rng(5)
+    h, w = 1024, 1536
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    E = np.zeros((h, w), np.float32)
+    for _ in range(8):
+        cx, cy, s, a = rng.uniform(.2 * w, .8 * w), rng.uniform(.2 * h, .8 * h), rng.uniform(60, 160), rng.uniform(30, 90)
+        E += a * np.exp(-0.5 * ((xx - cx) ** 2 + (yy - cy) ** 2) / s ** 2)
+    n = 900
+    x, y = rng.uniform(60, w - 60, n), rng.uniform(60, h - 60, n)
+    g = rng.uniform(0.7, 1.4, n)                                    # star colours (1, g, 0.6 g - 0.22): a plane
+    col = np.stack([np.ones(n), g, 0.6 * g - 0.22])
+    flux = 10 ** rng.uniform(3.0, 4.6, n)
+    st = np.zeros((3, h, w), np.float32)
+    for c in range(3):
+        np.add.at(st[c], (np.round(y).astype(int), np.round(x).astype(int)), (col[c] * flux).astype(np.float32))
+        st[c] = cv2.GaussianBlur(st[c], (0, 0), 1.3)
+    sky = np.stack([lv * (1 + 0.05 * (xx / w) - 0.03 * (yy / h)) for lv in (400, 520, 260)])
+    cam = sky + EMISSION[:, None, None] * E + st
+    raw = (cam + rng.normal(0, 4, cam.shape)).astype(np.float32)
+    proj = Project.create(root, "t", Inputs(lights=[]))
+    for name, files in {"stack": {"drz_full.npy": raw, "drz_weight.npy": np.full((3, h, w), 20, np.float32)},
+                        "color": {"M.npy": M_HEART}, "catalogs": {}, "denoise": {"n2n_full.npy": raw}}.items():
+        if name == "denoise" and not denoise:
+            continue
+        d = proj.stage_dir(name)
+        d.mkdir(parents=True, exist_ok=True)
+        for k, val in files.items():
+            np.save(d / k, val)
+        (d / "manifest.json").write_text(json.dumps({"status": "done", "params": {"aperture": 4.0}}))
+    (proj.stage_dir("stack") / "drz_meta.json").write_text(json.dumps({"scale": 1.0}))
+    np.savez(proj.stage_dir("color") / "specresp.npz", cam_hii=CAM_HII)
+    np.savez(proj.stage_dir("catalogs") / "gaia_xp.npz", x=x, y=y)
+    return proj, col
+
+
+@pytest.mark.parametrize("denoise", [False, True])
+def test_render_simple_gives_the_emission_its_hii_colour(tmp_path, denoise):
+    """The Classic exits anchor the emission as render_prep does (the H-alpha of heart_a7s was violet): the emission
+    measured on the stack gets the colour the matrix gives the HII spectrum, the star colours do not move."""
+    proj, col = emission_project(tmp_path / "p", denoise)
+    run_stage(proj, BackgroundPoly(), BackgroundPolyParams())
+    out = run_stage(proj, RenderSimple(), RenderSimpleParams())
+    prep = json.loads((out.dir / "prep_simple.json").read_text())
+    Ma = np.array(prep["M"])
+    assert prep["emission_anchor_weight"] == 1.0 and np.allclose(prep["emission"], EMISSION, atol=0.03)
+    before, after, hii = M_HEART @ EMISSION, Ma @ EMISSION, M_HEART @ CAM_HII
+    assert before[2] > before[0]                                             # violet: more blue than red
+    assert after[0] > 2.5 * after[2] and np.allclose(after / after[0], hii / hii[0], atol=0.12)
+    stars = M_HEART @ col
+    assert np.abs(Ma @ col - stars).max() < 0.03 * np.abs(stars).max()      # the star colours unchanged
+    # lin is the stack in the anchored colours minus the Gradient block's sky converted to them
+    lin = np.load(out.dir / "lin.npy")
+    src = np.load(proj.stage_dir("denoise" if denoise else "stack") / ("n2n_full.npy" if denoise else "drz_full.npy"))
+    cj = json.loads((proj.stage_dir("background_poly") / "coefs.json").read_text())
+    sky = poly_sky(cj["coefs"], cj["degree"], *src.shape[1:])
+    want = np.tensordot(Ma, src, 1) - np.tensordot(Ma @ np.linalg.inv(M_HEART), sky, 1)
+    assert np.allclose(lin, want, atol=0.05)
 
 
 def test_raw_stack_exit_has_no_colour_cast(tmp_path):
     proj, _ = make_project(tmp_path / "p", denoise=False, color=False)
     out = run_stage(proj, RenderSimple(), RenderSimpleParams())
     prep = json.loads((out.dir / "prep_simple.json").read_text())
-    assert prep["exit"] == "stacking" and prep["sky"] == "channel medians" and not prep["color"]
+    assert prep["exit"] == "stacking" and prep["sky"] == "camera-colour polynomial, made grey" and not prep["color"]
     x0, x1, y0, y1 = prep["crop"]
     img = SimpleRenderEngine(out.dir, DEV).render(SimpleSettings(), 1.0).final.cpu().numpy()[:, y0:y1, x0:x1]
-    med = np.median(img, axis=(1, 2))
-    assert float(med.max() - med.min()) < 0.02 * float(med.mean())        # channel medians equal within 2 %
+    # the sky gradient (another colour in each channel) stays visible but grey: every corner is neutral (the median
+    # pixel of this scene is not sky: its nebulae are red)
+    h, w = img.shape[1:]
+    corners = [img[:, :h // 5, :w // 5], img[:, :h // 5, -w // 5:], img[:, -h // 5:, :w // 5], img[:, -h // 5:, -w // 5:]]
+    cm_ = np.array([np.median(c.reshape(3, -1), axis=1) for c in corners])
+    assert float((cm_.max(1) - cm_.min(1)).max()) < 0.01                  # 2.5 levels of 255
+    assert float(cm_.mean(1).max() - cm_.mean(1).min()) > 0.01             # its brightness is kept
     # without the normalisation, camera RGB under a linked stretch is tinted: the sky of the scene is green-dominated
     cam = np.load(proj.stage_dir("stack") / "drz_full.npy")[:, y0:y1, x0:x1]
     cm = np.median(cam, axis=(1, 2))

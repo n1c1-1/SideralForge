@@ -50,7 +50,7 @@ from .journal import Journal
 from .journal import read_events as _read_events
 from .params import params_hash
 from .project2 import Project2, Workflow
-from .runner import Pipeline, read_manifest
+from .runner import Pipeline, read_manifest, replace_file
 from .stage import StageError
 from .store import InputScan, KeyRules, Keys, Store, StoreProject, key_rules
 
@@ -550,9 +550,15 @@ def _cuda() -> bool:
 
 
 def _write_json(path: Path, obj: Any) -> None:
+    """Write a JSON file (a manifest, the plan) atomically; the replace is retried while a reader holds the file
+    (``runner.replace_file``)."""
     tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
     tmp.write_text(json.dumps(obj, indent=1, default=str), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        replace_file(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _rename(src: Path, dst: Path, attempts: int = 20) -> None:
