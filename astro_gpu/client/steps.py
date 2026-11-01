@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import html
 
-from PySide6.QtCore import QObject, QPointF, Qt, Signal
-from PySide6.QtGui import QPainter
+import numpy as np
+from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPen, QPolygonF
 
 from .. import texts
 from .blocks import BY_KEY, STEPS, block_state, fmt_int  # noqa: F401  (the views import them from here)
 from .i18n import _, hours_text, language, number
-from .services.inspect import VisualSpec, service_of
+from .services.inspect import SkyData, VisualSpec, service_of
 from .viewer import Viewer
 from .widgets import WARN
 
@@ -51,8 +52,120 @@ FACTS = {
 }
 
 
+#: one line under the tabs of a picture whose role is not obvious (English, translated where shown)
+SOLUTION_NOTE = ("Your stack with the sky grid (RA / Dec) of its astrometric solution and the brightest catalogue stars "
+                 "where the solution puts them: they should sit on the stars of the image.")
+SURVEY_NOTE = ("Not your data: a professional H-alpha map of the same field. The Gradient block compares it with your "
+               "image to tell faint nebulosity from light pollution.")
+OUTPUT_NOTE = "The workflow's result at the suggested render settings, as Post shows its layer. Adjust it in Post."
+
+
 def fnum(x, d=1) -> str:
     return number(x, d)
+
+
+class SkyOverlay:
+    """The astrometric solution drawn over a picture of the stack, in the viewer's painter: the RA / Dec grid with its
+    labels, the catalogue stars where the solution puts them, and the named objects (``SkyData.objects``, filled by the
+    annotation package: nothing else to wire). ``show``: {"grid", "stars", "objects"} -> on or off."""
+
+    GRID = QColor(94, 200, 224, 130)
+    STAR = QColor(255, 210, 74, 215)
+    OBJECT = QColor(255, 255, 255, 230)
+
+    def __init__(self, sky: SkyData, show: dict):
+        self.sky, self.show = sky, show
+
+    def __call__(self, p: QPainter, v: Viewer):
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        try:
+            if self.show.get("grid", True):
+                self.grid(p, v)
+            if self.show.get("stars", True):
+                self.stars(p, v)
+            if self.show.get("objects", True):
+                self.objects(p, v)
+        finally:
+            p.restore()
+
+    @staticmethod
+    def _to_widget(pts: np.ndarray, v: Viewer) -> np.ndarray:
+        return (pts.astype(np.float64) - (v.cx, v.cy)) * v.scale + (v.width() / 2, v.height() / 2)
+
+    def grid(self, p: QPainter, v: Viewer):
+        p.setPen(QPen(self.GRID, 1.0))
+        p.setBrush(Qt.NoBrush)
+        labels = []
+        for line in self.sky.lines:
+            for piece in line.pieces:
+                w = self._to_widget(piece, v)
+                p.drawPolyline(QPolygonF([QPointF(x, y) for x, y in w]))
+                at = self._label_at(w, v, line.kind)
+                if at is not None:
+                    labels.append((line.label, at, line.kind))
+        f = p.font()
+        f.setPointSizeF(8.5)
+        p.setFont(f)
+        fm = QFontMetricsF(f)
+        taken: list[QRectF] = []
+        for text, (x, y), kind in labels:
+            tw, th = fm.horizontalAdvance(text) + 8, fm.height() + 2
+            r = QRectF(x + 3, y - th / 2, tw, th) if kind == "dec" else QRectF(x - tw / 2, y + 3, tw, th)
+            r.translate(max(0.0, 2 - r.left()) + min(0.0, v.width() - 2 - r.right()),
+                        max(0.0, 2 - r.top()) + min(0.0, v.height() - 2 - r.bottom()))      # all of it inside the viewer
+            if any(r.intersects(t) for t in taken):
+                continue
+            taken.append(r)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(15, 17, 21, 190))
+            p.drawRoundedRect(r, 3, 3)
+            p.setPen(QColor(150, 220, 236))
+            p.drawText(r, Qt.AlignCenter, text)
+
+    @staticmethod
+    def _label_at(w: np.ndarray, v: Viewer, kind: str):
+        """Where a grid line enters the viewer, on its left edge for a parallel and its top edge for a meridian (else
+        the other edges): the point the label hangs from. None when the line does not cross the viewer."""
+        W, H, m = v.width(), v.height(), 6.0
+        edges = (("x", m), ("y", m), ("x", W - m), ("y", H - m)) if kind == "dec" else \
+            (("y", m), ("x", m), ("y", H - m), ("x", W - m))
+        for axis, c in edges:
+            a = w[:, 0] if axis == "x" else w[:, 1]
+            o = w[:, 1] if axis == "x" else w[:, 0]
+            lim = H if axis == "x" else W
+            s = np.flatnonzero((a[:-1] - c) * (a[1:] - c) <= 0)
+            for i in s:
+                d = a[i + 1] - a[i]
+                t = 0.0 if d == 0 else (c - a[i]) / d
+                other = o[i] + t * (o[i + 1] - o[i])
+                if m <= other <= lim - m:
+                    return (c, other) if axis == "x" else (other, c)
+        return None
+
+    def stars(self, p: QPainter, v: Viewer):
+        s = self.sky.stars
+        if s is None or not len(s):
+            return
+        w = self._to_widget(s[:, :2], v)
+        W, H = v.width(), v.height()
+        grow = 3.0 * min(v.scale, 1.0)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(self.STAR, 1.2))
+        for (x, y), g in zip(w, s[:, 2]):
+            if -12 <= x <= W + 12 and -12 <= y <= H + 12:
+                r = min(max(2.0 + (10.0 - float(g)) * 0.9, 2.0), 9.0) + grow
+                p.drawEllipse(QPointF(x, y), r, r)
+
+    def objects(self, p: QPainter, v: Viewer):
+        if not self.sky.objects:
+            return
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(self.OBJECT, 1.4))
+        for x, y, name, _kind in self.sky.objects:
+            pt = v.img_to_w(x, y)
+            p.drawEllipse(pt, 7, 7)
+            v._tag(p, QPointF(pt.x() + 10, pt.y() - 8), str(name))
 
 
 def kv(rows, pad=14):
@@ -125,9 +238,12 @@ class Steps(QObject):
         if k == "empilement":
             return [V("stack", "Stack (stretched for display)", "array", "stack", "drz_full", True, True)]
         if k == "astrometrie":
-            out = [V("stack", "Stack (stretched for display)", "array", "stack", "drz_full", True, True)]
+            # first the user's own image with its solution; the survey is another picture, with its role said
+            out = [V("solution", "Stack and solution", "array", "stack", "drz_full", True, True, sky=True,
+                     note=SOLUTION_NOTE)]
             if "surveys" in stages:
-                out.append(V("survey", "Reference H-alpha survey", "preview", "surveys", "halpha_reference", True))
+                out.append(V("survey", "Reference H-alpha survey", "preview", "surveys", "halpha_reference", True,
+                             note=SURVEY_NOTE))
             out.append(V("objects", "Identified objects", "preview", "astrometry", "", spec=True))
             return out
         if k == "couleur":
@@ -151,13 +267,17 @@ class Steps(QObject):
         if k == "post":
             stage = next((x for x in ("render_prep_learned", "render_prep", "render_simple") if x in stages),
                          "render_prep")
-            return [V("output", "Output preview", "preview", stage, "output" if stage == "render_simple"
-                      else "nebula_layer")]
+            # the final image, not an engine preview: rendered with the project's render worker, as Post shows it
+            return [V("output", "Final image", "render", stage, note=OUTPUT_NOTE)]
         return []
 
-    def overlay(self, k: str, spec: VisualSpec):
+    def overlay(self, k: str, spec: VisualSpec, im=None, show: dict | None = None):
+        """What is drawn over a picture: the labels of the denoise crop, the sky grid and the catalogue stars of the
+        solution (``show`` says which are on, the view owns it)."""
         if spec.key == "crop":
             return self._denoise_overlay
+        if spec.sky and im is not None and im.sky is not None:
+            return SkyOverlay(im.sky, show if show is not None else {})
         return None
 
     @staticmethod

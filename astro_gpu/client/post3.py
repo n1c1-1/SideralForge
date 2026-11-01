@@ -638,6 +638,8 @@ class PostView(QWidget):
         self.worker.request(Request(kind="region", layers=snapshot(self.layers), level=0, box=box))
 
     def _on_result(self, res):
+        if res.kind == "inspect":
+            return                                              # Inspect's final image, rendered on the same worker
         if res.seq < self._last_seq.get(res.kind, 0):
             return                                              # an answer older than one already shown
         if res.kind != "thumbs":

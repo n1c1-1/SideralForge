@@ -300,7 +300,7 @@ def test_each_block_shows_its_real_picture(win):
     """Every block of Full has a picture from its done results: the arrays are stretched, the previews as they are."""
     want = {"calibration": ("preview", 3), "alignement": ("preview", 1), "empilement": ("array", 1),
             "astrometrie": ("array", 2), "couleur": ("chart", 2), "debruitage": ("preview", 2),
-            "etoiles": ("array", 3), "fond": ("preview", 2), "post": ("preview", 1)}
+            "etoiles": ("array", 3), "fond": ("preview", 2), "post": ("render", 1)}
     for step, (kind, n) in want.items():
         inspect(win, step)
         t = win.tune
@@ -322,6 +322,184 @@ def test_each_block_shows_its_real_picture(win):
     assert win.tune._slots[0].image.spec.key == "star_model"
     assert win.tune.img_tab == 1
     win.tune.img_tab = 0
+
+
+def test_the_output_block_shows_the_final_image_the_render_worker_makes(win):
+    """Output is what Post shows for the workflow's layer at its suggested settings, not an engine preview of a
+    stage: the render worker's own half-resolution image, one lane for Inspect."""
+    from astro_gpu.client.postengine import new_workflow_layer
+    from astro_gpu.client.services.render import HALF_LEVEL, Request
+    inspect(win, "post")
+    t = win.tune
+    vis = t.visuals(win.s.path, "post")
+    assert len(vis) == 1 and vis[0].kind == "render" and vis[0].caption == "Final image" and vis[0].name == ""
+    assert vis[0].stage in ("render_prep", "render_prep_learned", "render_simple")
+    sl = t._slots[0]
+    im = sl.image
+    assert im is not None and im.spec.key == "output" and sl.viewer is not None and im.lin is None
+    assert any("The workflow's result at the suggested render settings" in x for x in texts_of(t))
+    # the pixels are the ones Post's worker gives that layer (the same worker, the layer at its suggestion)
+    rw = win.render_worker()
+    assert win.tune.service._rw is rw                                  # shared with Post: engines and images kept once
+    got = []
+    take = got.append
+    rw.rendered.connect(take)
+    try:
+        rw.request(Request(kind="half", layers=[new_workflow_layer(win.s.path.pid, "Full", True)], level=HALF_LEVEL))
+        assert rw.settle(180)
+    finally:
+        rw.rendered.disconnect(take)
+    ref = next(r for r in got if r.kind == "half")
+    assert np.array_equal(im.stretched.arr, ref.rgb) and im.size == (ref.rgb.shape[1], ref.rgb.shape[0])
+    assert (im.size[0] * 2, im.size[1] * 2) == (ref.canvas.W, ref.canvas.H)
+    # a rendered picture, not the starless magenta layer: a stretched image with white stars and a neutral sky
+    a = im.stretched.arr[::4, ::4].reshape(-1, 3).astype(float)
+    assert a.max() > 240 and 10 < a.mean() < 200
+    # the sky under the cursor: the solution's, with the crop's offset (the worker reads it after the picture is shown)
+    settle(win)
+    assert im.wcs is not None and im.grid == (ref.canvas.W, ref.canvas.H) and im.origin == tuple(
+        float(c) for c in ref.canvas.origin)
+    ox, oy = im.origin
+    t._hover(0, 100.5, 120.5)
+    f = im.grid[0] / im.size[0]
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ra, dec = api.pixel_to_sky(win.s.p, win.s.path.pid, ox + 100.5 * f, oy + 120.5 * f)
+    r, g, b = (int(c) for c in im.stretched.arr[120, 100])
+    assert t.readout.text().startswith(f"x 100  y 120   R {r}  G {g}  B {b}") and sky_text(ra, dec) in t.readout.text()
+    shot(win, "inspect_output")
+
+
+def test_two_final_images_come_one_after_the_other_and_a_missing_result_fails_cleanly(win):
+    sv = win.tune.service
+    inspect(win, "post")
+    spec = win.tune.visuals(win.s.path, "post")[0]
+    pid = win.s.path.pid
+    ready, failed, order = {}, [], []
+    on_ready = lambda slot, token, im: (ready.__setitem__(slot, (token, im)), order.append(slot))     # noqa: E731
+    on_failed = lambda slot, token, why: failed.append((slot, token, why))                            # noqa: E731
+    sv.imageReady.connect(on_ready)
+    sv.imageFailed.connect(on_failed)
+    try:
+        t0 = sv.request_image(0, pid, spec, "current")             # Compare with: two slots, one lane, in order
+        t1 = sv.request_image(1, pid, spec, "current")
+        assert sv.busy() and sv.wait(180) and not sv.busy()
+        assert order == [0, 1] and ready[0][0] == t0 and ready[1][0] == t1 and not failed
+        assert np.array_equal(ready[0][1].stretched.arr, ready[1][1].stretched.arr)
+        assert ready[0][1].key == (spec.stage, win.steps.key_of(win.s.path, spec.stage), "", "current")
+        assert sv.cache.get(ready[0][1].key) is ready[1][1]                  # the last one rendered is the one kept
+        ready.clear()
+        order.clear()
+        t3 = sv.request_image(0, pid, spec, "current")
+        t4 = sv.request_image(1, pid, spec, "current")
+        t5 = sv.request_image(1, 999, spec, "current")             # a newer request of the slot: a workflow that is not there
+        assert sv.wait(180)
+        assert order == [0] and ready[0][0] == t3                  # t4 was replaced before it started
+        assert [f[:2] for f in failed] == [(1, t5)] and "not computed" in failed[0][2] and t4 < t5
+    finally:
+        sv.imageReady.disconnect(on_ready)
+        sv.imageFailed.disconnect(on_failed)
+
+
+def test_the_astrometry_block_opens_on_the_users_image_with_its_solution(win):
+    """First the stack with the RA / Dec grid and the catalogue stars; the survey comes after, with a line on its role;
+    the named objects have their place (SkyData.objects, drawn by the same overlay)."""
+    from PySide6.QtGui import QImage
+    inspect(win, "astrometrie")
+    t = win.tune
+    vis = t.visuals(win.s.path, "astrometrie")
+    assert [v.key for v in vis] == ["solution", "survey"] and vis[0].kind == "array" and vis[0].sky
+    assert "Not your data" in vis[1].note and "H-alpha" in vis[1].note and not vis[1].sky
+    tb = t.findChildren(QTabBar)[0]
+    assert [tb.tabText(i) for i in range(tb.count())] == ["Stack and solution", "Reference H-alpha survey"]
+    sl = t._slots[0]
+    im = sl.image
+    assert im.spec.stage == "stack" and im.lin is not None and im.size == (6384, 4272) and im.wcs is not None
+    shown = texts_of(t)
+    assert any(x.startswith("Your stack with the sky grid") for x in shown)
+    assert "Sky grid" in shown and "Catalogue stars" in shown
+    sky = im.sky
+    assert sky is not None and {ln.kind for ln in sky.lines} == {"ra", "dec"} and sky.objects == []
+    assert 4 <= len(sky.lines) <= 20 and sky.stars is not None and 100 < len(sky.stars) <= si.CATALOGUE_MAX
+    assert sky.stars[:, 2].max() < si.CATALOGUE_G_MAX and (np.diff(sky.stars[:, 2]) >= 0).all()
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for ln in sky.lines:                                        # a line is where the solution puts its label
+            pts = ln.pieces[0][::5]
+            ra, dec = im.wcs.all_pix2world(pts[:, 0].astype(float), pts[:, 1].astype(float), 0)
+            want = ln.label.replace("\u2212", "-").replace("\u00b0", "")
+            if ln.kind == "dec":
+                assert np.allclose(dec, float(want), atol=2e-3), (ln.label, dec[:3])
+            else:
+                h, m = int(want[:2]), int(want[3:5])
+                dra = (ra - (h + m / 60) * 15 + 180) % 360 - 180
+                assert np.abs(dra).max() < 2e-3, (ln.label, ra[:3])
+        st = sky.stars[:50]                                         # the catalogue stars are the Catalogs stage's
+        cat = api.stage_outputs(win.s.p, win.s.path.pid, "catalogs")
+        with np.load(Path(cat.dir) / "gaia_deep.npz") as z:
+            ra, dec, g = z["ra"], z["dec"], z["g"]
+        i = np.flatnonzero(g < si.CATALOGUE_G_MAX)
+        x, y = im.wcs.all_world2pix(ra[i], dec[i], 0)               # where the solution itself puts them
+        assert len(i) >= len(sky.stars)
+        near = np.hypot(x[None, :] - st[:, 0][:, None], y[None, :] - st[:, 1][:, None]).min(1)
+        assert near.max() < 0.05, near.max()
+    # the overlay draws: the viewer differs with the grid and the stars on and off, and nothing else changes
+    def grab(v):
+        v.resize(1100, 700)
+        QApplication.processEvents()
+        return v.grab().toImage().convertToFormat(QImage.Format_RGB888)
+
+    def diff(a, b):
+        pa = np.frombuffer(a.constBits(), np.uint8).reshape(a.height(), a.bytesPerLine())[:, :a.width() * 3]
+        pb = np.frombuffer(b.constBits(), np.uint8).reshape(b.height(), b.bytesPerLine())[:, :b.width() * 3]
+        return int((pa != pb).sum())
+    vw = sl.viewer
+    on = grab(vw)
+    t._sky("stars", False)
+    no_stars = grab(vw)
+    t._sky("grid", False)
+    plain = grab(vw)
+    assert diff(on, no_stars) > 200 and diff(no_stars, plain) > 200
+    ov = vw.overlays[:]
+    vw.overlays.clear()
+    assert diff(plain, grab(vw)) == 0                                 # both off: the picture as it is
+    vw.overlays[:] = ov
+    t._sky("grid", True)
+    t._sky("stars", True)
+    # the place of the named objects: filling SkyData.objects is all the annotation package has to do
+    sky.objects.append((3000.0, 2000.0, "IC 1805", "nebula"))
+    try:
+        t.refresh()
+        settle(win)
+        v2 = t._slots[0].viewer
+        assert t._slots[0].image is im and v2 is not vw
+        with_obj = grab(v2)
+        sky.objects.clear()
+        assert diff(with_obj, grab(v2)) > 100
+    finally:
+        sky.objects.clear()
+    shot(win, "inspect_astrometry")
+    # the survey tab: no solution overlay, the sentence on its role
+    tb = t.findChildren(QTabBar)[0]
+    tb.setCurrentIndex(1)
+    settle(win)
+    assert t._slots[0].image.spec.key == "survey" and not t._slots[0].viewer.overlays
+    shown = texts_of(t)
+    assert any(x.startswith("Not your data: a professional H-alpha map") for x in shown) and "Sky grid" not in shown
+    shot(win, "inspect_survey")
+    t.img_tab = 0
+
+
+def test_the_labels_of_the_sky_grid_are_the_round_values_of_the_solution():
+    assert si.ra_label(40.75, 120.0) == "02h43m" and si.ra_label(40.7541, 10.0) == "02h43m01s"
+    assert si.ra_label(359.9999, 60.0) == "00h00m" and si.ra_label(0.0, 1.0) == "00h00m00s"
+    assert si.dec_label(61.0, 60.0) == "+61\u00b0" and si.dec_label(-0.5, 5.0) == "\u221200\u00b030\u2032"
+    assert si.dec_label(61.25, 10.0) == "+61\u00b015\u2032"
+    # the steps: the smallest round one that keeps about six lines across the field
+    assert si._step(5.0 * 60, si._DEC_STEPS) == 60 and si._step(0.2 * 60, si._DEC_STEPS) == 2
+    assert si._step(30.0 * 240, si._RA_STEPS) == 1800 and si._step(1e9, si._RA_STEPS) == 3600
 
 
 def test_the_color_chart_draws_the_fitted_curves(win):
@@ -959,6 +1137,14 @@ def test_the_shots_in_english_and_french_have_no_cut_text(module_win, env):
         take("inspect_stars")
         inspect(w, "couleur")
         take("inspect_color")
+        inspect(w, "astrometrie")
+        take("inspect_astrometry")
+        w.tune.img_tab = 1
+        inspect(w, "astrometrie")
+        take("inspect_survey")
+        w.tune.img_tab = 0
+        inspect(w, "post")
+        take("inspect_output")
         inspect(w, "selection")
         w.tune._pick(10)
         settle(w)
@@ -989,14 +1175,15 @@ def test_the_shots_in_english_and_french_have_no_cut_text(module_win, env):
     names = {p.name for p in shots_dir().glob("*.png")}
     for lang in ("en", "fr"):
         for n in ("inspect_stack", "inspect_stack_hist_readout", "inspect_denoise", "inspect_stars", "inspect_selection",
-                  "inspect_color", "frames_sessions", "frames_browse", "grouping"):
+                  "inspect_color", "inspect_astrometry", "inspect_survey", "inspect_output", "frames_sessions",
+                  "frames_browse", "grouping"):
             assert f"{n}_{lang}.png" in names, n
 
 
 def test_the_modules_of_inspect_have_no_mockup_leftovers():
     root = ROOT / "astro_gpu" / "client"
     allowed = {"__future__", "os", "sys", "threading", "collections", "dataclasses", "pathlib", "typing", "weakref",
-               "numpy", "PySide6", "PIL", "astropy", "datetime", "json", "html", "warnings", "traceback", "re"}
+               "numpy", "PySide6", "PIL", "astropy", "datetime", "json", "html", "warnings", "traceback", "re", "time"}
     for name in ("steps", "tune", "charts", "frames", "sources", "services/inspect"):
         src = (root / f"{name}.py").read_text(encoding="utf-8")
         for bad in ("alt2", "alt3", "data.json", "datatext", "Demo", "import project", "from project", "from steps",
@@ -1025,6 +1212,9 @@ def _shown_texts() -> dict[str, list[str]]:
                 if isinstance(node.args[1], ast.Constant):
                     found.setdefault(node.args[1].value, []).append(f"{name}.py:{node.lineno} (caption)")
         for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) \
+                    and node.targets[0].id.endswith("_NOTE") and isinstance(node.value, ast.Constant):
+                found.setdefault(node.value.value, []).append(f"{name}.py:{node.targets[0].id}")     # a line under a picture
             if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) \
                     and node.targets[0].id in ("NEW_CHECKS", "KIND_COUNT"):
                 vals = node.value.values if isinstance(node.value, ast.Dict) else [node.value]

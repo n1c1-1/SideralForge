@@ -320,7 +320,8 @@ class LayerSource(Provider):
 class Request:
     """What the view asks for. ``kind``: draft (quarter, while something moves), half (the screen, on release), region
     (full resolution, the visible part), before (the bottom layer alone, at its suggestion), thumbs (the layers'
-    thumbnails)."""
+    thumbnails), inspect (a workflow's final image for Inspect: the same rendering as half, on a lane of its own so that
+    it never replaces or stops what Post asked for)."""
     kind: str = "half"
     layers: list = field(default_factory=list)          # a snapshot (postengine.snapshot)
     level: int = HALF_LEVEL
@@ -355,8 +356,9 @@ class Result:
 
 
 _RETIRED: list = []                    # workers asked to stop that were still busy: kept until their thread ends
-LANES = {"draft": "main", "half": "main", "region": "region", "before": "before", "thumbs": "thumbs"}
-PRIORITY = ("main", "region", "before", "thumbs")
+LANES = {"draft": "main", "half": "main", "region": "region", "before": "before", "inspect": "inspect",
+         "thumbs": "thumbs"}
+PRIORITY = ("main", "region", "before", "inspect", "thumbs")
 
 
 def to_u8(a: np.ndarray) -> np.ndarray:
@@ -769,13 +771,13 @@ class RenderWorker(QThread):
                 if lane == "export":
                     self._run_export(work)
                 else:
-                    if work.kind == "half":
+                    if work.kind in ("half", "inspect"):
                         self._recheck_device()
                     res = self.renderer.run(work, lambda l=lane, s=work.seq, k=work.kind: self._superseded(l, s, k))
                     self.stats = (self.stats + [(work.kind, res.ms, res.layer_ms)])[-50:]
                     self.rendered.emit(res)
             except Superseded:
-                if lane in ("region", "before", "thumbs"):          # abandoned for a more urgent lane: keep it
+                if lane in ("region", "before", "inspect", "thumbs"):   # abandoned for a more urgent lane: keep it
                     with self._cond:
                         if lane not in self._slots and not self._stopping:
                             self._slots[lane] = work

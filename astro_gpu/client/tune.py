@@ -38,7 +38,7 @@ from .blocks import ENGINE_BLOCK, Graph, block_state, block_title, chain, stages
 from .charts import FramesChart, SpectralChart
 from .i18n import _, hm, hours_text, number
 from .panel import STATE_COLOR, STATE_WORD, Panel
-from .services.inspect import ShownImage, VisualSpec
+from .services.inspect import CATALOGUE_G_MAX, ShownImage, VisualSpec
 from .steps import Steps, fnum, kv
 from .viewer import StaticSource, Viewer
 from .widgets import ACCENT, WARN, clear, label
@@ -212,6 +212,7 @@ class TuneView(QWidget):
         self.picked = None                # the frame picked on the chart (an index of the frame table)
         self.stretched = bool(prefs.get("auto_stretch"))
         self.show_hist = False
+        self.sky_show = {"grid": True, "stars": True, "objects": True}      # what the solution draws over a picture
         self._pending = False
         self._dirty = True
         self._want: dict[int, int] = {}
@@ -409,6 +410,10 @@ class TuneView(QWidget):
         self.head.addWidget(cmp_)
         q = next((x for x in s.paths if x.pid == self.cmp_pid), None)
         spec = vis[i]
+        if spec.note:                                       # what this picture is, when its role is not obvious
+            nt = label(_(spec.note), "small", wrap=True)
+            nt.setContentsMargins(2, 0, 2, 0)
+            self.center.addWidget(nt)
         if q is None:
             sl = self._slot(0)
             self.center.addWidget(sl, 1)
@@ -461,12 +466,28 @@ class TuneView(QWidget):
         sl = self._slots[slot]
         key = self.steps.key_of(p, spec.stage, which)
         hit = self.service.cache.get((spec.stage, key, spec.name, which)) if key else None
+        if hit is not None and spec.sky and hit.sky is None:
+            hit = None                                      # the stack, seen before without its solution: the worker adds it
         if hit is not None:
             self._show(slot, hit, spec, k)
             return
-        sl.message(_("Loading the image…"))
+        if spec.kind == "render":
+            sl.message(_("Rendering the final image…"))
+            self.service.use_renderer(self._render_worker())
+        else:
+            sl.message(_("Loading the image…"))
         self._want[slot] = self.service.request_image(slot, p.pid, spec, which)
         sl._spec, sl._k = spec, k
+
+    def _render_worker(self):
+        """The project's render worker, the one Post renders with (the window makes it when asked): the final image of
+        Inspect and Post then share the engines and the images. None outside a window that has one (the service makes
+        its own)."""
+        make = getattr(self.window(), "render_worker", None)
+        try:
+            return make() if callable(make) else None
+        except Exception:  # noqa: BLE001 - no worker from the window: Inspect renders with its own
+            return None
 
     def _image_ready(self, slot: int, token: int, im: ShownImage):
         if self._want.get(slot) != token or slot >= len(self._slots) or self._slots[slot] is None:
@@ -492,7 +513,7 @@ class TuneView(QWidget):
         left = self._views.get(im.key)
         if left is not None:
             vw.zoom_to(*left)
-        ov = self.steps.overlay(k, spec)
+        ov = self.steps.overlay(k, spec, im, self.sky_show)
         if ov:
             vw.overlays.append(ov)
         vw.hovered.connect(lambda x, y, n=slot: self._hover(n, x, y))
@@ -527,6 +548,18 @@ class TuneView(QWidget):
         hb.setChecked(self.show_hist)
         hb.toggled.connect(self._hist)
         self.foot.addWidget(hb)
+        if spec.sky:
+            for key, text, tip in (("grid", _("Sky grid"), _("The RA / Dec grid of the astrometric solution")),
+                                   ("stars", _("Catalogue stars"),
+                                    _("Gaia stars brighter than magnitude {g}, where the solution puts them")
+                                    .format(g=f"{CATALOGUE_G_MAX:g}"))):
+                b = QPushButton(text)
+                b.setCheckable(True)
+                b.setObjectName("toggle")
+                b.setChecked(self.sky_show.get(key, True))
+                b.setToolTip(tip)
+                b.toggled.connect(lambda on, kk=key: self._sky(kk, on))
+                self.foot.addWidget(b)
         fit = QPushButton(_("Fit"))
         fit.clicked.connect(lambda: [v.fit() for v in self.viewers])
         one = QPushButton("1:1")
@@ -559,6 +592,11 @@ class TuneView(QWidget):
         self.show_hist = on
         self.refresh()
 
+    def _sky(self, key: str, on: bool):
+        self.sky_show[key] = on
+        for v in self.viewers:
+            v.update()
+
     def _hover(self, slot: int, x: float, y: float):
         sl = self._slots[slot] if slot < len(self._slots) else None
         im = sl.image if sl is not None else None
@@ -579,8 +617,9 @@ class TuneView(QWidget):
         if im.wcs is not None:
             gw, gh = im.grid or self.s.image_size() or im.size
             f = gw / w
+            ox, oy = im.origin
             try:
-                ra, dec = im.wcs.pixel_to_world_values((xi + 0.5) * f, (yi + 0.5) * f)
+                ra, dec = im.wcs.pixel_to_world_values(ox + (xi + 0.5) * f, oy + (yi + 0.5) * f)
                 sky = "   " + sky_text(float(ra), float(dec))
             except (ValueError, ArithmeticError):
                 sky = ""

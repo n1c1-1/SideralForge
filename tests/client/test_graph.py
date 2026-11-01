@@ -547,6 +547,98 @@ def test_a_method_card_asks_the_same_question(world, model, page):
     assert q.name == "Full · polynomial"
 
 
+def test_a_method_card_says_the_duration_on_each_device_and_which_one_is_used(world, model, page):
+    """A card never quotes one figure for an unnamed device: "GPU ≈ 8 min · CPU ≈ 23 h", the device of this machine in
+    bold. A machine whose GPUs are hidden still shows what the GPU would take."""
+    from astro_gpu.client.panel import durations_text
+    w = world["w"]
+    page.select_node(node(page, "etoiles", 1))
+    settle(w, page)
+    try:
+        for gpu in (True, False):
+            model.set_machine(gpu)
+            settle(w, page)
+            here = "gpu" if gpu else "cpu"
+            cards = method_cards(page)
+            assert len(cards) >= 2
+            seen = 0
+            for c in cards:
+                lines = [lb.text() for lb in c.findChildren(QLabel) if "GPU" in lb.text() or "CPU" in lb.text()]
+                if not lines:
+                    continue
+                seen += 1
+                plain = re.sub(r"<[^>]+>", "", lines[0])
+                assert "CPU" in plain and re.search(r"(GPU|CPU) (≈ )?[\d≤]", plain), plain
+                if "GPU" in plain and "CPU" in plain:             # both: the used one is the bold one
+                    bold = re.findall(r"<b[^>]*>(.*?)</b>", lines[0])
+                    assert len(bold) == 1 and bold[0].startswith(here.upper()), (lines[0], here)
+            assert seen >= 2
+            # the figures are the engine's for each device, not the machine's twice
+            ok = [m for m in model_methods("etoiles") if m["runs"] != "cpu" and not m["new"]]
+            assert ok
+            t = model.method_times(model.path, "etoiles", ok[0]["key"])
+            assert set(t) == {"gpu", "cpu"} and t["gpu"][0] > 0 and t["cpu"][0] > t["gpu"][0] * 3, t
+            assert durations_text(t, here).count("<b") == 1
+        # the cards as the user sees them, on a machine whose GPUs are hidden (the case that quoted the CPU as the GPU)
+        d = Path(os.environ.get("ASTRO_GPU_SHOTS") or world["folder"].parent / "shots")
+        d.mkdir(parents=True, exist_ok=True)
+        model.set_machine(False)
+        for lang in ("en", "fr"):
+            appmod.apply_language(lang)
+            page.refresh()
+            settle(w, page)
+            assert not untranslated(texts_of(page.panel))
+            page.root.grab().save(str(d / f"graph_method_cards_{lang}.png"))
+    finally:
+        appmod.apply_language("en")
+        model.set_machine(True)
+        page.refresh()
+        settle(w, page)
+    assert durations_text(None, "gpu") == "…"
+    assert re.sub(r"<[^>]+>", "", durations_text({"cpu": (90.0, True)}, "gpu")) == "CPU " + hm(90.0)        # CPU only
+    assert "CPU ≈ " in durations_text({"cpu": (90.0, False)}, "cpu")
+
+
+def model_methods(block):
+    from astro_gpu.client.model import methods_of
+    return methods_of(block)
+
+
+def test_the_durations_of_the_cards_are_read_by_the_worker_and_the_panel_follows(qapp, monkeypatch):
+    """The GUI thread only reads the cache: a duration nobody has estimated yet is asked of the worker, the card shows
+    "…", and costChanged says when the figures are in."""
+    seen = []
+    orig = api.estimate
+
+    def watch(*a, **k):
+        seen.append(threading.current_thread() is threading.main_thread())
+        return orig(*a, **k)
+    monkeypatch.setattr(api, "estimate", watch)
+    p = _open_four()
+    w = ApiWorker()
+    m = ProjectModel(p, w, readonly=True)
+    assert w.wait(180) and m.ready, m.error
+    try:
+        v = m.path
+        key = next(x["key"] for x in model_methods("debruitage") if not x["new"] and x["runs"] != "cpu")
+        m._est.clear()                                              # as after an edit, before the worker has read
+        fired = []
+        m.costChanged.connect(lambda: fired.append(1))
+        seen.clear()
+        assert m.method_times(v, "debruitage", key) is None          # asks the worker, estimates nothing here
+        assert m.method_times(v, "debruitage", key) is None          # and only once
+        assert not any(seen)
+        assert w.wait(180)
+        assert fired and m.method_times(v, "debruitage", key) is not None
+        assert seen and not any(seen), "the estimates were made in the GUI thread"
+        # a ◇ method has the spec's figure for the device it is meant for, at once
+        new = next(x for x in model_methods("debruitage") if x["new"])
+        t = m.method_times(v, "debruitage", new["key"])
+        assert len(t) == 1 and not next(iter(t.values()))[1]
+    finally:
+        w.stop()
+
+
 def test_undo_and_redo_restore_the_workflows(world, model, page):
     n0 = len(model.paths)
     p = model.add_path("Extra", {"debruitage": False, "etoiles": "garder", "appris": False, "fond": "simple"})

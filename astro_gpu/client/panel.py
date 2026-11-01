@@ -160,11 +160,29 @@ class CompactRow(SettingRow):
         super().mousePressEvent(e)
 
 
+def durations_text(times, here: str, estimated: bool = False) -> str:
+    """The duration of a method on each device it runs on, as rich text: "GPU ≈ 8 min · CPU ≈ 23 h", the device this
+    machine uses in bold. ``times``: {"gpu"|"cpu": (seconds, measured)}, or None while the worker has not read them.
+    ``estimated``: every figure is an estimate (the spec's methods the engine does not have yet)."""
+    if times is None:
+        return "…"
+    parts = []
+    here = here if here in times else "cpu"                  # a method that only runs on the CPU runs there
+    for dev in ("gpu", "cpu"):
+        if dev not in times:
+            continue
+        sec, measured = times[dev]
+        t = html.escape(f"{dev.upper()} {'' if measured and not estimated else '≈ '}{hm(sec)}")
+        parts.append(f"<b style='color:#e6edf7'>{t}</b>" if dev == here else t)
+    return " · ".join(parts)
+
+
 class MethodCard(QFrame):
-    """One way of computing a block: its name, what it does, where it runs and how long on this machine."""
+    """One way of computing a block: its name, what it does, how long it takes on each device it runs on (the device
+    this machine uses in bold). ``times``: see ``durations_text``; ``here``: "gpu" or "cpu"."""
     clicked = Signal()
 
-    def __init__(self, m, on, ok, seconds, estimated, why="", parent=None):
+    def __init__(self, m, on, ok, times, here, why="", parent=None):
         super().__init__(parent)
         self.ok = ok
         self.setObjectName("meth")
@@ -182,17 +200,10 @@ class MethodCard(QFrame):
         top = QHBoxLayout()
         top.setSpacing(6)
         spec_mark(top, m.get("new"))
-        gpu = m["runs"] == "gpu"
-        chip = QLabel(_({"gpu": "GPU", "cpu": "CPU", "both": "CPU or GPU"}[m["runs"]]))
-        chip.setStyleSheet(f"color: {'#c9a35e' if gpu else '#8b93a1'}; border: 1px solid "
-                           f"{'#c9a35e' if gpu else '#3a4150'}; border-radius: 8px; padding: 0 6px; "
-                           "font-size: 8.5pt;")
-        top.addWidget(chip)
-        est = estimated or m.get("new")
-        d = label(("≈ " if est else "") + hm(seconds), "small")
-        d.setToolTip(_("On this machine") + (" · " + _("estimate") if est else ""))
-        top.addWidget(d)
-        top.addStretch(1)
+        d = label(durations_text(times, here, bool(m.get("new"))), "small", wrap=True)
+        d.setTextFormat(Qt.RichText)
+        d.setToolTip(_("Duration on each device; in bold, the one this machine uses · ≈ an estimate"))
+        top.addWidget(d, 1)
         v.addLayout(top)
         v.addWidget(label(_(m["what"]), "small", wrap=True))
         if why:
@@ -595,15 +606,16 @@ class Panel(QWidget):
                 continue
             on = m["key"] == cur
             ok = (s.gpu or m["runs"] != "gpu") and not m["new"]
-            sec, measured = s.method_seconds(p, k, m["key"])
+            times = s.method_times(p, k, m["key"])          # read by the worker: None until it has
             why = ""
             if m["new"]:
                 why = "◇ " + _("Not in the engine yet.")
             elif not ok:
-                why = _("Needs an NVIDIA GPU (≈ {t} on the CPU).").format(t=hm(sec))
+                t = hm(times["cpu"][0]) if times and "cpu" in times else "…"
+                why = _("Needs an NVIDIA GPU (≈ {t} on the CPU).").format(t=t)
                 if on:
-                    why = _("Computed earlier on a GPU; running it again here takes ≈ {t}.").format(t=hm(sec))
-            card = MethodCard(m, on, ok, sec, not measured, why)
+                    why = _("Computed earlier on a GPU; running it again here takes ≈ {t}.").format(t=t)
+            card = MethodCard(m, on, ok, times, "gpu" if s.gpu else "cpu", why)
             if not on and ok:
                 card.clicked.connect(lambda mk=m["key"], nm=m["name"], sh=m["short"]: self.propose_opt(
                     opt, method_value(k, mk), _("Method: {name}").format(name=_(nm)), _(sh)))

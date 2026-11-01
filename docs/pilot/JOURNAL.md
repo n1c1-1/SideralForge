@@ -279,6 +279,91 @@ Newest entries at the bottom. Times are local.
   `queue.py resume gpu1`. The 06:35 failure may have come from tests that used cuda:1 while GPUs were not hidden.
   If it fails again at stack, use gpu0b after gpu0.
 
+- P13 committed (a49b752) after client tests: 150 passed in the full run; 3 failures and 35 errors came from the
+  user's own client writing their settings during the run, and the 20 shell tests pass when rerun.
+  - client.bat at the repo root (CUDA_VISIBLE_DEVICES=-1 while P8 runs: remove that line after);
+  - POINT_ETAPE.md images copied to docs/pilot/point_etape/ (gitignored, 29 MB), with relative links;
+  - the user asked why ComfyUI still appears: the venv lives in ComfyUI's folder, and the repo keeps the old
+    ComfyUI blocks.
+
+## Sunday 2026-11-01: course change after the user's review (see PILOT.md §3b)
+- The user's remarks on the client: frame navigation, calibration review, drift charts, an annotated astrometry,
+  interactive charts, comparisons with the previous steps, the final image in Output, Post slow on the CPU,
+  Affinity-like layers, neutral filters.
+- New direction: Siril + Photoshop is the baseline; a bench of 5 instruments (Express 30 frames, Base 100 frames,
+  no crop) against Siril 1.4 basic; no more long full-project runs before the design is validated (my mistake to
+  launch them overnight, recorded in memory); a lighter test suite.
+- 09:30: P8 queues paused (gpu1 had already finished with M31; Heart stops at its next checkpoint). The engine is
+  unfrozen. client.bat runs on the GPU again.
+- Dispatched in parallel:
+  - bench + Siril (opus);
+  - engine fixes: patches 1–3, exFAT ceil, manifest retry, catalogs, timings lock (opus);
+  - GUI A1 quick fixes (sonnet);
+  - GUI A2 interactive charts (sonnet);
+  - GUI A3 common image viewer (opus);
+  - tests diet (sonnet).
+- To do when the engine fixes are committed: tell the bench agent to re-run "ours".
+- Engine fixes committed (8f154f3), on opus:
+  - patches 1–3 (render_simple version 3; Full bit for bit, checked on 4 projects);
+  - exFAT `mtime_key` (the keys of Horsehead, Heart, Iris and Rosette are unchanged);
+  - manifest replace retry (v1 and v2);
+  - timings2 lock;
+  - catalogs read once (263 s to 1 s);
+  - 43 module tests rerun by the orchestrator.
+  - The patches' 2 lines in tests/client/test_post.py are left for A1's commit.
+  - Bench agent told to re-run ours.
+- GUI A3, the common image viewer, committed (opus):
+  - imageview.py and stretch.py; 38 tests;
+  - CPU timings on the 6384×4272 stack: open 0.1–0.25 s, zoom 6 ms, stretch handle 23–35 ms, next frame 20 ms;
+  - the orchestrator looked at stack_histogram_fr and sequence_info_fr: Siril/Photoshop level;
+  - wiring is wave B, after A1 (same files: tune.py, steps.py, services/inspect.py). It replaces Viewer for
+    pictures, StretchSource, Histogram, the readout and PixelSource.
+- GUI A2, interactive charts, committed (sonnet):
+  - ChartView on QtCharts; 25 tests; the orchestrator looked at drift_fr: good;
+  - wiring for wave B: `charts.registration_data(model.p, wid)` in the worker, then `charts.registration_tabs(data)`
+    (Quality, Drift, Track, Distribution) and `charts.color_tabs(lam, S)`;
+  - API gaps:
+    - FrameRow should carry dx, dy, nmatch and nstars (today derived read-only from reg.npz coef);
+    - reg.npz has no roundness;
+    - the colour stage saves no per-star colours, so no colour-fit scatter yet.
+- Tests diet committed (sonnet):
+  - **level 2: 539 tests in 72 s (checked by the orchestrator), against 14.6 min before**; level 3: 6 min 15 s;
+  - `tools/t.py 1|2|3|4`; levels in tests/levels.toml; a 120 s kill per test; workers capped by free memory;
+  - pytest-xdist installed with uv;
+  - the one failure is A1's work in progress (test_model_surface durations);
+  - the charts agent was asked to fix a context-menu hang in test_charts.
+  - Fixed and committed (4d7e08e).
+- **Bench Express, interim (4 of 5 cases; M8 waiting on catalogues)** against Siril 1.4 basic (OSC script, subsky
+  degree 2, SPCC or PCC, offline on Siril's local Gaia extracts):
+  - **we win:**
+    - star colours, error against Gaia BP−RP: ours 0.03–0.09, Siril 0.02–0.22;
+    - background flatness on heart, iris and m51;
+    - rendering: H-alpha red on heart, M51 contrast;
+    - heart depth: +0.3 mag;
+  - **we lose:**
+    - fine-scale noise by 0.1–0.2 mag/arcsec² on all 4 cases;
+    - target SNR −9 to −24 % on heart, iris and m51;
+    - iris depth −0.19 mag;
+    - likely cause: at 30 frames the Bayer drizzle runs at scale 1, and R/B are not smoothed the way Siril's debayer and
+      Lanczos smooth them; Seestar Base (100 frames, drizzled) is equal on noise and +0.11 mag deeper;
+  - Seestar: purple sky and a dimmer M31 disc (sky bias when the object fills the frame);
+  - **durations: ours 4–22 min, Siril 0.3–3 min**, dominated by astrometry and catalogues (network).
+- Engine agent (opus) dispatched: offline-first astrometry and catalogues.
+  - cache under ASTRO_GPU_HOME, tiles instead of exact centres;
+  - short timeouts and fallbacks; Siril's local Gaia extracts as a source;
+  - scale from EXIF/FITS;
+  - targets: a cached field in under 1 min offline, a new field in under 2 min.
+- The stacking noise loss waits for the Base verdict before any engine change.
+- 11:00 the user: the GUI was asked for 3 times and is not assembled. It is their diagnostic instrument: it showed that
+  the GPU extras came before the basics (calibration, stacking, photometry). **GUI first, assembled, checked.**
+  - A1 asked to wrap up within 20 min.
+  - Engine diagnostics agent (opus) dispatched: calibration masters and stats, registration table, rejection map,
+    weights and normalisation, per-star colour fit. API contract: calibration_frames, registration_table,
+    stack_diagnostics, color_fit. Committed after bench Base, because of the version bumps.
+  - Next: B1 Inspect integration (viewer, charts, diagnostics of the basics), B2 Post (Affinity layers, export
+    formats), B3 graph breakpoints, in parallel on disjoint files, then one checked client.bat and a French "what
+    changed" page.
+
 ### Queue for the end of P8 (engine unfrozen)
 1. Apply patches 1–3, run the tests and the 4-dataset non-regression, recompute only render_simple (Classic and Raw
    stack), and re-check the sky slider in Post.
@@ -286,6 +371,11 @@ Newest entries at the bottom. Times are local.
    UP to the even second (ceil), which leaves every key already computed on F: unchanged (their mtimes are already
    even). Test that P8's store keys do not move.
 3. timings2.json: a lock or an atomic merge between workers.
+3b. The client tests' settings guard compares fingerprints of the user's settings file, so it fails when the user
+    uses the client during a test run (it happened at 08:41, Rosette open). Make it an audit hook on writes from the
+    test process, like tests/conftest.py's.
+3c. Proposed to the user, pending their OK: a Python environment of the software's own (today it is ComfyUI's
+    .venv), and the old ComfyUI blocks moved aside.
 4. Post speed on the CPU (1/2 render 11 s) and a reduced-resolution star draft: render/ work, if time allows (P15).
 5. Then P14: QC of the projects with the P17 tools; then phase F (independent evaluation) and RAPPORT.md.
 - P13 (integration, polish, walkthrough, opus) dispatched, CPU only.

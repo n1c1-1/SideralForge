@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,7 +28,7 @@ from typing import Any
 from weakref import WeakKeyDictionary
 
 import numpy as np
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
 
 from ... import api
 from .worker import ApiWorker
@@ -95,12 +96,35 @@ class VisualSpec:
 
     key: str                 # the tab: "stack", "starless"...
     caption: str             # English, translated where shown
-    kind: str                # array | preview | chart
+    kind: str                # array | preview | chart | render (the final image, rendered by the render worker)
     stage: str
-    name: str = ""           # the array (without .npy) or the preview (without .jpg); "" for a chart
+    name: str = ""           # the array (without .npy) or the preview (without .jpg); "" for a chart or a render
     grid: bool = False       # on the stack grid: the RA / Dec readout
     linear: bool = False     # linear data: the automatic stretch applies
     spec: bool = False       # ◇: not in the engine yet (a disabled tab, in Spec mode only)
+    sky: bool = False        # the astrometric solution is drawn over it (grid, catalogue stars, named objects)
+    note: str = ""           # one line under the tabs: what this picture is for (English, translated where shown)
+
+
+@dataclass
+class GridLine:
+    """A line of the sky grid: a meridian ('ra') or a parallel ('dec'), as polylines in pixels of the stack grid (a line
+    that leaves the field and comes back is several pieces)."""
+
+    kind: str                                  # "ra" | "dec"
+    label: str                                 # "02h40m", "+61°"
+    pieces: list[np.ndarray] = field(default_factory=list)      # each (n, 2): x, y
+
+
+@dataclass
+class SkyData:
+    """What the astrometric solution draws on the stack (made by the worker, drawn by ``steps.SkyOverlay``)."""
+
+    lines: list[GridLine] = field(default_factory=list)
+    stars: np.ndarray | None = None            # (n, 3): x, y, G magnitude of the catalogue stars, in pixels of the grid
+    #: the named objects (x, y, name, kind) in pixels of the grid: the annotation package fills this and the overlay
+    #: draws it, nothing else to wire
+    objects: list = field(default_factory=list)
 
 
 @dataclass
@@ -115,6 +139,8 @@ class ShownImage:
     lin: np.ndarray | None = None              # (3, H, W) float32, the data (ADU); None for a preview
     size: tuple[int, int] = (0, 0)             # (w, h) of the pixels shown
     grid: tuple[int, int] | None = None        # (w, h) of the stack grid the pixels cover (sky readout), or None
+    origin: tuple[float, float] = (0.0, 0.0)   # the grid pixel of the first shown pixel (a cropped final image)
+    sky: SkyData | None = None
     wcs: Any = None
     hist: dict[str, np.ndarray] = field(default_factory=dict)     # "stretched" / "linear" -> (3, 256) counts
     stretch: dict[str, list[float]] = field(default_factory=dict)  # black, white, balance per channel
@@ -285,6 +311,131 @@ def _wcs_of(p, wid: int, which: str):
         return WCS(fits.getheader(Path(out.dir) / "wcs.fits"))
 
 
+# ---------------------------------------------------------------------------------------------- the sky grid
+GRID_LINES = 6                                  # about this many meridians (and parallels) across the field
+_DEC_STEPS = (1, 2, 5, 10, 15, 30, 60, 120, 300, 600)                         # arcmin
+_RA_STEPS = (1, 2, 5, 10, 15, 30, 60, 120, 240, 300, 600, 900, 1800, 3600)    # seconds of time
+CATALOGUE_G_MAX = 9.0                           # the catalogue stars drawn: brighter than this (Gaia G)
+CATALOGUE_MAX = 1500
+
+
+def _step(span: float, steps: tuple, target: int = GRID_LINES) -> float:
+    """The smallest of the round ``steps`` that puts at most ``target`` lines across ``span`` (same unit)."""
+    return next((s for s in steps if span / s <= target), steps[-1])
+
+
+def ra_label(ra: float, step_s: float) -> str:
+    """02h40m (seconds too when the step is under a minute)."""
+    t = int(round((ra % 360.0) * 240.0)) % 86400
+    h, m, s = t // 3600, t % 3600 // 60, t % 60
+    return f"{h:02d}h{m:02d}m" if step_s >= 60 else f"{h:02d}h{m:02d}m{s:02d}s"
+
+
+def dec_label(dec: float, step_arcmin: float) -> str:
+    """+61° (arcminutes too when the step is under a degree)."""
+    a = int(round(abs(dec) * 60.0))
+    d, m = a // 60, a % 60
+    sign = "+" if dec >= 0 else "−"
+    return f"{sign}{d:02d}°" if step_arcmin >= 60 else f"{sign}{d:02d}°{m:02d}′"
+
+
+def _pieces(x: np.ndarray, y: np.ndarray, w: int, h: int) -> list[np.ndarray]:
+    """A polyline cut into the runs that lie within (a margin around) the picture."""
+    m = 0.1 * max(w, h)
+    ok = np.isfinite(x) & np.isfinite(y) & (x > -m) & (x < w + m) & (y > -m) & (y < h + m)
+    out, i = [], 0
+    while i < len(ok):
+        if not ok[i]:
+            i += 1
+            continue
+        j = i
+        while j < len(ok) and ok[j]:
+            j += 1
+        if j - i >= 2:
+            out.append(np.stack([x[i:j], y[i:j]], 1).astype(np.float32))
+        i = j
+    return out
+
+
+def sky_grid(wcs, w: int, h: int) -> list[GridLine]:
+    """The RA / Dec grid over a picture of w x h pixels of the grid ``wcs`` solves: round steps (the minutes of the
+    right ascension, the degrees of the declination), each line sampled and projected back through the solution
+    (distortion included)."""
+    xs, ys = np.meshgrid(np.linspace(0, w - 1, 17), np.linspace(0, h - 1, 17))
+    ra, dec = wcs.all_pix2world(xs, ys, 0)
+    ok = np.isfinite(ra) & np.isfinite(dec)
+    if ok.sum() < 8:
+        return []
+    ra, dec = ra[ok], dec[ok]
+    ra0 = float(np.degrees(np.arctan2(np.sin(np.radians(ra)).mean(), np.cos(np.radians(ra)).mean()))) % 360.0
+    dra = (ra - ra0 + 180.0) % 360.0 - 180.0
+    r0, r1, d0, d1 = float(dra.min()), float(dra.max()), float(dec.min()), float(dec.max())
+    lines: list[GridLine] = []
+    dstep = _step((d1 - d0) * 60.0, _DEC_STEPS)
+    pad_r, pad_d = 0.04 * (r1 - r0), 0.04 * (d1 - d0)
+    rs = np.linspace(ra0 + r0 - pad_r, ra0 + r1 + pad_r, 64) % 360.0
+    k0, k1 = int(np.ceil(d0 * 60.0 / dstep)), int(np.floor(d1 * 60.0 / dstep))
+    for k in range(k0, k1 + 1):
+        d = k * dstep / 60.0
+        if abs(d) >= 90:
+            continue
+        x, y = wcs.all_world2pix(rs, np.full_like(rs, d), 0)
+        pcs = _pieces(x, y, w, h)
+        if pcs:
+            lines.append(GridLine("dec", dec_label(d, dstep), pcs))
+    if d1 < 88 and d0 > -88:                                       # at a pole the meridians all meet
+        rstep = _step((r1 - r0) * 240.0, _RA_STEPS)                # seconds of time (1 degree = 240 s)
+        ds = np.clip(np.linspace(d0 - pad_d, d1 + pad_d, 64), -89.9, 89.9)
+        a0 = ra0 * 240.0
+        k0, k1 = int(np.ceil((a0 + r0 * 240.0) / rstep)), int(np.floor((a0 + r1 * 240.0) / rstep))
+        for k in range(k0, k1 + 1):
+            a = (k * rstep / 240.0) % 360.0
+            x, y = wcs.all_world2pix(np.full_like(ds, a), ds, 0)
+            pcs = _pieces(x, y, w, h)
+            if pcs:
+                lines.append(GridLine("ra", ra_label(a, rstep), pcs))
+    return lines
+
+
+def catalogue_stars(p, wid: int, which: str, w: int, h: int) -> np.ndarray | None:
+    """The brightest Gaia stars of the field, where the solution puts them (the Catalogs stage's own pixel positions):
+    (n, 3) x, y, G, brightest first; None when the Catalogs result is not there."""
+    out = api.stage_outputs(p, wid, "catalogs", which) or api.stage_outputs(p, wid, "catalogs")
+    f = Path(out.dir) / "gaia_deep.npz" if out is not None else None
+    if f is None or not f.is_file():
+        return None
+    with np.load(f) as z:
+        g, x, y = z["g"], z["x"], z["y"]
+    sel = np.flatnonzero((g < CATALOGUE_G_MAX) & (x >= 0) & (x < w) & (y >= 0) & (y < h))
+    sel = sel[np.argsort(g[sel])][:CATALOGUE_MAX]
+    return np.stack([x[sel], y[sel], g[sel]], 1).astype(np.float32)
+
+
+def sky_data(p, wid: int, which: str, wcs, w: int, h: int) -> SkyData | None:
+    """The grid and the catalogue stars of a picture of the stack (None without a solution)."""
+    if wcs is None:
+        return None
+    try:
+        lines = sky_grid(wcs, w, h)
+    except (ValueError, ArithmeticError):                       # a degenerate solution: the picture alone
+        lines = []
+    try:
+        stars = catalogue_stars(p, wid, which, w, h)
+    except (OSError, ValueError, KeyError):
+        stars = None
+    return SkyData(lines, stars)
+
+
+def add_sky(im: ShownImage, p, wid: int, spec: VisualSpec, which: str = "current") -> None:
+    """The solution's grid and catalogue stars for a picture of the stack that was loaded without them (the same stack is
+    shown by Stacking and by Astrometry: it is kept once, the solution is a small addition)."""
+    if spec.sky and im.sky is None and im.lin is not None:
+        w, h = im.size
+        im.wcs = im.wcs or _wcs_of(p, wid, which) or _wcs_of(p, wid, "current")
+        im.grid = im.grid or (w, h)
+        im.sky = sky_data(p, wid, which, im.wcs, w, h)
+
+
 def load_visual(p, wid: int, spec: VisualSpec, which: str = "current") -> ShownImage:
     """One picture of a done result, ready to show (worker thread). ``which``: current, or previous (the result an
     Outdated block had). Raises ``api.NotDone`` when the result or the file is not there."""
@@ -315,9 +466,10 @@ def load_visual(p, wid: int, spec: VisualSpec, which: str = "current") -> ShownI
     grid = None
     wcs = None
     if spec.grid:
-        wcs = _wcs_of(p, wid, which)
+        wcs = _wcs_of(p, wid, which) or _wcs_of(p, wid, "current")
         grid = (w, h)
-    return ShownImage(key, spec, stretched=s8, linear=l8, lin=lin, size=(w, h), grid=grid, wcs=wcs,
+    sky = sky_data(p, wid, which, wcs, w, h) if spec.sky else None
+    return ShownImage(key, spec, stretched=s8, linear=l8, lin=lin, size=(w, h), grid=grid, wcs=wcs, sky=sky,
                       hist={"stretched": histogram8(stretched), "linear": histogram8(linear)},
                       stretch={k: [float(x) for x in v] for k, v in sp.items()},
                       nbytes=lin.nbytes + s8.nbytes + l8.nbytes)
@@ -648,6 +800,10 @@ class InspectService(QObject):
         self._wb = None                              # the gains that make the sky of a light neutral
         self.criteria = api.GroupingCriteria()       # how the next imported folder is grouped (the Grouping dialog)
         self.requests = 0                            # jobs sent to the workers (the tests count them)
+        self._rw = None                              # the render worker of the final images (see ``use_renderer``)
+        self._rw_own = False                         # made here (and stopped here), not lent by the window
+        self._rq: dict[int, tuple] = {}              # slot -> the final image waiting to be rendered
+        self._rin: tuple | None = None               # (slot, token, key, wid, spec, which) being rendered
 
     # ------------------------------------------------------------ the workers' answers
     def _done(self, channel: str, _n: int, result):
@@ -702,21 +858,30 @@ class InspectService(QObject):
         return self._tokens[channel]
 
     def stop(self):
+        self._drop_renderer()
         for w in (self.images, self.thumbs, self.view, self.prefetch):
             w.stop()
 
     def wait(self, timeout: float = 60.0) -> bool:
         """Process events until the workers are idle (tests and scripted walkthroughs)."""
-        return all(w.wait(timeout) for w in (self.images, self.thumbs, self.view, self.prefetch))
+        end = time.monotonic() + timeout
+        ok = all(w.wait(max(end - time.monotonic(), 0.1)) for w in (self.images, self.thumbs, self.view, self.prefetch))
+        while self._rendering() and time.monotonic() < end:
+            QCoreApplication.processEvents()
+            time.sleep(0.005)
+        QCoreApplication.processEvents()
+        return ok and not self._rendering()
 
     def busy(self) -> bool:
-        return any(w.busy() for w in (self.images, self.thumbs, self.view, self.prefetch))
+        return self._rendering() or any(w.busy() for w in (self.images, self.thumbs, self.view, self.prefetch))
 
     # ------------------------------------------------------------ requests
     def request_image(self, slot: int, wid: int, spec: VisualSpec, which: str = "current") -> int:
         """Load a picture into ``slot`` (0: the shown one, 1: the one it is compared with). Answer: ``imageReady`` or
         ``imageFailed``, with the token returned here; a newer request of the slot makes the older answer stale. (A view
         looks in ``cache`` first: a picture seen lately is there.)"""
+        if spec.kind == "render":
+            return self._request_render(slot, wid, spec, which)
         channel = f"inspect.image:{slot}"
         token = self._token(channel)
         self.requests += 1
@@ -729,10 +894,118 @@ class InspectService(QObject):
         if out is not None:
             hit = self.cache.get((spec.stage, out.key, spec.name, which))
             if hit is not None:
+                add_sky(hit, p, wid, spec, which)           # the stack seen by Stacking has no solution drawn yet
                 return slot, token, hit
         im = load_visual(p, wid, spec, which)
         self.cache.put(im)                          # at once: the next request of the worker finds it
         return slot, token, im
+
+    # ------------------------------------------------------------ the final image of a workflow
+    def use_renderer(self, worker) -> None:
+        """Render the final images on this worker: the project's render worker, the one Post uses, so that the engines
+        and the images it keeps are shared (they are gigabytes). Without one the service makes its own at the first
+        render and stops it with itself."""
+        if worker is None or worker is self._rw:
+            return
+        self._drop_renderer()
+        self._set_renderer(worker, own=False)
+
+    def _set_renderer(self, worker, own: bool):
+        self._rw, self._rw_own = worker, own
+        worker.rendered.connect(self._rendered)
+        worker.failed.connect(self._render_failed)
+
+    def _drop_renderer(self):
+        w, own = self._rw, self._rw_own
+        self._rw, self._rw_own = None, False
+        if w is None:
+            return
+        for sig, slot in ((w.rendered, self._rendered), (w.failed, self._render_failed)):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        if own:
+            w.stop()
+
+    def _renderer(self):
+        if self._rw is None:
+            from .render import RenderWorker, default_device_pref
+            m = self.model
+            self._set_renderer(RenderWorker(m.p, device=default_device_pref() if m.gpu else "cpu"), own=True)
+        return self._rw
+
+    def _rendering(self) -> bool:
+        return bool(self._rq) or self._rin is not None
+
+    def _request_render(self, slot: int, wid: int, spec: VisualSpec, which: str) -> int:
+        """The final image of a workflow at its default render settings (the suggestion, every slider in the middle):
+        what Post shows for that layer, rendered by the render worker at the half resolution. One at a time (the worker
+        has one lane for Inspect); the newest request of a slot replaces the one waiting."""
+        from ..postengine import new_workflow_layer
+        token = self._token(f"inspect.image:{slot}")
+        self.requests += 1
+        self._rq.pop(slot, None)                       # the one still waiting in this slot is not wanted any more
+        v = self.model.view(wid)
+        st = self.model.state_info(v, spec.stage) if v is not None else None
+        key = None if st is None else (st.previous_key if which == "previous" else (st.key if st.state == "done" else None))
+        if not key:
+            QTimer.singleShot(0, lambda: self.imageFailed.emit(slot, token, "the result is not computed"))
+            return token
+        self._rq[slot] = (token, wid, spec, which, (spec.stage, key, spec.name, which),
+                          new_workflow_layer(wid, v.name, True))
+        self._pump()
+        return token
+
+    def _pump(self):
+        if self._rin is not None or not self._rq:
+            return
+        from .render import HALF_LEVEL, Request
+        slot = min(self._rq)
+        token, wid, spec, which, key, layer = self._rq.pop(slot)
+        self._rin = (slot, token, key, wid, spec, which)
+        self._renderer().request(Request(kind="inspect", layers=[layer], level=HALF_LEVEL, tag="inspect"))
+
+    def _rendered(self, res):
+        if res.kind != "inspect" or self._rin is None:
+            return
+        slot, token, key, wid, spec, which = self._rin
+        self._rin = None
+        try:
+            if res.rgb is None:
+                self.imageFailed.emit(slot, token, "this workflow has no result to show")
+            else:
+                im = self._final_image(res, key, spec)
+                self.cache.put(im)
+                self.imageReady.emit(slot, token, im)
+                self.requests += 1
+                self.images.submit(f"inspect.sky:{key}", self._sky_job, im, wid, which, res.canvas)
+        finally:
+            self._pump()
+
+    @staticmethod
+    def _final_image(res, key: tuple, spec: VisualSpec) -> ShownImage:
+        a = res.rgb
+        src = PixelSource(a)
+        return ShownImage(key, spec, stretched=src, size=src.size(), hist={"stretched": histogram8(a)}, nbytes=src.nbytes)
+
+    def _sky_job(self, im: ShownImage, wid: int, which: str, canvas):
+        """The sky coordinates under the cursor of a final image: the solution of the workflow, read by the worker and
+        given to the picture after it is shown (the readout looks at ``wcs`` when the cursor moves)."""
+        im.wcs = _wcs_of(self.model.p, wid, which) or _wcs_of(self.model.p, wid, "current")
+        if im.wcs is not None and canvas is not None:
+            im.grid, im.origin = (canvas.W, canvas.H), (float(canvas.origin[0]), float(canvas.origin[1]))
+        return None
+
+    def _render_failed(self, _seq: int, kind: str, text: str):
+        if kind not in ("inspect", "start"):
+            return
+        why = text.splitlines()[0] if text else "?"
+        if self._rin is not None:
+            slot, token = self._rin[:2]
+            self._rin = None
+            self.imageFailed.emit(slot, token, why)
+        self._pump()
 
     def request_outputs(self, wid: int, stage: str, which: str, key: str):
         """The metrics of a done result (``api.stage_outputs``); answer: ``outputsReady``, then ``outputs_of``."""

@@ -78,6 +78,55 @@ Co-Authored-By; never push.
 Order of priority if time runs short: B and C (the client on the real engine) > E (projects ready) > D (new methods).
 A working client on the current algorithms is worth more than new methods without a client.
 
+## 3b. Sunday plan (2026-11-01, from about 09:30; the user is away, "tu as la main, pas de questions bloquantes")
+
+The user's review changed the course:
+- **Target:** Siril users must find at least what they get from Siril + Photoshop: a calibrated, stacked,
+  colour-corrected image, plus Photoshop-like post. Star processing and neural methods are extras.
+- **No more long runs of the full projects** before the design is validated. Iterate on a bench.
+- **P8 queues paused** at 09:30. Resume with `tools/projects/queue.py resume gpu0|gpu1`. M33 still to redo on
+  cuda:0. The user decides in the evening whether to re-run all 9 projects with the final engine.
+- **Engine unfrozen:** P8 no longer runs.
+
+Three lanes run in parallel:
+1. **Bench and Siril reference** (opus).
+   - 5 cases, no crop:
+     - Heart (A7S + TS61);
+     - Iris (A7S + Newton 130/900);
+     - M51 (Canon 6D + Newton 200, D:\astro_donnees_test);
+     - M8 (ASI2600MC, the Siril tutorial set);
+     - Seestar M31.
+   - Express = 30 frames per case (about 10–15 min, with Siril). Base = 100 frames (about 40 min). Complete = all
+     workflows, at night only.
+   - Siril 1.4 basic: calibration, registration, stacking with rejection, background extraction, SPCC, autostretch.
+     The recipe is documented, for the user to validate.
+   - Measures on the linear stacks and the finals: background noise, SNR, FWHM, roundness, faint stars, trails,
+     background flatness, star colours against Gaia. Plus side-by-side sheets.
+   - Code in tools/bench/, data under F:/astro_essais/bench/, report in docs/pilot/BENCH.md (French).
+2. **GUI evolutions** (the user's remarks of 09:00), in waves so that each file has one owner:
+   - A: quick fixes (neutral filter defaults, final image in Output, duration for the right device, Astrometry
+     view order); interactive charts (QtCharts: registration quality, x,y drift against time, x against y; colour;
+     selection; zoom, CSV export); the common image viewer built standalone.
+   - B: the viewer wired into Frames, Calibration, Stacking, Denoise, Gradient and Output; Affinity-like Post layers
+     (a filter nested under its layer, "everything below" as a top-level row); breakpoints in the graph.
+   - C: calibration frames review, exclusion and quality detection; Astrometry annotated image; Post CPU speed.
+3. **Tests diet**: 4 levels (file under 1 min; fast suite under 3 min with xdist; walkthrough under 20 min; bench
+   only when results change), and time budgets.
+
+Plus the **engine fixes**: patches 1–3, store mtime ceil-to-even, manifest replace retry, catalogs reload, timings2
+lock.
+
+**PRIORITY 1 since 11:00 (the user, angry, rightly so): the assembled GUI.** They asked for it three times ("n'oublie
+pas le GUI") and found standalone pieces on return.
+- Rule: every GUI evolution ships wired into the client. Never "built standalone, wired later" when the user will
+  look at it.
+- Deliver one client.bat with everything, checked by the orchestrator screen by screen, plus a short French page
+  "ce qui a changé, où le voir".
+- The bench and engine work go on in the background and never delay the GUI.
+
+Checkpoints with the user: Express verdict and quick fixes; Base verdict, viewer and charts; evening (Post, manual
+control, the night plan).
+
 ## 4. Rules for the orchestrator
 
 - **Reviews must not overcorrect** (the user's worry, 2026-10-31). When triaging any independent review:

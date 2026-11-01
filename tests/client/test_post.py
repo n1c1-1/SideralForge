@@ -294,6 +294,8 @@ def _reference(key, x, p, ctx):
     f = ctx.f
     if key == "stretch":
         d, sp = p["strength"], p["symmetry"]
+        if d == 0:                                       # no stretch: the limit of the formula
+            return x
         a0, a1 = np.arcsinh(-d * sp), np.arcsinh(d * (1 - sp))
         return (np.arcsinh(d * (x - sp)) - a0) / (a1 - a0)
     if key == "curves":
@@ -375,12 +377,45 @@ def test_the_thirteen_filters_are_the_mockups_formulas():
                 err = float(np.abs(np.clip(got, 0, 1) - np.clip(want, 0, 1)).max()) * 255
                 worst[key] = max(worst.get(key, 0), err)
     assert max(worst.values()) < 1.0, worst
-    # the families of the spec, and the defaults of its table
+    # the families of the spec; the defaults are neutral (see the next test), the spec's old ones are the settings to try
     assert {f["family"] for f in FILTERS.values()} == set(postengine.FAMILIES)
     d = {k: {q["key"]: q["default"] for q in f["params"]} for k, f in FILTERS.items()}
-    assert d["stretch"] == {"strength": 3, "symmetry": 0.08} and d["saturation"] == {"strength": 30, "hues": "All"}
-    assert d["scnr"] == {"strength": 0.8} and d["local_contrast"] == {"strength": 0.4, "scale": 40}
-    assert d["halos"] == {"strength": 0.6, "radius": 14} and d["halpha_red"] == {"strength": 0.5}
+    assert d["stretch"] == {"strength": 0, "symmetry": 0.08} and d["saturation"] == {"strength": 0, "hues": "All"}
+    assert d["scnr"] == {"strength": 0} and d["local_contrast"] == {"strength": 0, "scale": 40}
+    assert d["halos"] == {"strength": 0, "radius": 14} and d["halpha_red"] == {"strength": 0}
+
+
+def test_a_filter_added_with_its_defaults_leaves_the_image_unchanged():
+    """Adding a filter must not move the image before the user touches a slider: every one of the 13, on a layer and on
+    everything below, at full resolution and in a reduced draft, with a mask and a half opacity, and through a blend mode
+    (the composite is the same to the float, so surely within 8-bit rounding)."""
+    pr = ToyProvider()
+    for level in (0, 2):
+        for key in FILTERS:
+            cp = Composer(pr)
+            base = _stack((1, "A"), (2, "B"))                       # top first: B over A
+            want = cp.compose(base, level).rgb
+            for target in (base[0]["id"], None):
+                f = new_filter_layer(key, target)
+                assert {q["key"]: q["default"] for q in FILTERS[key]["params"]} == f["params"]
+                got = cp.compose(normalize([f] + base), level).rgb
+                assert np.abs(got - want).max() * 255 < 0.5, (key, level, target)
+                assert np.array_equal(got, want), (key, level, target)           # in fact exactly
+    # the same through a mask, a lower opacity and a blend mode: still nothing moves
+    cp = Composer(pr)
+    base = _stack((1, "A"), (2, "B"))
+    want = cp.compose(base, 0).rgb
+    for key in FILTERS:
+        f = new_filter_layer(key, None)
+        f["opacity"], f["mask"] = 50.0, new_mask()
+        f["mask"]["parts"].append(new_part("luminance"))
+        assert np.abs(cp.compose(normalize([f] + base), 0).rgb - want).max() * 255 < 0.5, key
+        f["mask"], f["opacity"], f["mode"] = None, 100.0, "Lighten"
+        assert np.abs(cp.compose(normalize([f] + base), 0).rgb - want).max() * 255 < 0.5, key
+    # and a filter does change the image once a slider moves (the test above is not an empty one)
+    sat = new_filter_layer("saturation", None)
+    sat["params"]["strength"] = 60.0
+    assert np.abs(cp.compose(normalize([sat] + base), 0).rgb - want).max() * 255 > 1
 
 
 def test_blend_modes_are_the_specs():
@@ -721,10 +756,10 @@ def test_the_release_render_is_the_engines_bit_for_bit(preps):
         got = src.layer(lay, level, (0, 0, w, h))
         ref = np.moveaxis(want[:, oy // f: oy // f + h, ox // f: ox // f + w], 0, -1)
         assert np.array_equal(got, ref), level
-    # a slider away from 2 moves the settings the table says, nothing else
+    # a slider away from 2 moves the settings the table says, nothing else (the sky slider moves the dark level too)
     lay["sliders"] = {"sky": 3}
     moved = src.layer(lay, 1, (0, 0, *cv.size(1)))
-    s30 = RenderSettings.from_saved({"sky_level": 30.0})
+    s30 = RenderSettings.from_saved({"sky_level": 30.0, "dark_level": 12.5})
     ref = eng.render(s30, 0.5).final.numpy()[:, oy // 2: oy // 2 + cv.size(1)[1], ox // 2: ox // 2 + cv.size(1)[0]]
     assert np.array_equal(moved, np.moveaxis(ref, 0, -1))
     # the parts: stars alone is the layer minus its starless image
@@ -1030,6 +1065,47 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     assert list(fam) == ["Tone", "Color", "Detail", "Stars", "Combine"] and sum(len(x) for x in fam.values()) == 13
     assert fam["Tone"] == ["Stretch (GHS)", "Curves", "Levels"] and fam["Combine"] == ["H-alpha to red"]
     assert all(x.isEnabled() for a in v.filter_menu.actions() for x in a.menu().actions())
+
+
+def test_a_filter_added_in_the_page_does_not_move_the_image_until_a_slider_does(preps, qapp):
+    """What the user did: + Filter > Saturation changed the picture before any slider was touched. Each of the 13 filters,
+    added with its defaults, leaves what the page shows as it was; the shots (English, French) show the new filter."""
+    out = SHOTS / "new_filter"
+    out.mkdir(parents=True, exist_ok=True)
+    for lang in ("en", "fr"):
+        i18n.set_language(lang)
+        s = Setup(preps, qapp)
+        try:
+            assert s.settle()
+            v = s.view
+            full = named(v, "Full")
+            v.select(full["id"], "layer")
+            assert s.settle()
+            before = shown(v).copy()
+            added = []
+            for key in FILTERS:
+                added.append(v.add_filter(key))
+                assert s.settle()
+                assert np.array_equal(shown(v), before), key
+            assert np.array_equal(shown(v), reference(s).rgb)
+            for lay in added:                                       # hide them all, Saturation comes back for the shot
+                lay["visible"] = False
+            sat = next(x for x in added if x["filter"] == "saturation")
+            sat["visible"] = True
+            v.select(sat["id"], "layer")
+            v.request(final_only=True)
+            assert s.settle() and np.array_equal(shown(v), before)
+            s.page.resize(1600, 950)
+            for _i in range(4):
+                qapp.processEvents()
+                time.sleep(0.02)
+            assert s.page.grab().save(str(out / f"post_new_filter_{lang}.png"))
+            sat["params"]["strength"] = 60.0                        # and a slider does move it
+            v.request(final_only=True)
+            assert s.settle() and not np.array_equal(shown(v), before)
+        finally:
+            s.close()
+            i18n.set_language("en")
 
 
 def test_star_filters_and_the_star_mask_need_a_layer_with_stars(preps, qapp):

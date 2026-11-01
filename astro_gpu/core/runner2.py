@@ -66,6 +66,7 @@ LAYER_OTHER_STACK = "the earlier layer belongs to another stack"
 
 # Windows process creation flags of the detached worker
 DETACHED_PROCESS = 0x00000008
+CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
@@ -395,7 +396,9 @@ def launch(project: Project2, plan: Plan, device: str | None = None, python: str
     with open(info.log_file, "ab") as log:
         kw["stdout"] = log
         if os.name == "nt":
-            flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
+            # a hidden console of its own, not DETACHED_PROCESS: without a console, every console child of the worker
+            # (the multiprocessing pools of calibrate and register) would pop up a window of its own on the screen
+            flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB
             try:
                 proc = subprocess.Popen(cmd, creationflags=flags, **kw)
             except PermissionError:

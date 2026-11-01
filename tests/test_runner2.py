@@ -508,7 +508,8 @@ def test_worker_environment_and_creation_flags(proj, monkeypatch):
     assert json.loads(Path(info.plan_file).read_text())["inside"] == "cuda:0"
     if os.name == "nt":
         assert kw["creationflags"] & runner2.CREATE_BREAKAWAY_FROM_JOB
-        assert kw["creationflags"] & runner2.DETACHED_PROCESS and kw["creationflags"] & runner2.CREATE_NEW_PROCESS_GROUP
+        assert kw["creationflags"] & runner2.CREATE_NO_WINDOW and kw["creationflags"] & runner2.CREATE_NEW_PROCESS_GROUP
+        assert not kw["creationflags"] & runner2.DETACHED_PROCESS     # its console children would pop up windows
         # a job that forbids breaking away: launched anyway, with a note
         got.clear()
         refuse = True

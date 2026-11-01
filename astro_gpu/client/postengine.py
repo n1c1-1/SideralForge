@@ -153,7 +153,7 @@ def C(key, label, choices, default):
 def f_stretch(x, p, ctx):
     """An arcsinh stretch around the symmetry point (the transcendental on all cores, through torch)."""
     d, sp = p["strength"], p["symmetry"]
-    if d < 1e-3:
+    if d < 1e-3:                                       # the default: no stretch at all
         return x
     a0 = float(np.arcsinh(-d * sp))                    # python floats: a numpy scalar would promote the image to float64
     a1 = float(np.arcsinh(d * (1 - sp)))
@@ -164,6 +164,8 @@ def f_stretch(x, p, ctx):
 def f_curves(x, p, ctx):
     """The curve through (0, 0), (.25, .25 + shadows), (.5, .5 + midtones), (.75, .75 + highlights), (1, 1): the
     piecewise-linear interpolation as a sum of slopes (exact, and fast on all cores)."""
+    if not (p["shadows"] or p["midtones"] or p["highlights"]):          # the default: the identity
+        return x
     xs = [0.0, 0.25, 0.5, 0.75, 1.0]
     ys = np.clip([0, 0.25 + p["shadows"], 0.5 + p["midtones"], 0.75 + p["highlights"], 1], 0, 1)
     slope = [(ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]) for i in range(4)]
@@ -175,6 +177,8 @@ def f_curves(x, p, ctx):
 
 
 def f_levels(x, p, ctx):
+    if p["black"] <= 0 and p["white"] >= 1 and abs(p["gamma"] - 1) <= 1e-9:      # the default: the identity
+        return x
     t = (_torch(x) - p["black"]).mul_(1.0 / max(p["white"] - p["black"], 1e-3)).clamp_(0, 1)
     if abs(p["gamma"] - 1) > 1e-9:
         t = t.pow_(1.0 / p["gamma"])
@@ -182,8 +186,10 @@ def f_levels(x, p, ctx):
 
 
 def f_saturation(x, p, ctx):
-    L = lum(x)
     k = p["strength"] / 100
+    if k == 0:                                         # the default: no change
+        return x
+    L = lum(x)
     center = dict(HUES)[p["hues"]]
     if center is None:                                 # every hue alike: L + (x - L) * (1 + k) in one pass
         return _mix(x, 1 + k, _gray3(L), -k)
@@ -194,6 +200,8 @@ def f_saturation(x, p, ctx):
 
 
 def f_scnr(x, p, ctx):
+    if p["strength"] <= 0:                             # the default: no green removed
+        return x
     y = x.copy()
     g = np.minimum(x[..., 1], (x[..., 0] + x[..., 2]) / 2)
     y[..., 1] = x[..., 1] + p["strength"] * (g - x[..., 1])
@@ -202,20 +210,28 @@ def f_scnr(x, p, ctx):
 
 def f_balance(x, p, ctx):
     t, g = p["temperature"], p["tint"]
+    if not (t or g):                                   # the default: neutral
+        return x
     return x * np.array([1 + 0.15 * t, 1 + 0.1 * g, 1 - 0.15 * t], np.float32)
 
 
 def f_local_contrast(x, p, ctx):
     k = p["strength"]
+    if k == 0:                                         # the default: no change
+        return x
     return _mix(x, 1 + k, gauss(x, p["scale"] / ctx.f), -k)            # x + k * (x - blur)
 
 
 def f_sharpen(x, p, ctx):
     k = p["strength"]
+    if k == 0:                                         # the default: no change
+        return x
     return _mix(x, 1 + k, gauss(x, max(p["radius"] / ctx.f, 0.35)), -k)
 
 
 def f_denoise(x, p, ctx):
+    if not (p["luminance"] or p["color"]):             # the default: nothing smoothed
+        return x
     Y = lum(x)
     C_ = cv2.subtract(_f32(x), _gray3(Y))                              # the colour, what is left without the luminance
     a, b = p["luminance"], p["color"]
@@ -225,6 +241,8 @@ def f_denoise(x, p, ctx):
 
 
 def f_star_reduce(x, p, ctx):
+    if p["strength"] == 0:                             # the default: the stars as they are
+        return x
     m = ctx.stars()[..., None]
     size = max(2, int(round(5 / ctx.f)))
     er = erode(x, size)
@@ -232,6 +250,8 @@ def f_star_reduce(x, p, ctx):
 
 
 def f_halos(x, p, ctx):
+    if p["strength"] == 0:                             # the default: the halos as they are
+        return x
     m = ctx.stars()
     r = max(1, int(round(p["radius"] / ctx.f)))
     ring = np.clip(dilate(m, 2 * r + 1) - m, 0, 1)
@@ -241,6 +261,8 @@ def f_halos(x, p, ctx):
 
 
 def f_star_color(x, p, ctx):
+    if p["strength"] == 0:                             # the default: the star colours as they are
+        return x
     m = ctx.stars()
     w = _gray3(_f32(m) * float(p["strength"]))                         # k * m, in each channel
     L3 = _gray3(lum(x))
@@ -248,6 +270,8 @@ def f_star_color(x, p, ctx):
 
 
 def f_halpha(x, p, ctx):
+    if p["strength"] == 0:                             # the default: no red added
+        return x
     y = x.copy()
     y[..., 0] = x[..., 0] + p["strength"] * 0.35 * ctx.halpha() * (1 - x[..., 0])
     return y
@@ -255,41 +279,41 @@ def f_halpha(x, p, ctx):
 
 FILTERS = {
     "stretch": dict(name="Stretch (GHS)", family="Tone", fn=f_stretch,
-                    params=[P("strength", "Strength", 0, 12, 3, step=0.1),
+                    params=[P("strength", "Strength", 0, 12, 0, step=0.1),
                             P("symmetry", "Symmetry point", 0, 0.6, 0.08, step=0.01)]),
     "curves": dict(name="Curves", family="Tone", fn=f_curves,
                    params=[P("shadows", "Shadows", -0.2, 0.2, 0, step=0.01),
                            P("midtones", "Midtones", -0.2, 0.2, 0, step=0.01),
                            P("highlights", "Highlights", -0.2, 0.2, 0, step=0.01)]),
     "levels": dict(name="Levels", family="Tone", fn=f_levels,
-                   params=[P("black", "Black point", 0, 0.3, 0.02, step=0.005),
+                   params=[P("black", "Black point", 0, 0.3, 0, step=0.005),
                            P("white", "White point", 0.7, 1, 1, step=0.005),
                            P("gamma", "Gamma", 0.5, 2, 1, step=0.01)]),
     "saturation": dict(name="Saturation", family="Color", fn=f_saturation,
-                       params=[P("strength", "Strength", -100, 150, 30, "%", 1),
+                       params=[P("strength", "Strength", -100, 150, 0, "%", 1),
                                C("hues", "Hues", [h for h, _ in HUES], "All")]),
     "scnr": dict(name="SCNR (green removal)", family="Color", fn=f_scnr,
-                 params=[P("strength", "Strength", 0, 1, 0.8, step=0.01)]),
+                 params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
     "balance": dict(name="Color balance", family="Color", fn=f_balance,
                     params=[P("temperature", "Temperature", -1, 1, 0, step=0.01),
                             P("tint", "Green / magenta", -1, 1, 0, step=0.01)]),
     "local_contrast": dict(name="Local contrast", family="Detail", fn=f_local_contrast,
-                           params=[P("strength", "Strength", 0, 1.5, 0.4, step=0.01),
+                           params=[P("strength", "Strength", 0, 1.5, 0, step=0.01),
                                    P("scale", "Scale", 5, 120, 40, "px", 1)]),
     "sharpen": dict(name="Sharpen", family="Detail", fn=f_sharpen,
-                    params=[P("strength", "Strength", 0, 2, 0.6, step=0.01),
+                    params=[P("strength", "Strength", 0, 2, 0, step=0.01),
                             P("radius", "Radius", 0.5, 4, 1.2, "px", 0.1)]),
     "denoise": dict(name="Noise reduction", family="Detail", fn=f_denoise,
-                    params=[P("luminance", "Luminance", 0, 1, 0.4, step=0.01),
-                            P("color", "Color", 0, 1, 0.7, step=0.01)]),
+                    params=[P("luminance", "Luminance", 0, 1, 0, step=0.01),
+                            P("color", "Color", 0, 1, 0, step=0.01)]),
     "star_reduce": dict(name="Star reduction", family="Stars", fn=f_star_reduce, needs="stars",
-                        params=[P("strength", "Strength", 0, 1, 0.6, step=0.01)]),
+                        params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
     "halos": dict(name="Halo reduction", family="Stars", fn=f_halos, needs="stars",
-                  params=[P("strength", "Strength", 0, 1, 0.6, step=0.01), P("radius", "Radius", 4, 40, 14, "px", 1)]),
+                  params=[P("strength", "Strength", 0, 1, 0, step=0.01), P("radius", "Radius", 4, 40, 14, "px", 1)]),
     "star_color": dict(name="Star color", family="Stars", fn=f_star_color, needs="stars",
-                       params=[P("strength", "Strength", 0, 2, 0.6, step=0.01)]),
+                       params=[P("strength", "Strength", 0, 2, 0, step=0.01)]),
     "halpha_red": dict(name="H-alpha to red", family="Combine", fn=f_halpha, needs="halpha",
-                       params=[P("strength", "Strength", 0, 1, 0.5, step=0.01)]),
+                       params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
 }
 FAMILIES = ["Tone", "Color", "Detail", "Stars", "Combine"]
 

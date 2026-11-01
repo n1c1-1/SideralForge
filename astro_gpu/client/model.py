@@ -244,6 +244,7 @@ class ProjectModel(QObject):
         self._cache: dict = {}                             # costs and plans, forgotten at each sync
         self._est: dict = {}                               # durations by stage key (kept across edits; the worker
         #                                                    fills it ahead: estimates read manifests)
+        self._est_wanted = False                           # a view asked for a duration the worker had not read yet
         self._pc: dict[tuple[int, str], dict] = {}         # the settings of a stage of a workflow (describe)
         self._reasons: dict[tuple[str, str], tuple] = {}   # the last reason an automatic value had
         self._sel: dict | None = None                      # the last selection preview
@@ -357,6 +358,9 @@ class ProjectModel(QObject):
                 self.readyChanged.emit()
                 self.sourcesChanged.emit()
                 self.pathsChanged.emit()
+        elif channel == "model.wanted" + me:                 # durations a view was waiting for have arrived
+            self._est_wanted = False
+            self.costChanged.emit()
         elif channel == "model.facts" + me:
             self._facts = result
             self._cache.clear()
@@ -503,7 +507,8 @@ class ProjectModel(QObject):
             for block in ("debruitage", "etoiles", "fond"):
                 try:
                     for m in methods_of(block):
-                        self.method_seconds(v, block, m["key"])
+                        for dev in ("gpu", "cpu"):                 # the card says both: GPU and CPU
+                            self.method_seconds(v, block, m["key"], dev)
                 except (ValueError, KeyError):
                     pass
             for k in TOOLBOX:
@@ -741,35 +746,77 @@ class ProjectModel(QObject):
         """What the durations of a workflow from scratch depend on besides its options: the frames."""
         return (tuple(sorted(tuple(x) for x in self.p.excluded)), tuple(len(s.lights) for s in self.p.sessions))
 
-    def method_seconds(self, p: WorkflowView, block: str, method: str) -> tuple[float, bool]:
-        """(seconds, measured) of a block of the views computed with this method, on this machine: the stages of the
-        block in the workflow that has the method. The methods the engine does not have yet (◇) are the spec's
-        estimates."""
+    #: the device an estimate is for: the engine's names ("cuda:0" says a GPU computes, "cpu" that none does)
+    DEVICE_OF = {"gpu": "cuda:0", "cpu": "cpu"}
+
+    def _method_key(self, p: WorkflowView, block: str, method: str, device: str | None):
+        """(the cache key, the options the method needs) of a method's duration, or None when the engine refuses them.
+        ``device``: "gpu", "cpu", or None for the machine's."""
+        tool = {"fond": {"halpha": "halpha", "simple": "simple"}, "etoiles": {"psf": "etoiles", "psf_neural": "appris"},
+                "debruitage": {"appris": "debruitage"}}.get(block, {}).get(method)
+        try:
+            opts = self.with_tool(p.opts, tool)[0] if tool else dict(p.opts)      # the options the method needs
+        except wfl.OptionRefused:
+            return None
+        dev = self.DEVICE_OF[device or ("gpu" if self.gpu else "cpu")]      # the machine's own: the class it computes with
+        return ("method", block, repr(sorted(opts.items())), repr(sorted(p.params.items())), dev, self._epoch,
+                self._sources_sig()), opts
+
+    def method_seconds(self, p: WorkflowView, block: str, method: str,
+                       device: str | None = None) -> tuple[float, bool]:
+        """(seconds, measured) of a block of the views computed with this method: the stages of the block in the
+        workflow that has the method. ``device``: "gpu" or "cpu", else the machine's. The methods the engine does not
+        have yet (◇) are the spec's estimates. Reads manifests and the history: the worker's call, the views use
+        ``method_times``."""
         from .blocks import BY_KEY
         m = next((x for x in methods_of(block) if x["key"] == method), None)
         if m is not None and m["stage"] in EXTRA_SECONDS:
             return EXTRA_SECONDS[m["stage"]], False
         if not self.ready:
             return 0.0, False
-        tool = {"fond": {"halpha": "halpha", "simple": "simple"}, "etoiles": {"psf": "etoiles", "psf_neural": "appris"},
-                "debruitage": {"appris": "debruitage"}}.get(block, {}).get(method)
-        try:
-            opts = self.with_tool(p.opts, tool)[0] if tool else dict(p.opts)      # the options the method needs
-        except wfl.OptionRefused:
+        km = self._method_key(p, block, method, device)
+        if km is None:
             return 0.0, False
-        k = ("method", block, repr(sorted(opts.items())), repr(sorted(p.params.items())), self.device,
-             self._epoch, self._sources_sig())
+        k, opts = km
         got = self._est.get(k)
         if got is None:
             w = self._what_if(opts, p.params)
             try:
                 chain = api.chain(self.p, w)
-                est = [api.estimate(self.p, w, s, self.device) for s in BY_KEY[block]["stages"] if s in chain]
+                dev = k[4]
+                est = [api.estimate(self.p, w, s, dev) for s in BY_KEY[block]["stages"] if s in chain]
                 got = (sum(e.seconds for e in est), all(e.measured for e in est))
             except (ValueError, KeyError, OSError):
                 got = (0.0, False)
             self._est[k] = got
         return got
+
+    def method_times(self, p: WorkflowView, block: str, method: str) -> dict[str, tuple[float, bool]] | None:
+        """What a method takes on each device it runs on, for the card: {"gpu": (seconds, measured), "cpu": ...} (a
+        method that runs on the CPU only has just that one). The GUI thread only reads what the worker has already
+        estimated: None while it has not (the worker is asked, ``costChanged`` follows when the durations are in)."""
+        m = next((x for x in methods_of(block) if x["key"] == method), None)
+        if m is None:
+            return {}
+        devs = ("cpu",) if m["runs"] == "cpu" else ("gpu", "cpu")
+        if m["stage"] in EXTRA_SECONDS:                        # the spec's own figure, for the device it is meant for
+            return {devs[0]: (EXTRA_SECONDS[m["stage"]], False)}
+        if not self.ready:
+            return None
+        out = {}
+        for dev in devs:
+            km = self._method_key(p, block, method, dev)
+            if km is None:
+                out[dev] = (0.0, False)
+                continue
+            got = self._est.get(km[0])
+            if got is None:
+                if not self._est_wanted:                       # its own channel: never replaces the first prefetch
+                    self._est_wanted = True
+                    self.worker.submit(f"model.wanted:{id(self)}", self._prefetch_estimates, False)
+                return None
+            out[dev] = got
+        return out
 
     def cost_of(self, opts: dict, params: dict | None = None) -> tuple[float, list[str], list[str]]:
         """Cost of a workflow with these options: (seconds to compute, stages to compute, stages reused)."""
