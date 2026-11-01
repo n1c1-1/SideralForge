@@ -5,7 +5,16 @@
 - le **recalage des couleurs (ChannelMatch) est activé par défaut** : c'est un atout majeur ;
 - le but n'est pas de faire comme Siril, mais **mieux que Siril**. Siril est le plancher, pas le modèle ;
 - avant d'aller plus loin : **une passe d'état de l'art sur l'empilement** (PixInsight, Siril, APP, DSS,
-  publications), puis cette spec sera réécrite, avec les paramètres à exposer.
+  publications), puis cette spec sera réécrite, avec les paramètres à exposer. Fait :
+  docs/pilot/STATE_OF_THE_ART_STACKING.md ;
+- **sélection des poses** : on **garde notre seuil de sélection**, comme Siril qui propose aussi de ne garder que les
+  meilleures poses. Le défaut est peut-être trop sévère et sera mesuré. La vue « courbes + images » est appréciée :
+  on y voit les passages nuageux.
+
+**Idée pour plus tard (l'utilisateur) : ne plus juger une pose en tout ou rien, mais par tuiles.** Un nuage ne
+couvre pas toute l'image. Pondérer, ou écarter, par zones de l'image garderait les parties claires d'une pose
+partiellement voilée. Avant d'en faire quoi que ce soit, il faut une passe d'état de l'art sur la pondération
+locale.
 
 Statut : **à valider par l'utilisateur avant tout code.** Règle du projet (ENGINE_KNOWLEDGE 4b) : chaque méthode
 repose sur un algorithme publié et utilisé, nommé ici. Rien n'est réglé sur nos images de test.
