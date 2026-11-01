@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 from .. import api
 from . import prefs
 from .frames import fexp, night_text
-from .i18n import _, number
+from .i18n import _, hours_text, number, plural
 from .services.inspect import FrameItem, ProjectFrames, add_scan, service_of
 from .viewer import StaticSource, Viewer
 from .widgets import NEW, OK, WARN, clear, hline, label, para
@@ -193,10 +193,11 @@ class ImportDialog(QDialog):
         self.found.setText(txt)
         gs = api.group_sessions(scan.frames["lights"], self.service.criteria)
         names = " · ".join(_("{name} ({n} lights)").format(name=g.name, n=g.count) for g in gs)
-        self.groups.setText(_("{n} session(s): {names}").format(n=len(gs), names=names)
+        self.groups.setText(plural(len(gs), "{n} session: {names}", "{n} sessions: {names}", names=names)
                             if not self.new_session else _("One session: {name}").format(name=scan.name))
         if scan.errors:
-            self.warn.setText(_("{n} files could not be read.").format(n=len(scan.errors)))
+            self.warn.setText(plural(len(scan.errors), "{n} file could not be read.",
+                                     "{n} files could not be read."))
         self.ok.setEnabled(True)
 
     def finish_now(self):
@@ -230,10 +231,7 @@ def import_folder(model, parent=None, folder: str | None = None, new_session: bo
     else:
         made = add_scan(model.p, scan, svc.criteria)
     model.log('Folder "{folder}" imported · {lights} lights', folder=folder, lights=len(scan.frames.get("lights", [])))
-    touch = getattr(model, "_touch", None)
-    if touch is not None:
-        touch()                                       # the model saves the definition 300 ms after
-    model.load_sources()
+    model.load_sources()                              # saved 300 ms after, then the frames are read again
     return bool(made)
 
 
@@ -822,10 +820,7 @@ class SourcesView(QWidget):
         if f.session is None:
             return
         want = not f.excluded
-        self.s.set_excluded([(f.session, f.name)], want)
-        touch = getattr(self.s, "_touch", None)
-        if touch is not None:
-            touch()                                       # the model does not mark an exclusion as an edit
+        self.s.set_excluded([(f.session, f.name)], want)          # saved by the model, as any edit
         f.excluded = want
         self._marks()
         self.fill_table(self.order())
@@ -859,7 +854,7 @@ class SourcesView(QWidget):
                      .replace("T", " ")[:16]),
                     (_("Last frame"), (max((r.last for r in d.sessions if r.last), default="") or "–")
                      .replace("T", " ")[:16]),
-                    (_("Integration"), f"{fnum(hours)} h ({n} × {fexp(row0.exposure)})"),
+                    (_("Integration"), f"{hours_text(hours)} ({n} × {fexp(row0.exposure)})"),
                     (_("Black / white level"), f"{int(cam.get('black') or 0)} / {int(cam.get('white') or 0)} ADU")]
         elif d is not None and self.items:
             first = self.items[0]

@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 from . import prefs
 from .blocks import ENGINE_BLOCK, Graph, block_state, block_title, chain, stages_of
 from .charts import FramesChart, SpectralChart
-from .i18n import _, hm, number
+from .i18n import _, hm, hours_text, number
 from .panel import STATE_COLOR, STATE_WORD, Panel
 from .services.inspect import ShownImage, VisualSpec
 from .steps import Steps, fnum, kv
@@ -725,8 +725,8 @@ class TuneView(QWidget):
             s = self.s
             kept, n = self._kept
             exp = s.info().get("exposure_s") or 0
-            self.kept_label.setText(_("{kept} of {n} frames kept · {h} h").format(
-                kept=kept, n=n, h=fnum(kept * exp / 3600)))
+            self.kept_label.setText(_("{kept} of {n} frames kept · {t}").format(
+                kept=kept, n=n, t=hours_text(kept * exp / 3600)))
         except RuntimeError:                                  # the label went with a rebuild
             pass
 
@@ -747,10 +747,7 @@ class TuneView(QWidget):
     def _set_hand(self, pairs, excluded: bool):
         pairs = [x for x in pairs if x[0] is not None]
         if pairs:
-            self.s.set_excluded(pairs, excluded)
-            touch = getattr(self.s, "_touch", None)
-            if touch is not None:
-                touch()                                       # the model does not mark an exclusion as an edit
+            self.s.set_excluded(pairs, excluded)                 # saved by the model, as any edit
 
     def _pick(self, i):
         self.picked = i

@@ -47,6 +47,10 @@ POLL_MS = 500
 #: the model reads the states of the graph again at most this often while a run goes (it replans and rebuilds the graph:
 #: tens of ms each time, more on a busy machine); a stage that ends is shown within this time
 REFRESH_MS = 1500
+#: and only once the run has said nothing new of its stages for this long: when a stage starts or ends, the runner
+#: rewrites its manifest and renames its folder, and on Windows a manifest being read cannot be replaced (the job would
+#: fail); the states are read in the quiet that follows
+QUIET_MS = 400
 
 
 def duration_text(seconds: float, measured: bool = True) -> str:
@@ -784,18 +788,15 @@ class RunController(QObject):
         self.statusChanged.emit(self.status_text())
 
     def _model_changed(self):
-        """A stage started or ended: the model must read the states again, soon."""
+        """A stage started or ended: the model must read the states again, once the run is quiet (QUIET_MS after its
+        last stage event) and at most every REFRESH_MS."""
         self._refresh_due = True
-        self._refresh_model()
+        wait = max(QUIET_MS / 1000, REFRESH_MS / 1000 - (time.monotonic() - self._refresh_at))
+        self._refresh_timer.start(int(wait * 1000) + 1)       # a newer stage event starts the wait again
 
     def _refresh_model(self):
-        """Tell the model that results changed on disk: at once the first time, then at most every REFRESH_MS."""
+        """Tell the model that results changed on disk."""
         if not self._refresh_due:
-            return
-        wait = REFRESH_MS / 1000 - (time.monotonic() - self._refresh_at)
-        if wait > 0:
-            if not self._refresh_timer.isActive():
-                self._refresh_timer.start(int(wait * 1000) + 1)
             return
         self._refresh_due = False
         self._refresh_at = time.monotonic()

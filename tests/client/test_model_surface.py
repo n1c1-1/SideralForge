@@ -34,7 +34,7 @@ SURFACE = {
                 "paramsChanged", "factsChanged", "selectionChanged"],
     "attributes": ["paths", "path", "current", "sel_step", "scope", "pending_change", "sessions", "stack_mode", "gpu",
                    "history", "sources_loaded", "frames_excluded", "test_on", "test_zone", "root", "name", "target",
-                   "ready", "trunk_params"],
+                   "ready", "trunk_params", "p", "error", "device"],
     "workflows": ["add_path", "remove_path", "rename", "duplicate", "unique_name", "set_opts", "has_tool", "with_tool",
                   "without_tool", "tool_cost", "add_exit", "scope_paths", "select", "index_of", "view", "batch"],
     "changes": ["apply_change", "add_variant", "keep_variant", "drop_variant", "throws_away", "cost_with",
@@ -42,15 +42,16 @@ SURFACE = {
     "stages and states": ["state", "state_info", "previous_key", "pending_upto", "all_pending", "pending", "is_pending",
                           "stage_key", "owner", "sharing", "all_stages", "path_stages", "deps", "upstream",
                           "downstream", "block_keys", "block_key", "title", "mark_stages", "results_changed"],
-    "durations and plans": ["seconds", "path_seconds", "opts_seconds", "cost_of", "cost", "total_seconds", "plan_all",
-                            "plan_to_block", "method_seconds", "trunk_pending", "trunk_seconds", "set_machine"],
+    "durations and plans": ["seconds", "path_seconds", "opts_seconds", "opts_measured", "cost_of", "cost",
+                            "total_seconds", "plan_all", "plan_to_block", "method_seconds", "trunk_pending",
+                            "trunk_seconds", "set_machine"],
     "settings": ["params", "param_info", "param_value", "default_of", "reason_for"],
     "selection": ["thresholds_now", "suggested_thresholds", "thresholds_unit", "set_selection", "set_excluded",
                   "kept_frames", "selection_total", "excluded_mask", "request_selection", "fwhm_median"],
     "project facts": ["info", "image_size", "n_lights", "load_sources", "reload_sources", "add_session",
                       "set_stack_mode", "zone_fraction"],
     "Post": ["slider_infos", "slider_state", "available_sliders", "unlock_text"],
-    "lifecycle": ["flush", "close", "log"],
+    "lifecycle": ["flush", "close", "log", "edited"],
 }
 #: what the mockup's views read on the project that the model replaces on purpose: the name, and what to use instead
 REPLACED = {
@@ -264,3 +265,77 @@ def test_the_new_modules_have_no_mockup_leftovers():
                 top = node.module.split(".")[0]
                 assert top in {"__future__", "contextlib", "copy", "dataclasses", "math", "pathlib", "time", "typing",
                                "PySide6", "numpy"} or top == "astro_gpu", (name, node.module)
+
+
+def test_exclusions_and_session_edits_are_saved_like_any_edit(qapp, tmp_path):
+    """Frames excluded by hand and the sessions are part of the definition: the model saves them 300 ms after the
+    change, as it does for the workflows (Undo stays for the workflows: an exclusion is not taken back by it)."""
+    import json
+    import time
+
+    root = tmp_path / "P"
+    p = project2.create(root, "P", Target(name="M 1"))
+    p.sessions.append(project2.Session(1, "2026-08-16", lights=[str(tmp_path / "raw")]))
+    project2.save(p)
+    w = ApiWorker()
+    m = ProjectModel(p, w)
+    try:
+        assert w.wait(120)
+
+        def saved():
+            end = time.monotonic() + 5
+            while m._dirty and time.monotonic() < end:
+                QApplication.processEvents()
+                time.sleep(0.02)
+            return json.loads((root / "project.astroproj").read_text(encoding="utf-8"))
+        m.set_excluded([(1, "DSC0001.ARW")], True)
+        assert m._dirty and not m.can_undo()
+        assert saved()["excluded"] == [[1, "DSC0001.ARW"]]
+        m.set_excluded([(1, "DSC0001.ARW")], False)
+        assert saved()["excluded"] == []
+        p.sessions.append(project2.Session(2, "2026-08-17", lights=[str(tmp_path / "raw2")]))
+        m.reload_sources()                                  # what Import folder and Add session do after their edit
+        assert len(saved()["sessions"]) == 2
+        assert w.wait(120)
+    finally:
+        m.close()
+        w.stop()
+
+
+def test_durations_are_read_by_the_worker_before_the_views_are_told(qapp, tmp_path):
+    """The method cards, the toolbar cards and the New workflow dialog quote durations that read manifests: the worker
+    fills the model's cache before ``readyChanged``, so that drawing them reads nothing in the GUI thread."""
+    from astro_gpu import api
+    from astro_gpu.client.model import TEMPLATES
+    data = Path("F:/astro_essais/v2/heart_a7s")
+    if not (data / "project.astroproj").is_file():
+        pytest.skip("the heart_a7s test project (F:/astro_essais) is not here")
+    p = project2.load(data)                                  # read only: the model never writes it
+    w = ApiWorker()
+    m = ProjectModel(p, w, readonly=True)
+    told = []
+    m.readyChanged.connect(lambda: told.append(len(m._est)))
+    try:
+        assert w.wait(120) and m.ready
+        assert told and told[-1] > 0                         # the cache was full when the views were told
+        calls = []
+        real = api.estimate
+        api.estimate = lambda *a, **k: (calls.append(a), real(*a, **k))[1]
+        try:
+            v = m.paths[0]
+            for stage in m.all_stages(v):
+                m.seconds(stage, v)
+            for opts in TEMPLATES.values():
+                m.opts_seconds(opts)
+            for k in ("debruitage", "etoiles"):              # the toolbar asks only for the tools not there yet
+                if not m.has_tool(v.opts, k):
+                    m.tool_cost(v.opts, k)
+            for block in ("debruitage", "etoiles", "fond"):
+                for meth in modelmod.methods_of(block):
+                    m.method_seconds(v, block, meth["key"])
+        finally:
+            api.estimate = real
+        assert calls == []                                    # all answered from the cache
+    finally:
+        m.close()
+        w.stop()

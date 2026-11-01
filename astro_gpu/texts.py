@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import numbers
 import re
 import string
@@ -116,7 +117,7 @@ class Metric(NamedTuple):
     key: str
     label: str          # short name (English)
     unit: str           # written after the value, "" for none
-    fmt: str            # format spec of a number ("d", ".2f", "g", ".1%"); "" for the default
+    fmt: str            # format spec of a number ("d", ".2f", "g", ".1%"); "" for the default (see also DISPLAY)
     meaning: str        # one line (English)
     sep: str = " / "    # between the numbers of a list
 
@@ -315,6 +316,10 @@ _METRIC_ROWS: list[tuple] = [
 ]
 
 METRICS: dict[str, Metric] = {r[0]: Metric(*r) for r in _METRIC_ROWS}
+#: how some metrics read on screen, beyond their number format (display only: the stored values are unchanged):
+#: "hours" a duration given in hours, in minutes under one hour (0.17 -> "10 min", 3.02 -> "3.0 h"); "sig2" two
+#: significant digits (1.821 -> "1.8", 0.0123 -> "0.012")
+DISPLAY: dict[str, str] = {"integration_used_h": "hours", "rejected_pct": "sig2"}
 assert len(METRICS) == len(_METRIC_ROWS), "a metric key is listed twice"
 
 #: the fixed words some metrics hold: stored value -> English text shown (translated like any text)
@@ -375,7 +380,36 @@ def metric_meaning(key: str, lang: str = "en") -> str:
     return translate(m.meaning, lang) if m else ""
 
 
+def _sig2(x: float) -> str:
+    """Two significant digits, without an exponent: 12.3 -> 12, 1.821 -> 1.8, 0.0123 -> 0.012."""
+    a = abs(float(x))
+    if a == 0 or a >= 10:
+        return f"{x:.0f}"
+    return f"{x:.{max(1, 1 - math.floor(math.log10(a)))}f}"
+
+
+def _grouped(s: str, lang: str) -> str:
+    """Thousands set apart in a whole number of five digits or more: "573,295" in English, "573 295" in French (a
+    narrow no-break space); four digits stay as they are ("4742")."""
+    body = s.lstrip("-")
+    if not body.isdigit() or len(body) < 5:
+        return s
+    sep = "\u202f" if lang in DECIMAL_COMMA else ","
+    out = f"{int(body):,}".replace(",", sep)
+    return ("-" if s.startswith("-") else "") + out
+
+
 def _plain_number(x: Any, spec: str, lang: str) -> str:
+    if spec == "sig2":
+        s = _sig2(x)
+        return s.replace(".", ",") if lang in DECIMAL_COMMA else s
+    if spec == "hours":
+        if abs(x) < 1:
+            return f"{max(1, round(x * 60)) if x > 0 else 0} min"
+        s = f"{x:.1f} h"
+        return s.replace(".", ",") if lang in DECIMAL_COMMA else s
+    if spec == "d" and isinstance(x, numbers.Integral) and not isinstance(x, bool):
+        return _grouped(format(x, "d"), lang)
     if spec.endswith("%"):
         s = format(x * 100, spec[:-1] + "f") + " %"
     else:
@@ -401,7 +435,7 @@ def _text_value(v: str, lang: str) -> str:
 
 
 def _show(v: Any, m: Metric | None, lang: str) -> str:
-    spec = m.fmt if m else ""
+    spec = (DISPLAY.get(m.key) or m.fmt) if m else ""
     sep = m.sep if m else " / "
     if v is None:
         return "–"
@@ -430,6 +464,8 @@ def format_metric(key: str, value: Any, lang: str = "en") -> str:
     m = METRICS.get(key)
     out = _show(value, m, lang)
     unit = metric_unit(key, lang)
+    if m is not None and DISPLAY.get(m.key) == "hours":
+        unit = ""                                     # the duration carries its own unit (min or h)
     if unit and value is not None and not isinstance(value, (bool, str, dict)):
         out += unit if unit.startswith("°") else " " + unit
     return out

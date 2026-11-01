@@ -3,19 +3,19 @@
 Home: the workspace and its projects. A project has three modes over the same blocks:
 * Graph: the workflows as a graph of blocks, the tools on top, the selected block's settings on the right;
 * Inspect: the image of one block, large, the workflow as a strip, the same settings with the measurements;
-* Post: the workflows' layers, masks and filter layers.
+* Post: the workflows' layers, masks and filter layers (Post is the Inspect view of the Post block).
 Settings hold the application preferences; the language takes effect at once (the menus, Home and the project screen
 are built again). Spec mode shows, disabled and marked ◇, what the engine does not have yet.
 
-The shell (this module) opens, creates and lists v2 projects (core/project2) and never writes into a project unless
-the user creates it or saves it elsewhere. The views come from the later packages; ``READY`` says which are wired,
-and the actions of the others stay disabled. Mount points, for P13:
-* ``graph_page()``    P9b: GraphView with the toolbar of optional blocks, and the block Panel (model.ProjectModel);
-* ``inspect_page()``  P10: TuneView (Inspect), with FramesView and SourcesView for the Frames block;
-* ``post_page()``     P12: PostPage3 (Post is the Inspect view of the Post block) and ``export()``;
-* ``launch()``, ``run_to_here()``, ``stop_run()``: P11 (services/run: plan dialog, RunFollower, the Log console);
-* ``import_frames(folder)``: P10 (Import folder); ``offer_import(root)``: P6 (a v1 project);
-* ``undo()``, ``redo()``: P9b (the workflows' undo stack); ``clear_cache()``: P5 (api.clear_unused).
+The shell opens, creates and lists v2 projects (core/project2) and never writes into a project unless the user edits
+it or saves it elsewhere; a project of the previous version is imported first (previous.py), its folder untouched.
+Once a project is open the window holds, for it:
+* ``s``: the ProjectModel (model.py) every view reads and edits; it saves the definition 300 ms after an edit;
+* ``run``: the RunController (services/run.py): the plan dialog, the detached run, its progress and the Log console;
+* ``render``: the RenderWorker of Post (services/render.py), made when Post is first shown and kept while the project
+  is open, so that a rebuilt screen (a change of language) does not load the engines again.
+The views are built again with the project screen: ``graph`` (GraphPage), ``tune`` (TuneView, holding Frames and the
+Post page). ``READY`` says which parts are wired (all of them now).
 
     python -m astro_gpu.client [project folder]
 """
@@ -27,7 +27,7 @@ import time
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, QLibraryInfo, QLocale, Qt, QTranslator
+from PySide6.QtCore import QCoreApplication, QLibraryInfo, QLocale, Qt, QTimer, QTranslator
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -46,13 +46,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import __version__
+from .. import __version__, api
 from ..core import project2
 from ..core.newproject import guess_names
 from ..core.project import Target
 from . import prefs
 from .home import HomeView
-from .i18n import _, language, set_language
+from .i18n import _, language, plural, set_language
 from .logview import LogPanel
 from .services.worker import ApiWorker, Machine, machine_info
 from .settingsdlg import SettingsDialog
@@ -63,15 +63,15 @@ EXTRA_QSS = ("QSlider:horizontal { margin-left: 6px; margin-right: 6px; }"
 HELP = """<h2>{title}</h2>
 <p>{p1}</p><p>{p2}</p>"""
 
-#: the views and services of the later packages, by what they bring; P13 turns each on as it wires it
+#: the views and services of the packages, by what they bring (all wired by P13)
 READY = {
-    "workflows": False,      # P9b: graph, block panel, undo / redo
-    "inspect": False,        # P10: Inspect, Frames
-    "frames": False,         # P10: Import folder, Import folder as new project
-    "run": False,            # P11: Run all, Run to selected block, Stop
-    "post": False,           # P12: Post, Export image
-    "import_v1": False,      # P6: import of a project of the previous version
-    "cache": False,          # P5: Clear cache of closed projects
+    "workflows": True,       # P9b: graph, block panel, undo / redo
+    "inspect": True,         # P10: Inspect, Frames
+    "frames": True,          # P10: Import folder, Import folder as new project
+    "run": True,             # P11: Run all, Run to selected block, Stop
+    "post": True,            # P12: Post, Export image
+    "import_v1": True,       # P6: import of a project of the previous version
+    "cache": True,           # P5: Clear cache of closed projects
 }
 
 _qt_translator: QTranslator | None = None
@@ -109,9 +109,16 @@ def machine_text(machine: Machine | None, device: str) -> tuple[str, bool]:
     return g.name, True
 
 
+def approx(seconds: float, measured: bool) -> str:
+    """A duration as the views show it, with ≈ when it is an estimate."""
+    from .i18n import hm
+    t = hm(seconds)
+    return t if measured or t.startswith("≤") else "≈ " + t
+
+
 class OpenProject:
-    """The open project as the shell knows it: its folder, its definition and its history (for the Log). P13 hands
-    the views the ProjectModel built on it."""
+    """The open project as the shell knows it: its folder, its definition and its history (for the Log). The model of
+    the views (``Main.s``) shares the definition and the history."""
 
     def __init__(self, root: Path, definition: project2.Project2):
         self.root = Path(root)
@@ -132,7 +139,7 @@ class OpenProject:
 
 
 class Placeholder(QWidget):
-    """A mode whose view is not mounted yet."""
+    """A place with a short note (what is not there yet)."""
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
@@ -145,17 +152,52 @@ class Placeholder(QWidget):
         v.addStretch(1)
 
 
+class PostHolder(QWidget):
+    """Post's place in Inspect. The page is made the first time it is shown: its engines load then, not when the
+    project opens (on the CPU, a layer's engine takes seconds)."""
+
+    def __init__(self, make, parent=None):
+        super().__init__(parent)
+        self.setObjectName("root")
+        self._make = make
+        self.page = None
+        self._v = QVBoxLayout(self)
+        self._v.setContentsMargins(0, 0, 0, 0)
+
+    def ensure(self):
+        if self.page is None:
+            self.page = self._make()
+            self._v.addWidget(self.page)
+        return self.page
+
+    def showEvent(self, e):                                          # noqa: N802 - Qt's name
+        super().showEvent(e)
+        self.ensure()
+
+
 class Main(QMainWindow):
     def __init__(self, worker: ApiWorker | None = None):
         super().__init__()
         self.worker = worker or ApiWorker(self)
         self.worker.done.connect(self._worker_done)
+        self.worker.failed.connect(self._worker_failed)
         self.project: OpenProject | None = None
-        self.s = None                                # the ProjectModel of the views (P9b), wired by P13
+        self.s = None                                # the ProjectModel of the views
+        self.run = None                              # the RunController of the project
+        self.render = None                           # the RenderWorker of Post (made when Post is first shown)
         self.machine: Machine | None = None
         self.home: HomeView | None = None
         self.proj_screen: QWidget | None = None
+        self.graph = self.tune = self.frames = self.browser = self.steps = self.post_holder = None
         self.mode = 0
+        self._last_step = None                       # the block Inspect showed before Post
+        self._pending = False
+        self._run_widget = None
+        self._thumb_of = None                        # the Post image last left as the project's Home picture
+        self._flash = ""                             # a word said for a few seconds in place of the status line
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setSingleShot(True)
+        self._flash_timer.timeout.connect(self._flash_end)
         self.screens = QStackedWidget()
         self.setCentralWidget(self.screens)
         self.status = label("", "small")
@@ -210,7 +252,7 @@ class Main(QMainWindow):
         act(f, _("Save as…"), self.save_as, enabled=has)
         f.addSeparator()
         act(f, _("Import folder…"), self.add_sources, "Ctrl+I", enabled=has and READY["frames"])
-        act(f, _("Export image…"), self.export, "Ctrl+E", enabled=has and READY["post"])
+        self.a_export = act(f, _("Export image…"), self.export, "Ctrl+E", enabled=has and READY["post"])
         if spec:
             act(f, _("Export project as script…"), new=True)
         f.addSeparator()
@@ -231,19 +273,36 @@ class Main(QMainWindow):
         self.a_spec.setChecked(spec)
         self.a_spec.toggled.connect(self.set_spec)
         r = mb.addMenu(_("Run"))
-        act(r, _("Run all"), self.launch, "F5", enabled=has and READY["run"])
-        act(r, _("Run to selected block"), self.run_to_here, "Shift+F5", enabled=has and READY["run"])
+        self.a_run = act(r, _("Run all"), self.launch, "F5", enabled=has and READY["run"])
+        self.a_here = act(r, _("Run to selected block"), self.run_to_here, "Shift+F5", enabled=has and READY["run"])
         r.addSeparator()
-        self.a_stop = act(r, _("Stop"), self.stop_run, enabled=has and READY["run"])
+        self.a_stop = act(r, _("Stop"), self.stop_run, enabled=False)
         h = mb.addMenu(_("Help"))
         act(h, _("About"), self.about, "F1")
         if spec:
             act(h, _("Glossary"), new=True)
         for m in (f, e, v, r, h):
             m.setToolTipsVisible(True)
+        self._update_actions()
+
+    def _update_actions(self):
+        """What the menus allow now: Undo / Redo, Stop, Export."""
+        s = self.s
+        if s is None:
+            return
+        try:
+            self.a_undo.setEnabled(s.can_undo() or self._post_shown())
+            self.a_redo.setEnabled(s.can_redo() or self._post_shown())
+            self.a_stop.setEnabled(self.run is not None and self.run.running)
+            self.a_export.setEnabled(any(p.rendered for p in s.paths))
+            self.a_here.setEnabled(s.path is not None and s.sel_step not in ("sources", "final"))
+        except RuntimeError:                         # the menus are being rebuilt
+            pass
 
     # ------------------------------------------------------------ Home
     def show_home(self, last=None):
+        if self.project is not None:
+            self._leave_thumbnail()                  # Home shows the open project as Post last showed it
         if self.home is None:
             self.home = HomeView(self.worker, can_import=READY["frames"], last=last)
             self.home.openProject.connect(self.open_project)
@@ -253,7 +312,8 @@ class Main(QMainWindow):
         else:
             self.home.rescan()
         self.screens.setCurrentWidget(self.home)
-        self.statusBar().clearMessage()
+        self._flash = ""
+        self._flash_timer.stop()
         self.setWindowTitle("astro_gpu · " + _("Home"))
         self.status.setText(prefs.get("workspace"))
         self.update_spec_note()
@@ -291,6 +351,13 @@ class Main(QMainWindow):
             self.import_frames(folder)
 
     # ------------------------------------------------------------ a project
+    def _device(self) -> tuple[bool, str | None]:
+        """(a GPU computes, the device asked: None for automatic) from Settings > Compute and the machine."""
+        dev = prefs.get("device") or "auto"
+        if dev == "cpu" or (self.machine is not None and not self.machine.gpus):
+            return False, "cpu"
+        return True, (None if dev == "auto" else dev)
+
     def open_project(self, root, created: bool = False) -> bool:
         root = Path(root)
         if self.project is not None and root.as_posix().lower() == self.project.root.as_posix().lower():
@@ -314,10 +381,57 @@ class Main(QMainWindow):
         self.project = OpenProject(root, d)
         self.project.log("Project created" if created else "Project opened")
         prefs.add_recent(root.as_posix(), d.name, d.target.name or "")
+        self.make_model()
         self.mode = 0
+        self._last_step = None
         self.build_menus()
         self.build_project()
+        self.run.attach()                            # a run that goes on (started before, or elsewhere): follow it
         return True
+
+    def make_model(self):
+        """The model, the run controller and their signals, once per project."""
+        from .model import ProjectModel
+        from .services.run import RunController
+        gpu, device = self._device()
+        s = ProjectModel(self.project.definition, self.worker, history=self.project.history, gpu=gpu, device=device,
+                         readonly=bool(getattr(self, "readonly", False)))      # a test harness may ask: never write
+        self.s = s
+        for sig in (s.pathsChanged, s.currentChanged, s.costChanged, s.sourcesChanged, s.readyChanged):
+            sig.connect(self.request_refresh)
+        self.run = RunController(s, window=self, console=lambda: getattr(self, "logp", None))
+        self.run.runningChanged.connect(lambda _on: self.request_refresh())
+        self.run.updated.connect(self._run_updated)
+        self.run.finished.connect(self._run_finished)
+        self.run.logRequested.connect(lambda: self.b_log.setChecked(True))
+        self._run_widget = self.run.status_widget()
+        sb = self.statusBar()                       # the run's progress and Stop, left of the Log toggle
+        sb.removeWidget(self.b_log)
+        sb.addPermanentWidget(self._run_widget)
+        sb.addPermanentWidget(self.b_log)
+        self.b_log.show()
+
+    def render_worker(self):
+        """Post's render worker: one per project, kept while it is open (its engines stay loaded)."""
+        if self.render is None:
+            from .services.render import RenderWorker, default_device_pref
+            gpu, _device = self._device()
+            self.render = RenderWorker(self.s.p, device=default_device_pref() if gpu else "cpu")
+        return self.render
+
+    def _leave_thumbnail(self):
+        """The composition Post last showed becomes the project's picture on Home (``cache/thumb.jpg``, written by the
+        worker)."""
+        holder = self.post_holder
+        page = holder.page if holder is not None else None
+        img = getattr(getattr(getattr(page, "view", None), "src", None), "img1", None)
+        if img is None or self.s is None or self.s.readonly or self.project is None:
+            return
+        if img is self._thumb_of:
+            return                                   # written already
+        self._thumb_of = img
+        from .home import THUMB
+        self.worker.submit(f"thumb:{self.project.root}", _write_thumb, self.project.root / THUMB, img.copy())
 
     def show_project(self):
         if self.proj_screen is not None:
@@ -325,17 +439,34 @@ class Main(QMainWindow):
             self.refresh()
 
     def close_project(self, go_home=True):
-        """Save what is pending and close the project."""
+        """Save what is pending and close the project (a run in progress goes on: opening the project follows it
+        again)."""
         if self.project is not None:
-            flush = getattr(self.s, "flush", None)
-            if flush is not None:
-                flush()
+            if self.run is not None:
+                self.run.close()
+                if self._run_widget is not None:
+                    self.statusBar().removeWidget(self._run_widget)
+                    self._run_widget.deleteLater()
+                    self._run_widget = None
+                self.run.deleteLater()
+                self.run = None
+            self._leave_thumbnail()
+            if self.s is not None:
+                from .services.inspect import _services
+                sv = _services.get(self.s)
+                self.s.close()
+                if sv is not None:
+                    sv.stop()
+            if self.render is not None:
+                self.render.stop()
+                self.render = None
             self.project = None
             self.s = None
             if self.proj_screen is not None:
                 self.screens.removeWidget(self.proj_screen)
                 self.proj_screen.deleteLater()
                 self.proj_screen = None
+            self.graph = self.tune = self.frames = self.browser = self.post_holder = None
             self.build_menus()
         if go_home:
             self.show_home()
@@ -385,37 +516,127 @@ class Main(QMainWindow):
         self.logp = LogPanel(self.project)
         self.logp.setVisible(self.b_log.isChecked())
         sv.addWidget(self.logp)
-        # the modes: mount points of the views
+        # the modes: Graph, and Inspect (which holds Frames and Post)
         self.modes.addWidget(self.graph_page())
         self.modes.addWidget(self.inspect_page())
-        self.modes.addWidget(self.post_page())
         self.proj_screen = screen
         self.screens.addWidget(screen)
         self.screens.setCurrentWidget(screen)
+        if self.run is not None:
+            self.run.retranslate()                   # the console of the last run, in the new Log panel
         self.set_mode(self.mode)
 
     def graph_page(self) -> QWidget:
-        """Graph: the toolbar of optional blocks, the GraphView and the block Panel (P9b)."""
-        return Placeholder(_("Graph"))
+        """Graph: the toolbar of optional blocks, the GraphView and the block Panel."""
+        from .graph import GraphPage
+        from .steps import Steps
+        self.steps = Steps(self.s)
+        page = GraphPage(self.s, self.steps)
+        page.openBlock.connect(lambda: self.set_mode(2 if self.s.sel_step == "final" else 1))
+        page.openPost.connect(lambda: self.set_mode(2))
+        page.addSources.connect(self.add_sources)
+        page.addSession.connect(self.add_session)
+        page.variantMade.connect(self._variant_made)
+        page.changed.connect(self.request_refresh)
+        self.graph = page
+        if self.run is not None:
+            self.run.watch_graph(page.graph)
+        return page
 
     def inspect_page(self) -> QWidget:
-        """Inspect: TuneView, with Frames (P10)."""
-        return Placeholder(_("Inspect"))
+        """Inspect: TuneView, with Frames (FramesView and its browser) and the Post page."""
+        from .frames import FramesView
+        from .sources import SourcesView
+        from .tune import TuneView
+        s = self.s
+        self.browser = SourcesView(s)
+        self.frames = FramesView(s, self.browser)
+        self.post_holder = PostHolder(self.post_page)
+        tune = TuneView(s, self.steps, self.frames, self.post_holder)
+        tune.back.connect(lambda: self.set_mode(0))
+        tune.pick.connect(self._strip_pick)
+        tune.workflow.connect(lambda _i: self.request_refresh())
+        tune.runHere.connect(self.run_to_here)
+        tune.openPost.connect(lambda: self.set_mode(2))
+        tune.removeTool.connect(self._remove_tool)
+        tune.toasted.connect(self.flash)
+        self.frames.imported.connect(self.request_refresh)
+        self.frames.stackMode.connect(lambda m: s.set_stack_mode(m))
+        self.browser.goChain.connect(lambda k: self.select(step=k) if s.path is not None else None)
+        self.tune = tune
+        return tune
 
     def post_page(self) -> QWidget:
-        """Post: PostPage3 (P12). In the views, Post is the Inspect view of the Post block."""
-        return Placeholder(_("Post"))
+        """Post: PostPage3, on the project's render worker (made the first time Post is shown)."""
+        from .post3 import PostPage3
+        page = PostPage3(self.s, worker=self.render_worker())
+        page.goWorkflow.connect(lambda: self.set_mode(0))
+        page.view.goResults.connect(self._go_results)
+        page.view.goProcessing.connect(lambda pid, k: (self.select(index=self.s.index_of(pid), step=k),
+                                                       self.set_mode(1)))
+        return page
+
+    @property
+    def post(self):
+        """The Post page, made now if it was not yet."""
+        return self.post_holder.ensure() if self.post_holder is not None else None
+
+    def _post_shown(self) -> bool:
+        return self.s is not None and self.mode == 2 and self.post_holder is not None and \
+            self.post_holder.page is not None
+
+    def select(self, index=None, step=None):
+        """Select a workflow and a block (the scope follows the block, as a click on the graph does)."""
+        if self.graph is not None:
+            self.graph.select(index, step)
+        else:
+            self.s.select(index, step)
 
     def set_mode(self, i: int):
-        """0 Graph, 1 Inspect the chosen block, 2 Post."""
+        """0 Graph, 1 Inspect the chosen block, 2 Post (Inspect of the Post block)."""
+        s = self.s
         if self.project is None:
             return
         if self.screens.currentWidget() is not self.proj_screen:
             self.screens.setCurrentWidget(self.proj_screen)
+        was_post = self.mode == 2 and s is not None and s.sel_step == "final"
+        if s is not None:
+            if i == 2:
+                if s.sel_step != "final":
+                    self._last_step = s.sel_step
+                s.scope = None
+                s.pending_change = None
+                if s.sel_step != "final":
+                    s.select(step="final")
+            elif i == 1 and s.sel_step == "final":
+                self.select(step=self._last_step or ("post" if s.path is not None else "sources"))
         self.mode = i
-        self.modes.setCurrentIndex(i)
+        self.modes.setCurrentIndex(0 if i == 0 else 1)
         self.mode_btns[i].setChecked(True)
+        if i == 2 and not was_post and self.post_holder is not None and self.post_holder.page is not None:
+            self.post_holder.page.refresh()
         self.refresh()
+
+    def _strip_pick(self, k: str):
+        if k == "final":
+            self.set_mode(2)
+        else:
+            self.request_refresh()
+
+    def _go_results(self, pid: int):
+        """'Show workflow →' of a layer: Inspect on that workflow's Output."""
+        self._last_step = "post"
+        self.select(index=self.s.index_of(pid), step="post")
+        self.set_mode(1)
+
+    def _variant_made(self, pid: int, orig: int):
+        """A variant opens in Inspect compared with its original."""
+        if self.tune is not None:
+            self.tune.cmp_pid = orig
+
+    def _remove_tool(self):
+        if self.graph is not None:
+            self.graph.remove_tool(self.graph.current_node(), None)
 
     # ------------------------------------------------------------ refresh
     def project_name(self) -> str:
@@ -423,11 +644,17 @@ class Main(QMainWindow):
         name = "<b>" + html.escape(pr.name) + "</b>"
         return name + ("  ·  " + html.escape(pr.target) if pr.target else "")
 
+    def request_refresh(self, *_a):
+        if not self._pending:
+            self._pending = True
+            QTimer.singleShot(0, self.refresh)
+
     def refresh(self):
+        self._pending = False
         pr = self.project
         if pr is None or self.proj_screen is None:
             return
-        d = pr.definition
+        s = self.s
         self.title.setText(self.project_name())
         self.setWindowTitle("astro_gpu · " + pr.name)
         text, gpu = machine_text(self.machine, prefs.get("device"))
@@ -435,15 +662,59 @@ class Main(QMainWindow):
         self.machine_lb.setStyleSheet("" if gpu else f"color: {WARN};")
         g = self.machine.gpu(prefs.get("device")) if self.machine is not None else None
         self.machine_lb.setToolTip(f"{g.device} · {g.memory_gb:.0f} GB" if g is not None else "")
-        frames = bool(d.sessions)
-        self.bt_run.setText(_("Run"))
-        self.bt_run.setEnabled(READY["run"] and frames)
-        self.bt_run.setToolTip("" if frames else _("No frames yet"))
-        n = len(d.workflows)
-        self.status.setText(_("{n} workflow(s)").format(n=n) if n else "")
+        btn = 0 if self.mode == 0 else (2 if s is not None and s.sel_step == "final" else 1)
+        if self.mode != btn:
+            self.mode = btn
+        self.mode_btns[btn].setChecked(True)
+        self.update_run_button()
         if self.logp.isVisible():
             self.logp.refresh()
         self.update_spec_note()
+        self._update_actions()
+
+    def update_run_button(self):
+        """The Run button (Run · the time of Run all) and the status line (workflows, what is left to run)."""
+        s = self.s
+        frames = bool(s is not None and s.sources_loaded)
+        running = self.run is not None and self.run.running
+        n = len(s.paths) if s is not None else 0
+        cost = s.cost() if s is not None and s.ready and s.paths else None
+        todo = cost is not None and cost.jobs > 0
+        if running:
+            self.bt_run.setText(_("Running · {pct} %").format(pct=int(round(100 * self.run.progress()))))
+            self.bt_run.setEnabled(True)
+            self.bt_run.setToolTip(_("Show the run"))
+        else:
+            self.bt_run.setText(_("Run") + (f"  ·  {approx(cost.seconds, cost.measured)}" if todo else ""))
+            self.bt_run.setEnabled(READY["run"] and frames and todo)
+            self.bt_run.setToolTip("" if todo else (_("No frames yet") if not frames else
+                                                    _("Nothing to compute: all up to date.") if cost is not None
+                                                    else ""))
+        self.a_run.setEnabled(READY["run"] and frames and (todo or running))
+        if not n:
+            line = _("No workflow yet") if s is not None and s.ready else ""
+        else:
+            line = plural(n, "{n} workflow", "{n} workflows")
+            if s.error:
+                line += "  ·  " + _("cannot be read")
+            elif not s.ready:
+                line += "  ·  " + _("reading the project…")
+            elif todo:
+                line += "  ·  " + _("to run: {t}").format(t=approx(cost.seconds, cost.measured))
+            elif cost is not None:
+                line += "  ·  " + _("all up to date")
+        self._line = line
+        self.status.setText(self._flash or line)
+
+    def _run_updated(self):
+        if self.run is not None and self.run.running and self.proj_screen is not None:
+            self.update_run_button()
+
+    def _run_finished(self, status: str, text: str):
+        self.flash(text)
+        if self.render is not None:
+            self.render.refresh()
+        self.request_refresh()
 
     def update_spec_note(self):
         self.spec_note.setText(_("Spec mode · ◇ not in the engine yet") + "   " if prefs.spec() else "")
@@ -452,23 +723,34 @@ class Main(QMainWindow):
     def _worker_done(self, channel, _n, result):
         if channel == "machine":
             self.machine = result
+            if self.s is not None:
+                self.s.set_machine(*self._device())
             self.refresh()
+        elif channel == "cache.usage":
+            self._confirm_clear(result)
+        elif channel == "cache.clear":
+            freed, n = result
+            self.flash(plural(n, "{size} freed in {n} project", "{size} freed in {n} projects",
+                              size=_gb_text(freed)))
+
+    def _worker_failed(self, channel, _n, text):
+        if channel.startswith("cache."):
+            QMessageBox.warning(self, _("Clear cache"), _("The cache cannot be cleared: {why}").format(
+                why=(text or "?").splitlines()[0]))
 
     # ------------------------------------------------------------ files
     def save(self):
         """Edits are saved as they are made; Save writes what is still pending."""
-        flush = getattr(self.s, "flush", None)
-        if flush is not None:
-            flush()
+        if self.s is not None:
+            self.s.flush()
         self.flash(_("Project saved"))
 
     def save_as(self):
         """The definition of the project in another folder (its results stay where they are), then opened."""
         if self.project is None:
             return
-        save = getattr(self.s, "flush", None)
-        if save is not None:
-            save()
+        if self.s is not None:
+            self.s.flush()
         d = QFileDialog.getExistingDirectory(self, _("Save as…"), prefs.get("workspace"))
         if not d:
             return
@@ -492,43 +774,114 @@ class Main(QMainWindow):
         self.open_project(root)
 
     def offer_import(self, root: Path):
-        """A project of the previous version: it opens once imported (P6); its folder is never written."""
-        box = self.import_box(root)
-        box.exec()
-        box.deleteLater()
+        """A project of the previous version: it opens once imported into the workspace; its folder is never
+        written."""
+        if not READY["import_v1"]:
+            box = self.import_box(root)
+            box.exec()
+            box.deleteLater()
+            return
+        d = self.import_dialog(root)
+        ok = d.exec()
+        new = d.result_root
+        d.release()
+        d.deleteLater()
+        if ok and new is not None:
+            if self.open_project(new):
+                self.project.log('Imported from "{folder}"', folder=Path(root).as_posix())
+                self.flash(_("Project imported: {name}").format(name=self.project.name))
+
+    def import_dialog(self, root: Path):
+        from .previous import PreviousVersionDialog
+        return PreviousVersionDialog(root, self)
 
     def import_box(self, root: Path) -> QMessageBox:
         return QMessageBox(QMessageBox.Information, _("Open project"), _(
             "“{name}” was made with the previous version. Import it into the workspace to open it here; its folder "
             "is never changed.").format(name=Path(root).name), QMessageBox.Ok, self)
 
-    # ------------------------------------------------------------ mount points of the later packages
+    # ------------------------------------------------------------ frames, runs, export, undo
     def add_sources(self):
-        """File > Import folder…: frames into the open project (P10)."""
+        """File > Import folder…: frames into the open project."""
+        if self.s is None:
+            return
+        from .services.inspect import service_of
+        from .sources import import_folder
+        import_folder(self.s, self, service=service_of(self.s))
+
+    def add_session(self):
+        """Add session…: a folder of frames as a new session."""
+        if self.s is None:
+            return
+        from .services.inspect import service_of
+        from .sources import import_folder
+        import_folder(self.s, self, new_session=True, service=service_of(self.s))
 
     def import_frames(self, folder: str):
-        """The frames of a folder into the open project, after Import folder as new project (P10)."""
+        """The frames of a folder into the open project, after Import folder as new project."""
+        if self.s is None:
+            return
+        from .services.inspect import service_of
+        from .sources import import_folder
+        if import_folder(self.s, self, folder=folder, service=service_of(self.s)):
+            self.select(step="sources")
+            self.set_mode(1)
 
     def export(self):
-        """File > Export image… (P12)."""
+        """File > Export image… (the Export dialog of Post, on the composition of its layers)."""
+        if self.s is None:
+            return
+        if not any(p.rendered for p in self.s.paths):
+            self.flash(_("Nothing to export yet: no workflow is computed."))
+            return
+        self.post.export(self)
 
     def launch(self):
-        """Run all (P11)."""
+        """Run all (F5): the plan dialog, or the progress of the run in progress."""
+        if self.run is not None and READY["run"]:
+            self.run.launch()
 
     def run_to_here(self):
-        """Run to the selected block (P11)."""
+        """Run to the selected block (Shift+F5)."""
+        if self.run is not None and READY["run"]:
+            self.run.run_to_here()
 
     def stop_run(self):
-        """Stop the run (P11): the STOP file; the next run resumes."""
+        """Stop the run: the job in progress keeps its checkpoints; the next run resumes."""
+        if self.run is not None:
+            self.run.stop()
 
     def undo(self):
-        """Undo a change of the workflows (P9b)."""
+        """Undo: in Post, the composition's last change; elsewhere the workflows' last change."""
+        if self._post_shown():
+            self.post_holder.page.view.do_undo()
+        elif self.s is not None and self.s.undo():
+            self.s.log("Undone")
+            self.flash(_("Undone"))
 
     def redo(self):
-        """Redo a change of the workflows (P9b)."""
+        if self._post_shown():
+            self.post_holder.page.view.do_redo()
+        elif self.s is not None and self.s.redo():
+            self.s.log("Redone")
+            self.flash(_("Redone"))
 
     def clear_cache(self):
-        """Clear the unused results of the closed projects, after a confirmation (P5)."""
+        """Clear the unused results of the closed projects of the workspace, after a confirmation (read in the
+        worker: it walks the stores)."""
+        open_root = self.project.root if self.project is not None else None
+        self.worker.submit("cache.usage", _closed_usage, prefs.get("workspace"), open_root)
+
+    def _confirm_clear(self, found):
+        total = sum(b for _r, b in found)
+        if not total:
+            QMessageBox.information(self, _("Clear cache"), _("The closed projects hold no unused results."))
+            return
+        text = plural(len(found), "{size} of results no workflow uses, in {n} closed project. Clear them?",
+                      "{size} of results no workflow uses, in {n} closed projects. Clear them?",
+                      size=_gb_text(total))
+        if QMessageBox.question(self, _("Clear cache"), text) == QMessageBox.Yes:
+            self.worker.submit("cache.clear", _clear_closed, [r for r, b in found if b])
 
     # ------------------------------------------------------------ settings, language, spec mode, log
     def open_settings(self, page: str | None = None):
@@ -562,6 +915,12 @@ class Main(QMainWindow):
 
     def set_device(self, device: str):
         prefs.set("device", device)
+        if self.s is not None:
+            self.s.set_machine(*self._device())
+        if self.render is not None:                  # Post picks its device again before its next render
+            from .services.render import default_device_pref
+            self.render.pref = default_device_pref() if self._device()[0] else "cpu"
+            self.render._busy_at, self.render._last_busy = 0.0, "?"
         self.refresh()
 
     def set_spec(self, on: bool):
@@ -569,6 +928,10 @@ class Main(QMainWindow):
             prefs.set("spec_mode", on)
         self.build_menus()
         self.update_spec_note()
+        if self.graph is not None:
+            self.graph.request_refresh()
+        if self.tune is not None:
+            self.tune.request_refresh()
         self.refresh()
 
     def toggle_log(self, on):
@@ -579,7 +942,23 @@ class Main(QMainWindow):
                 logp.refresh()
 
     def flash(self, text):
-        self.statusBar().showMessage(text, 4000)
+        """A word for four seconds, in place of the status line (the status bar's own message would leave the line
+        under it when the bar is laid out again meanwhile)."""
+        self._flash = text
+        self.status.setText(text)
+        self._flash_timer.start(4000)
+
+    def _flash_end(self):
+        self._flash = ""
+        if self.project is not None and self.proj_screen is not None and \
+                self.screens.currentWidget() is self.proj_screen:
+            self.status.setText(getattr(self, "_line", ""))
+        else:
+            self.status.setText(prefs.get("workspace"))
+
+    def flashed(self) -> str:
+        """The word said now, if any (tests and walkthroughs)."""
+        return self._flash
 
     def about(self):
         d = self.about_dialog()
@@ -608,11 +987,51 @@ class Main(QMainWindow):
         return d
 
     def closeEvent(self, e):
-        flush = getattr(self.s, "flush", None)
-        if flush is not None:
-            flush()
+        self.close_project(go_home=False)
+        self.worker.wait(5)                          # what closing the project left to write (Home's thumbnail)
         self.worker.stop()
         super().closeEvent(e)
+
+
+def _gb_text(n_bytes: int) -> str:
+    from .i18n import number
+    gb = n_bytes / 1e9
+    return number(gb, 1 if gb >= 0.1 else 2) + " " + _("GB")
+
+
+def _write_thumb(path: Path, rgb) -> None:
+    """A small JPEG of a composition (worker thread): what Home shows of the project."""
+    from PIL import Image
+    im = Image.fromarray(rgb)
+    im.thumbnail((640, 400))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    im.save(tmp, format="JPEG", quality=88)
+    tmp.replace(path)
+
+
+def _closed_usage(workspace: str, open_root) -> list[tuple[str, int]]:
+    """(project folder, unused bytes) of the projects of the workspace, the open one aside (worker thread)."""
+    out = []
+    for info in api.list_projects(workspace):
+        root = Path(info.root)
+        if open_root is not None and root.resolve() == Path(open_root).resolve():
+            continue
+        if info.running or info.error:
+            continue
+        try:
+            u = api.cache_usage(api.open_project(root))
+        except Exception:  # noqa: BLE001 - a project that cannot be read is left alone
+            continue
+        out.append((str(root), sum(i.bytes for i in u.unused if not i.resumable)))
+    return out
+
+
+def _clear_closed(roots: list[str]) -> tuple[int, int]:
+    freed = 0
+    for r in roots:
+        freed += api.clear_unused(api.open_project(r))
+    return freed, len(roots)
 
 
 def main(argv=None):

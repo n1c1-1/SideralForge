@@ -32,3 +32,6 @@ scratch/
 .idea/
 Thumbs.db
 .DS_Store
+
+# review images (copies of F:/astro_projets/_review, too big for git)
+docs/pilot/point_etape/

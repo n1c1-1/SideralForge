@@ -25,11 +25,18 @@ from PySide6.QtWidgets import (
 from .i18n import _
 from .widgets import label
 
+#: the arguments of a history line that are words of the interface (a block's name), translated when shown, so that a
+#: line written in one language reads in the other
+WORD_ARGS = ("block",)
+
 
 def event_text(row) -> tuple[str, str]:
     """(time, text) of a history row, translated."""
     if len(row) >= 3:
-        t, template, args = row[0], row[1], row[2] or {}
+        t, template, args = row[0], row[1], dict(row[2] or {})
+        for k in WORD_ARGS:
+            if isinstance(args.get(k), str):
+                args[k] = _(args[k])
         return t, _(template).format(**args)
     return row[0], row[1]
 

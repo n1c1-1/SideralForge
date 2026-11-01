@@ -11,6 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
+from .blocks import TRUNK
 from .i18n import _, hm
 from .widgets import ACCENT, label
 
@@ -89,16 +90,20 @@ class NewWorkflowDialog(QDialog):
         hv = QVBoxLayout(host)
         hv.setContentsMargins(0, 0, 0, 0)
         hv.setSpacing(6)
+        # a new workflow joins the current one's pre-processing (its settings of Calibration to Stacking): its
+        # duration is quoted with them; a copy, with all of its settings
+        cur = getattr(session, "path", None)
+        trunk = {k: v for k, v in (cur.params if cur is not None else {}).items() if k in TRUNK}
         for key, opts in templates.items():
             shown = TEMPLATE_NAME.get(key, key)
-            self._card(hv, _(shown), _(TEMPLATE_TEXT.get(shown, "")), f"≈ {hm(session.opts_seconds(opts))}",
+            self._card(hv, _(shown), _(TEMPLATE_TEXT.get(shown, "")), f"≈ {hm(session.opts_seconds(opts, trunk))}",
                        (_("New workflow") if shown == "Classic stack" else _(shown), opts, {}))
         if session.paths:
             hv.addSpacing(4)
             hv.addWidget(label(_("Copy of a project workflow, with its settings"), "dim"))
             for p in session.paths:
                 self._card(hv, _("Copy of “{name}”").format(name=p.name), "",
-                           f"≈ {hm(session.opts_seconds(p.opts))}",
+                           f"≈ {hm(session.opts_seconds(p.opts, p.params))}",
                            (_("{name} (copy)").format(name=p.name), p.opts, p.params))
         hv.addStretch(1)
         sc = QScrollArea()

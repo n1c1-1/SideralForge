@@ -372,7 +372,7 @@ def test_states_come_from_the_api(world, model, page):
     assert block_state(model, model.view(2), "fond") == "running"
     model._sync()
     assert block_state(model, model.view(2), "fond") == "pending"
-    assert g.summary(g.root).startswith("1 session(s)") and "40 lights" in g.summary(g.root)
+    assert g.summary(g.root).startswith("1 session · ") and "40 lights" in g.summary(g.root)
 
 
 def test_a_shared_stage_is_one_key(world, model):
@@ -423,7 +423,7 @@ def test_the_toolbar_cards_say_what_each_block_costs(world, model, page):
     cards = {c.key: c for c in page.findChildren(ToolCard)}
     assert cards["debruitage"].state == "add" and cards["etoiles"].state == "add"
     texts = [lb.text() for c in cards.values() for lb in c.findChildren(QLabel)]
-    assert any(t.startswith("+") and "h" in t or t.startswith("+") for t in texts)
+    assert any(t.lstrip("≈ ").startswith("+") for t in texts)                 # "+2 min", or "≈ +5 h 08" (an estimate)
     assert hm(model.tool_cost(model.path.opts, "etoiles")) in " ".join(texts) or "same duration" in " ".join(texts)
     assert page.findChildren(QLabel, "h2")[0].text() == "Add step"
 

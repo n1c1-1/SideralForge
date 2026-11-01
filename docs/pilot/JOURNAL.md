@@ -251,6 +251,34 @@ Newest entries at the bottom. Times are local.
   - **Decision:** apply patch 1 as it is (measured colour). Whether Classic should carry the "red H-alpha" convention
     is the user's call, in the report, with the safe option named (the hue pull alone).
 
+- 07:34 heartbeat:
+  - **M33 failed at stack on gpu1** (cuda:1, the 3070 that drives the display): "CUDA error: unspecified launch
+    failure". 3 jobs done, 7 skipped downstream; the queue moved on (Rosette pass 2 runs fine on gpu1);
+  - likely a display-card reset (TDR), or a test that touched cuda:1 while GPUs were not hidden;
+  - **Action:** when queue gpu0 ends, run `tools/projects/queue.py start gpu0b --device cuda:0 M33` (done jobs are
+    kept). Do not retry it on cuda:1.
+  - NGC 7822 denoise at 80 % on gpu0, about 3.7 h left; P13 active.
+
+- 08:20 the user asked for a checkpoint with their manual review. A review pack (POINT_ETAPE.md, sonnet, CPU,
+  read-only, images under F:/astro_projets/_review/) is being prepared. The image fixes and the QC wait for their
+  answers.
+
+- POINT_ETAPE.md is ready: sheets for the 4 finished projects, the Classic stack of 8 projects, 11 French screens,
+  and the decisions (Classic colour, the set of 4 workflows, the order of what remains). Updated at 9:00 to say the
+  application is assembled.
+- P13 done, on opus:
+  - everything wired (all READY flags on); `client/previous.py` is the v1 import dialog; all 8 polish items done;
+  - the walkthrough: 87 screens EN+FR, no warning, no English left in French;
+  - fast suite 518 on the CPU, client 154.
+  - Engine bugs for the queue:
+    - runner2 replaces a manifest with no retry, so a job fails if the client reads that file at that instant
+      (Windows). The client works around it by waiting 400 ms of quiet;
+    - the catalogs stage reloads a compressed array inside its loop: 4–5 min of CPU per run, and Astrometry is
+      estimated at 2 min against 7 measured.
+- M33: rather than waiting for gpu0 (about 11:30), retry it on gpu1 when M31 ends (about 9:15) with
+  `queue.py resume gpu1`. The 06:35 failure may have come from tests that used cuda:1 while GPUs were not hidden.
+  If it fails again at stack, use gpu0b after gpu0.
+
 ### Queue for the end of P8 (engine unfrozen)
 1. Apply patches 1–3, run the tests and the 4-dataset non-regression, recompute only render_simple (Classic and Raw
    stack), and re-check the sky slider in Post.

@@ -1,7 +1,9 @@
 """Home: the workspace and its projects. New project, open, import a folder as a new project, recent projects.
 
 The workspace is read in the ApiWorker (``scan_workspace``): every folder holding a project.astroproj, except the
-folders whose name starts with "_" (QC sheets, scratch), plus the recent projects kept elsewhere. Nothing is written.
+folders whose name starts with "_" (QC sheets, scratch), plus the recent projects kept elsewhere. The cards show at
+once; the state of each project (up to date, outdated, never run) follows from a second, slower read of the worker
+(``project_state``: the keys of its stages, so the file lists of its frames). Nothing is written.
 """
 from __future__ import annotations
 
@@ -30,7 +32,7 @@ from PySide6.QtWidgets import (
 
 from ..core import project2
 from . import prefs
-from .i18n import _, number
+from .i18n import _, hours_text, plural
 from .widgets import ACCENT, ElidedLabel, label
 
 TW, TH = 260, 150
@@ -48,9 +50,10 @@ class ProjectInfo:
     nights: int = 0
     integration_h: float | None = None
     date: str = ""
-    state: str = "Never run"                         # English, translated when shown
+    state: str = "Never run"                         # English, translated when shown (state_text)
     state_args: dict = field(default_factory=dict)
     thumb: QImage | None = None
+    n_workflows: int = 0
 
 
 def _same(a: Path, b: Path) -> bool:
@@ -81,9 +84,35 @@ def _running(root: Path) -> bool:
         return False
 
 
+#: the output previews a card can show when Post has not left a thumbnail yet: the simple output's picture (the full
+#: outputs only keep diagnostic previews, not the final image)
+OUTPUT_PREVIEWS = (("render_simple", "output"),)
+
+
+def _newest_output(root: Path) -> Path | None:
+    """The preview of the newest output computed in the project (read only; never a .tmp or trashed result)."""
+    best, when = None, ""
+    for stage, name in OUTPUT_PREVIEWS:
+        for d in (root / "store" / stage).glob("*/manifest.json"):
+            f = d.parent / "previews" / f"{name}.jpg"
+            if d.parent.name.endswith(".tmp") or not f.is_file():
+                continue
+            try:
+                m = json.loads(d.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if m.get("status") == "done" and str(m.get("finished") or "") >= when:
+                best, when = f, str(m.get("finished") or "")
+    return best
+
+
 def _thumb(root: Path) -> QImage | None:
+    """The card's picture: the thumbnail Post left (``cache/thumb.jpg``, the composition as last shown), else the
+    picture of the newest simple output."""
     f = root / THUMB
     if not f.is_file():
+        f = _newest_output(root)
+    if f is None or not f.is_file():
         return None
     im = QImage(str(f))
     if im.isNull():
@@ -94,7 +123,7 @@ def _thumb(root: Path) -> QImage | None:
 
 def project_info(root: Path) -> ProjectInfo:
     p = project2.load(root)
-    info = ProjectInfo(root.as_posix(), p.name, p.target.name or "", len(p.sessions))
+    info = ProjectInfo(root.as_posix(), p.name, p.target.name or "", len(p.sessions), n_workflows=len(p.workflows))
     inv = max(_manifests(root, "inventory"), key=lambda d: d.get("finished") or "", default=None)
     m = (inv or {}).get("metrics") or {}
     info.integration_h = m.get("integration_h")
@@ -104,10 +133,63 @@ def project_info(root: Path) -> ProjectInfo:
     info.date = str(when)[:10]
     if _running(root):
         info.state = "Running"
+    elif not p.workflows:
+        info.state = "No workflow yet"
     elif inv is not None or next(_manifests(root), None) is not None:
-        info.state, info.state_args = "{n} workflow(s)", {"n": len(p.workflows)}
+        info.state, info.state_args = "workflows", {"n": len(p.workflows)}     # the states follow (project_state)
     info.thumb = _thumb(root)
     return info
+
+
+def project_state(root: str) -> tuple[str, dict]:
+    """The state of a project for its card (worker thread; nothing is written): Running, Never run, every workflow
+    up to date, or how many are outdated (computed earlier, a setting changed since) and how many have still to run.
+    Reads the keys of its stages, so the file lists of its frames."""
+    from .. import api
+    d = Path(root)
+    p = project2.load(d)
+    if _running(d):
+        return "Running", {}
+    if not p.workflows:
+        return "No workflow yet", {}
+    st = api.states(p, update=False)
+    if not any(x.state == "done" for x in st.values()):
+        return "Never run", {}
+    by: dict[int, set] = {}
+    for (wid, _stage), x in st.items():
+        by.setdefault(wid, set()).add(x.state)
+    n = len(p.workflows)
+    stale = sum(1 for s in by.values() if "stale" in s)
+    todo = sum(1 for s in by.values() if s != {"done"} and "stale" not in s)
+    if not stale and not todo:
+        return "up_to_date", {"n": n}
+    return "mixed", {"n": n, "stale": stale, "todo": todo}
+
+
+def project_states(roots: list[str]) -> list[tuple[str, str, dict]]:
+    out = []
+    for r in roots:
+        try:
+            out.append((r, *project_state(r)))
+        except Exception:  # noqa: BLE001 - a project whose frames cannot be read keeps its first state
+            continue
+    return out
+
+
+def state_text(state: str, args: dict) -> str:
+    """The state line of a card, translated."""
+    if state == "workflows":
+        return plural(args["n"], "{n} workflow", "{n} workflows")
+    if state == "up_to_date":
+        return _("1 workflow up to date") if args["n"] == 1 else _("All {n} workflows up to date").format(**args)
+    if state == "mixed":
+        parts = [plural(args["n"], "{n} workflow", "{n} workflows")]
+        if args.get("stale"):
+            parts.append(plural(args["stale"], "{n} outdated", "{n} outdated"))
+        if args.get("todo"):
+            parts.append(plural(args["todo"], "{n} to run", "{n} to run"))
+        return " · ".join(parts)
+    return _(state).format(**args)
 
 
 def scan_workspace(workspace: str, recent: list[str]) -> tuple[list[ProjectInfo], int]:
@@ -163,9 +245,9 @@ def card_line(info: ProjectInfo) -> str:
     if not info.nights:
         return _("No frames yet") + " · " + info.date
     if info.integration_h:
-        return _("{n} night(s) · {h} · {d}").format(n=info.nights, h=number(info.integration_h, 1) + " h",
-                                                     d=info.date)
-    return _("{n} night(s) · {d}").format(n=info.nights, d=info.date)
+        return plural(info.nights, "{n} night · {h} · {d}", "{n} nights · {h} · {d}", h=hours_text(info.integration_h),
+                      d=info.date)
+    return plural(info.nights, "{n} night · {d}", "{n} nights · {d}", d=info.date)
 
 
 class ProjectCard(QFrame):
@@ -191,7 +273,12 @@ class ProjectCard(QFrame):
         v.addWidget(n)
         v.addWidget(ElidedLabel(info.target or " ", "dim", Qt.ElideRight))
         v.addWidget(label(card_line(info), "small"))
-        v.addWidget(label(_(info.state).format(**info.state_args), "small"))
+        self.state = label(state_text(info.state, info.state_args), "small")
+        v.addWidget(self.state)
+
+    def set_state(self, state: str, args: dict):
+        self.info.state, self.info.state_args = state, args
+        self.state.setText(state_text(state, args))
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
@@ -341,6 +428,14 @@ class HomeView(QWidget):
     def _done(self, channel, _n, result):
         if channel == "home":
             self.show_projects(*result)
+            roots = [i.root for i in result[0] if i.state == "workflows"]
+            if roots:
+                self.worker.submit("home.states", project_states, roots)
+        elif channel == "home.states":
+            by = {c.info.root: c for c in self.cards}
+            for root, state, args in result:
+                if root in by:
+                    by[root].set_state(state, args)
 
     def show_projects(self, infos: list[ProjectInfo], n_ws: int):
         self.last = (infos, n_ws)

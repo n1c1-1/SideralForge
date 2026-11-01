@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import i18n, prefs  # noqa: E402
 from astro_gpu.client.dialogs import NewWorkflowDialog, name_dialog  # noqa: E402
-from astro_gpu.client.home import NewProjectDialog, card_line, project_info, scan_workspace  # noqa: E402
+from astro_gpu.client.home import NewProjectDialog, card_line, project_info, scan_workspace, state_text  # noqa: E402
 from astro_gpu.client.services.worker import ApiWorker, Gpu, Machine  # noqa: E402
 from astro_gpu.client.settingsdlg import SettingsDialog  # noqa: E402
 from astro_gpu.client.widgets import QSS, ElidedLabel  # noqa: E402
@@ -217,7 +217,7 @@ class FakeModel:
     def __init__(self):
         self.paths = [self.P("Classic stack", {"d": 0}), self.P("Full", {"d": 2})]
 
-    def opts_seconds(self, opts):
+    def opts_seconds(self, opts, params=None):
         return 2880 + 1860 * opts.get("d", 0)
 
     def unique_name(self, base):
@@ -248,16 +248,47 @@ def test_home_lists_the_workspace_and_skips_underscore(env):
 def test_card_shows_nights_integration_date_and_state(env):
     heart = project_info(env["ws"] / "Heart")
     assert (heart.nights, heart.integration_h, heart.date) == (1, 3.0, "2026-08-17")
-    assert _fmt(heart) == "3 workflow(s)" and heart.thumb is not None
-    assert card_line(heart) == "1 night(s) · 3.0 h · 2026-08-17"
+    assert _fmt(heart) == "3 workflows" and heart.thumb is not None
+    assert card_line(heart) == "1 night · 3.0 h · 2026-08-17"
     ngc = project_info(env["ws"] / "NGC7822")
     assert ngc.state == "Never run" and ngc.thumb is None
     appmod.apply_language("fr")
-    assert card_line(heart) == "1 nuit(s) · 3,0 h · 2026-08-17"
+    assert card_line(heart) == "1 nuit · 3,0 h · 2026-08-17"
+    heart.nights, heart.integration_h = 2, 0.17                 # under an hour: minutes
+    assert card_line(heart) == "2 nuits · 10 min · 2026-08-17"
+    appmod.apply_language("en")
+    assert card_line(heart) == "2 nights · 10 min · 2026-08-17"
+    assert state_text("up_to_date", {"n": 1}) == "1 workflow up to date"
+    assert state_text("up_to_date", {"n": 4}) == "All 4 workflows up to date"
+    assert state_text("mixed", {"n": 2, "stale": 1, "todo": 0}) == "2 workflows · 1 outdated"
+    appmod.apply_language("fr")
+    assert state_text("mixed", {"n": 4, "stale": 2, "todo": 1}) == "4 workflows · 2 obsolètes · 1 à exécuter"
 
 
 def _fmt(info):
-    return i18n._(info.state).format(**info.state_args)
+    return state_text(info.state, info.state_args)
+
+
+def test_post_leaves_the_thumbnail_home_shows(env, tmp_path):
+    from astro_gpu.client.home import THUMB, _thumb
+    rgb = np.zeros((300, 480, 3), np.uint8)
+    rgb[100:200, 150:330] = (220, 60, 90)
+    appmod._write_thumb(tmp_path / THUMB, rgb)
+    im = _thumb(tmp_path)
+    assert im is not None and (im.width(), im.height()) == (260, 150)
+
+
+def test_a_computed_project_shows_its_state_without_a_write(env):
+    """Home reads the true states (the keys of the stages, in the worker), and writes nothing."""
+    from astro_gpu.client.home import project_state
+    data = Path("F:/astro_essais/v2/heart_a7s")
+    if not (data / "project.astroproj").is_file():
+        pytest.skip("the heart_a7s test project (F:/astro_essais) is not here")
+    files = [data / "project.astroproj", data / "state.json"]
+    before = [(f.stat().st_mtime_ns, f.stat().st_size) if f.exists() else None for f in files]
+    state, args = project_state(data.as_posix())
+    assert state in ("up_to_date", "mixed") and args["n"] >= 1, (state, args)
+    assert [(f.stat().st_mtime_ns, f.stat().st_size) if f.exists() else None for f in files] == before
 
 
 def test_recent_projects_come_first(env):
@@ -287,13 +318,22 @@ def test_new_project_writes_a_v2_folder(env):
     assert dlg.ok.isEnabled() and dlg.folder() == env["ws"] / "Rosette_ night 2"
 
 
-def test_open_a_v1_folder_writes_nothing(env):
+def test_open_a_v1_folder_offers_its_import_and_writes_nothing(env, monkeypatch):
+    from astro_gpu.client.previous import PreviousVersionDialog
+    offered = []
+
+    def exec_(d):                                        # the dialog checks the old project, then Cancel
+        d.worker.wait(60)
+        offered.append((d.old.name, d.report is not None or d.note.isVisible(), d.new.parent))
+        return 0
+    monkeypatch.setattr(PreviousVersionDialog, "exec", exec_)
     w = _main(env)
     old = env["ws"] / "OldM31"
     before = _snapshot(old)
     assert not w.open_project(old)
     assert _snapshot(old) == before
-    assert env["shown"] and "previous version" in env["shown"][-1][1]
+    assert offered == [("OldM31", True, env["ws"])]           # into the workspace, after its check
+    assert not (env["ws"] / "OldM31 2").exists()               # nothing written before Import
     assert w.project is None
 
 
@@ -302,11 +342,11 @@ def test_open_and_close_a_project(env):
     assert w.open_project(env["ws"] / "Heart")
     before = _snapshot(env["ws"] / "Heart")
     assert "HeartSoul" in w.title.text() and "IC 1805" in w.title.text()
-    assert w.status.text() == "3 workflow(s)"
+    assert w.status.text().startswith("3 workflows")
     assert w.machine_lb.text() == "NVIDIA RTX 4060 Ti"
     for i in (1, 2, 0):
         w.set_mode(i)
-        assert w.modes.currentIndex() == i and w.mode_btns[i].isChecked()
+        assert w.modes.currentIndex() == min(i, 1) and w.mode_btns[i].isChecked()     # Post is in Inspect
     w.set_device("cpu")
     assert w.machine_lb.text() == "CPU only"
     file_menu = {a.text(): a for a in w.menuBar().actions()[0].menu().actions()}

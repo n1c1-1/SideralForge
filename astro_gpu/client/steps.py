@@ -17,7 +17,7 @@ from PySide6.QtGui import QPainter
 
 from .. import texts
 from .blocks import BY_KEY, STEPS, block_state, fmt_int  # noqa: F401  (the views import them from here)
-from .i18n import _, language, number
+from .i18n import _, hours_text, language, number
 from .services.inspect import VisualSpec, service_of
 from .viewer import Viewer
 from .widgets import WARN
@@ -203,7 +203,7 @@ class Steps(QObject):
         unit = s.thresholds_unit()
         rows = [(_("Frames kept"), _("{kept} of {n}").format(kept=kept, n=n))]
         if info.get("exposure_s"):
-            rows.append((_("Integration"), f"{fnum(kept * info['exposure_s'] / 3600, 2)} h"))
+            rows.append((_("Integration"), hours_text(kept * info["exposure_s"] / 3600)))
         rows += [(_("Minimum transparency"), _("{t} % of the best frames").format(t=f"{t:.0f}")),
                  (_("Maximum star size"), f"{fnum(f)} {unit if unit == 'px' else _('× median')}"),
                  (_("Excluded by hand"), str(len(s.frames_excluded)))]

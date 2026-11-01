@@ -65,6 +65,9 @@ Co-Authored-By; never push.
   Anything that fails its QC stays a non-default method and is reported.
 - **E. Projects**: copy each real project's inputs into clean folders on F:, build its workflows, run, and check at
   100 %.
+- **Checkpoint with the user (asked 2026-11-01 morning).** A review pack in French (docs/pilot/POINT_ETAPE.md):
+  the finished projects' images beside the old ones, screenshots of every screen, and the decisions that are the
+  user's. Their answers come before the image fixes are applied and before the blind QC.
 - **F. Final QC.** The user's explicit request: at the END OF IMPLEMENTATION, an independent agent evaluates the
   result. The orchestrator judges that evaluation with distance and applies the changes that hold, before handing
   back. This is in addition to the design review done in A2. The checks are:

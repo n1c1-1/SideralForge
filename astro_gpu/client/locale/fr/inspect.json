@@ -49,5 +49,6 @@
   "{n} lights": "{n} brutes",
   "{n} lights · {exp} · ISO {iso} · night of {day}/{month}": "{n} brutes · {exp} · ISO {iso} · nuit du {day}/{month}",
   "{n} session(s): {names}": "{n} session(s) : {names}",
-  "Folder \"{folder}\" imported · {lights} lights": "Dossier « {folder} » importé · {lights} brutes"
+  "Folder \"{folder}\" imported · {lights} lights": "Dossier « {folder} » importé · {lights} brutes",
+  "{kept} of {n} frames kept · {t}": "{kept} images sur {n} gardées · {t}"
 }

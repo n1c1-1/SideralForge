@@ -174,6 +174,52 @@ def stretch_params(lin: np.ndarray) -> dict[str, np.ndarray]:
     return {"black": bp, "white": wp, "balance": mtf(0.25, mn)}
 
 
+def neutral_params(lin: np.ndarray, ref: float = 99.5) -> dict[str, np.ndarray]:
+    """The automatic stretch of an image still in the camera's colours (the engine applies the colour matrix at the
+    output: every array Inspect shows is such an image). Each channel is first set so that its sky (the median) and
+    its stars (the ``ref`` percentile) line up with the other channels, then one stretch is applied to all three, as
+    the linked stretch of a calibrated image. The sky comes out neutral and the stars white, where a stretch per
+    channel alone leaves the green of the sensor (it has twice as many green pixels) and of the light pollution.
+    Display only: the data are never changed."""
+    c = lin.shape[0]
+    if c != 3:
+        return stretch_params(lin)
+    sub = lin[:, ::4, ::4].reshape(c, -1)
+    sub = sub[:, np.isfinite(sub).all(0)] if not np.isfinite(sub).all() else sub
+    med = np.median(sub, axis=1)
+    hi = np.percentile(sub, ref, axis=1)
+    span = np.maximum(hi - med, 1e-7 * np.maximum(np.abs(med), 1.0))
+    x = ((sub - med[:, None]) / span[:, None]).mean(axis=0)
+    m = float(np.median(x))
+    mad = 1.4826 * float(np.median(np.abs(x - m)))
+    bp = m - 2.8 * max(mad, 1e-7)
+    wp = max(float(np.percentile(x, 99.99)), bp + 1e-6)
+    mn = float(np.clip((m - bp) / (wp - bp), 1e-4, 0.99))
+    bal = float(mtf(0.25, mn))
+    return {"black": med + bp * span, "white": med + wp * span, "balance": np.array([bal] * c)}
+
+
+def neutral_preview(a: np.ndarray) -> np.ndarray:
+    """An engine preview of a frame in the camera's colours (H, W, 3 uint8), its sky made neutral for display: each
+    channel is mapped piecewise linearly so that 0 stays 0, 255 stays 255 and its median goes to the median of the
+    three."""
+    med = np.median(a[::4, ::4].reshape(-1, 3), axis=0).astype(np.float64)
+    target = float(med.mean())
+    if target <= 0 or target >= 255 or (med.max() - med.min()) < 1:
+        return a
+    out = np.empty_like(a)
+    x = np.arange(256, dtype=np.float64)
+    for k in range(3):
+        mk = min(max(med[k], 1.0), 254.0)
+        lut = np.where(x <= mk, x * target / mk, target + (x - mk) * (255.0 - target) / (255.0 - mk))
+        out[..., k] = np.clip(lut + 0.5, 0, 255).astype(np.uint8)[a[..., k]]
+    return out
+
+
+#: the engine previews of a frame in the camera's colours (before the colour calibration): shown with a neutral sky
+CAMERA_PREVIEWS = {("calibrate", "calibrated_frame"), ("inventory", "middle_frame"), ("denoise", "before_after")}
+
+
 def _lut(balance: float) -> np.ndarray:
     x = np.linspace(0.0, 1.0, 65536, dtype=np.float32)
     y = x if abs(balance - 0.5) < 1e-6 else mtf(balance, x)
@@ -209,10 +255,11 @@ def histogram8(a: np.ndarray) -> np.ndarray:
     return np.stack([np.bincount(s[:, :, k].ravel(), minlength=256) for k in range(3)])
 
 
-def stretch_image(lin: np.ndarray):
-    """(stretched uint8, linear uint8, parameters): the automatic stretch, and the data as stored (one black and one white
-    for the three channels, no midtones), each ready to show."""
-    sp = stretch_params(lin)
+def stretch_image(lin: np.ndarray, neutral: bool = True):
+    """(stretched uint8, linear uint8, parameters): the automatic stretch (``neutral``: for an image in the camera's
+    colours, ``neutral_params``; else one stretch per channel), and the data as stored (one black and one white for the
+    three channels, no midtones), each ready to show."""
+    sp = neutral_params(lin) if neutral else stretch_params(lin)
     stretched = render8(lin, sp["black"], sp["white"], sp["balance"])
     linear = render8(lin, float(sp["black"].min()), float(sp["white"].max()), 0.5)
     return stretched, linear, sp
@@ -252,6 +299,8 @@ def load_visual(p, wid: int, spec: VisualSpec, which: str = "current") -> ShownI
         if f is None:
             raise api.NotDone(f"{spec.stage} has no preview {spec.name!r}")
         a = _rgb_of_file(f)
+        if (spec.stage, spec.name) in CAMERA_PREVIEWS:
+            a = neutral_preview(a)
         src = PixelSource(a)
         return ShownImage(key, spec, stretched=src, size=src.size(), hist={"stretched": histogram8(a)},
                           wcs=_wcs_of(p, wid, which) if spec.grid else None, nbytes=src.nbytes)

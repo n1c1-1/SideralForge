@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import prefs
-from .i18n import _
+from .i18n import _, plural
 from .postengine import snapshot
 from .services.render import ExportJob
 from .widgets import WARN, label
@@ -118,7 +118,7 @@ class ExportDialog(QDialog):
         row(_("Size"), self.size_cb)
         self.dest = QLineEdit(self.default_file("tiff16"))
         self.browse = QPushButton("…")
-        self.browse.setFixedWidth(30)
+        self.browse.setFixedWidth(max(30, self.browse.sizeHint().width()))
         self.browse.setToolTip(_("Choose the folder"))
         row(_("File"), self.dest, self.browse)
         self.warn = label("", "warn")
@@ -265,7 +265,8 @@ class ExportDialog(QDialog):
         self.files = files
         self.bar.setValue(100)
         folder, _name = split_file(self.dest.text())
-        self.status.setText(_("{n} file(s) written to {folder}").format(n=len(files), folder=folder))
+        self.status.setText(plural(len(files), "{n} file written to {folder}", "{n} files written to {folder}",
+                                   folder=folder))
         self.status.setStyleSheet("")
         self.go.setText(_("Close"))
         self.cancel.setEnabled(False)

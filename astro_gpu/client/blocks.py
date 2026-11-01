@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .i18n import _, hm
+from .i18n import _, hm, plural
 
 # the columns of the graph, left to right; optional columns only appear when a workflow uses them
 COLUMNS = ["sources", "calibration", "alignement", "selection", "empilement", "astrometrie", "couleur", "deconv",
@@ -248,9 +248,10 @@ class Graph:
         if node.key == "sources":
             if not s.sources_loaded:
                 return _("to add")
-            return _("{n} session(s) · {lights} lights").format(n=len(s.sessions), lights=s.n_lights())
+            return plural(len(s.sessions), "{n} session · {lights} lights", "{n} sessions · {lights} lights",
+                          lights=fmt_int(s.n_lights()))
         if node.key == "final":
-            return _("{n} layer(s)").format(n=len(s.paths))
+            return plural(len(s.paths), "{n} layer", "{n} layers")
         p = node.paths[0]
         k = node.key
         if k == "post":

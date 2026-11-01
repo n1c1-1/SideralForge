@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from .blocks import ENGINE_BLOCK, Graph, Node, block_title
-from .i18n import _, hm
+from .i18n import _, all_workflows, hm
 from .services.run import (
     DONE,
     FAILED,
@@ -64,6 +64,13 @@ class Row:
     keys: list[str]
     block: str = ""                                          # the views' block key
     pids: set = field(default_factory=set)
+    everyone: bool = False                                   # every workflow of the project shares it
+
+    def who_text(self) -> str:
+        """The workflows sharing the block, as the panel's scope says them: "all 4 workflows", or their names."""
+        if self.everyone and len(self.who) > 1:
+            return all_workflows(len(self.who))
+        return ", ".join(self.who)
 
 
 def build_rows(model, jobs, names: dict[int, str] | None = None) -> list[Row]:
@@ -96,6 +103,7 @@ def build_rows(model, jobs, names: dict[int, str] | None = None) -> list[Row]:
         ids += sorted(w for w in row.pids if w not in ids)
         row.who = [] if row.block == "post" else [(model.view(w).name if model.view(w) is not None
                                                    else names.get(w, f"#{w}")) for w in ids]
+        row.everyone = bool(row.who) and {p.pid for p in model.paths} <= set(ids)
         out.append(row)
     return out
 
@@ -168,7 +176,7 @@ class RunRow(QFrame):
         h.addWidget(self.mark)
         self.name = ElidedLabel(row.title, mode=Qt.ElideRight)
         h.addWidget(self.name, 1)
-        self.who = ElidedLabel(", ".join(row.who), "small", mode=Qt.ElideRight)
+        self.who = ElidedLabel(row.who_text(), "small", mode=Qt.ElideRight)
         self.who.setMaximumWidth(280)
         self.who.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.who.setToolTip("\n".join(row.who))
@@ -620,7 +628,7 @@ class RunOverlay(QWidget):
             f = self.fraction_of(node)
             if f is None:
                 continue
-            r = self.view.mapFromScene(it.mapRectToScene(QRectF(0, 0, BW, BH))).boundingRect()
+            r = self.view.mapFromScene(it.mapRectToScene(QRectF(0, 0, getattr(it, "w", BW), BH))).boundingRect()
             inset, hh = 10 * k, max(3.0, 3.5 * k)
             track = QRectF(r.left() + inset, r.bottom() - 7 * k - hh / 2, r.width() - 2 * inset, hh)
             p.setPen(Qt.NoPen)

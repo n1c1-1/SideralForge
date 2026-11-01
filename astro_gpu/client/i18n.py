@@ -54,10 +54,32 @@ def missing() -> set[str]:
     return set(_missing)
 
 
+def plural(n: int, one: str, many: str, **args) -> str:
+    """A count with its noun in the right form, translated: ``plural(n, "{n} night", "{n} nights")``. English takes the
+    singular for 1 only; French for 0 and 1 ("0 nuit", "1 nuit", "2 nuits"). Other fields go in ``args``. When English
+    has one form for both ("{n} outdated"), the catalogue gives the language's plural under "<text>#many"."""
+    single = (abs(n) < 2) if _lang == "fr" else (n == 1)
+    if not single and one == many and _lang != "en" and many + "#many" in _cat:
+        return _cat[many + "#many"].format(n=n, **args)     # one English form, two in the language ("obsolète(s)")
+    return _(one if single else many).format(n=n, **args)
+
+
 def number(x: float, digits: int = 1) -> str:
     """A number with a fixed count of decimals, with a decimal comma in French ("2.5" → "2,5")."""
     t = f"{x:.{digits}f}"
     return t.replace(".", ",") if _lang in DECIMAL_COMMA else t
+
+
+def all_workflows(n: int) -> str:
+    """A change or a block for every workflow: "both workflows", "all 3 workflows" ("les 2 workflows"...)."""
+    return _("both workflows") if n == 2 else _("all {n} workflows").format(n=n)
+
+
+def hours_text(hours: float) -> str:
+    """An exposure time given in hours: "10 min" under an hour, "3.2 h" above (a decimal comma in French)."""
+    if hours < 1:
+        return f"{max(1, round(hours * 60)) if hours > 0 else 0} min"
+    return number(hours, 1) + " h"
 
 
 def hm(seconds: float) -> str:

@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 from ..core import workflow as wfl
 from . import prefs
 from .blocks import BY_KEY, STATE_WORD, block_state, block_title, fmt_int, stages_of  # noqa: F401
-from .i18n import _, hm, number
+from .i18n import _, all_workflows, hm, number
 from .model import NotInEngine, method_of, method_value, methods_of
 from .settings import RangeBar, SettingRow, fmt, needed_stages, step_settings
 from .settings import loading as settings_loading
@@ -408,7 +408,7 @@ class Panel(QWidget):
             box.setSpacing(2)
             allp = [q.pid for q in node.paths]
             cur = s.scope if s.scope and set(s.scope) <= set(allp) else allp
-            choices = [(_("all {n} workflows").format(n=len(node.paths)), allp)] + \
+            choices = [(all_workflows(len(node.paths)), allp)] + \
                       [(_('"{name}" only').format(name=q.name), [q.pid]) for q in node.paths]
             if len(choices) > 4:                       # many workflows: a list instead of a column of buttons
                 cb = QComboBox()

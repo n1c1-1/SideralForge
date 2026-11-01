@@ -525,6 +525,8 @@ def test_the_plan_dialog_lists_the_blocks_the_sharing_workflows_the_durations_an
     assert rows == [("Calibration", ["Plain", "Trained"]), ("Stacking", ["Plain", "Trained"]),
                     ("Color", ["Plain"]), ('Output "Plain"', []), ("Denoise", ["Trained"]),
                     ("Color", ["Trained"]), ('Output "Trained"', [])]
+    # a block every workflow shares says so, as the panel's scope does; else the workflows by name
+    assert [r.who.full_text() for r in d.rows[:3]] == ["both workflows", "both workflows", "Plain"]
     plan = toy.model.plan_all()
     assert len(plan) == 7 and [j.stage for j in plan.jobs].count("stack") == 1       # a shared block is planned once
     assert d.summary.text() == f"Duration: ≈ {i18n.hm(plan.seconds)} · disk: {size_text(plan.disk_gb)} GB"
@@ -787,7 +789,10 @@ def test_closing_and_reopening_the_project_reattaches_to_the_run(env):
 
 
 def test_a_run_that_is_already_going_is_followed_instead_of_started_twice(env):
-    w = make_world(env["tmp"], steps=100, delay=0.04)
+    # the other run lasts long enough (300 steps of 50 ms) to be still going when this window asks to start, even on a
+    # loaded machine (the detached worker can take seconds to start); with a short one the window's own start could
+    # come after its end and rightly start a second run
+    w = make_world(env["tmp"], steps=300, delay=0.05)
     try:
         other = api.open_project(w.p.root)                  # a run started by another window, or the command line
         api.use_rules(other, SPEC)
@@ -795,9 +800,13 @@ def test_a_run_that_is_already_going_is_followed_instead_of_started_twice(env):
         assert pump(lambda: api.running(w.p) is not None, 60)
         d = w.ctl.launch()
         d.start()                                           # refused by the engine: this window follows that run
-        assert pump(lambda: w.ctl.running and w.ctl.track is not None and w.ctl.track.run_id == info.run_id, 30)
+        assert pump(lambda: w.ctl.track is not None and w.ctl.track.run_id == info.run_id, 60)
         assert w.ctl.track.jobs and w.ctl.dialog is None            # the plan dialog is gone: the run has its own
-        assert pump(lambda: w.track.finished and not w.ctl.running, 120) and w.track.status == "done"
+        assert pump(lambda: w.track.finished and not w.ctl.running, 180)
+        assert w.track.status == "done", (w.console(), [(j.stage, j.state, j.error) for j in w.track.jobs])
+        assert w.track.run_id == info.run_id                        # one run only: the other one, followed to its end
+        runs = [e for e in api.read_events(w.p, 0)[0] if e.get("type") == "run_start"]
+        assert len(runs) == 1, runs
         assert "Run finished" in w.console()
     finally:
         w.close()
@@ -873,6 +882,7 @@ def test_the_graph_shows_the_running_blocks_and_their_progress(env):
 def test_the_console_survives_a_rebuilt_panel_and_a_change_of_language(toy):
     toy.run_all()
     english = toy.console()
+    assert toy.track.status == "done", english                  # the whole console when a stage failed
     assert "Run finished: 7 stages in" in english
     # the Log panel is built again with the project screen (a change of language): the console is filled again
     appmod.apply_language("fr")

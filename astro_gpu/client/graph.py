@@ -36,6 +36,7 @@ from PySide6.QtGui import (
     QFontMetrics,
     QFontMetricsF,
     QKeySequence,
+    QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
@@ -73,6 +74,8 @@ TOP = 74                    # room for the phase labels
 MARGIN = 8                  # around the graph, left and right
 MIN_SCALE = 0.8             # below, the text cannot be read: the view scrolls instead (off Show all)
 TITLE_PAD = 22              # a block's title, its state stripe and its padding
+OUT_MAX = BW + 30           # the widest Output column: a longer workflow name fades out (whole in the tooltip)
+FADE = 18                   # the width over which a name too long for its block fades out
 STATE_COL = {"done": OK, "pending": "#5d6470", "stale": WARN, "running": ACCENT, "failed": BAD,
              "interrupted": WARN, "skipped": "#5d6470"}
 # the blocks whose output can go straight to the post: only where it gives an image no workflow already gives
@@ -137,7 +140,21 @@ class BlockItem(QGraphicsItem):
         p.setFont(f)
         p.setPen(QColor("#e8ebf0"))
         tw = w - 18 - (18 if self.removable and self.hover else 0)
-        p.drawText(QRectF(11, 6, tw, 20), Qt.AlignLeft | Qt.AlignVCenter, elide(self.title, f, tw))
+        if self.node.key == "post" and QFontMetricsF(f).horizontalAdvance(self.title) > tw:
+            # a workflow's name: it fades out at the edge of its block (the whole name is in the tooltip); "…" is
+            # kept for the engine's words, whose end matters less
+            p.save()
+            p.setClipRect(QRectF(11, 6, tw, 20))
+            p.drawText(QRectF(11, 6, tw + 400, 20), Qt.AlignLeft | Qt.AlignVCenter, self.title)
+            p.restore()
+            grad = QLinearGradient(11 + tw - FADE, 0, 11 + tw, 0)
+            c0 = QColor(fill)
+            c0.setAlpha(0)
+            grad.setColorAt(0.0, c0)
+            grad.setColorAt(1.0, QColor(fill))
+            p.fillRect(QRectF(11 + tw - FADE, 6, FADE, 20), QBrush(grad))
+        else:
+            p.drawText(QRectF(11, 6, tw, 20), Qt.AlignLeft | Qt.AlignVCenter, elide(self.title, f, tw))
         f2 = QFont("Segoe UI", 8.5)
         p.setFont(f2)
         p.setPen(QColor("#8b93a1"))
@@ -303,14 +320,17 @@ class GraphView(QGraphicsView):
         return [c for c in COLUMNS if c not in OPTIONAL or c in used]
 
     @staticmethod
-    def column_width(key: str) -> float:
+    def column_width(key: str, names=()) -> float:
         """A column is as wide as a block, or wider when its title needs it in the language shown ("Post-traitement").
-        The outputs carry the workflows' names, which are shortened with "…" instead."""
-        if key == "post":
-            return BW
+        The outputs carry the workflows' names: their column widens to the longest name, up to OUT_MAX; a longer name
+        fades out at the edge of its block and is whole in the tooltip."""
         f = QFont("Segoe UI", 10)
         f.setBold(True)
-        return max(BW, min(BW + 40, QFontMetricsF(f).horizontalAdvance(block_title(None, key)) + TITLE_PAD))
+        fm = QFontMetricsF(f)
+        if key == "post":
+            need = max((fm.horizontalAdvance(n) for n in names), default=0.0) + TITLE_PAD
+            return max(BW, min(OUT_MAX, need))
+        return max(BW, min(BW + 40, fm.horizontalAdvance(block_title(None, key)) + TITLE_PAD))
 
     @staticmethod
     def lane_order(g: Graph) -> list[int]:
@@ -339,7 +359,7 @@ class GraphView(QGraphicsView):
         g = Graph(s, self.steps)
         self.graph = g
         cols = self.columns(g)
-        cw = {c: self.column_width(c) for c in cols}
+        cw = {c: self.column_width(c, [p.name for p in s.paths]) for c in cols}
         cx, x = {}, 0.0
         for c in cols:
             cx[c] = x
@@ -727,7 +747,7 @@ class GraphPage(QWidget):
             sec = s.total_seconds()
             last = self._last
             if last is not None and s.paths and len(s.paths) == last[1] and sec - last[0] >= 30:
-                self.toast(_("+ {t} to run").format(t=hm(sec - last[0])))
+                self.toast(_("+ {t} to run").format(t=("" if s.cost().measured else "≈ ") + hm(sec - last[0])))
             self._last = (sec, len(s.paths))
         self.changed.emit()
 
@@ -769,7 +789,8 @@ class GraphPage(QWidget):
                 state, text = "in", _("already there")
             else:
                 dt = s.tool_cost(p.opts, k)
-                state, text = "add", (f"+{hm(dt)}" if dt >= 30 else _("same duration"))
+                sure = s.opts_measured(s.with_tool(p.opts, k)[0]) if hasattr(s, "opts_measured") else True
+                state, text = "add", ((f"+{hm(dt)}" if sure else f"≈ +{hm(dt)}") if dt >= 30 else _("same duration"))
             card = ToolCard(self, k, state, text, new)
             card.setEnabled(p is not None and not new)
             self.tl.addWidget(card)

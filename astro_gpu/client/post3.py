@@ -469,10 +469,12 @@ class PostView(QWidget):
         self.viewer.viewChanged.connect(self._view_changed)
         self.viewer.stroke.connect(self._stroke)
         self.viewer.strokeEnd.connect(self._stroke_end)
-        for seq, fn in (("Ctrl+Z", self.do_undo), ("Ctrl+Y", self.do_redo), ("C", self.b_cmp.toggle),
-                        ("M", self.b_mask.toggle), ("F", self.viewer.fit), ("1", lambda: self.viewer.zoom_to(1.0)),
-                        ("X", self.toggle_paint), ("[", lambda: self.brush_size(1 / 1.25)),
-                        ("]", lambda: self.brush_size(1.25)), ("Ctrl+J", self.duplicate)):
+        # Ctrl+Z / Ctrl+Y are the window's Edit > Undo / Redo, which come here while Post is shown (two shortcuts on
+        # one key would cancel each other)
+        for seq, fn in (("C", self.b_cmp.toggle), ("M", self.b_mask.toggle), ("F", self.viewer.fit),
+                        ("1", lambda: self.viewer.zoom_to(1.0)), ("X", self.toggle_paint),
+                        ("[", lambda: self.brush_size(1 / 1.25)), ("]", lambda: self.brush_size(1.25)),
+                        ("Ctrl+J", self.duplicate)):
             sc = QShortcut(QKeySequence(seq), self)
             sc.setContext(Qt.WidgetWithChildrenShortcut)
             sc.activated.connect(fn)
@@ -554,9 +556,9 @@ class PostView(QWidget):
             return
         self._saved = text
         p.post = {**(p.post or {}), "layers": data}
-        touch = getattr(self.s, "_touch", None)
-        if touch is not None:
-            touch()
+        edited = getattr(self.s, "edited", None)
+        if edited is not None:
+            edited()
 
     # ------------------------------------------------------------ rendering (in the worker)
     def refresh(self):

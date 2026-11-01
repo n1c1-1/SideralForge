@@ -202,7 +202,7 @@ class ToyModel(QObject):
         info = next(x for x in self.slider_infos(p) if x.key == key)
         return info.available, i18n._(info.reason), None                      # as the real model: translated
 
-    def _touch(self):
+    def edited(self):
         self.touched += 1
 
 
@@ -1546,7 +1546,8 @@ def test_the_export_writes_only_into_the_folder_chosen_and_it_reads_back(exporti
         d.fmt.setCurrentIndex(d.fmt.findData("tiff16"))
         run_dialog(s, d)
         assert d.error == "" and d.go.text() == "Close" and d.bar.value() == 100
-        assert d.status.text() == f"{len(d.files)} file(s) written to {s.out.as_posix()}"
+        n = len(d.files)
+        assert d.status.text() == f"{n} file{'' if n == 1 else 's'} written to {s.out.as_posix()}"
         a = tifffile.imread(s.out / "heart_16bit.tif")
         assert a.dtype == np.uint16 and a.shape == expect.shape
         assert np.abs(a.astype(np.float64) / 65535 - np.clip(expect, 0, 1)).max() < 1e-4
@@ -1784,7 +1785,7 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
             assert "résultats du projet" in d.warn.text()
             d.dest.setText((tmp_path / "out" / "a_16bit.tif").as_posix())
             run_dialog(s, d)
-            assert d.status.text().startswith("2 fichier(s) écrit(s)") or "fichier(s) écrit(s)" in d.status.text()
+            assert d.status.text().startswith(("2 fichiers écrits dans", "1 fichier écrit dans")), d.status.text()
             assert d.go.text() == "Fermer"
         finally:
             d.accept()

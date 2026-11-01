@@ -264,7 +264,7 @@ def test_the_real_stack_shows_with_auto_stretch_histogram_and_catalogue_metrics(
     rows = dict(win.steps.facts(win.s.path, "empilement"))
     assert texts.metric_label("frames_used") in rows and rows[texts.metric_label("frames_used")] == "40"
     assert rows[texts.metric_label("grid")] == "6384 × 4272 px"
-    assert rows[texts.metric_label("rejected_pct")] == "1.821 %"
+    assert rows[texts.metric_label("rejected_pct")] == "1.8 %"
     panel_text = texts_of(t.panel)
     assert "Measurements" in panel_text and any(texts.metric_label("frames_used") in t for t in panel_text)
     shot(win, "inspect_stack")
@@ -922,7 +922,7 @@ def test_french_translates_every_screen_with_decimal_commas(module_win, env):
         # numbers: the readout, the thresholds, the measurements, the table
         joined = " ".join(seen)
         assert "06,6s" in joined or "RA 02h" in joined
-        assert "7,9 px" in joined and "0,17 h" in joined and "4,0 px" in joined
+        assert "7,9 px" in joined and "10 min" in joined and "4,0 px" in joined
         assert "16 → 17 août 2026" in joined and "aucun" in joined
     finally:
         prefs.set("spec_mode", False)

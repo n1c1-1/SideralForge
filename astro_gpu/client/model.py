@@ -241,7 +241,9 @@ class ProjectModel(QObject):
         self._states: dict = {}
         self._chains: dict[int, list[str]] = {}
         self._blocks: dict[int, list] = {}
-        self._cache: dict = {}                             # costs and durations, forgotten at each sync
+        self._cache: dict = {}                             # costs and plans, forgotten at each sync
+        self._est: dict = {}                               # durations by stage key (kept across edits; the worker
+        #                                                    fills it ahead: estimates read manifests)
         self._pc: dict[tuple[int, str], dict] = {}         # the settings of a stage of a workflow (describe)
         self._reasons: dict[tuple[str, str], tuple] = {}   # the last reason an automatic value had
         self._sel: dict | None = None                      # the last selection preview
@@ -346,10 +348,15 @@ class ProjectModel(QObject):
             self._history_est, self._facts = result
             self.ready = True
             self.error = ""
-            self._sync()
-            self.readyChanged.emit()
-            self.sourcesChanged.emit()
-            self.pathsChanged.emit()
+            self._sync(prefetch=False)
+            # the durations the views quote are read by the worker before the views are told (no manifest read in
+            # the GUI thread when they draw)
+            self.worker.submit(f"model.estimates:{id(self)}", self._prefetch_estimates, True)
+        elif channel == "model.estimates" + me:
+            if result:                                       # the first one, after warm: now the views may ask
+                self.readyChanged.emit()
+                self.sourcesChanged.emit()
+                self.pathsChanged.emit()
         elif channel == "model.facts" + me:
             self._facts = result
             self._cache.clear()
@@ -370,6 +377,10 @@ class ProjectModel(QObject):
         if channel == f"model.warm:{id(self)}":
             self.error = why
             self.readyChanged.emit()
+        elif channel == f"model.estimates:{id(self)}":
+            self.readyChanged.emit()                            # the durations will be read when asked
+            self.sourcesChanged.emit()
+            self.pathsChanged.emit()
         elif channel.startswith(f"model.describe:{id(self)}:"):
             _head, _id, pid, stage = channel.split(":", 3)
             v = self.view(int(pid))
@@ -384,10 +395,13 @@ class ProjectModel(QObject):
                 self.paramsChanged.emit(int(pid), stage)
 
     def reload_sources(self):
-        """The sessions or the frames changed (Import folder, a new session): scan again, then rebuild the keys.
-        Until the worker is done the model answers from what it knew (no disk access in the GUI thread)."""
+        """The sessions or the frames changed (Import folder, a new session): the definition is saved, the frames are
+        scanned again, then the keys rebuilt. Until the worker is done the model answers from what it knew (no disk
+        access in the GUI thread)."""
+        self.edited()
         api.refresh(self.p, scan=True)
         self._cache.clear()
+        self._est.clear()
         self._start_warm()
 
     def results_changed(self):
@@ -396,6 +410,7 @@ class ProjectModel(QObject):
         api.refresh(self.p)
         self._epoch += 1
         self._cache.clear()
+        self._est.clear()
         if self.ready:
             self._sync()
             self.worker.submit(f"model.facts:{id(self)}", _facts_job, self.p)
@@ -407,9 +422,12 @@ class ProjectModel(QObject):
 
     def set_machine(self, gpu: bool, device: str | None = None):
         """The machine the durations are for: with a GPU or without, and the device asked (cuda:N, cpu, None: auto)."""
+        changed = (gpu, device if device else (None if gpu else "cpu")) != (self.gpu, self.device)
         self.gpu = gpu
         self.device = device if device else (None if gpu else "cpu")
         self._cache.clear()
+        if self.ready and changed:
+            self.worker.submit(f"model.estimates:{id(self)}", self._prefetch_estimates, False)
         self.costChanged.emit()
         self.pathsChanged.emit()
 
@@ -435,13 +453,17 @@ class ProjectModel(QObject):
             api.save(self.p)
         self._dirty = False
 
-    def _touch(self):
+    def edited(self):
+        """The definition changed outside the workflows (the sessions, the frames excluded by hand, the Post
+        composition): it is saved 300 ms after the last change, as any edit."""
         self._dirty = True
         if not self.readonly:
             self._save_timer.start()
 
+    _touch = edited                                         # the earlier name
+
     # ------------------------------------------------------------ the sync: states, chains, blocks
-    def _sync(self):
+    def _sync(self, prefetch: bool = True):
         """The views, states, chains and block keys read again (GUI thread: caches and manifests only)."""
         self._rebuild_views()
         self._cache.clear()
@@ -468,6 +490,35 @@ class ProjectModel(QObject):
             for stage in PREFETCH:
                 if stage in self._chains.get(v.pid, []):
                     self.params(v, stage)
+        if prefetch:
+            self.worker.submit(f"model.estimates:{id(self)}", self._prefetch_estimates, False)
+
+    def _prefetch_estimates(self, first: bool) -> bool:
+        """Worker thread: the durations the views quote (each stage of each workflow, the method cards, the toolbar
+        cards, the New workflow dialog), into the estimates cache. Returns ``first``."""
+        from .blocks import TOOLBOX
+        for v in list(self.paths):
+            for stage in list(self._chains.get(v.pid, [])):
+                self.seconds(stage, v)
+            for block in ("debruitage", "etoiles", "fond"):
+                try:
+                    for m in methods_of(block):
+                        self.method_seconds(v, block, m["key"])
+                except (ValueError, KeyError):
+                    pass
+            for k in TOOLBOX:
+                if k != "deconv" and not self.has_tool(v.opts, k):
+                    try:
+                        self.tool_cost(v.opts, k)
+                    except (wfl.OptionRefused, ValueError):
+                        pass
+            trunk = {k: x for k, x in v.params.items() if k in TRUNK}
+            for opts in TEMPLATES.values():                 # the New workflow dialog, from this workflow
+                self.opts_seconds(opts, trunk)
+            self.opts_seconds(v.opts, v.params)             # a copy of it
+        for opts in TEMPLATES.values():
+            self.opts_seconds(opts)
+        return first
 
     @contextmanager
     def _edit(self):
@@ -475,6 +526,7 @@ class ProjectModel(QObject):
         keys and states again and says what changed."""
         top = self._depth == 0
         before = self._snapshot() if top else None
+        extra = self._extra() if top else None
         self._depth += 1
         try:
             yield
@@ -485,12 +537,20 @@ class ProjectModel(QObject):
                     self._undo.append(before)
                     del self._undo[:-200]
                     self._redo.clear()
-                    self._touch()
+                    self.edited()
+                elif self._extra() != extra:
+                    self.edited()                           # not for Undo: the frames, not the workflows
                 self._sync()
                 self.pathsChanged.emit()
 
     def _snapshot(self):
         return (api.workflows(self.p), self.p.current, self.p.stack_mode)
+
+    def _extra(self):
+        """What an edit may change besides the workflows: the sessions and the frames excluded by hand."""
+        return (sorted(tuple(x) for x in self.p.excluded),
+                [(s.id, s.name, *(tuple(getattr(s, k)) for k in ("lights", "darks", "flats", "bias", "flat_darks")))
+                 for s in self.p.sessions])
 
     # ------------------------------------------------------------ undo and redo
     def can_undo(self) -> bool:
@@ -514,7 +574,7 @@ class ProjectModel(QObject):
         api.set_workflows(self.p, ws, current)
         self.p.stack_mode = mode
         self.pending_change = None
-        self._touch()
+        self.edited()
         self._sync()
         if self.paths:
             self.current = next((i for i, v in enumerate(self.paths) if v.pid == self.p.current), 0)
@@ -636,13 +696,15 @@ class ProjectModel(QObject):
         p = p or self.path
         if p is None or not self.ready:
             return 0.0
-        k = ("sec", p.pid, stage, self.stage_key(p, stage), self.device)
-        if k not in self._cache:
+        k = ("sec", stage, self.stage_key(p, stage), self.device, self._epoch)
+        got = self._est.get(k)
+        if got is None:
             try:
-                self._cache[k] = float(api.estimate(self.p, p.pid, stage, self.device).seconds)
+                got = float(api.estimate(self.p, p.pid, stage, self.device).seconds)
             except (ValueError, KeyError, OSError):
-                self._cache[k] = 0.0
-        return self._cache[k]
+                got = 0.0
+            self._est[k] = got
+        return got
 
     def path_seconds(self, p: WorkflowView) -> float:
         return sum(self.seconds(s, p) for s in self.all_stages(p))
@@ -653,17 +715,31 @@ class ProjectModel(QObject):
 
     def opts_seconds(self, opts: dict, params: dict | None = None) -> float:
         """A workflow with these options, from scratch (nothing reused): the sum of its stages' durations."""
+        return self._opts_estimate(opts, params)[0]
+
+    def opts_measured(self, opts: dict, params: dict | None = None) -> bool:
+        """Whether every duration of ``opts_seconds`` was measured on this machine (else it is shown with ≈)."""
+        return self._opts_estimate(opts, params)[1]
+
+    def _opts_estimate(self, opts: dict, params: dict | None = None) -> tuple[float, bool]:
         if not self.ready:
-            return 0.0
-        k = ("opts", repr(sorted(opts.items())), self.device)
-        if k not in self._cache:
+            return 0.0, False
+        k = ("opts", repr(sorted(opts.items())), repr(sorted((params or {}).items())), self.device, self._epoch,
+             self._sources_sig())
+        got = self._est.get(k)
+        if got is None:
             w = self._what_if(opts, params)
             try:
-                self._cache[k] = sum(float(api.estimate(self.p, w, s, self.device).seconds)
-                                     for s in api.chain(self.p, w))
+                est = [api.estimate(self.p, w, s, self.device) for s in api.chain(self.p, w)]
+                got = (sum(float(e.seconds) for e in est), all(e.measured for e in est))
             except (ValueError, KeyError, OSError):
-                self._cache[k] = 0.0
-        return self._cache[k]
+                got = (0.0, False)
+            self._est[k] = got
+        return got
+
+    def _sources_sig(self) -> tuple:
+        """What the durations of a workflow from scratch depend on besides its options: the frames."""
+        return (tuple(sorted(tuple(x) for x in self.p.excluded)), tuple(len(s.lights) for s in self.p.sessions))
 
     def method_seconds(self, p: WorkflowView, block: str, method: str) -> tuple[float, bool]:
         """(seconds, measured) of a block of the views computed with this method, on this machine: the stages of the
@@ -681,16 +757,19 @@ class ProjectModel(QObject):
             opts = self.with_tool(p.opts, tool)[0] if tool else dict(p.opts)      # the options the method needs
         except wfl.OptionRefused:
             return 0.0, False
-        k = ("method", block, repr(sorted(opts.items())), self.device)
-        if k not in self._cache:
+        k = ("method", block, repr(sorted(opts.items())), repr(sorted(p.params.items())), self.device,
+             self._epoch, self._sources_sig())
+        got = self._est.get(k)
+        if got is None:
             w = self._what_if(opts, p.params)
             try:
                 chain = api.chain(self.p, w)
                 est = [api.estimate(self.p, w, s, self.device) for s in BY_KEY[block]["stages"] if s in chain]
-                self._cache[k] = (sum(e.seconds for e in est), all(e.measured for e in est))
+                got = (sum(e.seconds for e in est), all(e.measured for e in est))
             except (ValueError, KeyError, OSError):
-                self._cache[k] = (0.0, False)
-        return self._cache[k]
+                got = (0.0, False)
+            self._est[k] = got
+        return got
 
     def cost_of(self, opts: dict, params: dict | None = None) -> tuple[float, list[str], list[str]]:
         """Cost of a workflow with these options: (seconds to compute, stages to compute, stages reused)."""
