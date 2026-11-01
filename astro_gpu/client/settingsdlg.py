@@ -1,5 +1,6 @@
 """Settings (application preferences): General, Folders & disk, Compute, Catalogs & astrometry, File formats, Master
-library, Display. Kept in prefs; the language, the device and Spec mode take effect at once.
+library, Display. Kept in prefs; the language, the device and Spec mode take effect at once. Folders & disk also holds
+the sections of Home (a name, a folder and a description each: home.section_rows).
 
 What the engine does not have yet (DESIGN §5.5) is shown only in Spec mode, disabled and marked ◇, and hidden
 otherwise: Temporary files, Cache limit, CPU threads, Memory limit, Benchmark, the Gaia DR3 local copy, ASTAP,
@@ -18,6 +19,8 @@ from PySide6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -25,6 +28,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -33,7 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import prefs
-from .i18n import LANGUAGES, _
+from .i18n import LANGUAGES, _, maybe
 from .services.worker import Machine, disk_usage
 from .widgets import label, spec_mark
 
@@ -53,6 +57,7 @@ class SettingsDialog(QDialog):
     deviceChanged = Signal(str)                      # auto | cuda:<n> | cpu
     specChanged = Signal(bool)
     workspaceChanged = Signal(str)
+    homeChanged = Signal()                           # the sections of Home (Folders page)
     clearCache = Signal()
 
     def __init__(self, worker=None, machine: Machine | None = None, can_clear: bool = False, parent=None):
@@ -80,6 +85,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle(_("Settings"))
         self.spec = prefs.spec()
         self.bars = {}
+        self.sec_rows, self.sec_ws = [], None
         self.nav = QListWidget()
         self.nav.setFixedWidth(200)
         self.h.addWidget(self.nav)
@@ -108,6 +114,12 @@ class SettingsDialog(QDialog):
             width = max([LABEL_MIN] + [lb.sizeHint().width() + 12 for lb in self._labels if not lb.isHidden()])
             for lb in self._labels:
                 lb.setFixedWidth(width)
+            if key == "folders":                     # the sections of Home make it the longest page: it scrolls
+                sc = QScrollArea()
+                sc.setWidgetResizable(True)
+                sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+                sc.setWidget(w)
+                w = sc
             self.pages.addWidget(w)
             self.keys.append(key)
         self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
@@ -249,6 +261,58 @@ class SettingsDialog(QDialog):
         clean.setEnabled(self.can_clear)
         clean.clicked.connect(lambda: self.clearCache.emit())
         v.addWidget(clean, 0, Qt.AlignLeft)
+        self.home_sections(v)
+
+    def home_sections(self, v):
+        """The sections of Home: a row each (name, folder, description); the workspace's row takes its folder from
+        the Workspace setting above and cannot be removed."""
+        from .home import section_rows
+        v.addSpacing(6)
+        v.addWidget(label(_("Home sections"), "h2"))
+        v.addWidget(label(_("Each section of Home lists the projects of one folder and of its sub-folders."), "small",
+                          wrap=True))
+        self.sec_rows = []
+        for k, r in enumerate(section_rows()):
+            box = QFrame()
+            box.setObjectName("secrow")
+            box.setStyleSheet("QFrame#secrow { background: #23272f; border-radius: 6px; }")
+            g = QGridLayout(box)
+            g.setContentsMargins(8, 8, 8, 8)
+            g.setHorizontalSpacing(6)
+            g.setVerticalSpacing(6)
+            name = QLineEdit(maybe(r["label"]))
+            name.setFixedWidth(190)
+            folder = QLineEdit(r["folder"])
+            browse = QPushButton(_("Browse…"))
+            rm = QPushButton(_("Remove"))
+            note = QLineEdit(maybe(r["note"]))
+            for e, text in ((name, _("Name")), (folder, _("Folder")), (note, _("Description"))):
+                e.setPlaceholderText(text)
+                e.setToolTip(text)
+                e.setCursorPosition(0)
+            if r["workspace"]:
+                why = _("The workspace, set above: New project creates its folders there.")
+                folder.setEnabled(False)
+                browse.setEnabled(False)
+                rm.setEnabled(False)
+                for w in (folder, browse, rm):
+                    w.setToolTip(why)
+                self.sec_ws = folder
+            self.sec_rows.append({"row": r, "name": name, "folder": folder, "note": note})
+            for e in (name, folder, note):
+                e.editingFinished.connect(self._save_sections)
+            browse.clicked.connect(lambda _x=False, e=folder: self._pick_section(e))
+            rm.clicked.connect(lambda _x=False, i=k: self._remove_section(i))
+            g.addWidget(name, 0, 0)
+            g.addWidget(folder, 0, 1)
+            g.addWidget(browse, 0, 2)
+            g.addWidget(rm, 0, 3)
+            g.addWidget(note, 1, 0, 1, 4)
+            g.setColumnStretch(1, 1)
+            v.addWidget(box)
+        add = QPushButton(_("Add a section"))
+        add.clicked.connect(self._add_section)
+        v.addWidget(add, 0, Qt.AlignLeft)
 
     def compute(self, v):
         m = self.machine
@@ -384,4 +448,48 @@ class SettingsDialog(QDialog):
 
     def _workspace(self, folder):
         self.measure_disks()
+        if getattr(self, "sec_ws", None) is not None:
+            try:
+                self.sec_ws.setText(folder)
+            except RuntimeError:                     # the page was built again meanwhile
+                pass
         self.workspaceChanged.emit(folder)
+
+    # ------------------------------------------------------------ the sections of Home
+    def _section_values(self) -> list[dict]:
+        """The rows as edited: a name or a description left as shown (translated) keeps its stored English."""
+        rows = []
+        for w in self.sec_rows:
+            r = dict(w["row"])
+            name, note = w["name"].text().strip(), w["note"].text().strip()
+            r["label"] = r["label"] if name == maybe(r["label"]) else name
+            r["note"] = r["note"] if note == maybe(r["note"]) else note
+            if not r["workspace"]:
+                r["folder"] = w["folder"].text().strip()
+            rows.append(r)
+        return rows
+
+    def _save_sections(self, rows: list[dict] | None = None):
+        from .home import save_rows, section_rows
+        rows = self._section_values() if rows is None else rows
+        if rows != section_rows():
+            save_rows(rows)
+            self.homeChanged.emit()
+
+    def _pick_section(self, e: QLineEdit):
+        d = QFileDialog.getExistingDirectory(self, _("Folder"), e.text())
+        if d:
+            e.setText(d)
+            self._save_sections()
+
+    def _remove_section(self, k: int):
+        rows = self._section_values()
+        if 0 <= k < len(rows) and not rows[k]["workspace"]:
+            del rows[k]
+            self._save_sections(rows)
+            QTimer.singleShot(0, self.rebuild)
+
+    def _add_section(self):
+        rows = self._section_values() + [{"label": "", "folder": "", "note": "", "open": True, "workspace": False}]
+        self._save_sections(rows)
+        QTimer.singleShot(0, self.rebuild)

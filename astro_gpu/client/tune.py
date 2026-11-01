@@ -37,8 +37,10 @@ from __future__ import annotations
 
 import html
 import os
+import re
 from collections import OrderedDict
 from functools import partial
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -46,11 +48,14 @@ from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSplitter,
     QStackedWidget,
     QTabBar,
     QTableWidget,
@@ -74,12 +79,12 @@ from .charts import (
     color_tabs,
 )
 from .chartview import ChartView
-from .i18n import _, hm, hours_text, language, number
+from .i18n import _, hm, hours_text, language, maybe, number, plural
 from .imageview import ImageView, ViewImage, quick_thumbnail
 from .panel import STATE_COLOR, STATE_WORD, Panel
 from .services import inspect as si
 from .services.inspect import CATALOGUE_G_MAX, VisualSpec
-from .steps import Steps
+from .steps import CAMERA_NOTE, Steps
 from .widgets import ACCENT, WARN, clear, label
 
 STATE_COL = dict(STATE_COLOR, pending="#5d6470")      # the strip: a block not computed yet is a dark grey
@@ -337,6 +342,9 @@ class TuneView(QWidget):
         self.picked = None                                # the frame picked on the chart (an index of the frame table)
         self.show_hist = True                             # the viewers' stretch panel
         self.sky_show = {"grid": True, "stars": True, "objects": True}      # what the solution draws over a picture
+        self._splits: dict[str, list[int]] = {}           # block / tab -> the sizes of its two parts (chart, image)
+        self._cal_filter: dict[str, str] = {}             # calibration tab -> "all" | "flagged" (the suspicious frames)
+        self._note_row = None                             # the line under the tabs, where a picture's options go
         self.can_post = None                              # callable: Post takes images (the window sets it)
         self._pending = False
         self._dirty = True
@@ -499,11 +507,16 @@ class TuneView(QWidget):
         k = s.sel_step
         state = block_state(s, p, k)
         self.head.addWidget(label(f"{block_title(p, k)}  ·  {p.name}" if k != "post" else p.name, "h1"))
-        if state in ("pending", "running", "failed", "interrupted", "skipped") or \
-                (state == "stale" and not self._has_previous(p, k)):
+        not_done = state in ("pending", "running", "failed", "interrupted", "skipped") or \
+            (state == "stale" and not self._has_previous(p, k))
+        # the calibration frames can be looked at (and the wrong ones left out) before Calibration is computed: its
+        # darks, flats and bias tabs show; its masters and calibrated lights say what is missing
+        early = not_done and k == "calibration" and self.s.sources_loaded and state != "running"
+        if not_done and not early:
             self.head.addStretch(1)
             self.pending(p, k, state)
             return
+        self._early = early
         if state == "stale":
             self._previous_tag(p, k)
         if k == "selection":
@@ -605,12 +618,18 @@ class TuneView(QWidget):
             return
         p, k, spec = self._cur
         self._clear_center()
-        if spec.note:                                       # what this picture is, when its role is not obvious
-            nt = label(_(spec.note), "small", wrap=True)
+        self._note_row = None
+        note = spec.note or (CAMERA_NOTE if spec.camera and spec.kind in ("array", "removed") else "")
+        if note:                                            # what this picture is, when its role is not obvious
+            row = QHBoxLayout()
+            row.setSpacing(14)
+            nt = label(_(note), "small", wrap=True)
             nt.setContentsMargins(2, 0, 2, 0)
-            self.center.addWidget(nt)
+            row.addWidget(nt, 1)
+            self.center.addLayout(row)
+            self._note_row = row
         kind = spec.kind
-        if kind in ("array", "preview", "color", "gradient", "removed"):
+        if kind in ("array", "preview", "color", "gradient", "removed", "calibrated"):
             self._image_tab(p, k, spec)
         elif kind == "render":
             self._render_tab(p, k, spec)
@@ -723,6 +742,7 @@ class TuneView(QWidget):
         thread a fifth of a second), else a new one. What a tab connects goes through ``_on`` and is let go with the
         viewer (``_release``)."""
         v = self._pool.pop() if self._pool else self._make_view()
+        v.setMinimumHeight(320)
         v.show_histogram(self.show_hist if histogram is None else histogram)
         ok, tip = self._post_state()
         v.set_post_enabled(ok, tip)
@@ -758,6 +778,11 @@ class TuneView(QWidget):
         try:
             self.center.removeWidget(v)
             v.hide()
+            if isinstance(v.parentWidget(), QSplitter):      # out of a split tab before the splitter goes
+                v.setParent(self)
+                v.hide()
+            v.annotation_source = None
+            v.set_compare_neutral(None)
             v.blink_b.setChecked(False)
             v.set_sequence([])
             v.set_compare(None)
@@ -802,7 +827,7 @@ class TuneView(QWidget):
         """What a picture is compared with: the previous steps of the workflow, then the same picture of the other
         workflows."""
         out = []
-        for key in spec.compare:
+        for j, key in enumerate(spec.compare):
             if key == "calibrated_ref":
                 b = self._need("stack", self._keys(p, "stack", "register"), si.stack_bundle, p.pid)
                 vi = self._calibrated_vi(p, b.ref_path, b.ref_name) if isinstance(b, si.StackBundle) and \
@@ -811,6 +836,8 @@ class TuneView(QWidget):
                 sp = self.steps.picture(p, key)
                 vi = self.steps.view_image(p, sp) if sp is not None else None
             if vi is not None:
+                if j < len(spec.compare_names) and spec.compare_names[j]:
+                    vi.name = _(spec.compare_names[j])
                 out.append(vi)
         for q in self.s.paths:
             if q.pid == p.pid or k not in chain(self.steps, q):
@@ -820,6 +847,25 @@ class TuneView(QWidget):
                     vi.identity() != (self.steps.view_image(p, spec) or vi).identity():
                 vi.info = {"workflow": q.pid}
                 out.append(vi)
+        return out + self._references(k)
+
+    def _references(self, k: str) -> list[ViewImage]:
+        """The images from outside the project the project lists (a bench project: Siril's results for the same
+        frames, "Siril (reference)"), offered in every viewer's Compare with list, this block's own first. Read in
+        the viewer's thread (a file that is gone says so there)."""
+        refs = self.s.references() if callable(getattr(self.s, "references", None)) else []
+        refs.sort(key=lambda r: k not in (r.get("blocks") or [r.get("block")]))
+        out = []
+        for r in refs:
+            path = str(r["path"])
+            kind = str(r.get("kind") or "linear")
+            pic = kind == "picture"
+            white = float(r.get("white") or (65535.0 if path.lower().endswith((".tif", ".tiff")) else 255.0)) \
+                if pic else 1.0
+            out.append(ViewImage(si.reference_source(path), maybe(str(r.get("name") or Path(path).name)),
+                                 key=("reference", path), wcs=None if pic else si.reference_wcs(path),
+                                 camera=kind == "camera", units="" if pic else "norm", white=white, stretched=pic,
+                                 info={"reference": path}))
         return out
 
     def _image_tab(self, p, k: str, spec: VisualSpec):
@@ -832,6 +878,11 @@ class TuneView(QWidget):
         if spec.sky:
             self._sky_bar(spec)
         v = self._new_view(k, spec)
+        if self._note_row is not None and spec.kind != "preview":
+            if spec.camera:                               # camera colours: Neutral sky, an explicit display option
+                self._note_row.addWidget(self._neutral_box(v))
+            elif spec.kind == "color":                    # before / after: the option is the before's
+                self._note_row.addWidget(self._neutral_box(v, compare=True))
         if spec.sky:
             self._on(v, v.imageShown, lambda _key, pp=p, vv=v: self._want_sky(pp, vv))
         v.set_image(vi)
@@ -849,18 +900,43 @@ class TuneView(QWidget):
             v.set_same_stretch(True)
         self.center.addWidget(v, 1)
 
+    def _neutral_box(self, v: ImageView, compare: bool = False) -> QCheckBox:
+        """Neutral sky as an explicit display option of a picture in the camera's colours (``compare``: of the
+        before of a before / after). It follows the stretch panel's own Neutral sky."""
+        c = QCheckBox(_("Neutral sky on the before (display only)") if compare else _("Neutral sky (display only)"))
+        c.setToolTip(_("Each channel scaled on the screen so that the sky is grey and the stars white. The data stay "
+                       "in the camera's colours."))
+        if compare:
+            c.toggled.connect(lambda on, vv=v: vv.set_compare_neutral(bool(on)))
+            return c
+        c.toggled.connect(lambda on, vv=v: vv.set_neutral(bool(on)))
+
+        def sync(*_a, cc=c, vv=v):
+            try:
+                st = vv.stretch()
+                if st is not None and cc.isChecked() != bool(st.neutral):
+                    cc.blockSignals(True)
+                    cc.setChecked(bool(st.neutral))
+                    cc.blockSignals(False)
+            except RuntimeError:                       # the box went with a rebuild
+                pass
+        self._on(v, v.stretchChanged, sync)
+        self._on(v, v.imageShown, sync)
+        return c
+
     # ------------------------------------------------------------ the sky over the stack
     def _sky_bar(self, spec: VisualSpec):
         row = QHBoxLayout()
-        row.setSpacing(6)
+        row.setSpacing(10)
         row.addWidget(label(_("Over the image:"), "dim"))
         for key, text, tip in (("grid", _("Sky grid"), _("The RA / Dec grid of the astrometric solution")),
                                ("stars", _("Catalogue stars"),
                                 _("Gaia stars brighter than magnitude {g}, where the solution puts them")
-                                .format(g=number(CATALOGUE_G_MAX, 0)))):
-            b = QPushButton(text)
-            b.setCheckable(True)
-            b.setObjectName("toggle")
+                                .format(g=number(CATALOGUE_G_MAX, 0))),
+                               ("objects", _("Name the objects"),
+                                _("The known deep-sky objects of the field (Messier, NGC, IC, Sharpless and their "
+                                  "common names), outlined at their size. Export… can burn them into a picture."))):
+            b = QCheckBox(text)
             b.setChecked(self.sky_show.get(key, True))
             b.setToolTip(tip)
             b.toggled.connect(lambda on, kk=key: self._sky(kk, on))
@@ -890,8 +966,20 @@ class TuneView(QWidget):
                 ov = self.steps.overlay(self._cur[1], self._cur[2], sky, self.sky_show)
                 if ov is not None and not any(isinstance(o, type(ov)) for o in v.canvas.overlays):
                     v.add_overlay(ov)
+                v.annotation_source = lambda s=sky: (s, dict(self.sky_show))
                 n = len(sky.stars) if sky.stars is not None else 0
-                self.sky_note.setText(_("{n} catalogue stars, {m} grid lines").format(n=n, m=len(sky.lines)))
+                text = _("{n} catalogue stars, {m} grid lines").format(n=n, m=len(sky.lines))
+                tip = ""
+                if sky.objects:
+                    text += "  ·  " + plural(len(sky.objects), "{n} named object", "{n} named objects")
+                    src = re.sub(r"\s*\([^)]*\)", "", sky.source or "")
+                    if src:
+                        text += "  ·  " + _("names: {source}").format(source=src)
+                    tip = sky.source
+                elif sky.why:
+                    text += "  ·  " + _("No names: {why}").format(why=_(sky.why))
+                self.sky_note.setText(text)
+                self.sky_note.setToolTip(tip)
             else:
                 self.sky_note.setText(_("No astrometric solution for this image."))
         except RuntimeError:
@@ -953,6 +1041,46 @@ class TuneView(QWidget):
         v.set_compare_mode("side")
         v.set_compare_targets(targets, None)
 
+    # ------------------------------------------------------------ two parts of a tab, the height shared by hand
+    def _split(self, key: str, top: QWidget, bottom: QWidget, default=(2, 5)) -> QSplitter:
+        """Two parts of a tab one above the other (the chart and the image, the chart and its table) with a handle
+        to share the height between them: sometimes the image, sometimes the curves. Where the user leaves the handle
+        is kept for that block and tab, in this session and in the settings."""
+        sp = QSplitter(Qt.Vertical)
+        sp.setObjectName("tabsplit")
+        sp.setChildrenCollapsible(False)
+        sp.setHandleWidth(9)
+        sp.setStyleSheet("QSplitter#tabsplit::handle { background: #2a2f38; margin: 3px 40%; border-radius: 1px; } "
+                         "QSplitter#tabsplit::handle:hover { background: #4d5a70; }")
+        sp.addWidget(top)
+        sp.addWidget(bottom)
+        sizes = self._splits.get(key) or (prefs.get("inspect_splits") or {}).get(key)
+        if not (isinstance(sizes, list | tuple) and len(sizes) == 2 and all(isinstance(x, int | float) and x > 0
+                                                                           for x in sizes)):
+            sizes = default
+        tot = float(sum(sizes))
+        sp.setSizes([int(1000 * sizes[0] / tot), int(1000 * sizes[1] / tot)])
+        sp.handle(1).setToolTip(_("Drag to share the height between the two"))
+        sp.splitterMoved.connect(lambda *_a, ss=sp, kk=key: self._split_moved(kk, ss))
+        self.center.addWidget(sp, 1)
+        return sp
+
+    def _split_moved(self, key: str, sp: QSplitter):
+        a, b = sp.sizes()
+        if a <= 0 or b <= 0:
+            return
+        self._splits[key] = [int(1000 * a / (a + b)), int(1000 * b / (a + b))]
+        t = self.__dict__.get("_split_t")
+        if t is None:
+            t = self._split_t = QTimer(self)
+            t.setSingleShot(True)
+            t.setInterval(700)
+            t.timeout.connect(self._save_splits)
+        t.start()
+
+    def _save_splits(self):
+        prefs.set("inspect_splits", {**(prefs.get("inspect_splits") or {}), **self._splits})
+
     # ------------------------------------------------------------ Calibration
     def _calibrated_vi(self, p, path: str, name: str, info: dict | None = None, cfa: str = "") -> ViewImage | None:
         which = self.steps.which_for(p, "calibrate")
@@ -970,7 +1098,12 @@ class TuneView(QWidget):
     def _cal_keys(self, p) -> tuple:
         return self._keys(p, "calibrate", "inventory") + (self._sources_sig(),)
 
+    _early = False
+
     def _calibration_tab(self, p, spec: VisualSpec):
+        if self._early and spec.kind in ("masters", "callights"):
+            self.pending(p, "calibration", block_state(self.s, p, "calibration"))
+            return
         which = self.steps.which_for(p, "calibrate")
         data = self._need("calibration", self._cal_keys(p), si.calibration_data, p.pid, which, self.service.headers)
         if data is None:
@@ -1094,59 +1227,169 @@ class TuneView(QWidget):
             extra.append((_("Median level"), "…"))
         return extra
 
+    def _flag_level(self, it) -> str:
+        """The engine's flag of a calibration frame: "bad" (not a frame of its kind: a dark with stars), "warn" (unlike
+        the others of its kind), or "" (nothing to say, or not measured yet)."""
+        cf = self._engine_frame(it)
+        lvl = str(getattr(cf, "flag", "ok") or "ok") if cf is not None else "ok"
+        return "" if lvl == "ok" else ("bad" if lvl == "bad" else "warn")
+
     def _cal_info(self, it) -> dict:
         info = {"time": it.time, "exposure": it.exposure, "iso": it.iso, "temperature": it.temperature,
                 "excluded": it.excluded, "compact": True, "extra": self._frame_extra(it)}
-        cf = self._engine_frame(it)
-        if cf is not None and str(getattr(cf, "flag", "ok")) not in ("", "ok"):
-            lang = language()
-            why = str(getattr(cf, "reason", "") or "")
-            info["flag"] = _("To check")
-            info["flag_reason"] = texts.translate(why, lang) if lang == "en" or texts.has_translation(why, lang) \
-                else _("The engine flags this frame against the others of its kind.")
+        lvl = self._flag_level(it)
+        if lvl:
+            info["flag"] = _("Suspicious")
+            info["flag_level"] = lvl
+            info["flag_reason"] = frame_reason(self._engine_frame(it), it.kind, language())
         return info
 
     def _calframes(self, p, spec: VisualSpec, data: si.CalibrationData):
         items = data.groups.get(spec.name) or []
         if not items:
-            self._message(_("No frames of this kind."))
+            self._no_frames(spec.name)
             return
+        flagged = [it for it in items if self._flag_level(it)]
+        mode = self._cal_filter.get(spec.key, "all")
+        if not flagged:
+            mode = "all"
+        shown = flagged if mode == "flagged" else items
         frames = []
-        for it in items:
+        for it in shown:
             vi = ViewImage(it.path, it.name, cfa=it.cfa or data.cfa, camera=True, white=it.white,
                            info=self._cal_info(it))
             vi.thumb = partial(quick_thumbnail, ViewImage(it.path, cfa=it.cfa or data.cfa, camera=True))
             frames.append(vi)
         v = self._new_view("calibration", spec)
-        self._on(v, v.excludeToggled, lambda i, ex, its=items: self._cal_exclude(its, i, ex))
-        self._seq_items = items
+        self._on(v, v.excludeToggled, lambda i, ex, its=shown, grp=items: self._cal_exclude(its, i, ex, grp))
+        self._seq_items = shown
         self.sel_frames = frames
         n_out = sum(1 for x in items if x.excluded)
-        n_flag = sum(1 for x in items if "flag" in self._cal_info(x))
+        n_bad = sum(1 for x in flagged if self._flag_level(x) == "bad")
         line = _("{n} frames, {x} left out by hand. Exclude (X) leaves the frame shown out of the master: Calibration "
                  "is then computed again.").format(n=len(items), x=n_out)
         if self._report_state == "wait":
             line += "  " + _("Measuring every frame for its quality flag…")
         elif self._report_state == "ok":
-            line += "  " + (_("{n} frames to check (amber).").format(n=n_flag) if n_flag else
-                            _("No frame stands out from the others."))
+            if not flagged:
+                line += "  " + _("No frame stands out from the others.")
+            elif n_bad:
+                line += "  " + plural(len(flagged), "{n} suspicious frame: red, not a frame of this kind at all; "
+                                                    "amber, unlike the others.",
+                                      "{n} suspicious frames: red, not frames of this kind at all; amber, unlike the "
+                                      "others.")
+            else:
+                line += "  " + plural(len(flagged), "{n} suspicious frame (amber): unlike the others of its kind.",
+                                      "{n} suspicious frames (amber): unlike the others of their kind.")
         else:
             line += "  " + _("Quality flags: {why}").format(why=si.not_yet("calibrate"))
         self.center.addWidget(label(line, "small", wrap=True))
+        if flagged:
+            self.center.addLayout(self._flag_row(spec, items, flagged, mode))
         self.center.addWidget(v, 1)
-        v.set_sequence(frames, min(self._seq_index.get(spec.key, 0), len(frames) - 1))
-        self._on(v, v.frameChanged, lambda i, kk=spec.key: self._seq_index.__setitem__(kk, i))
+        v.set_sequence(frames, min(self._seq_index.get((spec.key, mode), 0), len(frames) - 1))
+        self._on(v, v.frameChanged, lambda i, kk=(spec.key, mode): self._seq_index.__setitem__(kk, i))
         if self._report is None:
             self.service.request_stats_batch([x.path for x in items])
+
+    def _flag_row(self, spec: VisualSpec, items, flagged, mode: str) -> QHBoxLayout:
+        """All the frames or the suspicious ones only, and Exclude the suspicious frames in one click."""
+        row = QHBoxLayout()
+        row.setSpacing(0)
+        grp = QButtonGroup(self)
+        for key, text in (("all", _("All frames ({n})").format(n=len(items))),
+                          ("flagged", _("Suspicious ({n})").format(n=len(flagged)))):
+            b = QPushButton(text)
+            b.setObjectName("face")
+            b.setCheckable(True)
+            b.setChecked(key == mode)
+            b.clicked.connect(lambda _x=False, kk=key, sk=spec.key: self._set_cal_filter(sk, kk))
+            grp.addButton(b)
+            row.addWidget(b)
+        row.addSpacing(14)
+        todo = [it for it in flagged if not it.excluded]
+        ex = QPushButton(_("Exclude the suspicious frames ({n})").format(n=len(todo)))
+        ex.setEnabled(bool(todo))
+        ex.setToolTip(_("Leaves every suspicious frame out of the master in one go: Calibration is then computed "
+                        "again. Include takes a frame back; a folder left empty comes back with Add a folder."))
+        ex.clicked.connect(lambda _x=False, its=items: self.exclude_suspicious(its))
+        row.addWidget(ex)
+        row.addStretch(1)
+        return row
+
+    def _set_cal_filter(self, key: str, mode: str):
+        self._cal_filter[key] = mode
+        self._remember()
+        self._fill()
+
+    def exclude_suspicious(self, items) -> dict:
+        """Every suspicious frame of the tab left out of its master, in one change. A session left with no
+        frame of the kind (all its "darks" were frames of the sky) is said, and Add a folder is offered."""
+        todo = [it for it in items if self._flag_level(it) and not it.excluded and it.session is not None]
+        if not todo:
+            return {"done": 0, "emptied": []}
+        kind = todo[0].kind
+        res = self.s.leave_out_calibration([(it.session, it.kind, it.path) for it in todo],
+                                           [(g.session, g.kind, g.path, g.excluded) for g in items
+                                            if g.session is not None])
+        msg = plural(res["done"], "{n} suspicious frame left out of the master: Calibration is to compute again.",
+                     "{n} suspicious frames left out of the master: Calibration is to compute again.")
+        if res["emptied"]:
+            msg += " " + no_frames_text(kind)
+        self._cal_filter.clear()
+        self.toasted.emit(msg)
+        return res
+
+    def _no_frames(self, kind: str):
+        """No frame of a kind in the project (none was given, or all were left out): what Calibration does then, and
+        Add a folder."""
+        title, line = NO_FRAMES.get(kind, ("No frames", "No frames of this kind."))
+        box = QFrame()
+        box.setObjectName("misscard")
+        box.setStyleSheet("QFrame#misscard { background: #1c1f26; border: 1px solid #3a4150; border-radius: 8px; }"
+                          " QLabel { background: transparent; }")
+        box.setFixedWidth(640)
+        v = QVBoxLayout(box)
+        v.setContentsMargins(22, 18, 22, 18)
+        v.setSpacing(10)
+        v.addWidget(label(_(title), "h2"))
+        v.addWidget(label(_(line), "", wrap=True))
+        b = QPushButton(_(ADD_FOLDER.get(kind, "Add a folder…")))
+        b.setObjectName("primary")
+        b.clicked.connect(lambda _x=False, kk=kind: self.add_calibration_folder(kk))
+        v.addWidget(b, 0, Qt.AlignLeft)
+        for i in range(v.count()):                 # styled now, so that the wrapped lines are measured right
+            w_ = v.itemAt(i).widget()
+            if w_ is not None:
+                w_.ensurePolished()
+        box.setFixedHeight(v.totalHeightForWidth(640) + 8)
+        self.center.addStretch(1)
+        self.center.addWidget(box, 0, Qt.AlignHCenter)
+        self.center.addStretch(2)
+
+    def add_calibration_folder(self, kind: str, folder: str | None = None) -> bool:
+        """Add a folder of darks (flats, bias, dark flats) to the sessions that have none of that kind (to every
+        session when all have some): Calibration is then computed again."""
+        if folder is None:
+            folder = QFileDialog.getExistingDirectory(self.window(), _(ADD_FOLDER.get(kind, "Add a folder…")),
+                                                      prefs.get("workspace"))
+            if not folder:
+                return False
+        P = self.s.p
+        targets = [x.id for x in P.sessions if not getattr(x, kind)] or [x.id for x in P.sessions]
+        done = [sid for sid in targets if self.s.add_calibration_folder(sid, kind, folder)]
+        if done:
+            self.toasted.emit(_("Folder added: Calibration is to compute again."))
+        return bool(done)
 
     @property
     def _seq_index(self) -> dict:
         d = self.__dict__.setdefault("_seq_pos", {})
         return d
 
-    def _cal_exclude(self, items, i: int, excluded: bool):
+    def _cal_exclude(self, items, i: int, excluded: bool, group=None):
         it = items[i]
-        if not si.set_calibration_excluded(self.s, it, excluded, items):
+        if not si.set_calibration_excluded(self.s, it, excluded, group if group is not None else items):
             if self.view is not None:
                 self.view.set_excluded(i, not excluded)
             self.toasted.emit(_("The last frame of a folder cannot be left out."))
@@ -1322,7 +1565,7 @@ class TuneView(QWidget):
             self._message(si.not_yet("stack"))
             return
         ch = WeightsChart(rows)
-        self.center.addWidget(ch, 3)
+        ch.setMinimumHeight(160)
         norm = any(r["scale"] is not None for r in rows)
         heads = [_("Frame"), _("Time"), _("Weight"), _("FWHM (px)"), _("Transparency (%)")]
         if norm:
@@ -1343,7 +1586,8 @@ class TuneView(QWidget):
             red.append(bool(r["status"]))
         digits = {2: 3, 3: 2, 4: 0} | ({5: 4, 6: 4, 7: 4, 8: 1, 9: 1, 10: 1} if norm else {})
         t = make_table(heads, data_rows, digits, red)
-        self.center.addWidget(t, 2)
+        t.setMinimumHeight(120)
+        self._split("empilement/weights", ch, t, (3, 2))
         d = b.diag
         bits = []
         if d is None:
@@ -1420,7 +1664,7 @@ class TuneView(QWidget):
             self._message(si.not_yet("color"))
             return
         ch = ColorFitChart(fit)
-        self.center.addWidget(ch, 3)
+        ch.setMinimumHeight(180)
         stars = list(fit.stars)
         heads = [_("x (px)"), _("y (px)"), "G", _("Gaia BP − RP"), _("Camera colour"), _("Residual"), _("Used"),
                  _("Reason")]
@@ -1431,7 +1675,8 @@ class TuneView(QWidget):
             rows.append([s.x, s.y, g, cat, meas, res, _("yes") if s.used else _("no"), _(why) if why else ""])
             red.append(not s.used)
         t = make_table(heads, rows, {0: 0, 1: 0, 2: 2, 3: 3, 4: 3, 5: 4}, red)
-        self.center.addWidget(t, 2)
+        t.setMinimumHeight(120)
+        self._split("couleur/fit", ch, t, (3, 2))
         st = dict(getattr(fit, "stats", None) or {})
         bits = []
         if st.get("used") is not None and st.get("stars") is not None:
@@ -1534,14 +1779,18 @@ class TuneView(QWidget):
         ch = FramesChart(table.rows, t, f)
         ch.sugg = s.suggested_thresholds()
         ch.current = self.picked if self.picked is not None and self.picked < ch.n else None
-        ch.setMinimumHeight(280)
+        ch.setMinimumHeight(140)
         ch.changed.connect(lambda c=ch: self._chart_changed(c))
         ch.picked.connect(self._pick)
         ch.setToolTip(_("Thresholds: drag · frame: click"))
         self.chart = ch
-        self.center.addWidget(ch, 2)
+        top = QWidget()
+        tl = QVBoxLayout(top)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(4)
+        tl.addWidget(ch, 1)
         self.kept_label = label("", "dim")
-        self.center.addWidget(self.kept_label)
+        tl.addWidget(self.kept_label)
         self._kept_n = (table.kept, table.total)
         self._kept_text()
         if abs(t - 100 * table.min_transparency) > 1e-6 or abs(f - table.max_fwhm_ratio * (s.fwhm_median() or 1.0)) > 1e-6:
@@ -1562,9 +1811,10 @@ class TuneView(QWidget):
             frames.append(vi)
         self.sel_frames = frames
         v = self._new_view("selection", None, histogram=False)
+        v.setMinimumHeight(220)
         self._on(v, v.frameChanged, self._frame_shown)
         self._on(v, v.excludeToggled, self._seq_exclude)
-        self.center.addWidget(v, 5)
+        self._split("selection", top, v, (2, 5))
         v.set_sequence(frames, self.picked if self.picked is not None and self.picked < len(frames) else 0)
 
     def _ask_preview(self, c):
@@ -1633,6 +1883,118 @@ class TuneView(QWidget):
             (self.chart.hand.add if excluded else self.chart.hand.discard)(i)
             self.chart._classify()
         self._set_hand([(r.session, r.name)], excluded)
+
+
+#: what Calibration does without frames of a kind, and the button that adds a folder of them (English, translated)
+NO_FRAMES = {
+    "darks": ("No darks", "No session of this project has darks now. Calibration subtracts the master bias, or the "
+                          "camera's black level, instead, and finds the hot pixels on the lights. Add a folder of real "
+                          "darks (the cap on, same exposure, ISO and temperature as the lights) to correct the "
+                          "thermal signal."),
+    "flats": ("No flats", "No session of this project has flats: the vignetting and the dust shadows stay in the "
+                          "image. Add a folder of flats taken with the same optics and focus."),
+    "bias": ("No bias", "No bias frames: the flats are calibrated with their dark flats, or the camera's black level."),
+    "flat_darks": ("No dark flats", "No dark flats: the flats are calibrated with the bias, or the camera's black "
+                                    "level."),
+}
+ADD_FOLDER = {"darks": "Add a darks folder…", "flats": "Add a flats folder…", "bias": "Add a bias folder…",
+              "flat_darks": "Add a dark flats folder…"}
+
+
+def no_frames_text(kind: str) -> str:
+    """One sentence for a session left without frames of a kind."""
+    return {"darks": _("A session has no darks any more: Calibration uses the master bias, or the camera's black "
+                       "level, instead. Add a darks folder in the Darks tab."),
+            "flats": _("A session has no flats any more: the vignetting stays. Add a flats folder in the Flats tab.")
+            }.get(kind, _("A session has no frames of this kind any more."))
+
+
+#: the engine's checks of a calibration frame (core/diagnostics.flag_frames) as templates: the same English as the
+#: engine writes, with fields, so that the French is a translation with the numbers in it ({kind}: the frame's kind)
+CHECK_TEMPLATES = {
+    "exposure": "exposure {value:g} s, the other {plural} {others:g} s",
+    "temperature": "taken at {value:.0f} °C, the other {plural} at {others:.0f} °C",
+    "level": "its level ({value:.0f} % of full scale) differs from the other flats ({others:.0f} %): the light changed?",
+    "sky": "its sky level ({value:.0f} ADU) differs from the other lights ({others:.0f} ADU): moon, twilight, clouds "
+           "or dew?",
+    "median": "its level ({value:.1f} ADU) differs from the other {plural} ({others:.1f} ADU)",
+    "median_dark": "its level ({value:.1f} ADU) differs from the other {plural} ({others:.1f} ADU): another exposure, "
+                   "ISO or temperature?",
+    "hot_pixels": "{value} hot pixels, the other {plural} about {others:.0f}: a warmer sensor?",
+    "gradient_brighter": "the centre is {absv:.1f} ADU brighter than the corners, the other {plural} {others:+.1f} ADU: "
+                         "heat or light reaching the sensor?",
+    "gradient_darker": "the centre is {absv:.1f} ADU darker than the corners, the other {plural} {others:+.1f} ADU: "
+                       "heat or light reaching the sensor?",
+    "noise": "its noise ({value:.1f} ADU) is {ratio:.1f}x that of the other {plural} ({others:.1f} ADU)",
+    "noise_alone": "its noise is {value:.1f} ADU",
+    "saturated": "{value:.2f} % of its pixels are saturated",
+    "underexposed": "its level is only {value:.0f} % of full scale (aim for 30-60 %)",
+    "overexposed": "its level is {value:.0f} % of full scale: close to saturation, where the sensor is no longer linear",
+    "stars": "contains stars ({value:.0f} found): a frame of the sky, not a {one} (was the cap on?)",
+    "stars_flat": "contains stars ({value:.0f} found): a frame of the sky, not a flat",
+    "sky_level": "its level is {value:.0f} ADU above the camera's black level ({black:.0f} ADU), {ratio:.0f}x its "
+                 "noise: light reached the sensor, not a {one}",
+}
+KIND_ONE = {"darks": "dark", "flats": "flat", "bias": "bias frame", "flat_darks": "flat dark", "lights": "light"}
+KIND_PLURAL = {"darks": "darks", "flats": "flats", "bias": "bias frames", "flat_darks": "flat darks",
+               "lights": "lights"}
+
+
+def check_template(check: dict, kind: str) -> tuple[str, dict] | None:
+    """(English template with the kind's words in it, its numbers) of one check of the engine, or None when the
+    check is not one of these."""
+    key = check.get("key")
+    v, o = check.get("value"), check.get("others")
+    args = {"value": v, "others": o}
+    if key == "median":
+        name = "median_dark" if kind in ("darks", "flat_darks") else "median"
+    elif key == "gradient":
+        if not isinstance(v, int | float):
+            return None
+        name = "gradient_brighter" if v > 0 else "gradient_darker"
+        args["absv"] = abs(float(v))
+    elif key == "noise":
+        if isinstance(o, int | float) and o > 0 and isinstance(v, int | float):
+            name, args["ratio"] = "noise", float(v) / float(o)
+        else:
+            name = "noise_alone"
+    elif key == "stars":
+        name = "stars_flat" if kind == "flats" else "stars"
+    elif key == "sky_level":
+        nz = check.get("noise")
+        if not (isinstance(v, int | float) and isinstance(nz, int | float) and nz > 0):
+            return None
+        name = "sky_level"
+        args.update(black=check.get("black"), ratio=float(v) / float(nz))
+    elif key in CHECK_TEMPLATES:
+        name = key
+    else:
+        return None
+    t = CHECK_TEMPLATES[name].replace("{plural}", KIND_PLURAL.get(kind, kind)).replace("{one}", KIND_ONE.get(kind, kind))
+    if any(a is None for f_, a in args.items() if "{" + f_ in t):
+        return None
+    return t, args
+
+
+def frame_reason(cf, kind: str, lang: str) -> str:
+    """Why the engine flags a calibration frame, in the interface's language: each check from its template (the
+    numbers written as the language writes them), else the engine's own sentence (English when it has no
+    translation)."""
+    if cf is None:
+        return ""
+    parts = []
+    for c in getattr(cf, "checks", None) or []:
+        got = check_template(c, kind) if isinstance(c, dict) else None
+        if got is None:
+            txt = str(c.get("text", "")) if isinstance(c, dict) else str(c)
+            parts.append(texts.translate(txt, lang))
+            continue
+        try:
+            parts.append(texts.format_reason(got[0], got[1], lang))
+        except (KeyError, ValueError, TypeError):
+            parts.append(str(c.get("text", "")))
+    text = "; ".join(x for x in parts if x) or texts.translate(str(getattr(cf, "reason", "") or ""), lang)
+    return text[:1].upper() + text[1:] if text else _("The engine flags this frame against the others of its kind.")
 
 
 class _Failed:

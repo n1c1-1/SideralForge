@@ -927,6 +927,7 @@ class Main(QMainWindow):
         d.deviceChanged.connect(self.set_device)
         d.specChanged.connect(self.set_spec)
         d.workspaceChanged.connect(lambda _w: self.home.rescan() if self.home is not None else None)
+        d.homeChanged.connect(lambda: self.home.rescan() if self.home is not None else None)
         d.clearCache.connect(self.clear_cache)
         d.exec()
         d.deleteLater()

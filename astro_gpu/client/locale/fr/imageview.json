@@ -116,5 +116,12 @@
  "Denoised": "Débruité",
  "Half-stack A": "Demi-empilement A",
  "Half-stack B": "Demi-empilement B",
- "Not in the engine yet.": "Pas encore dans le moteur."
+ "Not in the engine yet.": "Pas encore dans le moteur.",
+ "Copy image": "Copier l'image",
+ "Copies the picture as it is shown here (its zoom, stretch and overlays) to the clipboard, to paste it into a message or another program (Ctrl+C)": "Copie l'image telle qu'elle est affichée ici (zoom, étirement et superpositions) dans le presse-papiers, pour la coller dans un message ou un autre logiciel (Ctrl+C)",
+ "Image copied to the clipboard, as shown: paste it where you want": "Image copiée dans le presse-papiers, telle qu'affichée : collez-la où vous voulez",
+ "Include annotations:": "Inclure les annotations :",
+ "Object names": "Noms des objets",
+ "Sky grid": "Grille du ciel",
+ "Drawn into a picture of the stretched view only: a FITS file and the linear data stay clean.": "Dessinées seulement dans une image de la vue étirée : un fichier FITS et les données linéaires restent propres."
 }

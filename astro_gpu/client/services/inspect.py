@@ -112,6 +112,8 @@ class VisualSpec:
     base: tuple = ()         # kind "color": the (stage, array) the colour matrix is applied to
     channel: int | None = None       # one channel of the array (the coverage)
     units: str = "adu"
+    shown: str = ""          # its name in the viewer (the split's tag), when it is not the caption (English)
+    compare_names: tuple = ()        # the names of the pictures of ``compare`` in the viewer, when not their captions
 
 
 @dataclass
@@ -130,9 +132,11 @@ class SkyData:
 
     lines: list[GridLine] = field(default_factory=list)
     stars: np.ndarray | None = None            # (n, 3): x, y, G magnitude of the catalogue stars, in pixels of the grid
-    #: the named objects (x, y, name, kind) in pixels of the grid: the annotation package fills this and the overlay
-    #: draws it, nothing else to wire
+    #: the named objects of the field (``annotate.Named``: centre, outline, designation, common name, kind) in pixels
+    #: of the grid; ``source``: the catalogue they come from; ``why``: why there are none (no catalogue), English
     objects: list = field(default_factory=list)
+    source: str = ""
+    why: str = ""
 
 
 @dataclass
@@ -419,8 +423,8 @@ def catalogue_stars(p, wid: int, which: str, w: int, h: int) -> np.ndarray | Non
     return np.stack([x[sel], y[sel], g[sel]], 1).astype(np.float32)
 
 
-def sky_data(p, wid: int, which: str, wcs, w: int, h: int) -> SkyData | None:
-    """The grid and the catalogue stars of a picture of the stack (None without a solution)."""
+def sky_data(p, wid: int, which: str, wcs, w: int, h: int, names: bool = True) -> SkyData | None:
+    """The grid, the catalogue stars and the named objects of a picture of the stack (None without a solution)."""
     if wcs is None:
         return None
     try:
@@ -431,7 +435,12 @@ def sky_data(p, wid: int, which: str, wcs, w: int, h: int) -> SkyData | None:
         stars = catalogue_stars(p, wid, which, w, h)
     except (OSError, ValueError, KeyError):
         stars = None
-    return SkyData(lines, stars)
+    out = SkyData(lines, stars)
+    if names:
+        from ..annotate import field_annotations
+        ann = field_annotations(wcs, w, h, grid=False, names=True)
+        out.objects, out.source, out.why = ann.objects, ann.source, ann.why
+    return out
 
 
 def add_sky(im: ShownImage, p, wid: int, spec: VisualSpec, which: str = "current") -> None:
@@ -964,11 +973,37 @@ def _poly_background(p, wid: int, which: str) -> tuple[np.ndarray, np.ndarray]:
     return rgb, sky
 
 
+def calibrated_source(p, wid: int, base: tuple[str, str], which: str = "current"):
+    """An image of the workflow in calibrated colours: the colour matrix of its Color result applied, nothing else (its
+    sky stays where the step left it: an image whose gradient is removed keeps its zero point)."""
+    def load():
+        M = _array(p, wid, "color", "M", which)
+        return apply_matrix(M, _array(p, wid, base[0], base[1], which).astype(np.float32, copy=False))
+    return load
+
+
+def full_gradient_image(p, wid: int, which="current") -> np.ndarray:
+    """The whole image with the gradient removed, stars included, in calibrated colours (a Full workflow). The H-alpha
+    background works on the starless image: its result is (starless / star flat) - gradient, plus the continuum's zero
+    point. The stars are what the Stars block took away, (its input - the starless image), divided by the same star
+    flat, as Output's render puts them back: result + (lat_full - sl_final) / flat. Then the colour matrix."""
+    out = _array(p, wid, "background", "astro", which).astype(np.float32)
+    flat = _array(p, wid, "background", "flat", which).astype(np.float32, copy=False)
+    full = _array(p, wid, "optics", "lat_full", which)
+    sl = _array(p, wid, "starless", "sl_final", which)
+    for c in range(out.shape[0]):
+        out[c] += (np.asarray(full[c], np.float32) - np.asarray(sl[c], np.float32)) / np.where(flat[c] > 0, flat[c], 1)
+    del full, sl, flat
+    return apply_matrix(_array(p, wid, "color", "M", which), out)
+
+
 def gradient_source(p, wid: int, stage: str, which: str = "current"):
-    """The image with the gradient removed: the H-alpha background's result, or the stack minus the polynomial."""
+    """The image with the gradient removed, the stars in it, in calibrated colours: for the H-alpha background (which
+    works on the starless image) its result with the stars put back (``full_gradient_image``), for the simple one the
+    stack (or the denoised stack) in calibrated colours minus the polynomial."""
     def load():
         if stage == "background":
-            return _array(p, wid, "background", "astro", which)
+            return full_gradient_image(p, wid, which)
         rgb, sky = _poly_background(p, wid, which)
         rgb -= sky
         return rgb
@@ -1087,6 +1122,86 @@ def final_wcs_source(p, wid: int, which: str, grid, origin, size):
     return load
 
 
+class FlippedWcs:
+    """The solution of a FITS image stored bottom-up (Siril's ROWORDER = BOTTOM-UP), for the picture shown top-down:
+    pixel (x, y) of the picture is pixel (x, h - 1 - y) of the file. Only what the readout asks."""
+
+    def __init__(self, wcs, h: int):
+        self.wcs, self.h = wcs, int(h)
+
+    def pixel_to_world_values(self, x, y):
+        return self.wcs.pixel_to_world_values(x, self.h - 1 - np.asarray(y, float))
+
+
+def _reference_read(path: str):
+    """(array, solution or None) of an image from outside the project, read as it should be seen: a FITS file stored
+    bottom-up (Siril writes them so) turned top-down, its solution with it."""
+    p = Path(path)
+    if p.suffix.lower() in (".fit", ".fits", ".fts"):
+        import warnings
+
+        from astropy.io import fits
+        from astropy.wcs import WCS
+        with fits.open(p, memmap=False) as hl:
+            hdu = next((h for h in hl if getattr(h, "data", None) is not None), hl[0])
+            a, hdr = np.asarray(hdu.data, np.float32), hdu.header
+        wcs = None
+        if "CTYPE1" in hdr:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                try:
+                    wcs = WCS(hdr, naxis=2)
+                except Exception:  # noqa: BLE001 - no readout of the sky, the picture still shows
+                    wcs = None
+        if str(hdr.get("ROWORDER", "")).strip().upper() == "BOTTOM-UP":
+            a = np.ascontiguousarray(a[..., ::-1, :])
+            if wcs is not None:
+                wcs = FlippedWcs(wcs, a.shape[-2])
+        return a, wcs
+    from ..imageview import read_file
+    a, _cfa, wcs = read_file(p)
+    return a, wcs
+
+
+def reference_source(path: str):
+    """An image from outside the project (``ProjectModel.references``: Siril's results of a bench project), read in the
+    viewer's thread; a file that is not there says so."""
+    def load():
+        if not Path(path).is_file():
+            raise _unavailable(_missing_reference(path))
+        return _reference_read(path)[0]
+    return load
+
+
+def reference_wcs(path: str):
+    """The solution of a FITS reference (its header only), turned as the picture is (``FlippedWcs``)."""
+    def load():
+        if Path(path).suffix.lower() not in (".fit", ".fits", ".fts"):
+            return None
+        import warnings
+
+        from astropy.io import fits
+        from astropy.wcs import WCS
+        try:
+            hdr = fits.getheader(path)
+            if "CTYPE1" not in hdr:
+                return None
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                wcs = WCS(hdr, naxis=2)
+        except Exception:  # noqa: BLE001 - no readout of the sky
+            return None
+        if str(hdr.get("ROWORDER", "")).strip().upper() == "BOTTOM-UP":
+            return FlippedWcs(wcs, int(hdr.get("NAXIS2") or 0))
+        return wcs
+    return load
+
+
+def _missing_reference(path: str) -> str:
+    from ..i18n import _
+    return _("This comparison image is not there any more: {path}").format(path=path)
+
+
 def light_thumb(p, path: str, cfa: str = ""):
     """The film strip's thumbnail of a light, made from the raw with the viewer's automatic stretch (a neutral
     sky)."""
@@ -1115,7 +1230,7 @@ def post_key(vi, wid: int | None) -> str:
             return f"calibrate/{ident[2]}/{ident[3]}"
         if kind == "calframe":
             return "inspect:" + json.dumps({"wid": wid, "kind": "calframe", "path": ident[3]})
-        if kind in ("array", "preview", "color", "gradient", "removed"):
+        if kind in ("array", "preview", "color", "gradient", "removed", "calibrated"):
             return "inspect:" + json.dumps({"wid": wid, "kind": kind, "name": ident[2], "channel": ident[3],
                                             "base": list(ident[4]), "stages": [s for s, _k in ident[5]]})
         return "inspect:" + json.dumps({"wid": wid, "kind": str(kind)})
@@ -1190,6 +1305,8 @@ def resolve_key(p, key: str):
         return color_source(p, wid, tuple(d.get("base") or ("stack", "drz_full")), which)
     if kind == "gradient":
         return gradient_source(p, wid, stage, which)
+    if kind == "calibrated":
+        return calibrated_source(p, wid, tuple(d.get("base") or ("background", "astro")), which)
     if kind == "removed":
         return removed_source(p, wid, stage, which)
     if kind in ("rejection_low", "rejection_high"):
@@ -1287,6 +1404,8 @@ def calibration_report(p, wid: int, which: str = "current") -> CalibrationReport
     out = CalibrationReport()
     for s in p.sessions:
         r = _try(fn, p, s.id, wf=wid, which=which)
+        if r is None:                                   # Calibration not computed: the frames are measured anyway
+            r = _try(fn, p, s.id, wf=wid, which=which, require_done=False)
         if r is None:
             continue
         for cf in getattr(r, "frames", None) or []:
@@ -1474,6 +1593,16 @@ def lights_of(p, wid: int | None, headers: dict | None = None) -> list[FrameItem
         if not it.status and it.name in left:
             it.status = str(left[it.name])
     return items
+
+
+def post_annotations(p, wid: int, w: int, h: int, origin=(0, 0)):
+    """The sky grid and the named objects of Post's canvas (w x h pixels of the bottom workflow's grid from
+    ``origin``): ``annotate.Annotations`` (worker thread)."""
+    from ..annotate import Annotations, crop_wcs, field_annotations
+    wcs = _wcs_of(p, wid, "current") or _wcs_of(p, wid, "previous")
+    if wcs is None:
+        return Annotations(why="No astrometric solution for this image.")
+    return field_annotations(crop_wcs(wcs, origin), w, h, grid=True, names=True)
 
 
 def sky_bundle(p, wid: int, which: str, w: int, h: int) -> SkyData | None:

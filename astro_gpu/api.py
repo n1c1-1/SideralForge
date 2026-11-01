@@ -52,6 +52,7 @@ from .core import project2 as p2
 from .core import workflow as wfl
 from .core.project import Target
 from .core.project2 import KINDS, Project2, Session, Workflow
+from .core.skyobjects import CatalogueUnavailable, SkyObject  # noqa: F401 - re-exported: sky_objects raises it
 from .core.store import InputScan, KeyRules, Keys, Store, StoreProject
 
 if TYPE_CHECKING:
@@ -361,8 +362,9 @@ class CalFrame:
     edge: "growing central light" when positive), saturated_pct, max, and exposure, iso, temperature (°C, None when the
     file does not say), time; flats also level_pct (% of full scale above ``zero``, their offset), vignetting (each
     ring relative to the centre) and corner_pct; lights the calibrated frame's median, noise, planes and noise_planes
-    (the stage's frame_stats, in the cache's ADU). ``flag`` ok | warn, ``reason`` in plain words (an outlier against
-    the other frames of its kind, a badly exposed flat; nothing is excluded), ``checks`` the same as
+    (the stage's frame_stats, in the cache's ADU). ``flag`` ok | warn | bad, ``reason`` in plain words (warn: an
+    outlier against the other frames of its kind, a badly exposed flat; bad: not a frame of its kind at all, a dark
+    with stars or far above the camera's black level; nothing is excluded), ``checks`` the same as
     [{"key", "text", numbers}]. ``calibrated``: the calibrated cache file of a light, ``index`` its frame there
     (``calibrated_light`` reads it); '' when the cache is gone."""
 
@@ -437,8 +439,9 @@ class StackDiag:
     the quadratic sky difference, sky, half A | B, rejected_low, rejected_high: on the stack, rejected_outside: the
     rejected samples that land outside it). ``noise`` {R, G, B}: pixel noise of the result (ADU of the stack), from
     its two half-stacks. ``used``: the frames stacked; ``excluded`` {name: reason}. ``rejected_pct``: the stage's
-    metric (it counts the samples outside the stack too); ``rejected_on_grid_pct``: the share of the samples landing
-    on the stack that were rejected."""
+    metric (since version 4 of the stack, the share of the samples landing on the stack that were rejected; before, it
+    counted the samples landing outside it too); ``rejected_on_grid_pct``: the share of the samples landing on the
+    stack that were rejected."""
 
     rejection_low: Any = None
     rejection_high: Any = None
@@ -1058,7 +1061,7 @@ def _table(p: Project2, wf: int | Workflow, min_t: float | None, max_f: float | 
             d_min, d_max = _stack_thresholds(p, wf)
             min_t, max_f = d_min if min_t is None else min_t, d_max if max_f is None else max_f
         weight, reasons_a = select_frames(reg["transp"].astype(float), reg["fwhm"], reg["rms"], stats, min_t, max_f,
-                                          exclude=by_hand)
+                                          exclude=by_hand, noise=reg["noise"] if "noise" in reg.files else None)
         reasons = [str(r) for r in reasons_a]
     rows = [FrameRow(i, inv[i]["path"], names[i], sid[i], inv[i].get("time"), float(reg["fwhm"][i]),
                      float(reg["transp"][i]), float(reg["rms"][i]), float(weight[i]), reasons[i], bool(by_hand[i]))
@@ -1856,6 +1859,42 @@ def spectral_response(p: Project2, wf: int | Workflow, which: str = "current") -
     z = np.load(_need(p, wf, "color", which) / "specresp.npz")
     return SpectralCurves(z["lam"], z["S"], z["cam_hii"] if "cam_hii" in z else None,
                           z["cam_oiii"] if "cam_oiii" in z else None)
+
+
+def sky_objects(p: Project2, wf: int | Workflow, which: str = "current") -> list[SkyObject]:
+    """The named deep-sky objects (galaxies, nebulae, clusters: Messier, NGC, IC, Sharpless) whose centre or outline
+    falls in the field of the workflow's astrometric solution (the stack grid it was solved on), biggest first.
+    ``SkyObject``: name ("M 42", "IC 1805", "Sh2-275"), common name ("Heart Nebula" or ""), kind, RA / Dec in degrees
+    J2000, axes in arcminutes, position angle in degrees east of north, other designations. ``NotDone`` when Astrometry
+    is not computed; ``CatalogueUnavailable`` (a plain message) when no catalogue can be had (offline with nothing
+    cached and no Siril). Where the names come from: ``core.skyobjects.catalogue_source()``. The first call may
+    download the catalogue once (OpenNGC 4 MB, Sharpless 12 kB): worker thread."""
+    import warnings
+
+    import numpy as np
+
+    from .core import skyobjects as so
+    d = _need(p, wf, "astrometry", which)
+    f = d / "wcs.fits"
+    if not f.is_file():
+        raise NotDone(f"the astrometry result of workflow {_wid(wf)} has no solution ({which})")
+    mt = f.stat().st_mtime
+    hit = _WCS.get(str(f))
+    if hit is None or hit[0] != mt:
+        from astropy.io import fits
+        from astropy.wcs import WCS
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            hit = _WCS[str(f)] = (mt, WCS(fits.getheader(f)))
+    st = _upstream(p, wf, d, "stack", which)
+    if st is None:
+        raise NotDone(f"the stack the astrometry of workflow {_wid(wf)} was solved on is gone ({which})")
+    meta = _json(st / "drz_meta.json") if (st / "drz_meta.json").is_file() else {}
+    if meta.get("width") and meta.get("height"):
+        w, h = int(meta["width"]), int(meta["height"])
+    else:
+        h, w = np.load(st / "drz_full.npy", mmap_mode="r").shape[-2:]
+    return so.objects_in_field(hit[1], w, h)
 
 
 # ---------------------------------------------------------------------------------------------- diagnostics of the basics

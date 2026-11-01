@@ -80,6 +80,8 @@ from .services.render import CPU_DRAFT_LEVEL, DRAFT_LEVEL, HALF_LEVEL, RenderWor
 from .viewer import Viewer, to_qimage
 from .widgets import ACCENT, WARN, clear, hline, label
 
+NL = "\n"                                                   # a line break in a tooltip
+
 FAMILY_COL = {"Tone": "#c9a35e", "Color": "#c46fa8", "Detail": "#5ea1ff", "Stars": "#e6d36a",
               "Combine": "#e06c6c"}
 TW, TH = THUMB                                           # thumbnail size
@@ -467,6 +469,20 @@ class PostView(QWidget):
         self.b_mask.setCheckable(True)
         self.b_mask.setObjectName("toggle")
         self.b_mask.setToolTip(_("Mask of the selected layer, in gray (M)"))
+        # the annotations of the astrometric solution over the image (and, if wanted, burned into an export)
+        self.ann_show = {"grid": False, "objects": False}
+        self._ann = None                                 # annotate.Annotations of the canvas shown
+        self._ann_key = None
+        self._ann_token = None
+        self._canvas = None                              # the last result's canvas (size and origin on the grid)
+        self.b_grid = QPushButton(_("Sky grid"))
+        self.b_grid.setToolTip(_("The RA / Dec grid of the astrometric solution"))
+        self.b_names = QPushButton(_("Name the objects"))
+        self.b_names.setToolTip(_("The known deep-sky objects of the field (Messier, NGC, IC, Sharpless and their "
+                                  "common names), outlined at their size. Export… can burn them into the picture."))
+        for b in (self.b_grid, self.b_names):
+            b.setCheckable(True)
+            b.setObjectName("toggle")
         self.b_undo, self.b_redo = QPushButton("↶"), QPushButton("↷")
         self.b_undo.setToolTip(_("Undo (Ctrl+Z)"))
         self.b_redo.setToolTip(_("Redo (Ctrl+Y)"))
@@ -474,13 +490,14 @@ class PostView(QWidget):
         for w in (self.b_fit, self.b_100, self.zoom_lab):
             bar.addWidget(w)
         bar.addStretch(1)
-        for w in (self.b_cmp, self.b_mask, self.b_undo, self.b_redo, self.b_export):
+        for w in (self.b_grid, self.b_names, self.b_cmp, self.b_mask, self.b_undo, self.b_redo, self.b_export):
             bar.addWidget(w)
         mv.addLayout(bar)
         self.src = PostSource(self)
         self.before = BeforeSource(self)
         self.viewer = Viewer()
         self.viewer.overlays.append(self._overlay)
+        self.viewer.overlays.append(self._ann_overlay)
         self.viewer.banner = _("Rendering…")
         mv.addWidget(self.viewer, 1)
         self.hint = label("", "small")
@@ -551,6 +568,8 @@ class PostView(QWidget):
         self.b_100.clicked.connect(lambda: self.viewer.zoom_to(1.0))
         self.b_cmp.toggled.connect(self._compare)
         self.b_mask.toggled.connect(self._mask_view)
+        self.b_grid.toggled.connect(lambda on: self.set_annotations(grid=on))
+        self.b_names.toggled.connect(lambda on: self.set_annotations(objects=on))
         self.b_undo.clicked.connect(self.do_undo)
         self.b_redo.clicked.connect(self.do_redo)
         self.b_export.clicked.connect(lambda: self.export_dialog())
@@ -766,10 +785,13 @@ class PostView(QWidget):
         if res.kind != "thumbs":
             self._last_seq[res.kind] = res.seq
         if res.canvas is not None:
+            self._canvas = res.canvas
             size = (res.canvas.W, res.canvas.H)
             if self.src.canvas != size:
                 self.src.canvas = size
                 self.viewer.set_source(self.src)
+            if self.ann_show["grid"] or self.ann_show["objects"]:
+                self._want_annotations()
         if res.kind == "thumbs":
             self._take_layer_thumbs(res)
             return
@@ -864,6 +886,62 @@ class PostView(QWidget):
         a = np.ascontiguousarray(a)
         h, w = a.shape[:2]
         self._overlay_img = QImage(a.data, w, h, 4 * w, QImage.Format_RGBA8888).copy()
+
+    # ------------------------------------------------------------ the annotations of the solution
+    def set_annotations(self, grid: bool | None = None, objects: bool | None = None):
+        """The sky grid and the named objects over the image, on or off (Export… proposes the same)."""
+        if grid is not None:
+            self.ann_show["grid"] = bool(grid)
+        if objects is not None:
+            self.ann_show["objects"] = bool(objects)
+        for b, k in ((self.b_grid, "grid"), (self.b_names, "objects")):
+            if b.isChecked() != self.ann_show[k]:
+                b.blockSignals(True)
+                b.setChecked(self.ann_show[k])
+                b.blockSignals(False)
+        if self.ann_show["grid"] or self.ann_show["objects"]:
+            self._want_annotations()
+        self.viewer.update()
+
+    def _ann_pid(self):
+        """The workflow whose solution the canvas uses: the bottom workflow layer (as the export does)."""
+        return next((lay["pid"] for lay in reversed(self.layers) if lay["kind"] == "workflow"), None)
+
+    def _want_annotations(self):
+        c, pid = self._canvas, self._ann_pid()
+        if c is None or pid is None:
+            return
+        key = (pid, c.W, c.H, tuple(c.origin))
+        if key == self._ann_key:
+            return
+        try:
+            from .services import inspect as si
+            sv = si.service_of(self.s)
+        except Exception:  # noqa: BLE001 - a session without the inspect service (tests): no annotations
+            return
+        if not getattr(self, "_ann_wired", False):
+            sv.jobReady.connect(self._ann_ready)
+            self._ann_wired = True
+        self._ann_key = key
+        self._ann_token = sv.request_job("post.sky", si.post_annotations, pid, c.W, c.H, tuple(c.origin))
+
+    def _ann_ready(self, name: str, token: int, result):
+        if name != "post.sky" or token != self._ann_token:
+            return
+        self._ann = result
+        why = getattr(result, "why", "")
+        n = len(getattr(result, "objects", None) or [])
+        self.b_names.setToolTip(_("The known deep-sky objects of the field (Messier, NGC, IC, Sharpless and their "
+                                  "common names), outlined at their size. Export… can burn them into the picture.")
+                                + (NL + plural(n, "{n} named object", "{n} named objects") if n else "")
+                                + (NL + _(why) if why else ""))
+        self.viewer.update()
+
+    def _ann_overlay(self, p: QPainter, v: Viewer):
+        if self._ann is None or self.show_mask or not (self.ann_show["grid"] or self.ann_show["objects"]):
+            return
+        from .annotate import paint
+        paint(p, self._ann, v, self.ann_show)
 
     # ------------------------------------------------------------ the red overlay of the mask being edited
     def _overlay(self, p: QPainter, v: Viewer):

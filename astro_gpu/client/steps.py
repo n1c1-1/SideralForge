@@ -13,8 +13,8 @@ from __future__ import annotations
 import html
 
 import numpy as np
-from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPen, QPolygonF
+from PySide6.QtCore import QObject, QPointF, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen
 
 from .. import texts
 from .blocks import BY_KEY, STEPS, block_state, fmt_int  # noqa: F401  (the views import them from here)
@@ -66,12 +66,23 @@ CALIBRATED_NOTE = ("Each light after calibration: the master dark subtracted, di
 REFERENCE_NOTE = "The frame every other frame is aligned on, calibrated."
 REJECTION_NOTE = "Where the stack rejected pixels: satellite trails, planes, cosmic rays, hot pixels."
 COVERAGE_NOTE = "How many frames (weighted) cover each pixel of the stack: the edges and the dithering show here."
-COLOR_NOTE = ("After: the stack with the colour matrix measured on the Gaia stars, its sky set grey by an offset "
-              "per channel. Before: the same stack in the camera's colours. Drag the divider.")
+COLOR_NOTE = ("Before, left of the divider: the stack output as it is, in the camera's colours. After, right: the "
+              "same stack colour-calibrated (the colour matrix measured on the Gaia stars, the sky set grey). Drag the "
+              "divider.")
 DENOISE_NOTE = "Before (the stack) and after (denoised), with the same stretch on both. Drag the divider."
-GRADIENT_NOTE = "The image with the gradient removed. Compare it with the earlier steps."
+STACK_NOTE = "The stack output in the camera's colours, before colour calibration: its green cast is normal."
+CAMERA_NOTE = "In the camera's colours, before colour calibration."
+GRADIENT_NOTE = ("Your image with the gradient removed, stars included, in calibrated colours. Compare it with the "
+                 "earlier steps.")
+GRADIENT_FULL_NOTE = ("Your image with the gradient removed, stars included, in calibrated colours: the starless image "
+                      "without its gradient (the next tab), the stars put back. Compare it with the earlier steps.")
+STARLESS_BG_NOTE = ("The starless image without its gradient, in calibrated colours: what the block works on. The "
+                    "stars are put back in the first tab.")
 SKY_MODEL_NOTE = "What the block removed: its input minus its result."
-GRADIENT_SURFACE_NOTE = "The smooth surface of light pollution the block fitted, channel by channel."
+SKY_MODEL_FULL_NOTE = ("What the block removed from the starless image (its input minus its result), in the camera's "
+                       "colours.")
+GRADIENT_SURFACE_NOTE = ("The smooth surface of light pollution the block fitted, channel by channel, in the camera's "
+                         "colours.")
 STAR_FLAT_NOTE = "The correction of the flat field measured on the stars (1: no change)."
 
 
@@ -81,82 +92,28 @@ def fnum(x, d=1) -> str:
 
 class SkyOverlay:
     """The astrometric solution drawn over a picture of the stack, in the viewer's painter: the RA / Dec grid with its
-    labels, the catalogue stars where the solution puts them, and the named objects (``SkyData.objects``, filled by the
-    annotation package: nothing else to wire). ``show``: {"grid", "stars", "objects"} -> on or off."""
+    labels, the catalogue stars where the solution puts them, and the named objects outlined at their size
+    (``SkyData.objects``, ``annotate.paint_objects``). ``show``: {"grid", "stars", "objects"} -> on or off."""
 
-    GRID = QColor(94, 200, 224, 130)
     STAR = QColor(255, 210, 74, 215)
-    OBJECT = QColor(255, 255, 255, 230)
 
     def __init__(self, sky: SkyData, show: dict):
         self.sky, self.show = sky, show
 
     def __call__(self, p: QPainter, v: Viewer):
-        p.save()
-        p.setRenderHint(QPainter.Antialiasing)
-        try:
-            if self.show.get("grid", True):
-                self.grid(p, v)
-            if self.show.get("stars", True):
+        from .annotate import paint
+        paint(p, self.sky, v, {"grid": self.show.get("grid", True), "objects": self.show.get("objects", True)})
+        if self.show.get("stars", True):
+            p.save()
+            p.setRenderHint(QPainter.Antialiasing)
+            try:
                 self.stars(p, v)
-            if self.show.get("objects", True):
-                self.objects(p, v)
-        finally:
-            p.restore()
+            finally:
+                p.restore()
 
     @staticmethod
     def _to_widget(pts: np.ndarray, v: Viewer) -> np.ndarray:
         return (pts.astype(np.float64) - (v.cx, v.cy)) * v.scale + (v.width() / 2, v.height() / 2)
-
-    def grid(self, p: QPainter, v: Viewer):
-        p.setPen(QPen(self.GRID, 1.0))
-        p.setBrush(Qt.NoBrush)
-        labels = []
-        for line in self.sky.lines:
-            for piece in line.pieces:
-                w = self._to_widget(piece, v)
-                p.drawPolyline(QPolygonF([QPointF(x, y) for x, y in w]))
-                at = self._label_at(w, v, line.kind)
-                if at is not None:
-                    labels.append((line.label, at, line.kind))
-        f = p.font()
-        f.setPointSizeF(8.5)
-        p.setFont(f)
-        fm = QFontMetricsF(f)
-        taken: list[QRectF] = []
-        for text, (x, y), kind in labels:
-            tw, th = fm.horizontalAdvance(text) + 8, fm.height() + 2
-            r = QRectF(x + 3, y - th / 2, tw, th) if kind == "dec" else QRectF(x - tw / 2, y + 3, tw, th)
-            r.translate(max(0.0, 2 - r.left()) + min(0.0, v.width() - 2 - r.right()),
-                        max(0.0, 2 - r.top()) + min(0.0, v.height() - 2 - r.bottom()))      # all of it inside the viewer
-            if any(r.intersects(t) for t in taken):
-                continue
-            taken.append(r)
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(15, 17, 21, 190))
-            p.drawRoundedRect(r, 3, 3)
-            p.setPen(QColor(150, 220, 236))
-            p.drawText(r, Qt.AlignCenter, text)
-
-    @staticmethod
-    def _label_at(w: np.ndarray, v: Viewer, kind: str):
-        """Where a grid line enters the viewer, on its left edge for a parallel and its top edge for a meridian (else
-        the other edges): the point the label hangs from. None when the line does not cross the viewer."""
-        W, H, m = v.width(), v.height(), 6.0
-        edges = (("x", m), ("y", m), ("x", W - m), ("y", H - m)) if kind == "dec" else \
-            (("y", m), ("x", m), ("y", H - m), ("x", W - m))
-        for axis, c in edges:
-            a = w[:, 0] if axis == "x" else w[:, 1]
-            o = w[:, 1] if axis == "x" else w[:, 0]
-            lim = H if axis == "x" else W
-            s = np.flatnonzero((a[:-1] - c) * (a[1:] - c) <= 0)
-            for i in s:
-                d = a[i + 1] - a[i]
-                t = 0.0 if d == 0 else (c - a[i]) / d
-                other = o[i] + t * (o[i + 1] - o[i])
-                if m <= other <= lim - m:
-                    return (c, other) if axis == "x" else (other, c)
-        return None
 
     def stars(self, p: QPainter, v: Viewer):
         s = self.sky.stars
@@ -171,16 +128,6 @@ class SkyOverlay:
             if -12 <= x <= W + 12 and -12 <= y <= H + 12:
                 r = min(max(2.0 + (10.0 - float(g)) * 0.9, 2.0), 9.0) + grow
                 p.drawEllipse(QPointF(x, y), r, r)
-
-    def objects(self, p: QPainter, v: Viewer):
-        if not self.sky.objects:
-            return
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(self.OBJECT, 1.4))
-        for x, y, name, _kind in self.sky.objects:
-            pt = v.img_to_w(x, y)
-            p.drawEllipse(pt, 7, 7)
-            v._tag(p, QPointF(pt.x() + 10, pt.y() - 8), str(name))
 
 
 def kv(rows, pad=14):
@@ -252,7 +199,7 @@ class Steps(QObject):
                 for kind in counts:
                     counts[kind] += int(ses.get("dark_flats" if kind == "flat_darks" else kind) or 0)
             for kind, cap in (("darks", "Darks"), ("flats", "Flats"), ("bias", "Bias"), ("flat_darks", "Dark flats")):
-                if counts[kind]:
+                if counts[kind] or kind in ("darks", "flats"):       # no darks or flats: said there, with Add a folder
                     out.append(V(kind, cap, "calframes", "calibrate", kind, note=CALFRAMES_NOTE))
             out.append(V("calibrated", "Calibrated lights", "callights", "calibrate", note=CALIBRATED_NOTE))
             return out
@@ -265,7 +212,7 @@ class Steps(QObject):
                     V("table", "Frames", "regtable", "register")]
         if k == "empilement":
             return [V("stack", "Stack", "array", "stack", "drz_full", True, True, camera=True,
-                      compare=("calibrated_ref", "half_a", "half_b")),
+                      compare=("calibrated_ref", "half_a", "half_b"), note=STACK_NOTE),
                     V("rejection", "Rejection map", "rejection", "stack", note=REJECTION_NOTE),
                     V("coverage", "Coverage", "array", "stack", "drz_weight", True, True, camera=False, channel=1,
                       units="", note=COVERAGE_NOTE),
@@ -281,7 +228,8 @@ class Steps(QObject):
             return out
         if k == "couleur":
             return [V("colors", "Before / after", "color", "color", "", True, True, camera=False,
-                      base=("stack", "drz_full"), compare=("stack",), open_compare=True, note=COLOR_NOTE),
+                      base=("stack", "drz_full"), compare=("stack",), open_compare=True, note=COLOR_NOTE,
+                      shown="After: colour-calibrated", compare_names=("Before: stack output, camera colours",)),
                     V("spectral", "Spectral response", "chart", "color", "0"),
                     V("lines", "Colour of the lines", "chart", "color", "1"),
                     V("fit", "Star colours", "colorfit", "color")]
@@ -298,17 +246,26 @@ class Steps(QObject):
                 out.append(V("removal", "Neural star removal", "preview", "star_net", "star_removal", camera=False))
             return out
         if k == "fond":
+            # the main picture is always the whole image with the gradient removed, stars included, in calibrated
+            # colours: the H-alpha background works on the starless image, its result gets the stars back
+            # (services/inspect.full_gradient_image); the simple one's result is the whole image already
             st = "background" if "background" in stages else "background_poly"
-            cam = st == "background"
-            cmp_ = ("starless", "denoised", "stack") if cam else ("color_denoised", "color")
-            out = [V("result", "Gradient removed", "gradient", st, "", True, True, camera=cam, compare=cmp_,
-                     note=GRADIENT_NOTE),
-                   V("removed", "Sky model", "removed", st, "", True, True, camera=cam, note=SKY_MODEL_NOTE)]
-            if cam:
-                out += [V("sky", "Gradient", "array", "background", "sky", True, True, camera=True,
+            full = st == "background"
+            cmp_ = ("color_denoised", "color", "stack")
+            out = [V("result", "Gradient removed", "gradient", st, "", True, True, camera=False, compare=cmp_,
+                     note=GRADIENT_FULL_NOTE if full else GRADIENT_NOTE)]
+            if full:
+                out += [V("starless_bg", "Starless, gradient removed", "calibrated", "background", "", True, True,
+                          camera=False, base=("background", "astro"), compare=("starless_calibrated",),
+                          note=STARLESS_BG_NOTE),
+                        V("removed", "Sky model", "removed", st, "", True, True, camera=True,
+                          note=SKY_MODEL_FULL_NOTE),
+                        V("sky", "Gradient", "array", "background", "sky", True, True, camera=True,
                           note=GRADIENT_SURFACE_NOTE),
                         V("star_flat", "Star flat", "array", "background", "flat", True, True, camera=False,
                           note=STAR_FLAT_NOTE)]
+            else:
+                out.append(V("removed", "Sky model", "removed", st, "", True, True, camera=False, note=SKY_MODEL_NOTE))
             return out
         if k == "post":
             stage = next((x for x in ("render_prep_learned", "render_prep", "render_simple") if x in stages),
@@ -332,6 +289,9 @@ class Steps(QObject):
             return V("denoised", "Denoised stack", "array", "denoise", "n2n_full", True, True, camera=True)
         if key == "starless" and "starless" in stages:
             return V("starless", "Starless image", "array", "starless", "sl_final", True, True, camera=True)
+        if key == "starless_calibrated" and "starless" in stages and "color" in stages:
+            return V("starless_calibrated", "Starless image, before the gradient removal", "calibrated", "starless", "",
+                     True, True, camera=False, base=("starless", "sl_final"))
         if key == "color" and "color" in stages:
             return V("color", "Colour-calibrated stack", "color", "color", "", True, True, camera=False,
                      base=("stack", "drz_full"))
@@ -342,16 +302,18 @@ class Steps(QObject):
             st = "background" if "background" in stages else ("background_poly" if "background_poly" in stages
                                                               else None)
             if st is not None:
-                return V("result", "Gradient removed", "gradient", st, "", True, True, camera=st == "background")
+                return V("result", "Gradient removed", "gradient", st, "", True, True, camera=False)
         return None
 
     def stages_of(self, p, spec: VisualSpec) -> list[str]:
         """The results a picture is made of (its key is theirs)."""
         if spec.kind == "color":
             return ["color", spec.base[0]]
+        if spec.kind == "calibrated":
+            return ["color", spec.base[0]]
         if spec.kind in ("gradient", "removed"):
             if spec.stage == "background":
-                return ["background"] + (["starless"] if spec.kind == "removed" else [])
+                return ["background", "starless"] + (["optics", "color"] if spec.kind == "gradient" else [])
             stages = set(self.s.all_stages(p))
             return ["background_poly", "color", "denoise" if "denoise" in stages else "stack"]
         return [spec.stage]
@@ -376,6 +338,8 @@ class Steps(QObject):
             src = si.gradient_source(P, p.pid, spec.stage, which)
         elif spec.kind == "removed":
             src = si.removed_source(P, p.pid, spec.stage, which)
+        elif spec.kind == "calibrated":
+            src = si.calibrated_source(P, p.pid, spec.base, which)
         else:
             return None
         wcs = None
@@ -384,8 +348,11 @@ class Steps(QObject):
             if self.key_of(p, "astrometry", aw):
                 wcs = si.wcs_source(P, p.pid, aw)
         ident = ("inspect", spec.kind, spec.name, spec.channel, spec.base, tuple(zip(stages, keys)))
-        name = (prefix + "  ·  " if prefix else "") + _(spec.caption)
+        name = (prefix + "  ·  " if prefix else "") + _(spec.shown or spec.caption)
+        # an array in the camera's colours is shown as it is (its green cast and all): Neutral sky is a display
+        # option the user ticks, never the default (the earlier default made the stack look colour-calibrated)
         return ViewImage(src, name, key=ident, wcs=wcs, camera=spec.camera, units=spec.units,
+                         neutral=False if spec.camera and spec.kind != "preview" else None,
                          header={"HISTORY": [f"astro_gpu: {spec.caption} of workflow {p.name}"]})
 
     def overlay(self, k: str, spec: VisualSpec, sky: SkyData | None = None, show: dict | None = None):

@@ -483,6 +483,39 @@ Newest entries at the bottom. Times are local.
   - Ownership: B1 owns app.py, tune, steps, services/inspect, frames, sources, viewer and imageview; B2 owns post*,
     exportdlg, services/render and render/; B3 owns graph, blocks, model, runs, services/run and project2.
 
+- 15:45 **Darks of 28.12.24: all 100 are sky frames** (DARKS_28_12_24.md, committed 57e2db6 with the absolute
+  check):
+  - the master dark holds star trails (diagonal, about 35°, up to 250 px), which show in Rosette's results (26× the
+    noise), weakly in Flaming Star's (12×) and not measurably in Horsehead's;
+  - since v1 (2026-10-13); the P8 copies are correct copies of wrong frames.
+  - Fix options: the 48 real Iris-night darks, or no darks plus cosmetic correction. A bench agent (opus) adds Rosette
+    as a 6th case with variants A (no darks), B (Iris darks) and C (the wrong darks, Express only), ours and Siril.
+    It recommends.
+  - ENGINE_KNOWLEDGE.md corrected.
+  - **The user chose B** (the 48 Iris-night darks). Applied to Rosette, Horsehead and FlamingStar with
+    `F:/astro_projets/_p8/darks_fix/apply_fix.py --apply`, after a backup of the three project.astroproj in
+    `_p8/darks_fix/backup_before_B/`. Their calibration and everything after it are now Outdated; recompute in the
+    night's full run with the final engine. The bench agent still measures A against B against Siril, as a check.
+  - **The user, for their return (~17:30): the 5–6 bench projects ready to compare with Siril, all with the good
+    darks.**
+    - Bench agent: run the absolute darks check on all 6 cases; Rosette B is the main Rosette project.
+    - GUI agent: item 8 (Home sections, Siril reference).
+    - The bench projects use the HEAD engine (base patches not applied: the user has not decided yet).
+  - **The user: "put the corrections in, I want something complete; we are not doing it ten times, pre-correction,
+    post-correction."**
+    - The 8 base patches are applied (committed 8d450c1, except their api.py part, which shares the file with the GUI
+      agent's sky_objects and is committed with the GUI work; the inspect.json line is passed to the GUI agent).
+    - **One final pass:** the bench agent re-runs ours on the 6 cases with the patched engine; Rosette is variant B only
+      (A and C dropped); one clean "current state" table in BENCH.md.
+    - The GUI test copies are outdated now: recompute them after the GUI agent finishes.
+    - The user's 9 projects: recompute tonight with this engine (the 3 of 28.12.24 with the Iris darks).
+  - The user asked whether Siril had the wrong darks. The orchestrator ran the absolute check (raw_stats, 12 frames
+    per kind) on the bench cases:
+    - darks: heart 0–1 stars at 508 ADU; iris 0 at 508; m51 0–1 at 2048 (Canon black); m8 ≤ 8 at 501;
+    - flats ≤ 7 stars; bias ≤ 7;
+    - seestar has no calibration frames;
+    - **all real.** Rosette's Siril runs use variant B (the Iris darks); C was ours only.
+
 ### Queue for the end of P8 (engine unfrozen)
 1. Apply patches 1–3, run the tests and the 4-dataset non-regression, recompute only render_simple (Classic and Raw
    stack), and re-check the sky slider in Post.

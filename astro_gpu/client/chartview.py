@@ -7,8 +7,9 @@ y axis, line / scatter / histogram series, and:
   Ctrl: y only), a drag pans, a double click (or the "Reset zoom" button, which shows when zoomed) goes back;
 * a crosshair snaps to the data and a box reads the values under the cursor, with their units;
 * the legend toggles series (a click on its name);
-* the context menu exports the data as CSV (a ";" and decimal commas in French, so that a French spreadsheet opens it
-  right) and the picture as PNG, and holds the actions a chart adds;
+* an "Export CSV…" button in the title row, and the context menu, export the data as CSV (a ";" and decimal commas
+  in French, so that a French spreadsheet opens it right); the menu also exports the picture as PNG and holds the
+  actions a chart adds;
 * horizontal handles (``add_hline(..., draggable=True)``) are dragged with the mouse (the thresholds of Selection).
 
 The axes of QtCharts are kept hidden: they give the series their scale, and the ticks, the labels (nice steps, the
@@ -442,6 +443,12 @@ class ChartView(QWidget):
         self._reset_btn.setCursor(Qt.PointingHandCursor)
         self._reset_btn.clicked.connect(self.reset_view)
         self._reset_btn.hide()
+        # the data of the chart to a spreadsheet: always in sight (the context menu has it too, and PNG)
+        self._csv_btn = QPushButton(_("Export CSV…"), self)
+        self._csv_btn.setStyleSheet(BUTTON_QSS)
+        self._csv_btn.setCursor(Qt.PointingHandCursor)
+        self._csv_btn.setToolTip(_("The chart's data as a CSV file, for a spreadsheet (right click: PNG too)"))
+        self._csv_btn.clicked.connect(lambda: self.export_csv())
 
     # ------------------------------------------------------------ building
     def add_panel(self, title: str = "", unit: str = "", weight: float = 1.0, digits: int | None = None,
@@ -699,9 +706,7 @@ class ChartView(QWidget):
         return [(v, num(v, d)) for v in tick_values(p.y0, p.y1, step)]
 
     def _head_h(self) -> float:
-        if not (self.title or self._legend or self.controls or self.colorbar):
-            return 8.0
-        return max(self.HEAD, QFontMetricsF(self._font()).height() + 14.0)
+        return max(self.HEAD, QFontMetricsF(self._font()).height() + 14.0)       # the title row (Export CSV… is there)
 
     def resizeEvent(self, e):                                            # noqa: N802
         super().resizeEvent(e)
@@ -759,8 +764,14 @@ class ChartView(QWidget):
         self.update()
 
     def _place_controls(self, W: int):
-        """The choice buttons at the right of the title row (in the order they were added), the reset button at their left."""
+        """Export CSV… at the right end of the title row, the choice buttons at its left (in the order they were
+        added), the reset button at their left."""
         x, y = W - 12.0, 3
+        self._csv_btn.adjustSize()
+        x -= self._csv_btn.width()
+        self._csv_btn.move(int(x), y)
+        self._csv_btn.raise_()
+        x -= 8
         for b in reversed(self.controls):
             b.adjustSize()
             x -= b.width()
@@ -1423,11 +1434,13 @@ class ChartView(QWidget):
         saved, self._hover, self._export = self._hover, None, True
         was = self._reset_btn.isVisibleTo(self)
         self._reset_btn.hide()
+        self._csv_btn.hide()
         try:
             self.render(img)
         finally:
             self._hover, self._export = saved, False
             self._reset_btn.setVisible(was)
+            self._csv_btn.show()
         return img
 
     def export_png(self, path: str | None = None) -> str | None:

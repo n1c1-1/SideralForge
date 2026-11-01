@@ -19,6 +19,17 @@ DEFAULTS = {
     "recent": [],                     # [{"path", "name", "target"}], most recent first
     # folders and disk
     "workspace": "F:/astro_projets",
+    # the sections of Home (Settings › Folders): each lists the projects of a folder and of its sub-folders. "label" and
+    # "note" are English (translated where shown) or typed by the user; "open": shown open; "workspace": the row whose
+    # folder is the workspace above (where New project creates), so it has no "folder" of its own
+    "home_sections": [
+        {"label": "My projects", "workspace": True, "open": True,
+         "note": "Your own projects. New project creates its folder here."},
+        {"label": "Bench against Siril", "folder": "F:/astro_essais/bench", "open": True,
+         "note": "Test sets processed by both Siril and astro_gpu on the same frames, to compare the results."},
+        {"label": "Test copies", "folder": "F:/astro_essais/v2", "open": False,
+         "note": "Copies of a project, used to try new versions of the program. Your own projects are not touched."},
+    ],
     "cache_dir": (Path.home() / "astro_gpu_scratch").as_posix(),   # calibrated frames: <cache_dir>/<project>
     "temp_dir": (Path(tempfile.gettempdir()) / "astro_gpu").as_posix(),
     "cache_limit_gb": 200,

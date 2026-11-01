@@ -1432,6 +1432,78 @@ class ProjectModel(QObject):
         self.reload_sources()
         return True
 
+    def leave_out_calibration(self, frames: list[tuple[int, str, str]],
+                              listing: list[tuple[int, str, str, bool]]) -> dict:
+        """Leave several calibration frames out of their masters in one change (saved once): ``frames`` (session, kind,
+        path); ``listing`` the frames of their folders as the worker listed them (session, kind, path, left out now).
+        A folder whose every frame goes is taken out of the session, so a session can be left without any frame of a
+        kind (all its "darks" were frames of the sky): ``emptied`` says which. Returns {"done": n, "emptied":
+        [(session, kind)]}; nothing done: {"done": 0, "emptied": []}."""
+        import os
+
+        def norm(x) -> str:
+            return os.path.normcase(os.path.normpath(str(x)))
+        p = self.p
+        groups: dict[tuple[int, str, str], set[str]] = {}
+        for sid, kind, path in frames:
+            if kind not in CALIBRATION_KINDS:
+                raise ValueError(f"not a kind of calibration frame: {kind!r}")
+            groups.setdefault((int(sid), kind, norm(Path(path).parent)), set()).add(norm(path))
+        if not groups:
+            return {"done": 0, "emptied": []}
+        done, touched = 0, set()
+        with self._edit():
+            for (sid, kind, here), out in groups.items():
+                try:
+                    s = p.session(sid)
+                except (KeyError, ValueError):
+                    continue
+                lst = list(getattr(s, kind))
+                in_folder = [(x, left) for ss, kk, x, left in listing
+                             if ss == sid and kk == kind and norm(Path(x).parent) == here]
+                known = {norm(x) for x, _left in in_folder}
+                in_folder += [(x, False) for x in out if x not in known]
+                keep = [x for x, left in in_folder if not left and norm(x) not in out]
+                done += sum(1 for x, left in in_folder if not left and norm(x) in out)
+                rest = [e for e in lst if norm(p.abspath(e)) != here and norm(Path(p.abspath(e)).parent) != here]
+                original = next((e for e in lst if norm(p.abspath(e)) == here), None)
+                whole = len(keep) == len(in_folder)
+                setattr(s, kind, rest + (([original or str(Path(next(iter(out))).parent)] if whole else sorted(keep))
+                                         if keep else []))
+                touched.add((sid, kind))
+            p.validate()
+        emptied = sorted((sid, kind) for sid, kind in touched if not getattr(p.session(sid), kind))
+        self.reload_sources()
+        return {"done": done, "emptied": emptied}
+
+    def add_calibration_folder(self, session: int, kind: str, folder: str) -> bool:
+        """A folder of calibration frames (darks, flats, bias, flat darks) added to a session: saved, the frames read
+        again, Calibration and what follows Outdated. False when the session is not known or lists it already."""
+        import os
+        if kind not in CALIBRATION_KINDS:
+            raise ValueError(f"not a kind of calibration frame: {kind!r}")
+        try:
+            s = self.p.session(session)
+        except (KeyError, ValueError):
+            return False
+        lst = list(getattr(s, kind))
+        if any(os.path.normcase(os.path.normpath(self.p.abspath(e))) == os.path.normcase(os.path.normpath(folder))
+               for e in lst):
+            return False
+        with self._edit():
+            setattr(s, kind, lst + [Path(folder).as_posix()])
+            self.p.validate()
+        self.reload_sources()
+        return True
+
+    def references(self) -> list[dict]:
+        """The images from outside the project that every viewer offers in its Compare with list (a bench project:
+        Siril's results for the same frames): [{"name", "path", "kind": camera | linear | picture, "blocks": the
+        blocks it compares with first, "white": a picture's white level}]. They
+        live in the definition, in ``post["references"]`` (``tools/bench/references.py`` fills them)."""
+        refs = (getattr(self.p, "post", None) or {}).get("references") or []
+        return [dict(r) for r in refs if isinstance(r, dict) and r.get("path")]
+
     def request_selection(self, tmin: float | None = None, fmax: float | None = None):
         """Ask the worker how many frames these thresholds keep (answer: ``selectionChanged``, ``kept_frames``)."""
         p = self.path

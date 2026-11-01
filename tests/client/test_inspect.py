@@ -252,7 +252,7 @@ def test_the_real_stack_shows_with_auto_stretch_histogram_and_catalogue_metrics(
     assert [tb.tabText(i) for i in range(tb.count())] == ["Stack", "Rejection map", "Coverage", "Weights"]
     # the automatic stretch: the sky at about a quarter, the stars white; the toggle changes the display, never the data
     st = v.stretch()
-    assert st.auto and st.neutral                                         # camera colours: a neutral sky
+    assert st.auto and not st.neutral                     # camera colours, as they are (Neutral sky: an option)
     before = prep.data[:, 100, 100].copy()
     v.auto_b.setChecked(False)
     assert v.stretch().mode == "linear"
@@ -300,7 +300,8 @@ def test_each_block_shows_its_real_picture(win):
             "alignement": ["reference", "quality", "drift", "track", "distribution", "table"],
             "empilement": ["stack", "rejection", "coverage", "weights"], "astrometrie": ["solution", "survey"],
             "couleur": ["colors", "spectral", "lines", "fit"], "debruitage": ["denoised"],
-            "etoiles": ["starless", "star_model", "psf"], "fond": ["result", "removed", "sky", "star_flat"],
+            "etoiles": ["starless", "star_model", "psf"],
+            "fond": ["result", "starless_bg", "removed", "sky", "star_flat"],
             "post": ["output"]}
     from astro_gpu.client.chartview import ChartView
     for step, tabs in want.items():
@@ -312,8 +313,8 @@ def test_each_block_shows_its_real_picture(win):
             inspect(win, step)
             t = win.tune
             kind = t._cur[2].kind
-            if kind in ("array", "preview", "color", "gradient", "removed", "masters", "calframes", "callights",
-                        "regref"):
+            if kind in ("array", "preview", "color", "gradient", "removed", "calibrated", "masters", "calframes",
+                        "callights", "regref"):
                 assert t.view is not None and t.view.wait(120), (step, key)
                 assert t.view.prepared() is not None, (step, key, t.view.canvas.message)
                 assert min(t.view.prepared().size()) > 100
@@ -414,7 +415,8 @@ def test_the_astrometry_block_opens_on_the_users_image_with_its_solution(win):
     assert any(x.startswith("Your stack with the sky grid") for x in shown)
     assert "Sky grid" in shown and "Catalogue stars" in shown
     sky = next(d for (name, _k), d in t._data.items() if name == "sky")
-    assert isinstance(sky, si.SkyData) and {ln.kind for ln in sky.lines} == {"ra", "dec"} and sky.objects == []
+    assert isinstance(sky, si.SkyData) and {ln.kind for ln in sky.lines} == {"ra", "dec"}
+    assert "Name the objects" in shown and (any(o.name == "IC 1805" for o in sky.objects) or sky.why)
     assert 4 <= len(sky.lines) <= 20 and sky.stars is not None and 100 < len(sky.stars) <= si.CATALOGUE_MAX
     assert sky.stars[:, 2].max() < si.CATALOGUE_G_MAX and (np.diff(sky.stars[:, 2]) >= 0).all()
     assert any(isinstance(o, SkyOverlay) for o in v.canvas.overlays)

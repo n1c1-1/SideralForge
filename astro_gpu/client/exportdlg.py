@@ -130,6 +130,18 @@ class ExportDialog(QDialog):
                                   True)
         self.c_layers = self._check(v, _("Each layer as a separate file"), False)
         self.c_masks = self._check(v, _("The masks"), False)
+        # the annotations of Post's view, drawn into the picture (PNG, JPEG, TIFF): handy to show what the image is
+        show = dict(getattr(view, "ann_show", None) or {})
+        ah = QHBoxLayout()
+        ah.addWidget(QLabel(_("Include annotations:")))
+        self.c_grid = QCheckBox(_("Sky grid"))
+        self.c_grid.setChecked(bool(show.get("grid")))
+        self.c_names = QCheckBox(_("Object names"))
+        self.c_names.setChecked(bool(show.get("objects")))
+        ah.addWidget(self.c_grid)
+        ah.addWidget(self.c_names)
+        ah.addStretch(1)
+        v.addLayout(ah)
         self.spec_boxes = []
         if spec:
             for text in (_("Each workflow's output, linear (FITS)"),):
@@ -191,6 +203,10 @@ class ExportDialog(QDialog):
         self.dest.setText(f"{folder}/{name}{SUFFIX[key]}" if folder else name + SUFFIX[key])
         self.c_wcs.setEnabled(key == "fits32f")
         self.c_wcs.setToolTip("" if key == "fits32f" else _("Only the FITS file has a header."))
+        for c in (self.c_grid, self.c_names):
+            c.setEnabled(key != "fits32f")
+            c.setToolTip(_("A FITS file stays clean: its header holds the astrometric solution.") if key == "fits32f"
+                         else _("Drawn into the picture, as Post shows them."))
         self._check_dest()
 
     def _browse(self):
@@ -223,7 +239,9 @@ class ExportDialog(QDialog):
         return ExportJob(layers=snapshot(self.view.layers), folder=folder, name=name, format=self.format_key(),
                          size=int(self.size_cb.currentData() or 0), wcs=self.c_wcs.isEnabled() and self.c_wcs.isChecked(),
                          history=self.c_hist.isChecked(), each_layer=self.c_layers.isChecked(),
-                         masks=self.c_masks.isChecked(), project_name=self.pname)
+                         masks=self.c_masks.isChecked(), project_name=self.pname,
+                         annotations={"grid": self.c_grid.isEnabled() and self.c_grid.isChecked(),
+                                      "objects": self.c_names.isEnabled() and self.c_names.isChecked()})
 
     def _export(self):
         if self.go.text() == _("Close"):

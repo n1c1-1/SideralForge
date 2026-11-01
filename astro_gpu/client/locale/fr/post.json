@@ -38,5 +38,13 @@
   "this layer leaves the graph before the Stars block": "ce calque quitte le graphe avant le bloc Étoiles",
   "{n} file(s) written to {folder}": "{n} fichier(s) écrit(s) dans {folder}",
   "{n} filter": "{n} filtre",
-  "{n} filters": "{n} filtres"
+  "{n} filters": "{n} filtres",
+  "Name the objects": "Nommer les objets",
+  "The known deep-sky objects of the field (Messier, NGC, IC, Sharpless and their common names), outlined at their size. Export… can burn them into the picture.": "Les objets du ciel profond connus du champ (Messier, NGC, IC, Sharpless et leurs noms usuels), entourés à leur taille. Exporter… peut les incruster dans l'image.",
+  "{n} named object": "{n} objet nommé",
+  "{n} named objects": "{n} objets nommés",
+  "A FITS file stays clean: its header holds the astrometric solution.": "Un fichier FITS reste propre : son en-tête contient la solution astrométrique.",
+  "Drawn into the picture, as Post shows them.": "Dessinées dans l'image, comme Post les montre.",
+  "Include annotations:": "Inclure les annotations :",
+  "Object names": "Noms des objets"
 }

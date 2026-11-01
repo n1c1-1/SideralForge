@@ -13,7 +13,7 @@ One widget, ``ImageView``, shows an image of any size (up to 6384 x 4272 RGB flo
   numbers: time, exposure, ISO / gain, temperature, FWHM, roundness, transparency, kept or excluded) and Exclude /
   Include; frames load in worker threads, the neighbours ahead of time;
 * Export… (FITS 32-bit float with the WCS and a header; TIFF 16-bit, PNG, JPEG: the data or the stretched view),
-  Send to Post (a signal) and Copy view.
+  Send to Post (a signal) and Copy image (the picture as shown, to paste elsewhere).
 
 How it stays fast on the CPU: an image is prepared once in a worker thread (``prepare``: a pyramid of halves and a
 histogram of a sample, about 0.15 s for the 6384 x 4272 stack). The view draws from the pyramid level nearest to the
@@ -129,8 +129,9 @@ class ViewImage:
     ``wcs``: an astropy WCS, a FITS header or the path of a wcs.fits: RA / Dec in the readout, and the FITS export.
     ``units``: "adu", "norm" (0-1), "count" (a count per pixel) or "" (a number without a unit); ``white``: the
     saturation level in those units (for the readout in the other unit; default 65535 ADU or 1). ``camera``: still
-    in the camera's colours (Neutral sky on by default); None: guessed from the sky (channel medians apart by more
-    than 15 % and many noise sigmas: a camera's cast).
+    in the camera's colours (Neutral sky on by default, unless ``neutral`` says otherwise); None: guessed from the sky
+    (channel medians apart by more than 15 % and many noise sigmas: a camera's cast). ``neutral``: Neutral sky at
+    first (a display option the user can tick or untick); None: as ``camera`` says (a mosaic: on).
     ``info``: a frame of a sequence, as the caller measured it: ``time`` (ISO), ``exposure`` (s), ``iso`` or
     ``gain``, ``temperature`` (°C), ``fwhm`` (px), ``fwhm_arcsec``, ``roundness`` (0-1), ``transparency`` (1 = 100 %),
     ``weight``, ``excluded`` (bool), ``reason`` (why the engine leaves it out), ``extra`` [(caption, text)].
@@ -151,6 +152,8 @@ class ViewImage:
     #: already a picture for the eye (a final render, an engine preview): shown as it is, 0 to ``white`` linear, and
     #: read as levels without a unit
     stretched: bool = False
+    #: Neutral sky at first: None follows ``camera``; False shows a camera-colour image as it is (its cast and all)
+    neutral: bool | None = None
 
     def identity(self):
         if self.key is not None:
@@ -444,8 +447,12 @@ def default_stretch(prep: Prepared, mode: str = "mtf", linked: bool = True, neut
         return sm.Stretch("linear", np.zeros(c), np.full(c, white / 2), np.full(c, white), np.ones(c), np.zeros(c),
                           True, False, False)
     if neutral is None:
-        cam = (vi or prep.vi).camera
-        neutral = bool(prep.cfa) or (cam if cam is not None else sm.looks_camera(prep.stats))
+        v = vi or prep.vi
+        if v.neutral is not None:
+            neutral = bool(v.neutral)
+        else:
+            cam = v.camera
+            neutral = bool(prep.cfa) or (cam if cam is not None else sm.looks_camera(prep.stats))
     return sm.auto_stretch(prep.stats, mode, linked, neutral)
 
 
@@ -1773,6 +1780,11 @@ class InfoBand(QFrame):
         h.addWidget(self.toggle)
         self.mode = "on"                          # on | off (no toggle, no state) | spec (◇: shown, disabled)
         self.spec_tip = ""
+        # why the engine flags the frame shown, written out (not only in a tooltip): a line under the numbers
+        self.why = QLabel("")
+        self.why.setWordWrap(True)
+        self.why.setTextFormat(Qt.PlainText)
+        self.why.hide()
 
     def set_mode(self, mode: str, tip: str = ""):
         """What Exclude / Include does here: ``on``; ``off`` (masters: neither the toggle nor the state); ``spec``
@@ -1834,12 +1846,17 @@ class InfoBand(QFrame):
             self.state.setText(_("Included"))
             self.state.setToolTip("")
             self.state.setStyleSheet(f"color: {OK}; border: 1px solid {OK}; border-radius: 9px; padding: 2px 10px;")
-        flag = info.get("flag")                  # a quality flag of the engine: amber, its reason in the tip
+        flag = info.get("flag")                  # a quality flag of the engine: red (bad) or amber, the reason below
+        col = BAD if info.get("flag_level") == "bad" else WARN
         if flag and not (excluded or reason):
             self.state.setText(str(flag))
             self.state.setToolTip(info.get("flag_reason") or "")
-            self.state.setStyleSheet(f"color: {WARN}; border: 1px solid {WARN}; border-radius: 9px; "
+            self.state.setStyleSheet(f"color: {col}; border: 1px solid {col}; border-radius: 9px; "
                                      "padding: 2px 10px;")
+        why = str(info.get("flag_reason") or "") if flag else ""
+        self.why.setText(("⚠  " + why) if why else "")
+        self.why.setStyleSheet(f"color: {col}; font-weight: 600;")
+        self.why.setVisible(bool(why))
         self.toggle.setText(_("Include") if excluded else _("Exclude"))
         if self.mode == "spec":
             self.toggle.setText(self.toggle.text() + "  ◇")
@@ -1866,6 +1883,7 @@ class FilmStrip(QWidget):
         self.current = 0
         self.thumbs: dict[int, QImage] = {}
         self.excluded: set[int] = set()
+        self.flagged: dict[int, str] = {}           # frame -> the engine's flag: "bad" (red) or "warn" (amber)
         self.offset = 0.0
         self.bar = QScrollBar(Qt.Horizontal, self)
         self.bar.valueChanged.connect(self._scrolled)
@@ -1875,6 +1893,7 @@ class FilmStrip(QWidget):
         self.n = n
         self.thumbs.clear()
         self.excluded.clear()
+        self.flagged.clear()
         self._layout_bar()
         self.update()
 
@@ -1886,6 +1905,14 @@ class FilmStrip(QWidget):
 
     def set_excluded(self, i: int, on: bool):
         (self.excluded.add if on else self.excluded.discard)(i)
+        self.update()
+
+    def set_flagged(self, i: int, level: str | None):
+        """Mark a frame the engine flags: "bad" (a red frame and corner), "warn" (amber), None (no mark)."""
+        if level in ("bad", "warn"):
+            self.flagged[i] = level
+        else:
+            self.flagged.pop(i, None)
         self.update()
 
     def set_current(self, i: int):
@@ -1963,6 +1990,18 @@ class FilmStrip(QWidget):
                 p.setRenderHint(QPainter.SmoothPixmapTransform)
                 p.drawImage(tr, qi)
             ex = i in self.excluded
+            fl = self.flagged.get(i)
+            if fl is not None:                    # flagged by the engine: a coloured frame and a corner mark
+                fc = QColor(BAD if fl == "bad" else WARN)
+                p.setPen(QPen(fc, 2))
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(cell.adjusted(1, 1, -1, -1))
+                p.setPen(Qt.NoPen)
+                p.setBrush(fc)
+                p.drawPolygon(QPolygonF([QPointF(cell.x(), cell.y()), QPointF(cell.x() + 18, cell.y()),
+                                         QPointF(cell.x(), cell.y() + 18)]))
+                p.setPen(QColor("#ffffff"))
+                p.drawText(QRectF(cell.x() + 1, cell.y(), 9, 10), Qt.AlignCenter, "!")
             if ex:
                 p.fillRect(cell, QColor(15, 17, 21, 150))
                 p.setPen(QPen(QColor(BAD), 2))
@@ -2126,6 +2165,8 @@ class ImageView(QWidget):
         ch.addWidget(label(_("Compare with"), "dim"))
         self.cmp_cb = QComboBox()
         self.cmp_cb.setMinimumWidth(150)
+        self.cmp_cb.setMaximumWidth(330)
+        self.cmp_cb.setSizeAdjustPolicy(QComboBox.AdjustToContents)     # the names of the images read whole
         self.cmp_cb.currentIndexChanged.connect(self._cmp_picked)
         ch.addWidget(self.cmp_cb)
         self.cmp_opts = QWidget()                  # shown once an image is chosen
@@ -2167,7 +2208,9 @@ class ImageView(QWidget):
         self.export_b.setVisible(export)
         self.post_b = tool(_("Send to Post"), _("Use this image in Post"), self._send_post)
         self.post_b.setVisible(post)
-        self.copy_b = tool(_("Copy view"), _("Copy what is shown to the clipboard (Ctrl+C)"), self.copy_view)
+        self.copy_b = tool(_("Copy image"), _("Copies the picture as it is shown here (its zoom, stretch and overlays) "
+                                              "to the clipboard, to paste it into a message or another program "
+                                              "(Ctrl+C)"), self.copy_view)
         self.copy_b.setVisible(copy)
         return bar
 
@@ -2235,6 +2278,7 @@ class ImageView(QWidget):
         self.band.excludeClicked.connect(self.toggle_excluded)
         row.addWidget(self.band, 1)
         v.addLayout(row)
+        v.addWidget(self.band.why)
         self.strip = FilmStrip()
         self.strip.picked.connect(self.set_index)
         self.strip.visibleChanged.connect(self._want_thumbs)
@@ -2400,10 +2444,26 @@ class ImageView(QWidget):
             self.stretchChanged.emit(self._st.copy())
 
     def auto_stretch(self):
+        """The automatic stretch again, with the Neutral sky choice the image had (after Auto-stretch off, which shows
+        the data linear and plain, the choice made before it: once, turning Auto-stretch off and on again switched a
+        stack shown with a neutral sky to its camera colours)."""
         if self._prep is not None:
             st = self._st
+            neutral = st.neutral
+            if st.mode == "linear" and not st.auto and self._neutral_before is not None:
+                neutral = self._neutral_before
             self.set_stretch(sm.auto_stretch(self._prep.stats, st.mode if st.mode != "linear" else "mtf", st.linked,
-                                             st.neutral), emit=True)
+                                             neutral), emit=True)
+
+    _neutral_before: bool | None = None
+
+    def set_neutral(self, on: bool):
+        """Neutral sky on or off (display only): the automatic stretch with or without it."""
+        if self._prep is None or self._st is None or bool(self._st.neutral) == bool(on):
+            return
+        st = self._st
+        self.set_stretch(sm.auto_stretch(self._prep.stats, st.mode if st.mode != "linear" else "mtf", st.linked,
+                                         bool(on)), emit=True)
 
     def reset_stretch(self):
         if self._prep is not None:
@@ -2425,6 +2485,7 @@ class ImageView(QWidget):
         if on:
             self.auto_stretch()
             return
+        self._neutral_before = bool(self._st.neutral) if self._st is not None else None
         stats = self._prep.stats
         c = self._prep.channels
         st = sm.Stretch("linear", np.full(c, float(stats.vmin.min())), np.full(c, 0.5 * (stats.lo + stats.hi)),
@@ -2635,7 +2696,22 @@ class ImageView(QWidget):
         if st is None:
             return default_stretch(prep, vi=vi)
         mode = st.mode if st.mode != "linear" else "mtf"
-        return default_stretch(prep, mode, st.linked if prep.channels > 1 else True, None, vi)
+        # Neutral sky is the user's choice for both sides: "before" in the camera's colours stays as it is unless the
+        # main picture is shown with a neutral sky (a mosaic and a mono picture keep their own default)
+        neutral = None
+        if prep.channels == 3 and self._prep is not None and self._prep.channels == 3 and \
+                not (vi is not None and vi.stretched):
+            neutral = bool(st.neutral) if (st.auto or st.mode != "linear") else bool(self._neutral_before)
+            if self._cmp_neutral is not None:
+                neutral = bool(self._cmp_neutral)
+        return default_stretch(prep, mode, st.linked if prep.channels > 1 else True, neutral, vi)
+
+    _cmp_neutral: bool | None = None
+
+    def set_compare_neutral(self, on: bool | None):
+        """Neutral sky for the compared image only (display only): True or False, or None to follow this one's."""
+        self._cmp_neutral = None if on is None else bool(on)
+        self._apply_same()
 
     def _apply_same(self):
         if self._cmp is not None:
@@ -2677,6 +2753,7 @@ class ImageView(QWidget):
         self.strip.set_count(len(self._frames))
         for i, f in enumerate(self._frames):
             self.strip.set_excluded(i, bool((f.info or {}).get("excluded")))
+            self.strip.set_flagged(i, (f.info or {}).get("flag_level") if (f.info or {}).get("flag") else None)
             th = self.loader.thumbs.get(f.identity())
             if th is not None:
                 self.strip.set_thumb(i, th)
@@ -2739,6 +2816,7 @@ class ImageView(QWidget):
         if 0 <= i < len(self._frames):
             self._frames[i].info = dict(info)
             self.strip.set_excluded(i, bool(info.get("excluded")))
+            self.strip.set_flagged(i, info.get("flag_level") if info.get("flag") else None)
             if i == self._index:
                 self.band.set_frame(self._frames[i], i, len(self._frames))
 
@@ -2821,7 +2899,7 @@ class ImageView(QWidget):
         if self._prep is None:
             return
         QGuiApplication.clipboard().setImage(self.grab_view())
-        self.toasted.emit(_("View copied to the clipboard"))
+        self.toasted.emit(_("Image copied to the clipboard, as shown: paste it where you want"))
 
     def visible_area(self) -> tuple[int, int, int, int]:
         x0, y0, x1, y1 = self.canvas.visible()
@@ -2845,6 +2923,17 @@ class ImageView(QWidget):
     def add_overlay(self, fn):
         self.canvas.overlays.append(fn)
         self.canvas.update()
+
+    #: the annotations the overlays draw, for Export… ((sky, show), or None): a callable the caller sets
+    annotation_source = None
+
+    def annotations(self):
+        """(sky, show) the overlays draw (the sky grid, the named objects), or None: Export… offers to burn them in."""
+        fn = self.annotation_source
+        try:
+            return fn() if callable(fn) else None
+        except RuntimeError:
+            return None
 
     # ------------------------------------------------------------ tests and scripts
     def wait(self, timeout: float = 60.0) -> bool:
@@ -2950,10 +3039,12 @@ def slug(name: str) -> str:
 
 def export_image(path: str | os.PathLike, prep: Prepared, st: sm.Stretch | None = None, fmt: str | None = None,
                  content: str = "data", area: tuple[int, int, int, int] | None = None, with_wcs: bool = True,
-                 header: dict | None = None, vi: ViewImage | None = None) -> Path:
+                 header: dict | None = None, vi: ViewImage | None = None, annotations=None) -> Path:
     """Write a prepared image. FITS: the data as they are (32-bit float), with the WCS (shifted for a crop) and a
     header. TIFF 16-bit, PNG, JPEG: ``content`` "data" (ADU as 16-bit integers, 0-1 data scaled to the full range) or
-    "view" (the stretch shown, at full precision). ``area``: (x0, y0, x1, y1) image pixels, else the whole image."""
+    "view" (the stretch shown, at full precision). ``area``: (x0, y0, x1, y1) image pixels, else the whole image.
+    ``annotations``: (sky, show) burned into the stretched view of a picture (``annotate.burn``: the sky grid, the
+    named objects); never into a FITS file nor into the linear data."""
     path = Path(path)
     fmt = fmt or format_of(path)
     if fmt not in FORMATS:
@@ -2986,6 +3077,10 @@ def export_image(path: str | os.PathLike, prep: Prepared, st: sm.Stretch | None 
         a = a[0] if a.shape[0] == 1 else a.transpose(1, 2, 0)
     if content == "view":
         unit = a
+        if annotations is not None and a.ndim == 3:
+            from .annotate import burn, shifted
+            sky, show = annotations
+            unit = burn(np.clip(np.nan_to_num(a, nan=0.0), 0.0, 1.0), shifted(sky, x0, y0), show)
     elif vi.units == "norm":
         unit = a
     else:
@@ -3114,6 +3209,26 @@ class ImageExportDialog(QDialog):
         self.c_wcs.setChecked(hasattr(self.prep.wcs, "to_header"))
         grid.addWidget(self.c_wcs, r, 1)
         r += 1
+        # the annotations the view draws (the sky grid, the named objects), burned into a picture; never into a FITS
+        self.ann = view.annotations() if callable(getattr(view, "annotations", None)) else None
+        self.c_grid = QCheckBox(_("Sky grid"))
+        self.c_names = QCheckBox(_("Object names"))
+        self.ann_row = QWidget()
+        ah = QHBoxLayout(self.ann_row)
+        ah.setContentsMargins(0, 0, 0, 0)
+        ah.addWidget(label(_("Include annotations:")))
+        ah.addWidget(self.c_grid)
+        ah.addWidget(self.c_names)
+        ah.addStretch(1)
+        if self.ann is not None:
+            show = self.ann[1]
+            self.c_grid.setChecked(bool(show.get("grid")) and bool(getattr(self.ann[0], "lines", None)))
+            self.c_names.setChecked(bool(show.get("objects")) and bool(getattr(self.ann[0], "objects", None)))
+            self.c_grid.setEnabled(bool(getattr(self.ann[0], "lines", None)))
+            self.c_names.setEnabled(bool(getattr(self.ann[0], "objects", None)))
+        self.ann_row.setVisible(self.ann is not None)
+        grid.addWidget(self.ann_row, r, 1)
+        r += 1
         grid.addWidget(label(_("File")), r, 0)
         fh = QHBoxLayout()
         self.dest = QLineEdit()
@@ -3162,6 +3277,10 @@ class ImageExportDialog(QDialog):
             self.c_data.setChecked(True)
         self.c_wcs.setEnabled(fits_ and hasattr(self.prep.wcs, "to_header"))
         self.c_wcs.setToolTip("" if fits_ else _("Only the FITS file has a header."))
+        burn = not fits_ and not self.c_data.isChecked()
+        self.ann_row.setEnabled(burn)
+        self.ann_row.setToolTip("" if burn else _("Drawn into a picture of the stretched view only: a FITS file and "
+                                                  "the linear data stay clean."))
         text = self.dest.text().strip()
         if text and Path(text).name:
             self.dest.setText(Path(text).with_suffix(FORMATS[key][1]).as_posix())
@@ -3183,10 +3302,14 @@ class ImageExportDialog(QDialog):
             self.dest.setText(Path(f).with_suffix(suf).as_posix())
 
     def options(self) -> dict:
+        show = {"grid": self.c_grid.isChecked() and self.c_grid.isEnabled(),
+                "objects": self.c_names.isChecked() and self.c_names.isEnabled()}
+        burn = self.ann is not None and self.ann_row.isEnabled() and (show["grid"] or show["objects"])
         return {"path": self.dest.text().strip(), "fmt": self.format_key(),
                 "content": "data" if self.c_data.isChecked() else "view",
                 "area": self.area if self.a_vis.isChecked() else None,
-                "with_wcs": self.c_wcs.isEnabled() and self.c_wcs.isChecked()}
+                "with_wcs": self.c_wcs.isEnabled() and self.c_wcs.isChecked(),
+                "annotations": (self.ann[0], show) if burn else None}
 
     def _go(self):
         if self.result_path is not None:
@@ -3204,7 +3327,7 @@ class ImageExportDialog(QDialog):
         def job():
             try:
                 p = export_image(o["path"], prep, st, fmt=o["fmt"], content=o["content"], area=o["area"],
-                                 with_wcs=o["with_wcs"], vi=vi)
+                                 with_wcs=o["with_wcs"], vi=vi, annotations=o["annotations"])
                 self.finished_export.emit(str(p), "")
             except Exception as e:  # noqa: BLE001 - shown in the dialog
                 try:

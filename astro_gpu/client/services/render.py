@@ -620,6 +620,8 @@ class ExportJob:
     masks: bool = False
     project_name: str = ""
     jpeg_quality: int = 93
+    #: burned into the PNG / JPEG / TIFF (never the FITS): {"grid": bool, "objects": bool}, or None
+    annotations: dict | None = None
 
 
 def _slug(name: str) -> str:
@@ -638,6 +640,32 @@ def history_of(job: ExportJob, renderer: Renderer, canvas: Canvas | None) -> dic
                                             "outdated": src.previous(lay["pid"])}
                           for lay in job.layers if lay["kind"] == "workflow" and src.available(lay["pid"])},
             "images": {lay["key"]: lay["name"] for lay in job.layers if lay["kind"] == "image"}}
+
+
+def _solution(sol):
+    """An astropy WCS from what the render worker gives (a wcs.fits path, a header or a WCS)."""
+    if sol is None or hasattr(sol, "all_world2pix"):
+        return sol
+    import warnings
+
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return WCS(fits.getheader(sol) if isinstance(sol, str | Path) else sol, naxis=2)
+
+
+def canvas_annotations(sol, canvas, show: dict):
+    """The sky grid and the named objects of Post's canvas (``annotate.field_annotations`` on the solution of the
+    bottom workflow's grid, moved to the canvas's origin)."""
+    from ..annotate import crop_wcs, field_annotations
+    w = crop_wcs(_solution(sol), canvas.origin)
+    return field_annotations(w, canvas.W, canvas.H, grid=bool(show.get("grid")), names=bool(show.get("objects")))
+
+
+def _burned(rgb: np.ndarray, ann, show: dict) -> np.ndarray:
+    from ..annotate import burn
+    return np.ascontiguousarray(burn(np.clip(rgb, 0.0, 1.0), ann, show), dtype=np.float32)
 
 
 def run_export(renderer: Renderer, job: ExportJob, progress, stop=None,
@@ -676,10 +704,24 @@ def run_export(renderer: Renderer, job: ExportJob, progress, stop=None,
         ga, gb = renderer.source.grid(ref_pid), renderer.source.grid(source_id(bottom))
         if (ga.W, ga.H) != (gb.W, gb.H):
             ref_pid = None
-    wcs = renderer.wcs_of(ref_pid) if job.wcs and ref_pid is not None and getattr(renderer, "wcs_of", None) else None
+    sol = renderer.wcs_of(ref_pid) if ref_pid is not None and getattr(renderer, "wcs_of", None) else None
+    wcs = sol if job.wcs else None
     meta = {"wcs": wcs, "origin": canvas.origin, "wf": ref_pid if job.wcs else None,
             "history": history_of(job, renderer, canvas) if job.history else None}
-    files += write(np.ascontiguousarray(np.moveaxis(comp.rgb, -1, 0)), folder, ExportOptions(**opts), meta)
+    rgb = np.ascontiguousarray(np.moveaxis(comp.rgb, -1, 0))
+    show = dict(job.annotations or {})
+    pictures = [f for f in formats if f != "fits32f"]
+    if (show.get("grid") or show.get("objects")) and pictures and sol is not None:
+        # the annotations (sky grid, named objects) burned into the pictures; the FITS file stays clean, with its WCS
+        step("annotations")
+        ann = canvas_annotations(sol, canvas, show)
+        files += write(_burned(rgb, ann, show), folder, ExportOptions(**dict(opts, formats=pictures)), meta)
+        rest = [f for f in formats if f not in pictures]
+        if rest:
+            files += write(rgb, folder, ExportOptions(**dict(opts, formats=rest)), meta)
+    else:
+        files += write(rgb, folder, ExportOptions(**opts), meta)
+    del rgb
     done += 1
     del comp
     if job.each_layer:
@@ -840,8 +882,10 @@ class RenderWorker(QThread):
 
     def _wcs_of(self, pid: int):
         from ... import api
-        try:
-            f = Path(api.stage_outputs(self.project, pid, "astrometry").dir) / "wcs.fits"
+        try:                                         # an Outdated workflow's layer shows its previous result: its solution
+            out = api.stage_outputs(self.project, pid, "astrometry") or \
+                api.stage_outputs(self.project, pid, "astrometry", "previous")
+            f = Path(out.dir) / "wcs.fits"
         except (AttributeError, OSError, ValueError, KeyError):
             return None
         return f if f.is_file() else None
