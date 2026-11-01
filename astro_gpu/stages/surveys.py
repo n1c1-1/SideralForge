@@ -9,6 +9,7 @@ import urllib.request
 
 import numpy as np
 
+from ..core import online, skycache
 from ..core.params import ADVANCED, P, StageParams
 from ..core.stage import Context, Stage, StageError
 
@@ -79,15 +80,55 @@ class Surveys(Stage):
 
 
 def fetch_survey(name: str, wd, W: int, H: int, scale: float, log=print) -> np.ndarray:
-    """The survey on the stack's grid: from the CDS cut-out service, else from the survey's own HiPS server."""
+    """The survey on the stack's grid: from the CDS cut-out service, else from the survey's own HiPS server. Both are
+    cached under ASTRO_GPU_HOME (the cut-out by its exact grid, the tiles one by one): a re-run works offline."""
     try:
         return fetch_reprojected(SURVEYS[name][0], wd, W, H, scale)
     except Exception as e:  # noqa: BLE001 - CDS unreachable: the survey's own server when it has one
         if name not in HIPS_SERVERS:
             raise
-        log(f"the CDS cut-out service does not answer ({str(e)[:120]}): tiles read from {HIPS_SERVERS[name]}",
-            "warning")
+        why = e.why if isinstance(e, online.ServiceDown) else f"does not answer ({str(e)[:120]})"
+        log(f"the CDS cut-out service {why}: tiles read from {HIPS_SERVERS[name]}", "warning")
         return fetch_hips_tiles(HIPS_SERVERS[name], wd, W, H, scale)
+
+
+def _get(url: str, timeout: float = 60.0) -> bytes:
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return r.read()
+
+
+def _cached_url(url: str, sub: str, service: str, budget: float) -> bytes | None:
+    """The bytes at ``url``, from the cache (``cache/<sub>/``; astropy's download cache, where earlier versions put
+    the tiles, is read too) else downloaded and cached; None when the server says the file does not exist (a tile
+    outside the survey, remembered as such)."""
+    import hashlib
+    rel = f"{sub}/{hashlib.sha1(url.encode()).hexdigest()}"
+    p = skycache.find(rel + ".fits")
+    if p is not None:
+        return p.read_bytes()
+    if skycache.find(rel + ".absent") is not None:
+        return None
+    try:
+        from astropy.utils.data import download_file, is_url_in_cache
+        if is_url_in_cache(url):
+            return open(download_file(url, cache=True), "rb").read()
+    except Exception:  # noqa: BLE001 - astropy's cache unreadable: download
+        pass
+    try:
+        data = online.call(service, lambda: _get(url), budget)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            dst = skycache.cache_dir() / (rel + ".absent")
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(b"")
+            return None
+        raise
+    dst = skycache.cache_dir() / (rel + ".fits")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(dst)
+    return data
 
 
 def fetch_hips_tiles(url: str, wd, W: int, H: int, scale: float) -> np.ndarray:
@@ -98,7 +139,6 @@ def fetch_hips_tiles(url: str, wd, W: int, H: int, scale: float) -> np.ndarray:
     import cv2
     from astropy.coordinates import ICRS
     from astropy.io import fits
-    from astropy.utils.data import download_file
     from astropy_healpix import HEALPix
     props = _hips_properties(url)
     T, deepest = int(props["hips_tile_width"]), int(props["hips_order"])
@@ -113,10 +153,10 @@ def fetch_hips_tiles(url: str, wd, W: int, H: int, scale: float) -> np.ndarray:
     out = np.full(ip.shape, np.nan, np.float32)
     for t in np.unique(tile):
         u = f"{url}/Norder{level}/Dir{(t // 10000) * 10000}/Npix{t}.fits"
-        try:
-            d = fits.getdata(download_file(u, cache=True)).astype(np.float32)
-        except urllib.error.HTTPError:                       # no tile there: outside the survey
+        raw = _cached_url(u, "hips_tiles", "hips", 120.0)
+        if raw is None:                                      # no tile there: outside the survey
             continue
+        d = fits.getdata(io.BytesIO(raw)).astype(np.float32)
         m = tile == t
         out[m] = d[T - 1 - x[m], y[m]]
     small = out.reshape(yy.shape)
@@ -124,8 +164,10 @@ def fetch_hips_tiles(url: str, wd, W: int, H: int, scale: float) -> np.ndarray:
 
 
 def _hips_properties(url: str) -> dict:
-    with urllib.request.urlopen(f"{url}/properties", timeout=60) as r:
-        lines = r.read().decode("utf-8", "replace").splitlines()
+    raw = _cached_url(f"{url}/properties", "hips_tiles", "hips", 60.0)
+    if raw is None:
+        raise StageError(f"{url} has no HiPS properties")
+    lines = raw.decode("utf-8", "replace").splitlines()
     return {k.strip(): v.strip() for k, _, v in (ln.partition("=") for ln in lines if "=" in ln and not
                                                   ln.lstrip().startswith("#"))}
 
@@ -154,8 +196,9 @@ def fetch_reprojected(hips: str, wd, W: int, H: int, scale: float) -> np.ndarray
            "CDELT1": -cs, "CDELT2": cs}
     url = ("https://alasky.cds.unistra.fr/hips-image-services/hips2fits?hips=" + urllib.parse.quote(hips, safe="")
            + f"&width={n}&height={n}&wcs=" + urllib.parse.quote(json.dumps(hdr)) + "&format=fits")
-    with urllib.request.urlopen(url, timeout=900) as r:
-        data = r.read()
+    data = _cached_url(url, "hips2fits", "hips2fits", 300.0)
+    if data is None:
+        raise StageError("the CDS cut-out service has no image for this field")
     img = fits.open(io.BytesIO(data))[0].data.astype(np.float32)
     out, foot = reproject_interp((img, WCS(hdr)), wd, shape_out=(H, W), order="bilinear")
     return np.where(foot > 0, out, np.nan).astype(np.float32)

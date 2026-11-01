@@ -2,9 +2,10 @@
 does not answer.
 
 The same data under the same (VizieR) column names whatever the source: Gaia DR3 stars in a cone, the sampled XP
-spectra of Gaia DR3 stars and the Hipparcos stars. VizieR is asked first; after one failure the rest of the session
-goes to the other services (CDS was unreachable for days on 2026-10-28; on 2026-10-30 the ESA archive answered its
-asynchronous queries with errors 500 or in minutes, while GAVO gave 10 000 stars in 6 s).
+spectra of Gaia DR3 stars and the Hipparcos stars. VizieR is asked first; a service that does not answer is set aside
+for 10 minutes and the next one is asked at once (``core/online.py``: short timeouts, a budget per query, one line in
+the log per fallback). CDS was unreachable for days from 2026-10-28; on 2026-10-30 the ESA archive answered its
+asynchronous queries with errors 500 or in minutes, while GAVO gave 10 000 stars in 6 s.
 
 XP spectra: VizieR and the ESA archive give 343 points, 336-1020 nm every 2 nm; GAVO gives the same spectra on 41
 points, 400-800 nm every 10 nm (equal to the ESA values within 0.3 %). Spectra of both kinds are brought to the
@@ -12,12 +13,23 @@ common 400-800 nm grid (``common_grid``).
 """
 from __future__ import annotations
 
-import threading
-
 import numpy as np
 
-_VIZIER_DOWN = threading.Event()
-_GAVO_SLOTS = threading.Semaphore(2)      # GAVO dropped the connection with the catalogue stage's 6 parallel queries
+from . import online
+
+#: seconds one query may take before its service is set aside: a Gaia cone (a sky tile, up to ~300 000 stars in the
+#: Milky Way, GAVO's asynchronous jobs included), a Hipparcos / XP request, the last resort (nothing comes after it)
+CONE_BUDGET = 300.0
+SMALL_BUDGET = 60.0
+LAST_BUDGET = 600.0
+
+
+def _vizier(columns, row_limit=-1, host: str = "vizier", **kw):
+    from astroquery.vizier import Vizier
+    v = Vizier(columns=columns, row_limit=row_limit, timeout=(online.CONNECT_S, online.READ_S), **kw)
+    v.VIZIER_SERVER = online.VIZIER_HOSTS[host]
+    return v
+
 
 # VizieR I/355/gaiadr3 column -> gaiadr3.gaia_source column (positions are the same epoch 2016.0 ICRS ones)
 GAIA_COLS = {"Source": "source_id", "RA_ICRS": "ra", "DE_ICRS": "dec", "Gmag": "phot_g_mean_mag",
@@ -36,7 +48,7 @@ def _gavo(query: str):
     """GAVO TAP: a synchronous query, or an asynchronous job when it takes more than the ~20 s the service allows a
     synchronous one (dense Milky Way fields)."""
     import pyvo
-    svc = pyvo.dal.TAPService(GAVO_TAP)
+    svc = pyvo.dal.TAPService(GAVO_TAP, session=online.requests_session((online.CONNECT_S, 120.0)))
     try:
         return svc.run_sync(query, maxrec=50_000_000).to_table()
     except pyvo.dal.DALQueryError as e:
@@ -73,33 +85,36 @@ def _esa(query: str):
     return Gaia.launch_job_async(query).get_results()
 
 
-def gaia_cone(ra: float, dec: float, radius: float, cols: list[str], gfilter: str, timeout: int = 900) -> dict:
+def gaia_cone(ra: float, dec: float, radius: float, cols: list[str], gfilter: str, say=None) -> dict:
     """Gaia DR3 stars within ``radius`` deg of (ra, dec) whose G magnitude passes ``gfilter`` (VizieR syntax):
-    {VizieR column: array}."""
-    if not _VIZIER_DOWN.is_set():
-        try:
-            import astropy.units as u
-            from astropy.coordinates import SkyCoord
-            from astroquery.vizier import Vizier
-            v = Vizier(columns=cols, column_filters={"Gmag": gfilter}, row_limit=-1, timeout=timeout)
-            r = v.query_region(SkyCoord(ra, dec, unit="deg"), radius=radius * u.deg, catalog="I/355/gaiadr3")
-            return {k: (_column(r[0], k) if len(r) else np.zeros(0, np.int64 if k == "Source" else np.float64))
-                    for k in cols}
-        except Exception:  # noqa: BLE001 - VizieR unreachable: the ESA archive
-            _VIZIER_DOWN.set()
-    where = (f"WHERE 1=CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', {ra:.8f}, {dec:.8f}, {radius:.6f})) AND "
-             f"{_range_sql('phot_g_mean_mag', gfilter)}")
-    try:                    # GAVO's gaia.dr3lite: the same columns but has_xp_sampled, which follows from G
+    {VizieR column: array}. VizieR, else GAVO, else the ESA archive; raises ``online.ServiceDown`` when none
+    answers. ``say``: where the fallbacks are told (``online.sayer``)."""
+
+    def vizier():
+        import astropy.units as u
+        from astropy.coordinates import SkyCoord
+        v = _vizier(cols, column_filters={"Gmag": gfilter})
+        r = v.query_region(SkyCoord(ra, dec, unit="deg"), radius=radius * u.deg, catalog="I/355/gaiadr3",
+                           cache=False)
+        return {k: (_column(r[0], k) if len(r) else np.zeros(0, np.int64 if k == "Source" else np.float64))
+                for k in cols}
+
+    def gavo():             # GAVO's gaia.dr3lite: the same columns but has_xp_sampled, which follows from G
         need = [k for k in cols if k != "XPsamp"] + (["Gmag"] if "XPsamp" in cols and "Gmag" not in cols else [])
         t = _gavo_cone(need, ra, dec, radius, gfilter)
         out = {k: _column(t, GAIA_COLS[k]) for k in need}
         if "XPsamp" in cols:
             out["XPsamp"] = (out["Gmag"] < XP_SAMPLED_G).astype(np.float64)
         return {k: out[k] for k in cols}
-    except Exception:  # noqa: BLE001 - GAVO unreachable: the ESA archive
-        pass
-    t = _esa(f"SELECT {', '.join(GAIA_COLS[k] for k in cols)} FROM gaiadr3.gaia_source {where}")
-    return {k: _column(t, GAIA_COLS[k]) for k in cols}
+
+    def esa():
+        where = (f"WHERE 1=CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', {ra:.8f}, {dec:.8f}, {radius:.6f})) AND "
+                 f"{_range_sql('phot_g_mean_mag', gfilter)}")
+        t = _esa(f"SELECT {', '.join(GAIA_COLS[k] for k in cols)} FROM gaiadr3.gaia_source {where}")
+        return {k: _column(t, GAIA_COLS[k]) for k in cols}
+
+    return online.first_answer([("vizier", vizier), ("gavo", gavo), ("esa", esa)], "Gaia stars", say,
+                               budget=CONE_BUDGET)
 
 
 def _gavo_cone(need: list[str], ra: float, dec: float, radius: float, gfilter: str, depth: int = 0):
@@ -107,12 +122,12 @@ def _gavo_cone(need: list[str], ra: float, dec: float, radius: float, gfilter: s
     half its radius (one at the centre, six around at 0.866 of the radius: the smallest cover), twice at most, and the
     stars found twice are kept once."""
     sel = ", ".join(GAIA_COLS[k] for k in dict.fromkeys(need + ["Source", "RA_ICRS", "DE_ICRS"]))
-    try:
-        with _GAVO_SLOTS:
-            return _gavo(f"SELECT {sel} FROM gaia.dr3lite WHERE 1=CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', "
-                         f"{ra:.8f}, {dec:.8f}, {radius:.6f})) AND {_range_sql('phot_g_mean_mag', gfilter)}")
-    except Exception:  # noqa: BLE001
-        if depth >= 2:
+    try:                    # (two GAVO queries at most at once: online.SLOTS, held by the caller's online.call)
+        return _gavo(f"SELECT {sel} FROM gaia.dr3lite WHERE 1=CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', "
+                     f"{ra:.8f}, {dec:.8f}, {radius:.6f})) AND {_range_sql('phot_g_mean_mag', gfilter)}")
+    except Exception as e:  # noqa: BLE001
+        # unreachable: not 7 x 7 smaller queries that all wait for a connection
+        if depth >= 2 or online.unreachable(e):
             raise
     from astropy.table import unique, vstack
     d = 0.866 * radius
@@ -128,29 +143,41 @@ def _gavo_cone(need: list[str], ra: float, dec: float, radius: float, gfilter: s
     return t[sep <= radius]
 
 
-def hipparcos_cone(ra: float, dec: float, radius: float, cols: list[str], vmax: float) -> dict:
-    """Hipparcos stars brighter than V = vmax within ``radius`` deg: {VizieR column: array}."""
-    if not _VIZIER_DOWN.is_set():
-        try:
-            import astropy.units as u
-            from astropy.coordinates import SkyCoord
-            from astroquery.vizier import Vizier
-            v = Vizier(columns=cols, column_filters={"Vmag": f"<{vmax}"}, row_limit=-1, timeout=300)
-            r = v.query_region(SkyCoord(ra, dec, unit="deg"), radius=radius * u.deg, catalog="I/239/hip_main")
+def hipparcos_all(cols: list[str], vmax: float, say=None) -> dict:
+    """Every Hipparcos star brighter than V = vmax on the whole sky (V < 9: about 22 000 stars): {VizieR column:
+    array}. VizieR, its mirror at Harvard, else the ESA archive."""
+
+    def vizier(host):
+        def q():
+            v = _vizier(cols, host=host, column_filters={"Vmag": f"<{vmax}"})
+            r = v.query_constraints(catalog="I/239/hip_main", cache=False)
             return {k: (_column(r[0], k) if len(r) else np.zeros(0)) for k in cols}
-        except Exception:  # noqa: BLE001
-            _VIZIER_DOWN.set()
-    sel = ", ".join(HIP_COLS[k] for k in cols)
-    t = _esa(f"SELECT {sel} FROM public.hipparcos WHERE 1=CONTAINS(POINT('ICRS', ra, de), "
-             f"CIRCLE('ICRS', {ra:.8f}, {dec:.8f}, {radius:.6f})) AND vmag < {vmax}")
-    return {k: _column(t, HIP_COLS[k]) for k in cols}
+        return q
+
+    def esa():
+        t = _esa(f"SELECT {', '.join(HIP_COLS[k] for k in cols)} FROM public.hipparcos WHERE vmag < {vmax}")
+        return {k: _column(t, HIP_COLS[k]) for k in cols}
+
+    out = online.first_answer([("vizier", vizier("vizier")), ("vizier_cfa", vizier("vizier_cfa")), ("esa", esa)],
+                              "the Hipparcos stars", say, budget=SMALL_BUDGET * 3)
+    if "HIP" in out:
+        out["HIP"] = np.asarray(out["HIP"], np.float64)
+    return out
+
+
+def hipparcos_cone(ra: float, dec: float, radius: float, cols: list[str], vmax: float, say=None) -> dict:
+    """Hipparcos stars brighter than V = vmax within ``radius`` deg: {VizieR column: array} (from the whole-sky list,
+    cached)."""
+    from .skycache import _sep, hipparcos
+    t = hipparcos(list(dict.fromkeys(list(cols) + ["RAICRS", "DEICRS"])), vmax, log=say)
+    m = _sep(ra, dec, t["RAICRS"], t["DEICRS"]) <= radius
+    return {k: t[k][m] for k in cols}
 
 
 def xp_spectrum_vizier(sid: int):
     """(wavelength nm, flux) of one star from VizieR, None when it has none; raises when VizieR fails."""
-    from astroquery.vizier import Vizier
-    v = Vizier(columns=["Source", "lambda", "Flux"], row_limit=-1, timeout=120)
-    rr = v.query_constraints(catalog="I/355/xpsample", Source=f"={sid}")
+    v = _vizier(["Source", "lambda", "Flux"])
+    rr = v.query_constraints(catalog="I/355/xpsample", Source=f"={sid}", cache=False)
     if len(rr) and len(rr[0]):
         lam = np.asarray(rr[0]["lambda"], float)
         o = np.argsort(lam)
@@ -200,8 +227,8 @@ def xp_spectra_esa(sids: list[int], batch: int = 500) -> dict[int, tuple[np.ndar
 
 
 def vizier_down() -> bool:
-    return _VIZIER_DOWN.is_set()
+    return online.is_down("vizier")
 
 
-def mark_vizier_down() -> None:
-    _VIZIER_DOWN.set()
+def mark_vizier_down(why: str = "does not answer") -> None:
+    online.mark_down("vizier", why)

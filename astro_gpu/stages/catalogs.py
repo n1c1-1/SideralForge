@@ -2,18 +2,21 @@
 from __future__ import annotations
 
 import hashlib
-import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 
+from ..core import skycache
 from ..core.imgutil import safe_world2pix
 from ..core.params import ADVANCED, P, StageParams
 from ..core.stage import Context, Stage, StageError
 
-CACHE = Path.home() / ".astro_gpu" / "cache"
+
+def _cache() -> Path:
+    """Where new downloads go: $ASTRO_GPU_HOME/cache (earlier versions' ~/.astro_gpu/cache is read too)."""
+    return skycache.cache_dir()
 
 
 class CatalogsParams(StageParams):
@@ -57,11 +60,12 @@ class Catalogs(Stage):
         scale = float(ctx.metric_of("astrometry", "scale_arcsec"))
         epoch = _epoch(ctx.metric_of("inventory", "first_time"))
         centres, radius = _cells(w, W, H, scale, p.cell_deg)
+        fine = _cells(w, W, H, scale, p.cell_deg / 4)
         ctx.log(f"{len(centres)} sky cells of {p.cell_deg} deg, epoch {epoch:.2f}")
 
         # ---------------- deep catalogue (measured stars)
         cols = ["Source", "RA_ICRS", "DE_ICRS", "Gmag", "BPmag", "RPmag", "pmRA", "pmDE", "XPsamp"]
-        c = _query_cells(ctx, centres, radius, cols, f"<{p.g_deep}", "deep", 0.0, 0.5)
+        c = _query_cells(ctx, centres, radius, cols, f"<{p.g_deep}", "deep", 0.0, 0.5, fine)
         dt = epoch - 2016.0
         dec_e = c["DE_ICRS"] + np.nan_to_num(c["pmDE"]) / 3.6e6 * dt
         ra_e = c["RA_ICRS"] + np.nan_to_num(c["pmRA"]) / 3.6e6 * dt / np.cos(np.radians(c["DE_ICRS"]))
@@ -69,9 +73,11 @@ class Catalogs(Stage):
         inside = (x > -30) & (x < W + 30) & (y > -30) & (y < H + 30) & np.isfinite(c["Gmag"])
         deep = dict(source=c["Source"][inside], ra=ra_e[inside], dec=dec_e[inside], x=x[inside], y=y[inside],
                     g=c["Gmag"][inside], bp=c["BPmag"][inside], rp=c["RPmag"][inside], xp=c["XPsamp"][inside])
+        pos16 = np.c_[c["RA_ICRS"][inside], c["DE_ICRS"][inside]]     # Gaia's own epoch: Siril's XP extract is there
         add = _bright_missing(ctx, w, W, H, scale, epoch, deep)
         if add is not None:
             deep = {k: np.concatenate([deep[k], add[k].astype(deep[k].dtype)]) for k in deep}
+            pos16 = np.r_[pos16, np.full((len(add["ra"]), 2), np.nan)]
         np.savez(ctx.out("gaia_deep.npz"), **deep)
         ctx.metric("stars_deep", int(inside.sum()))
         ctx.log(f"{inside.sum()} Gaia stars G < {p.g_deep} in the field")
@@ -81,7 +87,7 @@ class Catalogs(Stage):
         # ---------------- faint catalogue (modelled stars)
         if p.g_faint > p.g_deep:
             f = _query_cells(ctx, centres, radius, ["RA_ICRS", "DE_ICRS", "Gmag"], f"{p.g_deep}..{p.g_faint}",
-                             "faint", 0.5, 0.85)
+                             "faint", 0.5, 0.85, fine)
             fx, fy = safe_world2pix(w, f["RA_ICRS"], f["DE_ICRS"], W, H)
             fin = (fx > -30) & (fx < W + 30) & (fy > -30) & (fy < H + 30) & np.isfinite(f["Gmag"])
             fx, fy, fg = fx[fin], fy[fin], f["Gmag"][fin]
@@ -102,9 +108,11 @@ class Catalogs(Stage):
             d = {k: z[k] for k in z.files}
         sel = _isolated_xp(d, p, W, H, scale)
         ctx.log(f"{len(sel)} isolated stars with an XP spectrum selected for the colour calibration")
-        rows = _xp_spectra(ctx, d["source"][sel].astype(np.int64), 0.85, 1.0)
-        if len(rows) < 50:
-            raise StageError(f"only {len(rows)} XP spectra available: the colour calibration needs at least 50")
+        rows = _xp_spectra(ctx, d["source"][sel].astype(np.int64), 0.85, 1.0, pos16[sel], d["g"][sel])
+        n_ok = sum(r is not None for r in rows)
+        if n_ok < 50:
+            raise StageError(f"only {n_ok} XP spectra available: the colour calibration needs at least 50 (connect to "
+                             "the internet once for this field, or install Siril's spectrophotometric catalogue)")
         keep = np.array([i for i, r in zip(sel, rows) if r is not None])
         lam = next(r for r in rows if r is not None)[0]
         flux = np.stack([r[1] for r in rows if r is not None])
@@ -136,30 +144,40 @@ def _cells(w, W, H, scale, cell_deg):
     return np.c_[sky.ra.deg, sky.dec.deg], step * np.sqrt(2) / 2 * 1.05 + 0.01
 
 
-def _query_cells(ctx, centres, radius, cols, gfilter, label, p0, p1):
-    from ..core.gaia_archive import gaia_cone
+def _cone_key(cols, gfilter, c, radius) -> str:
+    """The cache key of one cell's cone in versions before the sky tiles (their files are still read)."""
+    return hashlib.sha1(f"gaiadr3|{','.join(cols)}|{gfilter}|{c[0]:.5f}|{c[1]:.5f}|{radius:.4f}".encode()).hexdigest()
 
-    def one(c):
-        key = hashlib.sha1(f"gaiadr3|{','.join(cols)}|{gfilter}|{c[0]:.5f}|{c[1]:.5f}|{radius:.4f}".encode()).hexdigest()
-        cp = CACHE / "gaia" / f"{key}.npz"
-        if cp.exists():
-            return dict(np.load(cp))
-        for attempt in range(5):
-            try:
-                out = gaia_cone(c[0], c[1], radius, cols, gfilter)
-                cp.parent.mkdir(parents=True, exist_ok=True)
-                np.savez(cp, **out)
-                return out
-            except Exception as e:  # noqa: BLE001 - network errors: retry
-                err = e
-                time.sleep(3 * (attempt + 1))
-        raise StageError(f"Gaia archive query failed ({err}); check the internet connection and retry")
 
+def _query_cells(ctx, centres, radius, cols, gfilter, label, p0, p1, fine=None):
+    """Every Gaia star of the cells' cones. A cell an earlier version downloaded with exactly this cone is read from its
+    file (a re-run of the same solution needs no network, same stars); the others come from the sky tiles (cached, else
+    downloaded: ``core/skycache.py``) that the ``fine`` cones near them touch: the same cover of the frame with cells
+    4 times smaller, which hugs the frame (a quarter fewer tiles to download than the 1-degree cones)."""
+    files = [skycache.find(f"gaia/{_cone_key(cols, gfilter, c, radius)}.npz") for c in centres]
     parts = []
-    with ThreadPoolExecutor(6) as ex:
-        for i, r in enumerate(ex.map(one, centres)):
-            parts.append(r)
-            ctx.progress(p0 + (p1 - p0) * (i + 1) / len(centres), f"Gaia {label}: cell {i + 1}/{len(centres)}")
+    for f in files:
+        if f is not None:
+            with np.load(f) as z:
+                parts.append({k: z[k] for k in cols})
+    if parts:
+        ctx.log(f"Gaia {label}: {len(parts)} of the {len(centres)} cells read from the cache of an earlier version")
+    missing = np.array([c for c, f in zip(centres, files) if f is None]).reshape(-1, 2)
+    if len(missing):
+        fc, fr = fine if fine is not None else (centres, radius)
+        fc = np.asarray(fc, np.float64).reshape(-1, 2)
+        # the fine cones within reach of a missing cell: they cover all of it (a point of the cell lies within the
+        # cell's radius of its centre, and within the fine radius of a fine centre)
+        near = skycache.in_cones(fc[:, 0], fc[:, 1], [(float(c[0]), float(c[1]), float(radius + fr)) for c in missing])
+        cones = [(float(c[0]), float(c[1]), float(fr)) for c in fc[near]]
+
+        def prog(f, msg):
+            ctx.progress(p0 + (p1 - p0) * f, msg)
+        try:
+            parts.append(skycache.gaia_stars(cones, cols, gfilter, log=ctx.log, progress=prog, label=f"Gaia {label}"))
+        except skycache.SkyUnavailable as e:
+            raise StageError(f"{e}: connect to the internet once for this field, then it works offline") from e
+    ctx.progress(p1, f"Gaia {label}: {len(centres)} cells")
     c = {k: np.concatenate([q[k] for q in parts if len(q[k])]) if any(len(q[k]) for q in parts) else np.zeros(0)
          for k in cols}
     # duplicates from overlapping cones: exact position (Gaia ids must stay int64: as floats they collide)
@@ -176,27 +194,22 @@ def _bright_missing(ctx, w, W, H, scale, epoch, deep, vmax=9.0):
     photometric transformation). Returns the entries to append to the deep catalogue, or None."""
     from scipy.spatial import cKDTree
 
+    from ..core import online
     from ..core.gaia_archive import hipparcos_cone
     centre = w.pixel_to_world(W / 2, H / 2)
     radius = 0.5 * np.hypot(W, H) * scale / 3600 * 1.05
     cols = ["HIP", "RAICRS", "DEICRS", "Vmag", "B-V", "pmRA", "pmDE"]
     key = hashlib.sha1(f"hip|{centre.ra.deg:.4f}|{centre.dec.deg:.4f}|{radius:.3f}|{vmax}".encode()).hexdigest()
-    cp = CACHE / "hipparcos" / f"{key}.npz"
-    if cp.exists():
-        t = dict(np.load(cp))
-    else:
-        t = None
-        for attempt in range(4):
-            try:
-                t = hipparcos_cone(centre.ra.deg, centre.dec.deg, radius, cols, vmax)
-                t["HIP"] = np.asarray(t["HIP"], np.float64)
-                cp.parent.mkdir(parents=True, exist_ok=True)
-                np.savez(cp, **t)
-                break
-            except Exception:  # noqa: BLE001 - network errors: retry, then go on without the supplement
-                time.sleep(3 * (attempt + 1))
-        if t is None:
-            ctx.log("Hipparcos query failed: bright stars missing from Gaia are not added", "warning")
+    cp = skycache.find(f"hipparcos/{key}.npz")              # this very cone, downloaded by an earlier version
+    if cp is not None:
+        with np.load(cp) as z:
+            t = {k: z[k] for k in z.files}
+    else:                                                    # else the whole-sky list (cached once)
+        try:
+            t = hipparcos_cone(centre.ra.deg, centre.dec.deg, radius, cols, vmax, say=online.sayer(ctx.log))
+        except Exception as e:  # noqa: BLE001 - no service answers: go on without the supplement
+            ctx.log(f"Hipparcos stars unavailable ({str(e)[:150]}): bright stars missing from Gaia are not added",
+                    "warning")
             return None
     if not len(t["HIP"]):
         return None
@@ -258,57 +271,77 @@ def _isolated_xp(d, p, W, H, scale):
     return keep[np.argsort(g[keep])][: p.xp_max]
 
 
-def _xp_spectra(ctx, sources, p0, p1):
+def _xp_spectra(ctx, sources, p0, p1, pos16=None, gmag=None):
+    """XP spectra of the stars, in this order: the cache (by Gaia id; earlier versions' cache read too), Siril's
+    spectrophotometric extract when installed (by position at epoch 2016.0 and G: it has no ids), VizieR (one star a
+    query), GAVO, the ESA archive (by batches). Downloads are cached by id; Siril's spectra are not copied."""
     from ..core import gaia_archive as ga
+    from ..core import online, sirilcat
+    say = online.sayer(ctx.log)
+    have = skycache.listing("xp")
 
     def cached(sid):
-        cp = CACHE / "xp" / f"{sid}.npy"
-        if cp.exists():
+        cp = have.get(f"{sid}.npy")
+        if cp is not None:
             a = np.load(cp)
             return True, ((a[0], a[1]) if a.size else None)
         return False, None
 
     def store(sid, out):
-        cp = CACHE / "xp" / f"{sid}.npy"
-        cp.parent.mkdir(parents=True, exist_ok=True)
-        np.save(cp, np.stack(out) if out is not None else np.zeros(0))
-
-    def fetch(sid):
-        hit, out = cached(sid)
-        if hit or ga.vizier_down():
-            return out
-        for _ in range(3):
-            try:
-                out = ga.xp_spectrum_vizier(sid)
-                store(sid, out)
-                return out
-            except Exception:  # noqa: BLE001
-                time.sleep(2)
-        ga.mark_vizier_down()
-        return None
+        skycache.save_npy(_cache() / "xp" / f"{sid}.npy", np.stack(out) if out is not None else np.zeros(0))
 
     ids = [int(s) for s in sources]
-    rows = []
-    with ThreadPoolExecutor(10) as ex:
-        for i, r in enumerate(ex.map(fetch, ids)):
-            rows.append(r)
-            ctx.progress(p0 + (p1 - p0) * (i + 1) / len(sources), f"XP spectra {i + 1}/{len(sources)}")
-    if ga.vizier_down():                    # the spectra VizieR did not give: from GAVO, else the ESA archive
-        todo = [k for k, sid in enumerate(ids) if rows[k] is None and not cached(sid)[0]]
-        for name, get in (("GAVO (Heidelberg)", ga.xp_spectra_gavo), ("the ESA Gaia archive", ga.xp_spectra_esa)):
-            if not todo:
-                break
-            ctx.log(f"VizieR does not answer: {len(todo)} XP spectra from {name}")
-            try:
-                got = get([ids[k] for k in todo])
-            except Exception as e:  # noqa: BLE001 - this service fails too: the next one
-                ctx.log(f"{name} failed: {str(e)[:200]}", "warning")
-                continue
-            for k in todo:
-                if ids[k] in got:
-                    rows[k] = got[ids[k]]
-                    store(ids[k], rows[k])
-            todo = [k for k in todo if rows[k] is None]
+    rows: list = [None] * len(ids)
+    known = [False] * len(ids)
+    for k, sid in enumerate(ids):
+        known[k], rows[k] = cached(sid)
+    todo = [k for k in range(len(ids)) if not known[k]]
+    if todo and pos16 is not None and sirilcat.locate()["xp"]:
+        sub = np.asarray(todo)
+        got = sirilcat.xp_spectra(pos16[sub, 0], pos16[sub, 1], np.asarray(gmag)[sub], np.asarray(ids)[sub])
+        n = 0
+        for k, r in zip(todo, got):
+            if r is not None:
+                rows[k], known[k] = r, True
+                n += 1
+        ctx.log(f"{n} of {len(todo)} XP spectra read from Siril's local Gaia extract")
+        todo = [k for k in todo if not known[k]]
+    ctx.progress(p0 + 0.1 * (p1 - p0), f"XP spectra: {len(ids) - len(todo)}/{len(ids)} local")
+
+    def fetch(k):
+        if online.is_down("vizier"):
+            return
+        try:
+            rows[k] = online.call("vizier", lambda: ga.xp_spectrum_vizier(ids[k]), ga.SMALL_BUDGET)
+            known[k] = True
+            store(ids[k], rows[k])
+        except Exception as e:  # noqa: BLE001 - the batch services below take over
+            if isinstance(e, online.ServiceDown):
+                say(f"{online.label('vizier')} {e.why}: XP spectra from {online.label('gavo')}")
+    if todo:
+        done = [0]
+        with ThreadPoolExecutor(10) as ex:
+            for _ in ex.map(fetch, todo):
+                done[0] += 1
+                ctx.progress(p0 + (p1 - p0) * (0.1 + 0.9 * done[0] / len(todo)),
+                             f"XP spectra {len(ids) - len(todo) + done[0]}/{len(ids)}")
+        todo = [k for k in todo if not known[k]]
+    # the spectra VizieR did not give: from GAVO, else the ESA archive (by batches)
+    for name, get in (("gavo", ga.xp_spectra_gavo), ("esa", ga.xp_spectra_esa)):
+        if not todo:
+            break
+        try:
+            got = online.call(name, lambda: get([ids[k] for k in todo]), ga.LAST_BUDGET)
+        except Exception as e:  # noqa: BLE001 - this service fails too: the next one
+            why = e.why if isinstance(e, online.ServiceDown) else f"failed ({str(e)[:150]})"
+            say(f"{online.label(name)} {why}: {len(todo)} XP spectra still missing")
+            continue
+        ctx.log(f"{len(todo)} XP spectra asked of {online.label(name)}: {sum(ids[k] in got for k in todo)} given")
+        for k in todo:
+            if ids[k] in got:
+                rows[k] = got[ids[k]]
+                store(ids[k], rows[k])
+        todo = [k for k in todo if rows[k] is None]
     if len({len(r[0]) for r in rows if r is not None}) > 1:
         ctx.log("XP spectra from services with different wavelength grids: all brought to 400-800 nm")
     return ga.common_grid(rows)

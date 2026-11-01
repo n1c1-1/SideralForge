@@ -10,12 +10,11 @@ bright stars are present; the index is built once and cached.
 from __future__ import annotations
 
 from itertools import combinations
-from pathlib import Path
 
 import numpy as np
 from scipy.spatial import cKDTree
 
-CACHE = Path.home() / ".astro_gpu" / "cache"
+from . import online, skycache
 
 
 def _unit(ra, dec):
@@ -79,15 +78,16 @@ class SkyIndex:
     def __init__(self, catalog: str = "hip", k: int | None = None):
         self.k = k or (8 if catalog == "hip" else 7)
         self.combos = np.array(list(combinations(range(self.k), 3)))
-        p = CACHE / f"quads_{catalog}_k{self.k}.npz"
-        if p.exists():
-            d = np.load(p)
-            self.ra, self.dec, self.codes, self.quads = d["ra"], d["dec"], d["codes"], d["quads"]
+        name = f"quads_{catalog}_k{self.k}.npz"
+        p = skycache.find(name)             # the cache, else an earlier version's cache (read only)
+        if p is not None:
+            with np.load(p) as d:
+                self.ra, self.dec, self.codes, self.quads = d["ra"], d["dec"], d["codes"], d["quads"]
         else:
             self.ra, self.dec = _hipparcos() if catalog == "hip" else _tycho()
             self.codes, self.quads = self._build()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            np.savez(p, ra=self.ra, dec=self.dec, codes=self.codes, quads=self.quads)
+            skycache.save_npz(skycache.cache_dir() / name, ra=self.ra, dec=self.dec, codes=self.codes,
+                              quads=self.quads)
         self.catalog = catalog
         self.xyz = _unit(self.ra, self.dec)
         self.star_tree = cKDTree(self.xyz)
@@ -119,20 +119,31 @@ def _tangent_rows(xyz, centers):
     return np.stack([(xyz * east).sum(1) / d, (xyz * north).sum(1) / d], 1)
 
 
-def _hipparcos(vmax=9.5):
-    from astroquery.vizier import Vizier
-    v = Vizier(columns=["RAICRS", "DEICRS"], row_limit=-1, timeout=600)
-    t = v.query_constraints(catalog="I/239/hip_main", Vmag=f"<{vmax}")[0]
+def _hipparcos(vmax=9.5, say=None):
+    """Hipparcos stars V < vmax (whole sky): VizieR, its Harvard mirror, the ESA archive (short timeouts)."""
+    from .gaia_archive import hipparcos_all
+    t = hipparcos_all(["RAICRS", "DEICRS"], vmax, say=say)
     ra, dec = np.asarray(t["RAICRS"], float), np.asarray(t["DEICRS"], float)
     ok = np.isfinite(ra) & np.isfinite(dec)
     return ra[ok], dec[ok]
 
 
-def _tycho(vmax=11.0):
-    from astroquery.vizier import Vizier
-    v = Vizier(columns=["RAmdeg", "DEmdeg"], row_limit=-1, timeout=900)
-    t = v.query_constraints(catalog="I/259/tyc2", VTmag=f"<{vmax}")[0]
-    ra, dec = np.asarray(t["RAmdeg"], float), np.asarray(t["DEmdeg"], float)
+def _tycho(vmax=11.0, say=None):
+    """Tycho-2 stars VT < vmax (whole sky, ~1 million): VizieR, its Harvard mirror, the ESA archive."""
+    from .gaia_archive import _esa, _vizier
+
+    def vizier(host):
+        def q():
+            v = _vizier(["RAmdeg", "DEmdeg"], host=host, column_filters={"VTmag": f"<{vmax}"})
+            t = v.query_constraints(catalog="I/259/tyc2", cache=False)[0]
+            return np.asarray(t["RAmdeg"], float), np.asarray(t["DEmdeg"], float)
+        return q
+
+    def esa():
+        t = _esa(f"SELECT ra, dec FROM public.tycho2 WHERE vt_mag < {vmax}")
+        return np.asarray(t["ra"], float), np.asarray(t["dec"], float)
+    ra, dec = online.first_answer([("vizier", vizier("vizier")), ("vizier_cfa", vizier("vizier_cfa")), ("esa", esa)],
+                                  "the Tycho-2 stars", say, budget=900.0)
     ok = np.isfinite(ra) & np.isfinite(dec)
     return ra[ok], dec[ok]
 
