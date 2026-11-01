@@ -116,6 +116,13 @@ Three lanes run in parallel:
 Plus the **engine fixes**: patches 1–3, store mtime ceil-to-even, manifest replace retry, catalogs reload, timings2
 lock.
 
+**No tinkering (the user's lesson, 2026-11-01 18:35): this is generic processing software.**
+- Every engine method rests on the state of the art: a known algorithm (Siril, PixInsight, a paper), named with its
+  source before any code.
+- Never a home-made hybrid tuned on a handful of test images.
+- The bench measures; it does not select formulas.
+- A measurement the user asks for is reported. Any fix is proposed, never launched on our own initiative.
+
 **No heavy run (the user's projects, a full bench) starts without a review pass done together with the user**
 (their rule, 2026-11-01 18:20).
 

@@ -14,6 +14,12 @@ folders and of the G: archive done the same day.
    drift ("bricolage de patch", 2026-10-11).
 4. **Generalise from the data.** No rule keyed on focal length, instrument or camera; a percentile-only threshold is
    suspect. Why: the refractor-tuned chain broke on the Newton (2026-10-10).
+4b. **State of the art, no tinkering** (2026-11-01). This is generic processing software.
+    - Every method rests on a known algorithm (Siril, PixInsight, a published paper), named before coding.
+    - No home-made hybrid tuned until it looks right on a handful of test images.
+    - Against a gap with Siril, adopt the standard method, with our own as an option.
+    - Why: base patch 3, a drizzle and luminance-detail hybrid with a noise gate, made coloured dots, and its gate was
+      being tuned on Rosette and Heart.
 5. **Visual QC at 100 %, by yourself, before presenting**: faint stars on plain sky, stars in bright nebula, a dense
    field, every bright star with spikes. Any ring, halo, disc or bar means it cannot be shown. Why: he judges at 100 %,
    and averages hid the halos (2026-10-11).
