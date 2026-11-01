@@ -28,9 +28,22 @@ from astro_gpu.core.stage import Stage, StageError
 from astro_gpu.core.store import KeyRules, Keys, Store
 from astro_gpu.core.workflow import TEMPLATES, Chains
 
-# tests that pin a worker to a GPU; skipped when the suite runs on the CPU (CUDA_VISIBLE_DEVICES="", during P8)
-needs_gpu = pytest.mark.skipif(os.environ.get("CUDA_VISIBLE_DEVICES") == "",
-                               reason="needs a visible GPU (CUDA_VISIBLE_DEVICES is empty)")
+
+def _gpu_hidden() -> bool:
+    """The same test as tests/conftest.gpu_hidden: CUDA_VISIBLE_DEVICES empty or -1 (only -1 hides the GPUs on Windows),
+    or no GPU visible."""
+    v = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if v is not None and v.strip() in ("", "-1"):
+        return True
+    try:
+        import torch
+        return not torch.cuda.is_available()
+    except Exception:  # noqa: BLE001
+        return True
+
+
+# tests that pin a worker to a GPU; skipped when the suite runs on the CPU (CUDA_VISIBLE_DEVICES=-1, during P8)
+needs_gpu = pytest.mark.skipif(_gpu_hidden(), reason="needs a visible GPU (CUDA_VISIBLE_DEVICES is empty or -1)")
 
 TESTS = Path(__file__).parent
 RUNS: Counter = Counter()
