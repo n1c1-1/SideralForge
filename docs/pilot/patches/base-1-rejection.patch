@@ -1,0 +1,355 @@
+diff --git a/astro_gpu/api.py b/astro_gpu/api.py
+index 6aec549..247e1ad 100644
+--- a/astro_gpu/api.py
++++ b/astro_gpu/api.py
+@@ -437,8 +437,9 @@ class StackDiag:
+     the quadratic sky difference, sky, half A | B, rejected_low, rejected_high: on the stack, rejected_outside: the
+     rejected samples that land outside it). ``noise`` {R, G, B}: pixel noise of the result (ADU of the stack), from
+     its two half-stacks. ``used``: the frames stacked; ``excluded`` {name: reason}. ``rejected_pct``: the stage's
+-    metric (it counts the samples outside the stack too); ``rejected_on_grid_pct``: the share of the samples landing
+-    on the stack that were rejected."""
++    metric (since version 4 of the stack, the share of the samples landing on the stack that were rejected; before, it
++    counted the samples landing outside it too); ``rejected_on_grid_pct``: the share of the samples landing on the
++    stack that were rejected."""
+ 
+     rejection_low: Any = None
+     rejection_high: Any = None
+diff --git a/astro_gpu/stages/stack.py b/astro_gpu/stages/stack.py
+index 72cb2ef..b7ecab1 100644
+--- a/astro_gpu/stages/stack.py
++++ b/astro_gpu/stages/stack.py
+@@ -90,7 +90,10 @@ class Stack(Stage):
+                    "noise-aware denoising.")
+     deps = ("calibrate", "register")
+     Params = StackParams
+-    version = "3"          # 2: fixed pattern (walking noise) removal; 3: off by default (it drew walking noise)
++    # 2: fixed pattern (walking noise) removal; 3: off by default (it drew walking noise); 4: the rejection judged
++    # against a prediction cleaned of the strong outliers, with a noise model calibrated on each frame's sky and
++    # the star-core allowance on the signal above the background (it was on the sky too)
++    version = "4"
+ 
+     def auto(self, ctx: Context) -> dict[str, Auto]:
+         a: dict[str, Auto] = {}
+@@ -244,13 +247,13 @@ class Stack(Stage):
+ 
+         norm: dict[int, tuple[np.ndarray, np.ndarray]] = {}       # frame -> (gradient Q (3, 6), sky level (3,))
+ 
+-        def frame_model(i):
+-            fr = torch.from_numpy(np.asarray(mm[i], np.float32)).to(dev)
+-            if fpn is not None:
+-                fr = torch.where(fr > VALID_MAX, fr, fr - fpn)
+-            X, Y = poly_eval(coef[i], xx, yy)
++        def frame_norm(i, fr):
++            """The frame's additive sky difference to the reference (a quadratic per channel, Q (3, 6)) and its sky
++            level per channel; measured once (the first pass), then reused."""
++            if int(i) in norm:
++                return norm[int(i)]
+             Bi, cx, cy = block_bkg(fr)
+-            Q = torch.zeros(3, 6, dtype=torch.float64)
++            Q = np.zeros((3, 6))
+             bkg_level = np.zeros(3)
+             for c in range(3):
+                 ks = [k for k in range(4) if ch_of_k[k] == c]
+@@ -269,19 +272,30 @@ class Stack(Stage):
+                     r = b - A @ q
+                     s = 1.4826 * np.median(np.abs(r[m]))
+                     m = np.abs(r) < 3 * s + 1e-9
+-                Q[c] = torch.from_numpy(q)
++                Q[c] = q
+                 bkg_level[c] = np.nanmedian(np.concatenate([Bi[k].cpu().numpy().ravel() for k in ks]))
+-            norm[int(i)] = (Q.numpy().copy(), bkg_level.copy())
++            norm[int(i)] = (Q, bkg_level)
++            return norm[int(i)]
++
++        def frame_model(i):
++            """The frame normalised to the reference (value, ADU of the reference), where its samples land on the
++            output grid (Xo, Yo), its saturated and bad samples, its additive sky difference in its own ADU (grad,
++            for the noise model) and its sky level per channel."""
++            fr = torch.from_numpy(np.asarray(mm[i], np.float32)).to(dev)
++            if fpn is not None:
++                fr = torch.where(fr > VALID_MAX, fr, fr - fpn)
++            X, Y = poly_eval(coef[i], xx, yy)
++            Q, bkg_level = frame_norm(i, fr)
+             a = X / (W / 2) - 1.0
+             b = Y / (H / 2) - 1.0
+             terms = torch.stack([torch.ones_like(a), a, b, a * a, a * b, b * b])
+-            Qs = Q.to(dev, torch.float32)[chmap]
++            Qs = torch.from_numpy(Q).to(dev, torch.float32)[chmap]
+             grad = (Qs.permute(2, 0, 1) * terms).sum(0)
+             sat = fr > VALID_MAX
+             bad = torch.isnan(fr)
+             val = torch.where(sat, satval, fr)
+             val = (val - grad) / transp[i]
+-            return val, (X + 0.5) * S - 0.5, (Y + 0.5) * S - 0.5, sat, bad, bkg_level
++            return val, (X + 0.5) * S - 0.5, (Y + 0.5) * S - 0.5, sat, bad, grad, bkg_level
+ 
+         def deposit(num, den, val, Xo, Yo, w, keep):
+             v = val[keep]
+@@ -300,45 +314,54 @@ class Stack(Stage):
+                     num.index_add_(0, idx, v[ok] * ww[ok])
+                     den.index_add_(0, idx, ww[ok])
+ 
+-        # ---------------- pass 1: weighted mean
++        # ---------------- pass 1: weighted mean (the first prediction)
+         num = torch.zeros(3 * Ho * Wo, device=dev)
+         den = torch.zeros(3 * Ho * Wo, device=dev)
+         for c_, i in enumerate(used):
+-            val, Xo, Yo, sat, bad, _ = frame_model(i)
++            val, Xo, Yo, sat, bad, _, _ = frame_model(i)
+             deposit(num, den, val, Xo, Yo, float(weight[i]), ~bad)
+-            ctx.progress(0.5 * (c_ + 1) / len(used), f"pass 1: {c_ + 1}/{len(used)} frames")
+-        M = (num / den.clamp(min=1e-12)).view(3, Ho, Wo)
+-        M = torch.where(den.view(3, Ho, Wo) > 0, M, torch.zeros_like(M))
++            ctx.progress(0.3 * (c_ + 1) / len(used), f"pass 1: {c_ + 1}/{len(used)} frames")
++        model = Prediction(num, den, len(used), Ho, Wo, dev)
++        del num, den
++
++        def judge(i, model, kappa, edge, diag=None):
++            """The samples of frame i rejected against the prediction ``model`` (``reject``)."""
++            val, Xo, Yo, sat, bad, grad, _ = frame_model(i)
++            pr = model.sample(Xo, Yo, chmap)
++            hi, lo, inside = reject(val, pr, sat, bad, grad, chmap, float(transp[i]), p, kappa, edge, diag)
++            return val, Xo, Yo, bad, hi, lo, inside
++
++        # ---------------- pass 2: the strong outliers (satellites, planes, cosmic rays, hot pixels) left out of the
++        # prediction, so that the final pass does not judge the other frames against a mean they pulled up or down
++        num = torch.zeros(3 * Ho * Wo, device=dev)
++        den = torch.zeros(3 * Ho * Wo, device=dev)
++        for c_, i in enumerate(used):
++            val, Xo, Yo, bad, hi, lo, _ = judge(i, model, CLEAN_FACTOR * p.kappa, False)
++            deposit(num, den, val, Xo, Yo, float(weight[i]), ~bad & ~hi & ~lo)
++            ctx.progress(0.3 + 0.3 * (c_ + 1) / len(used), f"pass 2: {c_ + 1}/{len(used)} frames")
++        model = model.cleaned(num, den)
+         del num, den
+ 
+-        # ---------------- pass 2: predictive rejection + half-stacks
++        # ---------------- pass 3: rejection against the cleaned prediction + half-stacks
+         accA = [torch.zeros(3 * Ho * Wo, device=dev) for _ in range(2)]
+         accB = [torch.zeros(3 * Ho * Wo, device=dev) for _ in range(2)]
+-        Mb = M.unsqueeze(0)
+-        rej_tot = 0
++        rej_tot = tested = 0
+         rmap = RejectionMap(Ho, Wo, dev)
+         rej_frames: dict[int, tuple[int, int, int]] = {}
++        judged: dict[int, dict] = {}
+         for c_, i in enumerate(used):
+-            val, Xo, Yo, sat, bad, bkg = frame_model(i)
+-            gx = (Xo + 0.5) / Wo * 2 - 1
+-            gy = (Yo + 0.5) / Ho * 2 - 1
+-            grid = torch.stack([gx, gy], -1).unsqueeze(0)
+-            pred_all = F.grid_sample(Mb, grid, mode="bilinear", padding_mode="zeros", align_corners=False)[0]
+-            pred = torch.gather(pred_all, 0, chmap.unsqueeze(0))[0]
+-            bk = torch.tensor(bkg, device=dev, dtype=torch.float32)[chmap]
+-            var = (((pred * transp[i] + bk).clamp(min=1) / p.gain + p.read_noise ** 2) / transp[i] ** 2
+-                   + (p.core_tolerance * pred.clamp(min=0)) ** 2)
+-            z = (val - pred) / var.sqrt()
+-            hi = (z > p.kappa) & ~sat
+-            hi = F.max_pool2d(hi.float()[None, None], 3, 1, 1)[0, 0] > 0
+-            rej = hi | ((z < -p.kappa) & ~sat)
+-            keep = ~bad & ~rej
+-            rej_tot += int(rej.sum())
+-            rej_frames[int(i)] = rmap.add(Xo, Yo, hi & ~bad, rej & ~hi & ~bad)
++            rows: list = []
++            val, Xo, Yo, bad, hi, lo, inside = judge(i, model, p.kappa, True, rows)
++            judged[int(i)] = rows[0]
++            keep = ~bad & ~hi & ~lo
++            rej_tot += int((hi | lo).sum())
++            tested += int((inside & ~bad).sum())
++            rej_frames[int(i)] = rmap.add(Xo, Yo, hi, lo)
+             acc = accA if (i // p.half_block) % 2 == 0 else accB
+             deposit(acc[0], acc[1], val, Xo, Yo, float(weight[i]), keep)
+-            ctx.progress(0.5 + 0.5 * (c_ + 1) / len(used), f"pass 2: {c_ + 1}/{len(used)} frames, "
+-                                                          f"rejected {100 * rej_tot / ((c_ + 1) * H * W):.2f} %")
++            ctx.progress(0.6 + 0.4 * (c_ + 1) / len(used), f"pass 3: {c_ + 1}/{len(used)} frames, "
++                                                          f"rejected {100 * rej_tot / max(tested, 1):.2f} %")
++        del model
+ 
+         def finish(a):
+             img = (a[0] / a[1].clamp(min=1e-12)).view(3, Ho, Wo)
+@@ -355,7 +378,7 @@ class Stack(Stage):
+             halves.append(img[:, ::step, ::step].copy())
+             del img
+         ctx.save("drz_weight.npy", full[1].view(3, Ho, Wo).cpu().numpy())
+-        rej_pct = 100 * rej_tot / (len(used) * H * W)
++        rej_pct = 100 * rej_tot / max(tested, 1)          # of the samples landing on the stack (the others: no data)
+         ctx.metric("rejected_pct", round(rej_pct, 3))
+         ctx.save_json("drz_meta.json", {"scale": S, "pixfrac": PIX, "n": int(len(used)), "reject_pct": rej_pct,
+                                         "width": Wo, "height": Ho, "sensor": [W, H]})
+@@ -371,7 +394,7 @@ class Stack(Stage):
+                              "transparency": float(transp[i]), "scale": [float(1.0 / transp[i])] * 3,
+                              "offset": [float(v) for v in q[:, 0]], "gradient": q.tolist(), "sky": sky.tolist(),
+                              "half": "A" if in_a[int(i)] else "B", "rejected_low": lo, "rejected_high": hi_n,
+-                             "rejected_outside": outside})
++                             "rejected_outside": outside, **judged.get(int(i), {})})
+         noise = {c: (v if np.isfinite(v) else None) for c, v in halves_noise(halves[0], halves[1], w_a, w_b).items()}
+         ctx.save_json(DIAG, {"frames": frames_d, "noise": noise,
+                              "noise_sample_step": step, "half_weights": [w_a, w_b], "kappa": p.kappa,
+@@ -383,6 +406,125 @@ class Stack(Stage):
+         ctx.preview("stack", asinh_preview(drz))
+ 
+ 
++#: the first rejection pass leaves out of the prediction only the samples this many times farther than the threshold
++CLEAN_FACTOR = 2.0
++#: fewer frames than this covering a place: nothing is rejected there (too few to tell an outlier from the others)
++MIN_COVER = 3.0
++#: a neighbour of a high outlier deviating by more than this many sigmas goes with it (the edges of a trail)
++EDGE_SIGMA = 1.5
++#: side (output pixels) of the blocks whose medians make the smooth background of the prediction
++BKG_BLOCK = 64
++#: allowance, as a fraction of the extended signal above the sky floor, for the error of a frame's photometric scale
++SCALE_TOLERANCE = 0.05
++
++
++def smooth_background(M: torch.Tensor, valid: torch.Tensor, block: int = BKG_BLOCK) -> tuple[torch.Tensor, list]:
++    """Smooth background of a stack (3, H, W): the medians of its covered pixels in blocks of ``block`` pixels,
++    bilinearly interpolated (the stars and other small structures above it); and the sky floor of each channel (the
++    10th percentile of the block medians)."""
++    C, H, W = M.shape
++    hb, wb = -(-H // block), -(-W // block)
++    out = torch.zeros_like(M)
++    floors = []
++    for c in range(C):
++        x = torch.where(valid[c], M[c], torch.nan)
++        x = F.pad(x, (0, wb * block - W, 0, hb * block - H), value=float("nan"))
++        b = x.reshape(hb, block, wb, block).permute(0, 2, 1, 3).reshape(hb, wb, block * block)
++        med = torch.nanmedian(b, dim=-1).values
++        fin = torch.isfinite(med)
++        if not fin.any():
++            floors.append(0.0)
++            continue
++        floors.append(float(torch.quantile(med[fin], 0.1)))
++        med = torch.where(fin, med, torch.nanmedian(med[fin]))
++        up = F.interpolate(med[None, None], size=(hb * block, wb * block), mode="bilinear", align_corners=False)
++        out[c] = up[0, 0, :H, :W]
++    return out, floors
++
++
++class Prediction:
++    """What a frame is judged against: the weighted mean of the frames (``num`` / ``den``, flat 3 x Ho x Wo), how many
++    frames cover each place (``cover``: the deposited weight relative to its median, times the number of frames), the
++    smooth background of the mean and its sky floor; sampled where a frame's samples land (``sample``)."""
++
++    def __init__(self, num: torch.Tensor, den: torch.Tensor, n: int, Ho: int, Wo: int, dev):
++        d = den.view(3, Ho, Wo)
++        self.Ho, self.Wo = Ho, Wo
++        self.valid = d > 0
++        self.M = torch.where(self.valid, num.view(3, Ho, Wo) / d.clamp(min=1e-12), torch.zeros_like(d))
++        self.cover = torch.zeros_like(d)
++        for c in range(3):
++            pos = d[c][self.valid[c]]
++            if pos.numel():
++                med = torch.median(pos[::max(1, pos.numel() // 4_000_000)])
++                self.cover[c] = n * d[c] / med
++        self.bkg, self.floor = smooth_background(self.M, self.valid)
++
++    def cleaned(self, num: torch.Tensor, den: torch.Tensor) -> "Prediction":
++        """The same prediction with the mean of the samples ``num`` / ``den`` kept by a rejection (its coverage and
++        background are the first mean's)."""
++        d = den.view(3, self.Ho, self.Wo)
++        self.M = torch.where(d > 0, num.view(3, self.Ho, self.Wo) / d.clamp(min=1e-12), self.M)
++        return self
++
++    def sample(self, Xo: torch.Tensor, Yo: torch.Tensor, chmap: torch.Tensor) -> dict[str, torch.Tensor]:
++        """The prediction (``pred``), coverage, background and sky floor of each sample landing at (Xo, Yo), in the
++        sample's own channel (``chmap``); the mean is interpolated from the covered pixels only."""
++        grid = torch.stack([(Xo + 0.5) / self.Wo * 2 - 1, (Yo + 0.5) / self.Ho * 2 - 1], -1).unsqueeze(0)
++
++        def at(a: torch.Tensor) -> torch.Tensor:
++            v = F.grid_sample(a.unsqueeze(0), grid, mode="bilinear", padding_mode="zeros", align_corners=False)[0]
++            return torch.gather(v, 0, chmap.unsqueeze(0))[0]
++
++        vf = self.valid.float()
++        w = at(vf)
++        pred = at(self.M * vf) / w.clamp(min=1e-6)
++        floor = torch.tensor(self.floor, device=Xo.device, dtype=torch.float32)[chmap]
++        return {"pred": pred, "cover": torch.where(w > 0.5, at(self.cover), torch.zeros_like(w)), "bkg": at(self.bkg),
++                "floor": floor}
++
++
++def reject(val, pr: dict, sat, bad, grad, chmap, t: float, p: "StackParams", kappa: float, edge: bool,
++           diag: list | None = None):
++    """The samples of a normalised frame (``val``, ADU of the reference) deviating from the prediction ``pr``
++    (``Prediction.sample``) by more than ``kappa`` sigmas, high and low; ``edge``: with the neighbours of the high
++    ones above EDGE_SIGMA. Returns (high, low, inside: the samples with a prediction).
++
++    The sigma of a sample: the shot and read noise of the predicted value in the frame's own ADU (``grad``: the
++    frame's sky difference to the reference; gain and read noise), scaled so that the frame's sky samples have unit
++    spread (the model's gain matters only through its shape), widened where few frames cover the place; plus two
++    allowances for what differs between good frames: the seeing (``core_tolerance`` x the signal above the smooth
++    background: star cores) and the photometric scale of the frame (SCALE_TOLERANCE x the extended signal above the
++    sky floor). Saturated and bad samples, and those covered by fewer than MIN_COVER frames, are never rejected."""
++    pred, cover = pr["pred"], pr["cover"]
++    inside = cover > 0
++    test = (cover >= MIN_COVER) & ~bad & ~sat & torch.isfinite(val)
++    r = val - pred
++    raw = (pred * t + grad).clamp(min=0)
++    var_n = (raw / p.gain + p.read_noise ** 2) / t ** 2 * (1 + 1 / cover.clamp(min=1))
++    allow = (p.core_tolerance * (pred - pr["bkg"]).clamp(min=0)) ** 2 + \
++            (SCALE_TOLERANCE * (pr["bkg"] - pr["floor"]).clamp(min=0)) ** 2
++    z0 = r / var_n.sqrt()
++    sky = test & (allow < 0.25 * var_n)
++    s = torch.ones(3, device=val.device)
++    for c in range(3):
++        v = z0[sky & (chmap == c)]
++        v = v[::max(1, v.numel() // 2_000_000)]
++        if v.numel() >= 1000:
++            s[c] = 1.4826 * (v - v.median()).abs().median()
++    s = s.clamp(0.25, 4.0)
++    z = r / (var_n * s[chmap] ** 2 + allow).sqrt()
++    hi = (z > kappa) & test
++    if edge:
++        near = F.max_pool2d(hi.float()[None, None], 3, 1, 1)[0, 0] > 0
++        hi = hi | (near & (z > EDGE_SIGMA) & test)
++    lo = (z < -kappa) & test
++    if diag is not None:
++        row = {"noise_scale": [round(float(x), 3) for x in s]}
++        diag.append(row)
++    return hi, lo, inside
++
++
+ class RejectionMap:
+     """The samples the second pass rejects, counted on the output grid, low and high apart: each sample at the output
+     pixel nearest to where it lands, the grid reduced by a whole factor ``f`` so that its longer side is at most
+@@ -405,8 +547,8 @@ class RejectionMap:
+ 
+     def add(self, Xo: torch.Tensor, Yo: torch.Tensor, high: torch.Tensor, low: torch.Tensor) -> tuple[int, int, int]:
+         """Count one frame's rejected samples (boolean masks on the sensor). Returns (low, high, outside): the low and
+-        high ones that land on the grid, and those that land outside it (the margins the drift uncovers: the
+-        prediction there is 0, so all of them count as high in the ``rejected_pct`` metric)."""
++        high ones that land on the grid, and those that land outside it (none since version 4: a sample with nothing
++        to be compared with is never rejected)."""
+         lo, out_lo = self._count(self.low, Xo, Yo, low)
+         hi, out_hi = self._count(self.high, Xo, Yo, high)
+         return lo, hi, out_lo + out_hi
+diff --git a/tests/test_diagnostics.py b/tests/test_diagnostics.py
+index a69c29c..730ddda 100644
+--- a/tests/test_diagnostics.py
++++ b/tests/test_diagnostics.py
+@@ -294,18 +294,20 @@ def test_the_stack_keeps_its_rejection_maps_low_and_high(stacked):
+     frames = json.loads((d / DIAG).read_text())["frames"]           # the counts of the frames are the maps'
+     assert int(high.sum()) == sum(x["rejected_high"] for x in frames)
+     assert int(low.sum()) == sum(x["rejected_low"] for x in frames)
+-    assert sum(x["rejected_outside"] for x in frames) > 0            # the margins the shifts uncover
++    # a sample with nothing to be compared with (the margins the shifts uncover) is never rejected
++    assert sum(x["rejected_outside"] for x in frames) == 0
+     row = 60 - shifts[2][1]                                         # the satellite, on the reference grid
+     along = high[row - 1:row + 2].sum(0)
+-    assert (along[5:-5] > 0).mean() > 0.9                           # the whole trail, dilated by one pixel
++    assert (along[5:-5] > 0).mean() > 0.9                           # the whole trail, with its edges
+     hy, hx = 30 - shifts[4][1], 90 - shifts[4][0]                   # the hole of frame 4
+     assert low[hy:hy + 6, hx:hx + 6].sum() >= 20 and low.sum() - low[hy:hy + 6, hx:hx + 6].sum() < 20
+-    # high rejections elsewhere: the outer rows and columns of the grid (the prediction there is half zero padding)
+-    # and around the hole (it pulled the first-pass mean down, so the other frames look high there)
++    # no high rejection elsewhere, not on the outer rows and columns of the grid (the prediction there was half zero
++    # padding before version 4); only around the hole, where with these whole-pixel shifts a colour of a pixel holds
++    # the samples of two frames only, the hole's and one other (with real dithering the cleaned prediction holds there)
+     inner = high.astype(int)
+-    inner[:2], inner[-2:], inner[:, :2], inner[:, -2:] = 0, 0, 0, 0
+-    around = inner[hy - 6:hy + 12, hx - 6:hx + 12].sum()
+-    assert inner.sum() - inner[row - 1:row + 2].sum() - around < 0.02 * inner.sum()
++    inner[row - 1:row + 2] = 0
++    inner[hy - 6:hy + 12, hx - 6:hx + 12] = 0
++    assert inner.sum() == 0
+ 
+ 
+ def test_the_stack_keeps_the_normalisation_of_each_frame_and_the_noise_of_the_result(stacked):

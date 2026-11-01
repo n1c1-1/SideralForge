@@ -1,0 +1,179 @@
+diff --git a/astro_gpu/stages/calibrate.py b/astro_gpu/stages/calibrate.py
+index c382bb9..53e5075 100644
+--- a/astro_gpu/stages/calibrate.py
++++ b/astro_gpu/stages/calibrate.py
+@@ -59,10 +59,11 @@ class Calibrate(Stage):
+                    "cached on the fast scratch disk; an interrupted calibration resumes frame by frame.")
+     deps = ("inventory",)
+     Params = CalibrateParams
+-    # 2: hot pixels also seen in the lights; 3: a bad pixel stays excluded when saturated. The master bias and flat
+-    # dark (EXTRA_MASTERS, for the Inspect mode) are extra files with the same results: not a new version, an older
+-    # result simply lacks them
+-    version = "3"
++    # 2: hot pixels also seen in the lights; 3: a bad pixel stays excluded when saturated; 4: hot pixels seen in the
++    # lights when the sky did not move too (a lone pixel above its neighbours of every colour: m8 kept 45-57 coloured
++    # dots per square degree), and then filled from their same-colour neighbours (left out, they were holes). The master bias and flat dark (EXTRA_MASTERS, for the Inspect mode) are extra files with
++    # the same results: not a new version, an older result simply lacks them
++    version = "4"
+ 
+     def auto(self, ctx: Context) -> dict[str, Auto]:
+         n = max(1, min(12, (os.cpu_count() or 4) - 2))
+@@ -164,17 +165,22 @@ def calibrate_lights(ctx: Context, p: CalibrateParams, lights: list[dict], dark:
+         v = _plane(flat, k)
+         loc = median_filter(v, size=9)
+         _plane(bad, k)[...] |= (v < (1 - p.flat_defect) * loc) | (v > (1 + p.flat_defect) * loc)
++    moved = True
+     if p.hot_from_lights and len(lights) >= 15:
+         n0 = int(bad.sum())
+-        msg = _hot_from_lights([f["path"] for f in lights], dark, flat, bad, median_filter)
++        msg, moved = _hot_from_lights([f["path"] for f in lights], dark, flat, bad, median_filter)
+         ctx.metric("hot_pixels_from_lights", int(bad.sum()) - n0)
+         ctx.log(msg)
++    # the sky did not move: a pixel left out would be a hole in the stack, it is filled from its neighbours instead
++    ctx.metric("bad_pixels_filled", not moved)
++    if not moved:
++        ctx.log("the sky did not move on the sensor: the excluded pixels are filled from their same-colour neighbours")
+     ctx.save("badmask.npy", bad)
+     ctx.metric("bad_pixels_pct", round(100 * float(bad.mean()), 2))
+     ctx.metric("sky_noise_adu", round(sky_noise, 2))
+     ctx.log(f"master dark level {level:.1f} ADU, flat min {flat.min():.3f}, {100 * bad.mean():.2f} % pixels "
+             f"excluded, sky noise {sky_noise:.1f} ADU")
+-    _calibrated_cache(ctx, p, lights, dark, flat, bad, cfa, white, t0)
++    _calibrated_cache(ctx, p, lights, dark, flat, bad, cfa, white, t0, not moved)
+ 
+ 
+ #: what a v2 runner copies from an earlier result whose calibrated cache was lost, with MASTERS (their settings
+@@ -219,18 +225,20 @@ def rebuild_cache(ctx: Context, p: CalibrateParams, lights: list[dict], given: d
+         if k not in ("cache_scale", "cache_gb"):
+             ctx.metric(k, v)
+     ctx.log("calibrated frames rebuilt with the masters of the earlier result (same settings)")
++    fill = bool((given.get("metrics") or {}).get("bad_pixels_filled", False))
+     src = Path(str(given.get("from") or ""))
+     for n in EXTRA_MASTERS:
+         if given.get("from") and (src / n).is_file() and not ctx.out(n).is_file():
+             shutil.copy2(src / n, ctx.out(n))
+-    _calibrated_cache(ctx, p, lights, dark, flat, bad, cfa, white, t0)
++    _calibrated_cache(ctx, p, lights, dark, flat, bad, cfa, white, t0, fill)
+     (ctx.dir / MASTERS).unlink(missing_ok=True)
+ 
+ 
+ def _calibrated_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark: np.ndarray, flat: np.ndarray,
+-                      bad: np.ndarray, cfa: str, white: float, t0: float) -> None:
++                      bad: np.ndarray, cfa: str, white: float, t0: float, fill: bool = False) -> None:
+     """The calibrated cache of the light frames (float16 memmap on the scratch disk), its frame statistics and
+-    cache.json, from the masters and the bad pixel map."""
++    cache.json, from the masters and the bad pixel map; the bad pixels left out (NaN), or with ``fill`` (the sky did
++    not move on the sensor) filled with the median of their same-colour neighbours that are not bad."""
+     H, W = dark.shape
+     level = float(np.median(dark))
+     # values are scaled so that the brightest valid value stays below the float16 range
+@@ -255,7 +263,7 @@ def _calibrated_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark
+     np.save(paths_dir / "bad.npy", bad)
+     todo = [(i, lights[i]["path"]) for i in range(n) if not done[i]]
+     sat_raw = p.saturation * white
+-    init = (str(cache), n, H, W, str(paths_dir), sat_raw, scale)
++    init = (str(cache), n, H, W, str(paths_dir), sat_raw, scale, fill)
+     with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
+         for c, (idx, st) in enumerate(pool.imap_unordered(_calib_one, todo, chunksize=2)):
+             stats[idx] = st
+@@ -303,11 +311,19 @@ def _master_flat(paths: list[str], fdark: np.ndarray, ctx: Context) -> np.ndarra
+     return (np.where(keep, fl, 0).sum(0) / np.maximum(keep.sum(0), 1)).astype(np.float32)
+ 
+ 
++#: a pixel whose four nearest neighbours (the other colours) all stay within this many sigmas of their sky is a lone
++#: pixel: a star or a knot of nebula lights its neighbours too, even a red one in green (a test on the share of its
++#: rise flagged the red knots of M8's nebula)
++LONE_SIGMA = 3.0
++
++
+ def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0) -> str:
+     """Flag in ``bad`` the pixels that stand out from their same-colour neighbours in the lower quartile of ``n``
+-    light frames spread over the session, in sensor coordinates: a defect is bright in every frame, the sky has
+-    drifted (a star covers a given pixel in a small part of the frames only). Skipped when the sky moved by less
+-    than three star widths between the first and the last frame (stars would then look like defects)."""
++    light frames spread over the session, in sensor coordinates: a defect is bright in every frame. When the sky
++    drifted by three star widths or more between the first and the last frame, a star covers a given pixel in a
++    small part of the frames only, so that is enough. When it did not, the stars stand still too: a defect is then
++    also a lone pixel: its four nearest neighbours (the other colours) within LONE_SIGMA of their sky, where a star
++    or a nebula lights them too. Returns (message, whether the sky moved)."""
+     sub = [paths[i] for i in np.linspace(0, len(paths) - 1, min(n, len(paths))).astype(int)]
+     a, b = ((read_cfa(q) - dark) / flat for q in (sub[0], sub[-1]))
+     ga, gb = (cv2.resize(_plane(x, 1), None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA).astype(np.float32)
+@@ -315,19 +331,32 @@ def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0) -> str:
+     hp = [g - cv2.GaussianBlur(g, (0, 0), 8) for g in (ga, gb)]
+     (dx, dy), _ = cv2.phaseCorrelate(hp[0], hp[1])
+     drift = 4.0 * float(np.hypot(dx, dy))                     # sensor pixels (colour plane at half resolution)
+-    if drift < 12.0:
+-        return f"hot pixels from the lights: skipped, the sky moved by {drift:.0f} px only on the sensor"
++    moved = drift >= 12.0
+     q = np.percentile(np.stack([(read_cfa(x) - dark) / flat for x in sub]), 25, axis=0)
++    lone = None
++    if not moved:
++        # each pixel's rise above its local sky, in sigmas of its plane; the four nearest are the other colours
++        z = np.zeros_like(q)
++        for c in range(4):
++            v = _plane(q, c)
++            r = v - cv2.blur(median_filter(v, size=9), (15, 15))
++            _plane(z, c)[...] = r / max(robust_sigma(r[::2, ::2])[1], 1e-6)
++        nb = np.stack([np.roll(z, sh, axis=ax) for ax in (0, 1) for sh in (1, -1)])
++        lone = np.max(nb, axis=0) < LONE_SIGMA
+     n_new = 0
+     for c in range(4):
+         v = _plane(q, c)
+         h = v - median_filter(v, size=5)
+         s = robust_sigma(h[::2, ::2])[1]
+         hot = (h > k * s) & ~_plane(bad, c)
++        if lone is not None:
++            hot &= _plane(lone, c)
+         _plane(bad, c)[...] |= hot
+         n_new += int(hot.sum())
+-    return (f"hot pixels from the lights: {n_new} more pixels flagged (lower quartile of {len(sub)} frames; the sky "
+-            f"moved by {drift:.0f} px on the sensor)")
++    how = (f"the sky moved by {drift:.0f} px on the sensor" if moved else
++           f"the sky moved by {drift:.0f} px only: lone pixels, not stars")
++    return (f"hot pixels from the lights: {n_new} more pixels flagged (lower quartile of {len(sub)} frames; {how})",
++            moved)
+ 
+ 
+ def _sky_noise(path: str, dark: np.ndarray, flat: np.ndarray) -> float:
+@@ -350,10 +379,24 @@ def _flat_view(flat: np.ndarray, cfa: str) -> np.ndarray:
+ _G: dict = {}
+ 
+ 
+-def _init(cache, n, H, W, paths_dir, sat_raw, scale):
++def _init(cache, n, H, W, paths_dir, sat_raw, scale, fill=False):
+     d = Path(paths_dir)
+-    _G.update(dark=np.load(d / "dark.npy"), flat=np.load(d / "flat.npy"), bad=np.load(d / "bad.npy"),
+-              mm=np.memmap(cache, dtype=np.float16, mode="r+", shape=(n, H, W)), sat=sat_raw, scale=scale)
++    bad = np.load(d / "bad.npy")
++    _G.update(dark=np.load(d / "dark.npy"), flat=np.load(d / "flat.npy"), bad=bad,
++              mm=np.memmap(cache, dtype=np.float16, mode="r+", shape=(n, H, W)), sat=sat_raw, scale=scale,
++              fill=_neighbours(bad) if fill else None)
++
++
++def _neighbours(bad: np.ndarray):
++    """(rows, columns) of the bad pixels and of their 8 same-colour neighbours (2 px away; clipped at the edges)."""
++    H, W = bad.shape
++    ys, xs = np.nonzero(bad)
++    off = [(dy, dx) for dy in (-2, 0, 2) for dx in (-2, 0, 2) if dy or dx]
++    ny = np.stack([ys + dy for dy, _ in off], 1)
++    nx = np.stack([xs + dx for _, dx in off], 1)
++    ny = np.where((ny < 0) | (ny >= H), ys[:, None], ny)
++    nx = np.where((nx < 0) | (nx >= W), xs[:, None], nx)
++    return ys, xs, ny, nx
+ 
+ 
+ def _calib_one(args):
+@@ -366,6 +409,12 @@ def _calib_one(args):
+     # of a bright star and drew the drift of the mount with it (green dotted trails on the Flaming Star)
+     x[sat & ~_G["bad"]] = SAT_MARK
+     x[_G["bad"]] = np.nan
++    if _G.get("fill") is not None:
++        ys, xs, ny, nx = _G["fill"]
++        nb = x[ny, nx]
++        nb = np.where(nb > VALID_MAX, np.nan, nb)
++        with np.errstate(all="ignore"):
++            x[ys, xs] = np.nanmedian(nb, axis=1)          # NaN again when every neighbour is bad
+     _G["mm"][idx] = x.astype(np.float16)
+     stats = []
+     for k in range(4):

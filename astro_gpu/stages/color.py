@@ -64,7 +64,10 @@ class Color(Stage):
                    "nebulae are anchored on the true colour of an H-alpha + H-beta + [NII] + [SII] spectrum.")
     deps = ("catalogs", "stack", "register")
     Params = ColorParams
-    version = "2"          # 2: physical check, camera profiles, synthetic spectra in the matrix fit
+    # 2: physical check, camera profiles, synthetic spectra in the matrix fit; 3: a star is left out when a sample of
+    # its aperture was near saturation in a frame (the stack's map), not when its peak passes 45 % of the brightest
+    # pixel (on heart_a7s that left out 1121 of 4000 stars; on m8, half of them had no sample above 65 %)
+    version = "3"
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
@@ -80,7 +83,7 @@ class Color(Stage):
         img = ctx.load("stack", "drz_full.npy").astype(np.float32)
         xp = np.load(ctx.input("catalogs", "gaia_xp.npz"))
         lam = xp["lam"]
-        table, star_why = colour_star_table(img, xp["x"], xp["y"], p.aperture)
+        table, star_why = colour_star_table(img, xp["x"], xp["y"], p.aperture, saturation_map(ctx))
         idx = np.where(star_why == "")[0]
         cam = table[idx]
         if len(idx) < 50:
@@ -178,10 +181,22 @@ class Color(Stage):
         ctx.preview("spectral_response", response_plot(lam, S, len(idx)))
 
 
-def colour_stars(img, x, y, aperture):
+def saturation_map(ctx: Context, clipped: bool = False) -> np.ndarray | None:
+    """The stack's map of the pixels with samples near saturation (``stack.SATURATION``, layer 0), or with clipped
+    samples (``clipped``, layer 1); None for a stack made before it kept one."""
+    from .stack import SATURATION
+    try:
+        f = Path(ctx.input("stack", SATURATION))
+    except StageError:
+        return None
+    return np.load(f)[1 if clipped else 0] if f.is_file() else None
+
+
+def colour_stars(img, x, y, aperture, sat=None):
     """The colour stars of a stack: the catalogue stars at (x, y) away from the edges, measured in the aperture,
-    positive in every channel and unsaturated. Returns (their indices in x, their camera fluxes (N, 3))."""
-    flux, why = colour_star_table(img, x, y, aperture)
+    positive in every channel and unsaturated (``colour_star_table``). Returns (their indices in x, their camera
+    fluxes (N, 3))."""
+    flux, why = colour_star_table(img, x, y, aperture, sat)
     ok = why == ""
     return np.where(ok)[0], flux[ok]
 
@@ -190,17 +205,28 @@ def colour_stars(img, x, y, aperture):
 STAR_REASONS = {"edge": "within 50 px of the edge of the stack",
                 "not_finite": "no measure (empty pixels in its aperture)",
                 "not_positive": "no positive flux in every channel (faint or on a dark background)",
-                "saturated": "saturated or near saturation (peak above 45 % of the brightest pixels)"}
+                "saturated": "saturated or near saturation in at least one frame"}
 
 
-def colour_star_table(img, x, y, aperture):
+def colour_star_table(img, x, y, aperture, sat=None):
     """Every catalogue star at (x, y) as ``colour_stars`` judges it: (camera fluxes (N, 3), NaN for the stars too close
-    to the edge to be measured; why each one is left out, '' for a colour star, else a key of STAR_REASONS)."""
+    to the edge to be measured; why each one is left out, '' for a colour star, else a key of STAR_REASONS).
+
+    Saturated: with the stack's map ``sat`` (``saturation_map``), a sample near saturation within the aperture (one
+    pixel more); without it (a stack made before it kept one), a peak above 45 % of the brightest pixels."""
     Hh, Ww = img.shape[1:]
     m = (x > 50) & (x < Ww - 50) & (y > 50) & (y < Hh - 50)
     flux, peak = star_photometry(img, np.c_[x[m], y[m]], aperture)
-    chmax = np.array([np.nanpercentile(img[c], 99.999) for c in range(3)])
-    ok = (flux > 0).all(1) & (peak < 0.45 * chmax).all(1) & np.isfinite(flux).all(1)
+    if sat is not None and sat.shape == (Hh, Ww):
+        from scipy.ndimage import maximum_filter
+        r = int(np.ceil(aperture)) + 1
+        yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
+        near = maximum_filter(np.asarray(sat) > 0, footprint=xx ** 2 + yy ** 2 <= r * r)
+        unsat = ~near[np.round(y[m]).astype(int), np.round(x[m]).astype(int)]
+    else:
+        chmax = np.array([np.nanpercentile(img[c], 99.999) for c in range(3)])
+        unsat = (peak < 0.45 * chmax).all(1)
+    ok = (flux > 0).all(1) & unsat & np.isfinite(flux).all(1)
     why_m = np.where(~np.isfinite(flux).all(1), "not_finite",
                      np.where(~(flux > 0).all(1), "not_positive", np.where(~ok, "saturated", "")))
     out = np.full((len(x), 3), np.nan)

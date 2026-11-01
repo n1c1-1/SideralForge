@@ -1,0 +1,92 @@
+diff --git a/astro_gpu/stages/background_poly.py b/astro_gpu/stages/background_poly.py
+index 016f1c6..6f39be5 100644
+--- a/astro_gpu/stages/background_poly.py
++++ b/astro_gpu/stages/background_poly.py
+@@ -2,9 +2,13 @@
+ 
+ The 'Polynomial' gradient of the workflows without Stars, as a usual background extraction does it (Siril,
+ PixInsight's ABE): per channel, in display RGB (the colour matrix applied), a polynomial of the pixel position fitted on
+-sky samples spread over the whole field. The field is cut into a grid of ``samples`` x ``samples`` cells, each into
+-4 x 4 blocks; in each cell the darkest blocks (not the brightest areas) are the candidate samples, and the fit leaves out,
+-iteratively, the samples farther than ``object_clip`` sigmas from it (``simple_sky`` of mockup/alt2/build/prepare.py).
++sky samples. The field is cut into blocks (``samples`` x 4 per side), each one's median a sample. The sky samples are
++found on the luminance, from the whole field (``sky_blocks``): the surface is fitted, the samples more than
++``object_clip`` sigmas above it are left out, and again until it settles; the sigma is the scatter between neighbouring
++samples. An object that fills most of the field (a large galaxy) is left out whole and the surface passes under it
++(each cell's darkest blocks used to be samples: on M31 they were the galaxy's disc, which the surface then erased).
++Each channel is then fitted on those samples, leaving out, iteratively, the ones farther than ``object_clip`` sigmas
++from its surface.
+ 
+ Only the model is written (coefs.json, samples.npz); ``render_simple`` subtracts it (``poly_sky``).
+ """
+@@ -26,10 +30,10 @@ class BackgroundPolyParams(StageParams):
+                     tip="2 for most fields; 3-4 for wide fields with complex gradients. A high degree on a field "
+                         "filled with nebula can take a part of it for sky.")
+     samples: int = P(16, label="Samples per side", ge=4, le=64, step=2,
+-                     help="The field is cut into this many cells per side; the darkest areas of each cell are the "
+-                          "sky samples of the fit.",
+-                     tip="More cells follow the gradient more closely but find sky in fewer of them on a field "
+-                         "filled with nebula.")
++                     help="The field is cut into 4 times this many blocks per side; the blocks of sky (not the "
++                          "objects) are the samples of the fit.",
++                     tip="More, smaller blocks find sky between the objects of a crowded field; fewer, larger ones "
++                         "average more noise.")
+     object_clip: float = P(2.5, label="Object rejection", level=ADVANCED, ge=1.0, le=10, step=0.1, unit="sigma",
+                            help="Samples farther from the surface than this are taken as objects (nebula, galaxy, a "
+                                 "bright star) and left out of the fit, iteratively.")
+@@ -90,16 +94,8 @@ def fit_poly_sky(rgb: np.ndarray, valid: np.ndarray, degree: int, samples: int,
+     L = np.tensordot(LUM, blk, 1)
+     if vb.sum() < 10:
+         raise StageError("too few covered areas to fit a background")
+-    glob = float(np.percentile(L[vb], 60))
+-    ci = np.minimum((yc + 0.5) * samples // H, samples - 1).astype(int)
+-    cj = np.minimum((xc + 0.5) * samples // W, samples - 1).astype(int)
+-    cell = ci * samples + cj
+-    cand = np.zeros((hb, wb), bool)
+-    for k in np.unique(cell[vb]):
+-        m = vb & (cell == k)
+-        cand |= m & (L <= np.percentile(L[m], 25)) & (L <= glob)
+     A = poly_terms(xc.ravel(), yc.ravel(), W, H, degree)
+-    ok = cand.ravel()
++    ok = sky_blocks(L.ravel().astype(np.float64), vb.ravel(), A, clip, vb.shape)
+     if ok.sum() < 3 * A.shape[1]:
+         raise StageError(f"only {int(ok.sum())} sky samples for a degree-{degree} surface: lower the degree or the "
+                          f"number of samples")
+@@ -122,6 +118,28 @@ def fit_poly_sky(rgb: np.ndarray, valid: np.ndarray, degree: int, samples: int,
+             "candidate": ok, "used": np.array(used), "valid": vb.ravel(), "block": b}
+ 
+ 
++def sky_blocks(y: np.ndarray, valid: np.ndarray, A: np.ndarray, clip: float, shape: tuple[int, int],
++               iters: int = 50) -> np.ndarray:
++    """The sky among the block samples ``y`` (the valid ones, on a grid of ``shape``): the surface ``A`` fitted on
++    them, the samples more than ``clip`` sigmas above it left out, and again until it settles: the surface sinks to
++    the sky under the objects, whatever share of the field they cover. The sigma is the scatter of neighbouring
++    samples (1.4826 x the median of their differences / sqrt 2): the noise and the fine structure of the sky, not the
++    objects, which are smooth from one block to the next. Samples below the surface are all kept (the sky is there)."""
++    g = y.reshape(shape)
++    v = valid.reshape(shape)
++    dif = np.concatenate([(g[:, 1:] - g[:, :-1])[v[:, 1:] & v[:, :-1]], (g[1:] - g[:-1])[v[1:] & v[:-1]]])
++    s = 1.4826 * float(np.median(np.abs(dif - np.median(dif)))) / np.sqrt(2) + 1e-12 if dif.size else 0.0
++    m = valid.copy()
++    for _ in range(iters):
++        q = np.linalg.lstsq(A[m], y[m], rcond=None)[0]
++        r = y - A @ q
++        new = valid & (r < clip * s)
++        if new.sum() < 3 * A.shape[1] or (new == m).all():
++            break
++        m = new
++    return m
++
++
+ def poly_sky(coefs, degree: int, H: int, W: int) -> np.ndarray:
+     """The polynomial surfaces (3, H, W) float32 of ``coefs`` (on ``poly_terms``), evaluated exactly, by rows."""
+     u = np.arange(W, dtype=np.float64) / (W / 2) - 1
+@@ -157,7 +175,7 @@ class BackgroundPoly(Stage):
+                    "image.")
+     deps = ("stack", "color")
+     Params = BackgroundPolyParams
+-    version = "1"
++    version = "2"          # 2: the sky samples from the whole field (sky_blocks), not the darkest blocks of every cell
+ 
+     def run(self, ctx: Context, p: BackgroundPolyParams) -> None:
+         ctx.progress(0.05, "loading the stack")

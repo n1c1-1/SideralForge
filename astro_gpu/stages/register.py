@@ -34,7 +34,10 @@ class Register(Stage):
                    "transparency (star flux relative to the reference), used to weight or reject frames.")
     deps = ("calibrate",)
     Params = RegisterParams
-    version = "1"          # reg.npz's "roundness" is an extra array (same results): an older result lacks it
+    # reg.npz's "roundness" is an extra array (same results): an older result lacks it; 2: an affine map before the
+    # cubic (a frame turned by 0.7 degree with a 0.2 % change of scale locked on a third of its stars, 6 px off at
+    # the edges); the transparency from a fixed aperture (it followed the seeing); the pixel noise of each frame
+    version = "2"
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         n = max(1, min(12, (os.cpu_count() or 4) - 2))
@@ -46,18 +49,19 @@ class Register(Stage):
         meta = ctx.load_json("inventory", "frames.json")["lights"]
         cache_p = ctx.ckpt / "catalogs.pkl"
         got = pickle.loads(cache_p.read_bytes()) if cache_p.exists() else None
-        if got is not None and len(got) == 4:
-            cats, fwhm, rmsb, rnd = got
-        else:                                # no checkpoint, or one without the roundness: those frames again
+        if got is not None and len(got) == 5:
+            cats, fwhm, rmsb, rnd, noise = got
+        else:                                # no checkpoint, or one from an older version: those frames again
             cats, fwhm, rmsb, rnd = [None] * n, np.zeros(n), np.zeros(n), np.full(n, np.nan)
+            noise = np.full(n, np.nan)
         todo = [i for i in range(n) if cats[i] is None]
         if todo:
             init = (info["path"], n, H, W, p.detect_sigma, p.max_stars)
             with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
-                for c, (idx, cat, fw, rb, rd) in enumerate(pool.imap_unordered(_catalog, todo, chunksize=4)):
-                    cats[idx], fwhm[idx], rmsb[idx], rnd[idx] = cat, fw, rb, rd
+                for c, (idx, cat, fw, rb, rd, nz) in enumerate(pool.imap_unordered(_catalog, todo, chunksize=4)):
+                    cats[idx], fwhm[idx], rmsb[idx], rnd[idx], noise[idx] = cat, fw, rb, rd, nz
                     if (c + 1) % 50 == 0 or c + 1 == len(todo):
-                        cache_p.write_bytes(pickle.dumps((cats, fwhm, rmsb, rnd)))
+                        cache_p.write_bytes(pickle.dumps((cats, fwhm, rmsb, rnd, noise)))
                     ctx.progress(0.9 * (n - len(todo) + c + 1) / n, f"stars detected in {n - len(todo) + c + 1}/{n} frames")
         nst = np.array([len(c) for c in cats])
         if np.median(nst) < 30:
@@ -91,8 +95,17 @@ class Register(Stage):
                 ctx.log(f"{len(off)} frame(s) aligned with a residual above {lim:.1f} px are left out", "warning")
         if failed:
             ctx.log(f"{len(failed)} frame(s) could not be aligned and will be ignored, e.g. {failed[0]}", "warning")
+        # the transparency from the stars' flux in a fixed aperture (holding their light in every frame), not from
+        # their flux above the detection threshold, which follows the seeing: on Iris a frame of 5.3 px stars read
+        # 0.78 for 0.91 (its signal was scaled up 16 % too much, and its weight cut)
+        ap = aperture_column(np.nanpercentile(fwhm, 90) / 4.0)
+        for i in np.where(np.isfinite(rms))[0]:
+            t_ap = aperture_ratio(cats[i], refcat, tree, coef[i], W, H, ap)
+            if np.isfinite(t_ap):
+                transp[i] = t_ap
+        ctx.metric("photometry_aperture_px", 2 * APERTURES[ap - 4])
         np.savez(ctx.out("reg.npz"), coef=coef, fwhm=fwhm, transp=transp, nmatch=nmatch, rms=rms, ref=ref,
-                 nstars=nst, bkgrms=rmsb, roundness=rnd)
+                 nstars=nst, bkgrms=rmsb, roundness=rnd, noise=noise)
         ok = np.isfinite(rms)
         ctx.metric("reference_frame", os.path.basename(meta[ref]["path"]))
         ctx.metric("aligned", int(ok.sum()))
@@ -194,27 +207,58 @@ def fit_frame(cat, ref, tree, W, H):
 
 
 def _fit_from(cat, ref, tree, W, H, pred, tol):
-    """Cubic polynomial from a first guess of the frame's stars on the reference (pred), the matching tolerance
+    """Cubic polynomial from a first guess of the frame's stars on the reference (pred). An affine map first, at the
+    starting tolerance: it extends the matches from where the guess is right to the whole field (a guess from a shift
+    alone is right only near the centre of a turn: a cubic fitted there locked on a third of the stars, 6 px off at
+    the edges, for a turn of 0.7 degree with a 0.2 % change of scale); then the cubic, the matching tolerance
     shrinking with the residuals."""
     T = poly_terms(cat[:, 0], cat[:, 1], W, H)
     cx = cy = None
-    for _ in range(6):
+    for it in range(7):
+        k = 3 if it < 3 else T.shape[1]
         d, j = tree.query(pred, distance_upper_bound=tol)
         m = np.isfinite(d)
         if m.sum() < 30:
             return None
-        A = T[m]
+        A = T[m, :k]
         tgt = ref[j[m], :2]
-        cx = np.linalg.lstsq(A, tgt[:, 0], rcond=None)[0]
-        cy = np.linalg.lstsq(A, tgt[:, 1], rcond=None)[0]
+        cx = np.zeros(T.shape[1])
+        cy = np.zeros(T.shape[1])
+        cx[:k] = np.linalg.lstsq(A, tgt[:, 0], rcond=None)[0]
+        cy[:k] = np.linalg.lstsq(A, tgt[:, 1], rcond=None)[0]
         pred = np.c_[T @ cx, T @ cy]
         res = np.hypot(*(pred[m] - tgt).T)
-        tol = max(0.8, min(tol, 4 * np.median(res) * 1.4826))
+        if k == T.shape[1]:
+            tol = max(0.8, min(tol, 4 * np.median(res) * 1.4826))
     d, j = tree.query(pred, distance_upper_bound=tol)
     m = np.isfinite(d)
     rms = float(np.sqrt(np.mean(d[m] ** 2)))
     ratio = np.median(cat[m, 2] / ref[j[m], 2])
     return np.stack([cx, cy]), int(m.sum()), rms, float(ratio)
+
+
+#: radii (super-pixels) of the apertures the stars' flux is measured in; the catalogue's columns 4 onwards
+APERTURES = (3.0, 5.0, 8.0, 12.0)
+
+
+def aperture_column(hfr_sp: float) -> int:
+    """The catalogue column of the smallest aperture of at least 3 half-flux radii of the larger stars (``hfr_sp``,
+    super-pixels): it holds nearly all their light whatever the seeing."""
+    for k, r in enumerate(APERTURES):
+        if r >= 3 * hfr_sp:
+            return 4 + k
+    return 4 + len(APERTURES) - 1
+
+
+def aperture_ratio(cat, ref, tree, coef, W, H, col: int) -> float:
+    """Median flux ratio (frame / reference) of the stars matched within 1.5 px through the frame's polynomial, in
+    the aperture column ``col``; NaN when fewer than 10 stars have it in both."""
+    u, v = apply_poly(coef, cat[:, 0], cat[:, 1], W, H)
+    d, j = tree.query(np.c_[u, v], distance_upper_bound=1.5)
+    m = np.isfinite(d)
+    a, b = cat[m, col], ref[j[m], col]
+    ok = np.isfinite(a) & np.isfinite(b) & (a > 0) & (b > 0)
+    return float(np.median(a[ok] / b[ok])) if ok.sum() >= 10 else float("nan")
 
 
 def quality_plot(meta, fwhm, transp, ok):
@@ -256,15 +300,24 @@ def _catalog(idx):
     o = sep.extract(x, _G["k"], err=rms, minarea=4, mask=mask, deblend_cont=0.005)
     o = o[(o["flag"] == 0) & (o["npix"] < 200)]
     o = np.sort(o, order="flux")[::-1][: _G["nmax"]]
+    # the noise of the frame: adjacent super-pixels differ by their noise only (the sky and the objects larger than
+    # a few pixels cancel; the stars are a minority the median ignores)
+    dd = (x[:, 1:] - x[:, :-1])[::3, ::3]
+    dd = dd[np.isfinite(dd) & ~mask[::3, :-1][:, ::3][: dd.shape[0], : dd.shape[1]]]
+    noise = float(1.4826 * np.median(np.abs(dd - np.median(dd))) / np.sqrt(2)) if dd.size else float("nan")
     if len(o) == 0:
-        return idx, np.zeros((0, 4)), 0.0, float(rms), float("nan")
+        return idx, np.zeros((0, 4 + len(APERTURES))), 0.0, float(rms), float("nan"), noise
     xw, yw, _ = sep.winpos(x, o["x"], o["y"], np.full(len(o), 0.9))
     hfr, _ = sep.flux_radius(x, xw, yw, np.full(len(o), 5.0), 0.5, subpix=5)
-    cat = np.c_[2 * xw + 0.5, 2 * yw + 0.5, o["flux"], hfr]       # sensor coordinates
-    fin = np.isfinite(cat).all(1)
+    aps = []
+    for r in APERTURES:
+        f, _, fl = sep.sum_circle(x, xw, yw, r, mask=mask, bkgann=(r + 2.0, r + 6.0))
+        aps.append(np.where(fl == 0, f, np.nan))
+    cat = np.c_[2 * xw + 0.5, 2 * yw + 0.5, o["flux"], hfr, *aps]   # sensor coordinates
+    fin = np.isfinite(cat[:, :4]).all(1)
     cat = cat[fin]
     fwhm = 2.0 * 2.0 * np.median(cat[:300, 3])                     # super-pixel HFR -> sensor FWHM (gaussian)
-    return idx, cat.astype(np.float64), float(fwhm), float(rms), _roundness(o[fin][:300])
+    return idx, cat.astype(np.float64), float(fwhm), float(rms), _roundness(o[fin][:300]), noise
 
 
 def _roundness(o) -> float:

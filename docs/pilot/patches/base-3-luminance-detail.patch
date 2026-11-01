@@ -1,0 +1,112 @@
+diff --git a/astro_gpu/stages/stack.py b/astro_gpu/stages/stack.py
+index 6a485af..7dfdb85 100644
+--- a/astro_gpu/stages/stack.py
++++ b/astro_gpu/stages/stack.py
+@@ -74,6 +74,16 @@ class StackParams(StageParams):
+     pattern_frames: int = P(48, label="Frames for the pattern reference", level=ADVANCED, ge=8, le=400,
+                             help="Number of frames, evenly spread over the session, whose median is the first estimate "
+                                  "of the fixed pattern; the final estimate uses all frames around it.")
++    colour_from_luminance: bool = P(True, label="Fine detail from all colours", level=ADVANCED,
++                                    help="A colour sensor samples red and blue on one pixel in four, green on one in "
++                                         "two: at the finest scale each colour alone is noisy, while the three together "
++                                         "(the luminance) are sampled on every pixel. As a debayering does, the noise "
++                                         "finer than about a pixel of the sensor is taken from the luminance (all the "
++                                         "samples, each colour weighted by its noise), in the colour of its "
++                                         "surroundings; the stars and each colour's own light at that scale are kept. "
++                                         "Less colour grain, the same sharpness and star colours.",
++                                    tip="Off: each colour keeps its own finest detail (with many well-dithered frames "
++                                        "the drizzle resolves it, at the cost of more colour grain).")
+     exclude: list[str] = P([], label="Frames excluded by hand", level=INTERNAL,
+                            help="Light frames left out of the stack whatever their quality (their files). Set by the "
+                                 "project from the frames the user excluded; not a setting of its own.")
+@@ -382,12 +392,31 @@ class Stack(Stage):
+             return torch.where(a[1].view(3, Ho, Wo) > 0, img, torch.zeros_like(img)).cpu().numpy()
+ 
+         full = [accA[0] + accB[0], accA[1] + accB[1]]
++        in_a = {int(i): (int(i) // p.half_block) % 2 == 0 for i in used}
++        w_a = float(sum(weight[i] for i in used if in_a[int(i)]))
++        w_b = float(sum(weight[i] for i in used if not in_a[int(i)]))
++        step = noise_step(Ho, Wo)
++        fine = None
++        if p.colour_from_luminance:
++            # the noise of each colour, from the half-stacks, weighs it in the luminance
++            hs = [finish(acc)[:, ::step, ::step] for acc in (accA, accB)]
++            nz = halves_noise(hs[0], hs[1], w_a, w_b)
++            del hs
++            sig = np.array([nz[c] for c in "RGB"], float)
++            if np.isfinite(sig).all() and (sig > 0).all():
++                fine = (sig, S)
++                ctx.log("fine detail from the luminance; noise of the colours " +
++                        ", ".join(f"{c} {v:.2f}" for c, v in zip("RGB", sig)))
++        cover = (full[1].view(3, Ho, Wo) > 0).all(0)
+         drz = finish(full)
++        if fine is not None:
++            drz = luminance_detail(drz, cover, *fine, dev)
+         ctx.save("drz_full.npy", drz)
+-        step = noise_step(Ho, Wo)
+         halves = []                              # a sample of each half-stack: the noise of the result
+         for name, acc in (("drz_A.npy", accA), ("drz_B.npy", accB)):
+             img = finish(acc)
++            if fine is not None:
++                img = luminance_detail(img, cover, *fine, dev)
+             ctx.save(name, img)
+             halves.append(img[:, ::step, ::step].copy())
+             del img
+@@ -397,9 +426,6 @@ class Stack(Stage):
+         ctx.save_json("drz_meta.json", {"scale": S, "pixfrac": PIX, "n": int(len(used)), "reject_pct": rej_pct,
+                                         "width": Wo, "height": Ho, "sensor": [W, H]})
+         rmap.save(ctx.out(REJECTION))
+-        in_a = {int(i): (int(i) // p.half_block) % 2 == 0 for i in used}
+-        w_a = float(sum(weight[i] for i in used if in_a[int(i)]))
+-        w_b = float(sum(weight[i] for i in used if not in_a[int(i)]))
+         frames_d = []
+         for i in used:
+             q, sky = norm[int(i)]
+@@ -657,6 +683,47 @@ def reject(val, pr: dict, sat, bad, grad, chmap, t: float, p: "StackParams", kap
+     return hi, lo, inside
+ 
+ 
++#: the scale (sensor pixels, Gaussian sigma) below which a stack's detail comes from its luminance
++DETAIL_SCALE = 1.0
++
++
++def luminance_detail(img: np.ndarray, cover: torch.Tensor, sig: np.ndarray, S: float, dev) -> np.ndarray:
++    """The detail of a stack (3, H, W) finer than DETAIL_SCALE sensor pixels taken from its luminance, in each
++    place's colour; each colour's own light at that scale kept.
++
++    Each colour is split at a Gaussian of DETAIL_SCALE sensor pixels (x ``S`` output pixels): its fine part ``hp``
++    is replaced by the fine part of the luminance (the colours' fine parts weighted by their colour ``lp`` over their
++    noise ``sig`` squared: the least noisy estimate of a detail of that colour) times the colour, where that detail is
++    noise: the change is weighted by noise / (noise + detail), the detail's power measured on the luminance's fine
++    part around the pixel, its noise from the colours' noise (a constant fitted on the image). Then what the change
++    did at the scale of the split is taken back: each colour keeps its own light there (the aperture photometry of a
++    star, its colour). A star keeps its own fine colour and shape; the finest noise of the sky becomes the
++    luminance's, shared by the three colours: less colour grain, the same sharpness. Without the weighting the
++    colours of Heart's stars moved by 0.01 mag; without taking back, by 0.08. As a debayering does per frame (the
++    colour ratios vary slowly over a pixel), once on the stack. Outside ``cover`` the stack is unchanged."""
++    x = torch.from_numpy(np.ascontiguousarray(img)).to(dev)
++    vf = cover.float()
++    sg = DETAIL_SCALE * float(S)
++    nrm = _gauss(vf, sg).clamp(min=1e-6)
++    lp = torch.stack([_gauss(x[c] * vf, sg) / nrm for c in range(3)])
++    hp = x - lp
++    k = lp.clamp(min=0)
++    w = k / torch.tensor(sig, device=dev, dtype=torch.float32)[:, None, None] ** 2
++    q = (w * k).sum(0).clamp(min=1e-12)
++    lum = (w * hp).sum(0) / q
++    del w
++    # the detail's signal to noise: its power around the pixel over its noise (1 / q times a constant, the median of
++    # lum^2 q over the image, where noise dominates, / 0.4549, the median of a chi-square of one degree)
++    c0 = float((lum ** 2 * q)[cover][::7].median()) / 0.4549
++    snr2 = _gauss(lum ** 2 * vf, sg) / nrm * q / max(c0, 1e-30) - 1
++    alpha = 1 / (1 + snr2.clamp(min=0))
++    change = alpha[None] * (k * lum[None] - hp)
++    del lp, hp, lum, q, snr2, alpha
++    change -= torch.stack([_gauss(change[c] * vf, sg) / nrm for c in range(3)])
++    out = torch.where(cover[None], x + change, x)
++    return out.cpu().numpy()
++
++
+ class RejectionMap:
+     """The samples the second pass rejects, counted on the output grid, low and high apart: each sample at the output
+     pixel nearest to where it lands, the grid reduced by a whole factor ``f`` so that its longer side is at most

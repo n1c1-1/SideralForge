@@ -1,0 +1,277 @@
+diff --git a/astro_gpu/stages/color.py b/astro_gpu/stages/color.py
+index 9754be9..9b2025c 100644
+--- a/astro_gpu/stages/color.py
++++ b/astro_gpu/stages/color.py
+@@ -64,7 +64,10 @@ class Color(Stage):
+                    "nebulae are anchored on the true colour of an H-alpha + H-beta + [NII] + [SII] spectrum.")
+     deps = ("catalogs", "stack", "register")
+     Params = ColorParams
+-    version = "2"          # 2: physical check, camera profiles, synthetic spectra in the matrix fit
++    # 2: physical check, camera profiles, synthetic spectra in the matrix fit; 3: a star is left out when a sample of
++    # its aperture was near saturation in a frame (the stack's map), not when its peak passes 45 % of the brightest
++    # pixel (on heart_a7s that left out 1121 of 4000 stars; on m8, half of them had no sample above 65 %)
++    version = "3"
+ 
+     def auto(self, ctx: Context) -> dict[str, Auto]:
+         try:
+@@ -80,7 +83,7 @@ class Color(Stage):
+         img = ctx.load("stack", "drz_full.npy").astype(np.float32)
+         xp = np.load(ctx.input("catalogs", "gaia_xp.npz"))
+         lam = xp["lam"]
+-        table, star_why = colour_star_table(img, xp["x"], xp["y"], p.aperture)
++        table, star_why = colour_star_table(img, xp["x"], xp["y"], p.aperture, saturation_map(ctx))
+         idx = np.where(star_why == "")[0]
+         cam = table[idx]
+         if len(idx) < 50:
+@@ -178,10 +181,22 @@ class Color(Stage):
+         ctx.preview("spectral_response", response_plot(lam, S, len(idx)))
+ 
+ 
+-def colour_stars(img, x, y, aperture):
++def saturation_map(ctx: Context, clipped: bool = False) -> np.ndarray | None:
++    """The stack's map of the pixels with samples near saturation (``stack.SATURATION``, layer 0), or with clipped
++    samples (``clipped``, layer 1); None for a stack made before it kept one."""
++    from .stack import SATURATION
++    try:
++        f = Path(ctx.input("stack", SATURATION))
++    except StageError:
++        return None
++    return np.load(f)[1 if clipped else 0] if f.is_file() else None
++
++
++def colour_stars(img, x, y, aperture, sat=None):
+     """The colour stars of a stack: the catalogue stars at (x, y) away from the edges, measured in the aperture,
+-    positive in every channel and unsaturated. Returns (their indices in x, their camera fluxes (N, 3))."""
+-    flux, why = colour_star_table(img, x, y, aperture)
++    positive in every channel and unsaturated (``colour_star_table``). Returns (their indices in x, their camera
++    fluxes (N, 3))."""
++    flux, why = colour_star_table(img, x, y, aperture, sat)
+     ok = why == ""
+     return np.where(ok)[0], flux[ok]
+ 
+@@ -190,17 +205,28 @@ def colour_stars(img, x, y, aperture):
+ STAR_REASONS = {"edge": "within 50 px of the edge of the stack",
+                 "not_finite": "no measure (empty pixels in its aperture)",
+                 "not_positive": "no positive flux in every channel (faint or on a dark background)",
+-                "saturated": "saturated or near saturation (peak above 45 % of the brightest pixels)"}
++                "saturated": "saturated or near saturation in at least one frame"}
+ 
+ 
+-def colour_star_table(img, x, y, aperture):
++def colour_star_table(img, x, y, aperture, sat=None):
+     """Every catalogue star at (x, y) as ``colour_stars`` judges it: (camera fluxes (N, 3), NaN for the stars too close
+-    to the edge to be measured; why each one is left out, '' for a colour star, else a key of STAR_REASONS)."""
++    to the edge to be measured; why each one is left out, '' for a colour star, else a key of STAR_REASONS).
++
++    Saturated: with the stack's map ``sat`` (``saturation_map``), a sample near saturation within the aperture (one
++    pixel more); without it (a stack made before it kept one), a peak above 45 % of the brightest pixels."""
+     Hh, Ww = img.shape[1:]
+     m = (x > 50) & (x < Ww - 50) & (y > 50) & (y < Hh - 50)
+     flux, peak = star_photometry(img, np.c_[x[m], y[m]], aperture)
+-    chmax = np.array([np.nanpercentile(img[c], 99.999) for c in range(3)])
+-    ok = (flux > 0).all(1) & (peak < 0.45 * chmax).all(1) & np.isfinite(flux).all(1)
++    if sat is not None and sat.shape == (Hh, Ww):
++        from scipy.ndimage import maximum_filter
++        r = int(np.ceil(aperture)) + 1
++        yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
++        near = maximum_filter(np.asarray(sat) > 0, footprint=xx ** 2 + yy ** 2 <= r * r)
++        unsat = ~near[np.round(y[m]).astype(int), np.round(x[m]).astype(int)]
++    else:
++        chmax = np.array([np.nanpercentile(img[c], 99.999) for c in range(3)])
++        unsat = (peak < 0.45 * chmax).all(1)
++    ok = (flux > 0).all(1) & unsat & np.isfinite(flux).all(1)
+     why_m = np.where(~np.isfinite(flux).all(1), "not_finite",
+                      np.where(~(flux > 0).all(1), "not_positive", np.where(~ok, "saturated", "")))
+     out = np.full((len(x), 3), np.nan)
+diff --git a/astro_gpu/stages/render_simple.py b/astro_gpu/stages/render_simple.py
+index 1a9408d..37c0240 100644
+--- a/astro_gpu/stages/render_simple.py
++++ b/astro_gpu/stages/render_simple.py
+@@ -87,7 +87,7 @@ def emission_matrix(ctx: Context, M: np.ndarray, stack: np.ndarray, valid: np.nd
+     denoiser and Gradient settings do not change it: Classic and Classic + denoise get the same matrix.
+     Returns (matrix, measured emission colour or None, weight)."""
+     from .background_poly import BackgroundPolyParams, fit_poly_sky, poly_sky
+-    from .color import colour_stars
++    from .color import colour_stars, saturation_map
+     try:
+         cam_hii = np.load(ctx.input("color", "specresp.npz"))["cam_hii"].astype(np.float64)
+         xp = np.load(ctx.input("catalogs", "gaia_xp.npz"))
+@@ -96,7 +96,7 @@ def emission_matrix(ctx: Context, M: np.ndarray, stack: np.ndarray, valid: np.nd
+     if not np.isfinite(cam_hii).all() or cam_hii[0] <= 0:
+         return M, None, 0.0
+     aperture = float(ctx.manifest("color").get("params", {}).get("aperture", 5.0))
+-    _, F = colour_stars(stack, xp["x"], xp["y"], aperture)
++    _, F = colour_stars(stack, xp["x"], xp["y"], aperture, saturation_map(ctx))
+     if len(F) < 50:
+         return M, None, 0.0
+     bp = BackgroundPolyParams()
+@@ -111,6 +111,36 @@ def emission_matrix(ctx: Context, M: np.ndarray, stack: np.ndarray, valid: np.nd
+     return Ma, e, w
+ 
+ 
++def repair_saturated(lin: np.ndarray, sat: np.ndarray, valid: np.ndarray, ring_px: float) -> tuple[np.ndarray, int]:
++    """The colour of the places with clipped samples (``sat`` > 0, the stack's map: star cores), which is not
++    measured there: a channel clipped in some frames and not in others, or the colours of a star landing a
++    fraction of a pixel apart, gave the cores of the bright stars a coloured disc or a blue-cyan crescent. Each place
++    (a connected region, grown by a pixel) takes the colour of the light just around it (the unsaturated pixels within
++    ``ring_px``, sky removed, weighted by their brightness), at the lowest brightness that every channel allows (a
++    clipped channel is a lower bound). In place on ``lin`` (3, H, W); returns (lin, number of places)."""
++    from scipy import ndimage as ndi
++    reg = ndi.binary_dilation(np.asarray(sat) > 0, iterations=1) & valid
++    lab, n = ndi.label(reg)
++    if n == 0:
++        return lin, 0
++    dist, (iy, ix) = ndi.distance_transform_edt(lab == 0, return_indices=True)
++    ring = (dist <= ring_px) & (lab == 0) & valid
++    near = lab[iy, ix]
++    idx = np.arange(1, n + 1)
++    sums = np.stack([ndi.sum_labels(lin[c], np.where(ring, near, 0), idx) for c in range(3)], 1)   # (n, 3)
++    tot = sums.sum(1)
++    col = np.where(tot[:, None] > 0, np.clip(sums, 0, None) / np.maximum(tot, 1e-30)[:, None], np.nan)
++    ok = np.isfinite(col).all(1) & (tot > 0)
++    col = np.vstack([np.full((1, 3), np.nan), col])          # label 0: none
++    inside = reg & ok[np.maximum(lab - 1, 0)] & (lab > 0)
++    c = col[lab[inside]]                                     # (m, 3)
++    v = lin[:, inside].T                                     # (m, 3)
++    I = np.max(np.where(c > 0.02, v / np.maximum(c, 1e-6), -np.inf), axis=1)
++    I = np.maximum(I, 0)
++    lin[:, inside] = (I[:, None] * c).T.astype(lin.dtype)
++    return lin, int(ok.sum())
++
++
+ class RenderSimpleParams(StageParams):
+     stretch: str = P("auto", label="Stretch", choices=STRETCHES,
+                      help="How the linear image is brought to the screen. 'auto': an automatic stretch from the "
+@@ -136,8 +166,9 @@ class RenderSimple(Stage):
+                    "stretch. Post renders it with its sliders (sky, contrast, saturation, noise).")
+     deps = ("stack",)
+     Params = RenderSimpleParams
+-    version = "3"          # 2: the emission anchor of render_prep (the H-alpha of Classic was violet on heart_a7s);
+-                           # 3: the Raw stack exit's sky made grey (it had the green of the light pollution)
++    version = "4"          # 2: the emission anchor of render_prep (the H-alpha of Classic was violet on heart_a7s);
++                           # 3: the Raw stack exit's sky made grey (it had the green of the light pollution);
++                           # 4: the colour of the places near saturation from their surroundings (repair_saturated)
+ 
+     def run(self, ctx: Context, p: RenderSimpleParams) -> None:
+         from ..render.simple import SimpleRenderEngine, SimpleSettings, image_stats
+@@ -185,6 +216,14 @@ class RenderSimple(Stage):
+                         + (f"; rendered with the colour of an HII spectrum (weight {w:.2f}), the star colours "
+                            f"unchanged" if w > 0 else " - within the colours of the stars: matrix unchanged"))
+         del src
++        from .color import saturation_map
++        sat = saturation_map(ctx, clipped=True)
++        if sat is not None and sat.shape == valid.shape:
++            S = float(ctx.load_json("stack", "drz_meta.json").get("scale", 1.0))
++            lin, n_sat = repair_saturated(lin, sat, valid, 3.0 * S)
++            ctx.metric("saturated_places", n_sat)
++            if n_sat:
++                ctx.log(f"{n_sat} clipped places (star cores) take the colour of their surroundings")
+         gains = np.ones(3)
+         if not color:
+             # the camera's channels have different sensitivities: scaled to the same spread of the sky, the stretch
+diff --git a/astro_gpu/stages/stack.py b/astro_gpu/stages/stack.py
+index 79f5838..1b9c7e0 100644
+--- a/astro_gpu/stages/stack.py
++++ b/astro_gpu/stages/stack.py
+@@ -22,6 +22,12 @@ EXCLUDED = "excluded by hand"
+ #: grid (REJECTION)
+ DIAG = "diagnostics.json"
+ REJECTION = "rejection.npz"
++#: per output pixel, the share (0-255) of its samples near saturation (NEAR_SATURATION; layer 0: the colour
++#: calibration leaves those stars out) and of its clipped samples (layer 1: the simple output gives those cores the
++#: colour of their surroundings), the most of the three colours
++SATURATION = "saturation.npy"
++#: a raw value above this fraction of the saturation level is near saturation (the response bends before it clips)
++NEAR_SATURATION = 0.85
+ #: the rejection maps are reduced by a whole factor until their longer side is at most this
+ REJECTION_SIDE = 4096
+ 
+@@ -303,13 +309,14 @@ class Stack(Stage):
+             grad = (Qs.permute(2, 0, 1) * terms).sum(0)
+             sat = fr > VALID_MAX
+             bad = torch.isnan(fr)
++            near = sat | (fr > NEAR_SATURATION * satval)
+             val = torch.where(sat, satval, fr)
+             val = (val - grad) / transp[i]
+             Xo, Yo = (X + 0.5) * S - 0.5, (Y + 0.5) * S - 0.5
+             if chan_fix is not None:                  # each colour's own image placed on the green one
+                 dx, dy = chan_fix.at(Xo, Yo, chmap)
+                 Xo, Yo = Xo - dx, Yo - dy
+-            return val, Xo, Yo, sat, bad, grad, bkg_level
++            return val, Xo, Yo, sat, bad, grad, bkg_level, near
+ 
+         def deposit(num, den, val, Xo, Yo, w, keep):
+             v = val[keep]
+@@ -326,14 +333,15 @@ class Stack(Stage):
+                     ok = (ww > 0) & (jx >= 0) & (jx < Wo) & (iy >= 0) & (iy < Ho)
+                     idx = c[ok] * (Ho * Wo) + iy[ok].long() * Wo + jx[ok].long()
+                     num.index_add_(0, idx, v[ok] * ww[ok])
+-                    den.index_add_(0, idx, ww[ok])
++                    if den is not None:
++                        den.index_add_(0, idx, ww[ok])
+ 
+         chan_fix = None
+         # ---------------- pass 1: weighted mean (the first prediction)
+         num = torch.zeros(3 * Ho * Wo, device=dev)
+         den = torch.zeros(3 * Ho * Wo, device=dev)
+         for c_, i in enumerate(used):
+-            val, Xo, Yo, sat, bad, _, _ = frame_model(i)
++            val, Xo, Yo, sat, bad, _, _, _ = frame_model(i)
+             deposit(num, den, val, Xo, Yo, float(weight[i]), ~bad)
+             ctx.progress(0.3 * (c_ + 1) / len(used), f"pass 1: {c_ + 1}/{len(used)} frames")
+         model = Prediction(num, den, len(used), Ho, Wo, dev)
+@@ -350,17 +358,17 @@ class Stack(Stage):
+ 
+         def judge(i, model, kappa, edge, diag=None):
+             """The samples of frame i rejected against the prediction ``model`` (``reject``)."""
+-            val, Xo, Yo, sat, bad, grad, _ = frame_model(i)
++            val, Xo, Yo, sat, bad, grad, _, near = frame_model(i)
+             pr = model.sample(Xo, Yo, chmap)
+             hi, lo, inside = reject(val, pr, sat, bad, grad, chmap, float(transp[i]), p, kappa, edge, diag)
+-            return val, Xo, Yo, bad, hi, lo, inside
++            return val, Xo, Yo, bad, hi, lo, inside, near, sat
+ 
+         # ---------------- pass 2: the strong outliers (satellites, planes, cosmic rays, hot pixels) left out of the
+         # prediction, so that the final pass does not judge the other frames against a mean they pulled up or down
+         num = torch.zeros(3 * Ho * Wo, device=dev)
+         den = torch.zeros(3 * Ho * Wo, device=dev)
+         for c_, i in enumerate(used):
+-            val, Xo, Yo, bad, hi, lo, _ = judge(i, model, CLEAN_FACTOR * p.kappa, False)
++            val, Xo, Yo, bad, hi, lo, _, _, _ = judge(i, model, CLEAN_FACTOR * p.kappa, False)
+             deposit(num, den, val, Xo, Yo, float(weight[i]), ~bad & ~hi & ~lo)
+             ctx.progress(0.3 + 0.3 * (c_ + 1) / len(used), f"pass 2: {c_ + 1}/{len(used)} frames")
+         model = model.cleaned(num, den)
+@@ -373,9 +381,11 @@ class Stack(Stage):
+         rmap = RejectionMap(Ho, Wo, dev)
+         rej_frames: dict[int, tuple[int, int, int]] = {}
+         judged: dict[int, dict] = {}
++        near_acc = torch.zeros(3 * Ho * Wo, device=dev)     # the weight of the samples near saturation
++        clip_acc = torch.zeros(3 * Ho * Wo, device=dev)     # and of the clipped ones
+         for c_, i in enumerate(used):
+             rows: list = []
+-            val, Xo, Yo, bad, hi, lo, inside = judge(i, model, p.kappa, True, rows)
++            val, Xo, Yo, bad, hi, lo, inside, near, sat = judge(i, model, p.kappa, True, rows)
+             judged[int(i)] = rows[0]
+             keep = ~bad & ~hi & ~lo
+             rej_tot += int((hi | lo).sum())
+@@ -383,6 +393,9 @@ class Stack(Stage):
+             rej_frames[int(i)] = rmap.add(Xo, Yo, hi, lo)
+             acc = accA if (i // p.half_block) % 2 == 0 else accB
+             deposit(acc[0], acc[1], val, Xo, Yo, float(weight[i]), keep)
++            if near.any():
++                deposit(near_acc, None, near.float(), Xo, Yo, float(weight[i]), keep & near)
++                deposit(clip_acc, None, sat.float(), Xo, Yo, float(weight[i]), keep & sat)
+             ctx.progress(0.6 + 0.4 * (c_ + 1) / len(used), f"pass 3: {c_ + 1}/{len(used)} frames, "
+                                                           f"rejected {100 * rej_tot / max(tested, 1):.2f} %")
+         del model
+@@ -421,6 +434,10 @@ class Stack(Stage):
+             halves.append(img[:, ::step, ::step].copy())
+             del img
+         ctx.save("drz_weight.npy", full[1].view(3, Ho, Wo).cpu().numpy())
++        frac = torch.stack([(a / full[1].clamp(min=1e-12)).view(3, Ho, Wo).amax(0) for a in (near_acc, clip_acc)])
++        ctx.save(SATURATION, torch.ceil(255 * frac.clamp(0, 1)).to(torch.uint8).cpu().numpy())
++        ctx.metric("near_saturation_pct", round(100 * float((frac[0] > 0).float().mean()), 4))
++        del near_acc, clip_acc, frac
+         rej_pct = 100 * rej_tot / max(tested, 1)          # of the samples landing on the stack (the others: no data)
+         ctx.metric("rejected_pct", round(rej_pct, 3))
+         ctx.save_json("drz_meta.json", {"scale": S, "pixfrac": PIX, "n": int(len(used)), "reject_pct": rej_pct,

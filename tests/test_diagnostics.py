@@ -303,7 +303,7 @@ def test_registration_measures_the_roundness_of_the_stars(tmp_path, sx, sy, lo, 
     mm.flush()
     del mm
     reg._init(str(f), 1, H, W, 8.0, 2500)
-    idx, cat, fwhm, rms, rnd = reg._catalog(0)
+    idx, cat, fwhm, rms, rnd, _ = reg._catalog(0)
     reg._G.clear()
     assert idx == 0 and len(cat) >= 30 and lo < rnd < hi
 
@@ -379,18 +379,20 @@ def test_the_stack_keeps_its_rejection_maps_low_and_high(stacked):
     frames = json.loads((d / DIAG).read_text())["frames"]           # the counts of the frames are the maps'
     assert int(high.sum()) == sum(x["rejected_high"] for x in frames)
     assert int(low.sum()) == sum(x["rejected_low"] for x in frames)
-    assert sum(x["rejected_outside"] for x in frames) > 0            # the margins the shifts uncover
+    # a sample with nothing to be compared with (the margins the shifts uncover) is never rejected
+    assert sum(x["rejected_outside"] for x in frames) == 0
     row = 60 - shifts[2][1]                                         # the satellite, on the reference grid
     along = high[row - 1:row + 2].sum(0)
-    assert (along[5:-5] > 0).mean() > 0.9                           # the whole trail, dilated by one pixel
+    assert (along[5:-5] > 0).mean() > 0.9                           # the whole trail, with its edges
     hy, hx = 30 - shifts[4][1], 90 - shifts[4][0]                   # the hole of frame 4
     assert low[hy:hy + 6, hx:hx + 6].sum() >= 20 and low.sum() - low[hy:hy + 6, hx:hx + 6].sum() < 20
-    # high rejections elsewhere: the outer rows and columns of the grid (the prediction there is half zero padding)
-    # and around the hole (it pulled the first-pass mean down, so the other frames look high there)
+    # no high rejection elsewhere, not on the outer rows and columns of the grid (the prediction there was half zero
+    # padding before version 4); only around the hole, where with these whole-pixel shifts a colour of a pixel holds
+    # the samples of two frames only, the hole's and one other (with real dithering the cleaned prediction holds there)
     inner = high.astype(int)
-    inner[:2], inner[-2:], inner[:, :2], inner[:, -2:] = 0, 0, 0, 0
-    around = inner[hy - 6:hy + 12, hx - 6:hx + 12].sum()
-    assert inner.sum() - inner[row - 1:row + 2].sum() - around < 0.02 * inner.sum()
+    inner[row - 1:row + 2] = 0
+    inner[hy - 6:hy + 12, hx - 6:hx + 12] = 0
+    assert inner.sum() == 0
 
 
 def test_the_stack_keeps_the_normalisation_of_each_frame_and_the_noise_of_the_result(stacked):

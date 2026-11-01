@@ -1,0 +1,173 @@
+diff --git a/astro_gpu/stages/stack.py b/astro_gpu/stages/stack.py
+index b7ecab1..6a485af 100644
+--- a/astro_gpu/stages/stack.py
++++ b/astro_gpu/stages/stack.py
+@@ -295,7 +295,11 @@ class Stack(Stage):
+             bad = torch.isnan(fr)
+             val = torch.where(sat, satval, fr)
+             val = (val - grad) / transp[i]
+-            return val, (X + 0.5) * S - 0.5, (Y + 0.5) * S - 0.5, sat, bad, grad, bkg_level
++            Xo, Yo = (X + 0.5) * S - 0.5, (Y + 0.5) * S - 0.5
++            if chan_fix is not None:                  # each colour's own image placed on the green one
++                dx, dy = chan_fix.at(Xo, Yo, chmap)
++                Xo, Yo = Xo - dx, Yo - dy
++            return val, Xo, Yo, sat, bad, grad, bkg_level
+ 
+         def deposit(num, den, val, Xo, Yo, w, keep):
+             v = val[keep]
+@@ -314,6 +318,7 @@ class Stack(Stage):
+                     num.index_add_(0, idx, v[ok] * ww[ok])
+                     den.index_add_(0, idx, ww[ok])
+ 
++        chan_fix = None
+         # ---------------- pass 1: weighted mean (the first prediction)
+         num = torch.zeros(3 * Ho * Wo, device=dev)
+         den = torch.zeros(3 * Ho * Wo, device=dev)
+@@ -323,6 +328,15 @@ class Stack(Stage):
+             ctx.progress(0.3 * (c_ + 1) / len(used), f"pass 1: {c_ + 1}/{len(used)} frames")
+         model = Prediction(num, den, len(used), Ho, Wo, dev)
+         del num, den
++        # ---------------- the colours registered on each other: the offsets of the red and blue images of the stars
++        # from the green one (lateral chromatic aberration, atmospheric dispersion), measured on the first mean
++        chan_fix = ChannelOffsets.measure(model, float(satval.median()), S, float(np.median(fwhm)))
++        ctx.metric("channel_offsets", chan_fix.summary())
++        ctx.log(chan_fix.describe())
++        if chan_fix.applied:
++            model.shift_channels(chan_fix)
++        else:
++            chan_fix = None
+ 
+         def judge(i, model, kappa, edge, diag=None):
+             """The samples of frame i rejected against the prediction ``model`` (``reject``)."""
+@@ -460,6 +474,19 @@ class Prediction:
+                 self.cover[c] = n * d[c] / med
+         self.bkg, self.floor = smooth_background(self.M, self.valid)
+ 
++    def shift_channels(self, fix: "ChannelOffsets") -> None:
++        """The red and blue images of the mean moved onto the green one (``fix``), where the following passes place
++        their samples."""
++        yy, xx = torch.meshgrid(torch.arange(self.Ho, device=self.M.device, dtype=torch.float32),
++                                torch.arange(self.Wo, device=self.M.device, dtype=torch.float32), indexing="ij")
++        for c in (0, 2):
++            dx, dy = fix.at(xx, yy, torch.full_like(xx, c, dtype=torch.long))
++            grid = torch.stack([(xx + dx + 0.5) / self.Wo * 2 - 1, (yy + dy + 0.5) / self.Ho * 2 - 1], -1)[None]
++            del dx, dy
++            num = F.grid_sample((self.M[c] * self.valid[c])[None, None], grid, mode="bilinear", align_corners=False)
++            w = F.grid_sample(self.valid[c].float()[None, None], grid, mode="bilinear", align_corners=False)
++            self.M[c] = torch.where(w[0, 0] > 0.5, num[0, 0] / w[0, 0].clamp(min=1e-6), self.M[c])
++
+     def cleaned(self, num: torch.Tensor, den: torch.Tensor) -> "Prediction":
+         """The same prediction with the mean of the samples ``num`` / ``den`` kept by a rejection (its coverage and
+         background are the first mean's)."""
+@@ -484,6 +511,111 @@ class Prediction:
+                 "floor": floor}
+ 
+ 
++class ChannelOffsets:
++    """Where the red and blue images of the stars fall relative to the green one over the field: a quadratic surface
++    of the offset (output pixels) per channel, fitted on the isolated unsaturated stars of a stack. Lateral chromatic
++    aberration grows towards the edges; atmospheric dispersion shifts the whole field (red up, blue down, by up to a
++    pixel low over the horizon). Left alone, the colours of a star land apart: coloured edges, elongated stars."""
++
++    #: fewest stars for a fit; below, nothing is corrected
++    MIN_STARS = 50
++
++    def __init__(self, coefs, W: int, H: int, n: int, centre=None, edge=None):
++        self.coefs, self.W, self.H, self.n = coefs, W, H, n          # coefs (3, 2, 6): channel, (x, y), terms
++        self.centre, self.edge = centre, edge
++        self.applied = coefs is not None
++
++    @staticmethod
++    def terms(x: torch.Tensor, y: torch.Tensor, W: int, H: int) -> torch.Tensor:
++        u, v = x / (W / 2) - 1.0, y / (H / 2) - 1.0
++        return torch.stack([torch.ones_like(u), u, v, u * u, u * v, v * v])
++
++    @classmethod
++    def measure(cls, model: "Prediction", sat_level: float, S: float, fwhm_px: float) -> "ChannelOffsets":
++        """The offsets measured on the stars of the mean ``model``: windowed centroids of each colour on the peaks
++        of the green image well above the noise, below half the saturation and alone in their neighbourhood."""
++        M, valid = model.M, model.valid.all(0)
++        C, H, W = M.shape
++        dev = M.device
++        sw = S                                                  # centroid window: one sensor pixel (the core)
++        r = int(np.ceil(3 * sw))
++        G = M[1] - model.bkg[1]
++        hp = G[::3, ::3][valid[::3, ::3]]
++        noise = float(1.4826 * (hp - hp.median()).abs().median()) if hp.numel() else 0.0
++        peak = (F.max_pool2d(G[None, None], 2 * r + 1, 1, r)[0, 0] == G) & valid
++        peak &= (G > 50 * noise) & (M.max(0).values < 0.5 * sat_level)
++        peak[:2 * r] = False
++        peak[-2 * r:] = False
++        peak[:, :2 * r] = False
++        peak[:, -2 * r:] = False
++        # alone: no other peak above a tenth of its height within three windows
++        tall = F.max_pool2d(torch.where(peak, G, torch.zeros_like(G))[None, None], 6 * r + 1, 1, 3 * r)[0, 0]
++        second = F.max_pool2d(torch.where(peak & (G < tall), G, torch.zeros_like(G))[None, None], 6 * r + 1, 1,
++                              3 * r)[0, 0]
++        peak &= (G >= tall) & (second < 0.1 * G)
++        ys, xs = torch.nonzero(peak, as_tuple=True)
++        if len(ys) > 20000:
++            keep = torch.argsort(G[ys, xs], descending=True)[:20000]
++            ys, xs = ys[keep], xs[keep]
++        dd = torch.arange(-r, r + 1, device=dev)
++        oy, ox = torch.meshgrid(dd, dd, indexing="ij")
++        oy, ox = oy.reshape(-1), ox.reshape(-1)
++        yy, xx = ys[:, None] + oy[None], xs[:, None] + ox[None]
++        oy, ox = oy.float(), ox.float()
++        cen = torch.zeros(3, len(ys), 2, device=dev)
++        good = torch.ones(len(ys), dtype=torch.bool, device=dev)
++        for c in range(3):
++            a = (M[c][yy, xx] - model.bkg[c][ys, xs][:, None]).clamp(min=0)
++            cx = torch.zeros(len(ys), device=dev)
++            cy = torch.zeros(len(ys), device=dev)
++            for _ in range(5):
++                w = a * torch.exp(-0.5 * ((ox[None] - cx[:, None]) ** 2 + (oy[None] - cy[:, None]) ** 2) / sw ** 2)
++                s = w.sum(1)
++                good &= s > 0
++                cx = ((w * ox[None]).sum(1) / s.clamp(min=1e-12)).clamp(-r, r)
++                cy = ((w * oy[None]).sum(1) / s.clamp(min=1e-12)).clamp(-r, r)
++            cen[c, :, 0], cen[c, :, 1] = xs.float() + cx, ys.float() + cy
++        n = int(good.sum())
++        if n < cls.MIN_STARS:
++            return cls(None, W, H, n)
++        X, Y = cen[1, good, 0], cen[1, good, 1]
++        A = cls.terms(X, Y, W, H).T.double().cpu().numpy()
++        coefs = np.zeros((3, 2, 6))
++        for c in (0, 2):
++            for k in range(2):
++                b = (cen[c, good, k] - cen[1, good, k]).double().cpu().numpy()
++                m = np.ones(len(b), bool)
++                for _ in range(5):
++                    q = np.linalg.lstsq(A[m], b[m], rcond=None)[0]
++                    e = b - A @ q
++                    sg = 1.4826 * np.median(np.abs(e[m])) + 1e-6
++                    m = np.abs(e) < 3 * sg
++                coefs[c, k] = q
++        pts = torch.tensor([[W / 2, H / 2]] + [[x, y] for x in (0, W) for y in (0, H)], dtype=torch.float64)
++        T = cls.terms(pts[:, 0], pts[:, 1], W, H).numpy().T
++        off = np.einsum("ckt,pt->cpk", coefs, T)               # channel, point, (dx, dy)
++        centre = {nm: [round(float(v), 3) for v in off[c, 0]] for c, nm in ((0, "R"), (2, "B"))}
++        edge = {nm: round(float(np.hypot(off[c, 1:, 0], off[c, 1:, 1]).max()), 3) for c, nm in ((0, "R"), (2, "B"))}
++        return cls(coefs, W, H, n, centre, edge)
++
++    def at(self, x: torch.Tensor, y: torch.Tensor, chmap: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
++        """The offset (output pixels) of each sample in its own channel, where it lands (x, y)."""
++        T = self.terms(x, y, self.W, self.H)                               # (6, ...)
++        q = torch.from_numpy(self.coefs).to(x.device, torch.float32)       # (3, 2, 6)
++        dx = sum(q[:, 0, t][chmap] * T[t] for t in range(6))
++        dy = sum(q[:, 1, t][chmap] * T[t] for t in range(6))
++        return dx, dy
++
++    def summary(self) -> dict:
++        return {"stars": self.n, "applied": self.applied, "centre_px": self.centre, "corner_max_px": self.edge}
++
++    def describe(self) -> str:
++        if not self.applied:
++            return f"colours not registered on each other: {self.n} isolated stars only"
++        return (f"colours registered on each other ({self.n} stars): red {self.centre['R']} px at the centre, up to "
++                f"{self.edge['R']} px in the corners; blue {self.centre['B']} px, up to {self.edge['B']} px")
++
++
+ def reject(val, pr: dict, sat, bad, grad, chmap, t: float, p: "StackParams", kappa: float, edge: bool,
+            diag: list | None = None):
+     """The samples of a normalised frame (``val``, ADU of the reference) deviating from the prediction ``pr``

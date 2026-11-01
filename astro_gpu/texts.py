@@ -152,6 +152,8 @@ _METRIC_ROWS: list[tuple] = [
     ("hot_pixels_from_lights", "Hot pixels in the lights", "", "d",
      "Hot pixels found in the light frames that the darks missed."),
     ("bad_pixels_pct", "Excluded pixels", "%", ".2f", "Share of the sensor pixels left out (hot, cold, dusty)."),
+    ("bad_pixels_filled", "Pixels filled", "", "",
+     "Whether the excluded pixels were filled from their neighbours (the sky did not move on the sensor)."),
     ("sky_noise_adu", "Sky noise", "ADU", ".2f", "Noise of the sky background in one light frame."),
     ("cache_scale", "Cache scale", "", ".2f", "Size of the calibrated frames kept on disk (1 is full size)."),
     ("cache_gb", "Cache size", "GB", ".1f", "Disk space taken by the calibrated frames."),
@@ -164,12 +166,19 @@ _METRIC_ROWS: list[tuple] = [
     ("transparency_p10_p90", "Transparency range", "", ".2f",
      "Transparency of the worst and of the best frames (10 % and 90 %)."),
     ("drift_px", "Drift", "px", ".1f", "How far the field moved on the sensor during the session."),
+    ("photometry_aperture_px", "Photometry aperture", "px", "g",
+     "Diameter of the aperture the transparency of each frame is measured in."),
     # stack
     ("frames_used", "Frames stacked", "", "d", "Frames kept in the stack."),
     ("integration_used_h", "Stacked exposure", "h", ".2f", "Exposure time of the frames kept in the stack."),
     ("grid", "Stack size", "px", "d", "Width and height of the stacked image.", " × "),
     ("fixed_pattern", "Fixed pattern", "", "", "What was measured of the sensor's fixed pattern."),
     ("rejected_pct", "Rejected pixels", "%", ".3f", "Share of pixels rejected as outliers (satellites, cosmic rays)."),
+    ("channel_offsets", "Color offsets", "", "",
+     "Where the red and blue images of the stars fell relative to the green one (lateral chromatic aberration, "
+     "atmospheric dispersion), corrected in the stack."),
+    ("near_saturation_pct", "Near saturation", "%", ".4f",
+     "Share of the pixels of the stack with samples near saturation (star cores)."),
     # astrometry
     ("ra", "Centre RA", "deg", ".4f", "Right ascension of the image centre."),
     ("dec", "Centre Dec", "deg", ".4f", "Declination of the image centre."),
@@ -194,6 +203,9 @@ _METRIC_ROWS: list[tuple] = [
     ("survey", "Survey", "", "", "The H-alpha survey used as a reference."),
     ("coverage", "Survey coverage", "", ".1%", "Share of the field covered by the survey."),
     ("ha_p50_p99", "H-alpha level", "R", ".2f", "Median and 99th percentile of the survey over the field (rayleigh)."),
+    # render_simple
+    ("saturated_places", "Saturated places", "", "d",
+     "Star cores near saturation that take the color of their surroundings."),
     # color
     ("fit_agreement_pct", "Color fit error", "%", ".2f",
      "Gap between the measured star colors and those the fitted curves predict."),

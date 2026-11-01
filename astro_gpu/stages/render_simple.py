@@ -87,7 +87,7 @@ def emission_matrix(ctx: Context, M: np.ndarray, stack: np.ndarray, valid: np.nd
     denoiser and Gradient settings do not change it: Classic and Classic + denoise get the same matrix.
     Returns (matrix, measured emission colour or None, weight)."""
     from .background_poly import BackgroundPolyParams, fit_poly_sky, poly_sky
-    from .color import colour_stars
+    from .color import colour_stars, saturation_map
     try:
         cam_hii = np.load(ctx.input("color", "specresp.npz"))["cam_hii"].astype(np.float64)
         xp = np.load(ctx.input("catalogs", "gaia_xp.npz"))
@@ -96,7 +96,7 @@ def emission_matrix(ctx: Context, M: np.ndarray, stack: np.ndarray, valid: np.nd
     if not np.isfinite(cam_hii).all() or cam_hii[0] <= 0:
         return M, None, 0.0
     aperture = float(ctx.manifest("color").get("params", {}).get("aperture", 5.0))
-    _, F = colour_stars(stack, xp["x"], xp["y"], aperture)
+    _, F = colour_stars(stack, xp["x"], xp["y"], aperture, saturation_map(ctx))
     if len(F) < 50:
         return M, None, 0.0
     bp = BackgroundPolyParams()
@@ -109,6 +109,36 @@ def emission_matrix(ctx: Context, M: np.ndarray, stack: np.ndarray, valid: np.nd
         return M, None, 0.0
     Ma, w = anchor_matrix(M, cam_hii, F.T.astype(np.float64), e)
     return Ma, e, w
+
+
+def repair_saturated(lin: np.ndarray, sat: np.ndarray, valid: np.ndarray, ring_px: float) -> tuple[np.ndarray, int]:
+    """The colour of the places with clipped samples (``sat`` > 0, the stack's map: star cores), which is not
+    measured there: a channel clipped in some frames and not in others, or the colours of a star landing a
+    fraction of a pixel apart, gave the cores of the bright stars a coloured disc or a blue-cyan crescent. Each place
+    (a connected region, grown by a pixel) takes the colour of the light just around it (the unsaturated pixels within
+    ``ring_px``, sky removed, weighted by their brightness), at the lowest brightness that every channel allows (a
+    clipped channel is a lower bound). In place on ``lin`` (3, H, W); returns (lin, number of places)."""
+    from scipy import ndimage as ndi
+    reg = ndi.binary_dilation(np.asarray(sat) > 0, iterations=1) & valid
+    lab, n = ndi.label(reg)
+    if n == 0:
+        return lin, 0
+    dist, (iy, ix) = ndi.distance_transform_edt(lab == 0, return_indices=True)
+    ring = (dist <= ring_px) & (lab == 0) & valid
+    near = lab[iy, ix]
+    idx = np.arange(1, n + 1)
+    sums = np.stack([ndi.sum_labels(lin[c], np.where(ring, near, 0), idx) for c in range(3)], 1)   # (n, 3)
+    tot = sums.sum(1)
+    col = np.where(tot[:, None] > 0, np.clip(sums, 0, None) / np.maximum(tot, 1e-30)[:, None], np.nan)
+    ok = np.isfinite(col).all(1) & (tot > 0)
+    col = np.vstack([np.full((1, 3), np.nan), col])          # label 0: none
+    inside = reg & ok[np.maximum(lab - 1, 0)] & (lab > 0)
+    c = col[lab[inside]]                                     # (m, 3)
+    v = lin[:, inside].T                                     # (m, 3)
+    I = np.max(np.where(c > 0.02, v / np.maximum(c, 1e-6), -np.inf), axis=1)
+    I = np.maximum(I, 0)
+    lin[:, inside] = (I[:, None] * c).T.astype(lin.dtype)
+    return lin, int(ok.sum())
 
 
 class RenderSimpleParams(StageParams):
@@ -136,8 +166,9 @@ class RenderSimple(Stage):
                    "stretch. Post renders it with its sliders (sky, contrast, saturation, noise).")
     deps = ("stack",)
     Params = RenderSimpleParams
-    version = "3"          # 2: the emission anchor of render_prep (the H-alpha of Classic was violet on heart_a7s);
-                           # 3: the Raw stack exit's sky made grey (it had the green of the light pollution)
+    version = "4"          # 2: the emission anchor of render_prep (the H-alpha of Classic was violet on heart_a7s);
+                           # 3: the Raw stack exit's sky made grey (it had the green of the light pollution);
+                           # 4: the colour of the places near saturation from their surroundings (repair_saturated)
 
     def run(self, ctx: Context, p: RenderSimpleParams) -> None:
         from ..render.simple import SimpleRenderEngine, SimpleSettings, image_stats
@@ -185,6 +216,14 @@ class RenderSimple(Stage):
                         + (f"; rendered with the colour of an HII spectrum (weight {w:.2f}), the star colours "
                            f"unchanged" if w > 0 else " - within the colours of the stars: matrix unchanged"))
         del src
+        from .color import saturation_map
+        sat = saturation_map(ctx, clipped=True)
+        if sat is not None and sat.shape == valid.shape:
+            S = float(ctx.load_json("stack", "drz_meta.json").get("scale", 1.0))
+            lin, n_sat = repair_saturated(lin, sat, valid, 3.0 * S)
+            ctx.metric("saturated_places", n_sat)
+            if n_sat:
+                ctx.log(f"{n_sat} clipped places (star cores) take the colour of their surroundings")
         gains = np.ones(3)
         if not color:
             # the camera's channels have different sensitivities: scaled to the same spread of the sky, the stretch
