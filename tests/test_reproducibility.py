@@ -11,8 +11,11 @@ from astro_gpu.core.determinism import deterministic
 from astro_gpu.render.engine import fit_tone_curve
 from astro_gpu.stages.optics import fit_channel
 
+# a small field and few iterations: the fit is the same code on 60 stars as on 260 (the full-size field took 30 s)
+ITERS = 50
 
-def _field(seed=0, H=600, W=900, n=260, sky=(50.0, 0.01, -0.006)):
+
+def _field(seed=0, H=300, W=450, n=60, sky=(50.0, 0.01, -0.006)):
     """Isolated stars (pixel-integrated Gaussians, wider towards the right), on a tilted sky, with noise."""
     rng = np.random.default_rng(seed)
     gy, gx = np.mgrid[40:H - 40:36, 40:W - 40:36]
@@ -37,18 +40,18 @@ def test_psf_fit_gives_the_same_answer_every_time():
     img, xs, ys, cols, flux = _field()
     H, W = img.shape
     dev = torch.device("cpu")
-    E1, f1, r1 = fit_channel(img, xs, ys, cols, W, H, 150, dev)
-    E2, f2, r2 = fit_channel(img, xs, ys, cols, W, H, 150, dev)
+    E1, f1, r1 = fit_channel(img, xs, ys, cols, W, H, ITERS, dev)
+    E2, f2, r2 = fit_channel(img, xs, ys, cols, W, H, ITERS, dev)
     assert torch.equal(E1, E2) and np.array_equal(f1, f2) and r1 == r2
     ratio = f1 / flux
     assert np.median(np.abs(ratio / np.median(ratio) - 1)) < 0.01        # consistent fluxes (up to one common scale)
     # a flat offset of the image (a different sky level) does not move the fluxes: the background is measured
     # around each star, not traded with a flat part of the PSF model
-    _, f3, _ = fit_channel(img + 25.0, xs, ys, cols, W, H, 150, dev)
+    _, f3, _ = fit_channel(img + 25.0, xs, ys, cols, W, H, ITERS, dev)
     assert np.max(np.abs(f3 / f1 - 1)) < 1e-3
     # a small change of the image gives a small change of the fluxes (no jump to another solution)
     _, f4, _ = fit_channel(img + np.random.default_rng(9).normal(0, 0.02, img.shape).astype(np.float32),
-                           xs, ys, cols, W, H, 150, dev)
+                           xs, ys, cols, W, H, ITERS, dev)
     assert np.median(np.abs(f4 / f1 - 1)) < 1e-3
 
 

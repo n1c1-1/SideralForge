@@ -62,4 +62,12 @@ ignore = ["E741", "B905", "B023"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["gpu: needs a CUDA device", "network: needs internet access", "slow: long-running"]
+# the default run is level 2, the fast suite (tests/README.md); tools/t.py 3 / 4 give -m of their own. Keep this -m
+# equal to DEFAULT_MARK in tests/conftest.py. pytest-xdist (-n) is used by tools/t.py, not forced here.
+addopts = "-m 'not level3 and not slow and not network'"
+markers = [
+    "gpu: needs a CUDA device",
+    "network: needs internet access",
+    "slow: long-running, real data sets (level 4: tools/t.py 4)",
+    "level3: too heavy for the fast suite (set from tests/levels.toml, not in the test files; tools/t.py 3)",
+]
