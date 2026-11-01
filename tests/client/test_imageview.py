@@ -771,6 +771,99 @@ def test_overlays_of_the_old_viewer_still_draw(qapp, loader):
     assert seen and seen[-1][0] == 400
 
 
+# ---------------------------------------------------------------------------------------------- what Inspect asks
+def test_a_source_that_knows_why_it_is_missing_says_it_alone(qapp, loader):
+    def gone():
+        raise iv.Unavailable("Not available yet: recompute Stacking to get it.")
+
+    v = make_view(qapp, loader)
+    v.set_image(iv.ViewImage(gone, "Rejection", key="gone"))
+    assert v.wait(30)
+    assert v.canvas.message == "Not available yet: recompute Stacking to get it."
+    v.set_image(iv.ViewImage(lambda: 1 / 0, "Broken", key="broken"))      # any other failure keeps its type
+    assert v.wait(30) and v.canvas.message.startswith("This image cannot be shown: ZeroDivisionError")
+    # a compared image that cannot be read is said too, and not waited for
+    show(v, iv.ViewImage(sky(), "S", key="ok"))
+    toasts = []
+    v.toasted.connect(toasts.append)
+    v.set_compare_targets([iv.ViewImage(gone, "Gone", key="gone2")], current=0)
+    assert v.wait(30) and v.canvas2.message.startswith("Not available yet") and toasts
+
+
+def test_a_picture_for_the_eye_is_shown_as_it_is_and_read_as_levels(qapp, loader):
+    rgb = (np.arange(300 * 400 * 3) % 256).astype(np.uint8).reshape(300, 400, 3)
+    v = make_view(qapp, loader)
+    show(v, iv.ViewImage(rgb, "Final", key="final", stretched=True, white=255.0))
+    st = v.stretch()
+    assert st.mode == "linear" and float(st.black[0]) == 0.0 and float(st.white[0]) == 255.0
+    r, g, b = (int(c) for c in rgb[7, 9])
+    assert v.pixel_text(9.5, 7.5) == f"x     9  y     7    R {r}   G {g}   B {b}"
+
+
+def test_wcs_from_a_callable_and_a_readout_only_solution(qapp, loader):
+    called = []
+
+    def load_wcs():
+        called.append(1)
+        return simple_wcs()
+
+    v = make_view(qapp, loader)
+    show(v, iv.ViewImage(sky(), "S", key="cw", wcs=load_wcs))
+    assert called and v.prepared().wcs is not None and "RA " in v.pixel_text(10.5, 10.5)
+
+    class Readout:                                          # pixel_to_world_values only: the readout, not the export
+        def pixel_to_world_values(self, x, y):
+            return 40.0 + 0 * np.asarray(x), 61.0 + 0 * np.asarray(y)
+    show(v, iv.ViewImage(sky(), "S2", key="ro", wcs=Readout()))
+    assert "RA 02h40m00" in v.pixel_text(5.5, 5.5)
+    dlg = v.export_dialog()
+    assert not dlg.c_wcs.isChecked()
+    dlg.reject()
+
+
+def test_counts_and_numbers_without_a_unit(qapp, loader):
+    counts = np.zeros((1, 300, 400), np.float32)
+    counts[0, 10, 20] = 7
+    v = make_view(qapp, loader)
+    show(v, iv.ViewImage(counts, "Rejected", key="cnt", units="count"))
+    assert v.pixel_text(20.5, 10.5).endswith("    7")
+    show(v, iv.ViewImage(sky(channels=1), "Coverage", key="cov", units=""))
+    t = v.pixel_text(20.5, 10.5)
+    assert "ADU" not in t and v.panel.stats_l.text() == ""
+
+
+def test_info_band_compact_flag_and_exclude_modes(qapp, loader):
+    v = make_view(qapp, loader)
+    fr = frames_for_test(2)
+    fr[0].info = {"time": "2026-08-17T00:16:52", "exposure": 15.0, "iso": 5000, "compact": True,
+                  "extra": [("Median level", "508 ADU")], "flag": "To check", "flag_reason": "an outlier"}
+    v.set_sequence(fr, 0)
+    assert v.wait(30)
+    cells = v.band.cells
+    assert cells["exposure"][1].isVisibleTo(v) and not cells["fwhm"][1].isVisibleTo(v)    # compact: no empty cells
+    assert v.band.state.text() == "To check" and v.band.state.toolTip() == "an outlier"
+    got = []
+    v.excludeToggled.connect(lambda i, ex: got.append((i, ex)))
+    v.set_exclude_mode("spec", "The project is open read-only.")
+    assert not v.band.toggle.isEnabled() and "◇" in v.band.toggle.text()
+    v.toggle_excluded()
+    assert got == []                                        # ◇: nothing happens
+    v.set_exclude_mode("off")
+    assert not v.band.toggle.isVisibleTo(v) and not v.band.state.isVisibleTo(v)
+    v.set_exclude_mode("on")
+    v.toggle_excluded()
+    assert got == [(0, True)] and v.band.toggle.isEnabled()
+
+
+def test_send_to_post_can_be_withheld_with_its_reason(qapp, loader):
+    v = make_view(qapp, loader, post=True)
+    v.set_post_enabled(False, "Post does not take images yet.")
+    show(v, iv.ViewImage(sky(), "S", key="np"))
+    assert not v.post_b.isEnabled() and v.post_b.toolTip() == "Post does not take images yet."
+    v.set_post_enabled(True)
+    assert v.post_b.isEnabled()
+
+
 # ---------------------------------------------------------------------------------------------- language
 def _texts_of(path: Path) -> list[str]:
     out = []

@@ -560,6 +560,10 @@ class Main(QMainWindow):
         tune.openPost.connect(lambda: self.set_mode(2))
         tune.removeTool.connect(self._remove_tool)
         tune.toasted.connect(self.flash)
+        tune.can_post = self._post_takes_images
+        tune.sendToPost.connect(self._send_to_post)
+        self.browser.can_post = self._post_takes_images
+        self.browser.sendToPost.connect(self._send_to_post)
         self.frames.imported.connect(self.request_refresh)
         self.frames.stackMode.connect(lambda m: s.set_stack_mode(m))
         self.browser.goChain.connect(lambda k: self.select(step=k) if s.path is not None else None)
@@ -570,6 +574,9 @@ class Main(QMainWindow):
         """Post: PostPage3, on the project's render worker (made the first time Post is shown)."""
         from .post3 import PostPage3
         page = PostPage3(self.s, worker=self.render_worker())
+        if hasattr(page, "set_image_resolver"):                # the layers Inspect sent, when the project opens again
+            from .services.inspect import resolve_key
+            page.set_image_resolver(lambda key, p=self.s.p: resolve_key(p, key))
         page.goWorkflow.connect(lambda: self.set_mode(0))
         page.view.goResults.connect(self._go_results)
         page.view.goProcessing.connect(lambda pid, k: (self.select(index=self.s.index_of(pid), step=k),
@@ -580,6 +587,22 @@ class Main(QMainWindow):
     def post(self):
         """The Post page, made now if it was not yet."""
         return self.post_holder.ensure() if self.post_holder is not None else None
+
+    @staticmethod
+    def _post_takes_images() -> bool:
+        """Whether Post can take an image of Inspect as a layer (``PostPage3.add_image_layer``)."""
+        from .post3 import PostPage3
+        return callable(getattr(PostPage3, "add_image_layer", None))
+
+    def _send_to_post(self, name: str, source, key):
+        """Send to Post of a viewer of Inspect: the image becomes a layer of Post, which is shown."""
+        post = self.post
+        add = getattr(post, "add_image_layer", None)
+        if not callable(add):
+            self.flash(_("Post does not take images yet: this comes with its image layers."))
+            return
+        add(name, source, key)
+        self.set_mode(2)
 
     def _post_shown(self) -> bool:
         return self.s is not None and self.mode == 2 and self.post_holder is not None and \

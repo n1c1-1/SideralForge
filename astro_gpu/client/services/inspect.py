@@ -18,6 +18,7 @@ channel and the latest one wins (``ApiWorker``).
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
 import time
@@ -104,6 +105,13 @@ class VisualSpec:
     spec: bool = False       # ◇: not in the engine yet (a disabled tab, in Spec mode only)
     sky: bool = False        # the astrometric solution is drawn over it (grid, catalogue stars, named objects)
     note: str = ""           # one line under the tabs: what this picture is for (English, translated where shown)
+    camera: bool | None = None       # still in the camera's colours (the viewer's Neutral sky); None: guessed
+    compare: tuple = ()      # the pictures it is compared with (keys of ``Steps.picture``): the previous steps
+    open_compare: bool = False       # opened compared with the first of them (split)
+    same_stretch: bool = False       # the compared picture with the same stretch
+    base: tuple = ()         # kind "color": the (stage, array) the colour matrix is applied to
+    channel: int | None = None       # one channel of the array (the coverage)
+    units: str = "adu"
 
 
 @dataclass
@@ -680,6 +688,16 @@ class FrameItem:
     excluded: bool = False            # by hand
     index: int | None = None          # in the frame table
     level: float | None = None        # median level above black, ADU (lights: from the calibration statistics)
+    exposure: float | None = None     # what the header says (the Inventory result, else the file)
+    iso: float | None = None
+    temperature: float | None = None
+    cfa: str = ""
+    white: float | None = None
+    black: float | None = None
+    roundness: float | None = None    # once the engine's registration table gives it
+    stats: dict = field(default_factory=dict)        # a calibration frame: the engine's statistics (diagnostics)
+    flag: str = ""                    # a calibration frame: the engine's quality flag, and why
+    reason: str = ""
 
 
 def browse_group(p, wid: int | None, kind: str, headers: dict | None = None) -> list[FrameItem]:
@@ -697,52 +715,130 @@ def browse_group(p, wid: int | None, kind: str, headers: dict | None = None) -> 
         except (api.NotDone, OSError, ValueError, KeyError):
             by_path = {}
     items: list[FrameItem] = []
-    times: dict[str, str] = {}
     levels = None
     if by_path:                                    # the sky level of each frame, measured at calibration
         cal = api.stage_outputs(p, wid, "calibrate")
         f = Path(cal.dir) / "frame_stats.npy" if cal is not None else None
         if f is not None and f.is_file():
             levels = np.load(f)[:, :, 0].mean(1)
-    if kind == "lights" and not by_path:
-        inv = api.stage_outputs(p, wid, "inventory") if wid is not None else None
-        if inv is not None:
-            import json
-            try:
-                fj = json.loads((Path(inv.dir) / "frames.json").read_text(encoding="utf-8"))["lights"]
-                times = {os.path.normcase(os.path.normpath(f["path"])): f.get("time") or "" for f in fj}
-            except (OSError, ValueError, KeyError):
-                times = {}
+    heads = inventory_headers(p, wid, kind)
     like = None
+    excluded = {(a, b) for a, b in p.excluded}
+    listed = []
     for s in p.sessions:
         for f in _files(p, getattr(s, kind)):
-            norm = os.path.normcase(os.path.normpath(str(f)))
-            it = FrameItem(str(f), f.name, kind, s.id)
-            r = by_path.get(norm)
-            if r is not None:
-                it.time, it.fwhm, it.transparency, it.weight = r.time or "", r.fwhm, r.transparency, r.weight
-                it.status, it.index = r.status, r.index
-                if levels is not None and r.index < len(levels):
-                    it.level = float(levels[r.index])
-            elif kind == "lights":
-                it.time = times.get(norm, "")
-                if not it.time:
-                    k = str(f)
-                    if k not in hdr:
-                        try:
-                            hdr[k] = read_info(f, like=like).time or ""
-                            like = like or read_info(f)
-                        except Exception:  # noqa: BLE001
-                            hdr[k] = ""
-                    it.time = hdr[k]
-            else:
+            listed.append((s.id, f, False))
+    if kind != "lights":                           # a calibration frame left out: still shown, to take it back
+        seen = {os.path.normcase(os.path.normpath(str(f))) for _sid, f, _x in listed}
+        for sid, f in calibration_left_out(p, kind, seen):
+            listed.append((sid, f, True))
+    for sid, f, left_out in listed:
+        norm = os.path.normcase(os.path.normpath(str(f)))
+        it = FrameItem(str(f), f.name, kind, sid)
+        h = heads.get(norm)
+        if h is None and kind == "lights" and not by_path:
+            k = str(f)
+            if k not in hdr:
                 try:
-                    it.time = dt.datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")
-                except OSError:
-                    it.time = ""
-            it.excluded = (s.id, f.name) in {(a, b) for a, b in p.excluded} if kind == "lights" else False
-            items.append(it)
+                    info = read_info(f, like=like)
+                    like = like or info
+                    hdr[k] = {"time": info.time or "", "exposure": info.exposure, "iso": info.iso,
+                              "temperature": info.temperature, "cfa": info.cfa, "white": info.white,
+                              "black": info.black}
+                except Exception:  # noqa: BLE001
+                    hdr[k] = {}
+            h = hdr[k]
+        if h:
+            it.time = h.get("time") or ""
+            it.exposure, it.iso, it.temperature = h.get("exposure"), h.get("iso"), h.get("temperature")
+            it.cfa, it.white, it.black = h.get("cfa") or "", h.get("white"), h.get("black")
+        r = by_path.get(norm)
+        if r is not None:
+            it.time = r.time or it.time
+            it.fwhm, it.transparency, it.weight = r.fwhm, r.transparency, r.weight
+            it.status, it.index = r.status, r.index
+            if levels is not None and r.index < len(levels):
+                it.level = float(levels[r.index])
+        if not it.time and kind != "lights":
+            try:
+                it.time = dt.datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")
+            except OSError:
+                it.time = ""
+        it.excluded = (sid, f.name) in excluded if kind == "lights" else left_out
+        items.append(it)
+    if kind != "lights":
+        items.sort(key=lambda x: (x.name, x.path))
     return items
+
+
+def inventory_headers(p, wid: int | None, kind: str) -> dict[str, dict]:
+    """What the Inventory result read in the headers of the frames of a kind (time, exposure, ISO, temperature,
+    Bayer pattern, black and white levels), by normalised path; {} when it is not computed."""
+    import json
+    inv = api.stage_outputs(p, wid, "inventory") if wid is not None else None
+    if inv is None:
+        inv = api.stage_outputs(p, wid, "inventory", "previous") if wid is not None else None
+    if inv is None:
+        return {}
+    try:
+        fj = json.loads((Path(inv.dir) / "frames.json").read_text(encoding="utf-8")).get(kind) or []
+    except (OSError, ValueError):
+        return {}
+    return {os.path.normcase(os.path.normpath(f["path"])): f for f in fj if f.get("path")}
+
+
+def calibration_left_out(p, kind: str, seen: set[str]) -> list[tuple[int, Path]]:
+    """The calibration frames of a kind that were left out by hand: the files of the folders a session lists frame
+    by frame (``set_calibration_excluded``) that no session lists. (session id, path)."""
+    from ...core.project import list_frames
+    out = []
+    for s in p.sessions:
+        folders = []
+        for e in getattr(s, kind):
+            q = Path(p.abspath(e))
+            if q.suffix and not q.is_dir():
+                folders.append(str(q.parent))
+        for f in list_frames(list(dict.fromkeys(folders))):
+            norm = os.path.normcase(os.path.normpath(str(f)))
+            if norm not in seen:
+                seen.add(norm)
+                out.append((s.id, f))
+    return out
+
+
+def set_calibration_excluded(model, item: FrameItem, excluded: bool, group: list[FrameItem]) -> bool:
+    """Leave a calibration frame out of its master (or take it back): the session lists the frames of the folder one
+    by one, without that one (GUI thread, memory only: ``group`` is the worker's listing of the kind, left-out frames
+    included). When every frame of a folder is listed again the folder itself is listed, as it was. The model saves
+    the definition and reads the frames again; Calibration and what follows it become Outdated.
+
+    The model has no method for this yet (``ProjectModel.set_calibration_excluded`` is asked for): its edit context
+    is used, as its own edits do."""
+    p = model.p
+    try:
+        s = p.session(item.session)
+    except (KeyError, ValueError):
+        return False
+    kind = item.kind
+    lst = list(getattr(s, kind))
+    me = os.path.normcase(os.path.normpath(item.path))
+    folder = os.path.normcase(os.path.normpath(str(Path(item.path).parent)))
+    in_folder = [g for g in group if os.path.normcase(os.path.normpath(str(Path(g.path).parent))) == folder
+                 and g.session == item.session]
+    keep = [g.path for g in in_folder if (os.path.normcase(os.path.normpath(g.path)) != me and not g.excluded)
+            or (os.path.normcase(os.path.normpath(g.path)) == me and not excluded)]
+    rest = [e for e in lst if os.path.normcase(os.path.normpath(p.abspath(e))) != folder
+            and os.path.normcase(os.path.normpath(str(Path(p.abspath(e)).parent))) != folder]
+    if not keep:
+        return False                               # the last frame of a folder stays: remove the folder instead
+    whole = len(keep) == len(in_folder)
+    original = next((e for e in lst if os.path.normcase(os.path.normpath(p.abspath(e))) == folder), None)
+    new = rest + ([original or str(Path(item.path).parent)] if whole else sorted(keep))
+    with model._edit():
+        setattr(s, kind, new)
+        p.validate()
+    model.reload_sources()
+    return True
 
 
 def frame_stats(path: str) -> dict[str, float]:
@@ -754,6 +850,648 @@ def frame_stats(path: str) -> dict[str, float]:
     noise = float(1.4826 * np.median(np.abs(a - med)))
     return {"level": med - info.black, "noise": noise, "pct": 100 * (med - info.black) / max(info.white - info.black, 1.0),
             "black": info.black, "white": info.white}
+
+
+# ---------------------------------------------------------------------------------------------- the viewer's sources
+# The common viewer (imageview.ImageView) reads its images in its own worker threads: a ``ViewImage`` source may be a
+# callable, called there. The callables below read the engine's results (nothing runs in the GUI thread). A result
+# that is not there raises ``Unavailable`` with the words the view shows.
+
+def diag(name: str):
+    """A diagnostic of the engine (``api.calibration_frames``, ``registration_table``, ``stack_diagnostics``,
+    ``color_fit``), or None while the engine does not have it."""
+    return getattr(api, name, None)
+
+
+def block_of(stage: str) -> str:
+    """The title of the block a stage belongs to (English; translated where shown)."""
+    from ..blocks import STEPS
+    return next((b["title"] for b in STEPS if stage in b["stages"]), stage)
+
+
+def not_yet(stage: str) -> str:
+    """The words for a diagnostic the engine does not give yet, or that this result does not hold (translated)."""
+    from ..i18n import _
+    return _("Not available yet: recompute {block} to get it.").format(block=_(block_of(stage)))
+
+
+_MISSING = re.compile(r"^(.*): missing: recompute (.*) to get it\.?$")
+
+
+def missing_text(entry: str) -> str:
+    """One ``missing`` entry of a diagnostic ("rejection maps: missing: recompute Stacking to get it") in the
+    interface's language: "Rejection maps: not in this result. Recompute Stacking to get them." """
+    from ..i18n import _
+    m = _MISSING.match(str(entry).strip())
+    if m is None:
+        return _("Not in this result.")
+    what, stage = m.group(1).strip(), m.group(2).strip()
+    w = _(what)
+    return _("{what}: not in this result, made by an older version of the engine. Recompute {stage} to get "
+             "it.").format(what=w[:1].upper() + w[1:], stage=_(stage))
+
+
+def missing_of(obj, word: str = "") -> list[str]:
+    """The ``missing`` entries of a diagnostic (those naming ``word``), in the interface's language."""
+    return [missing_text(m) for m in (getattr(obj, "missing", None) or []) if word in str(m)]
+
+
+def not_computed(stage: str) -> str:
+    from ..i18n import _
+    return _("{block} is not computed for this workflow.").format(block=_(block_of(stage)))
+
+
+def _unavailable(text: str):
+    from ..imageview import Unavailable
+    return Unavailable(text)
+
+
+def _w(which, stage: str) -> str:
+    """``which`` is one word for every stage, or {stage: current | previous} (a picture made of several results)."""
+    return which.get(stage, "current") if isinstance(which, dict) else which
+
+
+def _array(p, wid: int, stage: str, name: str, which) -> np.ndarray:
+    which = _w(which, stage)
+    try:
+        return np.asarray(api.stage_array(p, wid, stage, name, which=which))
+    except api.NotDone:
+        if api.stage_outputs(p, wid, stage, which) is None:
+            raise _unavailable(not_computed(stage)) from None
+        raise _unavailable(not_yet(stage)) from None
+
+
+def array_source(p, wid: int, stage: str, name: str, which: str = "current", channel: int | None = None):
+    """An array of a done result (one channel of it with ``channel``)."""
+    def load():
+        a = _array(p, wid, stage, name, which)
+        return a[channel] if channel is not None and a.ndim == 3 else a
+    return load
+
+
+def preview_source(p, wid: int, stage: str, name: str, which: str = "current"):
+    """An engine preview (a JPEG), the ones still in the camera's colours with a neutral sky."""
+    def load():
+        out = api.stage_outputs(p, wid, stage, _w(which, stage))
+        f = out.previews.get(name) if out is not None else None
+        if f is None:
+            raise _unavailable(not_computed(stage) if out is None else not_yet(stage))
+        a = _rgb_of_file(f)
+        return neutral_preview(a) if (stage, name) in CAMERA_PREVIEWS else a
+    return load
+
+
+def apply_matrix(M: np.ndarray, a: np.ndarray) -> np.ndarray:
+    """The colour matrix of the Color stage on a (3, H, W) image in the camera's colours: linear display RGB."""
+    M = np.asarray(M, np.float32)
+    out = np.empty_like(a, dtype=np.float32)
+    for c in range(3):
+        out[c] = M[c, 0] * a[0] + M[c, 1] * a[1] + M[c, 2] * a[2]
+    return out
+
+
+def grey_sky(a: np.ndarray) -> np.ndarray:
+    """The sky of a colour image set grey by an offset per channel (its median brought to the mean of the three), as a
+    background neutralisation does: the colours of the stars and the nebulae are not touched (no gain)."""
+    if a.ndim != 3 or a.shape[0] != 3:
+        return a
+    med = np.array([float(np.median(a[c, ::4, ::4])) for c in range(3)])
+    shift = med.mean() - med
+    for c in range(3):
+        a[c] += np.float32(shift[c])
+    return a
+
+
+def color_source(p, wid: int, base: tuple[str, str], which: str = "current"):
+    """An image of the workflow with the colour matrix of its Color result applied (the colours the stage measured on
+    the Gaia stars), its sky set grey (``grey_sky``: the light pollution's colour is the Gradient block's)."""
+    def load():
+        M = _array(p, wid, "color", "M", which)
+        return grey_sky(apply_matrix(M, _array(p, wid, base[0], base[1], which).astype(np.float32, copy=False)))
+    return load
+
+
+def _poly_background(p, wid: int, which: str) -> tuple[np.ndarray, np.ndarray]:
+    """(the image the simple background works on, in display RGB; its sky model): the stage keeps the coefficients,
+    the surface is made again from them as the stage made it."""
+    import json
+
+    from ...stages.background_poly import poly_sky
+    out = api.stage_outputs(p, wid, "background_poly", _w(which, "background_poly"))
+    if out is None:
+        raise _unavailable(not_computed("background_poly"))
+    c = json.loads((Path(out.dir) / "coefs.json").read_text(encoding="utf-8"))
+    src = str(c.get("source") or "stack/drz_full").split("/")
+    rgb = apply_matrix(_array(p, wid, "color", "M", which), _array(p, wid, src[0], src[1], which).astype(np.float32))
+    sky = poly_sky(np.asarray(c["coefs"]), int(c["degree"]), rgb.shape[1], rgb.shape[2]).astype(np.float32)
+    return rgb, sky
+
+
+def gradient_source(p, wid: int, stage: str, which: str = "current"):
+    """The image with the gradient removed: the H-alpha background's result, or the stack minus the polynomial."""
+    def load():
+        if stage == "background":
+            return _array(p, wid, "background", "astro", which)
+        rgb, sky = _poly_background(p, wid, which)
+        rgb -= sky
+        return rgb
+    return load
+
+
+def removed_source(p, wid: int, stage: str, which: str = "current"):
+    """What the Gradient block took away: its input minus its result (the starless image for the H-alpha
+    background, the sky model of the simple one)."""
+    def load():
+        if stage == "background":
+            sl = _array(p, wid, "starless", "sl_final", which).astype(np.float32)
+            sl -= _array(p, wid, "background", "astro", which)
+            return sl
+        return _poly_background(p, wid, which)[1]
+    return load
+
+
+#: the masters the calibration keeps (arrays of its result): key, file, caption
+MASTERS = [("master_dark", "master_dark", "Master dark"), ("master_flat", "master_flat", "Master flat"),
+           ("master_bias", "master_bias", "Master bias"), ("master_flat_dark", "master_flat_dark", "Master dark flat"),
+           ("badmask", "badmask", "Defective pixels")]
+
+_masters_lock = threading.Lock()
+_masters: OrderedDict = OrderedDict()                     # calibrate dir -> (dark, flat, bad), the last two
+
+
+def _calib_masters(cal_dir: str):
+    with _masters_lock:
+        hit = _masters.get(cal_dir)
+        if hit is not None:
+            return hit
+    d = Path(cal_dir)
+    m = (np.load(d / "master_dark.npy").astype(np.float32), np.load(d / "master_flat.npy").astype(np.float32),
+         np.load(d / "badmask.npy").astype(bool))
+    with _masters_lock:
+        _masters[cal_dir] = m
+        while len(_masters) > 2:
+            _masters.popitem(last=False)
+    return m
+
+
+def calibrated_frame(p, wid: int, path: str, which: str = "current") -> tuple[np.ndarray, str, str]:
+    """One light frame as the calibration made it: (mosaic in ADU above the dark, Bayer pattern, how it was got).
+    From the calibrated cache when it is on disk, else made again from the stage's own masters with its formula
+    ((raw − master dark) / master flat, defective pixels left empty)."""
+    import json
+
+    from ...io.frames import read_cfa
+    from ...stages.calibrate import VALID_MAX
+    which = _w(which, "calibrate")
+    out = api.stage_outputs(p, wid, "calibrate", which)
+    if out is None:
+        raise _unavailable(not_computed("calibrate"))
+    d = Path(out.dir)
+    info = json.loads((d / "cache.json").read_text(encoding="utf-8"))
+    cfa = str(info.get("cfa") or "")
+    white = float(info.get("white_level") or 65535.0) - float(info.get("dark_level") or 0.0)
+    cache = Path(info.get("path") or "")
+    n, H, W = int(info["n"]), int(info["height"]), int(info["width"])
+    idx = None
+    if cache.is_file() and cache.stat().st_size == n * H * W * 2:
+        inv = inventory_headers(p, wid, "lights")
+        order = list(inv)
+        norm = os.path.normcase(os.path.normpath(path))
+        idx = order.index(norm) if norm in order and len(order) == n else None
+    if idx is not None:
+        mm = np.memmap(cache, dtype=np.float16, mode="r", shape=(n, H, W))
+        x = np.asarray(mm[idx], np.float32)
+        sat = x >= VALID_MAX                                   # the saturation marks of the cache
+        x /= float(info.get("scale") or 1.0)
+        x[sat] = white
+        how = "cache"
+    else:
+        dark, flat, bad = _calib_masters(str(d))
+        raw = read_cfa(path).astype(np.float32)
+        x = (raw - dark) / flat
+        x[bad] = np.nan
+        how = "masters"
+    return np.nan_to_num(x, nan=0.0, posinf=white, neginf=0.0), cfa, how
+
+
+def calframe_source(p, wid: int, path: str, which: str = "current"):
+    def load():
+        return calibrated_frame(p, wid, path, which)[0]
+    return load
+
+
+def wcs_source(p, wid: int, which: str = "current"):
+    """The astrometric solution of the workflow, read in the viewer's thread (None without one)."""
+    def load():
+        return _wcs_of(p, wid, _w(which, "astrometry")) or _wcs_of(p, wid, "current")
+    return load
+
+
+class ScaledWcs:
+    """The solution of the stack for a reduced, cropped picture of its grid (the final image): pixel (x, y) of the
+    picture is grid pixel (ox + (x + 0.5) f − 0.5, oy + (y + 0.5) f − 0.5). Only what the readout asks."""
+
+    def __init__(self, wcs, origin, f: float):
+        self.wcs, self.ox, self.oy, self.f = wcs, float(origin[0]), float(origin[1]), float(f)
+
+    def pixel_to_world_values(self, x, y):
+        f = self.f
+        return self.wcs.pixel_to_world_values(self.ox + (np.asarray(x) + 0.5) * f - 0.5,
+                                              self.oy + (np.asarray(y) + 0.5) * f - 0.5)
+
+
+def final_wcs_source(p, wid: int, which: str, grid, origin, size):
+    """The sky readout of a final image (``grid``: the canvas size on the stack grid, ``size``: the picture's)."""
+    def load():
+        w = _wcs_of(p, wid, which) or _wcs_of(p, wid, "current")
+        if w is None or not grid or not size or not size[0]:
+            return None
+        return ScaledWcs(w, origin, grid[0] / size[0])
+    return load
+
+
+def light_thumb(p, path: str, cfa: str = ""):
+    """The film strip's thumbnail of a light, made from the raw with the viewer's automatic stretch (a neutral
+    sky)."""
+    from ..imageview import ViewImage, quick_thumbnail
+
+    def load():
+        return quick_thumbnail(ViewImage(path, cfa=cfa, camera=True))
+    return load
+
+
+# ---------------------------------------------------------------------------------------------- Send to Post
+def post_key(vi, wid: int | None) -> str:
+    """The key Post keeps for an image Inspect sends (``PostPage3.add_image_layer``): "<stage>/<store key>/<array>"
+    for an array of a result (Post reads it from the store), else "inspect:{...}" or "file:<path>", which
+    ``resolve_key`` turns into the source again when the project is opened again."""
+    import json
+    ident = vi.identity()
+    if isinstance(ident, tuple) and ident[:1] == ("file",):
+        return "file:" + str(vi.source)
+    if isinstance(ident, tuple) and ident[:1] == ("inspect",):
+        kind = ident[1]
+        if kind == "array" and ident[3] is None and len(ident[5]) == 1:
+            stage, key = ident[5][0]
+            return f"{stage}/{key}/{ident[2]}"
+        if kind == "master":
+            return f"calibrate/{ident[2]}/{ident[3]}"
+        if kind == "calframe":
+            return "inspect:" + json.dumps({"wid": wid, "kind": "calframe", "path": ident[3]})
+        if kind in ("array", "preview", "color", "gradient", "removed"):
+            return "inspect:" + json.dumps({"wid": wid, "kind": kind, "name": ident[2], "channel": ident[3],
+                                            "base": list(ident[4]), "stages": [s for s, _k in ident[5]]})
+        return "inspect:" + json.dumps({"wid": wid, "kind": str(kind)})
+    return "inspect:" + json.dumps({"wid": wid, "kind": "other", "name": vi.name})
+
+
+def _debayered(load, cfa: str = ""):
+    """A source for Post: a Bayer mosaic made a colour image (one pixel per 2 x 2 photosites)."""
+    from ..stretch import superpixel
+
+    def get():
+        a = np.asarray(load())
+        return superpixel(a, cfa) if a.ndim == 2 and cfa else a
+    return get
+
+
+def post_source(vi):
+    """What Post reads for an image of a viewer: its source, read in Post's render worker (a raw or calibrated mosaic
+    made a colour image)."""
+    from ..imageview import _read
+
+    def load():
+        arr, cfa, _wcs = _read(vi)
+        return _debayered(lambda: arr, cfa)()
+    return load
+
+
+def resolve_key(p, key: str):
+    """The source of an image layer of Post from its key (``post_key``), when the project is opened again; None when
+    it cannot be made again (Post says the image is missing). Called in Post's render worker."""
+    import json
+    if key.startswith("file:"):
+        path = key[5:]
+        if not Path(path).is_file():
+            return None
+        from ..io.frames import read_cfa, read_info
+        return _debayered(lambda: read_cfa(path), read_info(path).cfa or "")
+    if not key.startswith("inspect:"):
+        return None
+    try:
+        d = json.loads(key[len("inspect:"):])
+    except ValueError:
+        return None
+    wid, kind = d.get("wid"), d.get("kind")
+    if wid is None:
+        return None
+    which = {s: _which_done(p, wid, s) or "current" for s in d.get("stages") or []}
+    if kind == "calframe":
+        w = _which_done(p, wid, "calibrate") or "current"
+
+        def cal():
+            x, cfa, _how = calibrated_frame(p, wid, d["path"], w)
+            return _debayered(lambda: x, cfa)()
+        return cal
+    stage = (d.get("stages") or [""])[0]
+    if kind == "array":
+        return array_source(p, wid, stage, d.get("name") or "", which, d.get("channel"))
+    if kind == "preview":
+        return preview_source(p, wid, stage, d.get("name") or "", which)
+    if kind == "color":
+        return color_source(p, wid, tuple(d.get("base") or ("stack", "drz_full")), which)
+    if kind == "gradient":
+        return gradient_source(p, wid, stage, which)
+    if kind == "removed":
+        return removed_source(p, wid, stage, which)
+    if kind in ("rejection_low", "rejection_high"):
+        fn = diag("stack_diagnostics")
+        w = _which_done(p, wid, "stack") or "current"
+        return (lambda: getattr(fn(p, wid, w), kind)) if fn is not None else None
+    return None
+
+
+# ---------------------------------------------------------------------------------------------- the blocks' data
+# The engine's diagnostics (``diag``) take ``which``: an Outdated block shows the result it had. Each answer is read
+# whole in the worker; what an older result did not keep comes back as None (the view says "recompute ... to get it").
+
+def _try(fn, *a, **k):
+    """A diagnostic, or None when the result is not there or predates it."""
+    try:
+        return fn(*a, **k)
+    except (api.NotDone, OSError, ValueError, KeyError, IndexError, TypeError):
+        return None
+
+
+def _which_done(p, wid: int, stage: str) -> str | None:
+    """current when the workflow's result of ``stage`` is done, else previous when it had one, else None."""
+    for w in ("current", "previous"):
+        if api.stage_outputs(p, wid, stage, w) is not None:
+            return w
+    return None
+
+
+@dataclass
+class CalibrationData:
+    """What the Calibration block shows: the masters (key, caption, statistics), the frames of each kind (left-out
+    ones included), and how a calibrated light is got. The engine's report (quality flags, the statistics of each
+    frame) comes apart: ``calibration_report`` reads every raw frame the first time."""
+
+    masters: list[tuple[str, str, dict]] = field(default_factory=list)
+    groups: dict[str, list[FrameItem]] = field(default_factory=dict)
+    cache: bool = False                  # the calibrated cache is on disk (else a light is calibrated again)
+    cfa: str = ""
+
+
+def _master_stats(a: np.ndarray) -> dict:
+    s = a[::4, ::4].astype(np.float32)
+    s = s[np.isfinite(s)]
+    if not s.size:
+        return {}
+    med = float(np.median(s))
+    return {"median": med, "noise": float(1.4826 * np.median(np.abs(s - med))), "min": float(s.min()),
+            "max": float(s.max())}
+
+
+def calibration_data(p, wid: int, which: str = "current", headers: dict | None = None) -> CalibrationData:
+    """The Calibration block's data (worker thread): the masters with their statistics and the calibration frames of
+    each kind (a few files read: the masters' arrays and the folders' listings)."""
+    import json
+    out = CalibrationData()
+    cal = api.stage_outputs(p, wid, "calibrate", which)
+    if cal is not None:
+        d = Path(cal.dir)
+        for key, fname, caption in MASTERS:
+            f = d / (fname + ".npy")
+            if f.is_file():
+                try:
+                    a = np.load(f)
+                    st = {"bad_pct": 100.0 * float(np.mean(a))} if key == "badmask" else _master_stats(a)
+                except (OSError, ValueError):
+                    st = {}
+                out.masters.append((key, caption, st))
+        try:
+            info = json.loads((d / "cache.json").read_text(encoding="utf-8"))
+            out.cfa = str(info.get("cfa") or "")
+            c = Path(info.get("path") or "")
+            out.cache = c.is_file() and c.stat().st_size == int(info["n"]) * int(info["height"]) * int(info["width"]) * 2
+        except (OSError, ValueError, KeyError):
+            out.cache = False
+    for kind in ("darks", "flats", "bias", "flat_darks"):
+        out.groups[kind] = browse_group(p, wid, kind, headers)
+    return out
+
+
+@dataclass
+class CalibrationReport:
+    """The engine's word on each calibration frame (``api.calibration_frames`` of every session), by normalised
+    path; its notes. None from ``calibration_report`` while the engine does not give it."""
+
+    frames: dict[str, Any] = field(default_factory=dict)            # path -> api.CalFrame
+    notes: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+
+
+def calibration_report(p, wid: int, which: str = "current") -> CalibrationReport | None:
+    fn = diag("calibration_frames")
+    if fn is None:
+        return None
+    out = CalibrationReport()
+    for s in p.sessions:
+        r = _try(fn, p, s.id, wf=wid, which=which)
+        if r is None:
+            continue
+        for cf in getattr(r, "frames", None) or []:
+            out.frames[os.path.normcase(os.path.normpath(str(cf.path)))] = cf
+        out.notes += [str(n) for n in (getattr(r, "notes", None) or [])]
+        out.missing += [str(n) for n in (getattr(r, "missing", None) or [])]
+    return out
+
+
+def registration_from_table(p, wid: int, which: str, table) -> Any:
+    """The charts' data (``charts.RegistrationData``) from the engine's registration table: it reads an Outdated
+    result too (``charts.registration_data`` reads the current one)."""
+    from ..charts import RegistrationData
+    from ..chartview import to_seconds
+    rows = list(table)
+    aligned = np.array([bool(r.used) for r in rows], bool)
+    tr = np.array([float(r.transparency) for r in rows], float)
+    ok = tr[aligned & np.isfinite(tr)]
+    p90 = float(np.percentile(ok, 90)) if len(ok) else 1.0
+    rnd = [r.roundness for r in rows]
+    scale = None
+    ast = api.stage_outputs(p, wid, "astrometry", which) or api.stage_outputs(p, wid, "astrometry")
+    if ast is not None and ast.metrics.get("sensor_scale_arcsec"):
+        scale = float(ast.metrics["sensor_scale_arcsec"])
+    else:
+        inv = inventory_headers(p, wid, "lights")
+        first = next(iter(inv.values()), {})
+        if first.get("focal_mm") and first.get("pixel_um"):
+            scale = 206.265 * float(first["pixel_um"]) / float(first["focal_mm"])
+    secs = np.array([np.nan if (s := to_seconds(r.time)) is None else s for r in rows], float)
+    ref = next((i for i, r in enumerate(rows) if getattr(r, "reference", False)), 0)
+    return RegistrationData(
+        names=[r.name for r in rows], iso=[r.time or "" for r in rows], secs=secs,
+        fwhm=np.array([float(r.fwhm) for r in rows], float), transp=np.where(aligned, 100 * tr / p90, np.nan),
+        nmatch=np.where(aligned, np.array([float(r.nmatch) for r in rows], float), np.nan),
+        nstars=np.array([float(r.nstars) if r.nstars else np.nan for r in rows], float),
+        rms=np.where(aligned, np.array([float(getattr(r, "rms", np.nan)) for r in rows], float), np.nan),
+        aligned=aligned, dx=np.array([float(r.dx) for r in rows], float), dy=np.array([float(r.dy) for r in rows]),
+        ref=ref, scale=scale,
+        roundness=None if all(x is None for x in rnd) else np.array([np.nan if x is None else float(x) for x in rnd]))
+
+
+@dataclass
+class RegistrationBundle:
+    """What the Registration block shows: the charts' data, the engine's per-frame table (``api.registration_table``,
+    None until the engine gives it), the frame table (current results only) and the reference frame."""
+
+    data: Any = None                     # charts.RegistrationData
+    table: list | None = None            # [api.RegRow]
+    frames: Any = None                   # api.FrameTable, or None
+    ref_path: str = ""
+    ref_name: str = ""
+    which: str = "current"
+
+
+def registration_bundle(p, wid: int) -> RegistrationBundle:
+    from ..charts import registration_data
+    which = _which_done(p, wid, "register") or "current"
+    b = RegistrationBundle(which=which)
+    fn = diag("registration_table")
+    if fn is not None:
+        b.table = _try(fn, p, wid, which)
+    b.frames = _try(api.frame_table, p, wid)
+    if b.table:
+        b.data = registration_from_table(p, wid, which, b.table)
+        ref = next((r for r in b.table if getattr(r, "reference", False)), None)
+        if ref is not None:
+            b.ref_path, b.ref_name = getattr(ref, "path", "") or "", ref.name
+    else:
+        b.data = registration_data(p, wid)                  # NotDone when it is not current: said by the view
+        rows = b.frames.rows if b.frames is not None else []
+        if 0 <= b.data.ref < len(rows):
+            b.ref_path, b.ref_name = rows[b.data.ref].path, rows[b.data.ref].name
+    return b
+
+
+def frame_table_any(p, wid: int):
+    """The frame table of Selection: the current one (``api.frame_table``), else, for an Outdated registration, the
+    one its previous result gives (``api.registration_table``, the stack's weights and reasons when it kept them)."""
+    try:
+        return api.frame_table(p, wid)
+    except api.NotDone:
+        pass
+    fn = diag("registration_table")
+    t = _try(fn, p, wid, "previous") if fn is not None else None
+    if not t:
+        raise api.NotDone("registration is not computed")
+    sd = diag("stack_diagnostics")
+    sdiag = _try(sd, p, wid, _which_done(p, wid, "stack") or "previous") if sd is not None else None
+    weights = {str(x[0]): x[1] for x in (getattr(sdiag, "weights", None) or [])}
+    left = dict(getattr(sdiag, "excluded", None) or {})
+    ex = {(int(a), str(b)) for a, b in p.excluded}
+    sess = {}
+    for s in p.sessions:
+        for f in _files(p, s.lights):
+            sess.setdefault(f.name, s.id)
+    rows = []
+    for r in t:
+        sid = sess.get(r.name)
+        hand = (sid, r.name) in ex
+        status = "excluded by hand" if hand else (left.get(r.name) or ("" if r.used else (r.reason or "not aligned")))
+        w = weights.get(r.name)
+        rows.append(api.FrameRow(r.index, r.path, r.name, sid, r.time, float(r.fwhm), float(r.transparency),
+                                 float(getattr(r, "rms", np.nan)), float(w) if w is not None else 0.0, status, hand))
+    try:
+        mt, mf = api._stack_thresholds(p, wid)
+    except Exception:  # noqa: BLE001 - the defaults of the stage
+        mt, mf = 0.0, 99.0
+    return api.FrameTable(rows, sum(1 for r in rows if not r.status), float(mt), float(mf), "previous")
+
+
+@dataclass
+class StackBundle:
+    frames: Any = None                   # api.FrameTable (or the previous one), the weights the stack gave
+    diag: Any = None                     # api.StackDiag, None until the engine gives it
+    ref_path: str = ""
+    ref_name: str = ""
+    which: str = "current"
+
+
+def stack_bundle(p, wid: int) -> StackBundle:
+    which = _which_done(p, wid, "stack") or "current"
+    b = StackBundle(which=which)
+    b.frames = _try(frame_table_any, p, wid)
+    fn = diag("stack_diagnostics")
+    if fn is not None:
+        b.diag = _try(fn, p, wid, which)
+    rw = _which_done(p, wid, "register") or "current"
+    try:
+        with api.stage_array(p, wid, "register", "reg.npz", which=rw) as z:
+            ref = int(z["ref"])
+    except (api.NotDone, OSError, KeyError, ValueError):
+        ref = -1
+    lights = list(inventory_headers(p, wid, "lights").values())
+    if 0 <= ref < len(lights):
+        b.ref_path = str(lights[ref].get("path") or "")
+    elif lights:
+        b.ref_path = str(lights[len(lights) // 2].get("path") or "")
+    b.ref_name = Path(b.ref_path).name if b.ref_path else ""
+    return b
+
+
+@dataclass
+class ColorBundle:
+    curves: Any = None                   # api.SpectralCurves
+
+
+def color_bundle(p, wid: int, which: str = "current") -> ColorBundle:
+    return ColorBundle(curves=api.spectral_response(p, wid, which))
+
+
+def color_fit_of(p, wid: int, which: str = "current"):
+    """The per-star colour fit (``api.color_fit``: for an older result it measures the stars again on the stack),
+    None while the engine does not give it."""
+    fn = diag("color_fit")
+    return _try(fn, p, wid, which) if fn is not None else None
+
+
+def lights_of(p, wid: int | None, headers: dict | None = None) -> list[FrameItem]:
+    """The light frames with what is known of each: headers, star size, transparency, weight, state, roundness.
+    For an Outdated registration or stack, the numbers their previous results give."""
+    items = browse_group(p, wid, "lights", headers)
+    if wid is None:
+        return items
+    fn = diag("registration_table")
+    rw = _which_done(p, wid, "register")
+    t = _try(fn, p, wid, rw) if fn is not None and rw else None
+    by = {str(r.name): r for r in (t or [])}
+    sd = diag("stack_diagnostics")
+    sw = _which_done(p, wid, "stack")
+    sdiag = _try(sd, p, wid, sw) if sd is not None and sw else None
+    weights = {str(x[0]): x[1] for x in (getattr(sdiag, "weights", None) or [])}
+    left = dict(getattr(sdiag, "excluded", None) or {})
+    for it in items:
+        r = by.get(it.name)
+        if r is not None:
+            if getattr(r, "roundness", None) is not None:
+                it.roundness = float(r.roundness)
+            if it.fwhm is None:
+                it.fwhm, it.transparency = float(r.fwhm), float(r.transparency)
+                it.index = r.index
+                it.status = "" if r.used else (r.reason or "not aligned")
+        if it.weight is None and it.name in weights and weights[it.name] is not None:
+            it.weight = float(weights[it.name])
+        if not it.status and it.name in left:
+            it.status = str(left[it.name])
+    return items
+
+
+def sky_bundle(p, wid: int, which: str, w: int, h: int) -> SkyData | None:
+    """The grid and the catalogue stars a picture of the stack shows (None without a solution)."""
+    wcs = _wcs_of(p, wid, which) or _wcs_of(p, wid, "current")
+    return sky_data(p, wid, which, wcs, w, h)
 
 
 # ---------------------------------------------------------------------------------------------- the service
@@ -777,6 +1515,8 @@ class InspectService(QObject):
     scanDone = Signal(int, object)                  # token, api.ScanResult
     scanFailed = Signal(int, str)
     previewReady = Signal(int, int, int)            # token, kept, total: what the thresholds of Selection keep
+    jobReady = Signal(str, int, object)             # name, token, result of ``request_job``
+    jobFailed = Signal(str, int, str)               # name, token, reason (its first line)
 
     def __init__(self, model):
         super().__init__()
@@ -841,11 +1581,16 @@ class InspectService(QObject):
         elif head == "inspect.preview":
             token, kept, total = result
             self.previewReady.emit(token, kept, total)
+        elif head == "inspect.job":
+            name, token, value = result
+            self.jobReady.emit(name, token, value)
 
     def _failed(self, channel: str, _n: int, text: str):
         head = channel.split(":", 1)[0]
         why = text.splitlines()[0] if text else "?"
-        if head == "inspect.image":
+        if head == "inspect.job":
+            self.jobFailed.emit(channel.split(":", 1)[1], self._tokens.get(channel, 0), why)
+        elif head == "inspect.image":
             slot = int(channel.split(":")[1])
             self.imageFailed.emit(slot, self._tokens.get(channel, 0), why)
         elif head == "inspect.table":
@@ -876,6 +1621,19 @@ class InspectService(QObject):
         return self._rendering() or any(w.busy() for w in (self.images, self.thumbs, self.view, self.prefetch))
 
     # ------------------------------------------------------------ requests
+    def request_job(self, name: str, fn, *args) -> int:
+        """Run ``fn(project, *args)`` in the worker (the data of a block: ``calibration_data``,
+        ``registration_bundle``...). Answer: ``jobReady(name, token, result)`` or ``jobFailed``; a newer request of
+        the same name makes the older answer stale."""
+        channel = f"inspect.job:{name}"
+        token = self._token(channel)
+        self.requests += 1
+        self.images.submit(channel, self._job, name, token, fn, args)
+        return token
+
+    def _job(self, name, token, fn, args):
+        return name, token, fn(self.model.p, *args)
+
     def request_image(self, slot: int, wid: int, spec: VisualSpec, which: str = "current") -> int:
         """Load a picture into ``slot`` (0: the shown one, 1: the one it is compared with). Answer: ``imageReady`` or
         ``imageFailed``, with the token returned here; a newer request of the slot makes the older answer stale. (A view
@@ -978,8 +1736,6 @@ class InspectService(QObject):
                 im = self._final_image(res, key, spec)
                 self.cache.put(im)
                 self.imageReady.emit(slot, token, im)
-                self.requests += 1
-                self.images.submit(f"inspect.sky:{key}", self._sky_job, im, wid, which, res.canvas)
         finally:
             self._pump()
 
@@ -987,7 +1743,12 @@ class InspectService(QObject):
     def _final_image(res, key: tuple, spec: VisualSpec) -> ShownImage:
         a = res.rgb
         src = PixelSource(a)
-        return ShownImage(key, spec, stretched=src, size=src.size(), hist={"stretched": histogram8(a)}, nbytes=src.nbytes)
+        im = ShownImage(key, spec, stretched=src, size=src.size(), hist={"stretched": histogram8(a)},
+                        nbytes=src.nbytes)
+        cv = res.canvas
+        if cv is not None:                 # where the picture sits on the stack grid (the sky readout)
+            im.grid, im.origin = (cv.W, cv.H), (float(cv.origin[0]), float(cv.origin[1]))
+        return im
 
     def _sky_job(self, im: ShownImage, wid: int, which: str, canvas):
         """The sky coordinates under the cursor of a final image: the solution of the workflow, read by the worker and
@@ -1034,7 +1795,7 @@ class InspectService(QObject):
         return token
 
     def _table_job(self, wid, token):
-        return wid, token, api.frame_table(self.model.p, wid)
+        return wid, token, frame_table_any(self.model.p, wid)
 
     def request_preview(self, wid: int, min_transparency: float, max_fwhm_ratio: float) -> int:
         """How many frames these thresholds keep (``api.selection_preview``); answer: ``previewReady``."""
@@ -1054,6 +1815,8 @@ class InspectService(QObject):
         return token
 
     def _group_job(self, wid, kind, token):
+        if kind == "lights":
+            return kind, token, lights_of(self.model.p, wid, self.headers)
         return kind, token, browse_group(self.model.p, wid, kind, self.headers)
 
     def _balanced(self, arr: np.ndarray, balance: bool) -> np.ndarray:

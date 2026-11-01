@@ -1,18 +1,23 @@
 """Browse: the lights and calibration frames of the project, their calibration matching, and a raw frames browser (grid,
-viewer with filmstrip and blink, sortable list) where frames are kept or excluded; and Import folder.
+the common viewer with its frame sequence, sortable list) where frames are kept or excluded; and Import folder.
 
-The thumbnails and the frame shown large are made by the worker from the raw files (``api.frame_thumb``: one stretch for
-all the lights of a session, so that a hazy frame looks darker when blinking). Nothing here reads a file.
+The grid's thumbnails are made by the worker from the raw files (``api.frame_thumb``: one stretch for all the lights of
+a session, so that a hazy frame looks darker when blinking). The viewer (``imageview.ImageView``) reads the raw frame
+shown, and its neighbours ahead of time, in its own threads: zoom, stretch, the pixel readout, the info band (time,
+exposure, ISO, temperature, FWHM, roundness, transparency, weight, kept or excluded), Exclude / Include, Blink. A
+calibration frame left out by hand is left out of its master (``services/inspect.set_calibration_excluded``). Nothing
+here reads a file.
 
 Displayed texts are English and go through _() at display time (French: locale/fr/inspect.json).
 """
 from __future__ import annotations
 
 import os
+from functools import partial
 
 import numpy as np
 from PySide6.QtCore import QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon, QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -39,8 +44,8 @@ from .. import api
 from . import prefs
 from .frames import fexp, night_text
 from .i18n import _, hours_text, number, plural
-from .services.inspect import FrameItem, ProjectFrames, add_scan, service_of
-from .viewer import StaticSource, Viewer
+from .imageview import ImageView, ViewImage, quick_thumbnail
+from .services.inspect import FrameItem, ProjectFrames, add_scan, light_thumb, service_of, set_calibration_excluded
 from .widgets import NEW, OK, WARN, clear, hline, label, para
 
 # (key, title, section): plain English, translated where shown
@@ -239,6 +244,7 @@ def import_folder(model, parent=None, folder: str | None = None, new_session: bo
 class SourcesView(QWidget):
     goChain = Signal(str)
     imported = Signal()
+    sendToPost = Signal(str, object, object)               # name, source, key (Send to Post of the viewer)
 
     def __init__(self, project, parent=None, service=None):
         super().__init__(parent)
@@ -250,10 +256,12 @@ class SourcesView(QWidget):
         self.mode = 1                                      # 0 grid, 1 viewer, 2 list
         self.cur = 0
         self.sort = "time"
+        self.can_post = None                               # callable: Post takes images (the window sets it)
         self._icons: dict[str, list[QListWidgetItem]] = {}
         self._group_token = 0
-        self._frame_token = 0
         self._loaded_group = None
+        self._seq_order: list[int] = []                    # the viewer's sequence: indices of ``items``
+        self._syncing = False
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self.pages = QStackedWidget()
@@ -293,12 +301,10 @@ class SourcesView(QWidget):
         self.sort_cb = QComboBox()
         self.sort_cb.currentIndexChanged.connect(self._sort_changed)
         bar.addWidget(self.sort_cb)
-        self.blink = QPushButton("▶  " + _("Blink"))
-        self.blink.setCheckable(True)
-        self.blink.setObjectName("toggle")
-        self.blink.setToolTip(_("Plays the frames at 5 frames/s in the viewer (Space)"))
-        self.blink.toggled.connect(self._blink)
-        bar.addWidget(self.blink)
+        self.zone_b = QPushButton(_("Draw test area") + "  ◇")      # ◇: Preview on a region, Spec mode only
+        self.zone_b.setToolTip("◇ " + _("Not in the engine yet."))
+        self.zone_b.setEnabled(False)
+        bar.addWidget(self.zone_b)
         bar.addStretch(1)
         self.count = label("", "dim")
         bar.addWidget(self.count)
@@ -319,45 +325,12 @@ class SourcesView(QWidget):
         self.grid.itemDoubleClicked.connect(lambda it: (self._goto(it.data(Qt.UserRole)), self.set_mode(1)))
         self.grid.itemClicked.connect(lambda it: self._goto(it.data(Qt.UserRole)))
         self.stack.addWidget(self.grid)
-        # viewer + filmstrip
-        vw = QWidget()
-        vv = QVBoxLayout(vw)
-        vv.setContentsMargins(0, 0, 0, 0)
-        vv.setSpacing(0)
-        self.viewer = Viewer()
-        vv.addWidget(self.viewer, 1)
-        nav = QHBoxLayout()
-        nav.setContentsMargins(10, 4, 10, 4)
-        self.prev_b, self.next_b = QPushButton("◀"), QPushButton("▶")
-        self.prev_b.setToolTip(_("Previous frame (←)"))
-        self.next_b.setToolTip(_("Next frame (→)"))
-        self.prev_b.clicked.connect(lambda: self.step(-1))
-        self.next_b.clicked.connect(lambda: self.step(1))
-        self.keep_b = QPushButton()
-        self.keep_b.setToolTip(_("Keep or exclude this frame (X)"))
-        self.keep_b.clicked.connect(self.toggle_keep)
-        self.zone_b = QPushButton(_("Draw test area") + "  ◇")      # ◇: Preview on a region, Spec mode only
-        self.zone_b.setToolTip("◇ " + _("Not in the engine yet."))
-        self.zone_b.setEnabled(False)
-        nav.addWidget(self.prev_b)
-        nav.addWidget(self.next_b)
-        nav.addWidget(self.keep_b)
-        nav.addStretch(1)
-        nav.addWidget(self.zone_b)
-        vv.addLayout(nav)
-        self.strip = QListWidget()
-        self.strip.setViewMode(QListView.IconMode)
-        self.strip.setFlow(QListView.LeftToRight)
-        self.strip.setWrapping(False)
-        self.strip.setIconSize(QSize(120, 80))
-        self.strip.setGridSize(QSize(128, 100))
-        self.strip.setFixedHeight(118)
-        self.strip.setMovement(QListView.Static)
-        self.strip.setUniformItemSizes(True)
-        self.strip.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.strip.itemClicked.connect(lambda it: self._goto(it.data(Qt.UserRole)))
-        vv.addWidget(self.strip)
-        self.stack.addWidget(vw)
+        # the common viewer, with the frames as its sequence (film strip, info band, Exclude / Include, Blink)
+        self.viewer = ImageView(post=True, histogram=False)
+        self.viewer.frameChanged.connect(self._viewer_frame)
+        self.viewer.excludeToggled.connect(self._viewer_exclude)
+        self.viewer.sendToPost.connect(self._send)
+        self.stack.addWidget(self.viewer)
         # list
         self.table = QTableWidget()
         self.table.setStyleSheet("QTableWidget { background: #1c1f26; gridline-color: #2a2f38; } "
@@ -379,8 +352,6 @@ class SourcesView(QWidget):
         self.rv.setContentsMargins(12, 12, 12, 12)
         root.addWidget(right)
 
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(lambda: self.step(1))
         self._table_timer = QTimer(self)                   # the list is built again once the levels came
         self._table_timer.setSingleShot(True)
         self._table_timer.setInterval(250)
@@ -389,18 +360,11 @@ class SourcesView(QWidget):
         self._thumb_timer.setSingleShot(True)
         self._thumb_timer.setInterval(120)
         self._thumb_timer.timeout.connect(self._want_thumbs)
-        for bar_ in (self.grid.verticalScrollBar(), self.strip.horizontalScrollBar()):
-            bar_.valueChanged.connect(lambda _v: self._thumb_timer.start())
-        for seq, fn in (("Left", lambda: self.step(-1)), ("Right", lambda: self.step(1)), ("X", self.toggle_keep),
-                        ("Space", self.blink.toggle)):
-            sc = QShortcut(QKeySequence(seq), self)
-            sc.setContext(Qt.WidgetWithChildrenShortcut)
-            sc.activated.connect(fn)
+        self.grid.verticalScrollBar().valueChanged.connect(lambda _v: self._thumb_timer.start())
         sv = self.service
         sv.groupReady.connect(self._group_ready)
         sv.framesReady.connect(self._frames_ready)
         sv.thumbReady.connect(self._thumb)
-        sv.frameReady.connect(self._frame_ready)
         sv.statsReady.connect(self._stats_ready)
         self._fill_sort()
         self.set_mode(1)
@@ -459,6 +423,9 @@ class SourcesView(QWidget):
             self._marks()
             self.fill_table(self.order())
             self.update_count()
+            for pos, i in enumerate(self._seq_order):
+                if i < len(items):
+                    self.viewer.set_frame_info(pos, self._info(i))
             self.build_left()
             self.build_right()
             return
@@ -596,7 +563,7 @@ class SourcesView(QWidget):
         self.group = key
         self.cur = 0
         self.items = []
-        self.blink.setChecked(False)
+        self.viewer.blink_b.setChecked(False)
         self._fill_sort()
         self.build_left()
         self.fill()
@@ -628,44 +595,120 @@ class SourcesView(QWidget):
     def fill(self):
         idx = self.order()
         self._icons = {}
-        for w in (self.grid, self.strip):
-            w.clear()
-            for i in idx:
-                it = QListWidgetItem(placeholder(), self._item_text(i) if w is self.grid else "")
-                it.setData(Qt.UserRole, i)
-                it.setToolTip(self._item_text(i).replace("\n", " · "))
-                if self.excluded(i):
-                    it.setForeground(QColor("#e06c6c"))
-                th = self.service.thumb_cache.get(self.items[i].path)
-                if th is not None:
-                    it.setIcon(QIcon(pixmap(th)))
-                else:
-                    self._icons.setdefault(self.items[i].path, []).append(it)
-                w.addItem(it)
+        self.grid.clear()
+        for i in idx:
+            it = QListWidgetItem(placeholder(), self._item_text(i))
+            it.setData(Qt.UserRole, i)
+            it.setToolTip(self._item_text(i).replace("\n", " · "))
+            if self.excluded(i):
+                it.setForeground(QColor("#e06c6c"))
+            th = self.service.thumb_cache.get(self.items[i].path)
+            if th is not None:
+                it.setIcon(QIcon(pixmap(th)))
+            else:
+                self._icons.setdefault(self.items[i].path, []).append(it)
+            self.grid.addItem(it)
         self.fill_table(idx)
         self.update_count()
+        self._fill_viewer(idx)
         self._thumb_timer.start()
+
+    # ------------------------------------------------------------ the viewer's sequence
+    def _info(self, i: int) -> dict:
+        """The info band of a frame: what its header and the engine say."""
+        f = self.items[i]
+        info = {"time": f.time, "exposure": f.exposure, "iso": f.iso, "temperature": f.temperature}
+        if self.group == "lights":
+            info.update(fwhm=f.fwhm, roundness=f.roundness, weight=f.weight,
+                        transparency=(f.transparency / self.p90) if f.transparency is not None else None,
+                        excluded=bool(f.excluded), reason=_(f.status) if f.status and not f.excluded else "")
+            if f.level is not None:
+                info["extra"] = [(_("Sky level"), fnum(f.level, 0) + " ADU")]
+        else:
+            st = self.service.stats.get(f.path)
+            info.update(excluded=bool(f.excluded), compact=True)
+            info["extra"] = [(_("Median level"), fnum(self.black() + st["level"], 0) + " ADU"),
+                             (_("Noise σ"), fnum(st["noise"], 1) + " ADU")] if st else [(_("Median level"), "…")]
+            if st and self.group == "flats":
+                info["extra"].append((_("Exposure level"), fnum(st["pct"], 0) + " %"))
+            if f.flag:
+                info["flag"], info["flag_reason"] = f.flag, f.reason
+        return info
+
+    def _fill_viewer(self, idx):
+        """The frames of the group, in the order of the sort, as the viewer's sequence."""
+        self._seq_order = list(idx)
+        if not idx:
+            self.viewer.set_sequence([])
+            self.viewer.clear()
+            return
+        lights = self.group == "lights"
+        cfa = (self.data.camera.get("cfa") if self.data is not None else "") or ""
+        frames = []
+        for i in idx:
+            f = self.items[i]
+            vi = ViewImage(f.path, f.name, camera=True, cfa=f.cfa or cfa, white=f.white, info=self._info(i))
+            vi.thumb = light_thumb(self.s.p, f.path) if lights else \
+                partial(quick_thumbnail, ViewImage(f.path, cfa=f.cfa or cfa, camera=True))
+            frames.append(vi)
+        self.viewer.set_exclude_mode("on")
+        ok = False
+        try:
+            ok = bool(self.can_post()) if callable(self.can_post) else False
+        except Exception:  # noqa: BLE001
+            ok = False
+        self.viewer.set_post_enabled(ok, "" if ok else _("Post does not take images yet: this comes with its image "
+                                                         "layers."))
+        pos = idx.index(self.cur) if self.cur in idx else 0
+        self._syncing = True
+        try:
+            self.viewer.set_sequence(frames, pos)
+        finally:
+            self._syncing = False
+
+    def _viewer_frame(self, pos: int):
+        """The viewer moved to another frame (arrows, film strip, number, blink)."""
+        if self._syncing or not (0 <= pos < len(self._seq_order)):
+            return
+        self.cur = self._seq_order[pos]
+        self._select_in_lists()
+        self.build_right()
+        if self.group != "lights":
+            self.service.request_stats(self.items[self.cur].path)
+
+    def _viewer_exclude(self, pos: int, excluded: bool):
+        if not (0 <= pos < len(self._seq_order)):
+            return
+        i = self._seq_order[pos]
+        self.cur = i
+        self._set_excluded(i, excluded)
+
+    def _send(self, key):
+        """Send to Post: the frame shown becomes a layer of Post (debayered, read in Post's worker)."""
+        from .services.inspect import post_key, post_source
+        vi = self.viewer.image()
+        if vi is not None:
+            self.sendToPost.emit(vi.name, post_source(vi), post_key(vi, None))
 
     def _marks(self):
         """The excluded frames are shown as such, in place."""
-        for w in (self.grid, self.strip):
-            for r in range(w.count()):
-                it = w.item(r)
-                i = it.data(Qt.UserRole)
-                it.setForeground(QColor("#e06c6c") if self.excluded(i) else QColor("#d8dce4"))
-                if w is self.grid:
-                    it.setText(self._item_text(i))
+        for r in range(self.grid.count()):
+            it = self.grid.item(r)
+            i = it.data(Qt.UserRole)
+            it.setForeground(QColor("#e06c6c") if self.excluded(i) else QColor("#d8dce4"))
+            it.setText(self._item_text(i))
 
     def _thumb(self, path: str, arr):
         for it in self._icons.pop(path, []):
             it.setIcon(QIcon(pixmap(arr)))
 
     def _want_thumbs(self):
-        """Thumbnails for the frames in view and around the current one (the worker makes them in this order)."""
-        if not self.items or self.pages.currentIndex() != 1:
+        """Thumbnails of the grid for the frames in view and around the current one (the worker makes them in this
+        order)."""
+        if not self.items or self.pages.currentIndex() != 1 or self.mode != 0:
             return
         idx = self.order()
-        w = self.grid if self.mode == 0 else self.strip
+        w = self.grid
         c = w.indexAt(QPoint(w.viewport().width() // 2, w.viewport().height() // 2)).row()
         pos = c if c >= 0 else (idx.index(self.cur) if self.cur in idx else 0)
         lo, hi = max(0, pos - 20), min(len(idx), pos + 60)
@@ -732,6 +775,7 @@ class SourcesView(QWidget):
         self.mode = k
         self.mode_btns[k].setChecked(True)
         self.stack.setCurrentIndex(k)
+        self.info.setVisible(k != 1)                     # the viewer has its own info band
         self._goto(self.cur)
         self._thumb_timer.start()
 
@@ -742,28 +786,42 @@ class SourcesView(QWidget):
         pos = idx.index(self.cur) if self.cur in idx else 0
         self._goto(idx[(pos + d) % len(idx)])
 
+    def _select_in_lists(self):
+        for r in range(self.grid.count()):
+            if self.grid.item(r).data(Qt.UserRole) == self.cur:
+                self.grid.setCurrentRow(r)
+                self.grid.scrollToItem(self.grid.item(r))
+                break
+        self._info_line()
+
     def _goto(self, i):
         if not self.items:
             return
         self.cur = int(min(max(int(i), 0), len(self.items) - 1))
+        if self.cur in self._seq_order:
+            self._syncing = True
+            try:
+                self.viewer.set_index(self._seq_order.index(self.cur))
+            finally:
+                self._syncing = False
+        self._select_in_lists()
+        if self.group != "lights":
+            self.service.request_stats(self.items[self.cur].path)
+        self.build_right()
+
+    def _info_line(self):
+        """One line on the frame chosen, above the grid and the list (the viewer has its info band)."""
         f = self.items[self.cur]
-        if self.mode == 1:
-            self._frame_token = self.service.request_frame(f.path, 1280, self.group == "lights")
-            self._prefetch()
-        for w in (self.grid, self.strip):
-            for r in range(w.count()):
-                if w.item(r).data(Qt.UserRole) == self.cur:
-                    w.setCurrentRow(r)
-                    w.scrollToItem(w.item(r))
-                    break
         d = self.data
         row0 = d.sessions[0] if d is not None and d.sessions else None
         if self.group == "lights":
             tr = f"{100 * f.transparency / self.p90:.0f}" if f.transparency is not None else "–"
+            exp = f.exposure if f.exposure is not None else (row0.exposure if row0 else None)
+            iso = f.iso if f.iso is not None else (row0.iso if row0 else None)
             t = _("{file} · {time} · {exp} · ISO {iso} · FWHM {fwhm} px · transparency {transp} % of the best · "
                   "weight {weight}").format(
-                file=f.name, time=(f.time or "")[11:16], exp=fexp(row0.exposure) if row0 else "–",
-                iso=int(row0.iso) if row0 and row0.iso else "–", fwhm=fnum(f.fwhm, 2) if f.fwhm is not None else "–",
+                file=f.name, time=(f.time or "")[11:16], exp=fexp(exp), iso=int(iso) if iso else "–",
+                fwhm=fnum(f.fwhm, 2) if f.fwhm is not None else "–",
                 transp=tr, weight=fnum(f.weight, 2) if f.weight is not None else "–")
         else:
             st = self.service.stats.get(f.path)
@@ -771,69 +829,51 @@ class SourcesView(QWidget):
                 file=f.name, date=(f.time or "")[:10], level=fnum(self.black() + st["level"], 0),
                 noise=fnum(st["noise"], 2)) if st else f"{f.name} · {(f.time or '')[:10]}")
         self.info.setText(t + (" · " + _("EXCLUDED") if self.by_hand(self.cur) else ""))
-        self.keep_b.setText(_("Keep this frame") if self.by_hand(self.cur) else _("Exclude this frame  (X)"))
-        self.keep_b.setEnabled(self.group == "lights" and f.session is not None)
-        if self.group != "lights":
-            self.keep_b.setToolTip("◇ " + _("Not in the engine yet.") if prefs.spec() else "")
-            self.keep_b.setVisible(prefs.spec())
-        else:
-            self.keep_b.setVisible(True)
-        if self.group != "lights":
-            self.service.request_stats(f.path)
-        self.build_right()
-
-    def _prefetch(self):
-        """The frames the blink will show next, made in the background."""
-        idx = self.order()
-        if not idx or self.cur not in idx:
-            return
-        pos = idx.index(self.cur)
-        nxt = [self.items[idx[(pos + k) % len(idx)]].path for k in range(1, 9)]
-        self.service.prefetch_frames(nxt, balance=self.group == "lights")
-
-    def _frame_ready(self, token: int, path: str, arr):
-        if token != self._frame_token or self.mode != 1:
-            return
-        self.viewer.set_source(StaticSource(arr), keep_view=True)
 
     def _stats_ready(self, path: str, st: dict):
         if not self.items:
             return
         if path == self.items[min(self.cur, len(self.items) - 1)].path:
             self.build_right()
-            self._update_info_stats()
+            self._info_line()
         if self.group != "lights":
+            for pos, i in enumerate(self._seq_order):
+                if i < len(self.items) and self.items[i].path == path:
+                    self.viewer.set_frame_info(pos, self._info(i))
+                    break
             self._table_timer.start()
 
-    def _update_info_stats(self):
-        f = self.items[self.cur]
-        st = self.service.stats.get(f.path)
-        if st and self.group != "lights":
-            self.info.setText(_("{file} · {date} · level {level} ADU · noise {noise} ADU").format(
-                file=f.name, date=(f.time or "")[:10], level=fnum(self.black() + st["level"], 0),
-                noise=fnum(st["noise"], 2)))
-
     def toggle_keep(self):
-        if not self.items or self.group != "lights":
+        """Exclude or take back the frame chosen (the list's Kept column)."""
+        if not self.items:
             return
         f = self.items[self.cur]
+        self._set_excluded(self.cur, not f.excluded)
+
+    def _set_excluded(self, i: int, want: bool):
+        """A light frame: by hand, for the whole project. A calibration frame: left out of its master (the session
+        lists the frames of its folder one by one)."""
+        f = self.items[i]
         if f.session is None:
             return
-        want = not f.excluded
-        self.s.set_excluded([(f.session, f.name)], want)          # saved by the model, as any edit
-        f.excluded = want
+        if self.group == "lights":
+            self.s.set_excluded([(f.session, f.name)], want)          # saved by the model, as any edit
+            f.excluded = want
+        else:
+            if not set_calibration_excluded(self.s, f, want, self.items):
+                QMessageBox.information(self, _("Browse"), _("The last frame of a folder cannot be left out."))
+                pos = self._seq_order.index(i) if i in self._seq_order else -1
+                if pos >= 0:
+                    self.viewer.set_excluded(pos, f.excluded)
+                return
+            f.excluded = want
         self._marks()
         self.fill_table(self.order())
         self.update_count()
+        if i in self._seq_order:
+            self.viewer.set_frame_info(self._seq_order.index(i), self._info(i))
         self.build_left()
-        self._goto(self.cur)
-
-    def _blink(self, on):
-        if on:
-            self.set_mode(1)
-            self.timer.start(200)
-        else:
-            self.timer.stop()
+        self.build_right()
 
     # ------------------------------------------------------------ right panel
     def build_right(self):

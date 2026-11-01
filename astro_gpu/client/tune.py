@@ -1,100 +1,88 @@
-"""Inspect: the image of one block, large.
+"""Inspect: one block, large, every result of it examinable.
 
-At the top, the current workflow as a strip of blocks; in the middle, the result of the chosen block with the inspection
-tools (auto-stretch, histogram, 1:1, pixel readout in ADU and sky coordinates); on the right, the same panel as in
-Graph, with the measurements. The Frames block opens the sessions and the frame browser.
+At the top, the current workflow as a strip of blocks; in the middle, the chosen block's tabs; on the right, the same
+panel as in Graph, with the measurements. Every picture is shown in the common viewer (``imageview.ImageView``: zoom,
+stretch with its histogram, pixel readout in ADU and sky coordinates, compare with the previous steps, Export, Send to
+Post); the charts are the interactive ones (``charts``); the frames are sequences with their numbers (info band,
+Exclude / Include).
 
-The pictures come from the done results of the engine (the arrays of ``api.stage_array``, the previews of
-``api.stage_outputs``), loaded and stretched by the worker (``services/inspect``): nothing here reads a file. An Outdated
-block shows the result it had ("previous result"); a Pending one says so, with Run to here.
+What each block shows (the tabs are ``Steps.visuals``):
+
+* Calibration: the masters, every dark, flat, bias and dark flat (left out by hand, or taken back), the calibrated
+  lights compared with the raw;
+* Registration: the reference frame, the charts (quality, drift, drift path, distribution) and the frame table;
+* Selection: the thresholds chart and the frames;
+* Stacking: the stack compared with a calibrated frame and the half-stacks, the rejection map, the coverage, the
+  weights;
+* Astrometry: the stack with the RA / Dec grid and the catalogue stars, then the survey;
+* Color: before / after, the sensor response charts, the per-star fit;
+* Denoise: compared with the stack, the same stretch on both; Stars; Gradient: the result compared with the earlier
+  steps, the sky model, the gradient, the star flat; Output: the final image (the render worker's) compared with the
+  earlier steps.
+
+The data of a block (masters, tables, charts) are read by the worker (``services/inspect``: ``request_job``); the
+pictures are read in the viewer's own threads (their sources are callables). Nothing here reads a file. An Outdated
+block shows the result it had ("previous result"); a Pending one says so, with Run to here. What the engine does not
+give yet says so: "Not available yet: recompute <block> to get it".
 
 Mounting (the window's ``inspect_page``): ``steps = Steps(model)``; ``browser = SourcesView(model)``;
 ``frames = FramesView(model, browser)``; ``tune = TuneView(model, steps, frames, post_page)``. The view refreshes itself
 from the model's signals while it is visible. Its signals: ``back`` (the Graph button, Esc), ``runHere`` (Run to the
 selected block of the current workflow), ``openPost``, ``removeTool`` (Remove on the panel of an optional block: the
-graph's ``remove_tool(node, None)``), ``toasted(text)``. Importing is the views' own: ``sources.import_folder(model, parent,
-folder=None, new_session=False)`` serves File > Import folder… and Import folder as new project.
+graph's ``remove_tool(node, None)``), ``toasted(text)``, ``sendToPost(name, source, key)`` (Send to Post of a viewer:
+the window gives it to Post's ``add_image_layer``; ``can_post``, a callable the window sets, says whether Post takes
+it). Importing is the views' own: ``sources.import_folder(model, parent, folder=None, new_session=False)``.
 """
 from __future__ import annotations
 
+import html
+import os
+from collections import OrderedDict
+from functools import partial
+
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QButtonGroup,
     QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QStackedLayout,
     QStackedWidget,
     QTabBar,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from .. import texts
 from . import prefs
 from .blocks import ENGINE_BLOCK, Graph, block_state, block_title, chain, stages_of
-from .charts import FramesChart, SpectralChart
-from .i18n import _, hm, hours_text, number
+from .charts import (
+    AMBER,
+    BLUE,
+    RED,
+    DistributionChart,
+    DriftChart,
+    FramesChart,
+    QualityChart,
+    TrackChart,
+    color_tabs,
+)
+from .chartview import ChartView
+from .i18n import _, hm, hours_text, language, number
+from .imageview import ImageView, ViewImage, quick_thumbnail
 from .panel import STATE_COLOR, STATE_WORD, Panel
-from .services.inspect import CATALOGUE_G_MAX, ShownImage, VisualSpec
-from .steps import Steps, fnum, kv
-from .viewer import StaticSource, Viewer
+from .services import inspect as si
+from .services.inspect import CATALOGUE_G_MAX, VisualSpec
+from .steps import Steps
 from .widgets import ACCENT, WARN, clear, label
 
 STATE_COL = dict(STATE_COLOR, pending="#5d6470")      # the strip: a block not computed yet is a dark grey
-
-
-class StretchSource:
-    """A picture shown with the automatic display stretch, or linear (as stored). The data is never changed."""
-
-    def __init__(self, img: ShownImage, stretched: bool = True):
-        self.img, self.stretched = img, stretched
-        self.version = 0
-
-    def _src(self):
-        im = self.img
-        return im.stretched if (self.stretched or im.linear is None) else im.linear
-
-    def size(self):
-        return self._src().size()
-
-    def region(self, level, x0, y0, x1, y1):
-        return self._src().region(level, x0, y0, x1, y1)
-
-
-class Histogram(QWidget):
-    """The histogram of what is shown: three channels, logarithmic counts."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(90)
-        self.h = None
-
-    def set_counts(self, counts):
-        """``counts``: (3, 256) counts of the values of the picture shown."""
-        self.h = None if counts is None else [np.log1p(np.asarray(c, float)) for c in counts]
-        self.update()
-
-    def paintEvent(self, e):                                         # noqa: N802 - Qt's name
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), QColor("#181b21"))
-        if self.h is not None:
-            w, hgt = self.width(), self.height() - 4
-            top = max(float(x.max()) for x in self.h) or 1
-            for c, col in enumerate(("#e06c6c", "#5fbf7f", "#5ea1ff")):
-                path = QPainterPath(QPointF(0, hgt))
-                for i, v in enumerate(self.h[c]):
-                    path.lineTo(QPointF(i * w / 255, hgt - v / top * (hgt - 4)))
-                path.lineTo(QPointF(w, hgt))
-                p.setPen(QPen(QColor(col), 1))
-                c_ = QColor(col)
-                c_.setAlpha(50)
-                p.setBrush(c_)
-                p.drawPath(path)
-        p.end()
 
 
 class Strip(QFrame):
@@ -162,37 +150,173 @@ class Strip(QFrame):
         self.h.addStretch(1)
 
 
-class ImageSlot(QWidget):
-    """One place for a picture: a note while it loads (or when it cannot be shown), then the viewer or the chart."""
+# ---------------------------------------------------------------------------------------------- small pieces
+class NumItem(QTableWidgetItem):
+    """A table cell sorted by its number."""
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.stack = QStackedLayout(self)
-        self.note = label("", "dim")
-        self.note.setAlignment(Qt.AlignCenter)
-        self.note.setWordWrap(True)
-        self.stack.addWidget(self.note)
-        self.content: QWidget | None = None
-        self.image: ShownImage | None = None
-        self.viewer: Viewer | None = None
+    def __init__(self, value, text: str):
+        super().__init__(text)
+        self.v = value if value is not None and np.isfinite(value) else -np.inf
+        self.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-    def message(self, text: str, warn: bool = False):
-        self.note.setObjectName("warn" if warn else "dim")
-        self.note.setStyleSheet("")
-        self.note.style().unpolish(self.note)
-        self.note.style().polish(self.note)
-        self.note.setText(text)
-        self.stack.setCurrentWidget(self.note)
-
-    def put(self, w: QWidget):
-        if self.content is not None:
-            self.stack.removeWidget(self.content)
-            self.content.deleteLater()
-        self.content = w
-        self.stack.addWidget(w)
-        self.stack.setCurrentWidget(w)
+    def __lt__(self, other):
+        return self.v < getattr(other, "v", -np.inf)
 
 
+def make_table(headers: list[str], rows: list[list], digits: dict[int, int] | None = None,
+               red: list[bool] | None = None) -> QTableWidget:
+    """A sortable table: a cell is text, or a number shown with ``digits[column]`` decimals (– when unknown)."""
+    digits = digits or {}
+    t = QTableWidget(len(rows), len(headers))
+    t.setHorizontalHeaderLabels(headers)
+    t.verticalHeader().setVisible(False)
+    t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    t.setSelectionBehavior(QAbstractItemView.SelectRows)
+    t.setStyleSheet("QTableWidget { background: #1c1f26; gridline-color: #2a2f38; } "
+                    "QHeaderView::section { background: #23272f; border: none; padding: 4px; }")
+    for r, row in enumerate(rows):
+        for c, v in enumerate(row):
+            if c in digits:
+                ok = v is not None and np.isfinite(float(v))
+                it = NumItem(float(v) if ok else None, number(float(v), digits[c]) if ok else "–")
+            else:
+                it = QTableWidgetItem("" if v is None else str(v))
+            if red is not None and red[r]:
+                it.setForeground(QColor("#e06c6c"))
+            t.setItem(r, c, it)
+    t.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)       # the rows as given until a header is clicked
+    t.setSortingEnabled(True)
+    t.resizeColumnsToContents()
+    for c in range(len(headers)):
+        t.setColumnWidth(c, t.columnWidth(c) + 14)
+    t.horizontalHeader().setStretchLastSection(True)
+    return t
+
+
+def _f(v) -> float:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return float("nan")
+    return x
+
+
+def colour_index(v) -> float:
+    """One number for a star's colour: the value itself, a difference of two, or −2.5 log10(B / R) of three
+    fluxes (a B − R index)."""
+    a = np.atleast_1d(np.asarray(v, float)).ravel()
+    if a.size == 1:
+        return float(a[0])
+    if a.size == 2:
+        return float(a[0] - a[1])
+    if a[0] > 0 and a[2] > 0:
+        return float(-2.5 * np.log10(a[2] / a[0]))
+    return float("nan")
+
+
+CHANNEL_COLORS = (QColor("#ff6b6b"), QColor("#5fd38d"), QColor("#5ea1ff"))
+
+
+def per_channel(v) -> np.ndarray:
+    """(3,) values of R, G, B from a number, a sequence, or None (NaN)."""
+    if v is None:
+        return np.full(3, np.nan)
+    a = np.atleast_1d(np.asarray(v, float)).ravel()
+    return np.resize(a, 3) if a.size else np.full(3, np.nan)
+
+
+def weight_rows(b) -> list[dict]:
+    """One record per frame of a stack: name, time, weight, normalisation offset and scale (R, G, B, or None), FWHM,
+    transparency, and the reason it is left out ('' kept)."""
+    tab = {r.name: r for r in (b.frames.rows if b.frames is not None else [])}
+    out = []
+    d = b.diag
+    if d is not None and getattr(d, "weights", None):
+        left = dict(getattr(d, "excluded", None) or {})
+        for name, w, off, sc in d.weights:
+            r = tab.get(name)
+            out.append(dict(name=name, time=(r.time if r is not None else "") or "", weight=w, offset=off, scale=sc,
+                            fwhm=r.fwhm if r is not None else None,
+                            transparency=r.transparency if r is not None else None,
+                            status=left.get(name) or (r.status if r is not None else "")))
+        return out
+    for r in tab.values():
+        out.append(dict(name=r.name, time=r.time or "", weight=r.weight, offset=None, scale=None, fwhm=r.fwhm,
+                        transparency=r.transparency, status=r.status))
+    return out
+
+
+class WeightsChart(ChartView):
+    """The weight the stack gave each frame and, once the engine gives them, its normalisation: the offset (the
+    frame's sky at the field centre, ADU) and the scale that bring each channel of the frame to the reference's
+    level."""
+
+    def __init__(self, rows: list[dict], parent=None):
+        super().__init__(_("Weight of each frame in the stack"), parent, zoom="x", readout="x", export_name="weights")
+        self.setMinimumHeight(300)
+        n = len(rows)
+        x = np.arange(n) + 1.0
+        w = np.array([_f(r["weight"]) for r in rows])
+        kept = np.array([not r["status"] for r in rows], bool)
+        extra = {_("Frame"): [r["name"] for r in rows], _("Time"): [r["time"] for r in rows]}
+        p0 = self.add_panel(_("Weight"), "", digits=2, zero=True)
+        self.add_scatter(_("kept"), x[kept], w[kept], panel=p0, color=BLUE, size=7, readout=False, export=False)
+        if (~kept).any():
+            self.add_scatter(_("left out"), x[~kept], w[~kept], panel=p0, color=RED, size=7, readout=False,
+                             export=False)
+        self.add_data(_("Weight"), x, w, panel=p0, digits=3, extra=extra, show_extra=(_("Frame"),))
+        if any(r["scale"] is not None for r in rows):
+            sc = np.stack([per_channel(r["scale"]) for r in rows]) if rows else np.zeros((0, 3))
+            off = np.stack([per_channel(r["offset"]) for r in rows]) if rows else np.zeros((0, 3))
+            p1 = self.add_panel(_("Normalisation scale"), "", digits=3)
+            p2 = self.add_panel(_("Normalisation offset (ADU)"), "ADU", digits=0)
+            for c, name in enumerate((_("Red"), _("Green"), _("Blue"))):
+                self.add_line(name, x, sc[:, c], panel=p1, color=CHANNEL_COLORS[c], points=True, size=4, digits=4)
+                self.add_line(name, x, off[:, c], panel=p2, color=CHANNEL_COLORS[c], points=True, size=4, digits=1,
+                              unit="ADU", legend=False)
+        self.set_x(_("Frame number"), kind="int")
+        self.x_short = _("Frame")
+        self.fit()
+
+
+def star_colour(s) -> tuple[float, float, float, float]:
+    """(catalogue colour, measured colour, residual, G) of a star of the colour fit: the catalogue's Gaia BP − RP
+    (else the x of its chromaticity), the camera's −2.5 log10(B / R) of its measured fractions."""
+    bp = getattr(s, "bp_rp", None)
+    cat = float(bp) if bp is not None else colour_index(getattr(s, "catalogue", None) or [np.nan])
+    meas = colour_index(s.measured) if getattr(s, "measured", None) is not None else float("nan")
+    res = _f(s.residual) if getattr(s, "residual", None) is not None else float("nan")
+    return cat, meas, res, _f(getattr(s, "g", np.nan))
+
+
+class ColorFitChart(ChartView):
+    """The photometric colour fit, star by star, as in a PCC / SPCC plot: the camera's colour of each star against
+    its catalogue colour (Gaia BP − RP), the stars the fit used in blue and the rejected ones in red; below, the
+    residual of each used star (its chromaticity distance to the catalogue after the fit)."""
+
+    def __init__(self, fit, parent=None):
+        super().__init__(_("Star colours: the camera against the catalogue"), parent, zoom="xy", readout="xy",
+                         export_name="colour_fit")
+        self.setMinimumHeight(360)
+        stars = list(getattr(fit, "stars", None) or [])
+        vals = np.array([star_colour(s) for s in stars], float).reshape(-1, 4)
+        cat, meas, res, g = vals[:, 0], vals[:, 1], vals[:, 2], vals[:, 3]
+        used = np.array([bool(s.used) for s in stars], bool)
+        reason = [_(str(getattr(s, "reason", "") or "")) for s in stars]     # the colour stage's STAR_REASONS
+        p0 = self.add_panel(_("Camera colour (−2.5 log B / R)"), "", digits=2)
+        self.add_scatter(_("used"), cat[used], meas[used], panel=p0, color=BLUE, size=4.5, alpha=0.7, digits=3,
+                         extra={"G": list(g[used])})
+        if (~used).any():
+            self.add_scatter(_("rejected"), cat[~used], meas[~used], panel=p0, color=RED, size=4.5, alpha=0.8,
+                             digits=3, extra={_("Reason"): [r for r, u in zip(reason, used) if not u]},
+                             show_extra=(_("Reason"),))
+        p1 = self.add_panel(_("Residual after the fit"), "", digits=3, weight=0.6, zero=True)
+        self.add_scatter(_("residual"), cat[used], res[used], panel=p1, color=AMBER, size=4, alpha=0.7, digits=4)
+        self.set_x(_("Catalogue colour (Gaia BP − RP)"), kind="num")
+        self.fit()
+
+
+# ---------------------------------------------------------------------------------------------- the view
 class TuneView(QWidget):
     back = Signal()
     pick = Signal(str)                    # a block of the strip was chosen
@@ -201,30 +325,35 @@ class TuneView(QWidget):
     openPost = Signal()
     removeTool = Signal()                 # Remove, on the panel of an optional block
     toasted = Signal(str)                 # a word to say (what came with a change, why it was refused)
+    sendToPost = Signal(str, object, object)       # name, source (what the viewer reads), key
 
     def __init__(self, project, steps, sources_view, post_page, parent=None, service=None):
         super().__init__(parent)
         steps = steps if steps is not None else Steps(project, service)
         self.s, self.steps = project, steps
         self.service = service or steps.service
-        self.img_tab = 0
-        self.cmp_pid = None
-        self.picked = None                # the frame picked on the chart (an index of the frame table)
-        self.stretched = bool(prefs.get("auto_stretch"))
-        self.show_hist = False
+        self.tab_of: dict[str, str] = {}                  # block -> the tab shown last
+        self.cmp_pid = None                               # a workflow to compare with (a variant and its original)
+        self.picked = None                                # the frame picked on the chart (an index of the frame table)
+        self.show_hist = True                             # the viewers' stretch panel
         self.sky_show = {"grid": True, "stars": True, "objects": True}      # what the solution draws over a picture
+        self.can_post = None                              # callable: Post takes images (the window sets it)
         self._pending = False
         self._dirty = True
-        self._want: dict[int, int] = {}
-        self._slots: list[ImageSlot] = []
-        self._views: dict[tuple, tuple] = {}              # picture key -> (scale, cx, cy) the user left it at
-        self._syncing = False
-        self.viewers: list[Viewer] = []
-        self.readout = None
-        self.hist = None
-        self.table = None                                 # the frame table of the Selection chart
+        self.views: list[ImageView] = []                  # the viewers of the tab shown
+        self.view: ImageView | None = None                # the main one
         self.chart: FramesChart | None = None
-        self._frame_token = 0
+        self.table = None                                 # the frame table of the Selection chart
+        self.sel_frames: list[ViewImage] = []
+        self._cur = None                                  # (workflow, block, VisualSpec) of the tab shown
+        self._data: OrderedDict = OrderedDict()           # (job, keys) -> what the worker read
+        self._asked: dict[str, tuple] = {}                # job -> (token, (job, keys))
+        self._kept: dict[tuple, tuple] = {}               # (block, tab) -> (image key, view state, stretch)
+        self._render_token = None
+        self._table_token = None
+        self._seq_items: list = []                        # the frames of the sequence shown (FrameItem)
+        self._pool: list[ImageView] = []                  # viewers kept for the next tabs
+        self._conns: dict[int, list] = {}                 # viewer -> the connections of the tab shown
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
@@ -241,14 +370,13 @@ class TuneView(QWidget):
         h.setSpacing(0)
         mid = QWidget()
         mv = QVBoxLayout(mid)
-        mv.setContentsMargins(14, 8, 14, 6)
+        mv.setContentsMargins(10, 8, 10, 6)
         mv.setSpacing(6)
         self.head = QHBoxLayout()
         mv.addLayout(self.head)
         self.center = QVBoxLayout()
+        self.center.setSpacing(6)
         mv.addLayout(self.center, 1)
-        self.foot = QHBoxLayout()
-        mv.addLayout(self.foot)
         h.addWidget(mid, 1)
         self.panel = Panel(project, steps, tune=True)
         h.addWidget(self.panel)
@@ -270,11 +398,14 @@ class TuneView(QWidget):
                     project.readyChanged):
             sig.connect(self.request_refresh)
         steps.changed.connect(self._facts_arrived)
-        self.service.imageReady.connect(self._image_ready)
-        self.service.imageFailed.connect(self._image_failed)
-        self.service.tableReady.connect(self._table_ready)
-        self.service.frameReady.connect(self._frame_ready)
-        self.service.previewReady.connect(self._preview_ready)
+        sv = self.service
+        sv.imageReady.connect(self._image_ready)
+        sv.imageFailed.connect(self._image_failed)
+        sv.tableReady.connect(self._table_ready)
+        sv.previewReady.connect(self._preview_ready)
+        sv.jobReady.connect(self._job_ready)
+        sv.jobFailed.connect(self._job_failed)
+        sv.statsReady.connect(self._stats_ready)
         esc = QShortcut(QKeySequence("Escape"), self)
         esc.setContext(Qt.WidgetWithChildrenShortcut)
         esc.activated.connect(self.back.emit)
@@ -328,11 +459,19 @@ class TuneView(QWidget):
         if self.pages.currentIndex() == 0 and self.panel.node is not None:
             self.panel.refresh(self.panel.node)
 
-    def _remember_view(self):
-        """Where the user left each picture (zoom and position), kept while the view is built again."""
-        for sl in self._slots:
-            if sl.viewer is not None and sl.image is not None and sl.viewer._fitted:
-                self._views[sl.image.key] = (sl.viewer.scale, sl.viewer.cx, sl.viewer.cy)
+    def _remember(self):
+        """Where the user left the picture of the tab shown (zoom, position, stretch), kept while the view is built
+        again and when the tab is shown again."""
+        if self._cur is None or self.view is None:
+            return
+        try:
+            img = self.view.image()
+            if img is not None and self.view.prepared() is not None:
+                _p, k, spec = self._cur
+                self._kept[(k, spec.key)] = (img.identity(), self.view.view_state(), self.view.stretch())
+            self.show_hist = self.view.panel.isVisibleTo(self.view)
+        except RuntimeError:                                   # the viewer went with a rebuild
+            pass
 
     def refresh(self, g: Graph | None = None):
         self._pending = False
@@ -352,12 +491,9 @@ class TuneView(QWidget):
         p = s.path
         node = g.node_of(p, s.sel_step)
         self.panel.refresh(node)
-        self._remember_view()
+        self._remember()
         clear(self.head)
-        clear(self.center)
-        clear(self.foot)
-        self._slots, self.viewers, self.readout, self.hist, self.chart = [], [], None, None, None
-        self._want.clear()
+        self._clear_center()
         if node is None or p is None:
             return
         k = s.sel_step
@@ -370,18 +506,20 @@ class TuneView(QWidget):
             return
         if state == "stale":
             self._previous_tag(p, k)
-        self.head.addStretch(1)
         if k == "selection":
+            self.head.addStretch(1)
             self.selection_center(p)
             return
         vis = self.visuals(p, k)
         if not vis:
+            self.head.addStretch(1)
             self.center.addWidget(label(_("No image for this block."), "dim"), 0, Qt.AlignCenter)
             return
-        i = min(self.img_tab, len(vis) - 1)
-        while i > 0 and vis[i].spec:
-            i -= 1
+        keys = [x.key for x in vis]
+        want = self.tab_of.get(k)
+        i = keys.index(want) if want in keys and not vis[keys.index(want)].spec else 0
         if len(vis) > 1:
+            self.head.addSpacing(12)
             tb = QTabBar()
             tb.setDrawBase(False)
             tb.setExpanding(False)
@@ -391,53 +529,56 @@ class TuneView(QWidget):
                     tb.setTabEnabled(n, False)
                     tb.setTabToolTip(n, "◇ " + _("Not in the engine yet."))
             tb.setCurrentIndex(i)
-            tb.currentChanged.connect(self._tab)
+            tb.currentChanged.connect(lambda j, vv=vis, kk=k: self._tab(kk, vv[j].key))
             self.head.addWidget(tb)
-        self.head.addSpacing(12)
-        self.head.addWidget(label(_("Compare with"), "dim"))
-        cmp_ = QComboBox()
-        cmp_.setMinimumWidth(180)
-        cmp_.addItem("—", None)
-        for q in s.paths:
-            if q.pid != p.pid and k in chain(self.steps, q):
-                cmp_.addItem(q.name, q.pid)
-        j = cmp_.findData(self.cmp_pid)
-        cmp_.setCurrentIndex(max(j, 0))
-        if j < 0:
-            self.cmp_pid = None
-        cmp_.setEnabled(cmp_.count() > 1)
-        cmp_.currentIndexChanged.connect(lambda jj: self._cmp(cmp_.itemData(jj)))
-        self.head.addWidget(cmp_)
-        q = next((x for x in s.paths if x.pid == self.cmp_pid), None)
-        spec = vis[i]
-        if spec.note:                                       # what this picture is, when its role is not obvious
-            nt = label(_(spec.note), "small", wrap=True)
-            nt.setContentsMargins(2, 0, 2, 0)
-            self.center.addWidget(nt)
-        if q is None:
-            sl = self._slot(0)
-            self.center.addWidget(sl, 1)
-            self._load(0, p, k, spec)
-        else:
-            row = QHBoxLayout()
-            for slot, w in enumerate((p, q)):
-                col = QVBoxLayout()
-                same = g.node_of(w, k) is node
-                col.addWidget(label(w.name + ("  ·  " + _("same block") if same and w is q else ""), "h2"))
-                if block_state(s, w, k) == "pending":
-                    col.addWidget(label(_("Not computed yet."), "dim"), 1, Qt.AlignCenter)
-                else:
-                    wv = self.visuals(w, k)
-                    sl = self._slot(slot)
-                    col.addWidget(sl, 1)
-                    self._load(slot, w, k, wv[min(i, len(wv) - 1)])
-                row.addLayout(col, 1)
-            self.center.addLayout(row, 1)
-        if spec.kind != "chart":
-            self.tools(spec)
+        self.head.addStretch(1)
+        self._cur = (p, k, vis[i])
+        self._fill()
+
+    def _clear_center(self):
+        for v in list(self.views):
+            self._release(v)
+        clear(self.center)
+        self.views, self.view, self.chart, self.table = [], None, None, None
+        self.sel_frames, self._seq_items = [], []
+
+    # ------------------------------------------------------------ what the walkthrough (tools/) asks of the earlier view
+    @property
+    def img_tab(self) -> int:
+        """The index of the tab shown (the earlier view's ``img_tab``)."""
+        if self._cur is None:
+            return 0
+        p, k, spec = self._cur
+        keys = [v.key for v in self.visuals(p, k)]
+        return keys.index(spec.key) if spec.key in keys else 0
+
+    @img_tab.setter
+    def img_tab(self, i: int):
+        p, k = self.s.path, self.s.sel_step
+        vis = self.visuals(p, k) if p is not None and k not in ("sources", "final", "selection") else []
+        if vis:
+            self.tab_of[k] = vis[min(max(int(i), 0), len(vis) - 1)].key
+
+    @property
+    def _slots(self) -> list:
+        """The earlier view's picture slots: ``image`` is set once the viewer shows its picture (or says why not)."""
+        class Slot:
+            def __init__(self, v):
+                self.viewer = v
+                self.image = v.prepared() or (v.canvas.message or None if v._want is not None and
+                                              v._failed_key == v._want else None)
+                self.note = self                    # its "Loading…" note, until the picture is there
+                self.stack = self
+
+            def text(self):
+                return "" if self.image is not None else "Loading"
+
+            def currentWidget(self):  # noqa: N802 - the earlier slot's QStackedLayout
+                return self.note
+        return [Slot(v) for v in self.views]
 
     def visuals(self, p, k) -> list[VisualSpec]:
-        """The pictures of a block; the ◇ ones (not in the engine yet) only in Spec mode."""
+        """The tabs of a block; the ◇ ones (not in the engine yet) only in Spec mode."""
         return [v for v in self.steps.visuals(p, k) if not v.spec or prefs.spec()]
 
     def _has_previous(self, p, k) -> bool:
@@ -448,36 +589,329 @@ class TuneView(QWidget):
     def _previous_tag(self, p, k):
         tag = QLabel(_("previous result"))
         tag.setStyleSheet(f"color: {WARN}; border: 1px solid {WARN}; border-radius: 9px; padding: 1px 8px;")
+        tag.setToolTip(_("This block is Outdated: what it shows is the result it had."))
         self.head.addWidget(tag)
         self.head.addWidget(self._run_button(p, k))
 
-    # ------------------------------------------------------------ the pictures
-    def _slot(self, n: int) -> ImageSlot:
-        sl = ImageSlot()
-        sl.setMinimumHeight(300)
-        while len(self._slots) <= n:
-            self._slots.append(None)
-        self._slots[n] = sl
-        return sl
+    def _tab(self, k: str, key: str):
+        self._remember()
+        self.tab_of[k] = key
+        self.refresh()
 
-    def _load(self, slot: int, p, k, spec: VisualSpec):
-        """Show a picture in a slot: from the cache at once, else after the worker has loaded it."""
+    # ------------------------------------------------------------ the tab shown
+    def _fill(self):
+        """Build the content of the tab shown (again, when the worker brings its data)."""
+        if self._cur is None:
+            return
+        p, k, spec = self._cur
+        self._clear_center()
+        if spec.note:                                       # what this picture is, when its role is not obvious
+            nt = label(_(spec.note), "small", wrap=True)
+            nt.setContentsMargins(2, 0, 2, 0)
+            self.center.addWidget(nt)
+        kind = spec.kind
+        if kind in ("array", "preview", "color", "gradient", "removed"):
+            self._image_tab(p, k, spec)
+        elif kind == "render":
+            self._render_tab(p, k, spec)
+        elif kind in ("masters", "calframes", "callights"):
+            self._calibration_tab(p, spec)
+        elif kind in ("regref", "regchart", "regtable"):
+            self._registration_tab(p, spec)
+        elif kind in ("rejection", "weights"):
+            self._stack_tab(p, spec)
+        elif kind in ("chart", "colorfit"):
+            self._color_tab(p, spec)
+        else:
+            self._message(_("No image for this block."))
+
+    def _message(self, text: str, warn: bool = False):
+        lb = label(text, "warn" if warn else "dim", wrap=True)
+        lb.setAlignment(Qt.AlignCenter)
+        self.center.addStretch(1)
+        self.center.addWidget(lb)
+        self.center.addStretch(2)
+
+    def _missing_line(self, text: str) -> QLabel:
+        """A line on what this result does not hold (amber: the user can recompute to get it)."""
+        lb = label("◌  " + text, "warn", wrap=True)
+        return lb
+
+    def _card(self, title: str, lines: list[str], more: str = ""):
+        """A missing diagnostic, said plainly in the middle of the tab: what, why and how to get it."""
+        box = QFrame()
+        box.setObjectName("misscard")
+        box.setStyleSheet("QFrame#misscard { background: #1c1f26; border: 1px solid #3a4150; border-radius: 8px; }"
+                          " QLabel { background: transparent; }")
+        box.setFixedWidth(640)                     # a fixed width: the wrapped lines get their height
+        v = QVBoxLayout(box)
+        v.setContentsMargins(22, 18, 22, 18)
+        v.setSpacing(8)
+        v.addWidget(label(title, "h2"))
+        for line in lines:
+            v.addWidget(label(line, "warn", wrap=True))
+        if more:
+            v.addWidget(label(more, "dim", wrap=True))
+        for i in range(v.count()):                 # styled now, so that the wrapped lines are measured right
+            w_ = v.itemAt(i).widget()
+            if w_ is not None:
+                w_.ensurePolished()
+        box.setFixedHeight(v.totalHeightForWidth(640) + 8)
+        self.center.addStretch(1)
+        self.center.addWidget(box, 0, Qt.AlignHCenter)
+        self.center.addStretch(2)
+
+    def _loading(self):
+        self._message(_("Reading the results…"))
+
+    # ------------------------------------------------------------ the worker's data
+    def _need(self, name: str, keys: tuple, fn, *args):
+        """What the worker read for a block (None while it reads it: the tab is built again when it comes). An
+        error comes back as ``_Failed``."""
+        dk = (name, keys)
+        if dk in self._data:
+            self._data.move_to_end(dk)
+            return self._data[dk]
+        asked = self._asked.get(name)
+        if asked is None or asked[1] != dk:
+            self._asked[name] = (self.service.request_job(name, fn, *args), dk)
+        return None
+
+    def _job_ready(self, name: str, token: int, result):
+        asked = self._asked.get(name)
+        if asked is None or asked[0] != token:
+            return
+        del self._asked[name]
+        self._data[asked[1]] = result
+        while len(self._data) > 16:
+            self._data.popitem(last=False)
+        if name == "sky":
+            self._add_sky(result)
+        elif name == "lights" and self._cur is None and self.s.sel_step == "selection":
+            self._build_selection()
+        elif self.isVisible() and self.pages.currentIndex() == 0:
+            self._remember()
+            self._fill()
+
+    def _job_failed(self, name: str, token: int, why: str):
+        asked = self._asked.get(name)
+        if asked is None or asked[0] != token:
+            return
+        self._job_ready(name, token, _Failed(why))
+
+    def _keys(self, p, *stages) -> tuple:
+        return (p.pid,) + tuple((x, self.steps.which_for(p, x), self.steps.key_of(p, x, self.steps.which_for(p, x)))
+                                for x in stages)
+
+    def _sources_sig(self) -> tuple:
+        """The sessions' frame lists and the frames excluded by hand (in memory): what the frame data depend on."""
+        P = self.s.p
+        return (tuple((s.id, *(tuple(getattr(s, kk)) for kk in ("lights", "darks", "flats", "bias", "flat_darks")))
+                      for s in P.sessions), tuple(sorted(tuple(x) for x in P.excluded)))
+
+    # ------------------------------------------------------------ viewers
+    def _post_state(self) -> tuple[bool, str]:
+        try:
+            ok = bool(self.can_post()) if callable(self.can_post) else False
+        except Exception:  # noqa: BLE001
+            ok = False
+        return ok, "" if ok else _("Post does not take images yet: this comes with its image layers.")
+
+    def _new_view(self, k: str, spec: VisualSpec | None, main: bool = True,
+                  histogram: bool | None = None) -> ImageView:
+        """A viewer for the tab: one kept from an earlier tab when there is one (building a viewer costs the GUI
+        thread a fifth of a second), else a new one. What a tab connects goes through ``_on`` and is let go with the
+        viewer (``_release``)."""
+        v = self._pool.pop() if self._pool else self._make_view()
+        v.show_histogram(self.show_hist if histogram is None else histogram)
+        ok, tip = self._post_state()
+        v.set_post_enabled(ok, tip)
+        kept = self._kept.get((k, spec.key)) if spec is not None else None
+        if kept is not None:
+            self._on(v, v.imageShown, lambda key, vv=v, kp=kept: self._restore(vv, key, kp))
+        self.views.append(v)
+        if main:
+            self.view = v
+        v.show()
+        return v
+
+    def _make_view(self) -> ImageView:
+        v = ImageView(post=True)
+        v.setMinimumHeight(320)
+        v.toasted.connect(self.toasted.emit)
+        v.sendToPost.connect(lambda key, vv=v: self._send(vv, key))
+        return v
+
+    def _on(self, v: ImageView, signal, slot):
+        """Connect a signal of a viewer for the tab shown (let go when the viewer goes back to the pool)."""
+        signal.connect(slot)
+        self._conns.setdefault(id(v), []).append((signal, slot))
+
+    def _release(self, v: ImageView):
+        """A viewer of the tab shown goes back to the pool: out of the layout, its tab's connections, sequence,
+        comparison and overlays let go, its picture cleared."""
+        for sig, slot in self._conns.pop(id(v), []):
+            try:
+                sig.disconnect(slot)
+            except (RuntimeError, TypeError):
+                pass
+        try:
+            self.center.removeWidget(v)
+            v.hide()
+            v.blink_b.setChecked(False)
+            v.set_sequence([])
+            v.set_compare(None)
+            v.set_compare_targets([], None)
+            v.set_compare_mode("split")
+            v.set_same_stretch(False)
+            v.canvas.overlays.clear()
+            v.set_exclude_mode("on")
+            v.clear()
+            v._st = None
+        except RuntimeError:                                  # gone with the window
+            return
+        if v not in self._pool:
+            self._pool.append(v)
+
+    @staticmethod
+    def _restore(v: ImageView, key, kept):
+        ident, state, st = kept
+        try:
+            if key == ident:
+                if st is not None:
+                    v.set_stretch(st)
+                v.set_view_state(state)
+        except RuntimeError:
+            pass
+
+    def _send(self, v: ImageView, key):
+        """Send to Post: the image shown becomes a layer of Post (its source read in Post's worker, its key kept in
+        the project: ``services/inspect.post_key``)."""
+        vi = v.image()
+        p = self.s.path
+        if vi is None:
+            return
+        self.sendToPost.emit(vi.name, si.post_source(vi), si.post_key(vi, p.pid if p is not None else None))
+
+    def _targets(self, p, k: str, spec: VisualSpec) -> list[ViewImage]:
+        """What a picture is compared with: the previous steps of the workflow, then the same picture of the other
+        workflows."""
+        out = []
+        for key in spec.compare:
+            if key == "calibrated_ref":
+                b = self._need("stack", self._keys(p, "stack", "register"), si.stack_bundle, p.pid)
+                vi = self._calibrated_vi(p, b.ref_path, b.ref_name) if isinstance(b, si.StackBundle) and \
+                    b.ref_path else None
+            else:
+                sp = self.steps.picture(p, key)
+                vi = self.steps.view_image(p, sp) if sp is not None else None
+            if vi is not None:
+                out.append(vi)
+        for q in self.s.paths:
+            if q.pid == p.pid or k not in chain(self.steps, q):
+                continue
+            vi = self.steps.view_image(q, spec, prefix=q.name)
+            if vi is not None and all(vi.identity() != t.identity() for t in out) and \
+                    vi.identity() != (self.steps.view_image(p, spec) or vi).identity():
+                vi.info = {"workflow": q.pid}
+                out.append(vi)
+        return out
+
+    def _image_tab(self, p, k: str, spec: VisualSpec):
+        vi = self.steps.view_image(p, spec)
+        if vi is None:
+            self._message(si.not_computed(spec.stage))
+            return
+        if spec.kind == "preview":
+            vi.stretched, vi.white, vi.units = True, 255.0, ""
+        if spec.sky:
+            self._sky_bar(spec)
+        v = self._new_view(k, spec)
+        if spec.sky:
+            self._on(v, v.imageShown, lambda _key, pp=p, vv=v: self._want_sky(pp, vv))
+        v.set_image(vi)
+        targets = self._targets(p, k, spec)
+        cur, side = None, False
+        if self.cmp_pid is not None:
+            cur = next((i for i, t in enumerate(targets) if (t.info or {}).get("workflow") == self.cmp_pid), None)
+            side = cur is not None
+        if cur is None and spec.open_compare and targets:
+            cur = 0
+        if side:
+            v.set_compare_mode("side")
+        v.set_compare_targets(targets, cur)
+        if spec.same_stretch:
+            v.set_same_stretch(True)
+        self.center.addWidget(v, 1)
+
+    # ------------------------------------------------------------ the sky over the stack
+    def _sky_bar(self, spec: VisualSpec):
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(label(_("Over the image:"), "dim"))
+        for key, text, tip in (("grid", _("Sky grid"), _("The RA / Dec grid of the astrometric solution")),
+                               ("stars", _("Catalogue stars"),
+                                _("Gaia stars brighter than magnitude {g}, where the solution puts them")
+                                .format(g=number(CATALOGUE_G_MAX, 0)))):
+            b = QPushButton(text)
+            b.setCheckable(True)
+            b.setObjectName("toggle")
+            b.setChecked(self.sky_show.get(key, True))
+            b.setToolTip(tip)
+            b.toggled.connect(lambda on, kk=key: self._sky(kk, on))
+            row.addWidget(b)
+        self.sky_note = label("", "small")
+        row.addSpacing(8)
+        row.addWidget(self.sky_note)
+        row.addStretch(1)
+        self.center.addLayout(row)
+
+    def _want_sky(self, p, v: ImageView):
+        prep = v.prepared()
+        if prep is None or self._cur is None:
+            return
+        w, h = prep.size()
+        which = self.steps.which_for(p, "astrometry")
+        got = self._need("sky", self._keys(p, "astrometry", "catalogs") + (w, h), si.sky_bundle, p.pid, which, w, h)
+        if got is not None:
+            self._add_sky(got)
+
+    def _add_sky(self, sky):
+        v = self.view
+        if v is None or self._cur is None or not self._cur[2].sky:
+            return
+        try:
+            if isinstance(sky, si.SkyData):
+                ov = self.steps.overlay(self._cur[1], self._cur[2], sky, self.sky_show)
+                if ov is not None and not any(isinstance(o, type(ov)) for o in v.canvas.overlays):
+                    v.add_overlay(ov)
+                n = len(sky.stars) if sky.stars is not None else 0
+                self.sky_note.setText(_("{n} catalogue stars, {m} grid lines").format(n=n, m=len(sky.lines)))
+            else:
+                self.sky_note.setText(_("No astrometric solution for this image."))
+        except RuntimeError:
+            pass
+
+    def _sky(self, key: str, on: bool):
+        self.sky_show[key] = on
+        for v in self.views:
+            v.canvas.update()
+            v.canvas2.update()
+
+    # ------------------------------------------------------------ the final image (Output)
+    def _render_tab(self, p, k: str, spec: VisualSpec):
         which = self.steps.which_for(p, spec.stage)
-        sl = self._slots[slot]
         key = self.steps.key_of(p, spec.stage, which)
         hit = self.service.cache.get((spec.stage, key, spec.name, which)) if key else None
-        if hit is not None and spec.sky and hit.sky is None:
-            hit = None                                      # the stack, seen before without its solution: the worker adds it
+        v = self._new_view(k, spec)
+        self.center.addWidget(v, 1)
         if hit is not None:
-            self._show(slot, hit, spec, k)
+            self._show_render(hit)
             return
-        if spec.kind == "render":
-            sl.message(_("Rendering the final image…"))
-            self.service.use_renderer(self._render_worker())
-        else:
-            sl.message(_("Loading the image…"))
-        self._want[slot] = self.service.request_image(slot, p.pid, spec, which)
-        sl._spec, sl._k = spec, k
+        v.canvas.message = _("Rendering the final image…")
+        v.canvas.update()
+        self.service.use_renderer(self._render_worker())
+        self._render_token = self.service.request_image(0, p.pid, spec, which)
 
     def _render_worker(self):
         """The project's render worker, the one Post renders with (the window makes it when asked): the final image of
@@ -489,160 +923,520 @@ class TuneView(QWidget):
         except Exception:  # noqa: BLE001 - no worker from the window: Inspect renders with its own
             return None
 
-    def _image_ready(self, slot: int, token: int, im: ShownImage):
-        if self._want.get(slot) != token or slot >= len(self._slots) or self._slots[slot] is None:
+    def _image_ready(self, slot: int, token: int, im):
+        if slot != 0 or token != self._render_token or self._cur is None or self._cur[2].kind != "render":
             return
-        sl = self._slots[slot]
-        self._show(slot, im, getattr(sl, "_spec", im.spec), getattr(sl, "_k", self.s.sel_step))
+        self._show_render(im)
 
     def _image_failed(self, slot: int, token: int, why: str):
-        if self._want.get(slot) != token or slot >= len(self._slots) or self._slots[slot] is None:
+        if slot != 0 or token != self._render_token or self.view is None:
             return
-        self._slots[slot].message(_("This image is not available: {why}").format(why=why), warn=True)
+        self.view.canvas.message = _("This image is not available: {why}").format(why=why)
+        self.view.canvas.update()
 
-    def _show(self, slot: int, im: ShownImage, spec: VisualSpec, k: str):
-        sl = self._slots[slot]
-        sl.image = im
-        if im.curves is not None:
-            ch = SpectralChart(im.curves.lam, im.curves.S)
-            sl.put(ch)
+    def _show_render(self, im):
+        p, k, spec = self._cur
+        v = self.view
+        if v is None:
             return
-        vw = Viewer()
-        vw.setMinimumHeight(300)
-        vw.set_source(StretchSource(im, self.stretched or not spec.linear))
-        left = self._views.get(im.key)
-        if left is not None:
-            vw.zoom_to(*left)
-        ov = self.steps.overlay(k, spec, im, self.sky_show)
-        if ov:
-            vw.overlays.append(ov)
-        vw.hovered.connect(lambda x, y, n=slot: self._hover(n, x, y))
-        sl.viewer = vw
-        sl.put(vw)
-        self.viewers = [x.viewer for x in self._slots if x is not None and x.viewer is not None]
-        if len(self.viewers) == 2 and len([x for x in self._slots if x is not None]) == 2:
-            a, b = self.viewers
-            a.viewChanged.connect(lambda: self._sync(a, b))
-            b.viewChanged.connect(lambda: self._sync(b, a))
-        if slot == 0:
-            self._set_histogram(im)
+        which = self.steps.which_for(p, spec.stage)
+        wcs = si.final_wcs_source(self.s.p, p.pid, which, im.grid, im.origin, im.size) if im.grid else None
+        vi = ViewImage(im.stretched.arr, _("Final image"), key=("inspect", "render") + tuple(im.key), wcs=wcs,
+                       camera=False, stretched=True, white=255.0, units="")
+        v.set_image(vi)
+        targets = self._targets(p, k, spec)
+        v.set_compare_mode("side")
+        v.set_compare_targets(targets, None)
 
-    def _set_histogram(self, im: ShownImage):
-        if self.hist is not None:
-            self.hist.set_counts(im.hist.get("stretched" if (self.stretched or im.linear is None) else "linear"))
+    # ------------------------------------------------------------ Calibration
+    def _calibrated_vi(self, p, path: str, name: str, info: dict | None = None, cfa: str = "") -> ViewImage | None:
+        which = self.steps.which_for(p, "calibrate")
+        key = self.steps.key_of(p, "calibrate", which)
+        if not key or not path:
+            return None
+        return ViewImage(si.calframe_source(self.s.p, p.pid, path, which), _("{file}, calibrated").format(file=name),
+                         key=("inspect", "calframe", key, path), cfa=cfa or self._cfa(p), camera=True,
+                         info=dict(info or {}))
 
-    # ------------------------------------------------------------ inspection tools
-    def tools(self, spec: VisualSpec):
-        """Under the image: auto-stretch (linear data only), histogram, fit and 1:1, and the pixel under the cursor."""
-        if spec.linear:
-            st = QPushButton(_("Auto-stretch"))
-            st.setCheckable(True)
-            st.setObjectName("toggle")
-            st.setChecked(self.stretched)
-            st.setToolTip(_("Display only: the data stays linear"))
-            st.toggled.connect(self._stretch)
-            self.foot.addWidget(st)
-        hb = QPushButton(_("Histogram"))
-        hb.setCheckable(True)
-        hb.setObjectName("toggle")
-        hb.setChecked(self.show_hist)
-        hb.toggled.connect(self._hist)
-        self.foot.addWidget(hb)
-        if spec.sky:
-            for key, text, tip in (("grid", _("Sky grid"), _("The RA / Dec grid of the astrometric solution")),
-                                   ("stars", _("Catalogue stars"),
-                                    _("Gaia stars brighter than magnitude {g}, where the solution puts them")
-                                    .format(g=f"{CATALOGUE_G_MAX:g}"))):
-                b = QPushButton(text)
-                b.setCheckable(True)
-                b.setObjectName("toggle")
-                b.setChecked(self.sky_show.get(key, True))
-                b.setToolTip(tip)
-                b.toggled.connect(lambda on, kk=key: self._sky(kk, on))
-                self.foot.addWidget(b)
-        fit = QPushButton(_("Fit"))
-        fit.clicked.connect(lambda: [v.fit() for v in self.viewers])
-        one = QPushButton("1:1")
-        one.clicked.connect(lambda: [v.zoom_to(1.0) for v in self.viewers])
-        self.foot.addWidget(fit)
-        self.foot.addWidget(one)
-        self.foot.addSpacing(12)
-        self.readout = label("", "small")
-        self.readout.setTextFormat(Qt.RichText)
-        self.foot.addWidget(self.readout, 1)
-        if self.show_hist:
-            self.hist = Histogram()
-            self.center.addWidget(self.hist)
-            im = self._slots[0].image if self._slots and self._slots[0] is not None else None
-            if im is not None:
-                self._set_histogram(im)
+    def _cfa(self, p) -> str:
+        data = self._data.get(("calibration", self._cal_keys(p)))
+        return data.cfa if isinstance(data, si.CalibrationData) and data.cfa else "RGGB"
 
-    def _stretch(self, on):
-        self.stretched = on
-        prefs.set("auto_stretch", on)
-        for sl in self._slots:
-            if sl is not None and sl.viewer is not None and isinstance(sl.viewer.source, StretchSource):
-                sl.viewer.source.stretched = on
-                sl.viewer.source.version += 1
-                sl.viewer.refresh()
-        if self._slots and self._slots[0] is not None and self._slots[0].image is not None:
-            self._set_histogram(self._slots[0].image)
+    def _cal_keys(self, p) -> tuple:
+        return self._keys(p, "calibrate", "inventory") + (self._sources_sig(),)
 
-    def _hist(self, on):
-        self.show_hist = on
-        self.refresh()
-
-    def _sky(self, key: str, on: bool):
-        self.sky_show[key] = on
-        for v in self.viewers:
-            v.update()
-
-    def _hover(self, slot: int, x: float, y: float):
-        sl = self._slots[slot] if slot < len(self._slots) else None
-        im = sl.image if sl is not None else None
-        if self.readout is None or im is None:
+    def _calibration_tab(self, p, spec: VisualSpec):
+        which = self.steps.which_for(p, "calibrate")
+        data = self._need("calibration", self._cal_keys(p), si.calibration_data, p.pid, which, self.service.headers)
+        if data is None:
+            self._loading()
             return
-        w, h = im.size
-        if not (0 <= x < w and 0 <= y < h):
-            self.readout.setText("")
+        if isinstance(data, _Failed):
+            self._message(_("The calibration cannot be read: {why}").format(why=data.why), warn=True)
             return
-        xi, yi = int(x), int(y)
-        if im.lin is not None:
-            r, g, b = (int(round(float(c))) for c in im.lin[:, yi, xi])
-            vals = f"R {r}  G {g}  B {b} ADU"
+        # the engine's word on each frame: it reads every raw frame the first time, so it is asked when the frames
+        # are looked at (the tab shows without it first); the masters' tab shows its notes once it is there
+        if spec.kind == "calframes":
+            rep = self._need("calreport", self._cal_keys(p), si.calibration_report, p.pid, which)
         else:
-            r, g, b = (int(c) for c in im.stretched.arr[yi, xi])
-            vals = f"R {r}  G {g}  B {b}"
-        sky = ""
-        if im.wcs is not None:
-            gw, gh = im.grid or self.s.image_size() or im.size
-            f = gw / w
-            ox, oy = im.origin
-            try:
-                ra, dec = im.wcs.pixel_to_world_values(ox + (xi + 0.5) * f, oy + (yi + 0.5) * f)
-                sky = "   " + sky_text(float(ra), float(dec))
-            except (ValueError, ArithmeticError):
-                sky = ""
-        self.readout.setText(f"x {xi}  y {yi}   {vals}{sky}")
+            rep = self._data.get(("calreport", self._cal_keys(p)))
+        self._report = rep if isinstance(rep, si.CalibrationReport) else None
+        if si.diag("calibration_frames") is None or isinstance(rep, _Failed):
+            self._report_state = "none"
+        else:
+            self._report_state = "ok" if self._report is not None else "wait"
+        if spec.kind == "masters":
+            self._masters(p, spec, data)
+        elif spec.kind == "calframes":
+            self._calframes(p, spec, data)
+        else:
+            self._callights(p, spec, data)
 
-    # ------------------------------------------------------------ helpers
-    def _sync(self, a, b):
-        if self._syncing:
+    _report = None
+    _report_state = "none"
+
+    def _masters(self, p, spec: VisualSpec, data: si.CalibrationData):
+        if not data.masters:
+            self._message(si.not_computed("calibrate"))
             return
-        self._syncing = True
-        try:
-            if a.source and b.source and a.source.size() == b.source.size():
-                b.zoom_to(a.scale, a.cx, a.cy)
-        finally:
-            self._syncing = False
+        which = self.steps.which_for(p, "calibrate")
+        key = self.steps.key_of(p, "calibrate", which)
+        first = {kind: (items[0] if items else None) for kind, items in data.groups.items()}
+        frames = []
+        for mk, caption, st in data.masters:
+            kind = {"master_dark": "darks", "master_flat": "flats", "master_bias": "bias",
+                    "master_flat_dark": "flat_darks"}.get(mk)
+            n = len([x for x in data.groups.get(kind, []) if not x.excluded]) if kind else 0
+            f0 = first.get(kind) if kind else None
+            norm = mk in ("master_flat", "badmask")
+            extra = []
+            if kind:
+                extra.append((_("Frames"), str(n)))
+            if mk == "badmask":
+                if st.get("bad_pct") is not None:
+                    extra.append((_("Defective pixels"), number(st["bad_pct"], 2) + " %"))
+            elif st:
+                unit = "" if norm else " ADU"
+                d = 3 if norm else 1
+                extra += [(_("Median"), number(st["median"], d) + unit),
+                          (_("Noise σ"), number(st["noise"], d + 1) + unit)]
+                if mk == "master_flat":
+                    extra.append((_("Darkest corner"), number(100 * st["min"] / max(st["median"], 1e-9), 0) + " %"))
+            info = {"compact": True, "extra": extra}
+            if f0 is not None:
+                info.update(exposure=f0.exposure, iso=f0.iso, temperature=f0.temperature)
+            frames.append(ViewImage(si.array_source(self.s.p, p.pid, "calibrate", mk, which), _(caption),
+                                    key=("inspect", "master", key, mk), cfa="" if mk == "badmask" else data.cfa,
+                                    camera=mk != "badmask", units="norm" if norm else "adu",
+                                    white=1.0 if norm else None, info=info, stretched=mk == "badmask"))
+        v = self._new_view("calibration", spec)
+        v.set_exclude_mode("off")
+        v.set_sequence(frames, 0)
+        self._notes()
+        self.center.addWidget(v, 1)
 
-    def _tab(self, i):
-        self.img_tab = i
-        self.refresh()
+    def _notes(self):
+        """The engine's remarks on the calibration (in the interface's language when it has them)."""
+        rep = self._report
+        if rep is None:
+            return
+        lang = language()
+        for n in rep.notes[:4]:
+            if lang == "en" or texts.has_translation(n, lang):
+                self.center.addWidget(label(texts.translate(n, lang), "small", wrap=True))
 
-    def _cmp(self, pid):
-        self.cmp_pid = pid
-        self.refresh()
+    def _engine_frame(self, it):
+        """The engine's CalFrame of a frame (its statistics and quality flag), or None."""
+        rep = self._report
+        if rep is None:
+            return None
+        return rep.frames.get(os.path.normcase(os.path.normpath(it.path)))
+
+    def _frame_extra(self, it) -> list[tuple[str, str]]:
+        """The numbers of a calibration frame for the info band: the engine's statistics when it gives them, else
+        the level and noise the worker measured on the raw."""
+        cf = self._engine_frame(it)
+        st = dict(getattr(cf, "stats", None) or {}) if cf is not None else {}
+        extra = []
+        if st:
+            def num(k):
+                v = st.get(k)
+                return float(v) if isinstance(v, int | float) and np.isfinite(v) else None
+            if num("median") is not None:
+                extra.append((_("Median level"), number(num("median"), 0) + " ADU"))
+            if num("noise") is not None:
+                extra.append((_("Noise σ"), number(num("noise"), 1) + " ADU"))
+            if it.kind == "flats":
+                if num("level_pct") is not None:
+                    extra.append((_("Exposure level"), number(num("level_pct"), 0) + " %"))
+                if num("corner_pct") is not None:
+                    extra.append((_("Corners"), number(num("corner_pct"), 0) + " %"))
+            else:
+                if num("hot_pixels") is not None:
+                    extra.append((_("Hot pixels"), number(num("hot_pixels"), 0)))
+                if num("gradient") is not None:
+                    extra.append((_("Centre − edge"), number(num("gradient"), 1) + " ADU"))
+            if (num("saturated_pct") or 0) >= 0.005:
+                extra.append((_("Saturated"), number(num("saturated_pct"), 2) + " %"))
+            return extra
+        sw = self.service.stats.get(it.path)
+        if sw:
+            extra.append((_("Median level"), number(sw["level"] + (sw.get("black") or 0), 0) + " ADU"))
+            extra.append((_("Noise σ"), number(sw["noise"], 1) + " ADU"))
+            if it.kind == "flats":
+                extra.append((_("Exposure level"), number(sw["pct"], 0) + " %"))
+        else:
+            extra.append((_("Median level"), "…"))
+        return extra
+
+    def _cal_info(self, it) -> dict:
+        info = {"time": it.time, "exposure": it.exposure, "iso": it.iso, "temperature": it.temperature,
+                "excluded": it.excluded, "compact": True, "extra": self._frame_extra(it)}
+        cf = self._engine_frame(it)
+        if cf is not None and str(getattr(cf, "flag", "ok")) not in ("", "ok"):
+            lang = language()
+            why = str(getattr(cf, "reason", "") or "")
+            info["flag"] = _("To check")
+            info["flag_reason"] = texts.translate(why, lang) if lang == "en" or texts.has_translation(why, lang) \
+                else _("The engine flags this frame against the others of its kind.")
+        return info
+
+    def _calframes(self, p, spec: VisualSpec, data: si.CalibrationData):
+        items = data.groups.get(spec.name) or []
+        if not items:
+            self._message(_("No frames of this kind."))
+            return
+        frames = []
+        for it in items:
+            vi = ViewImage(it.path, it.name, cfa=it.cfa or data.cfa, camera=True, white=it.white,
+                           info=self._cal_info(it))
+            vi.thumb = partial(quick_thumbnail, ViewImage(it.path, cfa=it.cfa or data.cfa, camera=True))
+            frames.append(vi)
+        v = self._new_view("calibration", spec)
+        self._on(v, v.excludeToggled, lambda i, ex, its=items: self._cal_exclude(its, i, ex))
+        self._seq_items = items
+        self.sel_frames = frames
+        n_out = sum(1 for x in items if x.excluded)
+        n_flag = sum(1 for x in items if "flag" in self._cal_info(x))
+        line = _("{n} frames, {x} left out by hand. Exclude (X) leaves the frame shown out of the master: Calibration "
+                 "is then computed again.").format(n=len(items), x=n_out)
+        if self._report_state == "wait":
+            line += "  " + _("Measuring every frame for its quality flag…")
+        elif self._report_state == "ok":
+            line += "  " + (_("{n} frames to check (amber).").format(n=n_flag) if n_flag else
+                            _("No frame stands out from the others."))
+        else:
+            line += "  " + _("Quality flags: {why}").format(why=si.not_yet("calibrate"))
+        self.center.addWidget(label(line, "small", wrap=True))
+        self.center.addWidget(v, 1)
+        v.set_sequence(frames, min(self._seq_index.get(spec.key, 0), len(frames) - 1))
+        self._on(v, v.frameChanged, lambda i, kk=spec.key: self._seq_index.__setitem__(kk, i))
+        if self._report is None:
+            self.service.request_stats_batch([x.path for x in items])
+
+    @property
+    def _seq_index(self) -> dict:
+        d = self.__dict__.setdefault("_seq_pos", {})
+        return d
+
+    def _cal_exclude(self, items, i: int, excluded: bool):
+        it = items[i]
+        if not si.set_calibration_excluded(self.s, it, excluded, items):
+            if self.view is not None:
+                self.view.set_excluded(i, not excluded)
+            self.toasted.emit(_("The last frame of a folder cannot be left out."))
+            return
+        self.toasted.emit((_("{file} left out of the master: Calibration is to compute again.") if excluded else
+                           _("{file} taken back into the master.")).format(file=it.name))
+
+    def _stats_ready(self, path: str, _st: dict):
+        v = self.view
+        if v is None or not self._seq_items or self._cur is None or self._cur[2].kind != "calframes":
+            return
+        for i, it in enumerate(self._seq_items):
+            if it.path == path:
+                try:
+                    v.set_frame_info(i, self._cal_info(it))
+                except RuntimeError:
+                    pass
+                return
+
+    def _light_info(self, it, p90: float) -> dict:
+        info = {"time": it.time, "exposure": it.exposure, "iso": it.iso, "temperature": it.temperature,
+                "fwhm": it.fwhm, "roundness": it.roundness, "weight": it.weight,
+                "transparency": (it.transparency / p90) if it.transparency is not None and p90 else None,
+                "excluded": bool(it.excluded), "reason": _(it.status) if it.status and not it.excluded else ""}
+        if it.level is not None:
+            info["extra"] = [(_("Sky level"), number(it.level, 0) + " ADU")]
+        return info
+
+    @staticmethod
+    def _p90(items) -> float:
+        tr = [x.transparency for x in items if x.transparency is not None and np.isfinite(x.transparency)]
+        return float(np.percentile(tr, 90)) if tr else 1.0
+
+    def _lights(self, p):
+        return self._need("lights", self._keys(p, "register", "inventory", "stack") + (self._sources_sig(),),
+                          si.lights_of, p.pid, self.service.headers)
+
+    def _callights(self, p, spec: VisualSpec, data: si.CalibrationData):
+        items = self._lights(p)
+        if items is None:
+            self._loading()
+            return
+        if isinstance(items, _Failed) or not items:
+            self._message(_("No light frames yet"))
+            return
+        p90 = self._p90(items)
+        frames = []
+        for it in items:
+            vi = self._calibrated_vi(p, it.path, it.name, self._light_info(it, p90), it.cfa or data.cfa)
+            if vi is None:
+                self._message(si.not_computed("calibrate"))
+                return
+            vi.thumb = si.light_thumb(self.s.p, it.path)
+            frames.append(vi)
+        if not data.cache:
+            self.center.addWidget(label(_("The calibrated frames are not on disk: each one is calibrated again here "
+                                          "from the masters of this result, with the engine's formula."),
+                                        "small", wrap=True))
+        v = self._new_view("calibration", spec)
+        self._seq_items = items
+        self.sel_frames = frames
+        self._on(v, v.frameChanged, lambda i, vv=v, its=items: self._raw_target(vv, its, i))
+        self._on(v, v.frameChanged, lambda i, kk=spec.key: self._seq_index.__setitem__(kk, i))
+        self._on(v, v.excludeToggled, lambda i, ex, its=items: self._light_exclude(its, i, ex))
+        self.center.addWidget(v, 1)
+        start = min(self._seq_index.get(spec.key, 0), len(frames) - 1)
+        v.set_sequence(frames, start)
+        self._raw_target(v, items, start)
+
+    def _raw_target(self, v: ImageView, items, i: int):
+        """The calibrated light is compared with the same frame, raw."""
+        if not (0 <= i < len(items)):
+            return
+        it = items[i]
+        raw = ViewImage(it.path, _("{file}, raw").format(file=it.name), cfa=it.cfa, camera=True, white=it.white)
+        cur = v._cmp_i
+        v.set_compare_targets([raw], cur)
+
+    def _light_exclude(self, items, i: int, excluded: bool):
+        it = items[i]
+        if it.session is None:
+            return
+        it.excluded = excluded
+        self.s.set_excluded([(it.session, it.name)], excluded)       # saved by the model, as any edit
+
+    # ------------------------------------------------------------ Registration
+    def _registration_tab(self, p, spec: VisualSpec):
+        b = self._need("registration", self._keys(p, "register", "calibrate", "astrometry", "inventory"),
+                       si.registration_bundle, p.pid)
+        if b is None:
+            self._loading()
+            return
+        if isinstance(b, _Failed):
+            self._message(si.not_yet("register") if "NotDone" in b.why else
+                          _("The registration cannot be read: {why}").format(why=b.why), warn="NotDone" not in b.why)
+            return
+        d = b.data
+        if spec.kind == "regref":
+            vi = self._calibrated_vi(p, b.ref_path, b.ref_name)
+            if vi is None:
+                self._message(si.not_computed("calibrate"))
+                return
+            v = self._new_view("alignement", spec)
+            v.set_image(vi)
+            raw = ViewImage(b.ref_path, _("{file}, raw").format(file=b.ref_name), camera=True)
+            v.set_compare_targets([raw], None)
+            if 0 <= d.ref < d.n:
+                ns = d.nstars[d.ref]
+                self.center.addWidget(label(_("{file} · FWHM {fwhm} px · {n} stars detected").format(
+                    file=b.ref_name, fwhm=number(d.fwhm[d.ref], 2), n=int(ns) if np.isfinite(ns) else "–"), "small"))
+            self.center.addWidget(v, 1)
+            return
+        if spec.kind == "regchart":
+            if spec.name in ("drift", "track") and not np.isfinite(d.dx).any():
+                self._message(si.not_yet("register"))
+                return
+            make = {"quality": QualityChart, "drift": DriftChart, "track": TrackChart,
+                    "distribution": DistributionChart}[spec.name]
+            ch = make(d)
+            self.center.addWidget(ch, 1)
+            if spec.name == "quality" and d.roundness is None:
+                for line in si.missing_of(b.table, "roundness") or [_("Roundness: {why}").format(
+                        why=si.not_yet("register"))]:
+                    self.center.addWidget(self._missing_line(line))
+            return
+        self._registration_table(b)
+
+    def _registration_table(self, b: si.RegistrationBundle):
+        d = b.data
+        if b.table:
+            heads = [_("Frame"), _("Time"), _("x offset (px)"), _("y offset (px)"), _("Rotation (°)"), _("Scale"),
+                     _("Stars matched"), _("Stars detected"), _("FWHM (px)"), _("Roundness"), _("Residual (px)"),
+                     _("Transparency (%)"), _("Aligned")]
+            rows, red = [], []
+            for i, r in enumerate(b.table):
+                tr = d.transp[i] if i < d.n else np.nan
+                rows.append([r.name + ("  ★" if getattr(r, "reference", False) else ""), (r.time or "")[11:19],
+                             r.dx, r.dy, r.rotation, r.scale, r.nmatch if r.used else None, r.nstars or None, r.fwhm,
+                             r.roundness, getattr(r, "rms", None), tr, _("yes") if r.used else _("no")])
+                red.append(not r.used)
+            t = make_table(heads, rows, {2: 2, 3: 2, 4: 3, 5: 5, 6: 0, 7: 0, 8: 2, 9: 3, 10: 3, 11: 0}, red)
+            self.center.addWidget(label(_("★ the reference frame."), "small"))
+            for line in si.missing_of(b.table):
+                self.center.addWidget(self._missing_line(line))
+        else:
+            heads = [_("Frame"), _("Time"), _("x offset (px)"), _("y offset (px)"), _("Stars matched"),
+                     _("Stars detected"), _("FWHM (px)"), _("Residual (px)"), _("Transparency (%)"), _("Aligned")]
+            rows, red = [], []
+            for i in range(d.n):
+                rows.append([d.names[i] + ("  ★" if i == d.ref else ""), (d.iso[i] or "")[11:19], d.dx[i], d.dy[i],
+                             d.nmatch[i], d.nstars[i], d.fwhm[i], d.rms[i], d.transp[i],
+                             _("yes") if d.aligned[i] else _("no")])
+                red.append(not d.aligned[i])
+            t = make_table(heads, rows, {2: 2, 3: 2, 4: 0, 5: 0, 6: 2, 7: 3, 8: 0}, red)
+            self.center.addWidget(label(_("★ the reference frame. Rotation, scale and roundness: {why}").format(
+                why=si.not_yet("register")), "small", wrap=True))
+        self.center.addWidget(t, 1)
+
+    # ------------------------------------------------------------ Stacking
+    def _stack_tab(self, p, spec: VisualSpec):
+        b = self._need("stack", self._keys(p, "stack", "register"), si.stack_bundle, p.pid)
+        if b is None:
+            self._loading()
+            return
+        if isinstance(b, _Failed):
+            self._message(_("The stack cannot be read: {why}").format(why=b.why), warn=True)
+            return
+        if spec.kind == "rejection":
+            self._rejection(p, spec, b)
+            return
+        rows = weight_rows(b)
+        if not rows:
+            self._message(si.not_yet("stack"))
+            return
+        ch = WeightsChart(rows)
+        self.center.addWidget(ch, 3)
+        norm = any(r["scale"] is not None for r in rows)
+        heads = [_("Frame"), _("Time"), _("Weight"), _("FWHM (px)"), _("Transparency (%)")]
+        if norm:
+            heads += [_("Scale R"), _("Scale G"), _("Scale B"), _("Offset R (ADU)"), _("Offset G (ADU)"),
+                      _("Offset B (ADU)")]
+        heads.append(_("State"))
+        tr = [r["transparency"] for r in rows if r["transparency"] is not None and np.isfinite(r["transparency"])]
+        p90 = float(np.percentile(tr, 90)) if tr else 1.0
+        data_rows, red = [], []
+        for r in rows:
+            sc, off = per_channel(r["scale"]), per_channel(r["offset"])
+            t_ = r["transparency"]
+            row = [r["name"], (r["time"] or "")[11:19], r["weight"], r["fwhm"],
+                   100 * t_ / p90 if t_ is not None and np.isfinite(t_) else None]
+            if norm:
+                row += [sc[0], sc[1], sc[2], off[0], off[1], off[2]]
+            data_rows.append(row + [_(r["status"]) if r["status"] else _("kept")])
+            red.append(bool(r["status"]))
+        digits = {2: 3, 3: 2, 4: 0} | ({5: 4, 6: 4, 7: 4, 8: 1, 9: 1, 10: 1} if norm else {})
+        t = make_table(heads, data_rows, digits, red)
+        self.center.addWidget(t, 2)
+        d = b.diag
+        bits = []
+        if d is None:
+            bits.append(_("Normalisation: {why}").format(why=si.not_yet("stack")))
+        if d is not None and getattr(d, "noise", None):
+            bits.append(_("Noise of the stack: {v}").format(v=_noise_text(d.noise)))
+        if d is not None and getattr(d, "rejected_on_grid_pct", None) is not None:
+            bits.append(_("Rejected samples on the stack: {v} %").format(v=number(float(d.rejected_on_grid_pct), 2)))
+        if bits:
+            self.center.addWidget(label("   ·   ".join(bits), "small", wrap=True))
+        if d is not None and not norm:
+            for line in si.missing_of(d, "normalisation"):
+                self.center.addWidget(self._missing_line(line))
+
+    def _rejection(self, p, spec: VisualSpec, b: si.StackBundle):
+        d = b.diag
+        if d is None or (getattr(d, "rejection_low", None) is None and getattr(d, "rejection_high", None) is None):
+            self._card(_("Rejection map"), si.missing_of(d, "rejection") or [si.not_yet("stack")],
+                       _("Once Stacking is computed again, the map shows where pixels were rejected below (dark: cold "
+                         "pixels, a dust shadow) and above (bright: satellite and plane trails, cosmic rays, hot "
+                         "pixels) the other frames."))
+            return
+        key = self.steps.key_of(p, "stack", self.steps.which_for(p, "stack"))
+        imgs = []
+        for which, cap in (("rejection_low", _("Rejected low")), ("rejection_high", _("Rejected high"))):
+            src = getattr(d, which, None)
+            if src is not None:
+                imgs.append(ViewImage(src, cap, key=("inspect", which, key), camera=False, units="count"))
+        row = QHBoxLayout()
+        row.setSpacing(0)
+        v = self._new_view("empilement", spec)
+        grp = QButtonGroup(self)
+        for i, vi in enumerate(imgs):
+            bt = QPushButton(vi.name)
+            bt.setObjectName("face")
+            bt.setCheckable(True)
+            bt.setChecked(i == len(imgs) - 1)
+            bt.clicked.connect(lambda _x=False, img=vi, vv=v: vv.set_image(img, keep_view=True))
+            grp.addButton(bt)
+            row.addWidget(bt)
+        f = int(getattr(d, "rejection_factor", 1) or 1)
+        row.addSpacing(12)
+        row.addWidget(label(_("Rejected samples per pixel, on the stack grid reduced {f} times.").format(f=f) if f > 1
+                            else _("Rejected samples per pixel of the stack."), "small"))
+        row.addStretch(1)
+        self.center.addLayout(row)
+        v.set_image(imgs[-1])
+        if len(imgs) == 2:
+            v.set_compare_targets([imgs[0]], None)
+        self.center.addWidget(v, 1)
+
+    # ------------------------------------------------------------ Color
+    def _color_tab(self, p, spec: VisualSpec):
+        which = self.steps.which_for(p, "color")
+        if spec.kind == "chart":
+            b = self._need("color", self._keys(p, "color"), si.color_bundle, p.pid, which)
+            if b is None:
+                self._loading()
+                return
+            if isinstance(b, _Failed):
+                self._message(_("The colour result cannot be read: {why}").format(why=b.why), warn=True)
+                return
+            ch = color_tabs(b.curves.lam, b.curves.S)[int(spec.name or 0)][1]
+            self.center.addWidget(ch, 1)
+            return
+        if si.diag("color_fit") is None:
+            self._message(si.not_yet("color"))
+            return
+        fit = self._need("colorfit", self._keys(p, "color", "catalogs", "stack"), si.color_fit_of, p.pid, which)
+        if fit is None:
+            self._message(_("Measuring the catalogue stars on the stack…"))
+            return
+        if isinstance(fit, _Failed) or not getattr(fit, "stars", None):
+            self._message(si.not_yet("color"))
+            return
+        ch = ColorFitChart(fit)
+        self.center.addWidget(ch, 3)
+        stars = list(fit.stars)
+        heads = [_("x (px)"), _("y (px)"), "G", _("Gaia BP − RP"), _("Camera colour"), _("Residual"), _("Used"),
+                 _("Reason")]
+        rows, red = [], []
+        for s in stars[:4000]:
+            cat, meas, res, g = star_colour(s)
+            why = str(getattr(s, "reason", "") or "")
+            rows.append([s.x, s.y, g, cat, meas, res, _("yes") if s.used else _("no"), _(why) if why else ""])
+            red.append(not s.used)
+        t = make_table(heads, rows, {0: 0, 1: 0, 2: 2, 3: 3, 4: 3, 5: 4}, red)
+        self.center.addWidget(t, 2)
+        st = dict(getattr(fit, "stats", None) or {})
+        bits = []
+        if st.get("used") is not None and st.get("stars") is not None:
+            bits.append(_("{u} of {n} stars used").format(u=st["used"], n=st["stars"]))
+        if st.get("chromaticity_residual") is not None:
+            bits.append(_("median residual {v}").format(v=number(float(st["chromaticity_residual"]), 4)))
+        if st.get("residual_p90") is not None:
+            bits.append(_("90 % of the stars under {v}").format(v=number(float(st["residual_p90"]), 4)))
+        if bits:
+            self.center.addWidget(label("   ·   ".join(bits), "small"))
 
     # ------------------------------------------------------------ a block not computed
     def _run_button(self, p, k) -> QPushButton:
@@ -687,7 +1481,7 @@ class TuneView(QWidget):
         self.center.addLayout(box)
         self.center.addStretch(2)
 
-    # ------------------------------------------------------------ the frames chart, and the frame under the cursor
+    # ------------------------------------------------------------ Selection: the frames chart and the frames
     def _thresholds(self) -> tuple[float, float]:
         """The thresholds the chart shows: the settings', or the ones just dragged while Replace / Try as variant is asked."""
         s = self.s
@@ -702,50 +1496,71 @@ class TuneView(QWidget):
         return t, f
 
     def selection_center(self, p):
-        self.center.addWidget(label(_("Loading the image…"), "dim"), 0, Qt.AlignCenter)
+        self._cur = None
+        self._loading()
         self._table_token = self.service.request_table(p.pid)
         self._table_wid = p.pid
+        self._table_got = None
+        self._lights(p)
 
     def _table_ready(self, wid: int, token: int, table):
         if self.pages.currentIndex() != 0 or self.s.sel_step != "selection" or wid != getattr(self, "_table_wid", None) \
-                or token != getattr(self, "_table_token", None):
+                or token != self._table_token:
             return
-        clear(self.center)
+        self._table_got = table
+        self._build_selection()
+
+    def _build_selection(self):
+        table = getattr(self, "_table_got", None)
+        p = self.s.path
+        if table is None or p is None or self.s.sel_step != "selection":
+            return
         if isinstance(table, str):
-            self.center.addStretch(1)
-            self.center.addWidget(label(_("The frames chart appears once registration is computed."), "dim"), 0,
-                                  Qt.AlignHCenter)
-            self.center.addStretch(2)
+            self._clear_center()
+            self._message(_("The frames chart appears once registration is computed."))
             return
+        items = self._lights(p)
+        if items is None:
+            return                                          # the frames' headers come next
+        self._clear_center()
         s = self.s
         self.table = table
         t, f = self._thresholds()
         ch = FramesChart(table.rows, t, f)
         ch.sugg = s.suggested_thresholds()
         ch.current = self.picked if self.picked is not None and self.picked < ch.n else None
-        ch.setMinimumHeight(300)
+        ch.setMinimumHeight(280)
         ch.changed.connect(lambda c=ch: self._chart_changed(c))
         ch.picked.connect(self._pick)
         ch.setToolTip(_("Thresholds: drag · frame: click"))
         self.chart = ch
-        self.center.addWidget(ch, 3)
+        self.center.addWidget(ch, 2)
         self.kept_label = label("", "dim")
         self.center.addWidget(self.kept_label)
-        self._kept = (table.kept, table.total)
+        self._kept_n = (table.kept, table.total)
         self._kept_text()
         if abs(t - 100 * table.min_transparency) > 1e-6 or abs(f - table.max_fwhm_ratio * (s.fwhm_median() or 1.0)) > 1e-6:
             self._ask_preview(ch)                  # the thresholds shown are not the stack's: what do they keep?
-        bottom = QHBoxLayout()
-        self.pick_view = Viewer()
-        self.pick_view.setMinimumHeight(200)
-        bottom.addWidget(self.pick_view, 1)
-        self.pick_side = QVBoxLayout()
-        side = QWidget()
-        side.setFixedWidth(260)
-        side.setLayout(self.pick_side)
-        bottom.addWidget(side)
-        self.center.addLayout(bottom, 2)
-        self._pick(self.picked if self.picked is not None and self.picked < ch.n else 0)
+        by = {it.path: it for it in items} if isinstance(items, list) else {}
+        p90 = ch.p90
+        frames = []
+        for r in table.rows:
+            it = by.get(r.path)
+            info = {"time": r.time or "", "fwhm": r.fwhm, "weight": r.weight,
+                    "transparency": r.transparency / p90 if np.isfinite(r.transparency) else None,
+                    "excluded": bool(r.excluded), "reason": _(r.status) if r.status and not r.excluded else ""}
+            if it is not None:
+                info.update(exposure=it.exposure, iso=it.iso, temperature=it.temperature, roundness=it.roundness)
+            vi = ViewImage(r.path, r.name, camera=True, cfa=it.cfa if it is not None else "",
+                           white=it.white if it is not None else None, info=info)
+            vi.thumb = si.light_thumb(s.p, r.path)
+            frames.append(vi)
+        self.sel_frames = frames
+        v = self._new_view("selection", None, histogram=False)
+        self._on(v, v.frameChanged, self._frame_shown)
+        self._on(v, v.excludeToggled, self._seq_exclude)
+        self.center.addWidget(v, 5)
+        v.set_sequence(frames, self.picked if self.picked is not None and self.picked < len(frames) else 0)
 
     def _ask_preview(self, c):
         """The engine counts the frames the dragged thresholds keep (selection_preview, in the worker)."""
@@ -754,7 +1569,7 @@ class TuneView(QWidget):
 
     def _preview_ready(self, token: int, kept: int, total: int):
         if token == getattr(self, "_preview_token", None):
-            self._kept = (kept, total)
+            self._kept_n = (kept, total)
             self._kept_text()
 
     def _kept_text(self):
@@ -762,7 +1577,7 @@ class TuneView(QWidget):
             return
         try:
             s = self.s
-            kept, n = self._kept
+            kept, n = self._kept_n
             exp = s.info().get("exposure_s") or 0
             self.kept_label.setText(_("{kept} of {n} frames kept · {t}").format(
                 kept=kept, n=n, t=hours_text(kept * exp / 3600)))
@@ -789,31 +1604,53 @@ class TuneView(QWidget):
             self.s.set_excluded(pairs, excluded)                 # saved by the model, as any edit
 
     def _pick(self, i):
+        """A frame clicked on the chart: shown in the viewer below."""
         self.picked = i
+        if self.view is not None and self.sel_frames and 0 <= i < len(self.sel_frames):
+            self.view.set_index(i)
+
+    def _frame_shown(self, i: int):
+        self.picked = i
+        if self.chart is not None:
+            try:
+                self.chart.current = i
+            except RuntimeError:
+                pass
+
+    def _seq_exclude(self, i: int, excluded: bool):
+        """Exclude / Include in the viewer: by hand, for the whole project (the chart follows)."""
         if self.table is None or not (0 <= i < len(self.table.rows)):
             return
-        row = self.table.rows[i]
-        clear(self.pick_side)
-        self.pick_side.addWidget(label(row.name, "h2"))
-        ex = row.excluded or bool(row.status)
-        tr = 100 * row.transparency / self.chart.p90 if self.chart is not None else 0.0
-        self.pick_side.addWidget(kv([(_("Time"), (row.time or "")[11:16]), ("FWHM", f"{fnum(row.fwhm, 2)} px"),
-                                     (_("Transparency"), f"{tr:.0f} %"),
-                                     (_("State"), _("excluded") if ex else _("kept"))], pad=10))
-        b1 = QPushButton(_("Keep") if row.excluded else _("Exclude"))
-        b1.setEnabled(row.session is not None)
-        b1.clicked.connect(lambda: (self._set_hand([(row.session, row.name)], not row.excluded), self.request_refresh()))
-        self.pick_side.addWidget(b1, 0, Qt.AlignLeft)
-        self.pick_side.addStretch(1)
-        self._frame_token = self.service.request_frame(row.path, 800, True)
-
-    def _frame_ready(self, token: int, path: str, arr):
-        if token != self._frame_token or self.table is None or not hasattr(self, "pick_view"):
+        r = self.table.rows[i]
+        if r.session is None:
             return
-        try:
-            self.pick_view.set_source(StaticSource(arr))
-        except RuntimeError:
-            pass
+        if self.chart is not None:
+            (self.chart.hand.add if excluded else self.chart.hand.discard)(i)
+            self.chart._classify()
+        self._set_hand([(r.session, r.name)], excluded)
+
+
+class _Failed:
+    """What the worker could not read, and why (its first line)."""
+
+    def __init__(self, why: str):
+        self.why = why
+
+
+def _noise_text(v) -> str:
+    if isinstance(v, dict):
+        return " · ".join(f"{k} {_stat(x)} ADU" for k, x in v.items())
+    if isinstance(v, list | tuple | np.ndarray):
+        return " / ".join(_stat(x) for x in v)
+    return _stat(v)
+
+
+def _stat(v) -> str:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return html.escape(str(v))
+    return number(x, 3 if abs(x) < 10 else 1)
 
 
 def approx(seconds: float, measured: bool) -> str:
@@ -824,16 +1661,8 @@ def approx(seconds: float, measured: bool) -> str:
 
 def sky_text(ra: float, dec: float) -> str:
     """RA and Dec as the readout writes them: 02h42m06.6s +61°18′01″ (a decimal comma in French)."""
-    rh = (ra % 360.0) / 15.0
-    h = int(rh)
-    m = int(rh % 1 * 60)
-    sec = (rh * 60 % 1) * 60
-    d = abs(dec)
-    sign = "+" if dec >= 0 else "−"
-    dd, dm = int(d), int(d % 1 * 60)
-    ds = (d * 60 % 1) * 60
-    sec_txt = number(sec, 1).rjust(4, "0")
-    return f"RA {h:02d}h{m:02d}m{sec_txt}s   Dec {sign}{dd:02d}°{dm:02d}′{ds:02.0f}″"
+    from .imageview import sky_text as iv_sky_text
+    return iv_sky_text(ra, dec)
 
 
-__all__ = ["TuneView", "Strip", "Histogram", "StretchSource", "ImageSlot", "sky_text"]
+__all__ = ["TuneView", "Strip", "make_table", "WeightsChart", "ColorFitChart", "sky_text", "approx"]

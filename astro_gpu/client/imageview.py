@@ -127,9 +127,10 @@ class ViewImage:
     ``cfa`` — or a callable returning one, or a file path (.npy, .fits, .tif, .png, .jpg, or a camera raw).
     ``key``: the image's identity (the cache, Send to Post, the compare selector); default: the path, or the array.
     ``wcs``: an astropy WCS, a FITS header or the path of a wcs.fits: RA / Dec in the readout, and the FITS export.
-    ``units``: "adu" or "norm" (0-1); ``white``: the saturation level in those units (for the readout in the other
-    unit; default 65535 ADU or 1). ``camera``: still in the camera's colours (Neutral sky on by default); None:
-    guessed from the sky (channel medians apart by more than 15 % and many noise sigmas: a camera's cast).
+    ``units``: "adu", "norm" (0-1), "count" (a count per pixel) or "" (a number without a unit); ``white``: the
+    saturation level in those units (for the readout in the other unit; default 65535 ADU or 1). ``camera``: still
+    in the camera's colours (Neutral sky on by default); None: guessed from the sky (channel medians apart by more
+    than 15 % and many noise sigmas: a camera's cast).
     ``info``: a frame of a sequence, as the caller measured it: ``time`` (ISO), ``exposure`` (s), ``iso`` or
     ``gain``, ``temperature`` (°C), ``fwhm`` (px), ``fwhm_arcsec``, ``roundness`` (0-1), ``transparency`` (1 = 100 %),
     ``weight``, ``excluded`` (bool), ``reason`` (why the engine leaves it out), ``extra`` [(caption, text)].
@@ -147,6 +148,9 @@ class ViewImage:
     info: dict = field(default_factory=dict)
     thumb: Any = None
     header: dict = field(default_factory=dict)
+    #: already a picture for the eye (a final render, an engine preview): shown as it is, 0 to ``white`` linear, and
+    #: read as levels without a unit
+    stretched: bool = False
 
     def identity(self):
         if self.key is not None:
@@ -209,14 +213,20 @@ def read_file(path: str | os.PathLike) -> tuple[np.ndarray, str, Any]:
 
 
 def _wcs_of(w):
-    """An astropy WCS from what the caller gave (a WCS, a header, a path), or None."""
+    """An astropy WCS from what the caller gave (a WCS, a header, a path, or a callable returning one of them: it is
+    called in the worker thread), or None."""
+    if callable(w) and not hasattr(w, "pixel_to_world_values"):
+        try:
+            w = w()
+        except Exception:  # noqa: BLE001 - no solution: no sky readout
+            return None
     if w is None:
         return None
     import warnings
 
     from astropy.wcs import WCS
-    if isinstance(w, WCS):
-        return w
+    if isinstance(w, WCS) or hasattr(w, "pixel_to_world_values"):
+        return w                                    # (an object with pixel_to_world_values only: the readout's)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         try:
@@ -428,6 +438,11 @@ def thumbnail_of(prep: Prepared, st: sm.Stretch | None = None, side: int = 160) 
 def default_stretch(prep: Prepared, mode: str = "mtf", linked: bool = True, neutral: bool | None = None,
                     vi: ViewImage | None = None) -> sm.Stretch:
     """The automatic stretch of an image; ``vi``: how the caller describes it now (default: as when it was read)."""
+    if (vi or prep.vi).stretched and mode == "mtf" and neutral is None:
+        c = prep.channels
+        white = (vi or prep.vi).white_level()
+        return sm.Stretch("linear", np.zeros(c), np.full(c, white / 2), np.full(c, white), np.ones(c), np.zeros(c),
+                          True, False, False)
     if neutral is None:
         cam = (vi or prep.vi).camera
         neutral = bool(prep.cfa) or (cam if cam is not None else sm.looks_camera(prep.stats))
@@ -435,6 +450,11 @@ def default_stretch(prep: Prepared, mode: str = "mtf", linked: bool = True, neut
 
 
 # ---------------------------------------------------------------------------------------------- the loader
+class Unavailable(Exception):
+    """Raised by a source that knows why its image is not there: the text (already in the language of the
+    interface) is what the view shows, alone."""
+
+
 class Loader(QObject):
     """Prepares images in worker threads, the most urgent first, and keeps the last ones (least recently used out,
     within a byte budget). Answers come as signals in the GUI thread. One loader is shared by default
@@ -456,6 +476,7 @@ class Loader(QObject):
         self._seq = itertools.count()
         self._stop = False
         self.thumbs: dict = {}                     # key -> thumbnail
+        self.unavailable: set = set()              # keys whose source raised Unavailable (its text is the message)
         self.loads = 0                             # images prepared (the tests count them)
         self.load_threads: set[int] = set()        # the threads that did it
         self._threads = [threading.Thread(target=self._run, daemon=True, name=f"imageview-loader-{i}")
@@ -575,7 +596,12 @@ class Loader(QObject):
                     self._emit(self.thumbReady, key, th)
             except Exception as e:  # noqa: BLE001 - every failure goes to the view as text
                 if kind == "load":
-                    self._emit(self.failed, key, f"{type(e).__name__}: {e}")
+                    if isinstance(e, Unavailable):          # the caller's own words (translated), shown alone
+                        self.unavailable.add(key)
+                        self._emit(self.failed, key, str(e))
+                    else:
+                        self.unavailable.discard(key)
+                        self._emit(self.failed, key, f"{type(e).__name__}: {e}")
             finally:
                 with self._cond:
                     self._running.discard((kind, key))
@@ -1580,13 +1606,17 @@ class StretchPanel(QFrame):
             if stats.channels == 1:
                 hd.setText(_("Value"))
                 hd.setStyleSheet(f"color: {MONO_COLOR}; font-weight: 600; font-size: 9pt;")
+            else:                                         # a colour image after a mono one in the same viewer
+                hd.setText("RGB"[c])
+                hd.setStyleSheet(f"color: {CHANNEL_COLORS[c]}; font-weight: 600; font-size: 9pt;")
             for r, arr in enumerate((stats.vmin, stats.median, stats.sigma, stats.high, stats.vmax)):
                 cell = self.cells[(r, c)]
                 cell.setVisible(shown)
                 if shown:
                     exact = integer and r in (0, 4)
                     cell.setText(value_text(float(arr[c]), None if exact else stats, exact))
-        self.stats_l.setText(_("Data units: {u}").format(u=u) if u else _("Data units: 0 to 1"))
+        self.stats_l.setText(_("Data units: {u}").format(u=u) if u else
+                             _("Data units: 0 to 1") if self.units == "norm" else "")
         lo_f, hi_f = sm.clipped(self.st, stats)
         self.clip_l.setText(_("Clipped: {b} % black · {w} % white").format(b=number(100 * lo_f, 2),
                                                                             w=number(100 * hi_f, 2)))
@@ -1741,6 +1771,16 @@ class InfoBand(QFrame):
         self.toggle.setToolTip(_("Leave this frame out of the stack, or take it back (X)"))
         self.toggle.clicked.connect(self.excludeClicked.emit)
         h.addWidget(self.toggle)
+        self.mode = "on"                          # on | off (no toggle, no state) | spec (◇: shown, disabled)
+        self.spec_tip = ""
+
+    def set_mode(self, mode: str, tip: str = ""):
+        """What Exclude / Include does here: ``on``; ``off`` (masters: neither the toggle nor the state); ``spec``
+        (◇ the engine cannot do it yet: the toggle disabled, ``tip`` says why)."""
+        self.mode = mode if mode in ("on", "off", "spec") else "on"
+        self.spec_tip = tip
+        self.toggle.setVisible(self.mode != "off")
+        self.state.setVisible(self.mode != "off")
 
     def set_frame(self, vi: ViewImage, index: int, total: int):
         info = vi.info or {}
@@ -1762,10 +1802,11 @@ class InfoBand(QFrame):
         }
         self.cells["iso"][0].setText(_("Gain") if info.get("iso") is None and info.get("gain") is not None
                                      else _("ISO"))
+        compact = bool(info.get("compact"))      # only the cells with a value (a master, a calibration frame)
         for k, (cap, val) in self.cells.items():
             val.setText(vals[k] or "–")
             val.setStyleSheet("" if vals[k] else "color: #5d6470;")
-            show = k != "weight" or bool(vals[k])
+            show = bool(vals[k]) or (k != "weight" and not compact)
             cap.setVisible(show)
             val.setVisible(show)
         while self.extra.count():
@@ -1792,7 +1833,20 @@ class InfoBand(QFrame):
             self.state.setText(_("Included"))
             self.state.setToolTip("")
             self.state.setStyleSheet(f"color: {OK}; border: 1px solid {OK}; border-radius: 9px; padding: 2px 10px;")
+        flag = info.get("flag")                  # a quality flag of the engine: amber, its reason in the tip
+        if flag and not (excluded or reason):
+            self.state.setText(str(flag))
+            self.state.setToolTip(info.get("flag_reason") or "")
+            self.state.setStyleSheet(f"color: {WARN}; border: 1px solid {WARN}; border-radius: 9px; "
+                                     "padding: 2px 10px;")
         self.toggle.setText(_("Include") if excluded else _("Exclude"))
+        if self.mode == "spec":
+            self.toggle.setText(self.toggle.text() + "  ◇")
+            self.toggle.setEnabled(False)
+            self.toggle.setToolTip("◇ " + (self.spec_tip or _("Not in the engine yet.")))
+        else:
+            self.toggle.setEnabled(True)
+            self.toggle.setToolTip(_("Leave this frame out of the stack, or take it back (X)"))
 
 
 class FilmStrip(QWidget):
@@ -2255,10 +2309,21 @@ class ImageView(QWidget):
         if key == self._want:
             self._failed_key = key
             self.canvas.busy = False
-            self.canvas.message = _("This image cannot be shown: {why}").format(why=why)
+            self.canvas.message = why if key in self.loader.unavailable else \
+                _("This image cannot be shown: {why}").format(why=why)
             if not self._frames:
                 self.canvas.set_display(None)
             self.canvas.update()
+        if self._cmp_i is not None and self._cmp_i < len(self._targets) and \
+                self._targets[self._cmp_i].identity() == key:
+            self._cmp_failed = key                  # the compared image cannot be read: said, and not waited for
+            text = why if key in self.loader.unavailable else \
+                _("This image cannot be shown: {why}").format(why=why)
+            self.canvas2.message = text
+            self.canvas2.update()
+            self.toasted.emit(text)
+
+    _cmp_failed = None
 
     def _show(self, prep: Prepared):
         keep_view, keep_stretch = self._keep
@@ -2309,6 +2374,9 @@ class ImageView(QWidget):
         has = self._prep is not None
         for b in (self.export_b, self.post_b, self.copy_b, self.fit_b, self.one_b, self.zoom_b, self.auto_b):
             b.setEnabled(has)
+        if not self._post_ok:
+            self.post_b.setEnabled(False)
+        self.post_b.setToolTip(_("Use this image in Post") if self._post_ok else self._post_tip)
         self.cmp_box.setVisible(self._compare_allowed and bool(self._targets))
 
     # ------------------------------------------------------------ the stretch
@@ -2433,6 +2501,18 @@ class ImageView(QWidget):
             return ""
         vals, letter = got
         vi = vi or prep.vi
+        if vi.stretched:                           # a picture for the eye: its levels, without a unit
+            text = "   ".join(f"{c} {int(round(v))}" for c, v in zip("RGB", vals)) if len(vals) == 3 else \
+                str(int(round(vals[0])))
+            return f"x {xi:>5}  y {yi:>5}    {text}" + self._sky_part(prep, x, y)
+        if vi.units == "count":                    # a count per pixel (a rejection map): whole numbers
+            text = str(int(round(vals[0]))) if len(vals) == 1 else \
+                "   ".join(f"{c} {int(round(v))}" for c, v in zip("RGB", vals))
+            return f"x {xi:>5}  y {yi:>5}    {text}" + self._sky_part(prep, x, y)
+        if vi.units not in ("adu", "norm"):        # a number without a unit (a coverage map)
+            fmt = [value_text(v, prep.stats) for v in vals]
+            text = "   ".join(f"{c} {v}" for c, v in zip("RGB", fmt)) if len(vals) == 3 else fmt[0]
+            return f"x {xi:>5}  y {yi:>5}    {text}" + self._sky_part(prep, x, y)
         white = vi.white_level()
         if vi.units == "norm" and self._units == "adu":
             vals, unit = [v * white for v in vals], "ADU"
@@ -2451,15 +2531,19 @@ class ImageView(QWidget):
             text = f"{letter} {fmt[0]}"
         else:
             text = fmt[0]
-        out = f"x {xi:>5}  y {yi:>5}    {text}" + (f" {unit}" if unit else "")
-        if prep.wcs is not None:
-            try:
-                ra, dec = prep.wcs.pixel_to_world_values(x - 0.5, y - 0.5)
-                if np.isfinite(ra) and np.isfinite(dec):
-                    out += "    " + sky_text(float(ra), float(dec))
-            except Exception:  # noqa: BLE001 - outside the solution
-                pass
-        return out
+        return f"x {xi:>5}  y {yi:>5}    {text}" + (f" {unit}" if unit else "") + self._sky_part(prep, x, y)
+
+    @staticmethod
+    def _sky_part(prep: Prepared, x: float, y: float) -> str:
+        if prep.wcs is None:
+            return ""
+        try:
+            ra, dec = prep.wcs.pixel_to_world_values(x - 0.5, y - 0.5)
+            if np.isfinite(ra) and np.isfinite(dec):
+                return "    " + sky_text(float(ra), float(dec))
+        except Exception:  # noqa: BLE001 - outside the solution
+            pass
+        return ""
 
     def _hover(self, cv: ImageCanvas, x: float, y: float, which: int):
         if cv is self.canvas2 or which == 1:
@@ -2664,9 +2748,25 @@ class ImageView(QWidget):
             info["excluded"] = bool(excluded)
             self.set_frame_info(i, info)
 
+    def set_exclude_mode(self, mode: str, tip: str = ""):
+        """``on`` (default), ``off`` (no Exclude / Include, no state: masters) or ``spec`` (◇: the engine cannot
+        leave such a frame out yet; the toggle is shown disabled with ``tip``)."""
+        self.band.set_mode(mode, tip)
+        if self._frames and 0 <= self._index < len(self._frames):
+            self.band.set_frame(self._frames[self._index], self._index, len(self._frames))
+
+    def set_post_enabled(self, on: bool, tip: str = ""):
+        """Send to Post can be offered (the Post page takes images) or not: disabled, ``tip`` says why."""
+        self._post_ok = bool(on)
+        self._post_tip = tip
+        self._update_actions()
+
+    _post_ok = True
+    _post_tip = ""
+
     def toggle_excluded(self):
         """Exclude / Include the frame shown: ``excludeToggled(index, excluded)``."""
-        if not self._frames:
+        if not self._frames or self.band.mode != "on":
             return
         i = self._index
         now = not bool((self._frames[i].info or {}).get("excluded"))
@@ -2754,7 +2854,8 @@ class ImageView(QWidget):
             app.processEvents()
             done = self._want is None or (self._prep is not None and self._prep.key == self._want) or \
                 self._failed_key == self._want
-            cmp_done = self._cmp_i is None or self._cmp is not None
+            cmp_done = self._cmp_i is None or self._cmp is not None or (
+                self._cmp_i < len(self._targets) and self._cmp_failed == self._targets[self._cmp_i].identity())
             if done and cmp_done:
                 app.processEvents()
                 return True
@@ -2923,7 +3024,7 @@ def _write_fits(path: Path, img: np.ndarray, prep: Prepared, origin, with_wcs: b
     if a.ndim == 3 and a.shape[0] == 1:
         a = a[0]
     hdr = fits.Header()
-    if with_wcs and prep.wcs is not None:
+    if with_wcs and prep.wcs is not None and hasattr(prep.wcs, "to_header"):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             w = prep.wcs.deepcopy()
@@ -3009,7 +3110,7 @@ class ImageExportDialog(QDialog):
         grid.addLayout(ab, r, 1)
         r += 1
         self.c_wcs = QCheckBox(_("Astrometric solution (WCS) in the header"))
-        self.c_wcs.setChecked(self.prep.wcs is not None)
+        self.c_wcs.setChecked(hasattr(self.prep.wcs, "to_header"))
         grid.addWidget(self.c_wcs, r, 1)
         r += 1
         grid.addWidget(label(_("File")), r, 0)
@@ -3058,7 +3159,7 @@ class ImageExportDialog(QDialog):
         self.c_view.setEnabled(not fits_)
         if fits_:
             self.c_data.setChecked(True)
-        self.c_wcs.setEnabled(fits_ and self.prep.wcs is not None)
+        self.c_wcs.setEnabled(fits_ and hasattr(self.prep.wcs, "to_header"))
         self.c_wcs.setToolTip("" if fits_ else _("Only the FITS file has a header."))
         text = self.dest.text().strip()
         if text and Path(text).name:
