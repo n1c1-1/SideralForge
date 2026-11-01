@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from multiprocessing import get_context
 from pathlib import Path
@@ -58,7 +59,10 @@ class Calibrate(Stage):
                    "cached on the fast scratch disk; an interrupted calibration resumes frame by frame.")
     deps = ("inventory",)
     Params = CalibrateParams
-    version = "3"          # 2: hot pixels also seen in the lights; 3: a bad pixel stays excluded when saturated
+    # 2: hot pixels also seen in the lights; 3: a bad pixel stays excluded when saturated. The master bias and flat
+    # dark (EXTRA_MASTERS, for the Inspect mode) are extra files with the same results: not a new version, an older
+    # result simply lacks them
+    version = "3"
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         n = max(1, min(12, (os.cpu_count() or 4) - 2))
@@ -74,9 +78,14 @@ class Calibrate(Stage):
         H, W = int(ctx.metric_of("inventory", "height")), int(ctx.metric_of("inventory", "width"))
         black = float(ctx.metric_of("inventory", "black_level"))
         bias = master_bias([f["path"] for f in frames["bias"]], ctx)
+        if bias is not None:
+            ctx.save("master_bias.npy", bias)
         dark, dark_noise = master_dark([f["path"] for f in frames["darks"]], bias, H, W, black, ctx)
+        kept: dict = {}
         flat = master_flat([f["path"] for f in frames["flats"]], [f["path"] for f in frames["flat_darks"]], bias,
-                           float(np.median(dark)), H, W, p.flat_scale_px, ctx)
+                           float(np.median(dark)), H, W, p.flat_scale_px, ctx, keep=kept)
+        if "flat_dark" in kept:
+            ctx.save("master_flat_dark.npy", kept.pop("flat_dark"))
         calibrate_lights(ctx, p, frames["lights"], dark, flat, bool(frames["darks"]), dark_noise,
                          ctx.metric_of("inventory", "cfa"), float(ctx.metric_of("inventory", "white_level")))
 
@@ -101,11 +110,14 @@ def master_dark(paths: list[str], bias: np.ndarray | None, H: int, W: int, black
 
 
 def master_flat(paths: list[str], flat_dark_paths: list[str], bias: np.ndarray | None, dark_level: float, H: int,
-                W: int, flat_scale_px: float, ctx: Context) -> np.ndarray:
-    """Master flat normalised to 1 at the centre of each Bayer plane (all ones without flats)."""
+                W: int, flat_scale_px: float, ctx: Context, keep: dict | None = None) -> np.ndarray:
+    """Master flat normalised to 1 at the centre of each Bayer plane (all ones without flats). ``keep``: receives
+    the master flat dark under "flat_dark" when there are flat darks."""
     if paths:
         if flat_dark_paths:
             fdark = _median_stack(flat_dark_paths, ctx, "flat darks")
+            if keep is not None:
+                keep["flat_dark"] = fdark
         elif bias is not None:
             fdark = bias
         else:
@@ -169,6 +181,9 @@ def calibrate_lights(ctx: Context, p: CalibrateParams, lights: list[dict], dark:
 #: and metrics): calibrate then rebuilds the cache only (``given_masters``)
 MASTER_FILES = ("master_dark.npy", "master_flat.npy", "badmask.npy")
 MASTERS = "masters.json"
+#: masters kept for the Inspect mode only (there when the project has bias or flat dark frames): the cache-only
+#: rebuild copies them from the earlier result itself (``from`` of MASTERS)
+EXTRA_MASTERS = ("master_bias.npy", "master_flat_dark.npy")
 
 
 def result_params(p: CalibrateParams) -> dict:
@@ -204,6 +219,10 @@ def rebuild_cache(ctx: Context, p: CalibrateParams, lights: list[dict], given: d
         if k not in ("cache_scale", "cache_gb"):
             ctx.metric(k, v)
     ctx.log("calibrated frames rebuilt with the masters of the earlier result (same settings)")
+    src = Path(str(given.get("from") or ""))
+    for n in EXTRA_MASTERS:
+        if given.get("from") and (src / n).is_file() and not ctx.out(n).is_file():
+            shutil.copy2(src / n, ctx.out(n))
     _calibrated_cache(ctx, p, lights, dark, flat, bad, cfa, white, t0)
     (ctx.dir / MASTERS).unlink(missing_ok=True)
 

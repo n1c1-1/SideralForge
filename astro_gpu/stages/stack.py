@@ -17,6 +17,13 @@ from .calibrate import VALID_MAX, open_cache
 #: the level of a parameter the project sets itself: never shown in a settings form
 INTERNAL = "internal"
 EXCLUDED = "excluded by hand"
+#: what the stack keeps for the Inspect mode (extra files: an older result lacks them): the normalisation, half and
+#: rejected samples of each used frame and the noise of the result (DIAG); the rejected samples counted on the output
+#: grid (REJECTION)
+DIAG = "diagnostics.json"
+REJECTION = "rejection.npz"
+#: the rejection maps are reduced by a whole factor until their longer side is at most this
+REJECTION_SIDE = 4096
 
 
 class StackParams(StageParams):
@@ -235,6 +242,8 @@ class Stack(Stage):
             pi = ((v - ky) / 2 + 0.5) / 32 - 0.5
             return map_coordinates(Bref_np[k], [pi.ravel(), pj.ravel()], order=1, mode="nearest").reshape(pi.shape)
 
+        norm: dict[int, tuple[np.ndarray, np.ndarray]] = {}       # frame -> (gradient Q (3, 6), sky level (3,))
+
         def frame_model(i):
             fr = torch.from_numpy(np.asarray(mm[i], np.float32)).to(dev)
             if fpn is not None:
@@ -262,6 +271,7 @@ class Stack(Stage):
                     m = np.abs(r) < 3 * s + 1e-9
                 Q[c] = torch.from_numpy(q)
                 bkg_level[c] = np.nanmedian(np.concatenate([Bi[k].cpu().numpy().ravel() for k in ks]))
+            norm[int(i)] = (Q.numpy().copy(), bkg_level.copy())
             a = X / (W / 2) - 1.0
             b = Y / (H / 2) - 1.0
             terms = torch.stack([torch.ones_like(a), a, b, a * a, a * b, b * b])
@@ -306,6 +316,8 @@ class Stack(Stage):
         accB = [torch.zeros(3 * Ho * Wo, device=dev) for _ in range(2)]
         Mb = M.unsqueeze(0)
         rej_tot = 0
+        rmap = RejectionMap(Ho, Wo, dev)
+        rej_frames: dict[int, tuple[int, int, int]] = {}
         for c_, i in enumerate(used):
             val, Xo, Yo, sat, bad, bkg = frame_model(i)
             gx = (Xo + 0.5) / Wo * 2 - 1
@@ -322,6 +334,7 @@ class Stack(Stage):
             rej = hi | ((z < -p.kappa) & ~sat)
             keep = ~bad & ~rej
             rej_tot += int(rej.sum())
+            rej_frames[int(i)] = rmap.add(Xo, Yo, hi & ~bad, rej & ~hi & ~bad)
             acc = accA if (i // p.half_block) % 2 == 0 else accB
             deposit(acc[0], acc[1], val, Xo, Yo, float(weight[i]), keep)
             ctx.progress(0.5 + 0.5 * (c_ + 1) / len(used), f"pass 2: {c_ + 1}/{len(used)} frames, "
@@ -334,16 +347,99 @@ class Stack(Stage):
         full = [accA[0] + accB[0], accA[1] + accB[1]]
         drz = finish(full)
         ctx.save("drz_full.npy", drz)
-        ctx.save("drz_A.npy", finish(accA))
-        ctx.save("drz_B.npy", finish(accB))
+        step = noise_step(Ho, Wo)
+        halves = []                              # a sample of each half-stack: the noise of the result
+        for name, acc in (("drz_A.npy", accA), ("drz_B.npy", accB)):
+            img = finish(acc)
+            ctx.save(name, img)
+            halves.append(img[:, ::step, ::step].copy())
+            del img
         ctx.save("drz_weight.npy", full[1].view(3, Ho, Wo).cpu().numpy())
         rej_pct = 100 * rej_tot / (len(used) * H * W)
         ctx.metric("rejected_pct", round(rej_pct, 3))
         ctx.save_json("drz_meta.json", {"scale": S, "pixfrac": PIX, "n": int(len(used)), "reject_pct": rej_pct,
                                         "width": Wo, "height": Ho, "sensor": [W, H]})
+        rmap.save(ctx.out(REJECTION))
+        in_a = {int(i): (int(i) // p.half_block) % 2 == 0 for i in used}
+        w_a = float(sum(weight[i] for i in used if in_a[int(i)]))
+        w_b = float(sum(weight[i] for i in used if not in_a[int(i)]))
+        frames_d = []
+        for i in used:
+            q, sky = norm[int(i)]
+            lo, hi_n, outside = rej_frames.get(int(i), (0, 0, 0))
+            frames_d.append({"index": int(i), "path": meta[i]["path"], "weight": float(weight[i]),
+                             "transparency": float(transp[i]), "scale": [float(1.0 / transp[i])] * 3,
+                             "offset": [float(v) for v in q[:, 0]], "gradient": q.tolist(), "sky": sky.tolist(),
+                             "half": "A" if in_a[int(i)] else "B", "rejected_low": lo, "rejected_high": hi_n,
+                             "rejected_outside": outside})
+        noise = {c: (v if np.isfinite(v) else None) for c, v in halves_noise(halves[0], halves[1], w_a, w_b).items()}
+        ctx.save_json(DIAG, {"frames": frames_d, "noise": noise,
+                             "noise_sample_step": step, "half_weights": [w_a, w_b], "kappa": p.kappa,
+                             "rejection": {"file": REJECTION, "factor": rmap.f, "grid": [Wo, Ho],
+                                           "shape": [rmap.Hr, rmap.Wr]}})
+        del halves
         ctx.log(f"drizzle {Wo}x{Ho} from {len(used)} frames in {(time.time() - t0) / 60:.1f} min, "
                 f"{rej_pct:.2f} % pixels rejected")
         ctx.preview("stack", asinh_preview(drz))
+
+
+class RejectionMap:
+    """The samples the second pass rejects, counted on the output grid, low and high apart: each sample at the output
+    pixel nearest to where it lands, the grid reduced by a whole factor ``f`` so that its longer side is at most
+    REJECTION_SIDE. Counts only: it never touches what is deposited."""
+
+    def __init__(self, Ho: int, Wo: int, dev):
+        self.f = max(1, -(-max(Ho, Wo) // REJECTION_SIDE))
+        self.Ho, self.Wo = Ho, Wo
+        self.Hr, self.Wr = -(-Ho // self.f), -(-Wo // self.f)
+        self.low = torch.zeros(self.Hr * self.Wr, dtype=torch.int64, device=dev)
+        self.high = torch.zeros_like(self.low)
+
+    def _count(self, acc: torch.Tensor, Xo: torch.Tensor, Yo: torch.Tensor, mask: torch.Tensor) -> tuple[int, int]:
+        jx = torch.floor(Xo[mask] + 0.5).long()
+        iy = torch.floor(Yo[mask] + 0.5).long()
+        ok = (jx >= 0) & (jx < self.Wo) & (iy >= 0) & (iy < self.Ho)
+        acc += torch.bincount((iy[ok] // self.f) * self.Wr + jx[ok] // self.f, minlength=acc.numel())
+        n = int(ok.sum())
+        return n, int(mask.sum()) - n
+
+    def add(self, Xo: torch.Tensor, Yo: torch.Tensor, high: torch.Tensor, low: torch.Tensor) -> tuple[int, int, int]:
+        """Count one frame's rejected samples (boolean masks on the sensor). Returns (low, high, outside): the low and
+        high ones that land on the grid, and those that land outside it (the margins the drift uncovers: the
+        prediction there is 0, so all of them count as high in the ``rejected_pct`` metric)."""
+        lo, out_lo = self._count(self.low, Xo, Yo, low)
+        hi, out_hi = self._count(self.high, Xo, Yo, high)
+        return lo, hi, out_lo + out_hi
+
+    def arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        out = []
+        for a in (self.low, self.high):
+            v = a.view(self.Hr, self.Wr).cpu().numpy()
+            out.append(v.astype(np.uint16 if v.max(initial=0) < 65536 else np.uint32))
+        return out[0], out[1]
+
+    def save(self, path) -> None:
+        low, high = self.arrays()
+        np.savez_compressed(path, low=low, high=high, factor=self.f, grid=np.array([self.Wo, self.Ho]))
+
+
+def noise_step(Ho: int, Wo: int) -> int:
+    """The stride of the sample the noise of a stack is measured on (about 4 million pixels per channel)."""
+    return max(1, int(np.sqrt(Ho * Wo / 4e6)))
+
+
+def halves_noise(A: np.ndarray, B: np.ndarray, w_a: float, w_b: float) -> dict[str, float]:
+    """Pixel noise (robust sigma, ADU of the stack) of each channel of the full stack, from its two independent
+    half-stacks (3, h, w), zero where empty: A - B holds no signal, only the noise of both halves, and the full stack,
+    their weighted mean, has sigma(A - B) x sqrt(w_a w_b) / (w_a + w_b) (the frame weights are inverse variances).
+    NaN without two halves."""
+    f = float(np.sqrt(w_a * w_b) / (w_a + w_b)) if w_a > 0 and w_b > 0 else float("nan")
+    out = {}
+    for c, name in enumerate("RGB"):
+        a, b = np.asarray(A[c], np.float64), np.asarray(B[c], np.float64)
+        d = (a - b)[(a != 0) & (b != 0) & np.isfinite(a) & np.isfinite(b)]
+        out[name] = float(1.4826 * np.median(np.abs(d - np.median(d))) * f) if d.size else float("nan")
+    return out
 
 
 def select_frames(transp, fwhm, rms, stats, min_transparency: float, max_fwhm_ratio: float, exclude=None):

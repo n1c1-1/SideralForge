@@ -34,7 +34,7 @@ class Register(Stage):
                    "transparency (star flux relative to the reference), used to weight or reject frames.")
     deps = ("calibrate",)
     Params = RegisterParams
-    version = "1"
+    version = "1"          # reg.npz's "roundness" is an extra array (same results): an older result lacks it
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         n = max(1, min(12, (os.cpu_count() or 4) - 2))
@@ -45,18 +45,19 @@ class Register(Stage):
         n, H, W = info["n"], info["height"], info["width"]
         meta = ctx.load_json("inventory", "frames.json")["lights"]
         cache_p = ctx.ckpt / "catalogs.pkl"
-        if cache_p.exists():
-            cats, fwhm, rmsb = pickle.loads(cache_p.read_bytes())
-        else:
-            cats, fwhm, rmsb = [None] * n, np.zeros(n), np.zeros(n)
+        got = pickle.loads(cache_p.read_bytes()) if cache_p.exists() else None
+        if got is not None and len(got) == 4:
+            cats, fwhm, rmsb, rnd = got
+        else:                                # no checkpoint, or one without the roundness: those frames again
+            cats, fwhm, rmsb, rnd = [None] * n, np.zeros(n), np.zeros(n), np.full(n, np.nan)
         todo = [i for i in range(n) if cats[i] is None]
         if todo:
             init = (info["path"], n, H, W, p.detect_sigma, p.max_stars)
             with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
-                for c, (idx, cat, fw, rb) in enumerate(pool.imap_unordered(_catalog, todo, chunksize=4)):
-                    cats[idx], fwhm[idx], rmsb[idx] = cat, fw, rb
+                for c, (idx, cat, fw, rb, rd) in enumerate(pool.imap_unordered(_catalog, todo, chunksize=4)):
+                    cats[idx], fwhm[idx], rmsb[idx], rnd[idx] = cat, fw, rb, rd
                     if (c + 1) % 50 == 0 or c + 1 == len(todo):
-                        cache_p.write_bytes(pickle.dumps((cats, fwhm, rmsb)))
+                        cache_p.write_bytes(pickle.dumps((cats, fwhm, rmsb, rnd)))
                     ctx.progress(0.9 * (n - len(todo) + c + 1) / n, f"stars detected in {n - len(todo) + c + 1}/{n} frames")
         nst = np.array([len(c) for c in cats])
         if np.median(nst) < 30:
@@ -91,7 +92,7 @@ class Register(Stage):
         if failed:
             ctx.log(f"{len(failed)} frame(s) could not be aligned and will be ignored, e.g. {failed[0]}", "warning")
         np.savez(ctx.out("reg.npz"), coef=coef, fwhm=fwhm, transp=transp, nmatch=nmatch, rms=rms, ref=ref,
-                 nstars=nst, bkgrms=rmsb)
+                 nstars=nst, bkgrms=rmsb, roundness=rnd)
         ok = np.isfinite(rms)
         ctx.metric("reference_frame", os.path.basename(meta[ref]["path"]))
         ctx.metric("aligned", int(ok.sum()))
@@ -256,10 +257,20 @@ def _catalog(idx):
     o = o[(o["flag"] == 0) & (o["npix"] < 200)]
     o = np.sort(o, order="flux")[::-1][: _G["nmax"]]
     if len(o) == 0:
-        return idx, np.zeros((0, 4)), 0.0, float(rms)
+        return idx, np.zeros((0, 4)), 0.0, float(rms), float("nan")
     xw, yw, _ = sep.winpos(x, o["x"], o["y"], np.full(len(o), 0.9))
     hfr, _ = sep.flux_radius(x, xw, yw, np.full(len(o), 5.0), 0.5, subpix=5)
     cat = np.c_[2 * xw + 0.5, 2 * yw + 0.5, o["flux"], hfr]       # sensor coordinates
-    cat = cat[np.isfinite(cat).all(1)]
+    fin = np.isfinite(cat).all(1)
+    cat = cat[fin]
     fwhm = 2.0 * 2.0 * np.median(cat[:300, 3])                     # super-pixel HFR -> sensor FWHM (gaussian)
-    return idx, cat.astype(np.float64), float(fwhm), float(rms)
+    return idx, cat.astype(np.float64), float(fwhm), float(rms), _roundness(o[fin][:300])
+
+
+def _roundness(o) -> float:
+    """Median minor / major axis (second moments of the detection) of the stars the FWHM is measured on: 1 for round
+    stars, lower when they are stretched (tracking, wind, tilt)."""
+    a, b = np.asarray(o["a"], float), np.asarray(o["b"], float)
+    r = b / np.where(a > 0, a, np.nan)
+    r = r[np.isfinite(r)]
+    return float(np.median(r)) if len(r) else float("nan")

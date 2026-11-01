@@ -16,7 +16,9 @@ needs them. The calls fall into four groups:
   when a project opens; the GUI thread then finds everything cached. ``states`` reads manifests (small files);
 * worker thread only (they scan, load arrays or compute): ``warm``, ``scan_folder``, ``add_frames``, ``health_checks``,
   ``frame_table``, ``selection_preview``, ``frame_thumb``, ``describe``, ``stage_outputs``, ``stage_array``,
-  ``cache_usage``, ``clear_unused``, ``machine``, ``list_projects``, ``import_v1`` (preview and import);
+  ``cache_usage``, ``clear_unused``, ``machine``, ``list_projects``, ``import_v1`` (preview and import), and the
+  diagnostics of the basic stages: ``calibration_frames``, ``calibrated_light``, ``registration_table``,
+  ``stack_diagnostics``, ``color_fit``;
 * the render worker: ``render_layer``, ``post_masks``, ``export_image``, ``export_workflow``.
 
 A run is a detached process (``start_run``); the client follows ``read_events`` and calls ``refresh(p)`` when a stage
@@ -345,6 +347,151 @@ class SliderInfo:
     ends: tuple[str, str]
     available: bool
     reason: str = ""
+
+
+# the diagnostics of the basic stages (calibration_frames, registration_table, stack_diagnostics, color_fit). Each
+# result lists in ``missing`` what a result of an older stage version did not keep, as "<what>: missing: recompute
+# <stage> to get it" (the field is then None / empty).
+
+@dataclass
+class CalFrame:
+    """A frame of a session as the calibration sees it. ``kind``: darks, flats, bias, flat_darks or lights.
+    ``stats``: raw ADU, black level not subtracted (``core/diagnostics.raw_stats``): median, planes (the level of each
+    Bayer position), noise, hot_pixels, rings (radial profile, centre to corners), centre, edge, gradient (centre -
+    edge: "growing central light" when positive), saturated_pct, max, and exposure, iso, temperature (°C, None when the
+    file does not say), time; flats also level_pct (% of full scale above ``zero``, their offset), vignetting (each
+    ring relative to the centre) and corner_pct; lights the calibrated frame's median, noise, planes and noise_planes
+    (the stage's frame_stats, in the cache's ADU). ``flag`` ok | warn, ``reason`` in plain words (an outlier against
+    the other frames of its kind, a badly exposed flat; nothing is excluded), ``checks`` the same as
+    [{"key", "text", numbers}]. ``calibrated``: the calibrated cache file of a light, ``index`` its frame there
+    (``calibrated_light`` reads it); '' when the cache is gone."""
+
+    kind: str
+    path: str
+    name: str
+    stats: dict[str, Any] = field(default_factory=dict)
+    flag: str = "ok"
+    reason: str = ""
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    calibrated: str = ""
+    index: int | None = None
+
+
+@dataclass
+class CalibrationReport:
+    """``masters`` {kind: .npy path} of the calibration result (dark, flat, bias, flat_dark, bad_pixels: the ones it
+    has), made from the frames of all the sessions; ``frames`` the session's calibration frames, then its lights;
+    ``notes`` plain-word remarks; ``stage_dir`` the result's folder ('' when none is done)."""
+
+    session: int
+    masters: dict[str, str] = field(default_factory=dict)
+    frames: list[CalFrame] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    stage_dir: str = ""
+
+
+@dataclass
+class RegRow:
+    """A light frame as registration aligned it (``core/diagnostics.frame_geometry`` for dx, dy, rotation, scale; NaN
+    when not aligned). ``nmatch``: stars matched to the reference, ``nstars``: stars detected, ``fwhm`` px,
+    ``roundness`` minor / major axis of the stars (1 = round; None for a result that did not keep it). ``used``: the
+    frame was aligned (the stack may still leave it out: ``stack_diagnostics``); ``reason`` when not."""
+
+    name: str
+    time: str | None
+    dx: float
+    dy: float
+    rotation: float
+    scale: float
+    nmatch: int
+    nstars: int
+    fwhm: float
+    roundness: float | None
+    used: bool
+    index: int = 0
+    path: str = ""
+    rms: float = float("nan")            # residual of the alignment (px)
+    transparency: float = float("nan")   # star flux relative to the reference frame
+    reference: bool = False
+    reason: str = ""
+
+
+class RegTable(list):
+    """``registration_table``'s answer: a list of RegRow, with ``missing`` and ``notes``."""
+
+    def __init__(self, rows: Iterable[RegRow] = (), missing: Iterable[str] = (), notes: Iterable[str] = ()):
+        super().__init__(rows)
+        self.missing = list(missing)
+        self.notes = list(notes)
+
+
+@dataclass
+class StackDiag:
+    """What the stack did. ``rejection_low`` / ``rejection_high``: (h, w) counts of the samples the second pass
+    rejected below / above the prediction, on the stack grid reduced ``rejection_factor`` times on each axis (None:
+    missing). ``weights``: (name, weight, norm_offset, norm_scale) of every frame, the normalisation being value ->
+    (value - offset) x scale per channel R, G, B (offset: the frame's sky gradient at the field centre, ADU; scale:
+    1 / transparency); None for a frame left out or a result that did not keep it. ``frames``: the full record of
+    each used frame (index, path, weight, transparency, offset, scale, gradient: the 6 coefficients per channel of
+    the quadratic sky difference, sky, half A | B, rejected_low, rejected_high: on the stack, rejected_outside: the
+    rejected samples that land outside it). ``noise`` {R, G, B}: pixel noise of the result (ADU of the stack), from
+    its two half-stacks. ``used``: the frames stacked; ``excluded`` {name: reason}. ``rejected_pct``: the stage's
+    metric (it counts the samples outside the stack too); ``rejected_on_grid_pct``: the share of the samples landing
+    on the stack that were rejected."""
+
+    rejection_low: Any = None
+    rejection_high: Any = None
+    rejection_factor: int = 1
+    weights: list[tuple[str, float, tuple[float, ...] | None, tuple[float, ...] | None]] = field(default_factory=list)
+    noise: dict[str, float] = field(default_factory=dict)
+    used: list[str] = field(default_factory=list)
+    excluded: dict[str, str] = field(default_factory=dict)
+    frames: list[dict[str, Any]] = field(default_factory=list)
+    rejected_pct: float | None = None
+    rejected_on_grid_pct: float | None = None
+    grid: tuple[int, int] | None = None              # (width, height) of the stack
+    missing: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class StarFit:
+    """A catalogue star of the colour calibration. ``x``, ``y``: stack pixels. ``measured``: its colour in the camera,
+    (R, G, B) fractions of its flux (None: not measured). ``catalogue``: the CIE xy chromaticity of its Gaia XP
+    spectrum, which the fit aims at (``bp_rp``: its Gaia BP - RP). ``predicted``: the xy the fitted matrix gives
+    from the measured colour; ``residual`` their distance (None: not used). ``used``: in the matrix fit; ``reason``
+    why not, in plain words. ``camera_predicted``: the (R, G, B) fractions the fitted sensitivity curves predict
+    from the spectrum; ``outlier``: the channels whose curve fit left the star out (e.g. "B")."""
+
+    x: float
+    y: float
+    measured: tuple[float, float, float] | None
+    catalogue: tuple[float, float]
+    predicted: tuple[float, float] | None
+    residual: float | None
+    used: bool
+    reason: str = ""
+    source: int = 0
+    g: float = float("nan")
+    bp_rp: float | None = None
+    flux: tuple[float, float, float] | None = None
+    camera_predicted: tuple[float, float, float] | None = None
+    outlier: str = ""
+
+
+@dataclass
+class ColorFit:
+    """The colour calibration's fit: ``stars``, ``matrix`` (3, 3) camera -> linear sRGB as applied (M.npy), ``stats``
+    (stars, used, rejected {reason: count}, chromaticity_residual and residual_p90 of the used stars, response_source,
+    fit_residual, fit_agreement_pct, matrix_xyz: the fitted camera -> XYZ matrix up to its scale, aperture,
+    white_temp, computed: "stage" or "again" (measured again on the stack for an older result))."""
+
+    stars: list[StarFit] = field(default_factory=list)
+    matrix: Any = None
+    stats: dict[str, Any] = field(default_factory=dict)
+    missing: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------------------------- per-project cache
@@ -1709,6 +1856,407 @@ def spectral_response(p: Project2, wf: int | Workflow, which: str = "current") -
     z = np.load(_need(p, wf, "color", which) / "specresp.npz")
     return SpectralCurves(z["lam"], z["S"], z["cam_hii"] if "cam_hii" in z else None,
                           z["cam_oiii"] if "cam_oiii" in z else None)
+
+
+# ---------------------------------------------------------------------------------------------- diagnostics of the basics
+
+_TITLES = {"calibrate": "Calibration", "register": "Registration", "stack": "Stacking", "color": "Colour calibration"}
+_DIAG: dict[tuple, Any] = {}             # results computed again from a stack (color_fit of an older result)
+
+
+def _missing(what: str, stage: str) -> str:
+    return f"{what}: missing: recompute {_TITLES.get(stage, stage)} to get it"
+
+
+def _manifest_of(d: Path) -> dict:
+    try:
+        return json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _upstream(p: Project2, wf: int | Workflow, d: Path, up: str, which: str) -> Path | None:
+    """The done result of stage ``up`` that the result in ``d`` was made from (the upstream keys its manifest names,
+    followed up the chain); the workflow's result of ``up`` when the manifests do not say."""
+    store = _store(p)
+    if store is not None:
+        seen: set[tuple[str, str]] = set()
+        todo = [d]
+        while todo:
+            m = _manifest_of(todo.pop())
+            ups = dict(m.get("inputs") or {})
+            ups.update((m.get("key_parts") or {}).get("u") or {})
+            for s, k in ups.items():
+                if not isinstance(k, str) or (s, k) in seen:
+                    continue
+                seen.add((s, k))
+                try:
+                    dd = store.dir(s, k)
+                except ValueError:                       # a v1 run id, not a key
+                    continue
+                if not store.done(s, k):
+                    continue
+                if s == up:
+                    return dd
+                todo.append(dd)
+    return _dir(p, wf, up, which) or _dir(p, wf, up)
+
+
+def _json(f: Path) -> Any:
+    return json.loads(f.read_text(encoding="utf-8"))
+
+
+def _norm(f: str | Path) -> str:
+    return os.path.normcase(os.path.normpath(str(f)))
+
+
+def _num(v: Any) -> float | None:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if x == x else None
+
+
+def calibration_frames(p: Project2, session_id: int, wf: int | Workflow | None = None, which: str = "current", *,
+                       require_done: bool = True,
+                       progress: Callable[[float, str], None] | None = None) -> CalibrationReport:
+    """The calibration of one session: the masters of the calibration result (``wf``'s, else the current workflow's,
+    else any workflow's that is done; they are made from the frames of all the sessions), the measures and the quality
+    flag of each of the session's darks, flats, bias and flat darks (measured on demand on the raw files, kept in
+    memory: the first call reads every frame) and its lights with their calibrated frame. ``NotDone`` when no
+    calibration result is done (``require_done=False``: the frames are measured anyway, without masters). Worker
+    thread (it reads the raw frames)."""
+    import numpy as np
+
+    from .core import diagnostics as dg
+    from .io.frames import read_info
+    say = progress or (lambda f, m: None)
+    keys = _keys(p)
+    proj = keys.project
+    session = proj.session(session_id)
+    d: Path | None = None
+    if wf is not None:
+        d = _dir(p, wf, "calibrate", which)
+    else:
+        for wid in dict.fromkeys(([proj.current] if proj.current is not None else []) + [w.id for w in proj.workflows]):
+            d = _dir(p, wid, "calibrate", which)
+            if d is not None:
+                wf = wid
+                break
+    if d is None and require_done:
+        who = f"workflow {_wid(wf)}" if wf is not None else "any workflow"
+        raise NotDone(f"the calibrate result of {who} is not computed ({which})")
+    rep = CalibrationReport(session_id, stage_dir=str(d or ""))
+    inv_frames: dict[str, list[dict]] = {}
+    metrics: dict[str, Any] = {}
+    if d is not None:
+        inv = _upstream(p, wf, d, "inventory", which) if wf is not None else None
+        if inv is not None and (inv / "frames.json").is_file():
+            inv_frames = _json(inv / "frames.json")
+        metrics = _manifest_of(d).get("metrics") or {}
+        for kind, name in (("dark", "master_dark.npy"), ("flat", "master_flat.npy"), ("bias", "master_bias.npy"),
+                           ("flat_dark", "master_flat_dark.npy"), ("bad_pixels", "badmask.npy")):
+            if (d / name).is_file():
+                rep.masters[kind] = str(d / name)
+        union = proj.inputs()
+        for kind, frames_kind, what in (("bias", "bias", "master bias"), ("flat_dark", "flat_darks", "master flat dark")):
+            had = inv_frames.get(frames_kind) if inv_frames else getattr(union, frames_kind)
+            if had and kind not in rep.masters:
+                rep.missing.append(_missing(what, "calibrate"))
+    files = keys.scan.session_frames(proj, session)
+
+    # ---------------- the calibration frames, measured on the raws
+    jobs = [(kind, Path(f)) for kind in ("darks", "flats", "bias", "flat_darks") for f, _ in files[kind]]
+    firsts: dict[str, Any] = {}
+    for kind, f in jobs:
+        if kind not in firsts:
+            firsts[kind] = read_info(f)
+
+    def measure(job: tuple[str, Path]) -> dict[str, Any]:
+        kind, f = job
+        info = firsts[kind] if Path(firsts[kind].path) == f else read_info(f, like=firsts[kind])
+        st = dg.raw_stats(f, info.white)
+        t = info.temperature if info.temperature is not None else (
+            dg.raw_temperature(f) if info.kind == "raw" else None)
+        st.update(exposure=info.exposure, iso=info.iso, temperature=t, time=info.time, white=info.white,
+                  black=info.black)
+        return st
+
+    stats: list[dict[str, Any]] = []
+    if jobs:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(min(4, len(jobs))) as ex:
+            for i, st in enumerate(ex.map(measure, jobs)):
+                stats.append(st)
+                say((i + 1) / len(jobs), f"measuring the calibration frames {i + 1}/{len(jobs)}")
+    by_kind: dict[str, list[int]] = {}
+    for i, (kind, _) in enumerate(jobs):
+        by_kind.setdefault(kind, []).append(i)
+
+    def level(kind: str) -> float | None:
+        v = [stats[i]["median"] for i in by_kind.get(kind, [])]
+        return float(np.median(v)) if v else None
+
+    zero = level("flat_darks")
+    zero = zero if zero is not None else level("bias")
+    zero = zero if zero is not None else _num(metrics.get("dark_level"))
+    zero = zero if zero is not None else level("darks")
+    for i in by_kind.get("flats", []):
+        st = stats[i]
+        z = zero if zero is not None else float(st["black"])
+        st.update(zero=z, **dg.flat_measures(st, z, float(st["white"])))
+    for kind, idx in by_kind.items():
+        for i, (flag, reason, checks) in zip(idx, dg.flag_frames(kind, [stats[i] for i in idx])):
+            f = jobs[i][1]
+            rep.frames.append(CalFrame(kind, str(f), f.name, stats[i], flag, reason, checks))
+
+    # ---------------- the lights, as the calibration made them
+    lights_inv = inv_frames.get("lights") or []
+    light_exp: list[float] = []
+    if d is not None and lights_inv:
+        pos = {_norm(f["path"]): i for i, f in enumerate(lights_inv)}
+        fs = np.load(d / "frame_stats.npy") if (d / "frame_stats.npy").is_file() else None
+        cache = _json(d / "cache.json") if (d / "cache.json").is_file() else {}
+        cache_ok = bool(cache.get("path")) and Path(cache["path"]).is_file()
+        if cache and not cache_ok:
+            rep.notes.append("The calibrated light frames are no longer on the scratch disk: the next run that needs "
+                             "them makes them again.")
+        rows = []
+        for f, _ in files["lights"]:
+            i = pos.get(_norm(f))
+            if i is None:
+                continue
+            if lights_inv[i].get("exposure"):
+                light_exp.append(float(lights_inv[i]["exposure"]))
+            st: dict[str, Any] = {"time": lights_inv[i].get("time"), "exposure": lights_inv[i].get("exposure"),
+                                  "iso": lights_inv[i].get("iso"), "temperature": lights_inv[i].get("temperature")}
+            if fs is not None and i < len(fs):
+                st.update(median=float(np.median(fs[i, :, 0])), noise=float(np.median(fs[i, :, 1])),
+                          planes=[float(v) for v in fs[i, :, 0]], noise_planes=[float(v) for v in fs[i, :, 1]])
+            if cache:
+                st["shape"] = [int(cache["n"]), int(cache["height"]), int(cache["width"])]
+                st["cache_scale"] = cache.get("scale")
+            rows.append(CalFrame("lights", str(f), Path(f).name, st, calibrated=cache["path"] if cache_ok else "",
+                                 index=i))
+        for r, (flag, reason, checks) in zip(rows, dg.flag_frames("lights", [r.stats for r in rows])):
+            r.flag, r.reason, r.checks = flag, reason, checks
+        rep.frames += rows
+
+    # ---------------- notes
+    if len(proj.sessions) > 1 and d is not None:
+        rep.notes.append(f"The masters are made from the frames of all {len(proj.sessions)} sessions together (one "
+                         "master dark, one master flat).")
+    src = inv_frames or {k: getattr(proj.inputs(), k) for k in KINDS}
+    for kind, text in (("darks", "No darks: the master bias (or the camera's black level) stands for the master "
+                                 "dark; hot pixels are left to the bad pixel map."),
+                       ("flats", "No flats: vignetting and dust are not corrected.")):
+        if d is not None and not src.get(kind):
+            rep.notes.append(text)
+        elif src.get(kind) and not files[kind] and d is not None:
+            rep.notes.append(f"This session has no {kind} of its own: the master comes from the other sessions.")
+    dark_exp =[stats[i]["exposure"] for i in by_kind.get("darks", []) if stats[i].get("exposure")]
+    if light_exp and dark_exp:
+        le, de = float(np.median(light_exp)), float(np.median(dark_exp))
+        if abs(le - de) > 0.01 * max(le, de):
+            rep.notes.append(f"The darks are {de:g} s exposures and the lights {le:g} s: the master dark does not "
+                             "match the dark current of the lights.")
+    return rep
+
+
+def calibrated_light(frame: CalFrame) -> np.ndarray:
+    """The calibrated mosaic (H, W) float32 of a light of ``calibration_frames``, read from its cache: dark subtracted,
+    flat divided, in the cache's ADU (``stats["cache_scale"]``); NaN where a pixel is excluded (hot, cold, dust),
+    above 60000 where saturated. Read whole, the file closed after. ``NotDone`` when the cache is gone. Worker
+    thread."""
+    import numpy as np
+    if frame.kind != "lights" or not frame.calibrated or not Path(frame.calibrated).is_file() or frame.index is None:
+        raise NotDone(f"no calibrated frame of {frame.name} in the cache")
+    n, h, w = frame.stats["shape"]
+    mm = np.memmap(frame.calibrated, dtype=np.float16, mode="r", shape=(n, h, w))
+    try:
+        return np.asarray(mm[frame.index], np.float32)
+    finally:
+        del mm
+
+
+def registration_table(p: Project2, wf: int | Workflow, which: str = "current") -> RegTable:
+    """One row per light frame as registration aligned it: dx, dy (px), rotation (degrees), scale, stars matched and
+    detected, FWHM, roundness, whether it was aligned (``RegRow``). ``NotDone`` when Registration is not computed.
+    Worker thread (it reads reg.npz and the frame list)."""
+    import numpy as np
+
+    from .core import diagnostics as dg
+    d = _need(p, wf, "register", which)
+    with np.load(d / "reg.npz") as z:
+        reg = {k: z[k] for k in z.files}
+    n = len(reg["fwhm"])
+    inv = _upstream(p, wf, d, "inventory", which)
+    lights = (_json(inv / "frames.json").get("lights") or []) if inv is not None else []
+    im = (_manifest_of(inv).get("metrics") or {}) if inv is not None else {}
+    width, height = _num(im.get("width")), _num(im.get("height"))
+    if (width is None or height is None) and lights:
+        width, height = _num(lights[0].get("width")), _num(lights[0].get("height"))
+    rms = np.asarray(reg["rms"], float)
+    aligned = np.isfinite(rms)
+    notes = []
+    if width is None or height is None:
+        notes.append("The sensor size is unknown (no inventory result): no offsets, rotation or scale.")
+        dx = dy = rot = sc = np.full(n, np.nan)
+    else:
+        dx, dy, rot, sc = dg.frame_geometry(reg["coef"], width, height, aligned)
+    rnd = reg.get("roundness")
+    ref = int(reg["ref"]) if "ref" in reg else -1
+    rows = []
+    for i in range(n):
+        f = lights[i] if i < len(lights) else {}
+        r = None if rnd is None or not np.isfinite(rnd[i]) else float(rnd[i])
+        rows.append(RegRow(Path(f.get("path", f"frame {i + 1}")).name, f.get("time"), float(dx[i]), float(dy[i]),
+                           float(rot[i]), float(sc[i]), int(reg["nmatch"][i]) if aligned[i] else 0,
+                           int(reg["nstars"][i]) if "nstars" in reg else 0, float(reg["fwhm"][i]), r, bool(aligned[i]),
+                           i, f.get("path", ""), float(rms[i]), float(reg["transp"][i]), i == ref,
+                           "" if aligned[i] else "not aligned"))
+    missing = [] if "roundness" in reg else [_missing("roundness", "register")]
+    if "nstars" not in reg:
+        missing.append(_missing("stars detected", "register"))
+    return RegTable(rows, missing, notes)
+
+
+def stack_diagnostics(p: Project2, wf: int | Workflow, which: str = "current") -> StackDiag:
+    """The rejection maps (low and high), the weight and normalisation of each frame, the frames used and the noise of
+    each channel of a done stack (``StackDiag``). For a stack made before it kept them the maps and the normalisation
+    are missing, and the noise is measured on its half-stacks (the first call reads them). ``NotDone`` when Stacking
+    is not computed. Worker thread."""
+    import numpy as np
+
+    from .core import diagnostics as dg
+    from .stages.stack import DIAG, REJECTION
+    d = _need(p, wf, "stack", which)
+    m = _manifest_of(d)
+    sf = _json(d / "frames.json")
+    names = [Path(f["path"]).name for f in sf]
+    out = StackDiag(rejected_pct=_num((m.get("metrics") or {}).get("rejected_pct")))
+    out.used = [names[i] for i, f in enumerate(sf) if float(f.get("weight") or 0) > 0]
+    out.excluded = {names[i]: str(f.get("excluded") or "") for i, f in enumerate(sf)
+                    if float(f.get("weight") or 0) <= 0}
+    meta = _json(d / "drz_meta.json") if (d / "drz_meta.json").is_file() else {}
+    if meta.get("width") and meta.get("height"):
+        out.grid = (int(meta["width"]), int(meta["height"]))
+    diag = _json(d / DIAG) if (d / DIAG).is_file() else None
+    by_index: dict[int, dict] = {}
+    if diag is not None:
+        out.frames = list(diag.get("frames") or [])
+        by_index = {int(f["index"]): f for f in out.frames}
+        out.noise = {k: (float(v) if v is not None else float("nan")) for k, v in (diag.get("noise") or {}).items()}
+        on = sum(int(f.get("rejected_low", 0)) + int(f.get("rejected_high", 0)) for f in out.frames)
+        off = sum(int(f.get("rejected_outside", 0)) for f in out.frames)
+        sensor = meta.get("sensor") or []
+        if len(sensor) == 2 and out.frames:
+            out.rejected_on_grid_pct = 100.0 * on / (len(out.frames) * float(sensor[0]) * float(sensor[1]))
+        if off > on:
+            out.notes.append(f"{100.0 * off / (on + off):.0f} % of the rejected samples land outside the stack (the "
+                             "margins the drift uncovers, where nothing is predicted): the stage's 'rejected' figure "
+                             f"counts them; on the stack, {out.rejected_on_grid_pct or 0:.2f} % of the samples were "
+                             "rejected.")
+    else:
+        out.missing.append(_missing("normalisation of each frame", "stack"))
+        try:
+            hb = int((m.get("params") or {}).get("half_block") or 20)
+            out.noise = dg.stack_noise(d, [float(f.get("weight") or 0) for f in sf], hb)
+            out.notes.append("The noise was measured on the half-stacks: this stack was made before it kept it.")
+        except (OSError, ValueError):
+            out.missing.append(_missing("noise", "stack"))
+    for i, f in enumerate(sf):
+        fr = by_index.get(i)
+        out.weights.append((names[i], float(f.get("weight") or 0),
+                            tuple(float(v) for v in fr["offset"]) if fr else None,
+                            tuple(float(v) for v in fr["scale"]) if fr else None))
+    if (d / REJECTION).is_file():
+        with np.load(d / REJECTION) as z:
+            out.rejection_low, out.rejection_high = z["low"], z["high"]
+            out.rejection_factor = int(z["factor"])
+    else:
+        out.missing.append(_missing("rejection maps", "stack"))
+    return out
+
+
+def color_fit(p: Project2, wf: int | Workflow, which: str = "current") -> ColorFit:
+    """The photometric colour fit: every catalogue star with its measured, catalogue and predicted colour, residual
+    and whether the fit used it (and why not), the fitted matrix and the fit statistics (``ColorFit``). For a result
+    made before the colour stage kept its stars, they are measured again on its stack (the same code: the same stars;
+    the first call reads the stack). ``NotDone`` when Colour calibration is not computed. Worker thread."""
+    import numpy as np
+
+    from .core import diagnostics as dg
+    from .stages.color import STAR_REASONS, STARS, ColorParams
+    d = _need(p, wf, "color", which)
+    m = _manifest_of(d)
+    metrics, params = m.get("metrics") or {}, m.get("params") or {}
+    out = ColorFit(matrix=np.load(d / "M.npy") if (d / "M.npy").is_file() else None)
+    aperture = _num(params.get("aperture")) or ColorParams().aperture
+    white_temp = _num(params.get("white_temp")) or ColorParams().white_temp
+    source_kind = str(metrics.get("response_source") or "")
+    cat_dir = _upstream(p, wf, d, "catalogs", which)
+    computed = "stage"
+    if (d / STARS).is_file():
+        with np.load(d / STARS) as z:
+            t = {k: z[k] for k in z.files}
+        source_kind = str(t.get("source_kind", source_kind))
+    else:
+        stack_dir = _upstream(p, wf, d, "stack", which)
+        ok = (stack_dir is not None and (stack_dir / "drz_full.npy").is_file() and cat_dir is not None
+              and (cat_dir / "gaia_xp.npz").is_file() and (d / "specresp.npz").is_file() and out.matrix is not None)
+        if not ok:
+            out.missing.append(_missing("the fit of each star", "color"))
+            out.stats = {"response_source": source_kind, "aperture": aperture, "white_temp": white_temp}
+            return out
+        ck = (str(d), (d / "M.npy").stat().st_mtime_ns, str(stack_dir), str(cat_dir))
+        t = _DIAG.get(ck)
+        if t is None:
+            img = np.load(stack_dir / "drz_full.npy").astype(np.float32)
+            with np.load(cat_dir / "gaia_xp.npz") as z:
+                xp = {k: z[k] for k in z.files}
+            with np.load(d / "specresp.npz") as z:
+                S = z["S"]
+            t = dg.colour_fit_again(img, xp, aperture, white_temp, out.matrix, S, source_kind == "fit")
+            del img
+            _DIAG.clear()                                # one at a time: a stack is large
+            _DIAG[ck] = t
+        computed = "again"
+        out.notes.append("The stars were measured again on the stack: this colour result was made before the colour "
+                         "stage kept them.")
+    bprp = dg.bp_rp(cat_dir, t["source"])
+    flux, cam_pred = np.asarray(t["flux"], float), np.asarray(t["cam_pred"], float)
+    from_fit = source_kind == "fit"
+    for i in range(len(t["x"])):
+        fl = flux[i]
+        meas = tuple(float(v) for v in fl / fl.sum()) if np.isfinite(fl).all() and fl.sum() > 0 else None
+        cp = cam_pred[i]
+        used = bool(t["used"][i])
+        why = str(t["reason"][i])
+        out.stars.append(StarFit(
+            float(t["x"][i]), float(t["y"][i]), meas, (float(t["cat_xy"][i, 0]), float(t["cat_xy"][i, 1])),
+            (float(t["pred_xy"][i, 0]), float(t["pred_xy"][i, 1])) if used else None,
+            float(t["resid"][i]) if used else None, used, "" if used else STAR_REASONS.get(why, why),
+            int(t["source"][i]), float(t["g"][i]), float(bprp[i]) if np.isfinite(bprp[i]) else None,
+            tuple(float(v) for v in fl) if np.isfinite(fl).all() else None,
+            tuple(float(v) for v in cp / cp.sum()) if np.isfinite(cp).all() and cp.sum() > 0 else None,
+            ",".join(c for c, k in zip("RGB", t["resp_keep"][i]) if not k) if used and from_fit else ""))
+    res = np.array([s.residual for s in out.stars if s.used], float)
+    rejected: dict[str, int] = {}
+    for s in out.stars:
+        if not s.used:
+            rejected[s.reason] = rejected.get(s.reason, 0) + 1
+    out.stats = {"stars": len(out.stars), "used": int(len(res)), "rejected": rejected,
+                 "chromaticity_residual": float(np.median(res)) if len(res) else None,
+                 "residual_p90": float(np.percentile(res, 90)) if len(res) else None,
+                 "response_outliers": sum(1 for s in out.stars if s.outlier),
+                 "response_source": source_kind, "fit_residual": metrics.get("fit_residual"),
+                 "fit_agreement_pct": metrics.get("fit_agreement_pct"),
+                 "profile_agreement_pct": metrics.get("profile_agreement_pct"),
+                 "matrix_xyz": np.asarray(t["M_xyz"], float).tolist(), "aperture": aperture,
+                 "white_temp": white_temp, "computed": computed}
+    return out
 
 
 # ---------------------------------------------------------------------------------------------- describe
