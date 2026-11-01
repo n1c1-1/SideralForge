@@ -629,6 +629,28 @@ Newest entries at the bottom. Times are local.
       V2 drizzle, V2-auto, all but one;
     - then Base for the best configuration by a written criterion; the BENCH.md tables.
     - Expected: Express about 2–3 h, Base about 1 h, so early morning.
+  - **Phase 3 done (about 00:20)**; BENCH.md rewritten:
+    - 19 Express configurations on 6 cases; Base for OLD, S1 and V2.
+    - **Recommended: S1** (Moffat FWHM + coverage rule): 3 small regressions out of 65 cells, 7 gains, beats Siril in
+      17 cells. At Base: identical on heart and seestar (1.5× kept), slightly better on iris and m51, **worse on
+      rosette** (at 1×: −0.08 mag, V−R colour 0.05 → 0.14, magenta sky).
+    - Hubble rejection: rejects 0.004–0.22 %, no gain, more dots on m51 and rosette.
+    - Noise weighting: neutral alone, −0.14 mag on iris with S1.
+    - SOTA selection: drops frames on roundness without Moffat, up to −0.22 mag; the transparency filter never fired.
+    - Local normalisation and per-block colour alignment: neutral.
+    - **Classic: Siril's noise within 0.02 mag and +0.11–0.17 mag on 4 cases, but colours damaged (heart orange).**
+  - Engine bugs reported:
+    1. a σ in a log line crashed a stage under the cp1252 console: **fixed by the orchestrator** (journal `_echo`);
+    2. Classic winsorized: a CUDA device-side assert (m8, 14 frames) kills the worker's context;
+    3. the coverage rule judges the frames before selection: rosette 19 % → drizzle, while its 23 kept frames vary by
+       27 % → Classic should be advised;
+    4. Classic followed by our colour stage gives heart an orange cast.
+    Not fixed tonight (outside the plan); for the user's review.
+- 00:30 **Phase 4 dispatched (opus, in parallel):**
+  - 4a GUI fixes: the track (Lissajous) visible, compares aligned on a common grid, M31 Output against gradient
+    removed, on a COPY of M31;
+  - 4b Post tools: a PixInsight/Siril inventory (POST_TOOLS.md), a real Curves tool with the pro presets, and the
+    missing filters that fit, tested.
 
 ### Queue for the end of P8 (engine unfrozen)
 1. Apply patches 1–3, run the tests and the 4-dataset non-regression, recompute only render_simple (Classic and Raw
