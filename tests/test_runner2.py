@@ -28,6 +28,10 @@ from astro_gpu.core.stage import Stage, StageError
 from astro_gpu.core.store import KeyRules, Keys, Store
 from astro_gpu.core.workflow import TEMPLATES, Chains
 
+# tests that pin a worker to a GPU; skipped when the suite runs on the CPU (CUDA_VISIBLE_DEVICES="", during P8)
+needs_gpu = pytest.mark.skipif(os.environ.get("CUDA_VISIBLE_DEVICES") == "",
+                               reason="needs a visible GPU (CUDA_VISIBLE_DEVICES is empty)")
+
 TESTS = Path(__file__).parent
 RUNS: Counter = Counter()
 SEEN: list[str] = []                     # the folder each job wrote into
@@ -341,6 +345,7 @@ def test_stop_interrupts_and_the_next_run_resumes_from_the_tmp_checkpoint(proj):
     assert out == {"steps": 10, "resumed_from": 5} and not tmp.exists()
 
 
+@needs_gpu
 def test_the_plan_is_frozen_with_the_whole_definition(proj):
     plan = plan_all(proj)
     info = runner2.prepare_run(proj, plan, "cuda:1")
@@ -469,6 +474,7 @@ def test_run_lock_is_created_with_o_excl_and_a_stale_lock_is_replaced(proj, monk
 
 # ---------------------------------------------------------------------------------------------- the worker process
 
+@needs_gpu
 def test_worker_environment_and_creation_flags(proj, monkeypatch):
     got = []
 
@@ -503,6 +509,7 @@ def test_worker_environment_and_creation_flags(proj, monkeypatch):
         runner2.device_env("gpu2")
 
 
+@needs_gpu
 def test_a_detached_worker_survives_its_launcher_and_is_followed_through_events(proj, state):
     import psutil
     proj.workflow(CLASSIC).params["c"] = {"sleep": 3.0}
