@@ -125,3 +125,128 @@ capteur, pas des défauts d'une pose ; le drizzle de Siril en garde aussi. C'est
 *Mesures et scripts : `F:/astro_essais/bench/_drizzle_gap/` (piles de Siril refaites, mesures par cas, simulation).
 Code de Siril lu : branche 1.4 et étiquettes 1.4.0-beta3 et beta4 sur gitlab.com/free-astro/siril (ChangeLog, merge
 request !882).*
+
+## Iris : d'où vient l'écart
+
+*La question : sur Iris, le signal/bruit de la cible est 9 % sous Siril pour notre empilement classique, 16 % sous le
+drizzle de Siril pour notre drizzle. Où, dans la chaîne, cela se perd-il ? Mêmes 30 poses, étape par étape, puis la
+mesure elle-même.*
+
+**Mots employés.** *Boîte* : un carré de 4 × 4 pixels ; le banc mesure la cible et son bruit sur la moyenne de chaque
+boîte. *Cible* : les boîtes les plus claires de la nébuleuse ; *ciel voisin* : une bande de ciel autour de la cible.
+*Bruit* : le grain aléatoire de l'image ; deux piles faites avec les mêmes poses ont en partie le même grain.
+*Corrélation* : à quel point le grain de deux images se ressemble boîte par boîte (1 = le même, 0 = sans rapport).
+
+### En bref
+
+- **Notre chaîne n'a pas de défaut sur Iris.** Calibration, alignement, poids des poses, rejet, bruit du ciel : tout
+  est égal à Siril, mesuré étape par étape. Rien n'a été changé dans le moteur.
+- **L'écart vient de la mesure du banc.** La cible et son ciel voisin sont choisis boîte par boîte *sur l'image de
+  Siril*. Le choix retient donc aussi les boîtes où le grain de Siril tombe bien (un ciel un peu plus sombre par
+  hasard, une nébuleuse un peu plus claire par hasard) : le signal/bruit de Siril en est gonflé. Nos boîtes ne tombent
+  pas au même endroit que celles de Siril, notre grain n'y est presque pas le même (corrélation 0,13) : nous n'en
+  profitons pas. Le drizzle de Siril, lui, est sur la même grille que son classique (corrélation 0,98) : il en profite.
+- **Mesuré sans ce biais, notre classique est à égalité avec Siril sur Iris** (−1 % à +1 %), et notre drizzle est 4 à
+  6 % sous celui de Siril (au lieu de 16 %), comme sur les autres cas.
+- **Pourquoi Iris surtout** : c'est la cible la plus faible du banc (signal/bruit 3 par boîte) dans un ciel plein de
+  poussière : le choix « boîte par boîte » y est fait surtout de hasard. Sur la Rosette et M51 le biais vaut 2 à 7 %,
+  sur Heart, M8 et le Seestar il ne se voit pas.
+- **Une petite différence réelle reste** : le vert d'Iris, 6 à 8 % sous Siril (signal −3 %, bruit +4 %). Sa cause n'est
+  pas trouvée ; ce n'est ni la calibration ni le rejet.
+
+### Étape par étape, sur les mêmes poses
+
+| Étape | Nous | Siril | Verdict |
+|---|---|---|---|
+| Dark maître (niveau, écart pixel à pixel) | 508,0 ADU | 509,5 ADU ; écart typique entre les deux : 1,25 ADU, pixels chauds corrélés à 0,9997 | égal |
+| Flat maître (forme, par couleur) | flat moins le niveau du dark (508) | flat moins l'offset synthétique 512 | même forme à 0,25 % près partout (coins : 1,002) |
+| Pose calibrée (pose 1, valeurs brutes de chaque couleur) | | | corrélation 0,9997 ; même bruit (rouge 17,86 contre 17,91 ADU, vert 20,1 contre 20,1) |
+| Pixels chauds | 2,4 % écartés puis remplis par leurs voisins | 0,7 % corrigés | aucun effet mesurable sur la cible |
+| Alignement | écart résiduel 0,25 pixel | — | étoiles aussi fines : 6,08″ (notre classique sans équilibrage) contre 6,12″ |
+| Poids des poses | 99,1 % du meilleur possible | 98,6 % (sa normalisation agit comme un poids) | égal ; des poids égaux donneraient 92 % (les poses de l'aube) |
+| Rejet | 1,5 % des valeurs, autant dans la cible (1,48 %) que dans le ciel voisin (1,50 %) | 0,9 % | le rejet ne mange pas la nébuleuse |
+| Bruit du ciel (boîtes de 4 px, rouge / vert / bleu) | 15,75 / 11,36 / 21,47 | 15,72 / 11,35 / 21,49 | égal |
+
+(« Meilleur possible » : chaque pose pesée par l'inverse de son bruit, à signal égal, la règle publiée. Bruit et
+signal sont comptés dans la même unité pour les deux piles : le flux des mêmes étoiles Gaia. La profondeur du banc n'est
+pas employée ici : sa mesure est en cours de correction par ailleurs.)
+
+Tout est égal jusqu'à la pile ; pourtant le banc trouve un signal de la cible 12 à 17 % plus bas chez nous à bruit
+égal. Il ne se retrouve pas avec une autre région : sur un disque de 300″ autour du cœur d'Iris contre un anneau de ciel
+à 700-1 100″, notre signal vaut celui de Siril (−3 % en médiane, +3 % en moyenne). C'est donc la façon de choisir la
+région qui fait l'écart.
+
+### La preuve : changer qui choisit la cible
+
+Même mesure que le banc (cible : les 5 % de boîtes les plus claires d'une carte lissée ; ciel : la moitié la plus sombre
+d'une bande autour, boîte par boîte ; bruit : l'écart de chaque boîte à ses voisines), seul change l'image sur
+laquelle on choisit. Rapport de signal/bruit à Siril classique (1 = égal) :
+
+| Iris, choix fait sur… | Notre classique | Notre drizzle | Siril drizzle |
+|---|---:|---:|---:|
+| l'image de Siril (le banc) | 0,91 | 0,81 | 0,96 |
+| notre pile | **1,13** | 1,04 | 0,98 |
+| la moyenne des deux piles | 1,01 | 0,93 | 0,97 |
+| la pile Base de Siril (100 autres poses, 4 en commun) | 0,99 | 0,89 | 0,94 |
+| choix du banc, mais tout le ciel de la bande (sans la moitié sombre) | 1,02 | 0,90 | 0,96 |
+
+Qui choisit gagne : choisie sur notre pile, la même mesure nous met 13 % devant Siril. Avec un choix qui ne dépend
+d'aucune des deux (la moyenne, ou d'autres poses), notre classique est à égalité. Couleur par couleur (choix sur la
+moyenne) : rouge 1,02, vert 0,92, bleu 1,03 ; sur la pile Base : 1,02, 0,94, 1,01.
+
+Le drizzle face au drizzle de Siril sur Iris : 0,81 / 0,96 = −15 % au banc, mais 0,93 / 0,97 = −4 % (choix sur la
+moyenne) et 0,89 / 0,94 = −6 % (choix sur Base). Le reste est celui des autres cas, expliqué plus haut (moyenne sans
+poids de la beta3 de Siril).
+
+### Les autres cas
+
+Rapport à Siril classique, au banc puis avec un choix neutre (sur la moyenne des deux piles, après retrait d'un
+polynôme de degré 2 ; sur la pile Base quand la moyenne ne convient pas) :
+
+| Cas (signal/bruit de Siril) | Notre classique : banc → neutre | Notre drizzle : banc → neutre | Siril drizzle : banc → neutre |
+|---|---|---|---|
+| Heart (4,6) | 1,14 → 1,11 (Base) | 1,01 → 1,01 (Base) | 1,05 → 1,04 |
+| Iris (3,1) | 0,91 → 1,01 | 0,81 → 0,93 | 0,96 → 0,97 |
+| M51 (3,7) | 1,00 → 1,07 | 0,90 → 0,97 | 0,95 → 0,97 |
+| M8 (51) | 1,04 → 1,04 | 0,94 → 0,94 | 0,98 → 0,98 |
+| Seestar (25) | 1,03 → 1,04 | 1,04 → 1,04 | 1,03 → 1,03 |
+| Rosette (5,0) | 1,12 → 1,17 | 0,98 → 1,00 | 0,95 → 0,96 |
+
+- Le biais se voit là où la cible est faible et le ciel voisin fait surtout de grain : Iris (10 à 12 %), M51 (6 à 7 %),
+  la Rosette (2 à 4 %). Sur M8 et le Seestar (cibles brillantes) il est nul ; sur Heart, la nébuleuse et son ciel sont
+  assez marqués pour que le choix ne dépende presque pas du grain.
+- Il ne touche que nos piles : celles de Siril partagent la grille, donc le grain, de l'image qui choisit.
+- Notre classique est donc devant Siril classique sur cinq cas (+4 à +17 %) et à égalité sur Iris.
+- Deux choix ne conviennent pas partout : sur Heart et M51 les piles brutes gardent un dégradé que le polynôme n'ôte pas
+  assez (le choix « sur notre pile » y désigne le dégradé, pas la nébuleuse) ; sur M51 la pile Base désigne une autre
+  région (29 000 boîtes au lieu de 42 000) et donne 0,86, chiffre que je n'explique pas.
+
+### Ce qui a été corrigé, et ce qui est proposé
+
+**Rien dans le moteur** : aucune étape de notre chaîne n'est en défaut face à Siril sur Iris.
+
+**Le banc** (outil `tools/bench/measure.py`, fonction du signal/bruit de la cible ; non modifié ici, un autre agent
+édite ce fichier) : le défaut est de choisir les régions sur l'une des images mesurées, ce que les méthodes publiées
+évitent :
+1. **Choisir sur une image indépendante**, puis mesurer toutes les piles sur les mêmes régions : c'est le mode « deux
+   images » de SExtractor (Bertin & Arnouts 1996, A&AS 117, 393 : détection sur une image, mesure sur une autre), et
+   la règle contre l'« analyse circulaire » (Kriegeskorte et al. 2009, Nature Neuroscience 12, 535 : une région choisie
+   sur des données ne doit pas servir à mesurer ces mêmes données). Ici : la pile Base de Siril (autres poses), sauf
+   pour M8 (pas d'autres poses).
+2. **Choisir sur la moyenne de toutes les piles comparées**, dégradé retiré : chacune profite autant du choix.
+3. **Au minimum, prendre le ciel sur toute la bande** (pas la moitié la plus sombre boîte par boîte) : sur Iris notre
+   classique passe de −9 % à +2 %, le reste du biais tient au choix de la cible.
+Je conseille 1 avec 2 en secours (M8, ou quand l'image indépendante désigne une autre région), puis de refaire les
+lignes « signal sur bruit de la cible » de BENCH.md et de ce document.
+
+**À noter aussi** : l'outil `diffmap.py` de l'analyse du drizzle (`_drizzle_gap`) plaçait notre pile 7,5 pixels à côté
+de celle de Siril (l'agrandissement d'une grille de 16 pixels par `cv2.resize` décale d'une demi-maille) : les
+« dipôles » autour du cœur d'Iris sur ses cartes de différence viennent de là, pas des images.
+
+**À suivre (petit)** : le vert d'Iris, 6 à 8 % sous Siril une fois le biais retiré (signal −3 %, bruit dans la cible
++4 %, alors que le bruit du ciel vert est égal). Le vert est aussi notre couleur la moins bonne face à Siril sur le
+Seestar (0,95 contre 1,03 à 1,05 en rouge et bleu) et la Rosette (1,07 contre 1,17), pas sur M8. Il touche autant notre
+classique avec et sans l'équilibrage avant dématriçage (0,92 et 0,94) : ce n'est pas l'équilibrage.
+
+*Mesures et scripts : `F:/astro_essais/bench/_iris_gap/` (README.txt ; la mesure clé : `scripts/pairs2.py`, résultats
+`measures/p2_<cas>_<pile>.json`, résumé `scripts/table.py`).*
