@@ -698,3 +698,19 @@ Newest entries at the bottom. Times are local.
     import of a v1 copy.
 - Wave 6 (client views) dispatched on sonnet, each on its own copy of the test project (heart_a7s_p10/p11/p12): P10
   Inspect and Frames, P11 Run, P12 Post and Export. P8 waits for P7's verdict.
+
+## 2026-11-02, 09:10 — Monday plan launched (PILOT.md §3c)
+
+The user read the crossed bench, chose: both methods in the GUI (drizzle default, classic stack), a method advice by
+type of series (discreet "Recommended" frame + "i" tooltip), keep the Moffat measurement, drop the four changes
+without effect, selection at state-of-the-art values (keep almost all, min weight 0.05), fix the classic stack's two
+defects, measure Siril's own drizzle. The user cannot connect at 13:00: a French note will be left; one review at
+19:00, nothing heavy before it. Four agents launched at 09:05:
+- GUI, two methods + advice + Inspect > Stacking (opus; client files; rosette/seestar/iris bench copies), ~12:30;
+- Siril drizzle on the 6 cases, Express, measured with the bench (sonnet; tools/bench/siril, BENCH.md), ~11:30;
+- engine: drop the four changes, new defaults, selection, method advice on kept frames (opus; stack.py, coverage.py,
+  frame_weights.py, register.py, engine.json), ~13:00;
+- classic stack defects: CUDA assert in winsorized rejection, orange cast after the colour stage (opus;
+  rejection_classic, stack_classic, debayer, resample, colour stage; heart/m8 bench copies, GPU 0), ~13:00.
+Agents do not commit; the orchestrator checks and commits. Afternoon: PixInsight-style rejection for drizzle hot
+pixels (after the engine agents finish), Express bench 17:00 on GPU 0, French review pack 18:30.

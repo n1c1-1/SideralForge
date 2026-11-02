@@ -324,6 +324,9 @@ def test_each_block_shows_its_real_picture(win):
                 assert [x for x in t.findChildren(QTableWidget) if x.isVisible()][0].rowCount() == 40
             elif kind == "rejection":                                  # an older result: said plainly
                 assert t.view is not None or any("Rejection maps" in x for x in texts_of(t))
+            elif kind == "coverage":                                   # the drizzle's red, blue, green maps
+                assert t.view is not None and t.view.wait(120), (step, key)
+                assert {"Red", "Blue", "Green"} <= set(texts_of(t)), texts_of(t)
         win.tune.tab_of.pop(step, None)
 
 
@@ -1192,6 +1195,47 @@ def test_the_tables_and_the_charts_of_the_blocks(qapp):
              api.StarFit(30.0, 40.0, (0.5, 0.3, 0.2), (0.40, 0.35), None, None, False, "saturated", bp_rp=1.9)]
     cf = ColorFitChart(api.ColorFit(stars=stars))
     assert any(tr.name == "rejected" for tr in cf.traces) and cf.x_title.startswith("Catalogue colour")
+
+
+def test_the_stacking_tabs_say_the_frames_left_out_the_rejection_rate_and_the_coverage(qapp):
+    """Inspect > Stacking: each frame left out with the engine's reason (translated), the rejected pixels next to
+    Siril's 0.1-0.5 %, the drizzle's coverage variation per colour against DrizzlePac's 20 % (none for Classic)."""
+    from astro_gpu.client import i18n
+    from astro_gpu.client.tune import coverage_text, rejection_rate_text, weight_rows
+    rows = [api.FrameRow(i, f"p{i}", f"f{i}.ARW", 1, "2026-08-17T00:00:00", 3.0, 1.0, 0.4, 0.5, "", False)
+            for i in range(2)]
+    why = "stars {sigma:.1f} σ larger than the night's median ({value:.1f} px for {median:.1f} px): wind, focus or seeing?"
+
+    class Bundle:
+        frames = api.FrameTable(rows, 2, 0.6, 2.0, "stack")
+        diag = api.StackDiag(weights=[("f0.ARW", 0.0, None, None), ("f1.ARW", 0.7, None, None)],
+                             excluded={"f0.ARW": "stars 4.0 σ larger ..."},
+                             exclusions={"f0.ARW": [{"code": "fwhm", "template": why,
+                                                     "args": {"sigma": 3.99, "value": 3.04, "median": 1.87}}]},
+                             rejection={"rejected_pct": 0.83, "reference_pct": [0.1, 0.5]},
+                             coverage={"variation": {"R": 0.26, "G": 0.08, "B": 0.19}, "estimate": {"limit": 0.2}})
+    wr = weight_rows(Bundle())
+    assert wr[0]["why"] == "stars 4.0 σ larger than the night's median (3.0 px for 1.9 px): wind, focus or seeing?"
+    assert wr[1]["why"] == ""
+    t = rejection_rate_text(Bundle.diag)
+    assert "Rejected pixels: 0.83 %" in t and "Siril's usual range: 0.1 to 0.5 %" in t and "above it" in t
+    assert "#e6a23c" in t.lower()                                       # amber: outside Siril's range
+    c = coverage_text(Bundle.diag, True)
+    assert "red" in c and "26 %" in c and "blue" in c and "under 20 % (DrizzlePac)" in c
+    assert coverage_text(Bundle.diag, False) == ""                      # Classic: the colours are filled alike
+    ok = api.StackDiag(rejection={"rejected_pct": 0.3, "classic": "winsorized",
+                                  "reason_template": {"template": "{n} frames: winsorized sigma clipping", "args": {"n": 9}}})
+    t = rejection_rate_text(ok)
+    assert "#5fbf7f" in t and "Rejection: Winsorized sigma clipping" in t
+    appmod.apply_language("fr")
+    try:
+        assert weight_rows(Bundle())[0]["why"].startswith("étoiles plus grosses de 4,0 σ que la médiane")
+        assert "Pixels rejetés : 0,83 %" in rejection_rate_text(Bundle.diag)
+        assert "rouge" in coverage_text(Bundle.diag, True)
+        left = {x for x in i18n.missing() if "Rejected" in x or "Coverage" in x or "Siril" in x}
+        assert not left, left
+    finally:
+        appmod.apply_language("en")
 
 
 # ---------------------------------------------------------------------------------------------- the French, the look

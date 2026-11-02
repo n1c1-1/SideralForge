@@ -32,14 +32,15 @@ AS_TODAY = "as the engine does today"
 NO_ZONE = "none"                    # value of a "zone" setting with nothing drawn
 
 
-def E(stage, name, level="normal", label=None, help=None, unit=None):          # noqa: A002 - the catalogue's words
-    return dict(kind="engine", stage=stage, name=name, level=level, label=label, help=help, unit=unit)
+def E(stage, name, level="normal", label=None, help=None, unit=None, method=None):   # noqa: A002 - the catalogue's words
+    """An engine setting; ``method``: the stacking method it belongs to (shown only with it), None for every method."""
+    return dict(kind="engine", stage=stage, name=name, level=level, label=label, help=help, unit=unit, method=method)
 
 
 def N(stage, key, label, typ, default, help, level="normal", choices=None, lo=None, hi=None, step=None,   # noqa: A002
-      unit="", reason=""):
+      unit="", reason="", method=None):
     return dict(kind="new", stage=stage, name="new_" + key, level=level, label=label, help=help, type=typ,
-                default=default, choices=choices, min=lo, max=hi, step=step, unit=unit, reason=reason)
+                default=default, choices=choices, min=lo, max=hi, step=step, unit=unit, reason=reason, method=method)
 
 
 CATALOG = {
@@ -129,44 +130,67 @@ CATALOG = {
               reason=AS_TODAY),
         ]),
     ],
+    # the method itself is chosen on the cards above the settings (panel.Panel.stack_methods); each method shows only
+    # its own settings (``method=``) and the ones both use
     "empilement": [
-        ("Resolution", [
-            E("stack", "scale"),
-            E("stack", "pixfrac", help="The size of the drop each raw pixel deposits on the fine grid."),
+        ("Drizzle", [
+            E("stack", "scale", method="drizzle"),
+            E("stack", "pixfrac", help="The size of the drop each raw pixel deposits on the fine grid.",
+              method="drizzle"),
+            N("stack", "drizzle_kernel", "Drizzle kernel", "choice", "Square", "The shape each input pixel drops on "
+              "the output grid.", choices=["Square", "Point", "Turbo", "Gaussian", "Lanczos-3"], level="expert",
+              method="drizzle"),
+            E("stack", "scale_rule", "expert", method="drizzle"),
+        ]),
+        ("Classic stack", [
+            E("stack", "classic_debayer", label="Debayering",
+              help="How the missing colours of each pixel are interpolated: RCD, as Siril does, or bilinear.",
+              method="classic"),
+            E("stack", "classic_interpolation", label="Interpolation",
+              help="How each frame is resampled onto the reference frame: Lanczos-4, as Siril does, or bilinear.",
+              method="classic"),
+            E("stack", "classic_clamping", label="Clamping",
+              help="Holds back the dark rings Lanczos-4 draws around bright stars: Siril's clamping, PixInsight's, or "
+                   "none.", method="classic"),
+            E("stack", "classic_rejection", label="Rejection",
+              help="How outlier pixels (satellites, planes, cosmic rays) are rejected. Automatic: chosen by the "
+                   "number of frames, as PixInsight does (percentile under 6 frames, winsorized sigma clipping from 6 "
+                   "to 15, linear fit clipping from 16).", method="classic"),
         ]),
         ("Pixel rejection", [
             N("stack", "rejection", "Rejection method", "choice", "Automatic: around the median",
               "How outlier pixels (satellites, planes, cosmic rays) are removed.",
               choices=["Automatic: around the median", "Sigma clipping", "Winsorized sigma clipping",
-                       "Linear fit clipping", "Generalized ESD"], reason=AS_TODAY),
+                       "Linear fit clipping", "Generalized ESD"], reason=AS_TODAY, method="drizzle"),
             E("stack", "kappa", help="A pixel farther from the median than this threshold (in noise sigmas) is "
-                                     "rejected."),
+                                     "rejected.", method="drizzle"),
             N("stack", "split_thresholds", "Separate low and high thresholds", "bool", False,
               "By default the same threshold applies to too bright and too dark pixels. Separate, bright trails can "
-              "be rejected harder."),
+              "be rejected harder.", method="drizzle"),
             E("stack", "core_tolerance", "expert", help="Margin left at the core of bright stars, which varies from "
-                                                        "frame to frame with the seeing."),
+                                                        "frame to frame with the seeing.", method="drizzle"),
+        ]),
+        ("Frames", [
+            E("stack", "selection", "expert"),
+            E("stack", "selection_transparency", "expert"),
+            E("stack", "weighting", "expert"),
         ]),
         ("Normalization", [
             N("stack", "normalization", "Frame normalization", "choice", "Automatic: offset and scale",
               "Brings all the frames to the same background level and scale before combining them, despite a "
               "changing Moon or haze.",
               choices=["Automatic: offset and scale", "Offset only", "None"], reason=AS_TODAY),
+            E("stack", "normalisation", "expert"),
         ]),
         ("Sensor", [
-            E("stack", "gain", "expert", help="Electrons per digital unit: used by the noise model."),
-            E("stack", "read_noise", "expert", help="Read noise of the sensor, in ADU."),
+            E("stack", "gain", "expert", help="Electrons per digital unit: used by the noise model.",
+              method="drizzle"),
+            E("stack", "read_noise", "expert", help="Read noise of the sensor, in ADU.", method="drizzle"),
         ]),
         ("Fixed sensor pattern", [
             E("stack", "pattern_removal", "expert", help="Removes a fixed pattern estimated on the frames (bands, "
                                                          "streaks)."),
             E("stack", "pattern_frames", "expert", help="Number of frames used to estimate this pattern."),
-        ]),
-        ("Advanced stacking", [
-            N("stack", "local_norm", "Local normalization", "bool", False, "Matches the background of each frame "
-              "locally before stacking: gradients that move from night to night are evened out."),
-            N("stack", "drizzle_kernel", "Drizzle kernel", "choice", "Square", "The shape each input pixel drops on "
-              "the output grid.", choices=["Square", "Point", "Turbo", "Gaussian", "Lanczos-3"], level="expert"),
         ]),
     ],
     "demi_piles": [
@@ -401,7 +425,22 @@ CATALOG = {
 }
 # the engine's settings that no panel shows: the project or the options set them, or a block control owns them
 HIDDEN = {("stack", "exclude"), ("stack", "min_transparency"), ("stack", "max_fwhm_ratio"), ("star_net", "enabled"),
-          ("render_simple", "stretch")}
+          ("render_simple", "stretch"), ("stack", "method")}
+#: the stacking method: chosen on the cards of the Stacking panel, never as a row
+STACK_METHOD = ("stack", "method")
+#: the choices of the stacking-v2 switches withdrawn from the engine (2026-11-02: no measurable effect on the bench):
+#: never offered, whether the engine still lists them or not; a setting left with one choice is not shown
+WITHDRAWN = {("stack", "rejection"): {"hubble"}, ("stack", "weighting"): {"noise"},
+             ("stack", "normalisation"): {"local"}, ("register", "channel_align"): {"per_block"}}
+#: the stacking methods' names and what each does, by the engine's key (an engine method missing here shows its
+#: engine label): the list itself and the advice are the engine's (``stack_methods``, ``method_advice``)
+METHOD_TEXTS = {
+    "drizzle": ("Drizzle", "Each raw pixel is dropped at its exact place on the output grid: no debayering, no "
+                           "interpolation. Best with many dithered frames."),
+    "classic": ("Classic stack", "Each frame is resampled onto the reference (Lanczos-4), colour frames debayered "
+                                 "first (RCD), then combined with a rejection chosen by the number of frames, as Siril "
+                                 "does. Best with few or barely dithered frames."),
+}
 OUTPUT_STAGES = ("render_prep", "render_prep_learned", "render_simple")
 # the 32 usage tips of the engine, as the mockup wrote them (the engine's own tips win when it has one)
 TIPS = {
@@ -528,7 +567,11 @@ def resolve(s, p, step: str, it: dict, stage: str | None = None) -> dict | None:
         if info is None or info.level == "internal" or info.type == "list":
             return None
         typ = TYPES.get(info.type, "str")
-        choices = [(v, texts.choice_label(v, language())) for v in info.choices] if info.choices else None
+        gone = WITHDRAWN.get((stage, it["name"]), ())
+        choices = [(v, texts.choice_label(v, language())) for v in info.choices if v not in gone] \
+            if info.choices else None
+        if choices is not None and gone and len(choices) < 2:
+            return None                                   # a withdrawn switch: nothing left to choose
         if choices:
             typ = "choice"
         lo = info.ge if info.ge is not None else info.gt
@@ -584,14 +627,63 @@ def loading(s, p, step: str) -> bool:
     return any(s.params(p, st) is None for st in needed_stages(s, p, step))
 
 
+def stack_methods(s, p) -> list[str]:
+    """The stacking methods the engine offers this workflow (the choices of its ``method`` setting), [] while the
+    worker has not described the stage or when the engine has no choice of method."""
+    info = s.param_info(p, *STACK_METHOD)
+    return list(info.choices or []) if info is not None else []
+
+
+def stack_method(s, p) -> str | None:
+    """The stacking method of the workflow (the effective value), None when the engine has no choice of method."""
+    info = s.param_info(p, *STACK_METHOD)
+    return info.value if info is not None and info.choices else None
+
+
+def method_advice(s, p) -> tuple[str, str] | None:
+    """The engine's advice on the stacking method: (method, its reason in the language shown), or None when the engine
+    gives none (``ParamInfo.advice`` of ``method``: an automatic value the engine never applies). The advice never
+    changes the method."""
+    info = s.param_info(p, *STACK_METHOD)
+    adv = getattr(info, "advice", None)
+    if adv is None or adv not in (info.choices or []):
+        return None
+    why = getattr(info, "advice_reason", "") or ""
+    return adv, texts.format_reason(why, getattr(info, "advice_args", None), language()) if why else ""
+
+
+def method_text(key: str) -> tuple[str, str]:
+    """(name, what it does) of a stacking method, translated."""
+    name, what = METHOD_TEXTS.get(key, (texts.choice_label(key, "en"), ""))
+    return _(name), _(what) if what else ""
+
+
+def setting_method(r: dict) -> str | None:
+    """The stacking method a setting belongs to: the catalogue's ``method``, else an engine setting of the stack named
+    after a method ("classic_debayer"); None: every method."""
+    if r.get("method"):
+        return r["method"]
+    if r.get("stage") == "stack" and "_" in r.get("name", ""):
+        head = r["name"].split("_", 1)[0]
+        return head if head in METHOD_TEXTS else None
+    return None
+
+
 def step_settings(s, p, step: str):
     """[(group title, [resolved settings])] for one block of the workflow; the group titles are translated. The
-    ◇ settings come in Spec mode only."""
+    ◇ settings come in Spec mode only. Only the settings of the workflow's stacking method are listed, with the ones
+    every method uses."""
     spec = prefs.spec()
+    cur = stack_method(s, p) if step == "empilement" else None
+
+    def mine(r):
+        m = setting_method(r)
+        return m is None or cur is None or m == cur
+
     out = []
     for title, items in CATALOG.get(catalog_key(p, step), []):
         rs = [r for r in (resolve(s, p, step, it) for it in items if it["kind"] == "engine" or spec)
-              if r is not None]
+              if r is not None and mine(r)]
         if rs:
             out.append((_(title), rs))
     # the engine's settings the catalogue does not place: in "Other settings", by level
@@ -602,7 +694,7 @@ def step_settings(s, p, step: str):
                 continue
             it = E(st, info.name, ENGINE_LEVEL.get(info.level, "normal"))
             r = resolve(s, p, step, it, st)
-            if r is not None:
+            if r is not None and mine(r):
                 rows.append(r)
     if rows:
         out.append((_("Other settings"), rows))

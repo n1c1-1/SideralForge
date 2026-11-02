@@ -73,16 +73,22 @@ class Auto:
     has its French in ``client/locale/fr/engine.json`` (``tests/test_texts.py`` checks it).
 
         Auto(2.0, "small stars (FWHM {fwhm:.1f} px) and {n} frames", {"fwhm": f, "n": n})
+
+    ``advice=True``: an advice only (the stack's "method"): ``resolve`` never applies it, the setting keeps its default
+    or the user's value; the client shows it beside the choices (api.ParamInfo.advice).
     """
 
     value: Any
     template: str
     args: dict | None
+    advice: bool
 
-    def __init__(self, value: Any, template: str = "", args: dict | None = None, *, reason: str | None = None):
+    def __init__(self, value: Any, template: str = "", args: dict | None = None, *, reason: str | None = None,
+                 advice: bool = False):
         self.value = value
         self.template = template if reason is None else reason     # ``reason=`` : the old keyword
         self.args = args
+        self.advice = bool(advice)
 
     @property
     def reason(self) -> str:
@@ -98,13 +104,14 @@ class Auto:
 def resolve(model: type[StageParams], auto: dict[str, Auto], overrides: dict[str, Any]) -> tuple[StageParams, dict]:
     """Build the effective parameters: declared default < automatic value < user override.
 
-    Returns the validated model and, per field, where its value came from ("default", "auto" or "user").
+    Returns the validated model and, per field, where its value came from ("default", "auto" or "user"). An advice
+    (``Auto.advice``) is never applied.
     """
     values, origin = {}, {}
     for name in model.model_fields:
         if name in overrides:
             values[name], origin[name] = overrides[name], "user"
-        elif name in auto:
+        elif name in auto and not getattr(auto[name], "advice", False):
             values[name], origin[name] = auto[name].value, "auto"
         else:
             origin[name] = "default"

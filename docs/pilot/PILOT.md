@@ -169,6 +169,39 @@ pas le GUI") and found standalone pieces on return.
 Checkpoints with the user: Express verdict and quick fixes; Base verdict, viewer and charts; evening (Post, manual
 control, the night plan).
 
+## 3c. Monday plan (2026-11-02, 09:00 to 19:00; the user is away until the 19:00 review)
+
+The user's decisions after reading the crossed bench (BENCH.md):
+- **Two stacking methods, both in the GUI, the user chooses**: Bayer drizzle (default) and the classic stack
+  (demosaic RCD, Lanczos-4, rejection by frame count). "On ne va pas faire un outil magique qui marche dans tous les
+  cas : il faut proposer un ensemble de méthodes." Monochrome comes next: the design must take it without rework.
+- **A method advice by the type of the series**, shown in the GUI as a discreet "Recommended" frame on the advised
+  option, with a small "i" icon whose tooltip gives the reason in a few words. The advice never changes the choice
+  by itself. Its table (validated by the user):
+  | Series | Advice | Source |
+  |---|---|---|
+  | colour, enough well-dithered frames (coverage varies < 20 %) | drizzle, scale 1 | PixInsight (drizzle recommended for CFA); DrizzlePac 20 % rule |
+  | colour, < 15 frames or little dither (coverage varies > 20 %) | classic | PixInsight (drizzle useful from 15–20 dithered frames); DrizzlePac |
+  | stars < 2 px FWHM and coverage holds | drizzle 1.5× or 2× | Siril doc, DrizzlePac |
+  | monochrome | classic; drizzle only if stars < 2 px and enough frames | same rule (no CFA: drizzle only adds detail) |
+  The advice is computed on the frames actually kept by the selection, not on all aligned frames.
+- **Keep** the Moffat star measurement (with the coverage rule for scale and drop). **Drop** the four changes with no
+  measurable effect: Hubble rejection, per-colour noise weighting, local normalisation, per-block channel alignment.
+  (Channel alignment for the whole night stays ON: the user's decision.)
+- **Selection threshold at state-of-the-art values**: keep almost all frames (as Siril and PixInsight by default) and
+  let the weighting give bad frames less weight (PixInsight's minimum weight 0.05).
+- **Fix the classic stack's two defects**: the orange cast on Heart after our colour stage; the CUDA assert in the
+  winsorized rejection with few frames (M8, 14 frames).
+- **Measure Siril's own drizzle** (its doc: CFA drizzle scale 1, pixfrac 1) on the same 6 cases, 30 frames: is our
+  extra noise a defect of our drizzle or of drizzle in general? Nothing is done on noise before the 19:00 review.
+- **Hot pixels left by the drizzle** (afternoon): PixInsight's published method, rejection computed on the demosaiced
+  registered frames, then applied in the drizzle.
+- 17:00 to 18:30: Express bench (30 frames, 6 cases), our drizzle and our classic stack against Siril classic and
+  Siril drizzle, on GPU 0 only. 18:30: the French review pack with images. Nothing heavier (100 frames, the user's
+  projects) before the 19:00 review.
+- At 13:00 the user cannot connect: a short French note (Siril drizzle result, GUI state, which projects to open) is
+  written for them to read when they can.
+
 ## 4. Rules for the orchestrator
 
 - **Reviews must not overcorrect** (the user's worry, 2026-10-31). When triaging any independent review:

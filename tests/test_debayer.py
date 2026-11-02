@@ -97,6 +97,69 @@ def test_bad_samples_are_filled_like_sirils_cosmetic_correction():
     assert torch.equal(y[~miss], x[~miss])
 
 
+def _stars_on_unbalanced_sensor(seed: int = 5):
+    """A CFA frame (RGGB, 256 x 256) of a sensor that records the sky and white stars at 0.7 / 1 / 0.4 of green in
+    red / green / blue (an unmodified colour camera: heart's Sony A7S records its sky at 0.73 / 1 / 0.40), 36 small
+    stars (FWHM 2.6 px) of that colour at random sub-pixel places, noise 5; and every star's true flux (R, G, B)."""
+    rng = np.random.default_rng(seed)
+    H = W = 256
+    yy, xx = grid(H, W)
+    level = torch.tensor([0.7, 1.0, 0.4])
+    rgb = (300.0 * level)[:, None, None].expand(3, H, W).clone()
+    s = 2.6 / 2.355
+    stars = []
+    for i in range(6):
+        for j in range(6):
+            y, x = 24 + 40 * i + rng.uniform(0, 1), 24 + 40 * j + rng.uniform(0, 1)
+            amp = rng.uniform(2000, 8000)
+            g = torch.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * s * s))
+            rgb += (amp * level)[:, None, None] * g
+            stars.append((x, y, amp * level.numpy() * 2 * np.pi * s * s))
+    cfa = mosaic(rgb) + torch.from_numpy(rng.normal(0, 5, (H, W)).astype(np.float32))
+    return cfa, stars, (xx, yy)
+
+
+def _flux(img, x, y, xx, yy, r=8.0):
+    d = torch.sqrt((xx - x) ** 2 + (yy - y) ** 2)
+    ap, an = d <= r, (d >= 12) & (d <= 16)
+    return np.array([float(img[c][ap].sum() - img[c][an].median() * ap.sum()) for c in range(3)])
+
+
+def test_white_balance_before_rcd_keeps_the_star_colours():
+    """RCD on an unbalanced frame moves green flux into the weak colour of small stars (heart: blue +46 %, red +11 %,
+    and the colour stage then found unphysical sensitivity curves). Balanced first and unbalanced after, as raw
+    converters demosaic, each colour's flux stays within a few per cent; the balance is the frame's own."""
+    cfa, stars, (xx, yy) = _stars_on_unbalanced_sensor()
+    bal = db.cfa_balance(cfa, CH)
+    assert bal is not None and bal[1] == 1.0
+    assert bal[0] == pytest.approx(1 / 0.7, rel=0.02) and bal[2] == pytest.approx(1 / 0.4, rel=0.02)
+    plain = db.debayer(cfa, CH, "rcd", balance=None)
+    auto = db.debayer(cfa, CH, "rcd")
+    r_plain = np.median([_flux(plain, x, y, xx, yy) / t for x, y, t in stars], 0)
+    r_auto = np.median([_flux(auto, x, y, xx, yy) / t for x, y, t in stars], 0)
+    assert r_plain[2] > 1.25                                    # the defect: blue gains a quarter or more
+    assert np.all(np.abs(r_auto - 1) < 0.05), r_auto
+    assert torch.equal(db.rcd(cfa, CH, balance=bal), auto)
+
+
+def test_white_balance_multipliers_are_taken_off_exactly_and_need_a_positive_level():
+    rng = np.random.default_rng(4)
+    x = torch.from_numpy(rng.uniform(100, 5000, (64, 72)).astype(np.float32))
+    a = db.rcd(x, CH)
+    b = db.rcd(x, CH, balance=(1.0, 1.0, 1.0))
+    assert torch.allclose(a, b, rtol=1e-6, atol=1e-3)
+    out = db.rcd(x, CH, balance=(2.0, 1.0, 3.0))
+    native = torch.gather(out, 0, db.colour_of(CH, 64, 72)[None])[0]
+    assert torch.allclose(native, x, rtol=2e-6, atol=0.02)        # the recorded samples come back unchanged
+    dark = x - 6000.0                                              # no positive level in any colour
+    assert db.cfa_balance(dark, CH) is None
+    assert torch.allclose(db.debayer(dark, CH, "rcd"), db.rcd(dark, CH))
+    with pytest.raises(ValueError):
+        db.rcd(x, CH, balance=(1.0, 0.0, 1.0))
+    with pytest.raises(ValueError):
+        db.debayer(x, CH, "rcd", balance="sky")
+
+
 VALID = Path("F:/astro_essais/classic_check/rcd")
 
 
@@ -108,7 +171,7 @@ def test_rcd_matches_sirils_own_debayering_of_a_real_frame():
     from astropy.io import fits
     x = np.load(VALID / "cfa_real.npy") / 65535.0
     siril = np.asarray(fits.getdata(VALID / "pp_cfa_real.fit"), np.float32)
-    ours = db.rcd(torch.from_numpy(x.astype(np.float32)), CH).numpy()
+    ours = db.rcd(torch.from_numpy(x.astype(np.float32)), CH, balance=None).numpy()
     d = np.abs(ours - siril)[:, 16:-16, 16:-16]
     rel = d / (np.abs(siril[:, 16:-16, 16:-16]) + 1e-4)
     assert float(np.sqrt((d ** 2).mean())) < 1e-6

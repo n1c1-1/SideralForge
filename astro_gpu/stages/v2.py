@@ -25,6 +25,22 @@ AUTO_FIELDS: dict[str, frozenset[str]] = {
 AUTO_WHEN: dict[str, dict[str, tuple[str, tuple]]] = {
     "stack": {"pixfrac": ("scale_rule", ("coverage",))},
 }
+#: settings whose default changed after results had been keyed under the previous one: {stage: {field: the previous
+#: default}}. The key compares such a field with its previous default, stored or not (core/store.py): a definition
+#: that leaves it unset gets the new default's result under a new key, one that stores the previous default keeps
+#: every key it had. 2 November (docs/pilot/PILOT.md §3c): the Moffat FWHM and the coverage rule on by default, the
+#: frame selection at the state of the art (WBPP's minimum weight only)
+KEY_BASELINE: dict[str, dict[str, object]] = {
+    "stack": {"scale_rule": "legacy", "selection": "legacy"},
+    "register": {"fwhm_method": "legacy"},
+}
+#: settings removed from a stage: a definition that still stores one is read without it. They were out of the key
+#: at their default, so the configurations that remain keep their keys. 2 November: the stacking-v2 changes without
+#: a measurable effect (Hubble rejection, per-colour weights, local normalisation, per-block colour alignment)
+RETIRED: dict[str, frozenset[str]] = {
+    "stack": frozenset({"rejection", "weighting", "normalisation"}),
+    "register": frozenset({"channel_align"}),
+}
 #: fields naming a file: keyed by the file (name, size, modification time), not by the path string
 PATH_FIELDS: dict[str, frozenset[str]] = {
     "starless": frozenset({"learned_stars"}),

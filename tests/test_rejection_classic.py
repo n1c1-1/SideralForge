@@ -113,6 +113,50 @@ def test_winsorized_keeps_sirils_guard_of_four_values():
     assert not bool((lo | hi).any())
 
 
+def test_winsorized_takes_every_column_a_classic_band_can_hold():
+    """A band as M8's classic stack gave it (14 frames, where the bench stopped on a CUDA bound check): columns with
+    0 to 14 values (registration edges), plateaus of equal values (sigma 0 once winsorized), infinities, outliers.
+    Nothing outside the values is rejected, at least four values are kept (Siril's guard), and every column is
+    Siril's loop on its values."""
+    rng = np.random.default_rng(9)
+    N, P = 14, 1500
+    v = rng.normal(0.0, 0.01, (N, P))
+    for j in range(P):
+        for i in rng.choice(N, rng.integers(0, 4), replace=False):
+            v[i, j] += rng.choice([-1, 1]) * rng.uniform(0.05, 2.0)
+    for j in range(0, P, 7):                                    # gaps: 0 to 14 frames missing
+        v[rng.choice(N, j % (N + 1), replace=False), j] = np.nan
+    v[:, 3::50] = 0.25                                           # a plateau: all equal
+    v[:10, 5::50] = 0.5                                          # ten equal, four apart
+    v[2, 9::50] = np.inf
+    v[5, 11::50] = -np.inf
+    t = torch.from_numpy(v)
+    valid = torch.isfinite(t)
+    lo, hi = rc.winsorized_clip(t, 3.0, 3.0)
+    rej = lo | hi
+    assert not bool((rej & ~valid).any()) and not bool((lo & hi).any())
+    n = valid.sum(0)
+    assert bool(((n - rej.sum(0)) >= torch.clamp(n, max=4)).all())
+    for j in range(P):
+        ok = np.isfinite(v[:, j])
+        if ok.sum() < 2:
+            assert not bool(rej[:, j].any())
+            continue
+        el, eh = siril_winsorized(v[ok, j], 3.0, 3.0)
+        if len(el) + len(eh) <= ok.sum() - 4:                    # where Siril's guard does not bind (its order)
+            assert sorted(v[lo[:, j].numpy(), j]) == el and sorted(v[hi[:, j].numpy(), j]) == eh, j
+
+
+def test_sirils_guard_keeps_the_most_deviant_and_breaks_ties_in_frame_order():
+    cand = torch.tensor([[True, True], [True, True], [True, False], [False, True]])
+    dev = torch.tensor([[1.0, 2.0], [3.0, 2.0], [2.0, 9.0], [9.0, 2.0]], dtype=torch.float64)
+    keep = rc._guard_most_deviant(cand, dev, torch.tensor([2, 2]))
+    assert keep[:, 0].tolist() == [False, True, True, False]     # 3.0 and 2.0; 9.0 was no candidate
+    assert keep[:, 1].tolist() == [True, True, False, False]     # three tied at 2.0: the first two frames
+    keep = rc._guard_most_deviant(cand, dev, torch.tensor([0, 3]))
+    assert not bool(keep[:, 0].any()) and keep[:, 1].tolist() == [True, True, False, True]
+
+
 def l1_exact(y):
     """The least mean absolute deviation line of y against 0..n-1: the best line through two of the points."""
     x = np.arange(len(y))

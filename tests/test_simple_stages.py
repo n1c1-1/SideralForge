@@ -353,15 +353,17 @@ class _ReadOnlyProject:
 
 @pytest.mark.skipif(not HEART_A7S.exists(), reason="test project F:/astro_essais/projets/heart_a7s not available")
 def test_every_auto_key_of_heart_a7s_is_in_auto_fields(tmp_path):
-    from astro_gpu.stages.v2 import AUTO_FIELDS, V2_STAGES
+    from astro_gpu.stages.v2 import AUTO_FIELDS, AUTO_WHEN, V2_STAGES
     before = {p: p.stat().st_mtime_ns for p in (HEART_A7S / "work").rglob("manifest.json")}
     proj = _ReadOnlyProject(HEART_A7S, tmp_path)
     journal = Journal(tmp_path / "logs", echo=False)
     seen = {}
     for st in V2_STAGES():
         ctx = Context(proj, st, journal, "cpu")
-        keys = set(st.auto(ctx))
+        autos = st.auto(ctx)
+        keys = {k for k, a in autos.items() if not a.advice}      # an advice (the stack's method) is never applied
         seen[st.name] = keys
-        assert keys <= AUTO_FIELDS.get(st.name, frozenset()), (st.name, keys)
+        allowed = AUTO_FIELDS.get(st.name, frozenset()) | set(AUTO_WHEN.get(st.name, {}))
+        assert keys <= allowed, (st.name, keys)
     assert seen["stack"] and seen["denoise"] == {"iterations"} and seen["calibrate"] == {"workers"}
     assert {p: p.stat().st_mtime_ns for p in (HEART_A7S / "work").rglob("manifest.json")} == before

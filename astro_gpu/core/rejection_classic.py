@@ -168,25 +168,33 @@ def percentile_clip(v: torch.Tensor, low: float, high: float, valid: torch.Tenso
 
 def winsorized_clip(v: torch.Tensor, low: float, high: float, valid: torch.Tensor | None = None,
                     max_rounds: int = 100, max_winsor: int = 200):
-    """(low, high) rejected (N, P): Siril's winsorized sigma clipping (see the module's docstring)."""
+    """(low, high) rejected (N, P): Siril's winsorized sigma clipping (see the module's docstring).
+
+    Each round runs on the whole band with the finished columns masked out, not on the columns ``torch.nonzero``
+    picks: the bench of 1 November 2026 stopped twice here on PyTorch's bound check of such an index (an index_put
+    in deterministic mode, ``TensorCompare.cu:109``) while the GPU driver logged errors on both cards in the same
+    seconds and the machine was short of memory; that index cannot leave its range when the GPU computes right
+    (40 bands of 1 Mpx with gaps, plateaus and outliers ran clean alone). Same results, about 1.4 x the time."""
     valid = torch.isfinite(v) if valid is None else valid
     N, P = v.shape
+    x = v.double()
+    nan = torch.full_like(x, float("nan"))
     lo = torch.zeros_like(valid)
     hi = torch.zeros_like(valid)
     active = valid.clone()
     r = torch.zeros(P, dtype=torch.long, device=v.device)
     go = _count(active) >= 2
+    # every step works on the whole band, the finished columns masked out: no column index is ever computed on the
+    # device, so no out-of-range index can reach an indexing kernel (see _guard_most_deviant)
     for _ in range(max_rounds):
-        idx = torch.nonzero(go, as_tuple=True)[0]
-        if idx.numel() == 0:
+        if not bool(go.any()):
             break
-        x = v[:, idx].double()
-        act = active[:, idx]
+        act = active & go[None]
         n = _count(act)
         sigma = std(x, act)
         m = median(x, act)
-        w = torch.where(act, x, torch.full_like(x, float("nan")))
-        todo = torch.ones_like(sigma, dtype=torch.bool)
+        w = torch.where(act, x, nan)
+        todo = go.clone()
         for _ in range(max_winsor):
             a, b = (m - 1.5 * sigma)[None], (m + 1.5 * sigma)[None]
             w2 = torch.where(todo[None], torch.minimum(torch.maximum(w, a), b), w)
@@ -200,24 +208,34 @@ def winsorized_clip(v: torch.Tensor, low: float, high: float, valid: torch.Tenso
         cl = act & (m[None] - x > sigma[None] * low)
         ch = act & (x - m[None] > sigma[None] * high)
         cand = cl | ch
-        allowed = (n - r[idx] - 4).clamp(min=0)
-        ncand = cand.sum(0)
-        over = ncand > allowed
-        if bool(over.any()):                    # Siril's guard: the most deviant first
-            dev = torch.where(cand, (x - m[None]).abs(), torch.full_like(x, -1.0))
-            order = torch.argsort(dev, dim=0, descending=True)
-            rank = torch.empty_like(order)
-            rank.scatter_(0, order, torch.arange(N, device=v.device)[:, None].expand(N, idx.numel()).contiguous())
-            keep = rank < allowed[None]
-            cand = torch.where(over[None], cand & keep, cand)
+        allowed = (n - r - 4).clamp(min=0)
+        if bool((cand.sum(0) > allowed).any()):     # Siril's guard: the most deviant first
+            cand = _guard_most_deviant(cand, (x - m[None]).abs(), allowed)
             cl, ch = cl & cand, ch & cand
         nrej = cand.sum(0)
-        lo[:, idx] |= cl
-        hi[:, idx] |= ch
-        active[:, idx] = act & ~cand
-        r[idx] += nrej
-        go[idx] = (nrej > 0) & (n - nrej > 3)
+        lo |= cl
+        hi |= ch
+        active &= ~cand
+        r += nrej
+        go &= (nrej > 0) & (n - nrej > 3)
     return lo, hi
+
+
+def _guard_most_deviant(cand: torch.Tensor, dev: torch.Tensor, allowed: torch.Tensor) -> torch.Tensor:
+    """The candidates ``cand`` (N, P) cut to the ``allowed`` (P,) most deviant of each column (``dev`` (N, P), ties in
+    frame order): by a threshold on the sorted deviations and a running count, element-wise, with no index written
+    or gathered from a device-computed permutation."""
+    N = cand.shape[0]
+    d = torch.where(cand, dev, torch.full_like(dev, -1.0))
+    s = torch.sort(d, dim=0, descending=True).values
+    k = (allowed - 1).clamp(min=0, max=N - 1)                  # arithmetic on counts: always in [0, N - 1]
+    kth = s.gather(0, k[None])[0]
+    greater = cand & (d > kth[None])
+    need = allowed - greater.sum(0)
+    eq = cand & (d == kth[None])
+    keep = greater | (eq & (eq.long().cumsum(0) <= need[None]))
+    keep = keep & (allowed > 0)[None]
+    return torch.where((cand.sum(0) > allowed)[None], keep, cand)
 
 
 def _gather_sorted(v: torch.Tensor, valid: torch.Tensor):

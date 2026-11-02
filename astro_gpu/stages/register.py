@@ -1,16 +1,15 @@
 """Registration: per-frame star catalogues, reference frame, polynomial (order 3) sub-pixel alignment, quality.
 
-Stacking v2 (docs/spec/STACKING.md), two switches beside the previous version, which their defaults keep to the bit
-(same reg.npz, same keys):
+Stacking v2 (docs/spec/STACKING.md): ``fwhm_method = moffat``, the default since 2 November (docs/pilot/PILOT.md
+§3c): the star size, roundness and Moffat beta of each frame by an elliptical Moffat fit on its green samples at
+native resolution (core/psf_moffat.py, Siril's PSF), in the workers; kept in reg.npz as the arrays ``fwhm_moffat``,
+``roundness_moffat``, ``beta_moffat`` (NaN: fewer than 10 stars fitted). The old ``fwhm`` (2x2 super-pixels) and
+everything chosen from it (the reference frame, the photometry aperture) stay as they are: the stack's coverage rule,
+method advice and frame filters read the new arrays when they are there. ``fwhm_method = legacy`` is the previous
+version to the bit (same reg.npz; stored, the same keys: stages/v2.KEY_BASELINE).
 
-- ``fwhm_method = moffat``: the star size, roundness and Moffat beta of each frame by an elliptical Moffat fit on its
-  green samples at native resolution (core/psf_moffat.py, Siril's PSF), in the workers; kept in reg.npz as the new
-  arrays ``fwhm_moffat``, ``roundness_moffat``, ``beta_moffat`` (NaN: fewer than 10 stars fitted). The old ``fwhm``
-  (2x2 super-pixels) and everything chosen from it (the reference frame, the photometry aperture) stay as they are:
-  the stack's switches read the new arrays when they are there.
-- ``channel_align = per_block``: the red and blue images of the isolated stars measured against the green one in each
-  frame (core/channel_align.py), fitted over the night per block of frames, saved as ``chan.npz``; the stack then
-  places each colour's samples with it instead of measuring one correction for the whole night on its first mean.
+(The per-block colour alignment, ``channel_align = per_block``, was removed on 2 November: no measurable effect. The
+stack's colour alignment for the whole night stays.)
 """
 from __future__ import annotations
 
@@ -26,11 +25,8 @@ from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage, StageError
 from .calibrate import VALID_MAX, open_cache
 
-#: the per-block colour alignment of stacking v2 (core/channel_align.py), when ``channel_align = per_block``
-CHAN = "chan.npz"
-#: switch values: the first is the previous version, the default
-FWHM_METHODS = ("legacy", "moffat")
-CHANNEL_ALIGNS = ("legacy", "per_block")
+#: switch values: the first is the default (since 2 November), "legacy" the previous version
+FWHM_METHODS = ("moffat", "legacy")
 #: stars fitted per frame for the Moffat FWHM (core/psf_moffat.py: about 0.1 to 0.2 s a frame)
 MOFFAT_STARS = 150
 
@@ -51,31 +47,18 @@ class RegisterParams(StageParams):
                        help="Brightest stars kept per frame for matching and for the alignment polynomial.")
     workers: int = P(8, label="Parallel workers", level=ADVANCED, ge=1, le=64,
                      help="CPU processes used to detect stars in parallel.")
-    fwhm_method: str = P("legacy", label="Star size measure", level=ADVANCED, choices=list(FWHM_METHODS),
+    fwhm_method: str = P("moffat", label="Star size measure", level=ADVANCED, choices=list(FWHM_METHODS),
                          help="How the size of the stars (FWHM) and their roundness are measured in each frame. "
-                              "Previous version: on blocks of 2 x 2 pixels, which reads about twice the true size of "
-                              "small stars. Moffat fit: a Moffat profile fitted on the green pixels of isolated stars "
-                              "at full resolution, as Siril and PixInsight measure them. The stacking's coverage rule, "
-                              "frame filters and Sharp stars weighting use it.",
-                         tip="Moffat fit is the stacking v2 measure; the previous version stays for comparison.")
-    channel_align: str = P("legacy", label="Colour alignment", level=ADVANCED, choices=list(CHANNEL_ALIGNS),
-                           help="How the red and blue images of the stars are put on the green one (lateral "
-                                "chromatic aberration, atmospheric dispersion). Previous version: one correction for "
-                                "the whole night, measured by the stacking on its first mean. Per block: measured on "
-                                "the stars of every frame and followed over the night by blocks of frames (the "
-                                "dispersion changes with the height of the target); the stacking places each colour's "
-                                "pixels with it, without interpolation.",
-                           tip="Per block needs at least 50 isolated stars; with fewer, nothing is corrected.")
+                              "Moffat fit: a Moffat profile fitted on the green pixels of isolated stars at full "
+                              "resolution, as Siril and PixInsight measure them. Previous version: on blocks of 2 x 2 "
+                              "pixels, which reads about twice the true size of small stars. The stacking's drizzle "
+                              "scale, method advice and frame filters use the Moffat fit.",
+                         tip="The previous version stays for comparison.")
 
     @field_validator("fwhm_method")
     @classmethod
     def _fwhm_method(cls, v: str) -> str:
         return check_choice("fwhm_method", v, FWHM_METHODS)
-
-    @field_validator("channel_align")
-    @classmethod
-    def _channel_align(cls, v: str) -> str:
-        return check_choice("channel_align", v, CHANNEL_ALIGNS)
 
 
 class Register(Stage):
@@ -101,34 +84,31 @@ class Register(Stage):
         mm, info = open_cache(ctx)
         n, H, W = info["n"], info["height"], info["width"]
         meta = ctx.load_json("inventory", "frames.json")["lights"]
-        moffat, per_block = p.fwhm_method == "moffat", p.channel_align == "per_block"
-        extras = moffat or per_block
+        moffat = p.fwhm_method == "moffat"
         cache_p = ctx.ckpt / "catalogs.pkl"
         got = pickle.loads(cache_p.read_bytes()) if cache_p.exists() else None
-        psf: list = [None] * n               # stacking v2 (``extras``): the Moffat fit and the colour offsets per frame
-        chan: list = [None] * n
-        if got is not None and len(got) in (5, 7):
+        psf: list = [None] * n               # the Moffat fit per frame (``moffat``)
+        if got is not None and len(got) in (5, 6, 7):        # 7: with the colour offsets of the removed per-block mode
             cats, fwhm, rmsb, rnd, noise = got[:5]
-            if len(got) == 7:
-                psf, chan = list(got[5]), list(got[6])
+            if len(got) >= 6:
+                psf = list(got[5])
         else:                                # no checkpoint, or one from an older version: those frames again
             cats, fwhm, rmsb, rnd = [None] * n, np.zeros(n), np.zeros(n), np.full(n, np.nan)
             noise = np.full(n, np.nan)
-        todo = [i for i in range(n) if cats[i] is None or (moffat and psf[i] is None) or (per_block and chan[i] is None)]
+        todo = [i for i in range(n) if cats[i] is None or (moffat and psf[i] is None)]
         if todo:
             init = (info["path"], n, H, W, p.detect_sigma, p.max_stars)
-            if extras:
-                init += (info["cfa"], moffat, per_block)
-            work = _catalog_v2 if extras else _catalog
+            if moffat:
+                init += (info["cfa"],)
+            work = _catalog_v2 if moffat else _catalog
             with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
                 for c, res in enumerate(pool.imap_unordered(work, todo, chunksize=4)):
                     idx, cat, fw, rb, rd, nz = res[:6]
                     cats[idx], fwhm[idx], rmsb[idx], rnd[idx], noise[idx] = cat, fw, rb, rd, nz
-                    if extras:
-                        psf[idx] = res[6] if moffat else psf[idx]
-                        chan[idx] = res[7] if per_block else chan[idx]
+                    if moffat:
+                        psf[idx] = res[6]
                     if (c + 1) % 50 == 0 or c + 1 == len(todo):
-                        ck = (cats, fwhm, rmsb, rnd, noise) + ((psf, chan) if extras else ())
+                        ck = (cats, fwhm, rmsb, rnd, noise) + ((psf,) if moffat else ())
                         cache_p.write_bytes(pickle.dumps(ck))
                     ctx.progress(0.9 * (n - len(todo) + c + 1) / n, f"stars detected in {n - len(todo) + c + 1}/{n} frames")
         nst = np.array([len(c) for c in cats])
@@ -173,7 +153,7 @@ class Register(Stage):
                 transp[i] = t_ap
         ctx.metric("photometry_aperture_px", 2 * APERTURES[ap - 4])
         extra: dict[str, np.ndarray] = {}
-        if moffat:                           # stacking v2: new arrays beside the old ``fwhm`` (never in place of it)
+        if moffat:                           # arrays beside the old ``fwhm`` (never in place of it)
             extra = moffat_arrays(psf)
             ok_m = np.isfinite(extra["fwhm_moffat"])
             if ok_m.any():
@@ -183,13 +163,6 @@ class Register(Stage):
                         f"{int(ok_m.sum())}/{n} frames measured), against {np.median(fwhm):.2f} px on 2 x 2 blocks")
             else:
                 ctx.log("Moffat fit: too few isolated unsaturated stars in every frame: no Moffat FWHM", "warning")
-        if per_block:
-            from ..core import channel_align
-            times = channel_align.times_s([m.get("time") for m in meta])
-            align = channel_align.fit_night(chan, W, H, times=times, coef=coef, use=np.isfinite(rms))
-            np.savez(ctx.out(CHAN), **align.to_npz())
-            ctx.metric("channel_alignment", align.summary())
-            ctx.log(align.describe())
         np.savez(ctx.out("reg.npz"), coef=coef, fwhm=fwhm, transp=transp, nmatch=nmatch, rms=rms, ref=ref,
                  nstars=nst, bkgrms=rmsb, roundness=rnd, noise=noise, **extra)
         ok = np.isfinite(rms)
@@ -375,30 +348,23 @@ def quality_plot(meta, fwhm, transp, ok):
 _G: dict = {}
 
 
-def _init(path, n, H, W, k, nmax, cfa=None, moffat=False, chan=False):
+def _init(path, n, H, W, k, nmax, cfa=None):
     _G.update(mm=np.memmap(path, dtype=np.float16, mode="r", shape=(n, H, W)), H=H, W=W, k=k, nmax=nmax)
-    if cfa is not None:                       # stacking v2: what ``_catalog_v2`` measures besides the catalogue
-        from ..io.frames import cfa_channel_map
-        _G.update(cfa=cfa, ch_of_k=cfa_channel_map(cfa), moffat=bool(moffat), chan=bool(chan))
+    if cfa is not None:                       # ``_catalog_v2``: the Moffat fit besides the catalogue
+        _G.update(cfa=cfa)
 
 
 def _catalog_v2(idx):
-    """``_catalog`` plus the measures of the stacking-v2 switches on the same frame and catalogue: the Moffat fit
-    (fwhm, roundness, beta, stars; NaN under psf_moffat.MIN_STARS stars) and the colour offsets of the isolated stars
-    (core/channel_align.measure_frame, with the frame's FWHM as the workers measure it); None for what is off."""
+    """``_catalog`` plus the Moffat fit on the same frame and catalogue: (fwhm, roundness, beta, stars; NaN under
+    psf_moffat.MIN_STARS stars)."""
     out = _catalog(idx)
-    cat, fw = out[1], out[2]
-    psf = chan = None
-    if _G.get("moffat"):
-        from ..core.psf_moffat import measure_psf
-        r = measure_psf(np.asarray(_G["mm"][idx], np.float32), cat[:, :2], cfa=_G["cfa"], channel="G",
-                        saturation=VALID_MAX, max_stars=MOFFAT_STARS)
-        psf = (float(r.fwhm), float(r.roundness), float(r.beta), int(r.n)) if r.ok else \
-            (float("nan"), float("nan"), float("nan"), int(r.n))
-    if _G.get("chan"):
-        from ..core import channel_align
-        chan = channel_align.measure_frame(_G["mm"][idx], cat, _G["ch_of_k"], fw)
-    return (*out, psf, chan)
+    cat = out[1]
+    from ..core.psf_moffat import measure_psf
+    r = measure_psf(np.asarray(_G["mm"][idx], np.float32), cat[:, :2], cfa=_G["cfa"], channel="G",
+                    saturation=VALID_MAX, max_stars=MOFFAT_STARS)
+    psf = (float(r.fwhm), float(r.roundness), float(r.beta), int(r.n)) if r.ok else \
+        (float("nan"), float("nan"), float("nan"), int(r.n))
+    return (*out, psf)
 
 
 def _catalog(idx):

@@ -17,8 +17,27 @@ weight map, and for red and blue (a quarter of the samples each) it must stay un
   scale; of the scales that hold, the smallest that samples the stars at 2 px or more, else the largest;
 * the drop size is then the smallest value of 0.05 steps from 1 / scale up that keeps the rule;
 * at scale 1, a drop of 1 (Siril, WBPP and APP for colour sensors [S5][P15][A8]);
-* the method: Bayer drizzle when the rule holds at scale 1 and drop 1, else "Classic" (debayer + interpolation)
-  advised (PixInsight: drizzle is the recommended procedure except with "a marginal number of raw frames" [P12]).
+* the method advice (``advise_method``, the table the user validated on 2 November, docs/pilot/PILOT.md §3c), on the
+  frames the selection keeps:
+
+  ===========================================================  ===========================  ========================
+  series                                                       advice                       source
+  ===========================================================  ===========================  ========================
+  colour sensor, fewer than 15 frames                          Classic                      PixInsight [P12]: drizzle
+                                                                                            from 15-20 dithered frames
+  colour, red / blue coverage varies by 20 % or more at 1×     Classic                      DrizzlePac 20 % rule [L2]
+  colour, enough well-dithered frames                          drizzle (scale: the rule)    PixInsight [P12], [L2]
+  colour, stars under 2 px and the coverage holds at 1.5×/2×   drizzle 1.5× or 2×           Siril [S5], [L1][L2]
+  monochrome                                                   Classic; drizzle only with   the same rules (no CFA:
+                                                               stars under 2 px, 15 frames  drizzle only adds detail
+                                                               and the coverage holding     when undersampled)
+                                                               at 1.5× or 2×
+  ===========================================================  ===========================  ========================
+
+  The advice is only shown: it never changes the method by itself (stages/stack.py exposes it as an advice ``Auto``).
+
+A monochrome sensor (``cfa`` empty, None or "MONO") goes through the same code: every pixel is a sample of its one
+plane, deposited and read as the middle channel ("G").
 
 Fast estimate: the map is computed only on a grid of small patches of the output (``GRID`` x ``PATCH`` px) inside the
 field, but there from every sample of every frame, each at its position through its frame's polynomial (linearised
@@ -35,20 +54,19 @@ How to call it (for the integration agent)
 
       from ..core.coverage import suggest_drizzle
       reg = np.load(ctx.input("register", "reg.npz"))
-      ok = np.isfinite(reg["rms"])                                   # the aligned frames (or the selection's kept ones)
+      ok = <the frames the selection keeps>                          # stack.frames_of(ctx, p, reg).weight > 0
       info = <calibrate's cache.json>                                # width, height, cfa (what open_cache reads)
       fwhm = float(np.median(reg["fwhm_moffat"][ok]))                # core/psf_moffat, sensor px (NaN: not measured)
       s = suggest_drizzle(reg["coef"][ok], info["width"], info["height"], info["cfa"], fwhm)
       a["scale"], a["pixfrac"] = s.scale, s.pixfrac                  # Auto(value, template, args)
-      # a["method"] = s.method  ("drizzle" / "classic") once the Classic method exists
+      a["method"] = s.method                                         # the advice ("drizzle" / "classic"), advice=True
 
   ``coef`` is register's (n, 2, 10) polynomial of each frame (frame sensor px -> reference sensor px, the 10 cubic
   terms of register.poly_terms); the output grid is stack.py's: Xo = (X + 0.5) x scale - 0.5. Pass ``weights`` (the
   frame weights) once they are known, for the weighted map. ``s.coverage[(scale, pixfrac)]`` keeps every
   ``Coverage`` computed (per colour: ``cv``, ``cv_max``, the per-patch ``cv_map`` for Inspect).
-* The reasons are ``Auto`` templates written here, with their French in ``FRENCH``. texts.reason_sites() scans
-  stages/*.py only: add this file to its scan and the FRENCH entries to client/locale/fr/engine.json, or
-  tests/test_texts.py will not know them.
+* The reasons are templates written here, with their French in ``FRENCH`` (also in client/locale/fr/engine.json);
+  texts.reason_sites() reads them from ``REASON_TEMPLATES``.
 * Inspect > Stacking: ``map_variation(np.load(drz_weight.npy))`` gives the measured variation per colour of the
   stack actually made, to show next to the estimate.
 Pure numpy; no torch.
@@ -73,9 +91,37 @@ GRID = (4, 4)
 PATCH = 32
 #: a patch covered by fewer than this share of the frames is not used
 MIN_PATCH_FRAMES = 0.5
+#: fewer kept frames than this: Classic advised (PixInsight: drizzle pays from 15 to 20 well-dithered frames [P12])
+MIN_DRIZZLE_FRAMES = 15
+#: the values of ``cfa`` that mean a monochrome sensor
+MONO = ("", "MONO", "L", "NONE")
+
+#: the method advice's reasons (short: a tooltip)
+M_FEW = "{n} frames (drizzle needs 15): Classic"
+M_HOLES = "red and blue leave holes: Classic"
+M_UNEVEN = "coverage varies {cov:.1f} % (over 20 %): Classic"
+M_DRIZZLE = "{n} dithered frames, coverage {cov:.1f} %: drizzle"
+M_DRIZZLE_FINE = "stars of {fwhm:.1f} px, coverage {cov:.1f} %: drizzle {scale:g}×"
+M_MONO = "monochrome, stars of {fwhm:.1f} px: Classic"
+M_MONO_NO_FWHM = "monochrome, star size not measured: Classic"
+M_MONO_FEW = "monochrome, {n} frames (drizzle needs 15): Classic"
+M_MONO_UNEVEN = "monochrome, coverage varies {cov:.1f} % at {scale:g}×: Classic"
+M_MONO_HOLES = "monochrome, holes at {scale:g}×: Classic"
+M_MONO_DRIZZLE = "monochrome, stars of {fwhm:.1f} px: drizzle {scale:g}×"
 
 #: the French of the reasons below (to go in client/locale/fr/engine.json)
 FRENCH = {
+    M_FEW: "{n} images (le drizzle en demande 15) : Classique",
+    M_HOLES: "le rouge et le bleu laissent des trous : Classique",
+    M_UNEVEN: "couverture variable de {cov:.1f} % (plus de 20 %) : Classique",
+    M_DRIZZLE: "{n} images décalées, couverture à {cov:.1f} % : drizzle",
+    M_DRIZZLE_FINE: "étoiles de {fwhm:.1f} px, couverture à {cov:.1f} % : drizzle {scale:g}×",
+    M_MONO: "monochrome, étoiles de {fwhm:.1f} px : Classique",
+    M_MONO_NO_FWHM: "monochrome, taille des étoiles non mesurée : Classique",
+    M_MONO_FEW: "monochrome, {n} images (le drizzle en demande 15) : Classique",
+    M_MONO_UNEVEN: "monochrome, couverture variable de {cov:.1f} % à {scale:g}× : Classique",
+    M_MONO_HOLES: "monochrome, des trous à {scale:g}× : Classique",
+    M_MONO_DRIZZLE: "monochrome, étoiles de {fwhm:.1f} px : drizzle {scale:g}×",
     "star size not measured: 1×": "taille des étoiles non mesurée : 1×",
     "stars of {fwhm:.1f} px: sampled well enough, drizzle would add no detail: 1×":
         "étoiles de {fwhm:.1f} px : assez échantillonnées, le drizzle n'ajouterait aucun détail : 1×",
@@ -89,13 +135,10 @@ FRENCH = {
     "scale 1×: drops of a whole pixel": "échelle 1× : des gouttes d'un pixel entier",
     "the finest drop that keeps the red and blue coverage under {limit:.0f} % ({cov:.0f} %)":
         "la plus fine qui garde la couverture du rouge et du bleu sous {limit:.0f} % ({cov:.0f} %)",
-    "{n} frames: the red and blue coverage varies by {cov:.0f} % at 1×: Bayer drizzle":
-        "{n} images : la couverture du rouge et du bleu varie de {cov:.0f} % à 1× : drizzle Bayer",
-    "{n} frames: the red and blue coverage varies by {cov:.0f} % at 1×: Classic advised":
-        "{n} images : la couverture du rouge et du bleu varie de {cov:.0f} % à 1× : Classique conseillé",
-    "{n} frames: the red and blue samples leave holes at 1×: Classic advised":
-        "{n} images : les mesures rouges et bleues laissent des trous à 1× : Classique conseillé",
 }
+#: every template this module writes (texts.reason_sites reads them here: the method advice's are not ``Auto(...)``
+#: literals)
+REASON_TEMPLATES = tuple(FRENCH)
 
 
 # ------------------------------------------------------------------------------------------------------ geometry
@@ -150,8 +193,23 @@ def invert(coef, X, Y, W: int, H: int, iters: int = 8):
     return x, y
 
 
-def _channels_of(cfa: str) -> np.ndarray:
-    return np.array([CHANNELS.index(c) for c in cfa.upper()])
+def is_mono(cfa) -> bool:
+    """Whether ``cfa`` names a monochrome sensor (no Bayer pattern)."""
+    return cfa is None or str(cfa).strip().upper() in MONO
+
+
+def _channels_of(cfa) -> np.ndarray:
+    """The channel of each 2 x 2 position k = 2 row + column: the Bayer pattern's, or the middle one for a
+    monochrome sensor (its one plane)."""
+    if is_mono(cfa):
+        return np.ones(4, int)
+    return np.array([CHANNELS.index(c) for c in str(cfa).upper()])
+
+
+def rule_channels(cfa) -> str:
+    """The channels the coverage rule reads: red and blue (a quarter of the samples each) on a colour sensor, the
+    one plane on a monochrome one."""
+    return "G" if is_mono(cfa) else "RB"
 
 
 # ------------------------------------------------------------------------------------------------------ the maps
@@ -233,8 +291,10 @@ class Coverage:
 
     @property
     def red_blue(self) -> float:
-        """The variation the rule reads: the larger of red and blue."""
-        return max(self.cv.get("R", np.nan), self.cv.get("B", np.nan))
+        """The variation the rule reads: the larger of red and blue; on a monochrome sensor (only "G" measured) its
+        one plane."""
+        vals = [self.cv[c] for c in ("R", "B") if c in self.cv] or [self.cv.get("G", np.nan)]
+        return max(vals)
 
     def holds(self, limit: float = LIMIT) -> bool:
         return bool(self.red_blue < limit)
@@ -276,11 +336,20 @@ class _Patches:
                 X0, Y0 = poly_eval(coef, x0[:, None], y0[:, None], W, H)
                 Xu, Xv, Yu, Yv = _poly_jacobian(coef, x0[:, None], y0[:, None], W, H)
                 det = Xu * Yv - Xv * Yu
-                rbx = int(np.ceil(np.max((np.abs(Yv) + np.abs(Xv)) / np.abs(det)) * half)) + 2
-                rby = int(np.ceil(np.max((np.abs(Yu) + np.abs(Xu)) / np.abs(det)) * half)) + 2
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    sx = (np.abs(Yv) + np.abs(Xv)) / np.abs(det)
+                    sy = (np.abs(Yu) + np.abs(Xu)) / np.abs(det)
+                # a degenerate polynomial (no inverse there: a failed registration) covers nothing
+                good = (np.isfinite(x0) & np.isfinite(y0))[:, None] & np.isfinite(sx) & np.isfinite(sy) & (det != 0)
+                if not good.any():
+                    continue
+                rbx = int(np.ceil(np.max(sx[good]) * half)) + 2
+                rby = int(np.ceil(np.max(sy[good]) * half)) + 2
                 ax = 2 * np.arange(-(rbx // 2) - 1, rbx // 2 + 2)                 # the lattice of a colour, x0 + ax + kx
                 ay = 2 * np.arange(-(rby // 2) - 1, rby // 2 + 2)
-                cov = (x0 + ax[0] >= 0) & (x0 + ax[-1] + 1 <= W - 1) & (y0 + ay[0] >= 0) & (y0 + ay[-1] + 1 <= H - 1)
+                with np.errstate(invalid="ignore"):
+                    cov = (x0 + ax[0] >= 0) & (x0 + ax[-1] + 1 <= W - 1) & (y0 + ay[0] >= 0) & \
+                        (y0 + ay[-1] + 1 <= H - 1) & good[:, 0]
                 self.frames[py, px] = int(cov.sum())
                 if cov.sum() < max(1, MIN_PATCH_FRAMES * len(coef)):
                     continue
@@ -354,12 +423,16 @@ def pixfrac_steps(scale: float) -> np.ndarray:
     return np.round(np.arange(lo, 1.0 + 1e-9, 0.05), 2)
 
 
-def suggest_drizzle(coef, W: int, H: int, cfa: str, fwhm: float | None, *, weights=None, limit: float = LIMIT,
+def suggest_drizzle(coef, W: int, H: int, cfa, fwhm: float | None, *, weights=None, limit: float = LIMIT,
                     undersampled: float = UNDERSAMPLED, scales=SCALES, grid=GRID, patch=PATCH) -> DrizzleSuggestion:
-    """The drizzle scale, drop size and method for these frames (see the module docstring), each an ``Auto`` with its
-    reason. ``fwhm``: the stars' Moffat FWHM in sensor pixels (core/psf_moffat), None or NaN when not measured."""
+    """The drizzle scale, drop size and method advice for these frames (see the module docstring), each an ``Auto``
+    with its reason; the method's is an advice (``Auto.advice``: shown, never applied). ``coef``: the polynomials of
+    the frames the selection keeps; ``weights``: their weights (None: equal); ``fwhm``: the stars' Moffat FWHM in
+    sensor pixels (core/psf_moffat), None or NaN when not measured; ``cfa``: the Bayer pattern, or empty / None /
+    "MONO" for a monochrome sensor."""
     coef = np.asarray(coef, float)
     n = int(len(coef) if weights is None else (np.asarray(weights) > 0).sum())
+    rc = rule_channels(cfa)
     found: dict = {}
 
     def cov_at(p: _Patches, pf: float) -> Coverage:
@@ -368,27 +441,23 @@ def suggest_drizzle(coef, W: int, H: int, cfa: str, fwhm: float | None, *, weigh
             found[key] = p.coverage(float(pf))
         return found[key]
 
-    p1 = _Patches(coef, W, H, cfa, 1.0, weights, grid, patch, "RB")
-    c1 = cov_at(p1, 1.0).red_blue
-    if not np.isfinite(c1):
-        method = Auto("classic", "{n} frames: the red and blue samples leave holes at 1×: Classic advised", {"n": n})
-    elif c1 < limit:
-        method = Auto("drizzle", "{n} frames: the red and blue coverage varies by {cov:.0f} % at 1×: Bayer drizzle",
-                      {"n": n, "cov": 100 * c1})
-    else:
-        method = Auto("classic", "{n} frames: the red and blue coverage varies by {cov:.0f} % at 1×: Classic advised",
-                      {"n": n, "cov": 100 * c1})
+    c1 = cov_at(_Patches(coef, W, H, cfa, 1.0, weights, grid, patch, rc), 1.0).red_blue
     one = Auto(1.0, "scale 1×: drops of a whole pixel")
     f = float(fwhm) if fwhm is not None else float("nan")
+
+    def done(scale: Auto, pixfrac: Auto, finer=None) -> DrizzleSuggestion:
+        return DrizzleSuggestion(scale, pixfrac, advise_method(cfa, n, c1, f, scale.value, finer, limit=limit,
+                                                               undersampled=undersampled), f, found)
+
     if not np.isfinite(f):
-        return DrizzleSuggestion(Auto(1.0, "star size not measured: 1×"), one, method, f, found)
+        return done(Auto(1.0, "star size not measured: 1×"), one)
     if f >= undersampled:
-        return DrizzleSuggestion(Auto(1.0, "stars of {fwhm:.1f} px: sampled well enough, drizzle would add no "
-                                           "detail: 1×", {"fwhm": f}), one, method, f, found)
+        return done(Auto(1.0, "stars of {fwhm:.1f} px: sampled well enough, drizzle would add no detail: 1×",
+                         {"fwhm": f}), one)
     holding = []                                         # (scale, pixfrac, variation) of the scales that keep the rule
     first = None
     for S in sorted(scales):
-        p = _Patches(coef, W, H, cfa, float(S), weights, grid, patch, "RB")
+        p = _Patches(coef, W, H, cfa, float(S), weights, grid, patch, rc)
         steps = pixfrac_steps(S)
         top = cov_at(p, steps[-1])
         if first is None:
@@ -411,11 +480,46 @@ def suggest_drizzle(coef, W: int, H: int, cfa: str, fwhm: float | None, *, weigh
         else:
             scale = Auto(1.0, "stars of {fwhm:.1f} px: undersampled, but at {scale:g}× the red and blue samples would "
                               "leave holes: 1×", {"fwhm": f, "scale": S})
-        return DrizzleSuggestion(scale, one, method, f, found)
+        return done(scale, one, first)
     nyquist = [h for h in holding if f * h[0] >= undersampled]
     S, pf, cv = nyquist[0] if nyquist else holding[-1]
     scale = Auto(S, "stars of {fwhm:.1f} px: undersampled; coverage stays at {cov:.0f} %: {scale:g}×",
                  {"fwhm": f, "cov": 100 * cv, "scale": S})
     pixfrac = Auto(pf, "the finest drop that keeps the red and blue coverage under {limit:.0f} % ({cov:.0f} %)",
                    {"limit": 100 * limit, "cov": 100 * cv})
-    return DrizzleSuggestion(scale, pixfrac, method, f, found)
+    return done(scale, pixfrac, (S, cv))
+
+
+def advise_method(cfa, n: int, cov1: float, fwhm: float, scale: float, finer=None, *, limit: float = LIMIT,
+                  undersampled: float = UNDERSAMPLED, min_frames: int = MIN_DRIZZLE_FRAMES) -> Auto:
+    """The method advice of the table in the module docstring (docs/pilot/PILOT.md §3c), an advice ``Auto``
+    ("drizzle" or "classic", a short reason): ``n`` the frames kept, ``cov1`` the coverage variation the rule reads
+    at scale 1 and drop 1 (red and blue; the one plane of a monochrome sensor), ``fwhm`` the Moffat FWHM (NaN: not
+    measured), ``scale`` the scale the rule suggests, ``finer`` (scale, variation) at the finer scale it tried (None
+    when it tried none)."""
+    def advice(value, template, args=None):
+        return Auto(value, template, args, advice=True)
+
+    if is_mono(cfa):
+        # no CFA: at scale 1 every pixel is sampled, a drizzle only adds detail when the stars are undersampled
+        if n < min_frames:
+            return advice("classic", M_MONO_FEW, {"n": n})
+        if not np.isfinite(fwhm):
+            return advice("classic", M_MONO_NO_FWHM)
+        if fwhm >= undersampled:
+            return advice("classic", M_MONO, {"fwhm": fwhm})
+        if scale > 1.0:
+            return advice("drizzle", M_MONO_DRIZZLE, {"fwhm": fwhm, "scale": scale})
+        S, cv = finer if finer is not None else (min(SCALES), float("inf"))
+        if np.isfinite(cv):
+            return advice("classic", M_MONO_UNEVEN, {"cov": 100 * cv, "scale": S})
+        return advice("classic", M_MONO_HOLES, {"scale": S})
+    if n < min_frames:
+        return advice("classic", M_FEW, {"n": n})
+    if not np.isfinite(cov1):
+        return advice("classic", M_HOLES)
+    if not cov1 < limit:
+        return advice("classic", M_UNEVEN, {"cov": 100 * cov1})
+    if scale > 1.0 and finer is not None:
+        return advice("drizzle", M_DRIZZLE_FINE, {"fwhm": fwhm, "cov": 100 * finer[1], "scale": scale})
+    return advice("drizzle", M_DRIZZLE, {"n": n, "cov": 100 * cov1})

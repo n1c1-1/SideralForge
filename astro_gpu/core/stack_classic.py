@@ -8,7 +8,9 @@ rule).
 The steps, each a published method (sources in the modules named):
 
 1. **Debayering by RCD** (core/debayer.py: librtprocess's rcd_demosaic as Siril runs it; bilinear as an option),
-   after Siril's cosmetic fill of the bad samples and with the saturated samples at the saturation level.
+   after Siril's cosmetic fill of the bad samples and with the saturated samples at the saturation level; the frame
+   white-balanced before RCD and the balance taken off after, as raw converters do (``cfa_balance``; without it RCD
+   moved green flux into the weak blue channel of the stars: +46 % on heart, an orange cast after the colour stage).
 2. **Resampling onto the reference grid by Lanczos-4 with Siril's clamping** (core/resample.py; PixInsight's clamping
    or none as options), through the registration polynomial the drizzle uses. Output at sensor resolution: pixel
    (j, i) is the reference sensor position (j, i), the drizzle's grid at scale 1.
@@ -106,6 +108,7 @@ SAT_SPREAD = 2
 class ClassicParams:
     """The settings of the Classic method, each with its published default (the modules give the sources)."""
     debayer: str = "rcd"                 # debayer.METHODS
+    cfa_balance: bool = True             # white balance before RCD, as raw converters do (debayer.py); False: as Siril
     interpolation: str = "lanczos4"      # resample.METHODS
     clamping: str = "siril"              # resample.CLAMPINGS
     clamp_threshold: float = rs.PCL_CLAMPING_THRESHOLD
@@ -187,7 +190,8 @@ class ClassicResult:
         p = self.params
         return {"method": "classic", "scale": 1.0, "pixfrac": None, "n": len(self.frames),
                 "reject_pct": self.rejected_pct, "width": W, "height": H, "sensor": [W, H],
-                "debayer": p.debayer, "interpolation": p.interpolation, "clamping": p.clamping,
+                "debayer": p.debayer, "cfa_balance": p.cfa_balance, "interpolation": p.interpolation,
+                "clamping": p.clamping,
                 "rejection": self.choice.as_dict()}
 
     def diagnostics(self) -> dict:
@@ -298,7 +302,8 @@ def stack_classic(load: Callable, coef, bad=None, norm=None, weights=None, param
         if bad_t is not None:
             badm = badm | bad_t
         fr, filled = db.fill_bad(fr, badm)
-        rgb = db.debayer(fr, ch_of_k, p.debayer)
+        bal = db.cfa_balance(fr, ch_of_k) if p.cfa_balance and p.debayer == "rcd" else None
+        rgb = db.debayer(fr, ch_of_k, p.debayer, balance=bal)
         del fr
         tc = time.time()
         x, y = rs.source_positions(coef[i], H, W, W, H, dev)
@@ -323,7 +328,8 @@ def stack_classic(load: Callable, coef, bad=None, norm=None, weights=None, param
         t_res += td - tc
         frames.append({"index": i, "half": "A" if in_a[k] else "B", "weights_rgb": [float(v) for v in Wt[i]],
                        "scale": [float(v) for v in nm.scale[i]], "offset": [float(v) for v in nm.Q[i, :, 0]],
-                       "bad_filled": int(filled.sum())})
+                       "bad_filled": int(filled.sum()),
+                       "cfa_balance": None if bal is None else [round(float(v), 5) for v in bal]})
         progress(0.6 * (k + 1) / nu, f"classic: {k + 1}/{nu} frames debayered and resampled")
     t1 = time.time()
 

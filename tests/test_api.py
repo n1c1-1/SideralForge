@@ -821,7 +821,8 @@ def test_describe_a_real_stack_from_faked_upstream_results(real, tmp_path):
     fake_done(p, 1, "inventory", files={"frames.json": {"lights": [{"path": str(f)} for f in
                                                                    list_frames(p.sessions[0].lights)]}})
     fake_done(p, 1, "calibrate", {"dark_frame_noise": 3.0, "cache_scale": 1.0},
-              files={"frame_stats.npy": np.full((n, 4, 2), 2.0, np.float32)})
+              files={"frame_stats.npy": np.full((n, 4, 2), 2.0, np.float32),
+                     "cache.json": {"width": 400, "height": 300, "cfa": "RGGB"}})
     assert not next(i for i in api.describe(p, 1, "stack") if i.name == "scale").suggestion_known     # register missing
     fake_done(p, 1, "register", files={"reg.npz": b""})
     np.savez(Store(p.root).dir("register", api.stage_key(p, 1, "register")) / "reg.npz", fwhm=np.full(n, 3.5),
@@ -829,7 +830,10 @@ def test_describe_a_real_stack_from_faked_upstream_results(real, tmp_path):
     info = {i.name: i for i in api.describe(p, 1, "stack")}
     sc = info["scale"]
     assert sc.suggestion_known and sc.origin == "auto" and sc.value == sc.suggested == 1.0
-    assert sc.reason and "FWHM" in sc.reason_en
+    assert sc.reason_en == "star size not measured: 1×"                 # the coverage rule; no Moffat fit faked
+    # the method advice: given beside the choices, never applied (every frame at the same place: holes, Classic)
+    m = info["method"]
+    assert m.value == "drizzle" and m.origin == "default" and m.advice == "classic" and m.advice_reason
     assert info["half_block"].origin == "auto" and info["min_transparency"].reason
     assert info["exclude"].level == "internal"
     # an exclusion reaches the stack's effective settings, locked
@@ -974,10 +978,17 @@ def test_frame_table_and_selection_preview_use_the_registration_and_the_threshol
                                [0.2, 0.2, 0.2, 0.2, 0.2, np.inf])
     t = api.frame_table(p, 1)
     assert t.source == "preview" and t.total == 6
-    assert [r.status for r in t.rows] == ["", "", "", "large stars", "low transparency", "not aligned"]
-    assert t.kept == 3 and (t.min_transparency, t.max_fwhm_ratio) == (0.6, 2.0)
+    # the stack's default selection (WBPP's minimum weight): only the frame not aligned is left out; the large stars
+    # and the hazy frame keep their lower weight
+    assert [r.status for r in t.rows] == ["", "", "", "", "", "not aligned"] and t.kept == 5
+    assert t.rows[3].weight < t.rows[0].weight and t.rows[4].weight < t.rows[0].weight
     assert [r.name for r in t.rows] == [f.name for f in lights] and {r.session for r in t.rows} == {1}
     assert t.rows[0].time == "2026-08-16T22:00:00" and t.rows[3].fwhm == 8.0
+    # the thresholds act with the previous selection
+    api.set_param(p, 1, "stack", "selection", "legacy")
+    t = api.frame_table(p, 1)
+    assert [r.status for r in t.rows] == ["", "", "", "large stars", "low transparency", "not aligned"]
+    assert t.kept == 3 and (t.min_transparency, t.max_fwhm_ratio) == (0.6, 2.0)
     loose = api.selection_preview(p, 1, 0.2, 5.0)
     assert loose.source == "preview" and loose.kept == 5 and (loose.min_transparency, loose.max_fwhm_ratio) == (0.2, 5.0)
     api.set_excluded(p, [(1, lights[0].name)])

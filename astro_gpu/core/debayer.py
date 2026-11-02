@@ -36,6 +36,21 @@ Two methods, torch, on the device of the frame (GPU or CPU):
 
   RCD was chosen by Siril because it renders round, sharp-edged objects (stars) without the zipper and the
   overshoot of the older methods [S11].
+
+  **White balance before demosaicing** (``balance``, on by default in ``debayer``): the colour channels are scaled to
+  the same level before RCD and scaled back after, as every raw converter does: dcraw applies its white-balance
+  multipliers (``scale_colors``) before any interpolation [D2], RawTherapee scales the raw data (``scaleColors``)
+  before it calls the librtprocess demosaicers [L11], darktable's default pipeline puts "white balance" before
+  "demosaic" [D3]. RCD's green estimate (ratios of low-passes over all four samples) and its red / blue colour
+  differences assume channels of similar level; on an unbalanced astronomical frame they move green flux into the
+  weak channel. Measured on a calibrated frame of heart (Sony A7S, blue sky level 0.4 x green), aperture photometry
+  of 3760 stars against the exact sums of each colour's samples (2 x 2 superpixels): without the balance, blue
+  +46 % and red +11 % on average, more for the red stars (the colour stage then found unphysical sensitivity
+  curves); with it, -4 % to -3 % (bilinear: -3 % to -1 %). Siril runs RCD on the unbalanced frame
+  (its photometric calibration then corrects the mean part with one factor per channel); ``balance=None`` does so.
+  The multipliers are the frame's own (``cfa_balance``: the median of each colour's samples against green's, the
+  levels a CFA equalisation brings to the same value), since astronomical frames (FITS) seldom carry the camera's;
+  the bilinear method interpolates each colour from its own samples only and is not changed by them.
 * ``bilinear``: the textbook bilinear demosaicing, each missing colour the mean of the samples of that colour in the
   3 x 3 neighbourhood (DSS's default [D1]; librtprocess's ``bayerborder_demosaic`` formula everywhere). Not Siril's
   "bilinear", which is librtprocess's ``bayerfast`` (gradient-weighted green): a simple option, not the reference.
@@ -49,7 +64,10 @@ those that are valid; a sample with none valid gets the mean of the next ring, t
 Sources: [L10] https://github.com/LuisSR/RCD-Demosaicing (rcd_demosaicing.c, release 2.3);
 librtprocess https://github.com/CarVac/librtprocess (src/demosaic/rcd.cc, border.cc); Siril 1.4
 https://gitlab.com/free-astro/siril/-/blob/1.4/src/algos/demosaicing_rtp.cpp and src/filters/cosmetic_correction.c;
-[S11] https://siril.org/2020/09/whats-new-in-siril-0.99.4/ ; [D1] DeepSkyStacker technical help.
+[S11] https://siril.org/2020/09/whats-new-in-siril-0.99.4/ ; [D1] DeepSkyStacker technical help; [D2] dcraw.c
+(Dave Coffin): main() calls scale_colors() before pre_interpolate() and the interpolations; [L11] RawTherapee
+rtengine/rawimagesource.cc (scaleColors before demosaic); [D3] darktable user manual, processing modules: demosaic
+and white balance (the default module order).
 """
 from __future__ import annotations
 
@@ -296,11 +314,26 @@ def _border(raw: torch.Tensor, col: torch.Tensor, rgb: torch.Tensor, border: int
         rgb[c] = torch.where(edge, val, rgb[c])
 
 
-def rcd(cfa: torch.Tensor, ch_of_k, *, siril_range: bool = True, tiles_per_batch: int = TILES_PER_BATCH) -> torch.Tensor:
+def cfa_balance(cfa: torch.Tensor, ch_of_k) -> tuple[float, float, float] | None:
+    """The white-balance multipliers (R, G, B) of a CFA frame without NaN: green's median sample over each colour's
+    (green 1), the levels at which the three colours are the same; None when a colour's median is not positive (a
+    dark-subtracted frame with no sky in a colour: nothing to balance on)."""
+    x = cfa.float()
+    col = colour_of(ch_of_k, *x.shape, x.device)
+    med = [float(x[col == c].median()) for c in range(3)]
+    if not all(np.isfinite(m) and m > 0 for m in med):
+        return None
+    return (med[1] / med[0], 1.0, med[1] / med[2])
+
+
+def rcd(cfa: torch.Tensor, ch_of_k, *, siril_range: bool = True, balance=None,
+        tiles_per_batch: int = TILES_PER_BATCH) -> torch.Tensor:
     """(3, H, W): the CFA frame (H, W) demosaiced by RCD as Siril runs it (see the module's docstring). ``ch_of_k``:
     the pattern ("RGGB") or the colour of each 2 x 2 position. ``siril_range``: map the frame's [min, max] onto
     [0, 65535] first and back after, as Siril's float path does (False: the values are taken as 16-bit data, clipped
-    to [0, 65536] by rcd.cc). No NaN allowed (``fill_bad`` first). Same device and float32."""
+    to [0, 65536] by rcd.cc). ``balance``: white-balance multipliers (R, G, B) put on the samples before and taken off
+    the result after (the raw converters' order, see the module's docstring); None: none, as Siril. No NaN allowed
+    (``fill_bad`` first). Same device and float32."""
     x = cfa.float()
     H, W = x.shape
     if H < 2 * RCD_BORDER + 2 or W < 2 * RCD_BORDER + 2:
@@ -308,6 +341,13 @@ def rcd(cfa: torch.Tensor, ch_of_k, *, siril_range: bool = True, tiles_per_batch
     if bool(torch.isnan(x).any()):
         raise ValueError("NaN samples: fill them first (debayer.fill_bad)")
     dev = x.device
+    if balance is not None:
+        k = torch.tensor([float(v) for v in balance], device=dev, dtype=torch.float32)
+        if k.numel() != 3 or not bool(torch.isfinite(k).all() & (k > 0).all()):
+            raise ValueError(f"white-balance multipliers must be three positive numbers, not {balance!r}")
+        out = rcd(x * k[colour_of(ch_of_k, H, W, dev)], ch_of_k, siril_range=siril_range,
+                  tiles_per_batch=tiles_per_batch)
+        return out / k[:, None, None]
     lo = hi = 0.0
     if siril_range:
         lo, hi = float(x.min()), float(x.max())
@@ -344,10 +384,16 @@ def rcd(cfa: torch.Tensor, ch_of_k, *, siril_range: bool = True, tiles_per_batch
     return out
 
 
-def debayer(cfa: torch.Tensor, ch_of_k, method: str = "rcd") -> torch.Tensor:
-    """(3, H, W) float32 from a CFA frame (H, W) without NaN: ``method`` one of METHODS."""
+def debayer(cfa: torch.Tensor, ch_of_k, method: str = "rcd", balance="auto") -> torch.Tensor:
+    """(3, H, W) float32 from a CFA frame (H, W) without NaN: ``method`` one of METHODS. ``balance`` (RCD): "auto"
+    the frame's own white balance (``cfa_balance``) before demosaicing, None none (as Siril), or the multipliers
+    (R, G, B)."""
     if method == "rcd":
-        return rcd(cfa, ch_of_k)
+        if isinstance(balance, str):
+            if balance != "auto":
+                raise ValueError(f"unknown balance {balance!r}: 'auto', None or three multipliers")
+            balance = cfa_balance(cfa, ch_of_k)
+        return rcd(cfa, ch_of_k, balance=balance)
     if method == "bilinear":
         return bilinear(cfa, ch_of_k)
     raise ValueError(f"unknown debayering {method!r}: one of {METHODS}")

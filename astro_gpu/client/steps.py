@@ -102,6 +102,8 @@ CALIBRATED_NOTE = ("Each light after calibration: the master dark subtracted, di
 REFERENCE_NOTE = "The frame every other frame is aligned on, calibrated."
 REJECTION_NOTE = "Where the stack rejected pixels: satellite trails, planes, cosmic rays, hot pixels."
 COVERAGE_NOTE = "How many frames (weighted) cover each pixel of the stack: the edges and the dithering show here."
+COVERAGE_DRIZZLE_NOTE = ("With the drizzle, red and blue are one pixel in four of the sensor: they need enough dithered "
+                         "frames to cover the grid evenly, or holes and a grid pattern show.")
 COLOR_NOTE = ("Before, left of the divider: the stack output as it is, in the camera's colours. After, right: the "
               "same stack colour-calibrated (the colour matrix measured on the Gaia stars, the sky set grey). Drag the "
               "divider.")
@@ -254,7 +256,7 @@ class Steps(QObject):
             return [V("stack", "Stack", "array", "stack", "drz_full", True, True, camera=True,
                       compare=("calibrated_ref", "half_a", "half_b"), note=STACK_NOTE),
                     V("rejection", "Rejection map", "rejection", "stack", note=REJECTION_NOTE),
-                    V("coverage", "Coverage", "array", "stack", "drz_weight", True, True, camera=False, channel=1,
+                    V("coverage", "Coverage", "coverage", "stack", "drz_weight", True, True, camera=False, channel=1,
                       units="", note=COVERAGE_NOTE),
                     V("weights", "Weights", "weights", "stack")]
         if k == "astrometrie":
@@ -433,6 +435,10 @@ class Steps(QObject):
             if isinstance(value, dict) and not value:
                 continue
             rows.append(metric_row(stage, key, value))
+        if k == "empilement" and "stack" in s.all_stages(p):
+            m = self._method_fact(p)
+            if m is not None:
+                rows.insert(0, m)
         if k == "debruitage":
             out = self.outputs(p, "denoise", self.which_for(p, "denoise"))
             if out is not None and out.params.get("iterations"):
@@ -441,6 +447,29 @@ class Steps(QObject):
         if k == "post":
             rows += self._output_facts(p)
         return rows
+
+    def _method_fact(self, p) -> tuple[str, str] | None:
+        """("Method", the stacking method of the done result and its main settings), from its manifest; a stack made
+        before the methods existed is a drizzle."""
+        from .settings import method_text
+        out = self.outputs(p, "stack", self.which_for(p, "stack"))
+        if out is None:
+            return None
+        prm = out.params or {}
+        m = prm.get("method") or "drizzle"
+        lang = language()
+
+        def ch(k):
+            return html.escape(texts.choice_label(str(prm[k]), lang)) if prm.get(k) is not None else None
+        bits = [html.escape(method_text(m)[0])]
+        if m == "drizzle":
+            if prm.get("scale") is not None:
+                bits.append(_("scale {v}×").format(v=fnum(float(prm["scale"]), 2).rstrip("0").rstrip(",.")))
+            if prm.get("pixfrac") is not None:
+                bits.append(_("drop {v}").format(v=fnum(float(prm["pixfrac"]), 2).rstrip("0").rstrip(",.")))
+        else:
+            bits += [b for b in (ch("classic_debayer"), ch("classic_interpolation")) if b]
+        return _("Method"), " · ".join(bits)
 
     def _selection_facts(self, p) -> list[tuple[str, str]]:
         s = self.s

@@ -38,9 +38,8 @@ LOCALE = Path(__file__).parent / "client" / "locale"
 STAGES_DIR = Path(__file__).parent / "stages"
 CORE_DIR = Path(__file__).parent / "core"
 #: the core modules of stacking v2 whose reasons reach the user (core/coverage.py writes ``Auto``s with plain
-#: templates; core/frame_weights.py and core/normalize_local.py list theirs in ``REASON_TEMPLATES``,
-#: core/rejection_classic.py in ``REASONS``)
-REASON_MODULES = ("coverage.py", "frame_weights.py", "normalize_local.py", "rejection_classic.py")
+#: templates; core/frame_weights.py lists its own in ``REASON_TEMPLATES``, core/rejection_classic.py in ``REASONS``)
+REASON_MODULES = ("coverage.py", "frame_weights.py", "rejection_classic.py")
 DECLARED = ("REASON_TEMPLATES", "REASONS")
 
 # ------------------------------------------------------------------------------------------------------ catalogues
@@ -178,8 +177,6 @@ _METRIC_ROWS: list[tuple] = [
      "Median width of the stars from a Moffat fit on the green pixels, at full resolution."),
     ("roundness_moffat", "Star roundness (Moffat)", "", ".2f",
      "Median ratio of the smallest to the largest width of the stars (1 is round)."),
-    ("channel_alignment", "Color alignment", "", "",
-     "How the red and blue images of the stars were put on the green one, per block of frames over the night."),
     # stack
     ("frames_used", "Frames stacked", "", "d", "Frames kept in the stack."),
     ("integration_used_h", "Stacked exposure", "h", ".2f", "Exposure time of the frames kept in the stack."),
@@ -191,12 +188,8 @@ _METRIC_ROWS: list[tuple] = [
      "atmospheric dispersion), corrected in the stack."),
     ("near_saturation_pct", "Near saturation", "%", ".4f",
      "Share of the pixels of the stack with samples near saturation (star cores)."),
-    ("untested_pct", "Untested pixels", "%", ".3f",
-     "Share of pixels covered by fewer than 3 frames in their colour: they cannot be tested for outliers."),
     ("coverage_variation_pct", "Coverage variation", "%", ".1f",
      "How much the weight of the pixels of the stack varies, red / green / blue (under 20 % is even enough)."),
-    ("normalisation_spread_sigma", "Background spread", "σ", ".1f",
-     "Largest difference of background between frames from edge to edge, in noise sigmas, before normalisation."),
     # astrometry
     ("ra", "Centre RA", "deg", ".4f", "Right ascension of the image centre."),
     ("dec", "Centre Dec", "deg", ".4f", "Declination of the image centre."),
@@ -511,6 +504,7 @@ CHOICE_TEXTS: dict[str, str] = {
     "legacy": "Previous version", "moffat": "Moffat fit", "per_block": "Per block of frames",
     "coverage": "Coverage rule", "hubble": "Hubble (driz_cr)", "noise": "Noise", "sharp": "Sharp stars",
     "sota": "k × σ filters", "local": "Local", "global": "Global (like Siril)", "on": "On", "off": "Off",
+    "min_weight": "Minimum weight",
     "drizzle": "Bayer drizzle", "classic": "Classic",
     "rcd": "RCD", "bilinear": "Bilinear", "lanczos4": "Lanczos-4", "siril": "Siril", "pixinsight": "PixInsight",
     "percentile": "Percentile clipping", "winsorized": "Winsorized sigma clipping", "linear_fit": "Linear fit clipping",

@@ -297,7 +297,10 @@ class ParamInfo:
     ``suggested`` the value without the user's (``suggestion_known`` False: the stage cannot compute it yet, the
     upstream results are not done). ``reason`` / ``reason_args``: the engine's ``Auto.template`` and ``Auto.args``,
     unformatted (``reason_en`` is ``Auto.reason``). ``drift``: the done result used another value
-    (``result_value``); ``locked``: the workflow's options or the project's exclusions set it."""
+    (``result_value``); ``locked``: the workflow's options or the project's exclusions set it. ``advice``: the value
+    the engine advises without applying it (the stack's "method": "drizzle" or "classic"; None when it gives none or
+    cannot compute it yet), its reason in ``advice_reason`` / ``advice_args`` (template and arguments, as for
+    ``reason``) and ``advice_reason_en``."""
 
     name: str
     label: str
@@ -323,6 +326,10 @@ class ParamInfo:
     locked: bool = False
     drift: bool = False
     result_value: Any = None
+    advice: Any = None
+    advice_reason: str = ""
+    advice_args: Any = None
+    advice_reason_en: str = ""
 
 
 @dataclass
@@ -473,7 +480,8 @@ class StackDiag:
     #: the switches the stack was made with ({} for a stack made before they existed: the previous version)
     switches: dict[str, str] = field(default_factory=dict)
     #: {"method": "legacy" | "hubble", "rejected_pct", "untested_pct" (Hubble: fewer than 3 samples around),
-    #: "reference_pct": Siril's mark [0.1, 0.5], "prediction" (Hubble: samples per point and median / minmed per colour)}
+    #: "reference_pct": Siril's mark [0.1, 0.5], "prediction" (Hubble: samples per point and median / minmed per colour),
+    #: "classic" and "reason_template" (the Classic method: the rejection its rule chose, {"template", "args"})}
     rejection: dict[str, Any] = field(default_factory=dict)
     #: (h, w) counts of the samples left untested (Hubble), on the rejection maps' grid; None otherwise
     rejection_untested: Any = None
@@ -1094,14 +1102,19 @@ def _table(p: Project2, wf: int | Workflow, min_t: float | None, max_f: float | 
         reasons = [str(f.get("excluded") or "") for f in sf]
         min_t, max_f = _stack_thresholds(p, wf)
     else:
-        from .stages.stack import select_frames
+        from .stages.stack import StackParams, frame_selection
         stats = np.load(_need(p, wf, "calibrate") / "frame_stats.npy")
+        infos = {i.name: i for i in describe(p, wf, "stack")}
         if min_t is None or max_f is None:
-            d_min, d_max = _stack_thresholds(p, wf)
+            d_min, d_max = float(infos["min_transparency"].value), float(infos["max_fwhm_ratio"].value)
             min_t, max_f = d_min if min_t is None else min_t, d_max if max_f is None else max_f
-        weight, reasons_a = select_frames(reg["transp"].astype(float), reg["fwhm"], reg["rms"], stats, min_t, max_f,
-                                          exclude=by_hand, noise=reg["noise"] if "noise" in reg.files else None)
-        reasons = [str(r) for r in reasons_a]
+        # the stack's own selection: the thresholds act only with the previous one ("legacy"); by default the frames
+        # under the minimum weight are left out (stages/stack.frame_selection)
+        sp = StackParams(min_transparency=min_t, max_fwhm_ratio=max_f, selection=infos["selection"].value,
+                         selection_transparency=infos["selection_transparency"].value)
+        sel = frame_selection(sp, reg, stats, by_hand)
+        weight = sel.weight
+        reasons = [str(r) for r in sel.reasons]
     rows = [FrameRow(i, inv[i]["path"], names[i], sid[i], inv[i].get("time"), float(reg["fwhm"][i]),
                      float(reg["transp"][i]), float(reg["rms"][i]), float(weight[i]), reasons[i], bool(by_hand[i]))
             for i in range(n)]
@@ -2185,16 +2198,8 @@ def registration_table(p: Project2, wf: int | Workflow, which: str = "current") 
         dx, dy, rot, sc = dg.frame_geometry(reg["coef"], width, height, aligned)
     rnd = reg.get("roundness")
     ref = int(reg["ref"]) if "ref" in reg else -1
-    # stacking v2: the Moffat fit (fwhm_method = moffat) and the colour alignment per block (channel_align = per_block)
-    from .stages.register import CHAN
-    chan = None
-    if (d / CHAN).is_file():
-        from .core.channel_align import ChannelAlignment
-        with np.load(d / CHAN) as z:
-            info, block_of = json.loads(str(z["info"])), np.asarray(z["block_of"], int)
-            align = ChannelAlignment.from_npz(z)
-        chan = {**info, "blocks_detail": align.blocks if align is not None else []}
-
+    # stacking v2: the Moffat fit (fwhm_method = moffat). (The per-block colour alignment was removed on 2 November:
+    # ``channel_alignment`` and the rows' colour_block / colour_shift stay None.)
     def opt(name, i):
         a = reg.get(name)
         return None if a is None or not np.isfinite(a[i]) else float(a[i])
@@ -2211,15 +2216,11 @@ def registration_table(p: Project2, wf: int | Workflow, which: str = "current") 
         row.fwhm_moffat, row.roundness_moffat, row.beta_moffat = (opt(k, i) for k in ("fwhm_moffat",
                                                                                        "roundness_moffat",
                                                                                        "beta_moffat"))
-        if chan is not None and align is not None and i < len(block_of):
-            row.colour_block = int(block_of[i])
-            q = align.coefs[i]                           # at the centre of the sensor only the constant term remains
-            row.colour_shift = (float(q[0, 0, 0]), float(q[0, 1, 0]), float(q[2, 0, 0]), float(q[2, 1, 0]))
         rows.append(row)
     missing = [] if "roundness" in reg else [_missing("roundness", "register")]
     if "nstars" not in reg:
         missing.append(_missing("stars detected", "register"))
-    return RegTable(rows, missing, notes, "moffat" if "fwhm_moffat" in reg else "legacy", chan)
+    return RegTable(rows, missing, notes, "moffat" if "fwhm_moffat" in reg else "legacy", None)
 
 
 def stack_diagnostics(p: Project2, wf: int | Workflow, which: str = "current") -> StackDiag:
@@ -2294,10 +2295,10 @@ def _stack_v2(out: StackDiag, d: Path, m: dict, sf: list, names: list[str], diag
     with the previous version (every switch at its default) gets the same fields from what it has."""
     import numpy as np
 
-    from .stages.stack import COVERAGE, LEGACY_CODES, SWITCHES, reduce_map
+    from .stages.stack import COVERAGE, LEGACY_CODES, PREVIOUS, reduce_map
     metrics = m.get("metrics") or {}
     diag = diag or {}
-    out.switches = dict(diag.get("switches") or {k: v[0] for k, v in SWITCHES.items()})
+    out.switches = dict(diag.get("switches") or PREVIOUS)
     rej = dict(diag.get("rejection") or {})
     summ = rej.get("summary") or {}
     out.rejection = {"method": rej.get("method", "legacy"), "rejected_pct": _num(metrics.get("rejected_pct")),
@@ -2305,6 +2306,9 @@ def _stack_v2(out: StackDiag, d: Path, m: dict, sf: list, names: list[str], diag
     for k in ("low_pct", "high_pct", "exempt_pct", "z_spread_median"):
         if k in summ:
             out.rejection[k] = summ[k]
+    for k in ("classic", "reason_template"):           # the Classic method: the rejection its rule chose, and why
+        if rej.get(k):
+            out.rejection[k] = rej[k]
     if rej.get("prediction"):
         out.rejection["prediction"] = rej["prediction"]
     # ---- weights per colour, the reasons of the frames left out
@@ -2505,13 +2509,17 @@ def describe(p: Project2, wf: int | Workflow, stage: str) -> list[ParamInfo]:
         a = r.autos.get(n) if r.origin[n] == "auto" else None
         drift = bool(used) and n in used and n not in skip and used[n] != r.values[n]
         english = getattr(a, "reason", "")
+        adv = r.autos.get(n)
+        adv = adv if getattr(adv, "advice", False) else None
         out.append(ParamInfo(
             n, d.get("label", n), d.get("help", ""), d.get("tip", ""), d["type"], d["default"], r.values[n],
             r.suggested[n], r.known[n], r.origin[n],
             reason=getattr(a, "template", english), reason_args=getattr(a, "args", None), reason_en=english,
             level=d.get("level", "basic"), unit=d.get("unit", ""), ge=d.get("ge"), le=d.get("le"), gt=d.get("gt"),
             lt=d.get("lt"), step=d.get("step"), choices=d.get("choices"), locked=n in locked, drift=drift,
-            result_value=used.get(n) if drift else None))
+            result_value=used.get(n) if drift else None,
+            advice=None if adv is None else adv.value, advice_reason="" if adv is None else adv.template,
+            advice_args=None if adv is None else adv.args, advice_reason_en="" if adv is None else adv.reason))
     return out
 
 

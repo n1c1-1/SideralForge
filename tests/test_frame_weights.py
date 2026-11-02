@@ -1,7 +1,8 @@
-"""Frame weighting and selection of stacking v2 (astro_gpu/core/frame_weights.py), on synthetic nights.
+"""Frame selection of stacking v2 (astro_gpu/core/frame_weights.py), on synthetic nights.
 
 A "steady night" spreads every measure on the quantiles of a Gaussian (no frame beyond 2.2 sigma for 40 frames), so
-the default k = 2.5 must keep everything; then a cloud passage, wind, and one frame with a wrong noise measure.
+the k = 2.5 filters must keep everything; then a cloud passage, wind, and frames whose weight is under the minimum.
+The weights are given (the stack's own, stages/stack.legacy_weights); the selection never changes them.
 """
 import json
 from statistics import NormalDist
@@ -11,15 +12,15 @@ import pytest
 
 from astro_gpu.core import frame_weights as fwm
 from astro_gpu.core.frame_weights import (
-    DEFAULT_FILTERS,
+    K_SIGMA_FILTERS,
+    MIN_WEIGHT,
     NO_FILTERS,
     REASON_TEMPLATES,
     Filter,
     parse_filter,
     planes_to_colours,
     robust_sigma,
-    stack_noise,
-    weigh_frames,
+    select,
 )
 
 N = 40
@@ -37,90 +38,96 @@ def night(n=N):
                 roundness=0.9 + 0.02 * gauss(n, 4), background=500.0 + 10.0 * gauss(n, 5))
 
 
-def ivm(t, s):
-    w = np.asarray(t, float) ** 2 / np.asarray(s, float) ** 2
+def weights(m):
+    """The stack's weight of each frame (stages/stack.legacy_weights' formula, the best = 1)."""
+    w = (m["transparency"] / m["noise"]) ** 2 * (np.percentile(m["fwhm"], 5) / m["fwhm"]) ** 2
     return w / w.max()
 
 
-# ------------------------------------------------------------------------------------------------- steady night
-def test_a_steady_night_keeps_every_frame_weighed_by_inverse_variance():
+def sel(m, **kw):
+    return select(weights(m), fwhm=m["fwhm"], roundness=m["roundness"], transparency=m["transparency"],
+                  background=m["background"], **kw)
+
+
+# ------------------------------------------------------------------------------------------------- the default
+def test_the_default_keeps_every_frame_of_a_steady_night_with_its_weight():
     m = night()
-    fw = weigh_frames(**m)
-    assert fw.kept.all() and not fw.exclusions and not fw.notes
-    assert fw.weights.shape == (N, 3)
-    np.testing.assert_allclose(fw.frame_weight, ivm(m["transparency"], m["noise"]), rtol=1e-12)
-    np.testing.assert_allclose(fw.weights[:, 0], fw.weights[:, 2])      # scalar measures: the colours agree
-    assert list(fw.reasons) == [""] * N
-    assert fw.suggestion.value == N and fw.suggestion.reason == f"all {N} aligned frames kept"
-    assert fw.selection_cost["noise_pct"] == 0.0
-    assert fw.costs["noise"]["noise_pct"] == 0.0
-    a = fw.auto
-    assert a["weighting"].value == "noise" and a["min_weight"].value == 0.05
-    assert a["filter_fwhm"].value == "2.5k" and a["filter_fwhm"].reason.startswith("no frame with stars more than 2.5")
-    assert a["filter_background"].value == "" and a["filter_background"].reason.startswith("off")
+    fs = sel(m)
+    assert fs.kept.all() and not fs.exclusions
+    np.testing.assert_allclose(fs.weight, weights(m), rtol=0, atol=0)      # the weights are never changed
+    assert list(fs.reasons) == [""] * N
+    assert fs.suggestion.value == N and fs.suggestion.reason == f"all {N} aligned frames kept"
+    assert all(fs.criteria[c].status == "off" for c in fwm.CRITERIA)        # no filter by default (Siril, PixInsight)
+    assert fs.auto["min_weight"].value == MIN_WEIGHT == 0.05                # WBPP's minimum weight
 
 
-def test_inverse_variance_is_per_colour():
-    m = night()
-    s3 = np.stack([m["noise"] * 1.3, m["noise"], m["noise"] * (1 + 0.1 * gauss(N, 9))], axis=1)
-    t3 = np.stack([m["transparency"] * 0.9, m["transparency"], m["transparency"] * 1.05], axis=1)
-    fw = weigh_frames(t3, s3, m["fwhm"], m["roundness"])
-    assert fw.kept.all()
-    for c in range(3):
-        np.testing.assert_allclose(fw.weights[:, c], ivm(t3[:, c], s3[:, c]), rtol=1e-12)
-    assert not np.allclose(fw.weights[:, 0], fw.weights[:, 2])
-    np.testing.assert_allclose(fw.frame_weight, fw.weights.mean(axis=1))
-
-
-def test_stack_noise_of_the_inverse_variance_is_the_closed_form():
-    v = (5.0 + gauss(N)) ** 2
-    var = np.repeat(v[:, None], 3, axis=1)
-    assert stack_noise(1.0 / var, var) == pytest.approx(1.0 / np.sqrt(np.sum(1.0 / v)))
-    assert stack_noise(np.ones_like(var), var) > stack_noise(1.0 / var, var)       # equal weights: noisier
-
-
-# ------------------------------------------------------------------------------------------------- cloud passage
 def cloudy():
     m = night()
     m["transparency"][10:14] = [0.6, 0.4, 0.3, 0.55]
     return m
 
 
-def test_a_cloud_passage_is_excluded_with_its_reason():
+def test_the_default_keeps_the_clouded_frames_and_leaves_out_only_those_under_the_minimum_weight():
     m = cloudy()
-    fw = weigh_frames(**m)
-    out = sorted({r.frame for r in fw.exclusions})
+    m["transparency"][13] = 0.2                                    # weight about 0.04 of the best: under 0.05
+    fs = sel(m)
+    assert sorted(r.frame for r in fs.exclusions) == [13]
+    assert fs.codes[13] == "weight" and fs.reasons[13].endswith("under the minimum of 5 %")
+    pct = 100 * weights(m)[13] / weights(m).max()
+    assert pct - 0.1 < fs.exclusions[0].args["pct"] <= pct                 # rounded down to a tenth
+    assert fs.kept[12] and fs.weight[12] == weights(m)[12] and fs.relative[12] > 0.05     # 0.3: about 0.09, kept
+    assert fs.weight[13] == 0 and fs.relative[13] == 0
+    assert fs.auto["min_weight"].reason == "1 frame(s) weigh less than 5 % of the best one: excluded"
+    assert fs.suggestion.reason == f"{N - 1} of {N} aligned frames kept"
+    assert select(weights(m), min_weight=0.0).kept.all()
+
+
+def test_the_minimum_weight_is_relative_to_the_best_frame_still_in():
+    """WBPP normalises the weights of the frames it integrates: a best frame excluded by hand or filtered out does
+    not set the scale."""
+    w = np.full(10, 0.04)
+    w[0] = 1.0
+    fs = select(w)
+    assert fs.kept.sum() == 1 and fs.kept[0]
+    ex = np.zeros(10, bool)
+    ex[0] = True
+    fs = select(w, exclude=ex)                                     # the others are now the best: all kept
+    assert fs.kept[1:].all() and not fs.kept[0] and fs.reasons[0] == "excluded by hand"
+    np.testing.assert_allclose(fs.relative[1:], 1.0)
+
+
+def test_failed_registrations_and_missing_weights_are_left_out_with_a_reason():
+    m = night()
+    aligned = np.ones(N, bool)
+    aligned[3] = False
+    w = weights(m)
+    w[3] = 0.0                                                     # legacy_weights gives 0 to a frame not aligned
+    w[5] = np.nan
+    fs = select(w, aligned=aligned)
+    assert fs.codes[3] == "not_aligned" and fs.reasons[3] == "not aligned"
+    assert fs.codes[5] == "no_measure" and fs.reasons[5] == "no measure of its weight"
+    assert fs.kept.sum() == N - 2
+
+
+# ------------------------------------------------------------------------------------------------- the k x sigma option
+def test_k_sigma_filters_exclude_a_cloud_passage_with_its_reason():
+    m = cloudy()
+    fs = sel(m, filters=K_SIGMA_FILTERS)
+    out = sorted({r.frame for r in fs.exclusions})
     assert out == [10, 11, 12, 13]
-    assert all(c == "transparency" for c in fw.codes[10:14])
-    assert fw.reasons[12].startswith("transparency ") and fw.reasons[12].endswith("(30 % of it): clouds or haze?")
-    sig = fw.exclusions[[r.frame for r in fw.exclusions].index(12)].args["sigma"]
+    assert all(c == "transparency" for c in fs.codes[10:14])
+    assert fs.reasons[12].startswith("transparency ") and fs.reasons[12].endswith("(30 % of it): clouds or haze?")
+    sig = fs.exclusions[[r.frame for r in fs.exclusions].index(12)].args["sigma"]
     med, s = robust_sigma(m["transparency"])
     assert sig == pytest.approx((med - 0.3) / s)
     keep = np.ones(N, bool)
     keep[10:14] = False
-    np.testing.assert_allclose(fw.frame_weight[keep], ivm(m["transparency"][keep], m["noise"][keep]), rtol=1e-12)
-    assert (fw.weights[~keep] == 0).all()
-    # what the clouded frames would have brought, measured and said
-    assert 0.0 < fw.selection_cost["noise_pct"] < 5.0 and fw.selection_cost["frames"] == 4
-    assert fw.suggestion.reason.startswith(f"{N - 4} of {N} frames kept; the 4 left out would have lowered the noise")
-    assert fw.auto["filter_transparency"].reason.startswith("4 frame(s) more than 2.5 σ below the night's median")
+    np.testing.assert_allclose(fs.weight[keep], weights(m)[keep])
+    assert (fs.weight[~keep] == 0).all()
+    assert fs.suggestion.reason == f"{N - 4} of {N} aligned frames kept"
+    assert fs.auto["filter_transparency"].reason.startswith("4 frame(s) more than 2.5 σ below the night's median")
 
 
-def test_without_the_filter_the_clouded_frames_are_weighed_and_the_minimum_weight_drops_the_worst():
-    m = cloudy()
-    m["transparency"][13] = 0.2                                    # weight 0.04 of the best: under 0.05
-    fw = weigh_frames(**m, filters={"transparency": ""})
-    assert sorted(r.frame for r in fw.exclusions) == [13]
-    assert fw.codes[13] == "weight"
-    assert fw.reasons[13].endswith("under the minimum of 5 %")
-    assert fw.frame_weight[12] == pytest.approx(ivm(m["transparency"], m["noise"])[12])     # 0.3: about 0.09, kept
-    assert fw.frame_weight[12] > 0.05
-    assert fw.auto["min_weight"].reason == "1 frame(s) weigh less than 5 % of the best one: excluded"
-    fw0 = weigh_frames(**m, filters={"transparency": ""}, min_weight=0.0)
-    assert fw0.kept.all()
-
-
-# ------------------------------------------------------------------------------------------------- wind
 def windy():
     m = night()
     m["fwhm"][25:28] *= 1.6
@@ -128,77 +135,28 @@ def windy():
     return m
 
 
-def test_wind_excludes_the_frames_with_large_stretched_stars():
+def test_k_sigma_filters_exclude_the_frames_with_large_stretched_stars():
     m = windy()
-    fw = weigh_frames(**m)
-    assert sorted({r.frame for r in fw.exclusions}) == [25, 26, 27]
-    assert list(fw.codes[25:28]) == ["fwhm,roundness"] * 3
-    assert "wind, focus or seeing?" in fw.reasons[25] and "wind or tracking?" in fw.reasons[25]
+    fs = sel(m, filters=K_SIGMA_FILTERS)
+    assert sorted({r.frame for r in fs.exclusions}) == [25, 26, 27]
+    assert list(fs.codes[25:28]) == ["fwhm,roundness"] * 3
+    assert "wind, focus or seeing?" in fs.reasons[25] and "wind or tracking?" in fs.reasons[25]
     med = np.median(m["fwhm"])
-    assert fw.reasons[25].startswith("stars ") and \
-        f" σ larger than the night's median ({m['fwhm'][25]:.1f} px for {med:.1f} px)" in fw.reasons[25]
-    # the inverse variance does not look at the stars: the other frames keep their weight
-    keep = np.ones(N, bool)
-    keep[25:28] = False
-    np.testing.assert_allclose(fw.frame_weight[keep], ivm(m["transparency"][keep], m["noise"][keep]), rtol=1e-12)
+    assert fs.reasons[25].startswith("stars ") and \
+        f" σ larger than the night's median ({m['fwhm'][25]:.1f} px for {med:.1f} px)" in fs.reasons[25]
+    # the default (no filter) keeps them, with the lower weight their stars give them
+    d = sel(m)
+    assert d.kept[25:28].all() and (d.weight[25:28] < np.median(d.weight)).all()
 
 
-def test_sharp_stars_has_a_measured_cost():
-    m = night()
-    m["fwhm"] = 3.0 + 0.5 * gauss(N, 3)                            # a night of changing seeing
-    fw = weigh_frames(**m)
-    sharp = fw.costs["sharp"]
-    assert sharp["noise_pct"] > 0 and sharp["fwhm_pct"] < 0      # noisier, finer
-    assert fw.costs["none"]["noise_pct"] > 0                       # equal weights are noisier too
-    a = fw.auto["weighting"]
-    assert a.value == "noise" and a.template == fwm.A_WEIGHT
-    assert a.args == {"noise": sharp["noise_pct"], "finer": -sharp["fwhm_pct"]}
-    fs = weigh_frames(**m, weighting="sharp")
-    w = m["transparency"] ** 2 / (m["noise"] ** 2 * m["fwhm"] ** 2)
-    np.testing.assert_allclose(fs.frame_weight, w / w.max(), rtol=1e-12)
-    # alike frames: nothing to choose
-    same = weigh_frames(np.ones(N), np.full(N, 10.0), np.full(N, 3.0), np.full(N, 0.9))
-    assert same.auto["weighting"].template == fwm.A_WEIGHT_SAME
+def test_steady_night_with_the_filters_keeps_everything():
+    fs = sel(night(), filters=K_SIGMA_FILTERS)
+    assert fs.kept.all()
+    a = fs.auto
+    assert a["filter_fwhm"].value == "2.5k" and a["filter_fwhm"].reason.startswith("no frame with stars more than 2.5")
+    assert a["filter_background"].value == "" and a["filter_background"].reason == "off"
 
 
-def test_sharp_stars_is_todays_stack_weight():
-    from astro_gpu.stages.stack import select_frames
-    m = night()
-    m["fwhm"] = 3.0 + 0.5 * gauss(N, 3)
-    rms = np.full(N, 0.3)
-    stats = np.ones((N, 4, 2))
-    w_old, r_old = select_frames(m["transparency"], m["fwhm"], rms, stats, 0.0, 5.0, noise=m["noise"])
-    assert (r_old == "").all()
-    fw = weigh_frames(**m, weighting="sharp", filters=NO_FILTERS, min_weight=0.0)
-    np.testing.assert_allclose(fw.frame_weight, w_old, rtol=1e-12)
-
-
-def test_no_weighting():
-    m = night()
-    fw = weigh_frames(**m, weighting="none")
-    assert (fw.weights == 1).all()
-    assert fw.costs["none"]["noise_pct"] > 0
-
-
-# ------------------------------------------------------------------------------------------------- one outlier frame
-def test_a_wrong_noise_measure_is_brought_back_to_the_median_weight():
-    m = night()
-    m["noise"][33] = 0.4                                           # 25 x too low: its weight 600 x the others
-    fw = weigh_frames(**m)
-    assert fw.kept.all()
-    assert [(r.frame, r.code) for r in fw.notes] == [(33, "guard")]
-    assert fw.notes[0].args["colour"] == "R, G, B" and fw.notes[0].args["ratio"] > 100
-    raw = m["transparency"] ** 2 / m["noise"] ** 2
-    guarded = raw.copy()
-    guarded[33] = np.median(raw)                                   # the median of all the weights, frame 33's included
-    np.testing.assert_allclose(fw.frame_weight, guarded / guarded.max(), rtol=1e-12)
-    assert fw.as_dict()["guarded"] == [{"frame": 33, "colour": "R, G, B", "ratio": fw.notes[0].args["ratio"]}]
-    # without the guard, that one frame would push all the others under the minimum weight
-    bare = weigh_frames(**m, guard=False)
-    assert bare.kept.sum() == 1 and bare.kept[33]
-
-
-# ------------------------------------------------------------------------------------------------- the filters
 def test_filter_syntax_is_siril_s():
     assert parse_filter("2.5k") == Filter("k", 2.5)
     assert parse_filter("90%") == Filter("pct", 90.0)
@@ -211,18 +169,16 @@ def test_filter_syntax_is_siril_s():
         with pytest.raises(ValueError):
             parse_filter(bad)
     with pytest.raises(ValueError):
-        weigh_frames(**night(), filters={"eccentricity": "2k"})
-    with pytest.raises(ValueError):
-        weigh_frames(**night(), weighting="psf")
+        sel(night(), filters={"eccentricity": "2k"})
 
 
 def test_percent_and_value_filters():
     m = night()
-    fw = weigh_frames(**m, filters={"fwhm": "90%", "roundness": "", "transparency": ""}, min_weight=0)
+    fs = sel(m, filters={"fwhm": "90%"}, min_weight=0)
     worst = set(np.argsort(m["fwhm"])[-4:])                         # 36 of 40 kept
-    assert {r.frame for r in fw.exclusions} == worst
-    assert fw.reasons[max(worst)].endswith("not among the 90 % of frames with the finest stars")
-    fv = weigh_frames(**m, filters={"fwhm": "", "roundness": "0.89", "transparency": ""}, min_weight=0)
+    assert {r.frame for r in fs.exclusions} == worst
+    assert fs.reasons[max(worst)].endswith("not among the 90 % of frames with the finest stars")
+    fv = sel(m, filters={"roundness": "0.89"}, min_weight=0)
     assert {r.frame for r in fv.exclusions} == set(np.where(m["roundness"] < 0.89)[0])
     assert fv.auto["filter_roundness"].reason.endswith("excluded by this filter")
 
@@ -233,10 +189,11 @@ def test_k_sigma_clips_only_the_bad_tail():
     m["roundness"][6] = 1.0                                        # rounder: never excluded
     m["transparency"][7] = 1.5                                     # clearer: never excluded
     m["background"][8] = 100.0                                     # darker sky: never excluded
-    fw = weigh_frames(**m, filters={"background": "2.5k"})
-    assert fw.kept.all()
+    f = {**K_SIGMA_FILTERS, "background": "2.5k"}
+    fs = sel(m, filters=f, min_weight=0)
+    assert fs.kept.all()
     m["background"][9] = 800.0                                     # the moon rises
-    fb = weigh_frames(**m, filters={"background": "2.5k"})
+    fb = sel(m, filters=f, min_weight=0)
     assert [r.frame for r in fb.exclusions] == [9] and fb.reasons[9].endswith("moon, dawn or a light?")
 
 
@@ -262,50 +219,44 @@ def test_hand_exclusion_and_alignment_never_move_the_thresholds():
     aligned = np.ones(N, bool)
     aligned[0] = False
     m["fwhm"][0] = 50.0                                            # a failed frame's nonsense: out of the statistics
-    ref = weigh_frames(**m, aligned=aligned)
+    ref = sel(m, aligned=aligned, filters=K_SIGMA_FILTERS)
     ex = np.zeros(N, bool)
     ex[[1, 2, 11]] = True
-    fw = weigh_frames(**m, aligned=aligned, exclude=ex)
-    assert fw.reasons[0] == "not aligned" and fw.codes[0] == "not_aligned"
-    assert fw.reasons[1] == fw.reasons[2] == fw.reasons[11] == "excluded by hand"
+    fs = sel(m, aligned=aligned, exclude=ex, filters=K_SIGMA_FILTERS)
+    assert fs.reasons[0] == "not aligned" and fs.codes[0] == "not_aligned"
+    assert fs.reasons[1] == fs.reasons[2] == fs.reasons[11] == "excluded by hand"
     for c in ("fwhm", "transparency"):
-        assert fw.criteria[c].limit == ref.criteria[c].limit
+        assert fs.criteria[c].limit == ref.criteria[c].limit
     assert ref.criteria["fwhm"].median == pytest.approx(np.median(m["fwhm"][1:]))
     others = ~ex & aligned
-    assert list(fw.reasons[others]) == list(ref.reasons[others])
+    assert list(fs.reasons[others]) == list(ref.reasons[others])
     assert ref.reasons[11].endswith("clouds or haze?")
 
 
 def test_missing_measures():
     m = night()
-    fw = weigh_frames(m["transparency"], m["noise"])                # no FWHM, roundness, sky: weights only
-    assert fw.kept.all() and fw.criteria["fwhm"].status == "no measure"
-    assert fw.auto["filter_fwhm"].reason == "no measure for this filter: not applied"
-    assert fw.auto["weighting"].template == fwm.A_WEIGHT_NO_FWHM and "sharp" not in fw.costs
-    with pytest.raises(ValueError):
-        weigh_frames(m["transparency"], m["noise"], weighting="sharp")
-    s = m["noise"].copy()
-    s[4] = np.nan
+    fs = select(weights(m), filters=K_SIGMA_FILTERS)               # no FWHM, roundness, transparency: weights only
+    assert fs.kept.all() and fs.criteria["fwhm"].status == "no measure"
+    assert fs.auto["filter_fwhm"].reason == "no measure for this filter: not applied"
     r = m["roundness"].copy()
     r[6] = np.nan                                                   # not measured: never excluded for it
-    fw = weigh_frames(m["transparency"], s, m["fwhm"], r)
-    assert fw.codes[4] == "no_measure" and fw.kept[6] and fw.kept.sum() == N - 1
+    fs = select(weights(m), fwhm=m["fwhm"], roundness=r, filters=K_SIGMA_FILTERS)
+    assert fs.kept[6] and fs.kept.all()
 
 
 # ------------------------------------------------------------------------------------------------- texts and outputs
 def test_texts_are_templates_with_their_numbers():
     m = windy()
-    m["transparency"][10:14] = [0.6, 0.4, 0.3, 0.55]
-    m["noise"][33] = 0.4
-    fw = weigh_frames(**m)
-    used = [r.template for r in fw.exclusions + fw.notes] + [a.template for a in fw.auto.values()] + \
-        [fw.suggestion.template]
+    m["transparency"][10:14] = [0.6, 0.4, 0.3, 0.2]
+    fs = sel(m, filters=K_SIGMA_FILTERS)
+    used = [r.template for r in fs.exclusions] + [a.template for a in fs.auto.values()] + [fs.suggestion.template]
     assert set(used) <= set(REASON_TEMPLATES)
-    fr = fw.reasons_in("fr")
+    fr = fs.reasons_in("fr")
     assert fr[12].count(",") >= 1 and "," in fr[12].split(" σ")[0]     # decimal comma: "30,4 σ"
-    assert fw.reasons_in("en") == list(fw.reasons)
-    json.dumps(fw.as_dict())
-    assert DEFAULT_FILTERS == {"fwhm": "2.5k", "roundness": "2.5k", "transparency": "2.5k", "background": ""}
+    assert fs.reasons_in("en") == list(fs.reasons)
+    json.dumps(fs.as_dict())
+    assert K_SIGMA_FILTERS == {"fwhm": "2.5k", "roundness": "2.5k", "transparency": "2.5k", "background": ""}
+    assert NO_FILTERS == {c: "" for c in fwm.CRITERIA}
 
 
 def test_planes_to_colours():

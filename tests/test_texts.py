@@ -130,13 +130,16 @@ class FakeCtx:
 
 
 def _stack_ctx(tmp_path, n, fwhm, low):
-    """n frames of star size fwhm, the first ``low`` of them with a transparency of 0.2 (the others 1)."""
+    """n frames of star size fwhm, the first ``low`` of them with a transparency of 0.2 (the others 1); the previous
+    scale rule (the frame-count rule these reasons come from; the coverage rule's are in tests/test_coverage.py)."""
     transp = np.ones(n)
     transp[:low] = 0.2
     np.savez(tmp_path / "register_reg.npz", fwhm=np.full(n, fwhm), rms=np.full(n, 0.2), transp=transp)
     rng = np.random.default_rng(1)
     np.save(tmp_path / "calibrate_frame_stats.npy", rng.uniform(50, 100, (n, 4, 2)))
-    return FakeCtx(tmp_path, metrics={("calibrate", "dark_frame_noise"): 2.0, ("calibrate", "cache_scale"): 1.0})
+    project = SimpleNamespace(overrides=lambda stage: {"scale_rule": "legacy"} if stage == "stack" else {})
+    return FakeCtx(tmp_path, metrics={("calibrate", "dark_frame_noise"): 2.0, ("calibrate", "cache_scale"): 1.0},
+                   project=project)
 
 
 def _old_stack_reasons(n, f, frac, hb):

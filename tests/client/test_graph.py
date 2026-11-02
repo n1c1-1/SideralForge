@@ -833,6 +833,108 @@ def test_a_settings_row_changes_marks_and_goes_back_to_the_suggestion(world, mod
     assert model.state(model.view(1), "denoise") == "done"
 
 
+def stack_cards(page):
+    from astro_gpu.client.panel import StackMethodCard
+    return [c for c in page.panel.findChildren(StackMethodCard) if c.isVisibleTo(page.panel)]
+
+
+def test_the_stacking_method_is_chosen_on_cards_and_shows_only_its_own_settings(world, model, page):
+    """Drizzle (the default) and Classic stack, from the engine's list of methods: each shows its own settings only;
+    choosing the other on a computed stack asks Replace or Try as variant; the withdrawn switches never show."""
+    page.select_node(node(page, "empilement"))
+    settle(world["w"], page)
+    page.panel.expert = True
+    page.panel.refresh(page.panel.node)
+    settle(world["w"], page)
+    cards = stack_cards(page)
+    assert [c.key for c in cards] == ["drizzle", "classic"] and [c.on for c in cards] == [True, False]
+    texts = " ".join(texts_of(page.panel))
+    assert "Drizzle" in texts and "Classic stack" in texts
+    keys = {r.r["key"] for r in live_rows(page)}
+    assert {"stack.scale", "stack.pixfrac", "stack.kappa"} <= keys
+    assert not any(k.startswith("stack.classic_") for k in keys) and "stack.method" not in keys
+    assert "stack.rejection" not in keys                          # Hubble withdrawn: nothing left to choose
+    rows = {r.r["key"]: r.r for r in live_rows(page)}
+    for key, gone in (("stack.weighting", "noise"), ("stack.normalisation", "local")):
+        if key in rows:
+            assert gone not in [c[0] for c in rows[key]["choices"]], key
+    done = model.state(model.view(1), "stack") == "done"
+    cards[1].clicked.emit()                                       # Classic stack
+    settle(world["w"], page)
+    ch = model.pending_change
+    if done:                                                      # a computed stack: Replace or Try as variant
+        assert ch and ch["kind"] == "param" and (ch["stage"], ch["name"], ch["value"]) == ("stack", "method",
+                                                                                           "classic")
+        button(page.panel, "Replace").click()
+        settle(world["w"], page)
+    else:
+        assert ch is None
+    assert model.view(1).params["stack"]["method"] == "classic"
+    cards = stack_cards(page)
+    assert [c.on for c in cards] == [False, True]
+    keys = {r.r["key"] for r in live_rows(page)}
+    assert {"stack.classic_debayer", "stack.classic_interpolation", "stack.classic_clamping",
+            "stack.classic_rejection"} <= keys
+    assert not keys & {"stack.scale", "stack.pixfrac", "stack.kappa", "stack.scale_rule", "stack.gain"}
+    labels = {r.r["name"]: r.r["label"] for r in live_rows(page)}
+    assert labels["classic_debayer"] == "Debayering" and labels["classic_clamping"] == "Clamping"
+    # the register's per-block colour alignment is withdrawn too: not in Registration
+    page.select_node(node(page, "alignement"))
+    settle(world["w"], page)
+    assert "register.channel_align" not in {r.r["key"] for r in live_rows(page)}
+    page.panel.expert = False
+    model.undo()
+    settle(world["w"], page)
+    assert "method" not in (model.view(1).params.get("stack") or {})
+
+
+def test_the_engine_advice_is_a_recommended_outline_that_never_changes_the_method(world, model, page, monkeypatch):
+    """The engine's advice on "method" (ParamInfo.advice, here a fake one: Classic, with its reason) puts a discreet
+    "Recommended" outline and an "i" with the reason on that card; the method stays the user's."""
+    import copy
+
+    from astro_gpu.client import i18n
+    from astro_gpu.client.widgets import ACCENT
+    real = model.param_info
+    reason = "{n} frames (drizzle needs 15): Classic"                     # one of the engine's (core/coverage.py)
+
+    def fake(p, stage, name):
+        info = real(p, stage, name)
+        if (stage, name) == ("stack", "method") and info is not None:
+            info = copy.copy(info)
+            info.advice, info.advice_reason, info.advice_args = "classic", reason, {"n": 12}
+        return info
+    monkeypatch.setattr(model, "param_info", fake)
+    page.select_node(node(page, "empilement"))
+    settle(world["w"], page)
+    page.panel.refresh(page.panel.node)
+    settle(world["w"], page)
+    cards = {c.key: c for c in stack_cards(page)}
+    assert cards["drizzle"].on and not cards["drizzle"].recommended and cards["drizzle"].tag is None
+    rec = cards["classic"]
+    assert rec.recommended and not rec.on and rec.tag.text() == "Recommended"
+    assert ACCENT in rec.tag.styleSheet() and "border-radius" in rec.tag.styleSheet()
+    assert rec.info.text() == "i" and rec.info.toolTip() == "12 frames (drizzle needs 15): Classic"
+    assert model.pending_change is None and "method" not in (model.view(1).params.get("stack") or {})
+    # in French: the outline and the reason are translated
+    appmod.apply_language("fr")
+    try:
+        page.panel.refresh(page.panel.node)
+        settle(world["w"], page)
+        rec = {c.key: c for c in stack_cards(page)}["classic"]
+        assert rec.tag.text() == "Conseillé" and rec.info.toolTip() == "12 images (le drizzle en demande 15) : Classique"
+        assert "Recommended" not in i18n.missing()
+    finally:
+        appmod.apply_language("en")
+    # the engine's own advice (none: nothing is marked)
+    from astro_gpu.client.settings import method_advice
+    monkeypatch.setattr(model, "param_info", real)
+    page.panel.refresh(page.panel.node)
+    settle(world["w"], page)
+    adv = method_advice(model, model.path)
+    assert [c.key for c in stack_cards(page) if c.recommended] == ([adv[0]] if adv else [])
+
+
 def test_selection_thresholds_come_from_the_stack_settings(world, model, page):
     model.scope = None
     page.select_node(node(page, "selection"))
@@ -1199,13 +1301,19 @@ def test_a_change_of_an_automatic_setting_is_seen_by_the_what_if(world, model, p
 def test_no_setting_of_the_engine_is_out_of_reach(world, model, page):
     """Every setting a stage describes (but the ones the project or the options own) has a row in the panel of its
     block, in some workflow; no row is listed twice in a panel."""
-    from astro_gpu.client.settings import HIDDEN
+    from astro_gpu.client.settings import HIDDEN, WITHDRAWN, setting_method, stack_method
     want = set()
     for v in model.paths:
         for stage in model.all_stages(v):
             for info in api.describe(model.p, v.pid, stage):
-                if info.level != "internal" and (stage, info.name) not in HIDDEN:
-                    want.add(f"{stage}.{info.name}")
+                if info.level == "internal" or (stage, info.name) in HIDDEN:
+                    continue
+                if (stage, info.name) in WITHDRAWN and len(set(info.choices) - WITHDRAWN[(stage, info.name)]) < 2:
+                    continue                                      # a withdrawn switch: nothing left to choose
+                m = setting_method({"stage": stage, "name": info.name})
+                if m is not None and m != stack_method(model, v):
+                    continue                                      # the other stacking method's (its own test)
+                want.add(f"{stage}.{info.name}")
     got = set()
     page.panel.expert = True
     for v in model.paths:

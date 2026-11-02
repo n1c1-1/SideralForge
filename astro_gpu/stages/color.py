@@ -66,8 +66,9 @@ class Color(Stage):
     Params = ColorParams
     # 2: physical check, camera profiles, synthetic spectra in the matrix fit; 3: a star is left out when a sample of
     # its aperture was near saturation in a frame (the stack's map), not when its peak passes 45 % of the brightest
-    # pixel (on heart_a7s that left out 1121 of 4000 stars; on m8, half of them had no sample above 65 %)
-    version = "3"
+    # pixel (on heart_a7s that left out 1121 of 4000 stars; on m8, half of them had no sample above 65 %); 4: the
+    # white point set by the stars' white balance (star_white_balance, as SPCC), not by the matrix fit alone
+    version = "4"
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
@@ -156,12 +157,17 @@ class Color(Stage):
 
         sol = least_squares(resid, M0.ravel(), loss="soft_l1", f_scale=0.01)
         M = sol.x.reshape(3, 3)
+        W_ref = white_xyz(p.white_temp)
+        W_d65 = colour.xy_to_XYZ(colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D65"])
+        to_out = XYZ_TO_SRGB @ bradford(W_ref, W_d65)
+        wb = star_white_balance(cam @ (to_out @ M).T, xyz @ to_out.T)
+        ctx.metric("white_balance", [round(float(v), 4) for v in wb["k"]])
+        ctx.metric("white_balance_stars", wb["stars"])
+        M = np.linalg.solve(to_out, np.diag(wb["k"]) @ to_out @ M)       # the camera -> XYZ matrix applied
         q = cam_n @ M.T
         q = q / q.sum(1, keepdims=True)
         rs = np.hypot(*(q - xyz_n)[:, :2].T)
-        W_ref = white_xyz(p.white_temp)
-        W_d65 = colour.xy_to_XYZ(colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D65"])
-        Mtot = XYZ_TO_SRGB @ bradford(W_ref, W_d65) @ M
+        Mtot = to_out @ M
         white_cam = np.linalg.solve(Mtot, np.ones(3))
         Mtot = Mtot * white_cam.mean()
         ctx.save("M.npy", Mtot)
@@ -179,6 +185,38 @@ class Color(Stage):
                     "warning")
         ctx.log(f"spectral response from {len(idx)} Gaia XP stars, chromaticity residual {np.median(rs):.4f}")
         ctx.preview("spectral_response", response_plot(lam, S, len(idx)))
+
+
+def star_white_balance(measured, expected) -> dict:
+    """The white balance of the stars, as the spectrophotometric colour calibrations make it (PixInsight's SPCC
+    [P21], Siril's SPCC [S13]): for red and blue, a robust straight line through the stars' measured colour ratio
+    (c / green) against the ratio their catalogue spectrum gives, evaluated at the ratio of the white reference; the
+    factor brings that value to the white reference's. Here the ratios are taken after the colour matrix, against the
+    Gaia XP spectra put in the same output space (``measured``, ``expected`` (N, 3); the white reference is (1, 1, 1)
+    there), so the white point no longer rests on the matrix's least-squares fit alone: the stars of a demosaiced
+    stack have their colours pulled towards grey (RCD takes the fine detail of red and blue from green), which makes
+    the fitted sensitivity curves overlap and moved heart's white from BP-RP 0.88 to 0.71. The line is Theil-Sen's
+    (the median of the pairwise slopes, Sen 1968), robust to the per-star scatter. Returns {"k": (3,) factors (green
+    1), "stars": the stars used, "at_white": the measured red and blue ratios at the white reference}.
+
+    [P21] PixInsight SpectrophotometricColorCalibration documentation (2022): the calibration factors are the
+    fitted functions evaluated at the white reference; [S13] Siril 1.2 documentation, Spectrophotometric Color
+    Calibration."""
+    from scipy.stats import theilslopes
+    m, e = np.asarray(measured, float), np.asarray(expected, float)
+    ok = np.isfinite(m).all(1) & np.isfinite(e).all(1) & (m > 0).all(1) & (e > 0).all(1)
+    k = np.ones(3)
+    at = [1.0, 1.0]
+    if ok.sum() < 20:
+        return {"k": k, "stars": int(ok.sum()), "at_white": at}
+    for j, c in enumerate((0, 2)):
+        x, y = e[ok, c] / e[ok, 1], m[ok, c] / m[ok, 1]
+        slope, intercept = theilslopes(y, x)[:2]
+        v = float(intercept + slope * 1.0)
+        if np.isfinite(v) and v > 0:
+            k[c] = 1.0 / v
+            at[j] = v
+    return {"k": k, "stars": int(ok.sum()), "at_white": at}
 
 
 def saturation_map(ctx: Context, clipped: bool = False) -> np.ndarray | None:

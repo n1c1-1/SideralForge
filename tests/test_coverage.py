@@ -1,4 +1,4 @@
-"""The drizzle coverage map and its rule (astro_gpu/core/coverage.py, stacking v2 points 1 and 1b): the geometry is
+﻿"""The drizzle coverage map and its rule (astro_gpu/core/coverage.py, stacking v2 points 1 and 1b): the geometry is
 register's; the fast estimate equals the exact map where it looks; no dither gives holes, random dithers a coverage
 that varies as 1 / sqrt(frames); the suggestion of scale, drop size and method with its reasons; and, on the real
 heart_a7s transforms (slow), the estimate against the weight map of the stack actually made."""
@@ -100,10 +100,10 @@ def test_no_dither_leaves_holes():
     assert est.cv["R"] > 1.0 and est.cv["B"] > 1.0 and est.cv["G"] > 0.5
     s = cv.suggest_drizzle(c, W, H, "RGGB", 1.8)
     assert s.method.value == "classic" and s.scale.value == 1.0
-    assert "Classic advised" in s.method.reason
+    assert s.method.template == cv.M_UNEVEN and s.method.reason.endswith("(over 20 %): Classic")
     holes = transforms(30, same=True, seed=5)                    # exactly the same place: half the red pixels empty
     s = cv.suggest_drizzle(holes, W, H, "RGGB", 1.8)
-    assert s.method.reason == "30 frames: the red and blue samples leave holes at 1×: Classic advised"
+    assert s.method.reason == "red and blue leave holes: Classic"
     assert "would leave holes" in s.scale.reason
 
 
@@ -117,7 +117,7 @@ def test_random_dithers_cover_well_and_better_with_more_frames():
         assert abs(got[n] - np.sqrt(7 / 144) / 0.25 / np.sqrt(n)) < 0.3 * (0.882 / np.sqrt(n)), (n, got[n])
     assert got[64] < cv.LIMIT < got[16] * 1.5
     s = cv.suggest_drizzle(transforms(64, rot_deg=0.2, seed=9), W, H, "RGGB", 3.0)
-    assert s.method.value == "drizzle" and s.method.reason.endswith("at 1×: Bayer drizzle")
+    assert s.method.value == "drizzle" and s.method.template == cv.M_DRIZZLE and s.method.args["n"] == 64
 
 
 def test_scale_and_drop_from_the_rule():
@@ -166,8 +166,9 @@ def test_frame_weights_count():
     a = cv.coverage(c, W, H, "RGGB", 1.0, 1.0, weights=w)
     b = cv.coverage(c[:20], W, H, "RGGB", 1.0, 1.0)
     assert a.n_frames == 20 and abs(a.red_blue - b.red_blue) < 1e-12
+    w[10:] = 0.0                                                # 10 frames kept: the advice counts them
     s = cv.suggest_drizzle(c, W, H, "RGGB", 3.0, weights=w)
-    assert s.method.args["n"] == 20
+    assert s.method.template == cv.M_FEW and s.method.args["n"] == 10
 
 
 def test_map_variation_of_a_full_map():
@@ -183,9 +184,15 @@ def test_reasons_are_templates_with_a_french():
     """Every Auto written in the module: a plain template (texts.reason_sites' rules), its arguments named in a dict,
     and its French in FRENCH with the same fields."""
     tree = ast.parse(Path(cv.__file__).read_text(encoding="utf-8"))
-    seen = set()
+    seen = {getattr(cv, k) for k in dir(cv) if k.startswith("M_")}          # the method advice's (advise_method)
+    for t in seen:
+        assert t in cv.FRENCH and {f for _, f, _, _ in string.Formatter().parse(t) if f} == \
+            {f for _, f, _, _ in string.Formatter().parse(cv.FRENCH[t]) if f}
+    assert set(cv.REASON_TEMPLATES) == set(cv.FRENCH)
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Auto":
+            if isinstance(node.args[1], ast.Name):                             # advise_method's helper
+                continue
             t = node.args[1]
             assert isinstance(t, ast.Constant) and isinstance(t.value, str)
             fields = {f for _, f, _, _ in string.Formatter().parse(t.value) if f}
@@ -200,6 +207,64 @@ def test_reasons_are_templates_with_a_french():
     a = Auto(1.5, "stars of {fwhm:.1f} px: undersampled; coverage stays at {cov:.0f} %: {scale:g}×",
              {"fwhm": 1.8, "cov": 14.2, "scale": 1.5})
     assert a.reason == "stars of 1.8 px: undersampled; coverage stays at 14 %: 1.5×"
+
+
+# ------------------------------------------------------------------------------------------------ the method advice
+def test_advice_table_colour_rows():
+    """docs/pilot/PILOT.md §3c, colour sensor: each row of the table, through the rule on real-like dithers."""
+    # enough well-dithered frames, stars sampled well: drizzle (scale 1)
+    s = cv.suggest_drizzle(transforms(64, rot_deg=0.2, seed=9), W, H, "RGGB", 3.0)
+    assert (s.method.value, s.method.template, s.scale.value) == ("drizzle", cv.M_DRIZZLE, 1.0)
+    assert s.method.args["cov"] < 20
+    # fewer than 15 frames, however well dithered: Classic (PixInsight: drizzle from 15-20 frames)
+    s = cv.suggest_drizzle(transforms(14, rot_deg=0.2, seed=9), W, H, "RGGB", 3.0)
+    assert (s.method.value, s.method.template, s.method.args) == ("classic", cv.M_FEW, {"n": 14})
+    # little dither: the coverage varies by more than 20 % (DrizzlePac): Classic
+    s = cv.suggest_drizzle(transforms(30, same=True, jitter=0.05, seed=5), W, H, "RGGB", 3.0)
+    assert (s.method.value, s.method.template) == ("classic", cv.M_UNEVEN) and s.method.args["cov"] > 20
+    # stars under 2 px and the coverage holds at 1.5x: drizzle 1.5x
+    s = cv.suggest_drizzle(transforms(80, rot_deg=0.2, seed=11), W, H, "RGGB", 1.8)
+    assert (s.method.value, s.method.template, s.scale.value) == ("drizzle", cv.M_DRIZZLE_FINE, 1.5)
+    assert s.method.reason.endswith(": drizzle 1.5×") and s.method.args["cov"] < 20
+    # every advice is an advice (never applied) with a French
+    for m in (s.method, cv.advise_method("RGGB", 20, float("inf"), 3.0, 1.0)):
+        assert m.advice and m.template in cv.FRENCH and m.text("fr") != m.reason
+    assert cv.advise_method("RGGB", 20, float("inf"), 3.0, 1.0).template == cv.M_HOLES
+
+
+def test_advice_table_monochrome_rows():
+    """Monochrome (no CFA) through the same code: Classic, unless the stars are under 2 px, there are 15 frames or
+    more and the coverage holds at the finer scale."""
+    for cfa in ("", None, "MONO"):
+        assert cv.is_mono(cfa) and cv.rule_channels(cfa) == "G"
+    assert not cv.is_mono("RGGB")
+    c = transforms(64, rot_deg=0.2, seed=9)
+    est = cv.coverage(c, W, H, "", 1.0, 1.0, channels="G")
+    assert est.red_blue < 1e-6                                  # at 1x every pixel gets each frame's whole drop
+    s = cv.suggest_drizzle(c, W, H, "", 3.0)
+    assert (s.method.value, s.method.template, s.scale.value) == ("classic", cv.M_MONO, 1.0)
+    s = cv.suggest_drizzle(c, W, H, None, float("nan"))
+    assert (s.method.value, s.method.template) == ("classic", cv.M_MONO_NO_FWHM)
+    s = cv.suggest_drizzle(c, W, H, "MONO", 1.8)
+    assert (s.method.value, s.method.template, s.scale.value) == ("drizzle", cv.M_MONO_DRIZZLE, 1.5)
+    s = cv.suggest_drizzle(c[:12], W, H, "", 1.8)
+    assert (s.method.value, s.method.template, s.method.args) == ("classic", cv.M_MONO_FEW, {"n": 12})
+    # small stars but the coverage fails at the finer scale (the rule kept 1x): Classic, with the reason
+    m = cv.advise_method("", 30, 0.0, 1.8, 1.0, (1.5, 0.31))
+    assert (m.value, m.template, m.args) == ("classic", cv.M_MONO_UNEVEN, {"cov": 31.0, "scale": 1.5})
+    assert cv.advise_method("", 30, 0.0, 1.8, 1.0, (1.5, float("inf"))).template == cv.M_MONO_HOLES
+
+
+def test_the_advice_is_never_applied():
+    """An advice ``Auto`` is shown, not used: ``resolve`` keeps the default or the user's value."""
+    from astro_gpu.core.params import resolve
+    from astro_gpu.stages.stack import StackParams
+    a = {"method": cv.advise_method("RGGB", 10, 0.1, 3.0, 1.0), "scale": Auto(1.0, "scale 1×: drops of a whole pixel")}
+    assert a["method"].value == "classic" and a["method"].advice
+    p, origin = resolve(StackParams, a, {})
+    assert p.method == "drizzle" and origin["method"] == "default" and p.scale == 1.0 and origin["scale"] == "auto"
+    p, origin = resolve(StackParams, a, {"method": "classic"})
+    assert p.method == "classic" and origin["method"] == "user"
 
 
 def test_fast_enough():

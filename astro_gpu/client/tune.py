@@ -85,7 +85,7 @@ from .imageview import ImageView, ViewImage, quick_thumbnail
 from .panel import STATE_COLOR, STATE_WORD, Panel
 from .services import inspect as si
 from .services.inspect import CATALOGUE_G_MAX, VisualSpec
-from .steps import CAMERA_NOTE, MODEL_COLOURS_NOTE, Steps
+from .steps import CAMERA_NOTE, COVERAGE_DRIZZLE_NOTE, MODEL_COLOURS_NOTE, Steps
 from .widgets import ACCENT, WARN, clear, label
 
 STATE_COL = dict(STATE_COLOR, pending="#5d6470")      # the strip: a block not computed yet is a dark grey
@@ -239,17 +239,81 @@ def weight_rows(b) -> list[dict]:
     d = b.diag
     if d is not None and getattr(d, "weights", None):
         left = dict(getattr(d, "excluded", None) or {})
+        why = {name: exclusion_text(ex) for name, ex in (getattr(d, "exclusions", None) or {}).items()}
         for name, w, off, sc in d.weights:
             r = tab.get(name)
+            # the stack's own verdict: a frame with a weight was stacked (the frame table may follow newer settings)
+            st = "" if w is not None and w > 0 else \
+                (left.get(name) or (r.status if r is not None else "") or "left out")
             out.append(dict(name=name, time=(r.time if r is not None else "") or "", weight=w, offset=off, scale=sc,
                             fwhm=r.fwhm if r is not None else None,
                             transparency=r.transparency if r is not None else None,
-                            status=left.get(name) or (r.status if r is not None else "")))
+                            status=st, why=(why.get(name) or _(st)) if st else ""))
         return out
     for r in tab.values():
         out.append(dict(name=r.name, time=r.time or "", weight=r.weight, offset=None, scale=None, fwhm=r.fwhm,
-                        transparency=r.transparency, status=r.status))
+                        transparency=r.transparency, status=r.status, why=_(r.status) if r.status else ""))
     return out
+
+
+def rejection_rate_text(d) -> str:
+    """The share of rejected pixels of a stack next to Siril's usual range (0.1 to 0.5 %), as rich text: in amber when
+    outside it; with the Classic method, the rejection its rule chose and why. '' when the stack does not say."""
+    rej = dict(getattr(d, "rejection", None) or {})
+    pct = rej.get("rejected_pct")
+    if pct is None:
+        pct = getattr(d, "rejected_pct", None)
+    if pct is None:
+        return ""
+    lo, hi = (rej.get("reference_pct") or [0.1, 0.5])[:2]
+    pct = float(pct)
+    out = _("Rejected pixels: {pct} %").format(pct=number(pct, 2 if pct < 10 else 1))
+    guide = _("Siril's usual range: {lo} to {hi} %").format(lo=number(lo, 1), hi=number(hi, 1))
+    if pct < lo:
+        guide += " · " + _("below it: few outliers were found")
+    elif pct > hi:
+        guide += " · " + _("above it: many pixels were rejected")
+    colour = "#5fbf7f" if lo <= pct <= hi else WARN
+    text = f"<span style='color:{colour}'>{html.escape(out, quote=False)}</span>   ·   {html.escape(guide, quote=False)}"
+    if rej.get("classic"):
+        how = texts.choice_label(str(rej["classic"]), language())
+        rt = rej.get("reason_template") or {}
+        why = texts.format_reason(str(rt.get("template") or ""), rt.get("args"), language()) if rt.get("template") \
+            else ""
+        text += "<br>" + html.escape(_("Rejection: {how}").format(how=how), quote=False) + (
+            f" ({html.escape(why, quote=False)})" if why else "")
+    return text
+
+
+def coverage_text(d, drizzle: bool) -> str:
+    """The variation of the coverage of each colour (std / median) against DrizzlePac's 20 %, as rich text: in amber
+    above it. '' when the stack does not say."""
+    cov = dict(getattr(d, "coverage", None) or {})
+    var = cov.get("variation") or {}
+    if not var or not drizzle:
+        return ""
+    limit = 100 * float((cov.get("estimate") or {}).get("limit") or 0.2)
+    parts = []
+    for c, name in (("R", _("red")), ("G", _("green")), ("B", _("blue"))):
+        x = var.get(c)
+        if x is None:
+            continue
+        x = 100 * float(x)
+        colour = WARN if x > limit else "#5fbf7f"
+        parts.append(f"{html.escape(name, quote=False)} <span style='color:{colour}'>{number(x, 0)} %</span>")
+    if not parts:
+        return ""
+    head = _("Coverage variation (std / median): {parts}").format(parts=" · ".join(parts))
+    return head + "   ·   " + html.escape(_("even under {limit} % (DrizzlePac)").format(limit=number(limit, 0)), quote=False) + \
+        "<br>" + html.escape(_(COVERAGE_DRIZZLE_NOTE), quote=False)
+
+
+def exclusion_text(reasons) -> str:
+    """Why a frame was left out of the stack, in the language shown: the engine's reasons ([{"code", "template",
+    "args"}], ``StackDiag.exclusions``) formatted and joined."""
+    lang = language()
+    return "; ".join(texts.format_reason(str(x.get("template") or ""), x.get("args"), lang)
+                     for x in reasons or [] if x.get("template"))
 
 
 class WeightsChart(ChartView):
@@ -645,7 +709,7 @@ class TuneView(QWidget):
             self._calibration_tab(p, spec)
         elif kind in ("regref", "regchart", "regtable"):
             self._registration_tab(p, spec)
-        elif kind in ("rejection", "weights"):
+        elif kind in ("rejection", "weights", "coverage"):
             self._stack_tab(p, spec)
         elif kind in ("chart", "colorfit"):
             self._color_tab(p, spec)
@@ -1583,31 +1647,39 @@ class TuneView(QWidget):
         if spec.kind == "rejection":
             self._rejection(p, spec, b)
             return
+        if spec.kind == "coverage":
+            self._coverage(p, spec, b)
+            return
         rows = weight_rows(b)
         if not rows:
             self._message(si.not_yet("stack"))
             return
+        n_left = sum(1 for r in rows if r["status"])
+        head = _("{kept} of {n} frames kept").format(kept=len(rows) - n_left, n=len(rows))
+        if n_left:
+            head += " · " + _("{n} left out, each with its reason").format(n=n_left)
+        self.center.addWidget(label(head, "small", wrap=True))
         ch = WeightsChart(rows)
         ch.setMinimumHeight(160)
         norm = any(r["scale"] is not None for r in rows)
-        heads = [_("Frame"), _("Time"), _("Weight"), _("FWHM (px)"), _("Transparency (%)")]
+        # the state (kept, or why left out) right after the frame's name and time: seen without scrolling
+        heads = [_("Frame"), _("Time"), _("State"), _("Weight"), _("FWHM (px)"), _("Transparency (%)")]
         if norm:
             heads += [_("Scale R"), _("Scale G"), _("Scale B"), _("Offset R (ADU)"), _("Offset G (ADU)"),
                       _("Offset B (ADU)")]
-        heads.append(_("State"))
         tr = [r["transparency"] for r in rows if r["transparency"] is not None and np.isfinite(r["transparency"])]
         p90 = float(np.percentile(tr, 90)) if tr else 1.0
         data_rows, red = [], []
         for r in rows:
             sc, off = per_channel(r["scale"]), per_channel(r["offset"])
             t_ = r["transparency"]
-            row = [r["name"], (r["time"] or "")[11:19], r["weight"], r["fwhm"],
-                   100 * t_ / p90 if t_ is not None and np.isfinite(t_) else None]
+            row = [r["name"], (r["time"] or "")[11:19], r.get("why") or _(r["status"]) if r["status"] else _("kept"),
+                   r["weight"], r["fwhm"], 100 * t_ / p90 if t_ is not None and np.isfinite(t_) else None]
             if norm:
                 row += [sc[0], sc[1], sc[2], off[0], off[1], off[2]]
-            data_rows.append(row + [_(r["status"]) if r["status"] else _("kept")])
+            data_rows.append(row)
             red.append(bool(r["status"]))
-        digits = {2: 3, 3: 2, 4: 0} | ({5: 4, 6: 4, 7: 4, 8: 1, 9: 1, 10: 1} if norm else {})
+        digits = {3: 3, 4: 2, 5: 0} | ({6: 4, 7: 4, 8: 4, 9: 1, 10: 1, 11: 1} if norm else {})
         t = make_table(heads, data_rows, digits, red)
         t.setMinimumHeight(120)
         self._split("empilement/weights", ch, t, (3, 2))
@@ -1657,9 +1729,55 @@ class TuneView(QWidget):
                             else _("Rejected samples per pixel of the stack."), "small"))
         row.addStretch(1)
         self.center.addLayout(row)
+        rate = rejection_rate_text(d)
+        if rate:
+            lb = label(rate, "small", wrap=True)
+            lb.setTextFormat(Qt.RichText)
+            self.center.addWidget(lb)
         v.set_image(imgs[-1])
         if len(imgs) == 2:
             v.set_compare_targets([imgs[0]], None)
+        self.center.addWidget(v, 1)
+
+    def _coverage(self, p, spec: VisualSpec, b: si.StackBundle):
+        """How evenly the frames cover the stack, colour by colour (the drizzle's red and blue first: one pixel in four
+        of the sensor), with the variation of each colour against DrizzlePac's 20 %; a classic stack, one map."""
+        import dataclasses
+        d = b.diag
+        method = (getattr(d, "switches", None) or {}).get("method") or "drizzle"
+        drizzle = method == "drizzle"
+        chans = ((0, "Red"), (2, "Blue"), (1, "Green")) if drizzle else ((1, "Coverage"),)
+        imgs = []
+        for c, cap in chans:                      # the picture's name is translated where it is shown
+            vi = self.steps.view_image(p, dataclasses.replace(spec, kind="array", channel=c, shown=cap))
+            if vi is not None:
+                imgs.append((vi, _(cap)))
+        if not imgs:
+            self._message(si.not_yet("stack"))
+            return
+        v = self._new_view("empilement", spec)
+        if len(imgs) > 1:
+            row = QHBoxLayout()
+            row.setSpacing(0)
+            grp = QButtonGroup(self)
+            for i, (vi, cap) in enumerate(imgs):
+                bt = QPushButton(cap)
+                bt.setObjectName("face")
+                bt.setCheckable(True)
+                bt.setChecked(i == 0)
+                bt.clicked.connect(lambda _x=False, img=vi, vv=v: vv.set_image(img, keep_view=True))
+                grp.addButton(bt)
+                row.addWidget(bt)
+            row.addStretch(1)
+            self.center.addLayout(row)
+        var = coverage_text(d, drizzle)
+        if var:
+            lb = label(var, "small", wrap=True)
+            lb.setTextFormat(Qt.RichText)
+            self.center.addWidget(lb)
+        v.set_image(imgs[0][0])
+        if len(imgs) > 1:
+            v.set_compare_targets([vi for vi, _c in imgs[1:]], None)
         self.center.addWidget(v, 1)
 
     # ------------------------------------------------------------ Color
