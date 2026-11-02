@@ -185,6 +185,23 @@ def test_a_bench_card_says_case_instrument_level_and_siril(env):
 
 # ---------------------------------------------------------------------------------------------- the view
 
+def test_cards_alone_take_the_next_column_and_cases_start_on_their_columns(qapp):
+    """A section with projects of no case (the bench's v2x_express folders) before the cases (Express, Base): the
+    cards alone sit side by side, without a free column between them (2026-11-02: they took every other column); a
+    case still starts on an even column."""
+    from PySide6.QtWidgets import QWidget
+    sv = home.SectionView("Bench")
+    cards = [QWidget() for _ in range(7)]
+    sv.set_cards(cards, groups=[[cards[0]], [cards[1]], [cards[2]], [cards[3], cards[4]], [cards[5], cards[6]]])
+    sv.place(4, force=True)
+    pos = [sv.grid.getItemPosition(sv.grid.indexOf(c))[:2] for c in cards]
+    assert pos[:3] == [(0, 0), (0, 1), (0, 2)]
+    assert pos[3:5] == [(1, 0), (1, 1)] and pos[5:] == [(1, 2), (1, 3)]
+    sv.place(5, force=True)                                   # five columns: still a case on even columns
+    pos = [sv.grid.getItemPosition(sv.grid.indexOf(c))[:2] for c in cards]
+    assert pos[:3] == [(0, 0), (0, 1), (0, 2)] and pos[3:5] == [(1, 0), (1, 1)] and pos[5:] == [(1, 2), (1, 3)]
+
+
 def test_home_shows_the_sections_and_opens_test_copies_on_a_click(env, qapp):
     from astro_gpu.client.services.inspect import GuiDiskWatch
     prefs.add_recent((env["bench"] / "heart" / "ours_express").as_posix(), "bench heart express", "IC 1805")

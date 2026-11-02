@@ -727,6 +727,10 @@ class SectionView(QWidget):
         span = span if span <= cols else 1
         r = c = 0
         for g in self.groups:
+            if len(g) > 1 and c % span:              # a group (a bench case) starts at the same columns as the
+                c += span - c % span                 # others; a card alone takes the next free column
+                if c >= cols:
+                    r, c = r + 1, 0
             if c and c + len(g) > cols:              # a group that fits in a row is not split
                 r, c = r + 1, 0
             for card in g:
@@ -734,7 +738,7 @@ class SectionView(QWidget):
                     r, c = r + 1, 0
                 self.grid.addWidget(card, r, c)
                 c += 1
-            if c % span:
+            if len(g) > 1 and c % span:
                 c += span - c % span                 # the next group starts at the same columns
             if c >= cols:
                 r, c = r + 1, 0

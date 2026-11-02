@@ -59,6 +59,7 @@ from PySide6.QtCore import QObject, QPointF, QRectF, QStandardPaths, Qt, QTimer,
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QFontMetricsF,
     QGuiApplication,
     QImage,
     QKeySequence,
@@ -84,6 +85,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QScrollBar,
     QSizePolicy,
     QSpinBox,
@@ -1476,6 +1478,21 @@ def short_number(v: float) -> str:
     return number(v, d)
 
 
+def spaced_ticks(ticks: list[tuple[float, str]], width, left: float, right: float, gap: float = 8.0,
+                 least: float = 34.0) -> list[tuple[float, str]]:
+    """The tick labels (x, text) kept on an axis: inside [left, right], each at least ``least`` px from the previous
+    one and never touching it (half widths plus ``gap``); ``width(text)``: its width in px. A fixed spacing let a dark's
+    narrow range put "-100" against "100"."""
+    out, last, last_half = [], -1e9, 0.0
+    for x, text in ticks:
+        half = width(text) / 2
+        if x < left or x > right or x - last < max(least, last_half + half + gap):
+            continue
+        out.append((x, text))
+        last, last_half = x, half
+    return out
+
+
 class HistogramView(QWidget):
     """The histogram of the data, with the black, mid and white handles and the curve of the stretch. The axis is a
     soft logarithm of the data (asinh): the sky, the faint nebula and the stars all get room, and the handles never
@@ -1569,16 +1586,13 @@ class HistogramView(QWidget):
         f = QFont(self.font())
         f.setPointSizeF(7.5)
         p.setFont(f)
-        last = -1e9
-        for v in nice_ticks(a0, a1):
-            x = self.px_of(v)
-            if x - last < 34 or x < r.x() + 2 or x > r.right() - 2:
-                continue
-            last = x
+        fm = QFontMetricsF(f)
+        for x, text in spaced_ticks([(self.px_of(v), short_number(v)) for v in nice_ticks(a0, a1)],
+                                    fm.horizontalAdvance, r.x() + 2, r.right() - 2):
             p.setPen(QPen(QColor(255, 255, 255, 18), 1))
             p.drawLine(QPointF(x, r.y()), QPointF(x, r.bottom()))
             p.setPen(QColor("#6b7280"))
-            p.drawText(QRectF(x - 30, r.bottom() + 20, 60, 14), Qt.AlignHCenter | Qt.AlignTop, short_number(v))
+            p.drawText(QRectF(x - 30, r.bottom() + 20, 60, 14), Qt.AlignHCenter | Qt.AlignTop, text)
         # the counts (logarithmic)
         top = float(np.log1p(b.max())) or 1.0
         chans = range(b.shape[0])
@@ -2015,6 +2029,40 @@ def exposure_text(t) -> str:
     return (txt.replace(".", ",") if language() == "fr" else txt) + " s"
 
 
+class SideScroll(QScrollArea):
+    """A row that scrolls sideways when the window is too narrow for it, instead of making the window wider (the
+    frame's facts and the viewer's tools: 2026-11-02, they made the Inspect window 1771 to 1960 px wide at least). A
+    scroll bar under the row only when it is needed."""
+
+    def __init__(self, inner: QWidget, parent=None):
+        super().__init__(parent)
+        self.setWidget(inner)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setMinimumWidth(240)
+        self.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.viewport().setAutoFillBackground(False)
+        inner.setAutoFillBackground(False)
+        self._fit()
+
+    def _fit(self):
+        inner = self.widget()
+        need = inner.minimumSizeHint().width() > self.viewport().width()
+        h = inner.sizeHint().height() + (self.horizontalScrollBar().sizeHint().height() if need else 0)
+        if self.height() != h or self.minimumHeight() != h:
+            self.setFixedHeight(h)
+
+    def resizeEvent(self, e):  # noqa: N802 - Qt's name
+        super().resizeEvent(e)
+        self._fit()
+
+    def sizeHint(self):  # noqa: N802 - Qt's name
+        return self.widget().sizeHint()                  # as wide as the row wants when there is room
+
+
 class InfoBand(QFrame):
     """What the caller knows of the frame shown: name, time, exposure, ISO / gain, temperature, FWHM, roundness,
     transparency, kept or excluded, and Exclude / Include."""
@@ -2378,7 +2426,8 @@ class ImageView(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
-        v.addWidget(self._toolbar(post, export, copy, compare))
+        # the tools in a row that scrolls sideways in a narrow window (in French they made the window 1771 px wide)
+        v.addWidget(SideScroll(self._toolbar(post, export, copy, compare)))
         self.align_bar = QFrame()                  # one line: how the compared image was put on this one's grid
         self.align_bar.setObjectName("ivalign")
         ab = QHBoxLayout(self.align_bar)
@@ -2403,8 +2452,20 @@ class ImageView(QWidget):
         body.addWidget(self.area, 1)
         self.panel = StretchPanel()
         self.panel.changed.connect(self._panel_changed)
+        # in a column that scrolls when the viewer is short: squeezed, its rows ran into each other (the histogram's
+        # numbers over "Black / Mid / White", in French, 2026-11-02)
+        self.panel_box = QScrollArea()
+        self.panel_box.setWidget(self.panel)
+        self.panel_box.setWidgetResizable(True)
+        self.panel_box.setFrameShape(QFrame.NoFrame)
+        self.panel_box.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.panel_box.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.panel_box.setFixedWidth(self.panel.width() + self.panel_box.verticalScrollBar().sizeHint().width())
+        self.panel_box.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self.panel_box.viewport().setAutoFillBackground(False)
         self.panel.setVisible(histogram)
-        body.addWidget(self.panel)
+        self.panel_box.setVisible(histogram)
+        body.addWidget(self.panel_box)
         v.addLayout(body, 1)
         v.addWidget(self._readout_bar())
         v.addWidget(self._sequence_bar())
@@ -2461,7 +2522,10 @@ class ImageView(QWidget):
         self.cmp_cb = QComboBox()
         self.cmp_cb.setMinimumWidth(150)
         self.cmp_cb.setMaximumWidth(330)
-        self.cmp_cb.setSizeAdjustPolicy(QComboBox.AdjustToContents)     # the names of the images read whole
+        # as wide as 26 characters: a long name ("Avant : sortie de l'empilement, couleurs de l'appareil") made the
+        # toolbar, so the window, wider than the screen in French; the list that opens shows the names whole
+        self.cmp_cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.cmp_cb.setMinimumContentsLength(26)
         self.cmp_cb.currentIndexChanged.connect(self._cmp_picked)
         ch.addWidget(self.cmp_cb)
         self.cmp_opts = QWidget()                  # shown once an image is chosen
@@ -2572,7 +2636,10 @@ class ImageView(QWidget):
         row.addSpacing(14)
         self.band = InfoBand()
         self.band.excludeClicked.connect(self.toggle_excluded)
-        row.addWidget(self.band, 1)
+        row.addWidget(SideScroll(self.band), 1)       # never wider than the window: it scrolls sideways instead
+        for w in (self.band.state, self.band.toggle):  # Included / Exclude stay in view, out of the scrolled row
+            self.band.layout().removeWidget(w)
+            row.addWidget(w)
         v.addLayout(row)
         v.addWidget(self.band.why)
         self.strip = FilmStrip()
@@ -2823,6 +2890,7 @@ class ImageView(QWidget):
 
     def show_histogram(self, on: bool):
         self.panel.setVisible(bool(on))
+        self.panel_box.setVisible(bool(on))
         if self.hist_b.isChecked() != bool(on):
             self.hist_b.setChecked(bool(on))
 
@@ -2952,6 +3020,8 @@ class ImageView(QWidget):
         self.cmp_cb.addItem("—", None)
         for i, t in enumerate(self._targets):
             self.cmp_cb.addItem(t.name or _("Image {n}").format(n=i + 1), i)
+        view = self.cmp_cb.view()
+        view.setMinimumWidth(view.sizeHintForColumn(0) + 24)          # the list shows the names whole
         self.cmp_cb.blockSignals(False)
         self._update_actions()
         self.set_compare(current)
@@ -2962,6 +3032,7 @@ class ImageView(QWidget):
         self._cmp_i = index
         self.cmp_cb.blockSignals(True)
         self.cmp_cb.setCurrentIndex(0 if index is None else index + 1)
+        self.cmp_cb.setToolTip(self.cmp_cb.currentText() if index is not None else "")   # a name cut short, whole
         self.cmp_cb.blockSignals(False)
         if self._cmp is not None:
             self._cmp.release()

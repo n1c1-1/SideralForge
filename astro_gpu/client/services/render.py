@@ -658,6 +658,22 @@ def _solution(sol):
         return WCS(fits.getheader(sol) if isinstance(sol, str | Path) else sol, naxis=2)
 
 
+def export_header(sol):
+    """The solution as the export writes it: the header of the workflow's wcs.fits without its empty image axes (that
+    file holds a header only, NAXIS = 0, which astropy notes with a warning on every FITS export when it builds the
+    WCS of the exported image). A header or a WCS goes through as it is."""
+    if not isinstance(sol, str | Path):
+        return sol
+    from astropy.io import fits
+    try:
+        h = fits.getheader(sol)
+    except OSError:
+        return sol
+    for key in [k for k in h if k == "NAXIS" or (k.startswith("NAXIS") and k[5:].isdigit())]:
+        del h[key]
+    return h
+
+
 def canvas_annotations(sol, canvas, show: dict):
     """The sky grid and the named objects of Post's canvas (``annotate.field_annotations`` on the solution of the
     bottom workflow's grid, moved to the canvas's origin)."""
@@ -708,7 +724,7 @@ def run_export(renderer: Renderer, job: ExportJob, progress, stop=None,
         if (ga.W, ga.H) != (gb.W, gb.H):
             ref_pid = None
     sol = renderer.wcs_of(ref_pid) if ref_pid is not None and getattr(renderer, "wcs_of", None) else None
-    wcs = sol if job.wcs else None
+    wcs = export_header(sol) if job.wcs else None
     meta = {"wcs": wcs, "origin": canvas.origin, "wf": ref_pid if job.wcs else None,
             "history": history_of(job, renderer, canvas) if job.history else None}
     rgb = np.ascontiguousarray(np.moveaxis(comp.rgb, -1, 0))
@@ -879,7 +895,9 @@ class RenderWorker(QThread):
         """The export through the engine API (render/export), into the folder chosen and nowhere else."""
         from ... import api
         m = {"origin": meta.get("origin"), "history": meta.get("history"), "out_dir": str(out_dir)}
-        if meta.get("wf") is not None:
+        if meta.get("wcs") is not None:              # the solution's header as run_export read it (export_header)
+            m["wcs"] = meta["wcs"]
+        elif meta.get("wf") is not None:
             m["wf"] = meta["wf"]
         return api.export_image(self.project, rgb, m, opts)
 

@@ -43,7 +43,11 @@ from .widgets import ACCENT, label
 
 CH_COL = {"RGB/K": "#e8ebf0", "R": "#ff6b6b", "G": "#5fd17f", "B": "#6aa8ff", "L*": "#e8ebf0", "S": "#e0a8ff",
           "c*": "#ffb86b", "H": "#e8ebf0"}
-CH_LABEL = {"RGB/K": "RGB"}                          # what the channel button shows
+CH_LABEL = {"RGB/K": "RGB"}                          # what the channel button shows (translated: RVB in French)
+
+
+def ch_label(ch: str) -> str:
+    return _(CH_LABEL[ch]) if ch in CH_LABEL else ch
 HIST_COL = {"R": QColor(120, 34, 34), "G": QColor(34, 104, 46), "B": QColor(34, 56, 132)}
 PLOT_H = 290
 BAR = 9                                              # the gradient bars under and left of the plot
@@ -333,7 +337,7 @@ class CurvesEditor(QWidget):
         row.setSpacing(2)
         self.ch_buttons: dict[str, QPushButton] = {}
         for ch in pc.CHANNELS:
-            b = QPushButton(CH_LABEL.get(ch, ch))
+            b = QPushButton(ch_label(ch))
             b.setCheckable(True)
             b.setObjectName("chan")
             b.setToolTip(_(pc.CHANNEL_TIPS[ch]))
@@ -380,7 +384,8 @@ class CurvesEditor(QWidget):
         self.b_save.setToolTip(_("Keep these curves as a preset of yours"))
         self.b_save.clicked.connect(lambda: self.save_preset())
         self.b_more = QPushButton("⋯")
-        self.b_more.setFixedWidth(28)
+        self.b_more.ensurePolished()                    # its width from the style's padding: never narrower than "⋯"
+        self.b_more.setFixedWidth(max(28, self.b_more.sizeHint().width()))
         self.more = QMenu(self.b_more)
         self.a_delete = self.more.addAction(_("Delete this preset"))
         self.a_delete.triggered.connect(self.delete_preset)
@@ -440,7 +445,7 @@ class CurvesEditor(QWidget):
         for c, b in self.ch_buttons.items():
             b.setChecked(c == ch)
             edited = c in self.curves and not pc.is_identity(self.curves[c])
-            b.setText(CH_LABEL.get(c, c) + (" •" if edited else ""))
+            b.setText(ch_label(c) + (" •" if edited else ""))
             col = CH_COL[c] if c in ("R", "G", "B") else None
             b.setStyleSheet(f"color: {col};" if col else "")
         self._busy = True
@@ -456,7 +461,7 @@ class CurvesEditor(QWidget):
     def _marks(self):
         for c, b in self.ch_buttons.items():
             edited = c in self.curves and not pc.is_identity(self.curves[c])
-            b.setText(CH_LABEL.get(c, c) + (" •" if edited else ""))
+            b.setText(ch_label(c) + (" •" if edited else ""))
 
     # ------------------------------------------------------------ edits
     def _moved(self):

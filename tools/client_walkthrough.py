@@ -1105,15 +1105,13 @@ class _Collect:
 
 
 #: messages that say nothing about the client:
-#: - the offscreen platform has no window manager: it cannot resize a window to its hint or raise it;
+#: - the offscreen platform has no window manager: it cannot resize a window to its hint or raise it, nor give a
+#:   menu the keyboard;
 #: - a run is a detached process that outlives the object that launched it (core/runner2.launch, by design): Python
 #:   notes it with a ResourceWarning, which it hides by default (the tour shows every warning)
-#: - the FITS export: the engine's ``render/layers.oriented_wcs`` builds its WCS from the header-only wcs.fits (NAXIS
-#:   0), which astropy notes; the WCS written is right (checked with astropy and siril-cli). Engine side, to quiet there.
 HARMLESS = (re.compile(r"^Qt: This plugin does not support (propagateSizeHints|raise)\(\)$"),
-            re.compile(r"^ResourceWarning: subprocess \d+ is still running \(subprocess\.py:\d+\)$"),
-            re.compile(r"^log WARNING: FITSFixedWarning: The WCS transformation has more axes \(2\) than the image it "
-                       r"is associated with \(0\)$"))
+            re.compile(r"^Qt: This plugin does not support grabbing the (keyboard|mouse)$"),   # a menu shown
+            re.compile(r"^ResourceWarning: subprocess \d+ is still running \(subprocess\.py:\d+\)$"))
 
 
 def _harmless(message: str) -> bool:

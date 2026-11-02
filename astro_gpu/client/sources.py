@@ -46,7 +46,7 @@ from .frames import fexp, night_text
 from .i18n import _, hours_text, number, plural
 from .imageview import ImageView, ViewImage, quick_thumbnail
 from .services.inspect import FrameItem, ProjectFrames, add_scan, light_thumb, service_of, set_calibration_excluded
-from .widgets import NEW, OK, WARN, clear, hline, label, para
+from .widgets import NEW, OK, WARN, ElidedLabel, clear, hline, label, para
 
 # (key, title, section): plain English, translated where shown
 GROUPS = [("lights", "Lights", "Lights"), ("darks", "Darks", "Calibration"), ("flats", "Flats", "Calibration"),
@@ -913,7 +913,8 @@ class SourcesView(QWidget):
         self.rv.addWidget(hline())
         if self.items:
             f = self.items[min(self.cur, len(self.items) - 1)]
-            self.rv.addWidget(label(_("Shown frame: {file}").format(file=f.name), "h2"))
+            # a long file name is shortened in the middle (its whole name in the tooltip), never cut at the end
+            self.rv.addWidget(ElidedLabel(_("Shown frame: {file}").format(file=f.name), "h2"))
             st = self.service.stats.get(f.path)
             rows = []
             if self.group == "lights":

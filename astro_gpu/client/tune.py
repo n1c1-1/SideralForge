@@ -267,7 +267,9 @@ def rejection_rate_text(d) -> str:
         return ""
     lo, hi = (rej.get("reference_pct") or [0.1, 0.5])[:2]
     pct = float(pct)
-    out = _("Rejected pixels: {pct} %").format(pct=number(pct, 2 if pct < 10 else 1))
+    # a tiny share keeps its first figures (0.0010 %, as the Measurements say), never "0.00 %"
+    out = _("Rejected pixels: {pct} %").format(pct=number(pct, 1 if pct >= 10 else 2 if pct >= 0.01 or pct == 0
+                                                       else 4))
     guide = _("Siril's usual range: {lo} to {hi} %").format(lo=number(lo, 1), hi=number(hi, 1))
     if pct < lo:
         guide += " · " + _("below it: few outliers were found")
