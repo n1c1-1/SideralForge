@@ -800,6 +800,6 @@ class HomeView(QWidget):
     def open_other(self):
         f, _x = QFileDialog.getOpenFileName(self, _("Open project"), prefs.get("workspace"),
                                             _("Projects (*.astroproj)") + ";;"
-                                            + _("Projects of the previous version (project.json)"))
+                                            + _("Projects made with an older version (project.json)"))
         if f:
             self.openProject.emit(Path(f).parent.as_posix())

@@ -269,7 +269,7 @@ CATALOG = {
             N("denoise_ai", "force", "Strength", "float", 0.8, "Blend between the denoised and the original image.",
               lo=0.0, hi=1.0, step=0.05),
             N("denoise_ai", "model", "Model", "choice", "Bundled", "The network applied.",
-              choices=["Bundled", "GraXpert (licence to check)"]),
+              choices=["Bundled", "Generic network"]),
         ]),
         ("NL-Bayes", [
             N("denoise_cl", "force", "Strength", "float", 1.0, "How much of the measured noise is removed.", lo=0.0,

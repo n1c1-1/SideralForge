@@ -811,7 +811,7 @@ class Main(QMainWindow):
         self.open_project(root)
 
     def offer_import(self, root: Path):
-        """A project of the previous version: it opens once imported into the workspace; its folder is never
+        """A project made with an older version: it opens once imported into the workspace; its folder is never
         written."""
         if not READY["import_v1"]:
             box = self.import_box(root)
@@ -834,7 +834,7 @@ class Main(QMainWindow):
 
     def import_box(self, root: Path) -> QMessageBox:
         return QMessageBox(QMessageBox.Information, _("Open project"), _(
-            "“{name}” was made with the previous version. Import it into the workspace to open it here; its folder "
+            "“{name}” was made with an older version. Import it into the workspace to open it here; its folder "
             "is never changed.").format(name=Path(root).name), QMessageBox.Ok, self)
 
     # ------------------------------------------------------------ frames, runs, export, undo

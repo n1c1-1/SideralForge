@@ -80,7 +80,6 @@
   "Click: add a point · drag: move · Ctrl+click or drag out: delete · arrows: nudge": "Clic : ajouter un point · glisser : déplacer · Ctrl+clic ou glisser dehors : supprimer · flèches : ajuster",
   "Color Negative": "Négatif couleur",
   "Color model": "Modèle de couleur",
-  "Contrast and curves": "Contraste et courbes",
   "Contrast limit": "Limite de contraste",
   "Cross Process": "Traitement croisé",
   "Cubic spline": "Spline cubique",
@@ -156,5 +155,5 @@
   "The same curve on the red, green and blue channels": "La même courbe sur les canaux rouge, vert et bleu",
   "This file cannot be read: {why}": "Ce fichier ne peut pas être lu : {why}",
   "This file cannot be written: {why}": "Ce fichier ne peut pas être écrit : {why}",
-  "Unsharp mask, as in Photoshop": "Accentuation par masque flou, comme dans Photoshop"
+  "Unsharp mask": "Accentuation par masque flou"
 }

@@ -1,4 +1,4 @@
-"""A project of the previous version (v1): the dialog that imports it, so that it opens here.
+"""A project made with an older version (v1): the dialog that imports it, so that it opens here.
 
 The import (``api.import_v1``) makes a new project in the workspace: the definition of the old project, and the results
 that are still valid, copied under their new keys. The old folder is never written. First a dry run in the worker says
@@ -118,8 +118,8 @@ class PreviousVersionDialog(QDialog):
         v = QVBoxLayout(self)
         v.setContentsMargins(18, 16, 18, 14)
         v.setSpacing(10)
-        v.addWidget(label(_("A project of the previous version"), "h1"))
-        intro = label(_("“{name}” was made with the previous version. Its workflows and the results that are still "
+        v.addWidget(label(_("A project made with an older version"), "h1"))
+        intro = label(_("“{name}” was made with an older version. Its workflows and the results that are still "
                         "valid are copied into a new project of the workspace; its own folder is never "
                         "changed.").format(name=self.old.name), "dim", wrap=True)
         v.addWidget(intro)

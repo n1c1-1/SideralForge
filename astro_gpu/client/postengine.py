@@ -390,7 +390,7 @@ FILTERS = {
                             P("tint", "Green / magenta", -1, 1, 0, step=0.01)]),
     # ---- detail
     "sharpen": dict(name="Sharpen", family="Detail", fn=f_sharpen,
-                    source="Unsharp mask, as in Photoshop",
+                    source="Unsharp mask",
                     params=[P("strength", "Strength", 0, 2, 0, step=0.01),
                             P("radius", "Radius", 0.5, 4, 1.2, "px", 0.1)]),
     "ml_sharpen": dict(name="Multiscale sharpening", family="Detail", fn=f_ml_sharpen,

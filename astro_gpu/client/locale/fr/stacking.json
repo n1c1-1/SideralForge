@@ -29,7 +29,7 @@
  "Blue": "Bleu",
  "Coverage": "Couverture",
  "Coverage variation (std / median): {parts}": "Variation de la couverture (écart-type / médiane) : {parts}",
- "even under {limit} % (DrizzlePac)": "régulière sous {limit} % (DrizzlePac)",
+ "even under {limit} %": "régulière sous {limit} %",
  "Rule": "Règle",
  "Every aligned frame is kept, except those weighing less than 5 % of the best one.": "Toutes les images alignées sont gardées, sauf celles qui pèsent moins de 5 % de la meilleure.",
  "Frames far worse than the night's median (over 2.5 σ) in star size or roundness are left out, then those weighing less than 5 % of the best one.": "Les images bien plus mauvaises que la médiane de la nuit (plus de 2,5 σ) en taille des étoiles ou en rondeur sont écartées, puis celles qui pèsent moins de 5 % de la meilleure.",

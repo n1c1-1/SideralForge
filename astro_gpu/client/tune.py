@@ -306,7 +306,7 @@ def coverage_text(d, drizzle: bool) -> str:
     if not parts:
         return ""
     head = _("Coverage variation (std / median): {parts}").format(parts=" · ".join(parts))
-    return head + "   ·   " + html.escape(_("even under {limit} % (DrizzlePac)").format(limit=number(limit, 0)), quote=False) + \
+    return head + "   ·   " + html.escape(_("even under {limit} %").format(limit=number(limit, 0)), quote=False) + \
         "<br>" + html.escape(_(COVERAGE_DRIZZLE_NOTE), quote=False)
 
 
