@@ -77,6 +77,20 @@ CHANGES: dict[str, dict[str, str]] = {
     "S6": {"channel_align": "per_block"},
 }
 ALL_ON = {k: v for ch in CHANGES.values() for k, v in ch.items()}
+#: since 2 November an empty configuration means the NEW defaults (Moffat star size, coverage rule, minimum-weight
+#: selection): the previous version is now stored explicitly, so that it keeps the keys (stages/v2.KEY_BASELINE) of its
+#: old results. The configurations of the first crossed pass (OLD, OLD-bis, S1 ... V2-Sk) are built on it; four of the
+#: six changes (S2, S3, S5, S6) were removed from the engine on 2 November, their settings are read as unset.
+LEGACY = {"fwhm_method": "legacy", "scale_rule": "legacy", "selection": "legacy"}
+#: the bench of 2 November (docs/pilot/BENCH.md "Banc du 2 novembre"), with today's engine: our drizzle (today's
+#: defaults), the same with PixInsight's rejection, our classic stack, the same without the white balance before the
+#: debayering (exactly Siril's), and the previous version for reference
+TODAY = ["PI-own", "PI-int", "CL", "CL-off", "LEG"]
+TODAY_LABELS = {"PI-own": "notre drizzle", "PI-int": "notre drizzle avec le rejet de PixInsight",
+                "CL": "notre empilement classique", "CL-off": "notre empilement classique sans équilibrage",
+                "LEG": "l'ancienne version"}
+#: the configurations that keep the catalogue of the faint stars (the star list of the measures comes from the first)
+KEEP_FAINT = ("OLD", "LEG")
 LABELS = {
     "OLD": "ancienne version (tout par défaut)",
     "OLD-bis": "ancienne version, recalage à peine différent (seuil 7,9 σ) : le bruit d'un passage à l'autre",
@@ -104,19 +118,24 @@ REPLICATE_SIGMA = 7.9
 
 def configs(rule_method: str | None = None) -> dict[str, dict]:
     """Every configuration: its switches (V2-auto only once the rule's advice is known)."""
-    d: dict[str, dict] = {"OLD": {}, "OLD-bis": {"detect_sigma": REPLICATE_SIGMA}}
+    d: dict[str, dict] = {"OLD": dict(LEGACY), "OLD-bis": {**LEGACY, "detect_sigma": REPLICATE_SIGMA}}
     for k, ch in CHANGES.items():
-        d[k] = dict(ch)
+        d[k] = {**LEGACY, **ch}
         if k == "S4":
-            d["S4b"] = {"selection": "sota", "selection_transparency": "off"}
-    d["S7"] = {"method": "classic"}
-    d["V2"] = dict(ALL_ON)
+            d["S4b"] = {**LEGACY, "selection": "sota", "selection_transparency": "off"}
+    d["S7"] = {**LEGACY, "method": "classic"}
+    d["V2"] = {**LEGACY, **ALL_ON}
     if rule_method:
-        d["V2-auto"] = {**ALL_ON, "method": rule_method}
-    d["V2-T"] = {**ALL_ON, "selection_transparency": "off"}
-    d["V2-C"] = {**ALL_ON, "method": "classic"}
+        d["V2-auto"] = {**LEGACY, **ALL_ON, "method": rule_method}
+    d["V2-T"] = {**LEGACY, **ALL_ON, "selection_transparency": "off"}
+    d["V2-C"] = {**LEGACY, **ALL_ON, "method": "classic"}
     for k, ch in CHANGES.items():
-        d[f"V2-{k}"] = {a: b for a, b in ALL_ON.items() if a not in ch}
+        d[f"V2-{k}"] = {**LEGACY, **{a: b for a, b in ALL_ON.items() if a not in ch}}
+    d["PI-own"] = {}
+    d["PI-int"] = {"drizzle_rejection": "integration"}
+    d["CL"] = {"method": "classic"}
+    d["CL-off"] = {"method": "classic", "classic_cfa_balance": "off"}
+    d["LEG"] = dict(LEGACY)
     return d
 
 
@@ -130,7 +149,7 @@ def stage_params(cfg: dict, name: str) -> dict[str, dict]:
     for k, v in cfg.items():
         st = "register" if k in REGISTER_KEYS else "catalogs" if k in CATALOG_KEYS else "stack"
         out.setdefault(st, {})[k] = v
-    if name != "OLD":
+    if name not in KEEP_FAINT:
         out.setdefault("catalogs", {})["g_faint"] = 0.0
     return out
 
@@ -421,8 +440,11 @@ def engine_info(p, name: str) -> dict:
     return out
 
 
-def measure_crossed(case: str, level: str, names: list[str]) -> dict:
+def measure_crossed(case: str, level: str, names: list[str], extra_siril: dict[str, str] | None = None) -> dict:
+    """``extra_siril``: more Siril stacks to measure on the same sky, {label: its folder's level name} (Siril's
+    drizzle: {"Siril drizzle": "express_drizzle"})."""
     import measure as M
+    extra = dict(extra_siril or {})
     t0 = time.time()
     sv = C.norm_variant(case, None)
     p, _ = project(case, level)
@@ -447,7 +469,7 @@ def measure_crossed(case: str, level: str, names: list[str]) -> dict:
         else:
             seen[k] = n
     ours = [n for n in dirs if n not in same]
-    first = "OLD" if "OLD" in ours else ours[0]
+    first = next((n for n in KEEP_FAINT if n in ours), ours[0])     # the star list: the faint catalogue's
 
     class Geo(M.Img):
         def __init__(self, name, wcs, cover, H, W):        # noqa: D401 - the geometry of an image, no pixels
@@ -458,6 +480,10 @@ def measure_crossed(case: str, level: str, names: list[str]) -> dict:
 
     ref = M.load_siril(case, level, "stack_linear", sv)
     geos: dict[str, Geo] = {}
+    for n, folder in extra.items():
+        im = M.load_siril(case, folder, "stack_linear", sv)
+        geos[n] = Geo(n, im.wcs, im.cover, im.H, im.W)
+        del im
     for n in ours:
         im = M.load_ours(dirs[n], "stack")
         geos[n] = Geo(n, im.wcs, im.cover, im.H, im.W)
@@ -481,7 +507,10 @@ def measure_crossed(case: str, level: str, names: list[str]) -> dict:
     iso_shape = M.isolated(st, common & (st["g"] < 16.5) & (st["g"] > 8), 40 / 3600, 3.0)
 
     def load(n: str, which: str = "stack"):
-        im = M.load_ours(dirs[n], which)
+        if n in extra:
+            im = M.load_siril(case, extra[n], "stack_linear" if which == "stack" else "color_linear", sv)
+        else:
+            im = M.load_ours(dirs[n], which)
         if which == "stack":
             im.cover = geos[n].cover
             im.dx, im.dy = geos[n].dx, geos[n].dy
@@ -489,7 +518,7 @@ def measure_crossed(case: str, level: str, names: list[str]) -> dict:
     shapes = {}
     M.refine_shift(ref, st, bright)
     shapes[SIRIL] = M.star_shapes(ref, st, iso_shape, ref)
-    for n in ours:
+    for n in list(extra) + ours:
         im = load(n)
         M.refine_shift(im, st, bright)
         geos[n].dx, geos[n].dy = im.dx, im.dy
@@ -510,7 +539,7 @@ def measure_crossed(case: str, level: str, names: list[str]) -> dict:
     ref_ph = M.photometry(ref, st, iso_f, shapes[SIRIL].get("fwhm_px", 3.0), ref_mask, gmin)
     out: dict = {}
     snrs, fsel = {}, {}
-    for n in [SIRIL] + ours:
+    for n in [SIRIL] + list(extra) + ours:
         fw = shapes[n].get("fwhm_px", 3.0)
         if n == SIRIL:
             im, mask, ph = ref, ref_mask, ref_ph
@@ -553,7 +582,8 @@ def measure_crossed(case: str, level: str, names: list[str]) -> dict:
         ph2 = M.photometry(im2, st, iso_f, fw, mask, gmin)
         e["flatness"] = M.flatness(im2, mask, ph2["zp"], bn["sky_sb"])
         del im2, ph2
-        e["engine"] = engine_info(p, n) if n != SIRIL else {"rejected_pct": _siril_rejection(case, level)}
+        e["engine"] = (engine_info(p, n) if n not in extra and n != SIRIL
+                       else {"rejected_pct": _siril_rejection(case, extra.get(n, level))})
         out[n] = e
         print(f"{n}: depth {bn['depth5_mag']:.2f} noise {bn['sb_mag_arcsec2']:.2f}/{bn['sb_large_mag_arcsec2']:.2f} "
               f"snr {e['target']['snr']} fwhm {shapes[n].get('fwhm_centre_arcsec')} "
@@ -566,7 +596,7 @@ def measure_crossed(case: str, level: str, names: list[str]) -> dict:
         s = snrs[n][common_f]
         out[n]["faint_stars"] = {"found": int((s >= 5).sum()), "of": int(len(s)),
                                  "g50": M._g50(s >= 5, st["g"][common_f])}
-    return {"case": case, "level": level, "images": [SIRIL] + ours, "same_as": same, "first": first,
+    return {"case": case, "level": level, "images": [SIRIL] + list(extra) + ours, "same_as": same, "first": first,
             "box_arcsec": bs * ref.scale, "gaia_stars": int(len(st["g"])), "drift": {k: (v.tolist() if isinstance(
                 v, np.ndarray) else v) for k, v in dr.items()}, "by_image": out, "seconds": round(time.time() - t0, 1)}
 
@@ -1032,6 +1062,8 @@ def main() -> int:
     ap.add_argument("level", nargs="?", default="express")
     ap.add_argument("--configs", nargs="*")
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--out", help="measure: the name of the json (default crossed_<level>)")
+    ap.add_argument("--siril-drizzle", action="store_true", help="measure: Siril's drizzle stack too")
     ap.add_argument("--export", nargs="*", default=["OLD", "V2", "V2-auto"])
     a = ap.parse_args()
     if a.cmd == "report":
@@ -1055,8 +1087,9 @@ def main() -> int:
         r2 = run(a.case, a.level, a.device, names, a.export)
         return r1 or r2
     if a.cmd == "measure":
-        r = measure_crossed(a.case, a.level, names)
-        out = C.BENCH / a.case / f"crossed_{a.level}.json"
+        r = measure_crossed(a.case, a.level, names,
+                            {"Siril drizzle": f"{a.level}_drizzle"} if a.siril_drizzle else None)
+        out = C.BENCH / a.case / f"{a.out or 'crossed_' + a.level}.json"
         out.write_text(json.dumps(r, indent=1, default=float), encoding="utf-8")
         print(f"written {out} ({r['seconds']:.0f} s)")
         return 0
