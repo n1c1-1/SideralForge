@@ -760,3 +760,14 @@ pixels (after the engine agents finish), Express bench 17:00 on GPU 0, French re
 - Level 2 per the agent: 792 passed, 18 failed + 2 errors, all on the outdated heart_a7s dev copies.
 - Running: bench measure fix (exact apertures + aperture correction; target regions chosen on an independent image),
   re-measure, BENCH.md/DRIZZLE_GAP.md update, ~16:30. Then the French review pack POINT_19H.md.
+
+## 2026-11-02, 15:20 — review pack ready
+
+- Astrometry tab: "Background image" list replaces Compare (user request 14:00), a559767; final render placed by a
+  shifted/scaled solution.
+- Bench measure fixed and re-measured (8c95855): exact apertures + aperture correction; target regions from an
+  independent image. Heart balance cost 0.57 -> 0.17 mag; Iris no longer apart; our drizzle vs Siril drizzle: deeper
+  in 6/6, target S/N −3 % on average (Heart −14 %, M51 −10 %, fragile); advice still 3/6.
+- POINT_19H.md written (French): what to test, results, 7 decisions with recommendations (PixInsight rejection as an
+  option; balance on; colour v5 kept; "colours like Siril" option; advice kept visible and reviewed on the 9
+  projects; Siril 1.4.5 update with approval; then old version removal, dev copies, 9 projects in batches).
