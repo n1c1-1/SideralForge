@@ -761,7 +761,7 @@ pixels (after the engine agents finish), Express bench 17:00 on GPU 0, French re
 - Running: bench measure fix (exact apertures + aperture correction; target regions chosen on an independent image),
   re-measure, BENCH.md/DRIZZLE_GAP.md update, ~16:30. Then the French review pack POINT_19H.md.
 
-## 2026-11-02, 15:20 — review pack ready
+## 2026-11-02, 15:00 — review pack ready
 
 - Astrometry tab: "Background image" list replaces Compare (user request 14:00), a559767; final render placed by a
   shifted/scaled solution.
