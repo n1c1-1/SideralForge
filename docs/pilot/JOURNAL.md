@@ -771,3 +771,13 @@ pixels (after the engine agents finish), Express bench 17:00 on GPU 0, French re
 - POINT_19H.md written (French): what to test, results, 7 decisions with recommendations (PixInsight rejection as an
   option; balance on; colour v5 kept; "colours like Siril" option; advice kept visible and reviewed on the 9
   projects; Siril 1.4.5 update with approval; then old version removal, dev copies, 9 projects in batches).
+
+## 2026-11-02, 17:50 — decisions 1–5 applied (0b48b98)
+
+- User (15:05): "fait 1 à 5 maintenant… on ne mentionne ni Siril ni PixInsight" (UI). 1–3, 5 were already the
+  defaults. New colour setting "correction" full | per_colour (Heart drizzle: colour noise ×1.43/1.24/1.75 -> ×1;
+  star colour error B−R 0.116 -> 0.169). UI texts describe methods; stored values unchanged.
+- User: credit data sources properly, and be sure of the origin. Help › About "Data sources" added. Found: Siril's NGC/IC
+  lists come from W. Steinicke's Revised NGC/IC (non-commercial, asks to be informed); Gaia DR3 CC BY-NC 3.0 IGO; NSNS
+  CC BY-NC-SA 4.0. Messier list origin not verified. To decide with the user (commercial use).
+- Temp workflow "PI-own · one factor (temp)" left in the Heart bench copy for the user to look at.
