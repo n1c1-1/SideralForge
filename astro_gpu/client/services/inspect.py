@@ -1103,7 +1103,8 @@ def wcs_source(p, wid: int, which: str = "current"):
 
 class ScaledWcs:
     """The solution of the stack for a reduced, cropped picture of its grid (the final image): pixel (x, y) of the
-    picture is grid pixel (ox + (x + 0.5) f − 0.5, oy + (y + 0.5) f − 0.5). Only what the readout asks."""
+    picture is grid pixel (ox + (x + 0.5) f − 0.5, oy + (y + 0.5) f − 0.5). Only what the readout and the compare
+    ask."""
 
     def __init__(self, wcs, origin, f: float):
         self.wcs, self.ox, self.oy, self.f = wcs, float(origin[0]), float(origin[1]), float(f)
@@ -1112,6 +1113,88 @@ class ScaledWcs:
         f = self.f
         return self.wcs.pixel_to_world_values(self.ox + (np.asarray(x) + 0.5) * f - 0.5,
                                               self.oy + (np.asarray(y) + 0.5) * f - 0.5)
+
+    def world_to_pixel_values(self, ra, dec):
+        gx, gy = self.wcs.world_to_pixel_values(ra, dec)
+        f = self.f
+        return (np.asarray(gx) + 0.5 - self.ox) / f - 0.5, (np.asarray(gy) + 0.5 - self.oy) / f - 0.5
+
+
+# ---------------------------------------------------------------------------------------------- where a picture sits
+def _stack_meta(p, wid: int, which: str) -> tuple[str, float, int, int]:
+    """(the registration's key, the drizzle scale, the stack grid's width and height) of a workflow's stack result:
+    its grid is the reference frame of that registration enlarged by the scale (stage stack: X = (x + 0.5) s - 0.5)."""
+    import json
+    st = api.stage_outputs(p, wid, "stack", which) or api.stage_outputs(p, wid, "stack")
+    if st is None:
+        raise LookupError("no stack result")
+    meta = json.loads((Path(st.dir) / "drz_meta.json").read_text(encoding="utf-8"))
+    reg = (st.manifest.get("inputs") or {}).get("register") or ""
+    if not reg:
+        out = api.stage_outputs(p, wid, "register", which) or api.stage_outputs(p, wid, "register")
+        reg = out.key if out is not None else ""
+    W, H = int(meta["width"]), int(meta["height"])
+    sensor = meta.get("sensor") or [W, H]
+    s = float(meta.get("scale") or (W / float(sensor[0])))
+    return str(reg or st.key), s, W, H
+
+
+def stack_place(p, wid: int, which="current"):
+    """Where a picture on the stack grid of a workflow sits (``imageview.Placement``), read in the viewer's thread: on
+    the grid of the registration's reference frame, at the drizzle scale. Its size (w, h) tells a reduced copy of the
+    grid (an engine preview of it) from the grid itself."""
+    from ..imageview import Placement
+    which = _w(which, "stack")
+
+    def place(w: int, h: int):
+        reg, s, W, H = _stack_meta(p, wid, which)
+        fx, fy = (W / float(w), H / float(h)) if (w, h) != (W, H) else (1.0, 1.0)
+        return Placement.scaled(("reference frame", reg), fx / s, fy=fy / s)
+    return place
+
+
+def reference_frame_place(p, wid: int, which="current"):
+    """The reference frame of the registration (calibrated, on the sensor): the grid the stacks are placed on."""
+    from ..imageview import Placement
+    which = _w(which, "stack")
+
+    def place(w: int, h: int):
+        reg, _s, _W, _H = _stack_meta(p, wid, which)
+        return Placement(("reference frame", reg))
+    return place
+
+
+def render_place(p, wid: int, stack_which: str, grid, origin, size):
+    """Where a final image sits: a part of the stack grid (``grid`` its size there, ``origin`` its corner: the render
+    canvas), reduced to ``size`` (the render's half size); then the stack grid's own placement (``stack_which``: the
+    stack result the render was made from, current or previous)."""
+    from ..imageview import Placement
+    on_stack = stack_place(p, wid, stack_which)
+
+    def place(w: int, h: int):
+        f = float(grid[0]) / float(size[0] or w)
+        fy = float(grid[1]) / float(size[1] or h)
+        sx, sy = (float(v) for v in origin)
+        _reg, _s, W, H = _stack_meta(p, wid, _w(stack_which, "stack"))
+        return Placement.scaled(None, f, sx, sy, fy=fy).then(on_stack(W, H))
+    return place
+
+
+def preview_wcs_source(p, wid: int, which_ast: str, stage: str, name: str, which="current"):
+    """The solution of the stack for an engine preview of its grid (a reduced copy: the H-alpha survey), read in the
+    viewer's thread: the preview's size against the stack grid's gives the reduction."""
+    def load():
+        w = _wcs_of(p, wid, which_ast) or _wcs_of(p, wid, "current")
+        out = api.stage_outputs(p, wid, stage, _w(which, stage))
+        f = out.previews.get(name) if out is not None else None
+        if w is None or f is None:
+            return None
+        from PIL import Image
+        with Image.open(f) as im:
+            pw = im.size[0]
+        _reg, _s, W, _H = _stack_meta(p, wid, _w(which, "stack"))
+        return ScaledWcs(w, (0.0, 0.0), W / float(pw))
+    return load
 
 
 def final_wcs_source(p, wid: int, which: str, grid, origin, size):
@@ -1133,6 +1216,10 @@ class FlippedWcs:
 
     def pixel_to_world_values(self, x, y):
         return self.wcs.pixel_to_world_values(x, self.h - 1 - np.asarray(y, float))
+
+    def world_to_pixel_values(self, ra, dec):
+        x, y = self.wcs.world_to_pixel_values(ra, dec)
+        return x, self.h - 1 - np.asarray(y, float)
 
 
 def _reference_read(path: str):
@@ -1481,7 +1568,54 @@ def registration_bundle(p, wid: int) -> RegistrationBundle:
         rows = b.frames.rows if b.frames is not None else []
         if 0 <= b.data.ref < len(rows):
             b.ref_path, b.ref_name = rows[b.data.ref].path, rows[b.data.ref].name
+    if b.data is not None and not np.isfinite(b.data.dx).any():
+        _offsets_anyway(p, wid, which, b.data)
     return b
+
+
+def sensor_size(p, wid: int, which: str = "current") -> tuple[float, float] | None:
+    """The sensor's size (w, h) from whichever result of the workflow gives it: the calibration's cache description,
+    its master dark, the stack's grid description. None when none does."""
+    import json
+    cal = api.stage_outputs(p, wid, "calibrate", which) or api.stage_outputs(p, wid, "calibrate")
+    if cal is not None:
+        d = Path(cal.dir)
+        try:
+            c = json.loads((d / "cache.json").read_text(encoding="utf-8"))
+            return float(c["width"]), float(c["height"])
+        except (OSError, ValueError, KeyError):
+            pass
+        try:
+            shape = np.load(d / "master_dark.npy", mmap_mode="r").shape
+            return float(shape[-1]), float(shape[-2])
+        except (OSError, ValueError, IndexError):
+            pass
+    st = api.stage_outputs(p, wid, "stack", which) or api.stage_outputs(p, wid, "stack")
+    if st is not None:
+        try:
+            s = json.loads((Path(st.dir) / "drz_meta.json").read_text(encoding="utf-8")).get("sensor")
+            if s and len(s) == 2:
+                return float(s[0]), float(s[1])
+        except (OSError, ValueError):
+            pass
+    return None
+
+
+def _offsets_anyway(p, wid: int, which: str, data) -> None:
+    """The drift of the frames when the registration table could not give it (the sensor size unknown to it: no
+    inventory result): made from the registration's polynomials with the sensor size another result gives, as the
+    engine makes it (``core.diagnostics.frame_geometry``). Left NaN when no result gives the size."""
+    size = sensor_size(p, wid, which)
+    out = api.stage_outputs(p, wid, "register", which)
+    if size is None or out is None or not (Path(out.dir) / "reg.npz").is_file():
+        return
+    from ...core.diagnostics import frame_geometry
+    with np.load(Path(out.dir) / "reg.npz") as z:
+        coef = np.asarray(z["coef"], float)[:data.n]
+    if len(coef) != data.n:
+        return
+    dx, dy, _rot, _sc = frame_geometry(coef, size[0], size[1], np.asarray(data.aligned, bool))
+    data.dx, data.dy = dx, dy
 
 
 def frame_table_any(p, wid: int):

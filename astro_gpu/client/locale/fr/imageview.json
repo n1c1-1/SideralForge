@@ -127,5 +127,15 @@
  "Keeps the stretch of the frame shown for the next frames of the same kind, so that blinking shows what changes. Off: each frame gets its own automatic stretch.": "Garde l'étirement de l'image affichée pour les images suivantes du même type, pour que le clignotement montre ce qui change. Décoché : chaque image a son propre étirement automatique.",
  "Linear, each channel from the lowest to the highest value of the smoothed flat: its vignetting and its dust shadows (A)": "Linéaire, chaque canal de la plus basse à la plus haute valeur de la flat lissée : son vignettage et ses ombres de poussières (A)",
  "Linear, channels linked, from zero to the model's brightest point: the colour shown is the model's own (A)": "Linéaire, canaux liés, de zéro au point le plus clair du modèle : la couleur affichée est celle du modèle (A)",
- "Each channel centred on its own level: black {k} σ under the median, the median at mid grey, white at the 99.99th percentile (A)": "Chaque canal centré sur son propre niveau : noir à {k} σ sous la médiane, la médiane en gris moyen, blanc au 99,99e centile (A)"
+ "Each channel centred on its own level: black {k} σ under the median, the median at mid grey, white at the 99.99th percentile (A)": "Chaque canal centré sur son propre niveau : noir à {k} σ sous la médiane, la médiane en gris moyen, blanc au 99,99e centile (A)",
+ "Not aligned: no common grid is known for “{name}”; it is matched to this image by its width": "Non aligné : aucune grille commune n'est connue pour « {name} » ; elle est ajustée à cette image par sa largeur",
+ "the compared image": "l'image comparée",
+ "× {k}": "× {k}",
+ "turned {a}°": "tournée de {a}°",
+ "shifted {dx}, {dy} px": "décalée de {dx}, {dy} px",
+ "on the same pixels": "sur les mêmes pixels",
+ "⇄ Aligned for display by the astrometric solutions: “{name}” resampled onto this image ({what})": "⇄ Alignée pour l'affichage par les solutions astrométriques : « {name} » rééchantillonnée sur cette image ({what})",
+ "⇄ Aligned for display by the geometry of the results (drizzle scale, crop, size): “{name}” resampled onto this image ({what})": "⇄ Alignée pour l'affichage par la géométrie des résultats (échelle du drizzle, recadrage, taille) : « {name} » rééchantillonnée sur cette image ({what})",
+ "their distortions followed, up to {d} px": "leurs distorsions suivies, jusqu'à {d} px",
+ "RGB": "RVB"
 }

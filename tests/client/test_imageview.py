@@ -567,6 +567,198 @@ def test_split_is_one_continuous_field(qapp, loader):
     assert np.array_equal(a.reshape(a.shape[0], -1, 3)[:, keep], b.reshape(b.shape[0], -1, 3)[:, keep])
 
 
+def _grab(widget) -> np.ndarray:
+    q = widget.grab().toImage()
+    q = q.convertToFormat(q.Format.Format_RGB888)
+    return np.frombuffer(q.constBits(), np.uint8).reshape(q.height(), q.bytesPerLine())[:, :q.width() * 3] \
+        .reshape(q.height(), q.width(), 3).copy()
+
+
+def _one_star(h, w, x, y, level=100.0, peak=20000.0, sigma=2.0) -> np.ndarray:
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    img = level + peak * np.exp(-((xx + 0.5 - x) ** 2 + (yy + 0.5 - y) ** 2) / (2 * sigma ** 2))
+    return np.repeat(img[None], 3, axis=0).astype(np.float32)
+
+
+def _brightest(rgb: np.ndarray, x0: int, x1: int) -> tuple[float, float]:
+    """(x, y) of the star between the columns x0 and x1 of a grab: the centroid of its pixels above half its peak (the
+    brightest pixel alone is any pixel of a plateau)."""
+    lum = rgb[:, x0:x1].astype(np.float64).sum(2)
+    lum -= np.median(lum)
+    lum[lum < 0.5 * lum.max()] = 0.0
+    yy, xx = np.mgrid[0:lum.shape[0], 0:lum.shape[1]]
+    return float((xx * lum).sum() / lum.sum()) + x0, float((yy * lum).sum() / lum.sum())
+
+
+def test_compare_puts_both_images_on_one_grid(qapp, loader):
+    """A compared image cut and reduced from another grid (a final image: a crop at half size of the stack) is drawn
+    on the grid of the image shown, by their placements: the same star at the same place on the screen, in split and
+    side by side, at any zoom; the line above the images says so; the readout reads the compared image's own pixel."""
+    W, H = 800, 600
+    sx, sy = 437.0, 263.0                                   # the star, on the big grid
+    big = _one_star(H, W, sx, sy)
+    ox, oy, f = 120, 80, 2                                  # the small one: the crop (120, 80) at half size
+    small = _one_star(260, 300, (sx - ox) / f, (sy - oy) / f, sigma=1.0)
+    frame = ("reference frame", "k")
+    v = make_view(qapp, loader)
+    v.canvas.minimap_on = v.canvas2.minimap_on = False
+    show(v, iv.ViewImage(small, "Final", key="al-small", place=iv.Placement.scaled(frame, f, ox, oy)))
+    v.set_compare_targets([iv.ViewImage(big, "Big", key="al-big", place=iv.Placement(frame))], current=0)
+    assert v.wait(30)
+    QApplication.processEvents()
+    al = v.compare_alignment()
+    assert al is not None and al.how == "grid" and al.scale == pytest.approx(2.0)
+    assert al.apply(0.0, 0.0) == pytest.approx((ox, oy))
+    note = v.alignment_note()
+    assert v.align_bar.isVisible() and "geometry of the results" in note and "“Big”" in note and "× 0.50" in note
+    # split: the divider over the star, half of the field from each image - the star's centre is in the same place
+    c = v.canvas
+    c.split_names = ("", "")
+    for zoom in (None, 300.0):
+        if zoom:
+            v.set_zoom_percent(zoom)
+            c.zoom_to(c.scale, (sx - ox) / f, (sy - oy) / f)
+        star = c.img_to_w((sx - ox) / f, (sy - oy) / f)
+        c.split = 1.0                                         # the whole canvas from the compared image
+        QApplication.processEvents()
+        left = _brightest(_grab(c), 0, c.width() - 30)
+        c.split = 0.0                                         # the whole canvas from the image shown
+        QApplication.processEvents()
+        right = _brightest(_grab(c), 30, c.width())
+        assert abs(left[0] - right[0]) <= 1 and abs(left[1] - right[1]) <= 1, (zoom, left, right)
+        assert abs(left[0] - star.x()) <= 1 and abs(left[1] - star.y()) <= 1, (zoom, left, star)
+    c.split = 0.5
+    # the readout of the compared image reads its own pixel under the cursor
+    v._hover(c, (sx - ox) / f, (sy - oy) / f, 1)
+    assert v.readout.text().startswith("Big") and f"x {int(sx):>5}  y {int(sy):>5}" in v.readout.text()
+    # side by side: the same point of the field in both canvases
+    v.set_compare_mode("side")
+    QApplication.processEvents()
+    v.fit()
+    QApplication.processEvents()
+    assert v.canvas2.display is v._cmp and v.canvas2.display.size() == (300, 260)
+    v.canvas.title = v.canvas2.title = ""                    # the name tags are bright too
+    a, b = _grab(v.canvas), _grab(v.canvas2)
+    pa, pb = _brightest(a, 0, a.shape[1]), _brightest(b, 0, b.shape[1])
+    star = v.canvas.img_to_w((sx - ox) / f, (sy - oy) / f)
+    assert abs(pa[0] - pb[0]) <= 1 and abs(pa[1] - pb[1]) <= 1 and abs(pa[0] - star.x()) <= 1, (pa, pb, star)
+    v.canvas2.zoom_by(3.0)                                    # zoom and pan stay linked on the one grid
+    QApplication.processEvents()
+    assert v.canvas.scale == pytest.approx(v.canvas2.scale) and v.canvas.cx == pytest.approx(v.canvas2.cx)
+    # no compare: no line
+    v.set_compare(None)
+    assert not v.align_bar.isVisible() and v.alignment_note() == ""
+
+
+def test_compare_by_the_astrometric_solutions_and_by_width(qapp, loader):
+    """Two images of the same sky with no common grid but each its solution (another program's result, turned and
+    shifted) are put on each other by the solutions; with neither, the compared one is matched by its width, and the
+    line says it is not aligned. The same grid needs nothing (no line)."""
+    from astropy.wcs import WCS
+    W, H = 500, 400
+    a_wcs = simple_wcs(W, H)
+    ra, dec = a_wcs.pixel_to_world_values(311.0 - 0.5, 147.0 - 0.5)
+    b_wcs = WCS(naxis=2)                                      # the other one: turned 12°, shifted, 1.25x the pixels
+    b_wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    b_wcs.wcs.crval = [40.01, 61.005]
+    b_wcs.wcs.crpix = [260.0, 190.0]
+    s, t = 2.0 / 3600 / 1.25, np.radians(12.0)
+    b_wcs.wcs.cd = [[-s * np.cos(t), s * np.sin(t)], [s * np.sin(t), s * np.cos(t)]]
+    bx, by = b_wcs.world_to_pixel_values(ra, dec)
+    A = _one_star(H, W, 311.0, 147.0)
+    B = _one_star(H + 100, W + 120, float(bx) + 0.5, float(by) + 0.5, sigma=2.5)
+    v = make_view(qapp, loader)
+    v.canvas.minimap_on = False
+    show(v, iv.ViewImage(A, "Ours", key="sky-a", wcs=a_wcs))
+    v.set_compare_targets([iv.ViewImage(B, "Theirs", key="sky-b", wcs=b_wcs),
+                           iv.ViewImage(A.copy(), "Same", key="sky-same", wcs=a_wcs),
+                           iv.ViewImage(B.copy(), "Bare", key="sky-bare")], current=0)
+    assert v.wait(30)
+    QApplication.processEvents()
+    al = v.compare_alignment()
+    assert al is not None and al.how == "sky" and al.residual < 0.05
+    assert abs(al.angle) == pytest.approx(12.0, abs=0.1) and al.scale == pytest.approx(1.25, rel=1e-3)
+    assert "astrometric solutions" in v.alignment_note() and "turned" in v.alignment_note()
+    c = v.canvas
+    c.split_names = ("", "")
+    c.split = 1.0
+    QApplication.processEvents()
+    left = _brightest(_grab(c), 0, c.width() - 30)
+    star = c.img_to_w(311.0, 147.0)
+    assert abs(left[0] - star.x()) <= 1 and abs(left[1] - star.y()) <= 1, (left, star)
+    v.set_compare(1)                                          # the same grid: nothing to do, nothing said
+    assert v.wait(30)
+    assert v.compare_alignment() is None and not v.align_bar.isVisible()
+    v.set_compare(2)                                          # no geometry: the width, said
+    assert v.wait(30)
+    al = v.compare_alignment()
+    assert al.how == "width" and v.alignment_note().startswith("Not aligned")
+    assert al.scale == pytest.approx((W + 120) / W)
+
+
+class _Distorted:
+    """A solution with a distortion of its own (as two programs' solutions of one field differ: a few pixels in the
+    corners): its pixel = the plain one + k (r² - r0²) along the radius from the centre."""
+
+    def __init__(self, wcs, cx, cy, k):
+        self.wcs, self.cx, self.cy, self.k = wcs, cx, cy, k
+
+    def world_to_pixel_values(self, ra, dec):
+        x, y = self.wcs.world_to_pixel_values(ra, dec)
+        dx, dy = np.asarray(x) - self.cx, np.asarray(y) - self.cy
+        f = self.k * (dx * dx + dy * dy)
+        return x + f * dx, y + f * dy
+
+    def pixel_to_world_values(self, x, y):                     # (not needed by the compare: one way is enough)
+        return self.wcs.pixel_to_world_values(x, y)
+
+
+def test_compare_by_the_solutions_follows_their_distortions(qapp, loader):
+    """When the two solutions differ by more than an affine map (their distortions), the compared image is drawn
+    through them point by point: a star in a corner, 4 px off the affine map, lands where it is in the image shown."""
+    W, H = 600, 400
+    a_wcs = simple_wcs(W, H)
+    b_plain = simple_wcs(W, H)
+    b_wcs = _Distorted(b_plain, W / 2, H / 2, 6e-8)               # 4 px at the corners (r = 360 px)
+    stars_a = [(60.0, 50.0), (300.0, 200.0), (540.0, 350.0)]
+    A = sum(_one_star(H, W, x, y) for x, y in stars_a) / 3
+    B = np.zeros_like(A)
+    for x, y in stars_a:
+        ra, dec = a_wcs.pixel_to_world_values(x - 0.5, y - 0.5)
+        bx, by = b_wcs.world_to_pixel_values(ra, dec)
+        B += _one_star(H, W, float(bx) + 0.5, float(by) + 0.5) / 3
+    v = make_view(qapp, loader)
+    v.canvas.minimap_on = False
+    show(v, iv.ViewImage(A, "Ours", key="dist-a", wcs=a_wcs))
+    v.set_compare_targets([iv.ViewImage(B, "Theirs", key="dist-b", wcs=b_wcs)], current=0)
+    assert v.wait(30)
+    al = v.compare_alignment()
+    assert al.how == "sky" and al.field is not None and 1.0 < al.residual < 6.0
+    assert "distortions followed" in v.alignment_note()
+    for x, y in stars_a:                                       # the map, read back, is the solutions' own
+        ra, dec = a_wcs.pixel_to_world_values(x - 0.5, y - 0.5)
+        bx, by = b_wcs.world_to_pixel_values(ra, dec)
+        assert al.apply(x, y) == pytest.approx((float(bx) + 0.5, float(by) + 0.5), abs=0.3)
+    c = v.canvas
+    c.split_names = ("", "")
+    v.set_zoom_percent(400)
+    for x, y in (stars_a[0], stars_a[2]):                      # the corners, at 4x
+        c.zoom_to(c.scale, x, y)
+        star = c.img_to_w(x, y)
+        c.split = 1.0
+        QApplication.processEvents()
+        got = _brightest(_grab(c), 0, c.width() - 30)
+        assert abs(got[0] - star.x()) <= 1.5 and abs(got[1] - star.y()) <= 1.5, ((x, y), got, star)
+    c.split = 0.5
+
+
+def test_placements_compose():
+    stack = iv.Placement.scaled("f", 1 / 1.5)                  # a drizzle at 1.5 on its reference frame
+    final = iv.Placement.scaled(None, 2.0, 96, 64).then(stack)  # its crop at (96, 64), half size
+    assert final.frame == "f"
+    assert final.matrix() @ np.array([10.0, 20.0, 1.0]) == pytest.approx([(96 + 20) / 1.5, (64 + 40) / 1.5, 1.0])
+
+
 def test_sync_group_shares_view_and_optionally_the_stretch(qapp, loader):
     a = make_view(qapp, loader)
     b = make_view(qapp, loader)

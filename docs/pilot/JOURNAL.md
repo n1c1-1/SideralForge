@@ -651,6 +651,24 @@ Newest entries at the bottom. Times are local.
     removed, on a COPY of M31;
   - 4b Post tools: a PixInsight/Siril inventory (POST_TOOLS.md), a real Curves tool with the pro presets, and the
     missing filters that fit, tested.
+  - **4b done and committed (759aa6c):**
+    - Curves with channels RGB/K, R, G, B, L*, S, c*, H; Akima; presets from Photoshop's .acv files and astro
+      classics; user presets;
+    - GHS, arcsinh, MTF histogram and SCNR, checked against siril-cli (0.000 level);
+    - CLAHE; multiscale sharpening and noise reduction (starlet);
+    - the menu in 7 groups; drafts 38–191 ms.
+    - Left out: HDRMultiscaleTransform (algorithm not published in detail); saturation by hue, Unpurple and TGV, for
+      lack of time.
+    - Small items:
+      - the help line under the Curves editor is cut;
+      - test_post at level 1 takes 71 s (move its slow tests to level 3);
+      - POST.md §2.3 still lists 13 filters.
+  - 02:47 heartbeat: 4a has written nothing since about 01:08, and no Python process runs. A status message was sent.
+    If it is still silent at the next heartbeat, stop it and relaunch 4a from its files.
+  - 03:47 still silent, so it was stopped. Its last words: "Tests pass. Now the final screenshots".
+    - Found: `client/curveseditor.py` (4b's Curves editor) was left out of commit 759aa6c, while post3.py imports it.
+      Committed at once (7d59e33); HEAD's client imports checked alone.
+    - A finishing agent (opus) was relaunched for 4a from its uncommitted files: judge the diff, finish, screenshots.
 
 ### Queue for the end of P8 (engine unfrozen)
 1. Apply patches 1–3, run the tests and the 4-dataset non-regression, recompute only render_simple (Classic and Raw

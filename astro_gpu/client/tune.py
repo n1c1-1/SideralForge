@@ -10,7 +10,8 @@ What each block shows (the tabs are ``Steps.visuals``):
 
 * Calibration: the masters, every dark, flat, bias and dark flat (left out by hand, or taken back), the calibrated
   lights compared with the raw;
-* Registration: the reference frame, the charts (quality, drift, drift path, distribution) and the frame table;
+* Registration: the reference frame, the charts (quality, drift with its path under it, drift path, distribution) and
+  the frame table;
 * Selection: the thresholds chart and the frames;
 * Stacking: the stack compared with a calibrated frame and the half-stacks, the rejection map, the coverage, the
   weights;
@@ -536,11 +537,17 @@ class TuneView(QWidget):
             tb = QTabBar()
             tb.setDrawBase(False)
             tb.setExpanding(False)
+            # every tab stays in view when the row is short of room (its name shortened), never behind scroll arrows:
+            # the last tabs of Registration (Drift path, Distribution, Frames) went out of sight on a narrow window
+            tb.setUsesScrollButtons(False)
+            tb.setElideMode(Qt.ElideRight)
             for sp in vis:
                 n = tb.addTab(_(sp.caption) + ("  ◇" if sp.spec else ""))
                 if sp.spec:
                     tb.setTabEnabled(n, False)
                     tb.setTabToolTip(n, "◇ " + _("Not in the engine yet."))
+                else:
+                    tb.setTabToolTip(n, _(sp.caption))          # its whole name, when the row shortens it
             tb.setCurrentIndex(i)
             tb.currentChanged.connect(lambda j, vv=vis, kk=k: self._tab(kk, vv[j].key))
             self.head.addWidget(tb)
@@ -833,9 +840,13 @@ class TuneView(QWidget):
                 b = self._need("stack", self._keys(p, "stack", "register"), si.stack_bundle, p.pid)
                 vi = self._calibrated_vi(p, b.ref_path, b.ref_name) if isinstance(b, si.StackBundle) and \
                     b.ref_path else None
+                if vi is not None:                 # the frame the stack grid is drawn on: compared on the same sky
+                    vi.place = si.reference_frame_place(self.s.p, p.pid, self.steps.which_for(p, "stack"))
             else:
                 sp = self.steps.picture(p, key)
                 vi = self.steps.view_image(p, sp) if sp is not None else None
+                if vi is not None and sp.kind == "preview":      # an engine picture: shown as it is
+                    vi.stretched, vi.white, vi.units = True, 255.0, ""
             if vi is not None:
                 if j < len(spec.compare_names) and spec.compare_names[j]:
                     vi.name = _(spec.compare_names[j])
@@ -1035,8 +1046,11 @@ class TuneView(QWidget):
             return
         which = self.steps.which_for(p, spec.stage)
         wcs = si.final_wcs_source(self.s.p, p.pid, which, im.grid, im.origin, im.size) if im.grid else None
+        # where it sits: the render's crop of the stack grid at half size (compared on the same sky)
+        place = si.render_place(self.s.p, p.pid, self.steps.which_for(p, "stack"), im.grid, im.origin, im.size) \
+            if im.grid else None
         vi = ViewImage(im.stretched.arr, _("Final image"), key=("inspect", "render") + tuple(im.key), wcs=wcs,
-                       camera=False, stretched=True, white=255.0, units="")
+                       camera=False, stretched=True, white=255.0, units="", place=place)
         v.set_image(vi)
         targets = self._targets(p, k, spec)
         v.set_compare_mode("side")
@@ -1044,9 +1058,9 @@ class TuneView(QWidget):
 
     # ------------------------------------------------------------ two parts of a tab, the height shared by hand
     def _split(self, key: str, top: QWidget, bottom: QWidget, default=(2, 5)) -> QSplitter:
-        """Two parts of a tab one above the other (the chart and the image, the chart and its table) with a handle
-        to share the height between them: sometimes the image, sometimes the curves. Where the user leaves the handle
-        is kept for that block and tab, in this session and in the settings."""
+        """Two parts of a tab one above the other (the chart and the image, the chart and its table, the drift and its
+        path) with a handle to share the height between them: sometimes the image, sometimes the curves. Where the user
+        leaves the handle is kept for that block and tab, in this session and in the settings."""
         sp = QSplitter(Qt.Vertical)
         sp.setObjectName("tabsplit")
         sp.setChildrenCollapsible(False)
@@ -1507,10 +1521,16 @@ class TuneView(QWidget):
             return
         if spec.kind == "regchart":
             if spec.name in ("drift", "track") and not np.isfinite(d.dx).any():
-                self._message(si.not_yet("register"))
+                self._message(_("The offsets of the frames cannot be computed: the size of the sensor is not known "
+                                "(no inventory, calibration or stack result gives it). Recompute Registration."),
+                              warn=True)
                 return
-            make = {"quality": QualityChart, "drift": DriftChart, "track": TrackChart,
-                    "distribution": DistributionChart}[spec.name]
+            if spec.name == "drift":
+                # the drift against time and, under it, its path (x against y, coloured by time): the path of the
+                # session is seen with the drift, not only in its own tab
+                self._split("alignement/drift", DriftChart(d), TrackChart(d), (1, 1))
+                return
+            make = {"quality": QualityChart, "track": TrackChart, "distribution": DistributionChart}[spec.name]
             ch = make(d)
             self.center.addWidget(ch, 1)
             if spec.name == "quality" and d.roundness is None:

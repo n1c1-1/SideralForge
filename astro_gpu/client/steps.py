@@ -60,6 +60,42 @@ SOLUTION_NOTE = ("Your stack with the sky grid (RA / Dec) of its astrometric sol
 SURVEY_NOTE = ("Not your data: a professional H-alpha map of the same field. The Gradient block compares it with your "
                "image to tell faint nebulosity from light pollution.")
 OUTPUT_NOTE = "The workflow's result at the suggested render settings, as Post shows its layer. Adjust it in Post."
+#: what the final image is, by the output of the workflow (``output_note``): the simple output is the Gradient removed
+#: picture stretched by Post (M31 Classic stack: the same data, its sky at 41/255 instead of 55, so the same noise shows
+#: 1.6 times more); the engine's rendering is another preparation (the starless image and the stars drawn back)
+OUTPUT_SIMPLE_NOTE = ("Final image: the same data as Gradient removed (the stack in calibrated colours, its sky removed), "
+                      "stretched by Post's suggested settings instead of this viewer's automatic stretch: a darker sky "
+                      "and steeper midtones can show the noise more. Cropped to the covered area, at half size. Adjust "
+                      "it in Post.")
+OUTPUT_SIMPLE_DENOISED_NOTE = ("Final image: the same data as Gradient removed (the denoised stack in calibrated "
+                               "colours, its sky removed), stretched by Post's suggested settings instead of this "
+                               "viewer's automatic stretch: a darker sky and steeper midtones can show the noise more. "
+                               "Cropped to the covered area, at half size. Adjust it in Post.")
+OUTPUT_COLOR_NOTE = ("Final image: the colour-calibrated stack with Post's suggested stretch. Cropped to the covered "
+                     "area, at half size. Adjust it in Post.")
+OUTPUT_RAW_NOTE = ("Final image: the stack in the camera's colours, the sky of each channel levelled, with Post's "
+                   "suggested stretch. Cropped to the covered area, at half size. Adjust it in Post.")
+OUTPUT_ENGINE_NOTE = ("Final image: Post's own rendering, not the Gradient removed picture: the starless image (denoised, "
+                      "its gradient removed) with the stars drawn back from their model, at the suggested settings. "
+                      "Cropped to the covered area, at half size. Adjust it in Post.")
+OUTPUT_LEARNED_NOTE = ("Final image: Post's own rendering, not the Gradient removed picture: the starless image of the "
+                       "neural star removal (denoised, its gradient removed) with the stars put back, at the suggested "
+                       "settings. Cropped to the covered area, at half size. Adjust it in Post.")
+
+
+def output_note(stage: str, stages: set) -> str:
+    """One line on what the final image of a workflow is and which steps it holds (the Output block's note)."""
+    if stage == "render_prep_learned":
+        return OUTPUT_LEARNED_NOTE
+    if stage == "render_prep":
+        return OUTPUT_ENGINE_NOTE
+    if stage != "render_simple":
+        return OUTPUT_NOTE
+    if "color" not in stages:
+        return OUTPUT_RAW_NOTE
+    if "background_poly" not in stages:
+        return OUTPUT_COLOR_NOTE
+    return OUTPUT_SIMPLE_DENOISED_NOTE if "denoise" in stages else OUTPUT_SIMPLE_NOTE
 CALFRAMES_NOTE = "Every frame of this kind, raw, as the master is made from them."
 CALIBRATED_NOTE = ("Each light after calibration: the master dark subtracted, divided by the master flat, the "
                    "defective pixels left empty.")
@@ -75,7 +111,8 @@ CAMERA_NOTE = "In the camera's colours, before colour calibration."
 GRADIENT_NOTE = ("Your image with the gradient removed, stars included, in calibrated colours. Compare it with the "
                  "earlier steps.")
 GRADIENT_FULL_NOTE = ("Your image with the gradient removed, stars included, in calibrated colours: the starless image "
-                      "without its gradient (the next tab), the stars put back. Compare it with the earlier steps.")
+                      "without its gradient (the next tab) with what the Stars block took away put back (the stars, and "
+                      "the noise its filter removed): the stack itself, not denoised. Compare it with the earlier steps.")
 STARLESS_BG_NOTE = ("The starless image without its gradient, in calibrated colours: what the block works on. The "
                     "stars are put back in the first tab.")
 SKY_MODEL_NOTE = "What the block removed: its input minus its result."
@@ -222,11 +259,12 @@ class Steps(QObject):
                     V("weights", "Weights", "weights", "stack")]
         if k == "astrometrie":
             # first the user's own image with its solution; the survey is another picture, with its role said
+            # each compared with the other on the same sky (the survey is reprojected on the stack grid)
             out = [V("solution", "Stack and solution", "array", "stack", "drz_full", True, True, sky=True,
-                     note=SOLUTION_NOTE, camera=True)]
+                     note=SOLUTION_NOTE, camera=True, compare=("survey",) if "surveys" in stages else ())]
             if "surveys" in stages:
                 out.append(V("survey", "Reference H-alpha survey", "preview", "surveys", "halpha_reference", True,
-                             note=SURVEY_NOTE, camera=False))
+                             note=SURVEY_NOTE, camera=False, compare=("stack",)))
             out.append(V("objects", "Identified objects", "preview", "astrometry", "", spec=True))
             return out
         if k == "couleur":
@@ -275,7 +313,7 @@ class Steps(QObject):
             stage = next((x for x in ("render_prep_learned", "render_prep", "render_simple") if x in stages),
                          "render_prep")
             # the final image, not an engine preview: rendered with the project's render worker, as Post shows it
-            return [V("output", "Final image", "render", stage, note=OUTPUT_NOTE, camera=False,
+            return [V("output", "Final image", "render", stage, note=output_note(stage, stages), camera=False,
                       compare=("result", "color"))]
         return []
 
@@ -286,6 +324,9 @@ class Steps(QObject):
         V = VisualSpec
         if key == "stack":
             return V("stack", "Stack", "array", "stack", "drz_full", True, True, camera=True)
+        if key == "survey" and "surveys" in stages:
+            return V("survey", "Reference H-alpha survey", "preview", "surveys", "halpha_reference", True,
+                     camera=False)
         if key in ("half_a", "half_b"):
             return V(key, "Half-stack A" if key == "half_a" else "Half-stack B", "array", "stack",
                      "drz_A" if key == "half_a" else "drz_B", True, True, camera=True)
@@ -350,14 +391,22 @@ class Steps(QObject):
         if spec.grid and "astrometry" in self.s.all_stages(p):
             aw = self.which_for(p, "astrometry")
             if self.key_of(p, "astrometry", aw):
-                wcs = si.wcs_source(P, p.pid, aw)
+                # a preview is a reduced copy of the stack grid: the solution scaled to it
+                wcs = si.preview_wcs_source(P, p.pid, aw, spec.stage, spec.name, which) if spec.kind == "preview" \
+                    else si.wcs_source(P, p.pid, aw)
+        # where it sits for the compare: every picture on the stack grid (and a reduced copy of it, an engine preview)
+        # is placed on the registration's reference frame at the drizzle scale (services/inspect.stack_place)
+        place = None
+        if spec.grid and "stack" in self.s.all_stages(p) and self.key_of(p, "stack", self.which_for(p, "stack")):
+            place = si.stack_place(P, p.pid, self.which_for(p, "stack"))
         ident = ("inspect", spec.kind, spec.name, spec.channel, spec.base, tuple(zip(stages, keys)))
         name = (prefix + "  ·  " if prefix else "") + _(spec.shown or spec.caption)
         # an array in the camera's colours is shown as it is (its green cast and all): Neutral sky is a display
         # option the user ticks, never the default (the earlier default made the stack look colour-calibrated)
         return ViewImage(src, name, key=ident, wcs=wcs, camera=spec.camera, units=spec.units,
                          neutral=False if spec.camera and spec.kind != "preview" else None,
-                         header={"HISTORY": [f"astro_gpu: {spec.caption} of workflow {p.name}"]}, kind=spec.display)
+                         header={"HISTORY": [f"astro_gpu: {spec.caption} of workflow {p.name}"]}, kind=spec.display,
+                         place=place)
 
     def overlay(self, k: str, spec: VisualSpec, sky: SkyData | None = None, show: dict | None = None):
         """What is drawn over a picture: the sky grid and the catalogue stars of the solution (``show`` says which

@@ -8,7 +8,10 @@ One widget, ``ImageView``, shows an image of any size (up to 6384 x 4272 RGB flo
   equalisation, black / mid / white handles on a live histogram, per channel or linked, "Neutral sky" for an image
   still in the camera's colours, Reset. The stretch is display only: the data are never changed;
 * compare with the previous steps of the workflow: the caller gives named images, the view a selector; split slider
-  (before / after) or side by side, with the same stretch on both if wanted;
+  (before / after) or side by side, with the same stretch on both if wanted. The compared image is drawn on the grid
+  of the one shown, so that a star sits at the same place in both (``alignment``: by the placements the caller gives,
+  ``ViewImage.place`` - drizzle scale, crop, half size -, else by the astrometric solutions), resampled for display
+  only, and a line above the images says how;
 * a sequence of frames: previous / next (arrow keys), a frame number, a film strip, an info band (the caller's
   numbers: time, exposure, ISO / gain, temperature, FWHM, roundness, transparency, kept or excluded) and Exclude /
   Include; frames load in worker threads, the neighbours ahead of time;
@@ -94,6 +97,7 @@ from .widgets import ACCENT, BAD, OK, WARN, ElidedLabel, label
 
 TILE = 512
 CANVAS_BG = QColor("#0f1115")
+CANVAS_RGB = (15, 17, 21)               # the same, for a picture drawn where an aligned image has no pixel
 CHANNEL_COLORS = ("#e06c6c", "#5fbf7f", "#5ea1ff")
 MONO_COLOR = "#c8ccd4"
 ZOOM_STEP = 1.25
@@ -105,6 +109,8 @@ QFrame#ivread {{ background: #181b21; border-top: 1px solid #2a2f38; }}
 QFrame#ivpanel {{ background: #1c1f26; border-left: 1px solid #2a2f38; }}
 QFrame#ivseq {{ background: #1a1d23; border-top: 1px solid #2a2f38; }}
 QFrame#ivsep {{ background: #353b47; }}
+QFrame#ivalign {{ background: #1a1d23; border-bottom: 1px solid #2a2f38; }}
+QLabel#ivalign {{ color: #9fc2ff; font-size: 8.5pt; }}
 QLabel#ivcap {{ color: #7d8594; font-size: 8pt; }}
 QLabel#ivval {{ color: #e8ebf0; font-size: 10pt; }}
 QLabel#ivname {{ color: #ffffff; font-size: 10.5pt; font-weight: 600; }}
@@ -158,6 +164,10 @@ class ViewImage:
     #: "bias", "flat_darks", "flats", or "model" (a sky model, a gradient surface, a star flat). "Same stretch for all
     #: frames" keeps one stretch per kind, never across kinds.
     kind: str = ""
+    #: where its pixels sit on a common grid, for the compare (``Placement``): two images placed on the same grid are
+    #: drawn on each other by it; else by their astrometric solutions (``wcs``). A callable (w, h) -> Placement or None
+    #: is called in the worker thread with the image's size.
+    place: Any = None
 
     def identity(self):
         if self.key is not None:
@@ -170,6 +180,152 @@ class ViewImage:
         if self.white:
             return float(self.white)
         return 1.0 if self.units == "norm" else 65535.0
+
+
+@dataclass(frozen=True)
+class Placement:
+    """Where an image's pixels sit on a common grid (``ViewImage.place``). ``frame`` names the grid: two images placed
+    on the same one are put on each other by their placements. ``m`` maps the image's coordinates to the grid's,
+    X = m[0] x + m[1] y + m[2], Y = m[3] x + m[4] y + m[5], in pixels with the pixel edges on whole numbers (pixel i
+    covers [i, i + 1)): a stack of drizzle scale s on the grid of its reference frame is (1/s, 0, 0, 0, 1/s, 0); a
+    final image cut at (ox, oy) of that stack and shown at half size is, on the stack, (2, 0, ox, 0, 2, oy)."""
+
+    frame: Any
+    m: tuple = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+    @classmethod
+    def scaled(cls, frame, f: float = 1.0, ox: float = 0.0, oy: float = 0.0, fy: float | None = None) -> Placement:
+        """X = ox + f x, Y = oy + fy y (fy: f by default)."""
+        return cls(frame, (float(f), 0.0, float(ox), 0.0, float(f if fy is None else fy), float(oy)))
+
+    def matrix(self) -> np.ndarray:
+        a, b, c, d, e, f = self.m
+        return np.array([[a, b, c], [d, e, f], [0.0, 0.0, 1.0]])
+
+    def then(self, outer: Placement) -> Placement:
+        """This placement, then ``outer`` (which places this one's grid on its own frame)."""
+        return Placement(outer.frame, tuple(float(v) for v in (outer.matrix() @ self.matrix())[:2].ravel()))
+
+
+@dataclass
+class Alignment:
+    """How a compared image is drawn on the grid of the image shown (display only; ``alignment``). ``T`` (2 x 3) maps a
+    point of the shown image to the compared one's (pixel edges on whole numbers). ``how``: "grid" (both placed on one
+    grid by the geometry of the results: drizzle scale, crop, half size), "sky" (by their astrometric solutions) or
+    "width" (no common grid known: matched by their widths). ``residual``: for "sky", the largest distance, in pixels
+    of the compared image, between the solutions and the affine map drawn."""
+
+    T: np.ndarray
+    how: str
+    residual: float = 0.0
+    #: for "sky": what the solutions add to the affine map (their distortions differ), sampled on an n x n grid of the
+    #: shown image (x, y = linspace(0.5, size - 0.5, n)): (size, dx, dy), drawn by ``Display`` and read by ``apply``
+    field: tuple | None = None
+
+    def apply(self, x, y):
+        t = self.T
+        bx, by = t[0, 0] * x + t[0, 1] * y + t[0, 2], t[1, 0] * x + t[1, 1] * y + t[1, 2]
+        if self.field is not None:
+            rx, ry = self.field_at(np.asarray(x, float), np.asarray(y, float))
+            bx, by = bx + rx, by + ry
+            if np.ndim(bx) == 0:
+                bx, by = float(bx), float(by)
+        return bx, by
+
+    def field_at(self, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The correction of the affine map at points of the shown image (bilinear between the grid's points)."""
+        (w, h), fx, fy = self.field
+        n = fx.shape[0]
+        gx = np.clip((x - 0.5) / max(w - 1.0, 1e-9) * (n - 1), 0, n - 1)
+        gy = np.clip((y - 0.5) / max(h - 1.0, 1e-9) * (n - 1), 0, n - 1)
+        i0, j0 = np.minimum(np.floor(gy).astype(int), n - 2), np.minimum(np.floor(gx).astype(int), n - 2)
+        ty, tx = gy - i0, gx - j0
+
+        def lerp(f):
+            return ((1 - ty) * ((1 - tx) * f[i0, j0] + tx * f[i0, j0 + 1])
+                    + ty * ((1 - tx) * f[i0 + 1, j0] + tx * f[i0 + 1, j0 + 1]))
+        return lerp(fx), lerp(fy)
+
+    @property
+    def scale(self) -> float:
+        """Pixels of the compared image per pixel of the shown one."""
+        return float(math.sqrt(abs(np.linalg.det(self.T[:, :2])))) or 1.0
+
+    @property
+    def angle(self) -> float:
+        """The turn (degrees) of the compared image on the shown one."""
+        return float(math.degrees(math.atan2(self.T[1, 0], self.T[0, 0])))
+
+    def origin(self) -> tuple[float, float]:
+        """Where the compared image's top-left corner falls on the shown one (its pixels)."""
+        full = np.vstack([self.T, [0.0, 0.0, 1.0]])
+        x, y, _w = np.linalg.solve(full, [0.0, 0.0, 1.0])
+        return float(x), float(y)
+
+
+def _identity(T: np.ndarray, tol: float = 1e-3) -> bool:
+    return bool(np.allclose(T[:, :2], np.eye(2), atol=tol) and np.allclose(T[:, 2], 0.0, atol=0.02))
+
+
+SKY_GRID = 17                           # the points of the shown image the solutions are read at (n x n)
+
+
+def _sky_map(a: Prepared, b: Prepared) -> tuple[np.ndarray, float, tuple | None] | None:
+    """The map from ``a`` to ``b`` their astrometric solutions give: the affine part (fitted on n x n points of ``a``),
+    its largest error, and what the solutions add to it on that grid (their distortions differ: two programs' solutions
+    of one field differ by a few pixels in the corners), None when under a tenth of a pixel. None when a solution cannot
+    answer (no inverse, nothing in common)."""
+    if not hasattr(b.wcs, "world_to_pixel_values") or not hasattr(a.wcs, "pixel_to_world_values"):
+        return None
+    n = SKY_GRID
+    xs = np.linspace(0.5, a.width - 0.5, n)
+    ys = np.linspace(0.5, a.height - 0.5, n)
+    X, Y = (g.ravel() for g in np.meshgrid(xs, ys))
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            ra, dec = a.wcs.pixel_to_world_values(X - 0.5, Y - 0.5)
+            bx, by = b.wcs.world_to_pixel_values(np.asarray(ra, float), np.asarray(dec, float))
+        except Exception:  # noqa: BLE001 - a solution that cannot answer: no alignment by the sky
+            return None
+    bx, by = np.asarray(bx, float) + 0.5, np.asarray(by, float) + 0.5
+    ok = np.isfinite(bx) & np.isfinite(by)
+    if ok.sum() < 6:
+        return None
+    A = np.stack([X[ok], Y[ok], np.ones(int(ok.sum()))], 1)
+    cx = np.linalg.lstsq(A, bx[ok], rcond=None)[0]
+    cy = np.linalg.lstsq(A, by[ok], rcond=None)[0]
+    res = float(np.hypot(A @ cx - bx[ok], A @ cy - by[ok]).max())
+    field = None
+    if res > 0.1 and ok.all():
+        full = np.stack([X, Y, np.ones(X.size)], 1)
+        field = ((float(a.width), float(a.height)), (bx - full @ cx).reshape(n, n).astype(np.float32),
+                 (by - full @ cy).reshape(n, n).astype(np.float32))
+    return np.array([cx, cy]), res, field
+
+
+def alignment(a: Prepared, b: Prepared) -> Alignment | None:
+    """How ``b`` (the compared image) is drawn on ``a`` (the one shown) so that a star sits at the same place in both:
+    by their placements when both are on one grid (the geometry the results give: drizzle scale, crop, half size),
+    else by their astrometric solutions when both have one, else matched by their widths (as the viewer always did).
+    None: nothing to do (the same grid, the same size)."""
+    pa, pb = a.place, b.place
+    T, how, res, field = None, "", 0.0, None
+    if pa is not None and pb is not None and pa.frame == pb.frame:
+        T, how = (np.linalg.inv(pb.matrix()) @ pa.matrix())[:2], "grid"
+    elif a.wcs is not None and b.wcs is not None:
+        got = _sky_map(a, b)
+        if got is not None:
+            (T, res, field), how = got, "sky"
+    if T is None:
+        if a.size() == b.size():
+            return None
+        r = b.width / max(a.width, 1)
+        T, how = np.array([[r, 0.0, 0.0], [0.0, r, 0.0]]), "width"
+    if how != "width" and a.size() == b.size() and _identity(T) and res < 0.1:
+        return None
+    return Alignment(np.asarray(T, float), how, res, field)
 
 
 RAW_SUFFIXES = {".arw", ".cr2", ".cr3", ".nef", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw"}
@@ -312,6 +468,7 @@ class Prepared:
         self.channels = levels[0].shape[0]
         self.integer = bool(cfa or np.issubdtype(data.dtype, np.integer) or (
             isinstance(vi.source, np.ndarray) and np.issubdtype(vi.source.dtype, np.integer)))
+        self.place: Placement | None = None          # where it sits on a common grid (``ViewImage.place``)
 
     # what the overlays of the old viewer ask (``v.source.size()``)
     def size(self) -> tuple[int, int]:
@@ -423,7 +580,19 @@ def prepare(vi: ViewImage) -> Prepared:
         cfa = ""
     levels = sm.pyramid(level0)
     stats = sm.compute_stats(level0, smooth=levels[-1])
-    return Prepared(vi, data, levels, factor, stats, cfa, wcs)
+    prep = Prepared(vi, data, levels, factor, stats, cfa, wcs)
+    prep.place = _place_of(vi.place, prep.width, prep.height)
+    return prep
+
+
+def _place_of(place, w: int, h: int) -> Placement | None:
+    """The placement the caller gave (a callable is called here, in the worker thread, with the image's size)."""
+    if callable(place):
+        try:
+            place = place(w, h)
+        except Exception:  # noqa: BLE001 - an unknown placement: the compare falls back on the solutions or the width
+            return None
+    return place if isinstance(place, Placement) else None
 
 
 def thumbnail_of(prep: Prepared, st: sm.Stretch | None = None, side: int = 160) -> np.ndarray:
@@ -666,8 +835,24 @@ class Display:
         self.version = 0
         self._comp = None
         self._thumb = None
+        self.align: Alignment | None = None          # drawn on another image's grid (a compared image)
+        self.frame: tuple[int, int] | None = None    # then the size of that image: the area it is drawn on
         self.stretch = st
         self.set_stretch(st)
+
+    def set_alignment(self, al: Alignment | None, frame: tuple[int, int] | None = None):
+        """Draw this image on the grid of another one (``al.T`` maps that grid onto this image), ``frame`` its size;
+        None: on its own grid."""
+        self.align = al
+        self.frame = (int(frame[0]), int(frame[1])) if al is not None and frame is not None else None
+        if self.frame is None:
+            self.align = None
+        self._comp = None
+        self._thumb = None
+
+    def size(self) -> tuple[int, int]:
+        """The size of the area it is drawn on: its own, or the grid it is aligned on."""
+        return self.frame if self.frame is not None else self.prep.size()
 
     def set_stretch(self, st: sm.Stretch):
         st = st.adapted(self.prep.channels)
@@ -717,6 +902,8 @@ class Display:
         """The visible part of the image in device pixels: (picture, u0, v0), its top-left corner in the area, or
         None. ``s_dev``: device pixels per image pixel; (cx, cy): the image point at the centre of the W x H area;
         ``clip``: only the columns [u0, u1)."""
+        if self.align is not None:
+            return self._view_aligned(s_dev, cx, cy, W, H, clip)
         import cv2
         p = self.prep
         k = self.level_for(s_dev)
@@ -749,6 +936,71 @@ class Display:
                              borderMode=cv2.BORDER_REPLICATE)
         return buf, u0, v0
 
+    def _view_aligned(self, s_dev: float, cx: float, cy: float, W: int, H: int, clip):
+        """``view`` for an image drawn on another one's grid (``align``): (cx, cy) and the area are that grid's; each
+        screen pixel takes this image's pixel ``align.T`` maps it on (bilinear below 1:1, display only). Where this
+        image has no pixel the canvas's background shows."""
+        import cv2
+        p = self.prep
+        fw, fh = self.frame
+        T = self.align.T
+        ex0, ex1 = W / 2 - cx * s_dev, W / 2 + (fw - cx) * s_dev
+        ey0, ey1 = H / 2 - cy * s_dev, H / 2 + (fh - cy) * s_dev
+        u0, u1 = max(0, math.floor(ex0)), min(W, math.ceil(ex1))
+        v0, v1 = max(0, math.floor(ey0)), min(H, math.ceil(ey1))
+        if clip is not None:
+            u0, u1 = max(u0, clip[0]), min(u1, clip[1])
+        if u1 <= u0 or v1 <= v0:
+            return None
+        lin = self.align.scale                                   # this image's pixels per pixel of the grid
+        k = self.level_for(s_dev / lin)
+        F = p.factor * (1 << k)
+        ax = (u0 + 0.5 - W / 2) / s_dev + cx                     # the grid point of the first screen pixel
+        ay = (v0 + 0.5 - H / 2) / s_dev + cy
+        # screen pixel (u, v) -> grid (ax + u / s, ay + v / s) -> this image (T) -> its level-k pixel index
+        m = np.array([[T[0, 0] / (s_dev * F), T[0, 1] / (s_dev * F), (T[0, 0] * ax + T[0, 1] * ay + T[0, 2]) / F - 0.5],
+                      [T[1, 0] / (s_dev * F), T[1, 1] / (s_dev * F), (T[1, 0] * ax + T[1, 1] * ay + T[1, 2]) / F - 0.5]])
+        du, dv = u1 - u0, v1 - v0
+        corners = m @ np.array([[0, du, 0, du], [0, 0, dv, dv], [1, 1, 1, 1]], float)
+        field = self.align.field
+        pad = 1.0 + (max(float(np.abs(field[1]).max()), float(np.abs(field[2]).max())) / F if field is not None
+                     else 0.0)
+        lw, lh = p.level_size(k)
+        ntx, nty = p.tiles_of(k)
+        tx0 = max(0, int(math.floor(corners[0].min() - pad)) // TILE)
+        tx1 = min(ntx, int(math.ceil(corners[0].max() + pad)) // TILE + 1)
+        ty0 = max(0, int(math.floor(corners[1].min() - pad)) // TILE)
+        ty1 = min(nty, int(math.ceil(corners[1].max() + pad)) // TILE + 1)
+        if tx1 <= tx0 or ty1 <= ty0 or corners[0].max() < -1 or corners[1].max() < -1 or \
+                corners[0].min() > lw or corners[1].min() > lh:
+            bg = np.empty((dv, du, 3) if p.channels == 3 else (dv, du), np.uint8)
+            bg[...] = CANVAS_RGB if p.channels == 3 else CANVAS_RGB[0]
+            return bg, u0, v0                                    # nothing of this image here
+        comp = self.composite(k, tx0, ty0, tx1, ty1)
+        m[0, 2] -= tx0 * TILE
+        m[1, 2] -= ty0 * TILE
+        interp = cv2.INTER_NEAREST if s_dev * F / lin >= 0.9999 else cv2.INTER_LINEAR
+        border = CANVAS_RGB if comp.ndim == 3 else CANVAS_RGB[0]
+        if field is None:
+            buf = cv2.warpAffine(comp, m, (du, dv), flags=interp | cv2.WARP_INVERSE_MAP,
+                                 borderMode=cv2.BORDER_CONSTANT, borderValue=border)
+            return buf, u0, v0
+        # the solutions' own distortions: the affine map corrected pixel by pixel (bilinear between the grid's points)
+        (fw_, fh_), fx, fy = field
+        n = fx.shape[0]
+        gx = np.clip((ax + np.arange(du) / s_dev - 0.5) / max(fw_ - 1.0, 1e-9) * (n - 1), 0, n - 1)
+        gy = np.clip((ay + np.arange(dv) / s_dev - 0.5) / max(fh_ - 1.0, 1e-9) * (n - 1), 0, n - 1)
+        mgx = np.ascontiguousarray(np.broadcast_to(gx.astype(np.float32)[None, :], (dv, du)))
+        mgy = np.ascontiguousarray(np.broadcast_to(gy.astype(np.float32)[:, None], (dv, du)))
+        rx = cv2.remap(fx, mgx, mgy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        ry = cv2.remap(fy, mgx, mgy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        uu = np.arange(du, dtype=np.float32)[None, :]
+        vv = np.arange(dv, dtype=np.float32)[:, None]
+        mapx = (m[0, 0] * uu + m[0, 1] * vv + m[0, 2] + rx / F).astype(np.float32)
+        mapy = (m[1, 0] * uu + m[1, 1] * vv + m[1, 2] + ry / F).astype(np.float32)
+        buf = cv2.remap(comp, mapx, mapy, interp, borderMode=cv2.BORDER_CONSTANT, borderValue=border)
+        return buf, u0, v0
+
     def release(self):
         """Forget the rendered tiles (the image is no longer shown)."""
         RTILES.drop(lambda k, u=self.uid: k[0] == u)
@@ -756,7 +1008,21 @@ class Display:
 
     def thumbnail(self, side: int) -> np.ndarray:
         if self._thumb is None or self._thumb[0] != side:
-            self._thumb = (side, thumbnail_of(self.prep, self.stretch, side))
+            if self.align is not None:                       # drawn on another grid: its picture there
+                fw, fh = self.frame
+                s = side / max(fw, fh)
+                w, h = max(1, round(fw * s)), max(1, round(fh * s))
+                img = np.empty((h, w, 3), np.uint8)
+                img[...] = CANVAS_RGB
+                got = self.view(s, fw / 2, fh / 2, w, h)
+                if got is not None:
+                    buf, u0, v0 = got
+                    if buf.ndim == 2:
+                        buf = np.repeat(buf[:, :, None], 3, axis=2)
+                    img[v0:v0 + buf.shape[0], u0:u0 + buf.shape[1]] = buf
+                self._thumb = (side, img)
+            else:
+                self._thumb = (side, thumbnail_of(self.prep, self.stretch, side))
         return self._thumb[1]
 
 
@@ -830,7 +1096,7 @@ class ImageCanvas(QWidget):
 
     # ------------------------------------------------------------ images
     def set_display(self, d: Display | None, keep_view: bool = False):
-        same = (self.display is not None and d is not None and self.display.prep.size() == d.prep.size())
+        same = (self.display is not None and d is not None and self.display.size() == d.size())
         self.display = d
         if d is not None and not (keep_view and same):
             self.fit()
@@ -844,13 +1110,13 @@ class ImageCanvas(QWidget):
         """Compared image pixels per image pixel (images of different sizes are matched by their width)."""
         if self.display is None or self.compare is None:
             return 1.0
-        return self.compare.prep.width / max(self.display.prep.width, 1)
+        return self.compare.size()[0] / max(self.display.size()[0], 1)
 
     # ------------------------------------------------------------ the view
     def fit_scale(self) -> float:
         if self.display is None:
             return 1.0
-        w, h = self.display.prep.size()
+        w, h = self.display.size()
         return max(min((self.width() - 16) / w, (self.height() - 16) / h), 1e-4)
 
     def min_scale(self) -> float:
@@ -862,7 +1128,7 @@ class ImageCanvas(QWidget):
     def fit(self):
         if self.display is None:
             return
-        w, h = self.display.prep.size()
+        w, h = self.display.size()
         self.scale = self.fit_scale()
         self.cx, self.cy = w / 2, h / 2
         self.fitted = True
@@ -913,7 +1179,7 @@ class ImageCanvas(QWidget):
     def _clamp(self):
         if self.display is None:
             return
-        w, h = self.display.prep.size()
+        w, h = self.display.size()
         mx, my = self.width() / 2 / self.scale, self.height() / 2 / self.scale
         # wider than the view: the edges stop at the borders; narrower: centred
         self.cx = float(np.clip(self.cx, mx, w - mx)) if w > 2 * mx else w / 2
@@ -929,7 +1195,7 @@ class ImageCanvas(QWidget):
         """The visible part of the image (x0, y0, x1, y1), image pixels."""
         if self.display is None:
             return 0, 0, 0, 0
-        w, h = self.display.prep.size()
+        w, h = self.display.size()
         x0, y0 = self.w_to_img(0, 0)
         x1, y1 = self.w_to_img(self.width(), self.height())
         return max(0.0, x0), max(0.0, y0), min(float(w), x1), min(float(h), y1)
@@ -937,7 +1203,7 @@ class ImageCanvas(QWidget):
     def whole_visible(self) -> bool:
         if self.display is None:
             return True
-        w, h = self.display.prep.size()
+        w, h = self.display.size()
         x0, y0, x1, y1 = self.visible()
         return x0 <= 0.5 and y0 <= 0.5 and x1 >= w - 0.5 and y1 >= h - 0.5
 
@@ -1052,7 +1318,7 @@ class ImageCanvas(QWidget):
         p.setRenderHint(QPainter.Antialiasing, False)
 
     def minimap_rect(self) -> QRectF:
-        w, h = self.display.prep.size()
+        w, h = self.display.size()
         mw, mh = 190.0, 130.0
         f = min(mw / w, mh / h)
         rw, rh = w * f, h * f
@@ -1068,7 +1334,7 @@ class ImageCanvas(QWidget):
         qi = to_qimage(th)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.drawImage(r, qi)
-        w, h = self.display.prep.size()
+        w, h = self.display.size()
         x0, y0, x1, y1 = self.visible()
         f = r.width() / w
         v = QRectF(r.x() + x0 * f, r.y() + y0 * f, (x1 - x0) * f, (y1 - y0) * f)
@@ -1095,7 +1361,7 @@ class ImageCanvas(QWidget):
 
     def _minimap_goto(self, pos: QPointF):
         r = self.minimap_rect()
-        w, _h = self.display.prep.size()
+        w, _h = self.display.size()
         f = r.width() / w
         self.cx = (pos.x() - r.x()) / f
         self.cy = (pos.y() - r.y()) / f
@@ -1494,7 +1760,7 @@ class StretchPanel(QFrame):
         cr.setSpacing(0)
         self.chan_btns = []
         grp = QButtonGroup(self)
-        for i, t in enumerate(("RGB", "R", "G", "B")):
+        for i, t in enumerate((_("RGB"), "R", "G", "B")):
             b = QPushButton(t)
             b.setCheckable(True)
             b.setObjectName("ivseg")
@@ -2054,7 +2320,8 @@ class ImageView(QWidget):
 
     Images: ``set_image(ViewImage | array, keep_view=False, keep_stretch=False)``, ``image()``, ``prepared()``,
     ``clear()``. Compare: ``set_compare_targets([ViewImage, ...], current=None)``, ``set_compare(index | None)``,
-    ``set_compare_mode("split" | "side")``, ``set_same_stretch(bool)``. Sequence: ``set_sequence([ViewImage, ...],
+    ``set_compare_mode("split" | "side")``, ``set_same_stretch(bool)``, ``compare_alignment()`` and
+    ``alignment_note()`` (how the compared image was put on this one's grid). Sequence: ``set_sequence([ViewImage, ...],
     index=0)``, ``set_index(i)``, ``index()``, ``next_frame()``, ``previous_frame()``, ``set_frame_info(i, info)``,
     ``set_excluded(i, bool)``, ``set_lock_stretch(bool)``. Stretch: ``stretch()``, ``set_stretch(Stretch)``,
     ``auto_stretch()``, ``reset_stretch()``, ``show_histogram(bool)``. View: ``fit()``, ``zoom_to(scale, cx, cy)``,
@@ -2112,6 +2379,15 @@ class ImageView(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
         v.addWidget(self._toolbar(post, export, copy, compare))
+        self.align_bar = QFrame()                  # one line: how the compared image was put on this one's grid
+        self.align_bar.setObjectName("ivalign")
+        ab = QHBoxLayout(self.align_bar)
+        ab.setContentsMargins(12, 2, 12, 3)
+        self.align_l = ElidedLabel("", "ivalign", Qt.ElideRight)
+        ab.addWidget(self.align_l, 1)
+        self.align_bar.hide()
+        v.addWidget(self.align_bar)
+        self._al: Alignment | None = None
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
@@ -2420,6 +2696,8 @@ class ImageView(QWidget):
         self.canvas.busy = False
         self.canvas.message = ""
         self.canvas.set_display(self._main, keep_view=keep_view or bool(self._frames))
+        if self._cmp is not None:
+            self._align()                           # the compared image on the grid of this one
         if self._cmp is not None and self._cmp_mode == "split":
             self.canvas.set_compare(self._cmp)
         self.panel.set_image(prep, st, self._vi)
@@ -2441,7 +2719,7 @@ class ImageView(QWidget):
     def _size_text(self, prep: Prepared) -> str:
         d = prep.data
         kind = (_("Bayer {cfa}").format(cfa=prep.cfa) if prep.cfa else
-                _("mono") if prep.channels == 1 else "RGB")
+                _("mono") if prep.channels == 1 else _("RGB"))
         depth = (_("{n}-bit float").format(n=d.dtype.itemsize * 8) if np.issubdtype(d.dtype, np.floating)
                  else _("{n}-bit").format(n=d.dtype.itemsize * 8))
         return f"{prep.width} × {prep.height}  ·  {kind}  ·  {depth}"
@@ -2565,7 +2843,7 @@ class ImageView(QWidget):
         c = self.canvas
         if c.display is None:
             return {"fitted": True}
-        w, h = c.display.prep.size()
+        w, h = c.display.size()
         return {"fitted": c.fitted, "zoom": c.scale * w, "fx": c.cx / w, "fy": c.cy / h}
 
     def set_view_state(self, state: dict):
@@ -2653,6 +2931,8 @@ class ImageView(QWidget):
             prep = self._cmp.prep if self._cmp is not None else None
             vi = self._targets[self._cmp_i] if self._cmp_i is not None else None
             name = vi.name if vi is not None else ""
+            if self._cmp is not None and self._cmp.align is not None:
+                x, y = self._cmp.align.apply(x, y)  # the point of this grid -> the compared image's own pixel
         else:
             prep, vi = self._prep, self._vi
             name = ""
@@ -2686,6 +2966,7 @@ class ImageView(QWidget):
         if self._cmp is not None:
             self._cmp.release()
         self._cmp = None
+        self._align()
         self.canvas.set_compare(None)
         self.canvas2.set_display(None)
         self.canvas2.setVisible(index is not None and self._cmp_mode == "side")
@@ -2714,6 +2995,7 @@ class ImageView(QWidget):
             if side:
                 self.canvas.set_compare(None)
                 self.canvas2.set_display(self._cmp)
+                _mirror_state(self.canvas2, _state_of(self.canvas))
                 QTimer.singleShot(0, lambda: _mirror_state(self.canvas2, _state_of(self.canvas)))
             else:
                 self.canvas2.set_display(None)
@@ -2764,6 +3046,7 @@ class ImageView(QWidget):
         if self._cmp is not None:
             self._cmp.release()
         self._cmp = Display(prep, self._cmp_stretch(prep))
+        self._align()
         self.canvas2.message = ""
         if self._cmp_mode == "side":
             self.canvas2.set_display(self._cmp)
@@ -2772,6 +3055,57 @@ class ImageView(QWidget):
         else:
             self.canvas.set_compare(self._cmp)
         self._names()
+
+    def _align(self):
+        """Put the compared image on the grid of the one shown, so that a star sits at the same place in both (split
+        and side by side; ``alignment``: the results' geometry, else the astrometric solutions), and say how in one line
+        above the images. Display only: the compared image is resampled as it is drawn."""
+        d = self._cmp
+        al = None
+        if d is not None and self._prep is not None:
+            try:
+                al = alignment(self._prep, d.prep)
+            except Exception:  # noqa: BLE001 - a geometry that cannot be read: drawn as before, matched by width
+                al = None
+            d.set_alignment(al, self._prep.size())
+        self._al = al
+        text = self.alignment_note()
+        self.align_l.setText(text)
+        self.align_bar.setVisible(bool(text))
+        if d is not None and self.canvas2.isVisible() and self.canvas2.display is d:
+            self.canvas2.set_display(d)
+            _mirror_state(self.canvas2, _state_of(self.canvas))
+        self.canvas.update()
+        self.canvas2.update()
+
+    def compare_alignment(self) -> Alignment | None:
+        """How the compared image is drawn on this one (None: the same grid, or no compare)."""
+        return self._al if self._cmp is not None else None
+
+    def alignment_note(self) -> str:
+        """The line that says how the compared image was put on this one's grid ("" when nothing was done)."""
+        al = self.compare_alignment()
+        if al is None or self._cmp_i is None or self._cmp_i >= len(self._targets):
+            return ""
+        name = self._targets[self._cmp_i].name or _("the compared image")
+        if al.how == "width":
+            return _("Not aligned: no common grid is known for “{name}”; it is matched to this image by its "
+                     "width").format(name=name)
+        k = 1.0 / al.scale
+        ox, oy = al.origin()
+        bits = [_("× {k}").format(k=number(k, 3 if k < 0.1 else 2))] if abs(k - 1.0) > 5e-4 else []
+        if abs(al.angle) >= 0.05:
+            bits.append(_("turned {a}°").format(a=number(-al.angle, 2)))
+        if abs(ox) >= 0.05 or abs(oy) >= 0.05:
+            bits.append(_("shifted {dx}, {dy} px").format(dx=number(ox, 1), dy=number(oy, 1)))
+        if al.field is not None:
+            bits.append(_("their distortions followed, up to {d} px").format(d=number(al.residual, 1)))
+        what = ", ".join(bits) or _("on the same pixels")
+        if al.how == "sky":
+            return _("⇄ Aligned for display by the astrometric solutions: “{name}” resampled onto this image "
+                     "({what})").format(name=name, what=what)
+        return _("⇄ Aligned for display by the geometry of the results (drizzle scale, crop, size): “{name}” "
+                 "resampled onto this image ({what})").format(name=name, what=what)
 
     def _names(self):
         main = self._vi.name if self._vi is not None else ""
@@ -3011,7 +3345,7 @@ class ImageView(QWidget):
 def _state_of(c: ImageCanvas) -> dict:
     if c.display is None:
         return {"fitted": True}
-    w, h = c.display.prep.size()
+    w, h = c.display.size()
     return {"fitted": c.fitted, "zoom": c.scale * w, "fx": c.cx / w, "fy": c.cy / h}
 
 
@@ -3022,7 +3356,7 @@ def _mirror_state(c: ImageCanvas, state: dict):
     if state.get("fitted", True) or "zoom" not in state:
         c.fit()
         return
-    w, h = c.display.prep.size()
+    w, h = c.display.size()
     c.zoom_to(state["zoom"] / w, state["fx"] * w, state["fy"] * h)
 
 

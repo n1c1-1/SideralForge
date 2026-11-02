@@ -343,7 +343,8 @@ def test_the_output_block_shows_the_final_image_the_render_worker_makes(win):
     v = t.view
     vi = v.image()
     assert vi is not None and vi.stretched and v.prepared() is not None
-    assert any("The workflow's result at the suggested render settings" in x for x in texts_of(t))
+    # one line on what it is: the engine's rendering of Full, not the Gradient removed picture
+    assert any("Post's own rendering, not the Gradient removed picture" in x for x in texts_of(t))
     rw = win.render_worker()
     assert win.tune.service._rw is rw                                  # shared with Post: engines and images kept once
     got = []
@@ -362,6 +363,12 @@ def test_the_output_block_shows_the_final_image_the_render_worker_makes(win):
     assert txt.startswith(f"x   100  y   120    R {r}   G {g}   B {b}") and "RA " in txt
     names = [v.cmp_cb.itemText(i) for i in range(v.cmp_cb.count())]
     assert "Gradient removed" in names and "Colour-calibrated stack" in names
+    # compared with Gradient removed: put on the final image's grid (its crop of the stack, at half size), said
+    v.set_compare(names.index("Gradient removed") - 1)
+    assert v.wait(120)
+    al = v.compare_alignment()
+    assert al is not None and al.how == "grid" and al.scale == pytest.approx(2.0, rel=0.01)
+    assert v.align_bar.isVisible() and "geometry of the results" in v.alignment_note()
     shot(win, "inspect_output")
 
 
@@ -1075,6 +1082,89 @@ def test_a_calibration_frame_is_left_out_frame_by_frame_and_taken_back(tmp_path)
     assert s.darks == [str(darks)]
     with pytest.raises(ValueError):
         m.set_calibration_excluded(s.id, "lights", str(darks / "D2.ARW"), True)
+
+
+def test_the_drift_tab_shows_the_path_of_the_session_and_no_tab_hides(win):
+    """The x / y path of the session (the "Lissajous"), coloured by time, is drawn under the drift in the Drift tab
+    and has its own tab; on a narrow window the tabs of the block shorten their names, none goes behind scroll
+    arrows."""
+    from astro_gpu.client.charts import DriftChart, TrackChart
+    win.tune.tab_of["alignement"] = "drift"
+    inspect(win, "alignement")
+    t = win.tune
+    drift = [c for c in t.findChildren(DriftChart) if c.isVisibleTo(t)]
+    track = [c for c in t.findChildren(TrackChart) if c.isVisibleTo(t)]
+    assert len(drift) == 1 and len(track) == 1
+    tr = track[0]
+    assert np.isfinite(tr.d.dx).sum() > 10 and tr.colorbar is not None and tr.colorbar[0] == "Time"
+    bar = next(b for b in t.findChildren(QTabBar) if b.isVisibleTo(t) and b.count() == 6)
+    assert not bar.usesScrollButtons() and bar.tabToolTip(3) == "Drift path"
+    win.tune.tab_of["alignement"] = "track"
+    inspect(win, "alignement")
+    assert [c for c in t.findChildren(TrackChart) if c.isVisibleTo(t)]
+    win.tune.tab_of.pop("alignement", None)
+
+
+def test_the_offsets_are_made_when_the_registration_table_has_none(tmp_path, monkeypatch):
+    """A registration whose table gives no offsets (the sensor size unknown to it) still draws its drift: the sensor
+    size comes from the calibration's cache description, the offsets from the registration's polynomials."""
+    from astro_gpu.client.charts import RegistrationData
+    cal, reg = tmp_path / "calibrate", tmp_path / "register"
+    cal.mkdir()
+    reg.mkdir()
+    (cal / "cache.json").write_text(json.dumps({"width": 200, "height": 100}), encoding="utf-8")
+    coef = np.zeros((3, 2, 10))
+    for i, (dx, dy) in enumerate(((0, 0), (5, -2), (9, 4))):    # the frame's centre lands at (100 - dx, 50 - dy)
+        coef[i, 0, 0], coef[i, 1, 0] = 100 - dx, 50 - dy
+        coef[i, 0, 1], coef[i, 1, 2] = 100, 50                   # no rotation, the same scale
+    np.savez(reg / "reg.npz", coef=coef)
+    dirs = {"calibrate": cal, "register": reg}
+    monkeypatch.setattr(si.api, "stage_outputs", lambda p, wid, stage, which="current": (
+        api.StageOutputs(stage, "k", which, str(dirs[stage])) if stage in dirs else None))
+    nan = np.full(3, np.nan)
+    d = RegistrationData(["a", "b", "c"], [""] * 3, nan, nan, nan, nan, nan, nan, np.ones(3, bool), nan.copy(),
+                         nan.copy(), 0, None)
+    assert si.sensor_size(None, 1) == (200.0, 100.0)
+    si._offsets_anyway(None, 1, "current", d)
+    assert d.dx.tolist() == pytest.approx([0, 5, 9]) and d.dy.tolist() == pytest.approx([0, -2, 4])
+
+
+def test_the_pictures_are_placed_on_the_reference_frame_of_their_registration(tmp_path, monkeypatch):
+    """Every picture on the stack grid sits on the registration's reference frame at the drizzle scale; an engine
+    preview of it (a reduced copy) and the final image (a crop at half size) too: Compare puts them on each other."""
+    from astro_gpu.client import imageview as iv
+    st = tmp_path / "stack"
+    st.mkdir()
+    (st / "drz_meta.json").write_text(json.dumps({"scale": 1.5, "width": 600, "height": 450, "sensor": [400, 300]}),
+                                      encoding="utf-8")
+    monkeypatch.setattr(si.api, "stage_outputs", lambda p, wid, stage, which="current": (
+        api.StageOutputs("stack", "s1", which, str(st), manifest={"inputs": {"register": "r1"}})
+        if stage == "stack" else None))
+    full = si.stack_place(None, 1)(600, 450)
+    assert full.frame == ("reference frame", "r1") and full.m == pytest.approx((1 / 1.5, 0, 0, 0, 1 / 1.5, 0))
+    preview = si.stack_place(None, 1)(150, 113)                     # a quarter of the grid (rounded up)
+    assert preview.m[0] == pytest.approx(4 / 1.5) and preview.m[4] == pytest.approx(450 / 113 / 1.5)
+    final = si.render_place(None, 1, "current", (480, 320), (64, 96), (240, 160))(240, 160)
+    assert final.frame == full.frame
+    # pixel (10, 20) of the final image is pixel (64 + 20, 96 + 40) of the stack: (84 / 1.5, 136 / 1.5) on the frame
+    assert final.matrix() @ np.array([10.0, 20.0, 1.0]) == pytest.approx([84 / 1.5, 136 / 1.5, 1.0])
+    ref = si.reference_frame_place(None, 1)(400, 300)
+    assert ref.frame == full.frame and ref.m == iv.Placement(ref.frame).m
+
+
+def test_the_output_says_what_the_final_image_is():
+    """One line under Output says what the final image is and which steps it holds: the simple output is the Gradient
+    removed picture with Post's stretch, the engine's rendering is another preparation."""
+    from astro_gpu.client import steps as st
+    base = {"stack", "color", "background_poly", "render_simple"}
+    assert st.output_note("render_simple", base) == st.OUTPUT_SIMPLE_NOTE
+    assert st.output_note("render_simple", base | {"denoise"}) == st.OUTPUT_SIMPLE_DENOISED_NOTE
+    assert st.output_note("render_simple", {"stack", "color", "render_simple"}) == st.OUTPUT_COLOR_NOTE
+    assert st.output_note("render_simple", {"stack", "render_simple"}) == st.OUTPUT_RAW_NOTE
+    assert st.output_note("render_prep", base) == st.OUTPUT_ENGINE_NOTE
+    assert st.output_note("render_prep_learned", base) == st.OUTPUT_LEARNED_NOTE
+    assert "same data as Gradient removed" in st.OUTPUT_SIMPLE_NOTE
+    assert "not the Gradient removed picture" in st.OUTPUT_ENGINE_NOTE
 
 
 def test_the_tables_and_the_charts_of_the_blocks(qapp):
