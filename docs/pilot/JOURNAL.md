@@ -747,3 +747,16 @@ pixels (after the engine agents finish), Express bench 17:00 on GPU 0, French re
   the "physical" background's fate).
 - Promised for 19:00: one complete client.bat (stacking, Inspect fixes, Post Curves and new filters), checked screen
   by screen in EN and FR around 17:30–18:30, plus a short French page "ce qui a changé, où le voir".
+
+## 2026-11-02, 13:55 — anomalies explained, client checked
+
+- Committed: drizzle gap explained (d8bf20e, 5c4cef3: Siril beta3 lacked drop weights; Iris gap = the bench's target
+  S/N regions chosen on Siril's image; a 6–8 % green gap on Iris left unexplained); colour v5 + classic anomalies
+  (de1baef: 0.45 of the 0.57 mag = whole-pixel aperture jump of the bench; colour stage used generic curves off by
+  18 %).
+- Full client check (bb57255): every screen EN/FR on Iris, Rosette, Seestar bench copies, read-only; layout fixes for a
+  1920 screen, FR labels, FITS export header. CE_QUI_A_CHANGE.md written. 398 shots kept on disk only (361 MB,
+  excluded locally); a 13-image JPEG selection in shots/2026-11-02/point19h/ for the review pack.
+- Level 2 per the agent: 792 passed, 18 failed + 2 errors, all on the outdated heart_a7s dev copies.
+- Running: bench measure fix (exact apertures + aperture correction; target regions chosen on an independent image),
+  re-measure, BENCH.md/DRIZZLE_GAP.md update, ~16:30. Then the French review pack POINT_19H.md.
