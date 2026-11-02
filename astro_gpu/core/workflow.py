@@ -1,5 +1,8 @@
 """Workflows of a v2 project: options → the chain of stages, the blocks, the option rules.
 
+Entry points: ``check_options``, ``set_option`` (the rules, with their notes), ``chain`` / ``chains()`` (the stage
+graph, ``Chains``), ``method_of``, ``implied``, ``TEMPLATES``.
+
 A workflow is a set of options (which optional blocks it has and the method of each) plus the settings the user
 stored. The options give its chain: the stages it runs, in the global order. Two workflows share a stage result
 when the stage key is the same (core/store.py); this module only says which stages a workflow has and which of them
@@ -9,24 +12,20 @@ each stage reads.
                "gradient": "halpha" | "polynomial", "deconvolution": None}
     end       None, or "stacking" for the Raw stack exit (inventory → stack, then render_simple)
 
-Rules (the mockup's toolbox): Stars needs Denoise; in v1, the H-alpha gradient needs Stars (the existing background
-works on the starless image); psf_neural with a stored ``starless.learned_stars`` file omits star_net (an earlier
-neural layer). Other option values are not in the engine yet (◇) and raise.
+Rules: Stars needs Denoise; the H-alpha gradient needs Stars (the background stage works on the starless image);
+psf_neural with a stored ``starless.learned_stars`` file omits star_net (an earlier neural layer). Other option
+values are not in the engine and raise.
 
 The stage list comes from ``stages/v2.py`` (``V2_STAGES``, loaded lazily); tests build toy ``Chains``.
 """
 from __future__ import annotations
 
-import importlib
-import importlib.util
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
-from .stage import Stage
-
 # ---------------------------------------------------------------------------------------------- options
 
-#: the allowed value of each option (any other value is ◇, not in the engine yet)
+#: the allowed values of each option
 OPTION_VALUES: dict[str, tuple[Any, ...]] = {
     "denoise": (None, "n2n"),
     "stars": (None, "psf", "psf_neural"),
@@ -37,9 +36,8 @@ OPTION_VALUES: dict[str, tuple[Any, ...]] = {
 DEFAULT_OPTIONS: dict[str, Any] = {"denoise": None, "stars": None, "gradient": "polynomial", "deconvolution": None}
 #: early exits: the block a workflow's output comes from when it does not go to the end
 EXITS = ("stacking",)
-EXIT_NAMES = {"stacking": "Raw stack"}
 
-#: the workflow templates (§2.1); a template is only used at creation
+#: the workflow templates; a template is only used at creation
 TEMPLATES: dict[str, dict[str, Any]] = {
     "Classic stack": {"denoise": None, "stars": None, "gradient": "polynomial", "deconvolution": None},
     "Classic + denoise": {"denoise": "n2n", "stars": None, "gradient": "polynomial", "deconvolution": None},
@@ -47,7 +45,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {
     "Full + neural stars": {"denoise": "n2n", "stars": "psf_neural", "gradient": "halpha", "deconvolution": None},
 }
 
-# the notes of the option rules: the mockup's texts, so that its French translations apply
+# the notes of the option rules (shown in the client, translated by its catalogues)
 NOTE_DENOISE_ADDED = "Denoise added: the star measurement needs it"
 NOTE_STARS_ADDED_NEURAL = "Stars added: neural star removal starts from the star model"
 NOTE_STARS_ADDED_HALPHA = "Stars added: the anchored background is computed on the starless image"
@@ -92,9 +90,8 @@ def check_end(end: str | None) -> str | None:
 
 
 def set_option(options: dict[str, Any], key: str, value: Any, end: str | None = None) -> tuple[dict, list[str]]:
-    """The options with ``key`` set to ``value``, and the notes on what came or went with it (the mockup's
-    ``with_tool`` / ``without_tool``). Raises OptionRefused when the rules forbid the change, ValueError on an
-    invalid option or value."""
+    """The options with ``key`` set to ``value``, and the notes on what came or went with it. Raises OptionRefused
+    when the rules forbid the change, ValueError on an invalid option or value."""
     o = check_options(options)
     if key not in OPTION_VALUES:
         raise ValueError(f"unknown workflow option {key!r}")
@@ -176,7 +173,7 @@ def has_learned_layer(params: dict[str, dict[str, Any]]) -> bool:
 ORDER = ["inventory", "calibrate", "register", "stack", "astrometry", "reference", "catalogs", "surveys", "color",
          "denoise", "optics", "stars", "star_net", "starless", "background", "background_poly", "render_prep",
          "render_prep_learned", "render_simple"]
-#: dependencies a stage has beyond its declared ``deps`` (today an implicit read through starless' auto value)
+#: dependencies a stage has beyond its declared ``deps`` (an implicit read through starless' auto value)
 EXTRA: dict[str, tuple[str, ...]] = {"starless": ("star_net",)}
 #: dependencies that may be absent from a chain (the stage then runs without them)
 OPTIONAL: dict[str, tuple[str, ...]] = {
@@ -204,16 +201,11 @@ BLOCK_TITLES = {"calibration": "Calibration", "registration": "Registration", "s
 RUN_TO: dict[str, tuple[str, ...]] = {"selection": ("register",)}
 #: stages a block's key leaves out: the survey follows the Gradient method, not the Astrometry block
 KEY_LEAVES_OUT: dict[str, tuple[str, ...]] = {"astrometry": ("surveys",)}
-#: the new stages of P4, by their design dependencies (stand-ins until stages/v2.py exists)
-NEW_STAGES: dict[str, tuple[str, ...]] = {
-    "background_poly": ("stack", "color", "denoise"),
-    "render_simple": ("stack", "color", "denoise", "background_poly"),
-}
 
 
 def chain_stages(options: dict[str, Any], end: str | None = None, reference: bool = False,
                  learned_layer: bool = False) -> list[str]:
-    """The stages of a workflow, in the global order (§2.1's table). ``reference``: the project has a reference
+    """The stages of a workflow, in the global order. ``reference``: the project has a reference
     image (the stage sits in the Astrometry block); ``learned_layer``: the workflow stores an earlier learned star
     layer, so psf_neural runs without star_net."""
     o = check_options(options)
@@ -347,36 +339,14 @@ class Chains:
         return [s for s in chain if s in self.blocks.get(block, ()) and s not in KEY_LEAVES_OUT.get(block, ())]
 
 
-class _Planned(Stage):
-    """A stand-in for a new stage of P4 before stages/v2.py exists: its name and dependencies only, never run."""
-
-    def __init__(self, name: str, deps: tuple[str, ...]):
-        self.name = name
-        self.title = name
-        self.deps = deps
-        self.version = "0"
-
-
-def _v2_stages() -> list[Any]:
-    name = importlib.util.resolve_name("..stages.v2", __package__)
-    try:
-        v2 = importlib.import_module(name)
-    except ModuleNotFoundError as e:
-        if e.name != name:
-            raise
-        from ..stages import all_stages
-        return all_stages() + [_Planned(n, d) for n, d in NEW_STAGES.items()]
-    stages = v2.V2_STAGES
-    return list(stages() if callable(stages) else stages)
-
-
 _CHAINS: list[Chains] = []
 
 
 def chains() -> Chains:
     """The v2 stage graph (built on first use: it imports the stages)."""
     if not _CHAINS:
-        _CHAINS.append(Chains(_v2_stages(), order=ORDER, extra=EXTRA, optional=OPTIONAL, blocks=BLOCKS,
+        from ..stages.v2 import V2_STAGES
+        _CHAINS.append(Chains(V2_STAGES(), order=ORDER, extra=EXTRA, optional=OPTIONAL, blocks=BLOCKS,
                               rule=chain_stages))
     return _CHAINS[0]
 

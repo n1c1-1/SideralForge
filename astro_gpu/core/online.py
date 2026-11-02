@@ -2,9 +2,8 @@
 answer is set aside for a while so that the next source is asked at once, with one line in the log saying so.
 
 Why: VizieR, SIMBAD, the CDS cut-out service (all at the CDS, Strasbourg), GAVO and the ESA Gaia archive are often
-down or silent (the CDS was unreachable for days from 2026-10-28; on 2026-11-01 it did not even open connections and
-the ESA archive opened them but never answered). A query used to wait its whole 600-900 s timeout before the next
-source was tried: M8's astrometry took 10 min, of which the computation was a few seconds.
+down or silent, sometimes for days (no connection at all, or a connection that never answers). Without a budget, a
+query waits its whole 600-900 s timeout before the next source is tried, for a computation of a few seconds.
 
 How:
 - ``available(name)``: a tiny request to the service (connect 8 s, answer 12 s), once per 10 minutes; a service that

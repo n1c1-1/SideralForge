@@ -1,4 +1,4 @@
-"""How long a stage job takes and how much disk it leaves, before it runs (DESIGN §3).
+"""How long a stage job takes and how much disk it leaves, before it runs.
 
 A stage's cost grows with its *units*:
 
@@ -11,7 +11,7 @@ A stage's cost grows with its *units*:
 
 With a history of this machine's runs (``STATE/timings2.json``: the last 20 [seconds, units, "gpu" | "cpu"] per
 stage) an estimate is median(seconds / units) x units, *measured*. Otherwise it is *≈*: the time of the reference
-project (Heart: 721 lights of 12.1 Mpx, drizzle 1.5, the stage times of ``mockup/alt2/data/data.json``) x the units
+project (``HEART``: 721 lights of 12.1 Mpx, drizzle 1.5) x the units
 ratio, x ``CPU_FACTOR`` without a GPU. Disk follows the reference the same way, plus the calibrated frame cache that
 calibrate writes on the scratch disk (light frames x sensor pixels x 2 bytes).
 
@@ -30,13 +30,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .files import write_json
+
 HISTORY_FILE = "timings2.json"
 KEEP = 20                                      # entries kept per stage
 LOCK_WAIT = 5.0                                # seconds a writer of the history waits for another one
 LOCK_STALE = 30.0                              # a lock file older than this was left by a process that died
 
-#: the reference project, Heart: (seconds, GB in the stage folder) per stage, from mockup/alt2/data/data.json (its
-#: manifests of 2026-10-17); the two stages v2 adds are design guesses at Heart size (60 s and 30 s)
+#: the reference project, Heart: (seconds, GB in the stage folder) per stage, from its manifests; background_poly and
+#: render_simple are guesses at Heart size (60 s and 30 s)
 HEART: dict[str, tuple[float, float]] = {
     "inventory": (5.0, 0.0), "calibrate": (310.8, 0.11), "register": (121.4, 0.0), "stack": (2064.0, 1.31),
     "astrometry": (124.1, 0.0), "reference": (89.8, 0.0), "catalogs": (178.3, 0.07), "surveys": (42.5, 0.11),
@@ -46,7 +48,7 @@ HEART: dict[str, tuple[float, float]] = {
 }
 #: a stage the table does not know (tests' toy stages): one minute at Heart size
 OTHER = (60.0, 0.0)
-#: without a GPU, each stage takes this many times longer (the mockup's guesses, alt3/app/project.py; to measure)
+#: without a GPU, each stage takes this many times longer (guesses, not measured)
 CPU_FACTOR: dict[str, float] = {
     "inventory": 1, "calibrate": 1.3, "register": 1.5, "stack": 5, "astrometry": 1, "catalogs": 1, "surveys": 1,
     "color": 1.5, "denoise": 45, "optics": 3, "stars": 8, "star_net": 60, "starless": 4, "background": 2,
@@ -164,7 +166,6 @@ def seed(entries: list[tuple[str, float, float, str]], path: str | Path | None =
     """Add (stage, seconds, units, "gpu" | "cpu") entries to the history; ``dedupe`` skips those already there.
     The read and the write are one step under a lock file (``_locked``), so workers that record at once all keep
     their entries. Returns the number added. Never raises: the history is a hint."""
-    from .runner import write_json_atomic
     p = Path(path or history_path())
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -185,7 +186,7 @@ def seed(entries: list[tuple[str, float, float, str]], path: str | Path | None =
             added += 1
         if added:
             try:
-                write_json_atomic(p, d)
+                write_json(p, d, indent=None, default=None)
             except OSError:
                 return 0
     return added

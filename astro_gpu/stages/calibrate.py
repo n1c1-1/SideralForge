@@ -61,8 +61,8 @@ class Calibrate(Stage):
     Params = CalibrateParams
     # 2: hot pixels also seen in the lights; 3: a bad pixel stays excluded when saturated; 4: hot pixels seen in the
     # lights when the sky did not move too (a lone pixel above its neighbours of every colour: m8 kept 45-57 coloured
-    # dots per square degree), and then filled from their same-colour neighbours (left out, they were holes). The master bias and flat dark (EXTRA_MASTERS, for the Inspect mode) are extra files with
-    # the same results: not a new version, an older result simply lacks them
+    # dots per square degree), and then filled from their same-colour neighbours (left out, they were holes). The
+    # master bias and flat dark (EXTRA_MASTERS, for the Inspect mode) are extra files: an older result lacks them
     version = "4"
 
     def auto(self, ctx: Context) -> dict[str, Auto]:

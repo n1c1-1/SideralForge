@@ -4,8 +4,8 @@ does not answer.
 The same data under the same (VizieR) column names whatever the source: Gaia DR3 stars in a cone, the sampled XP
 spectra of Gaia DR3 stars and the Hipparcos stars. VizieR is asked first; a service that does not answer is set aside
 for 10 minutes and the next one is asked at once (``core/online.py``: short timeouts, a budget per query, one line in
-the log per fallback). CDS was unreachable for days from 2026-10-28; on 2026-10-30 the ESA archive answered its
-asynchronous queries with errors 500 or in minutes, while GAVO gave 10 000 stars in 6 s.
+the log per fallback). The CDS can be unreachable for days, and the ESA archive can answer its asynchronous queries
+with errors or only after minutes; GAVO is the fast fallback.
 
 XP spectra: VizieR and the ESA archive give 343 points, 336-1020 nm every 2 nm; GAVO gives the same spectra on 41
 points, 400-800 nm every 10 nm (equal to the ESA values within 0.3 %). Spectra of both kinds are brought to the
@@ -224,11 +224,3 @@ def xp_spectra_esa(sids: list[int], batch: int = 500) -> dict[int, tuple[np.ndar
                 if f.size == XP_WAVELENGTHS.size:
                     out[int(row["source_id"])] = (XP_WAVELENGTHS.copy(), f)
     return out
-
-
-def vizier_down() -> bool:
-    return online.is_down("vizier")
-
-
-def mark_vizier_down(why: str = "does not answer") -> None:
-    online.mark_down("vizier", why)

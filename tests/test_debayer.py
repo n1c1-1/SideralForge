@@ -25,13 +25,37 @@ def mosaic(rgb: torch.Tensor) -> torch.Tensor:
     return torch.gather(rgb, 0, col[None])[0]
 
 
+def rcd_v23_vh_stat(c: list[float]) -> float:
+    """The vertical (or horizontal) statistic of RCD v2.3 as originally written (rcd_demosaicing.c, step 1.1: the
+    long quadratic form of the 9 samples c[-4..4] along the direction), for the test that rcd.cc's short form is the
+    same. ``c``: 9 values, c[4] the centre."""
+    m4, m3, m2, m1, x, p1, p2, p3, p4 = [float(v) for v in c]
+    return max(
+        -18 * x * m1 - 18 * x * p1 - 36 * x * m2 - 36 * x * p2 + 18 * x * m3 + 18 * x * p3 - 2 * x * m4 - 2 * x * p4
+        + 38 * x * x - 70 * m1 * p1 - 12 * m1 * m2 + 24 * m1 * p2 - 38 * m1 * m3 + 16 * m1 * p3 + 12 * m1 * m4
+        - 6 * m1 * p4 + 46 * m1 * m1 + 24 * p1 * m2 - 12 * p1 * p2 + 16 * p1 * m3 - 38 * p1 * p3 - 6 * p1 * m4
+        + 12 * p1 * p4 + 46 * p1 * p1 + 14 * m2 * p2 - 12 * m2 * p3 - 2 * m2 * m4 + 2 * m2 * p4 + 11 * m2 * m2
+        - 12 * p2 * m3 + 2 * p2 * m4 - 2 * p2 * p4 + 11 * p2 * p2 + 2 * m3 * p3 - 6 * m3 * m4 + 10 * m3 * m3
+        - 6 * p3 * p4 + 10 * p3 * p3 + m4 * m4 + p4 * p4, db.EPSSQ)
+
+
+def rcd_short_vh_stat(c: list[float]) -> float:
+    """rcd.cc's short form of the same statistic: the sum of the squared high-pass at the centre and its two
+    neighbours along the direction."""
+    a = np.asarray(c, float)
+
+    def hp(i):
+        return (a[i - 3] - a[i - 1] - a[i + 1] + a[i + 3]) - 3 * (a[i - 2] + a[i + 2]) + 6 * a[i]
+    return max(sum(hp(i) ** 2 for i in (3, 4, 5)), db.EPSSQ) if len(a) >= 9 else db.EPSSQ
+
+
 def test_short_form_of_the_directional_statistic_is_the_original_v23_one():
     """rcd.cc's sum of three squared high-pass terms is the long quadratic form of RCD v2.3 (Luis Sanz Rodríguez's
     "exact, shorter" formula)."""
     rng = np.random.default_rng(3)
     for _ in range(200):
         c = rng.uniform(0, 1, 9) * rng.choice([1e-3, 1.0])
-        a, b = db.rcd_v23_vh_stat(c), db.rcd_short_vh_stat(c)
+        a, b = rcd_v23_vh_stat(c), rcd_short_vh_stat(c)
         assert b == pytest.approx(a, rel=1e-9, abs=1e-12)
 
 

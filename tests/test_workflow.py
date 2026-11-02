@@ -177,7 +177,9 @@ def test_missing_required_dependency_names_the_block():
 def test_v2_stage_graph():
     ch = chains()
     assert ch.order == wfl.ORDER and set(ch.stages) == set(wfl.ORDER)
-    for name, deps in wfl.NEW_STAGES.items():                 # the design's dependencies of P4's new stages
+    new_stages = {"background_poly": ("stack", "color", "denoise"),        # the dependencies of the new stages
+                  "render_simple": ("stack", "color", "denoise", "background_poly")}
+    for name, deps in new_stages.items():
         assert set(deps) <= set(ch.deps2[name])
     for name in wfl.ORDER:                                     # every stage sits in exactly one block
         assert sum(name in ss for ss in wfl.BLOCKS.values()) == 1

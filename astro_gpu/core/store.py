@@ -1,6 +1,6 @@
 """The store of a v2 project: stage results addressed by a key, and the project a job's stage code sees.
 
-A done stage result lives in ``store/<stage>/<key>/`` (DESIGN §1.1, §1.3). Its key hashes everything that decides
+A done stage result lives in ``store/<stage>/<key>/``. Its key hashes everything that decides
 the result, and nothing else::
 
     key(wf, s) = sha1(canonical_json({"s": s, "v": version, "p": key_params(wf, s),
@@ -25,17 +25,16 @@ part of a stage revised on its own changes the keys of the definitions that use 
 
 Hence a setting added to a stage later, whose static default keeps the previous behaviour and which has no automatic
 rule at that default, never enters the key of a definition that leaves it at its default, stored or not: every key
-computed before it existed stays the same (tests/test_stacking_v2.py). That is how a new option goes in beside the old
-behaviour without a version bump.
+computed before it existed stays the same (tests/test_stacking.py).
 
 Automatic values are not in the key: they follow from the upstream results, which the upstream keys stand for.
 Settings that never change a result (worker counts, the training GPU) are left out. The key is the same in every
 process (canonical JSON, no set or hash order).
 
 The project parts read the disk (each session's frame files, the reference image, path settings): ``InputScan``
-caches them. A scan stats every frame: keep it out of the GUI thread.
+caches them. A scan stats every frame: keep it out of the client's interface thread.
 
-``StoreProject`` runs unchanged stage code, and v1's ``Pipeline._run_stage``, for one job: its own stage writes into
+``StoreProject`` lets the stage code, and v1's ``Pipeline._run_stage``, run one job: its own stage writes into
 ``<key>.tmp`` (the runner renames it on success), every ancestor reads its done key folder, and any other stage
 resolves to ``store/_absent/<stage>``, which is never created (``Context.has`` is false there).
 """
@@ -43,8 +42,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import importlib
-import importlib.util
 import json
 import os
 import re
@@ -68,10 +65,6 @@ ABSENT = "_absent"           # where the stages a chain does not have resolve; n
 KEY_LEN = 16
 _KEY = re.compile(r"^[0-9a-f]{16}$")
 
-#: settings that never change a result: left out of the key (a job still gets them)
-NON_KEY: dict[str, tuple[str, ...]] = {"calibrate": ("workers",), "register": ("workers",), "star_net": ("device",)}
-#: settings that name a file, keyed by that file. stages/v2.py declares them; this is the design's list until it does
-PATH_FIELDS: dict[str, tuple[str, ...]] = {"starless": ("learned_stars",), "denoise": ("reuse_model",)}
 #: a 'Learned star layer' value may carry the star_net run that made it: '<path> (run <id>)' (star_net.layer_file)
 _RUN_TAG = re.compile(r"^(.*?) \(run [0-9a-fA-F]*\)$")
 
@@ -118,7 +111,8 @@ def _split_tag(value: str) -> tuple[str, str]:
 
 class KeyRules:
     """What the key needs to know of the stages: their graph (``Chains``), the fields an ``auto()`` can set, the
-    path fields, the fields that never change a result, and the values workflow options imply.
+    path fields, the fields that never change a result (left out of the key; a job still gets them), the values
+    workflow options imply, and the tables of changed defaults, removed settings and key constants.
     ``auto_fields`` None counts every field as automatic: nothing is ever dropped (the safe side)."""
 
     def __init__(self, chains: Chains, auto_fields: Mapping[str, Iterable[str]] | None = None,
@@ -133,8 +127,8 @@ class KeyRules:
         self._baseline = {s: dict(d) for s, d in (baseline or {}).items()}
         self._retired = {s: frozenset(f) for s, f in (retired or {}).items()}
         self._constants = {s: dict(d) for s, d in (constants or {}).items()}
-        self._paths = {s: frozenset(f) for s, f in (PATH_FIELDS if path_fields is None else path_fields).items()}
-        self._non_key = {s: frozenset(f) for s, f in (NON_KEY if non_key is None else non_key).items()}
+        self._paths = {s: frozenset(f) for s, f in (path_fields or {}).items()}
+        self._non_key = {s: frozenset(f) for s, f in (non_key or {}).items()}
         self.implied = implied
         self._defaults: dict[str, dict[str, Any]] = {}
 
@@ -190,24 +184,12 @@ _RULES: list[KeyRules] = []
 
 
 def key_rules() -> KeyRules:
-    """The rules of the v2 stages: ``workflow.chains()`` with AUTO_FIELDS and PATH_FIELDS of stages/v2.py. Until
-    that module exists, every field counts as automatic and PATH_FIELDS is the design's list."""
+    """The rules of the v2 stages: ``workflow.chains()`` with the tables of stages/v2.py."""
     if not _RULES:
-        v2 = _v2_module()
-        _RULES.append(KeyRules(wfl.chains(), getattr(v2, "AUTO_FIELDS", None), getattr(v2, "PATH_FIELDS", None),
-                               baseline=getattr(v2, "KEY_BASELINE", None), retired=getattr(v2, "RETIRED", None),
-                               constants=getattr(v2, "KEY_CONSTANTS", None)))
+        from ..stages import v2
+        _RULES.append(KeyRules(wfl.chains(), v2.AUTO_FIELDS, v2.PATH_FIELDS, v2.NON_KEY, baseline=v2.KEY_BASELINE,
+                               retired=v2.RETIRED, constants=v2.KEY_CONSTANTS))
     return _RULES[0]
-
-
-def _v2_module() -> Any:
-    name = importlib.util.resolve_name("..stages.v2", __package__)
-    try:
-        return importlib.import_module(name)
-    except ModuleNotFoundError as e:
-        if e.name != name:
-            raise
-        return None
 
 
 # ---------------------------------------------------------------------------------------------- disk parts
@@ -324,7 +306,7 @@ class Keys:
             raise ValueError(f"workflow {w.name!r}: invalid setting {what}") from None
 
     def key_params(self, wf: int | Workflow, stage: str) -> dict[str, Any]:
-        """The parameter part of a stage's key (DESIGN §1.3)."""
+        """The parameter part of a stage's key."""
         return self._key_values(self._wf(wf), stage)[0]
 
     def _key_values(self, w: Workflow, stage: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -489,7 +471,7 @@ def _external_data_ok(stage: str, d: Path) -> bool:
 
 class StoreProject:
     """The project one job's stage code sees: the surface of core/project.Project that stages and v1's
-    ``Pipeline._run_stage`` use, over the store (DESIGN §1.4).
+    ``Pipeline._run_stage`` use, over the store.
 
     - ``stage_dir``: the job's own stage → ``<key>.tmp`` (or ``own_dir``: a resolve that must not touch the store);
       every ancestor → its done key folder; any other stage → ``store/_absent/<stage>``, never created.

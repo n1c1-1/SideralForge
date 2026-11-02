@@ -1,6 +1,6 @@
 """A v2 project: the definition of a processing project with several workflows (project.astroproj).
 
-Layout on disk (DESIGN §1.1)::
+Layout on disk::
 
     <project>/
         project.astroproj       the definition (JSON, atomic writes; written only through the API)
@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from . import workflow as wfl
+from .files import write_json
 from .project import Inputs, Target
 
 FORMAT = 2
@@ -37,7 +38,7 @@ FILE = "project.astroproj"
 STATE_FILE = "state.json"
 V1_FILE = "project.json"
 KINDS = ("lights", "darks", "flats", "bias", "flat_darks")
-STACK_MODES = ("together",)          # one stack per session is ◇
+STACK_MODES = ("together",)          # one stack per session is not in the engine
 
 
 class LegacyProject(Exception):
@@ -332,12 +333,6 @@ def _excluded(pairs: list) -> list[tuple[int, str]]:
 
 # ---------------------------------------------------------------------------------------------- files
 
-def _write_json(path: Path, obj: Any) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def _refuse_v1(root: Path) -> None:
     if (root / V1_FILE).exists():
         raise LegacyProject(root)
@@ -362,7 +357,7 @@ def save(project: Project2, root: str | Path | None = None) -> Path:
     project.validate()
     root.mkdir(parents=True, exist_ok=True)
     f = root / FILE
-    _write_json(f, project.to_dict())
+    write_json(f, project.to_dict(), indent=2, default=None)
     project.root = root
     return f
 
@@ -392,13 +387,13 @@ def write_state(root: str | Path, state: dict[str, Any]) -> None:
     """Write state.json atomically (never into a v1 folder)."""
     root = Path(root)
     _refuse_v1(root)
-    _write_json(root / STATE_FILE, state)
+    write_json(root / STATE_FILE, state, indent=2, default=None)
 
 
 # ---------------------------------------------------------------------------------------------- v1 projects
 
 def v1_options(params: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], str]:
-    """The options and the name of the workflow a v1 parameter set gives (DESIGN §1.5): denoise n2n; gradient
+    """The options and the name of the workflow a v1 parameter set gives: denoise n2n; gradient
     polynomial when surveys.survey is 'none', else H-alpha; stars psf_neural without star_net when
     starless.learned_stars names a file ("Full + earlier neural layer"), psf_neural when star_net.enabled (default
     true, "Full + neural stars"), else psf ("Full")."""

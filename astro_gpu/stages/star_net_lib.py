@@ -1,4 +1,4 @@
-"""Learned star removal network: the library behind the 'star_net' stage (recipe "run E" of the own-data experiment).
+"""Learned star removal network: the library behind the 'star_net' stage (``train_net``, ``apply_tiled``...).
 
 A U-Net learns to remove the stars of ONE stack, from that stack alone:
 

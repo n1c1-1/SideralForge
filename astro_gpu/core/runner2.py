@@ -1,4 +1,4 @@
-"""Runner v2: plans the stage jobs of a v2 project's workflows and runs them in a detached worker (DESIGN §3).
+"""The runner of v2 projects: plans the stage jobs of the workflows and runs them in a detached worker.
 
 A job computes one stage key (core/store.py): a result shared by several workflows is computed once. The plan::
 
@@ -57,11 +57,12 @@ from typing import Any
 
 from . import estimate as est
 from . import workflow as wfl
+from .files import write_json
 from .journal import Journal
 from .journal import read_events as _read_events
 from .params import params_hash
 from .project2 import Project2, Workflow
-from .runner import Pipeline, read_manifest, replace_file
+from .runner import Pipeline, read_manifest
 from .stage import StageError
 from .store import InputScan, KeyRules, Keys, Store, StoreProject, key_rules
 
@@ -155,9 +156,6 @@ class Plan:
     @property
     def disk_gb(self) -> float:
         return sum(j.disk_gb for j in self.jobs)
-
-    def jobs_of(self, wf: int) -> list[Job]:
-        return [j for j in self.jobs if wf in j.wf]
 
     def to_dict(self) -> dict[str, Any]:
         return {"jobs": [j.to_dict() for j in self.jobs], "targets": [list(t) for t in self.targets],
@@ -300,11 +298,6 @@ def order_jobs(jobs: Any, order: list[str], targets: set[int] | None = None) -> 
     return out
 
 
-def plan_stages(project: Project2, targets: list[tuple[int | Workflow, str]], **kw: Any) -> Plan:
-    """The plan for the given (workflow, stage) pairs (``Planner`` keywords: keys, store, gpu, history)."""
-    return Planner(project, **kw).plan(targets)
-
-
 def plan_workflows(project: Project2, workflows: list[int | Workflow], **kw: Any) -> Plan:
     """The plan computing every stage of the given workflows (ids, or Workflow objects for a what-if)."""
     p = Planner(project, **kw)
@@ -404,7 +397,7 @@ def prepare_run(project: Project2, plan: Plan, device: str | None = None) -> Run
     body = {"run_id": run_id, "created": datetime.now().isoformat(timespec="seconds"), "device": dev,
             "visible": visible, "inside": inside, "offset": offset, **plan.to_dict(),
             "definition": project.to_dict()}
-    _write_json(plan_file, body)
+    write_json(plan_file, body)
     return RunInfo(run_id, str(root), str(plan_file), str(log_file), offset, dev)
 
 
@@ -565,7 +558,7 @@ def hand_lock(logs: Path, run_id: str, pid: int) -> None:
     holder = _lock_holder(lock)
     if holder is None or holder.get("run_id") != run_id or int(holder.get("pid", -1)) != os.getpid():
         raise OSError(f"run.lock is not held by this worker ({holder})")
-    _write_json(lock, {"pid": int(pid), "run_id": run_id, "started": time.time(), "from": os.getpid()})
+    write_json(lock, {"pid": int(pid), "run_id": run_id, "started": time.time(), "from": os.getpid()})
 
 
 def adopt_lock(logs: Path, run_id: str, old: dict[str, Any], timeout: float | None = None) -> bool:
@@ -589,8 +582,8 @@ def adopt_lock(logs: Path, run_id: str, old: dict[str, Any], timeout: float | No
             # that runs the interpreter as its child): from now on it names this process, replaced in one step
             if int(h["pid"]) != os.getpid():
                 try:
-                    _write_json(lock, {"pid": os.getpid(), "run_id": run_id, "started": time.time(),
-                                       "from": h.get("from")})
+                    write_json(lock, {"pid": os.getpid(), "run_id": run_id, "started": time.time(),
+                                      "from": h.get("from")})
                 except OSError:
                     return False
             return True
@@ -692,18 +685,6 @@ def cuda_alive(device: str | None = None, timeout: float | None = None) -> bool 
 def _resolve(spec: str) -> Any:
     mod, _, fn = spec.partition(":")
     return getattr(importlib.import_module(mod), fn)
-
-
-def _write_json(path: Path, obj: Any) -> None:
-    """Write a JSON file (a manifest, the plan) atomically; the replace is retried while a reader holds the file
-    (``runner.replace_file``)."""
-    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(obj, indent=1, default=str), encoding="utf-8")
-    try:
-        replace_file(tmp, path)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 def _rename(src: Path, dst: Path, attempts: int = 20) -> None:
@@ -866,7 +847,7 @@ class _Worker:
         body = {**self.d, "jobs": [x.to_dict() for x in left],
                 "resume": {"part": part, "from": _me(), "done": out["done"], "failed": out["failed"],
                            "skipped": out["skipped"], "bad": sorted(bad), "retried": sorted(retried)}}
-        _write_json(plan_file, body)
+        write_json(plan_file, body)
         visible = self.d.get("visible") or os.environ.get("CUDA_VISIBLE_DEVICES") or "0"
         pid = _spawn_worker(self.root, plan_file, visible, runs / f"{self.run_id}.log")
         try:
@@ -913,7 +894,7 @@ class _Worker:
             return
         m.update(status="failed", error=msg, traceback=tb)
         try:
-            _write_json(mf, m)
+            write_json(mf, m)
         except OSError:
             pass
 
@@ -924,7 +905,7 @@ class _Worker:
         mf = tmp / "manifest.json"
         m = json.loads(mf.read_text(encoding="utf-8"))
         m.update(key=job.key, key_parts=self.keys.key_parts(w, job.stage), adopted_from=None, run=self.run_id)
-        _write_json(mf, m)
+        write_json(mf, m)
         gc.collect()                                  # no array of the job keeps a file of its folder open
         old = None
         if final.exists():
@@ -968,8 +949,8 @@ class _Worker:
         _empty(tmp)
         for n in MASTER_FILES:
             shutil.copy2(old / n, tmp / n)
-        _write_json(tmp / MASTERS, {"params": result_params(p), "metrics": om.get("metrics") or {},
-                                    "from": str(old)})
+        write_json(tmp / MASTERS, {"params": result_params(p), "metrics": om.get("metrics") or {},
+                                   "from": str(old)})
         ck.parent.mkdir(parents=True, exist_ok=True)
         ck.write_text(json.dumps(tag))
         self.journal.emit("log", stage=job.stage, level="info",

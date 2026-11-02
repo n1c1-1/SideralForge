@@ -1,4 +1,4 @@
-﻿"""The drizzle coverage map and its rule (astro_gpu/core/coverage.py, stacking v2 points 1 and 1b): the geometry is
+"""The drizzle coverage map and its rule (astro_gpu/core/coverage.py, stacking v2 points 1 and 1b): the geometry is
 register's; the fast estimate equals the exact map where it looks; no dither gives holes, random dithers a coverage
 that varies as 1 / sqrt(frames); the suggestion of scale, drop size and method with its reasons; and, on the real
 heart_a7s transforms (slow), the estimate against the weight map of the stack actually made."""
@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from astro_gpu import texts
 from astro_gpu.core import coverage as cv
 from astro_gpu.core.params import Auto
 from astro_gpu.stages.register import apply_poly
@@ -182,13 +183,13 @@ def test_map_variation_of_a_full_map():
 
 def test_reasons_are_templates_with_a_french():
     """Every Auto written in the module: a plain template (texts.reason_sites' rules), its arguments named in a dict,
-    and its French in FRENCH with the same fields."""
+    and its French in client/locale/fr/engine.json with the same fields."""
+    FRENCH = texts.catalogue("fr")
     tree = ast.parse(Path(cv.__file__).read_text(encoding="utf-8"))
     seen = {getattr(cv, k) for k in dir(cv) if k.startswith("M_")}          # the method advice's (advise_method)
     for t in seen:
-        assert t in cv.FRENCH and {f for _, f, _, _ in string.Formatter().parse(t) if f} == \
-            {f for _, f, _, _ in string.Formatter().parse(cv.FRENCH[t]) if f}
-    assert set(cv.REASON_TEMPLATES) == set(cv.FRENCH)
+        assert t in FRENCH and {f for _, f, _, _ in string.Formatter().parse(t) if f} == \
+            {f for _, f, _, _ in string.Formatter().parse(FRENCH[t]) if f}
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Auto":
             if isinstance(node.args[1], ast.Name):                             # advise_method's helper
@@ -198,12 +199,12 @@ def test_reasons_are_templates_with_a_french():
             fields = {f for _, f, _, _ in string.Formatter().parse(t.value) if f}
             names = {k.value for k in node.args[2].keys} if len(node.args) > 2 else set()
             assert fields == names, t.value
-            assert t.value in cv.FRENCH, t.value
+            assert t.value in FRENCH, t.value
             spec_en = {(f, sp) for _, f, sp, _ in string.Formatter().parse(t.value) if f}
-            spec_fr = {(f, sp) for _, f, sp, _ in string.Formatter().parse(cv.FRENCH[t.value]) if f}
-            assert spec_en == spec_fr and cv.FRENCH[t.value] != t.value
+            spec_fr = {(f, sp) for _, f, sp, _ in string.Formatter().parse(FRENCH[t.value]) if f}
+            assert spec_en == spec_fr and FRENCH[t.value] != t.value
             seen.add(t.value)
-    assert seen == set(cv.FRENCH)
+    assert seen == set(cv.REASON_TEMPLATES)
     a = Auto(1.5, "stars of {fwhm:.1f} px: undersampled; coverage stays at {cov:.0f} %: {scale:g}×",
              {"fwhm": 1.8, "cov": 14.2, "scale": 1.5})
     assert a.reason == "stars of 1.8 px: undersampled; coverage stays at 14 %: 1.5×"
@@ -228,7 +229,7 @@ def test_advice_table_colour_rows():
     assert s.method.reason.endswith(": drizzle 1.5×") and s.method.args["cov"] < 20
     # every advice is an advice (never applied) with a French
     for m in (s.method, cv.advise_method("RGGB", 20, float("inf"), 3.0, 1.0)):
-        assert m.advice and m.template in cv.FRENCH and m.text("fr") != m.reason
+        assert m.advice and m.template in cv.REASON_TEMPLATES and m.text("fr") != m.reason
     assert cv.advise_method("RGGB", 20, float("inf"), 3.0, 1.0).template == cv.M_HOLES
 
 

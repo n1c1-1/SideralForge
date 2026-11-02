@@ -86,29 +86,3 @@ def test_variant_names(tmp_path):
         except ValueError:
             continue
         raise AssertionError(f"accepted {bad!r}")
-
-
-def test_methods_match_parameters(tmp_path):
-    from astro_gpu.core.methods import BY_KEY, current_option, downstream, option_params
-    from astro_gpu.core.project import stage_graph
-    from astro_gpu.stages import all_stages
-    p = _project(tmp_path)
-    names = {s.name: s for s in all_stages()}
-    for d in BY_KEY.values():                      # every option sets parameters that exist
-        for o in d.options:
-            for st, kv in o.params.items():
-                for k in kv:
-                    assert k in names[st].Params.model_fields, (d.key, o.key, st, k)
-    glare = BY_KEY["glare"]
-    assert current_option(glare, p.overrides).key == "halo"
-    p.set_override("stars", "halo_bound", True)
-    assert current_option(glare, p.overrides).key == "bounded"
-    layer = BY_KEY["star_layer"]
-    assert current_option(layer, p.overrides).key == "none"
-    ch = option_params(layer, layer.options[2], "D:/x.npy")
-    assert ch == {"starless": {"learned_stars": "D:/x.npy"}}
-    p.create_variant("net", ch)
-    p.set_active_variant("net")
-    assert current_option(layer, p.overrides).key == "file"
-    order = downstream({"stars"}, stage_graph())
-    assert order[0] == "stars" and "render_prep" in order and "stack" not in order

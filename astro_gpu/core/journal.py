@@ -1,13 +1,13 @@
 """Processing journal: an append-only JSON-lines event stream plus a readable Markdown log.
 
-The worker process writes events; the GUI tails ``logs/events.jsonl``. Event types:
+The worker process writes events; the client tails ``logs/events.jsonl``. Event types:
 
     run_start, run_end            a pipeline run (``stages``, ``status``)
     stage_start, stage_end        ``stage``, ``status`` (done | failed | interrupted | skipped), ``duration``
     progress                      ``stage``, ``frac`` (0..1), ``msg``, ``eta`` (seconds, optional)
     log                           ``stage``, ``level``, ``msg``
     metric                        ``stage``, ``key``, ``value``
-    preview                       ``stage``, ``name``, ``path`` (an image the GUI can show)
+    preview                       ``stage``, ``name``, ``path`` (an image the client can show)
 """
 from __future__ import annotations
 

@@ -25,7 +25,7 @@ from ..core.stage import Context, Stage, StageError
 from .background_poly import LUM, coverage, has_input, sky_of, stack_source
 from .render_prep import anchor_matrix, crop_box
 
-STRETCHES = ["auto"]                       # the other stretches of the spec (GHS, arcsinh, STF, none) are not in v1
+STRETCHES = ["auto"]                       # the other stretches of the spec (GHS, arcsinh, STF, none) are not in the engine
 #: side of the blocks the emission colour is measured in (stack pixels): the area of render_prep's blocks (64 px of the
 #: image reduced by 2)
 EMISSION_BLOCK = 128

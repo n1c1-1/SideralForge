@@ -1,6 +1,6 @@
 """Star size (FWHM), roundness and Moffat beta, by fitting an elliptical Moffat profile to isolated, unsaturated stars
 at native resolution: on the samples of one colour of a raw CFA frame, at their true positions, or on one plane of a
-stack (stacking v2, point 3 of docs/spec/STACKING.md).
+stack. Entry points: ``measure_psf``, ``measure_psf_rgb``, ``find_stars``.
 
 The method of Siril's PSF (star finder, Dynamic PSF) and of PixInsight's DynamicPSF / SubframeSelector [S3][P21]:
 
@@ -14,36 +14,31 @@ finder keeps it (``reject_star`` and the defaults of ``settings.c``): roundness 
 x the amplitude; and, as both tools do for their statistics, no saturated sample and no other catalogued star in its
 window. The value of the image is the median over the kept stars (SubframeSelector weights each star by its residual
 instead; the median is the robust equivalent). ``fwhm`` is the geometric mean sqrt(major x minor), the width of the
-circle of the same area (what tools/bench/measure.py reports).
+circle of the same area.
 
-Why: register.py measures the stars on 2x2 super-pixels (half-flux radius x 4, as for a gaussian): on heart_a7s it reads
-3.97 px, where this fit reads 1.69 px on the green samples of the frames (1.93 px on the scale-1 stack, which adds the
-alignment and the drop). Validated on synthetic Moffat stars of known FWHM (1.3 to 5 px, beta 2.5 to 4.5): within 2 %
-on a plane, 3 % on the red, green or blue samples of a CFA frame (tests/test_psf_moffat.py).
+Why: a half-flux radius on 2x2 super-pixels overestimates the FWHM of undersampled stars about twofold; the Moffat
+fit on the samples of one colour does not. Validated on synthetic Moffat stars of known FWHM (1.3 to 5 px, beta 2.5
+to 4.5): within 2 % on a plane, 3 % on the red, green or blue samples of a CFA frame (tests/test_psf_moffat.py).
 
-How to call it (for the integration agent)
-------------------------------------------
-* register.py, in the worker ``_catalog(idx)`` (one calibrated frame, in a process of the pool), after ``cat`` is
-  built (sensor positions, brightest first)::
-
-      from ..core.psf_moffat import measure_psf
-      full = np.asarray(_G["mm"][idx], np.float32)                     # the calibrated CFA frame (H, W)
-      psf = measure_psf(full, cat[:, :2], cfa=_G["cfa"], channel="G", saturation=VALID_MAX, max_stars=150)
-
-  ``_init`` must also receive ``info["cfa"]``. In the cache, saturated samples are above VALID_MAX and bad ones NaN.
-  ``psf.fwhm`` (sensor px) is the frame's star size, ``psf.roundness`` its roundness, ``psf.beta`` its Moffat beta;
-  ``psf.ok`` is False when fewer than MIN_STARS stars were fitted (keep the old measure then, or NaN). Keep them in
-  reg.npz as new arrays (e.g. ``fwhm_moffat``, ``roundness_moffat``) so that the switch "everything off = the old
-  version to the pixel" still finds the old ``fwhm``. About 0.1 to 0.2 s per frame and colour for 150 stars.
+Callers
+-------
+* register.py, in the worker ``_catalog(idx)`` (one calibrated frame): ``measure_psf`` on the green samples of the
+  CFA frame at the catalogued star positions; ``psf.fwhm`` (sensor px), ``psf.roundness`` and ``psf.beta`` go into
+  reg.npz as ``fwhm_moffat``, ``roundness_moffat``... (NaN when ``psf.ok`` is False: fewer than MIN_STARS stars
+  fitted). About 0.1 to 0.2 s per frame and colour for 150 stars.
 * stack.py, ``Stack.auto``: the median over the aligned frames of ``fwhm_moffat`` is the FWHM of the drizzle rule
   (``core/coverage.suggest_drizzle``). Frame selection (k x sigma on FWHM, roundness) reads the same arrays.
-* On a stack (the bench, Inspect, the spec's "first stack")::
+* On a stack (Inspect)::
 
       xy = find_stars(stack[1])                                        # green plane, brightest first
       per_colour = measure_psf_rgb(stack, xy, saturation=near_saturation_mask)
 
   gives one result per colour, in output pixels (divide by the drizzle scale for sensor pixels).
 Pure numpy (scipy for the neighbour search, ``sep`` only in ``find_stars``); no torch, no GPU.
+
+Sources:
+[S3] Siril 1.4, registration: https://gitlab.com/free-astro/siril-doc/-/raw/1.4/doc/preprocessing/registration.rst
+[P21] PixInsight SubframeSelector documentation: https://gitlab.com/pixinsight/Reference-Documentation/-/raw/master/tools/obsolete/SubframeSelector/SubframeSelector.pidoc
 """
 from __future__ import annotations
 

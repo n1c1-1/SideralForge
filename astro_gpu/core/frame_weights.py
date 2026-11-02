@@ -1,4 +1,4 @@
-"""Frame selection for the stack (docs/spec/STACKING.md, point 4; the user's decision of 2 November, PILOT.md §3c).
+"""Frame selection for the stack (``select``).
 
 Pure functions on the per-frame measures: no file, no GPU, no project. One call::
 
@@ -8,8 +8,8 @@ Pure functions on the per-frame measures: no file, no GPU, no project. One call:
 ``weight`` is the stack's own weight of each frame (stages/stack.quality_weights: (transparency / noise)^2 x
 sharpness); this module never changes it, it only says which frames are left out, and why.
 
-The state of the art, and where each value comes from (docs/pilot/STATE_OF_THE_ART_STACKING.md: sections 5, 6, 9.3)
------------------------------------------------------------------------------------------------------------
+The state of the art, and where each value comes from
+-----------------------------------------------------
 * **Keep almost every frame and let the weights do the work (the default).** Siril keeps every frame unless a filter
   is asked for [S2]; PixInsight's SubframeSelector approval expressions are empty by default [P21]; Zackay & Ofek
   [L6]: once the weights are right, "the rejection of images becomes a damaging operation".
@@ -30,6 +30,12 @@ The state of the art, and where each value comes from (docs/pilot/STATE_OF_THE_A
   roundness and transparency; the background stays off (a brighter sky only adds noise, which the weights count).
 * The statistics of a filter are measured on all the aligned frames, those excluded by hand included, so excluding
   a frame by hand never changes the fate of another through a filter.
+
+Sources:
+[S2] Siril 1.4, the ``stack`` command: https://gitlab.com/free-astro/siril-doc/-/raw/1.4/doc/commands/stack.rst
+[P17] WBPP 2.5.0 release notes (minimum weight, colour drizzle): https://pixinsight.com/forum/index.php?threads/wbpp-2-5-0-released.19112/
+[P21] PixInsight SubframeSelector documentation: https://gitlab.com/pixinsight/Reference-Documentation/-/raw/master/tools/obsolete/SubframeSelector/SubframeSelector.pidoc
+[L6] Zackay & Ofek 2017, ApJ 836, 187 (optimal weighting, rejection of frames): https://arxiv.org/abs/1512.06872
 """
 from __future__ import annotations
 
@@ -46,9 +52,8 @@ MAD_TO_SIGMA = 1.4826
 CRITERIA = ("fwhm", "roundness", "transparency", "background")
 #: the bad tail of each criterion: True when a high value is bad
 HIGH_IS_BAD = {"fwhm": True, "roundness": False, "transparency": False, "background": True}
-#: Siril's k in its official Seestar script (-filter-round=2.5k), used for every criterion when the filters are on
-DEFAULT_K = 2.5
-#: the k x sigma filters (an option: Siril and SubframeSelector filter nothing by default)
+#: the k x sigma filters, k = 2.5 as in Siril's official Seestar script (-filter-round=2.5k); an option: Siril and
+#: SubframeSelector filter nothing by default
 K_SIGMA_FILTERS = {"fwhm": "2.5k", "roundness": "2.5k", "transparency": "2.5k", "background": ""}
 NO_FILTERS = {c: "" for c in CRITERIA}
 #: PixInsight WBPP 2.5.0's default minimum weight (relative to the best frame)
@@ -262,14 +267,6 @@ def per_frame(x, n: int, name: str = "measure") -> np.ndarray | None:
     return a
 
 
-def planes_to_colours(planes, ch_of_k) -> np.ndarray:
-    """(n, 3) from a measure per Bayer plane (n, 4) (frame_stats.npy[:, :, 0]: the sky level), the planes of one
-    colour averaged (``ch_of_k``: the colour of each plane, io.frames.cfa_channel_map)."""
-    p = np.asarray(planes, float)
-    ch = np.asarray(ch_of_k)
-    return np.stack([p[:, ch == c].mean(axis=1) if (ch == c).any() else p.mean(axis=1) for c in range(3)], axis=1)
-
-
 # ------------------------------------------------------------------------------------------------- the result
 @dataclass
 class FrameSelection:
@@ -283,13 +280,6 @@ class FrameSelection:
     min_weight: float
     auto: dict[str, Auto]          # what each filter and the minimum weight did (filter_*, min_weight)
     suggestion: Auto               # the summary: frames kept
-
-    def reasons_in(self, lang: str = "en") -> list[str]:
-        """Every frame's reason in ``lang`` ("" when kept)."""
-        by = {}
-        for r in self.exclusions:
-            by.setdefault(r.frame, []).append(r.text(lang))
-        return ["; ".join(by.get(i, [])) for i in range(len(self.kept))]
 
     def as_dict(self) -> dict:
         """A JSON-ready summary (diagnostics.json): thresholds and exclusions."""

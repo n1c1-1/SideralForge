@@ -3,7 +3,7 @@
 Works from the outputs of the ``render_prep`` stage. ``render(settings, scale)`` returns the nebula layer, the
 star layer and their screen blend as display-referred sRGB tensors in [0, 1].
 
-* ``scale = 1``: full resolution (exports, 100 % view) - identical to the reference implementation.
+* ``scale = 1``: full resolution (exports, 100 % view).
 * ``scale < 1``: fast preview; the nebula is processed on a reduced image with every spatial parameter scaled,
   the stars are always drawn at full resolution and then reduced, so star sizes and brightness match the export.
 

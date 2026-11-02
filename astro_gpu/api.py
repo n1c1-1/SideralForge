@@ -1,10 +1,10 @@
-"""The engine API: the only door between the client (``astro_gpu/client``) and the engine (DESIGN §4).
+"""The engine API: the only door between the client (``astro_gpu/client``) and the engine.
 
 Every function takes the project definition (``Project2``) first, and a workflow by its integer id (a ``Workflow``
 object also works wherever the function only reads: that is how what-ifs are asked). Edits change the definition in
 memory; ``save(p)`` writes it (the client autosaves, debounced). Nothing here imports Qt.
 
-Threading (DESIGN §5.3). Nothing slow runs on import: torch, the stages and the renderers load on the first call that
+Threading. Nothing slow runs on import: torch, the stages and the renderers load on the first call that
 needs them. The calls fall into four groups:
 
 * memory only (the GUI thread may call them): the editing functions (``add_workflow``, ``set_option``, ``set_param``,
@@ -185,7 +185,7 @@ class FrameTable:
 
 @dataclass
 class MethodInfo:
-    """A way to compute a block. ``new``: ◇, not in the engine yet (Spec mode only, disabled)."""
+    """A way to compute a block. ``new``: not in the engine (listed, disabled)."""
 
     key: str
     name: str
@@ -333,21 +333,6 @@ class ParamInfo:
 
 
 @dataclass
-class MetricInfo:
-    """How to show a metric (the catalogue of ``texts.py``): label, unit, number format spec ('d', '.2f'...), one-line
-    meaning, in the language asked. ``known`` is False for a key the catalogue lacks (the label is the key spelled
-    out). ``texts.format_metric(key, value, lang)`` writes a value."""
-
-    stage: str
-    key: str
-    label: str
-    unit: str = ""
-    format: str = ""
-    meaning: str = ""
-    known: bool = True
-
-
-@dataclass
 class SliderInfo:
     key: str
     name: str
@@ -468,17 +453,17 @@ class StackDiag:
     grid: tuple[int, int] | None = None              # (width, height) of the stack
     missing: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
-    # ---- stacking v2 (filled for every stack; what a switch adds is there only when it was on)
-    #: the switches the stack was made with ({} for a stack made before they existed: the previous version)
+    # ---- the details of the stacking (filled for every stack; what a switch adds is there only when it was on)
+    #: the switches the stack was made with ({} for a stack made before the stack kept them)
     switches: dict[str, str] = field(default_factory=dict)
-    #: {"method": "legacy" | "hubble", "rejected_pct", "untested_pct" (Hubble: fewer than 3 samples around),
+    #: {"method": "own" (or as recorded), "rejected_pct", "untested_pct" (Hubble: fewer than 3 samples around),
     #: "reference_pct": Siril's mark [0.1, 0.5], "prediction" (Hubble: samples per point and median / minmed per colour),
     #: "classic" and "reason_template" (the Classic method: the rejection its rule chose, {"template", "args"})}
     rejection: dict[str, Any] = field(default_factory=dict)
     #: (h, w) counts of the samples left untested (Hubble), on the rejection maps' grid; None otherwise
     rejection_untested: Any = None
     #: the coverage per colour: "maps" (3, h, w) the drizzle weight map reduced ``factor`` times (block means),
-    #: "variation" {R, G, B} its std / median (DrizzlePac's statistic, under 20 % is even), and with the v2 switches
+    #: "variation" {R, G, B} its std / median (DrizzlePac's statistic, under 20 % is even), and when kept
     #: "estimate" (core/coverage's fast estimate at the scale and drop used) and "rule" (the coverage rule's scale,
     #: drop and method, each {value, template, args, reason})
     coverage: dict[str, Any] = field(default_factory=dict)
@@ -486,13 +471,13 @@ class StackDiag:
     weights_rgb: dict[str, tuple[float, float, float]] = field(default_factory=dict)
     #: per excluded frame name, why: [{"code", "template", "args"}] (texts.format_reason translates them)
     exclusions: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    #: the v2 frame selection and weights (core/frame_weights): the filters' medians, sigmas and limits, the costs, the
-    #: guarded weights, the automatic reasons; None for the previous selection and weights
+    #: the frame selection and weights (core/frame_weights): the filters' medians, sigmas and limits, the costs, the
+    #: guarded weights, the automatic reasons; None for a stack made before the stack kept them
     selection: dict[str, Any] | None = None
-    #: the v2 normalisation (core/normalize_local): mode, the frames of its reference, its stars, the diagnostic and
-    #: its reason; None for the previous normalisation
+    #: the local normalisation recorded by stacks of an earlier engine version (mode, reference frames, stars,
+    #: diagnostic, reason); None otherwise
     normalisation: dict[str, Any] | None = None
-    #: the colour alignment applied: "mode" ("legacy": one correction measured on the mean; "per_block": register's)
+    #: the colour alignment applied: "mode" ("night": one correction measured on the mean, or as recorded)
     #: and its summary
     channel_alignment: dict[str, Any] | None = None
 
@@ -979,8 +964,8 @@ def set_excluded(p: Project2, pairs: Iterable[tuple[int, str]], excluded: bool =
 
 def health_checks(p: Project2) -> list[Check]:
     """What to look at before running: no lights, no bias, flats of several sessions merged into one master, the star
-    size per session (once Registration is done) and the disk the calibrated cache needs; the rest of the spec's
-    checks are ◇. Worker thread (it reads the frame lists and one header)."""
+    size per session (once Registration is done) and the disk the calibrated cache needs. Worker thread (it reads
+    the frame lists and one header)."""
     out: list[Check] = []
     inp = p.inputs()
     n = {k: len(getattr(inp, k)) for k in KINDS}
@@ -1258,6 +1243,7 @@ def rename_workflow(p: Project2, wf: int, name: str) -> None:
 
 
 def duplicate_workflow(p: Project2, wf: int, name: str | None = None) -> Workflow:
+    """A copy of a workflow (options and stored settings), named "<name> copy" unless ``name`` is given."""
     src = p.workflow(wf)
     return add_workflow(p, name or f"{src.name} copy", None, None, copy_of=wf)
 
@@ -1361,7 +1347,7 @@ def set_param(p: Project2, wf_ids: int | Iterable[int], stage: str, name: str, v
         p.workflow(wid).params = params
 
 
-# a change is {"kind": "opt", "key", "value"} or {"kind": "param", "stage", "name", "value"} (the mockup's)
+# a change is {"kind": "opt", "key", "value"} or {"kind": "param", "stage", "name", "value"}
 Change = dict[str, Any]
 
 
@@ -2270,19 +2256,19 @@ def stack_diagnostics(p: Project2, wf: int | Workflow, which: str = "current") -
                 out.rejection_untested = z["untested"]
     else:
         out.missing.append(_missing("rejection maps", "stack"))
-    _stack_v2(out, d, m, sf, names, diag)
+    _stack_details(out, d, m, sf, names, diag)
     return out
 
 
-#: the coverage maps of the stacks made before stacking v2 kept them, computed again from drz_weight.npy: one at a
+#: the coverage maps of the stacks made before the stack kept them, computed again from drz_weight.npy: one at a
 #: time (a stack's weight map is large); (folder, its mtime) -> the record
 _COVERAGE: dict[tuple, dict] = {}
 
 
-def _stack_v2(out: StackDiag, d: Path, m: dict, sf: list, names: list[str], diag: dict | None) -> None:
-    """StackDiag's stacking-v2 part: the switches, the rejection's rates, the coverage per colour, the weights per
-    colour, the reasons of the frames left out, the selection, the normalisation and the colour alignment. A stack made
-    with the previous version (every switch at its default) gets the same fields from what it has."""
+def _stack_details(out: StackDiag, d: Path, m: dict, sf: list, names: list[str], diag: dict | None) -> None:
+    """StackDiag's details: the switches, the rejection's rates, the coverage per colour, the weights per colour, the
+    reasons of the frames left out, the selection, the normalisation and the colour alignment. A stack made before
+    the stack kept them gets the same fields from what it has."""
     import numpy as np
 
     from .stages.stack import COVERAGE, THRESHOLD_CODES, reduce_map
@@ -2317,7 +2303,7 @@ def _stack_v2(out: StackDiag, d: Path, m: dict, sf: list, names: list[str], diag
     if ca is None and metrics.get("channel_offsets") is not None:
         ca = {**metrics["channel_offsets"], "mode": "night"}
     out.channel_alignment = ca
-    # ---- the coverage per colour: kept by the v2 stack (coverage.npz), else from its weight map
+    # ---- the coverage per colour: kept by the stack (coverage.npz), else from its weight map
     cov: dict[str, Any] = {}
     if (d / COVERAGE).is_file():
         with np.load(d / COVERAGE) as z:
@@ -2511,15 +2497,6 @@ def describe(p: Project2, wf: int | Workflow, stage: str) -> list[ParamInfo]:
             advice=None if adv is None else adv.value, advice_reason="" if adv is None else adv.template,
             advice_args=None if adv is None else adv.args, advice_reason_en="" if adv is None else adv.reason))
     return out
-
-
-def metric_info(stage: str, key: str, lang: str = "en") -> MetricInfo:
-    """The label, unit, format and meaning of a metric a stage writes (the catalogue is ``texts.py``), in ``lang``
-    ('en' or 'fr')."""
-    from . import texts
-    m = texts.metric(key)
-    return MetricInfo(stage, key, texts.metric_label(key, lang), texts.metric_unit(key, lang), m.fmt if m else "",
-                      texts.metric_meaning(key, lang), m is not None)
 
 
 # ---------------------------------------------------------------------------------------------- rendering and export

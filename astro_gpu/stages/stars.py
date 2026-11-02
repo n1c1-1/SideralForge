@@ -64,15 +64,12 @@ class Stars(Stage):
                    "of the image, used to separate the stars from the nebula and to redraw them.")
     deps = ("optics", "catalogs")
     Params = StarsParams
-    version = "15"         # 9: far halo of the stars, star shape measured without the stars sitting in the core of a
-                           # much brighter one; 10: the fine rays of the stars whose glare dominates, with their halo;
-                           # 11: the rays bounded by the star's glare (noise far from the star passed for rays);
-                           # 12: the glare of the dominant stars saved apart (the rendering draws back that one only);
-                           # 13: optionally no halo above the light the data show beyond the nebula (the halos
-                           # fitted on their own surroundings: dark rings around sigma Orionis, lobes around Alnitak);
-                           # 14: a local shape correction cell moving far more light than the others takes the
-                           # field's correction (a galaxy's gradient drew magenta rectangles on M31); 15: the
-                           # optional bound applies to every star's halo, also those drawn at their catalogue flux
+    version = "15"
+    # 9: far halo of the stars; star shape measured without the stars in the core of a brighter one
+    # 10-12: the fine rays of the dominant stars, bounded by their glare; that glare saved apart
+    # 13: optional bound: no halo above the light the data show beyond the nebula
+    # 14: a local shape correction cell moving far more light than the others takes the field's correction
+    # 15: the optional bound applies to every star's halo
 
     def run(self, ctx: Context, p: StarsParams) -> None:
         dev = ctx.device

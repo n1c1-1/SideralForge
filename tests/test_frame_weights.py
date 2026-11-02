@@ -18,7 +18,6 @@ from astro_gpu.core.frame_weights import (
     REASON_TEMPLATES,
     Filter,
     parse_filter,
-    planes_to_colours,
     robust_sigma,
     select,
 )
@@ -251,14 +250,12 @@ def test_texts_are_templates_with_their_numbers():
     fs = sel(m, filters=K_SIGMA_FILTERS)
     used = [r.template for r in fs.exclusions] + [a.template for a in fs.auto.values()] + [fs.suggestion.template]
     assert set(used) <= set(REASON_TEMPLATES)
-    fr = fs.reasons_in("fr")
+    by = {}
+    for r in fs.exclusions:
+        by.setdefault(r.frame, []).append(r)
+    fr = ["; ".join(r.text("fr") for r in by.get(i, [])) for i in range(len(fs.kept))]
     assert fr[12].count(",") >= 1 and "," in fr[12].split(" σ")[0]     # decimal comma: "30,4 σ"
-    assert fs.reasons_in("en") == list(fs.reasons)
+    assert ["; ".join(r.text("en") for r in by.get(i, [])) for i in range(len(fs.kept))] == list(fs.reasons)
     json.dumps(fs.as_dict())
     assert K_SIGMA_FILTERS == {"fwhm": "2.5k", "roundness": "2.5k", "transparency": "2.5k", "background": ""}
     assert NO_FILTERS == {c: "" for c in fwm.CRITERIA}
-
-
-def test_planes_to_colours():
-    planes = np.array([[1.0, 2.0, 4.0, 8.0]])
-    np.testing.assert_allclose(planes_to_colours(planes, [0, 1, 1, 2]), [[1.0, 3.0, 8.0]])     # RGGB

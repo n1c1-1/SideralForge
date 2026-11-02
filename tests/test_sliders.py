@@ -22,7 +22,6 @@ POSITIONS = [i / 4 for i in range(17)]
 def test_the_nine_sliders_of_post():
     assert S.KEYS == ("sky", "contrast", "saturation", "detail", "noise", "stars_number", "star_size", "star_color",
                       "star_halo")
-    assert set(S.MOCKUP_KEYS) == set(S.KEYS)
     # position 2 of every table is the suggested rendering (the defaults)
     r, s = RenderSettings(), SimpleSettings()
     for sl in S.SLIDERS:
@@ -125,10 +124,6 @@ def test_greyed_sliders_give_their_reasons():
     assert S.settings_at("simple", None, {"noise": 0}, has_denoise=False) == SimpleSettings()
     assert S.settings_at("simple", None, {"noise": 0}, has_denoise=True).noise_mix == pytest.approx(0.4)
     assert S.settings_at("stacking", None, {"star_size": 4, "sky": 3}) == SimpleSettings(sky=0.26)
-
-
-def test_position_text():
-    assert S.position_text(2) == "suggested" and S.position_text(2.7) == "+0.7" and S.position_text(0.8) == "−1.2"
 
 
 @pytest.fixture(scope="module")

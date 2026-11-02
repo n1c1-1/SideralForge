@@ -17,7 +17,7 @@ SURVEYS = {
     "nsns": ("simg.de/P/NSNS/DR0_2/halpha", "NSNS DR0.2 H-alpha (northern sky, ~1')"),
     "finkbeiner": ("CDS/P/Finkbeiner", "Finkbeiner 2003 H-alpha composite (all sky, 6')"),
 }
-#: the survey's own HiPS server, read tile by tile when the CDS cut-out service does not answer (2026-10-30)
+#: the survey's own HiPS server, read tile by tile when the CDS cut-out service does not answer
 HIPS_SERVERS = {"nsns": "https://simg.de/nebulae3/dr0_2/halpha"}
 
 

@@ -514,7 +514,7 @@ def resolve_name(name: str, log=None) -> tuple[float, float]:
                 return float(sc.ra.deg), float(sc.dec.deg)
         return None
 
-    def ned():                      # NED (NASA/IPAC) when SIMBAD (CDS) does not answer - down on 2026-10-30
+    def ned():                      # NED (NASA/IPAC) when SIMBAD (CDS) does not answer
         from astroquery.ipac.ned import Ned
         for c in candidates:
             try:

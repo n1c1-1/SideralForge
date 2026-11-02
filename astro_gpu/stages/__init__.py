@@ -1,4 +1,5 @@
-"""Processing stages, in execution order (each stage only depends on stages listed before it)."""
+"""Processing stages. ``all_stages()``: the stages v1's ``Pipeline`` runs, in execution order (each stage only
+depends on stages listed before it); stages/v2.py adds the stages only v2 workflows have."""
 from __future__ import annotations
 
 from ..core.stage import Stage

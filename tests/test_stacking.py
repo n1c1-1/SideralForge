@@ -422,7 +422,7 @@ def test_coverage_rule_and_method_advice_on_the_frames_kept(night, tmp_path):
     np.savez(p.stage_dir("register") / "reg.npz", **z)
     ctx = Context(p, Stack(), Journal(p.logs, echo=False), "cpu")
     a = Stack().auto(ctx)
-    assert a["scale"].template in cv.FRENCH and a["pixfrac"].template in cv.FRENCH
+    assert a["scale"].template in cv.REASON_TEMPLATES and a["pixfrac"].template in cv.REASON_TEMPLATES
     assert a["scale"].value in (1.0, 1.5, 2.0) and 0.5 <= a["pixfrac"].value <= 1.0
     m = a["method"]
     assert m.advice and m.value == "classic" and m.template == cv.M_FEW and m.args == {"n": truth.n}

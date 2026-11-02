@@ -1,5 +1,5 @@
-"""The drizzle coverage map, and the rule that chooses the drizzle scale, the drop size and the method (stacking v2,
-points 1 and 1b of docs/spec/STACKING.md; docs/pilot/STATE_OF_THE_ART_STACKING.md §1 and §9.1).
+"""The drizzle coverage map, and the rule that chooses the drizzle scale, the drop size and the method. Entry
+points: ``suggest_drizzle``, ``advise_method``, ``map_variation``, ``weight_map``.
 
 The coverage map is the weight map of a Bayer drizzle without the pixel values: for every frame, every raw sample of
 a colour is dropped where the frame's registration polynomial puts it on the output grid, as a square drop of
@@ -17,8 +17,7 @@ weight map, and for red and blue (a quarter of the samples each) it must stay un
   scale; of the scales that hold, the smallest that samples the stars at 2 px or more, else the largest;
 * the drop size is then the smallest value of 0.05 steps from 1 / scale up that keeps the rule;
 * at scale 1, a drop of 1 (Siril, WBPP and APP for colour sensors [S5][P15][A8]);
-* the method advice (``advise_method``, the table the user validated on 2 November, docs/pilot/PILOT.md §3c), on the
-  frames the selection keeps:
+* the method advice (``advise_method``), on the frames the selection keeps:
 
   ===========================================================  ===========================  ========================
   series                                                       advice                       source
@@ -41,35 +40,36 @@ plane, deposited and read as the middle channel ("G").
 
 Fast estimate: the map is computed only on a grid of small patches of the output (``GRID`` x ``PATCH`` px) inside the
 field, but there from every sample of every frame, each at its position through its frame's polynomial (linearised
-over the patch: 0.002 px at most for the bench's distortions); a frame that does not cover a whole patch is left out
+over the patch: 0.002 px at most for real lens distortions); a frame that does not cover a whole patch is left out
 of that patch, so the edges of the dithering do not count as variation, only the sampling pattern does. The variation
 is the RMS over the patches of their std / median. ``suggest_drizzle`` takes about 0.5 s for 100 frames, 1.5 s for 300
-(one core). On the bench's real transforms the estimate is within 1 to 5 points of the variation of the weight map of
-the stack actually made (6 cases, scale 1, drop 0.7). ``weight_map`` is the exact full map (small images, tests);
+(one core); the estimate is within a few points of the variation of the weight map of the stack actually made.
+``weight_map`` is the exact full map (small images, tests);
 after a stack, ``map_variation`` measures the same thing on its real ``drz_weight.npy``.
 
-How to call it (for the integration agent)
-------------------------------------------
-* stack.py, ``Stack.auto(ctx)``, before stacking::
-
-      from ..core.coverage import suggest_drizzle
-      reg = np.load(ctx.input("register", "reg.npz"))
-      ok = <the frames the selection keeps>                          # stack.frames_of(ctx, p, reg).weight > 0
-      info = <calibrate's cache.json>                                # width, height, cfa (what open_cache reads)
-      fwhm = float(np.median(reg["fwhm_moffat"][ok]))                # core/psf_moffat, sensor px (NaN: not measured)
-      s = suggest_drizzle(reg["coef"][ok], info["width"], info["height"], info["cfa"], fwhm)
-      a["scale"], a["pixfrac"] = s.scale, s.pixfrac                  # Auto(value, template, args)
-      a["method"] = s.method                                         # the advice ("drizzle" / "classic"), advice=True
+Callers
+-------
+* stages/stack.py (``drizzle_suggestion``, from ``Stack.auto``) calls ``suggest_drizzle`` on register's polynomials
+  of the frames the selection keeps, with calibrate's frame size and CFA pattern and the median Moffat FWHM, and
+  takes ``scale``, ``pixfrac`` and the method advice from it.
 
   ``coef`` is register's (n, 2, 10) polynomial of each frame (frame sensor px -> reference sensor px, the 10 cubic
   terms of register.poly_terms); the output grid is stack.py's: Xo = (X + 0.5) x scale - 0.5. Pass ``weights`` (the
   frame weights) once they are known, for the weighted map. ``s.coverage[(scale, pixfrac)]`` keeps every
   ``Coverage`` computed (per colour: ``cv``, ``cv_max``, the per-patch ``cv_map`` for Inspect).
-* The reasons are templates written here, with their French in ``FRENCH`` (also in client/locale/fr/engine.json);
-  texts.reason_sites() reads them from ``REASON_TEMPLATES``.
+* The reasons are templates written here, listed in ``REASON_TEMPLATES`` (texts.reason_sites() reads them there);
+  their French is in client/locale/fr/engine.json.
 * Inspect > Stacking: ``map_variation(np.load(drz_weight.npy))`` gives the measured variation per colour of the
   stack actually made, to show next to the estimate.
 Pure numpy; no torch.
+
+Sources:
+[L1] Fruchter & Hook 2002, PASP 114, 144 (drizzle): https://arxiv.org/abs/astro-ph/9808087
+[L2] DrizzlePac Handbook v3: https://hst-docs.stsci.edu/drizzpac
+[S5] Siril, drizzle: https://siril.readthedocs.io/en/latest/preprocessing/drizzle.html
+[P12] PixInsight Debayer documentation: https://gitlab.com/pixinsight/Reference-Documentation/-/raw/master/tools/Debayer/Debayer.pidoc
+[P15] PixInsight WBPP source (BPP-Global.js, BPP-FrameGroup.js): https://gitlab.com/pixinsight/PJSR/-/tree/master/src/scripts/BatchPreprocessing
+[A8] Astro Pixel Processor forum, Bayer drizzle: https://www.astropixelprocessor.com/community/tutorials-workflows/bayer-drizzle/
 """
 from __future__ import annotations
 
@@ -109,36 +109,28 @@ M_MONO_UNEVEN = "monochrome, coverage varies {cov:.1f} % at {scale:g}×: Classic
 M_MONO_HOLES = "monochrome, holes at {scale:g}×: Classic"
 M_MONO_DRIZZLE = "monochrome, stars of {fwhm:.1f} px: drizzle {scale:g}×"
 
-#: the French of the reasons below (to go in client/locale/fr/engine.json)
-FRENCH = {
-    M_FEW: "{n} images (le drizzle en demande 15) : Classique",
-    M_HOLES: "le rouge et le bleu laissent des trous : Classique",
-    M_UNEVEN: "couverture variable de {cov:.1f} % (plus de 20 %) : Classique",
-    M_DRIZZLE: "{n} images décalées, couverture à {cov:.1f} % : drizzle",
-    M_DRIZZLE_FINE: "étoiles de {fwhm:.1f} px, couverture à {cov:.1f} % : drizzle {scale:g}×",
-    M_MONO: "monochrome, étoiles de {fwhm:.1f} px : Classique",
-    M_MONO_NO_FWHM: "monochrome, taille des étoiles non mesurée : Classique",
-    M_MONO_FEW: "monochrome, {n} images (le drizzle en demande 15) : Classique",
-    M_MONO_UNEVEN: "monochrome, couverture variable de {cov:.1f} % à {scale:g}× : Classique",
-    M_MONO_HOLES: "monochrome, des trous à {scale:g}× : Classique",
-    M_MONO_DRIZZLE: "monochrome, étoiles de {fwhm:.1f} px : drizzle {scale:g}×",
-    "star size not measured: 1×": "taille des étoiles non mesurée : 1×",
-    "stars of {fwhm:.1f} px: sampled well enough, drizzle would add no detail: 1×":
-        "étoiles de {fwhm:.1f} px : assez échantillonnées, le drizzle n'ajouterait aucun détail : 1×",
-    "stars of {fwhm:.1f} px: undersampled, but at {scale:g}× the coverage would vary by {cov:.0f} %: 1×":
-        "étoiles de {fwhm:.1f} px : sous-échantillonné, mais à {scale:g}× la couverture varierait de {cov:.0f} % : 1×",
-    "stars of {fwhm:.1f} px: undersampled, but at {scale:g}× the red and blue samples would leave holes: 1×":
-        "étoiles de {fwhm:.1f} px : sous-échantillonné, mais à {scale:g}× les mesures rouges et bleues laisseraient "
-        "des trous : 1×",
-    "stars of {fwhm:.1f} px: undersampled; coverage stays at {cov:.0f} %: {scale:g}×":
-        "étoiles de {fwhm:.1f} px : sous-échantillonné ; la couverture reste à {cov:.0f} % : {scale:g}×",
-    "scale 1×: drops of a whole pixel": "échelle 1× : des gouttes d'un pixel entier",
-    "the finest drop that keeps the red and blue coverage under {limit:.0f} % ({cov:.0f} %)":
-        "la plus fine qui garde la couverture du rouge et du bleu sous {limit:.0f} % ({cov:.0f} %)",
-}
 #: every template this module writes (texts.reason_sites reads them here: the method advice's are not ``Auto(...)``
-#: literals)
-REASON_TEMPLATES = tuple(FRENCH)
+#: literals); their French is in client/locale/fr/engine.json
+REASON_TEMPLATES = (
+    M_FEW,
+    M_HOLES,
+    M_UNEVEN,
+    M_DRIZZLE,
+    M_DRIZZLE_FINE,
+    M_MONO,
+    M_MONO_NO_FWHM,
+    M_MONO_FEW,
+    M_MONO_UNEVEN,
+    M_MONO_HOLES,
+    M_MONO_DRIZZLE,
+    "star size not measured: 1×",
+    "stars of {fwhm:.1f} px: sampled well enough, drizzle would add no detail: 1×",
+    "stars of {fwhm:.1f} px: undersampled, but at {scale:g}× the coverage would vary by {cov:.0f} %: 1×",
+    "stars of {fwhm:.1f} px: undersampled, but at {scale:g}× the red and blue samples would leave holes: 1×",
+    "stars of {fwhm:.1f} px: undersampled; coverage stays at {cov:.0f} %: {scale:g}×",
+    "scale 1×: drops of a whole pixel",
+    "the finest drop that keeps the red and blue coverage under {limit:.0f} % ({cov:.0f} %)",
+)
 
 
 # ------------------------------------------------------------------------------------------------------ geometry
@@ -492,7 +484,7 @@ def suggest_drizzle(coef, W: int, H: int, cfa, fwhm: float | None, *, weights=No
 
 def advise_method(cfa, n: int, cov1: float, fwhm: float, scale: float, finer=None, *, limit: float = LIMIT,
                   undersampled: float = UNDERSAMPLED, min_frames: int = MIN_DRIZZLE_FRAMES) -> Auto:
-    """The method advice of the table in the module docstring (docs/pilot/PILOT.md §3c), an advice ``Auto``
+    """The method advice of the table in the module docstring, an advice ``Auto``
     ("drizzle" or "classic", a short reason): ``n`` the frames kept, ``cov1`` the coverage variation the rule reads
     at scale 1 and drop 1 (red and blue; the one plane of a monochrome sensor), ``fwhm`` the Moffat FWHM (NaN: not
     measured), ``scale`` the scale the rule suggests, ``finer`` (scale, variation) at the finer scale it tried (None

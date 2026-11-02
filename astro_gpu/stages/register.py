@@ -22,13 +22,6 @@ from .calibrate import VALID_MAX, open_cache
 MOFFAT_STARS = 150
 
 
-def check_choice(name: str, value: str, choices) -> str:
-    """A switch value, refused (ValueError naming the setting) when it is not one of its choices."""
-    if value not in choices:
-        raise ValueError(f"{name}: {value!r} is not one of {', '.join(choices)}")
-    return value
-
-
 class RegisterParams(StageParams):
     detect_sigma: float = P(8.0, label="Star detection threshold", level=ADVANCED, ge=3, le=50, unit="sigma",
                             help="Minimum significance of the stars used for alignment.",

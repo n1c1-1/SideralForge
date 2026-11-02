@@ -798,15 +798,12 @@ def test_estimates_follow_units_history_and_the_cpu():
     assert est.denoise_iterations(27.3) == 24000 and est.denoise_iterations(2.0) == 6000
 
 
-def test_record_keeps_the_last_20_and_v1_timings_are_written_atomically(state):
-    from astro_gpu.core.runner import _record_timing
+def test_record_keeps_the_last_20_written_atomically(state):
     for i in range(25):
         est.record("stack", 10.0 + i, 5.0, True)
-        _record_timing("stack", 10.0 + i)
     h = est.load_history()
     assert len(h["stack"]) == 20 and h["stack"][-1] == [34.0, 5.0, "gpu"]
-    assert json.loads((state / "timings.json").read_text())["stack"][-1] == 34.0
-    assert sorted(p.name for p in state.iterdir()) == ["timings.json", "timings2.json"]     # no temporary file left
+    assert sorted(p.name for p in state.iterdir()) == ["timings2.json"]     # no temporary file left
 
 
 def test_workers_recording_at_once_all_keep_their_entries(tmp_path, monkeypatch):
@@ -849,6 +846,7 @@ def test_a_manifest_a_reader_holds_open_is_replaced_once_it_lets_go(tmp_path, mo
     import threading
     from types import SimpleNamespace
 
+    from astro_gpu.core import files
     from astro_gpu.core import runner as runner_mod
     mf = tmp_path / "manifest.json"
     mf.write_text(json.dumps({"status": "running"}))
@@ -860,7 +858,7 @@ def test_a_manifest_a_reader_holds_open_is_replaced_once_it_lets_go(tmp_path, mo
             os.replace(probe, mf)
         probe.unlink()
     threading.Timer(0.4, reader.close).start()
-    runner2._write_json(mf, {"status": "done"})                                      # runner2: the commit
+    files.write_json(mf, {"status": "done"})                                         # runner2: the commit
     assert json.loads(mf.read_text()) == {"status": "done"}
     reader = open(mf, "rb")
     threading.Timer(0.4, reader.close).start()
@@ -873,15 +871,15 @@ def test_a_manifest_a_reader_holds_open_is_replaced_once_it_lets_go(tmp_path, mo
             src = tmp_path / "new.json"
             src.write_text("{}")
             with pytest.raises(PermissionError):
-                runner_mod.replace_file(src, mf, attempts=3)
+                files.replace_file(src, mf, attempts=3)
             src.unlink()
 
     def refuse(src, dst):
         raise PermissionError("held")
 
-    monkeypatch.setattr(runner2, "replace_file", refuse)
+    monkeypatch.setattr(files, "replace_file", refuse)
     with pytest.raises(PermissionError):
-        runner2._write_json(mf, {"status": "x"})
+        files.write_json(mf, {"status": "x"})
     assert sorted(x.name for x in tmp_path.iterdir()) == ["manifest.json"]
     assert json.loads(mf.read_text()) == {"status": "failed"}
 

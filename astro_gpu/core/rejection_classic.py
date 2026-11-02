@@ -1,5 +1,4 @@
-"""Pixel rejection of the Classic stacking method, chosen by the number of frames as PixInsight's WBPP does (stacking
-v2: docs/spec/STACKING.md point 2, docs/pilot/STATE_OF_THE_ART_STACKING.md sections 4 and 9.2).
+"""Pixel rejection of the Classic stacking method, chosen by the number of frames as PixInsight's WBPP does.
 
 The rule (WBPP 3.x, BPP-Global.js: the automatic rejection by the size of the group [P15]; the same ranges in the
 documentation of PixInsight [P1] and of Siril [S1]):
@@ -170,10 +169,8 @@ def winsorized_clip(v: torch.Tensor, low: float, high: float, valid: torch.Tenso
     """(low, high) rejected (N, P): Siril's winsorized sigma clipping (see the module's docstring).
 
     Each round runs on the whole band with the finished columns masked out, not on the columns ``torch.nonzero``
-    picks: the bench of 1 November 2026 stopped twice here on PyTorch's bound check of such an index (an index_put
-    in deterministic mode, ``TensorCompare.cu:109``) while the GPU driver logged errors on both cards in the same
-    seconds and the machine was short of memory; that index cannot leave its range when the GPU computes right
-    (40 bands of 1 Mpx with gaps, plateaus and outliers ran clean alone). Same results, about 1.4 x the time."""
+    picks: an index_put on such indices in deterministic mode trips PyTorch's bound check when the GPU misbehaves.
+    Same results, about 1.4 x the time."""
     valid = torch.isfinite(v) if valid is None else valid
     N, P = v.shape
     x = v.double()

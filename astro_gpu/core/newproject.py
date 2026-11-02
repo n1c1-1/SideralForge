@@ -1,11 +1,10 @@
-"""Guesses for a new project from the folder of its light frames (no interface code: shared by the New project dialog
-and the ComfyUI node): the darks / flats / bias / flat darks folders next to it, the project name, folders and target.
+"""Guesses for a new project from the folder of its light frames (no interface code): the darks / flats / bias /
+flat darks folders next to it (``guess_calibration``), the project name, folders and target (``guess_names``).
 """
 from __future__ import annotations
 
 import os
 import re
-import shutil
 from pathlib import Path
 
 from .project import list_frames
@@ -61,16 +60,3 @@ def guess_names(lights_folder: str) -> dict[str, str]:
         named = named.parent
     return {"name": named.name, "folder": str(named / "astro_gpu"),
             "scratch": str(Path.home() / "astro_gpu_scratch" / named.name), "target": target_guess(named.name)}
-
-
-def space_text(lights: list[Path], scratch: str) -> str:
-    """The calibrated frames cache needed on the scratch disk, against its free space."""
-    if not lights or not scratch:
-        return ""
-    from ..io.frames import read_info
-    inf = read_info(lights[0])
-    need = len(lights) * inf.width * inf.height * 2 / 1e9
-    root = Path(scratch).anchor or str(Path.home())
-    free = shutil.disk_usage(root).free / 1e9
-    return (f"Calibrated cache: about {need:.1f} GB on the scratch disk ({free:.0f} GB free)."
-            + ("  Not enough space!" if need > free * 0.9 else ""))

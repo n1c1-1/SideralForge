@@ -1,4 +1,4 @@
-"""The simplified sliders of Post (POST.md 2.1): 9 continuous sliders from 0 to 4, position 2 = the layer's base.
+"""The simplified sliders of Post: 9 continuous sliders from 0 to 4, position 2 = the layer's base.
 
 A workflow layer is rendered with settings derived from its base (a named rendering, a preset, the suggestion) and
 its slider positions:
@@ -7,8 +7,8 @@ its slider positions:
   at positions 0-4 for the default rendering; for another base the table's *step* from position 2 is added (sky_level,
   dark_level, faint_smooth, g_lim, d10, d7) or its *ratio* to position 2 multiplies the base (lc_*, chroma, neb_sharp,
   fine_k, star_sat, star_glow). Between integer positions the value is linear. Values stay inside the settings' bounds;
-* simple layers (render_simple): the tables of the classic layers of mockup/alt2/build/prepare.py, on the simple
-  rendering's settings, with the same rule (the defaults of ``SimpleSettings`` are those tables' position 2).
+* simple layers (render_simple): tables on the simple rendering's settings, with the same rule (the defaults of
+  ``SimpleSettings`` are those tables' position 2).
 
 A slider the layer cannot offer is greyed with its reason (``availability``); its position is then ignored.
 """
@@ -28,7 +28,7 @@ ADDITIVE = frozenset({"sky_level", "dark_level", "faint_smooth", "g_lim", "d10",
 SUGGESTED = 2.0
 LO, HI = 0.0, 4.0
 
-# the reasons of the greyed sliders (the mockup's texts, so that its French translations apply)
+# the reasons of the greyed sliders (translated by the client's catalogues)
 WHY_STARS = "the star sliders need the Stars block"
 WHY_DETAIL = "sharpening needs the starless image (Stars block)"
 WHY_DENOISE = "noise smoothing needs the Denoise block"
@@ -83,10 +83,6 @@ SLIDERS: tuple[Slider, ...] = (
 )
 BY_KEY = {s.key: s for s in SLIDERS}
 KEYS = tuple(BY_KEY)
-#: the mockup's internal keys (the client keeps them, DESIGN.md §7.7)
-MOCKUP_KEYS = {"sky": "ciel", "contrast": "contraste", "saturation": "saturation", "detail": "detail",
-               "noise": "bruit", "stars_number": "nombre", "star_size": "taille", "star_color": "couleur",
-               "star_halo": "halo"}
 
 
 def _check_kind(kind: str) -> str:
@@ -108,14 +104,6 @@ def availability(kind: str, has_denoise: bool) -> dict[str, str]:
             why = WHY_EXIT_DENOISE if kind == "stacking" else WHY_DENOISE
         out[s.key] = why
     return out
-
-
-def position_text(pos: float) -> str:
-    """'suggested' at 2, else the offset: '+0.7', '−1.2'."""
-    d = round(float(pos) - SUGGESTED, 1)
-    if abs(d) < 0.05:
-        return "suggested"
-    return f"+{d:.1f}" if d > 0 else f"−{-d:.1f}"
 
 
 def _bounds(model, name: str) -> tuple[float, float]:

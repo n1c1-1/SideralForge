@@ -1,5 +1,4 @@
-"""The Classic stacking method (stacking v2: docs/spec/STACKING.md point 1, "Classique";
-docs/pilot/STATE_OF_THE_ART_STACKING.md sections 1, 2, 4 and 9.1-9.2): debayer every frame, put it on the reference
+"""The Classic stacking method: debayer every frame, put it on the reference
 grid, normalise it, reject outliers pixel by pixel, average what is kept. It is how Siril (its OSC_Preprocessing
 script) and PixInsight (WBPP without drizzle) stack colour frames, and the method core/coverage.py advises when the
 frames are too few or too little dithered for a Bayer drizzle (the weight map varies by more than 20 %, DrizzlePac's
@@ -66,15 +65,9 @@ Memory: the resampled frames are kept on the CPU (``store_dtype`` float32: 12 by
 30 frames of 12 Mpx; float16 halves it; ``masks``: 1 byte more), the rejection runs on the device by bands of
 ``band_pixels``.
 
-Validation (1 November 2026, heart Express: 30 frames of the bench, F:/astro_essais/classic_check, the bench's own
-measures on the sky the stacks share, Gaia zero point): with Siril's own recipe (global IKSS normalisation, no
-weights, winsorized 3 / 3), against Siril's stack of the same frames: star FWHM 13.78" vs 13.77", roundness 0.882 vs
-0.875, background noise 24.598 vs 24.601 mag/arcsec2 (4 px boxes) and 25.302 vs 25.285 (16 px boxes), rejection
-1.00 / 1.04 / 1.15 % vs Siril's 0.89 / 0.92 / 1.02 % (R, G, B). With the v2 defaults (local normalisation,
-inverse-variance weights, linear fit 5 / 3.5): FWHM 13.87", noise 24.607 / 25.294, rejection 1.12 %. Time on the
-RTX 4060 Ti: 36 s for the 30 frames (debayer 3.5 s, resampling 31 s), 51 s (linear fit) to 86 s (winsorized) for the
-rejection and the means; 2.9 GB of GPU memory at peak. (That validation also ran a local normalisation and per-colour
-weights, both removed on 2 November: no measurable effect on the crossed bench.)
+With Siril's own recipe (global IKSS normalisation, no weights, winsorized 3 / 3) it gives Siril's stack of the same
+frames: the same star FWHM, roundness and background noise, within a few hundredths. Time: about 1 s per 12 Mpx
+frame on a mid-range GPU for debayering and resampling, then the rejection and the means.
 
 Sources: see core/debayer.py, core/resample.py, core/rejection_classic.py; [S7] Siril's OSC_Preprocessing.ssf;
 [S12] https://siril.org/tutorials/tuto-manual/ ; [P15] WBPP.

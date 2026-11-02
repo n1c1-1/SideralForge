@@ -102,10 +102,7 @@ class Context:
     def has(self, stage: str) -> bool:
         """Whether there is a result of ``stage`` to read. In a v2 workflow, a stage its chain does not have (an
         optional input) resolves to a folder that does not exist (core/store.py)."""
-        try:
-            return self.project.stage_dir(stage).is_dir()
-        except StageError:                   # a ComfyUI block not wired to that stage
-            return False
+        return self.project.stage_dir(stage).is_dir()
 
     @property
     def scratch(self) -> Path:

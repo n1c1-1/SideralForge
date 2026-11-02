@@ -1233,11 +1233,11 @@ def test_sliders_render_layer_masks_and_export_of_a_simple_workflow(real, tmp_pa
         api.export_image(p, img, None, {"name": "bad", "formats": ["bmp"]})
 
 
-def test_metric_info_comes_from_the_metric_catalogue():
-    m = api.metric_info("inventory", "n_lights")
-    assert (m.stage, m.key, m.label, m.unit, m.format, m.known) == ("inventory", "n_lights", "Lights", "", "d", True)
-    assert m.meaning == "Number of light frames found."
-    assert api.metric_info("inventory", "n_lights", "fr").label == "Brutes"
-    assert api.metric_info("stack", "exposure_s").unit == "s"
-    odd = api.metric_info("stack", "my_new_metric")
-    assert (odd.label, odd.known, odd.format) == ("My new metric", False, "")
+def test_metric_texts_come_from_the_metric_catalogue():
+    from astro_gpu import texts
+    m = texts.metric("n_lights")
+    assert (texts.metric_label("n_lights"), texts.metric_unit("n_lights"), m.fmt) == ("Lights", "", "d")
+    assert texts.metric_meaning("n_lights") == "Number of light frames found."
+    assert texts.metric_label("n_lights", "fr") == "Brutes"
+    assert texts.metric_unit("exposure_s") == "s"
+    assert texts.metric("my_new_metric") is None and texts.metric_label("my_new_metric") == "My new metric"

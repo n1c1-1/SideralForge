@@ -1,5 +1,4 @@
-"""Resampling of a debayered frame onto the reference grid, for the Classic stacking method (stacking v2:
-docs/spec/STACKING.md point 1, docs/pilot/STATE_OF_THE_ART_STACKING.md sections 2 and 9.1).
+"""Resampling of a debayered frame onto the reference grid, for the Classic stacking method (``to_reference``).
 
 Geometry: the frame's registration polynomial ``coef`` (reg.npz, the one stages/stack.py drizzles with: frame sensor
 pixel (x, y) -> reference sensor position (X, Y), a cubic in x / (W/2) - 1, y / (H/2) - 1) is inverted at every

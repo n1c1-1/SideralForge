@@ -1,4 +1,4 @@
-"""Import of a v1 project into a v2 project, with the results that are still valid (DESIGN §1.5, §1.6).
+"""Import of a v1 project into a v2 project, with the results that are still valid.
 
 Nothing is ever written into the old project. The import and its dry run run under a write guard (an audit hook,
 ``sys.addaudithook``) that refuses any open-for-write, mkdir, rename, removal, copy or link into the old project's
@@ -27,8 +27,8 @@ folder, its scratch folder and its input files, and the import fails if a write 
    (it is in that stack's grid): ``inputs/<layer>.json`` holds that stack's key (``runner2.LAYER_STACK_KEY``), or a
    ``v1:<run id>`` marker when that stack is not adopted, so the workflow using the layer runs only on that stack.
 4. **Report** (``ImportReport``): per workflow and stage, adopted (key) or recomputed (reason); the bytes to copy and
-   the free space; notes; and the stage durations ``estimate.learn_from_v1`` reads in the old manifests (P8 seeds a
-   pilot timing history with them; the import itself never writes a history).
+   the free space; notes; and the stage durations ``estimate.learn_from_v1`` reads in the old manifests (the import
+   itself never writes a timing history).
 
 ``dry_run`` does 1, 2 and 4 and writes nothing at all (its temporary folder is a system one, removed at the end).
 """
@@ -52,6 +52,7 @@ import numpy as np
 from . import estimate as est
 from . import project2
 from . import workflow as wfl
+from .files import write_json
 from .journal import Journal
 from .params import params_hash
 from .project import Project, list_frames
@@ -266,7 +267,7 @@ def _same_file(a: Any, b: Any) -> bool:
 
 def folders_of(old_root: str | Path) -> list[str]:
     """The folders and files of a v1 project the import only reads: the project folder, its scratch folder, its
-    inputs, its reference image and its earlier star layers (the write guard protects them; P8 snapshots them)."""
+    inputs, its reference image and its earlier star layers (the write guard protects them)."""
     root = Path(os.path.abspath(old_root))
     d = json.loads((root / project2.V1_FILE).read_text(encoding="utf-8"))
     out = [str(root)]
@@ -328,12 +329,6 @@ def _read_json(path: Path) -> dict:
     except (OSError, ValueError):
         return {}
     return d if isinstance(d, dict) else {}
-
-
-def _write_json(path: Path, obj: Any) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=1, default=str), encoding="utf-8")
-    os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------------------------------------- the report
@@ -722,7 +717,7 @@ class _Import:
     def write(self, rep: ImportReport) -> None:
         root = self.new
         (root / "logs").mkdir(parents=True, exist_ok=True)
-        _write_json(root / "logs" / REPORT_FILE, {**rep.to_dict(), "status": "copying"})
+        write_json(root / "logs" / REPORT_FILE, {**rep.to_dict(), "status": "copying"})
         self._move_inputs()
         again = Keys(self.defn, self.keys.rules, InputScan())
         for w in self.defn.workflows:
@@ -746,7 +741,7 @@ class _Import:
             os.replace(tmp, store.dir(s, k))
         rep.written = True
         rep.project = self.defn
-        _write_json(root / "logs" / REPORT_FILE, {**rep.to_dict(), "status": "done"})
+        write_json(root / "logs" / REPORT_FILE, {**rep.to_dict(), "status": "done"})
 
     def _move_inputs(self) -> None:
         """Copy the reference image and the earlier star layers into inputs/ (same name and date, so the same keys),
@@ -775,9 +770,9 @@ class _Import:
                 st["learned_stars"] = rel + tag
                 k, src = self.layer_keys.get(_norm(path) or "", (None, path))
                 if k is not None:
-                    _write_json((p.root / rel).with_suffix(".json"),
-                                {LAYER_STACK_KEY: k, "source": str(src), "project": str(self.old),
-                                 "workflow": w.name, "imported": datetime.now().isoformat(timespec="seconds")})
+                    write_json((p.root / rel).with_suffix(".json"),
+                               {LAYER_STACK_KEY: k, "source": str(src), "project": str(self.old),
+                                "workflow": w.name, "imported": datetime.now().isoformat(timespec="seconds")})
 
     def _rewrite(self, s: str, k: str, w: Workflow, src: Path, tmp: Path, dir_map: dict[str, Path]) -> None:
         """The adopted copy as a v2 result: its manifest with the key fields, frames.json on the new raws,
@@ -790,14 +785,14 @@ class _Import:
                  adopted_from={"project": str(self.old), "folder": str(src), "run_id": m.get("run_id"),
                                "finished": m.get("finished"), "imported": datetime.now().isoformat(timespec="seconds")})
         for f in tmp.rglob("frames.json"):
-            _write_json(f, _relocate_frames(json.loads(f.read_text(encoding="utf-8")), self.frame_map))
+            write_json(f, _relocate_frames(json.loads(f.read_text(encoding="utf-8")), self.frame_map))
         cache = tmp / "cache.json"
         if s == "calibrate" and cache.is_file():
             c = json.loads(cache.read_text(encoding="utf-8"))
             if isinstance(c, dict) and c.get("path"):
                 c["path"] = str(Path(os.path.abspath(self.defn.scratch)) / k / s / Path(str(c["path"])).name)
-                _write_json(cache, c)
-        _write_json(tmp / "manifest.json", m)
+                write_json(cache, c)
+        write_json(tmp / "manifest.json", m)
 
     def _relocated(self, v: Any, dir_map: dict[str, Path]) -> Any:
         """A setting that names a file of an adopted old result, moved to its new folder (with its run tag)."""

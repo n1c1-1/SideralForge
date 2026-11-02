@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from astro_gpu.core import project2
-from astro_gpu.core import runner as runner_mod
 from astro_gpu.core.journal import Journal
 from astro_gpu.core.params import Auto, P, StageParams
 from astro_gpu.core.project import Inputs, Project, list_frames
@@ -440,7 +439,6 @@ def run_job(keys: Keys, wf: int, stage: Stage) -> StoreProject:
 
 
 def test_jobs_run_through_the_shim(proj, monkeypatch):
-    monkeypatch.setattr(runner_mod, "_record_timing", lambda *a: None)     # keep the user's timings untouched
     k = K(proj)
     for st in (Inv(), Stack(), C(), E()):
         run_job(k, CLASSIC, st)
@@ -485,7 +483,6 @@ def test_shim_maps_ancestors_and_hands_out_absolute_paths(proj, raws, tmp_path):
 def test_resolve_outside_the_store(proj, monkeypatch, tmp_path):
     """effective_params (describe) with own_dir: the auto values come from the done upstream, the store gets no
     stray folder."""
-    monkeypatch.setattr(runner_mod, "_record_timing", lambda *a: None)
     k = K(proj)
     run_job(k, CLASSIC, Inv())
     sp = StoreProject(k, CLASSIC, "stack", own_dir=tmp_path / "resolve" / "stack")
@@ -500,7 +497,6 @@ def test_resolve_outside_the_store(proj, monkeypatch, tmp_path):
 
 
 def test_done_and_usable_as_input(proj, raws, tmp_path, monkeypatch):
-    monkeypatch.setattr(runner_mod, "_record_timing", lambda *a: None)
     k = K(proj)
     inv = run_job(k, CLASSIC, Inv())
     store = Store(proj.root)
@@ -540,36 +536,18 @@ def test_context_has(tmp_path):
     (v1.work / "stack").mkdir()
     assert ctx.has("stack")
 
-    class Block:                                               # a ComfyUI block not wired to every stage
-        logs = tmp_path / "blk" / "logs"
-        scratch = tmp_path / "blk" / "scratch"
-
-        def stage_dir(self, name):
-            if name != "b":
-                raise StageError("not wired")
-            return tmp_path / "blk" / "b"
-
-    assert not Context(Block(), B(), Journal(Block.logs, echo=False), "cpu").has("stack")
-
 
 # ---------------------------------------------------------------------------------------------- the v2 stages
 
 def test_default_rules_read_stages_v2(monkeypatch):
-    from types import SimpleNamespace
-
     from astro_gpu.core import store
+    from astro_gpu.stages import v2
     monkeypatch.setattr(store, "_RULES", [])
-    monkeypatch.setattr(store, "_v2_module", lambda: SimpleNamespace(AUTO_FIELDS={"stack": {"scale"}},
-                                                                      PATH_FIELDS={"starless": ("learned_stars",)}))
     r = store.key_rules()
-    assert r.auto_fields("stack") == {"scale"} and r.auto_fields("color") == frozenset()
-    assert r.path_fields("starless") == {"learned_stars"} and r.path_fields("denoise") == frozenset()
+    assert r.auto_fields("stack") == v2.AUTO_FIELDS["stack"] and r.auto_fields("optics") == frozenset()
+    assert r.path_fields("starless") == {"learned_stars"} and r.path_fields("denoise") == {"reuse_model"}
     assert r.non_key("calibrate") == {"workers"} and r.non_key("star_net") == {"device"}
-    monkeypatch.setattr(store, "_RULES", [])
-    monkeypatch.setattr(store, "_v2_module", lambda: None)     # before stages/v2.py: nothing is ever dropped
-    r = store.key_rules()
-    assert r.auto_fields("stack") == set(r.params("stack").model_fields)
-    assert r.path_fields("denoise") == {"reuse_model"}
+    assert r.retired("stack") == v2.RETIRED["stack"] and r.constants("register") == {"fwhm_method": "moffat"}
 
 
 def test_real_stage_graph_shares_as_designed(tmp_path, raws):

@@ -260,12 +260,10 @@ class RenderSettings(StageParams):
 
 PRESETS: dict[str, dict] = {
     "Natural": {},
-    # The two deliverables of every project. Faithful = the rendering of the reference image of 2026-10-10 10:34 (the
-    # defaults: the user's preferred rendering; measured colours without the H-alpha hue convention came out magenta
-    # and were not what the data look like to the eye). Artistic = the same base with a stronger stretch, local
-    # contrast and colour, judged by eye. Neither desaturates the halos (that produced grey discs around bright stars).
-    # (Tried 2026-10-14: the user's own slider settings on the Rosette as Artistic - the independent judge found dark
-    # rings around the stars, olive reflection nebulae and crushed faint dust on the Horsehead.)
+    # The two deliverables of every project. Faithful = the defaults (measured colours with the H-alpha hue
+    # convention: without it they come out magenta, not what the data look like to the eye). Artistic = the same base
+    # with a stronger stretch, local contrast and colour. Neither desaturates the halos (that gives grey discs around
+    # bright stars).
     "Faithful": {},
     "Artistic": {"sharpen": 1.0, "sharpen_lo_pct": 60.0, "fine_k": 1.3, "fine_lo_pct": 60.0, "colour_detail": 1.0,
                  "resid_boost": 0.3, "chroma": 1.1, "neb_sharp": 1.2, "lc_fine": 1.15, "lc_medium": 1.4,

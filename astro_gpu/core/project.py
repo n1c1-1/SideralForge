@@ -1,4 +1,8 @@
-"""A processing project: one target, its input folders and everything computed from them.
+"""A v1 processing project (project.json): one target, its input folders and everything computed from them.
+
+v1 projects run through ``core/runner.Pipeline`` (the ``astro-gpu`` command line); the client opens them through the
+import (``core/import_v1.py``). The v2 code (``core/project2.py``, ``core/store.py``...) reuses ``Inputs``,
+``Target``, ``ProjectConfig``, ``list_frames`` and ``frame_kind`` from here.
 
 Layout on disk::
 
@@ -7,7 +11,7 @@ Layout on disk::
         work/<stage>/       outputs of each stage + manifest.json (+ _ckpt/ while a stage can be resumed)
         results/            exported images
         variants/<slug>/<stage>/  the stages a variant computes its own way (see below)
-        logs/events.jsonl   machine-readable journal (progress, metrics, previews) read by the GUI
+        logs/events.jsonl   machine-readable journal (progress, metrics, previews)
         logs/journal.md     human-readable log
 
 Large temporary data (the calibrated frames cache) lives in ``scratch_dir``, ideally on a fast local SSD.
@@ -310,22 +314,6 @@ def remember(project: Project) -> None:
         os.replace(tmp, REGISTRY)
     except OSError:
         pass
-
-
-def recent_projects() -> list[tuple[str, str]]:
-    """(name, folder) of the recently used projects that still exist, most recent first."""
-    return [(n, f) for n, f, _ in recent_projects_described()]
-
-
-def recent_projects_described() -> list[tuple[str, str, str]]:
-    """(name, folder, description) of the recently used projects that still exist, most recent first."""
-    try:
-        reg = json.loads(REGISTRY.read_text(encoding="utf-8")) if REGISTRY.exists() else {}
-    except (OSError, ValueError):
-        return []
-    items = sorted(reg.items(), key=lambda kv: kv[1].get("used", ""), reverse=True)
-    return [(v.get("name", Path(k).name), k, v.get("description", "")) for k, v in items
-            if (Path(k) / "project.json").exists()]
 
 
 def list_frames(folders: list[str]) -> list[Path]:

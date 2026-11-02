@@ -24,10 +24,9 @@ ENGINE_JSON = texts.LOCALE / "fr" / "engine.json"
 
 
 # ---------------------------------------------------------------------------------------------------- Auto
-def test_auto_keeps_the_old_calls():
+def test_auto_with_a_fixed_text():
     a = Auto(2.0, "because")
     assert (a.value, a.reason, a.template, a.args) == (2.0, "because", "because", None)
-    assert Auto(2.0, reason="old keyword").reason == "old keyword"
     assert Auto(2.0, "because") == Auto(2.0, "because")
     # a fixed text is used as it is: braces in it are not fields
     assert Auto(1, "a {literal} brace").reason == "a {literal} brace"

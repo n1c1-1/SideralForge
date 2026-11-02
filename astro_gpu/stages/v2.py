@@ -1,7 +1,8 @@
-"""The stages of v2 projects: v1's stages plus the new ones, and what the stage keys need to know about them.
+"""The stages of v2 projects (``V2_STAGES``) and the tables the stage keys need.
 
-v1's ``Pipeline`` keeps ``all_stages()``: it never runs the new stages. ``core/workflow.py`` builds the chains on
-``V2_STAGES`` (loaded lazily) and ``core/store.py`` keys the results with the tables below (DESIGN.md §1.3, §2.2).
+``V2_STAGES()`` is ``stages.all_stages()`` (the stages v1's ``Pipeline`` runs) followed by the stages only v2
+workflows have (``NEW_STAGES``). ``core/workflow.py`` builds the chains on it and ``core/store.py`` keys the results
+with the tables below.
 """
 from __future__ import annotations
 
@@ -47,7 +48,7 @@ NON_KEY: dict[str, frozenset[str]] = {
     "register": frozenset({"workers"}),
     "star_net": frozenset({"device"}),
 }
-#: the stages v2 adds to v1's
+#: the stages only v2 workflows have
 NEW_STAGES = ("background_poly", "render_simple")
 
 
@@ -58,18 +59,6 @@ def new_stages() -> list[Stage]:
 
 
 def V2_STAGES() -> list[Stage]:            # noqa: N802 (a table, built on first use: it imports every stage)
-    """v1's stages in their order, then the new ones (``core/workflow.ORDER`` places them)."""
+    """``all_stages()`` in their order, then ``NEW_STAGES`` (``core/workflow.ORDER`` places them)."""
     from . import all_stages
     return all_stages() + new_stages()
-
-
-def auto_fields(stage: str) -> frozenset[str]:
-    return AUTO_FIELDS.get(stage, frozenset())
-
-
-def path_fields(stage: str) -> frozenset[str]:
-    return PATH_FIELDS.get(stage, frozenset())
-
-
-def non_key(stage: str) -> frozenset[str]:
-    return NON_KEY.get(stage, frozenset())

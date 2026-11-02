@@ -3,8 +3,7 @@
 Works from the outputs of the ``render_simple`` stage: the linear image in display RGB with its sky removed (lin.npy,
 the denoised stack when there is one), the same from the raw stack (lin_raw.npy, with denoise), the covered pixels
 (valid.npy) and the statistics of the whole image (prep_simple.json). ``render(settings, scale, region)`` returns the
-``Layers`` of the engine (no star layer): a usual automatic stretch, as the classic layers of the mockup were made
-(``stretch()`` in mockup/alt2/build/prepare.py):
+``Layers`` of the engine (no star layer): a usual automatic stretch:
 
 * the raw stack mixed back into the denoised one, or the faint areas smoothed (noise smoothing);
 * a midtones transfer function from black = median - 2.8 MAD to white = the 99.995th percentile, the median sky at

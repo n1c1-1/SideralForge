@@ -32,8 +32,7 @@ STAR_MIN_AREA = 6
 STAR_TILE = 32
 #: a dark, bias, flat dark or flat with this many stars or more is a frame of the sky, whatever the other frames say.
 #: Real ones hold 0 to 8 (hot pixel clusters, cosmic rays, dust: darks, bias and flats of the Sony A7S, Canon 6D / 40D /
-#: Ra, ASI2600MC); the 100 "darks" of 28.12.24 (the Rosette field, shot with the telescope open) hold 26 to 410, lights
-#: hundreds to thousands (docs/pilot/DARKS_28_12_24.md)
+#: Ra, ASI2600MC); "darks" shot with the telescope open hold tens to hundreds, lights hundreds to thousands
 STARS_NOT_CALIBRATION = 20
 #: a dark, bias or flat dark of a camera raw this far above the camera's black level (both: x its noise and % of the
 #: sensor's range) holds light, not only the sensor's offset and dark current

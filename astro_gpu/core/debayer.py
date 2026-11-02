@@ -1,5 +1,5 @@
-"""Debayering (demosaicing) of a calibrated CFA frame, for the Classic stacking method (stacking v2:
-docs/spec/STACKING.md point 1, docs/pilot/STATE_OF_THE_ART_STACKING.md sections 1, 8 and 9.1).
+"""Debayering (demosaicing) of a calibrated CFA frame, for the Classic stacking method. Entry point:
+``debayer(cfa, pattern, method)``.
 
 Two methods, torch, on the device of the frame (GPU or CPU):
 
@@ -27,12 +27,9 @@ Two methods, torch, on the device of the frame (GPU or CPU):
     so that a sample reads the term of the odd column of its pair (x | 1), not always its own diagonal as RCD v2.3
     does. Kept as Siril runs it.
 
-  Validation (1 November 2026, F:/astro_essais/classic_check/rcd): a calibrated frame of heart (Sony A7S, RGGB,
-  4256 x 2848) debayered by Siril 1.4.0-beta3 (``calibrate_single -debayer``, RCD) and here: relative difference
-  median 4e-7, 99.99th percentile 9e-6, rms 1.6e-7 of the [0, 1] range (signal rms 4.9e-3); 126 pixels of 12 million
-  differ by more than 1e-6, where a rounding flips a direction choice. With the diagonal terms at their own place
-  (RCD v2.3's intent) the difference grows 2700-fold (rms 4.3e-4): Siril runs librtprocess's indexing.
-  tests/test_debayer.py repeats it (marked slow) when the files are there.
+  Checked against Siril 1.4's own RCD on a real calibrated frame: relative difference rms 1.6e-7 of the [0, 1]
+  range (with the diagonal terms at their own place, as in RCD v2.3, it grows 2700-fold: Siril runs librtprocess's
+  indexing). tests/test_debayer.py repeats the check (marked slow) when the files are there.
 
   RCD was chosen by Siril because it renders round, sharp-edged objects (stars) without the zipper and the
   overshoot of the older methods [S11].
@@ -70,8 +67,6 @@ rtengine/rawimagesource.cc (scaleColors before demosaic); [D3] darktable user ma
 and white balance (the default module order).
 """
 from __future__ import annotations
-
-from collections.abc import Sequence
 
 import numpy as np
 import torch
@@ -397,27 +392,3 @@ def debayer(cfa: torch.Tensor, ch_of_k, method: str = "rcd", balance="auto") -> 
     if method == "bilinear":
         return bilinear(cfa, ch_of_k)
     raise ValueError(f"unknown debayering {method!r}: one of {METHODS}")
-
-
-def rcd_v23_vh_stat(c: Sequence[float]) -> float:
-    """The vertical (or horizontal) statistic of RCD v2.3 as originally written (rcd_demosaicing.c, step 1.1: the
-    long quadratic form of the 9 samples c[-4..4] along the direction), for the test that rcd.cc's short form is the
-    same. ``c``: 9 values, c[4] the centre."""
-    m4, m3, m2, m1, x, p1, p2, p3, p4 = [float(v) for v in c]
-    return max(
-        -18 * x * m1 - 18 * x * p1 - 36 * x * m2 - 36 * x * p2 + 18 * x * m3 + 18 * x * p3 - 2 * x * m4 - 2 * x * p4
-        + 38 * x * x - 70 * m1 * p1 - 12 * m1 * m2 + 24 * m1 * p2 - 38 * m1 * m3 + 16 * m1 * p3 + 12 * m1 * m4
-        - 6 * m1 * p4 + 46 * m1 * m1 + 24 * p1 * m2 - 12 * p1 * p2 + 16 * p1 * m3 - 38 * p1 * p3 - 6 * p1 * m4
-        + 12 * p1 * p4 + 46 * p1 * p1 + 14 * m2 * p2 - 12 * m2 * p3 - 2 * m2 * m4 + 2 * m2 * p4 + 11 * m2 * m2
-        - 12 * p2 * m3 + 2 * p2 * m4 - 2 * p2 * p4 + 11 * p2 * p2 + 2 * m3 * p3 - 6 * m3 * m4 + 10 * m3 * m3
-        - 6 * p3 * p4 + 10 * p3 * p3 + m4 * m4 + p4 * p4, EPSSQ)
-
-
-def rcd_short_vh_stat(c: Sequence[float]) -> float:
-    """rcd.cc's short form of the same statistic: the sum of the squared high-pass at the centre and its two
-    neighbours along the direction."""
-    a = np.asarray(c, float)
-
-    def hp(i):
-        return (a[i - 3] - a[i - 1] - a[i + 1] + a[i + 3]) - 3 * (a[i - 2] + a[i + 2]) + 6 * a[i]
-    return max(sum(hp(i) ** 2 for i in (3, 4, 5)), EPSSQ) if len(a) >= 9 else EPSSQ

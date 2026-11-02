@@ -10,7 +10,7 @@ the composed image.
 * ``masks(folder, scale, region)``: the star mask and the H-alpha map of Post's mask parts.
 * ``export_rgb(rgb, out_dir, options, wcs, origin, history)``: TIFF 16 / 32f, PNG 16, JPEG, FITS 32f with the WCS and
   the history in its header (ROWORDER TOP-DOWN: Siril shows it the right way up), in sRGB, at full size or reduced, in
-  an orientation of v1 (rot90 / flip), with a history file.
+  an orientation of render/export.py (rot90 / flip), with a history file.
 """
 from __future__ import annotations
 
@@ -221,7 +221,7 @@ class LayerService:
     @staticmethod
     def _emission(eng, f: int, box) -> torch.Tensor:
         """The emission map on a box (x0, x1, y0, y1) of the grid, reduced by f: the engine's emission layer, the
-        H-alpha excess of a v1 preparation, the red excess of a simple one."""
+        H-alpha excess of a preparation without that layer, the red excess of a simple one."""
         x0, x1, y0, y1 = box
         if isinstance(eng, SimpleRenderEngine):
             lin = eng._host["lin"][:, y0:y1, x0:x1].to(eng.dev).float()

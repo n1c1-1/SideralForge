@@ -54,11 +54,7 @@ _TAG = re.compile(r"^(.*\.npy) \(run [0-9a-fA-F]*\)$")
 def stage_layer(project) -> str | None:
     """The star layer of this stage when it ran to the end and wrote one, as '<path> (run <id>)' (the run id makes a
     new layer a new value for the star removal stage), else None."""
-    from ..core.stage import StageError
-    try:
-        d = project.stage_dir("star_net")
-    except StageError:          # a context without this stage (a ComfyUI block not wired to it)
-        return None
+    d = project.stage_dir("star_net")
     f = d / "star_layer.npy"
     try:
         m = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
@@ -118,14 +114,10 @@ class StarNet(Stage):
                    "goes to the star removal stage, which makes a second, learned starless image from it.")
     deps = ("stars", "optics", "denoise", "color")
     Params = StarNetParams
-    version = "4"          # 2: bright stamps = the star as the input shows it (light agreed by the interpolated and
-                           # the model background, point-symmetric darkness), no more the input minus the starless
-                           # image, whose holes the network learnt as star light; dark rings it had never seen;
-                           # 3: stamps saturated as the rendering sees it (Alnitak, most of the Rosette's saturated
-                           # stars passed for unsaturated); a glow centred on half of the pasted bright stars, in the
-                           # input and the target alike (the network took the core of NGC 2023 for star light)
-                           # 4: a number of training steps instead of a training time (two identical runs of the
-                           # Heart made 11 181 and 11 408 steps and gave different star layers)
+    version = "4"
+    # 2: bright stamps = the star as the input shows it (not the input minus the starless image)
+    # 3: stamps saturated as the rendering sees it; a glow centred on half of the pasted bright stars
+    # 4: a number of training steps instead of a training time (reproducible)
 
     def run(self, ctx: Context, p: StarNetParams) -> None:
         if not p.enabled:

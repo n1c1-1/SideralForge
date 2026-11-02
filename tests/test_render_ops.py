@@ -6,11 +6,20 @@ import numpy as np
 import pytest
 import torch
 
-from astro_gpu.core.imgutil import guided_filter
 from astro_gpu.render import ops
 from astro_gpu.render.engine import fit_tone_curve, tone_curve
 
 DEV = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+
+def guided_filter(I: np.ndarray, p: np.ndarray, r: int, eps: float) -> np.ndarray:
+    """Guided filter (He et al. 2013): edge-preserving smoothing of p guided by I."""
+    def box(a):
+        return cv2.boxFilter(a, -1, (2 * r + 1, 2 * r + 1), borderType=cv2.BORDER_REFLECT)
+    mI, mp = box(I), box(p)
+    a = (box(I * p) - mI * mp) / (box(I * I) - mI * mI + eps)
+    b = mp - a * mI
+    return box(a) * I + box(b)
 
 
 @pytest.fixture

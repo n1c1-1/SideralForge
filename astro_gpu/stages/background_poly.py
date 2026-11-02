@@ -6,7 +6,7 @@ sky samples. The field is cut into blocks (``samples`` x 4 per side), each one's
 found on the luminance, from the whole field (``sky_blocks``): the surface is fitted, the samples more than
 ``object_clip`` sigmas above it are left out, and again until it settles; the sigma is the scatter between neighbouring
 samples. An object that fills most of the field (a large galaxy) is left out whole and the surface passes under it
-(each cell's darkest blocks used to be samples: on M31 they were the galaxy's disc, which the surface then erased).
+(taking each cell's darkest blocks instead would sample the disc of M31, which the surface would then erase).
 Each channel is then fitted on those samples, leaving out, iteratively, the ones farther than ``object_clip`` sigmas
 from its surface.
 
@@ -40,12 +40,8 @@ class BackgroundPolyParams(StageParams):
 
 
 def has_input(ctx: Context, stage: str) -> bool:
-    """Whether an optional dependency is in this workflow and done (``Context.has`` in a v2 project; in a v1
-    folder, a done manifest)."""
-    has = getattr(ctx, "has", None)
-    if has is not None:
-        return bool(has(stage))
-    return ctx.manifest(stage).get("status") == "done"
+    """Whether an optional dependency is in this workflow (``Context.has``)."""
+    return bool(ctx.has(stage))
 
 
 def stack_source(ctx: Context) -> tuple[np.ndarray, str]:

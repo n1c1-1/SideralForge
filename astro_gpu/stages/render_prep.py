@@ -85,22 +85,15 @@ class RenderPrep(Stage):
                    "adjustment tab.")
     deps = ("background", "starless", "stars", "color", "optics", "stack")
     Params = RenderPrepParams
-    version = "44"         # 29: the star guard wherever star light dominates (dark moats around G 9.5-11.5 stars);
-                           # 30: the diffuse part of the star glare; 31: the glare of the dominant stars only, the
-                           # measured emission colour also in the emission / continuum / OIII separation; 32: the
-                           # star guard back to the footprints (its extension drew dark discs on the Heart); 33: the
-                           # real light of a saturated star = image minus the nebula rendered under it (dark notches);
-                           # 34: under a saturated star in structured nebula, the nebula kept at large scales only;
-                           # 35: only where the star's model light exceeds the nebula (34 washed out the Iris);
-                           # 36: every star brighter than real_g shown as photographed, nebula interpolated across spikes;
-                           # 38: under the spike strips only the spikes taken from the image, the stars there drawn;
-                           # 40: their light averaged along the spike direction; 41: the spikes drawn in the base
-                           # layers, the photographed ones in layers of their own (chosen at rendering); 42: the
-                           # learned preparation takes the sharpening layer of the learned starless image; 43: the
-                           # continuum under star light smoothed from the gaps between the stars only (a plain average
-                           # took the stars' residual light in: dark worms in the gaps, Wizard Nebula); 44: low
-                           # coverage inside the image kept (only the regions reaching the border left out), a hollow
-                           # measured star profile (defocus) replaced by a focused one (M31 of 2026-09-12)
+    version = "44"
+    # 29-32: the star guard on the footprints, the diffuse and dominant star glare, the measured emission colour in
+    #        the emission / continuum / OIII separation
+    # 33-36: saturated stars: their real light (image minus the nebula under them), shown as photographed, the nebula
+    #        interpolated across spikes
+    # 38-41: the spikes from the image, averaged along their direction, in layers of their own
+    # 42: the learned preparation takes the sharpening layer of the learned starless image
+    # 43: the continuum under star light smoothed from the gaps between the stars only
+    # 44: low coverage inside the image kept; a hollow (defocused) star profile replaced by a focused one
 
     learned = False        # RenderPrepLearned: the same layers from the learned starless image
 
@@ -221,8 +214,8 @@ class RenderPrep(Stage):
             ctx.metric("continuum_smoothed_pct", round(100 * float((sm > 0.5).mean()), 1))
             del EC_N, Cs, sm
         if p.star_guard and not self.learned:
-            # (tried 2026-10-14: the guard also wherever the light of a star dominates the noise, for the dark moats
-            # around G 9.5-11.5 stars - in a dense field that is 98 % of it (Heart), and the guard drew dark discs)
+            # (the guard is not applied wherever the light of a star dominates the noise: in a dense field that is
+            # nearly all of it, and the guard draws dark discs)
             N = guard_generic(N, np.tensordot(lum, N, 1).astype(np.float32), foot_w, lum, w_cam, p.guard_sigma)
         del wsl
         # saturated stars: shown by their real light; the nebula under them interpolated where that is safe
@@ -871,8 +864,8 @@ def smooth_from_gaps(c: np.ndarray, w: np.ndarray, sigma: float) -> np.ndarray:
 
 def star_light_weight(ctx, lum, shape) -> np.ndarray:
     """1 where the light of the stars (model, extended PSF, removed halos) is below 1 noise sigma of the brightness,
-    0 above 3 sigmas. (Tried on 2026-10-11: "dominates" relative to the nebula brightness instead of the noise -
-    it brought nothing more on a reflection nebula and exposed the star residual mottling in bright emission.)"""
+    0 above 3 sigmas. (Relative to the noise, not to the nebula brightness: that exposes the star residual mottling
+    in bright emission.)"""
     H, W = shape
     L = np.zeros((H, W), np.float32)
     for st, name in (("stars", "stars_model.npy"), ("stars", "stars_model_ext.npy"), ("starless", "halo_removed.npy")):

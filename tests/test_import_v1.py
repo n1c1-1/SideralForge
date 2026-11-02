@@ -19,7 +19,6 @@ import pytest
 import astro_gpu.core.project as project_mod
 from astro_gpu.core import import_v1 as iv
 from astro_gpu.core import project2, runner2
-from astro_gpu.core import runner as runner_mod
 from astro_gpu.core import workflow as wfl
 from astro_gpu.core.journal import Journal
 from astro_gpu.core.params import Auto, P, StageParams
@@ -136,7 +135,6 @@ RULES = toy_rules()
 def _private_state(tmp_path, monkeypatch):
     """The v1 runs of the toy projects never reach the user's timings (ASTRO_GPU_HOME)."""
     monkeypatch.setattr(project_mod, "STATE", tmp_path / "_state")
-    monkeypatch.setattr(runner_mod, "_record_timing", lambda *a: None)
     Cal.cores = 3
 
 

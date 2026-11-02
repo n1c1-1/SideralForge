@@ -1,6 +1,6 @@
-"""Parameter schema shared by the processing engine and the GUI.
+"""Parameter schema of the stages: ``P`` (a parameter with its texts), ``StageParams``, ``Auto``, ``resolve``.
 
-Every stage declares its parameters once, as a pydantic model whose fields carry UI metadata:
+Every stage declares its parameters once, as a pydantic model whose fields carry the client's metadata:
 
 * ``level``   - ``"basic"`` (shown by default) or ``"advanced"`` (shown in advanced mode)
 * ``label``   - short human name
@@ -11,7 +11,8 @@ Every stage declares its parameters once, as a pydantic model whose fields carry
 * ``choices`` - allowed values for string parameters
 
 Stages may also compute *automatic defaults* from the loaded data (``Stage.auto``). An automatic value always
-comes with a one-line reason so the user knows why it was chosen; a user override always wins.
+comes with a one-line reason so the user knows why it was chosen; a user override always wins. ``resolve`` builds
+the effective parameters; ``check_choice`` validates a text setting against its choices.
 """
 from __future__ import annotations
 
@@ -45,7 +46,7 @@ class StageParams(BaseModel):
 
     @classmethod
     def describe(cls) -> list[dict]:
-        """Field descriptions for the GUI (name, type, default, bounds and metadata)."""
+        """Field descriptions for the client (name, type, default, bounds and metadata)."""
         out = []
         for name, f in cls.model_fields.items():
             meta = dict(f.json_schema_extra or {})
@@ -83,16 +84,15 @@ class Auto:
     args: dict | None
     advice: bool
 
-    def __init__(self, value: Any, template: str = "", args: dict | None = None, *, reason: str | None = None,
-                 advice: bool = False):
+    def __init__(self, value: Any, template: str = "", args: dict | None = None, *, advice: bool = False):
         self.value = value
-        self.template = template if reason is None else reason     # ``reason=`` : the old keyword
+        self.template = template
         self.args = args
         self.advice = bool(advice)
 
     @property
     def reason(self) -> str:
-        """The reason in English (what v1 stores and shows)."""
+        """The reason in English (the text stored in the manifests)."""
         return self.template if self.args is None else self.template.format(**self.args)
 
     def text(self, lang: str = "en") -> str:
@@ -119,6 +119,13 @@ def resolve(model: type[StageParams], auto: dict[str, Auto], overrides: dict[str
     if unknown:
         raise ValueError(f"unknown parameter(s) for {model.__name__}: {sorted(unknown)}")
     return model(**values), origin
+
+
+def check_choice(name: str, value: str, choices) -> str:
+    """A text setting's value, refused (ValueError naming the setting) when it is not one of its choices."""
+    if value not in choices:
+        raise ValueError(f"{name}: {value!r} is not one of {', '.join(choices)}")
+    return value
 
 
 def params_hash(p: StageParams) -> str:

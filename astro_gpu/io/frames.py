@@ -34,7 +34,7 @@ class FrameInfo:
     kind: str                       # "raw" | "fits"
     width: int
     height: int
-    cfa: str                        # e.g. "RGGB"; "" for non-Bayer data (unsupported in v1)
+    cfa: str                        # e.g. "RGGB"; "" for non-Bayer data (not supported)
     black: float                    # black level (ADU) - from the file, refined later by darks/bias
     white: float                    # saturation level (ADU)
     exposure: float | None = None   # seconds

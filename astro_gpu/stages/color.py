@@ -9,7 +9,7 @@ import numpy as np
 from pydantic import field_validator
 from scipy.optimize import least_squares, nnls
 
-from ..core.params import ADVANCED, Auto, P, StageParams
+from ..core.params import ADVANCED, Auto, P, StageParams, check_choice
 from ..core.project import STATE
 from ..core.stage import Context, Stage, StageError
 
@@ -26,9 +26,9 @@ STARS = "color_stars.npz"
 #: ``response_source`` when no sensitivity curves are trusted: no matrix, one factor per colour (SPCC's white balance)
 PER_COLOUR = "one factor per colour (no reliable sensitivity curves)"
 #: ``correction``: "full" (a colour matrix when sensitivity curves are trusted, else one factor per colour) or
-#: "per_colour" (always one factor per colour: the white balance of the PER_COLOUR fallback, never a matrix). Added
-#: 2 November with "full" as its static default, the behaviour before it: out of the key at that default
-#: (core/store.py), so the results computed before it keep their keys
+#: "per_colour" (always one factor per colour: the white balance of the PER_COLOUR fallback, never a matrix). "full"
+#: is the behaviour of the results computed before the setting existed: at that default it stays out of the key
+#: (core/store.py), so those results keep their keys
 CORRECTIONS = ("full", "per_colour")
 #: the ``correction`` metric: what the matrix applied is
 APPLIED = {"matrix": "colour matrix", "per_colour": "one factor per colour"}
@@ -74,7 +74,6 @@ class ColorParams(StageParams):
     @field_validator("correction")
     @classmethod
     def _choice(cls, v: str, info) -> str:
-        from .register import check_choice
         return check_choice(info.field_name, v, CORRECTIONS)
 
 
@@ -138,8 +137,7 @@ class Color(Stage):
                     f"colours of this field within {agree:.1f} % ({reason})", "warning" if not good else "info")
         elif not good:
             # no profile of this camera: the curves of a typical colour sensor, each scaled to this field's stars.
-            # A wrong shape costs some accuracy; unphysical curves gave H-alpha a blue signature and pink skies
-            # (Canon 6D on M51, 2026-10-31)
+            # A wrong shape costs some accuracy; unphysical curves give H-alpha a blue signature and pink skies
             gen = generic_response(lam)
             agree = colour_agreement(xp["flux"][idx], lam, cam, gen)
             S = gen * np.median(cam / predict(xp["flux"][idx], lam, gen), 0)[:, None]
@@ -153,10 +151,10 @@ class Color(Stage):
                         f"camera first gives it its own profile", "warning")
             else:
                 # the typical curves do not predict this field's stars either (the test a camera profile must pass):
-                # a matrix fitted between them and the stars mixes the channels with large opposite terms (heart's
-                # Siril-debayered Classic stack, 2 November: generic curves 17.9 % off, red noise x 2.4 and H-alpha
-                # rendered orange). No curves are trusted, so no matrix: one factor per colour from the stars' white
-                # balance, as the spectrophotometric calibrations of Siril and PixInsight make it (SPCC [P21][S13])
+                # a matrix fitted between them and the stars mixes the channels with large opposite terms (more
+                # red noise, H-alpha rendered orange). No curves are trusted, so no matrix: one factor per colour
+                # from the stars' white balance, as the spectrophotometric calibrations of Siril and PixInsight make
+                # it (SPCC [P21][S13])
                 source = PER_COLOUR
                 ctx.log(f"the sensitivity curves found are not physical ({why}), and neither a profile of this camera "
                         f"nor the curves of a typical colour sensor predict this field's star colours (the typical "

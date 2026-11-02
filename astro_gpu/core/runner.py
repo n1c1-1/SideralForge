@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .determinism import deterministic
+from .files import write_json
 from .journal import Journal
 from .params import params_hash, resolve
 from .project import Project
@@ -50,26 +51,10 @@ def read_manifest(project: Project, stage: str) -> dict:
         return {}
 
 
-def replace_file(src: Path, dst: Path, attempts: int = 10) -> None:
-    """os.replace of a file over another, retried for about 5 s on PermissionError: on Windows a file cannot be
-    replaced while a reader has it open (the client reading a manifest, an antivirus, the indexer), usually for a
-    moment only. Without it a job failed when the client read its manifest at that instant."""
-    for i in range(attempts):
-        try:
-            os.replace(src, dst)
-            return
-        except PermissionError:
-            if i == attempts - 1:
-                raise
-            time.sleep(min(0.05 * 2 ** i, 1.0))
-
-
 def _write_manifest(project: Project, stage: str, m: dict) -> None:
     p = _manifest_path(project, stage)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(m, indent=1, default=str), encoding="utf-8")
-    replace_file(tmp, p)
+    write_json(p, m)
 
 
 class Pipeline:
@@ -220,7 +205,6 @@ class Pipeline:
         _write_manifest(self.project, st.name, m)
         ctx.clear_ckpt()
         self.journal.emit("stage_end", stage=st.name, status="done", duration=dur)
-        _record_timing(st.name, dur)
         return "done"
 
 
@@ -284,38 +268,3 @@ def _ancestors(by_name: dict[str, Stage], name: str) -> set[str]:
             out.add(d)
             todo += list(by_name[d].deps)
     return out
-
-
-def _record_timing(stage: str, seconds: float) -> None:
-    """Keep a per-machine history of stage durations (used for ETAs before a stage reports progress)."""
-    from .project import STATE
-    p = STATE / "timings.json"
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            d = json.loads(p.read_text()) if p.exists() else {}
-        except json.JSONDecodeError:
-            d = {}
-        d.setdefault(stage, []).append(round(seconds, 1))
-        d[stage] = d[stage][-20:]
-        write_json_atomic(p, d)
-    except OSError:                          # the history is a hint: never fail a stage over it
-        pass
-
-
-def write_json_atomic(path: Path, obj) -> None:
-    """Write a JSON file through a temporary file and a rename: a reader never sees half a file, and two runs that
-    write it at once leave one whole version."""
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
-    try:
-        tmp.write_text(json.dumps(obj), encoding="utf-8")
-        for attempt in range(5):
-            try:
-                os.replace(tmp, path)
-                return
-            except PermissionError:          # Windows: a reader has the file open for a moment
-                if attempt == 4:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
-    finally:
-        tmp.unlink(missing_ok=True)

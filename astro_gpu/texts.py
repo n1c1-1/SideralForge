@@ -1,4 +1,4 @@
-"""The texts that come from the engine, in English and in French (DESIGN.md §5.4, P16).
+"""The texts that come from the engine, in English and in French.
 
 The client is in English with a French translation (``client/i18n.py``, ``client/locale/fr/*.json``). Five kinds of
 engine text could not go through that dictionary as they were; this module gives each of them a form that does:
@@ -37,7 +37,7 @@ DECIMAL_COMMA = frozenset({"fr"})
 LOCALE = Path(__file__).parent / "client" / "locale"
 STAGES_DIR = Path(__file__).parent / "stages"
 CORE_DIR = Path(__file__).parent / "core"
-#: the core modules of stacking v2 whose reasons reach the user (core/coverage.py writes ``Auto``s with plain
+#: the core modules of the stacking whose reasons reach the user (core/coverage.py writes ``Auto``s with plain
 #: templates; core/frame_weights.py lists its own in ``REASON_TEMPLATES``, core/rejection_classic.py in ``REASONS``)
 REASON_MODULES = ("coverage.py", "frame_weights.py", "rejection_classic.py")
 DECLARED = ("REASON_TEMPLATES", "REASONS")
@@ -55,11 +55,6 @@ def catalogue(lang: str) -> dict[str, str]:
                 out.update(json.loads(f.read_text(encoding="utf-8")))
         _cat[lang] = out
     return _cat[lang]
-
-
-def reload() -> None:
-    """Forget the catalogues read (after a file changed)."""
-    _cat.clear()
 
 
 def has_translation(text: str, lang: str) -> bool:
@@ -98,8 +93,7 @@ def number(x: float, digits: int = 1, lang: str = "en") -> str:
 
 
 #: reason templates reworded after results had stored them (a stack's "reason_template"): the old English -> the new
-#: one, so that an older result reads like a new one in every language. 2 November: the interface no longer names
-#: other software
+#: one, so that an older result reads like a new one in every language (the texts do not name other software)
 REWORDED: dict[str, str] = {
     "{n} frames: percentile clipping ({low:g} / {high:g}), as PixInsight's WBPP below 6 frames":
         "{n} frames: percentile clipping ({low:g} / {high:g}), the usual choice under 6 frames",
@@ -413,10 +407,6 @@ def metric(key: str) -> Metric | None:
     return METRICS.get(key)
 
 
-def metric_keys() -> list[str]:
-    return list(METRICS)
-
-
 def metric_label(key: str, lang: str = "en") -> str:
     """The label of a metric; an unknown key is shown as itself, written out (``my_key`` -> ``My key``)."""
     m = METRICS.get(key)
@@ -613,9 +603,9 @@ class ReasonSite(NamedTuple):
 
 def _declared_templates(path: Path, tree: ast.Module) -> list[str] | None:
     """The templates a module lists in its top-level ``REASON_TEMPLATES`` or ``REASONS`` (a dict of them, or a
-    sequence), None when it has none. Read as a literal when it is one (no import: core/normalize_local.py and
-    core/rejection_classic.py need torch), else from the module itself (core/frame_weights.py builds its tuple; it
-    imports numpy only)."""
+    sequence), None when it has none. Read as a literal when it is one (no import: core/rejection_classic.py needs
+    torch), else from the module itself (core/frame_weights.py and core/coverage.py build theirs; they import numpy
+    only)."""
     for node in tree.body:
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]

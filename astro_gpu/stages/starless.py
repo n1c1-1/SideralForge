@@ -67,11 +67,10 @@ class Starless(Stage):
                    "neural star remover is used: faint nebulosity under the stars is preserved.")
     deps = ("stars", "optics", "denoise", "stack", "color", "catalogs")
     Params = StarlessParams
-    version = "24"         # 21: the residual halo bound measured with the far halo; 22: residual cleaning only where
-                           # the star model holds the star; 23: the fainter stars' cleaning bounded by their typical
-                           # residual (it erased reflection nebulae centred on their star). The optional learned star
-                           # layer (a second starless image) is a parameter: projects without one stay up to date.
-                           # 24: the sharpening network again (lost in the rebuild of 2026-10-11), for both images
+    version = "24"
+    # 21: the residual halo bound measured with the far halo; 22: residual cleaning only where the star model holds
+    # the star; 23: the fainter stars' cleaning bounded by their typical residual; 24: the sharpening network, for both
+    # images (the optional learned star layer is a parameter, not a version)
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         """The learned star layer of the 'star_net' stage, when that stage ran and wrote one (an explicit path set by
