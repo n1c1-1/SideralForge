@@ -67,6 +67,7 @@ from .blocks import (
     PHASES,
     REVIEWED_COL,
     STATE_WORD,
+    STEPS,
     TOOL_COLUMN,
     TOOLBOX,
     TOOLS,
@@ -460,6 +461,9 @@ class GraphView(QGraphicsView):
             self._wire(par, n, cur is not None and cur in n.paths)
         for p in s.paths:
             self._wire(g.leaves[p.pid], g.final, cur is not None and p is cur)
+        # the images sent to Post (from Inspect, or a block's output): an arrow from their block to Post
+        for n in self._post_sources(g):
+            self._post_wire(n, g.final)
         # side inputs of the selected block
         if sel is not None and sel.key not in ("sources", "final"):
             for src, lab in g.side_inputs(sel):
@@ -562,6 +566,55 @@ class GraphView(QGraphicsView):
             path.lineTo(QPointF(x2, y2))
         it = self.scene().addPath(path, QPen(QColor("#9aa3b2" if strong else "#3d4452"), 2.2 if strong else 1.6))
         it.setZValue(1)
+
+    def _post_sources(self, g: Graph) -> list[Node]:
+        """The blocks whose image is a layer of Post (``project.post["layers"]``, image layers: the key Inspect gave,
+        ``services/inspect.post_key``), each once."""
+        import json
+        layers = ((getattr(self.s.p, "post", None) or {}).get("layers") or []) if self.s.p is not None else []
+        by_stage = {st: b["key"] for b in STEPS for st in b["stages"]}
+        out = []
+        for lay in layers:
+            key = str(lay.get("key") or "") if isinstance(lay, dict) and lay.get("kind") == "image" else ""
+            wid, stage, skey = None, None, None
+            if key.startswith("inspect:"):
+                try:
+                    d = json.loads(key[len("inspect:"):])
+                except ValueError:
+                    continue
+                wid = d.get("wid")
+                stage = (d.get("stages") or [None])[0] or ("calibrate" if d.get("kind") == "calframe" else None)
+            elif key and not key.startswith("file:") and key.count("/") >= 2:
+                stage, skey = key.split("/")[:2]
+            block = by_stage.get(stage)
+            if block is None:
+                continue
+            paths = [q for q in self.s.paths if wid is None or q.pid == wid]
+            if skey is not None and stage != "calibrate":       # the workflow whose result it is
+                paths = [q for q in paths if self.s.stage_key(q, stage) == skey] or paths
+            n = next((g.node_of(q, block) for q in paths if g.node_of(q, block) is not None), None)
+            if n is not None and n not in out:
+                out.append(n)
+        return out
+
+    def _post_wire(self, a: Node, b: Node):
+        """An image of this block sent to Post: a dashed arrow from the block's top over the graph to Post."""
+        x1, y1 = a.col + a.w / 2, a.y - BH / 2
+        x2, y2 = b.col + b.w / 2, b.y - BH / 2
+        high = min(y1, y2) - 30
+        path = QPainterPath(QPointF(x1, y1))
+        path.cubicTo(QPointF(x1, high), QPointF(x2, high), QPointF(x2, y2))
+        col = QColor("#c9a227")
+        it = self.scene().addPath(path, QPen(col, 1.6, Qt.DashLine))
+        it.setZValue(2)
+        it.setToolTip(_("An image of {block} is a layer of Post").format(block=block_title(a.paths[0] if a.paths
+                                                                                          else None, a.key)))
+        head = QPainterPath(QPointF(x2, y2))                     # the arrow's head, pointing down into Post
+        head.lineTo(QPointF(x2 - 5, y2 - 9))
+        head.lineTo(QPointF(x2 + 5, y2 - 9))
+        head.closeSubpath()
+        h = self.scene().addPath(head, QPen(col, 1.0), col)
+        h.setZValue(2)
 
     def _side_wire(self, a: Node, b: Node, lab: str):
         x1, y1 = a.col + a.w / 2, a.y + BH / 2

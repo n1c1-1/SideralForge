@@ -1212,5 +1212,7 @@
  "Dark nebula names for the target search (shipped with the program).": "Noms des nébuleuses sombres pour la recherche de la cible (fournis avec le logiciel).",
  "Version: {version}": "Version : {version}",
  "Terms:": "Conditions :",
- "Contact: {address}": "Contact : {address}"
+ "Contact: {address}": "Contact : {address}",
+ "Not possible here: one image is already stretched for the eye (the final image, rendered by Post), the other is linear data. Each keeps its own stretch.": "Impossible ici : l'une des images est déjà étirée pour l'œil (l'image finale, rendue par le Post-traitement), l'autre contient les données brutes. Chacune garde son propre étirement.",
+ "An image of {block} is a layer of Post": "Une image de {block} est un calque du Post-traitement"
 }

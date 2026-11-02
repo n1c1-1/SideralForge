@@ -2912,10 +2912,26 @@ class ImageView(QWidget):
         if c.display is None:
             return {"fitted": True}
         w, h = c.display.size()
-        return {"fitted": c.fitted, "zoom": c.scale * w, "fx": c.cx / w, "fy": c.cy / h}
+        out = {"fitted": c.fitted, "zoom": c.scale * w, "fx": c.cx / w, "fy": c.cy / h}
+        pl = getattr(c.display, "place", None)
+        if pl is not None:
+            # the same point of the common grid (a final image is a crop of the stack at another scale)
+            m = pl.m
+            out["grid"] = (pl.frame, m[0] * c.cx + m[1] * c.cy + m[2], m[3] * c.cx + m[4] * c.cy + m[5],
+                           c.scale / max(abs(m[0]), 1e-12))
+        return out
 
     def set_view_state(self, state: dict):
-        _mirror_state(self.canvas, state)
+        c = self.canvas
+        pl = getattr(c.display, "place", None) if c.display is not None else None
+        g = state.get("grid")
+        if pl is not None and g is not None and g[0] == pl.frame and not state.get("fitted", True):
+            # back from the common grid to this image's pixels
+            inv = np.linalg.inv(pl.matrix())
+            x, y, _one = inv @ np.array([g[1], g[2], 1.0])
+            c.zoom_to(g[3] * abs(pl.m[0]), float(x), float(y))
+            return
+        _mirror_state(c, state)
 
     def _canvas_moved(self, cv: ImageCanvas):
         self._zoom_label()
@@ -3082,8 +3098,14 @@ class ImageView(QWidget):
             self.same_c.setChecked(self._same)
         self._apply_same()
 
+    def _same_possible(self) -> bool:
+        """Same stretch only between images of one kind of values: a picture already stretched for the eye (the final
+        image, 0-255) and linear data (a stack) never share one (the data would show black)."""
+        vi = self._targets[self._cmp_i] if self._cmp_i is not None and self._cmp_i < len(self._targets) else None
+        return vi is None or self._vi is None or bool(vi.stretched) == bool(self._vi.stretched)
+
     def _cmp_stretch(self, prep: Prepared) -> sm.Stretch:
-        if self._same and self._st is not None:
+        if self._same and self._st is not None and self._same_possible():
             return self._st.adapted(prep.channels)
         st = self._st
         vi = self._targets[self._cmp_i] if self._cmp_i is not None and self._cmp_i < len(self._targets) else None
@@ -3179,6 +3201,11 @@ class ImageView(QWidget):
                  "resampled onto this image ({what})").format(name=name, what=what)
 
     def _names(self):
+        ok = self._same_possible()
+        self.same_c.setEnabled(ok)
+        self.same_c.setToolTip(_("Show the compared image with the same stretch as this one") if ok else _(
+            "Not possible here: one image is already stretched for the eye (the final image, rendered by Post), the "
+            "other is linear data. Each keeps its own stretch."))
         main = self._vi.name if self._vi is not None else ""
         other = self._targets[self._cmp_i].name if self._cmp_i is not None else ""
         self.canvas.split_names = (other, main)

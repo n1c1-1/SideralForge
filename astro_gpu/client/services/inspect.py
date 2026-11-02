@@ -117,6 +117,7 @@ class VisualSpec:
     backgrounds: bool = False        # the picture behind its overlay is the user's choice (``Steps.backgrounds``), no compare
     display: str = ""        # the viewer's kind of image (``ViewImage.kind``): "model" for a sky model, a gradient
     #                          surface, a star flat (linked, from zero: its colour is its own); "" a light
+    previous: bool = False   # made from an Outdated result (its previous one): the lists mark it
 
 
 @dataclass
@@ -1206,90 +1207,6 @@ def final_wcs_source(p, wid: int, which: str, grid, origin, size):
             return None
         return ScaledWcs(w, origin, grid[0] / size[0])
     return load
-
-
-class FlippedWcs:
-    """The solution of a FITS image stored bottom-up (Siril's ROWORDER = BOTTOM-UP), for the picture shown top-down:
-    pixel (x, y) of the picture is pixel (x, h - 1 - y) of the file. Only what the readout asks."""
-
-    def __init__(self, wcs, h: int):
-        self.wcs, self.h = wcs, int(h)
-
-    def pixel_to_world_values(self, x, y):
-        return self.wcs.pixel_to_world_values(x, self.h - 1 - np.asarray(y, float))
-
-    def world_to_pixel_values(self, ra, dec):
-        x, y = self.wcs.world_to_pixel_values(ra, dec)
-        return x, self.h - 1 - np.asarray(y, float)
-
-
-def _reference_read(path: str):
-    """(array, solution or None) of an image from outside the project, read as it should be seen: a FITS file stored
-    bottom-up (Siril writes them so) turned top-down, its solution with it."""
-    p = Path(path)
-    if p.suffix.lower() in (".fit", ".fits", ".fts"):
-        import warnings
-
-        from astropy.io import fits
-        from astropy.wcs import WCS
-        with fits.open(p, memmap=False) as hl:
-            hdu = next((h for h in hl if getattr(h, "data", None) is not None), hl[0])
-            a, hdr = np.asarray(hdu.data, np.float32), hdu.header
-        wcs = None
-        if "CTYPE1" in hdr:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                try:
-                    wcs = WCS(hdr, naxis=2)
-                except Exception:  # noqa: BLE001 - no readout of the sky, the picture still shows
-                    wcs = None
-        if str(hdr.get("ROWORDER", "")).strip().upper() == "BOTTOM-UP":
-            a = np.ascontiguousarray(a[..., ::-1, :])
-            if wcs is not None:
-                wcs = FlippedWcs(wcs, a.shape[-2])
-        return a, wcs
-    from ..imageview import read_file
-    a, _cfa, wcs = read_file(p)
-    return a, wcs
-
-
-def reference_source(path: str):
-    """An image from outside the project (``ProjectModel.references``: Siril's results of a bench project), read in the
-    viewer's thread; a file that is not there says so."""
-    def load():
-        if not Path(path).is_file():
-            raise _unavailable(_missing_reference(path))
-        return _reference_read(path)[0]
-    return load
-
-
-def reference_wcs(path: str):
-    """The solution of a FITS reference (its header only), turned as the picture is (``FlippedWcs``)."""
-    def load():
-        if Path(path).suffix.lower() not in (".fit", ".fits", ".fts"):
-            return None
-        import warnings
-
-        from astropy.io import fits
-        from astropy.wcs import WCS
-        try:
-            hdr = fits.getheader(path)
-            if "CTYPE1" not in hdr:
-                return None
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                wcs = WCS(hdr, naxis=2)
-        except Exception:  # noqa: BLE001 - no readout of the sky
-            return None
-        if str(hdr.get("ROWORDER", "")).strip().upper() == "BOTTOM-UP":
-            return FlippedWcs(wcs, int(hdr.get("NAXIS2") or 0))
-        return wcs
-    return load
-
-
-def _missing_reference(path: str) -> str:
-    from ..i18n import _
-    return _("This comparison image is not there any more: {path}").format(path=path)
 
 
 def light_thumb(p, path: str, cfa: str = ""):

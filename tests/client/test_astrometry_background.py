@@ -72,12 +72,13 @@ def test_the_backgrounds_are_the_computed_images_in_the_order_of_the_workflow():
                         "Gradient removed", "Final image"]
 
 
-def test_an_image_that_is_not_computed_or_not_up_to_date_is_not_listed():
+def test_an_image_not_computed_is_not_listed_an_outdated_one_is_with_its_previous_result():
     assert keys({**BASE, "color": "pending", "background_poly": "done", "render_simple": "done"}) == ["stack", "output"]
-    # the gradient needs the colour result too: not listed while one of them is outdated
-    assert keys({**BASE, "color": "stale", "background_poly": "done", "render_simple": "done"}) == ["stack", "output"]
-    assert keys({**BASE, "color": "done", "background_poly": "stale", "render_simple": "pending"}) == ["stack", "color"]
-    assert keys({**BASE, "stack": "stale"}) == []                # even the stack: only what is up to date
+    # an Outdated result is listed (its previous one, marked), as the rest of Inspect shows it (M31, 2 November: every
+    # stage Outdated after an engine update left the list empty)
+    assert keys({**BASE, "color": "stale", "background_poly": "done", "render_simple": "done"}) ==         ["stack", "color", "result", "output"]
+    bgs = steps_of({**BASE, "stack": "stale"}).backgrounds(P)
+    assert [b.key for b in bgs] == ["stack"] and bgs[0].previous
 
 
 def test_the_solution_tab_has_a_background_choice_and_nothing_to_compare_with():

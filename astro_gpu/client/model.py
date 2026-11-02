@@ -1509,14 +1509,6 @@ class ProjectModel(QObject):
         self.reload_sources()
         return True
 
-    def references(self) -> list[dict]:
-        """The images from outside the project that every viewer offers in its Compare with list (a bench project:
-        Siril's results for the same frames): [{"name", "path", "kind": camera | linear | picture, "blocks": the
-        blocks it compares with first, "white": a picture's white level}]. They
-        live in the definition, in ``post["references"]`` (``tools/bench/references.py`` fills them)."""
-        refs = (getattr(self.p, "post", None) or {}).get("references") or []
-        return [dict(r) for r in refs if isinstance(r, dict) and r.get("path")]
-
     def request_selection(self, tmin: float | None = None, fmax: float | None = None):
         """Ask the worker how many frames these thresholds keep (answer: ``selectionChanged``, ``kept_frames``)."""
         p = self.path

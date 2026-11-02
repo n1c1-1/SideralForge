@@ -784,7 +784,7 @@ class TuneView(QWidget):
             self._data.popitem(last=False)
         if name == "sky":
             self._add_sky(result)
-        elif name == "lights" and self._cur is None and self.s.sel_step == "selection":
+        elif name in ("lights", "registration") and self._cur is None and self.s.sel_step == "selection":
             self._build_selection()
         elif self.isVisible() and self.pages.currentIndex() == 0:
             self._remember()
@@ -827,6 +827,17 @@ class TuneView(QWidget):
         kept = self._kept.get((k, spec.key)) if spec is not None else None
         if kept is not None:
             self._on(v, v.imageShown, lambda key, vv=v, kp=kept: self._restore(vv, key, kp))
+        carry = self.__dict__.pop("_carry_view", None)
+        if carry is not None and spec is not None and spec.backgrounds and not carry.get("fitted", True):
+            once = [carry]
+
+            def keep_view(_key, vv=v):
+                try:
+                    if once:
+                        vv.set_view_state(once.pop())
+                except RuntimeError:
+                    pass
+            self._on(v, v.imageShown, keep_view)
         self.views.append(v)
         if main:
             self.view = v
@@ -929,25 +940,6 @@ class TuneView(QWidget):
                     vi.identity() != (self.steps.view_image(p, spec) or vi).identity():
                 vi.info = {"workflow": q.pid}
                 out.append(vi)
-        return out + self._references(k)
-
-    def _references(self, k: str) -> list[ViewImage]:
-        """The images from outside the project the project lists (a bench project: Siril's results for the same
-        frames, "Siril (reference)"), offered in every viewer's Compare with list, this block's own first. Read in
-        the viewer's thread (a file that is gone says so there)."""
-        refs = self.s.references() if callable(getattr(self.s, "references", None)) else []
-        refs.sort(key=lambda r: k not in (r.get("blocks") or [r.get("block")]))
-        out = []
-        for r in refs:
-            path = str(r["path"])
-            kind = str(r.get("kind") or "linear")
-            pic = kind == "picture"
-            white = float(r.get("white") or (65535.0 if path.lower().endswith((".tif", ".tiff")) else 255.0)) \
-                if pic else 1.0
-            out.append(ViewImage(si.reference_source(path), maybe(str(r.get("name") or Path(path).name)),
-                                 key=("reference", path), wcs=None if pic else si.reference_wcs(path),
-                                 camera=kind == "camera", units="" if pic else "norm", white=white, stretched=pic,
-                                 info={"reference": path}))
         return out
 
     def _background(self, p, k: str, spec: VisualSpec) -> VisualSpec:
@@ -1054,13 +1046,19 @@ class TuneView(QWidget):
         cb.setMinimumWidth(190)
         cb.setToolTip(_("The image the grid and the stars are drawn over"))
         for b in self.steps.backgrounds(p):
-            cb.addItem(_(b.caption), b.key)
+            cb.addItem(_(b.caption) + ("  ·  " + _("previous result") if b.previous else ""), b.key)
         cb.setCurrentIndex(max(cb.findData(shown.key), 0))
         cb.activated.connect(lambda i, c=cb, kk=self._cur[1]: self._pick_background(kk, c.itemData(i)))
         return cb
 
     def _pick_background(self, k: str, key: str):
         self._remember()
+        # the zoom and the position stay where they were: every background but the final image is the stack grid, so
+        # the view (zoom relative to the width, centre in fractions) is the same place of the sky
+        try:
+            self._carry_view = self.view.view_state() if self.view is not None else None
+        except RuntimeError:
+            self._carry_view = None
         self.bg_of[k] = key
         self.refresh()
 
@@ -1989,7 +1987,17 @@ class TuneView(QWidget):
         tl = QVBoxLayout(top)
         tl.setContentsMargins(0, 0, 0, 0)
         tl.setSpacing(4)
-        tl.addWidget(ch, 1)
+        track = self._selection_track(p, table)
+        if track is not None:
+            # the tracking of the night (x against y, Lissajous) beside the frames, the left-out ones circled
+            row = QSplitter(Qt.Horizontal)
+            row.addWidget(ch)
+            row.addWidget(track)
+            row.setStretchFactor(0, 1)
+            row.setStretchFactor(1, 1)
+            tl.addWidget(row, 1)
+        else:
+            tl.addWidget(ch, 1)
         self.kept_label = label("", "dim")
         tl.addWidget(self.kept_label)
         self._kept_n = (table.kept, table.total)
@@ -2018,6 +2026,29 @@ class TuneView(QWidget):
         self._on(v, v.excludeToggled, self._seq_exclude)
         self._split("selection", top, v, (2, 5))
         v.set_sequence(frames, self.picked if self.picked is not None and self.picked < len(frames) else 0)
+
+    def _selection_track(self, p, table):
+        """The x / y tracking chart of Selection (``TrackChart``), the frames the stack leaves out circled with their
+        reason; a plain line when the offsets are not known. None while Registration's data is read (the selection is
+        built again when it comes)."""
+        b = self._need("registration", self._keys(p, "register", "calibrate", "astrometry", "inventory"),
+                       si.registration_bundle, p.pid)
+        if b is None or isinstance(b, _Failed):
+            return None
+        d = b.data
+        if not np.isfinite(d.dx).any():
+            return label(_("The x / y tracking appears once the offsets of the frames are known (Registration)."),
+                         "dim")
+        out = {r.name: _(r.status) for r in table.rows if r.status}         # status: the reason, '' when kept
+        ch = TrackChart(d, left_out=out)
+        ch.title = ""                          # its title on its own line: the chart's head is full beside the frames
+        box = QWidget()
+        bl = QVBoxLayout(box)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.setSpacing(0)
+        bl.addWidget(label(_("Tracking x / y (Lissajous)"), "h2"))
+        bl.addWidget(ch, 1)
+        return box
 
     def _ask_preview(self, c):
         """The engine counts the frames the dragged thresholds keep (selection_preview, in the worker)."""

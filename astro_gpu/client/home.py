@@ -2,14 +2,12 @@
 
 Home shows SECTIONS (Settings › Folders: a list of rows, prefs "home_sections"), each a folder with its name and a
 one-line description: by default "My projects" (the workspace, prefs "workspace": where New project creates its
-folders), "Bench against Siril" (F:/astro_essais/bench, its projects two levels down: <case>/ours_<level>) and "Test
-copies" (F:/astro_essais/v2, closed until its header is clicked). Above them, the projects opened last.
+folders) and "Test copies" (F:/astro_essais/v2, closed until its header is clicked). Above them, the projects opened
+last.
 
 The folders are read in the ApiWorker (``scan_home``): every sub-folder holding a project.astroproj and, for a
 sub-folder holding none, its own sub-folders that do; names starting with "_" or ".", pytest and temporary folders are
-skipped (``hidden``). A bench project (ours_<level> next to its case's manifest.json) also says its case, instrument,
-level, number of frames and whether Siril ran on the same frames (``bench_info``). The cards show at once; the state of
-each project (up to date, outdated, never run) follows from a second, slower read of the worker (``project_state``:
+skipped (``hidden``). The cards show at once; the state of each project (up to date, outdated, never run) follows from a second, slower read of the worker (``project_state``:
 the keys of its stages, so the file lists of its frames), for the open sections. Nothing is written but the settings.
 """
 from __future__ import annotations
@@ -23,8 +21,8 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPixmap
+from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -42,24 +40,12 @@ from PySide6.QtWidgets import (
 from ..core import project2
 from . import prefs
 from .i18n import _, hours_text, maybe, plural
-from .widgets import ACCENT, OK, ElidedLabel, label
+from .widgets import ACCENT, ElidedLabel, label
 
 TW, TH = 260, 150
 CARD_W, GAP = TW + 20, 16
 THUMB = Path("cache") / "thumb.jpg"
 RECENT_SHOWN = 4                                     # the recent projects shown above the sections
-
-#: the levels of a bench case, in the order their cards show, and their names (English, translated where shown)
-LEVELS = {"express": "Express", "base": "Base"}
-#: what a bench case's manifest.json may lack: short names of the instrument, the target, a word on the data set
-BENCH_FALLBACK = {
-    "heart": {"camera": "Sony A7S", "scope": "TS61EDPH", "target": "IC 1805"},
-    "iris": {"camera": "Sony A7S", "scope": "Newton 130/900", "target": "NGC 7023"},
-    "m51": {"camera": "Canon 6D", "scope": "Newton 200", "target": "M 51"},
-    "m8": {"camera": "ASI2600MC", "target": "M 8", "about": "Siril tutorial frames"},
-    "seestar": {"camera": "Seestar S50", "target": "M 31"},
-}
-
 
 # ---------------------------------------------------------------------------------------------- the sections (prefs)
 
@@ -97,25 +83,6 @@ def save_rows(rows: list[dict]):
 # ---------------------------------------------------------------------------------------------- the scan (worker)
 
 @dataclass
-class BenchInfo:
-    """A project of the bench against Siril: ours_<level> of a case (read from the case's manifest.json and the
-    project's bench_run.json)."""
-    case: str
-    level: str                                       # express | base
-    count: int | None = None                         # frames of the level
-    target: str = ""
-    camera: str = ""                                 # short: "Sony A7S"
-    scope: str = ""                                  # short: "TS61EDPH refractor"
-    camera_full: str = ""
-    scope_full: str = ""
-    note: str = ""
-    about: str = ""                                  # English, from BENCH_FALLBACK (translated where shown)
-    siril: bool = False                              # siril_<level> is there: Siril ran on the same frames
-    run_when: str = ""                               # the last bench run that finished: "2026-11-01T10:17:16"
-    run_failed: str = ""                             # the last bench run, when it failed
-
-
-@dataclass
 class ProjectInfo:
     """What a Home card shows of a project, read in the worker."""
     root: str
@@ -130,7 +97,6 @@ class ProjectInfo:
     n_workflows: int = 0
     description: str = ""
     title: str = ""                                  # the folder's name when another project of the section has its name
-    bench: BenchInfo | None = None
 
 
 @dataclass
@@ -249,72 +215,6 @@ def project_info(root: Path) -> ProjectInfo:
     return info
 
 
-def _cut(text: str, stops=(" (", ",", " + ")) -> str:
-    for s in stops:
-        text = text.split(s)[0]
-    return text.strip()
-
-
-def short_camera(label_: str) -> str:
-    """"Sony A7S (astro-modified), lossy ARW" → "Sony A7S"; "ZWO ASI2600MC Pro (FITS, cooled)" → "ASI2600MC Pro"."""
-    t = _cut(label_)
-    t = re.sub(r"^ZWO\s+", "", t)
-    return re.sub(r"\bEOS\s+", "", t)
-
-
-def short_scope(scope: str) -> str:
-    """"TS61EDPH refractor + 0.75x reducer (272 mm)" → "TS61EDPH refractor"; "Newton Sky-Watcher 200/1000" →
-    "Newton 200/1000"."""
-    t = _cut(scope)
-    return re.sub(r"\s+", " ", re.sub(r"\b(Sky-Watcher|Takahashi)\b", "", t)).strip()
-
-
-def _bench_run(root: Path) -> tuple[str, str, int | None]:
-    """(when the last bench run that finished ended, when the last run failed if it did, the lights it read)."""
-    try:
-        d = json.loads((root / "bench_run.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return "", "", None
-    runs = [r for r in d.get("runs") or [] if isinstance(r, dict)]
-    good = [r for r in runs if r.get("status") in ("done", "up to date")]
-    when = str(good[-1].get("when") or "") if good else ""
-    failed = str(runs[-1].get("when") or "?") if runs and runs[-1].get("status") == "failed" else ""
-    n = None
-    for r in reversed(good):
-        inv = ((r.get("metrics") or {}).get("inventory") or {}).get("metrics") or {}
-        if inv.get("n_lights"):
-            n = int(inv["n_lights"])
-            break
-    return when, failed, n
-
-
-def bench_info(root: Path) -> BenchInfo | None:
-    """The bench case of a project folder <case>/ours_<level> next to <case>/manifest.json, else None."""
-    m = re.fullmatch(r"ours_([a-z0-9]+)", root.name, re.I)
-    case_dir = root.parent
-    man = case_dir / "manifest.json"
-    if m is None or not man.is_file():
-        return None
-    try:
-        d = json.loads(man.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        d = {}
-    level = m.group(1).lower()
-    case = str(d.get("case") or case_dir.name)
-    fb = BENCH_FALLBACK.get(case.lower(), {})
-    when, failed, n_read = _bench_run(root)
-    lv = (d.get("levels") or {}).get(level) or {}
-    count = lv.get("count") if isinstance(lv.get("count"), int) else n_read
-    camera_full = str(d.get("camera_label") or "")
-    scope_full = str(d.get("scope") or "")
-    return BenchInfo(case=case, level=level, count=count, target=str(d.get("target") or fb.get("target", "")),
-                     camera=short_camera(camera_full) if camera_full else fb.get("camera", ""),
-                     scope=short_scope(scope_full) if scope_full else fb.get("scope", ""),
-                     camera_full=camera_full, scope_full=scope_full, note=str(d.get("note") or ""),
-                     about=fb.get("about", ""), siril=(case_dir / f"siril_{level}").is_dir(), run_when=when,
-                     run_failed=failed)
-
-
 def project_state(root: str) -> tuple[str, dict]:
     """The state of a project for its card (worker thread; nothing is written): Running, Never run, every workflow
     up to date, or how many are outdated (computed earlier, a setting changed since) and how many have still to run.
@@ -385,7 +285,7 @@ def _is_project(d: Path) -> bool:
 
 def find_projects(folder: Path) -> list[Path]:
     """The projects of a section's folder: its sub-folders holding a project.astroproj and, for a sub-folder holding
-    none, its own sub-folders that do (two levels: bench/<case>/ours_express). Hidden names are skipped at both."""
+    none, its own sub-folders that do (two levels: <group>/<project>). Hidden names are skipped at both."""
     out = []
     for d in _dirs(folder):
         if _is_project(d):
@@ -404,14 +304,9 @@ def _mtime(d: Path) -> float:
 
 def _read(d: Path) -> ProjectInfo:
     try:
-        info = project_info(d)
+        return project_info(d)
     except (OSError, ValueError, KeyError, TypeError):
-        info = ProjectInfo(d.as_posix(), d.name, state="Cannot be read")
-    try:
-        info.bench = bench_info(d)
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-    return info
+        return ProjectInfo(d.as_posix(), d.name, state="Cannot be read")
 
 
 def _titles(infos: list[ProjectInfo]):
@@ -420,12 +315,12 @@ def _titles(infos: list[ProjectInfo]):
     for i in infos:
         seen[i.name.lower()] = seen.get(i.name.lower(), 0) + 1
     for i in infos:
-        i.title = Path(i.root).name if seen[i.name.lower()] > 1 and not i.bench else ""
+        i.title = Path(i.root).name if seen[i.name.lower()] > 1 else ""
 
 
 def scan_home(rows: list[dict], recent: list[str]) -> HomeScan:
-    """Every section's projects (worker thread): the bench cases in their order (case, then Express before Base), the
-    others the recently opened first, then the newest; and the recent projects shown above the sections."""
+    """Every section's projects (worker thread): the recently opened first, then the newest; and the recent projects
+    shown above the sections."""
     cache: dict[str, ProjectInfo] = {}
 
     def info_of(d: Path) -> ProjectInfo:
@@ -445,9 +340,6 @@ def scan_home(rows: list[dict], recent: list[str]) -> HomeScan:
         dirs = find_projects(Path(folder)) if found else []
         dirs.sort(key=lambda d: (rank.get(_key(d), len(rank)), -_mtime(d)))
         infos = [info_of(d) for d in dirs]
-        bench = sorted((i for i in infos if i.bench), key=lambda i: (i.bench.case.lower(), list(LEVELS).index(
-            i.bench.level) if i.bench.level in LEVELS else len(LEVELS), i.bench.level))
-        infos = [i for i in infos if not i.bench] + bench
         _titles(infos)
         sections.append(SectionScan(dict(row), infos, found))
         if row.get("workspace"):
@@ -498,30 +390,7 @@ def thumb(info: ProjectInfo) -> QPixmap:
         p.setPen(QColor("#6b7280"))
         p.drawText(pm.rect(), Qt.AlignCenter, _("No preview"))
         p.end()
-    if info.bench is not None:
-        _badge(pm, level_name(info.bench.level))
     return pm
-
-
-def _badge(pm: QPixmap, text: str):
-    """The level of a bench project, written on its picture (top left)."""
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    f = QFont("Segoe UI", 9)
-    f.setBold(True)
-    p.setFont(f)
-    fm = QFontMetrics(f)
-    r = QRectF(8, 8, fm.horizontalAdvance(text) + 16, fm.height() + 6)
-    p.setPen(Qt.NoPen)
-    p.setBrush(QColor(15, 17, 21, 210))
-    p.drawRoundedRect(r, 4, 4)
-    p.setPen(QColor("#ffffff"))
-    p.drawText(r, Qt.AlignCenter, text)
-    p.end()
-
-
-def level_name(level: str) -> str:
-    return _(LEVELS[level]) if level in LEVELS else level.capitalize()
 
 
 def card_line(info: ProjectInfo) -> str:
@@ -533,57 +402,8 @@ def card_line(info: ProjectInfo) -> str:
     return plural(info.nights, "{n} night · {d}", "{n} nights · {d}", d=info.date)
 
 
-def _norm(t: str) -> str:
-    return re.sub(r"[\s_\-]", "", t).lower()
-
-
-def bench_title(b: BenchInfo) -> str:
-    """"Heart · IC 1805", "M51", "M8 · Siril tutorial frames"."""
-    name = b.case[:1].upper() + b.case[1:]
-    parts = [name]
-    if b.target and _norm(b.target) != _norm(name):
-        parts.append(b.target)
-    if b.about:
-        parts.append(_(b.about))
-    return " · ".join(parts)
-
-
-def bench_instrument(b: BenchInfo) -> str:
-    """"Sony A7S + TS61EDPH refractor"; one name when the camera is the telescope ("Seestar S50")."""
-    if not b.scope or _norm(b.scope) in _norm(b.camera):
-        return b.camera
-    if not b.camera or _norm(b.camera) in _norm(b.scope):
-        return b.scope
-    return f"{b.camera} + {b.scope}"
-
-
-def bench_level(b: BenchInfo) -> str:
-    """"Express, 30 frames · 2026-11-01" (the date of the last bench run)."""
-    text = level_name(b.level)
-    if b.count:
-        text = plural(b.count, "{level}, {n} frame", "{level}, {n} frames", level=text)
-    return text + (" · " + b.run_when[:10] if b.run_when else "")
-
-
 def card_tooltip(info: ProjectInfo) -> str:
-    lines = [info.root]
-    if info.description:
-        lines.append(info.description)
-    b = info.bench
-    if b is not None:
-        if b.camera_full or b.camera:
-            lines.append(_("Camera: {c}").format(c=b.camera_full or b.camera))
-        if b.scope_full or b.scope:
-            lines.append(_("Telescope: {s}").format(s=b.scope_full or b.scope))
-        if b.target:
-            lines.append(_("Target: {t}").format(t=b.target))
-        if b.run_failed:
-            lines.append(_("The last bench run failed: {when}").format(when=b.run_failed.replace("T", " ")[:16]))
-        elif b.run_when:
-            lines.append(_("Last bench run: {when}").format(when=b.run_when.replace("T", " ")[:16]))
-        if b.note:
-            lines.append(b.note)
-    return "\n".join(lines)
+    return "\n".join([info.root] + ([info.description] if info.description else []))
 
 
 class ProjectCard(QFrame):
@@ -609,10 +429,7 @@ class ProjectCard(QFrame):
             tg = ElidedLabel(tag, "small", Qt.ElideRight)
             tg.setStyleSheet(f"color: {ACCENT}; font-size: 9pt;")
             v.addWidget(tg)
-        b = info.bench
-        if b is not None:
-            title, sub = bench_title(b), bench_instrument(b)
-        elif info.title:
+        if info.title:
             title, sub = info.title, " · ".join(x for x in (info.name, info.target) if x)
         else:
             title, sub = info.name, info.target
@@ -620,15 +437,7 @@ class ProjectCard(QFrame):
         self.title.setStyleSheet("font-weight: 600; font-size: 11pt;")
         v.addWidget(self.title)
         v.addWidget(ElidedLabel(sub or " ", "dim", Qt.ElideRight))
-        if b is not None:
-            v.addWidget(ElidedLabel(bench_level(b), "small", Qt.ElideRight))
-            si = ElidedLabel(_("Compared with Siril") if b.siril else _("Not compared with Siril yet"), "small",
-                             Qt.ElideRight)
-            if b.siril:
-                si.setStyleSheet(f"color: {OK}; font-size: 9pt;")
-            v.addWidget(si)
-        else:
-            v.addWidget(ElidedLabel(card_line(info), "small", Qt.ElideRight))
+        v.addWidget(ElidedLabel(card_line(info), "small", Qt.ElideRight))
         self.state = ElidedLabel(state_text(info.state, info.state_args), "small", Qt.ElideRight)
         v.addWidget(self.state)
         v.addStretch(1)
@@ -696,7 +505,6 @@ class SectionView(QWidget):
         self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         v.addWidget(self.body)
         self.cards: list[ProjectCard] = []
-        self.groups: list[list[ProjectCard]] = []
         self.empty: QLabel | None = None
         self._cols = 0
         self.set_open(is_open)
@@ -708,11 +516,8 @@ class SectionView(QWidget):
         if by_click:
             self.toggled.emit(self.is_open)
 
-    def set_cards(self, cards: list[ProjectCard], empty: str = "", groups: list[list[ProjectCard]] | None = None):
-        """``groups``: cards kept on one row, each group starting at the same columns (a bench case: Express, Base);
-        by default every card alone."""
+    def set_cards(self, cards: list[ProjectCard], empty: str = ""):
         self.cards = cards
-        self.groups = groups or [[c] for c in cards]
         if not cards and empty:
             self.empty = label(empty, "dim")
         self.place(max(self._cols, 1), force=True)
@@ -723,28 +528,10 @@ class SectionView(QWidget):
         self._cols = cols
         while self.grid.count():
             self.grid.takeAt(0)
-        span = max((len(g) for g in self.groups), default=1)
-        span = span if span <= cols else 1
-        r = c = 0
-        for g in self.groups:
-            if len(g) > 1 and c % span:              # a group (a bench case) starts at the same columns as the
-                c += span - c % span                 # others; a card alone takes the next free column
-                if c >= cols:
-                    r, c = r + 1, 0
-            if c and c + len(g) > cols:              # a group that fits in a row is not split
-                r, c = r + 1, 0
-            for card in g:
-                if c >= cols:
-                    r, c = r + 1, 0
-                self.grid.addWidget(card, r, c)
-                c += 1
-            if len(g) > 1 and c % span:
-                c += span - c % span                 # the next group starts at the same columns
-            if c >= cols:
-                r, c = r + 1, 0
+        for i, card in enumerate(self.cards):
+            self.grid.addWidget(card, i // cols, i % cols)
         if self.empty is not None:
             self.grid.addWidget(self.empty, 0, 0)
-
 
 # ---------------------------------------------------------------------------------------------- new project
 
@@ -943,15 +730,7 @@ class HomeView(QWidget):
                 empty = _("No projects in this workspace yet.")
             else:
                 empty = _("No projects in this folder.")
-            groups: list[list[ProjectCard]] = []
-            for c in cards:                          # the levels of a bench case side by side
-                case = Path(c.info.root).parent.as_posix() if c.info.bench else None
-                if case and groups and groups[-1][0].info.bench and Path(groups[-1][0].info.root).parent.as_posix() \
-                        == case:
-                    groups[-1].append(c)
-                else:
-                    groups.append([c])
-            sec.set_cards(cards, empty, groups)
+            sec.set_cards(cards, empty)
             sec.toggled.connect(lambda on, sc=s: self._toggled(sc, on))
             self._add(sec, at)
             at += 1

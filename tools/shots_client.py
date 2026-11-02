@@ -635,7 +635,72 @@ def part_naming():
         post_render()
 
 
-PART_FN = {"home": part_home, "graph": part_graph, "stack": part_stack, "inspect": part_inspect,
+def part_evening(stale="S1"):
+    """The user's points of 2 November evening: the x / y tracking in Selection and Alignment; Astrometry's background
+    list on an up-to-date workflow and on an Outdated one (``stale``, its previous results), and the zoom kept when the
+    background changes (the stack zoomed in, then the final image)."""
+    print("Evening", flush=True)
+    open_it()
+    drz = pid_of(DRIZZLE)
+    walk.guarded(walk.show_tab, "selection", None, "evening_selection", drz)
+    walk.guarded(walk.show_tab, "alignement", "track", "evening_alignment_track", drz)
+    tune = w.tune
+    for pid, tag in ((drz, "current"), (pid_of(stale), "stale")):
+        p = w.s.view(pid)
+        bgs = tune.steps.backgrounds(p)
+        print(f"  {tag}: backgrounds {[(b.key, b.previous) for b in bgs]}", flush=True)
+        if not bgs:
+            walk.problem(f"Astrometry of {tag}: no background listed")
+        walk.guarded(walk.show_tab, "astrometrie", "solution", f"evening_astrometry_{tag}", pid)
+    v = tune.view
+    if v is None or v.canvas.display is None:
+        walk.problem("no Astrometry viewer")
+        return
+    v.zoom_to(1.0, v.canvas.display.size()[0] * 0.3, v.canvas.display.size()[1] * 0.4)
+    walk.settle()
+    walk.shot("evening_astrometry_stack_zoom")
+    tune._pick_background("astrometrie", "output")
+    walk.until(lambda: tune.view is not None and tune.view.canvas.display is not None
+               and tune.view.canvas.display.size()[0] < 3000, 300, "the final image")
+    walk.pump(1.0)
+    walk.settle()
+    walk.shot("evening_astrometry_final_zoom")
+    tune._pick_background("astrometrie", "stack")
+    # Output: the final image beside Gradient removed, Same stretch greyed (one is already stretched for the eye)
+    walk.guarded(walk.show_tab, "post", None, "evening_output", drz)
+    v = tune.view
+    if v is not None:
+        walk.until(lambda: v._targets, 300, "the Output compare targets")
+        names = [t.name for t in v._targets]
+        i = next((j for j, n in enumerate(names) if n.startswith(_("Gradient removed"))), 0)
+        v.set_compare_mode("side")
+        v.set_compare(i)
+        walk.pump(2.0)
+        walk.settle()
+        walk.shot("evening_output_compare")
+        if v.same_c.isEnabled():
+            walk.problem("Same stretch enabled between the final image and linear data")
+    w.tune.tab_of.clear()
+    # Graph: images sent to Post draw an arrow from their block (the composition set in memory: the model is read-only)
+    import json as _json
+    sp = w.s.p
+    old = getattr(sp, "post", None)
+    skey = w.s.stage_key(w.s.view(drz), "stack")
+    sp.post = {**(old or {}), "layers": [
+        {"id": "t1", "kind": "image", "key": "inspect:" + _json.dumps({"wid": drz, "kind": "gradient", "name": "",
+                                                                      "channel": None, "base": [],
+                                                                      "stages": ["background_poly", "color"]}),
+         "name": "Gradient removed", "visible": True},
+        {"id": "t2", "kind": "image", "key": f"stack/{skey}/drz_full", "name": "Stack", "visible": True}]}
+    w.set_mode(0)
+    walk.select("fond", drz)
+    w.graph.graph.rebuild()
+    walk.settle()
+    walk.shot("evening_graph_post_arrows")
+    sp.post = old
+
+
+PART_FN = {"home": part_home, "evening": part_evening, "graph": part_graph, "stack": part_stack, "inspect": part_inspect,
            "post": part_post, "export": part_export, "naming": part_naming}
 
 for lang in LANGS:

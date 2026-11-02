@@ -1109,7 +1109,7 @@ def test_the_drift_tab_shows_the_path_of_the_session_and_no_tab_hides(win):
     tr = track[0]
     assert np.isfinite(tr.d.dx).sum() > 10 and tr.colorbar is not None and tr.colorbar[0] == "Time"
     bar = next(b for b in t.findChildren(QTabBar) if b.isVisibleTo(t) and b.count() == 6)
-    assert not bar.usesScrollButtons() and bar.tabToolTip(3) == "Drift path"
+    assert not bar.usesScrollButtons() and bar.tabToolTip(3) == "Tracking x / y (Lissajous)"
     win.tune.tab_of["alignement"] = "track"
     inspect(win, "alignement")
     assert [c for c in t.findChildren(TrackChart) if c.isVisibleTo(t)]
@@ -1174,7 +1174,7 @@ def test_the_output_says_what_the_final_image_is():
     assert st.output_note("render_simple", {"stack", "render_simple"}) == st.OUTPUT_RAW_NOTE
     assert st.output_note("render_prep", base) == st.OUTPUT_ENGINE_NOTE
     assert st.output_note("render_prep_learned", base) == st.OUTPUT_LEARNED_NOTE
-    assert "same data as Gradient removed" in st.OUTPUT_SIMPLE_NOTE
+    assert "Final image = Gradient removed, then the steps of Post" in st.OUTPUT_SIMPLE_NOTE
     assert "not the Gradient removed picture" in st.OUTPUT_ENGINE_NOTE
 
 

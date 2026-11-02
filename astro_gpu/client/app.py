@@ -650,6 +650,8 @@ class Main(QMainWindow):
         self.mode_btns[i].setChecked(True)
         if i == 2 and not was_post and self.post_holder is not None and self.post_holder.page is not None:
             self.post_holder.page.refresh()
+        if i == 0 and self.graph is not None and getattr(self.graph, "graph", None) is not None:
+            self.graph.graph.rebuild()             # the arrows of the images sent to Post meanwhile
         self.refresh()
 
     def _strip_pick(self, k: str):

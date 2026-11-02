@@ -68,14 +68,14 @@ OUTPUT_NOTE = "The workflow's result at the suggested render settings, as Post s
 #: what the final image is, by the output of the workflow (``output_note``): the simple output is the Gradient removed
 #: picture stretched by Post (M31 Classic stack: the same data, its sky at 41/255 instead of 55, so the same noise shows
 #: 1.6 times more); the engine's rendering is another preparation (the starless image and the stars drawn back)
-OUTPUT_SIMPLE_NOTE = ("Final image: the same data as Gradient removed (the stack in calibrated colours, its sky removed), "
-                      "stretched by Post's suggested settings instead of this viewer's automatic stretch: a darker sky "
-                      "and steeper midtones can show the noise more. Cropped to the covered area, at half size. Adjust "
-                      "it in Post.")
-OUTPUT_SIMPLE_DENOISED_NOTE = ("Final image: the same data as Gradient removed (the denoised stack in calibrated "
-                               "colours, its sky removed), stretched by Post's suggested settings instead of this "
-                               "viewer's automatic stretch: a darker sky and steeper midtones can show the noise more. "
-                               "Cropped to the covered area, at half size. Adjust it in Post.")
+OUTPUT_SIMPLE_NOTE = ("Final image = Gradient removed, then the steps of Post: its stretch (the suggested settings) and the "
+                      "filters you add there. These steps are in Post, not in the graph. The stretch is already applied "
+                      "(values 0 to 255), so Same stretch is not possible against Gradient removed: compare them by eye. "
+                      "Cropped to the area every frame covers, at half size.")
+OUTPUT_SIMPLE_DENOISED_NOTE = ("Final image = Gradient removed (of the denoised stack), then the steps of Post: its stretch (the "
+                               "suggested settings) and the filters you add there. These steps are in Post, not in the graph. The "
+                               "stretch is already applied (values 0 to 255), so Same stretch is not possible against Gradient "
+                               "removed: compare them by eye. Cropped to the area every frame covers, at half size.")
 OUTPUT_COLOR_NOTE = ("Final image: the colour-calibrated stack with Post's suggested stretch. Cropped to the covered "
                      "area, at half size. Adjust it in Post.")
 OUTPUT_RAW_NOTE = ("Final image: the stack in the camera's colours, the sky of each channel levelled, with Post's "
@@ -254,7 +254,7 @@ class Steps(QObject):
             return [V("reference", "Reference frame", "regref", "register", note=REFERENCE_NOTE),
                     V("quality", "Quality", "regchart", "register", "quality"),
                     V("drift", "Drift", "regchart", "register", "drift"),
-                    V("track", "Drift path", "regchart", "register", "track"),
+                    V("track", "Tracking x / y (Lissajous)", "regchart", "register", "track"),
                     V("distribution", "Distribution", "regchart", "register", "distribution"),
                     V("table", "Frames", "regtable", "register")]
         if k == "empilement":
@@ -365,12 +365,18 @@ class Steps(QObject):
 
     def backgrounds(self, p) -> list[VisualSpec]:
         """The pictures the solution of Astrometry can be drawn over, in the order of the workflow: the ones that are
-        computed and up to date, the stack first (its default)."""
+        computed, the stack first (its default). A picture made from an Outdated result (its previous one, as the rest
+        of Inspect shows it) is listed too, marked ``previous`` (M31: every stage Outdated after an engine update left
+        the list empty)."""
         out = []
         for key in BACKGROUNDS:
             sp = self.picture(p, key)
-            if sp is not None and all(self.key_of(p, x) for x in self.stages_of(p, sp)):
-                out.append(sp)
+            if sp is None:
+                continue
+            stages = self.stages_of(p, sp)
+            which = [self.which_for(p, x) for x in stages]
+            if all(self.key_of(p, x, w) for x, w in zip(stages, which)):
+                out.append(dataclasses.replace(sp, previous=True) if "previous" in which else sp)
         return out
 
     def stages_of(self, p, spec: VisualSpec) -> list[str]:

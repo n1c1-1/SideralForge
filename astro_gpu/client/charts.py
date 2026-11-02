@@ -571,10 +571,13 @@ class TrackChart(_Offsets):
     reference frame at the origin and the time as colour. Dithering makes a cloud, a drift a line, periodic error and
     field rotation loops and arcs."""
 
-    def __init__(self, d: RegistrationData, parent=None):
-        super().__init__(_("Path of the drift"), parent, zoom="xy", readout="xy", snap=18.0, export_name="drift_path")
+    def __init__(self, d: RegistrationData, parent=None, left_out: dict | None = None):
+        """``left_out``: in Selection, the frames the stack leaves out (name -> reason), circled in red on the path."""
+        super().__init__(_("Tracking x / y (Lissajous)"), parent, zoom="xy", readout="xy", snap=18.0,
+                         export_name="drift_path")
         self.setMinimumHeight(300)
         self.d = d
+        self.left_out = left_out or {}
         self._unit_choice(d)
         k = self._k(self.unit)
         self.p = self.add_panel("", "", digits=None, equal=True)
@@ -590,6 +593,13 @@ class TrackChart(_Offsets):
         if ref is not None:
             self.add_scatter(_("reference frame"), [d.dx[ref] * k], [d.dy[ref] * k], color=QColor("#ffffff"), size=11,
                              readout=False, export=False)
+        out = [i for i, name in enumerate(d.names) if name in self.left_out and ok[i]]
+        if out:
+            self.add_scatter(_("excluded"), d.dx[out] * k, d.dy[out] * k, color=OUT, size=13, legend=True,
+                             unit=self._unit_name(), digits=2,
+                             extra={_("Frame"): [d.names[i] for i in out],
+                                    _("Reason"): [self.left_out[d.names[i]] for i in out]},
+                             show_extra=(_("Frame"), _("Reason")))
         if by_time and ok.any():
             self.colorbar = (_("Time"), clock(color[ok].min()), clock(color[ok].max()))
         elif ok.any():
@@ -616,8 +626,10 @@ class TrackChart(_Offsets):
         self.t_pts.set_data(self.d.dx * k, self.d.dy * k)
         self.t_pts.unit = self._unit_name()
         for t in self.traces:
-            if t.name == _("reference frame"):
+            if t.name in (_("reference frame"), _("excluded")):
                 t.set_data(t.x * k / old, t.y * k / old)
+                if t.name == _("excluded"):
+                    t.unit = self._unit_name()
         self._titles()
         self.scale_axes(k / old, k / old)
 
@@ -678,6 +690,6 @@ def registration_tabs(d: RegistrationData) -> list[tuple[str, ChartView]]:
     sensor size is unknown."""
     tabs = [(_("Quality"), QualityChart(d))]
     if np.isfinite(d.dx).any():
-        tabs += [(_("Drift"), DriftChart(d)), (_("Drift path"), TrackChart(d))]
+        tabs += [(_("Drift"), DriftChart(d)), (_("Tracking x / y (Lissajous)"), TrackChart(d))]
     tabs.append((_("Distribution"), DistributionChart(d)))
     return tabs
