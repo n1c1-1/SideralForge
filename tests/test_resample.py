@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import torch
 
-from astro_gpu.core import normalize_local as nl
+from astro_gpu.core import poly as nl
 from astro_gpu.core import resample as rs
 
 

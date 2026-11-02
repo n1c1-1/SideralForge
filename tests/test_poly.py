@@ -1,11 +1,10 @@
-"""The polynomial helpers left in astro_gpu/core/normalize_local.py (the local normalisation itself was removed on
-2 November: no measurable effect; core/resample.py still imports ``poly_inverse`` from there)."""
+"""The registration polynomial in torch (astro_gpu/core/poly.py), which core/resample.py inverts."""
 import math
 
 import numpy as np
 import torch
 
-from astro_gpu.core import normalize_local as nl
+from astro_gpu.core import poly as nl
 
 H, W = 512, 768
 
@@ -31,6 +30,8 @@ def test_polynomial_is_registers_and_inverts():
     assert np.abs(xi.numpy() - x).max() < 1e-6 and np.abs(yi.numpy() - y).max() < 1e-6
 
 
-def test_the_normalisation_is_gone():
-    for name in ("normalize", "build_reference", "Normalisation", "ikss"):
-        assert not hasattr(nl, name), name
+
+def test_the_local_normalisation_module_is_gone():
+    """Removed on 2 November (no measurable effect on the crossed bench); its polynomial helpers live in core/poly.py."""
+    import importlib.util
+    assert importlib.util.find_spec("astro_gpu.core.normalize_local") is None

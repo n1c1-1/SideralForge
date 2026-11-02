@@ -14,12 +14,13 @@ The steps, each a published method (sources in the modules named):
 2. **Resampling onto the reference grid by Lanczos-4 with Siril's clamping** (core/resample.py; PixInsight's clamping
    or none as options), through the registration polynomial the drizzle uses. Output at sensor resolution: pixel
    (j, i) is the reference sensor position (j, i), the drizzle's grid at scale 1.
-3. **Normalisation** (core/normalize_local.py's result, local or global): every colour c of a frame becomes
+3. **Normalisation** (the drizzle's: stages/stack.py ``frame_norm``, an additive sky difference to the reference, a
+   quadratic per colour, and the frame's transparency as its scale): every colour c of a frame becomes
    (value - Q_c(X, Y)) / scale_c at its reference position (X, Y) = the output pixel.
 4. **Rejection by the number of frames, PixInsight's WBPP rule** (core/rejection_classic.py): percentile 0.2 / 0.1
    for 3 to 5 frames, winsorized sigma clipping 3 / 3 for 6 to 15, linear fit clipping 5 / 3.5 from 16, the
    generalized ESD test as an option above 50; per frame, colour and pixel.
-5. **The weighted mean** of the kept values, with the frame weights of core/frame_weights.py (per colour), as Siril's
+5. **The weighted mean** of the kept values, with the frame weights of the drizzle (one per frame), as Siril's
    ``mean_and_reject``; and the two half-stacks A and B (frames dealt by blocks of ``half_block``, as the drizzle),
    with the same rejection, for the noise measure.
 
@@ -28,7 +29,9 @@ covers; ``weight`` (3, H, W), the summed weight of the kept values (drz_weight.n
 counts of rejected values, the three colours together, on the grid reduced by a whole factor until its longer side
 is at most 4096: rejection.npz as stack.RejectionMap writes it); the rejection rate in % of the values tested (next to
 Siril's 0.1-0.5 % mark [S12]) and per colour; per frame its rejected values; the noise of the result from the two
-halves (stack.halves_noise's formula, per colour weights); the saturation shares (saturation.npy, as stack.py).
+halves (stack.halves_noise's formula); the saturation shares (saturation.npy, as stack.py). With ``masks=True``, also
+what was rejected in each frame, per pixel and colour (``masks``): the rejection data of PixInsight's drizzle
+integration, which stages/stack.py applies to a Bayer drizzle (``drizzle_rejection = integration``).
 
 How stages/stack.py calls it (for the integration agent; ``mm``, ``fpn``, ``dev``, ``reg``, ``info``, ``satval``,
 ``ch_of_k``, ``H``, ``W``, ``ctx``, ``p`` are stack.py's names; the frame selection, the normalisation and the frame
@@ -43,12 +46,9 @@ weights are computed as for the drizzle, before)::
     res = sc.stack_classic(
         load, reg["coef"],
         bad=None,                        # the bad pixels are the NaN of the cache; or calibrate's badmask (H, W) bool
-        norm=res_norm,                   # normalize_local.normalize(...)'s result (its .scale (n, 3), .Q (n, 3, 6));
-                                         # switch off: sc.Norm.from_drizzle(norm, transp) with stack.py's frame_norm
-                                         # dict {i: (Q (3, 6), sky)} and transp (n,)
-        weights=fw.weights,              # frame_weights.weigh_frames(...).weights (n, 3); or select_frames' (n,)
-        params=sc.ClassicParams(debayer=p.debayer, interpolation=p.interpolation, clamping=p.clamping,
-                                rejection=p.rejection, half_block=p.half_block),
+        norm=sc.Norm.from_drizzle(norm, transp),   # stack.py's frame_norm dict {i: (Q (3, 6), sky)} and transp (n,)
+        weights=weight,                  # the frame weights (n,)
+        params=classic_params(p),        # stack.py's: the Classic settings of the stack (white balance included)
         device=dev, used=used, ch_of_k=ch_of_k, H=H, W=W, sat_level=satval,
         progress=lambda f, msg: ctx.progress(f, msg))
     for name, a in res.arrays().items():  # drz_full, drz_A, drz_B, drz_weight, saturation (.npy)
@@ -63,7 +63,8 @@ weights are computed as for the drizzle, before)::
 
 ``used`` are the frame indices to stack (weight > 0); ``weights`` and ``norm`` are indexed by frame (all n frames).
 Memory: the resampled frames are kept on the CPU (``store_dtype`` float32: 12 bytes per pixel and frame, 4.4 GB for
-30 frames of 12 Mpx; float16 halves it), the rejection runs on the device by bands of ``band_pixels``.
+30 frames of 12 Mpx; float16 halves it; ``masks``: 1 byte more), the rejection runs on the device by bands of
+``band_pixels``.
 
 Validation (1 November 2026, heart Express: 30 frames of the bench, F:/astro_essais/classic_check, the bench's own
 measures on the sky the stacks share, Gaia zero point): with Siril's own recipe (global IKSS normalisation, no
@@ -72,11 +73,11 @@ weights, winsorized 3 / 3), against Siril's stack of the same frames: star FWHM 
 1.00 / 1.04 / 1.15 % vs Siril's 0.89 / 0.92 / 1.02 % (R, G, B). With the v2 defaults (local normalisation,
 inverse-variance weights, linear fit 5 / 3.5): FWHM 13.87", noise 24.607 / 25.294, rejection 1.12 %. Time on the
 RTX 4060 Ti: 36 s for the 30 frames (debayer 3.5 s, resampling 31 s), 51 s (linear fit) to 86 s (winsorized) for the
-rejection and the means; 2.9 GB of GPU memory at peak.
+rejection and the means; 2.9 GB of GPU memory at peak. (That validation also ran a local normalisation and per-colour
+weights, both removed on 2 November: no measurable effect on the crossed bench.)
 
-Sources: see core/debayer.py, core/resample.py, core/rejection_classic.py, core/normalize_local.py,
-core/frame_weights.py; [S7] Siril's OSC_Preprocessing.ssf; [S12] https://siril.org/tutorials/tuto-manual/ ;
-[P15] WBPP.
+Sources: see core/debayer.py, core/resample.py, core/rejection_classic.py; [S7] Siril's OSC_Preprocessing.ssf;
+[S12] https://siril.org/tutorials/tuto-manual/ ; [P15] WBPP.
 """
 from __future__ import annotations
 
@@ -121,26 +122,22 @@ class ClassicParams:
     band_pixels: int = 1 << 20           # pixels per rejection band on the device
 
 
+#: ``masks``: bit c (0-2) = rejected low in colour c (R, G, B), bit HIGH_SHIFT + c = rejected high (PixInsight's
+#: rejection map keeps the low and high rejections apart too; any bit excludes the sample from the drizzle)
+HIGH_SHIFT = 3
+
+
 @dataclass
 class Norm:
-    """What a frame's colour c is mapped by: normalised = (value - Q[i, c] . quad_terms(X, Y)) / scale[i, c]."""
+    """What a frame's colour c is mapped by: normalised = (value - Q[i, c] . terms(X, Y)) / scale[i, c], the terms of
+    stack.py's ``quad_terms`` (``_quad``)."""
     scale: np.ndarray                    # (n, 3)
-    Q: np.ndarray                        # (n, 3, 6), the frame's ADU, normalize_local's quad_terms at (X, Y)
+    Q: np.ndarray                        # (n, 3, 6), the frame's ADU
 
     @classmethod
-    def of(cls, norm, n: int) -> Norm:
-        """From normalize_local's result (``.scale``, ``.Q``), a Norm, a (scale, Q) pair or None (no normalisation)."""
-        if norm is None:
-            return cls(np.ones((n, 3)), np.zeros((n, 3, 6)))
-        if isinstance(norm, Norm):
-            return norm
-        if isinstance(norm, tuple):
-            scale, Q = norm
-        else:
-            scale, Q = norm.scale, norm.Q
-        scale = np.asarray(scale, float)
-        scale = np.repeat(scale[:, None], 3, 1) if scale.ndim == 1 else scale
-        return cls(scale, np.asarray(Q, float))
+    def of(cls, norm: Norm | None, n: int) -> Norm:
+        """``norm``, or no normalisation (None) for n frames."""
+        return cls(np.ones((n, 3)), np.zeros((n, 3, 6))) if norm is None else norm
 
     @classmethod
     def from_drizzle(cls, frame_norm: dict, transp, n: int | None = None) -> Norm:
@@ -172,6 +169,8 @@ class ClassicResult:
     half_weights: list
     params: ClassicParams
     seconds: dict = field(default_factory=dict)
+    #: with ``masks=True``: (frames used, H, W) uint8, what was rejected in each frame (bits: HIGH_SHIFT)
+    masks: np.ndarray | None = None
 
     def arrays(self) -> dict[str, np.ndarray]:
         """The drizzle's file names -> arrays."""
@@ -215,19 +214,20 @@ class ClassicResult:
 
 
 def _quad(Q: np.ndarray, X: torch.Tensor, Y: torch.Tensor, W: int, H: int) -> torch.Tensor:
-    """Q (6,) . quad_terms at the grid X (Wo,) x Y (Ho,) -> (Ho, Wo) (normalize_local.quad_terms)."""
+    """Q (6,) . the terms of stack.py's ``quad_terms`` at the grid X (Wo,) x Y (Ho,) -> (Ho, Wo)."""
     a = (X / (W / 2) - 1.0)[None, :]
     b = (Y / (H / 2) - 1.0)[:, None]
     q = [float(v) for v in Q]
     return q[0] + q[1] * a + q[2] * b + q[3] * a * a + q[4] * a * b + q[5] * b * b
 
 
-def halves_noise_rgb(A: np.ndarray, B: np.ndarray, w_a, w_b) -> dict[str, float | None]:
-    """stack.halves_noise with a weight per colour: robust sigma of A - B x sqrt(w_a w_b) / (w_a + w_b)."""
+def halves_noise(A: np.ndarray, B: np.ndarray, w_a: float, w_b: float) -> dict[str, float | None]:
+    """stack.halves_noise (not imported: a core module): robust sigma of A - B x sqrt(w_a w_b) / (w_a + w_b) per
+    colour; None where it cannot be measured."""
     out: dict[str, float | None] = {}
+    wa, wb = float(w_a), float(w_b)
+    f = math.sqrt(wa * wb) / (wa + wb) if wa > 0 and wb > 0 else float("nan")
     for c, name in enumerate("RGB"):
-        wa, wb = float(w_a[c]), float(w_b[c])
-        f = math.sqrt(wa * wb) / (wa + wb) if wa > 0 and wb > 0 else float("nan")
         a, b = np.asarray(A[c], np.float64), np.asarray(B[c], np.float64)
         d = (a - b)[(a != 0) & (b != 0) & np.isfinite(a) & np.isfinite(b)]
         v = float(1.4826 * np.median(np.abs(d - np.median(d))) * f) if d.size else float("nan")
@@ -244,15 +244,16 @@ def _reduce(count: np.ndarray, f: int) -> np.ndarray:
     return r.astype(np.uint16 if r.max(initial=0) < 65536 else np.uint32)
 
 
-def stack_classic(load: Callable, coef, bad=None, norm=None, weights=None, params: ClassicParams | None = None,
-                  device="cpu", *, used, ch_of_k, H: int, W: int, sat_level=None,
-                  progress: Callable | None = None) -> ClassicResult:
+def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weights=None,
+                  params: ClassicParams | None = None, device="cpu", *, used, ch_of_k, H: int, W: int, sat_level=None,
+                  progress: Callable | None = None, masks: bool = False) -> ClassicResult:
     """Stack the frames ``used`` by the Classic method (see the module's docstring for what stack.py passes).
 
     ``load(i)``: frame i, the calibrated CFA (H, W) (torch or numpy; NaN = bad, > VALID_MAX = saturated); ``coef``
     (n, 2, 10) the registration polynomials; ``bad``: an extra bad-pixel mask (H, W) or None; ``norm``: the
-    normalisation (``Norm.of``); ``weights``: (n, 3) or (n,) frame weights (None: equal); ``sat_level``: the
-    saturation level (a float or a map (H, W)), put on the saturated samples (None: VALID_MAX)."""
+    normalisation (``Norm``; None: none); ``weights``: (n,) frame weights (None: equal); ``sat_level``: the
+    saturation level (a float or a map (H, W)), put on the saturated samples (None: VALID_MAX); ``masks``: keep what
+    was rejected in each frame (``ClassicResult.masks``)."""
     p = params or ClassicParams()
     dev = torch.device(device)
     progress = progress or (lambda f, msg: None)
@@ -263,8 +264,9 @@ def stack_classic(load: Callable, coef, bad=None, norm=None, weights=None, param
         raise ValueError("no frame to stack")
     n_all = max(used) + 1 if weights is None else len(np.asarray(weights))
     n_all = max(n_all, len(np.asarray(coef)))
-    Wt = np.ones((n_all, 3)) if weights is None else np.asarray(weights, float)
-    Wt = np.repeat(Wt[:, None], 3, 1) if Wt.ndim == 1 else Wt
+    Wt = np.ones(n_all) if weights is None else np.asarray(weights, float)
+    if Wt.ndim != 1:
+        raise ValueError("weights: one per frame (n,)")
     nm = Norm.of(norm, n_all)
     unmeasured = [i for i in used if not (np.isfinite(nm.scale[i]).all() and np.isfinite(nm.Q[i]).all()
                                           and (np.asarray(nm.scale[i]) > 0).all())]
@@ -272,7 +274,7 @@ def stack_classic(load: Callable, coef, bad=None, norm=None, weights=None, param
         raise ValueError(f"no normalisation for frame(s) {unmeasured}: leave them out of ``used``")
     choice = rc.choose(nu, p.rejection, p.low, p.high, p.gesd_above_50)
     in_a = np.array([(i // p.half_block) % 2 == 0 for i in used])
-    wu = torch.as_tensor(Wt[used], dtype=torch.float32, device=dev)            # (nu, 3)
+    wu = torch.as_tensor(Wt[used], dtype=torch.float32, device=dev)            # (nu,)
     sat_t = None
     if sat_level is not None:
         sat_t = sat_level.to(dev, torch.float32) if isinstance(sat_level, torch.Tensor) else \
@@ -326,9 +328,8 @@ def stack_classic(load: Callable, coef, bad=None, norm=None, weights=None, param
         t_load += tb - ta
         t_deb += tc - tb
         t_res += td - tc
-        frames.append({"index": i, "half": "A" if in_a[k] else "B", "weights_rgb": [float(v) for v in Wt[i]],
-                       "scale": [float(v) for v in nm.scale[i]], "offset": [float(v) for v in nm.Q[i, :, 0]],
-                       "bad_filled": int(filled.sum()),
+        frames.append({"index": i, "half": "A" if in_a[k] else "B", "scale": [float(v) for v in nm.scale[i]],
+                       "offset": [float(v) for v in nm.Q[i, :, 0]], "bad_filled": int(filled.sum()),
                        "cfa_balance": None if bal is None else [round(float(v), 5) for v in bal]})
         progress(0.6 * (k + 1) / nu, f"classic: {k + 1}/{nu} frames debayered and resampled")
     t1 = time.time()
@@ -340,6 +341,7 @@ def stack_classic(load: Callable, coef, bad=None, norm=None, weights=None, param
     wsum = np.zeros_like(full)
     sat_share = np.zeros((2, H, W), np.float32)
     low_cnt = np.zeros((H, W), np.int32)
+    rej_masks = np.zeros((nu, H, W), np.uint8) if masks else None
     high_cnt = np.zeros((H, W), np.int32)
     rej_lo_f = np.zeros(nu, np.int64)
     rej_hi_f = np.zeros(nu, np.int64)
@@ -361,7 +363,7 @@ def stack_classic(load: Callable, coef, bad=None, norm=None, weights=None, param
             valid = torch.isfinite(v)
             lo, hi = rc.reject(v, choice, valid)
             keep = valid & ~lo & ~hi
-            w = wu[:, c]
+            w = wu
             mean, den, kept = rc.combine(v, keep, w)
             mean = torch.where(valid.any(0), mean, torch.zeros_like(mean))
             wk = torch.where(keep, w[:, None].expand_as(v), torch.zeros_like(v))
@@ -378,6 +380,9 @@ def stack_classic(load: Callable, coef, bad=None, norm=None, weights=None, param
             A[c, r0:r1] = half[0].view(r1 - r0, W).cpu().numpy()
             B[c, r0:r1] = half[1].view(r1 - r0, W).cpu().numpy()
             wsum[c, r0:r1] = den.view(r1 - r0, W).cpu().numpy()
+            if rej_masks is not None:
+                bits = (lo.to(torch.uint8) << c) | (hi.to(torch.uint8) << (HIGH_SHIFT + c))
+                rej_masks[:, r0:r1] |= bits.view(nu, r1 - r0, W).cpu().numpy()
             lo_b += lo.sum(0, dtype=torch.int32)
             hi_b += hi.sum(0, dtype=torch.int32)
             rej_lo_f += lo.sum(1).cpu().numpy()
@@ -401,13 +406,13 @@ def stack_classic(load: Callable, coef, bad=None, norm=None, weights=None, param
     for k in range(nu):
         frames[k].update({"rejected_low": int(rej_lo_f[k]), "rejected_high": int(rej_hi_f[k]),
                           "tested": int(tested_f[k])})
-    w_a = Wt[[i for k, i in enumerate(used) if in_a[k]]].sum(0) if in_a.any() else np.zeros(3)
-    w_b = Wt[[i for k, i in enumerate(used) if not in_a[k]]].sum(0) if (~in_a).any() else np.zeros(3)
+    w_a = float(sum(Wt[i] for k, i in enumerate(used) if in_a[k]))
+    w_b = float(sum(Wt[i] for k, i in enumerate(used) if not in_a[k]))
     step = max(1, int(np.sqrt(H * W / 4e6)))                 # stack.noise_step
-    noise = halves_noise_rgb(A[:, ::step, ::step], B[:, ::step, ::step], w_a, w_b)
+    noise = halves_noise(A[:, ::step, ::step], B[:, ::step, ::step], w_a, w_b)
     sat_u8 = np.ceil(255 * np.clip(sat_share, 0, 1)).astype(np.uint8)
     return ClassicResult(full, A, B, wsum, sat_u8, _reduce(low_cnt, f), _reduce(high_cnt, f), f, round(rate, 4),
-                         rate_rgb, tested, choice, frames, noise, [w_a.tolist(), w_b.tolist()], p,
+                         rate_rgb, tested, choice, frames, noise, [w_a, w_b], p,
                          {"load": round(t_load, 2), "debayer": round(t_deb, 2), "resample_normalise": round(t_res, 2),
                           "pass1": round(t1 - t0, 2), "rejection_mean": round(t2 - t1, 2),
-                          "total": round(time.time() - t0, 2)})
+                          "total": round(time.time() - t0, 2)}, rej_masks)

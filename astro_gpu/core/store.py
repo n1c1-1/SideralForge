@@ -21,6 +21,9 @@ setting), and path settings replaced by their file (name, size, mtime). The rule
   stored at the previous default, it keeps the key it always had. A setting removed from a stage (``RETIRED``) is
   ignored where a definition still stores it.
 
+``version`` is the stage's, or what its ``key_version(values)`` makes of the definition's settings when it has one: a
+part of a stage revised on its own changes the keys of the definitions that use it only (the stack's Classic part).
+
 Hence a setting added to a stage later, whose static default keeps the previous behaviour and which has no automatic
 rule at that default, never enters the key of a definition that leaves it at its default, stored or not: every key
 computed before it existed stays the same (tests/test_stacking_v2.py). That is how a new option goes in beside the old
@@ -140,8 +143,13 @@ class KeyRules:
     def params(self, stage: str) -> type[StageParams]:
         return self.chains.stages[stage].Params
 
-    def version(self, stage: str) -> str:
-        return str(self.chains.stages[stage].version)
+    def version(self, stage: str, values: Mapping[str, Any] | None = None) -> str:
+        """The stage's version in a key: its ``version``; with the definition's validated ``values``, the stage's
+        ``key_version(values)`` when it has one (a part of the stage revised on its own, keyed only where the settings
+        use it: the stack's Classic part)."""
+        st = self.chains.stages[stage]
+        kv = getattr(st, "key_version", None)
+        return str(kv(dict(values)) if callable(kv) and values is not None else st.version)
 
     def auto_fields(self, stage: str, values: Mapping[str, Any] | None = None) -> frozenset[str]:
         """The fields an ``auto()`` can set in a definition whose (validated, defaults included) ``values`` are given:
@@ -320,7 +328,10 @@ class Keys:
 
     def key_params(self, wf: int | Workflow, stage: str) -> dict[str, Any]:
         """The parameter part of a stage's key (DESIGN §1.3)."""
-        w = self._wf(wf)
+        return self._key_values(self._wf(wf), stage)[0]
+
+    def _key_values(self, w: Workflow, stage: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        """(the parameter part of the key, every validated value of the stage, defaults included)."""
         r = self.rules
         pairs = sorted(self.project.excluded) if r.injects_exclude(stage) else []
         v = self._given(w, stage, [name for _, name in pairs])       # validated as names, keyed as pairs
@@ -340,7 +351,7 @@ class Keys:
                     p.pop(k, None)
         if "exclude" in p and pairs:
             p["exclude"] = [list(t) for t in pairs]    # (session, name): the same after the raws move
-        return p
+        return p, m
 
     def project_part(self, stage: str) -> Any:
         """The project's part of a stage's key: the frame list for inventory, the target for astrometry, the image's
@@ -358,7 +369,8 @@ class Keys:
     def key_parts(self, wf: int | Workflow, stage: str) -> dict[str, Any]:
         """What a stage's key hashes (the manifest keeps it as ``key_parts``)."""
         w = self._wf(wf)
-        return {"s": stage, "v": self.rules.version(stage), "p": self.key_params(w, stage),
+        p, m = self._key_values(w, stage)
+        return {"s": stage, "v": self.rules.version(stage, m), "p": p,
                 "u": {d: self.key(w, d) for d in self.deps(w, stage)}, "x": self.project_part(stage)}
 
     def key(self, wf: int | Workflow, stage: str) -> str:

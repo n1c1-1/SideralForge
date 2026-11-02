@@ -16,7 +16,7 @@ import pytest
 import torch
 
 from astro_gpu.core import debayer as db
-from astro_gpu.core import normalize_local as nl
+from astro_gpu.core import poly as nl
 from astro_gpu.core import rejection_classic as rc
 from astro_gpu.core import stack_classic as sc
 

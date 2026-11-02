@@ -3,7 +3,7 @@ docs/spec/STACKING.md point 1, docs/pilot/STATE_OF_THE_ART_STACKING.md sections 
 
 Geometry: the frame's registration polynomial ``coef`` (reg.npz, the one stages/stack.py drizzles with: frame sensor
 pixel (x, y) -> reference sensor position (X, Y), a cubic in x / (W/2) - 1, y / (H/2) - 1) is inverted at every
-output pixel (normalize_local.poly_inverse: an inverse cubic, then Newton steps on the polynomial itself; 1e-6 px).
+output pixel (core/poly.poly_inverse: an inverse cubic, then Newton steps on the polynomial itself; 1e-6 px).
 Output pixel (j, i) is the reference sensor position X = j, Y = i: the grid of the drizzle at scale 1, the sensor
 resolution. A pixel whose interpolation window leaves the frame has no value (NaN): the frame does not cover it (as
 OpenCV's BORDER_TRANSPARENT leaves it untouched in Siril, which then counts it as missing).
@@ -40,7 +40,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from .normalize_local import poly_inverse
+from .poly import poly_inverse
 
 METHODS = ("lanczos4", "bilinear")
 CLAMPINGS = ("siril", "pixinsight", "none")

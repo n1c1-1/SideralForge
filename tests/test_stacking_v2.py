@@ -352,7 +352,8 @@ def test_keys_with_the_previous_values_stored_are_the_previous_keys(tmp_path):
     new = {"stack": set(StackParams.model_fields) - set(rules0.params("stack").model_fields),
            "register": set(RegisterParams.model_fields) - set(rules0.params("register").model_fields)}
     assert new["stack"] == {"method", "scale_rule", "selection", "selection_transparency", "classic_debayer",
-                            "classic_interpolation", "classic_clamping", "classic_rejection"}
+                            "classic_interpolation", "classic_clamping", "classic_rejection", "classic_cfa_balance",
+                            "drizzle_rejection"}
     assert new["register"] == {"fwhm_method"}
     # the new defaults: the registration (Moffat), the stack and what follows change; calibration does not
     now = _keys_of(p, key_rules())
@@ -380,6 +381,27 @@ def test_keys_with_the_previous_values_stored_are_the_previous_keys(tmp_path):
     # the new default stored or left unset: the same key
     del w.params["stack"]["selection"]
     assert _keys_of(p, key_rules())[w.id]["stack"] == after["stack"]
+
+
+def test_the_classic_part_has_a_revision_of_its_own_in_the_keys(tmp_path):
+    """The Classic part's revision (stack.CLASSIC_VERSION: the white balance before RCD) is in the key of the stacks
+    that use it, the Classic method and the drizzle with the integration's rejection, and of no other: the stacks
+    made before it are made again, the drizzle stacks keep their keys."""
+    from astro_gpu.core.store import Keys
+    from astro_gpu.stages.stack import CLASSIC_VERSION, Stack
+    p = _project2(tmp_path)
+    w = p.workflows[1]
+    drizzle = Keys(p).key_parts(w.id, "stack")
+    assert drizzle["v"] == Stack.version
+    for kv in ({"method": "classic"}, {"drizzle_rejection": "integration"}):
+        w.params["stack"].update(kv)
+        parts = Keys(p).key_parts(w.id, "stack")
+        assert parts["v"] == f"{Stack.version}+classic{CLASSIC_VERSION}" and parts["p"] == {**drizzle["p"], **kv}
+        assert Keys(p).key(w.id, "stack") != Keys(p).key(p.workflows[0].id, "stack")
+        for k in kv:
+            del w.params["stack"][k]
+    w.params["stack"]["drizzle_rejection"] = "own"           # the default stored: the drizzle's key
+    assert Keys(p).key_parts(w.id, "stack") == drizzle
 
 
 def test_pixfrac_is_automatic_only_under_the_coverage_rule(tmp_path):
@@ -617,12 +639,48 @@ def test_classic_method_writes_the_drizzle_files(small_night):
     row = (h // 2 + 10 - truth.dith[truth.trail, 1]) / f
     assert (high[int(row) - 2:int(row) + 3].sum(0)[8:-8] > 0).mean() > 0.9      # the satellite trail
     meta = json.loads((d / "drz_meta.json").read_text())
-    assert meta["method"] == "classic" and meta["scale"] == 1.0
+    assert meta["method"] == "classic" and meta["scale"] == 1.0 and meta["cfa_balance"] is True
     # its own settings
     p2, _ = stack_with(small_night, "classic_pct", method="classic", classic_rejection="percentile",
-                       classic_interpolation="bilinear")
+                       classic_interpolation="bilinear", classic_cfa_balance="off")
     diag2 = json.loads((p2.stage_dir("stack") / st.DIAG).read_text())
     assert diag2["rejection"]["classic"] == "percentile" and diag2["switches"]["classic_interpolation"] == "bilinear"
+    assert json.loads((p2.stage_dir("stack") / "drz_meta.json").read_text())["cfa_balance"] is False
+    assert diag2["switches"]["classic_cfa_balance"] == "off" and diag2["frames"][0]["cfa_balance"] is None
+    assert not np.array_equal(np.load(p2.stage_dir("stack") / "drz_full.npy"), full)
+
+
+def test_drizzle_with_the_integrations_rejection(small_night):
+    """drizzle_rejection = integration (PixInsight's CFA drizzle): the Classic method's rejection on the debayered,
+    registered frames (8 frames: winsorized), applied to the drops; the trail is gone from the drizzle, the rejection's
+    rate and map are in the diagnostics as the drizzle's own are, and the drizzle's grid and files stay."""
+    from astro_gpu.stages import stack as st
+    root, proj, truth = small_night
+    h, w = 192, 256
+    p, ctx = stack_with(small_night, "integration", drizzle_rejection="integration")
+    d = p.stage_dir("stack")
+    full = np.load(d / "drz_full.npy")
+    assert full.shape == (3, h, w) and np.isfinite(full).all()
+    diag = json.loads((d / st.DIAG).read_text())
+    rj = diag["rejection"]
+    assert rj["method"] == "integration" and rj["classic"] == "winsorized" and rj["reason_template"]["template"]
+    assert 0 < rj["rate_pct"] < 5 and len(rj["rate_rgb_pct"]) == 3 and 0 < rj["drizzle_excluded_pct"] < 5
+    assert ctx.metrics["rejected_pct"] == round(rj["rate_pct"], 3) and "drizzle_excluded_pct" in ctx.metrics
+    assert diag["switches"]["drizzle_rejection"] == "integration" and diag["switches"]["classic_cfa_balance"] == "on"
+    fr = {f["index"]: f for f in diag["frames"]}
+    clean = [f["rejected_high"] for i, f in fr.items() if i != truth.trail]
+    assert fr[truth.trail]["rejected_high"] > max(clean) and "tested" in fr[truth.trail]
+    with np.load(d / st.REJECTION) as z:
+        high, f = z["high"], int(z["factor"])
+    row = h // 2 + 10 - truth.dith[truth.trail, 1]
+    assert (high[int(row / f) - 2:int(row / f) + 3].sum(0)[8:-8] > 0).mean() > 0.9      # the satellite trail
+    # the trail gone from the image: its rows no brighter than the rows around (green, a robust level per row)
+    g = np.median(full[1, :, 16:-16], axis=1)
+    r0 = int(round(row))
+    around = np.r_[g[r0 - 8:r0 - 3], g[r0 + 4:r0 + 9]]
+    assert g[r0 - 1:r0 + 2].max() - np.median(around) < 5 * (around.std() + 1.0)
+    # the drizzle with its own rejection is another result
+    p2, _ = stack_with(small_night, "own")
     assert not np.array_equal(np.load(p2.stage_dir("stack") / "drz_full.npy"), full)
 
 
@@ -630,6 +688,7 @@ def test_switch_values_are_checked():
     from astro_gpu.stages.register import RegisterParams
     from astro_gpu.stages.stack import StackParams
     for model, name in ((StackParams, "selection"), (StackParams, "scale_rule"), (StackParams, "classic_rejection"),
+                        (StackParams, "drizzle_rejection"), (StackParams, "classic_cfa_balance"),
                         (RegisterParams, "fwhm_method")):
         with pytest.raises(ValueError, match=name):
             model(**{name: "wrong"})

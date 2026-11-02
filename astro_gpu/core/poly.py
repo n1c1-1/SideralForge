@@ -1,9 +1,6 @@
-"""The registration polynomial in torch: forward, inverse and the background terms.
-
-What is left of stacking v2's local normalisation (removed on 2 November, docs/pilot/PILOT.md §3c: no measurable
-effect on the crossed bench; git keeps it): its polynomial helpers, which core/resample.py (``poly_inverse``) and
-the tests of the Classic method use. They belong in a module of their own; until core/resample.py imports them from
-there, they stay here under this name.
+"""The registration polynomial in torch: a frame's sensor positions to the reference's (``poly_apply``, the cubic of
+stages/register.py: x / (W/2) - 1, y / (H/2) - 1 -> reference position) and back (``poly_inverse``). core/resample.py
+inverts it at every output pixel of the Classic stacking method.
 """
 from __future__ import annotations
 
@@ -11,7 +8,6 @@ import numpy as np
 import torch
 
 
-# ------------------------------------------------------------------------------------------------ geometry
 def _poly(c, u, v):
     """The cubic of register.poly_terms with coefficients c (10,), on normalised coordinates u, v."""
     return (c[0] + c[1] * u + c[2] * v + c[3] * u * u + c[4] * u * v + c[5] * v * v + c[6] * u ** 3
@@ -67,8 +63,3 @@ def _newton(c, inv, Xd, Yd, W, H, iters):
         y = y + (a * ry - e * rx) / det
     return x, y
 
-
-def quad_terms(X: torch.Tensor, Y: torch.Tensor, W: int, H: int) -> torch.Tensor:
-    """(6, ...) the terms of the background model at reference positions (X, Y): stack.py's ``quad_terms``."""
-    a, b = X / (W / 2) - 1.0, Y / (H / 2) - 1.0
-    return torch.stack([torch.ones_like(a), a, b, a * a, a * b, b * b])
