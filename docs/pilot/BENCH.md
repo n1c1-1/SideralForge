@@ -932,6 +932,197 @@ Une table par mesure : chaque case donne la valeur, puis entre parenthèses l'é
 
 </details>
 
+## Le drizzle de Siril (2 novembre)
+
+**La question.** Notre drizzle (Bayer) laisse plus de bruit de fond que l'empilement classique de Siril. Est-ce un
+défaut de notre drizzle, ou du drizzle en général ? On a fait tourner le drizzle de Siril lui-même sur les mêmes poses.
+
+**Réponse.**
+
+- **Le même bruit en plus apparaît chez Siril.** Entre l'empilement classique et le drizzle, le bruit de fond fin perd
+  en moyenne 0,17 mag/arcsec² chez Siril (de 0,06 à 0,36 selon le cas) et 0,12 chez nous (de 0,04 à 0,17) ; à grande
+  échelle, 0,16 chez Siril et 0,06 chez nous. Ce n'est donc pas propre à notre drizzle : c'est ce que fait un drizzle
+  Bayer à l'échelle 1 sur 30 poses (ou 15 pour M8). Notre drizzle n'est pas plus bruité que celui de Siril (en moyenne
+  0,05 mag de mieux à petite échelle, 0,08 à grande échelle) et va plus profond (+0,12 mag en moyenne).
+- **La profondeur suit** : le drizzle de Siril perd 0,09 à 0,36 mag de profondeur face à son empilement classique
+  (0,21 en moyenne), le nôtre 0,08 en moyenne (de −0,15 à +0,08).
+- **Un point où nous sommes en retard** : le signal/bruit sur la cible. Le drizzle de Siril garde celui de son
+  empilement classique (de −6 % à +13 %), le nôtre en perd 6 à 10 % sur les six cas. Notre drizzle reste donc 12 % en
+  dessous de celui de Siril sur ce point (en moyenne), alors qu'il est devant à petite échelle : à regarder.
+- **Les points d'une seule couleur (pixels chauds) sont aussi dans le drizzle de Siril**, et plus nombreux que chez
+  nous sur Heart (76 par degré², contre 21 chez nous et 1 pour son empilement classique) et sur M8 (6 307 contre
+  2 344) ; au même niveau sur Iris, M51 et la Rosette (16 contre 18 à 26). Les empilements classiques n'en ont presque
+  plus (0 à 8 par degré² hors M8). Ce défaut est donc celui du drizzle Bayer, pas de notre implémentation.
+- **Autre repère** : les étoiles faibles trouvées, la finesse et l'erreur de couleur bougent peu ou dans les deux sens
+  (Heart : le drizzle de Siril a de moins bonnes couleurs que son classique, le nôtre de meilleures).
+
+### Comment on l'a fait tourner
+
+- **Même recette que « Siril classique »** (voir « La recette Siril »), mêmes fichiers, mêmes catalogues et réglages
+  locaux, même post-traitement (astrométrie, extraction du fond de degré 2, PCC ou SPCC, étirement automatique). Seul
+  change ce que le drizzle exige, d'après la documentation de Siril 1.4 et son script officiel
+  `OSC_Preprocessing_BayerDrizzle.ssf` :
+  - la calibration des poses garde les poses en mosaïque de Bayer (`-cfa -equalize_cfa`, sans `-debayer`) ;
+  - le recalage devient `register pp_light -drizzle -scale=1.0 -pixfrac=1.0 -kernel=square -flat=<flat maître>`
+    (la doc : « it is recommended to apply CFA drizzle with scale = 1.0 and pixfrac = 1.0 ») ;
+  - l'empilement est la même ligne que pour l'empilement classique ;
+  - Seestar (sans images de calibration) : `calibrate light` sans dématriçage, `register pp_light -2pass`, puis
+    `seqapplyreg pp_light -drizzle -scale=1.0 -pixfrac=1.0 -kernel=square -filter-round=2.5k` (même filtre de rondeur
+    que le script classique). Pas de flat pour ce cas.
+- Aucun autre réglage de Siril n'a été touché. Calcul sur le processeur (Siril n'utilise pas la carte graphique ;
+  nos mesures avec `CUDA_VISIBLE_DEVICES=-1`). Les résultats sont dans `siril_express_drizzle/` de chaque cas
+  (`pre.ssf`, `post.ssf`, journaux, piles FITS, images finales, `siril.json`) ; les résultats de Siril classique
+  (`siril_express/`) n'ont pas été touchés. Poses gardées : toutes (30 ; 15 pour M8).
+- **Durée** (préparation entière de Siril, 8 cœurs) : drizzle contre classique, Heart 81 s / 122 s, Iris 93 s / 170 s,
+  M51 125 s / 143 s, M8 248 s / 212 s, Seestar 19 s / 15 s, Rosette 96 s / 80 s.
+- **Les mesures** sont celles du banc (mêmes fonctions que le banc croisé : `tools/bench/siril/measure_drizzle.py`
+  appelle `crossed.py` et `measure.py`), sur le même ciel pour les quatre piles : le ciel couvert par toutes, la même
+  liste d'étoiles Gaia, la même cible, des boîtes de même taille. Notre drizzle et notre empilement classique sont lus
+  dans les résultats existants du banc croisé : le moteur n'a pas été relancé. Le ciel commun est un peu plus grand
+  que celui du banc croisé (quatre piles seulement), donc quelques valeurs diffèrent de la 2e décimale des tableaux
+  précédents. Les scripts (`run_siril_drizzle.py`, `measure_drizzle.py`, `report_drizzle.py`) sont copiés dans chaque
+  dossier `siril_express_drizzle/` ; les mesures brutes sont dans `<cas>/drizzle_siril_express.json`.
+
+### Les mesures, une table par mesure
+
+Les deux dernières colonnes sont les écarts qui répondent à la question : drizzle moins classique, chez Siril puis
+chez nous. Pour le bruit et la profondeur, négatif = le drizzle est moins bon.
+
+**Profondeur : magnitude de l'étoile détectée à 5σ (plus haut = plus profond)**
+
+| Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
+|---|---:|---:|---:|---:|---:|---:|
+| Heart | 16,33 | 16,00 | 16,23 | 16,37 | −0,33 | −0,13 |
+| Iris | 17,42 | 17,15 | 17,27 | 17,42 | −0,27 | −0,15 |
+| M51 | 18,29 | 18,20 | 18,21 | 18,20 | −0,09 | +0,01 |
+| M8 | 17,75 | 17,65 | 17,86 | 17,78 | −0,09 | +0,08 |
+| Seestar | 16,00 | 15,87 | 15,90 | 16,03 | −0,14 | −0,13 |
+| Rosette | 17,32 | 16,96 | 17,05 | 17,18 | −0,36 | −0,13 |
+
+**Bruit du fond, petite échelle (mag/arcsec² ; plus haut = moins de bruit)**
+
+| Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
+|---|---:|---:|---:|---:|---:|---:|
+| Heart | 24,60 | 24,25 | 24,48 | 24,61 | −0,36 | −0,13 |
+| Iris | 23,85 | 23,69 | 23,68 | 23,86 | −0,16 | −0,17 |
+| M51 | 24,65 | 24,59 | 24,54 | 24,64 | −0,06 | −0,11 |
+| M8 | 24,08 | 23,97 | 24,04 | 24,09 | −0,11 | −0,04 |
+| Seestar | 22,63 | 22,48 | 22,52 | 22,64 | −0,14 | −0,12 |
+| Rosette | 23,63 | 23,43 | 23,47 | 23,64 | −0,20 | −0,17 |
+
+**Bruit du fond, grande échelle (mag/arcsec² ; plus haut = moins de bruit)**
+
+| Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
+|---|---:|---:|---:|---:|---:|---:|
+| Heart | 25,29 | 25,00 | 25,24 | 25,29 | −0,30 | −0,05 |
+| Iris | 25,22 | 25,07 | 25,10 | 25,21 | −0,14 | −0,11 |
+| M51 | 25,91 | 25,87 | 25,88 | 25,86 | −0,04 | +0,01 |
+| M8 | 24,39 | 24,29 | 24,37 | 24,39 | −0,10 | −0,02 |
+| Seestar | 23,80 | 23,61 | 23,65 | 23,73 | −0,19 | −0,08 |
+| Rosette | 24,82 | 24,65 | 24,74 | 24,82 | −0,17 | −0,08 |
+
+**Signal/bruit sur la cible**
+
+| Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
+|---|---:|---:|---:|---:|---:|---:|
+| Heart | 5,03 | 5,13 | 4,45 | 4,84 | +2 % | −8 % |
+| Iris | 2,98 | 2,85 | 2,36 | 2,56 | −5 % | −8 % |
+| M51 | 4,65 | 4,39 | 4,05 | 4,50 | −6 % | −10 % |
+| M8 | 49,70 | 48,93 | 46,55 | 51,31 | −2 % | −9 % |
+| Seestar | 19,84 | 22,35 | 20,43 | 21,71 | +13 % | −6 % |
+| Rosette | 4,89 | 4,69 | 4,17 | 4,62 | −4 % | −10 % |
+
+**Étoiles faibles trouvées à 5σ (les mêmes étoiles Gaia pour les quatre)**
+
+| Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
+|---|---:|---:|---:|---:|---:|---:|
+| Heart | 22634 | 22126 | 22506 | 22837 | −2 % | −1 % |
+| Iris | 4776 | 4519 | 4581 | 4807 | −5 % | −5 % |
+| M51 | 1284 | 1241 | 1246 | 1233 | −3 % | +1 % |
+| M8 | 27408 | 27563 | 27893 | 27367 | +1 % | +2 % |
+| Seestar | 620 | 621 | 622 | 640 | +0 % | −3 % |
+| Rosette | 5777 | 5471 | 5567 | 5704 | −5 % | −2 % |
+
+**Finesse des étoiles : largeur à mi-hauteur au centre (″ ; plus bas = plus fines)**
+
+| Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
+|---|---:|---:|---:|---:|---:|---:|
+| Heart | 13,10 | 12,34 | 12,07 | 13,01 | −6 % | −7 % |
+| Iris | 6,12 | 6,55 | 6,15 | 6,08 | +7 % | +1 % |
+| M51 | 6,88 | 7,09 | 6,95 | 6,86 | +3 % | +1 % |
+| M8 | 5,63 | 5,69 | 5,33 | 5,58 | +1 % | −4 % |
+| Seestar | 5,84 | 6,47 | 5,94 | 5,83 | +11 % | +2 % |
+| Rosette | 5,81 | 5,99 | 5,96 | 5,90 | +3 % | +1 % |
+
+**Points d'une seule couleur (pixels chauds restants, par degré²)**
+
+| Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
+|---|---:|---:|---:|---:|---:|---:|
+| Heart | 1 | 76 | 21 | 1 | +75 | +21 |
+| Iris | 3 | 16 | 26 | 6 | +13 | +19 |
+| M51 | 4 | 16 | 18 | 5 | +12 | +12 |
+| M8 | 1418 | 6307 | 2344 | 1196 | +4890 | +1148 |
+| Seestar | 0 | 7 | 5 | 5 | +7 | +0 |
+| Rosette | 6 | 16 | 22 | 8 | +9 | +14 |
+
+**Couleurs des étoiles : erreur bleu−rouge face à Gaia (plus bas = plus fidèle)**
+
+| Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
+|---|---:|---:|---:|---:|---:|---:|
+| Heart | 0,217 | 0,263 | 0,093 | 0,238 | +0,045 | −0,145 |
+| Iris | 0,058 | 0,042 | 0,045 | 0,089 | −0,016 | −0,044 |
+| M51 | 0,021 | 0,024 | 0,025 | 0,024 | +0,002 | +0,001 |
+| M8 | 0,073 | 0,058 | 0,054 | 0,085 | −0,015 | −0,031 |
+| Seestar | 0,158 | 0,147 | 0,133 | 0,090 | −0,011 | +0,042 |
+| Rosette | 0,055 | 0,056 | 0,060 | 0,062 | +0,000 | −0,002 |
+
+**Couleurs des étoiles : erreur vert−rouge face à Gaia (plus bas = plus fidèle)**
+
+| Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
+|---|---:|---:|---:|---:|---:|---:|
+| Heart | 0,326 | 0,579 | 0,188 | 0,329 | +0,252 | −0,141 |
+| Iris | 0,069 | 0,067 | 0,058 | 0,072 | −0,002 | −0,014 |
+| M51 | 0,047 | 0,041 | 0,035 | 0,038 | −0,006 | −0,003 |
+| M8 | 0,128 | 0,076 | 0,053 | 0,282 | −0,052 | −0,229 |
+| Seestar | 0,262 | 0,243 | 0,166 | 0,165 | −0,019 | +0,001 |
+| Rosette | 0,108 | 0,114 | 0,202 | 0,174 | +0,005 | +0,028 |
+
+**Planéité du fond après retrait du dégradé (mag/arcsec² ; plus haut = plus plat)**
+
+| Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
+|---|---:|---:|---:|---:|---:|---:|
+| Heart | 24,58 | 24,25 | 24,58 | 23,68 | −0,33 | +0,90 |
+| Iris | 23,26 | 23,15 | 23,37 | 23,54 | −0,11 | −0,18 |
+| M51 | 22,99 | 19,92 | 23,22 | 23,23 | −3,07 | −0,01 |
+| M8 | 23,18 | 23,10 | 23,20 | 22,90 | −0,07 | +0,30 |
+| Seestar | 21,29 | 21,37 | 21,01 | 21,34 | +0,08 | −0,34 |
+| Rosette | 21,94 | 21,79 | 21,23 | 22,12 | −0,15 | −0,89 |
+
+**Taux de rejet de l'empilement (% des échantillons écartés)**
+
+| Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
+|---|---:|---:|---:|---:|---:|---:|
+| Heart | 0,941 | 0,990 | 0,014 | 1,097 | +0,049 | −1,083 |
+| Iris | 0,892 | 0,788 | 0,044 | 1,347 | −0,104 | −1,303 |
+| M51 | 0,804 | 0,596 | 0,024 | 0,852 | −0,207 | −0,828 |
+| M8 | 1,222 | 1,177 | 0,014 | 1,215 | −0,045 | −1,201 |
+| Seestar | 0,919 | 0,630 | 0,001 | 0,959 | −0,289 | −0,958 |
+| Rosette | 0,910 | 0,841 | 0,039 | 0,545 | −0,069 | −0,506 |
+
+À noter :
+- **Taux de rejet** : les chiffres de notre drizzle (0,001 à 0,044 %) et ceux des deux empilements classiques ne sont
+  pas comparables (notre drizzle compte les échantillons autrement) ; les deux Siril sont comparables entre eux : le drizzle
+  de Siril rejette à peu près autant que son empilement classique (0,6 à 1,2 %).
+- **M51, planéité du fond de Siril drizzle (19,92)** : la pile elle-même est normale (mêmes rapports de couleurs que
+  Siril classique) ; c'est l'extraction du fond de degré 2 de Siril qui a mal ajusté le polynôme sur cette pile
+  (dominante rose et verte sur l'image finale, rapport rouge/vert jusqu'à 1,5 dans un coin). Rien n'a été retouché.
+- **M8, points d'une seule couleur** : les nombres sont grands pour les quatre piles (1 200 à 6 300 par degré²) parce
+  que le champ est plein de nébulosité et d'étoiles ; seuls les écarts entre piles comptent.
+- **Heart, couleurs des étoiles** : le drizzle de Siril donne l'erreur vert−rouge la plus forte (0,58, contre 0,33 en
+  classique et 0,19 chez nous).
+- Ces mesures portent sur l'Express (30 poses ; 15 pour M8) : elles disent ce que fait le drizzle à l'échelle 1 avec
+  si peu de poses. Le drizzle de Siril n'a pas été mesuré en Base (100 poses).
+
 ## Le banc
 
 Six cas, sans recadrage, avec exactement les mêmes fichiers pour les deux logiciels (des copies figées sous
