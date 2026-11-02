@@ -43,22 +43,27 @@ Tes 9 projets n'ont pas été touchés. Tout ce qui suit est enregistré.
 ## Pour regarder le GUI
 
 - Lance **client.bat**, section « Banc d’essai face à Siril », projet **Seestar** ou **Iris** (express).
-- Évite la Rosette et Heart jusqu'à ce soir : un essai tourne dessus.
+- Le banc tourne sur ces projets jusque vers 13 h : ouvre-les après, pour ne rien enregistrer par-dessus un calcul.
 - Les empilements sont marqués « Obsolète » : les réglages par défaut ont changé ce matin. L'inspection montre donc
   le résultat précédent, marqué comme tel. Ne lance pas de calcul : la carte graphique est occupée par les essais.
 
-## Cet après-midi
+## Fait aussi ce matin (en avance)
 
-- **Les pixels chauds du drizzle,** avec la méthode publiée de PixInsight : repérer les pixels à écarter sur les
-  poses dématricées, puis les écarter dans le drizzle. Fin vers 15 h 30. Ce sera un réglage : le banc compare
-  l'ancienne et la nouvelle façon.
-- **17 h à 18 h 30 : le banc sur 30 poses,** notre drizzle et notre empilement classique face à Siril, en classique
-  et en drizzle.
-- **18 h 30 : le point en français,** avec les images.
+- **La méthode de PixInsight contre les pixels chauds du drizzle** est dans le moteur, comme réglage (« Rejet du
+  drizzle »), éteinte par défaut. Premier essai sur la Rosette et Heart :
+  - **elle ne fait pas baisser les points d'une seule couleur.** Ce ne sont pas des défauts d'une seule pose : ils
+    sont présents dans toutes les poses, au bord des zones peu couvertes (Rosette) ou partout un peu (Heart). Aucun
+    rejet pose par pose ne peut les retirer ;
+  - **elle améliore nettement la Rosette** : couleurs des étoiles plus justes, fond plus plat ;
+  - elle ne dégrade rien, mais l'empilement prend 3 fois plus de temps.
+- **Le banc sur 30 poses** est lancé dès maintenant au lieu de 17 h (la carte graphique est libre), fin vers 13 h :
+  nos deux méthodes, avec et sans ces réglages, face à Siril classique et Siril drizzle.
+- **Le point en français avec les images** sera prêt bien avant 19 h.
 
 ## Ce que tu auras à décider à 19 h
 
-1. Les pixels chauds du drizzle : la nouvelle façon par défaut, ou non (selon le banc).
+1. Le rejet de PixInsight dans le drizzle : par défaut ou en option (selon le banc). Et les points d'une seule
+   couleur qui restent : comprendre d'où ils viennent avant toute autre méthode.
 2. **Le reste de couleur de l'empilement classique.** Le dématriçage écrase encore un peu les couleurs des petites
    étoiles (Siril aussi). Deux façons connues de faire mieux :
    - garder pour l'empilement classique la correction de couleur mesurée sur le drizzle du même appareil ;
