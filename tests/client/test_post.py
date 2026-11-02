@@ -1,4 +1,4 @@
-"""Post and Export (P12), offscreen: the composition (layers, 13 filters, masks), the render worker (supersede, device,
+"""Post and Export (P12), offscreen: the composition (layers, filters, masks), the render worker (supersede, device,
 fallback), the engine's renderings through it (bit for bit), the export, the screen, the French and the screenshots.
 
 The synthetic preparations (a nebula, stars, an uncovered border) make the fast tests; the real ones use F:/astro_essais/v2/
@@ -69,6 +69,9 @@ from astro_gpu.render.sliders import KEYS, SLIDERS, availability  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CLIENT = ROOT / "astro_gpu" / "client"
+#: the modules of Post (their texts are translated, their imports checked)
+POST_MODULES = ("post3", "exportdlg", "postengine", "services/render", "curveseditor", "postfilters/__init__",
+                "postfilters/colour", "postfilters/curves", "postfilters/tone", "postfilters/detail")
 REAL = Path("F:/astro_essais/v2/heart_a7s_p12")
 DEV = "cpu"                                              # the fast tests render on the CPU: no GPU needed, no GPU busy
 SHOTS = Path(os.environ.get("ASTRO_GPU_SHOTS") or Path(os.environ.get("TEMP") or tempfile.gettempdir()) / "p12_shots")
@@ -281,6 +284,7 @@ class RefCtx:
 
     def __init__(self, stars, halpha, f=1):
         self._s, self._h, self.f = stars, halpha, f
+        self.level, self.draft = int(round(np.log2(f))), False
 
     def stars(self):
         return self._s
@@ -349,21 +353,30 @@ def _reference(key, x, p, ctx):
     raise KeyError(key)
 
 
-def test_the_thirteen_filters_are_the_mockups_formulas():
-    """Each filter, on a random image, at several settings and resolutions: the port (and its fast paths) gives what the
-    mockup's formulas give, to a fraction of an 8-bit level."""
-    assert len(FILTERS) == 13 and set(FILTERS) == {
-        "stretch", "curves", "levels", "saturation", "scnr", "balance", "local_contrast", "sharpen", "denoise",
-        "star_reduce", "halos", "star_color", "halpha_red"}
+#: the filters of the first Post (the mockup's); the new settings some have since, at the values that keep the old ones
+FIRST = {"stretch", "levels", "saturation", "scnr", "balance", "local_contrast", "sharpen", "denoise", "star_reduce",
+         "halos", "star_color", "halpha_red"}
+AS_FIRST = {"scnr": {"method": "Average neutral", "lightness": False}}
+
+
+def test_the_first_posts_filters_are_the_mockups_formulas():
+    """Each filter of the first Post, on a random image, at several settings and resolutions: the port (and its fast
+    paths) gives what the mockup's formulas give, to a fraction of an 8-bit level; its three-slider Curves opens as the
+    same curve in the Curves tool (tests/client/test_post_tools.py tests the new filters)."""
+    assert FIRST < set(FILTERS) and "curves" in FILTERS
     rng = np.random.default_rng(1)
     x = np.clip(cv2.GaussianBlur(rng.random((150, 230, 3)).astype(np.float32), (0, 0), 3) * 1.6 - 0.3, 0, 1)
     stars = np.clip(rng.random((150, 230)).astype(np.float32) * 1.4 - 0.4, 0, 1)
     halpha = cv2.GaussianBlur(rng.random((150, 230)).astype(np.float32), (0, 0), 8)
     worst = {}
-    for key, f in FILTERS.items():
+    for key in sorted(FIRST):
+        f = FILTERS[key]
         defaults = {q["key"]: q["default"] for q in f["params"]}
+        defaults.update(AS_FIRST.get(key, {}))
         variants = [defaults]
         for q in f["params"]:
+            if q["key"] in AS_FIRST.get(key, {}):
+                continue
             if q["type"] == "float":
                 variants += [dict(defaults, **{q["key"]: q["lo"] + (q["hi"] - q["lo"]) * t}) for t in (0.3, 0.8)]
             else:
@@ -376,12 +389,24 @@ def test_the_thirteen_filters_are_the_mockups_formulas():
                 assert got.shape == x.shape and got.dtype == np.float32, (key, got.dtype)
                 err = float(np.abs(np.clip(got, 0, 1) - np.clip(want, 0, 1)).max()) * 255
                 worst[key] = max(worst.get(key, 0), err)
+    # the first Curves (shadows, midtones, highlights): saved compositions open with the same curve, exact
+    for sh, mid, hi in ((0.1, -0.05, 0.08), (-0.2, 0.2, 0.0), (0.05, 0.0, -0.2)):
+        ctx = RefCtx(stars, halpha, 1)
+        old = {"shadows": sh, "midtones": mid, "highlights": hi}
+        saved = {"id": 5, "kind": "filter", "filter": "curves", "name": "Curves", "visible": True, "opacity": 100.0,
+                 "mode": "Normal", "params": old, "mask": None, "target": None}
+        lay = postengine.load_layers([saved], set())[0]
+        ctx.draft = False
+        got = FILTERS["curves"]["fn"](x.copy(), lay["params"], ctx)
+        err = float(np.abs(got - _reference("curves", x.astype(np.float64), old, ctx)).max()) * 255
+        worst["curves (first)"] = max(worst.get("curves (first)", 0), err)
     assert max(worst.values()) < 1.0, worst
-    # the families of the spec; the defaults are neutral (see the next test), the spec's old ones are the settings to try
+    # the families; the defaults are neutral (see the next test), the spec's old ones are the settings to try
     assert {f["family"] for f in FILTERS.values()} == set(postengine.FAMILIES)
     d = {k: {q["key"]: q["default"] for q in f["params"]} for k, f in FILTERS.items()}
     assert d["stretch"] == {"strength": 0, "symmetry": 0.08} and d["saturation"] == {"strength": 0, "hues": "All"}
-    assert d["scnr"] == {"strength": 0} and d["local_contrast"] == {"strength": 0, "scale": 40}
+    assert d["scnr"] == {"strength": 0, "method": "Average neutral", "lightness": True}
+    assert d["local_contrast"] == {"strength": 0, "scale": 40}
     assert d["halos"] == {"strength": 0, "radius": 14} and d["halpha_red"] == {"strength": 0}
 
 
@@ -608,7 +633,7 @@ def test_a_region_is_the_crop_of_the_whole_and_the_levels_agree():
     assert inner.max() < 1.0 and float(np.abs(reg - crop).max() * 255) < 8   # the margin: filters see their neighbours
     # half and quarter resolution look like the reduced full image (smooth filters: their sizes are divided by the factor)
     smooth = [new_filter_layer("curves", None), new_filter_layer("local_contrast", None), sat, base]
-    smooth[0]["params"]["midtones"] = 0.1
+    smooth[0]["params"]["curves"] = postengine.curves_of_old(0.0, 0.1, 0.0)
     smooth[1]["params"].update(scale=60, strength=0.8)
     base["mask"] = None
     pr.img[1] = cv2.GaussianBlur(pr.img[1], (0, 0), 7)                      # no sharp edge: a mean of a curve is not its curve
@@ -709,7 +734,7 @@ def test_the_layer_tree_and_its_moves_follow_affinity_photo():
     a, b = new_workflow_layer(1, "A", True), new_workflow_layer(2, "B", False)
     lo, top = new_filter_layer("levels", a["id"]), new_filter_layer("curves", a["id"])
     lo["params"].update(black=0.2)
-    top["params"].update(midtones=0.15)
+    top["params"]["curves"] = postengine.curves_of_old(0.0, 0.15, 0.0)
     g = new_filter_layer("saturation", None)
     layers = normalize([g, b, top, lo, a])
     assert [(x["name"], d) for x, d in postengine.rows(layers)] == [
@@ -1168,15 +1193,17 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     sat["params"]["strength"] = 30.0
     v.request(final_only=True)
     assert post.settle() and np.array_equal(shown(v), reference(post).rgb)
-    # the + Filter menu: the 13 filters by family
+    # the + Filter menu: the filters by family (the first Post's arcsinh stretch is no longer offered)
     fam = {a.text(): [x.text() for x in a.menu().actions()] for a in v.filter_menu.actions()}
-    assert list(fam) == ["Tone", "Color", "Detail", "Stars", "Combine"] and sum(len(x) for x in fam.values()) == 13
-    assert fam["Tone"] == ["Stretch (GHS)", "Curves", "Levels"] and fam["Combine"] == ["H-alpha to red"]
+    assert list(fam) == ["Stretch", "Contrast and curves", "Color", "Detail", "Noise", "Stars", "Combine"]
+    assert sum(len(x) for x in fam.values()) == len([f for f in FILTERS.values() if not f.get("hidden")]) == 18
+    assert fam["Stretch"] == ["Generalised hyperbolic stretch", "Arcsinh stretch", "Histogram transformation"]
+    assert fam["Contrast and curves"][0] == "Curves" and fam["Combine"] == ["H-alpha to red"]
     assert all(x.isEnabled() for a in v.filter_menu.actions() for x in a.menu().actions())
 
 
 def test_a_filter_added_in_the_page_does_not_move_the_image_until_a_slider_does(preps, qapp):
-    """What the user did: + Filter > Saturation changed the picture before any slider was touched. Each of the 13 filters,
+    """What the user did: + Filter > Saturation changed the picture before any slider was touched. Each filter,
     added with its defaults, leaves what the page shows as it was; the shots (English, French) show the new filter."""
     out = SHOTS / "new_filter"
     out.mkdir(parents=True, exist_ok=True)
@@ -1190,11 +1217,9 @@ def test_a_filter_added_in_the_page_does_not_move_the_image_until_a_slider_does(
             v.select(full["id"], "layer")
             assert s.settle()
             before = shown(v).copy()
-            added = []
-            for key in FILTERS:
-                added.append(v.add_filter(key))
-                assert s.settle()
-                assert np.array_equal(shown(v), before), key
+            added = [v.add_filter(key) for key in FILTERS]          # each at its defaults (the composer test checks
+            assert s.settle()                                         # them one by one): the page shows the same
+            assert np.array_equal(shown(v), before), [x["filter"] for x in added]
             assert np.array_equal(shown(v), reference(s).rgb)
             for lay in added:                                       # hide them all, Saturation comes back for the shot
                 lay["visible"] = False
@@ -2016,7 +2041,7 @@ def test_the_export_writes_only_into_the_folder_chosen_and_it_reads_back(exporti
         assert np.abs(np.moveaxis(h[0].data[:, ::-1], 0, -1) - np.clip(expect, 0, 1)).max() < 1e-6
         hist_lines = [str(x) for x in h[0].header["HISTORY"]]
     assert any(x.startswith("layer Full") for x in hist_lines) and any("its filter Saturation" in x for x in hist_lines)
-    assert any("sky=1" in x for x in hist_lines), hist_lines
+    assert "sky=1" in "".join(hist_lines), hist_lines                                 # (a line may wrap in it)
     ox, oy = 24, 8                                                                           # where the canvas starts on the grid
     for x, y in ((0, 0), (300, 200), (cv[0] - 1, cv[1] - 1)):
         assert np.allclose(w.pixel_to_world_values(ox + x, oy + y), w2.pixel_to_world_values(x, cv[1] - 1 - y),
@@ -2139,8 +2164,9 @@ def _texts_of_the_code() -> dict[str, list[str]]:
     import ast
 
     from astro_gpu.client import exportdlg as ed
+    from astro_gpu.client.postfilters import curves as pc
     found: dict[str, list[str]] = {}
-    for name in ("post3", "exportdlg", "postengine", "services/render"):
+    for name in POST_MODULES:
         tree = ast.parse((CLIENT / f"{name}.py").read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_" and node.args:
@@ -2148,7 +2174,7 @@ def _texts_of_the_code() -> dict[str, list[str]]:
                 if isinstance(a, ast.Constant) and isinstance(a.value, str):
                     found.setdefault(a.value, []).append(f"{name}.py:{node.lineno}")
     for f in FILTERS.values():
-        for t in (f["name"], f["family"]) + tuple(q["label"] for q in f["params"]):
+        for t in (f["name"], f["family"], f["source"]) + tuple(q["label"] for q in f["params"]):
             found.setdefault(t, []).append("FILTERS")
         for q in f["params"]:
             for c in q.get("choices", []):
@@ -2159,6 +2185,9 @@ def _texts_of_the_code() -> dict[str, list[str]]:
         found.setdefault(t, []).append("tables")
     for t in ("Paint", "Erase", "Needs a layer with the Stars block", rsv.NOTE_CPU_TEXT, "stars", "starless", " (copy)"):
         found.setdefault(t, []).append("constants")
+    for t in list(pc.CHANNEL_TIPS.values()) + pc.INTERPS + ["Photoshop", "Astrophotography"] + \
+            [x for p in pc.builtin_presets() for x in (p["name"], p["source"])] + list(postengine.OLD_NAMES):
+        found.setdefault(t, []).append("curves")
     return found
 
 
@@ -2177,7 +2206,7 @@ def test_every_text_of_post_has_its_french():
 
 
 def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(preps, qapp, tmp_path):
-    """The page rebuilt in French, with every panel opened (13 filters, 6 mask sources, the brush, the greyed sliders,
+    """The page rebuilt in French, with every panel opened (every filter, 6 mask sources, the brush, the greyed sliders,
     the empty page, the menus, the Export dialog in Spec mode and its messages): not one text is missing."""
     from astro_gpu.client.post3 import ContSlider
     prefs.set("spec_mode", True)
@@ -2195,7 +2224,7 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
         v = s.view
         assert v.b_filter.text() == "+ Filtre" and v.b_cmp.text() == "Avant / après" and v.b_maskadd.text() == "Masque"
         assert [lb.text() for lb in v.findChildren(QLabel)][:1] != []
-        for k in FILTERS:                                                               # the 13 filters' panels
+        for k in FILTERS:                                                               # every filter's panel
             v.select(named(v, "Full")["id"], "layer")
             fl = v.add_filter(k)
             assert fl is not None
@@ -2219,8 +2248,8 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
             v.sub_text(lay)
             v.thumb(lay)
         v.build_filter_menu()
-        assert [a.text() for a in v.filter_menu.actions()] == ["Tonalité", "Couleur", "Détail", "Étoiles", "Combiner"] or \
-               all(a.text() for a in v.filter_menu.actions())
+        assert [a.text() for a in v.filter_menu.actions()] == ["Étirement", "Contraste et courbes", "Couleur", "Détail",
+                                                               "Bruit", "Étoiles", "Combinaison"]
         d = ExportDialog(v)
         try:
             d.dest.setText((root / "store" / "x.tif").as_posix())
@@ -2249,7 +2278,7 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
 # ---------------------------------------------------------------------------------------------- hygiene
 def test_the_new_modules_have_no_mockup_leftovers_and_import_only_the_client():
     import ast
-    for name in ("post3", "postengine", "exportdlg", "services/render"):
+    for name in POST_MODULES:
         src = (CLIENT / f"{name}.py").read_text(encoding="utf-8")
         for bad in ("alt2", "alt3", "data.json", "datatext", "from model import", "import project", "Demo"):
             assert bad not in src, (name, bad)
@@ -2260,9 +2289,10 @@ def test_the_new_modules_have_no_mockup_leftovers_and_import_only_the_client():
                                "threading", "time", "typing", "PySide6", "numpy", "cv2", "torch", "astropy",
                                "astro_gpu"}, (name, node.module)
     # the GUI thread never renders: no engine, no composition in the widgets' module
-    gui = (CLIENT / "post3.py").read_text(encoding="utf-8")
-    assert "Composer(" not in gui and "LayerService" not in gui and "api.render_layer" not in gui
-    assert "torch" not in gui
+    for name in ("post3", "curveseditor"):
+        gui = (CLIENT / f"{name}.py").read_text(encoding="utf-8")
+        assert "Composer(" not in gui and "LayerService" not in gui and "api.render_layer" not in gui
+        assert "torch" not in gui, name
 
 
 def test_nothing_here_wrote_the_users_settings():

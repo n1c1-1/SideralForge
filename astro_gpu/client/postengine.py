@@ -12,8 +12,9 @@ Layers (a list, top first, as in Photoshop; saved as it is in ``project.post["la
 * an image layer ``{id, kind: "image", key, name, visible, opacity, mode, sliders, linked, mask}``: the linear image of
   a stage result (a stack, a gradient-removed or a denoised image) sent from Inspect, stretched automatically and moved
   by the Sky, Contrast and Saturation sliders; ``key`` names the stage result (the pixels are never saved);
-* a filter layer ``{id, kind: "filter", filter, name, visible, opacity, mode, params, mask, target}``: one of the 13
-  filters, applied to the one pixel layer (workflow or image) ``target`` names, or to everything below (``target`` is
+* a filter layer ``{id, kind: "filter", filter, name, visible, opacity, mode, params, mask, target}``: one of the
+  filters (``FILTERS``: each a published or documented method, named in its ``source``; postfilters/ holds the new
+  ones), applied to the one pixel layer (workflow or image) ``target`` names, or to everything below (``target`` is
   None).
 
 The model is Affinity Photo's: a filter that applies to one layer is that layer's child; a filter that applies to
@@ -40,6 +41,11 @@ from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
+
+from .postfilters import colour as pf_colour
+from .postfilters import curves as pf_curves
+from .postfilters import detail as pf_detail
+from .postfilters import tone as pf_tone
 
 MODES = ["Normal", "Lighten", "Screen", "Multiply", "Soft light"]       # plain English: _() where shown
 OPS = {"add": "Add", "sub": "Subtract", "inter": "Intersect"}
@@ -158,6 +164,15 @@ def C(key, label, choices, default):
     return dict(key=key, label=label, type="choice", choices=choices, default=default)
 
 
+def B(key, label, default):
+    return dict(key=key, label=label, type="bool", default=bool(default))
+
+
+def CURVE(key):
+    """The curves of the Curves tool: {channel: {"pts", "interp"}}; {} is the identity (postfilters.curves)."""
+    return dict(key=key, label="Curves", type="curve", default={})
+
+
 def f_stretch(x, p, ctx):
     """An arcsinh stretch around the symmetry point (the transcendental on all cores, through torch)."""
     d, sp = p["strength"], p["symmetry"]
@@ -170,18 +185,17 @@ def f_stretch(x, p, ctx):
 
 
 def f_curves(x, p, ctx):
-    """The curve through (0, 0), (.25, .25 + shadows), (.5, .5 + midtones), (.75, .75 + highlights), (1, 1): the
-    piecewise-linear interpolation as a sum of slopes (exact, and fast on all cores)."""
-    if not (p["shadows"] or p["midtones"] or p["highlights"]):          # the default: the identity
-        return x
-    xs = [0.0, 0.25, 0.5, 0.75, 1.0]
-    ys = np.clip([0, 0.25 + p["shadows"], 0.5 + p["midtones"], 0.75 + p["highlights"], 1], 0, 1)
-    slope = [(ys[i + 1] - ys[i]) / (xs[i + 1] - xs[i]) for i in range(4)]
-    xc = _torch(x).clamp(0, 1)
-    y = xc * float(slope[0])
-    for i in (1, 2, 3):
-        y += (xc - xs[i]).relu_().mul_(float(slope[i] - slope[i - 1]))
-    return y.numpy()
+    """The Curves tool (postfilters.curves): a table while a point moves, exact on release."""
+    return pf_curves.apply(x, p["curves"], draft=ctx.draft)
+
+
+def curves_of_old(sh: float, mid: float, hi: float) -> dict:
+    """The curves of a composition saved before the Curves tool (three sliders moving the curve at .25, .5 and .75):
+    the same piecewise-linear curve, so that it renders as it did."""
+    if not (sh or mid or hi):
+        return {}
+    ys = np.clip([0, 0.25 + sh, 0.5 + mid, 0.75 + hi, 1], 0, 1)
+    return {"RGB/K": {"pts": [[x, float(y)] for x, y in zip((0.0, 0.25, 0.5, 0.75, 1.0), ys)], "interp": "Linear"}}
 
 
 def f_levels(x, p, ctx):
@@ -208,12 +222,39 @@ def f_saturation(x, p, ctx):
 
 
 def f_scnr(x, p, ctx):
-    if p["strength"] <= 0:                             # the default: no green removed
-        return x
-    y = x.copy()
-    g = np.minimum(x[..., 1], (x[..., 0] + x[..., 2]) / 2)
-    y[..., 1] = x[..., 1] + p["strength"] * (g - x[..., 1])
-    return y
+    """SCNR, Siril's and PixInsight's four protections (postfilters.colour.scnr)."""
+    return pf_colour.scnr(x, p["method"], p["strength"], bool(p["lightness"]))
+
+
+def f_ghs(x, p, ctx):
+    return pf_tone.ghs(x, p)
+
+
+def f_asinh(x, p, ctx):
+    return pf_tone.asinh(x, p)
+
+
+def f_histogram(x, p, ctx):
+    return pf_tone.histogram_transform(x, p)
+
+
+def f_clahe(x, p, ctx):
+    """CLAHE; on a region (100 %) the tile grid is the whole canvas's, so that it looks as in the whole image."""
+    ax0, ay0 = getattr(ctx, "abox", None)[:2] if getattr(ctx, "abox", None) is not None else (0, 0)
+    return pf_detail.clahe(x, p["amount"], p["clip"], p["radius"], ctx.level, (ax0, ay0),
+                           getattr(ctx, "canvas_wh", None))
+
+
+ML_KEYS = ("l1", "l2", "l3", "l4", "l5")
+ML_LABELS = ("1 px", "2 px", "4 px", "8 px", "16 px")
+
+
+def f_ml_sharpen(x, p, ctx):
+    return pf_detail.sharpen(x, [p[k] for k in ML_KEYS], p["target"], ctx.level)
+
+
+def f_ml_denoise(x, p, ctx):
+    return pf_detail.denoise(x, [p[k] for k in ML_KEYS[:4]], p["amount"], p["target"], ctx.level)
 
 
 def f_balance(x, p, ctx):
@@ -285,45 +326,107 @@ def f_halpha(x, p, ctx):
     return y
 
 
+GHS = "As Siril's and PixInsight's generalised hyperbolic stretch (D. Payne and M. Cranfield)"
 FILTERS = {
-    "stretch": dict(name="Stretch (GHS)", family="Tone", fn=f_stretch,
+    # ---- stretch
+    "ghs": dict(name="Generalised hyperbolic stretch", family="Stretch", fn=f_ghs, graph=pf_tone.ghs_curve, hist=True,
+                source=GHS,
+                params=[P("stretch", "Stretch factor ln(D+1)", 0, 10, 0, step=0.01),
+                        P("local", "Local intensity (b)", -5, 15, 0, step=0.1),
+                        P("symmetry", "Symmetry point (SP)", 0, 1, 0, step=0.001),
+                        P("shadows", "Shadow protection (LP)", 0, 1, 0, step=0.001),
+                        P("highlights", "Highlight protection (HP)", 0, 1, 1, step=0.001),
+                        P("black", "Black point (BP)", 0, 0.5, 0, step=0.001),
+                        C("model", "Color model", pf_tone.COLOUR_MODES, pf_tone.COLOUR_MODES[0])]),
+    "asinh": dict(name="Arcsinh stretch", family="Stretch", fn=f_asinh, graph=pf_tone.asinh_curve, hist=True,
+                  source="As Siril's asinh transformation (after Lupton et al. 2004): the colours kept",
+                  params=[P("stretch", "Stretch factor", 0, 250, 0, step=0.5),
+                          P("black", "Black point", 0, 0.2, 0, step=0.001),
+                          C("model", "Luminance", pf_tone.COLOUR_MODES[2:0:-1], pf_tone.COLOUR_MODES[2])]),
+    "histogram": dict(name="Histogram transformation", family="Stretch", fn=f_histogram, graph=pf_tone.ht_curve,
+                      hist=True, source="As PixInsight's HistogramTransformation and Siril's midtones transfer function",
+                      params=[P("shadows", "Shadows", 0, 1, 0, step=0.001),
+                              P("midtones", "Midtones", 0.001, 0.999, 0.5, step=0.001),
+                              P("highlights", "Highlights", 0, 1, 1, step=0.001),
+                              C("channel", "Channel", pf_tone.HT_CHANNELS, "RGB/K")]),
+    # the arcsinh stretch of the first Post (saved compositions still open with it; no longer offered)
+    "stretch": dict(name="Arcsinh stretch (symmetry point)", family="Stretch", fn=f_stretch, hidden=True,
+                    source="An arcsinh stretch around a symmetry point (the first Post's)",
                     params=[P("strength", "Strength", 0, 12, 0, step=0.1),
                             P("symmetry", "Symmetry point", 0, 0.6, 0.08, step=0.01)]),
-    "curves": dict(name="Curves", family="Tone", fn=f_curves,
-                   params=[P("shadows", "Shadows", -0.2, 0.2, 0, step=0.01),
-                           P("midtones", "Midtones", -0.2, 0.2, 0, step=0.01),
-                           P("highlights", "Highlights", -0.2, 0.2, 0, step=0.01)]),
-    "levels": dict(name="Levels", family="Tone", fn=f_levels,
+    # ---- contrast and curves
+    "curves": dict(name="Curves", family="Contrast and curves", fn=f_curves, editor="curves", hist=True,
+                   source="As PixInsight's CurvesTransformation, Siril's and Photoshop's Curves",
+                   params=[CURVE("curves")]),
+    "levels": dict(name="Levels", family="Contrast and curves", fn=f_levels,
+                   source="Photoshop's Levels: black point, white point, gamma",
                    params=[P("black", "Black point", 0, 0.3, 0, step=0.005),
                            P("white", "White point", 0.7, 1, 1, step=0.005),
                            P("gamma", "Gamma", 0.5, 2, 1, step=0.01)]),
+    "local_contrast": dict(name="Local contrast", family="Contrast and curves", fn=f_local_contrast,
+                           source="A large-radius unsharp mask",
+                           params=[P("strength", "Strength", 0, 1.5, 0, step=0.01),
+                                   P("scale", "Scale", 5, 120, 40, "px", 1)]),
+    "clahe": dict(name="Local histogram equalization (CLAHE)", family="Contrast and curves", fn=f_clahe,
+                  source="CLAHE (Zuiderveld 1994), as Siril's CLAHE and PixInsight's LocalHistogramEqualization, "
+                         "on the lightness",
+                  params=[P("amount", "Amount", 0, 1, 0, step=0.01),
+                          P("clip", "Contrast limit", 1, 8, 2, step=0.1),
+                          P("radius", "Kernel radius", 16, 512, 64, "px", 1)]),
+    # ---- colour
     "saturation": dict(name="Saturation", family="Color", fn=f_saturation,
+                       source="Saturation around the luminance, by hue range",
                        params=[P("strength", "Strength", -100, 150, 0, "%", 1),
                                C("hues", "Hues", [h for h, _ in HUES], "All")]),
     "scnr": dict(name="SCNR (green removal)", family="Color", fn=f_scnr,
-                 params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
+                 source="As PixInsight's SCNR and Siril's Remove green noise",
+                 params=[P("strength", "Amount", 0, 1, 0, step=0.01),
+                         C("method", "Protection", pf_colour.SCNR_METHODS, pf_colour.SCNR_METHODS[0]),
+                         B("lightness", "Preserve lightness", True)]),
     "balance": dict(name="Color balance", family="Color", fn=f_balance,
+                    source="Gains on red and blue (temperature) and on green (tint)",
                     params=[P("temperature", "Temperature", -1, 1, 0, step=0.01),
                             P("tint", "Green / magenta", -1, 1, 0, step=0.01)]),
-    "local_contrast": dict(name="Local contrast", family="Detail", fn=f_local_contrast,
-                           params=[P("strength", "Strength", 0, 1.5, 0, step=0.01),
-                                   P("scale", "Scale", 5, 120, 40, "px", 1)]),
+    # ---- detail
     "sharpen": dict(name="Sharpen", family="Detail", fn=f_sharpen,
+                    source="Unsharp mask (Photoshop, PixInsight UnsharpMask)",
                     params=[P("strength", "Strength", 0, 2, 0, step=0.01),
                             P("radius", "Radius", 0.5, 4, 1.2, "px", 0.1)]),
-    "denoise": dict(name="Noise reduction", family="Detail", fn=f_denoise,
+    "ml_sharpen": dict(name="Multiscale sharpening", family="Detail", fn=f_ml_sharpen,
+                       source="Starlet wavelet layers (B3 spline a trous), as PixInsight's MultiscaleLinearTransform "
+                              "and Siril's Wavelets",
+                       params=[P(k, lb, -1, 3, 0, step=0.01) for k, lb in zip(ML_KEYS, ML_LABELS)] +
+                       [C("target", "Applies to", pf_detail.TARGETS, pf_detail.TARGETS[0])]),
+    # ---- noise
+    "denoise": dict(name="Noise reduction", family="Noise", fn=f_denoise,
+                    source="A Gaussian smoothing of the luminance and of the colour",
                     params=[P("luminance", "Luminance", 0, 1, 0, step=0.01),
                             P("color", "Color", 0, 1, 0, step=0.01)]),
+    "ml_denoise": dict(name="Multiscale noise reduction", family="Noise", fn=f_ml_denoise,
+                       source="Soft thresholding of the starlet layers (Starck and Murtagh), as PixInsight's "
+                              "MultiscaleLinearTransform noise reduction",
+                       params=[P(k, lb, 0, 10, 0, "σ", 0.1) for k, lb in zip(ML_KEYS[:4], ML_LABELS[:4])] +
+                       [P("amount", "Amount", 0, 1, 1, step=0.01),
+                        C("target", "Applies to", pf_detail.NR_TARGETS, pf_detail.NR_TARGETS[0])]),
+    # ---- stars
     "star_reduce": dict(name="Star reduction", family="Stars", fn=f_star_reduce, needs="stars",
+                        source="A morphological erosion through the star mask (PixInsight's MorphologicalTransformation "
+                               "with a star mask)",
                         params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
     "halos": dict(name="Halo reduction", family="Stars", fn=f_halos, needs="stars",
+                  source="The ring around the star mask pulled to the eroded background",
                   params=[P("strength", "Strength", 0, 1, 0, step=0.01), P("radius", "Radius", 4, 40, 14, "px", 1)]),
     "star_color": dict(name="Star color", family="Stars", fn=f_star_color, needs="stars",
+                       source="Saturation through the star mask",
                        params=[P("strength", "Strength", 0, 2, 0, step=0.01)]),
+    # ---- combine
     "halpha_red": dict(name="H-alpha to red", family="Combine", fn=f_halpha, needs="halpha",
+                       source="The engine's H-alpha map added to the red channel",
                        params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
 }
-FAMILIES = ["Tone", "Color", "Detail", "Stars", "Combine"]
+FAMILIES = ["Stretch", "Contrast and curves", "Color", "Detail", "Noise", "Stars", "Combine"]
+#: the names of filters as the first Post saved them (a layer keeps its name): shown as today's names
+OLD_NAMES = {"Stretch (GHS)": "Arcsinh stretch (symmetry point)"}
 
 # ======================================================================== masks
 MASK_SOURCES = {
@@ -393,7 +496,7 @@ def new_filter_layer(key: str, target=None) -> dict:
     mask); None: it applies to everything below it."""
     f = FILTERS[key]
     return {"id": new_id(), "kind": "filter", "filter": key, "name": f["name"], "visible": True, "opacity": 100.0,
-            "mode": "Normal", "params": {q["key"]: q["default"] for q in f["params"]}, "mask": None,
+            "mode": "Normal", "params": {q["key"]: copy.deepcopy(q["default"]) for q in f["params"]}, "mask": None,
             "target": target}
 
 
@@ -467,9 +570,10 @@ def snapshot(layers: list[dict]) -> list[dict]:
     out = []
     for lay in layers:
         d = dict(lay)
-        for k in ("sliders", "params"):
-            if k in d:
-                d[k] = dict(d[k])
+        if "sliders" in d:
+            d["sliders"] = dict(d["sliders"])
+        if "params" in d:
+            d["params"] = {k: copy.deepcopy(v) if isinstance(v, (dict, list)) else v for k, v in d["params"].items()}
         m = lay.get("mask")
         if m is not None:
             d["mask"] = dict(m, parts=[dict(p, strokes=list(p["strokes"])) if "strokes" in p else dict(p)
@@ -538,12 +642,28 @@ def load_layers(raw, alive: set[int]) -> list[dict]:
             lay["linked"] = bool(d.get("linked", True))
         elif d.get("kind") == "filter" and d.get("filter") in FILTERS:
             lay = new_filter_layer(d["filter"], d.get("target"))
-            lay["name"] = str(d.get("name") or lay["name"])
+            name = str(d.get("name") or lay["name"])
+            lay["name"] = OLD_NAMES.get(name, name)
             lay["visible"] = bool(d.get("visible", True))
+            raw = dict(d.get("params") or {})
+            if d["filter"] == "curves" and "curves" not in raw:          # saved before the Curves tool
+                raw["curves"] = curves_of_old(_num(raw.get("shadows"), 0.0, -0.2, 0.2),
+                                              _num(raw.get("midtones"), 0.0, -0.2, 0.2),
+                                              _num(raw.get("highlights"), 0.0, -0.2, 0.2))
+            if d["filter"] == "scnr":                                    # saved before its protections: as it was
+                raw.setdefault("method", pf_colour.SCNR_METHODS[0])
+                raw.setdefault("lightness", False)
             for q in FILTERS[d["filter"]]["params"]:
-                v = (d.get("params") or {}).get(q["key"], q["default"])
-                lay["params"][q["key"]] = (v if v in q["choices"] else q["default"]) if q["type"] == "choice" \
-                    else _num(v, q["default"], q["lo"], q["hi"])
+                v = raw.get(q["key"], q["default"])
+                if q["type"] == "choice":
+                    v = v if v in q["choices"] else q["default"]
+                elif q["type"] == "bool":
+                    v = bool(v)
+                elif q["type"] == "curve":
+                    v = pf_curves.clean_curves(v)
+                else:
+                    v = _num(v, q["default"], q["lo"], q["hi"])
+                lay["params"][q["key"]] = v
         else:
             continue
         lay["id"] = int(d.get("id") or lay["id"])
@@ -679,14 +799,18 @@ class Composite:
     notes: set[str] = field(default_factory=set)
     layer_ms: float = 0.0                                     # time spent in the engine's renderings
     drawn: int = 0                                            # how many workflow layers were rendered (not cached)
+    hists: dict[int, dict] = field(default_factory=dict)      # filter id -> the histograms of its input (``hists``)
 
 
 class Ctx:
     """What a filter or a mask part needs, at one resolution and for one region."""
 
-    def __init__(self, comp: Composer, level: int, abox):
+    def __init__(self, comp: Composer, level: int, abox, draft: bool = False):
         self.comp, self.level, self.abox = comp, level, abox
         self.f = 2 ** level
+        self.draft = draft                                    # a quick look while something moves (tables, not exact)
+        self.hist_ids: set = set()                            # the filters whose input's histograms are wanted
+        self.hists: dict = {}
         self._memo: dict[str, np.ndarray] = {}
 
     def _data(self, name: str) -> np.ndarray:
@@ -886,12 +1010,13 @@ class Composer:
 
     # ------------------------------------------------------------ the whole image
     def compose(self, layers: list[dict], level: int, box=None, *, want=(), thumbs: bool = False, stop=None,
-                cache: bool = True, draft: bool = False) -> Composite | None:
+                cache: bool = True, draft: bool = False, hists=()) -> Composite | None:
         """The composite (float 0..1) at a resolution, for a box of the canvas at that level (default: all of it).
         ``want``: ids of layers whose mask is returned (also those hidden). ``thumbs``: also a thumbnail of every mask
         computed. ``stop``: called between the steps (and by the engine between its stages), True abandons the work
-        (``Superseded``). ``draft``: a quick look of the pixel layers whose exact image is not cached. None when no pixel
-        layer has a result."""
+        (``Superseded``). ``draft``: a quick look of the pixel layers whose exact image is not cached, and of the filters
+        that have one (the curves' tables). ``hists``: ids of filters whose input's histograms are returned (the
+        Curves editor's and the stretches' graphs). None when no pixel layer has a result."""
         canvas = self.canvas_of(layers)
         if canvas is None:
             return None
@@ -906,7 +1031,9 @@ class Composer:
         ax0, ay0, ax1, ay1 = abox
         comp = np.zeros((ay1 - ay0, ax1 - ax0, 3), np.float32)
         out = Composite(comp, level, box)
-        ctx = Ctx(self, level, abox)
+        ctx = Ctx(self, level, abox, draft)
+        ctx.hist_ids, ctx.hists = set(hists), out.hists
+        ctx.canvas_wh = (W, H)                                            # the whole canvas at this level
         want = set(want)
         self._drawn = 0
         check = stop or (lambda: False)
@@ -967,6 +1094,8 @@ class Composer:
     def _apply(self, fl, under, level, abox, canvas, ctx):
         """A filter layer on an image (its own layer's, or everything below): the filtered image, through the layer's
         mask, opacity and mode. Returns (result, mask)."""
+        if fl["id"] in ctx.hist_ids:
+            ctx.hists[fl["id"]] = pf_curves.histograms(under)
         out = FILTERS[fl["filter"]]["fn"](under, fl["params"], ctx)
         m = self.mask(fl, level, abox, under, canvas, ctx)
         out = self.blend(fl["mode"], under, out)

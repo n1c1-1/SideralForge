@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .curveseditor import CurvesEditor, FunctionGraph, caption
 from .i18n import _, language, maybe, plural
 from .postengine import (
     DIRECTIONS,
@@ -57,6 +58,7 @@ from .postengine import (
     MASK_SOURCES,
     MAX_LEVEL,
     MODES,
+    OLD_NAMES,
     OPS,
     PART_SETTINGS,
     THUMB,
@@ -82,8 +84,8 @@ from .widgets import ACCENT, WARN, clear, hline, label
 
 NL = "\n"                                                   # a line break in a tooltip
 
-FAMILY_COL = {"Tone": "#c9a35e", "Color": "#c46fa8", "Detail": "#5ea1ff", "Stars": "#e6d36a",
-              "Combine": "#e06c6c"}
+FAMILY_COL = {"Stretch": "#c9a35e", "Contrast and curves": "#d98a4e", "Color": "#c46fa8", "Detail": "#5ea1ff",
+              "Noise": "#62c2b1", "Stars": "#e6d36a", "Combine": "#e06c6c"}
 TW, TH = THUMB                                           # thumbnail size
 COPY, STARLESS, STARS = " (copy)", "starless", "stars"   # pieces of the layer names, translated where shown
 NEEDS_STARS = "Needs a layer with the Stars block"
@@ -104,7 +106,7 @@ def tr_name(n: str, image: bool = False) -> str:
         n, k = n[:-len(COPY)], k + 1
     if image:
         return _pieces(n, maybe) + _(COPY) * k
-    known = {f["name"] for f in FILTERS.values()} | {STARS, STARLESS}
+    known = {f["name"] for f in FILTERS.values()} | set(OLD_NAMES) | {STARS, STARLESS}
     return " · ".join(_(b) if b in known else b for b in n.split(" · ")) + _(COPY) * k
 
 
@@ -447,6 +449,10 @@ class PostView(QWidget):
         self._half_due = False                           # (CPU) the exact quarter is shown, the half not rendered
         self._missing_images: set[str] = set()           # image layers' keys whose pixels the worker did not find
         self._drop = None                                # the drop the drag shows (see drop_at)
+        self._hists: dict[int, dict] = {}                # filter id -> the histograms of its input (the last render)
+        self.curves_editor: CurvesEditor | None = None   # the Curves panel shown, or the graph of a stretch
+        self._curve_channel: dict[int, str] = {}         # filter id -> the channel its Curves panel showed last
+        self.function_graph: FunctionGraph | None = None
         self.first_image = False
         self.sync_paths(initial=True)
 
@@ -697,6 +703,13 @@ class PostView(QWidget):
         want = (self.sel[0],) if self.sel else ()
         return want, bool(self.sel and self.sel[1] == "mask")
 
+    def _hist_ids(self) -> tuple:
+        """The selected filter, when its panel shows the histogram of its input (Curves, the stretches)."""
+        lay = self.layer(self.sel[0]) if self.sel and self.sel[1] == "layer" else None
+        if lay is None or lay["kind"] != "filter" or not FILTERS[lay["filter"]].get("hist"):
+            return ()
+        return (lay["id"],)
+
     def _send_draft(self):
         want, overlay = self._selected_wants()
         self.worker.request(Request(kind="draft", layers=snapshot(self.layers), level=self.draft_level, want=want,
@@ -716,12 +729,12 @@ class PostView(QWidget):
             # view is zoomed in past a quarter
             self._half_due = True
             self.worker.request(Request(kind="refine", layers=snapshot(self.layers), level=HALF_LEVEL + 1, want=want,
-                                        thumbs=True, overlay=overlay))
+                                        thumbs=True, overlay=overlay, hists=self._hist_ids()))
         else:
             # on the CPU the exact quarter comes first, then the half
             self._half_due = False
             self.worker.request(Request(kind="half", layers=snapshot(self.layers), level=HALF_LEVEL, want=want,
-                                        thumbs=True, overlay=overlay, refine=cpu))
+                                        thumbs=True, overlay=overlay, refine=cpu, hists=self._hist_ids()))
         if self.b_cmp.isChecked():
             self._send_before()
         need = tuple(self._stale_thumbs())
@@ -804,6 +817,9 @@ class PostView(QWidget):
             return
         self.viewer.banner = ""
         self.first_image = True
+        if res.hists:
+            self._hists.update(res.hists)
+            self._show_hist()
         if res.kind in ("draft", "half", "refine"):
             if res.kind in ("draft", "refine"):
                 self.src.img2, self.src.seq2, self.src.level2 = res.rgb, res.seq, res.level
@@ -839,6 +855,17 @@ class PostView(QWidget):
             self._notes = sorted(res.notes)
         self._hint()
         self.rendered.emit(res)
+
+    def _show_hist(self):
+        """The histogram of the selected filter's input into its panel."""
+        h = self._hists.get(self.sel[0]) if self.sel else None
+        if h is None:
+            return
+        if self.curves_editor is not None:
+            self.curves_editor.set_hist(h)
+        if self.function_graph is not None:
+            self.function_graph.hist = h
+            self.function_graph.update()
 
     def _adapt_draft(self):
         """The draft must stay within its budget (150 ms of the engine): on a slow machine it drops a level (to an
@@ -1030,9 +1057,11 @@ class PostView(QWidget):
         has_stars = self.has_stars()
         for fam in FAMILIES:
             sub = self.filter_menu.addMenu(_(fam))
+            sub.setToolTipsVisible(True)
             for k, f in FILTERS.items():
-                if f["family"] == fam:
+                if f["family"] == fam and not f.get("hidden"):
                     a = sub.addAction(_(f["name"]))
+                    a.setToolTip(_(f["source"]))
                     a.triggered.connect(lambda _c=False, kk=k: self.add_filter(kk))
                     if f.get("needs") == "stars" and not has_stars:
                         a.setEnabled(False)
@@ -1451,6 +1480,7 @@ class PostView(QWidget):
     # ------------------------------------------------------------ properties of the selection
     def build_props(self):
         clear(self.pbox)
+        self.curves_editor = self.function_graph = None
         self.viewer.mode = "pan"
         lay = self.layer(self.sel[0]) if self.sel else None
         if lay is None:
@@ -1499,21 +1529,42 @@ class PostView(QWidget):
                 r.addWidget(b)
             self.pbox.addLayout(r)
             self._group(_(f["name"]))
+            self.pbox.addWidget(caption(_(f["source"])))
+            refresh = lambda: None                                          # noqa: E731
+            if f.get("editor") == "curves":
+                self.curves_editor = ed = CurvesEditor(lay["params"]["curves"], self._hists.get(lay["id"]),
+                                                       channel=self._curve_channel.get(lay["id"], "RGB/K"))
+                ed.channelChanged.connect(lambda ch, i=lay["id"]: self._curve_channel.__setitem__(i, ch))
+                self._wire_editor(ed)
+                self.pbox.addWidget(ed)
+            elif f.get("graph"):
+                self.function_graph = g = FunctionGraph(lambda xs, fn=f["graph"]: fn(lay["params"], xs),
+                                                        self._hists.get(lay["id"]))
+                self.pbox.addWidget(g)
+                refresh = g.update
             for q in f["params"]:
-                if q["type"] == "choice":
+                if q["type"] == "curve":
+                    continue
+                if q["type"] == "bool":
+                    cb = QCheckBox(_(q["label"]))
+                    cb.setChecked(bool(lay["params"][q["key"]]))
+                    cb.toggled.connect(lambda v, k=q["key"]: self._set_param(lay, k, bool(v)))
+                    self.pbox.addWidget(cb)
+                elif q["type"] == "choice":
                     r = QHBoxLayout()
                     r.addWidget(QLabel(_(q["label"])))
                     c = QComboBox()
                     for ch in q["choices"]:
                         c.addItem(_(ch), ch)
                     c.setCurrentIndex(q["choices"].index(lay["params"][q["key"]]))
-                    c.currentIndexChanged.connect(lambda i, k=q["key"], c=c: self._set_param(lay, k, c.itemData(i)))
+                    c.currentIndexChanged.connect(lambda i, k=q["key"], c=c: (self._set_param(lay, k, c.itemData(i)),
+                                                                              refresh()))
                     r.addWidget(c, 1)
                     self.pbox.addLayout(r)
                 else:
                     sl = ContSlider(_(q["label"]), q["lo"], q["hi"], lay["params"][q["key"]], q["default"],
                                     unit=q["unit"], step=q["step"])
-                    self._wire(sl, lambda v, k=q["key"]: lay["params"].__setitem__(k, v))
+                    self._wire(sl, lambda v, k=q["key"]: (lay["params"].__setitem__(k, v), refresh()))
                     self.pbox.addWidget(sl)
             return
         if lay["kind"] == "image":
@@ -1607,6 +1658,23 @@ class PostView(QWidget):
             QTimer.singleShot(0, self._refresh_rows)
         sl.moved.connect(moved)
         sl.done.connect(done)
+
+    def _wire_editor(self, ed: CurvesEditor):
+        """The Curves panel: a draft while a point moves; on release the exact render and one undo step (the state
+        before is taken when the edit starts, before the points change)."""
+        state = {"before": None}
+
+        def starting():
+            if state["before"] is None:
+                state["before"] = snapshot(self.layers)
+
+        def committed():
+            self.push(state["before"] if state["before"] is not None else snapshot(self.layers))
+            state["before"] = None
+            self.request(final_only=True)
+        ed.starting.connect(starting)
+        ed.changed.connect(self.request)
+        ed.committed.connect(committed)
 
     def sub_text(self, lay) -> str:
         """Under a layer's name: mode and opacity; for a filter of its own row, that it applies to everything below (a
