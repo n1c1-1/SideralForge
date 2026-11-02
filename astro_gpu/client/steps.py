@@ -10,6 +10,7 @@ more has arrived (the panel is built again).
 """
 from __future__ import annotations
 
+import dataclasses
 import html
 
 import numpy as np
@@ -56,8 +57,11 @@ FACTS = {
 
 
 #: one line under the tabs of a picture whose role is not obvious (English, translated where shown)
-SOLUTION_NOTE = ("Your stack with the sky grid (RA / Dec) of its astrometric solution and the brightest catalogue stars "
-                 "where the solution puts them: they should sit on the stars of the image.")
+SOLUTION_NOTE = ("Your image with the sky grid (RA / Dec) of its astrometric solution and the brightest catalogue stars "
+                 "where the solution puts them: they should sit on the stars of the image. Choose the image behind "
+                 "them, up to the final image.")
+#: the pictures that can be behind the solution, in the order of the workflow (``Steps.picture`` makes each)
+BACKGROUNDS = ("stack", "color", "denoised", "color_denoised", "result", "output")
 SURVEY_NOTE = ("Not your data: a professional H-alpha map of the same field. The Gradient block compares it with your "
                "image to tell faint nebulosity from light pollution.")
 OUTPUT_NOTE = "The workflow's result at the suggested render settings, as Post shows its layer. Adjust it in Post."
@@ -261,10 +265,11 @@ class Steps(QObject):
                       units="", note=COVERAGE_NOTE),
                     V("weights", "Weights", "weights", "stack")]
         if k == "astrometrie":
-            # first the user's own image with its solution; the survey is another picture, with its role said
-            # each compared with the other on the same sky (the survey is reprojected on the stack grid)
+            # first the user's own image with its solution, over the image of the workflow the user chooses (no compare:
+            # the solution is drawn over one picture); the survey is another picture, with its role said, compared
+            # with the stack on the same sky (it is reprojected on the stack grid)
             out = [V("solution", "Stack and solution", "array", "stack", "drz_full", True, True, sky=True,
-                     note=SOLUTION_NOTE, camera=True, compare=("survey",) if "surveys" in stages else ())]
+                     note=SOLUTION_NOTE, camera=True, backgrounds=True)]
             if "surveys" in stages:
                 out.append(V("survey", "Reference H-alpha survey", "preview", "surveys", "halpha_reference", True,
                              note=SURVEY_NOTE, camera=False, compare=("stack",)))
@@ -313,12 +318,13 @@ class Steps(QObject):
                              display="model"))
             return out
         if k == "post":
-            stage = next((x for x in ("render_prep_learned", "render_prep", "render_simple") if x in stages),
-                         "render_prep")
-            # the final image, not an engine preview: rendered with the project's render worker, as Post shows it
-            return [V("output", "Final image", "render", stage, note=output_note(stage, stages), camera=False,
-                      compare=("result", "color"))]
+            return [dataclasses.replace(self.picture(p, "output"), compare=("result", "color"))]
         return []
+
+    def render_stage(self, p) -> str:
+        """The stage whose result is the final image of the workflow."""
+        stages = set(self.s.all_stages(p))
+        return next((x for x in ("render_prep_learned", "render_prep", "render_simple") if x in stages), "render_prep")
 
     def picture(self, p, key: str) -> VisualSpec | None:
         """A picture of the workflow another one is compared with (the previous steps), or None when the workflow
@@ -351,7 +357,21 @@ class Steps(QObject):
                                                               else None)
             if st is not None:
                 return V("result", "Gradient removed", "gradient", st, "", True, True, camera=False)
+        if key == "output":
+            # the final image, not an engine preview: rendered with the project's render worker, as Post shows it
+            stage = self.render_stage(p)
+            return V("output", "Final image", "render", stage, note=output_note(stage, stages), camera=False)
         return None
+
+    def backgrounds(self, p) -> list[VisualSpec]:
+        """The pictures the solution of Astrometry can be drawn over, in the order of the workflow: the ones that are
+        computed and up to date, the stack first (its default)."""
+        out = []
+        for key in BACKGROUNDS:
+            sp = self.picture(p, key)
+            if sp is not None and all(self.key_of(p, x) for x in self.stages_of(p, sp)):
+                out.append(sp)
+        return out
 
     def stages_of(self, p, spec: VisualSpec) -> list[str]:
         """The results a picture is made of (its key is theirs)."""

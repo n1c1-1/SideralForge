@@ -405,6 +405,7 @@ class TuneView(QWidget):
         self.s, self.steps = project, steps
         self.service = service or steps.service
         self.tab_of: dict[str, str] = {}                  # block -> the tab shown last
+        self.bg_of: dict[str, str] = {}                   # block -> the image chosen behind the solution (Astrometry)
         self.cmp_pid = None                               # a workflow to compare with (a variant and its original)
         self.picked = None                                # the frame picked on the chart (an index of the frame table)
         self.show_hist = True                             # the viewers' stretch panel
@@ -425,6 +426,8 @@ class TuneView(QWidget):
         self._asked: dict[str, tuple] = {}                # job -> (token, (job, keys))
         self._kept: dict[tuple, tuple] = {}               # (block, tab) -> (image key, view state, stretch)
         self._render_token = None
+        self._render_spec = None                          # the final image the tab asked for (its own or a background)
+        self._render_geom = None                          # (grid, origin, size) of the final image shown
         self._table_token = None
         self._seq_items: list = []                        # the frames of the sequence shown (FrameItem)
         self._pool: list[ImageView] = []                  # viewers kept for the next tabs
@@ -627,6 +630,7 @@ class TuneView(QWidget):
         clear(self.center)
         self.views, self.view, self.chart, self.table = [], None, None, None
         self.sel_frames, self._seq_items = [], []
+        self._render_spec = self._render_geom = None
 
     # ------------------------------------------------------------ what the walkthrough (tools/) asks of the earlier view
     @property
@@ -946,24 +950,39 @@ class TuneView(QWidget):
                                  info={"reference": path}))
         return out
 
+    def _background(self, p, k: str, spec: VisualSpec) -> VisualSpec:
+        """The picture a tab with a choice of background shows: the one chosen if the workflow still has it computed, else
+        the tab's own (the stack)."""
+        want = self.bg_of.get(k)
+        return next((b for b in self.steps.backgrounds(p) if b.key == want), spec)
+
     def _image_tab(self, p, k: str, spec: VisualSpec):
-        vi = self.steps.view_image(p, spec)
-        if vi is None:
-            self._message(si.not_computed(spec.stage))
+        shown = self._background(p, k, spec) if spec.backgrounds else spec
+        if shown.kind == "render":                        # the final image, over which the solution is drawn
+            self._sky_bar(spec, p, shown)
+            self._render_tab(p, k, shown, spec)
             return
-        if spec.kind == "preview":
+        vi = self.steps.view_image(p, shown)
+        if vi is None:
+            self._message(si.not_computed(shown.stage))
+            return
+        if shown.kind == "preview":
             vi.stretched, vi.white, vi.units = True, 255.0, ""
         if spec.sky:
-            self._sky_bar(spec)
+            self._sky_bar(spec, p, shown)
         v = self._new_view(k, spec)
-        if self._note_row is not None and spec.kind != "preview" and spec.display != "model":   # a model: its own colours
-            if spec.camera:                               # camera colours: Neutral sky, an explicit display option
+        if self._note_row is not None and shown.kind != "preview" and shown.display != "model":   # a model: its own colours
+            if shown.camera:                              # camera colours: Neutral sky, an explicit display option
                 self._note_row.addWidget(self._neutral_box(v))
-            elif spec.kind == "color":                    # before / after: the option is the before's
+            elif shown.kind == "color" and not spec.backgrounds:      # before / after: the option is the before's
                 self._note_row.addWidget(self._neutral_box(v, compare=True))
         if spec.sky:
             self._on(v, v.imageShown, lambda _key, pp=p, vv=v: self._want_sky(pp, vv))
         v.set_image(vi)
+        if spec.backgrounds:                              # one picture with its solution: nothing to compare with
+            v.set_compare_targets([], None)
+            self.center.addWidget(v, 1)
+            return
         targets = self._targets(p, k, spec)
         cur, side = None, False
         if self.cmp_pid is not None:
@@ -1003,9 +1022,13 @@ class TuneView(QWidget):
         return c
 
     # ------------------------------------------------------------ the sky over the stack
-    def _sky_bar(self, spec: VisualSpec):
+    def _sky_bar(self, spec: VisualSpec, p=None, shown: VisualSpec | None = None):
         row = QHBoxLayout()
         row.setSpacing(10)
+        if spec.backgrounds and p is not None:            # the image behind the solution, as many as the workflow has
+            row.addWidget(label(_("Background image:"), "dim"))
+            row.addWidget(self._background_box(p, shown or spec))
+            row.addSpacing(14)
         row.addWidget(label(_("Over the image:"), "dim"))
         for key, text, tip in (("grid", _("Sky grid"), _("The RA / Dec grid of the astrometric solution")),
                                ("stars", _("Catalogue stars"),
@@ -1025,13 +1048,37 @@ class TuneView(QWidget):
         row.addStretch(1)
         self.center.addLayout(row)
 
+    def _background_box(self, p, shown: VisualSpec) -> QComboBox:
+        """The list of the images the solution can be drawn over (those the workflow has computed, in its order)."""
+        cb = QComboBox()
+        cb.setMinimumWidth(190)
+        cb.setToolTip(_("The image the grid and the stars are drawn over"))
+        for b in self.steps.backgrounds(p):
+            cb.addItem(_(b.caption), b.key)
+        cb.setCurrentIndex(max(cb.findData(shown.key), 0))
+        cb.activated.connect(lambda i, c=cb, kk=self._cur[1]: self._pick_background(kk, c.itemData(i)))
+        return cb
+
+    def _pick_background(self, k: str, key: str):
+        self._remember()
+        self.bg_of[k] = key
+        self.refresh()
+
     def _want_sky(self, p, v: ImageView):
         prep = v.prepared()
         if prep is None or self._cur is None:
             return
         w, h = prep.size()
         which = self.steps.which_for(p, "astrometry")
-        got = self._need("sky", self._keys(p, "astrometry", "catalogs") + (w, h), si.sky_bundle, p.pid, which, w, h)
+        keys = self._keys(p, "astrometry", "catalogs") + (w, h)
+        if self._render_spec is not None:                 # the final image: a part of the stack grid, reduced
+            if self._render_geom is None:
+                return
+            grid, origin, _size = self._render_geom
+            got = self._need("sky", keys + (tuple(grid), tuple(origin)), si.final_sky_bundle, p.pid, which, grid, origin,
+                             w, h)
+        else:
+            got = self._need("sky", keys, si.sky_bundle, p.pid, which, w, h)
         if got is not None:
             self._add_sky(got)
 
@@ -1070,12 +1117,17 @@ class TuneView(QWidget):
             v.canvas2.update()
 
     # ------------------------------------------------------------ the final image (Output)
-    def _render_tab(self, p, k: str, spec: VisualSpec):
+    def _render_tab(self, p, k: str, spec: VisualSpec, tab: VisualSpec | None = None):
+        """The final image ``spec``, in the tab ``tab`` (default: its own; Astrometry draws its solution over it)."""
         which = self.steps.which_for(p, spec.stage)
         key = self.steps.key_of(p, spec.stage, which)
         hit = self.service.cache.get((spec.stage, key, spec.name, which)) if key else None
-        v = self._new_view(k, spec)
+        tab = tab or spec
+        self._render_spec = spec
+        v = self._new_view(k, tab)
         self.center.addWidget(v, 1)
+        if tab.sky:
+            self._on(v, v.imageShown, lambda _key, pp=p, vv=v: self._want_sky(pp, vv))
         if hit is not None:
             self._show_render(hit)
             return
@@ -1095,7 +1147,7 @@ class TuneView(QWidget):
             return None
 
     def _image_ready(self, slot: int, token: int, im):
-        if slot != 0 or token != self._render_token or self._cur is None or self._cur[2].kind != "render":
+        if slot != 0 or token != self._render_token or self._cur is None or self._render_spec is None:
             return
         self._show_render(im)
 
@@ -1106,10 +1158,12 @@ class TuneView(QWidget):
         self.view.canvas.update()
 
     def _show_render(self, im):
-        p, k, spec = self._cur
+        p, k, tab = self._cur
+        spec = self._render_spec or tab
         v = self.view
         if v is None:
             return
+        self._render_geom = (im.grid, im.origin, im.size) if im.grid else None
         which = self.steps.which_for(p, spec.stage)
         wcs = si.final_wcs_source(self.s.p, p.pid, which, im.grid, im.origin, im.size) if im.grid else None
         # where it sits: the render's crop of the stack grid at half size (compared on the same sky)
@@ -1118,6 +1172,9 @@ class TuneView(QWidget):
         vi = ViewImage(im.stretched.arr, _("Final image"), key=("inspect", "render") + tuple(im.key), wcs=wcs,
                        camera=False, stretched=True, white=255.0, units="", place=place)
         v.set_image(vi)
+        if tab.backgrounds:                               # the solution's picture: nothing to compare with
+            v.set_compare_targets([], None)
+            return
         targets = self._targets(p, k, spec)
         v.set_compare_mode("side")
         v.set_compare_targets(targets, None)

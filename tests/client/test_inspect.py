@@ -422,7 +422,7 @@ def test_the_astrometry_block_opens_on_the_users_image_with_its_solution(win):
     prep = v.prepared()
     assert prep.size() == (6384, 4272) and prep.wcs is not None
     shown = texts_of(t)
-    assert any(x.startswith("Your stack with the sky grid") for x in shown)
+    assert any(x.startswith("Your image with the sky grid") for x in shown)
     assert "Sky grid" in shown and "Catalogue stars" in shown
     sky = next(d for (name, _k), d in t._data.items() if name == "sky")
     assert isinstance(sky, si.SkyData) and {ln.kind for ln in sky.lines} == {"ra", "dec"}

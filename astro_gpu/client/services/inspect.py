@@ -114,6 +114,7 @@ class VisualSpec:
     units: str = "adu"
     shown: str = ""          # its name in the viewer (the split's tag), when it is not the caption (English)
     compare_names: tuple = ()        # the names of the pictures of ``compare`` in the viewer, when not their captions
+    backgrounds: bool = False        # the picture behind its overlay is the user's choice (``Steps.backgrounds``), no compare
     display: str = ""        # the viewer's kind of image (``ViewImage.kind``): "model" for a sky model, a gradient
     #                          surface, a star flat (linked, from zero: its colour is its own); "" a light
 
@@ -1745,6 +1746,30 @@ def sky_bundle(p, wid: int, which: str, w: int, h: int) -> SkyData | None:
     """The grid and the catalogue stars a picture of the stack shows (None without a solution)."""
     wcs = _wcs_of(p, wid, which) or _wcs_of(p, wid, "current")
     return sky_data(p, wid, which, wcs, w, h)
+
+
+def final_sky_bundle(p, wid: int, which: str, grid, origin, w: int, h: int) -> SkyData | None:
+    """The same for a final image, which is a part of the stack grid (``grid``: its size there, ``origin``: its corner)
+    reduced to w x h pixels: the solution is shifted and scaled with it (the grid and the names through the cropped,
+    scaled solution, the catalogue stars by the same shift and scale)."""
+    from ..annotate import crop_wcs
+    wcs = _wcs_of(p, wid, which) or _wcs_of(p, wid, "current")
+    if wcs is None or not grid or not w or not h:
+        return None
+    ox, oy = float(origin[0]), float(origin[1])
+    f = float(grid[0]) / float(w)                                  # one factor, as the final image's readout has
+    sky = sky_data(p, wid, which, crop_wcs(wcs, origin, ((w, h), tuple(grid))), w, h)
+    try:
+        s = catalogue_stars(p, wid, which, int(ox + grid[0]) + 1, int(oy + grid[1]) + 1)
+    except (OSError, ValueError, KeyError):
+        s = None
+    if s is not None:
+        s = s[(s[:, 0] >= ox) & (s[:, 1] >= oy)].copy()
+        s[:, 0] = (s[:, 0] + 0.5 - ox) / f - 0.5
+        s[:, 1] = (s[:, 1] + 0.5 - oy) / f - 0.5
+        s = s[(s[:, 0] >= 0) & (s[:, 0] < w) & (s[:, 1] >= 0) & (s[:, 1] < h)]
+    sky.stars = s
+    return sky
 
 
 # ---------------------------------------------------------------------------------------------- the service

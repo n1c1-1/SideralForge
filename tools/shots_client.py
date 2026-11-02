@@ -277,7 +277,7 @@ def part_inspect():
             walk.guarded(walk.show_tab, k, key, f"inspect_{k}_{key}", drz)
             if k == "empilement" and key == "stack":
                 walk.guarded(stack_histogram)
-            if k in ("fond", "couleur", "astrometrie") and key == keys[0]:
+            if k in ("fond", "couleur") and key == keys[0]:
                 walk.guarded(side_by_side, k)
     for key in ("stack", "rejection", "coverage", "weights"):
         keys = [v.key for v in w.tune.visuals(s.view(cla), "empilement")]
