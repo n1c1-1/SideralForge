@@ -1346,15 +1346,15 @@ class ProjectModel(QObject):
         return float(v) if v else None
 
     def selection_rule(self, p=None) -> str:
-        """The frame selection rule of the workflow: "min_weight" (the default), "sota" (k × σ filters) or "legacy" (the
+        """The frame selection rule of the workflow: "min_weight" (the default), "sota" (k × σ filters) or "thresholds" (the
         transparency and star-size thresholds)."""
         p = p or self.path
         v = self.param_value(p, "stack", "selection") if p is not None else None
         return str(v) if v else "min_weight"
 
     def thresholds_active(self, p=None) -> bool:
-        """Whether the transparency and star-size thresholds act: only with the "legacy" rule."""
-        return self.selection_rule(p) == "legacy"
+        """Whether the transparency and star-size thresholds act: only with the "thresholds" rule."""
+        return self.selection_rule(p) == "thresholds"
 
     def thresholds_unit(self) -> str:
         return "px" if self.fwhm_median() else "× median"

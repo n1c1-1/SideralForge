@@ -2,7 +2,7 @@
 
 A "steady night" spreads every measure on the quantiles of a Gaussian (no frame beyond 2.2 sigma for 40 frames), so
 the k = 2.5 filters must keep everything; then a cloud passage, wind, and frames whose weight is under the minimum.
-The weights are given (the stack's own, stages/stack.legacy_weights); the selection never changes them.
+The weights are given (the stack's own, stages/stack.quality_weights); the selection never changes them.
 """
 import json
 from statistics import NormalDist
@@ -39,7 +39,7 @@ def night(n=N):
 
 
 def weights(m):
-    """The stack's weight of each frame (stages/stack.legacy_weights' formula, the best = 1)."""
+    """The stack's weight of each frame (stages/stack.quality_weights' formula, the best = 1)."""
     w = (m["transparency"] / m["noise"]) ** 2 * (np.percentile(m["fwhm"], 5) / m["fwhm"]) ** 2
     return w / w.max()
 
@@ -101,7 +101,7 @@ def test_failed_registrations_and_missing_weights_are_left_out_with_a_reason():
     aligned = np.ones(N, bool)
     aligned[3] = False
     w = weights(m)
-    w[3] = 0.0                                                     # legacy_weights gives 0 to a frame not aligned
+    w[3] = 0.0                                                     # quality_weights gives 0 to a frame not aligned
     w[5] = np.nan
     fs = select(w, aligned=aligned)
     assert fs.codes[3] == "not_aligned" and fs.reasons[3] == "not aligned"

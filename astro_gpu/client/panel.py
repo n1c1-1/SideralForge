@@ -746,8 +746,8 @@ class Panel(QWidget):
         live = s.thresholds_active(p)
         self.bv.addWidget(self.group_title(_("Thresholds")))
         if not live:
-            why = label(_("These thresholds act only with the “{rule}” rule.").format(
-                rule=texts.choice_label("legacy", language())), "small", wrap=True)
+            why = label(_("These thresholds act only when the frame selection is “{rule}”.").format(
+                rule=texts.choice_label("thresholds", language())), "small", wrap=True)
             why.setObjectName("thresholds_reason")
             self.bv.addWidget(why)
         for name, val, unit, lo, hi, step, which in (

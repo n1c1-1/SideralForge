@@ -53,7 +53,7 @@ class FramesChart(ChartView):
     drag pans, a click picks the frame under the cursor (``picked``), the grips on the left move the thresholds
     (``changed`` when dropped), Shift + drag draws a rectangle of frames to exclude or keep by hand.
 
-    ``thresholds``: whether the thresholds act (the stack's "previous version" selection rule). Without, there are no
+    ``thresholds``: whether the thresholds act (the stack's "thresholds" selection rule). Without, there are no
     grips and no threshold lines, and a frame is left out for the reason the table gives (the rule's), or by hand."""
     changed = Signal()
     picked = Signal(int)

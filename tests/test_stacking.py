@@ -1,16 +1,14 @@
-"""Stacking v2 (docs/spec/STACKING.md; the decisions of 2 November, docs/pilot/PILOT.md §3c): every setting at its
-previous version's value is the previous version bit for bit with the same store keys; the new defaults (Moffat FWHM,
-coverage rule, minimum-weight selection) and the method advice on a toy night (CPU); the removed changes are gone.
+"""Registration's star measures and the stack's settings on a toy night (CPU): the Moffat FWHM, the frame selection
+(automatic, k x sigma, thresholds) with its reasons, the coverage rule and the method advice, the Classic method, the
+drizzle with the integration's rejection, what the API serves; and the store keys of projects that still store
+removed settings.
 
-The previous version is the engine of BASE (git), loaded from git; the toy night is a v1 project with done inventory,
-calibrate (a float16 cache of CFA frames) and register results: stars with a colour of their own and red and blue
-images offset from the green one, dithered by a few pixels, a satellite trail, a noisier frame and a hazy one."""
+The toy night is a v1 project with done inventory, calibrate (a float16 cache of CFA frames) and register results:
+stars with a colour of their own and red and blue images offset from the green one, dithered by a few pixels, a
+satellite trail, a noisier frame and a hazy one."""
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
-import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,11 +20,9 @@ from astro_gpu.core.journal import Journal
 from astro_gpu.core.project import Inputs, Project
 from astro_gpu.core.stage import Context, StageError
 
-REPO = Path(__file__).resolve().parents[1]
-#: the engine before stacking v2 was wired in (stack.py and register.py as the modules were committed)
-BASE = "bdbbc77"
 H, W = 320, 448
 CH = np.array([0, 1, 1, 2])                    # RGGB: the colour of each 2 x 2 position k = 2 row + column
+
 
 
 # ---------------------------------------------------------------------------------------------- the toy night
@@ -114,9 +110,9 @@ def toy_night(root: Path, n: int = 12, n_stars: int = 360, seed: int = 0, red=(0
     return proj, truth
 
 
+
 class InProcessPool:
-    """multiprocessing's Pool, in this process: the registration's workers without spawning (and the engine of BASE,
-    loaded from git, has no file a spawned worker could import)."""
+    """multiprocessing's Pool, in this process: the registration's workers without spawning."""
 
     def __init__(self, processes=None, initializer=None, initargs=()):
         if initializer is not None:
@@ -137,35 +133,6 @@ def in_process(module):
     return module
 
 
-def base_module(path: str, name: str):
-    """A module of the engine at BASE (from git), in its package (relative imports work)."""
-    try:
-        src = subprocess.run(["git", "show", f"{BASE}:{path}"], cwd=REPO, capture_output=True, text=True,
-                             check=True, encoding="utf-8").stdout
-    except (OSError, subprocess.CalledProcessError):
-        pytest.skip(f"git or commit {BASE} not available")
-    pkg = path.rsplit("/", 1)[0].replace("/", ".")
-    mod = types.ModuleType(f"{pkg}.{name}")
-    mod.__package__ = pkg
-    sys.modules[mod.__name__] = mod
-    exec(compile(src, f"{BASE}:{path}", "exec"), mod.__dict__)
-    return mod
-
-
-def git_text(path: str) -> str:
-    try:
-        return subprocess.run(["git", "show", f"{BASE}:{path}"], cwd=REPO, capture_output=True, text=True,
-                              check=True, encoding="utf-8").stdout
-    except (OSError, subprocess.CalledProcessError):
-        pytest.skip(f"git or commit {BASE} not available")
-
-
-def _function_source(src: str, name: str) -> str:
-    import ast
-    node = next(n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == name)
-    return ast.get_source_segment(src, node) + "\n"
-
-
 def run_stage(proj, stage, params, device="cpu"):
     ctx = Context(proj, stage, Journal(proj.logs, echo=False), device)
     with deterministic():
@@ -182,31 +149,6 @@ def copy_project(src: Path, dst: Path, stages=("inventory", "calibrate", "regist
     return proj
 
 
-def same_outputs(a: Path, b: Path) -> list[str]:
-    """The files that differ between two stage folders (arrays bit for bit, JSON equal, other files byte for byte);
-    the manifests and checkpoints left out."""
-    skip = {"manifest.json"}
-    fa = {p.relative_to(a) for p in a.rglob("*") if p.is_file() and p.name not in skip and "_ckpt" not in p.parts}
-    fb = {p.relative_to(b) for p in b.rglob("*") if p.is_file() and p.name not in skip and "_ckpt" not in p.parts}
-    diff = sorted(str(x) for x in fa ^ fb)
-    for rel in sorted(fa & fb):
-        x, y = a / rel, b / rel
-        if x.suffix == ".npy":
-            u, v = np.load(x), np.load(y)
-            ok = u.dtype == v.dtype and u.shape == v.shape and u.tobytes() == v.tobytes()
-        elif x.suffix == ".npz":
-            with np.load(x) as zu, np.load(y) as zv:
-                ok = sorted(zu.files) == sorted(zv.files) and all(
-                    zu[k].dtype == zv[k].dtype and zu[k].tobytes() == zv[k].tobytes() for k in zu.files)
-        elif x.suffix == ".json":
-            ok = json.loads(x.read_text()) == json.loads(y.read_text())
-        else:
-            ok = x.read_bytes() == y.read_bytes()
-        if not ok:
-            diff.append(str(rel))
-    return diff
-
-
 @pytest.fixture(scope="module")
 def night(tmp_path_factory):
     root = tmp_path_factory.mktemp("night")
@@ -216,74 +158,20 @@ def night(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def small_night(tmp_path_factory):
-    """A smaller night for the bit-for-bit comparisons (no star count to reach)."""
+    """A smaller night for the Classic method's runs."""
     root = tmp_path_factory.mktemp("small")
     proj, truth = toy_night(root / "p", n=8, n_stars=140, noisy=2, hazy=4, trail=3, size=(192, 256))
     return root, proj, truth
 
 
-def stack_with(night, name: str, **switches):
+def stack_with(night, name: str, **settings):
     """The stack of the toy night with these settings (scale 1, its sensor model), in a project of its own."""
     from astro_gpu.stages.stack import Stack, StackParams
     root, proj, truth = night
     p = copy_project(proj.root, root / name)
-    params = {"scale": 1.0, "pixfrac": 1.0, "gain": 1.0, "read_noise": 6.0, "half_block": 2, **switches}
+    params = {"scale": 1.0, "pixfrac": 1.0, "gain": 1.0, "read_noise": 6.0, "half_block": 2, **settings}
     ctx = run_stage(p, Stack(), StackParams(**params))
     return p, ctx
-
-
-# ---------------------------------------------------------------------------------------------- the previous version
-
-STACK_CASES = {
-    "defaults": {},
-    "drizzle 1.5 / 0.7, fixed pattern, a frame by hand": {"scale": 1.5, "pixfrac": 0.7, "pattern_removal": True,
-                                                         "pattern_frames": 8, "exclude": ["L01.fits"]},
-}
-
-
-@pytest.mark.parametrize("case", list(STACK_CASES), ids=["previous values", "drizzle 1.5, pattern, by hand"])
-def test_every_setting_at_its_previous_value_is_the_previous_stack_bit_for_bit(small_night, case):
-    """The stack of BASE and today's with every stacking-v2 setting at its previous version's value: the same files,
-    bit for bit (the manifest aside)."""
-    from astro_gpu.stages.stack import PREVIOUS, Stack, StackParams
-    old = base_module("astro_gpu/stages/stack.py", "_stack_base")
-    root, proj, _ = small_night
-    params = {"gain": 1.0, "read_noise": 6.0, "half_block": 2, "min_transparency": 0.6, **STACK_CASES[case]}
-    tag = case[:8].replace(" ", "_")
-    pa = copy_project(proj.root, root / f"old_{tag}")
-    pb = copy_project(proj.root, root / f"new_{tag}")
-    ca = run_stage(pa, old.Stack(), old.StackParams(**params))
-    cb = run_stage(pb, Stack(), StackParams(**params, **PREVIOUS))
-    assert same_outputs(pa.stage_dir("stack"), pb.stage_dir("stack")) == []
-    assert ca.metrics == cb.metrics
-    assert sorted(p.name for p in pb.stage_dir("stack").iterdir()) == sorted(p.name for p in
-                                                                             pa.stage_dir("stack").iterdir())
-
-
-def test_the_previous_registration_is_bit_for_bit(small_night):
-    """The registration of BASE and today's with ``fwhm_method = legacy`` on the same star catalogues: the same files,
-    bit for bit. (sep's extraction of a frame depends slightly on what the same process extracted before, in BASE as
-    today: the catalogues come from one run, through the checkpoint both read; the worker that makes them is BASE's,
-    unchanged.)"""
-    import inspect
-    import shutil
-
-    from astro_gpu.stages import register as new
-    old = in_process(base_module("astro_gpu/stages/register.py", "_register_base"))
-    in_process(new)
-    assert inspect.getsource(new._catalog) == _function_source(git_text("astro_gpu/stages/register.py"), "_catalog")
-    root, proj, _ = small_night
-    p0 = copy_project(proj.root, root / "reg_ck", ("inventory", "calibrate"))
-    run_stage(p0, new.Register(), new.RegisterParams(workers=1, fwhm_method="legacy"))
-    pa = copy_project(proj.root, root / "reg_old", ("inventory", "calibrate"))
-    pb = copy_project(proj.root, root / "reg_new", ("inventory", "calibrate"))
-    for q in (pa, pb):
-        shutil.copytree(p0.stage_dir("register") / "_ckpt", q.stage_dir("register") / "_ckpt")
-    ca = run_stage(pa, old.Register(), old.RegisterParams(workers=1))
-    cb = run_stage(pb, new.Register(), new.RegisterParams(workers=1, fwhm_method="legacy"))
-    assert same_outputs(pa.stage_dir("register"), pb.stage_dir("register")) == []
-    assert same_outputs(p0.stage_dir("register"), pb.stage_dir("register")) == []
-    assert ca.metrics == cb.metrics and not (pb.stage_dir("register") / "chan.npz").exists()
 
 
 # ---------------------------------------------------------------------------------------------- the store keys
@@ -305,108 +193,68 @@ def _project2(tmp_path):
     return p
 
 
-def _keys_of(p, rules):
+def _keys_of(p):
     from astro_gpu.core.store import InputScan, Keys
-    k = Keys(p, rules=rules, scan=InputScan())
+    k = Keys(p, scan=InputScan())
     return {w.id: k.keys(w.id) for w in p.workflows}
 
 
-def base_rules():
-    """The key rules of BASE: its store.py, with its stack and register (their settings before stacking v2)."""
-    from astro_gpu.core import workflow as wfl
-    from astro_gpu.stages import v2
-    store = base_module("astro_gpu/core/store.py", "_store_base")
-    stages = []
-    for s in v2.V2_STAGES():
-        if s.name == "stack":
-            s = base_module("astro_gpu/stages/stack.py", "_stack_base").Stack()
-        elif s.name == "register":
-            s = base_module("astro_gpu/stages/register.py", "_register_base").Register()
-        stages.append(s)
-    chains = wfl.Chains(stages, order=wfl.ORDER, extra=wfl.EXTRA, optional=wfl.OPTIONAL, blocks=wfl.BLOCKS,
-                        rule=wfl.chain_stages)
-    return store, store.KeyRules(chains, v2.AUTO_FIELDS, v2.PATH_FIELDS)
-
-
-def store_previous(w):
-    """The previous version's values of the settings whose default changed, stored in a workflow (where it stores
-    none of its own)."""
-    from astro_gpu.stages.v2 import KEY_BASELINE
-    for st, fields in KEY_BASELINE.items():
-        d = w.params.setdefault(st, {})
-        for k, v in fields.items():
-            d.setdefault(k, v)
-
-
-def test_keys_with_the_previous_values_stored_are_the_previous_keys(tmp_path):
-    """The previous values of the changed defaults stored, every key is BASE's, also with every other new setting
-    stored at its default and the removed settings still stored; left unset (the new defaults), the registration and
-    the stack get new keys, and what follows them, not what comes before."""
-    from astro_gpu.core.store import key_rules
-    from astro_gpu.stages.register import RegisterParams
-    from astro_gpu.stages.stack import StackParams
-    from astro_gpu.stages.v2 import KEY_BASELINE, RETIRED
-    store, rules0 = base_rules()
+def test_removed_settings_stored_in_a_project_are_ignored(tmp_path):
+    """The old star size measure and the old drizzle scale rule are gone: a project that still stores them gets the
+    keys of the current behaviour, whose last values stay in every key (stages/v2.KEY_CONSTANTS) so that the results
+    computed with them keep their keys; the settings removed earlier are ignored the same way."""
+    from astro_gpu.core.store import Keys
+    from astro_gpu.stages.v2 import KEY_CONSTANTS, RETIRED
+    assert {"fwhm_method"} <= RETIRED["register"] and {"scale_rule"} <= RETIRED["stack"]
     p = _project2(tmp_path)
-    before = {w.id: store.Keys(p, rules=rules0).keys(w.id) for w in p.workflows}
-    new = {"stack": set(StackParams.model_fields) - set(rules0.params("stack").model_fields),
-           "register": set(RegisterParams.model_fields) - set(rules0.params("register").model_fields)}
-    assert new["stack"] == {"method", "scale_rule", "selection", "selection_transparency", "classic_debayer",
-                            "classic_interpolation", "classic_clamping", "classic_rejection", "classic_cfa_balance",
-                            "drizzle_rejection"}
-    assert new["register"] == {"fwhm_method"}
-    # the new defaults: the registration (Moffat), the stack and what follows change; calibration does not
-    now = _keys_of(p, key_rules())
-    for w in p.workflows:
-        assert now[w.id]["calibrate"] == before[w.id]["calibrate"]
-        assert now[w.id]["register"] != before[w.id]["register"] and now[w.id]["stack"] != before[w.id]["stack"]
-    for w in p.workflows:
-        store_previous(w)
-    assert _keys_of(p, key_rules()) == before
-    for w in p.workflows:                                   # every other new setting stored at its default
-        for st, names in new.items():
-            w.params.setdefault(st, {}).update({k: key_rules().defaults(st)[k] for k in names
-                                                if k not in KEY_BASELINE.get(st, {})})
-    assert _keys_of(p, key_rules()) == before
-    for w in p.workflows:                                   # the removed settings, as the bench's projects store them
-        w.params["stack"].update(rejection="hubble", weighting="noise", normalisation="local")
-        w.params["register"]["channel_align"] = "per_block"
-    assert RETIRED["stack"] == {"rejection", "weighting", "normalisation"} and RETIRED["register"] == {"channel_align"}
-    assert _keys_of(p, key_rules()) == before
+    before = _keys_of(p)
     w = p.workflows[1]
-    w.params["stack"]["selection"] = "min_weight"
-    after = _keys_of(p, key_rules())[w.id]
-    assert after["register"] == before[w.id]["register"] and after["calibrate"] == before[w.id]["calibrate"]
-    assert after["stack"] != before[w.id]["stack"] and after["color"] != before[w.id]["color"]
-    # the new default stored or left unset: the same key
-    del w.params["stack"]["selection"]
-    assert _keys_of(p, key_rules())[w.id]["stack"] == after["stack"]
+    parts = Keys(p).key_parts(w.id, "stack")["p"]
+    assert parts["scale_rule"] == KEY_CONSTANTS["stack"]["scale_rule"] == "coverage"
+    assert Keys(p).key_parts(w.id, "register")["p"]["fwhm_method"] == "moffat"
+    for x in p.workflows:
+        x.params.setdefault("register", {}).update(fwhm_method="legacy", channel_align="per_block")
+        x.params.setdefault("stack", {}).update(scale_rule="legacy", rejection="hubble", weighting="noise",
+                                                normalisation="local")
+    assert _keys_of(p) == before
+
+
+def test_the_thresholds_selection_keeps_its_keys_under_its_old_name(tmp_path):
+    """``selection = thresholds`` was stored as "legacy": both read the same, with the key such results always had
+    (the previous default, out of the key); the default (minimum weight) is another result."""
+    from astro_gpu.stages.stack import StackParams
+    assert StackParams(selection="legacy").selection == "thresholds"
+    p = _project2(tmp_path)
+    w = p.workflows[1]
+    default = _keys_of(p)[w.id]
+    w.params["stack"]["selection"] = "legacy"
+    old = _keys_of(p)[w.id]
+    w.params["stack"]["selection"] = "thresholds"
+    assert _keys_of(p)[w.id] == old and old["stack"] != default["stack"]
+    assert old["register"] == default["register"]
 
 
 def test_the_colour_correction_option_keeps_the_keys_of_its_default(tmp_path):
-    """The colour stage's ``correction`` (2 November): at its default ("full", the behaviour before it), stored or
-    not, every key stays what it was without the setting; "per_colour" changes the colour key and what follows it,
-    not what comes before."""
-    from astro_gpu.core.store import key_rules
+    """The colour stage's ``correction`` at its default ("full"), stored or not, keeps every key; "per_colour"
+    changes the colour key and what follows it, not what comes before."""
     from astro_gpu.stages.color import ColorParams
     assert ColorParams().correction == "full"
     p = _project2(tmp_path)
-    before = _keys_of(p, key_rules())
+    before = _keys_of(p)
     for w in p.workflows:
         w.params.setdefault("color", {})["correction"] = "full"
-    assert _keys_of(p, key_rules()) == before
+    assert _keys_of(p) == before
     w = p.workflows[0]
     w.params["color"]["correction"] = "per_colour"
-    after = _keys_of(p, key_rules())[w.id]
+    after = _keys_of(p)[w.id]
     assert after["stack"] == before[w.id]["stack"] and after["color"] != before[w.id]["color"]
     with pytest.raises(ValueError):
         ColorParams(correction="matrix")
 
 
 def test_the_classic_part_has_a_revision_of_its_own_in_the_keys(tmp_path):
-    """The Classic part's revision (stack.CLASSIC_VERSION: the white balance before RCD) is in the key of the stacks
-    that use it, the Classic method and the drizzle with the integration's rejection, and of no other: the stacks
-    made before it are made again, the drizzle stacks keep their keys."""
+    """The Classic part's revision (stack.CLASSIC_VERSION) is in the key of the stacks that use it, the Classic method
+    and the drizzle with the integration's rejection, and of no other."""
     from astro_gpu.core.store import Keys
     from astro_gpu.stages.stack import CLASSIC_VERSION, Stack
     p = _project2(tmp_path)
@@ -424,117 +272,73 @@ def test_the_classic_part_has_a_revision_of_its_own_in_the_keys(tmp_path):
     assert Keys(p).key_parts(w.id, "stack") == drizzle
 
 
-def test_pixfrac_is_automatic_only_under_the_coverage_rule(tmp_path):
-    """stack.pixfrac stored at its default: dropped from the key under the previous scale rule (as before), kept under
-    the coverage rule (now the default), whose automatic drop size it overrides (AUTO_WHEN)."""
+def test_pixfrac_is_automatic(tmp_path):
+    """stack.pixfrac is set by the coverage rule: stored at its default, it overrides the automatic drop size and
+    stays in the key."""
     from astro_gpu.core.store import Keys, key_rules
-    r = key_rules()
-    assert "pixfrac" not in r.auto_fields("stack", {"scale_rule": "legacy"})
-    assert "pixfrac" in r.auto_fields("stack", {"scale_rule": "coverage"}) and "pixfrac" in r.auto_fields("stack")
+    assert "pixfrac" in key_rules().auto_fields("stack")
     p = _project2(tmp_path)
-    w = p.workflows[1]
-    w.params["stack"]["scale_rule"] = "legacy"
-    assert "pixfrac" not in Keys(p).key_parts(w.id, "stack")["p"]
-    del w.params["stack"]["scale_rule"]                     # the default: the coverage rule
-    kp = Keys(p).key_parts(w.id, "stack")["p"]
-    assert kp["pixfrac"] == 0.7 and kp["scale_rule"] == "coverage"
-    with pytest.raises(ValueError, match="scale_rule"):
-        w.params["stack"]["scale_rule"] = "wrong"
-        Keys(p).key(w.id, "stack")
-
-
-REAL = [Path("F:/astro_projets/Horsehead"), Path("F:/astro_essais/bench/heart/ours_express")]
-
-
-@pytest.mark.parametrize("root", REAL, ids=[r.name for r in REAL])
-def test_real_projects_keep_their_keys_with_the_previous_values(root):
-    """The keys of real projects, read-only: with the previous values of the changed defaults stored (in memory),
-    today's equal BASE's, for every workflow and stage."""
-    if not (root / "project.astroproj").is_file():
-        pytest.skip(f"{root} not available")
-    from astro_gpu.core import project2 as p2
-    from astro_gpu.core.store import key_rules
-    before = {f: f.stat().st_mtime_ns for f in root.glob("*") if f.is_file()}
-    p = p2.load(root)
-    store, rules0 = base_rules()
-    old = {w.id: store.Keys(p, rules=rules0).keys(w.id) for w in p.workflows}
-    for w in p.workflows:
-        store_previous(w)
-    assert old and _keys_of(p, key_rules()) == old
-    assert {f: f.stat().st_mtime_ns for f in root.glob("*") if f.is_file()} == before
+    assert Keys(p).key_parts(p.workflows[1].id, "stack")["p"]["pixfrac"] == 0.7
 
 
 # ---------------------------------------------------------------------------------------------- register
 
 @pytest.fixture(scope="module")
 def registered(night):
-    """Register run on the toy night with its defaults (the Moffat fit; in this process)."""
+    """Register run on the toy night (in this process)."""
     from astro_gpu.stages import register as reg
     in_process(reg)
     root, proj, truth = night
-    p = copy_project(proj.root, root / "reg_v2", ("inventory", "calibrate"))
+    p = copy_project(proj.root, root / "reg", ("inventory", "calibrate"))
     ctx = run_stage(p, reg.Register(), reg.RegisterParams(workers=1))
     return p, ctx, truth
 
 
-def test_moffat_fwhm_is_measured_by_default_beside_the_old_one(registered, night):
+def test_moffat_fwhm_is_measured_beside_the_2x2_one(registered):
     from astro_gpu.stages import register as reg
     p, ctx, truth = registered
-    assert reg.RegisterParams().fwhm_method == "moffat" and "channel_align" not in reg.RegisterParams.model_fields
+    assert "fwhm_method" not in reg.RegisterParams.model_fields
     z = np.load(p.stage_dir("register") / "reg.npz")
     assert {"fwhm_moffat", "roundness_moffat", "beta_moffat", "stars_moffat"} <= set(z.files)
     assert np.nanmedian(z["fwhm_moffat"]) == pytest.approx(truth.fwhm, rel=0.08)
-    assert np.nanmedian(z["fwhm"]) > 1.3 * truth.fwhm                      # the 2 x 2 measure, kept as it was
+    assert np.nanmedian(z["fwhm"]) > 1.3 * truth.fwhm                      # the 2 x 2 measure
     assert np.nanmedian(z["roundness_moffat"]) > 0.85
     assert ctx.metrics["fwhm_moffat_px"] == pytest.approx(truth.fwhm, rel=0.08)
-    assert not (p.stage_dir("register") / "chan.npz").exists() and "channel_alignment" not in ctx.metrics
-    # the old arrays are still there, the same measures (to sep's run-to-run differences: see the bit-for-bit test)
-    root = night[0]
-    q = copy_project(night[1].root, root / "reg_v2_off", ("inventory", "calibrate"))
-    in_process(reg)
-    run_stage(q, reg.Register(), reg.RegisterParams(workers=1, fwhm_method="legacy"))
-    old = np.load(q.stage_dir("register") / "reg.npz")
-    assert set(old.files) < set(z.files) and int(old["ref"]) == int(z["ref"])
-    for k in ("fwhm", "transp", "coef", "noise"):
-        assert np.allclose(old[k], z[k], rtol=2e-3, atol=2e-3), k
 
 
 # ---------------------------------------------------------------------------------------------- the stack
 
-def test_the_removed_changes_are_gone():
+def test_the_removed_settings_are_gone():
     from astro_gpu.stages import stack as st
-    for name in ("rejection", "weighting", "normalisation"):
+    for name in ("rejection", "weighting", "normalisation", "scale_rule"):
         assert name not in st.StackParams.model_fields and name not in st.SWITCHES
-        with pytest.raises(ValueError):
-            st.StackParams(**{name: "legacy"})
     for mod in ("rejection_hubble", "channel_align"):
         with pytest.raises(ImportError):
             __import__(f"astro_gpu.core.{mod}")
-    assert not hasattr(st, "v2_frames") and not hasattr(st, "FramesV2")
 
 
-def test_the_new_defaults():
-    from astro_gpu.stages.stack import PREVIOUS, StackParams
+def test_the_defaults():
+    from astro_gpu.stages.stack import SELECTIONS, StackParams
     p = StackParams()
-    assert (p.method, p.scale_rule, p.selection) == ("drizzle", "coverage", "min_weight") and p.v2
-    assert not StackParams(**PREVIOUS).v2 and StackParams(**{**PREVIOUS, "selection_transparency": "off"}).v2 is False
+    assert (p.method, p.selection, p.drizzle_rejection) == ("drizzle", "min_weight", "own")
+    assert SELECTIONS == ("min_weight", "sota", "thresholds")
 
 
-def test_the_colour_alignment_for_the_whole_night_stays_on(night):
-    """No per-block mode any more; the whole night's alignment, measured on the first mean, is applied by default."""
+def test_the_colour_alignment_for_the_whole_night_is_on(night):
+    """The whole night's channel alignment, measured on the first mean, is applied by default."""
     from astro_gpu.stages.stack import DIAG
     p, ctx = stack_with(night, "chan_night")
     info = ctx.metrics["channel_offsets"]
     assert info["applied"] and info["centre_px"]["R"][0] == pytest.approx(night[2].red[0], abs=0.1)
     diag = json.loads((p.stage_dir("stack") / DIAG).read_text())
-    assert diag["channel_alignment"]["mode"] == "legacy" and diag["channel_alignment"]["applied"]
+    assert diag["channel_alignment"]["mode"] == "night" and diag["channel_alignment"]["applied"]
 
 
 def test_the_default_selection_keeps_every_frame_above_the_minimum_weight(night, tmp_path):
-    """Siril and PixInsight keep almost every frame: by default only a frame weighing less than 5 % of the best one
-    (WBPP) is left out, with its reason; the hazy and the noisy frames are kept with their lower weight."""
+    """By default only a frame weighing less than 5 % of the best one is left out, with its reason; the hazy and the
+    noisy frames are kept with their lower weight."""
     from astro_gpu.core import frame_weights as fwm
-    from astro_gpu.stages.stack import DIAG, Stack, StackParams, legacy_weights
+    from astro_gpu.stages.stack import DIAG, Stack, StackParams, quality_weights
     root, proj, truth = night
     p = copy_project(proj.root, tmp_path / "minw")
     z = dict(np.load(p.stage_dir("register") / "reg.npz"))
@@ -548,9 +352,9 @@ def test_the_default_selection_keeps_every_frame_above_the_minimum_weight(night,
     assert rows[9]["excluded"].endswith("under the minimum of 5 %")
     assert rows[truth.hazy]["weight"] > 0 and rows[truth.noisy]["weight"] > 0
     stats = np.load(p.stage_dir("calibrate") / "frame_stats.npy")
-    w, _ = legacy_weights(z["transp"], z["fwhm"], z["rms"], stats, z["noise"])
+    w, _ = quality_weights(z["transp"], z["fwhm"], z["rms"], stats, z["noise"])
     kept = np.arange(truth.n) != 9
-    np.testing.assert_allclose([r["weight"] for r in rows if r["weight"] > 0], w[kept])     # the weights unchanged
+    np.testing.assert_allclose([r["weight"] for r in rows if r["weight"] > 0], w[kept])
     assert ctx.metrics["frames_used"] == truth.n - 1
     diag = json.loads((p.stage_dir("stack") / DIAG).read_text())
     assert diag["selection"]["selection"] == "min_weight" and diag["selection"]["excluded"]["9"][0]["code"] == "weight"
@@ -558,6 +362,7 @@ def test_the_default_selection_keeps_every_frame_above_the_minimum_weight(night,
 
 def test_selection_at_k_sigma_with_reasons(night, tmp_path):
     from astro_gpu.core import frame_weights as fwm
+    from astro_gpu.stages.stack import Stack, StackParams
     root, proj, truth = night
     p = copy_project(proj.root, tmp_path / "sel")
     z = dict(np.load(p.stage_dir("register") / "reg.npz"))
@@ -565,7 +370,6 @@ def test_selection_at_k_sigma_with_reasons(night, tmp_path):
     fm[2] = 2.0 * truth.fwhm                                           # wind on frame 2
     z["fwhm_moffat"], z["roundness_moffat"] = fm, np.full(truth.n, 0.95)
     np.savez(p.stage_dir("register") / "reg.npz", **z)
-    from astro_gpu.stages.stack import Stack, StackParams
     params = dict(scale=1.0, pixfrac=1.0, gain=1.0, read_noise=6.0, half_block=2, selection="sota")
     ctx = run_stage(p, Stack(), StackParams(**params))
     rows = json.loads((p.stage_dir("stack") / "frames.json").read_text())
@@ -585,9 +389,29 @@ def test_selection_at_k_sigma_with_reasons(night, tmp_path):
     assert rows3[2]["weight"] > 0
 
 
+def test_selection_by_thresholds_with_reasons(night, tmp_path):
+    """The user's thresholds: a frame under the minimum transparency is left out with its reason (and its code), as
+    is a frame excluded by hand; the others are kept."""
+    from astro_gpu.stages.stack import DIAG, Stack, StackParams
+    root, proj, truth = night
+    p = copy_project(proj.root, tmp_path / "thr")
+    z = dict(np.load(p.stage_dir("register") / "reg.npz"))
+    z["transp"] = z["transp"].copy()
+    z["transp"][5] = 0.3                                               # haze on frame 5
+    np.savez(p.stage_dir("register") / "reg.npz", **z)
+    ctx = run_stage(p, Stack(), StackParams(scale=1.0, pixfrac=1.0, gain=1.0, read_noise=6.0, half_block=2,
+                                            selection="thresholds", min_transparency=0.6, exclude=["L01.fits"]))
+    rows = json.loads((p.stage_dir("stack") / "frames.json").read_text())
+    out = {i: r["exclusion_codes"] for i, r in enumerate(rows) if r["weight"] == 0}
+    assert out == {1: "by_hand", 5: "transparency"}
+    assert ctx.metrics["frames_used"] == truth.n - 2
+    diag = json.loads((p.stage_dir("stack") / DIAG).read_text())
+    assert diag["selection"]["selection"] == "thresholds"
+
+
 def test_coverage_rule_and_method_advice_on_the_frames_kept(night, tmp_path):
     """The scale, the drop and the method advice judge the frames the selection keeps (not every aligned frame): the
-    advice counts them; it is an advice (never applied); the previous scale rule keeps its own reasons."""
+    advice counts them; it is an advice (never applied)."""
     from astro_gpu.core import coverage as cv
     from astro_gpu.core.params import resolve
     from astro_gpu.stages.stack import Stack, StackParams
@@ -597,7 +421,7 @@ def test_coverage_rule_and_method_advice_on_the_frames_kept(night, tmp_path):
     z["fwhm_moffat"], z["roundness_moffat"] = np.full(truth.n, 1.6), np.full(truth.n, 0.95)
     np.savez(p.stage_dir("register") / "reg.npz", **z)
     ctx = Context(p, Stack(), Journal(p.logs, echo=False), "cpu")
-    a = Stack().auto(ctx)                                            # the defaults: the coverage rule
+    a = Stack().auto(ctx)
     assert a["scale"].template in cv.FRENCH and a["pixfrac"].template in cv.FRENCH
     assert a["scale"].value in (1.0, 1.5, 2.0) and 0.5 <= a["pixfrac"].value <= 1.0
     m = a["method"]
@@ -606,13 +430,9 @@ def test_coverage_rule_and_method_advice_on_the_frames_kept(night, tmp_path):
     assert params.method == "drizzle" and origin["method"] == "default"      # never applied
     p.set_override("stack", "exclude", ["L00.fits", "L01.fits"])          # two frames out by hand: 10 judged
     assert Stack().auto(ctx)["method"].args == {"n": truth.n - 2}
-    p.set_override("stack", "scale_rule", "legacy")
-    legacy = Stack().auto(ctx)
-    assert "pixfrac" not in legacy and legacy["scale"].template not in cv.FRENCH
-    assert legacy["method"].args == {"n": truth.n - 2}                   # the advice is given under both rules
 
 
-def test_coverage_is_kept_per_colour_with_the_switches(night):
+def test_coverage_is_kept_per_colour(night):
     from astro_gpu.core import coverage as cv
     from astro_gpu.stages.stack import COVERAGE, DIAG
     p, ctx = stack_with(night, "cov_on")
@@ -623,8 +443,9 @@ def test_coverage_is_kept_per_colour_with_the_switches(night):
     assert ctx.metrics["coverage_variation_pct"] == [round(100 * v, 1) for v in var]
     diag = json.loads((p.stage_dir("stack") / DIAG).read_text())
     rule = diag["coverage"]["rule"]
-    assert diag["switches"]["scale_rule"] == "coverage" and rule["scale"]["template"] and rule["applied"]
+    assert rule["scale"]["template"] and diag["switches"]["method"] == "drizzle"
     assert rule["method"]["value"] == "classic" and rule["method"]["template"] == cv.M_FEW
+
 
 
 def test_classic_method_says_when_it_is_not_available(night, monkeypatch):
@@ -671,7 +492,7 @@ def test_classic_method_writes_the_drizzle_files(small_night):
 
 
 def test_drizzle_with_the_integrations_rejection(small_night):
-    """drizzle_rejection = integration (PixInsight's CFA drizzle): the Classic method's rejection on the debayered,
+    """drizzle_rejection = integration (the CFA drizzle of an image integration): the Classic method's rejection on the debayered,
     registered frames (8 frames: winsorized), applied to the drops; the trail is gone from the drizzle, the rejection's
     rate and map are in the diagnostics as the drizzle's own are, and the drizzle's grid and files stay."""
     from astro_gpu.stages import stack as st
@@ -704,14 +525,12 @@ def test_drizzle_with_the_integrations_rejection(small_night):
     assert not np.array_equal(np.load(p2.stage_dir("stack") / "drz_full.npy"), full)
 
 
-def test_switch_values_are_checked():
-    from astro_gpu.stages.register import RegisterParams
+
+def test_choice_values_are_checked():
     from astro_gpu.stages.stack import StackParams
-    for model, name in ((StackParams, "selection"), (StackParams, "scale_rule"), (StackParams, "classic_rejection"),
-                        (StackParams, "drizzle_rejection"), (StackParams, "classic_cfa_balance"),
-                        (RegisterParams, "fwhm_method")):
+    for name in ("selection", "classic_rejection", "drizzle_rejection", "classic_cfa_balance"):
         with pytest.raises(ValueError, match=name):
-            model(**{name: "wrong"})
+            StackParams(**{name: "wrong"})
 
 
 # ---------------------------------------------------------------------------------------------- the API
@@ -724,31 +543,23 @@ def _served_by(monkeypatch, proj):
     return api
 
 
-def test_api_serves_what_the_settings_add(night, monkeypatch):
-    """stack_diagnostics reads what the v2 settings add, and gives a stack of the previous version the same fields
-    from what it has (its coverage from its weight map, its reasons from frames.json)."""
-    from astro_gpu.stages.stack import PREVIOUS
+@pytest.mark.parametrize("selection", ["min_weight", "sota", "thresholds"])
+def test_api_serves_the_stack_diagnostics(night, monkeypatch, selection):
     root, proj, truth = night
-    for name, sw in (("api_old", dict(PREVIOUS)), ("api_new", {"selection": "sota"})):
-        p, ctx = stack_with(night, name, **sw)
-        (p.stage_dir("stack") / "manifest.json").write_text(json.dumps({"status": "done", "metrics": ctx.metrics}))
-        api = _served_by(monkeypatch, p)
-        s = api.stack_diagnostics(None, 1)
-        assert s.rejection["method"] == "legacy" and s.coverage["maps"].shape == (3, H, W)
-        assert set(s.coverage["variation"]) == set("RGB") and len(s.weights_rgb) == truth.n
-        assert s.channel_alignment["mode"] == "legacy" and s.used
-        assert all(r and r[0]["template"] for r in s.exclusions.values())
-        if name == "api_new":
-            assert s.selection["selection"] == "sota" and "estimate" in s.coverage
-            assert s.switches["selection"] == "sota" and s.switches["scale_rule"] == "coverage"
-        else:
-            assert s.switches == PREVIOUS and s.selection is None and s.rejection_untested is None
+    p, ctx = stack_with(night, f"api_{selection}", selection=selection)
+    (p.stage_dir("stack") / "manifest.json").write_text(json.dumps({"status": "done", "metrics": ctx.metrics}))
+    api = _served_by(monkeypatch, p)
+    s = api.stack_diagnostics(None, 1)
+    assert s.rejection["method"] == "own" and s.coverage["maps"].shape == (3, H, W) and "estimate" in s.coverage
+    assert set(s.coverage["variation"]) == set("RGB") and len(s.weights_rgb) == truth.n
+    assert s.channel_alignment["mode"] == "night" and s.used
+    assert all(r and r[0]["template"] for r in s.exclusions.values())
+    assert s.selection["selection"] == selection and s.switches["selection"] == selection
 
 
 def test_api_registration_table_with_the_moffat_fit(registered, monkeypatch):
     p, _, truth = registered
     api = _served_by(monkeypatch, p)
     t = api.registration_table(None, 1)
-    assert t.fwhm_method == "moffat" and t.channel_alignment is None
     r = t[truth.n // 2]
-    assert r.fwhm_moffat == pytest.approx(truth.fwhm, rel=0.1) and r.colour_block is None
+    assert r.fwhm_moffat == pytest.approx(truth.fwhm, rel=0.1)

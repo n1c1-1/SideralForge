@@ -139,7 +139,6 @@ CATALOG = {
             N("stack", "drizzle_kernel", "Drizzle kernel", "choice", "Square", "The shape each input pixel drops on "
               "the output grid.", choices=["Square", "Point", "Turbo", "Gaussian", "Lanczos-3"], level="expert",
               method="drizzle"),
-            E("stack", "scale_rule", "expert", method="drizzle"),
         ]),
         ("Classic stack", [
             E("stack", "classic_debayer", label="Debayering",
@@ -648,7 +647,7 @@ def method_advice(s, p) -> tuple[str, str] | None:
 def selection_rule_text(s, p) -> str:
     """The active frame selection rule in plain words (translated): what decides which frames are left out."""
     rule = s.selection_rule(p)
-    if rule == "legacy":
+    if rule == "thresholds":
         return _("Frames under the minimum transparency or over the maximum star size below are left out.")
     if rule == "sota":
         off = s.param_value(p, "stack", "selection_transparency") == "off"

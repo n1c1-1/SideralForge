@@ -11,15 +11,14 @@ the result, and nothing else::
 validated through the stage's Params (2, 2.0 and "2" hash the same; an invalid value is a ValueError naming the
 setting), and path settings replaced by their file (name, size, mtime). The rule on defaults:
 
-- a field with an automatic rule is never dropped: a stored value equal to the static default overrides the automatic
-  value, so it may be another result. A field has an automatic rule when it is in ``AUTO_FIELDS``, or in
-  ``AUTO_WHEN`` and the setting its rule depends on has a value that selects the rule (``stack.pixfrac`` is automatic
-  only under ``scale_rule = coverage``): read on the definition's own values, defaults included;
+- a field with an automatic rule (``AUTO_FIELDS``) is never dropped: a stored value equal to the static default
+  overrides the automatic value, so it may be another result;
 - a field without one is dropped at its static default: the effective value is the same;
 - a field whose default changed (``KEY_BASELINE``: its previous default) is in the key with its effective value,
   stored or not, unless that value is the previous default: unset, it gets a new key (the new default's result);
   stored at the previous default, it keeps the key it always had. A setting removed from a stage (``RETIRED``) is
-  ignored where a definition still stores it.
+  ignored where a definition still stores it; one whose last value must stay in the keys (``KEY_CONSTANTS``) is
+  added with that value, so the results computed with it keep their keys.
 
 ``version`` is the stage's, or what its ``key_version(values)`` makes of the definition's settings when it has one: a
 part of a stage revised on its own changes the keys of the definitions that use it only (the stack's Classic part).
@@ -118,8 +117,7 @@ def _split_tag(value: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------------------------- rules
 
 class KeyRules:
-    """What the key needs to know of the stages: their graph (``Chains``), the fields an ``auto()`` can set (always:
-    ``auto_fields``; under a setting: ``auto_when`` {stage: {field: (setting, values that select its rule)}}), the
+    """What the key needs to know of the stages: their graph (``Chains``), the fields an ``auto()`` can set, the
     path fields, the fields that never change a result, and the values workflow options imply.
     ``auto_fields`` None counts every field as automatic: nothing is ever dropped (the safe side)."""
 
@@ -127,14 +125,14 @@ class KeyRules:
                  path_fields: Mapping[str, Iterable[str]] | None = None,
                  non_key: Mapping[str, Iterable[str]] | None = None,
                  implied: Callable[[dict[str, Any], str], dict[str, Any]] = wfl.implied,
-                 auto_when: Mapping[str, Mapping[str, tuple[str, Iterable[Any]]]] | None = None,
                  baseline: Mapping[str, Mapping[str, Any]] | None = None,
-                 retired: Mapping[str, Iterable[str]] | None = None):
+                 retired: Mapping[str, Iterable[str]] | None = None,
+                 constants: Mapping[str, Mapping[str, Any]] | None = None):
         self.chains = chains
         self._auto = None if auto_fields is None else {s: frozenset(f) for s, f in auto_fields.items()}
-        self._when = {s: {f: (str(c[0]), tuple(c[1])) for f, c in d.items()} for s, d in (auto_when or {}).items()}
         self._baseline = {s: dict(d) for s, d in (baseline or {}).items()}
         self._retired = {s: frozenset(f) for s, f in (retired or {}).items()}
+        self._constants = {s: dict(d) for s, d in (constants or {}).items()}
         self._paths = {s: frozenset(f) for s, f in (PATH_FIELDS if path_fields is None else path_fields).items()}
         self._non_key = {s: frozenset(f) for s, f in (NON_KEY if non_key is None else non_key).items()}
         self.implied = implied
@@ -151,17 +149,12 @@ class KeyRules:
         kv = getattr(st, "key_version", None)
         return str(kv(dict(values)) if callable(kv) and values is not None else st.version)
 
-    def auto_fields(self, stage: str, values: Mapping[str, Any] | None = None) -> frozenset[str]:
-        """The fields an ``auto()`` can set in a definition whose (validated, defaults included) ``values`` are given:
-        the AUTO_FIELDS, and the AUTO_WHEN fields whose setting selects their rule there. Without ``values``, every
-        field that can ever be automatic (the safe side)."""
+    def auto_fields(self, stage: str) -> frozenset[str]:
+        """The fields an ``auto()`` can set (stages/v2.AUTO_FIELDS); without that table, every field (the safe
+        side)."""
         if self._auto is None:
             return frozenset(self.params(stage).model_fields)
-        out = self._auto.get(stage, frozenset())
-        when = self._when.get(stage)
-        if when:
-            out = out | {f for f, (s, sel) in when.items() if values is None or values.get(s) in sel}
-        return out
+        return self._auto.get(stage, frozenset())
 
     def baseline(self, stage: str) -> dict[str, Any]:
         """{field: its previous default} of the fields whose default changed (stages/v2.KEY_BASELINE): the key holds
@@ -171,6 +164,10 @@ class KeyRules:
     def retired(self, stage: str) -> frozenset[str]:
         """The settings removed from the stage (stages/v2.RETIRED): a stored one is ignored."""
         return self._retired.get(stage, frozenset())
+
+    def constants(self, stage: str) -> dict[str, Any]:
+        """{field: value} of the removed settings whose last value stays in every key (stages/v2.KEY_CONSTANTS)."""
+        return self._constants.get(stage, {})
 
     def path_fields(self, stage: str) -> frozenset[str]:
         return self._paths.get(stage, frozenset())
@@ -198,8 +195,8 @@ def key_rules() -> KeyRules:
     if not _RULES:
         v2 = _v2_module()
         _RULES.append(KeyRules(wfl.chains(), getattr(v2, "AUTO_FIELDS", None), getattr(v2, "PATH_FIELDS", None),
-                               auto_when=getattr(v2, "AUTO_WHEN", None), baseline=getattr(v2, "KEY_BASELINE", None),
-                               retired=getattr(v2, "RETIRED", None)))
+                               baseline=getattr(v2, "KEY_BASELINE", None), retired=getattr(v2, "RETIRED", None),
+                               constants=getattr(v2, "KEY_CONSTANTS", None)))
     return _RULES[0]
 
 
@@ -341,7 +338,7 @@ class Keys:
         for k in r.path_fields(stage) & p.keys():
             if isinstance(p[k], str) and wfl.names_file(p[k]):
                 p[k] = self.scan.file_id(_absolute(self.project, _split_tag(p[k])[0]))
-        auto, default = r.auto_fields(stage, m), r.defaults(stage)
+        auto, default = r.auto_fields(stage), r.defaults(stage)
         p = {k: x for k, x in p.items() if k in auto or x != default.get(k)}
         for k, before in r.baseline(stage).items():      # a changed default: the effective value against the previous
             if k in m:
@@ -349,6 +346,7 @@ class Keys:
                     p[k] = m[k]
                 else:
                     p.pop(k, None)
+        p.update(r.constants(stage))
         if "exclude" in p and pairs:
             p["exclude"] = [list(t) for t in pairs]    # (session, name): the same after the raws move
         return p, m

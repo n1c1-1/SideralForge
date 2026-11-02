@@ -5,7 +5,7 @@ Pure functions on the per-frame measures: no file, no GPU, no project. One call:
     fs = select(weight, fwhm=..., roundness=..., transparency=..., background=..., aligned=..., exclude=...,
                 filters=NO_FILTERS, min_weight=MIN_WEIGHT)
 
-``weight`` is the stack's own weight of each frame (stages/stack.legacy_weights: (transparency / noise)^2 x
+``weight`` is the stack's own weight of each frame (stages/stack.quality_weights: (transparency / noise)^2 x
 sharpness); this module never changes it, it only says which frames are left out, and why.
 
 The state of the art, and where each value comes from (docs/pilot/STATE_OF_THE_ART_STACKING.md: sections 5, 6, 9.3)

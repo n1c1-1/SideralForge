@@ -1,15 +1,9 @@
 """Registration: per-frame star catalogues, reference frame, polynomial (order 3) sub-pixel alignment, quality.
 
-Stacking v2 (docs/spec/STACKING.md): ``fwhm_method = moffat``, the default since 2 November (docs/pilot/PILOT.md
-§3c): the star size, roundness and Moffat beta of each frame by an elliptical Moffat fit on its green samples at
-native resolution (core/psf_moffat.py, Siril's PSF), in the workers; kept in reg.npz as the arrays ``fwhm_moffat``,
-``roundness_moffat``, ``beta_moffat`` (NaN: fewer than 10 stars fitted). The old ``fwhm`` (2x2 super-pixels) and
-everything chosen from it (the reference frame, the photometry aperture) stay as they are: the stack's coverage rule,
-method advice and frame filters read the new arrays when they are there. ``fwhm_method = legacy`` is the previous
-version to the bit (same reg.npz; stored, the same keys: stages/v2.KEY_BASELINE).
-
-(The per-block colour alignment, ``channel_align = per_block``, was removed on 2 November: no measurable effect. The
-stack's colour alignment for the whole night stays.)
+Each frame's stars are detected on 2 x 2 super-pixels (``fwhm``: the reference frame and the photometry aperture are
+chosen from it), and measured by an elliptical Moffat fit on its green samples at native resolution
+(core/psf_moffat.py): reg.npz's ``fwhm_moffat``, ``roundness_moffat``, ``beta_moffat`` (NaN: fewer than 10 stars
+fitted), which the stack's frame filters, drizzle scale rule and method advice read.
 """
 from __future__ import annotations
 
@@ -18,15 +12,12 @@ import pickle
 from multiprocessing import get_context
 
 import numpy as np
-from pydantic import field_validator
 from scipy.spatial import cKDTree
 
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage, StageError
 from .calibrate import VALID_MAX, open_cache
 
-#: switch values: the first is the default (since 2 November), "legacy" the previous version
-FWHM_METHODS = ("moffat", "legacy")
 #: stars fitted per frame for the Moffat FWHM (core/psf_moffat.py: about 0.1 to 0.2 s a frame)
 MOFFAT_STARS = 150
 
@@ -47,18 +38,6 @@ class RegisterParams(StageParams):
                        help="Brightest stars kept per frame for matching and for the alignment polynomial.")
     workers: int = P(8, label="Parallel workers", level=ADVANCED, ge=1, le=64,
                      help="CPU processes used to detect stars in parallel.")
-    fwhm_method: str = P("moffat", label="Star size measure", level=ADVANCED, choices=list(FWHM_METHODS),
-                         help="How the size of the stars (FWHM) and their roundness are measured in each frame. "
-                              "Moffat fit: a Moffat profile fitted on the green pixels of isolated stars at full "
-                              "resolution, the usual measure. Previous version: on blocks of 2 x 2 "
-                              "pixels, which reads about twice the true size of small stars. The stacking's drizzle "
-                              "scale, method advice and frame filters use the Moffat fit.",
-                         tip="The previous version stays for comparison.")
-
-    @field_validator("fwhm_method")
-    @classmethod
-    def _fwhm_method(cls, v: str) -> str:
-        return check_choice("fwhm_method", v, FWHM_METHODS)
 
 
 class Register(Stage):
@@ -84,10 +63,9 @@ class Register(Stage):
         mm, info = open_cache(ctx)
         n, H, W = info["n"], info["height"], info["width"]
         meta = ctx.load_json("inventory", "frames.json")["lights"]
-        moffat = p.fwhm_method == "moffat"
         cache_p = ctx.ckpt / "catalogs.pkl"
         got = pickle.loads(cache_p.read_bytes()) if cache_p.exists() else None
-        psf: list = [None] * n               # the Moffat fit per frame (``moffat``)
+        psf: list = [None] * n               # the Moffat fit per frame
         if got is not None and len(got) in (5, 6, 7):        # 7: with the colour offsets of the removed per-block mode
             cats, fwhm, rmsb, rnd, noise = got[:5]
             if len(got) >= 6:
@@ -95,21 +73,15 @@ class Register(Stage):
         else:                                # no checkpoint, or one from an older version: those frames again
             cats, fwhm, rmsb, rnd = [None] * n, np.zeros(n), np.zeros(n), np.full(n, np.nan)
             noise = np.full(n, np.nan)
-        todo = [i for i in range(n) if cats[i] is None or (moffat and psf[i] is None)]
+        todo = [i for i in range(n) if cats[i] is None or psf[i] is None]
         if todo:
-            init = (info["path"], n, H, W, p.detect_sigma, p.max_stars)
-            if moffat:
-                init += (info["cfa"],)
-            work = _catalog_v2 if moffat else _catalog
+            init = (info["path"], n, H, W, p.detect_sigma, p.max_stars, info["cfa"])
             with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
-                for c, res in enumerate(pool.imap_unordered(work, todo, chunksize=4)):
-                    idx, cat, fw, rb, rd, nz = res[:6]
+                for c, res in enumerate(pool.imap_unordered(_catalog_moffat, todo, chunksize=4)):
+                    idx, cat, fw, rb, rd, nz, psf[idx] = res
                     cats[idx], fwhm[idx], rmsb[idx], rnd[idx], noise[idx] = cat, fw, rb, rd, nz
-                    if moffat:
-                        psf[idx] = res[6]
                     if (c + 1) % 50 == 0 or c + 1 == len(todo):
-                        ck = (cats, fwhm, rmsb, rnd, noise) + ((psf,) if moffat else ())
-                        cache_p.write_bytes(pickle.dumps(ck))
+                        cache_p.write_bytes(pickle.dumps((cats, fwhm, rmsb, rnd, noise, psf)))
                     ctx.progress(0.9 * (n - len(todo) + c + 1) / n, f"stars detected in {n - len(todo) + c + 1}/{n} frames")
         nst = np.array([len(c) for c in cats])
         if np.median(nst) < 30:
@@ -152,17 +124,15 @@ class Register(Stage):
             if np.isfinite(t_ap):
                 transp[i] = t_ap
         ctx.metric("photometry_aperture_px", 2 * APERTURES[ap - 4])
-        extra: dict[str, np.ndarray] = {}
-        if moffat:                           # arrays beside the old ``fwhm`` (never in place of it)
-            extra = moffat_arrays(psf)
-            ok_m = np.isfinite(extra["fwhm_moffat"])
-            if ok_m.any():
-                ctx.metric("fwhm_moffat_px", round(float(np.median(extra["fwhm_moffat"][ok_m])), 3))
-                ctx.metric("roundness_moffat", round(float(np.median(extra["roundness_moffat"][ok_m])), 3))
-                ctx.log(f"Moffat fit: FWHM {np.median(extra['fwhm_moffat'][ok_m]):.2f} px (green samples, "
-                        f"{int(ok_m.sum())}/{n} frames measured), against {np.median(fwhm):.2f} px on 2 x 2 blocks")
-            else:
-                ctx.log("Moffat fit: too few isolated unsaturated stars in every frame: no Moffat FWHM", "warning")
+        extra = moffat_arrays(psf)
+        ok_m = np.isfinite(extra["fwhm_moffat"])
+        if ok_m.any():
+            ctx.metric("fwhm_moffat_px", round(float(np.median(extra["fwhm_moffat"][ok_m])), 3))
+            ctx.metric("roundness_moffat", round(float(np.median(extra["roundness_moffat"][ok_m])), 3))
+            ctx.log(f"Moffat fit: FWHM {np.median(extra['fwhm_moffat'][ok_m]):.2f} px (green samples, "
+                    f"{int(ok_m.sum())}/{n} frames measured), against {np.median(fwhm):.2f} px on 2 x 2 blocks")
+        else:
+            ctx.log("Moffat fit: too few isolated unsaturated stars in every frame: no Moffat FWHM", "warning")
         np.savez(ctx.out("reg.npz"), coef=coef, fwhm=fwhm, transp=transp, nmatch=nmatch, rms=rms, ref=ref,
                  nstars=nst, bkgrms=rmsb, roundness=rnd, noise=noise, **extra)
         ok = np.isfinite(rms)
@@ -181,9 +151,9 @@ class Register(Stage):
 
 
 def moffat_arrays(psf: list) -> dict[str, np.ndarray]:
-    """reg.npz's stacking-v2 arrays from the workers' Moffat fits (``_extras``: (fwhm, roundness, beta, stars) per
-    frame, NaN where fewer than psf_moffat.MIN_STARS stars were fitted): ``fwhm_moffat`` (sensor px),
-    ``roundness_moffat`` (minor / major, Siril's r), ``beta_moffat``, ``stars_moffat``."""
+    """reg.npz's Moffat arrays from the workers' fits ((fwhm, roundness, beta, stars) per frame, NaN where fewer
+    than psf_moffat.MIN_STARS stars were fitted): ``fwhm_moffat`` (sensor px), ``roundness_moffat`` (minor / major),
+    ``beta_moffat``, ``stars_moffat``."""
     a = np.array([r if r is not None else (np.nan, np.nan, np.nan, 0) for r in psf], float).reshape(-1, 4)
     return {"fwhm_moffat": a[:, 0], "roundness_moffat": a[:, 1], "beta_moffat": a[:, 2],
             "stars_moffat": a[:, 3].astype(np.int32)}
@@ -348,13 +318,11 @@ def quality_plot(meta, fwhm, transp, ok):
 _G: dict = {}
 
 
-def _init(path, n, H, W, k, nmax, cfa=None):
-    _G.update(mm=np.memmap(path, dtype=np.float16, mode="r", shape=(n, H, W)), H=H, W=W, k=k, nmax=nmax)
-    if cfa is not None:                       # ``_catalog_v2``: the Moffat fit besides the catalogue
-        _G.update(cfa=cfa)
+def _init(path, n, H, W, k, nmax, cfa):
+    _G.update(mm=np.memmap(path, dtype=np.float16, mode="r", shape=(n, H, W)), H=H, W=W, k=k, nmax=nmax, cfa=cfa)
 
 
-def _catalog_v2(idx):
+def _catalog_moffat(idx):
     """``_catalog`` plus the Moffat fit on the same frame and catalogue: (fwhm, roundness, beta, stars; NaN under
     psf_moffat.MIN_STARS stars)."""
     out = _catalog(idx)

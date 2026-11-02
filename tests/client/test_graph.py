@@ -948,9 +948,9 @@ def test_the_engine_advice_is_a_recommended_outline_that_never_changes_the_metho
     assert [c.key for c in stack_cards(page) if c.recommended] == ([adv[0]] if adv else [])
 
 
-def test_the_selection_rule_is_said_and_the_thresholds_act_only_with_the_previous_rule(world, model, page):
-    """The Selection panel says the active rule in plain words (min_weight by default, k × σ, previous version); the two
-    threshold editors are enabled with the previous rule only, with a one-line reason otherwise; the chart has no
+def test_the_selection_rule_is_said_and_the_thresholds_act_only_with_the_thresholds_rule(world, model, page):
+    """The Selection panel says the active rule in plain words (min_weight by default, k × σ, thresholds); the two
+    threshold editors are enabled with the thresholds rule only, with a one-line reason otherwise; the chart has no
     grips then. In French too. (The state of Registration does not matter here: the stored rule is set in memory.)"""
     from PySide6.QtWidgets import QDoubleSpinBox, QLabel
     model.scope = None
@@ -974,7 +974,7 @@ def test_the_selection_rule_is_said_and_the_thresholds_act_only_with_the_previou
                 ("sota", "Frames far worse than the night's median (over 2.5 σ) in star size, roundness or "
                          "transparency are left out, then those weighing less than 5 % of the best one.", False,
                  "k × σ filters · weight ≥ 5 % of the best"),
-                ("legacy", "Frames under the minimum transparency or over the maximum star size below are left out.",
+                ("thresholds", "Frames under the minimum transparency or over the maximum star size below are left out.",
                  True, "transparency ≥ ")):
             stored["selection"] = rule
             model._cache.clear()
@@ -984,7 +984,7 @@ def test_the_selection_rule_is_said_and_the_thresholds_act_only_with_the_previou
             assert said in texts_of(page.panel)
             eds = thresholds_editors()
             assert len(eds) == 2 and all(e.isEnabled() is live for e in eds), rule
-            assert reason() == ([] if live else ["These thresholds act only with the “Previous version” rule."]), rule
+            assert reason() == ([] if live else ["These thresholds act only when the frame selection is “Thresholds”."]), rule
             assert summary in Graph(model).summary(node(page, "selection"))
             assert any(r.r["key"] == "stack.selection" for r in live_rows(page))      # the rule is chosen right here
         # in French
@@ -995,7 +995,7 @@ def test_the_selection_rule_is_said_and_the_thresholds_act_only_with_the_previou
             page.panel.refresh(page.panel.node)
             settle(world["w"], page)
             assert "Toutes les images alignées sont gardées, sauf celles qui pèsent moins de 5 % de la meilleure."                 in texts_of(page.panel)
-            assert reason() == ["Ces seuils n'agissent qu'avec la règle « Version précédente »."]
+            assert reason() == ["Ces seuils n'agissent que si la sélection des poses est sur « Seuils »."]
         finally:
             appmod.apply_language("en")
     finally:

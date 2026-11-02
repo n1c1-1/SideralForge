@@ -302,7 +302,7 @@ def test_registration_measures_the_roundness_of_the_stars(tmp_path, sx, sy, lo, 
     mm[0] = img
     mm.flush()
     del mm
-    reg._init(str(f), 1, H, W, 8.0, 2500)
+    reg._init(str(f), 1, H, W, 8.0, 2500, "RGGB")
     idx, cat, fwhm, rms, rnd, _ = reg._catalog(0)
     reg._G.clear()
     assert idx == 0 and len(cat) >= 30 and lo < rnd < hi

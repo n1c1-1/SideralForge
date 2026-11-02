@@ -529,11 +529,9 @@ def format_metric(key: str, value: Any, lang: str = "en") -> str:
 CHOICE_TEXTS: dict[str, str] = {
     "auto": "Automatic", "none": "None", "nsns": "NSNS", "finkbeiner": "Finkbeiner",
     "main": "Main GPU", "aux": "Second GPU",
-    # the switches of stacking v2 (stages/stack.py, stages/register.py)
-    "legacy": "Previous version", "moffat": "Moffat fit",
-    "coverage": "Coverage rule",
-    "sota": "k × σ filters", "on": "On", "off": "Off",
-    "min_weight": "Minimum weight", "own": "On the raw pixels", "integration": "From the classic stack's rejection",
+    # the stacking settings (stages/stack.py)
+    "thresholds": "Thresholds", "sota": "k × σ filters", "on": "On", "off": "Off",
+    "min_weight": "Automatic", "own": "On the raw pixels", "integration": "From the classic stack's rejection",
     "drizzle": "Bayer drizzle", "classic": "Classic",
     "rcd": "RCD", "bilinear": "Bilinear", "lanczos4": "Lanczos-4",
     # the Classic method's clamping (core/resample.CLAMPINGS): the stored values name where each comes from, the

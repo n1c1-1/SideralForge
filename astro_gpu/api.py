@@ -424,28 +424,20 @@ class RegRow:
     transparency: float = float("nan")   # star flux relative to the reference frame
     reference: bool = False
     reason: str = ""
-    # stacking v2 (None for a result made without the switch): register's fwhm_method = moffat, the Moffat fit on the
-    # green samples (FWHM px, roundness minor / major, beta); channel_align = per_block, the frame's block and the
-    # correction applied to its red and blue samples at the centre of the sensor (R dx, R dy, B dx, B dy, sensor px)
+    # register's Moffat fit on the green samples (FWHM px, roundness minor / major, beta); None for a registration
+    # result made before it
     fwhm_moffat: float | None = None
     roundness_moffat: float | None = None
     beta_moffat: float | None = None
-    colour_block: int | None = None
-    colour_shift: tuple[float, float, float, float] | None = None
 
 
 class RegTable(list):
-    """``registration_table``'s answer: a list of RegRow, with ``missing`` and ``notes``; with stacking v2's
-    switches, ``fwhm_method`` ("legacy" or "moffat") and ``channel_alignment`` (register's chan.npz: its summary, the
-    blocks of frames with their shift and error; None without)."""
+    """``registration_table``'s answer: a list of RegRow, with ``missing`` and ``notes``."""
 
-    def __init__(self, rows: Iterable[RegRow] = (), missing: Iterable[str] = (), notes: Iterable[str] = (),
-                 fwhm_method: str = "legacy", channel_alignment: dict | None = None):
+    def __init__(self, rows: Iterable[RegRow] = (), missing: Iterable[str] = (), notes: Iterable[str] = ()):
         super().__init__(rows)
         self.missing = list(missing)
         self.notes = list(notes)
-        self.fwhm_method = fwhm_method
-        self.channel_alignment = channel_alignment
 
 
 @dataclass
@@ -1108,7 +1100,7 @@ def _table(p: Project2, wf: int | Workflow, min_t: float | None, max_f: float | 
         if min_t is None or max_f is None:
             d_min, d_max = float(infos["min_transparency"].value), float(infos["max_fwhm_ratio"].value)
             min_t, max_f = d_min if min_t is None else min_t, d_max if max_f is None else max_f
-        # the stack's own selection: the thresholds act only with the previous one ("legacy"); by default the frames
+        # the stack's own selection: the thresholds act only with the "thresholds" rule; by default the frames
         # under the minimum weight are left out (stages/stack.frame_selection)
         sp = StackParams(min_transparency=min_t, max_fwhm_ratio=max_f, selection=infos["selection"].value,
                          selection_transparency=infos["selection_transparency"].value)
@@ -2198,9 +2190,7 @@ def registration_table(p: Project2, wf: int | Workflow, which: str = "current") 
         dx, dy, rot, sc = dg.frame_geometry(reg["coef"], width, height, aligned)
     rnd = reg.get("roundness")
     ref = int(reg["ref"]) if "ref" in reg else -1
-    # stacking v2: the Moffat fit (fwhm_method = moffat). (The per-block colour alignment was removed on 2 November:
-    # ``channel_alignment`` and the rows' colour_block / colour_shift stay None.)
-    def opt(name, i):
+    def opt(name, i):                    # register's Moffat arrays (absent from a result made before them)
         a = reg.get(name)
         return None if a is None or not np.isfinite(a[i]) else float(a[i])
 
@@ -2220,7 +2210,7 @@ def registration_table(p: Project2, wf: int | Workflow, which: str = "current") 
     missing = [] if "roundness" in reg else [_missing("roundness", "register")]
     if "nstars" not in reg:
         missing.append(_missing("stars detected", "register"))
-    return RegTable(rows, missing, notes, "moffat" if "fwhm_moffat" in reg else "legacy", None)
+    return RegTable(rows, missing, notes)
 
 
 def stack_diagnostics(p: Project2, wf: int | Workflow, which: str = "current") -> StackDiag:
@@ -2295,13 +2285,13 @@ def _stack_v2(out: StackDiag, d: Path, m: dict, sf: list, names: list[str], diag
     with the previous version (every switch at its default) gets the same fields from what it has."""
     import numpy as np
 
-    from .stages.stack import COVERAGE, LEGACY_CODES, PREVIOUS, reduce_map
+    from .stages.stack import COVERAGE, THRESHOLD_CODES, reduce_map
     metrics = m.get("metrics") or {}
     diag = diag or {}
-    out.switches = dict(diag.get("switches") or PREVIOUS)
+    out.switches = dict(diag.get("switches") or {})
     rej = dict(diag.get("rejection") or {})
     summ = rej.get("summary") or {}
-    out.rejection = {"method": rej.get("method", "legacy"), "rejected_pct": _num(metrics.get("rejected_pct")),
+    out.rejection = {"method": rej.get("method", "own"), "rejected_pct": _num(metrics.get("rejected_pct")),
                      "untested_pct": _num(metrics.get("untested_pct")), "reference_pct": [0.1, 0.5]}
     for k in ("low_pct", "high_pct", "exempt_pct", "z_spread_median"):
         if k in summ:
@@ -2320,12 +2310,12 @@ def _stack_v2(out: StackDiag, d: Path, m: dict, sf: list, names: list[str], diag
                 out.exclusions[names[i]] = [dict(r) for r in f["exclusions"]]
             elif f.get("excluded"):
                 r = str(f["excluded"])
-                out.exclusions[names[i]] = [{"code": LEGACY_CODES.get(r, "selection"), "template": r, "args": None}]
+                out.exclusions[names[i]] = [{"code": THRESHOLD_CODES.get(r, "selection"), "template": r, "args": None}]
     out.selection = diag.get("selection")
     out.normalisation = diag.get("normalisation")
     ca = diag.get("channel_alignment")
     if ca is None and metrics.get("channel_offsets") is not None:
-        ca = {**metrics["channel_offsets"], "mode": "legacy"}
+        ca = {**metrics["channel_offsets"], "mode": "night"}
     out.channel_alignment = ca
     # ---- the coverage per colour: kept by the v2 stack (coverage.npz), else from its weight map
     cov: dict[str, Any] = {}
@@ -2485,7 +2475,7 @@ def _resolve(p: Project2, wf: int | Workflow, stage: str) -> _Resolved:
         autos, ok = {}, False
         params, origin = resolve(model, autos, given)
         sug, _ = resolve(model, autos, {})
-    auto_f = keys.rules.auto_fields(stage, params.model_dump(mode="json"))
+    auto_f = keys.rules.auto_fields(stage)
     known = {n: (n in autos) or ok or (n not in auto_f) for n in model.model_fields}
     return _Resolved(params.model_dump(mode="json"), origin, sug.model_dump(mode="json"), known, autos, ok)
 
