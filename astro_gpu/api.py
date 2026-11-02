@@ -1455,7 +1455,7 @@ _METHODS: dict[str, list[MethodInfo]] = {
                    "nothing is invented."),
         MethodInfo("finetuned", "Pretrained + fine-tuned", "fine-tuned", "both", "denoise_ft", True,
                    "Starts from a network trained on earlier projects and fine-tunes it on the half-stacks."),
-        MethodInfo("pretrained", "Pretrained (GraXpert-like)", "pretrained", "both", "denoise_ai", True,
+        MethodInfo("pretrained", "Pretrained network", "pretrained", "both", "denoise_ai", True,
                    "A pretrained network applied as is: the fastest. May smooth or invent detail: compare."),
         MethodInfo("nlbayes", "NL-Bayes", "NL-Bayes", "cpu", "denoise_cl", True,
                    "Averages similar patches after stabilising the photon noise. Classic, predictable."),
@@ -1471,13 +1471,13 @@ _METHODS: dict[str, list[MethodInfo]] = {
                    "Each star measured with the optics' real PSF, positioned by Gaia, then subtracted: star sliders "
                    "in Post."),
         MethodInfo("psf_neural", "PSF model + neural removal", "PSF + neural", "gpu", "star_net", False,
-                   "Adds a star-removal network trained on this stack (StarNet-like): a second starless image, "
+                   "Adds a star-removal network trained on this stack: a second starless image, "
                    "cleaner around bright stars."),
     ],
     "deconvolution": [
         MethodInfo("rl", "Measured PSF (Richardson-Lucy)", "Richardson-Lucy", "both", "deconv", True,
                    "Classic deconvolution with the PSF measured across the field."),
-        MethodInfo("neural", "Neural (BlurXTerminator-like)", "neural", "both", "deconv", True,
+        MethodInfo("neural", "Neural network", "neural", "both", "deconv", True,
                    "A pretrained network that corrects the PSF locally, stars included."),
     ],
 }
