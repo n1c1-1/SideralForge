@@ -14,7 +14,10 @@ On the raw linear stacks (ours: stack/drz_full; Siril: stack_linear.fit), lumina
 - photometric zero point: G + 2.5 log10(flux) on isolated unsaturated stars, so that both images speak in magnitudes;
 - background noise: robust spread of boxes of the same angular size in the sky (stars masked, smooth background
   removed), as a surface brightness (mag/arcsec2: higher = less noise); and the 5-sigma depth of a point source
-  (empty apertures of radius 1 FWHM: higher = deeper);
+  (empty apertures of radius 1 FWHM: higher = deeper). All apertures are circles with the exact fraction of each
+  pixel inside (SExtractor / DAOPHOT / photutils "exact"), never whole pixels, and the depth carries the aperture
+  correction (the share of a star's flux outside the detection aperture) measured on the stars of the same image
+  (curve of growth), see aperture_depth;
 - faint stars: Gaia stars measured in an aperture of 1 FWHM above 5 sigma (local empty-aperture noise); their count
   and the magnitude where half the stars are found;
 - target SNR: median signal of the target's boxes (above the darkest sky) over the box noise inside the target;
@@ -64,12 +67,9 @@ from astropy.wcs import WCS  # noqa: E402
 from scipy import ndimage as ndi  # noqa: E402
 from scipy.spatial import cKDTree  # noqa: E402
 
-MAD = 1.4826
-
-
-def rstd(v: np.ndarray) -> float:
-    v = v[np.isfinite(v)]
-    return float(MAD * np.median(np.abs(v - np.median(v)))) if v.size else float("nan")
+from regions import BoxMap, boxes, choose, on_regions, save_maps  # noqa: E402,F401
+from aperture import (GROWTH_RADII, MAD, aperture_depth, aperture_sums, gather, ring_offsets, rstd,  # noqa: E402,F401
+                      sky_level, star_flux)
 
 
 # ---------------------------------------------------------------------------------------------- loading
@@ -180,25 +180,12 @@ def gaia(d: dict[str, Path], ours: Img) -> dict[str, np.ndarray]:
 # ---------------------------------------------------------------------------------------------- pixel tools
 
 def disk_offsets(r: float) -> tuple[np.ndarray, np.ndarray]:
+    """Pixels of a disk made of WHOLE pixels. Only for masks: a flux or a noise is measured with ``aperture_sums``
+    (exact fraction of each pixel), never with this (the pixel count jumps from 13 to 21 at r = sqrt(5))."""
     R = int(np.ceil(r))
     yy, xx = np.mgrid[-R:R + 1, -R:R + 1]
     m = xx ** 2 + yy ** 2 <= r * r
     return yy[m], xx[m]
-
-
-def ring_offsets(r1: float, r2: float) -> tuple[np.ndarray, np.ndarray]:
-    R = int(np.ceil(r2))
-    yy, xx = np.mgrid[-R:R + 1, -R:R + 1]
-    d2 = xx ** 2 + yy ** 2
-    m = (d2 >= r1 * r1) & (d2 <= r2 * r2)
-    return yy[m], xx[m]
-
-
-def gather(img: np.ndarray, x: np.ndarray, y: np.ndarray, off: tuple[np.ndarray, np.ndarray]) -> np.ndarray:
-    H, W = img.shape
-    xi = np.clip(np.round(x).astype(int)[:, None] + off[1][None], 0, W - 1)
-    yi = np.clip(np.round(y).astype(int)[:, None] + off[0][None], 0, H - 1)
-    return img[yi, xi]
 
 
 def star_mask(im: Img, st: dict, fwhm_arcsec: float, max_frac: float = 0.4) -> np.ndarray:
@@ -263,17 +250,6 @@ def background(L: np.ndarray, ok: np.ndarray, block: int) -> np.ndarray:
     if out.shape[1] < W:
         full[:, out.shape[1]:] = full[:, out.shape[1] - 1:out.shape[1]]
     return full
-
-
-def boxes(L: np.ndarray, ok: np.ndarray, b: int) -> tuple[np.ndarray, np.ndarray]:
-    H, W = L.shape
-    hb, wb = H // b, W // b
-    Lc = L[: hb * b, : wb * b].reshape(hb, b, wb, b)
-    oc = ok[: hb * b, : wb * b].reshape(hb, b, wb, b)
-    n = oc.sum((1, 3))
-    s = np.where(oc, Lc, 0).sum((1, 3), dtype=np.float64)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        return (s / n).astype(np.float32), n / float(b * b)
 
 
 # ---------------------------------------------------------------------------------------------- stars
@@ -424,18 +400,15 @@ def star_shapes(im: Img, st: dict, cand: np.ndarray, frame: Img | None = None) -
 
 def normalise_channels(im: Img, st: dict, sel: np.ndarray, fwhm_px: float, zp_ref: float = 25.0) -> list[float]:
     """Each channel brought to the same photometric scale (a star of magnitude G gives 10^(-0.4 (G - zp_ref)) in its
-    aperture), so that the luminance (mean of the channels) mixes them the same way in both programs: the channel
+    exact circular aperture), so that the luminance (mean of the channels) mixes them the same way in both programs: the channel
     scalings of a pipeline (Siril's background equalisation, our colour space) then do not weigh on the noise."""
     x, y = im.pix(st["ra"][sel], st["dec"][sel])
     ok = im.inside(x, y, 40)
     x, y, g = x[ok], y[ok], st["g"][sel][ok]
-    big = disk_offsets(2.5 * fwhm_px)
-    ring = ring_offsets(3.5 * fwhm_px, 5.0 * fwhm_px)
     zps = []
     for c in range(3):
         ch = im.rgb[c]
-        loc = np.median(gather(ch, x, y, ring), 1)
-        F = gather(ch, x, y, big).sum(1) - loc * len(big[0])
+        F = star_flux(ch, x, y, 2.5 * fwhm_px, 3.5 * fwhm_px, 5.0 * fwhm_px)
         good = F > 0
         zp = float(np.median(g[good] + 2.5 * np.log10(F[good]))) if good.sum() >= 10 else float("nan")
         zps.append(zp)
@@ -452,18 +425,11 @@ def photometry(im: Img, st: dict, iso: np.ndarray, fwhm_px: float, mask: np.ndar
     B = background(im.L, im.cover & ~mask, max(32, int(8 * fwhm_px)))
     R = im.L - B
     r_det = max(1.5, 1.0 * fwhm_px)
-    ap = disk_offsets(r_det)
-    big = disk_offsets(2.5 * fwhm_px)
-    ring = ring_offsets(3.5 * fwhm_px, 5.0 * fwhm_px)
     x, y = im.pix(st["ra"], st["dec"])
     inside = im.inside(x, y, 40)
     # zero point on bright isolated unsaturated stars
     zsel = iso & inside & (st["g"] >= gmin_unsat + 0.3) & (st["g"] < gmin_unsat + 3.5)
     xs, ys = x[zsel], y[zsel]
-    loc = np.median(gather(R, xs, ys, ring), 1)
-    F = gather(R, xs, ys, big).sum(1) - loc * len(big[0])
-    okf = F > 0
-    zp = float(np.median(st["g"][zsel][okf] + 2.5 * np.log10(F[okf]))) if okf.sum() >= 10 else float("nan")
     # empty apertures in the sky (no star, inside the coverage), noise per tile
     free = im.cover & ~mask
     free_e = _erode(free, int(r_det) + 2) if free.any() else free
@@ -471,8 +437,11 @@ def photometry(im: Img, st: dict, iso: np.ndarray, fwhm_px: float, mask: np.ndar
     n = min(len(yy), 6000)
     pick = rng.choice(len(yy), n, replace=False) if len(yy) > n else np.arange(len(yy))
     ex, ey = xx[pick] * 4.0, yy[pick] * 4.0
-    ef = gather(R, ex, ey, ap).sum(1)
-    sig_all = rstd(ef)
+    # apertures at random sub-pixel positions, like a star's (a pixel-centred circle is one special phase)
+    ex, ey = ex + rng.uniform(-0.5, 0.5, len(ex)), ey + rng.uniform(-0.5, 0.5, len(ey))
+    ef = aperture_sums(R, ex, ey, r_det)
+    ad = aperture_depth(R, xs, ys, st["g"][zsel], ex, ey, fwhm_px, sigma_ap=rstd(ef))
+    zp, sig_all = ad["zp"], ad["sigma_ap"]
     tx = np.clip((ex / im.W * tiles).astype(int), 0, tiles - 1)
     ty = np.clip((ey / im.H * tiles).astype(int), 0, tiles - 1)
     sig_tile = np.full((tiles, tiles), sig_all)
@@ -484,12 +453,13 @@ def photometry(im: Img, st: dict, iso: np.ndarray, fwhm_px: float, mask: np.ndar
     # faint stars: forced photometry at the Gaia positions, local sky from the smooth background
     fsel = iso & inside
     xf, yf = x[fsel], y[fsel]
-    flux = gather(R, xf, yf, ap).sum(1)
+    flux = aperture_sums(R, xf, yf, r_det)
     sx = np.clip((xf / im.W * tiles).astype(int), 0, tiles - 1)
     sy = np.clip((yf / im.H * tiles).astype(int), 0, tiles - 1)
     snr = flux / sig_tile[sy, sx]
-    return {"zp": zp, "zp_stars": int(okf.sum()), "r_det_px": r_det, "sigma_ap": sig_all,
-            "depth5_mag": zp - 2.5 * np.log10(5 * sig_all) if np.isfinite(zp) else float("nan"),
+    return {"zp": zp, "zp_stars": ad["zp_stars"], "r_det_px": r_det, "sigma_ap": sig_all,
+            "aperture_fraction": ad["aperture_fraction"], "growth": ad["growth"],
+            "depth5_mag": ad["depth5_mag"], "depth5_uncorrected_mag": ad["depth5_uncorrected_mag"],
             "snr": snr, "fsel": fsel, "B": B, "R": R}
 
 
@@ -502,78 +472,47 @@ def box_noise(im: Img, R: np.ndarray, mask: np.ndarray, b: int, b_exact: float) 
     return {"sigma_box": s, "box_px": b, "boxes": int(good.sum())}
 
 
-def target_snr(sc: Img, si: Img, ou: Img, si_mask, ou_mask, bs: int, bo: int, bo_exact: float,
-               zp_s: float = float("nan"), zp_o: float = float("nan")) -> dict:
-    """SNR on the target. The target and a sky reference are chosen once, on Siril's gradient-removed image (sc, the
-    same grid as its stack si), in boxes of bs pixels: the target is the brightest extended region (the largest
-    connected parts of the top 5 % of the smoothed box map, at most 5 % of the field), the sky reference the darker
-    half of a band around it. On each raw stack: signal = median of the target boxes - median of the sky boxes;
-    noise = spread of the target boxes around the median of their 3 x 3 neighbours. Our boxes take the choice of the
-    Siril box their centre falls in."""
-    out = {}
-    vc, fc = boxes(sc.L, sc.cover & ~si_mask, bs)
-    good = fc > 0.6
-    if good.sum() < 200:
-        return {"target_boxes": 0}
-    noise_c = rstd((vc - ndi.median_filter(np.nan_to_num(vc), 3, mode="nearest"))[good])
-    sky_v = np.nanpercentile(vc[good], 10)
-    sky = good & (vc <= sky_v)
-    # the target: the brightest extended region of the smoothed map (stars masked), its largest connected parts,
-    # at most 5 % of the field
-    sm = ndi.median_filter(np.where(good, vc, np.nanmedian(vc[good])), 9, mode="nearest")
-    thr = np.percentile(sm[good], 95)
-    lab, n = ndi.label((sm >= thr) & good)
-    if n == 0:
-        return {"target_boxes": 0}
-    sizes = ndi.sum_labels(np.ones_like(sm), lab, np.arange(1, n + 1))
-    order = np.argsort(sizes)[::-1]
-    tgt = np.zeros_like(good)
-    for k in order:
-        if tgt.sum() >= 0.6 * sizes.sum() or tgt.sum() + sizes[k] > 0.05 * good.sum() and tgt.any():
-            break
-        tgt |= lab == k + 1
-    tgt &= good
-    rel = (vc - np.nanmedian(vc[sky])) / noise_c
-    if tgt.sum() < 20:
-        return {"target_boxes": int(tgt.sum())}
-    # the sky next to the target (so that a large-scale gradient left in a raw stack does not count as signal): a
-    # band around it, its darker half; the darkest tenth of the field if the band is too small
-    r2 = max(8, int(0.04 * max(vc.shape)))
-    band = ndi.binary_dilation(tgt, iterations=r2) & ~ndi.binary_dilation(tgt, iterations=3) & good
-    if band.sum() >= 50:
-        sky = band & (vc <= np.nanmedian(vc[band]))
-    out["target_boxes"] = int(tgt.sum())
-    out["target_fraction"] = float(tgt.sum() / good.sum())
-    out["target_level_sigma"] = float(np.median(rel[tgt]))
+def box_map(im: Img, mask: np.ndarray, b: int, bex: float, zp: float) -> BoxMap:
+    """The box means of an image's luminance (stars masked, common sky only) for the target measure."""
+    v, f = boxes(im.L, im.cover & ~mask, b)
+    return BoxMap(v, f, im.wcs, im.dx, im.dy, im.pixarea, b, float(bex), zp)
 
-    def local_noise(v, t):
-        med = ndi.median_filter(np.nan_to_num(v), 3, mode="nearest")
-        return rstd((v - med)[t]) / np.sqrt(1 + 1.5 / 9)
 
-    vs, fs = boxes(si.L, si.cover & ~si_mask, bs)
-    ts, ks = tgt & (fs > 0.6), sky & (fs > 0.6)
-    sig_s, n_s = float(np.median(vs[ts]) - np.median(vs[ks])), local_noise(vs, ts)
-    out["snr_siril"] = sig_s / n_s
-    # signal and noise as surface brightness (mag/arcsec2), to tell a lost signal from a higher noise
-    out["signal_sb_siril"] = float(zp_s - 2.5 * np.log10(max(sig_s, 1e-30) / si.pixarea))
-    out["noise_sb_siril"] = float(zp_s - 2.5 * np.log10(n_s / si.pixarea))
-    vo, fo = boxes(ou.L, ou.cover & ~ou_mask, bo)
-    hb, wb = vo.shape
-    cy, cx = (np.mgrid[0:hb, 0:wb] + 0.5) * bo
-    ra, dec = ou.wcs.all_pix2world((cx - ou.dx).ravel(), (cy - ou.dy).ravel(), 0)
-    xs, ys = si.pix(ra, dec)
-    jx, jy = np.floor(xs / bs).astype(int), np.floor(ys / bs).astype(int)
-    inb = (jx >= 0) & (jy >= 0) & (jx < tgt.shape[1]) & (jy < tgt.shape[0])
-    to, ko = np.zeros(hb * wb, bool), np.zeros(hb * wb, bool)
-    to[inb], ko[inb] = tgt[jy[inb], jx[inb]], sky[jy[inb], jx[inb]]
-    to, ko = to.reshape(hb, wb) & (fo > 0.6), ko.reshape(hb, wb) & (fo > 0.6)
-    if to.sum() >= 20 and ko.sum() >= 20:
-        sig_o, n_o = float(np.median(vo[to]) - np.median(vo[ko])), local_noise(vo, to) * (bo / bo_exact)
-        out["snr_ours"] = sig_o / n_o
-        out["signal_sb_ours"] = float(zp_o - 2.5 * np.log10(max(sig_o, 1e-30) / ou.pixarea))
-        out["noise_sb_ours"] = float(zp_o - 2.5 * np.log10(n_o / ou.pixarea))
-    out["target_boxes_ours"] = int(to.sum())
-    return out
+def independent_map(case: str, level: str, sv: str, st: dict, bright: np.ndarray, fwhm_as: float, bs: int,
+                    within: Img) -> BoxMap | None:
+    """The image the target is chosen on when it is not one of the stacks compared: Siril's Base stack (100 frames,
+    other frames than the Express stacks') of the case, gradient removed (its colour_linear), limited to the sky
+    ``within`` covers. None when the case has no Base stack, or when the level measured is the Base itself."""
+    if level == "base" or not (C.siril_dir(case, "base", sv) / "color_linear.fit").exists():
+        return None
+    sel = load_siril(case, "base", "color_linear", sv)
+    refine_shift(sel, st, bright)
+    sel.cover = sel.cover & common_cover(sel, within)
+    mask = star_mask(sel, st, fwhm_as)
+    v, f = boxes(sel.L, sel.cover & ~mask, bs)
+    return BoxMap(v, f, sel.wcs, sel.dx, sel.dy, sel.pixarea, bs, float(bs))
+
+
+def target_measures(case: str, level: str, sv: str, maps: dict[str, BoxMap], ref: str, st: dict, bright: np.ndarray,
+                    fwhm_as: float, bs: int, within: Img, dump=None) -> tuple[dict, dict]:
+    """SNR on the target for every stack compared, on regions chosen once on an image independent of them (regions.py:
+    SExtractor's dual-image mode, Bertin & Arnouts 1996; the rule against circular analysis, Kriegeskorte et al. 2009):
+    Siril's Base stack when the case has one, else the mean of all the stacks compared. Returns
+    ({name: regions.on_regions result}, {"source", "target_fraction", "level_sigma"})."""
+    ind = independent_map(case, level, sv, st, bright, fwhm_as, bs, within)
+    reg, sel, src = choose(maps, ref, ind)
+    if dump is not None:                      # the box maps, so that tools/bench/retarget.py can redo this step
+        save_maps(dump, maps, ind, src)
+    if reg is None:
+        return {n: {"target_boxes": 0} for n in maps}, {"source": src}
+    out = {n: on_regions(reg, sel, m) for n, m in maps.items()}
+    return out, {"source": src, "target_fraction": reg["fraction"], "level_sigma": reg["level_sigma"]}
+
+
+def target_entry(t: dict, ref_snr, info: dict) -> dict:
+    """The "target" entry of a stack's measures."""
+    return {"snr": t.get("snr"), "signal_sb": t.get("signal_sb"), "noise_sb": t.get("noise_sb"),
+            "boxes": t.get("target_boxes"), "sky_boxes": t.get("sky_boxes"), "ref_snr": ref_snr, "regions": info}
 
 
 def residuals(im: Img, mask: np.ndarray, fwhm_px: float) -> dict:
@@ -653,14 +592,13 @@ def colours(im: Img, st: dict, sel: np.ndarray, fwhm_px: float) -> dict:
     ok = im.inside(x, y, 40)
     idx = np.where(sel)[0][ok]
     x, y = x[ok], y[ok]
-    ap = disk_offsets(1.5 * fwhm_px)
     ring = ring_offsets(3.5 * fwhm_px, 5.0 * fwhm_px)
+    r_ap = 1.5 * fwhm_px
     F = []
     for c in range(3):
         ch = im.rgb[c]
-        loc = np.median(gather(ch, x, y, ring), 1)
-        s = gather(ch, x, y, ap).sum(1) - loc * len(ap[0])
-        noise = np.array([rstd(v) for v in gather(ch, x, y, ring)]) * np.sqrt(len(ap[0]))
+        s = star_flux(ch, x, y, r_ap, 3.5 * fwhm_px, 5.0 * fwhm_px)       # exact aperture and exact area
+        noise = np.array([rstd(v) for v in gather(ch, x, y, ring)]) * np.sqrt(np.pi * r_ap * r_ap)
         F.append((s, noise))
     good = np.all([(f > 30 * n) & (f > 0) for f, n in F], axis=0)
     if good.sum() < 20:
@@ -889,14 +827,18 @@ def measure(case: str, level: str, variant: str = "", siril_variant: str = "") -
             box_noise(im, phot[key]["R"], masks[key], b4, bex4)["sigma_box"] / im.pixarea))
         sky = float(np.median(phot[key]["B"][im.cover & ~masks[key]]))
         bn["sky_sb"] = float(zp - 2.5 * np.log10(sky / im.pixarea)) if sky > 0 else float("nan")
-        bn.update({k: phot[key][k] for k in ("zp", "zp_stars", "r_det_px", "depth5_mag")})
+        bn.update({k: phot[key][k] for k in ("zp", "zp_stars", "r_det_px", "depth5_mag", "aperture_fraction", "growth",
+                                       "depth5_uncorrected_mag")})
         noise[key] = bn
     res["noise"] = noise
     res["box_arcsec"] = bs * ss.scale
-    sc = load_siril(case, level, "color_linear", siril_variant)
-    res["target"] = target_snr(sc, ss, so, masks["siril"], masks["ours"], bs, bo, bo_exact, noise["siril"]["zp"],
-                               noise["ours"]["zp"])
-    del sc
+    maps = {"siril": box_map(ss, masks["siril"], bs, bs, noise["siril"]["zp"]),
+            "ours": box_map(so, masks["ours"], bo, bo_exact, noise["ours"]["zp"])}
+    tm, info = target_measures(case, level, siril_variant, maps, "siril", st, bright, fwhm_as, bs, ss)
+    res["target"] = {"snr_ours": tm["ours"].get("snr"), "snr_siril": tm["siril"].get("snr"),
+                     "signal_sb_ours": tm["ours"].get("signal_sb"), "noise_sb_ours": tm["ours"].get("noise_sb"),
+                     "signal_sb_siril": tm["siril"].get("signal_sb"), "noise_sb_siril": tm["siril"].get("noise_sb"),
+                     "target_boxes_ours": tm["ours"].get("target_boxes"), "regions": info}
     print(f"noise {noise} target {res['target']} ({time.time() - t0:.0f} s)", flush=True)
     # streaks along the drift (walking noise, a dark's star trails) and spots of one colour (hot pixels)
     dr = drift_direction(d)
@@ -1029,8 +971,8 @@ def measure_variants(case: str, level: str) -> dict:
     bs = 4
     dr = drift_direction(d0)
     res["drift"] = {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in dr.items()}
-    sc = load_siril(case, level, "color_linear", names[ref_i].split("_", 1)[1])
     out = {}
+    maps = {}
     for n, im in zip(names, ims):
         e: dict = {"stars": shapes[n]}
         snr = np.full(len(st["g"]), np.nan)
@@ -1047,13 +989,10 @@ def measure_variants(case: str, level: str) -> dict:
             box_noise(im, phot[n]["R"], masks[n], max(2, int(round(4 * bex))), 4 * bex)["sigma_box"] / im.pixarea))
         sky = float(np.median(phot[n]["B"][im.cover & ~masks[n]]))
         bn["sky_sb"] = float(zp - 2.5 * np.log10(sky / im.pixarea)) if sky > 0 else float("nan")
-        bn.update({k: phot[n][k] for k in ("zp", "zp_stars", "r_det_px", "depth5_mag")})
+        bn.update({k: phot[n][k] for k in ("zp", "zp_stars", "r_det_px", "depth5_mag", "aperture_fraction", "growth",
+                                       "depth5_uncorrected_mag")})
         e["noise"] = bn
-        # the target and its sky band chosen once on the reference; this image's boxes take the reference's choice
-        t = target_snr(sc, ref, im, masks[names[ref_i]], masks[n], bs, b, bex, phot[names[ref_i]]["zp"], zp)
-        e["target"] = {"snr": t.get("snr_ours"), "signal_sb": t.get("signal_sb_ours"),
-                       "noise_sb": t.get("noise_sb_ours"), "boxes": t.get("target_boxes_ours"),
-                       "ref_snr": t.get("snr_siril")}
+        maps[n] = box_map(im, masks[n], b, bex, zp)
         ang = dr["angle_deg"] if n.startswith("ours_") else angle_in(im, ims[names.index(first_ours)], dr["v"])
         e["streaks"] = streaks(im, phot[n]["R"], masks[n], phot[n]["B"], ang, zp)
         e["coloured_spots"] = coloured_spots(im, masks[n], shapes[n].get("fwhm_px", 3.0))
@@ -1064,9 +1003,13 @@ def measure_variants(case: str, level: str) -> dict:
                           "cold_spots_per_deg2": len(rs["spots"]["cold"]) / max(rs["area_deg2"], 1e-6)}
         out[n] = e
         print(f"{n}: noise {bn['sb_mag_arcsec2']:.2f}/{bn['sb_large_mag_arcsec2']:.2f} depth {bn['depth5_mag']:.2f} "
-              f"faint {e['faint_stars']} snr {e['target']['snr']} streaks {e['streaks']['ratio_along']:.3f} "
+              f"faint {e['faint_stars']} streaks {e['streaks']['ratio_along']:.3f} "
               f"spots {e['coloured_spots']['all_per_deg2']:.0f} ({time.time() - t0:.0f} s)", flush=True)
-    del sc, phot
+    del phot
+    tm, info = target_measures(case, level, names[ref_i].split("_", 1)[1], maps, names[ref_i], st, bright, fwhm_as, bs, ref)
+    for n in out:
+        out[n]["target"] = target_entry(tm[n], tm[names[ref_i]].get("snr"), info)
+    print("target SNR:", {n: out[n]["target"]["snr"] for n in out}, info["source"], flush=True)
     iso_c = isolated(st, common & np.isfinite(st["bp"]) & (st["g"] > gmin + 0.3) & (st["g"] < gmin + 5), 30 / 3600,
                      2.5)
     for n, im in zip(names, ims):

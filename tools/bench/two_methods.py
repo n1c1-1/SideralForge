@@ -92,8 +92,8 @@ def cell_value(m: dict, case: str, name: str, key: str):
 
 
 def fmt_of(key: str) -> str:
-    return "{:.3f}" if key in ("br", "gr", "white", "reject") else "{:.1f}" if key in ("snr", "time_pre") else \
-        _mk(key)[3]
+    return "{:.3f}" if key in ("br", "gr", "white", "reject") else "{:.2f}" if key == "snr" else \
+        "{:.1f}" if key == "time_pre" else _mk(key)[3]
 
 
 def case_table(case: str, m: dict) -> str:
@@ -202,11 +202,9 @@ def board(case: str) -> Path:
     def star_flux(im: M.Img) -> np.ndarray:
         xx, yy = im.pix(st["ra"][sel], st["dec"][sel])
         k = im.scale / ref.scale                      # radii in this image's pixels
-        bo, ro = M.disk_offsets(2.5 * fw / k), M.ring_offsets(3.5 * fw / k, 5.0 * fw / k)
         ok = im.inside(xx, yy, 40)
         out = np.full(len(xx), np.nan)
-        loc = np.median(M.gather(im.L, xx[ok], yy[ok], ro), 1)
-        out[ok] = M.gather(im.L, xx[ok], yy[ok], bo).sum(1) - loc * len(bo[0])
+        out[ok] = M.star_flux(im.L, xx[ok], yy[ok], 2.5 * fw / k, 3.5 * fw / k, 5.0 * fw / k)   # exact apertures
         return out
     f_ref = star_flux(ref)
     imgs, kf = {}, {}

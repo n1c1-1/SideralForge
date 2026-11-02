@@ -1,6 +1,9 @@
 """Four stacks of a case on the same sky, with the bench's own measures (measure.py, as crossed.py does): Siril's
 classic stack, Siril's Bayer drizzle (run_siril_drizzle.py), our drizzle and our classic stack, both read from the
-existing crossed project (v2x_<level>: chains "OLD" and "S7"; nothing is re-run).
+existing crossed project (v2x_<level>; nothing is re-run). The chains are LEG (our drizzle, the previous version's
+settings: the same configuration as the crossed bench's "OLD", whose later stages were cleaned from the project, re-run
+on 2 November with today's engine) and CL-off (our classic stack without the white balance before the debayering,
+exactly Siril's: what "S7" was before the debayer fix of 2 November).
 
     CUDA_VISIBLE_DEVICES=-1 python tools/bench/siril/measure_drizzle.py CASE [LEVEL]
 
@@ -22,7 +25,7 @@ import measure as M  # noqa: E402
 import cases as C  # noqa: E402
 
 SIRIL, SIRIL_DRZ = "Siril", "Siril drizzle"
-OURS = ["OLD", "S7"]                                       # our drizzle, our classic stack
+OURS = ["LEG", "CL-off"]                                   # our drizzle, our classic stack
 
 
 class Geo(M.Img):
@@ -46,7 +49,7 @@ def measure(case: str, level: str) -> dict:
             if o is not None:
                 d[s] = Path(o.dir)
         dirs[n] = d
-    first = "OLD"
+    first = "LEG"
     sdir = {SIRIL: level, SIRIL_DRZ: f"{level}_drizzle"}      # the Siril folders' level names
 
     ref = M.load_siril(case, level, "stack_linear", sv)
@@ -102,7 +105,7 @@ def measure(case: str, level: str) -> dict:
     iso_c = M.isolated(st, common & np.isfinite(st["bp"]) & (st["g"] > gmin + 0.3) & (st["g"] < gmin + 5),
                        30 / 3600, 2.5)
     dr = M.drift_direction(dirs[first])
-    sc = M.load_siril(case, level, "color_linear", sv)
+    maps: dict = {}
     bs = 4
     ref_mask = M.star_mask(ref, st, fwhm_as)
     M.normalise_channels(ref, st, iso_z, shapes[SIRIL].get("fwhm_px", 3.0))
@@ -131,12 +134,10 @@ def measure(case: str, level: str) -> dict:
             M.box_noise(im, ph["R"], mask, max(2, int(round(4 * bex))), 4 * bex)["sigma_box"] / im.pixarea))
         sky = float(np.median(ph["B"][im.cover & ~mask]))
         bn["sky_sb"] = float(zp - 2.5 * np.log10(sky / im.pixarea)) if sky > 0 else float("nan")
-        bn.update({k: ph[k] for k in ("zp", "zp_stars", "r_det_px", "depth5_mag")})
+        bn.update({k: ph[k] for k in ("zp", "zp_stars", "r_det_px", "depth5_mag", "aperture_fraction", "growth",
+                                  "depth5_uncorrected_mag")})
         e["noise"] = bn
-        t = M.target_snr(sc, ref, im, ref_mask, mask, bs, b, bex, ref_ph["zp"], zp)
-        e["target"] = {"snr": t.get("snr_ours"), "signal_sb": t.get("signal_sb_ours"),
-                       "noise_sb": t.get("noise_sb_ours"), "boxes": t.get("target_boxes_ours"),
-                       "ref_snr": t.get("snr_siril")}
+        maps[n] = M.box_map(im, mask, b, bex, zp)
         ang = M.angle_in(im, geos[first], dr["v"])
         e["streaks"] = M.streaks(im, ph["R"], mask, ph["B"], ang, zp)
         e["coloured_spots"] = M.coloured_spots(im, mask, fw)
@@ -161,11 +162,17 @@ def measure(case: str, level: str) -> dict:
             e["engine"] = X.engine_info(p, n)
         out[n] = e
         print(f"{n}: depth {bn['depth5_mag']:.2f} noise {bn['sb_mag_arcsec2']:.2f}/{bn['sb_large_mag_arcsec2']:.2f} "
-              f"snr {e['target']['snr']} fwhm {shapes[n].get('fwhm_centre_arcsec')} "
+              f"fwhm {shapes[n].get('fwhm_centre_arcsec')} "
               f"spots {e['coloured_spots']['all_per_deg2']:.0f} "
               f"B-R {(e['colours'].get('b_r') or {}).get('scatter_bp_rp')} ({time.time() - t0:.0f} s)", flush=True)
         if n != SIRIL:
             del im, mask, ph
+    # the target's SNR: regions chosen on an image independent of the stacks, the same for all (measure.target_measures)
+    tm, tinfo = M.target_measures(case, level, sv, maps, SIRIL, st, bright, fwhm_as, bs, ref,
+                                  dump=C.BENCH / case / f"target_maps_drizzle_{level}.npz")
+    for n in out:
+        out[n]["target"] = M.target_entry(tm[n], tm[SIRIL].get("snr"), tinfo)
+    print("target SNR:", {n: out[n]["target"]["snr"] for n in out}, tinfo.get("source"), flush=True)
     common_f = np.logical_and.reduce([fsel[n] for n in out])
     for n in out:
         s = snrs[n][common_f]

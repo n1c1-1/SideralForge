@@ -13,7 +13,7 @@ from pathlib import Path
 BENCH = Path("F:/astro_essais/bench")
 CASES = [("heart", "Heart"), ("iris", "Iris"), ("m51", "M51"), ("m8", "M8"), ("seestar", "Seestar"),
          ("rosette", "Rosette")]
-NAMES = ["Siril", "Siril drizzle", "OLD", "S7"]
+NAMES = ["Siril", "Siril drizzle", "LEG", "CL-off"]      # (LEG: our drizzle; CL-off: our classic stack)
 HEAD = ["Siril classique", "Siril drizzle", "Notre drizzle", "Notre classique"]
 # key, title, path, format, gap kind (mag: difference; rel: percent; abs: difference), plain-words hint
 MEASURES = [

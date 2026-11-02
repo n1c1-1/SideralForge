@@ -321,11 +321,9 @@ def demo(case: str, out_name: str | None = None, before: dict[str, str] | None =
     def star_flux(im):
         xx, yy = im.pix(st["ra"][sel], st["dec"][sel])
         k = im.scale / ref.scale
-        bo, ro = M.disk_offsets(2.5 * fw / k), M.ring_offsets(3.5 * fw / k, 5.0 * fw / k)
         ok = im.inside(xx, yy, 40)
         o = np.full(len(xx), np.nan)
-        loc = np.median(M.gather(im.L, xx[ok], yy[ok], ro), 1)
-        o[ok] = M.gather(im.L, xx[ok], yy[ok], bo).sum(1) - loc * len(bo[0])
+        o[ok] = M.star_flux(im.L, xx[ok], yy[ok], 2.5 * fw / k, 3.5 * fw / k, 5.0 * fw / k)   # exact apertures
         return o
     f_ref = star_flux(ref)
     kf = {}

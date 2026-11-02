@@ -2,6 +2,17 @@
 
 ## Banc du 2 novembre : les deux méthodes
 
+**Mesures corrigées le 2 novembre, dans l'après-midi (tout est remesuré, aucune pile recalculée).** La profondeur était
+mesurée dans de petits disques faits de pixels entiers : quand la largeur des étoiles passait de 2,17 à 2,24 pixels, le
+disque sautait de 13 à 21 pixels et ramassait 56 % de bruit en plus, sans rien gagner (jusqu'à 0,45 mag d'écart sans
+changement réel) ; elle utilise maintenant des disques exacts au pixel près et corrige la lumière qui sort du disque,
+comme les logiciels de photométrie (SExtractor, DAOPHOT, photutils). Le signal sur bruit de la cible était mesuré sur des
+zones choisies sur l'image de Siril, ce qui la favorisait ; les zones sont maintenant choisies sur une image
+indépendante (la pile de 100 poses de Siril, ou la moyenne de toutes les piles pour M8) et toutes les piles sont
+mesurées sur les mêmes zones. **Les anciens chiffres de profondeur et de signal sur bruit de ce document (les sections plus
+bas, et les tableaux d'avant la correction) ne sont pas comparables à ceux d'ici.** Les couleurs sont
+celles de l'étape couleur actuelle (version 5, refaite à 12 h 30 sur ce banc).
+
 Express (30 poses ; M8 : ses 15), les six cas, avec le moteur du jour (drizzle à l'échelle 1 choisie par la règle de
 couverture, sélection par poids minimal, taille des étoiles par ajustement de Moffat, rejet « à nous »). Sept images par
 cas, mesurées **ensemble sur le même ciel** (le ciel couvert par les sept, les mêmes étoiles Gaia, la même cible, des
@@ -15,48 +26,54 @@ boîtes de même taille) :
 - **notre empilement classique sans équilibrage** : le dématriçage exact de Siril ;
 - **l'ancienne version** : l'échelle, la sélection et la mesure des étoiles d'hier.
 
-Chaque image passe par la même chaîne (astrométrie, couleur version 4, dégradé de degré 2, sortie) : les couleurs des
+Chaque image passe par la même chaîne (astrométrie, couleur version 5, dégradé de degré 2, sortie) : les couleurs des
 étoiles et la planéité sont mesurées sur l'image linéaire finale. Aucun réglage n'a été touché pour le banc. Calculs sur
 la carte graphique 0 seule, un à la fois ; aucun échec.
 
 ### Ce qu'il faut retenir
 
-1. **Face au drizzle de Siril, notre drizzle gagne** : plus profond de 0,10 à 0,27 mag sur cinq cas (M51 : à égalité),
-   bruit fin meilleur de 0,03 à 0,26 mag sur cinq cas (M51 : −0,02), étoiles un peu plus fines sur quatre, couleurs
-   égales ou meilleures (Heart : nettement) sauf la Rosette (V−R 0,20 contre 0,11). Il reste en dessous sur un point, le
-   signal sur bruit de la cible : de 2 à 16 % plus bas sur cinq cas, +1 % sur la Rosette.
-2. **Face à Siril classique, notre drizzle est derrière** : 0,06 à 0,11 mag de profondeur sur quatre cas (la Rosette :
-   0,23), 0,02 à 0,12 mag de bruit fin sur les six, un signal sur bruit plus bas de 3 à 20 % (sauf le Seestar, +7 %), et
-   des points d'une seule couleur (10 à 24 par degré² contre 0 à 6 chez Siril classique hors M8). Il est devant sur M8
-   (+0,11 mag) et a de loin les meilleures couleurs d'étoiles sur Heart (B−R 0,09 contre 0,22), le Seestar et M8.
-3. **Notre classique sans équilibrage rejoint Siril classique** : profondeur à 0,11 mag près, bruit fin à 0,01 mag près
-   (la Rosette : +0,08 mag), puisque c'est le même dématriçage. Sur Heart il est orangé (erreur B−R 0,238 contre 0,093
-   pour notre drizzle ; planéité 0,9 mag sous celle de Siril).
-4. **L'équilibrage avant le dématriçage** corrige ce défaut (Heart : B−R 0,153, planéité +0,7 mag), améliore le signal
-   sur bruit de la cible sur les six cas (+1 à +9 %) et l'erreur V−R sur quatre (−0,04 à −0,07), mais **il coûte de la
-   profondeur** : −0,57 mag sur Heart, −0,03 à −0,08 mag sur quatre autres cas (M51 : +0,08 mag, et meilleur partout),
-   et des étoiles 1 à 3 % plus larges. Il ne règle pas M8, où les couleurs d'étoiles classiques restent mauvaises (V−R
-   0,23 contre 0,05 pour notre drizzle).
+1. **Face au drizzle de Siril, notre drizzle gagne** : plus profond de 0,15 à 0,30 mag sur cinq cas (M51 : +0,06 mag),
+   bruit fin meilleur de 0,04 à 0,26 mag sur cinq cas (M51 : −0,02), étoiles un peu plus fines sur quatre, couleurs
+   égales ou meilleures (Heart : nettement) sauf la Rosette (V−R 0,21 contre 0,11). Il reste en dessous sur un point, le
+   signal sur bruit de la cible : de 2 à 14 % plus bas sur quatre cas (Heart 14 %, M51 10 %, Iris 4 %, M8 2 %), et 5 à
+   6 % plus haut sur le Seestar et la Rosette.
+2. **Face à Siril classique, notre drizzle est derrière** : de 0,06 à 0,15 mag de profondeur sur trois cas (Iris 0,06, la
+   Rosette 0,08, le Seestar 0,15), à égalité sur les trois autres (Heart, M51, M8 à 0,02 mag près), 0,02 à 0,12 mag de
+   bruit fin sur les six, un signal sur bruit plus bas de 3 à 13 % sur cinq cas (la Rosette : +1 %), et des points d'une
+   seule couleur (10 à 24 par degré² contre 0 à 6 chez Siril classique hors M8). Il a de loin les meilleures couleurs
+   d'étoiles sur Heart (B−R 0,09 contre 0,22), le Seestar (0,10 contre 0,15) et M8 (V−R 0,05 contre 0,13).
+3. **Notre classique sans équilibrage rejoint Siril classique** : profondeur à 0,08 mag près, bruit fin à 0,02 mag près
+   (la Rosette : +0,08 mag), puisque c'est le même dématriçage. Sur Heart il n'est plus orangé avec l'étape couleur
+   actuelle (planéité 24,58 comme Siril, 24,59), mais ses couleurs d'étoiles restent mauvaises (B−R 0,223 et V−R 0,479,
+   contre 0,094 et 0,184 pour notre drizzle).
+4. **L'équilibrage avant le dématriçage** améliore le signal sur bruit de la cible sur les six cas (+2 à +8 %) et l'erreur
+   V−R sur quatre (−0,06 à −0,12), mais **il coûte de la profondeur** : −0,05 à −0,17 mag sur cinq cas (Heart −0,17, Iris
+   −0,12, la Rosette −0,11, M8 −0,08, le Seestar −0,05 ; M51 : +0,08 mag), et des étoiles 1 à 3 % plus larges. Ce coût
+   est surtout celui de la lumière du vert recopiée dans le bleu et le rouge (CLASSIC_ANOMALIES.md) ; les 0,57 mag de
+   Heart venaient de la mesure (seuil de pixels entiers), il en reste 0,17. Il ne règle pas M8, où les couleurs d'étoiles
+   classiques restent mauvaises (V−R 0,23 contre 0,05 pour notre drizzle), et sur Heart il gagne peu avec la nouvelle
+   étape couleur (B−R 0,193 contre 0,223, planéité 24,50 contre 24,58).
 5. **Le rejet de PixInsight appliqué à notre drizzle** ne change presque rien sur Heart, Iris et M51, et **ne retire pas
    les points d'une seule couleur** (24 contre 23 sur Heart, 17 contre 17 sur M51, 2 680 contre 2 638 sur M8). Il
-   répare la Rosette (V−R de 0,20 à 0,07, planéité +0,7 mag), mais il est un peu moins bon sur M8 (couleurs : B−R 0,063
-   contre 0,056) et sur le Seestar (B−R 0,136 contre 0,105 ; signal sur bruit −3 %). Il coûte 1,6 à 4 fois plus de
+   répare la Rosette (V−R de 0,21 à 0,07, planéité +0,7 mag), mais il est un peu moins bon sur M8 (couleurs : B−R 0,063
+   contre 0,057) et sur le Seestar (B−R 0,134 contre 0,102 ; signal sur bruit −1 %). Il coûte 1,6 à 4 fois plus de
    temps (M8 : 17 minutes contre 4).
 6. **Laquelle de nos deux méthodes est la meilleure ?** (nombre de mesures du critère où l'une bat l'autre, au-delà de la
-   variation d'un passage à l'autre) Le drizzle devant sur **Heart** (7 contre 2 : profondeur, bruit large, étoiles
-   faibles, couleurs, planéité ; mais le classique sans équilibrage est le plus profond) et **M8** (5 contre 1). Le
-   classique devant sur **Iris** (6 contre 2), **M51** (5 contre 0), le **Seestar** (7 contre 1) et la **Rosette**
-   (6 contre 0) : profondeur, bruit fin, signal sur bruit, et points d'une seule couleur (2 à 14 contre 10 à 24 par
-   degré² hors M8).
+   variation d'un passage à l'autre) Le drizzle devant sur **Heart** (6 contre 2 : profondeur, bruit large, finesse des
+   étoiles, couleurs, planéité ; le classique est devant sur le signal sur bruit et les points d'une seule couleur, et
+   le classique sans équilibrage reste le plus profond) et **M8** (5 contre 1). Le classique devant sur **Iris** (5
+   contre 2), **M51** (4 contre 0), le **Seestar** (8 contre 1) et la **Rosette** (6 contre 0) : profondeur (sauf M51),
+   bruit fin, signal sur bruit, et points d'une seule couleur (2 à 14 contre 10 à 24 par degré² hors M8).
 7. **Le conseil de méthode du moteur** donne : Heart classique, Iris drizzle, M51 classique, M8 drizzle, Seestar drizzle,
    Rosette classique. **Il tombe sur la meilleure de nos deux méthodes dans 3 cas sur 6** (M51, M8, Rosette). Il se
    trompe sur Heart (conseille le classique, le drizzle fait mieux, sauf pour le classique sans équilibrage), sur Iris et
    sur le Seestar (conseille le drizzle, le classique fait mieux). La variation de couverture que lit la règle
    (17,9 % au Seestar, 20,0 % à Iris, 21,1 à 21,8 % à Heart, M51 et la Rosette ; plus grande valeur mesurée, seuil de
    20 %) tombe à quelques points du seuil sur chaque cas : le seuil seul ne sépare pas les cas.
-8. **Par rapport à l'ancienne version**, les réglages du jour ne font pas moins bien : un peu mieux partout (profondeur
-   +0,01 à +0,07 mag, bruit fin +0,02 à +0,12 mag, signal sur bruit +1 à +13 %, la Rosette en tête : l'ancienne sélection
-   n'y gardait que 16 poses sur 30, la nouvelle 26), mais des étoiles 1 à 4 % plus larges (Heart : 12,55″ contre 12,07″).
+8. **Par rapport à l'ancienne version**, les réglages du jour ne font pas moins bien : à égalité ou un peu mieux
+   (profondeur −0,01 à +0,06 mag, bruit fin +0,02 à +0,12 mag, signal sur bruit +2 à +3 % et +15 % pour la Rosette, où
+   l'ancienne sélection n'y gardait que 16 poses sur 30, la nouvelle 26), mais des étoiles 1 à 4 % plus larges (Heart :
+   12,55″ contre 12,07″).
 9. **Durées** (calibration, alignement, empilement ; machine partagée) : notre drizzle 0,9 à 4,2 minutes, notre
    classique 1,0 à 16 minutes (M8 : 16 minutes pour 15 poses de 26 Mpx), Siril classique 0,2 à 3,5 minutes.
 10. **Taux de rejet** : Siril et nos empilements classiques rejettent 0,8 à 1,6 % des échantillons (repère de Siril :
@@ -64,14 +81,31 @@ la carte graphique 0 seule, un à la fois ; aucun échec.
     les valeurs aberrantes qu'il prévoit), ne pas les comparer.
 11. **Sur les planches** (100 %, même flux, même étirement) : notre drizzle et l'ancienne version montrent sur les zones
     faibles de la Rosette une texture magenta que le rejet de PixInsight atténue ; l'empilement classique sans
-    équilibrage est orange sur Heart et jaune-vert autour de la galaxie du Seestar (bleu avec l'équilibrage) ; le drizzle de
-    Siril a un fond très inégal sur M51 (planéité 19,9 contre 23).
+    équilibrage est jaune-vert autour de la galaxie du Seestar (bleu avec l'équilibrage) ; sur Heart il n'est plus orange
+    (étape couleur actuelle) ; le drizzle de Siril a un fond très inégal sur M51 (planéité 19,9 contre 23).
+
+**Ce qui a changé avec les mesures corrigées** : la profondeur de Siril classique face à notre drizzle (M8 n'est plus en
+avance de 0,11 mag : égalité ; la Rosette : 0,08 mag au lieu de 0,23), le coût de l'équilibrage sur Heart (0,57 → 0,17
+mag), le signal sur bruit de la cible (Siril ne gagne plus de 9 % sur Iris : notre classique y est à +6 % ; notre drizzle
+passe devant celui de Siril sur le Seestar et la Rosette ; l'écart au drizzle de Siril sur Iris tombe de 16 à 4 %), les
+décomptes 6 contre 2 (Heart), 5 contre 2 (Iris), 4 contre 0 (M51), 8 contre 1 (Seestar) de la conclusion 6, et, avec
+l'étape couleur 5, les couleurs du classique sur Heart. Le conseil de méthode (conclusion 7) ne change pas.
+
+**Le signal sur bruit de la cible, ce qu'il vaut.** Les zones (la cible : les 5 % de boîtes les plus claires d'une
+carte lissée ; le ciel voisin : toute la bande autour d'elle, boîtes de 4 pixels de Siril) sont choisies sur la pile
+Base de Siril (100 poses : d'autres poses que l'Express), et pour M8, qui n'en a pas, sur la moyenne de toutes les
+piles comparées, après retrait d'un polynôme de degré 2. Le ciel sous la cible est un plan ajusté sur la bande, pour
+chaque pile (un dégradé propre à une pile ne compte plus comme signal). Le résultat change de 1 % sur Iris et de 5 %
+sur le Seestar quand on remplace la pile Base par la moyenne des piles ; **sur Heart et M51 il est fragile** : selon le
+traitement du dégradé et de la zone, le rapport d'une même pile à Siril classique varie de 10 à 15 %, parce que la
+nébuleuse y est plus faible que les dégradés des piles brutes. M8, qui n'a que la moyenne, a une cible forte (signal
+sur bruit 40 à 45). À lire avec ces marges.
 
 Lecture des tableaux : un tableau par cas ; **en gras** le meilleur des cinq empilements de chez nous sur la ligne (les
 deux Siril sont donnés pour repère). Le ciel commun aux sept images est un peu plus petit que celui des tableaux
 précédents : quelques valeurs de Siril classique diffèrent de la deuxième décimale. « Point blanc » : l'indice Gaia
 (BP−RP) d'une étoile qui sort sans écart bleu−rouge (environ 0,8 pour une étoile de type solaire ; un écart dit un fond
-de couleur trop chaud ou trop froid). Siril a écarté une pose du Seestar (29 gardées). Les mesures brutes sont dans
+de couleur trop chaud ou trop froid). Siril a écarté une pose du Seestar (29 gardées). Le signal sur bruit est donné à deux décimales parce que la cible d'Iris, de M51 et de Heart est faible (moins de 3 par boîte). Les mesures brutes sont dans
 `F:/astro_essais/bench/<cas>/today_express.json`, les tableaux et les verdicts dans
 `docs/pilot/bench/two_methods_tables.md` et `two_methods_verdicts.json`, l'outil dans `tools/bench/two_methods.py`.
 
@@ -90,18 +124,18 @@ planche montre le grain, les points colorés et les étoiles, pas un voile de co
 
 | | Siril classique | Siril drizzle | Notre drizzle | Notre drizzle, rejet PixInsight | Notre classique | Notre classique sans équilibrage | Ancienne version |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Profondeur (mag, 5σ ; plus haut = plus profond) | 16,36 | 16,03 | 16,27 | 16,27 | 15,81 | **16,38** | 16,22 |
+| Profondeur (mag, 5σ ; plus haut = plus profond) | 16,03 | 15,72 | 16,03 | 16,01 | 15,89 | **16,07** | 16,03 |
 | Bruit fin (mag/arcsec² ; plus haut = moins de bruit) | 24,61 | 24,25 | 24,51 | 24,50 | 24,53 | **24,61** | 24,48 |
 | Bruit large (mag/arcsec²) | 25,30 | 25,01 | 25,29 | 25,28 | 25,24 | **25,32** | 25,28 |
-| Signal sur bruit de la cible | 4,8 | 4,9 | 4,5 | 4,5 | **5,0** | 4,6 | 4,4 |
-| Étoiles faibles trouvées | 21784 | 21322 | 21640 | 21687 | 20504 | **21847** | 21596 |
+| Signal sur bruit de la cible | 2,60 | 2,74 | 2,37 | 2,37 | **2,67** | 2,51 | 2,31 |
+| Étoiles faibles trouvées | 21643 | 21344 | 21606 | 21665 | 21300 | **21716** | 21677 |
 | FWHM au centre (″ ; plus bas = plus fines) | 13,10 | 12,34 | 12,55 | 12,57 | 13,36 | 13,01 | **12,07** |
 | Rondeur (1 = rondes) | 0,91 | 0,90 | 0,91 | 0,92 | **0,93** | 0,92 | 0,91 |
 | Points d'une seule couleur (par degré²) | 1 | 75 | 24 | 23 | 2 | **1** | 21 |
-| Erreur de couleur B−R (plus bas = plus fidèle) | 0,217 | 0,263 | **0,093** | 0,096 | 0,153 | 0,238 | 0,093 |
-| Erreur de couleur V−R | 0,326 | 0,579 | 0,184 | **0,173** | 0,283 | 0,329 | 0,188 |
-| Point blanc B−R (BP−RP où B−R = 0 ; Gaia : environ 0,8) | 0,931 | 0,949 | 0,933 | 0,940 | 0,964 | 0,949 | 0,923 |
-| Planéité du fond (mag/arcsec² ; plus haut = plus plat) | 24,59 | 24,25 | 24,67 | **24,70** | 24,37 | 23,69 | 24,59 |
+| Erreur de couleur B−R (plus bas = plus fidèle) | 0,218 | 0,264 | 0,094 | 0,096 | 0,193 | 0,223 | **0,093** |
+| Erreur de couleur V−R | 0,319 | 0,574 | 0,184 | **0,174** | 0,361 | 0,479 | 0,188 |
+| Point blanc B−R (BP−RP où B−R = 0 ; Gaia : environ 0,8) | 0,927 | 0,954 | 0,927 | 0,934 | 0,953 | 0,994 | 0,925 |
+| Planéité du fond (mag/arcsec² ; plus haut = plus plat) | 24,59 | 24,25 | 24,66 | **24,70** | 24,50 | 24,58 | 24,60 |
 | Poses gardées | 30 | 30 | 30 | 30 | 30 | 30 | 30 |
 | Taux de rejet (% des échantillons) | 0,941 | 0,990 | 0,014 | 1,060 | 1,060 | 1,097 | 0,014 |
 | Durée de la préparation (min) | 2,0 | 1,3 | 2,5 | 4,1 | 3,5 | 3,5 | 2,3 |
@@ -110,18 +144,18 @@ planche montre le grain, les points colorés et les étoiles, pas un voile de co
 
 | | Siril classique | Siril drizzle | Notre drizzle | Notre drizzle, rejet PixInsight | Notre classique | Notre classique sans équilibrage | Ancienne version |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Profondeur (mag, 5σ ; plus haut = plus profond) | 17,38 | 17,12 | 17,31 | 17,32 | 17,37 | **17,44** | 17,30 |
-| Bruit fin (mag/arcsec² ; plus haut = moins de bruit) | 23,85 | 23,69 | 23,72 | 23,72 | **23,86** | 23,86 | 23,68 |
-| Bruit large (mag/arcsec²) | 25,22 | 25,07 | 25,12 | 25,12 | 25,17 | **25,21** | 25,10 |
-| Signal sur bruit de la cible | 3,0 | 2,8 | 2,4 | 2,4 | **2,7** | 2,6 | 2,4 |
-| Étoiles faibles trouvées | 4633 | 4493 | 4640 | 4628 | 4681 | **4735** | 4631 |
+| Profondeur (mag, 5σ ; plus haut = plus profond) | 17,11 | 16,90 | 17,05 | 17,04 | 17,08 | **17,20** | 17,03 |
+| Bruit fin (mag/arcsec² ; plus haut = moins de bruit) | 23,85 | 23,69 | 23,72 | 23,72 | **23,86** | 23,86 | 23,69 |
+| Bruit large (mag/arcsec²) | 25,21 | 25,07 | 25,12 | 25,12 | 25,17 | **25,21** | 25,10 |
+| Signal sur bruit de la cible | 1,75 | 1,69 | 1,61 | 1,61 | **1,85** | 1,74 | 1,58 |
+| Étoiles faibles trouvées | 4666 | 4518 | 4669 | 4616 | 4661 | **4779** | 4651 |
 | FWHM au centre (″ ; plus bas = plus fines) | 6,12 | 6,55 | 6,24 | 6,26 | 6,28 | **6,08** | 6,15 |
 | Rondeur (1 = rondes) | 0,89 | 0,89 | 0,88 | 0,88 | **0,90** | 0,89 | 0,88 |
 | Points d'une seule couleur (par degré²) | 2 | 17 | 21 | 15 | 14 | **7** | 26 |
-| Erreur de couleur B−R (plus bas = plus fidèle) | 0,058 | 0,042 | 0,046 | 0,046 | 0,055 | 0,089 | **0,045** |
-| Erreur de couleur V−R | 0,069 | 0,067 | **0,058** | 0,062 | 0,067 | 0,072 | 0,058 |
-| Point blanc B−R (BP−RP où B−R = 0 ; Gaia : environ 0,8) | 0,869 | 0,906 | 0,914 | 0,921 | 0,923 | 0,917 | 0,915 |
-| Planéité du fond (mag/arcsec² ; plus haut = plus plat) | 23,26 | 23,15 | 23,43 | 23,48 | 23,53 | **23,55** | 23,37 |
+| Erreur de couleur B−R (plus bas = plus fidèle) | 0,057 | 0,042 | **0,045** | 0,045 | 0,053 | 0,090 | 0,046 |
+| Erreur de couleur V−R | 0,070 | 0,065 | 0,058 | 0,060 | 0,068 | 0,072 | **0,057** |
+| Point blanc B−R (BP−RP où B−R = 0 ; Gaia : environ 0,8) | 0,869 | 0,906 | 0,914 | 0,920 | 0,922 | 0,918 | 0,915 |
+| Planéité du fond (mag/arcsec² ; plus haut = plus plat) | 23,26 | 23,15 | 23,44 | 23,48 | 23,54 | **23,55** | 23,37 |
 | Poses gardées | 30 | 30 | 30 | 30 | 30 | 30 | 30 |
 | Taux de rejet (% des échantillons) | 0,892 | 0,788 | 0,045 | 1,403 | 1,403 | 1,347 | 0,044 |
 | Durée de la préparation (min) | 2,8 | 1,6 | 2,5 | 4,1 | 3,6 | 3,5 | 2,3 |
@@ -130,18 +164,18 @@ planche montre le grain, les points colorés et les étoiles, pas un voile de co
 
 | | Siril classique | Siril drizzle | Notre drizzle | Notre drizzle, rejet PixInsight | Notre classique | Notre classique sans équilibrage | Ancienne version |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Profondeur (mag, 5σ ; plus haut = plus profond) | 18,27 | 18,20 | 18,21 | 18,20 | **18,28** | 18,20 | 18,20 |
-| Bruit fin (mag/arcsec² ; plus haut = moins de bruit) | 24,65 | 24,59 | 24,57 | 24,56 | **24,70** | 24,64 | 24,54 |
-| Bruit large (mag/arcsec²) | 25,91 | 25,87 | 25,90 | 25,87 | **25,91** | 25,86 | 25,88 |
-| Signal sur bruit de la cible | 4,7 | 4,4 | 4,2 | 4,1 | **4,8** | 4,5 | 4,1 |
-| Étoiles faibles trouvées | 1271 | 1237 | 1237 | 1239 | **1262** | 1225 | 1245 |
+| Profondeur (mag, 5σ ; plus haut = plus profond) | 17,94 | 17,87 | 17,93 | 17,91 | **17,97** | 17,89 | 17,91 |
+| Bruit fin (mag/arcsec² ; plus haut = moins de bruit) | 24,66 | 24,59 | 24,57 | 24,56 | **24,70** | 24,64 | 24,54 |
+| Bruit large (mag/arcsec²) | 25,91 | 25,87 | 25,89 | 25,87 | **25,91** | 25,86 | 25,88 |
+| Signal sur bruit de la cible | 1,80 | 1,73 | 1,56 | 1,51 | **1,75** | 1,65 | 1,51 |
+| Étoiles faibles trouvées | 1274 | 1233 | 1242 | 1242 | **1257** | 1234 | 1240 |
 | FWHM au centre (″ ; plus bas = plus fines) | 6,88 | 7,09 | 6,99 | 6,99 | 6,94 | **6,86** | 6,95 |
 | Rondeur (1 = rondes) | 0,82 | 0,83 | **0,84** | 0,83 | 0,83 | 0,83 | 0,83 |
 | Points d'une seule couleur (par degré²) | 4 | 16 | 17 | 17 | 6 | **5** | 17 |
-| Erreur de couleur B−R (plus bas = plus fidèle) | 0,021 | 0,024 | 0,025 | 0,027 | 0,025 | **0,024** | 0,025 |
-| Erreur de couleur V−R | 0,047 | 0,041 | 0,033 | **0,033** | 0,034 | 0,038 | 0,035 |
-| Point blanc B−R (BP−RP où B−R = 0 ; Gaia : environ 0,8) | 0,424 | 0,458 | 0,870 | 0,871 | 0,881 | 0,878 | 0,871 |
-| Planéité du fond (mag/arcsec² ; plus haut = plus plat) | 22,99 | 19,92 | 23,16 | 23,19 | **23,28** | 23,24 | 23,21 |
+| Erreur de couleur B−R (plus bas = plus fidèle) | 0,022 | 0,025 | 0,025 | 0,024 | 0,024 | **0,023** | 0,024 |
+| Erreur de couleur V−R | 0,047 | 0,042 | 0,032 | **0,032** | 0,035 | 0,038 | 0,035 |
+| Point blanc B−R (BP−RP où B−R = 0 ; Gaia : environ 0,8) | 0,425 | 0,454 | 0,870 | 0,872 | 0,881 | 0,878 | 0,871 |
+| Planéité du fond (mag/arcsec² ; plus haut = plus plat) | 22,99 | 19,92 | 23,16 | 23,19 | **23,28** | 23,24 | 23,20 |
 | Poses gardées | 30 | 30 | 30 | 30 | 30 | 30 | 30 |
 | Taux de rejet (% des échantillons) | 0,804 | 0,596 | 0,025 | 0,814 | 0,814 | 0,852 | 0,024 |
 | Durée de la préparation (min) | 2,4 | 2,1 | 3,9 | 6,4 | 5,5 | 5,4 | 3,6 |
@@ -150,18 +184,18 @@ planche montre le grain, les points colorés et les étoiles, pas un voile de co
 
 | | Siril classique | Siril drizzle | Notre drizzle | Notre drizzle, rejet PixInsight | Notre classique | Notre classique sans équilibrage | Ancienne version |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Profondeur (mag, 5σ ; plus haut = plus profond) | 17,66 | 17,50 | **17,78** | 17,75 | 17,58 | 17,62 | 17,74 |
-| Bruit fin (mag/arcsec² ; plus haut = moins de bruit) | 23,97 | 23,86 | 23,95 | 23,94 | 23,95 | **23,97** | 23,93 |
-| Bruit large (mag/arcsec²) | 24,10 | 24,00 | 24,08 | 24,07 | 24,07 | **24,10** | 24,07 |
-| Signal sur bruit de la cible | 46,0 | 45,0 | 44,2 | 44,5 | **48,1** | 47,5 | 43,5 |
-| Étoiles faibles trouvées | 25183 | 25082 | 25601 | **25711** | 24884 | 24901 | 25646 |
+| Profondeur (mag, 5σ ; plus haut = plus profond) | 17,43 | 17,23 | 17,45 | 17,42 | 17,34 | 17,41 | **17,46** |
+| Bruit fin (mag/arcsec² ; plus haut = moins de bruit) | 23,97 | 23,85 | 23,95 | 23,94 | 23,94 | **23,97** | 23,93 |
+| Bruit large (mag/arcsec²) | 24,10 | 24,00 | 24,08 | 24,08 | 24,07 | **24,10** | 24,07 |
+| Signal sur bruit de la cible | 42,44 | 41,17 | 40,29 | 40,39 | **44,30** | 43,61 | 39,49 |
+| Étoiles faibles trouvées | 25078 | 24783 | 25281 | 25222 | 24727 | 24902 | **25399** |
 | FWHM au centre (″ ; plus bas = plus fines) | 5,61 | 5,68 | 5,45 | 5,46 | 5,65 | 5,58 | **5,33** |
 | Rondeur (1 = rondes) | 0,93 | 0,92 | **0,95** | 0,95 | 0,93 | 0,93 | 0,95 |
 | Points d'une seule couleur (par degré²) | 1704 | 7159 | 2680 | 2638 | 1655 | **1425** | 2576 |
-| Erreur de couleur B−R (plus bas = plus fidèle) | 0,075 | 0,057 | 0,056 | 0,063 | 0,086 | 0,087 | **0,053** |
-| Erreur de couleur V−R | 0,133 | 0,076 | **0,049** | 0,057 | 0,230 | 0,296 | 0,051 |
-| Point blanc B−R (BP−RP où B−R = 0 ; Gaia : environ 0,8) | 0,972 | 0,972 | 0,905 | 0,904 | 0,964 | 0,961 | 0,904 |
-| Planéité du fond (mag/arcsec² ; plus haut = plus plat) | 23,17 | 23,09 | 23,25 | **23,30** | 22,96 | 22,90 | 23,19 |
+| Erreur de couleur B−R (plus bas = plus fidèle) | 0,076 | 0,057 | 0,057 | 0,063 | 0,085 | 0,087 | **0,054** |
+| Erreur de couleur V−R | 0,134 | 0,075 | **0,049** | 0,057 | 0,233 | 0,298 | 0,050 |
+| Point blanc B−R (BP−RP où B−R = 0 ; Gaia : environ 0,8) | 0,971 | 0,972 | 0,904 | 0,903 | 0,963 | 0,961 | 0,905 |
+| Planéité du fond (mag/arcsec² ; plus haut = plus plat) | 23,17 | 23,09 | 23,25 | **23,31** | 22,96 | 22,91 | 23,19 |
 | Poses gardées | 15 | 15 | 15 | 15 | 15 | 15 | 15 |
 | Taux de rejet (% des échantillons) | 1,222 | 1,177 | 0,014 | 1,167 | 1,167 | 1,215 | 0,014 |
 | Durée de la préparation (min) | 3,5 | 4,1 | 4,2 | 17,0 | 16,3 | 16,5 | 6,8 |
@@ -170,17 +204,17 @@ planche montre le grain, les points colorés et les étoiles, pas un voile de co
 
 | | Siril classique | Siril drizzle | Notre drizzle | Notre drizzle, rejet PixInsight | Notre classique | Notre classique sans équilibrage | Ancienne version |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Profondeur (mag, 5σ ; plus haut = plus profond) | 16,06 | 15,85 | 15,95 | 15,94 | 15,99 | **16,03** | 15,93 |
-| Bruit fin (mag/arcsec² ; plus haut = moins de bruit) | 22,63 | 22,47 | 22,55 | 22,53 | 22,63 | **22,64** | 22,52 |
-| Bruit large (mag/arcsec²) | 23,80 | 23,62 | 23,69 | 23,66 | 23,69 | **23,74** | 23,65 |
-| Signal sur bruit de la cible | 19,1 | 21,0 | 20,5 | 19,8 | **21,6** | 20,5 | 19,2 |
-| Étoiles faibles trouvées | 647 | 607 | 612 | 616 | 627 | **634** | 621 |
+| Profondeur (mag, 5σ ; plus haut = plus profond) | 15,90 | 15,57 | 15,76 | 15,75 | 15,83 | **15,87** | 15,76 |
+| Bruit fin (mag/arcsec² ; plus haut = moins de bruit) | 22,62 | 22,47 | 22,55 | 22,53 | 22,63 | **22,64** | 22,52 |
+| Bruit large (mag/arcsec²) | 23,80 | 23,62 | 23,68 | 23,66 | 23,69 | **23,74** | 23,65 |
+| Signal sur bruit de la cible | 28,38 | 26,31 | 27,55 | 27,14 | **28,60** | 27,93 | 27,13 |
+| Étoiles faibles trouvées | 671 | 608 | 618 | 626 | **643** | 639 | 636 |
 | FWHM au centre (″ ; plus bas = plus fines) | 5,82 | 6,47 | 6,10 | 6,12 | 5,94 | **5,83** | 5,94 |
 | Rondeur (1 = rondes) | 0,89 | 0,87 | 0,87 | 0,86 | 0,91 | **0,91** | 0,86 |
 | Points d'une seule couleur (par degré²) | 0 | 7 | 10 | 10 | **2** | 5 | 5 |
-| Erreur de couleur B−R (plus bas = plus fidèle) | 0,158 | 0,147 | 0,105 | 0,136 | 0,120 | **0,090** | 0,133 |
-| Erreur de couleur V−R | 0,259 | 0,239 | 0,188 | 0,159 | **0,116** | 0,175 | 0,166 |
-| Point blanc B−R (BP−RP où B−R = 0 ; Gaia : environ 0,8) | 0,978 | 0,949 | 0,966 | 0,946 | 1,073 | 0,995 | 0,958 |
+| Erreur de couleur B−R (plus bas = plus fidèle) | 0,153 | 0,136 | 0,102 | 0,134 | 0,120 | **0,094** | 0,125 |
+| Erreur de couleur V−R | 0,254 | 0,216 | 0,183 | 0,151 | **0,118** | 0,181 | 0,163 |
+| Point blanc B−R (BP−RP où B−R = 0 ; Gaia : environ 0,8) | 0,981 | 0,948 | 0,966 | 0,946 | 1,061 | 0,997 | 0,956 |
 | Planéité du fond (mag/arcsec² ; plus haut = plus plat) | 21,30 | 21,37 | 21,06 | 21,07 | **21,39** | 21,35 | 21,01 |
 | Poses gardées | 29 | 30 | 30 | 30 | 30 | 30 | 30 |
 | Taux de rejet (% des échantillons) | 0,919 | 0,630 | 0,001 | 0,920 | 0,920 | 0,959 | 0,001 |
@@ -190,18 +224,18 @@ planche montre le grain, les points colorés et les étoiles, pas un voile de co
 
 | | Siril classique | Siril drizzle | Notre drizzle | Notre drizzle, rejet PixInsight | Notre classique | Notre classique sans équilibrage | Ancienne version |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Profondeur (mag, 5σ ; plus haut = plus profond) | 17,36 | 16,96 | 17,12 | 17,13 | 17,17 | **17,25** | 17,05 |
+| Profondeur (mag, 5σ ; plus haut = plus profond) | 17,08 | 16,81 | 17,00 | 17,00 | 17,04 | **17,15** | 16,93 |
 | Bruit fin (mag/arcsec² ; plus haut = moins de bruit) | 23,64 | 23,43 | 23,60 | 23,59 | 23,71 | **23,72** | 23,47 |
-| Bruit large (mag/arcsec²) | 24,82 | 24,65 | 24,82 | 24,82 | 24,82 | **24,89** | 24,75 |
-| Signal sur bruit de la cible | 4,9 | 4,7 | 4,7 | 4,8 | **5,4** | 5,0 | 4,2 |
-| Étoiles faibles trouvées | 5802 | 5458 | 5608 | 5601 | 5659 | **5783** | 5514 |
+| Bruit large (mag/arcsec²) | 24,82 | 24,65 | 24,82 | 24,82 | 24,82 | **24,89** | 24,74 |
+| Signal sur bruit de la cible | 3,65 | 3,48 | 3,69 | 3,73 | **4,26** | 3,93 | 3,21 |
+| Étoiles faibles trouvées | 5755 | 5541 | 5803 | 5739 | 5771 | **5928** | 5650 |
 | FWHM au centre (″ ; plus bas = plus fines) | 5,81 | 5,99 | 6,02 | 6,02 | 6,02 | **5,87** | 5,96 |
 | Rondeur (1 = rondes) | 0,76 | 0,77 | 0,76 | 0,76 | **0,77** | 0,77 | 0,76 |
 | Points d'une seule couleur (par degré²) | 6 | 17 | 17 | 17 | 7 | **6** | 22 |
-| Erreur de couleur B−R (plus bas = plus fidèle) | 0,053 | 0,054 | 0,056 | **0,041** | 0,054 | 0,056 | 0,060 |
-| Erreur de couleur V−R | 0,102 | 0,109 | 0,201 | **0,072** | 0,112 | 0,152 | 0,200 |
-| Point blanc B−R (BP−RP où B−R = 0 ; Gaia : environ 0,8) | 0,734 | 0,759 | 0,859 | 0,867 | 0,894 | 0,887 | 0,853 |
-| Planéité du fond (mag/arcsec² ; plus haut = plus plat) | 21,95 | 21,79 | 21,29 | 21,95 | 22,07 | **22,10** | 21,25 |
+| Erreur de couleur B−R (plus bas = plus fidèle) | 0,053 | 0,052 | 0,056 | **0,041** | 0,054 | 0,059 | 0,059 |
+| Erreur de couleur V−R | 0,102 | 0,113 | 0,207 | **0,071** | 0,110 | 0,181 | 0,197 |
+| Point blanc B−R (BP−RP où B−R = 0 ; Gaia : environ 0,8) | 0,734 | 0,758 | 0,857 | 0,866 | 0,893 | 0,889 | 0,851 |
+| Planéité du fond (mag/arcsec² ; plus haut = plus plat) | 21,95 | 21,79 | 21,29 | 21,95 | 22,07 | **22,19** | 21,24 |
 | Poses gardées | 30 | 30 | 26 | 26 | 26 | 26 | 16 |
 | Taux de rejet (% des échantillons) | 0,910 | 0,841 | 0,044 | 1,603 | 1,603 | 1,622 | 0,039 |
 | Durée de la préparation (min) | 1,3 | 1,6 | 2,7 | 4,3 | 3,6 | 3,7 | 2,5 |
@@ -1143,24 +1177,37 @@ Une table par mesure : chaque case donne la valeur, puis entre parenthèses l'é
 **La question.** Notre drizzle (Bayer) laisse plus de bruit de fond que l'empilement classique de Siril. Est-ce un
 défaut de notre drizzle, ou du drizzle en général ? On a fait tourner le drizzle de Siril lui-même sur les mêmes poses.
 
+**Mesures refaites le 2 novembre dans l'après-midi** (profondeur par disques exacts avec correction de la lumière hors
+disque, signal sur bruit sur des zones choisies à part : voir le haut de « Banc du 2 novembre ») ; les piles sont les
+mêmes. Les conclusions tiennent ; ce qui change est dit plus bas.
+
 **Réponse.**
 
 - **Le même bruit en plus apparaît chez Siril.** Entre l'empilement classique et le drizzle, le bruit de fond fin perd
-  en moyenne 0,17 mag/arcsec² chez Siril (de 0,06 à 0,36 selon le cas) et 0,12 chez nous (de 0,04 à 0,17) ; à grande
-  échelle, 0,16 chez Siril et 0,06 chez nous. Ce n'est donc pas propre à notre drizzle : c'est ce que fait un drizzle
+  en moyenne 0,17 mag/arcsec² chez Siril (de 0,06 à 0,36 selon le cas) et 0,14 chez nous (de 0,04 à 0,25) ; à grande
+  échelle, 0,16 chez Siril et 0,07 chez nous. Ce n'est donc pas propre à notre drizzle : c'est ce que fait un drizzle
   Bayer à l'échelle 1 sur 30 poses (ou 15 pour M8). Notre drizzle n'est pas plus bruité que celui de Siril (en moyenne
-  0,05 mag de mieux à petite échelle, 0,08 à grande échelle) et va plus profond (+0,12 mag en moyenne).
-- **La profondeur suit** : le drizzle de Siril perd 0,09 à 0,36 mag de profondeur face à son empilement classique
-  (0,21 en moyenne), le nôtre 0,08 en moyenne (de −0,15 à +0,08).
-- **Un point où nous sommes en retard** : le signal/bruit sur la cible. Le drizzle de Siril garde celui de son
-  empilement classique (de −6 % à +13 %), le nôtre en perd 6 à 10 % sur les six cas. Notre drizzle reste donc 12 % en
-  dessous de celui de Siril sur ce point (en moyenne), alors qu'il est devant à petite échelle : à regarder.
+  0,05 mag de mieux à petite échelle, 0,08 à grande échelle) et va plus profond (+0,16 mag en moyenne, de +0,05 à
+  +0,38).
+- **La profondeur suit** : le drizzle de Siril perd 0,11 à 0,34 mag de profondeur face à son empilement classique
+  (0,21 en moyenne), le nôtre 0,08 en moyenne (de −0,23 à +0,02).
+- **Un point où nous sommes en retard** : le signal/bruit sur la cible. Le drizzle de Siril garde à peu près celui de
+  son empilement classique (de −5 % à +6 %, −1 % en moyenne), le nôtre en perd 7 à 18 % (10 % en moyenne ; la Rosette,
+  18 %, parce que cette version n'y garde que 16 poses sur 30, contre 26 pour le classique). Notre drizzle reste 9 % en
+  dessous de celui de Siril sur ce point (en moyenne, de 4 à 13 %), alors qu'il est devant à petite échelle : à regarder.
 - **Les points d'une seule couleur (pixels chauds) sont aussi dans le drizzle de Siril**, et plus nombreux que chez
   nous sur Heart (76 par degré², contre 21 chez nous et 1 pour son empilement classique) et sur M8 (6 307 contre
-  2 344) ; au même niveau sur Iris, M51 et la Rosette (16 contre 18 à 26). Les empilements classiques n'en ont presque
-  plus (0 à 8 par degré² hors M8). Ce défaut est donc celui du drizzle Bayer, pas de notre implémentation.
+  2 344) ; au même niveau sur Iris, M51 et la Rosette (16 à 17 contre 18 à 26). Les empilements classiques n'en ont
+  presque plus (0 à 6 par degré² hors M8). Ce défaut est donc celui du drizzle Bayer, pas de notre implémentation.
 - **Autre repère** : les étoiles faibles trouvées, la finesse et l'erreur de couleur bougent peu ou dans les deux sens
   (Heart : le drizzle de Siril a de moins bonnes couleurs que son classique, le nôtre de meilleures).
+
+**Ce qui a changé avec les mesures corrigées** : le signal/bruit de la cible. Avant, le drizzle de Siril « gardait » le
+signal/bruit de son classique (de −6 % à +13 %) et le nôtre en perdait 6 à 10 % (12 % sous celui de Siril en moyenne) ;
+maintenant le drizzle de Siril va de −5 % à +6 %, le nôtre perd 7 à 18 %, et il est 9 % sous celui de Siril : l'écart est
+un peu plus petit, la conclusion est la même. Les écarts de profondeur sont presque les mêmes qu'avant (Siril : −0,09 à
+−0,36 avant, −0,11 à −0,34 maintenant ; nous : −0,15 à +0,08 avant, −0,23 à +0,02 maintenant). Le signal/bruit de M51
+est fragile (la nébuleuse y est plus faible que les dégradés ; voir « Le signal sur bruit de la cible, ce qu'il vaut »).
 
 ### Comment on l'a fait tourner
 
@@ -1183,8 +1230,11 @@ défaut de notre drizzle, ou du drizzle en général ? On a fait tourner le driz
   M51 125 s / 143 s, M8 248 s / 212 s, Seestar 19 s / 15 s, Rosette 96 s / 80 s.
 - **Les mesures** sont celles du banc (mêmes fonctions que le banc croisé : `tools/bench/siril/measure_drizzle.py`
   appelle `crossed.py` et `measure.py`), sur le même ciel pour les quatre piles : le ciel couvert par toutes, la même
-  liste d'étoiles Gaia, la même cible, des boîtes de même taille. Notre drizzle et notre empilement classique sont lus
-  dans les résultats existants du banc croisé : le moteur n'a pas été relancé. Le ciel commun est un peu plus grand
+  liste d'étoiles Gaia, la même cible, des boîtes de même taille. Notre drizzle (les réglages de l'ancienne version : le même
+  résultat que celui du matin, recalculé aujourd'hui avec le moteur du jour, car le projet du matin n'a plus ses
+  dernières étapes) et notre empilement classique sans équilibrage des couleurs avant le dématriçage (le même
+  dématriçage que Siril, comme le classique du matin) sont lus dans les résultats du banc du jour : le moteur n'a
+  pas été relancé. L'étape couleur est la version actuelle. Le ciel commun est un peu plus grand
   que celui du banc croisé (quatre piles seulement), donc quelques valeurs diffèrent de la 2e décimale des tableaux
   précédents. Les scripts (`run_siril_drizzle.py`, `measure_drizzle.py`, `report_drizzle.py`) sont copiés dans chaque
   dossier `siril_express_drizzle/` ; les mesures brutes sont dans `<cas>/drizzle_siril_express.json`.
@@ -1198,56 +1248,56 @@ chez nous. Pour le bruit et la profondeur, négatif = le drizzle est moins bon.
 
 | Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
 |---|---:|---:|---:|---:|---:|---:|
-| Heart | 16,33 | 16,00 | 16,23 | 16,37 | −0,33 | −0,13 |
-| Iris | 17,42 | 17,15 | 17,27 | 17,42 | −0,27 | −0,15 |
-| M51 | 18,29 | 18,20 | 18,21 | 18,20 | −0,09 | +0,01 |
-| M8 | 17,75 | 17,65 | 17,86 | 17,78 | −0,09 | +0,08 |
-| Seestar | 16,00 | 15,87 | 15,90 | 16,03 | −0,14 | −0,13 |
-| Rosette | 17,32 | 16,96 | 17,05 | 17,18 | −0,36 | −0,13 |
+| Heart | 16,02 | 15,68 | 16,07 | 16,04 | −0,34 | +0,02 |
+| Iris | 17,16 | 16,94 | 17,04 | 17,17 | −0,22 | −0,13 |
+| M51 | 17,98 | 17,87 | 17,92 | 17,90 | −0,12 | +0,01 |
+| M8 | 17,51 | 17,39 | 17,57 | 17,57 | −0,11 | +0,01 |
+| Seestar | 15,86 | 15,60 | 15,75 | 15,91 | −0,26 | −0,16 |
+| Rosette | 17,08 | 16,85 | 16,94 | 17,17 | −0,23 | −0,23 |
 
 **Bruit du fond, petite échelle (mag/arcsec² ; plus haut = moins de bruit)**
 
 | Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
 |---|---:|---:|---:|---:|---:|---:|
-| Heart | 24,60 | 24,25 | 24,48 | 24,61 | −0,36 | −0,13 |
+| Heart | 24,60 | 24,24 | 24,48 | 24,60 | −0,36 | −0,13 |
 | Iris | 23,85 | 23,69 | 23,68 | 23,86 | −0,16 | −0,17 |
-| M51 | 24,65 | 24,59 | 24,54 | 24,64 | −0,06 | −0,11 |
+| M51 | 24,66 | 24,59 | 24,54 | 24,64 | −0,06 | −0,11 |
 | M8 | 24,08 | 23,97 | 24,04 | 24,09 | −0,11 | −0,04 |
-| Seestar | 22,63 | 22,48 | 22,52 | 22,64 | −0,14 | −0,12 |
-| Rosette | 23,63 | 23,43 | 23,47 | 23,64 | −0,20 | −0,17 |
+| Seestar | 22,62 | 22,48 | 22,52 | 22,64 | −0,14 | −0,12 |
+| Rosette | 23,64 | 23,43 | 23,47 | 23,72 | −0,20 | −0,25 |
 
 **Bruit du fond, grande échelle (mag/arcsec² ; plus haut = moins de bruit)**
 
 | Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
 |---|---:|---:|---:|---:|---:|---:|
-| Heart | 25,29 | 25,00 | 25,24 | 25,29 | −0,30 | −0,05 |
+| Heart | 25,29 | 25,00 | 25,24 | 25,29 | −0,29 | −0,05 |
 | Iris | 25,22 | 25,07 | 25,10 | 25,21 | −0,14 | −0,11 |
-| M51 | 25,91 | 25,87 | 25,88 | 25,86 | −0,04 | +0,01 |
-| M8 | 24,39 | 24,29 | 24,37 | 24,39 | −0,10 | −0,02 |
-| Seestar | 23,80 | 23,61 | 23,65 | 23,73 | −0,19 | −0,08 |
-| Rosette | 24,82 | 24,65 | 24,74 | 24,82 | −0,17 | −0,08 |
+| M51 | 25,91 | 25,87 | 25,88 | 25,86 | −0,04 | +0,02 |
+| M8 | 24,39 | 24,28 | 24,37 | 24,39 | −0,11 | −0,02 |
+| Seestar | 23,79 | 23,61 | 23,66 | 23,74 | −0,19 | −0,08 |
+| Rosette | 24,82 | 24,65 | 24,74 | 24,89 | −0,17 | −0,15 |
 
 **Signal/bruit sur la cible**
 
 | Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
 |---|---:|---:|---:|---:|---:|---:|
-| Heart | 5,03 | 5,13 | 4,45 | 4,84 | +2 % | −8 % |
-| Iris | 2,98 | 2,85 | 2,36 | 2,56 | −5 % | −8 % |
-| M51 | 4,65 | 4,39 | 4,05 | 4,50 | −6 % | −10 % |
-| M8 | 49,70 | 48,93 | 46,55 | 51,31 | −2 % | −9 % |
-| Seestar | 19,84 | 22,35 | 20,43 | 21,71 | +13 % | −6 % |
-| Rosette | 4,89 | 4,69 | 4,17 | 4,62 | −4 % | −10 % |
+| Heart | 2,96 | 3,07 | 2,67 | 2,87 | +4 % | −7 % |
+| Iris | 1,74 | 1,69 | 1,58 | 1,73 | −3 % | −9 % |
+| M51 | 1,80 | 1,73 | 1,51 | 1,65 | −4 % | −8 % |
+| M8 | 49,03 | 46,40 | 44,47 | 49,08 | −5 % | −9 % |
+| Seestar | 20,82 | 22,05 | 20,18 | 21,74 | +6 % | −7 % |
+| Rosette | 3,65 | 3,48 | 3,22 | 3,93 | −5 % | −18 % |
 
 **Étoiles faibles trouvées à 5σ (les mêmes étoiles Gaia pour les quatre)**
 
 | Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
 |---|---:|---:|---:|---:|---:|---:|
-| Heart | 22634 | 22126 | 22506 | 22837 | −2 % | −1 % |
-| Iris | 4776 | 4519 | 4581 | 4807 | −5 % | −5 % |
-| M51 | 1284 | 1241 | 1246 | 1233 | −3 % | +1 % |
-| M8 | 27408 | 27563 | 27893 | 27367 | +1 % | +2 % |
-| Seestar | 620 | 621 | 622 | 640 | +0 % | −3 % |
-| Rosette | 5777 | 5471 | 5567 | 5704 | −5 % | −2 % |
+| Heart | 22529 | 22149 | 22672 | 22594 | −2 % | +0 % |
+| Iris | 4813 | 4553 | 4659 | 4777 | −5 % | −2 % |
+| M51 | 1285 | 1235 | 1240 | 1242 | −4 % | −0 % |
+| M8 | 27255 | 27378 | 27660 | 27256 | +0 % | +1 % |
+| Seestar | 651 | 620 | 636 | 665 | −5 % | −4 % |
+| Rosette | 5853 | 5610 | 5658 | 5992 | −4 % | −6 % |
 
 **Finesse des étoiles : largeur à mi-hauteur au centre (″ ; plus bas = plus fines)**
 
@@ -1258,7 +1308,7 @@ chez nous. Pour le bruit et la profondeur, négatif = le drizzle est moins bon.
 | M51 | 6,88 | 7,09 | 6,95 | 6,86 | +3 % | +1 % |
 | M8 | 5,63 | 5,69 | 5,33 | 5,58 | +1 % | −4 % |
 | Seestar | 5,84 | 6,47 | 5,94 | 5,83 | +11 % | +2 % |
-| Rosette | 5,81 | 5,99 | 5,96 | 5,90 | +3 % | +1 % |
+| Rosette | 5,81 | 5,99 | 5,96 | 5,87 | +3 % | +2 % |
 
 **Points d'une seule couleur (pixels chauds restants, par degré²)**
 
@@ -1267,42 +1317,42 @@ chez nous. Pour le bruit et la profondeur, négatif = le drizzle est moins bon.
 | Heart | 1 | 76 | 21 | 1 | +75 | +21 |
 | Iris | 3 | 16 | 26 | 6 | +13 | +19 |
 | M51 | 4 | 16 | 18 | 5 | +12 | +12 |
-| M8 | 1418 | 6307 | 2344 | 1196 | +4890 | +1148 |
+| M8 | 1418 | 6307 | 2344 | 1190 | +4890 | +1154 |
 | Seestar | 0 | 7 | 5 | 5 | +7 | +0 |
-| Rosette | 6 | 16 | 22 | 8 | +9 | +14 |
+| Rosette | 6 | 17 | 22 | 6 | +10 | +16 |
 
 **Couleurs des étoiles : erreur bleu−rouge face à Gaia (plus bas = plus fidèle)**
 
 | Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
 |---|---:|---:|---:|---:|---:|---:|
-| Heart | 0,217 | 0,263 | 0,093 | 0,238 | +0,045 | −0,145 |
-| Iris | 0,058 | 0,042 | 0,045 | 0,089 | −0,016 | −0,044 |
-| M51 | 0,021 | 0,024 | 0,025 | 0,024 | +0,002 | +0,001 |
-| M8 | 0,073 | 0,058 | 0,054 | 0,085 | −0,015 | −0,031 |
-| Seestar | 0,158 | 0,147 | 0,133 | 0,090 | −0,011 | +0,042 |
-| Rosette | 0,055 | 0,056 | 0,060 | 0,062 | +0,000 | −0,002 |
+| Heart | 0,218 | 0,264 | 0,093 | 0,223 | +0,046 | −0,130 |
+| Iris | 0,057 | 0,042 | 0,046 | 0,090 | −0,015 | −0,044 |
+| M51 | 0,022 | 0,025 | 0,024 | 0,023 | +0,003 | +0,001 |
+| M8 | 0,074 | 0,058 | 0,054 | 0,085 | −0,016 | −0,031 |
+| Seestar | 0,153 | 0,141 | 0,125 | 0,093 | −0,012 | +0,032 |
+| Rosette | 0,053 | 0,052 | 0,059 | 0,059 | −0,001 | −0,000 |
 
 **Couleurs des étoiles : erreur vert−rouge face à Gaia (plus bas = plus fidèle)**
 
 | Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
 |---|---:|---:|---:|---:|---:|---:|
-| Heart | 0,326 | 0,579 | 0,188 | 0,329 | +0,252 | −0,141 |
-| Iris | 0,069 | 0,067 | 0,058 | 0,072 | −0,002 | −0,014 |
-| M51 | 0,047 | 0,041 | 0,035 | 0,038 | −0,006 | −0,003 |
-| M8 | 0,128 | 0,076 | 0,053 | 0,282 | −0,052 | −0,229 |
-| Seestar | 0,262 | 0,243 | 0,166 | 0,165 | −0,019 | +0,001 |
-| Rosette | 0,108 | 0,114 | 0,202 | 0,174 | +0,005 | +0,028 |
+| Heart | 0,319 | 0,573 | 0,188 | 0,480 | +0,254 | −0,292 |
+| Iris | 0,070 | 0,065 | 0,057 | 0,072 | −0,005 | −0,015 |
+| M51 | 0,047 | 0,042 | 0,035 | 0,038 | −0,005 | −0,003 |
+| M8 | 0,129 | 0,076 | 0,051 | 0,284 | −0,053 | −0,233 |
+| Seestar | 0,248 | 0,226 | 0,163 | 0,174 | −0,022 | −0,011 |
+| Rosette | 0,102 | 0,113 | 0,197 | 0,181 | +0,011 | +0,015 |
 
 **Planéité du fond après retrait du dégradé (mag/arcsec² ; plus haut = plus plat)**
 
 | Cas | Siril classique | Siril drizzle | Notre drizzle | Notre classique | Siril : drizzle − classique | Nous : drizzle − classique |
 |---|---:|---:|---:|---:|---:|---:|
-| Heart | 24,58 | 24,25 | 24,58 | 23,68 | −0,33 | +0,90 |
-| Iris | 23,26 | 23,15 | 23,37 | 23,54 | −0,11 | −0,18 |
-| M51 | 22,99 | 19,92 | 23,22 | 23,23 | −3,07 | −0,01 |
+| Heart | 24,58 | 24,24 | 24,58 | 24,58 | −0,33 | +0,00 |
+| Iris | 23,26 | 23,15 | 23,37 | 23,55 | −0,11 | −0,18 |
+| M51 | 22,99 | 19,92 | 23,22 | 23,24 | −3,07 | −0,02 |
 | M8 | 23,18 | 23,10 | 23,20 | 22,90 | −0,07 | +0,30 |
-| Seestar | 21,29 | 21,37 | 21,01 | 21,34 | +0,08 | −0,34 |
-| Rosette | 21,94 | 21,79 | 21,23 | 22,12 | −0,15 | −0,89 |
+| Seestar | 21,29 | 21,37 | 21,00 | 21,33 | +0,08 | −0,33 |
+| Rosette | 21,95 | 21,79 | 21,24 | 22,19 | −0,16 | −0,94 |
 
 **Taux de rejet de l'empilement (% des échantillons écartés)**
 
@@ -1313,7 +1363,7 @@ chez nous. Pour le bruit et la profondeur, négatif = le drizzle est moins bon.
 | M51 | 0,804 | 0,596 | 0,024 | 0,852 | −0,207 | −0,828 |
 | M8 | 1,222 | 1,177 | 0,014 | 1,215 | −0,045 | −1,201 |
 | Seestar | 0,919 | 0,630 | 0,001 | 0,959 | −0,289 | −0,958 |
-| Rosette | 0,910 | 0,841 | 0,039 | 0,545 | −0,069 | −0,506 |
+| Rosette | 0,910 | 0,841 | 0,039 | 1,622 | −0,069 | −1,583 |
 
 À noter :
 - **Taux de rejet** : les chiffres de notre drizzle (0,001 à 0,044 %) et ceux des deux empilements classiques ne sont
@@ -1324,7 +1374,7 @@ chez nous. Pour le bruit et la profondeur, négatif = le drizzle est moins bon.
   (dominante rose et verte sur l'image finale, rapport rouge/vert jusqu'à 1,5 dans un coin). Rien n'a été retouché.
 - **M8, points d'une seule couleur** : les nombres sont grands pour les quatre piles (1 200 à 6 300 par degré²) parce
   que le champ est plein de nébulosité et d'étoiles ; seuls les écarts entre piles comptent.
-- **Heart, couleurs des étoiles** : le drizzle de Siril donne l'erreur vert−rouge la plus forte (0,58, contre 0,33 en
+- **Heart, couleurs des étoiles** : le drizzle de Siril donne l'erreur vert−rouge la plus forte (0,57, contre 0,32 en
   classique et 0,19 chez nous).
 - Ces mesures portent sur l'Express (30 poses ; 15 pour M8) : elles disent ce que fait le drizzle à l'échelle 1 avec
   si peu de poses. Le drizzle de Siril n'a pas été mesuré en Base (100 poses).
@@ -1426,10 +1476,19 @@ magnitude G donne le même flux partout).
 Sur les **piles linéaires** (notre pile brute, la pile de Siril avant extraction du fond) :
 - **bruit du fond** : l'écart des moyennes de petites boîtes de ciel (étoiles masquées), en magnitude par seconde
   d'arc² (plus haut = moins de bruit), à deux échelles : boîtes de 4 pixels de Siril, et 4 fois plus grandes ;
-- **profondeur** : la magnitude de l'étoile qu'on détecte à 5 sigma ;
+- **profondeur** : la magnitude de l'étoile qu'on détecte à 5 sigma. Le flux d'une étoile est celui d'un cercle de
+  2,5 fois la largeur à mi-hauteur, le bruit celui de cercles vides de 1 fois la largeur posés sur le ciel ; tous les
+  cercles prennent chaque pixel pour la part exacte de sa surface qui est dans le cercle (jamais des pixels entiers : le
+  nombre de pixels d'un disque saute, ce qui faisait sauter la profondeur), et on corrige la part de la lumière de l'étoile
+  qui sort du petit cercle, mesurée sur les étoiles de la même image (la courbe de croissance). C'est la méthode de
+  SExtractor, DAOPHOT et photutils (mesure corrigée le 2 novembre dans l'après-midi) ;
 - **étoiles faibles** : combien d'étoiles Gaia isolées ressortent à plus de 5 sigma, et la magnitude où on en trouve la
   moitié ;
-- **signal/bruit sur la cible** : la région étendue la plus brillante contre le ciel juste autour ;
+- **signal/bruit sur la cible** : la région étendue la plus brillante contre le ciel juste autour. La région (les 5 % de
+  boîtes les plus claires) et son ciel (toute la bande autour) sont choisis sur une image indépendante des piles
+  comparées (la pile de 100 poses de Siril, ou la moyenne des piles pour M8), puis chaque pile est mesurée sur ces mêmes
+  zones, avec un plan ajusté sur la bande comme ciel sous la cible : choisir sur l'une des images la favorise (corrigé le
+  2 novembre dans l'après-midi) ;
 - **étoiles** : finesse (largeur à mi-hauteur) et rondeur, au centre et au bord du champ ;
 - **défauts** : traînées longues restantes ; taches claires ou sombres propres à une image ; **points d'une seule
   couleur** (au-dessus de 6σ dans une couleur, sous 2σ dans les deux autres : les pixels chauds restants) ;

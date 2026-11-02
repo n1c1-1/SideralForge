@@ -3,6 +3,24 @@
 *La question : « comprendre et si possible corriger l'écart de qualité du drizzle face à Siril ». Banc Express (30
 poses, 15 pour M8, 6 cas), mêmes poses, même ciel, mêmes étoiles Gaia, mêmes fonctions de mesure que le banc.*
 
+**Mises à jour de l'après-midi (2 novembre).** Deux mesures du banc ont été corrigées (BENCH.md, haut de « Banc du 2
+novembre ») : la profondeur (disques exacts, avec la lumière hors disque corrigée) et le signal/bruit de la cible (zones
+choisies sur une image indépendante, la même pour toutes les piles, avec toute la bande de ciel voisin). **Ce qui a
+changé ici, en clair :**
+- **Iris n'est plus un cas à part.** Mesuré sans le biais, notre classique est à +6 % de Siril classique (−1 % sans
+  l'équilibrage des couleurs) : il n'y avait pas de défaut dans la chaîne, c'était la mesure (section « Iris : d'où
+  vient l'écart », maintenant appliquée au banc).
+- **L'écart de signal/bruit entre notre drizzle et celui de Siril est plus petit** : −3 % en moyenne (au lieu de −6 %),
+  et −4 % sur Iris (au lieu de −16 %) ; notre drizzle passe devant sur le Seestar (+5 %) et la Rosette (+6 %). Il reste
+  derrière sur Heart (−14 %) et M51 (−10 %), deux cas où la mesure est fragile (la cible y est plus faible que les
+  dégradés des piles brutes).
+- **La profondeur** : notre drizzle reste devant celui de Siril dans les 6 cas (+0,06 à +0,30 mag au lieu de +0,04 à
+  +0,28) ; les chiffres de profondeur d'avant ne sont pas comparables.
+- **Ne change pas** : l'explication par les gouttes non pesées de la beta3, le grain, la finesse, les couleurs, les
+  points d'une seule couleur, et la conclusion (rien à corriger dans le moteur).
+- Les tableaux et les mesures du paragraphe 2 (Seestar, Heart) plus bas ont été faits avec l'ancien choix de la cible : les
+  écarts entre lignes d'un même tableau restent valables (mêmes zones pour toutes les lignes), pas les valeurs absolues.
+
 **Mots employés.** *Drizzle* : chaque pixel brut rouge, vert ou bleu est déposé tel quel, à sa place exacte, sur
 l'image finale, sous la forme d'un petit carré, la *goutte* (taille 1 = un pixel). *Signal/bruit sur la cible* : la
 lumière de la nébuleuse au-dessus du ciel voisin, divisée par le grain de l'image à cet endroit (boîtes de 4 pixels).
@@ -14,31 +32,38 @@ grain plus corrélé, donc plus doux, mais elle est moins fine.
 - **Il n'y a pas de défaut dans notre drizzle.** Rien n'a été changé dans le moteur.
 - **La moitié de l'écart venait de la comparaison elle-même** : ce matin, « notre drizzle » était l'ancienne version
   (goutte 0,7, ancienne sélection : 16 poses sur 26 pour la Rosette), alors que Siril tournait avec la goutte 1. Avec
-  les réglages d'aujourd'hui (goutte 1), l'écart moyen passe de −10 % à −6 %.
+  les réglages d'aujourd'hui (goutte 1), l'écart moyen passe de −7 % à −3 % (mesures corrigées ; −10 % à −6 % avec les anciennes).
 - **Le reste vient surtout de Siril** : la version du banc (1.4.0-beta3) empile les poses drizzlées *sans le poids de
   chaque goutte*. Siril l'a corrigé lui-même dans la 1.4.0-beta4 (« Fixed drizzle calculations by exporting weight
   files during registration and using them for stacking »). Sans ces poids, l'image est un peu lissée : le grain
   paraît 4 % plus doux, les étoiles sont 7 % plus larges. Refait avec les poids à partir des propres poses de Siril,
   le drizzle de Siril a le même grain, la même finesse et la même profondeur que le nôtre.
-- **Iris est à part** : notre empilement classique y est aussi 9 % sous celui de Siril. Ce n'est donc pas le drizzle.
-  La cause n'est pas trouvée (deux pistes écartées par la mesure).
-- **Notre drizzle reste devant sur le reste** : plus profond que celui de Siril dans les 6 cas (+0,04 à +0,28 mag),
+- **Iris n'est plus à part** : le matin, notre empilement classique y était 9 % sous celui de Siril, sans cause
+  trouvée. C'était la mesure de la cible (choisie sur l'image de Siril) ; corrigée, notre classique est à +6 % et notre
+  drizzle à −4 % de celui de Siril.
+- **Notre drizzle reste devant sur le reste** : plus profond que celui de Siril dans les 6 cas (+0,06 à +0,30 mag),
   étoiles plus fines dans 4 cas sur 6 (à peine plus larges sur Heart et la Rosette).
 
 ## Les chiffres : signal/bruit sur la cible
 
+Mesures corrigées (zones choisies sur une image indépendante, les mêmes pour toutes les piles ; M8 : sur la moyenne
+des piles). « Ce matin » : l'ancienne version (goutte 0,7, ancienne sélection : 16 poses sur 26 pour la Rosette) ;
+« aujourd'hui » : les réglages du jour (goutte 1).
+
 | Cas | Siril drizzle | Notre drizzle ce matin (goutte 0,7) | Notre drizzle aujourd'hui (goutte 1) | Profondeur : nous − Siril drizzle |
 |---|---:|---:|---:|---:|
-| Heart | 4,91 | 4,32 (−12 %) | 4,46 (−9 %) | +0,28 mag |
-| Iris | 2,85 | 2,36 (−17 %) | 2,40 (−16 %) | +0,19 mag |
-| M51 | 4,39 | 4,05 (−8 %) | 4,21 (−4 %) | +0,04 mag |
-| M8 | 48,9 | 46,5 (−5 %) | 47,6 (−3 %) | +0,22 mag |
-| Seestar | 22,5 | 20,5 (−9 %) | 21,5 (−4 %) | +0,09 mag |
-| Rosette | 4,68 | 4,19 (−10 %) | 4,74 (+1 %) | +0,18 mag |
-| **Moyenne** | | **−10 %** | **−6 %** | |
+| Heart | 2,74 | 2,31 (−16 %) | 2,37 (−14 %) | +0,30 mag |
+| Iris | 1,69 | 1,58 (−7 %) | 1,61 (−4 %) | +0,15 mag |
+| M51 | 1,73 | 1,51 (−13 %) | 1,56 (−10 %) | +0,06 mag |
+| M8 | 41,2 | 39,5 (−4 %) | 40,3 (−2 %) | +0,22 mag |
+| Seestar | 26,3 | 27,1 (+3 %) | 27,6 (+5 %) | +0,19 mag |
+| Rosette | 3,48 | 3,21 (−8 %) | 3,69 (+6 %) | +0,19 mag |
+| **Moyenne** | | **−7 %** | **−3 %** | |
 
-(Mêmes mesures que le banc, refaites ensemble sur le même ciel ; les valeurs diffèrent de la 2e décimale de celles de
-BENCH.md parce que le ciel commun inclut ici plusieurs piles de plus.)
+(Les mêmes mesures que le banc du 2 novembre de BENCH.md, sept piles ensemble sur le même ciel. Les valeurs absolues
+changent avec les zones choisies : ne comparer que les lignes d'un même tableau. Avant correction : Siril drizzle 4,91 /
+2,85 / 4,39 / 48,9 / 22,5 / 4,68 ; notre drizzle aujourd'hui 4,46 / 2,40 / 4,21 / 47,6 / 21,5 / 4,74, soit −6 % en
+moyenne.)
 
 ## D'où vient l'écart
 
@@ -58,7 +83,7 @@ Les mesures qui le montrent :
 - **Le grain de Siril drizzle est deux fois plus corrélé que le nôtre** (0,49 à 0,59 en rouge et bleu, contre 0,25 à
   0,45), alors qu'une seule de ses poses drizzlées a bien le grain d'une goutte 1 (0,52 ; simulation : 0,50). La
   simulation de sa moyenne sans poids redonne 0,50.
-- **Siril refait avec les poids.** À partir des poses drizzlées de Siril lui-même et de son propre recalage, on a
+- **Siril refait avec les poids** (valeurs absolues du tableau mesurées avec l'ancien choix de la cible : seuls les écarts entre lignes comptent). À partir des poses drizzlées de Siril lui-même et de son propre recalage, on a
   refait sa pile deux fois : simple moyenne (comme la beta3) et moyenne pesée (comme la 1.4.0 et nous).
 
   | Seestar | Signal/bruit cible | Corrélation du grain | Finesse (″) | Profondeur |
@@ -81,12 +106,11 @@ Les mesures qui le montrent :
   encore 4 % sur la simple moyenne refaite, par sa normalisation et son rejet, que la reconstruction n'a pas (son rejet
   rogne aussi le cœur des étoiles rouges et bleues : 6 à 9 % de leur flux sur le Seestar).
 
-**3. Iris : pas le drizzle.** Notre empilement classique y est aussi 9 % sous celui de Siril, et l'écart est le même
-dans les trois couleurs : la nébuleuse ressort moins au-dessus de son bruit chez nous, pour les deux méthodes. Deux pistes
-ont été mesurées et écartées : un dégradé du fond (retirer un plan avant de mesurer ne change rien) et les deux poses
-de l'aube (ciel 2 à 10 fois plus clair), que nous pondérons peu et Siril autant que les autres (Siril refait sans ces
-deux poses : 2,95 au lieu de 2,98 ; avec sa pondération par le bruit : 2,96). La cause reste ouverte ; elle concerne
-toute la chaîne, pas le drizzle.
+**3. Iris : pas le drizzle, et finalement pas la chaîne non plus.** Le matin, notre empilement classique y était 9 % sous
+celui de Siril, avec le même écart dans les trois couleurs, et deux pistes mesurées avaient été écartées (un dégradé du
+fond ; les deux poses de l'aube, que nous pesons peu et Siril autant que les autres). La cause était la mesure : voir
+la section « Iris : d'où vient l'écart » plus bas. Avec la mesure corrigée, notre classique est à +6 % de Siril
+(−1 % sans l'équilibrage des couleurs avant dématriçage) et notre drizzle à −4 % de son drizzle.
 
 **4. Pourquoi notre drizzle reste sous notre classique (−7 à −13 %).** C'est le drizzle lui-même, chez Siril aussi.
 Le dématriçage RCD du classique remplit le rouge et le bleu de chaque pixel avec le détail du vert (deux fois plus de
@@ -100,7 +124,9 @@ bleu (le nôtre équilibre les couleurs avant RCD) masquent cette perte.
 ## Ce qui a été corrigé
 
 Rien dans le moteur : notre drizzle suit la méthode publiée (Hubble/STScI, Siril ≥ 1.4.0-beta4, PixInsight), et le
-réglage par défaut est déjà la goutte 1 depuis ce matin. Le classique n'a pas été touché.
+réglage par défaut est déjà la goutte 1 depuis ce matin. Le classique n'a pas été touché. **Le banc, si** (après-midi) :
+la profondeur (disques exacts) et le signal/bruit de la cible (zones choisies sur une image indépendante), voir plus haut
+et BENCH.md.
 
 ## Les choix possibles (à décider)
 
@@ -169,7 +195,7 @@ boîte. *Cible* : les boîtes les plus claires de la nébuleuse ; *ciel voisin* 
 
 (« Meilleur possible » : chaque pose pesée par l'inverse de son bruit, à signal égal, la règle publiée. Bruit et
 signal sont comptés dans la même unité pour les deux piles : le flux des mêmes étoiles Gaia. La profondeur du banc n'est
-pas employée ici : sa mesure est en cours de correction par ailleurs.)
+pas employée ici (sa mesure a été corrigée l'après-midi, voir le haut de ce document).)
 
 Tout est égal jusqu'à la pile ; pourtant le banc trouve un signal de la cible 12 à 17 % plus bas chez nous à bruit
 égal. Il ne se retrouve pas avec une autre région : sur un disque de 300″ autour du cœur d'Iris contre un anneau de ciel
@@ -225,19 +251,33 @@ polynôme de degré 2 ; sur la pile Base quand la moyenne ne convient pas) :
 
 **Rien dans le moteur** : aucune étape de notre chaîne n'est en défaut face à Siril sur Iris.
 
-**Le banc** (outil `tools/bench/measure.py`, fonction du signal/bruit de la cible ; non modifié ici, un autre agent
-édite ce fichier) : le défaut est de choisir les régions sur l'une des images mesurées, ce que les méthodes publiées
-évitent :
+**Le banc** (outil `tools/bench/measure.py` et `tools/bench/regions.py`) : **corrigé l'après-midi**. Le défaut était de
+choisir les régions sur l'une des images mesurées, ce que les méthodes publiées évitent :
 1. **Choisir sur une image indépendante**, puis mesurer toutes les piles sur les mêmes régions : c'est le mode « deux
    images » de SExtractor (Bertin & Arnouts 1996, A&AS 117, 393 : détection sur une image, mesure sur une autre), et
    la règle contre l'« analyse circulaire » (Kriegeskorte et al. 2009, Nature Neuroscience 12, 535 : une région choisie
    sur des données ne doit pas servir à mesurer ces mêmes données). Ici : la pile Base de Siril (autres poses), sauf
-   pour M8 (pas d'autres poses).
-2. **Choisir sur la moyenne de toutes les piles comparées**, dégradé retiré : chacune profite autant du choix.
-3. **Au minimum, prendre le ciel sur toute la bande** (pas la moitié la plus sombre boîte par boîte) : sur Iris notre
-   classique passe de −9 % à +2 %, le reste du biais tient au choix de la cible.
-Je conseille 1 avec 2 en secours (M8, ou quand l'image indépendante désigne une autre région), puis de refaire les
-lignes « signal sur bruit de la cible » de BENCH.md et de ce document.
+   pour M8 (pas d'autres poses) où c'est la moyenne de toutes les piles comparées.
+2. **Le ciel voisin est toute la bande** autour de la cible (pas la moitié la plus sombre boîte par boîte).
+3. **Le ciel sous la cible est un plan ajusté sur la bande**, pour chaque pile : un dégradé propre à une pile brute
+   (Heart, M51) ne passe plus pour du signal.
+
+Résultat, rapport de signal/bruit à Siril classique (1 = égal ; banc de l'après-midi, piles du jour) :
+
+| Cas | Notre classique | Notre classique sans équilibrage | Notre drizzle | Siril drizzle |
+|---|---:|---:|---:|---:|
+| Heart | 1,02 | 0,96 | 0,91 | 1,05 |
+| Iris | 1,06 | 0,99 | 0,92 | 0,97 |
+| M51 | 0,98 | 0,92 | 0,87 | 0,96 |
+| M8 | 1,04 | 1,03 | 0,95 | 0,97 |
+| Seestar | 1,01 | 0,98 | 0,97 | 0,93 |
+| Rosette | 1,17 | 1,08 | 1,01 | 0,95 |
+
+Sur Iris, le résultat est celui de l'analyse ci-dessus (neutre : 1,01 pour notre classique, 0,93 pour notre drizzle ; ici
+1,06 et 0,92). **Ce qui change par rapport au tableau « Les autres cas » ci-dessus** : Heart et M51 passent de 1,11 et
+1,07 (choix « neutre ») à 1,02 et 0,98 : leur cible est plus faible que les dégradés des piles brutes, et le résultat y
+varie de 10 à 15 % selon le traitement du dégradé ; on ne peut pas y conclure mieux qu'« à peu près égal ». Notre
+classique est devant sur la Rosette (+17 %), M8 (+4 %) et Iris (+6 %), à égalité sur Heart, M51 et le Seestar.
 
 **À noter aussi** : l'outil `diffmap.py` de l'analyse du drizzle (`_drizzle_gap`) plaçait notre pile 7,5 pixels à côté
 de celle de Siril (l'agrandissement d'une grille de 16 pixels par `cv2.resize` décale d'une demi-maille) : les
