@@ -156,11 +156,6 @@ def cmd_variant(a):
         raise SystemExit(f"unknown action {act!r}")
 
 
-def cmd_gui(a):
-    from .gui.app import main as gui_main
-    gui_main([a.project] if a.project else [])
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="astro-gpu", description="GPU astrophotography processing")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -217,9 +212,6 @@ def main(argv=None):
     va.add_argument("--note")
     va.add_argument("--keep", help="promote: keep the former main as a variant with this name")
     va.set_defaults(fn=cmd_variant)
-    g = sub.add_parser("gui", help="open the graphical interface")
-    g.add_argument("project", nargs="?")
-    g.set_defaults(fn=cmd_gui)
     a = ap.parse_args(argv)
     a.fn(a)
 

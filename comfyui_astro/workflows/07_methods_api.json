@@ -1,8 +1,0 @@
-{
-  "1": {"class_type": "AstroProject", "inputs": {"project_folder": "E:/astro_gpu/projects/FlamingStar"}},
-  "2": {"class_type": "AstroMethods", "inputs": {"astro": ["1", 0], "variant": "", "star_layer": "as main", "glare": "as main", "star_shape": "as main", "faint_stars": "as main", "star_flat": "as main", "ha_reference": "as main", "star_guard": "As removed", "pattern": "as main", "lateral": "as main"}},
-  "3": {"class_type": "AstroRender", "inputs": {"astro": ["1", 0], "source": "delivered: faithful", "view": "", "changes": "", "scale": 0.5}},
-  "4": {"class_type": "AstroRender", "inputs": {"astro": ["2", 0], "source": "delivered: faithful", "view": "", "changes": "", "scale": 0.5}},
-  "5": {"class_type": "PreviewImage", "inputs": {"images": ["3", 0]}},
-  "6": {"class_type": "PreviewImage", "inputs": {"images": ["4", 0]}}
-}

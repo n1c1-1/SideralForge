@@ -1,7 +1,0 @@
-{
-  "1": {"class_type": "AstroNewProject", "inputs": {"lights": "", "darks": "", "flats": "", "bias": "", "flat_darks": "", "guess_calibration": true, "project_folder": "", "name": "", "target": ""}},
-  "2": {"class_type": "AstroRender", "inputs": {"astro": ["1", 0], "source": "preset: Faithful", "view": "", "changes": "", "scale": 0.5}},
-  "3": {"class_type": "PreviewImage", "inputs": {"images": ["2", 0]}},
-  "4": {"class_type": "AstroExport", "inputs": {"astro": ["1", 0], "settings": ["2", 3], "name": "faithful", "orientation": "as captured"}},
-  "5": {"class_type": "PreviewAny", "inputs": {"source": ["1", 1]}}
-}

@@ -960,7 +960,7 @@ def test_select_frames_keeps_its_positional_signature_and_honours_exclude():
         [True, True, False]
 
 
-def test_exclude_is_internal_hidden_in_the_v1_form_and_old_stacks_stay_done(monkeypatch):
+def test_exclude_is_internal_and_old_stacks_stay_done():
     from astro_gpu.core.runner import _same_params
     from astro_gpu.stages.stack import Stack, StackParams
     d = {x["name"]: x for x in StackParams.describe()}
@@ -969,14 +969,6 @@ def test_exclude_is_internal_hidden_in_the_v1_form_and_old_stacks_stay_done(monk
     stored.pop("exclude")                                   # a manifest written before the parameter existed
     assert _same_params(Stack(), StackParams(), stored)
     assert not _same_params(Stack(), StackParams(exclude=["F:/a.ARW"]), stored)
-    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
-    from astro_gpu.gui.widgets import ParamForm
-    form = ParamForm(StackParams, StackParams().model_dump(), advanced=True)
-    assert "exclude" not in form.widgets and "kappa" in form.widgets and "scale" in form.widgets
-    form.deleteLater()
-    app.processEvents()
 
 
 HEART_A7S = Path("F:/astro_essais/projets/heart_a7s")
