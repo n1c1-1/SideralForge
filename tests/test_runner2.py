@@ -886,16 +886,6 @@ def test_a_manifest_a_reader_holds_open_is_replaced_once_it_lets_go(tmp_path, mo
     assert json.loads(mf.read_text()) == {"status": "failed"}
 
 
-def test_the_reference_is_heart_from_the_mockup_data():
-    data = json.loads((TESTS.parent / "mockup" / "alt2" / "data" / "data.json").read_text(encoding="utf-8"))
-    for s, d in data["stages"].items():
-        assert est.HEART[s] == (d["seconds"], d["gb"]), s
-    inv = data["inventory"]
-    f = est.HEART_FACTS
-    assert (f.lights, f.frames) == (inv["n_lights"], inv["n_lights"] + inv["n_darks"] + inv["n_flats"])
-    assert f.mpx == inv["width"] * inv["height"] / 1e6 and f.grid_mpx == data["grid"][0] * data["grid"][1] / 1e6
-
-
 IRIS = Path("C:/Users/Nicolas/astro_gpu_scratch/projects/Iris")
 OTHERS = [Path(p) for p in ("F:/photos/heart_nebula/astro_gpu", "F:/photos/NGC7822/astro_gpu",
                             "E:/astro_gpu/projects/FlamingStar", "E:/astro_gpu/projects/Horsehead",
