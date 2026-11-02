@@ -287,5 +287,5 @@
   "The offsets of the frames cannot be computed: the size of the sensor is not known (no inventory, calibration or stack result gives it). Recompute Registration.": "Les décalages des images ne peuvent pas être calculés : la taille du capteur n'est pas connue (aucun résultat d'inventaire, de calibration ou d'empilement ne la donne). Recalculez Alignement.",
   "OpenNGC": "OpenNGC",
   "Sharpless, VizieR VII/20": "Sharpless, VizieR VII/20",
-  "Siril's catalogue lists": "listes de catalogues de Siril"
+  "Steinicke's Revised NGC/IC": "NGC/IC révisé de Steinicke"
 }

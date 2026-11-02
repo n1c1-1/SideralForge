@@ -1,24 +1,29 @@
-"""Siril's offline Gaia DR3 extracts, read in place (never copied, never written).
+"""The offline Gaia DR3 extracts (star positions and sampled XP spectra), read in place (never copied, never written).
 
-Siril users often have them: Siril's catalogue installer puts them in Siril's data folder and Siril reads them for its
-plate solving and its spectrophotometric colour calibration. Read here, they make our astrometry and the XP spectra of
-the catalogues stage local.
+They are the HEALPix extracts of Gaia DR3 published on Zenodo (CC BY 4.0, records 14692304 and 14738271) in the
+format below, which several astronomy programs read. The product needs none of those programs: its own downloader
+(``core/gaia_extracts.py``, run only on a user action, from Settings) puts them in its own folder, ``gaia_extracts``
+of the cache (``skycache.cache_dir()``). With them, the astrometry and the catalogues stage read the stars and their
+spectra locally; without them, they are fetched online and kept in the cache.
 
-Format (Siril HEALpixel Catalog Format 1.0.0, Zenodo 14697486): a 128-byte header (title 48 bytes, Gaia release,
-HEALPix level, type 1 astrometric / 2 xp_sampled, chunked flag, chunk level, then three packed uint32: the chunk's
-pixel, its first and last pixel at the index level), one uint32 per pixel of the index level (nested scheme) giving
-the cumulative number of records up to and including it, then the records grouped by pixel in pixel order.
+Format (HEALpixel Catalog Format 1.0.0, Zenodo 14697486): a 128-byte header (title 48 bytes, Gaia release, HEALPix
+level, type 1 astrometric / 2 xp_sampled, chunked flag, chunk level, then three packed uint32: the chunk's pixel, its
+first and last pixel at the index level), one uint32 per pixel of the index level (nested scheme) giving the cumulative
+number of records up to and including it, then the records grouped by pixel in pixel order.
 
 - astrometric extract (``siril_cat_healpix8_astro.dat``, 1.5 GB, one file), 16 bytes a star: RA and Dec int32 x
   360/(2^31-1) deg (ICRS, epoch 2016.0), pmRA and pmDec int16 mas/yr, Teff uint16 K, G int16 in mmag. It holds the 127
   brightest stars of each level-8 pixel (14' wide): complete to G ~ 17 far from the Milky Way, to G ~ 14-16 in it.
-- xp_sampled extract (``siril_cat1_healpix8_xpsamp_<N>.dat``, one file per level-1 pixel N), 701 bytes a star: the
-  same first 14 bytes without Teff, an int8 exponent e and 343 float16 values: the sampled XP spectrum, 336-1020 nm
-  every 2 nm, in W m-2 nm-1 = value x 10^-e (checked on Gaia archive spectra of the user's cache: equal within 0.03 %).
+- xp_sampled extract (``siril_cat1_healpix8_xpsamp_<N>.dat``, one file per level-1 pixel N, in the sub-folder
+  ``siril_cat1_healpix8_xpsamp``), 701 bytes a star: the same first 14 bytes without Teff, an int8 exponent e and 343
+  float16 values: the sampled XP spectrum, 336-1020 nm every 2 nm, in W m-2 nm-1 = value x 10^-e (checked on Gaia
+  archive spectra of the user's cache: equal within 0.03 %).
 
-Where (the first found): ``ASTRO_GPU_SIRIL_CATALOGUES`` (folders separated by ``os.pathsep``), the files Siril's own
-settings name (``catalogue_gaia_astro`` / ``catalogue_gaia_photo`` in its config*.ini), Siril's data folder
-(Windows ``%LOCALAPPDATA%/siril``, Linux ``~/.local/share/siril``, macOS ``~/Library/Application Support/siril``).
+Where (the first found, per file): the folders of ``ASTRO_GPU_GAIA_EXTRACTS`` (separated by ``os.pathsep``; the older
+name ``ASTRO_GPU_SIRIL_CATALOGUES`` is still accepted), then our own folder; and, as an extra place only, never
+required, a copy that another program already put on this computer: the files named by the ``catalogue_gaia_astro`` /
+``catalogue_gaia_photo`` settings in its ``config*.ini`` and its data folder (Windows ``%LOCALAPPDATA%/siril``, Linux
+``~/.local/share/siril``, macOS ``~/Library/Application Support/siril``).
 """
 from __future__ import annotations
 
@@ -101,7 +106,7 @@ class CatFile:
 
 
 def read_header(path: Path) -> CatFile | None:
-    """The catalogue described by a Siril catalogue file, or None when it is not one (or is truncated)."""
+    """The catalogue described by an extract file, or None when it is not one (or is truncated)."""
     try:
         with open(path, "rb") as f:
             h = f.read(HEADER)
@@ -173,13 +178,20 @@ def _data_dirs() -> list[Path]:
     return out
 
 
+def own_dir() -> Path:
+    """Our folder of extracts: ``gaia_extracts`` in the cache (where the downloader writes)."""
+    from .skycache import cache_dir
+    return cache_dir() / "gaia_extracts"
+
+
 def _candidates() -> list[Path]:
-    env = [Path(p) for p in os.environ.get("ASTRO_GPU_SIRIL_CATALOGUES", "").split(os.pathsep) if p.strip()]
-    return env + _from_config() + _data_dirs()
+    env = [Path(p) for name in ("ASTRO_GPU_GAIA_EXTRACTS", "ASTRO_GPU_SIRIL_CATALOGUES")
+           for p in os.environ.get(name, "").split(os.pathsep) if p.strip()]
+    return env + [own_dir()] + _from_config() + _data_dirs()
 
 
 def _scan(p: Path, found: dict) -> None:
-    """A file, or a folder holding Siril catalogue files (or their xpsamp folder)."""
+    """A file, or a folder holding extract files (or their xpsamp folder)."""
     if p.is_file():
         cf = read_header(p)
         if cf is None:
@@ -236,36 +248,6 @@ def describe() -> str:
     return "; ".join(parts) or "none"
 
 
-def siril_share_dirs() -> list[Path]:
-    """Siril's installed data folders (``share/siril``: its deep-sky lists in ``catalogue/``), the first existing
-    first: ASTRO_GPU_SIRIL_DIR, next to a ``siril`` program on the PATH, the usual install places."""
-    import shutil
-    c: list[Path] = []
-    if os.environ.get("ASTRO_GPU_SIRIL_DIR"):
-        c.append(Path(os.environ["ASTRO_GPU_SIRIL_DIR"]))
-    for exe in ("siril", "siril-cli"):
-        w = shutil.which(exe)
-        if w:
-            c.append(Path(w).resolve().parent.parent / "share" / "siril")
-    for env in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
-        if os.environ.get(env):
-            c.append(Path(os.environ[env]) / "Siril" / "share" / "siril")
-    if os.environ.get("LOCALAPPDATA"):
-        c.append(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Siril" / "share" / "siril")
-    c += [Path("/usr/share/siril"), Path("/usr/local/share/siril"), Path("/app/share/siril"),
-          Path("/var/lib/flatpak/app/org.siril.Siril/current/active/files/share/siril"),
-          Path.home() / ".local/share/flatpak/app/org.siril.Siril/current/active/files/share/siril",
-          Path("/Applications/Siril.app/Contents/Resources/share/siril")]
-    out = []
-    for p in c:
-        try:
-            if (p / "catalogue").is_dir() and p not in out:
-                out.append(p)
-        except OSError:
-            continue
-    return out
-
-
 # ------------------------------------------------------------------ queries
 
 def _sep_deg(ra1, dec1, ra2, dec2):
@@ -305,7 +287,7 @@ def astro_cone(ra: float, dec: float, radius: float, gmax: float) -> dict | None
 def xp_spectra(ra: np.ndarray, dec: np.ndarray, g: np.ndarray, sources: np.ndarray | None = None,
                tol_arcsec: float = 0.05, tol_mag: float = 0.01) -> list:
     """Sampled XP spectra (wavelength nm, flux W m-2 nm-1) of Gaia stars given by their epoch-2016.0 position and G,
-    from the installed chunks of Siril's spectrophotometric extract; None for a star not found there."""
+    from the installed chunks of the spectra extract; None for a star not found there."""
     out: list = [None] * len(ra)
     chunks = locate()["xp"]
     if not chunks or not len(ra):

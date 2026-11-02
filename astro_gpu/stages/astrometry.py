@@ -411,13 +411,13 @@ _GAIA_LOCK = threading.Lock()
 
 def bright_stars(ra, dec, radius, glim, log=None) -> tuple[dict, str]:
     """Gaia DR3 stars brighter than glim within radius (deg) of (ra, dec), epoch 2016.0: ({"RA_ICRS", "DE_ICRS",
-    "Gmag"}, where they came from). Siril's astrometric extract when it is installed (local, instant; it keeps the 127
+    "Gmag"}, where they came from). The offline astrometric extract when it is installed (local, instant; it keeps the 127
     brightest stars of every 14' cell, which in the Milky Way can stop short of glim: plenty for a solution), else
     the sky tiles of the cache, else the network (tiles downloaded and cached)."""
     from ..core import sirilcat, skycache
     s = sirilcat.astro_cone(ra, dec, radius, glim)
     if s is not None:
-        src = f"Siril's local Gaia extract ({sirilcat.locate()['astro'].path.name})"
+        src = f"the offline Gaia extract ({sirilcat.locate()['astro'].path.name})"
         if s["complete_to"] < glim:
             src += f", complete to G {s['complete_to']:.1f} here"
         return s, src
@@ -450,36 +450,21 @@ def _norm(s: str) -> str:
 
 
 def _local_names() -> dict[str, tuple[float, float]]:
-    """Object names -> (ra, dec) from the deep-sky lists Siril installs (Messier, NGC, IC, Sharpless, LDN, with their
-    aliases such as 'Whirlpool galaxy'), read in place."""
-    import csv
-
-    from ..core.sirilcat import siril_share_dirs
+    """Object names -> (ra, dec) from the catalogues shipped with the package (core/skyobjects.names_index: Messier,
+    NGC, IC, Sharpless with their common names such as 'Whirlpool Galaxy', and the Lynds dark nebulae)."""
+    from ..core import skyobjects
     out: dict[str, tuple[float, float]] = {}
-    for d in siril_share_dirs():
-        for f in ("messier.csv", "ngc.csv", "ic.csv", "sh2.csv", "ldn.csv"):
-            p = d / "catalogue" / f
-            if not p.exists():
-                continue
-            try:
-                with open(p, encoding="utf-8", errors="replace") as fh:
-                    for row in csv.DictReader(fh):
-                        try:
-                            pos = (float(row["ra"]), float(row["dec"]))
-                        except (KeyError, TypeError, ValueError):
-                            continue
-                        for n in [row.get("name") or ""] + (row.get("alias") or "").split("/"):
-                            if n.strip():
-                                out.setdefault(_norm(n), pos)
-            except OSError:
-                continue
-        if out:
-            break
+    try:
+        index = skyobjects.names_index()
+    except skyobjects.CatalogueUnavailable:
+        return out
+    for n, (ra, dec, _d) in index.items():
+        out.setdefault(_norm(n), (ra, dec))
     return out
 
 
 def resolve_name(name: str, log=None) -> tuple[float, float]:
-    """(ra, dec) of a named object: names resolved before (cache), Siril's deep-sky lists, SIMBAD, NED (each service
+    """(ra, dec) of a named object: names resolved before (cache), the shipped catalogues, SIMBAD, NED (each service
     given a few seconds; one line per fallback)."""
     from ..core import online, skycache
     say = online.sayer(log)
@@ -510,7 +495,7 @@ def resolve_name(name: str, log=None) -> tuple[float, float]:
     for c in candidates:
         if _norm(c) in local:
             ra, dec = local[_norm(c)]
-            say(f"'{name}' found in Siril's deep-sky lists: RA {ra:.4f} Dec {dec:.4f}", "info")
+            say(f"'{name}' found in the deep-sky catalogues: RA {ra:.4f} Dec {dec:.4f}", "info")
             return float(ra), float(dec)
 
     def simbad():
@@ -552,5 +537,5 @@ def resolve_name(name: str, log=None) -> tuple[float, float]:
             continue
         if r is not None:
             return remember(r[0], r[1], svc)
-    raise StageError(f"'{name}' is not in Siril's lists and neither SIMBAD nor NED could give it: enter the RA/Dec of "
-                     "the field centre")
+    raise StageError(f"'{name}' is not in the deep-sky catalogues and neither SIMBAD nor NED could give it: enter the "
+                     "RA/Dec of the field centre")

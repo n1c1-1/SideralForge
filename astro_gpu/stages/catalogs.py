@@ -73,7 +73,7 @@ class Catalogs(Stage):
         inside = (x > -30) & (x < W + 30) & (y > -30) & (y < H + 30) & np.isfinite(c["Gmag"])
         deep = dict(source=c["Source"][inside], ra=ra_e[inside], dec=dec_e[inside], x=x[inside], y=y[inside],
                     g=c["Gmag"][inside], bp=c["BPmag"][inside], rp=c["RPmag"][inside], xp=c["XPsamp"][inside])
-        pos16 = np.c_[c["RA_ICRS"][inside], c["DE_ICRS"][inside]]     # Gaia's own epoch: Siril's XP extract is there
+        pos16 = np.c_[c["RA_ICRS"][inside], c["DE_ICRS"][inside]]     # Gaia's own epoch: the XP extract is there
         add = _bright_missing(ctx, w, W, H, scale, epoch, deep)
         if add is not None:
             deep = {k: np.concatenate([deep[k], add[k].astype(deep[k].dtype)]) for k in deep}
@@ -112,7 +112,8 @@ class Catalogs(Stage):
         n_ok = sum(r is not None for r in rows)
         if n_ok < 50:
             raise StageError(f"only {n_ok} XP spectra available: the colour calibration needs at least 50 (connect to "
-                             "the internet once for this field, or install Siril's spectrophotometric catalogue)")
+                             "the internet once for this field, or download the offline Gaia spectra in Settings › "
+                             "Catalogs & astrometry)")
         keep = np.array([i for i, r in zip(sel, rows) if r is not None])
         lam = next(r for r in rows if r is not None)[0]
         flux = np.stack([r[1] for r in rows if r is not None])
@@ -272,9 +273,9 @@ def _isolated_xp(d, p, W, H, scale):
 
 
 def _xp_spectra(ctx, sources, p0, p1, pos16=None, gmag=None):
-    """XP spectra of the stars, in this order: the cache (by Gaia id; earlier versions' cache read too), Siril's
-    spectrophotometric extract when installed (by position at epoch 2016.0 and G: it has no ids), VizieR (one star a
-    query), GAVO, the ESA archive (by batches). Downloads are cached by id; Siril's spectra are not copied."""
+    """XP spectra of the stars, in this order: the cache (by Gaia id; earlier versions' cache read too), the offline
+    spectra extract when installed (by position at epoch 2016.0 and G: it has no ids), VizieR (one star a
+    query), GAVO, the ESA archive (by batches). Downloads are cached by id; the offline spectra are not copied."""
     from ..core import gaia_archive as ga
     from ..core import online, sirilcat
     say = online.sayer(ctx.log)
@@ -304,7 +305,7 @@ def _xp_spectra(ctx, sources, p0, p1, pos16=None, gmag=None):
             if r is not None:
                 rows[k], known[k] = r, True
                 n += 1
-        ctx.log(f"{n} of {len(todo)} XP spectra read from Siril's local Gaia extract")
+        ctx.log(f"{n} of {len(todo)} XP spectra read from the offline Gaia extract")
         todo = [k for k in todo if not known[k]]
     ctx.progress(p0 + 0.1 * (p1 - p0), f"XP spectra: {len(ids) - len(todo)}/{len(ids)} local")
 

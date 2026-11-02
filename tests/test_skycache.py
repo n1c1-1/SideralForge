@@ -1,6 +1,6 @@
-"""The sky catalogue cache (core/skycache.py), the online services' time limits (core/online.py) and Siril's local
-Gaia extracts (core/sirilcat.py). No network: the services are replaced by a synthetic sky or by a local server that
-never answers."""
+"""The sky catalogue cache (core/skycache.py), the online services' time limits (core/online.py) and the offline
+Gaia extracts (core/sirilcat.py; their download: test_gaia_extracts.py). No network: the services are replaced by a
+synthetic sky or by a local server that never answers."""
 from __future__ import annotations
 
 import socket
@@ -25,6 +25,7 @@ def _isolated(tmp_path, monkeypatch):
     (tmp_path / "nowhere").mkdir()
     for v in ("LOCALAPPDATA", "APPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME"):
         monkeypatch.setenv(v, str(tmp_path / "nowhere"))
+    monkeypatch.setenv("ASTRO_GPU_GAIA_EXTRACTS", "")
     monkeypatch.setenv("ASTRO_GPU_SIRIL_CATALOGUES", "")
     monkeypatch.setenv("ASTRO_GPU_OFFLINE", "1")
     online.reset()
@@ -246,7 +247,7 @@ def test_a_query_over_its_budget_is_abandoned_and_the_service_set_aside(monkeypa
     assert r == 2 and said == ["GAVO (Heidelberg) took more than 0 s: the things from the ESA Gaia archive"]
 
 
-# ------------------------------------------------------------------ Siril's extracts
+# ------------------------------------------------------------------ the offline extracts
 
 def _write_siril(path: Path, kind: int, level: int, stars: dict, chunk: tuple[int, int] | None = None):
     """A Siril catalogue file (format 1.0.0) of the given stars (ra, dec, g, and flux / e for xp_sampled)."""
@@ -292,7 +293,7 @@ def test_siril_astrometric_extract_is_found_and_read(tmp_path, monkeypatch):
     cat = tmp_path / "sirildata" / "siril_cat_healpix8_astro.dat"
     _write_siril(cat, 1, 8, st)
     assert sirilcat.locate()["astro"] is None
-    # found where Siril's settings say (its catalogue installer writes the key)
+    # an extra place only: where another program's settings say (its catalogue installer writes the key)
     cfg = tmp_path / "nowhere" / "siril" / "config.1.4.ini"
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text("[core]\ncatalogue_gaia_astro=" + str(cat).replace("\\", "\\\\") + "\n", encoding="utf-8")
@@ -329,7 +330,7 @@ def test_siril_xp_extract_gives_the_spectra_by_position(tmp_path, monkeypatch):
     n = int(inside.sum())
     d = tmp_path / "cats" / "siril_cat1_healpix8_xpsamp"
     _write_siril(d / f"siril_cat1_healpix8_xpsamp_{chunk}.dat", 2, 8, st, chunk=(1, chunk))
-    monkeypatch.setenv("ASTRO_GPU_SIRIL_CATALOGUES", str(tmp_path / "cats"))
+    monkeypatch.setenv("ASTRO_GPU_GAIA_EXTRACTS", str(tmp_path / "cats"))
     sirilcat.reset()
     assert list(sirilcat.locate()["xp"]) == [chunk]
     q = np.r_[np.arange(0, n, 3), [0]]
@@ -345,17 +346,17 @@ def test_siril_xp_extract_gives_the_spectra_by_position(tmp_path, monkeypatch):
 
 # ------------------------------------------------------------------ names, catalogs stage
 
-def test_target_names_are_resolved_from_sirils_lists_offline(tmp_path, monkeypatch):
+def test_target_names_are_resolved_from_the_shipped_catalogues_offline(tmp_path, monkeypatch):
     from astro_gpu.stages.astrometry import resolve_name
-    share = tmp_path / "siril_share"
-    (share / "catalogue").mkdir(parents=True)
-    (share / "catalogue" / "messier.csv").write_text(
-        "name,ra,dec,diameter,mag,alias\nM51,202.46958,47.195278,12,8.4,Whirlpool galaxy/NGC5194\n", encoding="utf-8")
-    monkeypatch.setenv("ASTRO_GPU_SIRIL_DIR", str(share))
+    for k in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA", "APPDATA"):
+        monkeypatch.setenv(k, str(tmp_path / "empty"))                # no other program's lists: ours only
+    m51 = (202.469625, 47.195167)                                     # OpenNGC's NGC 5194
     t = time.monotonic()
-    assert resolve_name("M 51") == pytest.approx((202.46958, 47.195278))
-    assert resolve_name("NGC 5194") == pytest.approx((202.46958, 47.195278))
-    assert resolve_name("whirlpool_galaxy") == pytest.approx((202.46958, 47.195278))
+    assert resolve_name("M 51") == pytest.approx(m51)
+    assert resolve_name("NGC 5194") == pytest.approx(m51)
+    assert resolve_name("whirlpool_galaxy") == pytest.approx(m51)
+    assert resolve_name("LDN 1622") == pytest.approx((88.6503, 2.0081))       # the Lynds dark nebulae (VII/7A)
+    assert resolve_name("Sh2-155") == pytest.approx((344.1826, 62.6176), abs=1e-3)
     assert time.monotonic() - t < 3
     from astro_gpu.core.stage import StageError
     with pytest.raises(StageError):                          # unknown and offline: at once

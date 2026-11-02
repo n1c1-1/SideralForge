@@ -41,3 +41,6 @@ docs/pilot/bench/
 
 # screenshots of NOUVEAUTES.md (copies of the client's final tour, too big for git)
 docs/pilot/nouveautes/
+
+# package data the engine loads (the rule above would drop it from the built wheel)
+!astro_gpu/resources/*.npz

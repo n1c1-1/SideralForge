@@ -1,12 +1,14 @@
 """The external data the product reads, credited in Help › About ("Data sources").
 
 Each entry was checked on the source itself on 2 November 2026 (the provider's page, the data's own header or README,
-the repository): who made it, its licence, the acknowledgement it asks for (copied as written, in English, and never
-translated), the references to cite. The names, licences, references and acknowledgements stay as they are; the
-labels and what each source is used for are translated.
+the repository): who made it, its version when the data are shipped with the program
+(``astro_gpu/resources/catalogues``, each folder with its README), its licence or terms, the acknowledgement it asks
+for (copied as written, in English, and never translated), the references to cite. The names, versions, licences,
+terms, references and acknowledgements stay as they are; the labels and what each source is used for are translated.
 
 Gaia, NSNS and Steinicke's NGC/IC data are free for non-commercial use only: a commercial use of the product needs
-their permission first.
+their permission first. W. Steinicke also asks to be informed of any use of his data, free software included
+(steinicke-zehnle@t-online.de).
 """
 from __future__ import annotations
 
@@ -14,8 +16,8 @@ import html
 
 from .i18n import _
 
-#: {"name", "by", "use" (English, translated), "licence", "link", "cite" (references), "ack" (as written), "note"
-#: (English, translated)}
+#: {"name", "by", "version", "use" (English, translated), "licence", "link", "cite" (references), "ack" (as written),
+#: "terms" (the provider's terms, as written), "contact", "note" (English, translated)}
 DATA_SOURCES: list[dict] = [
     dict(name="Gaia DR3", by="ESA/Gaia/DPAC",
          use="Star positions, magnitudes and spectra: plate solving, colour calibration, star models.",
@@ -26,8 +28,9 @@ DATA_SOURCES: list[dict] = [
              "(https://www.cosmos.esa.int/gaia), processed by the Gaia Data Processing and Analysis Consortium (DPAC, "
              "https://www.cosmos.esa.int/web/gaia/dpac/consortium). Funding for the DPAC has been provided by national "
              "institutions, in particular the institutions participating in the Gaia Multilateral Agreement."),
-    dict(name="Siril's Gaia DR3 extracts", by="I. Cass, A. Knagg-Baugh, C. Melis, C. Richard (2025), Zenodo",
-         use="Gaia stars and spectra read offline, when Siril's catalogues are installed.",
+    dict(name="Gaia DR3 offline extracts", by="I. Cass, A. Knagg-Baugh, C. Melis, C. Richard (2025), Zenodo",
+         version="astrometric v1.0.0, spectrophotometric v1.0.1",
+         use="Gaia stars and spectra read offline, once downloaded in Settings › Catalogs & astrometry.",
          licence="CC BY 4.0", link="https://doi.org/10.5281/zenodo.14692304",
          cite="Siril Astrometry Catalogue extracted from Gaia DR3, v1.0.0, doi:10.5281/zenodo.14692304; Siril "
               "Spectrophotometric Catalog extracted from Gaia DR3, v1.0.1, doi:10.5281/zenodo.14738271."),
@@ -37,7 +40,8 @@ DATA_SOURCES: list[dict] = [
          cite="ESA 1997, The Hipparcos and Tycho Catalogues (VizieR I/239); Høg et al. 2000, A&A 355, L27 "
               "(VizieR I/259)."),
     dict(name="VizieR", by="CDS, Strasbourg",
-         use="Access to the Gaia, Hipparcos, Tycho-2 and Sharpless catalogues.",
+         use="Access to the Gaia, Hipparcos and Tycho-2 catalogues; the Sharpless and Lynds catalogues shipped with "
+             "the program come from it.",
          licence="CDS", link="https://vizier.cds.unistra.fr",
          cite="Ochsenbein et al. 2000, A&AS 143, 23; doi:10.26093/cds/vizier.",
          ack="This research has made use of the VizieR catalogue access tool, CDS, Strasbourg, France "
@@ -50,19 +54,33 @@ DATA_SOURCES: list[dict] = [
     dict(name="ESA Gaia archive", by="ESA",
          use="Gaia, Hipparcos and Tycho-2 stars when the other services do not answer.",
          licence="CC BY-NC 3.0 IGO", link="https://gea.esac.esa.int/archive/"),
-    dict(name="OpenNGC", by="Mattia Verga",
-         use="Names, types and sizes of the NGC, IC and Messier objects.",
-         licence="CC BY-SA 4.0", link="https://github.com/mattiaverga/OpenNGC"),
+    dict(name="OpenNGC", by="Mattia Verga", version="release v20260501 (1 May 2026)",
+         use="Names, types and sizes of the NGC, IC and Messier objects (shipped with the program).",
+         licence="CC BY-SA 4.0", link="https://github.com/mattiaverga/OpenNGC",
+         cite="OpenNGC, M. Verga, https://github.com/mattiaverga/OpenNGC, doi:10.21938/y.1ejWUD_MQ6b_eDFoVbbw."),
+    dict(name="Revised NGC/IC", by="Dr. Wolfgang Steinicke", version="8 February 2026",
+         use="The links between the designations of the NGC and IC objects (Messier, Sharpless) and some of their "
+             "common names (shipped with the program).",
+         licence="Free for non-commercial use (the author's terms)",
+         link="http://www.klima-luft.de/steinicke/ngcic/ngcic_e.htm",
+         cite="Steinicke, W., Revised NGC and IC Catalogue, version 8 February 2026; Steinicke, W. 2010, Observing "
+              "and Cataloguing Nebulae and Star Clusters, Cambridge University Press.",
+         terms="Any non-commercial use of my data is free! If a commercial use is planned, please contact me! Please "
+               "inform the author Dr. Wolfgang Steinicke (also in case of non-commercial use, e.g. in a free "
+               "software). In any case, a proper acknowledgment of the source, including an answer-back to the "
+               "author is necessary.",
+         contact="steinicke-zehnle@t-online.de",
+         note="The author asks to be told of every use of his data, free software included."),
     dict(name="Sharpless catalogue of HII regions", by="S. Sharpless 1959, ApJS 4, 257 (VizieR VII/20)",
-         use="Names and sizes of the Sharpless regions.", licence="CDS",
-         link="https://vizier.cds.unistra.fr/viz-bin/VizieR?-source=VII/20"),
-    dict(name="Siril's catalogue lists", by="The Siril team (installed with Siril)",
-         use="Object names when OpenNGC or the Sharpless catalogue cannot be had, and the links between their "
-             "designations; dark nebula names for the target search.",
-         licence="GPL-3.0 (Siril)", link="https://siril.org",
-         cite="NGC and IC: W. Steinicke, Revised NGC/IC (http://www.klima-luft.de/steinicke), free for "
-              "non-commercial use; Sharpless 1959 (VizieR VII/20); Lynds 1962, ApJS 7, 1 (VizieR VII/7A).",
-         note="The origin of the Messier list could not be established."),
+         version="VizieR VII/20 as served on 2 November 2026 (IDIA mirror)",
+         use="Names and sizes of the Sharpless regions (shipped with the program).", licence="CDS",
+         link="https://vizier.cds.unistra.fr/viz-bin/VizieR?-source=VII/20",
+         cite="Sharpless 1959, ApJS 4, 257."),
+    dict(name="Lynds catalogue of dark nebulae", by="B. T. Lynds 1962, ApJS 7, 1 (VizieR VII/7A)",
+         version="VizieR VII/7A as served on 2 November 2026 (IDIA mirror)",
+         use="Dark nebula names for the target search (shipped with the program).", licence="CDS",
+         link="https://vizier.cds.unistra.fr/viz-bin/VizieR?-source=VII/7A",
+         cite="Lynds 1962, ApJS 7, 1."),
     dict(name="NSNS DR0.2 H-alpha", by="Stefan Ziegenbalg",
          use="The H-alpha reference of the background in the northern sky.",
          licence="CC BY-NC-SA 4.0", link="http://www.simg.de/nebulae3/dr0_2",
@@ -99,6 +117,12 @@ def data_sources_html() -> str:
         bits = [f"<b>{e(s['name'])}</b> · {e(s['by'])}", e(_(s["use"])),
                 e(_("Licence: {licence}").format(licence=s["licence"]))
                 + f" · <a href='{e(s['link'])}'>{e(s['link'])}</a>"]
+        if s.get("version"):
+            bits.insert(1, e(_("Version: {version}").format(version=s["version"])))
+        if s.get("terms"):
+            bits.append(e(_("Terms:")) + f" <i>“{e(s['terms'])}”</i>")
+        if s.get("contact"):
+            bits.append(e(_("Contact: {address}").format(address=s["contact"])))
         if s.get("cite"):
             bits.append(e(_("To cite: {refs}").format(refs=s["cite"])))
         if s.get("ack"):

@@ -39,8 +39,6 @@ DEFAULTS = {
     "memory_limit_gb": 24,
     "benchmark": None,                # result of the machine benchmark
     # catalogs and astrometry
-    "gaia": "online",                 # online | local
-    "gaia_path": "",
     "solver": "internal",             # internal | astap | astrometry.net
     "survey_cache": "",
     # file formats

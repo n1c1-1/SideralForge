@@ -475,7 +475,7 @@ def test_the_interface_names_no_other_software():
 
     from astro_gpu.client.credits import DATA_SOURCES
     bad = re.compile(r"(?i)siril|pixinsight|wbpp|spcc")
-    credits = {x for s in DATA_SOURCES for x in (s["use"], s.get("note")) if x} | {"Siril's catalogue lists"}
+    credits = {x for s in DATA_SOURCES for x in (s["use"], s.get("note")) if x}
     bench = re.compile(r"(?i)bench against siril|both siril and astro_gpu|compared with siril|siril tutorial|"
                        r"siril \(reference\)")
     for f in sorted((texts.LOCALE / "fr").glob("*.json")):

@@ -5,7 +5,7 @@ exported PNG / JPEG / TIFF. A FITS file never gets them: it keeps the data as th
 * ``field_annotations(wcs, w, h, grid, names)`` (worker thread): the grid lines (``services/inspect.sky_grid``) and the
   objects of the field (``core/skyobjects.objects_in_field``) as ``Named`` items, in the picture's pixels: the centre,
   the outline as a polygon (the object's ellipse through the solution) and the label. The catalogue is the engine's
-  (``core/skyobjects``: OpenNGC, the Sharpless catalogue and Siril's lists, downloaded once into the cache).
+  (``core/skyobjects``: OpenNGC, Steinicke's Revised NGC/IC and the Sharpless catalogue, shipped with the package).
 * ``paint_grid`` / ``paint_objects`` draw them with a QPainter on anything that has ``cx, cy, scale, width(),
   height()`` (the viewers' canvases, or ``Frame`` for a whole picture).
 * ``burn(rgb, sky, show)``: the same drawing on an image array (H, W, 3, 0..1), for the export.

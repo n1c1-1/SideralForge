@@ -1918,9 +1918,9 @@ def sky_objects(p: Project2, wf: int | Workflow, which: str = "current") -> list
     falls in the field of the workflow's astrometric solution (the stack grid it was solved on), biggest first.
     ``SkyObject``: name ("M 42", "IC 1805", "Sh2-275"), common name ("Heart Nebula" or ""), kind, RA / Dec in degrees
     J2000, axes in arcminutes, position angle in degrees east of north, other designations. ``NotDone`` when Astrometry
-    is not computed; ``CatalogueUnavailable`` (a plain message) when no catalogue can be had (offline with nothing
-    cached and no Siril). Where the names come from: ``core.skyobjects.catalogue_source()``. The first call may
-    download the catalogue once (OpenNGC 4 MB, Sharpless 12 kB): worker thread."""
+    is not computed; ``CatalogueUnavailable`` (a plain message) when the catalogue shipped with the package is
+    incomplete. Where the names come from: ``core.skyobjects.catalogue_source()``. The first call of a session reads
+    the catalogue (a few tens of ms from its cache, about a second the first time): worker thread."""
     import warnings
 
     import numpy as np

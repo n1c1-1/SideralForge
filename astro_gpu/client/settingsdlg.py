@@ -3,15 +3,15 @@ library, Display. Kept in prefs; the language, the device and Spec mode take eff
 the sections of Home (a name, a folder and a description each: home.section_rows).
 
 What the engine does not have yet (DESIGN §5.5) is shown only in Spec mode, disabled and marked ◇, and hidden
-otherwise: Temporary files, Cache limit, CPU threads, Memory limit, Benchmark, the Gaia DR3 local copy, ASTAP,
+otherwise: Temporary files, Cache limit, CPU threads, Memory limit, Benchmark, ASTAP,
 astrometry.net, the survey cache folder, and the File formats and Master library pages.
 """
 from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -36,8 +36,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core import gaia_extracts as ge
 from . import prefs
-from .i18n import LANGUAGES, _, maybe
+from .i18n import LANGUAGES, _, maybe, number
+from .services import extracts
 from .services.worker import Machine, disk_usage
 from .widgets import label, spec_mark
 
@@ -70,8 +72,12 @@ class SettingsDialog(QDialog):
         self.nav = self.pages = None
         self.keys: list[str] = []
         self.bars: dict[str, tuple[QProgressBar, QLabel]] = {}
+        self.ex: dict = {}                           # the widgets of the offline extracts (Catalogs & astrometry)
         if worker is not None:
             worker.done.connect(self._done)
+        j = extracts.job()                           # the download goes on when this window is closed
+        j.progress.connect(self._ex_progress, Qt.QueuedConnection)
+        j.finished.connect(self._ex_finished, Qt.QueuedConnection)
         self.build()
 
     # ------------------------------------------------------------ building
@@ -357,16 +363,122 @@ class SettingsDialog(QDialog):
         self._mark([head, text, b, bar, res], True)
 
     def catalogs(self, v):
-        self.row(v, _("Gaia DR3"), self.combo([("Local copy", "local", True), ("Online (VizieR)", "online", False)],
-                                              prefs.get("gaia"), "gaia"))
-        self.path_row(v, _("Gaia DR3 folder"), "gaia_path", new=True)
-        dl = QPushButton(_("Download Gaia DR3 extract (12 GB)…"))
-        self._mark([dl], True)
-        v.addWidget(dl, 0, Qt.AlignLeft)
+        self.offline_extracts(v)
         self.row(v, _("Plate solver"), self.combo([("Internal (Gaia)", "internal", False), ("ASTAP", "astap", True),
                                                    ("astrometry.net (local)", "astrometry.net", True)],
                                                   prefs.get("solver"), "solver"))
         self.path_row(v, _("Survey cache (H-alpha)"), "survey_cache", new=True)
+
+    def offline_extracts(self, v):
+        """The Gaia DR3 extracts the engine reads offline: their folder, what is installed, the two downloads (run
+        off the GUI thread by services.extracts, only when a button is pressed)."""
+        v.addWidget(label(_("Offline Gaia extracts"), "h2"))
+        v.addWidget(label(_("Star positions find where the image points on the sky; star spectra calibrate the colours. "
+                            "Without them, Gaia stars are fetched online and kept in the cache."), "small", wrap=True))
+        where = QLineEdit(str(ge.folder()))
+        where.setReadOnly(True)
+        where.setCursorPosition(0)
+        opn = QPushButton(_("Open folder"))
+        opn.clicked.connect(self._ex_open)
+        box = QWidget()
+        hl = QHBoxLayout(box)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.addWidget(where, 1)
+        hl.addWidget(opn)
+        self.row(v, _("Folder"), box)
+        self.ex = {"status": {}, "button": {}}
+        buttons = QHBoxLayout()
+        for kind, name, button in ((ge.ASTRO, _("Star positions"), _("Download star positions ({size})")),
+                                   (ge.XP, _("Star spectra"), _("Download star spectra ({size})"))):
+            st = label("", "small", wrap=True)
+            self.row(v, name, st)
+            gb = f"{number(ge.DOWNLOAD_BYTES[kind] / 1e9)} {_('GB')}"
+            b = QPushButton(button.format(size=gb))
+            b.clicked.connect(lambda _x=False, k=kind: self._ex_start(k))
+            buttons.addWidget(b)
+            self.ex["status"][kind], self.ex["button"][kind] = st, b
+        buttons.addStretch(1)
+        v.addLayout(buttons)
+        bar = QProgressBar()
+        bar.setRange(0, 1000)
+        bar.setTextVisible(False)
+        cancel = QPushButton(_("Cancel"))
+        cancel.clicked.connect(lambda: extracts.job().cancel())
+        run = QWidget()
+        hl = QHBoxLayout(run)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.addWidget(bar, 1)
+        hl.addWidget(cancel)
+        v.addWidget(run)
+        msg = label("", "small", wrap=True)
+        v.addWidget(msg)
+        self.ex.update(bar=bar, run=run, msg=msg)
+        v.addSpacing(6)
+        j = extracts.job()
+        run.setVisible(j.running())
+        if j.running():
+            self._ex_progress(*j.last)
+        self._ex_refresh()
+
+    def _ex_status_text(self, st: ge.Status) -> str:
+        if st.state == "installed":
+            if st.outside is not None:
+                return _("Found in another program's data folder: {path}").format(path=st.outside)
+            return _("Installed")
+        if st.state == "partial":
+            if st.files and st.total > 1:
+                return _("Partly downloaded: {n} of {total} files").format(n=st.files, total=st.total)
+            return _("Partly downloaded: {size}").format(size=ge.human(st.part_bytes))
+        return _("Not installed")
+
+    def _ex_refresh(self):
+        """The state of each extract and which buttons can be pressed."""
+        busy = extracts.job().running()
+        try:
+            for kind, lab in self.ex.get("status", {}).items():
+                st = ge.status(kind)
+                lab.setText(self._ex_status_text(st))
+                done = st.state == "installed" and st.own
+                b = self.ex["button"][kind]
+                b.setEnabled(not busy and not done)
+                b.setToolTip(_("Already installed.") if done else "")
+        except RuntimeError:                         # the page was built again meanwhile
+            pass
+
+    def _ex_start(self, kind):
+        if extracts.job().start(kind):
+            self.ex["msg"].setText("")
+            self.ex["bar"].setValue(0)
+            self.ex["run"].setVisible(True)
+            self._ex_progress(*extracts.job().last)
+            self._ex_refresh()
+
+    def _ex_open(self):
+        try:
+            ge.folder().mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(ge.folder())))
+
+    @Slot(int, int, str)
+    def _ex_progress(self, done, total, text):
+        try:
+            self.ex["bar"].setValue(int(1000 * done / max(total, 1)))
+            self.ex["msg"].setText(text)
+        except (KeyError, RuntimeError):             # no such page, or built again meanwhile
+            pass
+
+    @Slot(str, str)
+    def _ex_finished(self, kind, outcome):
+        try:
+            self.ex["run"].setVisible(False)
+            self.ex["msg"].setText(
+                _("Done.") if not outcome else
+                _("Cancelled. What was downloaded is kept: the next download goes on from there.")
+                if outcome == "cancelled" else outcome)
+        except (KeyError, RuntimeError):
+            pass
+        self._ex_refresh()
 
     def formats(self, v):
         self.row(v, _("Intermediate files"), self.combo([("FITS", "FITS", False), ("XISF", "XISF", False)],
