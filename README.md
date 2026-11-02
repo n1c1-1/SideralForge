@@ -37,17 +37,17 @@ uv sync
 ```
 
 On the development PC the package is installed in editable mode in the Python environment of
-`C:\Users\Nicolas\sandbox\ComfyUI\.venv`; `astro_client.bat` starts the graphical interface from it.
+`C:\Users\Nicolas\sandbox\ComfyUI\.venv`; `client.bat` starts the client from it.
 
 ## Use
 
-Graphical interface:
+The client (projects, sessions, workflows as a graph of blocks, Inspect, Post, export):
 
 ```
-uv run astro-gpu-gui
+uv run astro-gpu-client          # or: python -m astro_gpu.client
 ```
 
-Command line:
+Command line (projects of the older format, one chain per project):
 
 ```
 uv run astro-gpu new D:/astro/NGC7822 --lights D:/raw/NGC7822/lights --darks D:/raw/darks --flats D:/raw/flats --target "NGC 7822" --scratch E:/scratch/NGC7822
@@ -63,8 +63,6 @@ uv run astro-gpu render D:/astro/NGC7822 --preset artistic     # -> results/arti
 Every project is meant to end with these two renders: **Faithful** (measured colours, no display sharpening, detail
 as measured) and **Artistic** (non-blind sharpening with the star shape measured on the stack, stronger stretch and
 local contrast). Both are presets of the final adjustment tab.
-
-The user guide is in [astro_gpu/resources/GUIDE.md](astro_gpu/resources/GUIDE.md) (also F1 in the interface).
 
 ## Pipeline
 
@@ -117,7 +115,7 @@ interactive rendering: 0.15-0.35 s per adjustment in preview, 2 s at full resolu
 Version 0.1 - colour sensors only (monochrome + filters planned). Tested on Windows 11 with RTX 4060 Ti (16 GB)
 and RTX 3070 (8 GB).
 
-Interfaces: the graphical interface (`astro-gpu-gui`), the command line, and processing blocks
-(`comfyui_astro/`, see [docs/COMFYUI.md](docs/COMFYUI.md)). Decision of 2026-10-28: ComfyUI is no longer the target;
-the next step is a heavy client with a completely rethought ergonomics, which will reuse the processing blocks.
-Plan and history: [docs/PLAN.md](docs/PLAN.md).
+Interfaces: the client (`astro_gpu/client`, `client.bat`) and the command line. How the code is organised:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Tests: [tests/README.md](tests/README.md). History (plans, the
+interface mockups, the ComfyUI blocks, the notes of past work): [docs/archive/](docs/archive/) and the git tag
+`archive/avant-nettoyage-2026-11-03`.
