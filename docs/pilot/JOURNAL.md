@@ -669,6 +669,13 @@ Newest entries at the bottom. Times are local.
     - Found: `client/curveseditor.py` (4b's Curves editor) was left out of commit 759aa6c, while post3.py imports it.
       Committed at once (7d59e33); HEAD's client imports checked alone.
     - A finishing agent (opus) was relaunched for 4a from its uncommitted files: judge the diff, finish, screenshots.
+  - **4a done and committed (f36e6c7):**
+    - the drift path under the drift chart;
+    - compares on the reference grid, with a banner (the cause: matching by width only);
+    - M31 Output = Gradient-removed data under Post's stretch, explained on screen.
+    - The orchestrator checked m31_registration_drift_and_track_fr and m31_output_vs_gradient_side_fr.
+- **04:00 the night's plan is done.** Heartbeat deleted. Level 2: 770 passed, 22 known failures (outdated heart_a7s
+  dev copies). Morning summary for the user: docs/pilot/POINT_DU_MATIN.md.
 
 ### Queue for the end of P8 (engine unfrozen)
 1. Apply patches 1–3, run the tests and the 4-dataset non-regression, recompute only render_simple (Classic and Raw
