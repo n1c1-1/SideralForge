@@ -354,6 +354,7 @@ assert len(METRICS) == len(_METRIC_ROWS), "a metric key is listed twice"
 VALUE_TEXTS: dict[str, str] = {
     "fit": "fitted on this field",
     "generic colour sensor": "generic colour sensor",
+    "one factor per colour (no reliable sensitivity curves)": "one factor per colour (no reliable sensitivity curves)",
     "aperture": "wide apertures",
     "star models": "star models",
     "fitted": "fitted",

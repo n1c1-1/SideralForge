@@ -545,6 +545,7 @@
  "Whether the denoised stack was used.": "Si l'empilement débruité a été utilisé.",
  "fitted on this field": "ajustées sur ce champ",
  "generic colour sensor": "capteur couleur générique",
+ "one factor per colour (no reliable sensitivity curves)": "un facteur par couleur (pas de courbes de sensibilité fiables)",
  "wide apertures": "grandes ouvertures",
  "star models": "modèles d'étoiles",
  "fitted": "ajusté",

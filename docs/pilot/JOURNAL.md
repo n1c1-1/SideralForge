@@ -729,3 +729,21 @@ pixels (after the engine agents finish), Express bench 17:00 on GPU 0, French re
 - Level 2 at 09:46: 758 passed, 20 failed + 2 errors (mostly outdated heart_a7s copies).
 - 09:55 launched: drizzle PixInsight-style rejection + classic cache bump + cleanups (opus, ~15:30); runner GPU-fault
   containment (opus, ~13:00); client/texts cleanup, failing tests, STACKING.md, screenshots (sonnet, ~12:00).
+
+## 2026-11-02, 12:10 — bench done (b261f5a); two investigations running
+
+- Committed: drizzle PixInsight-style rejection option (41c9d03), runner GPU-fault containment (cde0337), client
+  cleanup + STACKING.md (c2b8e7e), midday note POINT_13H.md, Express bench of the two methods (b261f5a).
+- Bench: our drizzle beats Siril drizzle on depth and fine noise on 5/6 but is 2–16 % lower on target S/N; best of
+  ours: drizzle on Heart, M8, classic on Iris, M51, Seestar, Rosette; the method advice matches 3/6 (coverage near
+  20 % everywhere); PixInsight rejection repairs Rosette only, 1.6–4x slower; new defaults slightly better than the
+  previous version everywhere.
+- User (11:00): "comprendre et si possible corriger l'écart de qualité du drizzle vs Siril" -> opus agent, report
+  DRIZZLE_GAP.md, ~17:30. User (12:05): dig and fix if possible the two classic anomalies (balance before RCD costs
+  0.57 mag depth on Heart; balance off is orange and grainy on Heart instead of Siril-like) -> opus agent, report
+  CLASSIC_ANOMALIES.md, findings ~17:00, fixes ~18:15. Both share GPU 0, never two runs at once.
+- User asked for a state of play on gradient removal vs competitors (no action): answered in chat; proposal kept for
+  later (state-of-the-art pass, bench against Siril RBF and GraXpert, Siril-level manual samples in the GUI, decide
+  the "physical" background's fate).
+- Promised for 19:00: one complete client.bat (stacking, Inspect fixes, Post Curves and new filters), checked screen
+  by screen in EN and FR around 17:30–18:30, plus a short French page "ce qui a changé, où le voir".
