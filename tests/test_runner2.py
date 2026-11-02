@@ -48,6 +48,14 @@ needs_gpu = pytest.mark.skipif(_gpu_hidden(), reason="needs a visible GPU (CUDA_
 TESTS = Path(__file__).parent
 RUNS: Counter = Counter()
 SEEN: list[str] = []                     # the folder each job wrote into
+GPU_FAULT = "gpu_fault"                  # file in the project: how many more times the Classic C stage faults
+GPU_DEAD = "TOY_GPU_DEAD"                # the pid of the process whose (fake) CUDA context is dead
+
+
+def fake_gpu(device):
+    """The plans' gpu_check in the tests: the CUDA context is dead in the process where a toy stage faulted (an
+    environment variable naming its pid: the worker it starts inherits it but is another process)."""
+    return False if os.environ.get(GPU_DEAD) == str(os.getpid()) else None
 
 
 def _ran(ctx) -> None:
@@ -139,6 +147,12 @@ class C(Stage):
 
     def run(self, ctx, p):
         _ran(ctx)
+        fault = Path(ctx.project.root) / GPU_FAULT
+        if not ctx.has("b") and fault.exists() and int(fault.read_text() or 0) > 0:
+            # a GPU fault in the Classic workflow's C: the CUDA context of this process is dead from now on
+            fault.write_text(str(int(fault.read_text()) - 1))
+            os.environ[GPU_DEAD] = str(os.getpid())
+            raise RuntimeError("CUDA error: unspecified launch failure")
         t0 = time.time()
         while time.time() - t0 < p.sleep:
             time.sleep(0.1)
@@ -146,7 +160,7 @@ class C(Stage):
         steps = ctx.load_json("b", "b.json")["steps"] if ctx.has("b") else None
         ctx.save_json("c.json", {"n": ctx.load_json("stack", "stack.json")["n"], "steps": steps,
                                  "cuda_visible": os.environ.get("CUDA_VISIBLE_DEVICES"), "cwd": os.getcwd(),
-                                 "device": ctx.device_name})
+                                 "device": ctx.device_name, "pid": os.getpid()})
 
 
 class E(Stage):
@@ -211,7 +225,8 @@ def state(tmp_path, monkeypatch) -> Path:
 
 
 @pytest.fixture
-def proj(tmp_path, state):
+def proj(tmp_path, state, monkeypatch):
+    monkeypatch.setenv(GPU_DEAD, "")                    # (removed again after the test)
     RUNS.clear()
     SEEN.clear()
     Inv.fail = False
@@ -566,6 +581,203 @@ def test_a_detached_worker_survives_its_launcher_and_is_followed_through_events(
     while lock.exists() and time.time() - t1 < 30:
         time.sleep(0.1)
     assert not lock.exists() and runner2.running(proj.root) is None
+
+
+# ---------------------------------------------------------------------------------------------- a GPU fault
+
+LOST_C = "the graphics card stopped responding during C; the rest of the run continues in a fresh process"
+LOST_C_AGAIN = ("the graphics card stopped responding again during C: it is not tried a third time; the rest of the "
+                "run continues in a fresh process")
+
+
+def _gpu_plan(proj, faults: int) -> runner2.Plan:
+    """The plan of both workflows, the Classic C faulting ``faults`` times, with a CUDA context check that reports
+    dead in the process where it faulted."""
+    (proj.root / GPU_FAULT).write_text(str(faults))
+    plan = plan_all(proj)
+    plan.rules, plan.gpu_check = "test_runner2:toy_rules", "test_runner2:fake_gpu"
+    return plan
+
+
+def test_a_gpu_fault_hands_the_rest_of_the_run_and_the_lock_to_a_fresh_worker(proj, monkeypatch):
+    started = []
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])       # the new worker
+    monkeypatch.setattr(runner2, "_spawn_worker", lambda *a, **kw: (started.append(a), sleeper.pid)[1])
+    try:
+        plan = _gpu_plan(proj, 1)
+        k = K(proj)
+        c1 = k.key(CLASSIC, "c")
+        assert plan.keys[2] == c1
+        status, info = run(proj, plan)
+        assert status == "handover" and RUNS["e"] == 0 and RUNS["b"] == 0      # nothing more in the dead process
+        holder = json.loads((proj.root / "logs" / "run.lock").read_text())
+        assert holder["pid"] == sleeper.pid and holder["run_id"] == info.run_id
+        assert runner2.running(proj.root).pid == sleeper.pid                   # never free for another run
+        with pytest.raises(RuntimeError, match="already in progress"):
+            runner2.prepare_run(proj, plan_all(proj))
+        root, part_file, visible, log_file = started[0][:4]
+        assert Path(part_file).name == f"{info.run_id}.part2.plan.json" and visible == "-1"
+        assert Path(log_file) == Path(info.log_file) and Path(root) == Path(info.root)
+        part = json.loads(Path(part_file).read_text())
+        assert [j["key"] for j in part["jobs"]] == plan.keys[2:]               # the failed job first, then the rest
+        assert part["run_id"] == info.run_id and part["gpu_check"] == plan.gpu_check
+        assert part["definition"] == proj.to_dict() and part["rules"] == plan.rules
+        r = part["resume"]
+        assert r["part"] == 2 and r["from"]["pid"] == os.getpid() and r["retried"] == [c1]
+        assert r["done"] == plan.keys[:2] and r["failed"] == [] and r["skipped"] == [] and r["bad"] == []
+        evs = events(proj, info)
+        assert not [e for e in evs if e["type"] == "run_end"]                  # the run goes on in the new worker
+        lost = [e for e in evs if e.get("gpu_lost")]
+        assert [e["msg"] for e in lost] == [LOST_C] and lost[0]["level"] == "error"
+        assert lost[0]["pid"] == sleeper.pid and lost[0]["retry"] is True and lost[0]["job"] == c1
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+
+
+def test_without_a_fresh_worker_the_run_ends_failed_and_a_plain_failure_is_unchanged(proj, monkeypatch):
+    def refuse(*a, **kw):
+        raise OSError("no more processes")
+
+    monkeypatch.setattr(runner2, "_spawn_worker", refuse)
+    plan = _gpu_plan(proj, 1)
+    c1 = K(proj).key(CLASSIC, "c")
+    status, info = run(proj, plan)
+    assert status == "failed" and not (proj.root / "logs" / "run.lock").exists()
+    evs = events(proj, info)
+    end = evs[-1]
+    assert end["type"] == "run_end" and end["status"] == "failed"
+    assert end["done"] == plan.keys[:2] and end["failed"] == [c1] and end["not_started"] == plan.keys[3:]
+    lost = [e["msg"] for e in evs if e.get("gpu_lost")]
+    assert len(lost) == 1 and lost[0].startswith("the graphics card stopped responding during C and the run cannot "
+                                                 "go on: no fresh process could take over")
+    # a failure that is not a GPU fault (the context check says it works): skips its downstream only, as before
+    (proj.root / GPU_FAULT).unlink()
+    monkeypatch.setenv(GPU_DEAD, "")                     # this process's (fake) CUDA context works again
+    proj.workflow(DENOISE).params["b"] = {"fail": True}
+    plan = plan_all(proj)
+    plan.gpu_check = "test_runner2:fake_gpu"
+    status, info = run(proj, plan)
+    k = K(proj)
+    end = events(proj, info)[-1]
+    assert status == "failed" and end["failed"] == [k.key(DENOISE, "b")]
+    assert end["skipped"] == [k.key(DENOISE, "c"), k.key(DENOISE, "e")] and sorted(end["done"]) == sorted(
+        [k.key(CLASSIC, "c"), k.key(CLASSIC, "e")])
+    assert not [e for e in events(proj, info) if e.get("gpu_lost")]
+
+
+@pytest.mark.parametrize("faults", [1, 2])
+def test_after_a_gpu_fault_a_fresh_worker_retries_the_job_once_and_the_lock_is_held_throughout(proj, state,
+                                                                                                 monkeypatch, faults):
+    """Real detached workers on the CPU: the Classic C faults (and its CUDA context is reported dead) once, or twice.
+    Once: a second worker tries it again and the run completes. Twice: its second failure is a plain one (its
+    downstream skipped), and a third worker finishes the rest. One run for the follower, the lock never free."""
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(TESTS), os.environ.get("PYTHONPATH", "")]))
+    monkeypatch.setenv("ASTRO_GPU_HOME", str(state))
+    plan = _gpu_plan(proj, faults)
+    k = K(proj)
+    c1, e1 = k.key(CLASSIC, "c"), k.key(CLASSIC, "e")
+    info = runner2.launch(proj, plan, "cpu")
+    lock = proj.root / "logs" / "run.lock"
+    holders: list[int] = []
+    free, evs, offset, t0 = 0, [], info.offset, time.time()
+    while time.time() - t0 < 300 and not (evs and evs[-1]["type"] == "run_end"):
+        h = runner2._lock_holder(lock)
+        missing = not lock.exists()
+        got, offset = runner2.read_events(proj.root, offset, info.run_id)
+        evs += got
+        if h is not None and (not holders or holders[-1] != h["pid"]):
+            holders.append(int(h["pid"]))
+        elif missing and holders and not any(e["type"] == "run_end" for e in evs):
+            free += 1                                   # free while the run was not over (run_end comes first)
+        time.sleep(0.01)
+    log = Path(info.log_file).read_text(errors="replace")
+    assert evs and evs[-1]["type"] == "run_end", log
+    assert [e["type"] for e in evs].count("run_start") == 1 and [e["type"] for e in evs].count("run_end") == 1
+    goes_on = [e for e in evs if e["type"] == "log" and e["msg"] == "a fresh process goes on with the run"]
+    workers = [next(e["pid"] for e in evs if e["type"] == "run_start")] + [e["pid"] for e in goes_on]
+    # each worker held the lock in turn (with, on Windows, the venv launcher of a new one for a moment in between)
+    assert free == 0 and len(set(workers)) == faults + 1 and set(workers) <= set(holders), (holders, workers, free)
+    assert [h for h in holders if h in workers] == workers
+    assert [e["status"] for e in evs if e["type"] == "stage_end" and e["key"] == c1] == \
+        (["failed", "done"] if faults == 1 else ["failed", "failed"])
+    lost = [e["msg"] for e in evs if e.get("gpu_lost")]
+    end = evs[-1]
+    others = [x for x in plan.keys if x not in (c1, e1)]
+    if faults == 1:
+        assert lost == [LOST_C], log
+        assert end["status"] == "done" and sorted(end["done"]) == sorted(plan.keys) and not end["failed"]
+        c = json.loads((Store(proj.root).dir("c", c1) / "c.json").read_text())
+        assert c["pid"] == workers[1]                   # computed again by the fresh worker
+    else:
+        assert lost == [LOST_C, LOST_C_AGAIN], log
+        assert end["status"] == "failed" and end["failed"] == [c1] and end["skipped"] == [e1]
+        assert sorted(end["done"]) == sorted(others) and not Store(proj.root).done("c", c1)
+        part3 = json.loads((proj.root / "logs" / "runs" / f"{info.run_id}.part3.plan.json").read_text())
+        assert [j["key"] for j in part3["jobs"]] == plan.keys[3:] and part3["resume"]["failed"] == [c1]
+    assert (proj.root / GPU_FAULT).read_text() == "0"
+    t1 = time.time()
+    while lock.exists() and time.time() - t1 < 30:
+        time.sleep(0.1)
+    assert not lock.exists() and runner2.running(proj.root) is None
+
+
+def test_the_new_worker_adopts_the_lock_and_waits_for_the_old_one(tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    lock = logs / "run.lock"
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        time.sleep(0.5)
+        old = {"pid": sleeper.pid, "started": time.time()}
+        # another run's live worker holds it: refused
+        lock.write_text(json.dumps({**old, "run_id": "other"}))
+        assert not runner2.adopt_lock(logs, "r", old, timeout=1.0)
+        assert json.loads(lock.read_text())["run_id"] == "other"
+        # the old worker of this run handed it over: this process holds it
+        lock.write_text(json.dumps({"pid": os.getpid(), "run_id": "r", "started": time.time()}))
+        assert runner2.adopt_lock(logs, "r", old, timeout=1.0)
+        # the old worker still holds it and never hands it: waits, then gives up
+        lock.write_text(json.dumps({**old, "run_id": "r"}))
+        t0 = time.time()
+        assert not runner2.adopt_lock(logs, "r", old, timeout=0.5) and time.time() - t0 >= 0.5
+        # an old worker that does not exit is ended
+        assert "ended" in runner2.wait_gone(old, timeout=0.3)
+        assert sleeper.wait(10) is not None
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+    # it is gone without handing the lock over: the stale lock is taken
+    assert runner2.wait_gone(old, timeout=0.3) == ""
+    assert runner2.adopt_lock(logs, "r", old, timeout=1.0)
+    assert json.loads(lock.read_text())["pid"] == os.getpid()
+
+
+def test_the_cuda_check(monkeypatch):
+    import types
+    if _gpu_hidden():
+        import torch  # noqa: F401
+        assert runner2.cuda_alive("cuda:0") is None              # CUDA never used in this process: nothing to check
+    else:
+        import torch
+        torch.ones(1, device="cuda:0")
+        assert runner2.cuda_alive("cuda:0") is True
+
+    def fake(op):
+        cuda = types.SimpleNamespace(is_initialized=lambda: True, synchronize=lambda d=None: None)
+        return types.SimpleNamespace(cuda=cuda, ones=op)
+
+    def dead(*a, **kw):
+        raise RuntimeError("CUDA error: an illegal memory access was encountered")
+
+    def hung(*a, **kw):
+        time.sleep(5)
+
+    monkeypatch.setitem(sys.modules, "torch", fake(dead))
+    assert runner2.cuda_alive("cuda:0") is False
+    monkeypatch.setitem(sys.modules, "torch", fake(hung))
+    t0 = time.time()
+    assert runner2.cuda_alive("cuda:0", timeout=0.3) is False and time.time() - t0 < 2
 
 
 # ---------------------------------------------------------------------------------------------- estimates

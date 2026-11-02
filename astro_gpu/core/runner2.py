@@ -24,6 +24,16 @@ re-run never destroys a result. A failed job skips only the jobs downstream of i
 folder keeps its checkpoints and the next run resumes there. Every event carries ``run``; stage events add ``key``,
 ``wf`` (workflow ids) and ``block``; a ``plan`` event lists the jobs; ``run_end`` lists the jobs done, failed,
 skipped, interrupted and not started.
+
+A GPU fault (a device-side assert, an "unspecified launch failure", a driver reset) kills the CUDA context of the
+process: every later job of it would fail too. So after a failed job the worker checks the context (``cuda_alive``: a
+tiny op and a synchronize, only when CUDA was used in the process). When it is dead, the worker hands the rest of the
+run to a fresh worker process (``<run_id>.part<n>.plan.json``: the jobs left, the failed one first, and what is done
+so far), started like the first one, which tries the failed job once more; a job that fails again in it is a plain
+failure. The lock passes from one to the other without ever being free: the old worker rewrites run.lock with the new
+worker's pid before it exits, and the new one waits for the old one to be gone before it runs anything, so there is
+never a gap for another run nor two workers running jobs at once. The follower sees one run: the same run id, one
+``run_end``.
 """
 from __future__ import annotations
 
@@ -36,6 +46,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import uuid
@@ -70,6 +81,16 @@ CREATE_NO_WINDOW = 0x08000000
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
+# a GPU fault: the hand-over of the run to a fresh worker process
+CHECK_TIMEOUT = 30.0          # seconds the context check may take before the GPU counts as gone (a hung driver)
+ADOPT_WAIT = 60.0             # seconds a new worker waits for the old one to hand it the lock
+EXIT_WAIT = 120.0             # seconds a new worker waits for the old one to exit before it ends it
+MAX_PARTS = 8                 # worker processes one run may use (the first one included)
+GPU_LOST = "the graphics card stopped responding during {stage}; the rest of the run continues in a fresh process"
+GPU_LOST_AGAIN = ("the graphics card stopped responding again during {stage}: it is not tried a third time; the rest "
+                  "of the run continues in a fresh process")
+GPU_LOST_END = "the graphics card stopped responding during {stage} and the run cannot go on: {why}"
+
 
 # ---------------------------------------------------------------------------------------------- the plan
 
@@ -103,12 +124,14 @@ class Job:
 class Plan:
     """The jobs of a run, in order, each key once. ``targets``: the (workflow, stage) pairs asked for;
     ``skipped``: workflows left out, with the reason; ``rules``: 'module:function' building the KeyRules of other
-    stages than the v2 ones (tests and tools; None: the v2 stages)."""
+    stages than the v2 ones (tests and tools; None: the v2 stages); ``gpu_check``: 'module:function(device)' telling
+    whether the process's CUDA context still works (tests; None: ``cuda_alive``)."""
 
     jobs: list[Job] = field(default_factory=list)
     targets: list[tuple[int, str]] = field(default_factory=list)
     skipped: dict[int, str] = field(default_factory=dict)
     rules: str | None = None
+    gpu_check: str | None = None
 
     def __len__(self) -> int:
         return len(self.jobs)
@@ -138,13 +161,14 @@ class Plan:
 
     def to_dict(self) -> dict[str, Any]:
         return {"jobs": [j.to_dict() for j in self.jobs], "targets": [list(t) for t in self.targets],
-                "skipped": {str(k): v for k, v in self.skipped.items()}, "rules": self.rules}
+                "skipped": {str(k): v for k, v in self.skipped.items()}, "rules": self.rules,
+                "gpu_check": self.gpu_check}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Plan:
         return cls([Job.from_dict(j) for j in d.get("jobs") or []],
                    [(int(w), s) for w, s in d.get("targets") or []],
-                   {int(k): v for k, v in (d.get("skipped") or {}).items()}, d.get("rules"))
+                   {int(k): v for k, v in (d.get("skipped") or {}).items()}, d.get("rules"), d.get("gpu_check"))
 
 
 def layer_record(layer: str | Path) -> Path | None:
@@ -389,11 +413,19 @@ def launch(project: Project2, plan: Plan, device: str | None = None, python: str
     followed through ``read_events(root, info.offset, info.run_id)``."""
     info = prepare_run(project, plan, device)
     d = json.loads(Path(info.plan_file).read_text(encoding="utf-8"))
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": d["visible"], "PYTHONUNBUFFERED": "1"}
-    cmd = [python or sys.executable, "-m", "astro_gpu.core.runner2", info.root, info.plan_file]
-    kw: dict[str, Any] = {"cwd": info.root, "env": env, "stdin": subprocess.DEVNULL, "stderr": subprocess.STDOUT,
+    info.pid = _spawn_worker(info.root, info.plan_file, d["visible"], info.log_file, python, info.notes)
+    return info
+
+
+def _spawn_worker(root: str | Path, plan_file: str | Path, visible: str, log_file: str | Path,
+                  python: str | None = None, notes: list[str] | None = None) -> int:
+    """Start ``python -m astro_gpu.core.runner2 <root> <plan_file>`` detached (it survives the process that started
+    it), in the project's folder, appending to the run's log, on the run's GPU. Returns its pid."""
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(visible), "PYTHONUNBUFFERED": "1"}
+    cmd = [python or sys.executable, "-m", "astro_gpu.core.runner2", str(root), str(plan_file)]
+    kw: dict[str, Any] = {"cwd": str(root), "env": env, "stdin": subprocess.DEVNULL, "stderr": subprocess.STDOUT,
                           "close_fds": True}
-    with open(info.log_file, "ab") as log:
+    with open(log_file, "ab") as log:
         kw["stdout"] = log
         if os.name == "nt":
             # a hidden console of its own, not DETACHED_PROCESS: without a console, every console child of the worker
@@ -405,11 +437,11 @@ def launch(project: Project2, plan: Plan, device: str | None = None, python: str
                 # the launching process is in a job that forbids breaking away: the worker stays in it, so it ends
                 # with that job (a closed agent session, a killed terminal)
                 proc = subprocess.Popen(cmd, creationflags=flags & ~CREATE_BREAKAWAY_FROM_JOB, **kw)
-                info.notes.append("the worker could not leave the launching process's job: it stops with it")
+                if notes is not None:
+                    notes.append("the worker could not leave the launching process's job: it stops with it")
         else:
             proc = subprocess.Popen(cmd, start_new_session=True, **kw)
-    info.pid = proc.pid
-    return info
+    return proc.pid
 
 
 def running(root: str | Path) -> RunInfo | None:
@@ -516,6 +548,80 @@ def release_lock(logs: Path, run_id: str) -> None:
         lock.unlink(missing_ok=True)
 
 
+def _me() -> dict[str, Any]:
+    """This process as a lock names it: {pid, started} (its creation time, so a reused pid is not taken for it)."""
+    try:
+        import psutil
+        started = psutil.Process().create_time()
+    except Exception:  # noqa: BLE001
+        started = time.time()
+    return {"pid": os.getpid(), "started": started}
+
+
+def hand_lock(logs: Path, run_id: str, pid: int) -> None:
+    """Give this run's lock to the worker process ``pid`` (already started): run.lock is replaced in one step, so it
+    is never free in between. Raises OSError when it cannot be written."""
+    lock = Path(logs) / LOCK
+    holder = _lock_holder(lock)
+    if holder is None or holder.get("run_id") != run_id or int(holder.get("pid", -1)) != os.getpid():
+        raise OSError(f"run.lock is not held by this worker ({holder})")
+    _write_json(lock, {"pid": int(pid), "run_id": run_id, "started": time.time(), "from": os.getpid()})
+
+
+def adopt_lock(logs: Path, run_id: str, old: dict[str, Any], timeout: float | None = None) -> bool:
+    """The new worker of a run takes the lock the old one (``old``: {pid, started}) hands it: True once run.lock names
+    this process. While it still names the live old worker, wait; if the old worker died before handing it over, the
+    lock is stale and taken as usual (``acquire_lock``). False when another run holds it, or after ``timeout``."""
+    lock = Path(logs) / LOCK
+    t0 = time.time()
+    limit = ADOPT_WAIT if timeout is None else timeout
+    while time.time() - t0 < limit:
+        h = _lock_holder(lock)
+        if h is None:
+            if lock.exists():                                    # being replaced this very moment
+                time.sleep(0.05)
+                continue
+            return acquire_lock(logs, run_id)
+        if h.get("run_id") != run_id:
+            return acquire_lock(logs, run_id)                    # another run's lock: taken only when stale
+        if int(h["pid"]) in (os.getpid(), os.getppid()):
+            # handed to this process, or to the one that started it (a venv's python.exe on Windows is a launcher
+            # that runs the interpreter as its child): from now on it names this process, replaced in one step
+            if int(h["pid"]) != os.getpid():
+                try:
+                    _write_json(lock, {"pid": os.getpid(), "run_id": run_id, "started": time.time(),
+                                       "from": h.get("from")})
+                except OSError:
+                    return False
+            return True
+        if int(h["pid"]) == int(old.get("pid", -1)) and _alive(h):
+            time.sleep(0.05)                                     # the old worker has not handed it yet
+            continue
+        return acquire_lock(logs, run_id)                        # the old worker is gone without handing it
+    return False
+
+
+def wait_gone(old: dict[str, Any], timeout: float | None = None) -> str:
+    """Wait for the old worker of a run to exit (its GPU memory is then free); past ``timeout`` it is ended.
+    Returns '' when it exited, else what happened."""
+    if not old.get("pid"):
+        return ""
+    t0 = time.time()
+    limit = EXIT_WAIT if timeout is None else timeout
+    while _alive(old):
+        if time.time() - t0 > limit:
+            try:
+                import psutil
+                psutil.Process(int(old["pid"])).kill()
+                psutil.Process(int(old["pid"])).wait(10)
+            except Exception:  # noqa: BLE001 - gone meanwhile, or a process the driver holds
+                pass
+            return "the previous worker process did not exit: it was ended" if not _alive(old) else \
+                "the previous worker process could not be ended"
+        time.sleep(0.1)
+    return ""
+
+
 # ---------------------------------------------------------------------------------------------- the worker
 
 class RunJournal(Journal):
@@ -550,6 +656,42 @@ def _cuda() -> bool:
         return bool(torch.cuda.is_available())
     except Exception:  # noqa: BLE001
         return False
+
+
+def cuda_alive(device: str | None = None, timeout: float | None = None) -> bool | None:
+    """Whether this process's CUDA context still works: None when CUDA was not used in it (nothing to check), else a
+    tiny op and a synchronize on ``device`` ('cuda:N'; default the current one). After a GPU fault (a device-side
+    assert, an unspecified launch failure, a driver reset) every CUDA call of the process fails: False. A check that
+    does not answer within ``timeout`` seconds (a hung driver) counts as False."""
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    try:
+        if not torch.cuda.is_initialized():
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    dev = device if device and str(device).startswith("cuda") else "cuda"
+    got: list[bool] = []
+
+    def probe() -> None:
+        try:
+            x = torch.ones(8, device=dev)
+            ok = float((x * 2).sum().item()) == 16.0
+            torch.cuda.synchronize(dev)
+            got.append(ok)
+        except Exception:  # noqa: BLE001 - RuntimeError: CUDA error ..., AcceleratorError
+            got.append(False)
+
+    t = threading.Thread(target=probe, name="cuda-check", daemon=True)
+    t.start()
+    t.join(CHECK_TIMEOUT if timeout is None else timeout)
+    return bool(got and got[0])
+
+
+def _resolve(spec: str) -> Any:
+    mod, _, fn = spec.partition(":")
+    return getattr(importlib.import_module(mod), fn)
 
 
 def _write_json(path: Path, obj: Any) -> None:
@@ -601,6 +743,9 @@ class _Worker:
         self.device = d.get("inside") if same_gpu else d.get("device")   # in-process: the device as named
         self.device = self.device or "cuda:0"
         self._gpu: bool | None = None
+        self.resume: dict[str, Any] = d.get("resume") or {}      # set in the plan of a worker taking over a run
+        self.part = int(self.resume.get("part") or 1)
+        self.handed_to: int | None = None                        # the pid of the worker this one handed the run to
 
     @property
     def gpu(self) -> bool:
@@ -613,13 +758,22 @@ class _Worker:
 
     # ------------------------------------------------------------------ the run
     def run(self) -> str:
+        """Run the jobs: 'done', 'failed', 'interrupted', or 'handover' when the GPU failed and a fresh worker
+        process goes on with the run (this one must then exit without releasing the lock: it names the new one)."""
         j = self.journal
-        j.emit("run_start", stages=[x.stage for x in self.jobs], jobs=len(self.jobs), device=self.d.get("device"),
-               targets=self.d.get("targets"), pid=os.getpid())
-        j.emit("plan", jobs=[{k: v for k, v in x.to_dict().items() if k not in ("run_wf", "deps")} for x in self.jobs],
-               seconds=round(sum(x.est_s for x in self.jobs), 1), skipped=self.d.get("skipped") or {})
-        out: dict[str, list[str]] = {"done": [], "failed": [], "skipped": [], "interrupted": [], "not_started": []}
-        bad: set[str] = set()
+        r = self.resume
+        if not r:
+            j.emit("run_start", stages=[x.stage for x in self.jobs], jobs=len(self.jobs),
+                   device=self.d.get("device"), targets=self.d.get("targets"), pid=os.getpid())
+            j.emit("plan", jobs=[{k: v for k, v in x.to_dict().items() if k not in ("run_wf", "deps")}
+                                 for x in self.jobs],
+                   seconds=round(sum(x.est_s for x in self.jobs), 1), skipped=self.d.get("skipped") or {})
+        else:
+            j.emit("log", level="info", msg="a fresh process goes on with the run", pid=os.getpid(), part=self.part)
+        out: dict[str, list[str]] = {"done": list(r.get("done") or []), "failed": list(r.get("failed") or []),
+                                     "skipped": list(r.get("skipped") or []), "interrupted": [], "not_started": []}
+        bad: set[str] = set(r.get("bad") or [])
+        retried: set[str] = set(r.get("retried") or [])            # jobs already tried again after a GPU fault
         status = "done"
         try:
             for i, job in enumerate(self.jobs):
@@ -635,6 +789,11 @@ class _Worker:
                     j.emit("stage_end", stage=job.stage, status="skipped", reason="upstream failed", upstream=up)
                     continue
                 res = self.run_job(job)
+                if res == "failed" and self.gpu_lost():
+                    status = self._gpu_lost(job, i, out, bad, retried)
+                    if status == "handover":
+                        return status
+                    break
                 out[res].append(job.key)
                 if res == "failed":
                     bad.add(job.key)
@@ -644,10 +803,78 @@ class _Worker:
                     break
         finally:
             self.journal.job = None
-            if status == "done" and (out["failed"] or out["skipped"]):
-                status = "failed"
-            j.emit("run_end", status=status, **out)
+            if status != "handover":
+                if status == "done" and (out["failed"] or out["skipped"]):
+                    status = "failed"
+                j.emit("run_end", status=status, **out)
         return status
+
+    # ------------------------------------------------------------------ a GPU fault
+    def gpu_lost(self) -> bool:
+        """Whether the CUDA context of this process is dead (the plan's ``gpu_check``, else ``cuda_alive``)."""
+        try:
+            check = _resolve(self.d["gpu_check"]) if self.d.get("gpu_check") else cuda_alive
+            return check(self.device) is False
+        except Exception:  # noqa: BLE001 - a check that cannot run says nothing
+            return False
+
+    def _gpu_lost(self, job: Job, i: int, out: dict[str, list[str]], bad: set[str], retried: set[str]) -> str:
+        """The job failed and the GPU is gone with it: hand the rest of the run (the job first, unless it was already
+        tried again) to a fresh worker process: 'handover'. When that cannot be, the job fails and the jobs left are
+        not started: 'failed'."""
+        st = self.rules.chains.stages.get(job.stage)
+        title = getattr(st, "title", None) or job.stage
+        again = job.key in retried
+        if again:                                   # its second failure: a plain one
+            out["failed"].append(job.key)
+            bad.add(job.key)
+        left = self.jobs[i + 1:] if again else self.jobs[i:]
+        if not left:
+            self.journal.emit("log", level="error", gpu_lost=job.stage,
+                              msg=f"the graphics card stopped responding again during {title}")
+            return "done"                               # nothing left: the run ends as usual (failed)
+        why = ""
+        if self.part >= MAX_PARTS:
+            why = f"it already stopped responding {self.part} times in this run"
+        else:
+            try:
+                self.handed_to = self._hand_over(left, out, bad, retried | {job.key})
+            except Exception as e:  # noqa: BLE001 - no fresh process: the run ends here
+                why = f"no fresh process could take over ({type(e).__name__}: {e})"
+                traceback.print_exc()
+        if not why:
+            self.journal.job = None
+            self.journal.emit("log", level="error", msg=(GPU_LOST_AGAIN if again else GPU_LOST).format(stage=title),
+                              gpu_lost=job.stage, job=job.key, retry=not again, pid=self.handed_to,
+                              part=self.part + 1)
+            return "handover"
+        if not again:
+            out["failed"].append(job.key)
+        out["not_started"] = [x.key for x in self.jobs[i + 1:]]
+        self.journal.job = None
+        self.journal.emit("log", level="error", msg=GPU_LOST_END.format(stage=title, why=why), gpu_lost=job.stage,
+                          job=job.key)
+        return "failed"
+
+    def _hand_over(self, left: list[Job], out: dict[str, list[str]], bad: set[str], retried: set[str]) -> int:
+        """Freeze the rest of the run in ``<run_id>.part<n>.plan.json``, start its worker, and give it the lock.
+        Returns its pid."""
+        part = self.part + 1
+        runs = self.root / "logs" / RUNS
+        runs.mkdir(parents=True, exist_ok=True)
+        plan_file = runs / f"{self.run_id}.part{part}.plan.json"
+        body = {**self.d, "jobs": [x.to_dict() for x in left],
+                "resume": {"part": part, "from": _me(), "done": out["done"], "failed": out["failed"],
+                           "skipped": out["skipped"], "bad": sorted(bad), "retried": sorted(retried)}}
+        _write_json(plan_file, body)
+        visible = self.d.get("visible") or os.environ.get("CUDA_VISIBLE_DEVICES") or "0"
+        pid = _spawn_worker(self.root, plan_file, visible, runs / f"{self.run_id}.log")
+        try:
+            hand_lock(self.root / "logs", self.run_id, pid)
+        except Exception as e:  # noqa: BLE001
+            # the new worker takes the lock once this process is gone (a stale lock is replaced): say why
+            print(f"run.lock could not be handed to the new worker {pid}: {e}", flush=True)
+        return pid
 
     def run_job(self, job: Job) -> str:
         """Run one job: 'done', 'failed' or 'interrupted'."""
@@ -755,10 +982,18 @@ def run_plan(root: str | Path, plan_file: str | Path, rules: KeyRules | None = N
     root = Path(os.path.abspath(root))
     d = json.loads(Path(plan_file).read_text(encoding="utf-8"))
     logs = root / "logs"
-    if not acquire_lock(logs, d["run_id"]):
+    r = d.get("resume") or {}
+    # a worker taking over a run after a GPU fault is handed the lock by the old one, never takes a free one
+    got = adopt_lock(logs, d["run_id"], r.get("from") or {}) if r else acquire_lock(logs, d["run_id"])
+    if not got:
         print(f"run {d['run_id']} refused: another run holds {logs / LOCK}", flush=True)
         return "refused"
+    status = "failed"
     try:
+        if r:
+            note = wait_gone(r.get("from") or {})                # no two workers at once, its GPU memory freed
+            if note:
+                print(note, flush=True)
         try:
             worker = _Worker(root, d, rules, echo)
         except Exception as e:  # noqa: BLE001 - a plan that cannot even start still ends its run for the follower
@@ -766,15 +1001,18 @@ def run_plan(root: str | Path, plan_file: str | Path, rules: KeyRules | None = N
             print(traceback.format_exc(), flush=True)
             j = RunJournal(logs, d["run_id"], echo)
             j.emit("log", level="error", msg=f"the run cannot start: {msg}")
-            j.emit("run_end", status="failed", error=msg, done=[], failed=[], skipped=[], interrupted=[],
+            j.emit("run_end", status="failed", error=msg, done=list(r.get("done") or []),
+                   failed=list(r.get("failed") or []), skipped=list(r.get("skipped") or []), interrupted=[],
                    not_started=[x["key"] for x in d.get("jobs") or []])
             return "failed"
-        return worker.run()
+        status = worker.run()
+        return status
     finally:
-        release_lock(logs, d["run_id"])
+        if status != "handover":                       # handed over: run.lock names the new worker now
+            release_lock(logs, d["run_id"])
 
 
-EXIT = {"done": 0, "failed": 1, "interrupted": 2, "refused": 3}
+EXIT = {"done": 0, "failed": 1, "interrupted": 2, "refused": 3, "handover": 4}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -783,7 +1021,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("plan")
     a = ap.parse_args(argv)
     os.chdir(a.project)                               # relative paths of stage code resolve in the project
-    return EXIT[run_plan(a.project, a.plan)]
+    status = run_plan(a.project, a.plan)
+    if status == "handover":
+        # the CUDA context is dead: leave at once, without the interpreter's teardown (freeing CUDA memory on a dead
+        # context can hang), so the new worker that waits for this process starts soon
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(EXIT[status])
+    return EXIT[status]
 
 
 if __name__ == "__main__":
