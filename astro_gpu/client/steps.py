@@ -41,7 +41,8 @@ FACTS = {
                     ("astrometry", "focal_estimate_mm"), ("reference", "stars_matched"), ("surveys", "survey"),
                     ("surveys", "coverage")],
     "couleur": [("color", "stars"), ("color", "fit_agreement_pct"), ("color", "profile_agreement_pct"),
-                ("color", "response_source"), ("color", "chromaticity_residual")],
+                ("color", "response_source"), ("color", "chromaticity_residual"), ("color", "white_balance"),
+                ("color", "white_balance_stars")],
     "debruitage": [("denoise", "noise_before"), ("denoise", "noise_after"), ("denoise", "noise_reduction")],
     "etoiles": [("stars", "modelled_stars"), ("stars", "faint_stars"), ("stars", "prediction_scatter_pct"),
                 ("stars", "local_psf_grid"), ("optics", "psf_residual_pct"), ("optics", "lateral_shift_max_px"),
@@ -481,9 +482,11 @@ class Steps(QObject):
         rows = [(_("Frames kept"), _("{kept} of {n}").format(kept=kept, n=n))]
         if info.get("exposure_s"):
             rows.append((_("Integration"), hours_text(kept * info["exposure_s"] / 3600)))
-        rows += [(_("Minimum transparency"), _("{t} % of the best frames").format(t=f"{t:.0f}")),
-                 (_("Maximum star size"), f"{fnum(f)} {unit if unit == 'px' else _('× median')}"),
-                 (_("Excluded by hand"), str(len(s.frames_excluded)))]
+        rows.append((_("Rule"), texts.choice_label(s.selection_rule(p), language())))
+        if s.thresholds_active(p):                           # the thresholds act only with the previous rule
+            rows += [(_("Minimum transparency"), _("{t} % of the best frames").format(t=f"{t:.0f}")),
+                     (_("Maximum star size"), f"{fnum(f)} {unit if unit == 'px' else _('× median')}")]
+        rows.append((_("Excluded by hand"), str(len(s.frames_excluded))))
         return rows
 
     def _output_facts(self, p) -> list[tuple[str, str]]:

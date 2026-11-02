@@ -1,82 +1,100 @@
-# Spec : l'empilement (v2)
+# Spec : l'empilement (état du 2 novembre 2026)
 
-Statut : **à valider par l'utilisateur avant tout code.**
-Base : docs/pilot/STATE_OF_THE_ART_STACKING.md (les sources [S…] [P…] [L…] [A…] y sont détaillées).
-Règle du projet (ENGINE_KNOWLEDGE 4b) : chaque choix repose sur une méthode publiée, nommée ici ; rien n'est réglé sur
-nos images de test. **But : mieux que Siril**. Siril est le plancher, PixInsight la référence.
+Cette page remplace la version du 1er novembre (six changements derrière des interrupteurs). Elle suit les décisions de
+l'utilisateur après le banc croisé (docs/pilot/BENCH.md). Règle du projet : chaque choix repose sur une méthode
+publiée ; rien n'est réglé sur nos images de test. Siril est le plancher, PixInsight la référence.
 
-## Décisions de l'utilisateur
+## Deux méthodes, l'utilisateur choisit
 
-- **Drizzle Bayer par défaut.**
-- **Recalage des couleurs entre elles activé par défaut** : c'est un atout majeur.
-- **On garde le principe d'un seuil de sélection des poses, avec les valeurs de l'état de l'art** (filtres robustes
-  en k × σ sur la FWHM, la rondeur, le fond ou la transparence, comme Siril et SubframeSelector ; poids minimal de
-  PixInsight), pas nos valeurs actuelles.
-- **Mise en œuvre (décision de l'utilisateur, 1er novembre, 20 h) :** les 6 changements sont codés **ensemble**,
-  chacun derrière un **interrupteur**, à côté de l'ancienne version, qui reste. Tout coupé = l'ancienne version au
-  pixel près, et les clés de stockage inchangées. Le banc les mesure ensuite en croisé : l'ancienne version, chaque
-  changement seul, tous ensemble, tous sauf un. L'ancienne version sera supprimée quand le choix sera fait.
+« On ne va pas faire un outil magique qui marche dans tous les cas : il faut proposer un ensemble de méthodes. »
 
-## Ce que fait l'empilement
+- **Drizzle** (par défaut) : chaque pixel brut est déposé à sa place exacte sur la grille de sortie, sans dématriçage ni
+  interpolation. Échelle 1 et goutte 1 sauf si la règle de couverture (plus bas) en décide autrement.
+- **Empilement classique** : dématriçage RCD, recalage Lanczos-4 écrêté, rejet choisi selon le nombre d'images (comme
+  PixInsight). Même principe que Siril.
 
-| Point | Méthode | Source |
+Chaque méthode ne montre que ses propres réglages. La liste des méthodes vient du moteur : la monochrome s'ajoutera
+sans refaire l'écran.
+
+## Le conseil de méthode
+
+Selon la série, le logiciel **conseille** une méthode. Il ne choisit jamais à la place de l'utilisateur.
+
+| Série | Conseil | Source |
 |---|---|---|
-| 1. Méthode | **Drizzle Bayer**, échelle 1, goutte 1, noyau carré. Pas de dématriçage : chaque mesure brute est déposée à sa position exacte. Méthode « Classique » en second choix : dématriçage RCD, recalage Lanczos-4 écrêté. | [S5][P15][A8][S3][S11] |
-| 1b. Échelle | 1,5 ou 2 proposée seulement si les étoiles font moins de 2 px de FWHM (image sous-échantillonnée) **et** si la carte de couverture du rouge et du bleu varie de moins de 20 % à cette échelle. La goutte suit : la plus petite qui garde cette couverture. | [L1][L2] |
-| 2. Rejet | **Méthode de Hubble** (`driz_cr`) : prédiction médiane, ou *minmed* pour 3 à 5 mesures par point et par couleur ; rejet si l'écart dépasse 3,5 × le bruit attendu + 1,2 × la pente, puis 3,0 × + 0,7 × autour, avec 1 px d'extension. Le bruit attendu vient du modèle du capteur (gain, bruit de lecture mesurés). Sous 3 mesures, pas de rejet, et on le dit. En méthode Classique : la règle de PixInsight selon le nombre de poses (percentile, winsorized 3/3, linear fit 5/3,5). | [L3][L4][P15][S2] |
-| 3. Finesse (FWHM) | Ajustement de Moffat sur les étoiles, au lieu des super-pixels 2×2. | [S3][P11] |
-| 4. Poses | Un **seuil de sélection aux valeurs de l'état de l'art** (k × σ robustes sur FWHM, rondeur, fond ou transparence, comme Siril et SubframeSelector), avec la raison affichée pour chaque pose écartée. Les poses gardées sont **pondérées par l'inverse de la variance**, par couleur. Option « Étoiles fines » (Annis 2014) et « Aucune ». Garde-fou : un poids plus de 10 fois supérieur au quartile haut est ramené à la médiane. | [L6][S2][P9] |
-| 5. Normalisation | **Locale**, fond du 2e degré **par couleur**, avec **un facteur photométrique par couleur** mesuré sur les étoiles. Référence = intégration des meilleures poses. Option « Globale (comme Siril) ». | [P15][A2][P11][S1] |
-| 6. Couleurs | Recalage du rouge et du bleu sur le vert, **dans le drizzle, sans interpolation**, suivi **par blocs de poses** au fil de la nuit. Activé dès 50 étoiles isolées. | [P17][L13] |
+| couleur, assez d'images bien décalées (la couverture varie de moins de 20 %) | drizzle, échelle 1 | PixInsight ; règle des 20 % de DrizzlePac |
+| couleur, moins de 15 images ou peu de décalage (la couverture varie de plus de 20 %) | classique | PixInsight (drizzle utile dès 15 à 20 images décalées) ; DrizzlePac |
+| étoiles de moins de 2 px de FWHM et couverture qui tient | drizzle 1,5× ou 2× | doc de Siril, DrizzlePac |
+| monochrome | classique ; drizzle seulement si étoiles < 2 px et assez d'images | même règle (sans matrice de Bayer, le drizzle n'ajoute que du détail) |
 
-**Ce qui disparaît** (fait maison) : l'échelle automatique « 1,5 dès 40 poses », la goutte 0,7, nos seuils de rejet
-(κ 5…), la prédiction par moyenne pondérée nettoyée, l'échelle photométrique unique pour les trois couleurs, la
-référence de normalisation sur une seule pose, et la mesure de FWHM sur super-pixels.
+**Comment c'est montré** : un cadre discret « Conseillé » autour de la méthode conseillée, avec une petite icône « i »
+dont l'infobulle donne la raison en quelques mots (par exemple « 12 images (le drizzle en demande 15) : Classique »).
+Le conseil est calculé sur les images que la sélection garde, pas sur toutes les images alignées.
+
+## Mesure des étoiles et règle de couverture : par défaut
+
+- **Taille des étoiles par ajustement d'un profil de Moffat**, en pleine résolution sur les pixels verts d'étoiles
+  isolées, comme Siril et PixInsight. L'ancienne mesure (blocs de 2 × 2 pixels) donnait environ le double de la vraie
+  taille des petites étoiles. L'ancienne mesure reste choisissable (« Version précédente »).
+- **Règle de couverture** pour l'échelle et la goutte : échelle 1 et goutte 1, sauf si les étoiles font moins de 2 px
+  et si la couverture du rouge et du bleu varie encore de moins de 20 % à l'échelle plus fine ; la goutte est alors la
+  plus petite qui garde cette couverture. L'ancienne règle (selon le nombre d'images) reste choisissable.
+
+## Sélection des images : poids minimal
+
+Par défaut, **toutes les images alignées sont gardées**, sauf celles dont le poids est sous 5 % de celui de la
+meilleure (le poids minimal de PixInsight). Le poids fait le reste : une mauvaise image compte moins. C'est ce que font
+Siril et PixInsight par défaut. Chaque image écartée a sa raison affichée.
+
+Deux autres règles restent au choix, dans le bloc Sélection :
+- **Filtres k × σ** : en plus, on écarte les images à plus de 2,5 σ robustes de la médiane de la nuit en taille des
+  étoiles, rondeur ou transparence (les filtres de Siril). Le filtre de transparence peut être coupé.
+- **Version précédente** : seuils fixes de transparence et de taille d'étoile.
+
+Le bloc Sélection dit en clair la règle active. Les deux curseurs (transparence minimale, taille d'étoile maximale)
+ne servent qu'avec la version précédente : avec les autres règles, ils sont grisés avec une ligne d'explication, et le
+graphique n'a plus de poignées de seuil.
+
+## Les quatre changements retirés
+
+Mesurés seuls puis ensemble sur le banc croisé (6 cas), ils n'ont donné aucun effet mesurable ; ils ont été retirés
+du moteur et du client, avec leurs textes :
+- le rejet de type Hubble (le rejet d'origine reste) ;
+- la pondération par couleur selon le bruit (le poids par image reste) ;
+- la normalisation locale (la normalisation globale reste) ;
+- le recalage des couleurs par blocs de poses.
+
+**Le recalage des couleurs entre elles pour toute la nuit reste activé** : c'est une décision de l'utilisateur. Un
+projet qui garde l'un des réglages retirés est lu sans lui.
+
+## Empilement classique : balance des blancs avant le dématriçage
+
+Le dématriçage RCD tirait de la lumière verte vers le rouge et le bleu des petites étoiles, ce qui donnait une dominante
+orange sur Heart après notre étape de couleur. Comme le font dcraw, RawTherapee et darktable, on **équilibre les
+couleurs avant le dématriçage et on retire cet équilibre après**. Réglage « Balance des blancs avant dématriçage »,
+activé par défaut ; désactivé, on retrouve exactement Siril. Le rejet winsorisé travaille maintenant sur des masques
+(plus d'écriture indexée sur la carte graphique, qui plantait avec peu d'images).
+
+L'étape de couleur (version 4) fixe le point blanc par un ajustement robuste des rapports de couleur mesurés des étoiles
+contre ceux du catalogue, comme la calibration spectrophotométrique de PixInsight et de Siril.
+
+## À l'essai, pas par défaut
+
+- Rejet du drizzle issu de l'intégration des images dématricées et recalées (la méthode de PixInsight) : option du
+  drizzle, évaluée sur le banc avant tout changement de défaut.
 
 ## Dans le logiciel
 
-**Six réglages visibles**, chacun pré-rempli d'une valeur automatique avec sa raison :
+Réglages visibles de l'empilement : la méthode (deux cartes), puis pour le drizzle l'échelle et la goutte, pour le
+classique le dématriçage, l'interpolation, l'écrêtage et le rejet. La règle de sélection est dans le bloc Sélection. En
+« Avancé » : noyau, seuils de rejet, modèle de bruit du capteur, motif fixe, règle d'échelle.
 
-| Réglage | Choix | Défaut |
-|---|---|---|
-| Méthode | Drizzle Bayer / Classique | Drizzle Bayer |
-| Échelle | 1× / 1,5× / 2× | 1×, sauf règle 1b |
-| Rejet | Auto / liste des méthodes | Auto |
-| Pondération | Bruit / Étoiles fines / Aucune | Bruit |
-| Recalage des couleurs | oui / non | oui |
-| Poses | seuils de sélection (transparence, taille des étoiles) | nos seuils actuels |
-
-**En « Avancé »**, tout ce que Siril offre pour un empilement simple, chaque réglage avec sa source : taille de goutte,
-noyau, prédiction et seuils du rejet, modèle de bruit, normalisation (locale / globale / aucune, degré), référence de
-normalisation, filtres de poses (FWHM, rondeur, transparence ; en valeur, % ou k × σ), poids minimal, dématriçage et
-interpolation (méthode Classique), suivi du recalage des couleurs.
-
-**Exemples de raisons affichées :**
-- « 12 poses peu décalées : la couverture du rouge varie de 34 % ; Classique conseillé. »
-- « Étoiles de 1,8 px : sous-échantillonné ; la couverture reste à 14 % : 1,5×. »
-- « 9 mesures par pixel rouge : prédiction médiane. »
-
-**Dans Inspection › Empilement** : la carte de couverture par couleur, la carte de rejet avec le taux de rejet à côté
-du repère de Siril (0,1 à 0,5 %), les poids et les poses écartées avec leur raison.
-
-## Validation : sur le banc, une chose à la fois
-
-Chaque changement est mesuré seul, en Express puis en Base, sur les 6 cas, contre l'état actuel et contre Siril. Il
-n'est adopté que s'il ne dégrade rien au-delà de la variation d'un calcul à l'autre :
-
-1. drizzle 1 / 1 contre 1,5 / 0,7 et contre Classique : points d'une seule couleur, bruit, profondeur, FWHM ;
-2. rejet de Hubble contre le nôtre : taux rejeté, points, traînées ;
-3. seuil de sélection actuel contre un seuil moins sévère, sur Rosette : profondeur, fond ;
-4. facteur photométrique par couleur : erreur de couleur des étoiles face à Gaia ;
-5. recalage des couleurs : coupé, pour toute la nuit, ou par blocs : erreur de couleur, FWHM en rouge et en bleu,
-   franges colorées aux coins.
-
-La FWHM par Moffat (point 3) se met en place en premier : les autres en dépendent.
+**Dans Inspection › Empilement** : la méthode utilisée, le taux de rejet à côté du repère de Siril (0,1 à 0,5 %), les
+cartes de couverture rouge, vert et bleu avec le repère de 20 % de DrizzlePac, les images gardées et écartées avec leur
+raison.
 
 ## Hors de cette version
 
-- **Juger une pose par tuiles** plutôt qu'en tout ou rien (l'idée de l'utilisateur), après une passe d'état de l'art
-  sur la pondération locale.
-- La coaddition « propre » de Zackay et Ofek (+5 à 18 % de signal sur bruit sur les étoiles), qui ne sait pas encore
-  rejeter.
+- Juger une pose par tuiles plutôt qu'en tout ou rien (idée de l'utilisateur), après une passe d'état de l'art.
+- La coaddition « propre » de Zackay et Ofek, qui ne sait pas encore rejeter.
 - Les mosaïques.

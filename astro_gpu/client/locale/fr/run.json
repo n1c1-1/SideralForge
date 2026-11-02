@@ -146,5 +146,14 @@
  "Paused for your review": "En pause pour vérification",
  "Run paused for your review at {block}: {n} stage in {t}": "Exécution en pause pour votre vérification à {block} : {n} étape en {t}",
  "Run paused for your review at {block}: {n} stages in {t}": "Exécution en pause pour votre vérification à {block} : {n} étapes en {t}",
- "{text}": "{text}"
+ "{text}": "{text}",
+ "the graphics card stopped responding during {0}; the rest of the run continues in a fresh process": "la carte graphique a cessé de répondre pendant {0} ; la suite de l'exécution continue dans un nouveau processus",
+ "the graphics card stopped responding again during {0}: it is not tried a third time; the rest of the run continues in a fresh process": "la carte graphique a de nouveau cessé de répondre pendant {0} : on ne l'essaie pas une troisième fois ; la suite de l'exécution continue dans un nouveau processus",
+ "the graphics card stopped responding during {0} and the run cannot go on: {1}": "la carte graphique a cessé de répondre pendant {0} et l'exécution ne peut pas continuer : {1}",
+ "the graphics card stopped responding again during {0}": "la carte graphique a de nouveau cessé de répondre pendant {0}",
+ "it already stopped responding {0} times in this run": "elle a déjà cessé de répondre {0} fois dans cette exécution",
+ "no fresh process could take over ({0})": "aucun nouveau processus n'a pu prendre le relais ({0})",
+ "the run cannot start: {0}": "l'exécution ne peut pas démarrer : {0}",
+ "a fresh process goes on with the run": "un nouveau processus poursuit l'exécution",
+ "the calibrated frames were lost: they are rebuilt with the masters of the result": "les images calibrées ont été perdues : elles sont refaites avec les images maîtresses du résultat"
 }

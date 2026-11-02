@@ -504,7 +504,15 @@ def test_the_color_chart_draws_the_fitted_curves(win):
         colors = {img.pixelColor(x, y).name() for x in range(60, 880, 7) for y in range(40, 360, 5)}
         assert len(colors) > 8                                     # the three curves and the grid, not a blank widget
         rows = dict(win.steps.facts(win.s.path, "couleur"))
-        assert rows[texts.metric_label("stars")] == "2879"
+        # the stars of the result shown (its manifest's, not a number of one run); a colour stage of version 4 adds the
+        # white balance (red, green, blue multipliers and the stars behind them), shown whenever the result has it
+        out = win.steps.outputs(win.s.path, "color", win.steps.which_for(win.s.path, "color"))
+        assert rows[texts.metric_label("stars")] == str(out.metrics["stars"])
+        has_wb = "white_balance" in out.metrics
+        assert (texts.metric_label("white_balance") in rows) == has_wb
+        if has_wb:
+            assert len(rows[texts.metric_label("white_balance")].replace(",", ".").split(" / ")) == 3
+            assert rows[texts.metric_label("white_balance_stars")] == str(out.metrics["white_balance_stars"])
         shot(win, "inspect_color")
     finally:
         win.tune.tab_of.pop("couleur", None)

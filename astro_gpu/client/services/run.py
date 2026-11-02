@@ -95,6 +95,21 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
         (r"^PSF channel ([RGB]): (.*)$", "PSF channel {0}: {1}", ()),
         (r"^training target: (.*)$", "training target: {0}", ()),
         (r"^downloading (.+)$", "downloading {0}", ()),
+        # the runner's hand-over of a run to a fresh process after a graphics card fault (core/runner2.py)
+        (r"^the graphics card stopped responding during (.+); the rest of the run continues in a fresh process$",
+         "the graphics card stopped responding during {0}; the rest of the run continues in a fresh process", (0,)),
+        (r"^the graphics card stopped responding again during (.+): it is not tried a third time; the rest of the "
+         r"run continues in a fresh process$",
+         "the graphics card stopped responding again during {0}: it is not tried a third time; the rest of the run "
+         "continues in a fresh process", (0,)),
+        (r"^the graphics card stopped responding during (.+) and the run cannot go on: (.+)$",
+         "the graphics card stopped responding during {0} and the run cannot go on: {1}", (0, 1)),
+        (r"^the graphics card stopped responding again during (.+)$",
+         "the graphics card stopped responding again during {0}", (0,)),
+        (r"^it already stopped responding (\d+) times in this run$",
+         "it already stopped responding {0} times in this run", ()),
+        (r"^no fresh process could take over \((.*)\)$", "no fresh process could take over ({0})", ()),
+        (r"^the run cannot start: (.*)$", "the run cannot start: {0}", ()),
 
         # the lines the stages log (the common ones: the rest of their free diagnostics stays in English)
         (r"^(\d+) lights of ([\d.]+) s \(([\d.]+) h\), (\d+)x(\d+) (\w+), (\d+) darks, (\d+) flats, (\d+) bias, camera (.*)$",
@@ -136,7 +151,7 @@ def engine_text(msg: str) -> str:
             args = []
             for i, a in enumerate(m.groups("")):
                 if i in translated:
-                    a = _(a)
+                    a = engine_text(a)                    # a word of the interface, or a message of its own
                 if re.fullmatch(r"[+-]?\d+\.\d+", a):
                     a = ("+" if a.startswith("+") else "") + number(float(a), len(a.split(".")[1]))
                 elif a.strip() == "(shifted centres)":

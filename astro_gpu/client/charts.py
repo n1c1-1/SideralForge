@@ -51,11 +51,14 @@ class FramesChart(ChartView):
     ``rows``: the frame table's rows (name, time, fwhm, transparency, status, excluded). Thresholds: ``tmin`` in % of the
     best frames, ``fmax`` in px. ``hand``: the indices excluded by hand. The mouse: the wheel zooms the frames axis, a
     drag pans, a click picks the frame under the cursor (``picked``), the grips on the left move the thresholds
-    (``changed`` when dropped), Shift + drag draws a rectangle of frames to exclude or keep by hand."""
+    (``changed`` when dropped), Shift + drag draws a rectangle of frames to exclude or keep by hand.
+
+    ``thresholds``: whether the thresholds act (the stack's "previous version" selection rule). Without, there are no
+    grips and no threshold lines, and a frame is left out for the reason the table gives (the rule's), or by hand."""
     changed = Signal()
     picked = Signal(int)
 
-    def __init__(self, rows, tmin: float, fmax: float, parent=None):
+    def __init__(self, rows, tmin: float, fmax: float, parent=None, *, thresholds: bool = True):
         super().__init__("", parent, zoom="x", readout="x", pickable=True, export_name="frames")
         self.setMinimumHeight(300)
         self.rows = list(rows)
@@ -69,6 +72,9 @@ class FramesChart(ChartView):
         self.tr = 100 * tr / self.p90                                    # % of the best frames
         self.n = len(self.rows)
         self.tmin, self.fmax = float(tmin), float(fmax)                  # thresholds (%, px)
+        self.thresholds = bool(thresholds)
+        # without thresholds: the frames the rule leaves out (not the ones excluded by hand, which ``hand`` holds)
+        self.ruled = np.array([bool(r.status) and not r.excluded for r in self.rows], bool)
         self.sugg = (self.tmin, self.fmax)
         self.hand = {i for i, r in enumerate(self.rows) if r.excluded}
         self.status = [r.status for r in self.rows]
@@ -97,12 +103,17 @@ class FramesChart(ChartView):
         t = self.tr[np.isfinite(self.tr) & self.aligned]
         f0, f1 = (min(f.min(), self.fmax), max(f.max(), self.fmax)) if f.size else (0.0, 1.0)
         t0, t1 = (min(t.min(), self.tmin), max(t.max(), self.tmin, 100)) if t.size else (0.0, 100.0)
+        if not self.thresholds:
+            f0, f1 = (f.min(), f.max()) if f.size else (0.0, 1.0)
+            t0, t1 = (t.min(), max(t.max(), 100)) if t.size else (0.0, 100.0)
         self.p_f.home_y = (f0 * 0.95, f1 * 1.05)
         self.p_t.home_y = (t0 * 0.95, t1 * 1.03)
-        self.h_f = self.add_hline("fmax", self.fmax, panel=self.p_f, color=OUT, draggable=True,
-                                  label=lambda v: _("threshold {v} px  (drag)").format(v=number(v, 1)))
-        self.h_t = self.add_hline("tmin", self.tmin, panel=self.p_t, color=OUT, draggable=True,
-                                  label=lambda v: _("threshold {v} %  (drag)").format(v=f"{v:.0f}"))
+        self.h_f = self.h_t = None
+        if self.thresholds:
+            self.h_f = self.add_hline("fmax", self.fmax, panel=self.p_f, color=OUT, draggable=True,
+                                      label=lambda v: _("threshold {v} px  (drag)").format(v=number(v, 1)))
+            self.h_t = self.add_hline("tmin", self.tmin, panel=self.p_t, color=OUT, draggable=True,
+                                      label=lambda v: _("threshold {v} %  (drag)").format(v=f"{v:.0f}"))
         if self.has_time:
             self.add_choice([("frame", _("Frame number")), ("time", _("Time"))], "frame", self.set_xmode)
         self.enable_lasso(True)
@@ -110,14 +121,15 @@ class FramesChart(ChartView):
         self.lineReleased.connect(lambda *_a: self.changed.emit())
         self.pointClicked.connect(self._clicked)
         self.rubberBand.connect(self._band)
-        self.add_action(_("Restore the suggested thresholds"), self.reset_thresholds)
+        if self.thresholds:
+            self.add_action(_("Restore the suggested thresholds"), self.reset_thresholds)
         self._classify()
         self.fit()
 
     # ------------------------------------------------------------ the frames
     def excluded(self) -> np.ndarray:
         """Left out by the thresholds, by hand, or because the frame did not align."""
-        ex = (self.fwhm > self.fmax) | (self.tr < self.tmin) | ~self.aligned
+        ex = ((self.fwhm > self.fmax) | (self.tr < self.tmin) if self.thresholds else self.ruled) | ~self.aligned
         for i in self.hand:
             ex[i] = True
         return ex
@@ -203,6 +215,8 @@ class FramesChart(ChartView):
         self.changed.emit()
 
     def reset_thresholds(self):
+        if not self.thresholds:
+            return
         self.tmin, self.fmax = self.sugg
         self.h_t.value, self.h_f.value = self.tmin, self.fmax
         self._classify()
@@ -211,6 +225,10 @@ class FramesChart(ChartView):
     def reset(self):
         """The suggested thresholds, and no frame excluded by hand."""
         self.hand.clear()
+        if not self.thresholds:
+            self._classify()
+            self.changed.emit()
+            return
         self.reset_thresholds()
 
     # ------------------------------------------------------------ the readout, the ring on the picked frame

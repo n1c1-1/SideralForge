@@ -123,11 +123,10 @@ CATALOG = {
               "After the thresholds, keeps only this percentage of the best frames.", lo=10, hi=100, step=5,
               unit="% of frames"),
         ]),
-        ("Weighting", [
-            N("stack", "weighting", "Frame weights", "choice", "Transparency and star size",
-              "How much each frame counts in the stack.",
-              choices=["Transparency and star size", "Signal-to-noise ratio", "Equal for all"],
-              reason=AS_TODAY),
+        # the rule itself; the panel draws these rows above the thresholds (panel.Panel.selection)
+        ("Rule", [
+            E("stack", "selection"),
+            E("stack", "selection_transparency", "expert"),
         ]),
     ],
     # the method itself is chosen on the cards above the settings (panel.Panel.stack_methods); each method shows only
@@ -156,8 +155,10 @@ CATALOG = {
               help="How outlier pixels (satellites, planes, cosmic rays) are rejected. Automatic: chosen by the "
                    "number of frames, as PixInsight does (percentile under 6 frames, winsorized sigma clipping from 6 "
                    "to 15, linear fit clipping from 16).", method="classic"),
+            E("stack", "classic_cfa_balance", method="classic"),
         ]),
         ("Pixel rejection", [
+            E("stack", "drizzle_rejection", method="drizzle"),
             N("stack", "rejection", "Rejection method", "choice", "Automatic: around the median",
               "How outlier pixels (satellites, planes, cosmic rays) are removed.",
               choices=["Automatic: around the median", "Sigma clipping", "Winsorized sigma clipping",
@@ -170,17 +171,11 @@ CATALOG = {
             E("stack", "core_tolerance", "expert", help="Margin left at the core of bright stars, which varies from "
                                                         "frame to frame with the seeing.", method="drizzle"),
         ]),
-        ("Frames", [
-            E("stack", "selection", "expert"),
-            E("stack", "selection_transparency", "expert"),
-            E("stack", "weighting", "expert"),
-        ]),
         ("Normalization", [
             N("stack", "normalization", "Frame normalization", "choice", "Automatic: offset and scale",
               "Brings all the frames to the same background level and scale before combining them, despite a "
               "changing Moon or haze.",
               choices=["Automatic: offset and scale", "Offset only", "None"], reason=AS_TODAY),
-            E("stack", "normalisation", "expert"),
         ]),
         ("Sensor", [
             E("stack", "gain", "expert", help="Electrons per digital unit: used by the noise model.",
@@ -428,10 +423,6 @@ HIDDEN = {("stack", "exclude"), ("stack", "min_transparency"), ("stack", "max_fw
           ("render_simple", "stretch"), ("stack", "method")}
 #: the stacking method: chosen on the cards of the Stacking panel, never as a row
 STACK_METHOD = ("stack", "method")
-#: the choices of the stacking-v2 switches withdrawn from the engine (2026-11-02: no measurable effect on the bench):
-#: never offered, whether the engine still lists them or not; a setting left with one choice is not shown
-WITHDRAWN = {("stack", "rejection"): {"hubble"}, ("stack", "weighting"): {"noise"},
-             ("stack", "normalisation"): {"local"}, ("register", "channel_align"): {"per_block"}}
 #: the stacking methods' names and what each does, by the engine's key (an engine method missing here shows its
 #: engine label): the list itself and the advice are the engine's (``stack_methods``, ``method_advice``)
 METHOD_TEXTS = {
@@ -567,11 +558,7 @@ def resolve(s, p, step: str, it: dict, stage: str | None = None) -> dict | None:
         if info is None or info.level == "internal" or info.type == "list":
             return None
         typ = TYPES.get(info.type, "str")
-        gone = WITHDRAWN.get((stage, it["name"]), ())
-        choices = [(v, texts.choice_label(v, language())) for v in info.choices if v not in gone] \
-            if info.choices else None
-        if choices is not None and gone and len(choices) < 2:
-            return None                                   # a withdrawn switch: nothing left to choose
+        choices = [(v, texts.choice_label(v, language())) for v in info.choices] if info.choices else None
         if choices:
             typ = "choice"
         lo = info.ge if info.ge is not None else info.gt
@@ -650,6 +637,20 @@ def method_advice(s, p) -> tuple[str, str] | None:
         return None
     why = getattr(info, "advice_reason", "") or ""
     return adv, texts.format_reason(why, getattr(info, "advice_args", None), language()) if why else ""
+
+
+def selection_rule_text(s, p) -> str:
+    """The active frame selection rule in plain words (translated): what decides which frames are left out."""
+    rule = s.selection_rule(p)
+    if rule == "legacy":
+        return _("Frames under the minimum transparency or over the maximum star size below are left out.")
+    if rule == "sota":
+        off = s.param_value(p, "stack", "selection_transparency") == "off"
+        return (_("Frames far worse than the night's median (over 2.5 σ) in star size or roundness are left out, "
+                  "then those weighing less than 5 % of the best one.") if off else
+                _("Frames far worse than the night's median (over 2.5 σ) in star size, roundness or transparency "
+                  "are left out, then those weighing less than 5 % of the best one."))
+    return _("Every aligned frame is kept, except those weighing less than 5 % of the best one.")
 
 
 def method_text(key: str) -> tuple[str, str]:

@@ -1917,13 +1917,13 @@ class TuneView(QWidget):
         s = self.s
         self.table = table
         t, f = self._thresholds()
-        ch = FramesChart(table.rows, t, f)
+        ch = FramesChart(table.rows, t, f, thresholds=s.thresholds_active())
         ch.sugg = s.suggested_thresholds()
         ch.current = self.picked if self.picked is not None and self.picked < ch.n else None
         ch.setMinimumHeight(140)
         ch.changed.connect(lambda c=ch: self._chart_changed(c))
         ch.picked.connect(self._pick)
-        ch.setToolTip(_("Thresholds: drag · frame: click"))
+        ch.setToolTip(_("Thresholds: drag · frame: click") if ch.thresholds else _("Frame: click"))
         self.chart = ch
         top = QWidget()
         tl = QVBoxLayout(top)
@@ -1934,7 +1934,8 @@ class TuneView(QWidget):
         tl.addWidget(self.kept_label)
         self._kept_n = (table.kept, table.total)
         self._kept_text()
-        if abs(t - 100 * table.min_transparency) > 1e-6 or abs(f - table.max_fwhm_ratio * (s.fwhm_median() or 1.0)) > 1e-6:
+        if ch.thresholds and (abs(t - 100 * table.min_transparency) > 1e-6
+                              or abs(f - table.max_fwhm_ratio * (s.fwhm_median() or 1.0)) > 1e-6):
             self._ask_preview(ch)                  # the thresholds shown are not the stack's: what do they keep?
         by = {it.path: it for it in items} if isinstance(items, list) else {}
         p90 = ch.p90
@@ -1990,7 +1991,7 @@ class TuneView(QWidget):
                 self._set_hand(want - now, True)
                 self._set_hand(now - want, False)
         t, f = self._thresholds()
-        if abs(c.tmin - t) > 1e-6 or abs(c.fmax - f) > 1e-6:
+        if c.thresholds and (abs(c.tmin - t) > 1e-6 or abs(c.fmax - f) > 1e-6):
             self._ask_preview(c)
             self.panel.propose_selection(c.tmin, c.fmax)
 

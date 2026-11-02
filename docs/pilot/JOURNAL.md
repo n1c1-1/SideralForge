@@ -714,3 +714,18 @@ defects, measure Siril's own drizzle. The user cannot connect at 13:00: a French
   rejection_classic, stack_classic, debayer, resample, colour stage; heart/m8 bench copies, GPU 0), ~13:00.
 Agents do not commit; the orchestrator checks and commits. Afternoon: PixInsight-style rejection for drizzle hot
 pixels (after the engine agents finish), Express bench 17:00 on GPU 0, French review pack 18:30.
+
+## 2026-11-02, 09:55 — morning agents done, committed (3fe419b, plus the Siril drizzle commit)
+
+- Siril drizzle measured: the extra noise is drizzle's in general (Siril's drizzle loses more than ours against its
+  classic stack); our drizzle's S/N on the target is ~12 % under Siril's drizzle (for 19:00); Siril's drizzle also
+  leaves single-colour dots. M51: Siril's degree-2 background extraction failed (noted, untouched).
+- Engine: four changes removed, new defaults, min-weight selection, method advice on kept frames (Rosette and M51:
+  classic advised; Iris, Seestar: drizzle).
+- Classic stack: orange cast root cause = RCD on unbalanced CFA; fixed by white balance before RCD (dcraw,
+  RawTherapee, darktable) + colour stage v4 (white point as SPCC). Left for the user at 19:00: RCD still flattens
+  small-star colours (Siril too); options: colour matrix from the camera profile for classic stacks, or bilinear.
+  CUDA assert: driver faults under overload (Windows events match to the second), winsorized rewritten on masks.
+- Level 2 at 09:46: 758 passed, 20 failed + 2 errors (mostly outdated heart_a7s copies).
+- 09:55 launched: drizzle PixInsight-style rejection + classic cache bump + cleanups (opus, ~15:30); runner GPU-fault
+  containment (opus, ~13:00); client/texts cleanup, failing tests, STACKING.md, screenshots (sonnet, ~12:00).

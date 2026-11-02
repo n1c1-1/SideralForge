@@ -287,6 +287,11 @@ class Graph:
         if k == "alignement":
             return _("on the sharpest frame")
         if k == "selection":
+            rule = s.selection_rule(p)
+            if rule == "min_weight":
+                return _("every frame, weight ≥ 5 % of the best")
+            if rule == "sota":
+                return _("k × σ filters · weight ≥ 5 % of the best")
             t, f = s.thresholds_now()
             unit = s.thresholds_unit()
             return (_("transparency ≥ {t} % · stars ≤ {f} px").format(t=f"{t:.0f}", f=fnum(f)) if unit == "px" else

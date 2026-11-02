@@ -183,6 +183,8 @@ _METRIC_ROWS: list[tuple] = [
     ("grid", "Stack size", "px", "d", "Width and height of the stacked image.", " × "),
     ("fixed_pattern", "Fixed pattern", "", "", "What was measured of the sensor's fixed pattern."),
     ("rejected_pct", "Rejected pixels", "%", ".3f", "Share of pixels rejected as outliers (satellites, cosmic rays)."),
+    ("drizzle_excluded_pct", "Drops left out", "%", ".3f",
+     "Share of the drizzle's drops left out where the frames' integration rejected the pixel."),
     ("channel_offsets", "Color offsets", "", "",
      "Where the red and blue images of the stars fell relative to the green one (lateral chromatic aberration, "
      "atmospheric dispersion), corrected in the stack."),
@@ -226,6 +228,9 @@ _METRIC_ROWS: list[tuple] = [
     ("stars", "Color stars", "", "d", "Stars measured for the colour calibration."),
     ("fit_residual", "Fit residual", "", ".4f", "Relative error of the fit in red, green and blue."),
     ("chromaticity_residual", "Color residual", "", ".4f", "Typical gap between the measured and the predicted star colors."),
+    ("white_balance", "White balance", "", ".3f",
+     "Multipliers of red, green and blue that make the stars match their catalogue colors."),
+    ("white_balance_stars", "White balance stars", "", "d", "Stars used for the white balance."),
     ("matrix", "Color matrix", "", ".3f", "Matrix that turns the camera colors into sRGB."),
     ("response_at_lines", "Response at the lines", "", "", "Camera response to H-beta, OIII and H-alpha (red, green, blue)."),
     # denoise
@@ -501,10 +506,10 @@ CHOICE_TEXTS: dict[str, str] = {
     "auto": "Automatic", "none": "None", "nsns": "NSNS", "finkbeiner": "Finkbeiner",
     "main": "Main GPU", "aux": "Second GPU",
     # the switches of stacking v2 (stages/stack.py, stages/register.py)
-    "legacy": "Previous version", "moffat": "Moffat fit", "per_block": "Per block of frames",
-    "coverage": "Coverage rule", "hubble": "Hubble (driz_cr)", "noise": "Noise", "sharp": "Sharp stars",
-    "sota": "k × σ filters", "local": "Local", "global": "Global (like Siril)", "on": "On", "off": "Off",
-    "min_weight": "Minimum weight",
+    "legacy": "Previous version", "moffat": "Moffat fit",
+    "coverage": "Coverage rule",
+    "sota": "k × σ filters", "on": "On", "off": "Off",
+    "min_weight": "Minimum weight", "own": "Own", "integration": "From the integration",
     "drizzle": "Bayer drizzle", "classic": "Classic",
     "rcd": "RCD", "bilinear": "Bilinear", "lanczos4": "Lanczos-4", "siril": "Siril", "pixinsight": "PixInsight",
     "percentile": "Percentile clipping", "winsorized": "Winsorized sigma clipping", "linear_fit": "Linear fit clipping",

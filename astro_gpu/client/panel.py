@@ -30,12 +30,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import texts
 from ..core import workflow as wfl
 from . import prefs
 from .blocks import BY_KEY, STATE_WORD, block_state, block_title, fmt_int, stages_of  # noqa: F401
-from .i18n import _, all_workflows, hm, number
+from .i18n import _, all_workflows, hm, language, number
 from .model import NotInEngine, method_of, method_value, methods_of
-from .settings import RangeBar, SettingRow, fmt, needed_stages, step_settings
+from .settings import RangeBar, SettingRow, fmt, needed_stages, selection_rule_text, step_settings
 from .settings import loading as settings_loading
 from .widgets import ACCENT, BAD, NEW, WARN, clear, hline, label
 
@@ -521,7 +522,9 @@ class Panel(QWidget):
         if k == "selection":
             units += [_("% of the best"), "px", _("× median")]
         self._unit_w = unit_column(units)
+        extra = 0
         if k == "selection":
+            groups, extra = self.selection_rule(p, groups)
             self.selection(p)
         if k == "empilement" and len(s.sessions) > 1:
             self.stack_sessions()
@@ -529,7 +532,7 @@ class Panel(QWidget):
             self.stack_methods(p)
         if k == "post" and p.end:
             self.bv.addWidget(kv([(_("Output of"), block_title(p, p.end))]))
-        self.settings(p, k, groups)
+        self.settings(p, k, groups, extra)
         self.bv.addStretch(1)
 
     def stack_sessions(self):
@@ -721,11 +724,32 @@ class Panel(QWidget):
         g.setStyleSheet("color: #aab2bf; font-weight: 600; margin-top: 8px; margin-bottom: 2px;")
         return g
 
+    def selection_rule(self, p, groups):
+        """The Selection block's top: the rule that decides which frames are left out, in plain words, and its setting
+        rows. Returns the other groups, and how many Advanced rows were drawn here (for the Advanced settings count)."""
+        title = _("Rule")
+        rule = next((rs for t, rs in groups if t == title), [])
+        rest = [(t, rs) for t, rs in groups if t != title]
+        if not rule and settings_loading(self.s, p, "selection"):
+            return groups, 0
+        self.bv.addWidget(self.group_title(title))
+        self.bv.addWidget(label(selection_rule_text(self.s, p), "small", wrap=True))
+        for r in rule:
+            if r["level"] == "normal" or (self.expert and r["level"] == "expert"):
+                self.add_row(r)
+        return rest, sum(r["level"] != "normal" for r in rule)
+
     def selection(self, p):
         s = self.s
         t, f = s.thresholds_now()
         px = s.thresholds_unit() == "px"
+        live = s.thresholds_active(p)
         self.bv.addWidget(self.group_title(_("Thresholds")))
+        if not live:
+            why = label(_("These thresholds act only with the “{rule}” rule.").format(
+                rule=texts.choice_label("legacy", language())), "small", wrap=True)
+            why.setObjectName("thresholds_reason")
+            self.bv.addWidget(why)
         for name, val, unit, lo, hi, step, which in (
                 (_("Minimum transparency"), t, _("% of the best"), 0, 100, 1, "t"),
                 (_("Maximum FWHM") if px else _("Maximum star size"), f, "px" if px else _("× median"),
@@ -741,6 +765,7 @@ class Panel(QWidget):
             e.setSingleStep(step)
             e.setValue(val)
             e.setFixedWidth(EDITOR_W)
+            e.setEnabled(live)
             e.editingFinished.connect(lambda ed=e, wh=which: self._sel(ed.value(), wh))
             row.addWidget(e)
             row.addWidget(unit_label(unit, self._unit_w))
@@ -786,7 +811,7 @@ class Panel(QWidget):
             groups += [(_("Starless image") + f" · {g}", rs) for g, rs in step_settings(s, p, "sans_etoiles")]
         return groups
 
-    def settings(self, p, k, groups=None):
+    def settings(self, p, k, groups=None, extra_hidden=0):
         s = self.s
         groups = self._groups(p, k) if groups is None else groups
         if settings_loading(s, p, k) and not groups:
@@ -794,7 +819,7 @@ class Panel(QWidget):
             self.bv.addWidget(label(_("The settings cannot be read: {why}").format(why=err) if err else
                                     _("Loading the settings…"), "dim", wrap=True))
             return
-        hidden = 0
+        hidden = extra_hidden
         system = []
         for title, rs in groups:
             shown = [r for r in rs if r["level"] == "normal" or (self.expert and r["level"] == "expert")]
