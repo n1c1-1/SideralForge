@@ -1195,10 +1195,12 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     assert post.settle() and np.array_equal(shown(v), reference(post).rgb)
     # the + Filter menu: the filters by family (the first Post's arcsinh stretch is no longer offered)
     fam = {a.text(): [x.text() for x in a.menu().actions()] for a in v.filter_menu.actions()}
-    assert list(fam) == ["Stretch", "Contrast and curves", "Color", "Detail", "Noise", "Stars", "Combine"]
+    assert list(fam) == ["Stretch", "Contrast", "Color", "Detail", "Noise", "Stars", "Combine"]
     assert sum(len(x) for x in fam.values()) == len([f for f in FILTERS.values() if not f.get("hidden")]) == 18
-    assert fam["Stretch"] == ["Generalised hyperbolic stretch", "Arcsinh stretch", "Histogram transformation"]
-    assert fam["Contrast and curves"][0] == "Curves" and fam["Combine"] == ["H-alpha to red"]
+    # Curves and Levels are stretches (2 November: where the user looked for them first)
+    assert fam["Stretch"] == ["Generalised hyperbolic stretch", "Arcsinh stretch", "Histogram transformation", "Curves",
+                              "Levels"]
+    assert "Curves" not in fam["Contrast"] and fam["Combine"] == ["H-alpha to red"]
     assert all(x.isEnabled() for a in v.filter_menu.actions() for x in a.menu().actions())
 
 

@@ -84,7 +84,7 @@ from .widgets import ACCENT, WARN, clear, hline, label
 
 NL = "\n"                                                   # a line break in a tooltip
 
-FAMILY_COL = {"Stretch": "#c9a35e", "Contrast and curves": "#d98a4e", "Color": "#c46fa8", "Detail": "#5ea1ff",
+FAMILY_COL = {"Stretch": "#c9a35e", "Contrast": "#d98a4e", "Color": "#c46fa8", "Detail": "#5ea1ff",
               "Noise": "#62c2b1", "Stars": "#e6d36a", "Combine": "#e06c6c"}
 TW, TH = THUMB                                           # thumbnail size
 COPY, STARLESS, STARS = " (copy)", "starless", "stars"   # pieces of the layer names, translated where shown

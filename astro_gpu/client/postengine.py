@@ -356,19 +356,19 @@ FILTERS = {
                     params=[P("strength", "Strength", 0, 12, 0, step=0.1),
                             P("symmetry", "Symmetry point", 0, 0.6, 0.08, step=0.01)]),
     # ---- contrast and curves
-    "curves": dict(name="Curves", family="Contrast and curves", fn=f_curves, editor="curves", hist=True,
+    "curves": dict(name="Curves", family="Stretch", fn=f_curves, editor="curves", hist=True,
                    source="A curve per channel through control points, as Photoshop's Curves",
                    params=[CURVE("curves")]),
-    "levels": dict(name="Levels", family="Contrast and curves", fn=f_levels,
+    "levels": dict(name="Levels", family="Stretch", fn=f_levels,
                    source="Photoshop's Levels: black point, white point, gamma",
                    params=[P("black", "Black point", 0, 0.3, 0, step=0.005),
                            P("white", "White point", 0.7, 1, 1, step=0.005),
                            P("gamma", "Gamma", 0.5, 2, 1, step=0.01)]),
-    "local_contrast": dict(name="Local contrast", family="Contrast and curves", fn=f_local_contrast,
+    "local_contrast": dict(name="Local contrast", family="Contrast", fn=f_local_contrast,
                            source="A large-radius unsharp mask",
                            params=[P("strength", "Strength", 0, 1.5, 0, step=0.01),
                                    P("scale", "Scale", 5, 120, 40, "px", 1)]),
-    "clahe": dict(name="Local histogram equalization (CLAHE)", family="Contrast and curves", fn=f_clahe,
+    "clahe": dict(name="Local histogram equalization (CLAHE)", family="Contrast", fn=f_clahe,
                   source="CLAHE (Zuiderveld 1994): the contrast equalised tile by tile, with a limit, on the "
                          "lightness",
                   params=[P("amount", "Amount", 0, 1, 0, step=0.01),
@@ -424,7 +424,7 @@ FILTERS = {
                        source="The engine's H-alpha map added to the red channel",
                        params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
 }
-FAMILIES = ["Stretch", "Contrast and curves", "Color", "Detail", "Noise", "Stars", "Combine"]
+FAMILIES = ["Stretch", "Contrast", "Color", "Detail", "Noise", "Stars", "Combine"]
 #: the names of filters as the first Post saved them (a layer keeps its name): shown as today's names
 OLD_NAMES = {"Stretch (GHS)": "Arcsinh stretch (symmetry point)"}
 
