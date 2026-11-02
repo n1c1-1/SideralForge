@@ -807,6 +807,19 @@ def test_the_panel_lists_the_settings_of_the_engine(world, model, page):
     page.panel.expert = False
 
 
+def test_the_colour_block_offers_one_factor_per_colour(world, model, page):
+    """The colour correction (2 November): a normal setting of the Colour block, full correction by default, its
+    choices in words."""
+    page.select_node(node(page, "couleur"))
+    settle(world["w"], page)
+    rows = {r.r["key"]: r for r in live_rows(page)}
+    assert "color.correction" in rows
+    r = rows["color.correction"].r
+    assert r["label"] == "Colour correction" and r["value"] == "full" and not r["changed"]
+    assert r["choices"] == [("full", "Full correction"), ("per_colour", "One factor per colour")]
+    assert "One factor per colour" in r["help"]
+
+
 def test_a_settings_row_changes_marks_and_goes_back_to_the_suggestion(world, model, page):
     page.select_node(node(page, "debruitage"))
     settle(world["w"], page)

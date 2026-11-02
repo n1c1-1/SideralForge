@@ -1016,11 +1016,18 @@ class Main(QMainWindow):
         t.setWordWrap(True)
         t.setTextFormat(Qt.RichText)
         lv.addWidget(t)
-        lv.addStretch(1)
+        from PySide6.QtWidgets import QTextBrowser
+
+        from .credits import data_sources_html
+        src = QTextBrowser()                         # the data the product reads, credited (credits.py)
+        src.setObjectName("data_sources")
+        src.setOpenExternalLinks(True)
+        src.setHtml(data_sources_html())
+        lv.addWidget(src, 1)
         b = QPushButton(_("Close"))
         b.clicked.connect(d.accept)
         lv.addWidget(b, 0, Qt.AlignRight)
-        d.resize(640, 300)
+        d.resize(760, 640)
         return d
 
     def closeEvent(self, e):

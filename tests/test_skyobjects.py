@@ -198,7 +198,7 @@ def test_siril_lists_alone_name_the_objects_without_types(sources):
     assert cat.find("Sh2-190").name == "IC 1805" and cat.find("IC 1805").common_name == "Heart Nebula"
     assert cat.find("Sh2-25").name == "M 8" and cat.find("Sh2-116").aliases == ()
     assert cat.find("Sh2-117").kind == "HII region"
-    assert cat.source.startswith("Siril (")
+    assert cat.source.startswith("Siril's catalogue lists (")
 
 
 # ---------------------------------------------------------------------------------------------- the objects of a field
@@ -292,7 +292,7 @@ def test_without_any_catalogue_a_plain_message_says_why(home):
 def test_a_missing_source_is_noted_and_siril_fills_in(home, sources, monkeypatch):
     monkeypatch.setattr(so, "siril_catalogue_dir", lambda: sources["siril"])
     cat = so.load_catalogue()
-    assert cat.source.startswith("Siril (") and cat.find("IC 1805").common_name == "Heart Nebula"
+    assert cat.source.startswith("Siril's catalogue lists (") and cat.find("IC 1805").common_name == "Heart Nebula"
     assert any("OpenNGC could not be had (offline mode)" in n for n in cat.notes)
     assert any("Sharpless" in n and "without their sizes" in n for n in cat.notes)
 

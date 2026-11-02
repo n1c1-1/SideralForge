@@ -1479,13 +1479,13 @@ _METHODS: dict[str, list[MethodInfo]] = {
                    "Starts from a network trained on earlier projects and fine-tunes it on the half-stacks."),
         MethodInfo("pretrained", "Pretrained (GraXpert-like)", "pretrained", "both", "denoise_ai", True,
                    "A pretrained network applied as is: the fastest. May smooth or invent detail: compare."),
-        MethodInfo("nlbayes", "NL-Bayes (as in Siril)", "NL-Bayes", "cpu", "denoise_cl", True,
+        MethodInfo("nlbayes", "NL-Bayes", "NL-Bayes", "cpu", "denoise_cl", True,
                    "Averages similar patches after stabilising the photon noise. Classic, predictable."),
     ],
     "gradient": [
         MethodInfo("halpha", "H-alpha survey", "H-alpha survey", "cpu", "background", False,
                    "Tells the sky background from the instrument's defects with a professional H-alpha survey."),
-        MethodInfo("polynomial", "Polynomial (as in Siril)", "polynomial", "cpu", "background_poly", False,
+        MethodInfo("polynomial", "Polynomial", "polynomial", "cpu", "background_poly", False,
                    "A smooth surface fitted on dark samples."),
     ],
     "stars": [

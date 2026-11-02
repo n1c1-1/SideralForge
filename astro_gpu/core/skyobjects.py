@@ -43,7 +43,7 @@ from pathlib import Path
 
 import numpy as np
 
-BUILD_VERSION = "2"                 # the merged catalogue's format and rules: bump to make it again
+BUILD_VERSION = "3"                 # the merged catalogue's format and rules: bump to make it again (3: its credit)
 SUB = "skyobjects"                  # the cache sub-folder
 OPENNGC_URL = "https://raw.githubusercontent.com/mattiaverga/OpenNGC/master/database_files/{}"
 OPENNGC_FILES = {"NGC.csv": "openngc_NGC.csv", "addendum.csv": "openngc_addendum.csv"}     # remote -> cached name
@@ -485,7 +485,7 @@ def build_catalogue(openngc: Sequence[Path] | None = None, sharpless: Path | Non
         r, li, common = read_siril(siril, objects=not openngc, sharpless=sharpless is None)
         recs += r
         links += li
-        parts.append(f"Siril ({siril})")
+        parts.append(f"Siril's catalogue lists ({siril})")    # the credit the screen shows (client/credits.py)
     return Catalogue(merge(recs, links, common), " + ".join(parts))
 
 

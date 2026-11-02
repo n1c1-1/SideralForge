@@ -1226,8 +1226,8 @@ def test_the_stacking_tabs_say_the_frames_left_out_the_rejection_rate_and_the_co
     assert wr[0]["why"] == "stars 4.0 σ larger than the night's median (3.0 px for 1.9 px): wind, focus or seeing?"
     assert wr[1]["why"] == ""
     t = rejection_rate_text(Bundle.diag)
-    assert "Rejected pixels: 0.83 %" in t and "Siril's usual range: 0.1 to 0.5 %" in t and "above it" in t
-    assert "#e6a23c" in t.lower()                                       # amber: outside Siril's range
+    assert "Rejected pixels: 0.83 %" in t and "Usual range: 0.1 to 0.5 %" in t and "above it" in t
+    assert "#e6a23c" in t.lower()                                       # amber: outside the usual range
     c = coverage_text(Bundle.diag, True)
     assert "red" in c and "26 %" in c and "blue" in c and "under 20 % (DrizzlePac)" in c
     assert coverage_text(Bundle.diag, False) == ""                      # Classic: the colours are filled alike
@@ -1240,7 +1240,7 @@ def test_the_stacking_tabs_say_the_frames_left_out_the_rejection_rate_and_the_co
         assert weight_rows(Bundle())[0]["why"].startswith("étoiles plus grosses de 4,0 σ que la médiane")
         assert "Pixels rejetés : 0,83 %" in rejection_rate_text(Bundle.diag)
         assert "rouge" in coverage_text(Bundle.diag, True)
-        left = {x for x in i18n.missing() if "Rejected" in x or "Coverage" in x or "Siril" in x}
+        left = {x for x in i18n.missing() if "Rejected" in x or "Coverage" in x or "range" in x}
         assert not left, left
     finally:
         appmod.apply_language("en")

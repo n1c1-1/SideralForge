@@ -532,8 +532,111 @@ def part_export():
     walk.settle()
 
 
+def shot_with_popup(name, combo, root=None):
+    """``root`` (default the window) grabbed with the list of ``combo`` opened under it (a popup is a window of its
+    own: painted over the grab)."""
+    root = root or w
+    combo.showPopup()
+    walk.pump(0.3)
+    pop = combo.view().window()
+    walk.n += 1
+    f = out / f"{walk.n:02d}_{name}_{walk.lang}.png"
+    img = root.grab()
+    p = QPainter(img)
+    p.drawPixmap(combo.mapTo(root, QPoint(0, combo.height())), pop.grab())
+    p.end()
+    img.save(str(f))
+    walk.shots.append(f)
+    items = [combo.itemText(i) for i in range(combo.count())]
+    combo.hidePopup()
+    print(f"  {f.name}  list: {items}", flush=True)
+    return f
+
+
+def part_naming():
+    """The texts that named other software (2 November): the stacking settings of both methods (the drizzle's
+    rejection list opened), the Selection rule, the Colour settings, the stacking's rejection in Inspect, the help of
+    two Post filters."""
+    print("Naming", flush=True)
+    open_it()
+    drz, cla = pid_of(DRIZZLE), pid_of(CLASSIC)
+    from PySide6.QtWidgets import QComboBox
+
+    from astro_gpu.client.panel import CompactRow
+    w.set_mode(0)
+    for pid, tag in ((drz, "drizzle"), (cla, "classic")):
+        walk.select("empilement", pid)
+        panel = w.graph.panel
+        panel._expert(True)
+        walk.settle()
+        walk.shot(f"naming_stack_{tag}", panel)
+        if tag == "drizzle":
+            row = next((r for r in panel.findChildren(CompactRow)
+                        if r.r.get("key") == "stack.drizzle_rejection" and r.isVisible()), None)
+            combo = row.findChildren(QComboBox)[0] if row is not None and row.findChildren(QComboBox) else None
+            if combo is None:
+                walk.problem("no list for the drizzle's rejection")
+            else:
+                row.focused.emit(row.r)                       # its help in the Details
+                walk.settle()
+                shot_with_popup("naming_drizzle_rejection_list", combo)
+        else:
+            for key in ("stack.classic_clamping", "stack.classic_cfa_balance"):
+                row = next((r for r in panel.findChildren(CompactRow) if r.r.get("key") == key and r.isVisible()),
+                           None)
+                if row is not None:
+                    row.focused.emit(row.r)
+                    walk.settle()
+                    combo = row.findChildren(QComboBox)
+                    if combo:
+                        shot_with_popup(f"naming_{key.split('.')[1]}_list", combo[0])
+                    else:
+                        walk.shot(f"naming_{key.split('.')[1]}")
+        panel._expert(False)
+        walk.select("selection", pid)
+        walk.settle()
+        walk.shot(f"naming_selection_{tag}", panel)
+    walk.select("couleur", drz)
+    panel = w.graph.panel
+    walk.settle()
+    row = next((r for r in panel.findChildren(CompactRow) if r.r.get("key") == "color.correction" and r.isVisible()),
+               None)
+    if row is None:
+        walk.problem("no Colour correction row")
+        walk.shot("naming_colour", panel)
+    else:
+        row.focused.emit(row.r)
+        walk.settle()
+        combo = row.findChildren(QComboBox)
+        shot_with_popup("naming_colour_correction", combo[0]) if combo else walk.shot("naming_colour", panel)
+    for pid, tag in ((drz, "drizzle"), (cla, "classic")):
+        walk.guarded(walk.show_tab, "empilement", "rejection", f"naming_inspect_rejection_{tag}", pid)
+    walk.guarded(walk.show_tab, "couleur", None, "naming_inspect_colour", drz)
+    w.tune.tab_of.clear()
+    # Post: the help line of two filters
+    w.set_mode(2)
+    post_render()
+    view = w.post.view
+    wl = [lay for lay in view.layers if lay["kind"] == "workflow"]
+    base = next((lay for lay in wl if lay["pid"] == drz), wl[-1] if wl else None)
+    if base is None:
+        walk.problem("no workflow layer in Post")
+        return
+    for lay in wl:
+        view.set_visible(lay["id"], lay is base)
+    for key in ("ghs", "ml_sharpen"):
+        view.select(base["id"], "layer")
+        fl = view.add_filter(key)
+        view.select(fl["id"], "layer")
+        post_render()
+        props(view)
+        walk.shot(f"naming_post_{key}")
+        view.delete()
+        post_render()
+
+
 PART_FN = {"home": part_home, "graph": part_graph, "stack": part_stack, "inspect": part_inspect,
-           "post": part_post, "export": part_export}
+           "post": part_post, "export": part_export, "naming": part_naming}
 
 for lang in LANGS:
     if lang != walk.lang:

@@ -367,8 +367,8 @@ class CurvesEditor(QWidget):
         self.interp = QComboBox()
         for it in pc.INTERPS:
             self.interp.addItem(_(it), it)
-        self.interp.setToolTip(_("Interpolation of this curve: Akima (PixInsight's and Siril's default), the natural "
-                                 "cubic spline, or straight segments"))
+        self.interp.setToolTip(_("Interpolation of this curve: Akima (the usual default), the natural cubic spline, "
+                                 "or straight segments"))
         self.interp.currentIndexChanged.connect(self._interp)
         io.addWidget(self.interp)
         v.addLayout(io)

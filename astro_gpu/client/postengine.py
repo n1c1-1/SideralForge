@@ -326,7 +326,8 @@ def f_halpha(x, p, ctx):
     return y
 
 
-GHS = "As Siril's and PixInsight's generalised hyperbolic stretch (D. Payne and M. Cranfield)"
+GHS = ("The generalised hyperbolic stretch (D. Payne and M. Cranfield): a strong stretch around a chosen level, the "
+       "shadows and highlights protected")
 FILTERS = {
     # ---- stretch
     "ghs": dict(name="Generalised hyperbolic stretch", family="Stretch", fn=f_ghs, graph=pf_tone.ghs_curve, hist=True,
@@ -339,12 +340,12 @@ FILTERS = {
                         P("black", "Black point (BP)", 0, 0.5, 0, step=0.001),
                         C("model", "Color model", pf_tone.COLOUR_MODES, pf_tone.COLOUR_MODES[0])]),
     "asinh": dict(name="Arcsinh stretch", family="Stretch", fn=f_asinh, graph=pf_tone.asinh_curve, hist=True,
-                  source="As Siril's asinh transformation (after Lupton et al. 2004): the colours kept",
+                  source="An arcsinh stretch (after Lupton et al. 2004): the colours kept",
                   params=[P("stretch", "Stretch factor", 0, 250, 0, step=0.5),
                           P("black", "Black point", 0, 0.2, 0, step=0.001),
                           C("model", "Luminance", pf_tone.COLOUR_MODES[2:0:-1], pf_tone.COLOUR_MODES[2])]),
     "histogram": dict(name="Histogram transformation", family="Stretch", fn=f_histogram, graph=pf_tone.ht_curve,
-                      hist=True, source="As PixInsight's HistogramTransformation and Siril's midtones transfer function",
+                      hist=True, source="Shadows, midtones and highlights, through the midtones transfer function",
                       params=[P("shadows", "Shadows", 0, 1, 0, step=0.001),
                               P("midtones", "Midtones", 0.001, 0.999, 0.5, step=0.001),
                               P("highlights", "Highlights", 0, 1, 1, step=0.001),
@@ -356,7 +357,7 @@ FILTERS = {
                             P("symmetry", "Symmetry point", 0, 0.6, 0.08, step=0.01)]),
     # ---- contrast and curves
     "curves": dict(name="Curves", family="Contrast and curves", fn=f_curves, editor="curves", hist=True,
-                   source="As PixInsight's CurvesTransformation, Siril's and Photoshop's Curves",
+                   source="A curve per channel through control points, as Photoshop's Curves",
                    params=[CURVE("curves")]),
     "levels": dict(name="Levels", family="Contrast and curves", fn=f_levels,
                    source="Photoshop's Levels: black point, white point, gamma",
@@ -368,8 +369,8 @@ FILTERS = {
                            params=[P("strength", "Strength", 0, 1.5, 0, step=0.01),
                                    P("scale", "Scale", 5, 120, 40, "px", 1)]),
     "clahe": dict(name="Local histogram equalization (CLAHE)", family="Contrast and curves", fn=f_clahe,
-                  source="CLAHE (Zuiderveld 1994), as Siril's CLAHE and PixInsight's LocalHistogramEqualization, "
-                         "on the lightness",
+                  source="CLAHE (Zuiderveld 1994): the contrast equalised tile by tile, with a limit, on the "
+                         "lightness",
                   params=[P("amount", "Amount", 0, 1, 0, step=0.01),
                           P("clip", "Contrast limit", 1, 8, 2, step=0.1),
                           P("radius", "Kernel radius", 16, 512, 64, "px", 1)]),
@@ -379,7 +380,7 @@ FILTERS = {
                        params=[P("strength", "Strength", -100, 150, 0, "%", 1),
                                C("hues", "Hues", [h for h, _ in HUES], "All")]),
     "scnr": dict(name="SCNR (green removal)", family="Color", fn=f_scnr,
-                 source="As PixInsight's SCNR and Siril's Remove green noise",
+                 source="Removes a green cast: the green held under a neutral made of red and blue",
                  params=[P("strength", "Amount", 0, 1, 0, step=0.01),
                          C("method", "Protection", pf_colour.SCNR_METHODS, pf_colour.SCNR_METHODS[0]),
                          B("lightness", "Preserve lightness", True)]),
@@ -389,12 +390,12 @@ FILTERS = {
                             P("tint", "Green / magenta", -1, 1, 0, step=0.01)]),
     # ---- detail
     "sharpen": dict(name="Sharpen", family="Detail", fn=f_sharpen,
-                    source="Unsharp mask (Photoshop, PixInsight UnsharpMask)",
+                    source="Unsharp mask, as in Photoshop",
                     params=[P("strength", "Strength", 0, 2, 0, step=0.01),
                             P("radius", "Radius", 0.5, 4, 1.2, "px", 0.1)]),
     "ml_sharpen": dict(name="Multiscale sharpening", family="Detail", fn=f_ml_sharpen,
-                       source="Starlet wavelet layers (B3 spline a trous), as PixInsight's MultiscaleLinearTransform "
-                              "and Siril's Wavelets",
+                       source="Starlet wavelet layers (B3 spline a trous): each scale of detail raised or lowered "
+                              "on its own",
                        params=[P(k, lb, -1, 3, 0, step=0.01) for k, lb in zip(ML_KEYS, ML_LABELS)] +
                        [C("target", "Applies to", pf_detail.TARGETS, pf_detail.TARGETS[0])]),
     # ---- noise
@@ -403,15 +404,14 @@ FILTERS = {
                     params=[P("luminance", "Luminance", 0, 1, 0, step=0.01),
                             P("color", "Color", 0, 1, 0, step=0.01)]),
     "ml_denoise": dict(name="Multiscale noise reduction", family="Noise", fn=f_ml_denoise,
-                       source="Soft thresholding of the starlet layers (Starck and Murtagh), as PixInsight's "
-                              "MultiscaleLinearTransform noise reduction",
+                       source="Soft thresholding of the starlet wavelet layers (Starck and Murtagh): the noise "
+                              "lowered scale by scale",
                        params=[P(k, lb, 0, 10, 0, "σ", 0.1) for k, lb in zip(ML_KEYS[:4], ML_LABELS[:4])] +
                        [P("amount", "Amount", 0, 1, 1, step=0.01),
                         C("target", "Applies to", pf_detail.NR_TARGETS, pf_detail.NR_TARGETS[0])]),
     # ---- stars
     "star_reduce": dict(name="Star reduction", family="Stars", fn=f_star_reduce, needs="stars",
-                        source="A morphological erosion through the star mask (PixInsight's MorphologicalTransformation "
-                               "with a star mask)",
+                        source="A morphological erosion through the star mask",
                         params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
     "halos": dict(name="Halo reduction", family="Stars", fn=f_halos, needs="stars",
                   source="The ring around the star mask pulled to the eroded background",

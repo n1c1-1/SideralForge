@@ -383,6 +383,26 @@ def test_keys_with_the_previous_values_stored_are_the_previous_keys(tmp_path):
     assert _keys_of(p, key_rules())[w.id]["stack"] == after["stack"]
 
 
+def test_the_colour_correction_option_keeps_the_keys_of_its_default(tmp_path):
+    """The colour stage's ``correction`` (2 November): at its default ("full", the behaviour before it), stored or
+    not, every key stays what it was without the setting; "per_colour" changes the colour key and what follows it,
+    not what comes before."""
+    from astro_gpu.core.store import key_rules
+    from astro_gpu.stages.color import ColorParams
+    assert ColorParams().correction == "full"
+    p = _project2(tmp_path)
+    before = _keys_of(p, key_rules())
+    for w in p.workflows:
+        w.params.setdefault("color", {})["correction"] = "full"
+    assert _keys_of(p, key_rules()) == before
+    w = p.workflows[0]
+    w.params["color"]["correction"] = "per_colour"
+    after = _keys_of(p, key_rules())[w.id]
+    assert after["stack"] == before[w.id]["stack"] and after["color"] != before[w.id]["color"]
+    with pytest.raises(ValueError):
+        ColorParams(correction="matrix")
+
+
 def test_the_classic_part_has_a_revision_of_its_own_in_the_keys(tmp_path):
     """The Classic part's revision (stack.CLASSIC_VERSION: the white balance before RCD) is in the key of the stacks
     that use it, the Classic method and the drizzle with the integration's rejection, and of no other: the stacks

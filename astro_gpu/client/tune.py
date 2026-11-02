@@ -257,7 +257,7 @@ def weight_rows(b) -> list[dict]:
 
 
 def rejection_rate_text(d) -> str:
-    """The share of rejected pixels of a stack next to Siril's usual range (0.1 to 0.5 %), as rich text: in amber when
+    """The share of rejected pixels of a stack next to the usual range (0.1 to 0.5 %), as rich text: in amber when
     outside it; with the Classic method, the rejection its rule chose and why. '' when the stack does not say."""
     rej = dict(getattr(d, "rejection", None) or {})
     pct = rej.get("rejected_pct")
@@ -270,7 +270,7 @@ def rejection_rate_text(d) -> str:
     # a tiny share keeps its first figures (0.0010 %, as the Measurements say), never "0.00 %"
     out = _("Rejected pixels: {pct} %").format(pct=number(pct, 1 if pct >= 10 else 2 if pct >= 0.01 or pct == 0
                                                        else 4))
-    guide = _("Siril's usual range: {lo} to {hi} %").format(lo=number(lo, 1), hi=number(hi, 1))
+    guide = _("Usual range: {lo} to {hi} %").format(lo=number(lo, 1), hi=number(hi, 1))
     if pct < lo:
         guide += " · " + _("below it: few outliers were found")
     elif pct > hi:
@@ -1097,7 +1097,8 @@ class TuneView(QWidget):
                 tip = ""
                 if sky.objects:
                     text += "  ·  " + plural(len(sky.objects), "{n} named object", "{n} named objects")
-                    src = re.sub(r"\s*\([^)]*\)", "", sky.source or "")
+                    src = " + ".join(_(x) for x in re.sub(r"\s*\([^)]*\)", "", sky.source or "").split(" + ")
+                                     if x)
                     if src:
                         text += "  ·  " + _("names: {source}").format(source=src)
                     tip = sky.source

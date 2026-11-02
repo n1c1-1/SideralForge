@@ -38,7 +38,7 @@ CHANNEL_TIPS = {
     "RGB/K": "The same curve on the red, green and blue channels",
     "R": "The red channel", "G": "The green channel", "B": "The blue channel",
     "L*": "Lightness (CIE L*): the colours kept",
-    "S": "Saturation (HSV, the lightness kept as CIE L*): PixInsight's S curve",
+    "S": "Saturation (HSV, the lightness kept as CIE L*)",
     "c*": "Chroma (CIE c*): the hue and the lightness kept",
     "H": "Hue (CIE h): input hue to output hue, the lightness and the chroma kept",
 }
@@ -272,7 +272,7 @@ _GRID = [0, 0.04, 0.12, 0.25, 0.45, 0.7, 1]
 def builtin_presets() -> list[dict]:
     """The presets, in the menu's order: {"name", "source", "curves"}. Photoshop's are the points of its .acv files
     (input, output in 0-255), drawn with the natural cubic spline (Photoshop does not document its interpolation)."""
-    out = [{"name": "Linear", "source": "The identity: the default of PixInsight, Siril and Photoshop", "curves": {}}]
+    out = [{"name": "Linear", "source": "The identity: no change", "curves": {}}]
     ps = [
         ("Medium Contrast", {"RGB/K": _ps((0, 0), (73, 56), (163, 164), (255, 255))}),
         ("Strong Contrast", {"RGB/K": _ps((0, 0), (77, 50), (151, 153), (175, 188), (255, 255))}),
@@ -290,16 +290,16 @@ def builtin_presets() -> list[dict]:
     for name, cs in ps:
         out.append({"name": name, "source": PS, "curves": {ch: _curve(p) for ch, p in cs.items()}})
     out += [
-        {"name": "Lift the midtones", "source": "Histogram transformation, midtones balance 0.35 (PixInsight, Siril)",
+        {"name": "Lift the midtones", "source": "Histogram transformation, midtones balance 0.35",
          "curves": {"RGB/K": _sampled(lambda x: _mtf(0.35, x), _GRID)}},
         {"name": "Midtone contrast, highlights protected",
-         "source": "GHS tutorial (Siril): SP on the midtones, b = 2, HP = 0.85, ln(D+1) = 1",
+         "source": "Generalised hyperbolic stretch: SP on the midtones, b = 2, HP = 0.85, ln(D+1) = 1",
          "curves": {"RGB/K": _sampled(_ghs(dict(stretch=1.0, local=2.0, symmetry=0.35, highlights=0.85)), _GRID)}},
         {"name": "Brighten, contrast kept",
-         "source": "GHS tutorial (Siril): a negative b (-1.4, close to asinh), ln(D+1) = 1",
+         "source": "Generalised hyperbolic stretch: a negative b (-1.4, close to asinh), ln(D+1) = 1",
          "curves": {"RGB/K": _sampled(_ghs(dict(stretch=1.0, local=-1.4, symmetry=0.0)), _GRID)}},
         {"name": "Saturation boost",
-         "source": "PixInsight's S curve raised in the middle: the weak colours raised, the strong ones kept",
+         "source": "The saturation curve raised in the middle: the weak colours raised, the strong ones kept",
          "curves": {"S": _curve([[0.0, 0.0], [0.35, 0.47], [1.0, 1.0]], "Akima")}},
     ]
     return out

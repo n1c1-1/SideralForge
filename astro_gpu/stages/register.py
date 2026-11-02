@@ -50,7 +50,7 @@ class RegisterParams(StageParams):
     fwhm_method: str = P("moffat", label="Star size measure", level=ADVANCED, choices=list(FWHM_METHODS),
                          help="How the size of the stars (FWHM) and their roundness are measured in each frame. "
                               "Moffat fit: a Moffat profile fitted on the green pixels of isolated stars at full "
-                              "resolution, as Siril and PixInsight measure them. Previous version: on blocks of 2 x 2 "
+                              "resolution, the usual measure. Previous version: on blocks of 2 x 2 "
                               "pixels, which reads about twice the true size of small stars. The stacking's drizzle "
                               "scale, method advice and frame filters use the Moffat fit.",
                          tip="The previous version stays for comparison.")

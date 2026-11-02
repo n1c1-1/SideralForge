@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from pydantic import field_validator
 from scipy.optimize import least_squares, nnls
 
 from ..core.params import ADVANCED, Auto, P, StageParams
@@ -24,6 +25,13 @@ PROFILES = STATE / "camera_profiles"   # per-user state (core/project.py)
 STARS = "color_stars.npz"
 #: ``response_source`` when no sensitivity curves are trusted: no matrix, one factor per colour (SPCC's white balance)
 PER_COLOUR = "one factor per colour (no reliable sensitivity curves)"
+#: ``correction``: "full" (a colour matrix when sensitivity curves are trusted, else one factor per colour) or
+#: "per_colour" (always one factor per colour: the white balance of the PER_COLOUR fallback, never a matrix). Added
+#: 2 November with "full" as its static default, the behaviour before it: out of the key at that default
+#: (core/store.py), so the results computed before it keep their keys
+CORRECTIONS = ("full", "per_colour")
+#: the ``correction`` metric: what the matrix applied is
+APPLIED = {"matrix": "colour matrix", "per_colour": "one factor per colour"}
 
 
 class ColorParams(StageParams):
@@ -55,6 +63,19 @@ class ColorParams(StageParams):
                                  help="A camera profile is accepted if it predicts the measured star colours of this "
                                       "field within this scatter (a modified / unmodified camera of the same model "
                                       "fails this test).")
+    correction: str = P("full", label="Colour correction", choices=list(CORRECTIONS),
+                        help="Full: when the sensitivity curves of the camera predict the star colours, a colour "
+                             "matrix mixes the three colours of the sensor to make the star colours right; otherwise "
+                             "one factor per colour. One factor per colour: always only the white balance of the "
+                             "stars. Less colour noise, but the star colours are less corrected.",
+                        tip="The colour matrix can multiply the colour noise up to 4 times. Choose one factor per "
+                            "colour for a noisy image or when the star colours matter less than a clean background.")
+
+    @field_validator("correction")
+    @classmethod
+    def _choice(cls, v: str, info) -> str:
+        from .register import check_choice
+        return check_choice(info.field_name, v, CORRECTIONS)
 
 
 class Color(Stage):
@@ -140,11 +161,17 @@ class Color(Stage):
                 ctx.log(f"the sensitivity curves found are not physical ({why}), and neither a profile of this camera "
                         f"nor the curves of a typical colour sensor predict this field's star colours (the typical "
                         f"curves within {agree:.1f} %, more than {p.profile_tolerance:.1f} %): the colours are "
-                        f"calibrated with one factor per colour from the stars' white balance, as Siril's and "
-                        f"PixInsight's photometric colour calibrations do", "warning")
+                        f"calibrated with one factor per colour from the stars' white balance, as the usual "
+                        f"photometric colour calibrations do", "warning")
         elif p.camera_profile and camera and max(rel) < 0.06:
             save_profile(camera, lam, S, ctx.project.config.name, max(rel))
         ctx.metric("response_source", source)
+        # one factor per colour: when no curves are trusted, or when the settings ask for it (the same white balance,
+        # never a matrix: less colour noise, the star colours less corrected)
+        per_colour = source == PER_COLOUR or p.correction == "per_colour"
+        if p.correction == "per_colour" and source != PER_COLOUR:
+            ctx.log("one factor per colour from the stars' white balance, as chosen in the settings: no colour matrix")
+        ctx.metric("correction", APPLIED["per_colour" if per_colour else "matrix"])
         cam_hii, xyz_hii = line_vec(S, lam, HII_LINES)
         cam_oiii, xyz_oiii = line_vec(S, lam, OIII_LINES)
         xyz = xp["xyz"][idx]
@@ -175,7 +202,7 @@ class Color(Stage):
         W_ref = white_xyz(p.white_temp)
         W_d65 = colour.xy_to_XYZ(colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D65"])
         to_out = XYZ_TO_SRGB @ bradford(W_ref, W_d65)
-        if source == PER_COLOUR:
+        if per_colour:
             M = np.linalg.inv(to_out)          # camera colours as the output's: the white balance below is all
         else:
             sol = least_squares(resid, M0.ravel(), loss="soft_l1", f_scale=0.01)
@@ -200,7 +227,7 @@ class Color(Stage):
         resp = {f"{l0:.0f}nm": [round(float(np.interp(l0, lam, S[c]) / S.max()), 3) for c in range(3)]
                 for l0 in (486.1, 500.7, 656.3)}
         ctx.metric("response_at_lines", resp)
-        if np.median(rs) > 0.03 or (np.diag(Mtot) < 0).any():
+        if (np.median(rs) > 0.03 and p.correction != "per_colour") or (np.diag(Mtot) < 0).any():
             ctx.log("the colour fit is poor: check that the colour pattern (Bayer) of the camera is right",
                     "warning")
         ctx.log(f"spectral response from {len(idx)} Gaia XP stars, chromaticity residual {np.median(rs):.4f}")

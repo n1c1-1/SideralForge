@@ -683,7 +683,7 @@ def test_color_uses_one_factor_per_colour_when_no_curves_predict_the_stars(proje
     off = M - np.diag(np.diag(M))
     if leak:
         assert ctx.metrics["generic_agreement_pct"] > 5.0
-        assert ctx.metrics["response_source"] == K.PER_COLOUR
+        assert ctx.metrics["response_source"] == K.PER_COLOUR and ctx.metrics["correction"] == "one factor per colour"
         assert np.abs(off).max() < 1e-9 and (np.diag(M) > 0).all()
         # the white reference of the stars comes out neutral: the factors are the stars' white balance
         cam = K.colour_stars(img, xp["x"], xp["y"], 4.0)[1]
@@ -696,4 +696,11 @@ def test_color_uses_one_factor_per_colour_when_no_curves_predict_the_stars(proje
     else:
         assert ctx.metrics["generic_agreement_pct"] <= 5.0
         assert ctx.metrics["response_source"] == "generic colour sensor"
+        assert ctx.metrics["correction"] == "colour matrix"
         assert np.abs(off).max() > 0.05
+        # the same field with one factor per colour chosen in the settings: the fallback's white balance, no matrix
+        K.Color().run(ctx, K.ColorParams(aperture=4.0, correction="per_colour"))
+        M = np.load(d / "M.npy")
+        assert ctx.metrics["response_source"] == "generic colour sensor"
+        assert ctx.metrics["correction"] == "one factor per colour"
+        assert np.abs(M - np.diag(np.diag(M))).max() < 1e-9 and (np.diag(M) > 0).all()

@@ -162,7 +162,7 @@ class StackParams(StageParams):
                     help="Bayer drizzle: every raw red, green or blue pixel is dropped at its exact registered position, "
                          "with no debayering and no interpolation. Classic: each frame is debayered (RCD) and "
                          "registered by interpolation (Lanczos-4, clamped), then the frames are combined with a "
-                         "rejection chosen by their number, as Siril does.",
+                         "rejection chosen by their number.",
                     tip="Classic suits few or barely dithered frames, whose red and blue pixels leave holes in a "
                         "drizzle.")
     scale_rule: str = P("coverage", label="Scale rule", level=ADVANCED, choices=list(SCALE_RULES),
@@ -175,11 +175,11 @@ class StackParams(StageParams):
                             "to Moffat fit.")
     selection: str = P("min_weight", label="Frame selection", level=ADVANCED, choices=list(SELECTIONS),
                        help="Which frames are left out. Minimum weight: only the frames weighing less than 5 % of the "
-                            "best one (PixInsight's WBPP), besides those not aligned; the weights handle the others, "
-                            "as Siril and PixInsight keep almost every frame. k × σ: also the frames more than 2.5 "
-                            "robust sigmas worse than the night's median in star size, roundness or transparency "
-                            "(Siril's filters). Previous version: a transparency under the minimum times the best "
-                            "frames', or stars larger than the maximum times the median. Each with its reason.")
+                            "best one, besides those not aligned; the weights handle the others, so almost every "
+                            "frame is kept. k × σ: also the frames more than 2.5 robust sigmas worse than the night's "
+                            "median in star size, roundness or transparency. Previous version: a transparency under "
+                            "the minimum times the best frames', or stars larger than the maximum times the median. "
+                            "Each with its reason.")
     selection_transparency: str = P("on", label="Transparency filter", level=ADVANCED, choices=list(ON_OFF),
                                     help="With the k × σ frame selection: whether frames are also left out for a low "
                                          "transparency. Off keeps them, with the lower weight their transparency "
@@ -187,31 +187,32 @@ class StackParams(StageParams):
     classic_debayer: str = P("rcd", label="Debayering (Classic)", level=ADVANCED,
                              choices=list(CLASSIC_CHOICES["classic_debayer"]),
                              help="With the Classic method: how the missing colours of each pixel are interpolated. "
-                                  "RCD as Siril and librtprocess run it, or bilinear.")
+                                  "RCD (sharp, round stars), or bilinear.")
     classic_interpolation: str = P("lanczos4", label="Interpolation (Classic)", level=ADVANCED,
                                    choices=list(CLASSIC_CHOICES["classic_interpolation"]),
                                    help="With the Classic method: how each debayered frame is resampled onto the "
-                                        "reference grid. Lanczos-4 as Siril, or bilinear.")
+                                        "reference grid. Lanczos-4 (sharper), or bilinear.")
     classic_clamping: str = P("siril", label="Clamping (Classic)", level=ADVANCED,
                               choices=list(CLASSIC_CHOICES["classic_clamping"]),
                               help="With the Classic method: how the dark rings Lanczos-4 draws around bright stars are "
-                                   "held back. Siril's clamping, PixInsight's, or none.")
+                                   "held back. Bilinear guide: where Lanczos-4 falls below the bilinear value, the "
+                                   "bilinear value is kept. Lobe clamping: the negative lobes of Lanczos-4 are "
+                                   "reduced where they are strong. None: Lanczos-4 alone.")
     classic_rejection: str = P("auto", label="Rejection (Classic)", level=ADVANCED,
                                choices=list(CLASSIC_CHOICES["classic_rejection"]),
                                help="With the Classic method: how outliers are rejected pixel by pixel. Automatic: "
-                                    "PixInsight's rule by the number of frames (percentile under 6 frames, winsorized "
-                                    "sigma clipping from 6 to 15, linear fit clipping from 16), with the published "
-                                    "thresholds.")
+                                    "chosen by the number of frames (percentile under 6 frames, winsorized sigma "
+                                    "clipping from 6 to 15, linear fit clipping from 16), with the usual thresholds.")
     classic_cfa_balance: str = P("on", label="White balance before debayering (Classic)", level=ADVANCED,
                                  choices=list(ON_OFF),
                                  help="With the Classic method: the colours of each frame are balanced before RCD "
                                       "debayering and the balance is taken off after, as raw converters do, so that "
-                                      "RCD does not move green light into the blue and red of the stars. Off: exactly "
-                                      "as Siril.")
+                                      "RCD does not move green light into the blue and red of the stars. Off: the "
+                                      "debayering without balance.")
     drizzle_rejection: str = P("own", label="Rejection (drizzle)", level=ADVANCED, choices=list(DRIZZLE_REJECTIONS),
                                help="With the Bayer drizzle: how outliers (hot pixels, satellites, cosmic rays) are "
-                                    "found. Own: each raw pixel is compared with a prediction of the sky made from "
-                                    "all frames. Integration: as PixInsight does for a colour drizzle, the Classic "
+                                    "found. On the raw pixels: each raw pixel is compared with a prediction of the "
+                                    "sky made from all frames. From the classic stack's rejection: the Classic "
                                     "method's rejection runs on the debayered, registered frames, and what it "
                                     "rejects in a frame is left out of that frame's drops on the same pixels.")
     exclude: list[str] = P([], label="Frames excluded by hand", level=INTERNAL,
@@ -1247,7 +1248,7 @@ class Selection:
                 counts[code] = counts.get(code, 0) + 1
         for code, k in sorted(counts.items()):
             ctx.log(f"{k} frame(s) excluded: {code.replace('_', ' ')}")
-        what = {"min_weight": "minimum weight 5 % (WBPP)", "sota": "k x sigma filters and minimum weight",
+        what = {"min_weight": "minimum weight 5 %", "sota": "k x sigma filters and minimum weight",
                 "given": "the selection block"}.get(self.mode, self.mode)
         ctx.log(f"frames: {int((self.weight > 0).sum())} of {len(self.weight)} kept ({what}); star size from "
                 f"{self.fwhm_source or 'registration'}")

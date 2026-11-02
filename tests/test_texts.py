@@ -464,3 +464,32 @@ def test_module_stays_light():
     import sys
     code = "import sys, astro_gpu.texts; assert not [m for m in sys.modules if m.startswith(('PySide', 'PyQt', 'torch'))]"
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_the_interface_names_no_other_software():
+    """2 November: no text that describes our methods names Siril or PixInsight. The bench's own texts (the Home
+    section of the bench and its reference images) and the credits of the data we read (client/credits.py, the
+    names' source in Astrometry) do. The stored values keep their names ("siril" clamping, "integration" rejection),
+    shown in words; a reason an older result stored is reworded."""
+    import re
+
+    from astro_gpu.client.credits import DATA_SOURCES
+    bad = re.compile(r"(?i)siril|pixinsight|wbpp|spcc")
+    credits = {x for s in DATA_SOURCES for x in (s["use"], s.get("note")) if x} | {"Siril's catalogue lists"}
+    bench = re.compile(r"(?i)bench against siril|both siril and astro_gpu|compared with siril|siril tutorial|"
+                       r"siril \(reference\)")
+    for f in sorted((texts.LOCALE / "fr").glob("*.json")):
+        for k, v in json.loads(f.read_text(encoding="utf-8")).items():
+            if bench.search(k) or k in credits:
+                continue
+            assert not bad.search(k) and not bad.search(v), (f.name, k)
+    for st in texts.stage_names():
+        for name in texts.param_names(st):
+            assert not any(bad.search(t) for t in texts.param_texts(st, name).values()), (st, name)
+    assert not [v for v in texts.CHOICE_TEXTS.values() if bad.search(v)]
+    assert not [t for t in texts.reason_templates() if bad.search(t)]
+    assert texts.choice_label("siril", "fr") == "Guide bilinéaire" and texts.choice_label("own") == "On the raw pixels"
+    old = "{n} frames: linear fit clipping ({low:g} / {high:g} σ), as PixInsight's WBPP from 16 frames"
+    args = {"n": 40, "low": 5, "high": 3.5}
+    assert texts.format_reason(old, args) == "40 frames: linear fit clipping (5 / 3.5 σ), the usual choice from 16 frames"
+    assert texts.format_reason(old, args, "fr").startswith("40 images : rejet par ajustement linéaire (5 / 3,5 σ)")

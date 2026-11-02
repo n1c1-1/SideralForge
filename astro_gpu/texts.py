@@ -97,12 +97,31 @@ def number(x: float, digits: int = 1, lang: str = "en") -> str:
     return t.replace(".", ",") if lang in DECIMAL_COMMA else t
 
 
+#: reason templates reworded after results had stored them (a stack's "reason_template"): the old English -> the new
+#: one, so that an older result reads like a new one in every language. 2 November: the interface no longer names
+#: other software
+REWORDED: dict[str, str] = {
+    "{n} frames: percentile clipping ({low:g} / {high:g}), as PixInsight's WBPP below 6 frames":
+        "{n} frames: percentile clipping ({low:g} / {high:g}), the usual choice under 6 frames",
+    "{n} frames: winsorized sigma clipping ({low:g} / {high:g} σ), as PixInsight's WBPP from 6 to 15 frames, with "
+    "Siril's thresholds":
+        "{n} frames: winsorized sigma clipping ({low:g} / {high:g} σ), the usual choice from 6 to 15 frames",
+    "{n} frames: linear fit clipping ({low:g} / {high:g} σ), as PixInsight's WBPP from 16 frames":
+        "{n} frames: linear fit clipping ({low:g} / {high:g} σ), the usual choice from 16 frames",
+    "{n} frames: generalized ESD test (up to {low:.0%} outliers, significance {high:g}), as Siril advises above 50 "
+    "frames":
+        "{n} frames: generalized ESD test (up to {low:.0%} outliers, significance {high:g}), the usual advice above 50 "
+        "frames",
+}
+
+
 def format_reason(template: str, args: dict | None = None, lang: str = "en") -> str:
     """The reason of an automatic value in ``lang``.
 
     ``template`` is the English template of ``Auto`` and ``args`` its arguments (None: a fixed text, used as it is).
     A translation that does not fit its arguments (a wrong field name) falls back on the English text.
     """
+    template = REWORDED.get(template, template)
     if args is None:
         return translate(template, lang)
     t = translate(template, lang)
@@ -225,6 +244,8 @@ _METRIC_ROWS: list[tuple] = [
     ("profile_agreement_pct", "Camera profile error", "%", ".2f", "Same gap with the saved profile of this camera."),
     ("generic_agreement_pct", "Generic sensor error", "%", ".2f", "Same gap with the curves of a typical color sensor."),
     ("response_source", "Sensitivity curves", "", "", "Where the camera's sensitivity curves come from."),
+    ("correction", "Colour correction", "", "", "What turned the camera colours into true colours: a colour matrix or "
+                                                "one factor per colour."),
     ("stars", "Color stars", "", "d", "Stars measured for the colour calibration."),
     ("fit_residual", "Fit residual", "", ".4f", "Relative error of the fit in red, green and blue."),
     ("chromaticity_residual", "Color residual", "", ".4f", "Typical gap between the measured and the predicted star colors."),
@@ -355,6 +376,8 @@ VALUE_TEXTS: dict[str, str] = {
     "fit": "fitted on this field",
     "generic colour sensor": "generic colour sensor",
     "one factor per colour (no reliable sensitivity curves)": "one factor per colour (no reliable sensitivity curves)",
+    "colour matrix": "colour matrix",
+    "one factor per colour": "one factor per colour",
     "aperture": "wide apertures",
     "star models": "star models",
     "fitted": "fitted",
@@ -510,11 +533,16 @@ CHOICE_TEXTS: dict[str, str] = {
     "legacy": "Previous version", "moffat": "Moffat fit",
     "coverage": "Coverage rule",
     "sota": "k × σ filters", "on": "On", "off": "Off",
-    "min_weight": "Minimum weight", "own": "Own", "integration": "From the integration",
+    "min_weight": "Minimum weight", "own": "On the raw pixels", "integration": "From the classic stack's rejection",
     "drizzle": "Bayer drizzle", "classic": "Classic",
-    "rcd": "RCD", "bilinear": "Bilinear", "lanczos4": "Lanczos-4", "siril": "Siril", "pixinsight": "PixInsight",
+    "rcd": "RCD", "bilinear": "Bilinear", "lanczos4": "Lanczos-4",
+    # the Classic method's clamping (core/resample.CLAMPINGS): the stored values name where each comes from, the
+    # interface says what it does
+    "siril": "Bilinear guide", "pixinsight": "Lobe clamping",
     "percentile": "Percentile clipping", "winsorized": "Winsorized sigma clipping", "linear_fit": "Linear fit clipping",
     "gesdt": "Generalized ESD test",
+    # the colour stage's correction (stages/color.py)
+    "full": "Full correction", "per_colour": "One factor per colour",
 }
 
 _stage_index: dict[str, dict] | None = None

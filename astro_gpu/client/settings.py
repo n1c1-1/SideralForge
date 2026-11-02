@@ -143,18 +143,18 @@ CATALOG = {
         ]),
         ("Classic stack", [
             E("stack", "classic_debayer", label="Debayering",
-              help="How the missing colours of each pixel are interpolated: RCD, as Siril does, or bilinear.",
+              help="How the missing colours of each pixel are interpolated: RCD (sharp, round stars), or bilinear.",
               method="classic"),
             E("stack", "classic_interpolation", label="Interpolation",
-              help="How each frame is resampled onto the reference frame: Lanczos-4, as Siril does, or bilinear.",
+              help="How each frame is resampled onto the reference frame: Lanczos-4 (sharper), or bilinear.",
               method="classic"),
             E("stack", "classic_clamping", label="Clamping",
-              help="Holds back the dark rings Lanczos-4 draws around bright stars: Siril's clamping, PixInsight's, or "
-                   "none.", method="classic"),
+              help="Holds back the dark rings Lanczos-4 draws around bright stars: a bilinear guide, a clamping of "
+                   "its negative lobes, or none.", method="classic"),
             E("stack", "classic_rejection", label="Rejection",
               help="How outlier pixels (satellites, planes, cosmic rays) are rejected. Automatic: chosen by the "
-                   "number of frames, as PixInsight does (percentile under 6 frames, winsorized sigma clipping from 6 "
-                   "to 15, linear fit clipping from 16).", method="classic"),
+                   "number of frames (percentile under 6 frames, winsorized sigma clipping from 6 to 15, linear fit "
+                   "clipping from 16).", method="classic"),
             E("stack", "classic_cfa_balance", method="classic"),
         ]),
         ("Pixel rejection", [
@@ -211,6 +211,12 @@ CATALOG = {
                                                              "catalogue.")]),
     ],
     "couleur": [
+        ("Correction", [
+            E("color", "correction", label="Colour correction",
+              help="Full: a colour matrix makes the star colours right when the camera's sensitivity curves are "
+                   "known. One factor per colour: only the white balance of the stars; less colour noise, star "
+                   "colours less corrected."),
+        ]),
         ("White reference", [
             N("color", "white_ref", "White reference", "choice", "The Sun",
               "What should appear white.",
@@ -429,8 +435,8 @@ METHOD_TEXTS = {
     "drizzle": ("Drizzle", "Each raw pixel is dropped at its exact place on the output grid: no debayering, no "
                            "interpolation. Best with many dithered frames."),
     "classic": ("Classic stack", "Each frame is resampled onto the reference (Lanczos-4), colour frames debayered "
-                                 "first (RCD), then combined with a rejection chosen by the number of frames, as Siril "
-                                 "does. Best with few or barely dithered frames."),
+                                 "first (RCD), then combined with a rejection chosen by the number of frames. Best "
+                                 "with few or barely dithered frames."),
 }
 OUTPUT_STAGES = ("render_prep", "render_prep_learned", "render_simple")
 # the 32 usage tips of the engine, as the mockup wrote them (the engine's own tips win when it has one)

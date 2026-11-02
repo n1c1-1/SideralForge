@@ -72,11 +72,10 @@ NR_EPS = 1.0e-7
 
 REASONS = {
     "few": "{n} frames: too few to tell an outlier from the others, no rejection",
-    "percentile": "{n} frames: percentile clipping ({low:g} / {high:g}), as PixInsight's WBPP below 6 frames",
-    "winsorized": "{n} frames: winsorized sigma clipping ({low:g} / {high:g} σ), as PixInsight's WBPP from 6 to 15 "
-                  "frames, with Siril's thresholds",
-    "linear_fit": "{n} frames: linear fit clipping ({low:g} / {high:g} σ), as PixInsight's WBPP from 16 frames",
-    "gesdt": "{n} frames: generalized ESD test (up to {low:.0%} outliers, significance {high:g}), as Siril advises "
+    "percentile": "{n} frames: percentile clipping ({low:g} / {high:g}), the usual choice under 6 frames",
+    "winsorized": "{n} frames: winsorized sigma clipping ({low:g} / {high:g} σ), the usual choice from 6 to 15 frames",
+    "linear_fit": "{n} frames: linear fit clipping ({low:g} / {high:g} σ), the usual choice from 16 frames",
+    "gesdt": "{n} frames: generalized ESD test (up to {low:.0%} outliers, significance {high:g}), the usual advice "
              "above 50 frames",
     "chosen": "{method} chosen ({low:g} / {high:g})",
 }
