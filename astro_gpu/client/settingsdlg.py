@@ -2,9 +2,9 @@
 library, Display. Kept in prefs; the language, the device and Spec mode take effect at once. Folders & disk also holds
 the sections of Home (a name, a folder and a description each: home.section_rows).
 
-What the engine does not have yet (DESIGN §5.5) is shown only in Spec mode, disabled and marked ◇, and hidden
-otherwise: Temporary files, Cache limit, CPU threads, Memory limit, Benchmark, ASTAP,
-astrometry.net, the survey cache folder, and the File formats and Master library pages.
+What the engine does not have yet is shown only in Spec mode, disabled and marked ◇, and hidden otherwise: Temporary
+files, Cache limit, CPU threads, Memory limit, Benchmark, ASTAP, astrometry.net, the survey cache folder, and the File
+formats and Master library pages. The dialog is ``SettingsDialog``.
 """
 from __future__ import annotations
 
@@ -342,9 +342,9 @@ class SettingsDialog(QDialog):
         th.setValue(min(prefs.get("threads"), cores))
         th.valueChanged.connect(lambda x: prefs.set("threads", x))
         self.row(v, _("CPU threads"), th, new=True)
-        total = round(m.memory_gb) if m is not None and m.memory_gb else 32
-        mem = self.spin(4, max(total, 4), "memory_limit_gb")
-        self.row(v, _("Memory limit"), mem, _("GB of {t} GB").format(t=total), new=True)
+        total = round(m.memory_gb) if m is not None and m.memory_gb else None      # None: not measured yet
+        mem = self.spin(4, max(total, 4) if total else 1024, "memory_limit_gb")
+        self.row(v, _("Memory limit"), mem, _("GB of {t} GB").format(t=total) if total else _("GB"), new=True)
         head = label(spec_mark(_("Benchmark")), "h2")
         v.addWidget(head)
         text = label(_("Measures this machine on a small data set, so that the durations shown are real."),

@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject, QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 
 from .. import texts
-from .blocks import BY_KEY, STEPS, block_state, fmt_int  # noqa: F401  (the views import them from here)
+from .blocks import BY_KEY, STEPS, fmt_int
 from .i18n import _, hours_text, language, number
 from .imageview import ViewImage
 from .services.inspect import SkyData, VisualSpec, service_of
@@ -26,7 +26,6 @@ from .widgets import WARN
 
 Viewer = object                    # what an overlay draws on: the common viewer's canvas (cx, cy, scale, img_to_w)
 
-DIM = "#8b93a1"
 
 #: the metrics each block quotes, in order: (stage, metric key). The catalogue (texts.py) gives the label, unit and format.
 FACTS = {
@@ -66,16 +65,17 @@ SURVEY_NOTE = ("Not your data: a professional H-alpha map of the same field. The
                "image to tell faint nebulosity from light pollution.")
 OUTPUT_NOTE = "The workflow's result at the suggested render settings, as Post shows its layer. Adjust it in Post."
 #: what the final image is, by the output of the workflow (``output_note``): the simple output is the Gradient removed
-#: picture stretched by Post (M31 Classic stack: the same data, its sky at 41/255 instead of 55, so the same noise shows
-#: 1.6 times more); the engine's rendering is another preparation (the starless image and the stars drawn back)
+#: picture stretched by Post (the same data, its sky stretched to another level, so its noise shows more or less); the
+#: engine's rendering is another preparation (the starless image and the stars drawn back)
 OUTPUT_SIMPLE_NOTE = ("Final image = Gradient removed, then the steps of Post: its stretch (the suggested settings) and the "
                       "filters you add there. These steps are in Post, not in the graph. The stretch is already applied "
                       "(values 0 to 255), so Same stretch is not possible against Gradient removed: compare them by eye. "
                       "Cropped to the area every frame covers, at half size.")
-OUTPUT_SIMPLE_DENOISED_NOTE = ("Final image = Gradient removed (of the denoised stack), then the steps of Post: its stretch (the "
-                               "suggested settings) and the filters you add there. These steps are in Post, not in the graph. The "
-                               "stretch is already applied (values 0 to 255), so Same stretch is not possible against Gradient "
-                               "removed: compare them by eye. Cropped to the area every frame covers, at half size.")
+OUTPUT_SIMPLE_DENOISED_NOTE = ("Final image = Gradient removed (of the denoised stack), then the steps of Post: its stretch "
+                               "(the suggested settings) and the filters you add there. These steps are in Post, not in the "
+                               "graph. The stretch is already applied (values 0 to 255), so Same stretch is not possible "
+                               "against Gradient removed: compare them by eye. Cropped to the area every frame covers, at half "
+                               "size.")
 OUTPUT_COLOR_NOTE = ("Final image: the colour-calibrated stack with Post's suggested stretch. Cropped to the covered "
                      "area, at half size. Adjust it in Post.")
 OUTPUT_RAW_NOTE = ("Final image: the stack in the camera's colours, the sky of each channel levelled, with Post's "
@@ -101,6 +101,8 @@ def output_note(stage: str, stages: set) -> str:
     if "background_poly" not in stages:
         return OUTPUT_COLOR_NOTE
     return OUTPUT_SIMPLE_DENOISED_NOTE if "denoise" in stages else OUTPUT_SIMPLE_NOTE
+
+
 CALFRAMES_NOTE = "Every frame of this kind, raw, as the master is made from them."
 CALIBRATED_NOTE = ("Each light after calibration: the master dark subtracted, divided by the master flat, the "
                    "defective pixels left empty.")
@@ -131,10 +133,6 @@ STAR_FLAT_NOTE = "The correction of the flat field measured on the stars (1: no 
 #: the line after the note of a model (display "model"): what its colours mean
 MODEL_COLOURS_NOTE = ("Shown with the channels linked, from zero to its highest value: the colours are the model's own, "
                       "not stretched apart. Untick Linked channels to see the shape of each channel.")
-
-
-def fnum(x, d=1) -> str:
-    return number(x, d)
 
 
 class SkyOverlay:
@@ -175,18 +173,6 @@ class SkyOverlay:
             if -12 <= x <= W + 12 and -12 <= y <= H + 12:
                 r = min(max(2.0 + (10.0 - float(g)) * 0.9, 2.0), 9.0) + grow
                 p.drawEllipse(QPointF(x, y), r, r)
-
-
-def kv(rows, pad=14):
-    """Two columns of text, a name and its value (rich text)."""
-    from PySide6.QtWidgets import QLabel
-    table = "<table cellspacing='0' cellpadding='3'>" + "".join(
-        f"<tr><td style='color:{DIM}; padding-right:{pad}px' valign='top'>{k}</td><td>{v}</td></tr>"
-        for k, v in rows) + "</table>"
-    lb = QLabel(table)
-    lb.setTextFormat(Qt.RichText)
-    lb.setWordWrap(True)
-    return lb
 
 
 def metric_row(stage: str, key: str, value) -> tuple[str, str]:
@@ -366,8 +352,7 @@ class Steps(QObject):
     def backgrounds(self, p) -> list[VisualSpec]:
         """The pictures the solution of Astrometry can be drawn over, in the order of the workflow: the ones that are
         computed, the stack first (its default). A picture made from an Outdated result (its previous one, as the rest
-        of Inspect shows it) is listed too, marked ``previous`` (M31: every stage Outdated after an engine update left
-        the list empty)."""
+        of Inspect shows it) is listed too, marked ``previous`` (after an engine update every stage may be Outdated)."""
         out = []
         for key in BACKGROUNDS:
             sp = self.picture(p, key)
@@ -431,7 +416,7 @@ class Steps(QObject):
         ident = ("inspect", spec.kind, spec.name, spec.channel, spec.base, tuple(zip(stages, keys)))
         name = (prefix + "  ·  " if prefix else "") + _(spec.shown or spec.caption)
         # an array in the camera's colours is shown as it is (its green cast and all): Neutral sky is a display
-        # option the user ticks, never the default (the earlier default made the stack look colour-calibrated)
+        # option the user ticks, never the default (on by default, the stack would look colour-calibrated)
         return ViewImage(src, name, key=ident, wcs=wcs, camera=spec.camera, units=spec.units,
                          neutral=False if spec.camera and spec.kind != "preview" else None,
                          header={"HISTORY": [f"astro_gpu: {spec.caption} of workflow {p.name}"]}, kind=spec.display,
@@ -506,9 +491,9 @@ class Steps(QObject):
         bits = [html.escape(method_text(m)[0])]
         if m == "drizzle":
             if prm.get("scale") is not None:
-                bits.append(_("scale {v}×").format(v=fnum(float(prm["scale"]), 2).rstrip("0").rstrip(",.")))
+                bits.append(_("scale {v}×").format(v=number(float(prm["scale"]), 2).rstrip("0").rstrip(",.")))
             if prm.get("pixfrac") is not None:
-                bits.append(_("drop {v}").format(v=fnum(float(prm["pixfrac"]), 2).rstrip("0").rstrip(",.")))
+                bits.append(_("drop {v}").format(v=number(float(prm["pixfrac"]), 2).rstrip("0").rstrip(",.")))
         else:
             bits += [b for b in (ch("classic_debayer"), ch("classic_interpolation")) if b]
         return _("Method"), " · ".join(bits)
@@ -524,9 +509,9 @@ class Steps(QObject):
         if info.get("exposure_s"):
             rows.append((_("Integration"), hours_text(kept * info["exposure_s"] / 3600)))
         rows.append((_("Rule"), texts.choice_label(s.selection_rule(p), language())))
-        if s.thresholds_active(p):                           # the thresholds act only with the previous rule
+        if s.thresholds_active(p):                           # the thresholds act only with the "thresholds" rule
             rows += [(_("Minimum transparency"), _("{t} % of the best frames").format(t=f"{t:.0f}")),
-                     (_("Maximum star size"), f"{fnum(f)} {unit if unit == 'px' else _('× median')}")]
+                     (_("Maximum star size"), f"{number(f)} {unit if unit == 'px' else _('× median')}")]
         rows.append((_("Excluded by hand"), str(len(s.frames_excluded))))
         return rows
 
@@ -545,4 +530,4 @@ class Steps(QObject):
         return rows
 
 
-__all__ = ["STEPS", "BY_KEY", "FACTS", "Steps", "fnum", "fmt_int", "kv", "metric_row", "DIM"]
+__all__ = ["STEPS", "BY_KEY", "FACTS", "Steps", "fmt_int", "metric_row"]

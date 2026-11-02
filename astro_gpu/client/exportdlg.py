@@ -1,14 +1,13 @@
 """Export: the final image (and, if wanted, each layer and the masks), in a chosen format.
 
-The image is the whole composition of Post at full resolution (each layer rendered by the engine on the whole grid, as
-the previous version did), composed in the render worker. Files go into the folder of the File line and nowhere else
-(the layers and the masks into its subfolders ``layers`` and ``masks``); a folder inside the project's results is
-refused. The FITS file has the astrometric solution (WCS) and the processing history in its header. What the engine
-does not have yet (XISF, other colour profiles, the linear outputs) is shown in Spec mode only, disabled, marked ◇.
+The image is the whole composition of Post at full resolution (each layer rendered by the engine on the whole grid),
+composed in the render worker. Files go into the folder of the File line and nowhere else (the layers and the masks
+into its subfolders ``layers`` and ``masks``); a folder inside the project's results is refused. The FITS file has
+the astrometric solution (WCS) and the processing history in its header. What the engine does not have yet (XISF,
+other colour profiles, the linear outputs) is shown in Spec mode only, disabled, marked ◇. The dialog is ``ExportDialog``.
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -28,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from . import prefs
 from .i18n import _, plural
+from .imageview import slug
 from .postengine import snapshot
 from .services.render import ExportJob
 from .widgets import WARN, label
@@ -40,10 +40,6 @@ SIZES = {"Full resolution": 0, "Web (2048 px)": 2048, "Web (4096 px)": 4096}
 #: the file each format gives (render/layers.export_rgb): name + suffix
 SUFFIX = {"tiff16": "_16bit.tif", "tiff32f": "_32bit_float.tif", "png16": ".png", "jpeg": ".jpg", "fits32f": ".fits"}
 KNOWN_ENDINGS = tuple(sorted(list(SUFFIX.values()) + [".tiff", ".jpeg", ".fit"], key=len, reverse=True))
-
-
-def slug(name: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "image"
 
 
 def split_file(text: str) -> tuple[str, str]:

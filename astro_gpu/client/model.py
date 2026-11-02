@@ -1,11 +1,10 @@
-"""ProjectModel: the one adapter between the views and the engine API (DESIGN §5.2).
+"""ProjectModel: the one adapter between the views and the engine API.
 
-It keeps the surface of the mockup's ``Project`` (the views were drawn on it), each member a thin call on
-``astro_gpu.api``: the workflows (``WorkflowView`` replaces the mockup's PathDef), their stages, keys and states, what a
+Each member is a thin call on ``astro_gpu.api``: the workflows (``WorkflowView``), their stages, keys and states, what a
 change costs, the Replace / Try as variant choice, variants, undo and redo, the sessions, the selection thresholds and
 the settings of a stage. Edits autosave, debounced 300 ms.
 
-What the GUI thread may do, and what it may not (DESIGN §5.3):
+What the GUI thread may do, and what it may not:
 
 * it edits the workflows, and reads keys, states, plans and costs, which the API answers from caches once ``warm`` has
   run: the model submits that to the ApiWorker when a project opens (``ready`` turns True, ``readyChanged`` fires);
@@ -13,10 +12,11 @@ What the GUI thread may do, and what it may not (DESIGN §5.3):
   counts of the sessions and the facts of the done results come from the worker. ``params(p, stage)`` answers from a
   cache and asks the worker for what it lacks; ``paramsChanged`` says when it arrives.
 
-Vocabulary. The views speak the mockup's: a workflow's ``opts`` are ``debruitage`` / ``dn``, ``etoiles`` / ``appris``,
-``fond`` and ``deconv``; its blocks are ``calibration``, ``alignement``, ``selection``, ``empilement``, ``astrometrie``,
-``couleur``, ``deconv``, ``debruitage``, ``etoiles``, ``fond``, ``post`` (blocks.py). Stage names, settings and the
-stored ``params`` are the engine's. The model translates at the API's door (``to_engine`` / ``from_engine``).
+Vocabulary. The views use the client's own keys (French words): a workflow's ``opts`` are ``debruitage`` / ``dn``,
+``etoiles`` / ``appris``, ``fond`` and ``deconv``; its blocks are ``calibration``, ``alignement``, ``selection``,
+``empilement``, ``astrometrie``, ``couleur``, ``deconv``, ``debruitage``, ``etoiles``, ``fond``, ``post`` (blocks.py).
+Stage names, settings and the stored ``params`` are the engine's. The model translates at the API's door
+(``to_engine`` / ``from_engine``).
 
 A change is a dict: ``{"kind": "param", "stage", "name", "value", "suggested"}`` (value None: back to the suggestion),
 ``{"kind": "opt", "key", "value"}`` (a method: ``dn``, ``appris``, ``fond``) or ``{"kind": "params", "items": [...]}``
@@ -38,24 +38,23 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from .. import api
 from ..core import workflow as wfl
 from ..core.project2 import Workflow, read_state, write_state
-from .blocks import COLUMNS, KEY_ENGINE_BLOCK, TOOLS, TRUNK, block_state  # noqa: F401  (TOOLS: the views import it from here)
+from .blocks import COLUMNS, KEY_ENGINE_BLOCK, TOOLS, TRUNK, block_state  # noqa: F401  (TOOLS: test_model_surface reads it here)
 from .blocks import ENGINE_BLOCK as ENGINE_KEY
-from .i18n import _, hm  # noqa: F401  (hm: the views import it from here, as from the mockup's model)
-from .services.worker import ApiWorker
+from .i18n import _, hm
+from .services.worker import ApiWorker, norm_path
 
 SAVE_DELAY_MS = 300
 #: the output stages (the last one of a chain is the workflow's layer)
 BY_OUTPUT = ("render_prep", "render_prep_learned", "render_simple")
 
 # ---------------------------------------------------------------------------------------------- vocabulary
-#: the starting points of the New workflow dialog, by the mockup's keys (dialogs.TEMPLATE_NAME gives their names)
+#: the starting points of the New workflow dialog, by their keys (dialogs.TEMPLATE_NAME gives their names)
 TEMPLATES = {
     "Vierge": dict(debruitage=False, etoiles="garder", appris=False, fond="simple"),
     "Classique + débruitage": dict(debruitage=True, etoiles="garder", appris=False, fond="simple"),
     "Complet": dict(debruitage=True, etoiles="mesurer", appris=False, fond="halpha"),
 }
 DN_SUMMARY = {"affine": "fine-tuned", "generique": "pretrained", "nlbayes": "NL-Bayes"}
-MACHINES = {True: "GPU", False: "CPU only (no GPU)"}
 CALIBRATION_KINDS = ("darks", "flats", "bias", "flat_darks")    # the session's lists a frame can be left out of
 #: seconds of the methods the engine does not have yet (the spec's estimates)
 EXTRA_SECONDS = {"denoise_ft": 180.0, "denoise_ai": 45.0, "denoise_cl": 300.0, "deconv": 150.0}
@@ -81,7 +80,7 @@ class NotInEngine(ValueError):
 
 
 def to_engine(o: dict) -> dict:
-    """The mockup's options of a workflow as the engine's (core/workflow)."""
+    """The views' options of a workflow as the engine's (core/workflow)."""
     stars = None
     if o.get("etoiles") == "mesurer":
         stars = "psf_neural" if o.get("appris") else "psf"
@@ -90,7 +89,7 @@ def to_engine(o: dict) -> dict:
 
 
 def from_engine(o: dict) -> dict:
-    """The engine's options as the mockup's (``dn`` is always the engine's Noise2Noise)."""
+    """The engine's options as the views' (``dn`` is always the engine's Noise2Noise)."""
     return {"debruitage": bool(o.get("denoise")), "dn": "appris", "etoiles": "mesurer" if o.get("stars") else "garder",
             "appris": o.get("stars") == "psf_neural", "fond": "halpha" if o.get("gradient") == "halpha" else "simple",
             "deconv": bool(o.get("deconvolution"))}
@@ -122,7 +121,7 @@ def method_value(block: str, key: str):
 
 @dataclass
 class WorkflowView:
-    """A workflow as the views see it (replaces the mockup's PathDef): ``pid`` is the workflow's id."""
+    """A workflow as the views see it: ``pid`` is the workflow's id."""
 
     pid: int
     name: str
@@ -132,7 +131,7 @@ class WorkflowView:
     variant_of: int | None = None
     computed: bool = False                               # every stage is done
     rendered: bool = False                               # has a result to show in Post (now or earlier)
-    layer: str = ""                                      # unused: the layers are the engine's
+    layer: str = ""                                      # not read by the views (the layers are the engine's)
     provisional: bool = False
     model: Any = field(default=None, repr=False, compare=False)
 
@@ -257,7 +256,6 @@ class ProjectModel(QObject):
         self.error = ""                                    # why the project could not be read
         self.test_on = False
         self.test_zone = (0.25, 0.25, 0.6, 0.6)
-        self.test_frames = 1.0
         self._facts = Facts()
         self._history_est: dict | None = None
         self._states: dict = {}
@@ -325,7 +323,7 @@ class ProjectModel(QObject):
 
     @property
     def frames_excluded(self) -> set[tuple[int, str]]:
-        """The light frames excluded by hand: (session id, file name) pairs (DESIGN §1.2)."""
+        """The light frames excluded by hand: (session id, file name) pairs."""
         return {(int(a), str(b)) for a, b in self.p.excluded}
 
     def n_lights(self) -> int:
@@ -446,7 +444,7 @@ class ProjectModel(QObject):
         self.pathsChanged.emit()
 
     def mark_stages(self, items=None, emit: bool = True):
-        """The mockup's 'a run is over' (the views call it): the states are read again from disk."""
+        """A run is over: the states are read again from disk (``results_changed``)."""
         self.results_changed()
 
     def set_machine(self, gpu: bool, device: str | None = None):
@@ -488,8 +486,6 @@ class ProjectModel(QObject):
         self._dirty = True
         if not self.readonly:
             self._save_timer.start()
-
-    _touch = edited                                         # the earlier name
 
     # ------------------------------------------------------------ the sync: states, chains, blocks
     def _sync(self, prefetch: bool = True):
@@ -1173,7 +1169,7 @@ class ProjectModel(QObject):
 
     def throws_away(self, paths, ch) -> bool:
         """Whether the change would make something already computed in one of these workflows Outdated. (A stage
-        name, as the mockup asked, means: something computed at or after that stage.)"""
+        name means: something computed at or after that stage.)"""
         if not self.ready:
             return False
         if isinstance(ch, str):
@@ -1413,7 +1409,6 @@ class ProjectModel(QObject):
         (``services/inspect.browse_group``); None: the folder is listed here (a directory listing in the GUI thread).
         One change, saved, the frames scanned again; Calibration and what follows become Outdated. False when nothing is
         done: the last frame of a folder stays (remove the folder instead), or the session is not known."""
-        import os
         if kind not in CALIBRATION_KINDS:
             raise ValueError(f"not a kind of calibration frame: {kind!r}")
         p = self.p
@@ -1421,9 +1416,7 @@ class ProjectModel(QObject):
             s = p.session(session)
         except (KeyError, ValueError):
             return False
-
-        def norm(x) -> str:
-            return os.path.normcase(os.path.normpath(str(x)))
+        norm = norm_path
         me, here = norm(path), norm(Path(path).parent)
         lst = list(getattr(s, kind))
         if folder is None:
@@ -1452,10 +1445,7 @@ class ProjectModel(QObject):
         A folder whose every frame goes is taken out of the session, so a session can be left without any frame of a
         kind (all its "darks" were frames of the sky): ``emptied`` says which. Returns {"done": n, "emptied":
         [(session, kind)]}; nothing done: {"done": 0, "emptied": []}."""
-        import os
-
-        def norm(x) -> str:
-            return os.path.normcase(os.path.normpath(str(x)))
+        norm = norm_path
         p = self.p
         groups: dict[tuple[int, str, str], set[str]] = {}
         for sid, kind, path in frames:
@@ -1492,7 +1482,6 @@ class ProjectModel(QObject):
     def add_calibration_folder(self, session: int, kind: str, folder: str) -> bool:
         """A folder of calibration frames (darks, flats, bias, flat darks) added to a session: saved, the frames read
         again, Calibration and what follows Outdated. False when the session is not known or lists it already."""
-        import os
         if kind not in CALIBRATION_KINDS:
             raise ValueError(f"not a kind of calibration frame: {kind!r}")
         try:
@@ -1500,8 +1489,7 @@ class ProjectModel(QObject):
         except (KeyError, ValueError):
             return False
         lst = list(getattr(s, kind))
-        if any(os.path.normcase(os.path.normpath(self.p.abspath(e))) == os.path.normcase(os.path.normpath(folder))
-               for e in lst):
+        if any(norm_path(self.p.abspath(e)) == norm_path(folder) for e in lst):
             return False
         with self._edit():
             setattr(s, kind, lst + [Path(folder).as_posix()])
@@ -1539,7 +1527,7 @@ class ProjectModel(QObject):
 
     # ------------------------------------------------------------ sessions and the project's facts
     def info(self) -> dict:
-        """The project's facts, replacing the mockup's ``s.data``: from the done inventory result when there is one,
+        """The project's facts: from the done inventory result when there is one,
         else from the sessions. Keys: name, target, n_lights, n_darks, n_flats, n_bias, exposure_s, width, height,
         iso_gain, integration_h, camera, fwhm_px, grid."""
         inv = self._facts.inventory
@@ -1578,7 +1566,7 @@ class ProjectModel(QObject):
         return p.params if p is not None else {}
 
     def trunk_pending(self) -> list[str]:
-        """The pre-processing stages still to compute for the current workflow (the mockup had a common trunk)."""
+        """The pre-processing stages still to compute for the current workflow."""
         p = self.path
         return [x for x in self.pending(p) if x in TRUNK] if p is not None else []
 
@@ -1628,6 +1616,6 @@ class ProjectModel(QObject):
         self.history.append((time.strftime("%H:%M:%S"), template, args))
 
 
-# the mockup's names, for the views ported from it
+# aliases (test_model_surface checks them)
 PathDef = WorkflowView
 Session = ProjectModel

@@ -1,6 +1,5 @@
-"""Style and small shared widgets.
-
-Frozen once the shell is done (DESIGN §6.1): a view that needs a new widget keeps it in its own module.
+"""Style and small shared widgets: the colours, the style sheet (``QSS``), ``label``, ``para``, ``hline``, ``clear``,
+``spec_mark``, ``ElidedLabel`` and ``Box``. A widget only one view needs stays in that view's module.
 """
 from __future__ import annotations
 

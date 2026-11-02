@@ -6,8 +6,8 @@ are rebuilt). Other languages: locale/<code>/*.json, each a dictionary {English:
     label(_("Stacking"))
     _("{n} frames kept of {total}").format(n=kept, total=n)
 
-locale/fr/base.json holds the translations that came with the views; each package adds its own file (shell.json,
-graph.json, inspect.json, run.json, post.json, engine.json). Files are read in name order, a later one wins.
+The French catalogue is split by area: base.json (the shared views), shell.json, graph.json, inspect.json, run.json,
+post.json, engine.json and a few more. Files are read in name order, a later one wins.
 
 Names typed by the user are never translated. Numbers shown with a decimal part go through ``number()``, which writes
 a decimal comma in French.
@@ -89,7 +89,7 @@ def hours_text(hours: float) -> str:
 
 
 def hm(seconds: float) -> str:
-    """A duration as the views show it (SPEC §7): "≤ 1 min", "N min", "H h MM"."""
+    """A duration as the views show it: "≤ 1 min", "N min", "H h MM"."""
     m = int(round(seconds / 60))
     if m < 1:
         return "≤ 1 min"

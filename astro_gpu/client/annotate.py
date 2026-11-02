@@ -51,9 +51,6 @@ class Named:
     def label(self) -> str:
         return f"{self.name} · {self.common}" if self.common else self.name
 
-    def as_tuple(self) -> tuple:              # what SkyData.objects held before: (x, y, name, kind)
-        return (self.x, self.y, self.label, self.kind)
-
 
 @dataclass
 class Annotations:
@@ -72,10 +69,6 @@ def colour_of(kind: str) -> QColor:
         if word in k:
             return col
     return KIND_COLORS[-1][1]
-
-
-def _important(o) -> bool:
-    return o.name.startswith("M ") or bool(o.common_name)
 
 
 def named_objects(wcs, w: int, h: int, objects=None) -> list[Named]:
@@ -235,7 +228,7 @@ def paint_objects(p: QPainter, objects, v, max_labels: int = 80) -> None:
     taken: list[QRectF] = []
     n_labels = 0
     for o in objects:
-        if not isinstance(o, Named):                   # an older (x, y, name, kind)
+        if not isinstance(o, Named):                   # a plain (x, y, name[, kind]) tuple
             o = Named(float(o[0]), float(o[1]), None, str(o[2]), "", str(o[3]) if len(o) > 3 else "")
         col = colour_of(o.kind)
         c = to_widget(np.array([[o.x, o.y]]), v)[0]

@@ -34,11 +34,10 @@ The views call (see ``ImageView`` for the whole list)::
     v.excludeToggled.connect(...); v.sendToPost.connect(...)
     SyncGroup([v1, v2], stretch=True)                         # two viewers share zoom, pan (and the stretch)
 
-What it replaces: ``viewer.Viewer`` for showing pictures (``Viewer`` stays for Post's rectangle and brush tools),
-``viewer.StaticSource`` and ``services/inspect.PixelSource`` (one half-size copy: here a pyramid), and in ``tune.py``
-``StretchSource``, ``Histogram``, the readout (``_hover``, ``sky_text``), the Fit / 1:1 / Auto-stretch / Histogram
-buttons and the zoom sync of the compare. The worker's fixed 8-bit stretch (``services/inspect.stretch_image``) is
-no longer needed for the arrays: the view stretches.
+Classes: ``ImageView`` (the widget) draws on an ``ImageCanvas``, with a ``StretchPanel`` (its ``HistogramView``), an
+``InfoBand`` and a ``FilmStrip``; a ``Loader`` turns each ``ViewImage`` into a ``Prepared`` image in worker threads and a
+``Display`` shows it through a stretch; ``ImageExportDialog`` is Export…; ``SyncGroup`` links viewers. Post has its own
+viewer (``viewer.Viewer``).
 """
 from __future__ import annotations
 
@@ -472,7 +471,7 @@ class Prepared:
             isinstance(vi.source, np.ndarray) and np.issubdtype(vi.source.dtype, np.integer)))
         self.place: Placement | None = None          # where it sits on a common grid (``ViewImage.place``)
 
-    # what the overlays of the old viewer ask (``v.source.size()``)
+    # what the overlays read (``canvas.source.size()``)
     def size(self) -> tuple[int, int]:
         return self.width, self.height
 
@@ -545,11 +544,22 @@ def _read(vi: ViewImage) -> tuple[np.ndarray, str, Any]:
     return np.asarray(arr), cfa, wcs
 
 
+def _to_side(img: np.ndarray, side: int) -> np.ndarray:
+    """An (h, w) or (h, w, 3) uint8 picture as (h, w, 3), reduced so that its long side is at most ``side``."""
+    import cv2
+    if img.ndim == 2:
+        img = np.repeat(img[:, :, None], 3, axis=2)
+    h, w = img.shape[:2]
+    f = side / max(h, w)
+    if f < 1:
+        img = cv2.resize(img, (max(1, round(w * f)), max(1, round(h * f))), interpolation=cv2.INTER_AREA)
+    return np.ascontiguousarray(img)
+
+
 def quick_thumbnail(vi: ViewImage, side: int = 160) -> np.ndarray:
     """A thumbnail made straight from the source, for a film strip (worker thread): read, reduced, stretched
     automatically (neutral sky for a camera-colour image or a mosaic). ``ViewImage(..., thumb=partial(quick_thumbnail,
     vi))`` when the caller has no thumbnail of its own."""
-    import cv2
     arr, cfa, _wcs = _read(vi)
     lv = sm.superpixel(arr, cfa) if arr.ndim == 2 and cfa else planar(arr)
     while max(lv.shape[1:]) > side * 2 and min(lv.shape[1:]) >= 4:
@@ -558,13 +568,7 @@ def quick_thumbnail(vi: ViewImage, side: int = 160) -> np.ndarray:
     camera = vi.camera if vi.camera is not None else (bool(arr.ndim == 2 and cfa) or sm.looks_camera(stats))
     st = sm.auto_for(stats, vi.kind, neutral=camera if sm.rule_of(vi.kind) == "light" else False)
     img = sm.render(sm.quantize(lv, stats.lo, stats.hi), sm.luts(st, stats))
-    if img.ndim == 2:
-        img = np.repeat(img[:, :, None], 3, axis=2)
-    h, w = img.shape[:2]
-    f = side / max(h, w)
-    if f < 1:
-        img = cv2.resize(img, (max(1, round(w * f)), max(1, round(h * f))), interpolation=cv2.INTER_AREA)
-    return np.ascontiguousarray(img)
+    return _to_side(img, side)
 
 
 def prepare(vi: ViewImage) -> Prepared:
@@ -599,18 +603,11 @@ def _place_of(place, w: int, h: int) -> Placement | None:
 
 def thumbnail_of(prep: Prepared, st: sm.Stretch | None = None, side: int = 160) -> np.ndarray:
     """A small picture (h, w, 3) uint8 of a prepared image, its long side ``side``, stretched (automatic by default)."""
-    import cv2
     st = st or default_stretch(prep)
     k = next((i for i, lv in enumerate(prep.levels) if max(lv.shape[1:]) <= max(side * 2, 64)), len(prep.levels) - 1)
     lv = prep.levels[k]
     img = sm.render(sm.quantize(lv, prep.stats.lo, prep.stats.hi), sm.luts(st, prep.stats))
-    if img.ndim == 2:
-        img = np.repeat(img[:, :, None], 3, axis=2)
-    h, w = img.shape[:2]
-    f = side / max(h, w)
-    if f < 1:
-        img = cv2.resize(img, (max(1, round(w * f)), max(1, round(h * f))), interpolation=cv2.INTER_AREA)
-    return np.ascontiguousarray(img)
+    return _to_side(img, side)
 
 
 def default_stretch(prep: Prepared, mode: str | None = None, linked: bool | None = None, neutral: bool | None = None,
@@ -1088,7 +1085,7 @@ class ImageCanvas(QWidget):
         self._rect = None
         self._mouse: QPointF | None = None
 
-    # ------------------------------------------------------------ what the old viewer's overlays ask
+    # ------------------------------------------------------------ what the overlays read
     @property
     def source(self) -> Prepared | None:
         return self.display.prep if self.display is not None else None
@@ -2014,12 +2011,14 @@ class StretchPanel(QFrame):
 
 # ---------------------------------------------------------------------------------------------- a sequence of frames
 def time_text(t: str) -> str:
+    """The time of day of an ISO date and time ("2026-08-16T23:41:05" -> "23:41:05")."""
     if not t:
         return ""
     return t[11:19] if len(t) >= 19 and t[10] in "T " else t
 
 
 def exposure_text(t) -> str:
+    """An exposure time: 1/1000 s under a second, else 15 s (a decimal comma in French); "" when unknown."""
     if t is None:
         return ""
     t = float(t)
@@ -2031,8 +2030,8 @@ def exposure_text(t) -> str:
 
 class SideScroll(QScrollArea):
     """A row that scrolls sideways when the window is too narrow for it, instead of making the window wider (the
-    frame's facts and the viewer's tools: 2026-11-02, they made the Inspect window 1771 to 1960 px wide at least). A
-    scroll bar under the row only when it is needed."""
+    frame's facts and the viewer's tools are wider than a small screen). A scroll bar under the row only when it is
+    needed."""
 
     def __init__(self, inner: QWidget, parent=None):
         super().__init__(parent)
@@ -2372,7 +2371,7 @@ class ImageView(QWidget):
     ``alignment_note()`` (how the compared image was put on this one's grid). Sequence: ``set_sequence([ViewImage, ...],
     index=0)``, ``set_index(i)``, ``index()``, ``next_frame()``, ``previous_frame()``, ``set_frame_info(i, info)``,
     ``set_excluded(i, bool)``, ``set_lock_stretch(bool)``. Stretch: ``stretch()``, ``set_stretch(Stretch)``,
-    ``auto_stretch()``, ``reset_stretch()``, ``show_histogram(bool)``. View: ``fit()``, ``zoom_to(scale, cx, cy)``,
+    ``auto_stretch()``, ``show_histogram(bool)``. View: ``fit()``, ``zoom_to(scale, cx, cy)``,
     ``set_zoom_percent(p)``, ``view_state()``, ``set_view_state(state)``. Actions: ``export_dialog()``,
     ``export(path, fmt, content, area)``, ``copy_view()``. Readout: ``pixel_text(x, y)``. Overlays: ``add_overlay(fn)``
     (fn(painter, canvas): ``canvas.img_to_w(x, y)``, ``canvas.scale``). Tests: ``wait(timeout)``.
@@ -2426,7 +2425,7 @@ class ImageView(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
-        # the tools in a row that scrolls sideways in a narrow window (in French they made the window 1771 px wide)
+        # the tools in a row that scrolls sideways in a narrow window (they would widen it otherwise)
         v.addWidget(SideScroll(self._toolbar(post, export, copy, compare)))
         self.align_bar = QFrame()                  # one line: how the compared image was put on this one's grid
         self.align_bar.setObjectName("ivalign")
@@ -2452,8 +2451,7 @@ class ImageView(QWidget):
         body.addWidget(self.area, 1)
         self.panel = StretchPanel()
         self.panel.changed.connect(self._panel_changed)
-        # in a column that scrolls when the viewer is short: squeezed, its rows ran into each other (the histogram's
-        # numbers over "Black / Mid / White", in French, 2026-11-02)
+        # in a column that scrolls when the viewer is short (squeezed, its rows would run into each other)
         self.panel_box = QScrollArea()
         self.panel_box.setWidget(self.panel)
         self.panel_box.setWidgetResizable(True)
@@ -2522,8 +2520,8 @@ class ImageView(QWidget):
         self.cmp_cb = QComboBox()
         self.cmp_cb.setMinimumWidth(150)
         self.cmp_cb.setMaximumWidth(330)
-        # as wide as 26 characters: a long name ("Avant : sortie de l'empilement, couleurs de l'appareil") made the
-        # toolbar, so the window, wider than the screen in French; the list that opens shows the names whole
+        # as wide as 26 characters: a long name (long in French) would make the toolbar, so the window, wider than
+        # the screen; the list that opens shows the names whole
         self.cmp_cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.cmp_cb.setMinimumContentsLength(26)
         self.cmp_cb.currentIndexChanged.connect(self._cmp_picked)
@@ -2849,10 +2847,6 @@ class ImageView(QWidget):
         st = self._st
         self.set_stretch(self._kind_auto(st.mode if st.mode != "linear" or st.auto else None, st.linked, bool(on)),
                          emit=True)
-
-    def reset_stretch(self):
-        if self._prep is not None:
-            self.set_stretch(default_stretch(self._prep, vi=self._vi), emit=True)
 
     def _panel_changed(self, st: sm.Stretch):
         self._st = st.adapted(self._main.prep.channels) if self._main else st
@@ -3521,6 +3515,7 @@ def format_of(path: str | os.PathLike) -> str:
 
 
 def slug(name: str) -> str:
+    """A file name from a name: every character but letters, digits, "_", "." and "-" becomes "_"."""
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "image"
 
 

@@ -1,7 +1,7 @@
-"""The image viewer: zoom, pan, 100 %, before / after curtain, overlays, rectangle and brush tools.
+"""Post's viewer (``Viewer``): zoom, pan, 100 %, before / after curtain, overlays, rectangle and brush tools.
 
-Kept in its own module on purpose: it is the one piece that could be rewritten natively later without touching
-the rest. It only asks its source for the pixels of the visible region, at full or half resolution.
+It only asks its source for the pixels of the visible region, at full or half resolution (post3.PostSource);
+``StaticSource`` is a fixed image. The other views show their pictures in ``imageview.ImageView``.
 """
 from __future__ import annotations
 
@@ -94,11 +94,6 @@ class Viewer(QWidget):
         self._fitted = True                               # a chosen view: kept on resize
         self.viewChanged.emit()
         self.update()
-
-    def show_rect(self, x0, y0, x1, y1):
-        s = min((self.width() - 40) / max(x1 - x0, 1), (self.height() - 40) / max(y1 - y0, 1))
-        self.zoom_to(s, (x0 + x1) / 2, (y0 + y1) / 2)
-        self._fitted = True
 
     def img_to_w(self, x, y) -> QPointF:
         return QPointF((x - self.cx) * self.scale + self.width() / 2, (y - self.cy) * self.scale + self.height() / 2)

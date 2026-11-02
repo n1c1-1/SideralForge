@@ -7,6 +7,8 @@ table and the health checks come from the headers of the frames and from the eng
 
 The checks the engine does not make yet (the master library, the sensor temperature, a rotated camera) show in Spec mode
 only, marked ◇.
+
+Classes: ``FramesView`` (the Sessions page and the browser of sources.py), ``GroupingDialog``.
 """
 from __future__ import annotations
 
@@ -32,6 +34,7 @@ from PySide6.QtWidgets import (
 from .. import api, texts
 from . import prefs
 from .i18n import _, language, number
+from .imageview import exposure_text
 from .services.inspect import ProjectFrames, service_of
 from .widgets import NEW, OK, WARN, clear, label
 
@@ -39,18 +42,9 @@ MONTHS = {"en": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", 
           "fr": ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]}
 
 
-def fnum(x, d=1) -> str:
-    return number(x, d)
-
-
 def fexp(t) -> str:
-    """An exposure time: 1/1000 s under a second, else 15 s."""
-    if t is None:
-        return "–"
-    if t < 1:
-        return f"1/{round(1 / t)} s"
-    txt = f"{t:g}"
-    return (txt.replace(".", ",") if language() == "fr" else txt) + " s"
+    """An exposure time: 1/1000 s under a second, else 15 s; "–" when unknown."""
+    return "–" if t is None else exposure_text(t)
 
 
 def night_text(first: str) -> str:
@@ -84,10 +78,10 @@ def check_text(c, data: ProjectFrames | None = None) -> str:
         return _("The flats of {n} sessions are merged into one master flat.").format(n=a.get("n", 0))
     if c.key == "disk":
         t = _("Disk: about {gb} GB needed for the calibrated frames; {free} GB free on the cache drive.").format(
-            gb=fnum(a.get("need_gb", 0)), free=a.get("free_gb", 0))
+            gb=number(a.get("need_gb", 0)), free=a.get("free_gb", 0))
         return t + (" " + _("Not enough space!") if c.level == "warn" else "")
     if c.key == "fwhm":
-        return _("Star size in {session}: {fwhm} px").format(session=a.get("session", ""), fwhm=fnum(a.get("fwhm", 0)))
+        return _("Star size in {session}: {fwhm} px").format(session=a.get("session", ""), fwhm=number(a.get("fwhm", 0)))
     return texts.translate(c.text, language())
 
 
@@ -108,7 +102,7 @@ def check_lines(data: ProjectFrames | None) -> list[tuple[str, str]]:
         for name, f in fwhm.items():
             if f > best * 1.1:
                 out.append(("info", _("Session {name}: FWHM {f} px against {b} px — its frames weigh less.").format(
-                    name=name, f=fnum(f), b=fnum(best))))
+                    name=name, f=number(f), b=number(best))))
     return out
 
 
@@ -356,10 +350,10 @@ class FramesView(QWidget):
         kept = src.kept if src is not None and src.kept is not None else ses["kept"]
         return [ses["name"], night_text(src.first) if src else "–", str(lights),
                 fexp(src.exposure) if src else "–", str(int(src.iso)) if src and src.iso else "–",
-                f"{fnum(src.temperature)} °C" if src and src.temperature is not None else "–",
+                f"{number(src.temperature)} °C" if src and src.temperature is not None else "–",
                 "OSC" if osc else "–", count(src.flats if src else ses["flats"]),
                 count(src.darks if src else ses["darks"]), count(src.bias if src else ses["bias"]),
-                f"{fnum(src.fwhm)} px" if src and src.fwhm else "–", f"{kept} / {lights}"]
+                f"{number(src.fwhm)} px" if src and src.fwhm else "–", f"{kept} / {lights}"]
 
     def _check_row(self, lvl: str, text: str):
         row = QHBoxLayout()

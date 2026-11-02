@@ -18,6 +18,9 @@ up and every number goes through ``i18n.number`` as the rest of the client does.
 
 The mouse events are the widget's own (the QGraphicsView that draws the chart lets them through), so a test or a
 parent sends them to the chart itself.
+
+Classes: ``ChartView`` (the widget), ``Panel`` (one plot), ``Trace`` (one series), ``HLine`` / ``VLine`` (lines and
+handles over a plot).
 """
 from __future__ import annotations
 
@@ -47,7 +50,7 @@ from PySide6.QtWidgets import (
 from .i18n import _, language, number
 
 # ---------------------------------------------------------------------------------------------- theme (widgets.py)
-BG = QColor("#181b21")                      # the charts of the client have always been on this
+BG = QColor("#181b21")                      # the background of every chart
 PLOT = QColor("#15181e")
 GRID = QColor("#2a2f38")
 FRAME = QColor("#3a4150")
@@ -606,20 +609,6 @@ class ChartView(QWidget):
 
     def is_zoomed(self) -> bool:
         return any(not _same((p.x0, p.x1, p.y0, p.y1), p.home) for p in self.panels)
-
-    def set_range(self, panel=0, x=None, y=None):
-        """Show this part of the data (the x range is the shared one)."""
-        p = self._panel(panel)
-        if x is not None:
-            for q in self.panels:
-                q.x0, q.x1 = float(x[0]), float(x[1])
-        if y is not None:
-            p.y0, p.y1 = float(y[0]), float(y[1])
-        self._equalize()
-        for q in self.panels:
-            q.apply()
-        self._relayout()
-        self.viewChanged.emit()
 
     def scale_axes(self, fx: float = 1.0, fy: float = 1.0, panel=0):
         """The data of a panel were multiplied by fx / fy (a unit change): the view and its home follow."""

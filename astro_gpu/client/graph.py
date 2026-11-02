@@ -9,21 +9,12 @@ Stacking has a port that is pulled onto Post.
 the ``ProjectModel``. It makes the edits (add or remove a block, new workflow, rename, duplicate, delete, an output sent
 to Post) and tells the window, by signals, what it must do (open Inspect or Post, import frames).
 
-Wiring (app.py, P13)::
+The window (app.py ``graph_page``) builds it again with the project screen and connects its signals: ``openBlock``
+and ``openPost`` (Inspect or Post), ``addSources`` and ``addSession`` (import frames), ``variantMade`` (Inspect opens
+the variant compared with its original), ``changed`` (the Run button and the status line).
 
-    READY["workflows"] = True
-    self.s = ProjectModel(definition, self.worker, history=self.project.history, gpu=..., device=...)   # once per project
-    page = GraphPage(self.s)                                    # graph_page(); built again with the project screen
-    page.openBlock.connect(lambda: self.set_mode(2 if self.s.sel_step == "final" else 1))
-    page.openPost.connect(lambda: self.set_mode(2));  page.addSources.connect(self.add_sources)
-    page.addSession.connect(self.add_sources)                   # "Add session…" of the Frames block
-    page.variantMade.connect(lambda pid, orig: ...)             # Inspect opens the variant compared with its original
-    page.changed.connect(self.refresh)                          # Run button: hm(self.s.total_seconds()); status line
-    self.s.readyChanged.connect(self.refresh)                   # Run enabled once the keys are read (self.s.ready)
-    undo / redo: ``self.s.undo()`` / ``self.s.redo()`` (False when there is nothing to take back); ``can_undo()``
-    after a run or a stage end: ``self.s.results_changed()``; after an import: ``self.s.reload_sources()``
-    Spec mode toggled: ``page.request_refresh()``; machine changed: ``self.s.set_machine(gpu, device)``
-    closing the project: ``self.s.close()`` instead of ``flush()`` (it flushes, and lets go of the shared worker)
+The scene's items: ``BlockItem`` (a block), ``GhostItem`` (where a dragged tool can go), ``BandItem`` (a phase band);
+``ToolCard`` is a card of the toolbar.
 """
 from __future__ import annotations
 
@@ -83,7 +74,6 @@ from .widgets import ACCENT, BAD, NEW, OK, WARN, clear, label
 
 BW, BH = 120, 54            # block size (a column is wider when its title needs it: TITLE_PAD)
 GAP = 12                    # between two columns: where the branches split
-COLW = BW + GAP             # column pitch
 LANE = 80                   # lane pitch
 TOP = 74                    # room for the phase labels
 MARGIN = 8                  # around the graph, left and right
@@ -346,9 +336,9 @@ class GraphView(QGraphicsView):
     pauseToggled = Signal(object)          # Node: "Pause here for review" was chosen (set it, or take it off)
     reviewMarked = Signal(object)          # Node: "Mark as reviewed" was chosen
 
-    def __init__(self, project, steps=None, parent=None):
+    def __init__(self, project, parent=None):
         super().__init__(parent)
-        self.s, self.steps = project, steps
+        self.s = project
         self.setScene(QGraphicsScene(self))
         self.setRenderHint(QPainter.Antialiasing)
         self.setBackgroundBrush(QBrush(QColor("#15171c")))
@@ -423,7 +413,7 @@ class GraphView(QGraphicsView):
         self.b_all.setToolTip(_("The whole graph in the window, smaller; off: readable size, scrolling"))
         self.b_all.adjustSize()
         s = self.s
-        g = Graph(s, self.steps)
+        g = Graph(s)
         self.graph = g
         cols = self.columns(g)
         cw = {c: self.column_width(c, [p.name for p in s.paths]) for c in cols}
@@ -553,8 +543,7 @@ class GraphView(QGraphicsView):
 
     def _wire(self, a: Node, b: Node, strong: bool):
         """A wire from a block to the next block of its workflows. A branch bends in the gap right after the block it
-        leaves (the last one its workflows share), then runs straight on its own lane past the columns it skips, as
-        the mockup draws a workflow that leaves the trunk early."""
+        leaves (the last one its workflows share), then runs straight on its own lane past the columns it skips."""
         x1, y1 = a.col + a.w, a.y
         x2, y2 = b.col, b.y
         path = QPainterPath(QPointF(x1, y1))
@@ -822,7 +811,7 @@ class GraphPage(QWidget):
 
     def __init__(self, project, steps=None, parent=None):
         super().__init__(parent)
-        self.s, self.steps = project, steps
+        self.s = project
         self._pending = False
         self._last: tuple | None = None                  # (seconds, count of workflows) at the last refresh
         ph = QHBoxLayout(self)
@@ -839,7 +828,7 @@ class GraphPage(QWidget):
         self.tl.setContentsMargins(12, 8, 12, 8)
         self.tl.setSpacing(8)
         cv.addWidget(tools)
-        self.graph = GraphView(project, steps)
+        self.graph = GraphView(project)
         cv.addWidget(self.graph, 1)
         ph.addWidget(centre, 1)
         self.panel = Panel(project, steps)
@@ -900,7 +889,7 @@ class GraphPage(QWidget):
         self.toasted.emit(text)
 
     def current_node(self, g=None):
-        g = g or Graph(self.s, self.steps)
+        g = g or Graph(self.s)
         k = self.s.sel_step
         if k == "sources":
             return g.root
@@ -990,7 +979,7 @@ class GraphPage(QWidget):
         s.set_opts(p, new)
         s.log('{block} added to "{name}"', block=block_title(p, TOOL_COLUMN[key]), name=p.name)
         s.select(index=s.paths.index(s.view(pid)), step=TOOL_COLUMN.get(key, key))
-        node = Graph(s, self.steps).node_of(s.view(pid), s.sel_step)
+        node = Graph(s).node_of(s.view(pid), s.sel_step)
         s.scope = [q.pid for q in node.paths] if node is not None else [pid]
         if notes:
             self.toast(" · ".join(_(n) for n in notes))

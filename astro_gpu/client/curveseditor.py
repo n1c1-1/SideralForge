@@ -14,6 +14,9 @@ histogram of the filter's input (sent by the render worker), control points adde
 
 Nothing is rendered here: the curve is drawn from its points (postfilters.curves.Spline), the histogram comes from the
 worker.
+
+Classes: ``CurvesEditor`` (the panel), ``CurveGraph`` (the plot it edits), ``FunctionGraph`` (the read-only graph of a
+stretch's transfer function).
 """
 from __future__ import annotations
 
@@ -48,6 +51,8 @@ CH_LABEL = {"RGB/K": "RGB"}                          # what the channel button s
 
 def ch_label(ch: str) -> str:
     return _(CH_LABEL[ch]) if ch in CH_LABEL else ch
+
+
 HIST_COL = {"R": QColor(120, 34, 34), "G": QColor(34, 104, 46), "B": QColor(34, 56, 132)}
 PLOT_H = 290
 BAR = 9                                              # the gradient bars under and left of the plot
@@ -202,10 +207,6 @@ class CurveGraph(QWidget):
             if d < best:
                 best, bi = d, i
         return bi
-
-    def _ensure(self):
-        if self.curve is not None and "pts" not in self.curve:
-            self.curve.update(pc.identity())
 
     def delete(self, i: int) -> bool:
         pts = self.pts()

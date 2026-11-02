@@ -1,4 +1,4 @@
-"""The render worker of Post: the engine's layers, the composition and the export, off the GUI thread (DESIGN §5.3).
+"""The render worker of Post: the engine's layers, the composition and the export, off the GUI thread.
 
 * ``LayerSource`` is the ``postengine.Provider`` on the engine: a workflow's output folder rendered by a ``LayerService``
   (render/layers.py) with a base and slider positions, on the canvas every layer covers. The release render, the 100 %
@@ -44,7 +44,7 @@ from ..postengine import (
 
 #: the output stages (the last one of a chain is the workflow's layer)
 OUTPUT_STAGES = ("render_prep", "render_prep_learned", "render_simple")
-#: the budgets of DESIGN §5.3, in seconds
+#: the time budgets of a request, in seconds
 BUDGET = {"draft": 0.15, "half": 1.0, "region": 2.0}
 DRAFT_LEVEL, HALF_LEVEL = 2, 1
 #: the draft's level on the CPU: an eighth of the image (the nebula of a 6000-pixel image in about 0.3 s)
@@ -376,7 +376,7 @@ class LayerSource(Provider):
                 li = self.service.render(f.path, base, lay.get("sliders"), 1.0,
                                          region=tuple(int(round(v)) for v in region), part=part, stop=stop)
                 arr = self._cut(li.rgb, 1, region, size, False)
-            else:                                           # the whole grid at 1/fi: v1's rendering, cut to the canvas
+            else:                                           # the whole grid at 1/fi, cut to the canvas
                 li = self.service.render(f.path, base, lay.get("sliders"), 1.0 / fi, part=part, draft=draft,
                                          stop=stop)
                 arr = self._cut(li.rgb, fi, region, size, True)

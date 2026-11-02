@@ -3,7 +3,7 @@
 The import (``api.import_v1``) makes a new project in the workspace: the definition of the old project, and the results
 that are still valid, copied under their new keys. The old folder is never written. First a dry run in the worker says
 what is kept and what will be computed again, with the size to copy and the free space; then Import copies, with a
-progress line, and the new project opens.
+progress line, and the new project opens. The dialog is ``PreviousVersionDialog``.
 """
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
 )
 
 from .. import api
-from ..core import project2
 from . import prefs
 from .home import folder_name
 from .i18n import _, language, number, plural
@@ -284,9 +283,3 @@ class PreviousVersionDialog(QDialog):
 
 #: the workers of closed dialogs whose last job is still running
 _RETIRED: list = []
-
-
-def is_previous(root) -> bool:
-    """Whether the folder holds a project of the previous version (and no v2 project)."""
-    root = Path(root)
-    return (root / project2.V1_FILE).is_file() and not (root / project2.FILE).is_file()

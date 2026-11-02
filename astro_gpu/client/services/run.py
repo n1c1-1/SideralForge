@@ -1,4 +1,4 @@
-"""The run service (P11): launch a run, follow it, stop it, reattach to it, and tell the views what happens.
+"""The run service: launch a run, follow it, stop it, reattach to it, and tell the views what happens.
 
 A run is a detached process (core/runner2.py). The client never waits for it: ``RunFollower`` tails
 ``logs/events.jsonl`` every 500 ms through ``api.read_events``, and every read happens in the service's own worker
@@ -8,18 +8,10 @@ progress, and the console lines. ``RunController`` is the one object a window ne
 opens the plan dialog (runs.py), starts the run, follows it, refreshes the model (the stripes of the graph turn running,
 green, red…) when a stage starts or ends, writes the history line, and reattaches to a live run when a project is opened.
 
-Wiring, for the window (P13)::
-
-    self.run = RunController(self.s, window=self, console=lambda: self.logp)    # once per project, after the model
-    self.run.runningChanged.connect(self.refresh)             # Run button, the Stop item of the Run menu
-    self.run.finished.connect(lambda status, text: self.flash(text))      # one line at the end of a run
-    self.run.logRequested.connect(lambda: self.b_log.setChecked(True))    # "Show the log" of the recap
-    self.statusBar().addPermanentWidget(self.run.status_widget())         # the progress and Stop, while a run lasts
-    self.run.watch_graph(page.graph)                          # the progress of each block, drawn on the graph
-    self.run.attach()                                         # a project opened with a live run: follow it again
-    launch -> self.run.launch(); run_to_here -> self.run.run_to_here(); stop_run -> self.run.stop()
-    language changed, project screen rebuilt (new Log panel, new graph): self.run.retranslate()
-    project closed: self.run.close()                          # the run goes on; opening the project follows it again
+The window (app.py ``make_model``) makes one controller per project, after the model, and connects
+``runningChanged``, ``updated``, ``finished`` and ``logRequested``; it shows ``status_widget()`` in the status bar,
+calls ``watch_graph`` with each new graph, ``attach`` when a project opens (a live run is followed again),
+``retranslate`` when the project screen is rebuilt and ``close`` when the project closes (the run goes on).
 
 Breakpoints ("Pause here for review", set on the blocks of the graph): ``launch`` and ``run_to_here`` plan the run up to
 the first review not done yet (``ProjectModel.plan_run``); the dialog says "Stops after Calibration for your review", and
@@ -28,7 +20,7 @@ or to the end) and Open in Inspect (``open_in_inspect``: selects the block, then
 ``openBlock`` it already routes; ``openInspect(workflow id, block)`` is emitted too, for a window that prefers it).
 
 The console of the last run is the Log panel's right pane (``set_console`` / ``append_console``); the controller keeps
-its lines, so that a rebuilt panel is filled again (``sync_console``) and a change of language translates them.
+its lines, so that a rebuilt panel is filled again (``set_console``) and a change of language translates them.
 """
 from __future__ import annotations
 
@@ -60,7 +52,7 @@ QUIET_MS = 400
 
 
 def duration_text(seconds: float, measured: bool = True) -> str:
-    """A duration as the views show it, with ≈ when it is an estimate (SPEC §7)."""
+    """A duration as the views show it, with ≈ when it is an estimate ("≤ 1 min" is one already)."""
     t = hm(seconds)
     return t if measured or t.startswith("≤") else "≈ " + t
 
@@ -644,7 +636,6 @@ class RunController(QObject):
         self.dialog = None
         self._status_widget = None
         self._snapshot: Project2 | None = None
-        self._last_text = ""
         self._free: float | None = None
         self._free_asked = False
         self._attaching = False
@@ -664,10 +655,6 @@ class RunController(QObject):
     def progress(self) -> float:
         """The fraction of the run done, 0..1."""
         return self.track.fraction() if self.track is not None else 0.0
-
-    def titler(self):
-        m = self.model
-        return lambda stage: m.title(stage)
 
     def status_text(self) -> str:
         t = self.track
@@ -898,7 +885,6 @@ class RunController(QObject):
                 failed=c[FAILED], skipped=c[SKIPPED] + c[NOT_STARTED])
             self.model.log("Run failed: {failed} failed, {skipped} not run", failed=c[FAILED],
                            skipped=c[SKIPPED] + c[NOT_STARTED])
-        self._last_text = text
         self.phase = "idle"
         c_ = self._console_obj()
         if c_ is not None and hasattr(c_, "refresh"):
@@ -968,8 +954,6 @@ class RunController(QObject):
         c = self._console_obj()
         if c is not None and self.track is not None:
             c.set_console("\n".join(render_line(x, self.model.title) for x in self.track.lines))
-
-    sync_console = set_console
 
     def append_console(self, lines=None):
         c = self._console_obj()

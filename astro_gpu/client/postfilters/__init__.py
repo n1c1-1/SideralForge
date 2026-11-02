@@ -1,7 +1,6 @@
 """The methods of Post's filters, without widgets and without the composition (postengine imports them).
 
-Each module follows a published or documented method, named in its docstring (docs/pilot/POST_TOOLS.md has the
-inventory against PixInsight and Siril):
+Each module follows a published or documented method, named in its docstring:
 
 * ``curves``: the Curves tool (PixInsight CurvesTransformation, Siril 1.4 Curves, Photoshop Curves): Akima, natural
   cubic or linear curves per channel (RGB/K, R, G, B, CIE L*, saturation, CIE c*, CIE hue), the presets of the pro tools,

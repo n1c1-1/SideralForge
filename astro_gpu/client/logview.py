@@ -3,7 +3,7 @@ bottom of the window (View > Log, Ctrl+L).
 
 The history is the project's ``history``: (time, text) rows, or (time, English template, arguments) rows translated
 when shown, so that a change of language applies to them too. The console is fed by the run service
-(``set_console``, ``append_console``).
+(``set_console``, ``append_console``). The panel is ``LogPanel``.
 """
 from __future__ import annotations
 

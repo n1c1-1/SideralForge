@@ -21,6 +21,9 @@ older one. The layers are saved in the project (``project.post["layers"]``).
     page.view.goResults(pid)             # '"X": not computed yet →' and "Show workflow →": Inspect on that Output
     page.export(parent)                  # File > Export image… and the Export… button
     page.add_image_layer(name, source, key)   # Inspect: a stage's image as a layer
+
+Classes: ``PostPage3`` holds the ``PostView`` (the viewer, the layers panel of ``LayerRow`` rows, the properties with
+their ``ContSlider`` sliders and the Curves editor); ``PostSource`` and ``BeforeSource`` feed the viewer.
 """
 from __future__ import annotations
 
@@ -119,7 +122,6 @@ def _pieces(n: str, fn) -> str:
     """``fn`` applied to each piece of a name made of pieces joined by "·" (the separators kept as they are)."""
     parts = re.split(r"(\s*·\s*)", n)
     return "".join(p if i % 2 else fn(p) for i, p in enumerate(parts))
-
 
 
 def dec(s: str) -> str:
@@ -455,10 +457,20 @@ class PostView(QWidget):
         self.function_graph: FunctionGraph | None = None
         self.first_image = False
         self.sync_paths(initial=True)
-
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        root.addWidget(self._build_centre(), 1)
+        root.addWidget(self._build_panel())
+        self._connect(own_worker=worker is None)
+        if self.layers:
+            self.sel = (self.layers[-1]["id"], "layer")
+        self.build_filter_menu()
+        self.rebuild()
+        self._send_final()
+
+    def _build_centre(self) -> QWidget:
+        """The centre: the bar of view tools, the viewer and the hint line under it."""
         mid = QWidget()
         mv = QVBoxLayout(mid)
         mv.setContentsMargins(0, 0, 0, 0)
@@ -509,8 +521,10 @@ class PostView(QWidget):
         self.hint = label("", "small")
         self.hint.setContentsMargins(10, 3, 10, 5)
         mv.addWidget(self.hint)
-        root.addWidget(mid, 1)
-        # ---- right: layers, then the properties of the selection
+        return mid
+
+    def _build_panel(self) -> QWidget:
+        """The right side: the layers, their buttons, then the properties of the selection."""
         right = QWidget()
         right.setObjectName("panel")
         right.setFixedWidth(400)
@@ -568,8 +582,10 @@ class PostView(QWidget):
         self.pbox.setSpacing(4)
         psc.setWidget(ph)
         rv.addWidget(psc, 1)
-        root.addWidget(right)
+        return right
 
+    def _connect(self, own_worker: bool):
+        """The buttons, the shortcuts, the timers and the signals of the worker and the model."""
         self.b_fit.clicked.connect(self.viewer.fit)
         self.b_100.clicked.connect(lambda: self.viewer.zoom_to(1.0))
         self.b_cmp.toggled.connect(self._compare)
@@ -612,12 +628,7 @@ class PostView(QWidget):
         if self.worker.device:                           # the worker may have said it before we listened
             self._on_device(self.worker.device)
         self.s.pathsChanged.connect(self.sync_paths)
-        self.destroyed.connect(self.worker.stop if worker is None else (lambda *_a: None))
-        if self.layers:
-            self.sel = (self.layers[-1]["id"], "layer")
-        self.build_filter_menu()
-        self.rebuild()
-        self._send_final()
+        self.destroyed.connect(self.worker.stop if own_worker else (lambda *_a: None))
 
     # ------------------------------------------------------------ the model
     def path(self, pid):
@@ -1313,7 +1324,6 @@ class PostView(QWidget):
         if not is_pixel(lay) or sum(map(is_pixel, self.layers)) > 1:
             m.addSeparator()
             m.addAction(_("Delete")).triggered.connect(lambda: (self.select(lay["id"], "layer"), self.delete()))
-        self._menu = m                                   # (the tests and the screenshots read it)
         m.exec(gpos)
 
     def rename(self, lay, new: str | None = None):

@@ -5,6 +5,9 @@ Displayed texts are English and go through _() at display time.
 The New workflow dialog works on the project model (model.py): its ``paths`` (each with ``name``, ``opts``,
 ``params``), ``opts_seconds(opts)`` and ``unique_name(name)``; the starting points are the model's ``TEMPLATES``
 ({name: opts}) unless a dict is given.
+
+Classes and functions: ``NewWorkflowDialog`` (its starting points are ``StartCard`` items), ``ask_name`` and
+``name_dialog`` (Rename).
 """
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ from .blocks import TRUNK
 from .i18n import _, hm
 from .widgets import ACCENT, label
 
-# displayed name of each starting point, by template key (the model may keep the views' internal keys)
+# displayed name of each starting point, by its key in model.TEMPLATES
 TEMPLATE_NAME = {
     "Vierge": "Classic stack",
     "Classique + débruitage": "Classic + denoise",

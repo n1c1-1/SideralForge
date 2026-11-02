@@ -1,7 +1,7 @@
 """The Post of the client, without its widgets: layers, masks, filters and the composition.
 
-Ported from the mockup's ``postengine.py``. The images come from a ``Provider`` (the engine's layers, see
-``services/render.py``), the composition is numpy and runs in the render worker, never in the GUI thread.
+The images come from a ``Provider`` (the engine's layers, see ``services/render.py``), the composition is numpy and
+runs in the render worker, never in the GUI thread.
 
 Layers (a list, top first, as in Photoshop; saved as it is in ``project.post["layers"]``):
 
@@ -29,6 +29,9 @@ divided by the reduction factor, so the draft looks like the full image.
 Resolutions: level 0 is the full canvas (only a region of it, with a 64 px margin for the filters), level 1 the half
 (the screen), level 2 the quarter (the draft while something moves), level 3 the eighth (a draft on a slow machine).
 The canvas is the area every workflow layer covers, taken on multiples of 8 px so that the levels line up.
+
+``Composer`` composes the layers (one per render worker: it owns the caches); ``Provider`` is what it reads the
+images from; ``FILTERS`` lists the filters and their settings.
 """
 from __future__ import annotations
 
@@ -115,8 +118,7 @@ def hue_weight(h, center, width):
     return np.clip(1 - dist / max(width, 1), 0, 1)
 
 
-def _f32(x: np.ndarray) -> np.ndarray:
-    return x if x.dtype == np.float32 and x.flags.c_contiguous else np.ascontiguousarray(x, np.float32)
+_f32 = pf_colour.f32                  # a C-contiguous float32 array (no copy when it is one already)
 
 
 def gauss(x: np.ndarray, sigma: float) -> np.ndarray:
@@ -350,7 +352,7 @@ FILTERS = {
                               P("midtones", "Midtones", 0.001, 0.999, 0.5, step=0.001),
                               P("highlights", "Highlights", 0, 1, 1, step=0.001),
                               C("channel", "Channel", pf_tone.HT_CHANNELS, "RGB/K")]),
-    # the arcsinh stretch of the first Post (saved compositions still open with it; no longer offered)
+    # hidden: not in the filter menu, kept so that the compositions that hold it still open
     "stretch": dict(name="Arcsinh stretch (symmetry point)", family="Stretch", fn=f_stretch, hidden=True,
                     source="An arcsinh stretch around a symmetry point (the first Post's)",
                     params=[P("strength", "Strength", 0, 12, 0, step=0.1),
@@ -425,7 +427,7 @@ FILTERS = {
                        params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
 }
 FAMILIES = ["Stretch", "Contrast", "Color", "Detail", "Noise", "Stars", "Combine"]
-#: the names of filters as the first Post saved them (a layer keeps its name): shown as today's names
+#: a filter name older saved compositions hold (a layer keeps its name) -> the filter's name today
 OLD_NAMES = {"Stretch (GHS)": "Arcsinh stretch (symmetry point)"}
 
 # ======================================================================== masks
@@ -861,9 +863,6 @@ class Composer:
         self._brush.clear()
         self._canvas = None
 
-    def clear_brushes(self):
-        self._brush.clear()
-
     # ------------------------------------------------------------ one workflow layer
     def _key(self, lay: dict, level: int, abox, canvas: Canvas, draft: bool = False) -> tuple:
         """What an image of a pixel layer depends on: the same for a copy of the layer. The canvas is part of it: it
@@ -1129,7 +1128,3 @@ def only_layer(layers: list[dict], lid: int) -> list[dict]:
     base = next(lay for lay in layers if lay["id"] == lid)
     own = [dict(f, visible=f["visible"]) for f in layers if f["kind"] == "filter" and f.get("target") == lid]
     return snapshot(own + [dict(base, visible=True, opacity=100.0, mode="Normal", mask=None)])
-
-
-def copy_layers(layers: list[dict]) -> list[dict]:
-    return copy.deepcopy(layers)

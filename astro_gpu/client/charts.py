@@ -24,15 +24,11 @@ from PySide6.QtGui import QColor, QPen
 from PySide6.QtWidgets import QMenu
 
 from . import prefs
-from .chartview import (  # noqa: F401 - the colours are this module's, as they have been
+from .chartview import (
     AMBER,
-    BG,
     BLUE,
-    DIM,
     GREEN,
-    GRID,
     RED,
-    TEXT,
     VIOLET,
     ChartView,
     clock,

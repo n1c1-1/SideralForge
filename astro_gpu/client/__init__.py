@@ -1,4 +1,4 @@
-"""The heavy client of astro_gpu, over v2 projects (DESIGN §5; the specification is SPEC.md).
+"""The heavy client of astro_gpu, over v2 projects.
 
     python -m astro_gpu.client [project folder]
 

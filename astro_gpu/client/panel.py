@@ -8,6 +8,9 @@ Blocks with several methods show them as cards: what each does, where it runs, h
 The settings come from the model's cache of the engine's ``describe`` (the worker fills it): the panel shows what it has
 and builds itself again when the rest arrives. The ◇ methods and settings (not in the engine yet) show in Spec mode
 only, disabled.
+
+Classes: ``Panel``, its rows (``CompactRow``), the method cards (``MethodCard``, ``StackMethodCard`` with its
+``InfoDot``) and ``Details`` (what is known about the setting clicked).
 """
 from __future__ import annotations
 
@@ -33,7 +36,7 @@ from PySide6.QtWidgets import (
 from .. import texts
 from ..core import workflow as wfl
 from . import prefs
-from .blocks import BY_KEY, STATE_WORD, block_state, block_title, fmt_int, stages_of  # noqa: F401
+from .blocks import STATE_WORD, block_state, block_title
 from .i18n import _, all_workflows, hm, language, number
 from .model import NotInEngine, method_of, method_value, methods_of
 from .settings import RangeBar, SettingRow, fmt, needed_stages, selection_rule_text, step_settings
@@ -46,10 +49,6 @@ OPTIONAL_BLOCKS = ("debruitage", "etoiles", "deconv")
 EDITOR_W = 104                      # every editor of a row has this width...
 BACK_W = 22                         # ...then the unit column, then the ↺ button (its room kept when hidden)
 UNIT_MAX = 76                       # a longer unit wraps on two lines
-
-
-def fnum(x, d=1) -> str:
-    return number(x, d)
 
 
 def kv(rows, pad=14) -> QLabel:
@@ -427,7 +426,7 @@ class Panel(QWidget):
                 lights=ses["lights"], flats=ses["flats"], darks=darks))], pad=10))
             if ses.get("rotation"):
                 self.bv.addWidget(label(_("Camera rotated {deg}°: this session uses its own flats").format(
-                    deg=fnum(ses["rotation"])), "warn", wrap=True))
+                    deg=number(ses["rotation"])), "warn", wrap=True))
         self.bv.addSpacing(6)
         self.bv.addWidget(kv([(_("Excluded by hand"), str(len(s.frames_excluded))),
                               (_("Stacking"), _("all sessions together") if s.stack_mode == "together" else
@@ -794,8 +793,8 @@ class Panel(QWidget):
                                         ("stack", "max_fwhm_ratio", ratio)])
         unit = "px" if m else "× median"
         self._propose(ch, _("Selection: transparency ≥ {t} %, FWHM ≤ {f} {unit}").format(
-            t=f"{tmin:.0f}", f=fnum(fmax), unit=unit),
-            _("selection {t} % / {f} {unit}").format(t=f"{tmin:.0f}", f=fnum(fmax), unit=unit))
+            t=f"{tmin:.0f}", f=number(fmax), unit=unit),
+            _("selection {t} % / {f} {unit}").format(t=f"{tmin:.0f}", f=number(fmax), unit=unit))
 
     def _groups(self, p, k) -> list:
         """[(group title, [resolved settings])] of the block, with the half-stacks, the neural removal and the

@@ -8,11 +8,10 @@ exposure, ISO, temperature, FWHM, roundness, transparency, weight, kept or exclu
 calibration frame left out by hand is left out of its master (``services/inspect.set_calibration_excluded``). Nothing
 here reads a file.
 
-Displayed texts are English and go through _() at display time (French: locale/fr/inspect.json).
+Classes: ``SourcesView`` (the browser), ``ImportDialog`` (the scan of a folder, used by ``import_folder``).
 """
 from __future__ import annotations
 
-import os
 from functools import partial
 
 import numpy as np
@@ -46,6 +45,7 @@ from .frames import fexp, night_text
 from .i18n import _, hours_text, number, plural
 from .imageview import ImageView, ViewImage, quick_thumbnail
 from .services.inspect import FrameItem, ProjectFrames, add_scan, light_thumb, service_of, set_calibration_excluded
+from .services.worker import norm_path
 from .widgets import NEW, OK, WARN, ElidedLabel, clear, hline, label, para
 
 # (key, title, section): plain English, translated where shown
@@ -54,10 +54,6 @@ GROUPS = [("lights", "Lights", "Lights"), ("darks", "Darks", "Calibration"), ("f
 KIND_WORD = {"lights": "lights", "darks": "darks", "flats": "flats", "bias": "bias", "flat_darks": "dark flats"}
 KIND_COUNT = {"lights": "{n} lights", "darks": "{n} darks", "flats": "{n} flats", "bias": "{n} bias",
               "flat_darks": "{n} dark flats"}
-
-
-def fnum(x, d=1) -> str:
-    return number(x, d)
 
 
 class NumItem(QTableWidgetItem):
@@ -219,9 +215,9 @@ def import_folder(model, parent=None, folder: str | None = None, new_session: bo
                                                   prefs.get("workspace"))
         if not folder:
             return False
-    norm = os.path.normcase(os.path.normpath(folder))
+    norm = norm_path(folder)
     for ses in model.p.sessions:
-        if any(os.path.normcase(os.path.normpath(model.p.abspath(x))) == norm for x in ses.lights):
+        if any(norm_path(model.p.abspath(x)) == norm for x in ses.lights):
             QMessageBox.information(parent, _("Add folder"), _("This folder is already in the project."))
             return False
     d = ImportDialog(model, folder, new_session, parent, svc)
@@ -259,7 +255,6 @@ class SourcesView(QWidget):
         self.can_post = None                               # callable: Post takes images (the window sets it)
         self._icons: dict[str, list[QListWidgetItem]] = {}
         self._group_token = 0
-        self._loaded_group = None
         self._seq_order: list[int] = []                    # the viewer's sequence: indices of ``items``
         self._syncing = False
         outer = QVBoxLayout(self)
@@ -537,13 +532,13 @@ class SourcesView(QWidget):
             out.append((same, t.format(exp=fexp(d.darks.get("exposure")), iso=int(d.darks.get("iso") or 0))))
             if d.dark_level is not None:
                 out.append((True, _("Darks: median level {level} ADU, nominal black level {black} ADU.").format(
-                    level=fnum(d.dark_level, 0), black=fnum(self.black(), 0))))
+                    level=number(d.dark_level, 0), black=number(self.black(), 0))))
         if d.flats:
             pct = d.flat_pct
             n = d.counts.get("flats", 0)
             if pct is not None:
                 out.append((None, _("Flats: {n} frames at {pct} % of saturation, exposure {exp}.").format(
-                    n=n, pct=fnum(pct, 0), exp=fexp(d.flats.get("exposure")))))
+                    n=n, pct=number(pct, 0), exp=fexp(d.flats.get("exposure")))))
             else:
                 out.append((None, _("Flats: {n} frames, exposure {exp}.").format(n=n, exp=fexp(d.flats.get("exposure")))))
         if not d.counts.get("bias") and not d.counts.get("flat_darks"):
@@ -587,9 +582,9 @@ class SourcesView(QWidget):
         f = self.items[i]
         if self.group == "lights":
             tr = f"{100 * f.transparency / self.p90:.0f} %" if f.transparency is not None else "–"
-            t = f"{f.name}\n{(fnum(f.fwhm) + ' px') if f.fwhm is not None else '–'} · {tr}"
+            t = f"{f.name}\n{(number(f.fwhm) + ' px') if f.fwhm is not None else '–'} · {tr}"
         else:
-            t = f"{f.name}\n{(fnum(f.level, 0) + ' ADU') if f.level is not None else (f.time[:10] if f.time else '')}"
+            t = f"{f.name}\n{(number(f.level, 0) + ' ADU') if f.level is not None else (f.time[:10] if f.time else '')}"
         return ("✕ " if self.excluded(i) else "") + t
 
     def fill(self):
@@ -623,14 +618,14 @@ class SourcesView(QWidget):
                         transparency=(f.transparency / self.p90) if f.transparency is not None else None,
                         excluded=bool(f.excluded), reason=_(f.status) if f.status and not f.excluded else "")
             if f.level is not None:
-                info["extra"] = [(_("Sky level"), fnum(f.level, 0) + " ADU")]
+                info["extra"] = [(_("Sky level"), number(f.level, 0) + " ADU")]
         else:
             st = self.service.stats.get(f.path)
             info.update(excluded=bool(f.excluded), compact=True)
-            info["extra"] = [(_("Median level"), fnum(self.black() + st["level"], 0) + " ADU"),
-                             (_("Noise σ"), fnum(st["noise"], 1) + " ADU")] if st else [(_("Median level"), "…")]
+            info["extra"] = [(_("Median level"), number(self.black() + st["level"], 0) + " ADU"),
+                             (_("Noise σ"), number(st["noise"], 1) + " ADU")] if st else [(_("Median level"), "…")]
             if st and self.group == "flats":
-                info["extra"].append((_("Exposure level"), fnum(st["pct"], 0) + " %"))
+                info["extra"].append((_("Exposure level"), number(st["pct"], 0) + " %"))
             if f.flag:
                 info["flag"], info["flag_reason"] = f.flag, f.reason
         return info
@@ -737,16 +732,16 @@ class SourcesView(QWidget):
             if self.group == "lights":
                 tr = 100 * f.transparency / self.p90 if f.transparency is not None else 0
                 cells = [QTableWidgetItem(f.name), QTableWidgetItem((f.time or "").replace("T", " ")[:19]),
-                         NumItem(f.fwhm or 0, fnum(f.fwhm, 2) if f.fwhm is not None else "–"),
+                         NumItem(f.fwhm or 0, number(f.fwhm, 2) if f.fwhm is not None else "–"),
                          NumItem(tr, f"{tr:.0f}" if f.transparency is not None else "–"),
-                         NumItem(f.weight or 0, fnum(f.weight, 2) if f.weight is not None else "–"),
-                         NumItem(f.level or 0, fnum(f.level) if f.level is not None else "–"),
+                         NumItem(f.weight or 0, number(f.weight, 2) if f.weight is not None else "–"),
+                         NumItem(f.level or 0, number(f.level) if f.level is not None else "–"),
                          QTableWidgetItem(keep)]
             else:
                 st = self.service.stats.get(f.path)
                 cells = [QTableWidgetItem(f.name), QTableWidgetItem((f.time or "")[:10]),
-                         NumItem(st["level"] if st else 0, fnum(self.black() + st["level"], 0) if st else "–"),
-                         NumItem(st["noise"] if st else 0, fnum(st["noise"], 2) if st else "–"),
+                         NumItem(st["level"] if st else 0, number(self.black() + st["level"], 0) if st else "–"),
+                         NumItem(st["noise"] if st else 0, number(st["noise"], 2) if st else "–"),
                          QTableWidgetItem(keep)]
             cells[0].setData(Qt.UserRole, i)
             for c, c_item in enumerate(cells):
@@ -823,13 +818,13 @@ class SourcesView(QWidget):
             t = _("{file} · {time} · {exp} · ISO {iso} · FWHM {fwhm} px · transparency {transp} % of the best · "
                   "weight {weight}").format(
                 file=f.name, time=(f.time or "")[11:16], exp=fexp(exp), iso=int(iso) if iso else "–",
-                fwhm=fnum(f.fwhm, 2) if f.fwhm is not None else "–",
-                transp=tr, weight=fnum(f.weight, 2) if f.weight is not None else "–")
+                fwhm=number(f.fwhm, 2) if f.fwhm is not None else "–",
+                transp=tr, weight=number(f.weight, 2) if f.weight is not None else "–")
         else:
             st = self.service.stats.get(f.path)
             t = (_("{file} · {date} · level {level} ADU · noise {noise} ADU").format(
-                file=f.name, date=(f.time or "")[:10], level=fnum(self.black() + st["level"], 0),
-                noise=fnum(st["noise"], 2)) if st else f"{f.name} · {(f.time or '')[:10]}")
+                file=f.name, date=(f.time or "")[:10], level=number(self.black() + st["level"], 0),
+                noise=number(st["noise"], 2)) if st else f"{f.name} · {(f.time or '')[:10]}")
         self.info.setText(t + (" · " + _("EXCLUDED") if self.by_hand(self.cur) else ""))
 
     def _stats_ready(self, path: str, st: dict):
@@ -919,20 +914,20 @@ class SourcesView(QWidget):
             rows = []
             if self.group == "lights":
                 if f.level is not None:
-                    rows.append((_("Median level"), _("{level} ADU above black").format(level=fnum(f.level))))
+                    rows.append((_("Median level"), _("{level} ADU above black").format(level=number(f.level))))
                 rows += [(_("Time"), (f.time or "")[11:16]),
-                         ("FWHM", f"{fnum(f.fwhm, 2)} px" if f.fwhm is not None else "–"),
+                         ("FWHM", f"{number(f.fwhm, 2)} px" if f.fwhm is not None else "–"),
                          (_("Transparency"), _("{pct} % of the best lights").format(
                              pct=f"{100 * f.transparency / self.p90:.0f}") if f.transparency is not None else "–"),
-                         (_("Weight in the stack"), fnum(f.weight, 2) if f.weight is not None else "–")]
+                         (_("Weight in the stack"), number(f.weight, 2) if f.weight is not None else "–")]
             elif st:
                 rows.append((_("Median level"), _("{level} ADU (nominal black {black} ADU)").format(
-                    level=fnum(self.black() + st["level"], 0), black=fnum(self.black(), 0)) if self.group == "darks"
-                    else _("{level} ADU above black").format(level=fnum(st["level"]))))
+                    level=number(self.black() + st["level"], 0), black=number(self.black(), 0)) if self.group == "darks"
+                    else _("{level} ADU above black").format(level=number(st["level"]))))
                 if self.group == "flats":
-                    rows.append((_("Exposure level"), _("{pct} % of saturation").format(pct=fnum(st["pct"]))))
+                    rows.append((_("Exposure level"), _("{pct} % of saturation").format(pct=number(st["pct"]))))
                 else:
-                    rows.append((_("Noise"), f"{fnum(st['noise'], 2)} ADU"))
+                    rows.append((_("Noise"), f"{number(st['noise'], 2)} ADU"))
             else:
                 rows.append((_("Median level"), "…"))
             rows.append((_("State"), _("excluded") if self.by_hand(self.cur) else

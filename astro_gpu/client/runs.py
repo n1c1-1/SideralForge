@@ -1,12 +1,11 @@
 """Runs: the plan dialog, the progress of a run block by block, its recap, the progress drawn on the graph and the
 status bar widget (the service that launches and follows a run is services/run.py).
 
-The dialog is the mockup's Run dialog (one row per block in graph order: the block, the workflows sharing it, the
-duration, a progress bar; "Already up to date: N blocks"; "Duration: t · disk: N GB"; Cancel, Run) carried on: once Run
-is pressed the same rows show the run (a mark and a coloured bar per block), Close leaves the run going on (the
-progress stays in the status bar and on the graph), and Stop ends it so that the next run goes on from there. At the
-end the rows keep their final state and a recap says what was computed, what failed and which blocks were not run
-because of it, in plain words.
+The dialog has one row per block in graph order (the block, the workflows sharing it, the duration, a progress bar),
+"Already up to date: N blocks", "Duration: t · disk: N GB", Cancel and Run. Once Run is pressed the same rows show the
+run (a mark and a coloured bar per block), Close leaves the run going on (the progress stays in the status bar and on
+the graph), and Stop ends it so that the next run goes on from there. At the end the rows keep their final state and a
+recap says what was computed, what failed and which blocks were not run because of it, in plain words.
 
 When the plan stops at a breakpoint ("Pause here for review") the dialog says so before the run ("Stops after
 Calibration for your review"), and once the run is over a yellow box asks for the review: Continue (the results are
@@ -14,7 +13,7 @@ marked as checked, the run goes on to the next pause or the end) and Open in Ins
 the review (the block is done already) the dialog opens on that box.
 
 The dialog is not modal. ``RunDialog`` reads a ``RunTrack`` (services/run.py) through the controller and redraws when
-it changes.
+it changes. ``RunStatus`` is the status bar widget, ``RunOverlay`` the progress drawn over the graph.
 """
 from __future__ import annotations
 
@@ -82,7 +81,7 @@ def build_rows(model, jobs, names: dict[int, str] | None = None) -> list[Row]:
     """One row per block of the graph that has something to run, in the graph's order. ``jobs``: runner2.Job or
     JobState. The workflows named are those that share the result (``job.wf``)."""
     names = names or {}
-    g = Graph(model, None) if model.paths else None
+    g = Graph(model) if model.paths else None
     order = {id(n): i for i, n in enumerate(g.nodes)} if g is not None else {}
     found: dict = {}
     for i, j in enumerate(jobs):
@@ -506,10 +505,10 @@ class RunDialog(QDialog):
         self.b_log.setVisible(ph == "end" and t is not None and (t.count()[FAILED] > 0 or t.lost or t.status == "failed"))
 
     def _up_to_date(self) -> int:
-        """The blocks of the graph that are done (the mockup's "Already up to date")."""
+        """The blocks of the graph that are done ("Already up to date")."""
         if not self.s.paths:
             return 0
-        g = Graph(self.s, None)
+        g = Graph(self.s)
         return sum(1 for nd in g.nodes if nd.key not in ("sources", "final") and nd.paths and g.state(nd) == "done")
 
     def _fill_progress(self, t: RunTrack):
@@ -535,10 +534,6 @@ class RunDialog(QDialog):
         self.summary.setStyleSheet(f"color: {color};")
 
     # ------------------------------------------------------------ the recap
-    def _title_of(self, key: str) -> str:
-        r = next((x for x in self.rows_data if key in x.keys), None)
-        return r.title if r is not None else key
-
     def _fill_recap(self, t: RunTrack):
         """What happened, in plain words: computed, failed, not run because of what, stopped."""
         box = self.recap
@@ -723,11 +718,10 @@ class RunOverlay(QWidget):
             p.drawRoundedRect(QRectF(track.left(), track.top(), max(track.width() * f, hh), hh), hh / 2, hh / 2)
 
 
-# ---------------------------------------------------------------------------------------------- the mockup's door
+# ---------------------------------------------------------------------------------------------- run to a stage
 def run_blocks(s, steps, items, title: str, parent, show_done: bool = False, controller=None):
-    """The mockup's ``run_blocks(s, steps, items, title, parent)``: ``items`` are (workflow, stage) pairs as
-    ``pending_upto`` gives them. The plan is that of the block of the last stage, in the first workflow. Prefer
-    ``RunController.run_to_here()``."""
+    """The plan dialog for (workflow, stage) pairs as ``pending_upto`` gives them (tests call it). The plan is that of
+    the block of the last stage, in the first workflow. Prefer ``RunController.run_to_here()``."""
     if not items or controller is None:
         return None
     from .blocks import BY_KEY

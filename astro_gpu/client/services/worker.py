@@ -1,4 +1,4 @@
-"""ApiWorker: the thread that does what touches the disk or takes time, so that the GUI never blocks (DESIGN §5.3).
+"""ApiWorker: the thread that does what touches the disk or takes time, so that the GUI never blocks.
 
 Workspace scans, the file parts of the keys, describe, outputs, arrays, thumbnails, imports: each request carries a
 channel; a new request on a channel replaces the one still waiting there, and only the result of the newest request
@@ -7,10 +7,10 @@ of a channel is delivered. Results come back in the GUI thread as signals.
     worker = ApiWorker(parent)
     worker.done.connect(on_done)                 # (channel, request number, result)
     worker.failed.connect(on_failed)             # (channel, request number, error text)
-    n = worker.submit("home", scan_workspace, folder)
+    n = worker.submit("home", scan_home, rows, recent)
 
 Also here, as plain functions run by the worker: ``machine_info()`` (the GPUs, cores and memory) and
-``disk_usage(folders)``.
+``disk_usage(folders)``; and ``norm_path(path)``, a path as Windows compares it (no disk access).
 """
 from __future__ import annotations
 
@@ -140,7 +140,7 @@ class ApiWorker(QObject):
 @dataclass
 class Gpu:
     device: str                                      # "cuda:0"
-    name: str                                        # "NVIDIA RTX 4060 Ti"
+    name: str                                        # the name the driver gives
     memory_gb: float
 
 
@@ -184,6 +184,11 @@ def machine_info() -> Machine:
     except Exception:  # noqa: BLE001
         pass
     return Machine(gpus, os.cpu_count() or 0, mem)
+
+
+def norm_path(x) -> str:
+    """A path as Windows compares it: case and separators made alike (no disk access)."""
+    return os.path.normcase(os.path.normpath(str(x)))
 
 
 def disk_usage(folders: dict[str, str]) -> dict[str, tuple[float, float] | None]:

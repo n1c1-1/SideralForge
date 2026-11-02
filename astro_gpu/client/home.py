@@ -7,8 +7,11 @@ last.
 
 The folders are read in the ApiWorker (``scan_home``): every sub-folder holding a project.astroproj and, for a
 sub-folder holding none, its own sub-folders that do; names starting with "_" or ".", pytest and temporary folders are
-skipped (``hidden``). The cards show at once; the state of each project (up to date, outdated, never run) follows from a second, slower read of the worker (``project_state``:
-the keys of its stages, so the file lists of its frames), for the open sections. Nothing is written but the settings.
+skipped (``hidden``). The cards show at once; the state of each project (up to date, outdated, never run) follows
+from a second, slower read of the worker (``project_state``: the keys of its stages, so the file lists of its
+frames), for the open sections. Nothing is written but the settings.
+
+Classes: ``HomeView`` shows a ``SectionView`` per section, each with its ``ProjectCard`` items; ``NewProjectDialog``.
 """
 from __future__ import annotations
 
@@ -48,6 +51,7 @@ THUMB = Path("cache") / "thumb.jpg"
 RECENT_SHOWN = 4                                     # the recent projects shown above the sections
 
 # ---------------------------------------------------------------------------------------------- the sections (prefs)
+
 
 def section_rows() -> list[dict]:
     """The sections of Home, as Settings › Folders keeps them (a copy): [{"label", "folder", "note", "open",
@@ -534,6 +538,7 @@ class SectionView(QWidget):
             self.grid.addWidget(self.empty, 0, 0)
 
 # ---------------------------------------------------------------------------------------------- new project
+
 
 def folder_name(name: str) -> str:
     """A folder name from a project name (characters Windows refuses become "_")."""

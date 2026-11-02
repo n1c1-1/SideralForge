@@ -1,4 +1,4 @@
-"""The worker side of Inspect and Frames (DESIGN §5.3): everything that reads the disk or takes time.
+"""The worker side of Inspect and Frames: everything that reads the disk or takes time.
 
 The views (tune.py, frames.py, sources.py) never touch a file. They ask an ``InspectService``; it runs the job in a
 worker thread and answers with a signal in the GUI thread:
@@ -6,14 +6,14 @@ worker thread and answers with a signal in the GUI thread:
 * images: the array of a block (stack, denoised, starless...) or the engine's preview, with the automatic display stretch,
   the histograms and the astrometric solution (``ShownImage``); the last images are kept (least recently used);
 * the metrics of a done result (``api.stage_outputs``), the frame table of Selection, the sessions with their headers
-  and health checks, the frames of a group, their thumbnails and the image of one frame;
+  and health checks, the frames of a group, their thumbnails and statistics;
 * the scan of a folder to import, with its progress.
 
-Three workers: ``images`` (arrays, metrics, tables, scans), ``thumbs`` (the thumbnails of the grid and the filmstrip) and
-``view`` (the one frame shown large), so that a long load never keeps another one waiting. Each request carries a
-channel and the latest one wins (``ApiWorker``).
+Four workers: ``images`` (arrays, metrics, tables, scans), ``thumbs`` (the thumbnails of the grid and the filmstrip),
+``view`` (the statistics of the frame shown) and ``prefetch`` (the statistics of many frames), so that a long load never
+keeps another one waiting. Each request carries a channel and the latest one wins (``ApiWorker``).
 
-``GuiDiskWatch`` is the debug hook of DESIGN §6.3: it counts the file accesses the GUI thread makes under some folders.
+``GuiDiskWatch`` is a debug hook (tests use it): it counts the file accesses the GUI thread makes under some folders.
 """
 from __future__ import annotations
 
@@ -32,7 +32,8 @@ import numpy as np
 from PySide6.QtCore import QCoreApplication, QObject, QTimer, Signal
 
 from ... import api
-from .worker import ApiWorker
+from ..stretch import mtf
+from .worker import ApiWorker, norm_path
 
 # ---------------------------------------------------------------------------------------------- the GUI disk watch
 _WATCHED = ("open", "os.listdir", "os.scandir", "glob.glob", "os.mkdir", "os.rename", "os.remove", "os.rmdir",
@@ -65,7 +66,7 @@ def _hook(event: str, args: tuple):
 
 class GuiDiskWatch:
     """``with GuiDiskWatch(folders) as w: ...``: ``w.hits`` lists the (event, path) the calling thread opened, listed,
-    created, renamed or removed under ``folders`` (DESIGN §6.3: no disk access in the GUI thread); ``w.where`` says, for
+    created, renamed or removed under ``folders`` (no disk access in the GUI thread); ``w.where`` says, for
     the first of them, which calls of the client led there. The hook is installed once (``sys.addaudithook`` cannot be
     removed) and costs nothing while no watch is open."""
 
@@ -196,9 +197,6 @@ def reduce2(a: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------------------------- the display stretch
-def mtf(m: float, x):
-    """The midtones transfer function: 0 -> 0, m -> 1/2, 1 -> 1."""
-    return ((m - 1.0) * x) / ((2.0 * m - 1.0) * x - m)
 
 
 def stretch_params(lin: np.ndarray) -> dict[str, np.ndarray]:
@@ -496,7 +494,6 @@ def load_visual(p, wid: int, spec: VisualSpec, which: str = "current") -> ShownI
                       nbytes=lin.nbytes + s8.nbytes + l8.nbytes)
 
 
-
 class ImageCache:
     """The last pictures, least recently used first out, within a budget of bytes (the arrays are big)."""
 
@@ -669,8 +666,8 @@ def add_scan(p, scan, criteria=None, session: int | None = None) -> list:
     mids = [datetime.fromisoformat(g.start) if g.start else None for g in groups]
     for kind in ("darks", "flats", "bias", "flat_darks"):
         for folder in scan.folders.get(kind, []):
-            fl = [i for i in scan.frames.get(kind, []) if os.path.normcase(os.path.normpath(str(Path(i.path).parent)))
-                  == os.path.normcase(os.path.normpath(folder))]
+            fl = [i for i in scan.frames.get(kind, []) if norm_path(Path(i.path).parent)
+                  == norm_path(folder)]
             if not fl:
                 continue
             ts = sorted(t for t in map(api._when, fl) if t)
@@ -679,7 +676,7 @@ def add_scan(p, scan, criteria=None, session: int | None = None) -> list:
                 mid = ts[len(ts) // 2]
                 near = min((i for i, m in enumerate(mids) if m), key=lambda i: abs(mids[i] - mid))
             lst = getattr(made[near], kind)
-            if not any(os.path.normcase(os.path.normpath(folder)) == os.path.normcase(os.path.normpath(x)) for x in lst):
+            if not any(norm_path(folder) == norm_path(x) for x in lst):
                 lst.append(folder)
     p.validate()
     return made
@@ -724,7 +721,7 @@ def browse_group(p, wid: int | None, kind: str, headers: dict | None = None) -> 
     if kind == "lights" and wid is not None:
         try:
             t = api.frame_table(p, wid)
-            by_path = {os.path.normcase(os.path.normpath(r.path)): r for r in t.rows}
+            by_path = {norm_path(r.path): r for r in t.rows}
         except (api.NotDone, OSError, ValueError, KeyError):
             by_path = {}
     items: list[FrameItem] = []
@@ -742,11 +739,11 @@ def browse_group(p, wid: int | None, kind: str, headers: dict | None = None) -> 
         for f in _files(p, getattr(s, kind)):
             listed.append((s.id, f, False))
     if kind != "lights":                           # a calibration frame left out: still shown, to take it back
-        seen = {os.path.normcase(os.path.normpath(str(f))) for _sid, f, _x in listed}
+        seen = {norm_path(f) for _sid, f, _x in listed}
         for sid, f in calibration_left_out(p, kind, seen):
             listed.append((sid, f, True))
     for sid, f, left_out in listed:
-        norm = os.path.normcase(os.path.normpath(str(f)))
+        norm = norm_path(f)
         it = FrameItem(str(f), f.name, kind, sid)
         h = heads.get(norm)
         if h is None and kind == "lights" and not by_path:
@@ -797,7 +794,7 @@ def inventory_headers(p, wid: int | None, kind: str) -> dict[str, dict]:
         fj = json.loads((Path(inv.dir) / "frames.json").read_text(encoding="utf-8")).get(kind) or []
     except (OSError, ValueError):
         return {}
-    return {os.path.normcase(os.path.normpath(f["path"])): f for f in fj if f.get("path")}
+    return {norm_path(f["path"]): f for f in fj if f.get("path")}
 
 
 def calibration_left_out(p, kind: str, seen: set[str]) -> list[tuple[int, Path]]:
@@ -812,7 +809,7 @@ def calibration_left_out(p, kind: str, seen: set[str]) -> list[tuple[int, Path]]
             if q.suffix and not q.is_dir():
                 folders.append(str(q.parent))
         for f in list_frames(list(dict.fromkeys(folders))):
-            norm = os.path.normcase(os.path.normpath(str(f)))
+            norm = norm_path(f)
             if norm not in seen:
                 seen.add(norm)
                 out.append((s.id, f))
@@ -825,9 +822,9 @@ def set_calibration_excluded(model, item: FrameItem, excluded: bool, group: list
     included), so that the GUI thread reads no folder. False: the last frame of a folder stays."""
     if item.session is None:
         return False
-    here = os.path.normcase(os.path.normpath(str(Path(item.path).parent)))
+    here = norm_path(Path(item.path).parent)
     folder = [(g.path, g.excluded) for g in group if g.session == item.session
-              and os.path.normcase(os.path.normpath(str(Path(g.path).parent))) == here]
+              and norm_path(Path(g.path).parent) == here]
     return model.set_calibration_excluded(item.session, item.kind, item.path, excluded, folder=folder)
 
 
@@ -1072,7 +1069,7 @@ def calibrated_frame(p, wid: int, path: str, which: str = "current") -> tuple[np
     if cache.is_file() and cache.stat().st_size == n * H * W * 2:
         inv = inventory_headers(p, wid, "lights")
         order = list(inv)
-        norm = os.path.normcase(os.path.normpath(path))
+        norm = norm_path(path)
         idx = order.index(norm) if norm in order and len(order) == n else None
     if idx is not None:
         mm = np.memmap(cache, dtype=np.float16, mode="r", shape=(n, H, W))
@@ -1416,7 +1413,7 @@ def calibration_report(p, wid: int, which: str = "current") -> CalibrationReport
         if r is None:
             continue
         for cf in getattr(r, "frames", None) or []:
-            out.frames[os.path.normcase(os.path.normpath(str(cf.path)))] = cf
+            out.frames[norm_path(cf.path)] = cf
         out.notes += [str(n) for n in (getattr(r, "notes", None) or [])]
         out.missing += [str(n) for n in (getattr(r, "missing", None) or [])]
     return out
@@ -1704,7 +1701,6 @@ class InspectService(QObject):
     tableReady = Signal(int, int, object)           # workflow id, token, FrameTable (or an error text)
     groupReady = Signal(str, int, object)           # kind, token, [FrameItem]
     thumbReady = Signal(str, object)                # path, (h, w, 3) uint8
-    frameReady = Signal(int, str, object)           # token, path, (h, w, 3) uint8 (the shown frame)
     statsReady = Signal(str, object)                # path, {level, noise, pct}
     scanProgress = Signal(int, float, str)          # token, fraction, text
     scanDone = Signal(int, object)                  # token, api.ScanResult
@@ -1718,8 +1714,8 @@ class InspectService(QObject):
         self.model = model
         self.images = ApiWorker(self)               # arrays, metrics, tables, scans
         self.thumbs = ApiWorker(self)
-        self.view = ApiWorker(self)
-        self.prefetch = ApiWorker(self)             # the frames the blink shows next
+        self.view = ApiWorker(self)                 # the statistics of the frame shown
+        self.prefetch = ApiWorker(self)             # background batches (the statistics of the frames)
         for w in (self.images, self.thumbs, self.view, self.prefetch):
             w.done.connect(self._done)
             w.failed.connect(self._failed)
@@ -1730,7 +1726,6 @@ class InspectService(QObject):
         self._thumb_token = 0
         self._scan_cancel: set[int] = set()
         self.thumb_cache: OrderedDict[str, np.ndarray] = OrderedDict()
-        self.frame_cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self.stats: dict[str, dict] = {}
         self._wb = None                              # the gains that make the sky of a light neutral
         self.criteria = api.GroupingCriteria()       # how the next imported folder is grouped (the Grouping dialog)
@@ -1760,12 +1755,6 @@ class InspectService(QObject):
             self.groupReady.emit(kind, token, items)
         elif head == "inspect.thumbs":
             pass
-        elif head == "inspect.frame":
-            token, path, arr = result
-            self.frame_cache[path + "|view"] = arr
-            while len(self.frame_cache) > 60:
-                self.frame_cache.popitem(last=False)
-            self.frameReady.emit(token, path, arr)
         elif head == "inspect.stats":
             path, st = result
             self.stats[path] = st
@@ -1945,14 +1934,6 @@ class InspectService(QObject):
             im.grid, im.origin = (cv.W, cv.H), (float(cv.origin[0]), float(cv.origin[1]))
         return im
 
-    def _sky_job(self, im: ShownImage, wid: int, which: str, canvas):
-        """The sky coordinates under the cursor of a final image: the solution of the workflow, read by the worker and
-        given to the picture after it is shown (the readout looks at ``wcs`` when the cursor moves)."""
-        im.wcs = _wcs_of(self.model.p, wid, which) or _wcs_of(self.model.p, wid, "current")
-        if im.wcs is not None and canvas is not None:
-            im.grid, im.origin = (canvas.W, canvas.H), (float(canvas.origin[0]), float(canvas.origin[1]))
-        return None
-
     def _render_failed(self, _seq: int, kind: str, text: str):
         if kind not in ("inspect", "start"):
             return
@@ -2054,39 +2035,6 @@ class InspectService(QObject):
             while len(self.thumb_cache) > 4000:
                 self.thumb_cache.popitem(last=False)
             self.thumbReady.emit(path, arr)
-        return None
-
-    def request_frame(self, path: str, size: int = 1280, balance: bool = False) -> int:
-        """One frame, large; answer: ``frameReady``. A frame seen already comes back at once."""
-        token = self._token("inspect.frame")
-        hit = self.frame_cache.get(path + "|view")
-        if hit is not None:
-            QTimer.singleShot(0, lambda: self.frameReady.emit(token, path, hit))     # after the caller has the token
-            return token
-        self.requests += 1
-        self.view.submit("inspect.frame", self._frame_job, path, size, token, balance)
-        return token
-
-    def _frame_job(self, path, size, token, balance):
-        return token, path, self._balanced(api.frame_thumb(self.model.p, path, size), balance)
-
-    def prefetch_frames(self, paths: list[str], size: int = 1280, balance: bool = False):
-        """Make these frames in the background, so that the viewer finds them (blink)."""
-        todo = [x for x in paths if x + "|view" not in self.frame_cache]
-        if todo:
-            self.requests += 1
-            self.prefetch.submit("inspect.prefetch", self._prefetch_job, todo, size, balance)
-
-    def _prefetch_job(self, paths, size, balance):
-        for path in paths:
-            if path + "|view" in self.frame_cache:
-                continue
-            try:
-                self.frame_cache[path + "|view"] = self._balanced(api.frame_thumb(self.model.p, path, size), balance)
-            except Exception:  # noqa: BLE001
-                continue
-            while len(self.frame_cache) > 60:
-                self.frame_cache.popitem(last=False)
         return None
 
     def request_stats_batch(self, paths: list[str]):

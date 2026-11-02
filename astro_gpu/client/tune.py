@@ -33,15 +33,15 @@ selected block of the current workflow), ``openPost``, ``removeTool`` (Remove on
 graph's ``remove_tool(node, None)``), ``toasted(text)``, ``sendToPost(name, source, key)`` (Send to Post of a viewer:
 the window gives it to Post's ``add_image_layer``; ``can_post``, a callable the window sets, says whether Post takes
 it). Importing is the views' own: ``sources.import_folder(model, parent, folder=None, new_session=False)``.
+
+Classes: ``TuneView``, ``Strip`` (the strip of blocks), ``WeightsChart`` and ``ColorFitChart`` (Stacking and Color).
 """
 from __future__ import annotations
 
 import html
-import os
 import re
 from collections import OrderedDict
 from functools import partial
-from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -80,11 +80,13 @@ from .charts import (
     color_tabs,
 )
 from .chartview import ChartView
-from .i18n import _, hm, hours_text, language, maybe, number, plural
-from .imageview import ImageView, ViewImage, quick_thumbnail
+from .i18n import _, hours_text, language, number, plural
+from .imageview import ImageView, ViewImage, quick_thumbnail, sky_text
 from .panel import STATE_COLOR, STATE_WORD, Panel
 from .services import inspect as si
 from .services.inspect import CATALOGUE_G_MAX, VisualSpec
+from .services.run import duration_text
+from .services.worker import norm_path
 from .steps import CAMERA_NOTE, COVERAGE_DRIZZLE_NOTE, MODEL_COLOURS_NOTE, Steps
 from .widgets import ACCENT, WARN, clear, label
 
@@ -126,7 +128,7 @@ class Strip(QFrame):
             cb.currentIndexChanged.connect(lambda i: self.workflow.emit(i))
             self.h.addWidget(cb)
             self.h.addSpacing(10)
-        keys = ["sources"] + (chain(g.steps, p) if p is not None else [])
+        keys = ["sources"] + (chain(p) if p is not None else [])
         for i, k in enumerate(keys):
             if i:
                 a = QLabel("›")
@@ -493,7 +495,7 @@ class TuneView(QWidget):
         s = self.s
         s.pending_change = None
         s.select(index, step)
-        g = Graph(s, self.steps)
+        g = Graph(s)
         node = g.node_of(s.path, s.sel_step) if s.sel_step not in ("sources", "final") else None
         s.scope = [q.pid for q in node.paths] if node is not None else None
 
@@ -555,7 +557,7 @@ class TuneView(QWidget):
         self._pending = False
         self._dirty = False
         s = self.s
-        g = g or Graph(s, self.steps)
+        g = g or Graph(s)
         self.strip.build(s, g)
         if s.sel_step == "sources":
             self.pages.setCurrentIndex(1)
@@ -606,8 +608,8 @@ class TuneView(QWidget):
             tb = QTabBar()
             tb.setDrawBase(False)
             tb.setExpanding(False)
-            # every tab stays in view when the row is short of room (its name shortened), never behind scroll arrows:
-            # the last tabs of Registration (Drift path, Distribution, Frames) went out of sight on a narrow window
+            # every tab stays in view when the row is short of room (its name shortened), never behind scroll arrows
+            # (the last tabs of Registration would be out of sight on a narrow window)
             tb.setUsesScrollButtons(False)
             tb.setElideMode(Qt.ElideRight)
             for sp in vis:
@@ -632,10 +634,10 @@ class TuneView(QWidget):
         self.sel_frames, self._seq_items = [], []
         self._render_spec = self._render_geom = None
 
-    # ------------------------------------------------------------ what the walkthrough (tools/) asks of the earlier view
+    # ------------------------------------------------------------ what the walkthrough (tools/client_walkthrough.py) reads
     @property
     def img_tab(self) -> int:
-        """The index of the tab shown (the earlier view's ``img_tab``)."""
+        """The index of the tab shown; set, the tab of that index."""
         if self._cur is None:
             return 0
         p, k, spec = self._cur
@@ -651,7 +653,7 @@ class TuneView(QWidget):
 
     @property
     def _slots(self) -> list:
-        """The earlier view's picture slots: ``image`` is set once the viewer shows its picture (or says why not)."""
+        """One slot per viewer: ``image`` is set once the viewer shows its picture (or says why not)."""
         class Slot:
             def __init__(self, v):
                 self.viewer = v
@@ -663,7 +665,7 @@ class TuneView(QWidget):
             def text(self):
                 return "" if self.image is not None else "Loading"
 
-            def currentWidget(self):  # noqa: N802 - the earlier slot's QStackedLayout
+            def currentWidget(self):  # noqa: N802 - read as a QStackedLayout's
                 return self.note
         return [Slot(v) for v in self.views]
 
@@ -736,6 +738,17 @@ class TuneView(QWidget):
 
     def _card(self, title: str, lines: list[str], more: str = ""):
         """A missing diagnostic, said plainly in the middle of the tab: what, why and how to get it."""
+        box, v = self._card_frame(8)
+        v.addWidget(label(title, "h2"))
+        for line in lines:
+            v.addWidget(label(line, "warn", wrap=True))
+        if more:
+            v.addWidget(label(more, "dim", wrap=True))
+        self._place_card(box, v)
+
+    @staticmethod
+    def _card_frame(spacing: int) -> tuple[QFrame, QVBoxLayout]:
+        """The frame of a card shown in the middle of the tab, and its layout."""
         box = QFrame()
         box.setObjectName("misscard")
         box.setStyleSheet("QFrame#misscard { background: #1c1f26; border: 1px solid #3a4150; border-radius: 8px; }"
@@ -743,12 +756,11 @@ class TuneView(QWidget):
         box.setFixedWidth(640)                     # a fixed width: the wrapped lines get their height
         v = QVBoxLayout(box)
         v.setContentsMargins(22, 18, 22, 18)
-        v.setSpacing(8)
-        v.addWidget(label(title, "h2"))
-        for line in lines:
-            v.addWidget(label(line, "warn", wrap=True))
-        if more:
-            v.addWidget(label(more, "dim", wrap=True))
+        v.setSpacing(spacing)
+        return box, v
+
+    def _place_card(self, box: QFrame, v: QVBoxLayout):
+        """The card in the middle of the tab, as tall as its wrapped lines."""
         for i in range(v.count()):                 # styled now, so that the wrapped lines are measured right
             w_ = v.itemAt(i).widget()
             if w_ is not None:
@@ -933,7 +945,7 @@ class TuneView(QWidget):
                     vi.name = _(spec.compare_names[j])
                 out.append(vi)
         for q in self.s.paths:
-            if q.pid == p.pid or k not in chain(self.steps, q):
+            if q.pid == p.pid or k not in chain(q):
                 continue
             vi = self.steps.view_image(q, spec, prefix=q.name)
             if vi is not None and all(vi.identity() != t.identity() for t in out) and \
@@ -1326,7 +1338,7 @@ class TuneView(QWidget):
         rep = self._report
         if rep is None:
             return None
-        return rep.frames.get(os.path.normcase(os.path.normpath(it.path)))
+        return rep.frames.get(norm_path(it.path))
 
     def _frame_extra(self, it) -> list[tuple[str, str]]:
         """The numbers of a calibration frame for the info band: the engine's statistics when it gives them, else
@@ -1483,28 +1495,14 @@ class TuneView(QWidget):
         """No frame of a kind in the project (none was given, or all were left out): what Calibration does then, and
         Add a folder."""
         title, line = NO_FRAMES.get(kind, ("No frames", "No frames of this kind."))
-        box = QFrame()
-        box.setObjectName("misscard")
-        box.setStyleSheet("QFrame#misscard { background: #1c1f26; border: 1px solid #3a4150; border-radius: 8px; }"
-                          " QLabel { background: transparent; }")
-        box.setFixedWidth(640)
-        v = QVBoxLayout(box)
-        v.setContentsMargins(22, 18, 22, 18)
-        v.setSpacing(10)
+        box, v = self._card_frame(10)
         v.addWidget(label(_(title), "h2"))
         v.addWidget(label(_(line), "", wrap=True))
         b = QPushButton(_(ADD_FOLDER.get(kind, "Add a folder…")))
         b.setObjectName("primary")
         b.clicked.connect(lambda _x=False, kk=kind: self.add_calibration_folder(kk))
         v.addWidget(b, 0, Qt.AlignLeft)
-        for i in range(v.count()):                 # styled now, so that the wrapped lines are measured right
-            w_ = v.itemAt(i).widget()
-            if w_ is not None:
-                w_.ensurePolished()
-        box.setFixedHeight(v.totalHeightForWidth(640) + 8)
-        self.center.addStretch(1)
-        self.center.addWidget(box, 0, Qt.AlignHCenter)
-        self.center.addStretch(2)
+        self._place_card(box, v)
 
     def add_calibration_folder(self, kind: str, folder: str | None = None) -> bool:
         """Add a folder of darks (flats, bias, dark flats) to the sessions that have none of that kind (to every
@@ -1891,7 +1889,7 @@ class TuneView(QWidget):
     def _run_button(self, p, k) -> QPushButton:
         s = self.s
         plan = s.plan_to_block(p, k)
-        rb = QPushButton(_("Run to here") + "  ·  " + approx(plan.seconds, plan.measured))
+        rb = QPushButton(_("Run to here") + "  ·  " + duration_text(plan.seconds, plan.measured))
         titles = []
         for j in plan.jobs:
             key = ENGINE_BLOCK.get(j.block)
@@ -1920,7 +1918,7 @@ class TuneView(QWidget):
         rb.setObjectName("primary")
         box.addWidget(rb, 0, Qt.AlignHCenter)
         if prefs.spec():
-            pv = QPushButton(_("Preview on a region") + "  ·  " + approx(max(plan.seconds / 12, 30), False) + "  ◇")
+            pv = QPushButton(_("Preview on a region") + "  ·  " + duration_text(max(plan.seconds / 12, 30), False) + "  ◇")
             pv.setToolTip("◇ " + _("Not in the engine yet."))
             pv.setEnabled(False)
             box.addWidget(pv, 0, Qt.AlignHCenter)
@@ -2253,16 +2251,4 @@ def _stat(v) -> str:
     return number(x, 3 if abs(x) < 10 else 1)
 
 
-def approx(seconds: float, measured: bool) -> str:
-    """A duration, with ≈ when it is an estimate ("≤ 1 min" is one already)."""
-    t = hm(seconds)
-    return t if measured or t.startswith("≤") else "≈ " + t
-
-
-def sky_text(ra: float, dec: float) -> str:
-    """RA and Dec as the readout writes them: 02h42m06.6s +61°18′01″ (a decimal comma in French)."""
-    from .imageview import sky_text as iv_sky_text
-    return iv_sky_text(ra, dec)
-
-
-__all__ = ["TuneView", "Strip", "make_table", "WeightsChart", "ColorFitChart", "sky_text", "approx"]
+__all__ = ["TuneView", "Strip", "make_table", "WeightsChart", "ColorFitChart", "sky_text"]

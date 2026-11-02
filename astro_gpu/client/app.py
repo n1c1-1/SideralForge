@@ -8,14 +8,15 @@ Settings hold the application preferences; the language takes effect at once (th
 are built again). Spec mode shows, disabled and marked ◇, what the engine does not have yet.
 
 The shell opens, creates and lists v2 projects (core/project2) and never writes into a project unless the user edits
-it or saves it elsewhere; a project of the previous version is imported first (previous.py), its folder untouched.
+it or saves it elsewhere; a project of an older version (v1) is imported first (previous.py), its folder untouched.
 Once a project is open the window holds, for it:
 * ``s``: the ProjectModel (model.py) every view reads and edits; it saves the definition 300 ms after an edit;
 * ``run``: the RunController (services/run.py): the plan dialog, the detached run, its progress and the Log console;
 * ``render``: the RenderWorker of Post (services/render.py), made when Post is first shown and kept while the project
   is open, so that a rebuilt screen (a change of language) does not load the engines again.
 The views are built again with the project screen: ``graph`` (GraphPage), ``tune`` (TuneView, holding Frames and the
-Post page). ``READY`` says which parts are wired (all of them now).
+Post page). Classes: ``Main`` (the window), ``OpenProject`` (the open project as the shell knows it), ``PostHolder``
+(makes the Post page the first time it is shown).
 
     python -m astro_gpu.client [project folder]
 """
@@ -54,6 +55,7 @@ from . import prefs
 from .home import HomeView
 from .i18n import _, language, plural, set_language
 from .logview import LogPanel
+from .services.run import duration_text
 from .services.worker import ApiWorker, Machine, machine_info
 from .settingsdlg import SettingsDialog
 from .widgets import NEW, QSS, WARN, label
@@ -62,17 +64,6 @@ EXTRA_QSS = ("QSlider:horizontal { margin-left: 6px; margin-right: 6px; }"
              "QMenuBar { background: #1c1f26; } QMenuBar::item:selected { background: #2b3446; }")
 HELP = """<h2>{title}</h2>
 <p>{p1}</p><p>{p2}</p>"""
-
-#: the views and services of the packages, by what they bring (all wired by P13)
-READY = {
-    "workflows": True,       # P9b: graph, block panel, undo / redo
-    "inspect": True,         # P10: Inspect, Frames
-    "frames": True,          # P10: Import folder, Import folder as new project
-    "run": True,             # P11: Run all, Run to selected block, Stop
-    "post": True,            # P12: Post, Export image
-    "import_v1": True,       # P6: import of a project of the previous version
-    "cache": True,           # P5: Clear cache of closed projects
-}
 
 _qt_translator: QTranslator | None = None
 
@@ -109,13 +100,6 @@ def machine_text(machine: Machine | None, device: str) -> tuple[str, bool]:
     return g.name, True
 
 
-def approx(seconds: float, measured: bool) -> str:
-    """A duration as the views show it, with ≈ when it is an estimate."""
-    from .i18n import hm
-    t = hm(seconds)
-    return t if measured or t.startswith("≤") else "≈ " + t
-
-
 class OpenProject:
     """The open project as the shell knows it: its folder, its definition and its history (for the Log). The model of
     the views (``Main.s``) shares the definition and the history."""
@@ -139,7 +123,7 @@ class OpenProject:
 
 
 class Placeholder(QWidget):
-    """A place with a short note (what is not there yet)."""
+    """A centred dim note in an empty place (tests stand it in for a page)."""
 
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
@@ -251,16 +235,16 @@ class Main(QMainWindow):
         act(f, _("Save"), self.save, "Ctrl+S", enabled=has)
         act(f, _("Save as…"), self.save_as, enabled=has)
         f.addSeparator()
-        act(f, _("Import folder…"), self.add_sources, "Ctrl+I", enabled=has and READY["frames"])
-        self.a_export = act(f, _("Export image…"), self.export, "Ctrl+E", enabled=has and READY["post"])
+        act(f, _("Import folder…"), self.add_sources, "Ctrl+I", enabled=has)
+        self.a_export = act(f, _("Export image…"), self.export, "Ctrl+E", enabled=has)
         if spec:
             act(f, _("Export project as script…"), new=True)
         f.addSeparator()
         act(f, _("Close project"), self.close_project, "Ctrl+W", enabled=has)
         act(f, _("Quit"), self.close, "Ctrl+Q")
         e = mb.addMenu(_("Edit"))
-        self.a_undo = act(e, _("Undo"), self.undo, "Ctrl+Z", enabled=has and READY["workflows"])
-        self.a_redo = act(e, _("Redo"), self.redo, "Ctrl+Y", enabled=has and READY["workflows"])
+        self.a_undo = act(e, _("Undo"), self.undo, "Ctrl+Z", enabled=has)
+        self.a_redo = act(e, _("Redo"), self.redo, "Ctrl+Y", enabled=has)
         e.addSeparator()
         act(e, _("Settings…"), self.open_settings, "Ctrl+,")
         v = mb.addMenu(_("View"))
@@ -273,8 +257,8 @@ class Main(QMainWindow):
         self.a_spec.setChecked(spec)
         self.a_spec.toggled.connect(self.set_spec)
         r = mb.addMenu(_("Run"))
-        self.a_run = act(r, _("Run all"), self.launch, "F5", enabled=has and READY["run"])
-        self.a_here = act(r, _("Run to selected block"), self.run_to_here, "Shift+F5", enabled=has and READY["run"])
+        self.a_run = act(r, _("Run all"), self.launch, "F5", enabled=has)
+        self.a_here = act(r, _("Run to selected block"), self.run_to_here, "Shift+F5", enabled=has)
         r.addSeparator()
         self.a_stop = act(r, _("Stop"), self.stop_run, enabled=False)
         h = mb.addMenu(_("Help"))
@@ -304,7 +288,7 @@ class Main(QMainWindow):
         if self.project is not None:
             self._leave_thumbnail()                  # Home shows the open project as Post last showed it
         if self.home is None:
-            self.home = HomeView(self.worker, can_import=READY["frames"], last=last)
+            self.home = HomeView(self.worker, can_import=True, last=last)
             self.home.openProject.connect(self.open_project)
             self.home.createProject.connect(self.create_project)
             self.home.importFolder.connect(self.import_folder_as_new)
@@ -561,9 +545,8 @@ class Main(QMainWindow):
         tune.openPost.connect(lambda: self.set_mode(2))
         tune.removeTool.connect(self._remove_tool)
         tune.toasted.connect(self.flash)
-        tune.can_post = self._post_takes_images
+        tune.can_post = self.browser.can_post = lambda: True    # Post takes Inspect's images as layers
         tune.sendToPost.connect(self._send_to_post)
-        self.browser.can_post = self._post_takes_images
         self.browser.sendToPost.connect(self._send_to_post)
         self.frames.imported.connect(self.request_refresh)
         self.frames.stackMode.connect(lambda m: s.set_stack_mode(m))
@@ -574,10 +557,9 @@ class Main(QMainWindow):
     def post_page(self) -> QWidget:
         """Post: PostPage3, on the project's render worker (made the first time Post is shown)."""
         from .post3 import PostPage3
+        from .services.inspect import resolve_key
         page = PostPage3(self.s, worker=self.render_worker())
-        if hasattr(page, "set_image_resolver"):                # the layers Inspect sent, when the project opens again
-            from .services.inspect import resolve_key
-            page.set_image_resolver(lambda key, p=self.s.p: resolve_key(p, key))
+        page.set_image_resolver(lambda key, p=self.s.p: resolve_key(p, key))   # the layers Inspect sent, reopened
         page.goWorkflow.connect(lambda: self.set_mode(0))
         page.view.goResults.connect(self._go_results)
         page.view.goProcessing.connect(lambda pid, k: (self.select(index=self.s.index_of(pid), step=k),
@@ -600,20 +582,9 @@ class Main(QMainWindow):
             except RuntimeError:                     # gone with the window
                 pass
 
-    @staticmethod
-    def _post_takes_images() -> bool:
-        """Whether Post can take an image of Inspect as a layer (``PostPage3.add_image_layer``)."""
-        from .post3 import PostPage3
-        return callable(getattr(PostPage3, "add_image_layer", None))
-
     def _send_to_post(self, name: str, source, key):
         """Send to Post of a viewer of Inspect: the image becomes a layer of Post, which is shown."""
-        post = self.post
-        add = getattr(post, "add_image_layer", None)
-        if not callable(add):
-            self.flash(_("Post does not take images yet: this comes with its image layers."))
-            return
-        add(name, source, key)
+        self.post.add_image_layer(name, source, key)
         self.set_mode(2)
 
     def _post_shown(self) -> bool:
@@ -722,12 +693,12 @@ class Main(QMainWindow):
             self.bt_run.setEnabled(True)
             self.bt_run.setToolTip(_("Show the run"))
         else:
-            self.bt_run.setText(_("Run") + (f"  ·  {approx(cost.seconds, cost.measured)}" if todo else ""))
-            self.bt_run.setEnabled(READY["run"] and frames and todo)
+            self.bt_run.setText(_("Run") + (f"  ·  {duration_text(cost.seconds, cost.measured)}" if todo else ""))
+            self.bt_run.setEnabled(frames and todo)
             self.bt_run.setToolTip("" if todo else (_("No frames yet") if not frames else
                                                     _("Nothing to compute: all up to date.") if cost is not None
                                                     else ""))
-        self.a_run.setEnabled(READY["run"] and frames and (todo or running))
+        self.a_run.setEnabled(frames and (todo or running))
         if not n:
             line = _("No workflow yet") if s is not None and s.ready else ""
         else:
@@ -737,7 +708,7 @@ class Main(QMainWindow):
             elif not s.ready:
                 line += "  ·  " + _("reading the project…")
             elif todo:
-                line += "  ·  " + _("to run: {t}").format(t=approx(cost.seconds, cost.measured))
+                line += "  ·  " + _("to run: {t}").format(t=duration_text(cost.seconds, cost.measured))
             elif cost is not None:
                 line += "  ·  " + _("all up to date")
         self._line = line
@@ -813,11 +784,6 @@ class Main(QMainWindow):
     def offer_import(self, root: Path):
         """A project made with an older version: it opens once imported into the workspace; its folder is never
         written."""
-        if not READY["import_v1"]:
-            box = self.import_box(root)
-            box.exec()
-            box.deleteLater()
-            return
         d = self.import_dialog(root)
         ok = d.exec()
         new = d.result_root
@@ -833,6 +799,7 @@ class Main(QMainWindow):
         return PreviousVersionDialog(root, self)
 
     def import_box(self, root: Path) -> QMessageBox:
+        """A note that the folder holds a project of an older version (tests check its text)."""
         return QMessageBox(QMessageBox.Information, _("Open project"), _(
             "“{name}” was made with an older version. Import it into the workspace to open it here; its folder "
             "is never changed.").format(name=Path(root).name), QMessageBox.Ok, self)
@@ -875,12 +842,12 @@ class Main(QMainWindow):
 
     def launch(self):
         """Run all (F5): the plan dialog, or the progress of the run in progress."""
-        if self.run is not None and READY["run"]:
+        if self.run is not None:
             self.run.launch()
 
     def run_to_here(self):
         """Run to the selected block (Shift+F5)."""
-        if self.run is not None and READY["run"]:
+        if self.run is not None:
             self.run.run_to_here()
 
     def stop_run(self):
@@ -922,7 +889,7 @@ class Main(QMainWindow):
 
     # ------------------------------------------------------------ settings, language, spec mode, log
     def open_settings(self, page: str | None = None):
-        d = SettingsDialog(self.worker, self.machine, can_clear=READY["cache"], parent=self)
+        d = SettingsDialog(self.worker, self.machine, can_clear=True, parent=self)
         if page:
             d.show_page(page)
         d.languageChanged.connect(self.change_language)
@@ -994,10 +961,6 @@ class Main(QMainWindow):
             self.status.setText(getattr(self, "_line", ""))
         else:
             self.status.setText(prefs.get("workspace"))
-
-    def flashed(self) -> str:
-        """The word said now, if any (tests and walkthroughs)."""
-        return self._flash
 
     def about(self):
         d = self.about_dialog()

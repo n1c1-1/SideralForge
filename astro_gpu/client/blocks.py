@@ -4,24 +4,25 @@ A workflow is a chain of blocks, named as in the standard tools (Calibration, Re
 Astrometry, Color, Denoise, Stars, Gradient, Output). The engine's internal steps (the half-stacks, the starless image)
 are not blocks: they are shown inside the block that makes them and as a wire to the block that uses them.
 
-The order is the engine's real one (DESIGN §2.4): Gradient comes after Stars, whose starless image it works on. Two
+The order is the engine's real one: Gradient comes after Stars, whose starless image it works on. Two
 workflows share a block as long as they compute it, and everything before it, the same way (the keys of the engine,
 ``api.blocks``). The graph is therefore a tree: one root (the frames), a branch where two workflows start to differ, one
 leaf (the output) per workflow, all leaves going to Post.
 
-The views keep the mockup's internal block keys (calibration, alignement, selection, empilement, astrometrie, couleur,
+The views use their own block keys (calibration, alignement, selection, empilement, astrometrie, couleur,
 deconv, debruitage, etoiles, fond, post): ``ENGINE_BLOCK`` maps the engine's names to them. The stage names are the
 engine's (``background_poly``, ``render_simple``...).
 
 This module also holds the block table (``STEPS``, ``BY_KEY``) that the Inspect strip and the panel share, and the
-block-level answers (stages, state, duration, summary) over a ``ProjectModel``.
+block-level answers (stages, state, duration, summary) over a ``ProjectModel``. ``Graph`` builds the tree of
+``Node`` objects the graph and the Inspect strip draw.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from .. import texts
-from .i18n import _, hm, language, plural
+from .i18n import _, hm, language, number, plural
 
 # the columns of the graph, left to right; optional columns only appear when a workflow uses them
 COLUMNS = ["sources", "calibration", "alignement", "selection", "empilement", "astrometrie", "couleur", "deconv",
@@ -51,7 +52,7 @@ SIDE_INPUTS = {
 SIDE_INPUTS_HALPHA = [("astrometrie", "H-alpha survey")]
 TRUNK = ["inventory", "calibrate", "register", "stack"]
 
-# every state a block can be in: the three of the spec, and what a run adds
+# every state a block can be in: up to date, pending, outdated, and what a run adds
 STATE_WORD = {"done": "Up to date", "pending": "Pending", "stale": "Outdated", "running": "Running",
               "failed": "Failed", "interrupted": "Interrupted", "skipped": "Skipped"}
 # worst first: a block is as bad as its worst stage in any of its workflows
@@ -136,15 +137,10 @@ def review_title(key: str) -> str:
     return _("Output") if key == "post" else block_title(None, key)
 
 
-def chain(steps, p) -> list[str]:
+def chain(p) -> list[str]:
     """The block keys of a workflow, in order (frames and post excluded); a workflow pulled to the post from a block
-    stops there, then has its output. ``steps`` is unused (the mockup's Steps object): the model knows the chain."""
-    return [k for k in p_model(p).block_keys(p) if k not in HIDDEN_BLOCKS]
-
-
-def p_model(p):
-    """The model a workflow view belongs to."""
-    return p.model
+    stops there, then has its output."""
+    return [k for k in p.model.block_keys(p) if k not in HIDDEN_BLOCKS]
 
 
 # ------------------------------------------------------------------ block-level answers over a model
@@ -170,11 +166,6 @@ def block_state(s, p, key: str) -> str:
 
 def block_seconds(s, p, key: str) -> float:
     return sum(s.seconds(x, p) for x in stages_of(s, p, key))
-
-
-def fnum(x, d=1) -> str:
-    from .i18n import number
-    return number(x, d)
 
 
 def fmt_int(n) -> str:
@@ -204,11 +195,10 @@ class Node:
 
 
 class Graph:
-    """The tree of blocks for the current state of the project."""
+    """The tree of blocks for the current state of the project. A second argument (tests pass None) is not read."""
 
-    def __init__(self, project, steps=None):
+    def __init__(self, project, _unused=None):
         self.s = project
-        self.steps = steps
         self.root = Node("sources", list(project.paths))
         self.final = Node("final", list(project.paths))
         self.leaves: dict[int, Node] = {}
@@ -217,7 +207,7 @@ class Graph:
         for p in project.paths:
             cur = self.root
             self.by_path[p.pid] = {"sources": self.root, "final": self.final}
-            for k in chain(steps, p):
+            for k in chain(p):
                 bk = project.block_key(p, k)
                 nxt = next((c for c in cur.children if c._bk == bk), None)
                 if nxt is None:
@@ -294,16 +284,16 @@ class Graph:
                 return _("k × σ filters · weight ≥ 5 % of the best")
             t, f = s.thresholds_now()
             unit = s.thresholds_unit()
-            return (_("transparency ≥ {t} % · stars ≤ {f} px").format(t=f"{t:.0f}", f=fnum(f)) if unit == "px" else
-                    _("transparency ≥ {t} % · stars ≤ {f} × median").format(t=f"{t:.0f}", f=fnum(f)))
+            return (_("transparency ≥ {t} % · stars ≤ {f} px").format(t=f"{t:.0f}", f=number(f)) if unit == "px" else
+                    _("transparency ≥ {t} % · stars ≤ {f} × median").format(t=f"{t:.0f}", f=number(f)))
         if k == "empilement":
             if s.param_value(p, "stack", "method") == "classic":
                 txt = _("classic stack · {how}").format(how=texts.choice_label(
                     str(s.param_value(p, "stack", "classic_debayer") or "rcd"), language()))
             else:
-                sc = fnum(s.param_value(p, "stack", "scale") or 1.0, 2).rstrip("0").rstrip(",.")
+                sc = number(s.param_value(p, "stack", "scale") or 1.0, 2).rstrip("0").rstrip(",.")
                 txt = _("drizzle ×{scale} · rejection at {kappa} σ").format(
-                    scale=sc, kappa=fnum(s.param_value(p, "stack", "kappa") or 5, 0))
+                    scale=sc, kappa=number(s.param_value(p, "stack", "kappa") or 5, 0))
             if any(q.opts["debruitage"] for q in node.paths):
                 txt += " · " + _("+ half-stacks")
             return txt

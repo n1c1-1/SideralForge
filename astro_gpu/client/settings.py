@@ -5,7 +5,7 @@ Two kinds of settings:
   of a block by the catalogue below; the ones the catalogue does not place go to "Other settings" of their block, so
   that no setting of the engine is out of reach;
 * "new" (◇): a setting the engine does not have yet. Shown in Spec mode only, disabled and marked ◇, so that the
-  panel doubles as the list of the engine work. Its value is never stored and never changes a key (DESIGN §5.5).
+  panel doubles as the list of the engine work. Its value is never stored and never changes a key.
 
 Levels: "normal" (always shown), "expert" (Advanced settings), "system" (speed, memory, reproducibility: kept apart).
 
@@ -13,7 +13,7 @@ Texts are in English and go through ``_()`` when shown: ``resolve()`` returns th
 choices already translated (the engine's reasons through ``texts.format_reason``, with a decimal comma in French);
 group titles are translated by ``step_settings()``. The settings of a stage come from ``ProjectModel.params`` (the
 worker's ``describe``, cached): ``step_settings`` gives what it has, ``loading`` says whether some are still on their
-way.
+way. ``SettingRow`` (with its ``RangeBar``) is the editor of one setting.
 """
 from __future__ import annotations
 
@@ -438,7 +438,7 @@ METHOD_TEXTS = {
                                  "with few or barely dithered frames."),
 }
 OUTPUT_STAGES = ("render_prep", "render_prep_learned", "render_simple")
-# the 32 usage tips of the engine, as the mockup wrote them (the engine's own tips win when it has one)
+# the usage tips of the settings, by (stage, setting) (the engine's own tip wins when it has one)
 TIPS = {
     ("astrometry", "target"): "Not needed when the center is given or when the FITS files hold the pointing.",
     ("astrometry", "focal_mm"): "Read from the files when the camera records it; telescopes usually do not. Empty, "
@@ -500,7 +500,6 @@ STAGE_STEP = {"inventory": "Calibration", "calibrate": "Calibration", "register"
               "reference": "Astrometry", "color": "Color", "denoise": "Denoise", "optics": "Stars",
               "stars": "Stars", "star_net": "Neural star removal", "starless": "Starless image",
               "background": "Gradient", "background_poly": "Gradient"}
-LEVEL_TEXT = {"normal": "normal", "expert": "expert", "system": "system"}
 ENGINE_LEVEL = {"basic": "normal", "advanced": "expert", "expert": "expert", "system": "system"}
 TYPES = {"int": "int", "float": "float", "bool": "bool", "str": "str", "float | None": "optfloat"}
 
@@ -705,17 +704,6 @@ def step_settings(s, p, step: str):
     if rows:
         out.append((_("Other settings"), rows))
     return out
-
-
-def all_settings(s, p, steps_obj=None):
-    """Every setting of the workflow, in chain order: [(block title, group, resolved)]."""
-    from .blocks import BY_KEY
-    rows = []
-    for k in s.block_keys(p):
-        for g, rs in step_settings(s, p, k):
-            for r in rs:
-                rows.append((_(BY_KEY[k]["title"]), g, r))
-    return rows
 
 
 def fmt(v, typ=None, choices=None) -> str:
