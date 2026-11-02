@@ -44,7 +44,10 @@ Survoler un bloc donne son état ; clic droit › « Pause ici pour vérificatio
 - **Couleur** : avant / après, et à droite la **balance des blancs** mesurée sur les étoiles. Nouveau ce midi : si
   les courbes de l'appareil ne collent pas au champ, plus de matrice de couleur, seulement un facteur par couleur
   (comme Siril et PixInsight). Sur Heart en classique, le rouge n'est plus orangé.
-- **Gradient**, **Astrométrie** : « Comparer avec », puis **Côte à côte** : les deux images sont sur le même ciel.
+- **Gradient** : « Comparer avec », puis **Côte à côte** : les deux images sont sur le même ciel.
+- **Astrométrie** : plus de comparaison. Le menu **« Image de fond »** choisit l'image sous la grille du ciel et les
+  objets nommés : empilement, calibré en couleur, gradient retiré, ou **image finale**. Seules les images déjà
+  calculées y figurent.
 - **Sortie** : l'image finale, avec une phrase qui explique pourquoi elle peut paraître plus bruitée que
   « Gradient retiré » (même données, étirées par les réglages du Post-traitement).
 
