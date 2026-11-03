@@ -10,8 +10,8 @@ core/import_v1.map_path).
 Nothing is written into the old projects: the import runs under a write guard (core/import_v1.WriteGuard). With
 ``--dry-run`` nothing is written at all. ``--proof DIR`` lists every file of the old projects' folders (project,
 scratch, inputs, reference, star layers) with its size and date before and after, writes both lists into DIR and
-reports any difference. The stage durations of the old manifests (estimate.learn_from_v1) are printed: P8 seeds a
-pilot timing history with them; this tool writes no history.
+reports any difference. The stage durations of the old manifests (estimate.learn_from_v1) are printed (a timing history can be
+seeded with them); this tool writes no history.
 """
 from __future__ import annotations
 

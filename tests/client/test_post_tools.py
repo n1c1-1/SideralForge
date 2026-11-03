@@ -1,11 +1,11 @@
-"""Post's tools (docs/pilot/POST_TOOLS.md): the Curves tool and the filters added after the PixInsight / Siril inventory.
+"""Post's tools: the Curves editor and the filters (GHS, asinh, histogram transformation, SCNR, CLAHE, starlets...).
 
 Each method against its reference: the interpolations against scipy, Photoshop's presets against the .acv files
 Photoshop ships (when installed), GHS, asinh, the histogram transformation and SCNR against siril-cli (when installed),
 CLAHE against OpenCV, the starlet transform against its definition. Every filter is the identity at its defaults, then
 has a known effect on synthetic data. The Curves editor in the page: points added, moved and deleted with the mouse, a
 draft while a point moves and the exact image on release (one undo step), the live histogram, the presets (built-in, the
-user's own, Photoshop files), the French. The real project (slow): screenshots EN and FR and the time of a filter drag.
+user's own, Photoshop files), the French. The test project (slow): screenshots EN and FR and the time of a filter drag.
 
 ASTRO_GPU_POST_TOOLS_SHOTS names the folder of the screenshots (default: %TEMP%/post_tools_shots).
 """
@@ -25,6 +25,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
+from conftest import NO_TEST_PROJECT  # noqa: E402
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from test_post import (  # noqa: E402, F401 - the fixtures and helpers of Post's tests
@@ -586,7 +587,7 @@ def test_the_tools_in_french(preps, qapp):
         assert "   Contraste moyen" in texts and "Personnalisé" in texts and "   Remonter les tons moyens" in texts
         assert ed.b_reset.text() == "Réinitialiser le canal"
         v.build_filter_menu()
-        assert [a.text() for a in v.filter_menu.actions()][:2] == ["Étirement", "Contraste et courbes"]
+        assert [a.text() for a in v.filter_menu.actions()][:2] == ["Étirement", "Contraste"]
         assert not i18n.missing(), sorted(i18n.missing())
     finally:
         s.close()
@@ -594,7 +595,7 @@ def test_the_tools_in_french(preps, qapp):
 
 
 # ---------------------------------------------------------------------------------------------- the real project
-needs_real = pytest.mark.skipif(not (REAL / "project.astroproj").exists(), reason="test copy not there")
+needs_real = pytest.mark.skipif(not (REAL / "project.astroproj").exists(), reason=NO_TEST_PROJECT)
 
 
 def take_tool_shots(s, lang: str, out: Path):

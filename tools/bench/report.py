@@ -325,7 +325,7 @@ def vtable(case: str, level: str) -> str:
         return "(mesures pas encore faites)\n"
     vals = [(lab, _get(e)) for lab, _n, e in cols]
     by = dict(vals)
-    pairs = [(f"B face à A (nous)", "nous A", "nous B"), (f"B face à A (Siril)", "Siril A", "Siril B")]
+    pairs = [("B face à A (nous)", "nous A", "nous B"), ("B face à A (Siril)", "Siril A", "Siril B")]
     pairs = [p for p in pairs if p[1] in by and p[2] in by]
     head = "| Mesure | " + " | ".join(lab for lab, _ in vals) + "".join(f" | {p[0]}" for p in pairs) + " |\n"
     head += "|---|" + "---|" * (len(vals) + len(pairs)) + "\n"

@@ -1,4 +1,4 @@
-"""P7: the v2 path against v1, end to end, on the heart_a7s test set.
+"""The v2 path against v1, end to end, on the heart_a7s test set (tests/test_integration_v2.py, slow).
 
 A fresh v2 project is built under ``F:/astro_essais/p7/`` from the raw frames of ``F:/astro_essais/donnees/heart_a7s``
 with the parameters of the v1 test project ``F:/astro_essais/projets/heart_a7s`` (denoise 6000 iterations). It is
@@ -20,7 +20,7 @@ driven through ``astro_gpu.api`` as the client does: create, scan, add frames, w
 Options (before the phase): ``--root DIR`` (default ``$ASTRO_TESTS/p7``), ``--against v1copy`` (compare with the run of
 ``v1run`` instead of the existing v1 results), ``--device cuda:0``.
 
-Rules. The v1 test project is read only (its files are listed before and after). The pilot ``ASTRO_GPU_HOME`` is
+Rules. The v1 test project is read only (its files are listed before and after). The run's ``ASTRO_GPU_HOME`` is
 ``<root>/etat`` (a copy of the camera profiles): nothing of the user's state is written. The numeric helpers at the
 top need only numpy (tests/test_integration_v2.py uses them on toy stages); everything else imports the engine on
 first use, after ASTRO_GPU_HOME is set.

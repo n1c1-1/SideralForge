@@ -8,7 +8,7 @@ What Siril's Catalog_Installer script does, without its window:
   offline.
 Each archive is checked against its sha256 and decompressed. The bench's copy of the Siril settings (_siril/config.ini)
 then points core.catalogue_gaia_astro and core.catalogue_gaia_photo at them. Why: the online catalogues Siril uses
-(VizieR) did not answer on 2026-11-01; Siril itself recommends these local extracts.
+(VizieR) does not always answer; Siril itself recommends these local extracts.
 """
 from __future__ import annotations
 

@@ -1,5 +1,6 @@
-"""Quality control of v1 and v2 renders: pairing, blind sheets, report cards, non-regression. The v2 port of
-judge.py, blind.py, bulletin.py and nonreg.py (P17).
+"""Quality control of v1 and v2 renders: pairing, blind sheets, report cards, non-regression.
+
+The v2 counterpart of judge.py, blind.py, bulletin.py and nonreg.py.
 
     python tools/qc/qc2.py pairs OLD [OLD ...] [--new NEW] [--out DIR]
     python tools/qc/qc2.py sheets --out DIR --short NAME [--seed N] [--zones x:y ...] CAND CAND ...
@@ -13,7 +14,7 @@ CAND is ``PROJECT::WORKFLOW`` (v2: the workflow's name, or #id) or ``PROJECT::DE
 by default export/<workflow>/<workflow>_16bit.tif; a v1 deliverable's is results/<name>/<name>.png). ``--render DEVICE``
 renders a v2 workflow that has no image, into DIR/renders/.
 
-Everything is written into DIR (F:/astro_projets/_qc/ for P14): sheets/ for the judges, _keys/ for the key (never given
+Everything is written into DIR (for example F:/astro_projets/_qc/): sheets/ for the judges, _keys/ for the key (never given
 to them), bulletin/, nonreg/, pairs/, renders/. DIR inside a project, or in the folder of an image read, is refused,
 and no write under a project is possible during the run (the write guard of core/import_v1).
 

@@ -6,7 +6,7 @@ projects that stay apart from the user's (their own list of projects and camera 
                                                      process the sets, then render them with the 'Natural' preset
     python tools/qc/jeux.py list                     the sets, what they test and their last run
 
-Everything lives under ROOT (the T9 since 2026-10-30): donnees/<set>/{lights,darks,flats,bias}, projets/<set>,
+Everything lives under ROOT (F:/astro_essais): donnees/<set>/{lights,darks,flats,bias}, projets/<set>,
 scratch/<set>, etat/ (ASTRO_GPU_HOME), journaux/<set>_<label>.log, runs.json. The sources are only read.
 A set's frames are chosen evenly over its session (drift, transparency and sky changes stay representative). The
 test projects have their own settings (TEST_PARAMS): learned star removal off, shorter denoiser training.

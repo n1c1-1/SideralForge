@@ -7,6 +7,8 @@ brings to a comparison: its image, its own geometry, its own alignment and astro
 
 Every file a render is mapped with comes from the project that made it, never from the project it is compared with
 (the framing of two stacks of the same field moves by a few pixels). The project is read, never written.
+
+A module of tools/qc/qc2.py (``python tools/qc/qc2.py --help``): not run by itself.
 """
 from __future__ import annotations
 

@@ -1,5 +1,7 @@
-"""The client shell (P9a), offscreen: Home over a scratch workspace, new and v1 projects, the language at runtime,
-the settings file, the Log, the dialogs, the ApiWorker, and screenshots.
+"""The client shell, offscreen: Home, new and older projects, the language, settings, the Log, dialogs, the ApiWorker.
+
+Home over a scratch workspace, new projects and the import of older ones, the language at runtime, the settings file,
+the Log, the dialogs, the ApiWorker, and screenshots.
 
 ASTRO_GPU_SETTINGS points to a temporary file in every test; the user's settings file is checked untouched.
 ASTRO_GPU_SHOTS names a folder for the screenshots (default: a temporary folder).
@@ -23,6 +25,7 @@ if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")      # the offscreen platform has no fonts else
 
 pytest.importorskip("PySide6")
+from conftest import HAVE_TEST_PROJECT, NO_TEST_PROJECT, TEST_PROJECT  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractButton,
     QApplication,
@@ -281,9 +284,9 @@ def test_post_leaves_the_thumbnail_home_shows(env, tmp_path):
 def test_a_computed_project_shows_its_state_without_a_write(env):
     """Home reads the true states (the keys of the stages, in the worker), and writes nothing."""
     from astro_gpu.client.home import project_state
-    data = Path("F:/astro_essais/v2/heart_a7s")
-    if not (data / "project.astroproj").is_file():
-        pytest.skip("the heart_a7s test project (F:/astro_essais) is not here")
+    data = TEST_PROJECT
+    if not HAVE_TEST_PROJECT:
+        pytest.skip(NO_TEST_PROJECT)
     files = [data / "project.astroproj", data / "state.json"]
     before = [(f.stat().st_mtime_ns, f.stat().st_size) if f.exists() else None for f in files]
     state, args = project_state(data.as_posix())
@@ -401,7 +404,7 @@ def test_prefs_go_only_to_the_override_file(env, monkeypatch, tmp_path):
     assert _fingerprint(USER_SETTINGS) == USER_BEFORE
 
 
-def test_no_mockup_leftovers():
+def test_no_prototype_leftovers():
     bad = [re.compile(p) for p in (r"alt2", r"alt3", r"data\.json", r"\bDemo\b", r"\bdemo\b", r"sys\.path\.(insert|append)",
                                    r"mockup/", r"^\s*(from|import)\s+(project|model|blocks|graph|panel|steps|prefs|"
                                    r"i18n|widgets|viewer|home|dialogs)\b")]

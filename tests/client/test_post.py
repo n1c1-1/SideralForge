@@ -1,10 +1,12 @@
-"""Post and Export (P12), offscreen: the composition (layers, filters, masks), the render worker (supersede, device,
-fallback), the engine's renderings through it (bit for bit), the export, the screen, the French and the screenshots.
+"""Post and Export, offscreen: layers, filters, masks, the render worker, the engine's renderings, the export.
 
-The synthetic preparations (a nebula, stars, an uncovered border) make the fast tests; the real ones use F:/astro_essais/v2/
-heart_a7s_p12, a copy of the adopted heart_a7s project (skipped without it) and are marked slow.
+The composition (layers, filters, masks), the render worker (supersede, device, fallback), the engine's renderings
+through it (bit for bit), the export, the screen, the French and the screenshots.
+
+The synthetic preparations (a nebula, stars, an uncovered border) make the fast tests; the real ones read the test
+project (tests/conftest.py: Full computed, its computed Classic workflow added in memory) and are marked slow.
 ASTRO_GPU_SETTINGS points to a temporary file everywhere: the user's settings file is checked untouched.
-ASTRO_GPU_SHOTS names the folder of the screenshots (default: %TEMP%/p12_shots).
+ASTRO_GPU_SHOTS names the folder of the screenshots (default: %TEMP%/post_shots).
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ if Path("C:/Windows/Fonts").is_dir():
 
 pytest.importorskip("PySide6")
 import torch  # noqa: E402
+from conftest import TEST_PROJECT, TEST_PROJECT_CLASSIC, needs_test_project  # noqa: E402
 from PySide6.QtCore import QObject, Signal  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
@@ -72,9 +75,9 @@ CLIENT = ROOT / "astro_gpu" / "client"
 #: the modules of Post (their texts are translated, their imports checked)
 POST_MODULES = ("post3", "exportdlg", "postengine", "services/render", "curveseditor", "postfilters/__init__",
                 "postfilters/colour", "postfilters/curves", "postfilters/tone", "postfilters/detail")
-REAL = Path("F:/astro_essais/v2/heart_a7s_p12")
+REAL = TEST_PROJECT
 DEV = "cpu"                                              # the fast tests render on the CPU: no GPU needed, no GPU busy
-SHOTS = Path(os.environ.get("ASTRO_GPU_SHOTS") or Path(os.environ.get("TEMP") or tempfile.gettempdir()) / "p12_shots")
+SHOTS = Path(os.environ.get("ASTRO_GPU_SHOTS") or Path(os.environ.get("TEMP") or tempfile.gettempdir()) / "post_shots")
 
 
 def _user_settings() -> Path:
@@ -280,7 +283,7 @@ def _hw(h, c, w):
 
 
 class RefCtx:
-    """The mockup's formulas (scipy, float64), the reference of the port."""
+    """The reference formulas of the filters (scipy, float64)."""
 
     def __init__(self, stars, halpha, f=1):
         self._s, self._h, self.f = stars, halpha, f
@@ -353,15 +356,15 @@ def _reference(key, x, p, ctx):
     raise KeyError(key)
 
 
-#: the filters of the first Post (the mockup's); the new settings some have since, at the values that keep the old ones
+#: the original filters of Post; the settings some have since, at the values that keep the original behaviour
 FIRST = {"stretch", "levels", "saturation", "scnr", "balance", "local_contrast", "sharpen", "denoise", "star_reduce",
          "halos", "star_color", "halpha_red"}
 AS_FIRST = {"scnr": {"method": "Average neutral", "lightness": False}}
 
 
-def test_the_first_posts_filters_are_the_mockups_formulas():
+def test_the_original_filters_match_their_reference_formulas():
     """Each filter of the first Post, on a random image, at several settings and resolutions: the port (and its fast
-    paths) gives what the mockup's formulas give, to a fraction of an 8-bit level; its three-slider Curves opens as the
+    paths) gives what the reference formulas give, to a fraction of an 8-bit level; its three-slider Curves opens as the
     same curve in the Curves tool (tests/client/test_post_tools.py tests the new filters)."""
     assert FIRST < set(FILTERS) and "curves" in FILTERS
     rng = np.random.default_rng(1)
@@ -865,7 +868,7 @@ def test_a_region_at_full_resolution_is_the_engines_region(preps):
     whole = src.layer(lay, 0, (0, 0, *cv.size(0)))                           # the whole canvas: v1's own full rendering
     full = svc.render(preps["full"], None, {"sky": 2.5}, 1.0).rgb
     assert np.array_equal(whole, np.moveaxis(full[:, oy:oy + cv.H, ox:ox + cv.W], 0, -1))
-    d = np.abs(got - whole[60:300, 100:420]) * 255                           # P4: a region is the crop within 2 levels
+    d = np.abs(got - whole[60:300, 100:420]) * 255                           # a region is the crop within 2 levels
     assert float(np.percentile(d[64:-64, 64:-64], 99.9)) <= 2.0
 
 
@@ -2250,7 +2253,7 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
             v.sub_text(lay)
             v.thumb(lay)
         v.build_filter_menu()
-        assert [a.text() for a in v.filter_menu.actions()] == ["Étirement", "Contraste et courbes", "Couleur", "Détail",
+        assert [a.text() for a in v.filter_menu.actions()] == ["Étirement", "Contraste", "Couleur", "Détail",
                                                                "Bruit", "Étoiles", "Combinaison"]
         d = ExportDialog(v)
         try:
@@ -2278,7 +2281,7 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
 
 
 # ---------------------------------------------------------------------------------------------- hygiene
-def test_the_new_modules_have_no_mockup_leftovers_and_import_only_the_client():
+def test_the_post_modules_import_only_the_client_libraries():
     import ast
     for name in POST_MODULES:
         src = (CLIENT / f"{name}.py").read_text(encoding="utf-8")
@@ -2409,18 +2412,25 @@ def test_screenshots_en_and_fr(preps, qapp, tmp_path):
 
 # ---------------------------------------------------------------------------------------------- the real project (slow)
 REAL_DEVICE = os.environ.get("ASTRO_GPU_TEST_DEVICE", "cpu")         # "auto" only where the GPUs are free
-needs_real = pytest.mark.skipif(not (REAL / "project.astroproj").exists(), reason="F:/astro_essais/v2/heart_a7s_p12 not there")
+needs_real = needs_test_project
+
+
+def real_project():
+    """The test project with its computed Classic workflow added in memory (TEST_PROJECT_CLASSIC): nothing is saved."""
+    p = api.open_project(REAL)
+    api.add_workflow(p, *TEST_PROJECT_CLASSIC)
+    return p
 
 
 class RealSetup(Setup):
-    """A page on the copy of the adopted heart_a7s project (Full: render_prep; Classic: render_simple), the model read
-    only: nothing is written into the project."""
+    """A page on the test project (Full: render_prep; Classic: render_simple), the model read only: nothing is
+    written into the project."""
 
     def __init__(self, qapp, faithful=True):
         from astro_gpu.client.model import ProjectModel
         from astro_gpu.client.services.worker import ApiWorker
         self.qapp = qapp
-        self.project = api.open_project(REAL)
+        self.project = real_project()
         if faithful:
             self.project.render_bases = {"faithful": {"sky_level": 24.0}}          # in memory only
         self.api_worker = ApiWorker()
@@ -2498,7 +2508,7 @@ def test_real_the_layers_render_filters_masks_split_and_undo(real):
 def test_real_the_release_render_is_the_engines_bit_for_bit(qapp):
     """api.render_layer with the 'faithful' rendering and every slider at 2 is RenderEngine.render(faithful), and the
     layers of Post are those renderings (the DESIGN §6.3 v1/v2 check)."""
-    p = api.open_project(REAL)
+    p = real_project()
     p.render_bases = {"faithful": {"sky_level": 24.0}}
     dev = "cpu" if REAL_DEVICE == "cpu" else rsv.choose_device("auto")
     svc = LayerService(dev)
@@ -2509,7 +2519,7 @@ def test_real_the_release_render_is_the_engines_bit_for_bit(qapp):
     assert torch.equal(torch.from_numpy(lay.rgb), want.final.cpu()), "render_layer(faithful, 2) is not the engine's render"
     # the page's layer, cut to the canvas, is the same image
     src = LayerSource(rsv.api_resolver(p), svc, rsv.bases_of(p))
-    cv = src.canvas([1, 2])
+    cv = src.canvas([w.id for w in p.workflows])
     ox, oy = cv.origin
     lay_p = new_workflow_layer(1, "Full", True, base="faithful")
     w, h = cv.size(2)
@@ -2541,7 +2551,7 @@ def test_real_the_exports_read_back_with_their_wcs_and_the_reduced_one_matches_t
     # full resolution has, like the removal of specks), the least Post can differ by
     import cv2 as _cv
     ref_src = LayerSource(rsv.api_resolver(s.project), LayerService(s.worker.device), rsv.bases_of(s.project))
-    ref_src.canvas([1, 2])
+    ref_src.canvas([w.id for w in s.project.workflows])
     solo = new_workflow_layer(1, "Full", True)
     w1, h1 = ref_src._cv.size(1)
     a1 = ref_src.layer(solo, 1, (0, 0, w1, h1))

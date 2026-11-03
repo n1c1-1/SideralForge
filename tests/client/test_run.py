@@ -1,10 +1,10 @@
-"""P11: the Run part of the client (plan dialog, run service, progress on the graph, the console, the recap), offscreen.
+"""The Run part of the client (plan dialog, run service, progress on the graph, the console, the recap), offscreen.
 
 Most tests run toy stages (inventory → stack → denoise (the 'denoise' option: steps, checkpoints) → color →
 render_prep) in a real detached worker on the CPU: the worker builds the same toy graph from the spec
 'test_run:toy_rules' (this module, put on its PYTHONPATH). The slow tests run the real stages on a copy of the
-heart_a7s v2 project (F:/astro_essais/v2/heart_a7s_p11) on the CPU, and take the screenshots (ASTRO_GPU_SHOTS names the
-folder; default %TEMP%/p11_shots).
+test project (tests/conftest.py) on the CPU, and take the screenshots (ASTRO_GPU_SHOTS names the folder; default
+%TEMP%/run_shots).
 
 ASTRO_GPU_SETTINGS points to a temporary file in every test; the user's settings file is checked untouched.
 """
@@ -71,10 +71,15 @@ from astro_gpu.core.stage import Stage, StageError  # noqa: E402
 from astro_gpu.core.store import KeyRules, Store  # noqa: E402
 from astro_gpu.core.workflow import Chains  # noqa: E402
 
+try:
+    from conftest import TEST_PROJECT, needs_test_project  # noqa: E402
+except ImportError:          # a detached worker imports this module for toy_rules alone: tests/ is not on its path
+    TEST_PROJECT, needs_test_project = Path("."), pytest.mark.skip(reason="no tests/conftest.py")
+
 HERE = Path(__file__).parent
 SPEC = "test_run:toy_rules"
-F_COPY = Path("F:/astro_essais/v2/heart_a7s_p11")
-SHOTS = Path(os.environ.get("ASTRO_GPU_SHOTS") or Path(os.environ.get("TEMP", ".")) / "p11_shots")
+F_COPY = TEST_PROJECT                                   # only read: the runs work on copies
+SHOTS = Path(os.environ.get("ASTRO_GPU_SHOTS") or Path(os.environ.get("TEMP", ".")) / "run_shots")
 
 
 # ---------------------------------------------------------------------------------------------- toy stages
@@ -224,7 +229,7 @@ def raw_folder(folder: Path, n: int = 3) -> Path:
 def beat_limit(load: float) -> float:
     """What the GUI thread may stall for: 200 ms, on a machine that is not busy. The model reads the states and replans
     from the manifests when a stage ends (tens of ms), and the graph page rebuilds: on a machine whose cores are busy
-    with other jobs (the other agents' tests, the runs of P8) that takes longer, and the limit goes up to 600 ms."""
+    with other jobs (other tests, project runs) that takes longer, and the limit goes up to 600 ms."""
     return 0.2 if load < 40 else 0.6
 
 
@@ -1320,7 +1325,7 @@ def test_a_dialog_in_every_phase_has_no_english_left_in_french(toy):
                for x in seen[0]), [x for x in seen[0] if "Go" in x or "Dur" in x]
 
 
-def test_the_mockups_run_blocks_door_opens_the_plan_of_the_block(toy):
+def test_the_run_blocks_entry_opens_the_plan_of_the_block(toy):
     items = toy.model.pending_upto(toy.model.view(1), ["stack"])
     d = run_blocks(toy.model, None, items, "Run to Stacking", None, controller=toy.ctl)
     assert d is not None and [r.row.title for r in d.rows] == ["Calibration", "Stacking"]
@@ -1331,8 +1336,31 @@ def test_the_mockups_run_blocks_door_opens_the_plan_of_the_block(toy):
 
 
 # ---------------------------------------------------------------------------------------------- the real stages
-real = pytest.mark.skipif(not (F_COPY / "project.astroproj").is_file(),
-                          reason="the heart_a7s_p11 copy of the v2 test project is not on this machine")
+real = needs_test_project
+#: the store folders a Classic stack workflow reads (its own chain, and the survey its Astrometry block shows): what a
+#: copy that runs it needs
+CLASSIC_STORE = ("inventory", "calibrate", "register", "stack", "astrometry", "surveys", "catalogs", "color",
+                 "background_poly", "render_simple")
+
+
+def _classic_copy(tmp: Path) -> Path:
+    """A copy of the test project holding the results of the Classic stack chain (not the scratch, not the stages of
+    Full alone): a run in it writes into the copy only."""
+    dst = tmp / "heart"
+    dst.mkdir()
+    for f in F_COPY.iterdir():
+        if f.is_file():
+            shutil.copy2(f, dst / f.name)
+    for name in ("inputs",):
+        if (F_COPY / name).is_dir():
+            shutil.copytree(F_COPY / name, dst / name)
+    for sd in (F_COPY / "store").iterdir():
+        if sd.is_dir() and (sd.name in CLASSIC_STORE or sd.name.startswith("_")):
+            shutil.copytree(sd, dst / "store" / sd.name)
+        elif sd.is_file():
+            (dst / "store").mkdir(exist_ok=True)
+            shutil.copy2(sd, dst / "store" / sd.name)
+    return dst
 
 
 def _grab(w: QWidget, name: str):
@@ -1341,11 +1369,11 @@ def _grab(w: QWidget, name: str):
     w.grab().save(str(SHOTS / f"{name}.png"))
 
 
-def _real_world(tmp: Path) -> World:
-    """The copy of heart_a7s with the four workflows, on the CPU: the model never saves (the plan carries the
-    definition), the runs write the new results into the copy."""
+def _real_world(root: Path) -> World:
+    """The project in ``root`` with the four workflows, on the CPU: the model never saves (the plan carries the
+    definition), the runs write the new results into ``root``."""
     from astro_gpu.core import workflow as wfl
-    p = api.open_project(F_COPY)
+    p = api.open_project(root)
     for name, template, params in (("Classic stack", "Classic stack", None),
                                    ("Classic + denoise", "Classic + denoise", {"denoise": {"iterations": 6000}}),
                                    ("Full + neural stars", "Full + neural stars", {"denoise": {"iterations": 6000}})):
@@ -1384,14 +1412,10 @@ def _shell(w: World):
 @real
 @pytest.mark.slow
 def test_a_real_render_simple_job_runs_with_the_heartbeat_under_200_ms_and_the_screenshots(env, monkeypatch):
-    """Run the Classic stack of the heart_a7s copy for real on the CPU: background_poly and render_simple. The
-    stripes turn green and the layer appears. Takes the screenshots in English and in French."""
-    monkeypatch.setenv("ASTRO_GPU_HOME", str(F_COPY.parent / "heart_a7s_p11_home"))
-    monkeypatch.setattr(project_mod, "STATE", F_COPY.parent / "heart_a7s_p11_home")
-    before = done_keys(F_COPY)
-    w = _real_world(env["tmp"])
+    """Run the Classic stack of a copy of the test project for real on the CPU: background_poly and render_simple.
+    The stripes turn green and the layer appears. Takes the screenshots in English and in French."""
+    w = _real_world(_classic_copy(env["tmp"]))
     root = None
-    created: list[tuple[str, str]] = []
     try:
         classic = w.model.view(next(v.pid for v in w.model.paths if v.name == "Classic stack"))
         for n, lang in enumerate(("en", "fr")):
@@ -1433,7 +1457,6 @@ def test_a_real_render_simple_job_runs_with_the_heartbeat_under_200_ms_and_the_s
             d = w.ctl.run_to_here()
             jobs = [(j.stage, j.measured) for j in d.plan.jobs]
             assert [s for s, _m in jobs] == ["background_poly", "render_simple"], jobs
-            created += [(j.stage, j.key) for j in d.plan.jobs]
             w.beat.start()
             d.start()
             shot = False
@@ -1473,14 +1496,6 @@ def test_a_real_render_simple_job_runs_with_the_heartbeat_under_200_ms_and_the_s
             root.close()
         w.close()
         appmod.apply_language("en")
-        # the copy goes back to what it was: the results of this test are removed (they belong to the copy)
-        after = done_keys(F_COPY)
-        for stage, keys in after.items():
-            for k in keys:
-                if k not in before.get(stage, []):
-                    shutil.rmtree(F_COPY / "store" / stage / k, ignore_errors=True)
-        for stage, k in created:
-            shutil.rmtree(F_COPY / "store" / stage / f"{k}.tmp", ignore_errors=True)
 
 
 @real
@@ -1488,7 +1503,7 @@ def test_a_real_render_simple_job_runs_with_the_heartbeat_under_200_ms_and_the_s
 def test_screenshots_of_the_failed_run_and_the_stopped_run_on_the_real_plan(env):
     """A failed run and a stopped run on the real four-workflow plan, from synthetic events (no stage is run):
     the recaps in English and French."""
-    w = _real_world(env["tmp"])
+    w = _real_world(F_COPY)
     try:
         plan = w.model.plan_all()
         jobs = plan.jobs
@@ -1558,7 +1573,7 @@ B3 = Path(os.environ.get("TEMP", ".")) / "b3_shots"
 
 @real
 def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_fr(env, monkeypatch):
-    """The real client (the main window, offscreen) on the definition of the heart_a7s_p11 copy, in a scratch folder
+    """The real client (the main window, offscreen) on the definition of the test project, in a scratch folder
     (the copy itself is only read: its results are other tests'), on the CPU: Pause here for review on Calibration and
     Registration; Run all stops after Calibration (the real stages run in a detached worker); the recap asks for the
     review; Open in Inspect shows the block; Continue runs Registration and stops again. The breakpoints and the reviews

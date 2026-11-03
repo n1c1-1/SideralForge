@@ -1,5 +1,6 @@
-"""Fixes found by the screen-by-screen review of the client on the bench projects (2026-11-02), offscreen, on scratch
-data only (never F:/astro_projets, never the user's settings)."""
+"""Layout and export details of the client: FITS export WCS and header, histogram ticks, widths that never grow.
+
+Offscreen, on scratch data only (never F:/astro_projets, never the user's settings)."""
 from __future__ import annotations
 
 import os

@@ -9,6 +9,8 @@ Nothing in a sheet or in a file name says which render is old or new, which work
 What they never get (``<out>/_keys/<short>_key.json``): which letter is which render, the seed, the frame used.
 
 The letters are drawn with a random seed (or the one given, for a rerun): the old image is not always A.
+
+A module of tools/qc/qc2.py (``python tools/qc/qc2.py --help``): not run by itself.
 """
 from __future__ import annotations
 

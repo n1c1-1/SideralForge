@@ -17,11 +17,14 @@ import tempfile
 import time
 from pathlib import Path
 
-ROOT = Path("C:/Users/Nicolas/sandbox/astro")
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 import client_walkthrough as cw  # noqa: E402
 
+if len(sys.argv) < 3 or sys.argv[1] in ("-h", "--help"):
+    print(__doc__)
+    raise SystemExit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
 project, out = Path(sys.argv[1]), Path(sys.argv[2])
 fake = "--fake-advice" in sys.argv
 assert "astro_projets" not in project.as_posix().lower()
@@ -150,9 +153,9 @@ def graph_shots():
 
 
 def selection_shots():
-    """The Selection block of one workflow under each rule: the project's own workflows for the rules it has; for the
-    previous rule (none of its workflows has it) one workflow is changed in memory (the model is read-only) and the
-    change undone."""
+    """The Selection block of one workflow under each rule (Automatic, k x sigma, Thresholds): the project's own
+    workflows for the rules it has; for Thresholds, when none of its workflows has it, one workflow is changed in memory
+    (the model is read-only) and the change undone."""
     by_rule = {}
     for q in s.paths:
         by_rule.setdefault(s.selection_rule(q), q)
@@ -166,26 +169,26 @@ def selection_shots():
                 walk.shot(f"selection_{rule}_window")
         else:
             walk.problem(f"no workflow of the project has the {rule} rule")
-    q = by_rule.get("legacy")
+    q = by_rule.get("thresholds")
     depth = len(s._undo)
     if q is None:
         q = by_rule["min_weight"]
         walk.select("selection", q.pid)
         s.scope = [q.pid]                                # only this workflow
-        s.apply_change([q], dict(kind="param", stage="stack", name="selection", value="legacy", suggested=None))
+        s.apply_change([q], dict(kind="param", stage="stack", name="selection", value="thresholds", suggested=None))
         walk.settle()
     walk.select("selection", q.pid)
     walk.settle()
-    if s.selection_rule(q) != "legacy":
-        walk.problem("the previous rule is not set")
-    walk.shot("selection_legacy", panel())
-    walk.shot("selection_legacy_window")
+    if s.selection_rule(q) != "thresholds":
+        walk.problem("the Thresholds rule is not set")
+    walk.shot("selection_thresholds", panel())
+    walk.shot("selection_thresholds_window")
     while len(s._undo) > depth:
         s.undo()
     s.scope = None
     walk.settle()
-    if s.selection_rule(q) == "legacy" and "legacy" not in by_rule:
-        walk.problem("the previous rule was not put back")
+    if s.selection_rule(q) == "thresholds" and "thresholds" not in by_rule:
+        walk.problem("the rule was not put back")
 
 
 def inspect_shots():
@@ -204,6 +207,7 @@ walk.guarded(graph_shots)
 walk.guarded(selection_shots)
 walk.guarded(inspect_shots)
 from astro_gpu.client import i18n  # noqa: E402
+
 miss = sorted(t for t in i18n.missing() if any(c.isalpha() for c in t))
 walk.guarded(walk.step_settings, "en")
 w.close()

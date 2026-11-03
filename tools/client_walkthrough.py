@@ -13,7 +13,7 @@ The tour (the real application, ``astro_gpu.client.app.Main``, on the real engin
 6. the Replace / Try as variant choice on a computed block, a variant made then discarded;
 7. Post: the Stacking output sent to Post and computed, two layers, a filter, a mask; then Export;
 8. the project closed and opened again, an edit, Undo and Redo;
-9. a project of the previous version imported (F:/astro_essais/projets/heart_a7s, a test copy);
+9. a project of an older version imported (F:/astro_essais/projets/heart_a7s, a test copy);
 10. Settings: the language switched to French; the screens and dialogs again, in French (with a Replace on Gradient
     and its run), then back to English.
 
@@ -23,11 +23,11 @@ The tour ends with no error and no warning (Qt messages, Python warnings and exc
 report (``report.json`` next to the shots) also gives the durations and the longest stall of the GUI thread while
 each run went on.
 
-``--short`` (the test) skips the runs, the export and the import of the previous version: the project is created,
+``--short`` (the test) skips the runs, the export and the import of an older version: the project is created,
 its frames read, its workflows edited, every screen shown in both languages.
 
-``--project FOLDER`` is the other tour, the one of the features asked for on 2026-11-01, on a COMPUTED test copy (for
-example F:/astro_essais/v2/heart_a7s_tour, a fresh copy of heart_a7s_p10), in English then in French:
+``--project FOLDER`` is the other tour, the one of the features, on a COMPUTED project (a copy of the test project
+F:/astro_essais/tests/heart_small, built by tools/make_test_project.py), in English then in French:
 - Inspect, every tab of every block in the common viewer: the calibration masters and the darks and flats browsable
   with their measures, the calibrated lights; the registration charts (quality, drift, drift path, distribution) and
   the frame table; Selection with a frame picked; the stack, its rejection map, coverage and weights; Astrometry, the
@@ -40,7 +40,8 @@ Nothing is computed (a Continue that would start a run is not clicked); the copy
 export folder, the reviews), so make a fresh copy for each tour.
 
 Rules: CPU only (CUDA_VISIBLE_DEVICES=-1); the settings file and the engine's state folder are temporary; nothing is
-deleted outside the walkthrough's workspace (default F:/astro_essais/p13) and temporary folders; never F:/astro_projets.
+deleted outside the walkthrough's workspace (default F:/astro_essais/tests/walkthrough) and temporary folders; never
+F:/astro_projets.
 """
 from __future__ import annotations
 
@@ -58,7 +59,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ESSAIS = Path("F:/astro_essais")
-REFERENCE = ESSAIS / "v2" / "heart_a7s" / "project.astroproj"      # where the heart_a7s raw frames are
+RAW = ESSAIS / "donnees" / "heart_a7s"                               # the heart_a7s raw frames (lights, darks, flats)
 PREVIOUS = ESSAIS / "projets" / "heart_a7s"                          # a test copy of a v1 project
 FORBIDDEN = Path("F:/astro_projets")                                 # the user's projects: never opened
 
@@ -81,9 +82,8 @@ def setup_environment(tmp: Path):
 
 
 def raw_lights() -> Path:
-    """The lights folder of heart_a7s, from the session of the v2 test project."""
-    d = json.loads(REFERENCE.read_text(encoding="utf-8"))
-    return Path(d["sessions"][0]["lights"][0])
+    """The lights folder of heart_a7s."""
+    return RAW / "lights"
 
 
 # ---------------------------------------------------------------------------------------------- checks of a screen
@@ -307,7 +307,7 @@ class Walk:
         return f
 
     def user_names(self, target) -> set[str]:
-        """The names the user gave (or the previous version's project had): workflows and projects."""
+        """The names the user gave (or the project of the older version had): workflows and projects."""
         names = set()
         w = self.w
         if w.s is not None:
@@ -669,7 +669,7 @@ class Walk:
         self.settle()
 
     def step_import(self, old: Path, do_import: bool):
-        print("9. A project of the previous version", flush=True)
+        print("9. A project of an older version", flush=True)
         w = self.w
 
         def imp(d):
@@ -688,7 +688,7 @@ class Walk:
                 self.problem("the import failed: " + d.note.text())
                 d._busy = False
                 d.reject()
-        self.modal(lambda: w.open_project(old), imp, "Import of a previous version")
+        self.modal(lambda: w.open_project(old), imp, "Import of a project of an older version")
         if do_import:
             self.wait_ready()
             self.shot("imported_graph")
@@ -1122,8 +1122,8 @@ def _harmless(message: str) -> bool:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--short", action="store_true", help="no run, no export, no import (the test)")
-    ap.add_argument("--out", default=str(Path(os.environ.get("TEMP", tempfile.gettempdir())) / "p13_walk"))
-    ap.add_argument("--workspace", default=str(ESSAIS / "p13"))
+    ap.add_argument("--out", default=str(Path(os.environ.get("TEMP", tempfile.gettempdir())) / "client_walk"))
+    ap.add_argument("--workspace", default=str(ESSAIS / "tests" / "walkthrough"))
     ap.add_argument("--name", default="Heart")
     ap.add_argument("--project", default="", help="the features tour, on this computed test copy (see above)")
     a = ap.parse_args(argv)
@@ -1138,7 +1138,7 @@ def main(argv=None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     for f in out.glob("*.png"):
         f.unlink()
-    tmp = Path(tempfile.mkdtemp(prefix="p13_walk_"))
+    tmp = Path(tempfile.mkdtemp(prefix="client_walk_"))
     setup_environment(tmp)
     ws.mkdir(parents=True, exist_ok=True)
     if project is None:

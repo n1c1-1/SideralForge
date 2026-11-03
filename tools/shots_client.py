@@ -29,7 +29,6 @@ import re
 import sys
 import tempfile
 import time
-import traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +45,9 @@ def arg(name, default):
     return default
 
 
+if len(sys.argv) < 3 or sys.argv[1] in ("-h", "--help"):
+    print(__doc__)
+    raise SystemExit(0 if sys.argv[1:2] in (["-h"], ["--help"]) else 2)
 project, out = Path(sys.argv[1]), Path(sys.argv[2])
 assert "astro_projets" not in project.resolve().as_posix().lower(), "never the user's projects"
 PARTS = arg("--parts", "home,graph,stack,inspect,post,export").split(",")
@@ -82,9 +84,7 @@ w = walk.w
 w.readonly = True
 from PySide6.QtCore import QPoint  # noqa: E402
 from PySide6.QtGui import QPainter  # noqa: E402
-from PySide6.QtWidgets import QApplication, QToolTip  # noqa: E402
 
-from astro_gpu.client import prefs  # noqa: E402
 from astro_gpu.client.i18n import _  # noqa: E402
 
 # Home: the default sections (My projects = the scratch workspace, the bench, the test copies)
@@ -174,8 +174,9 @@ def part_graph():
     walk.settle()
     walk.shot("graph")
     # a block hovered: its tooltip
-    from astro_gpu.client.graph import BlockItem
     from PySide6.QtWidgets import QGraphicsView
+
+    from astro_gpu.client.graph import BlockItem
     gv = w.graph.findChildren(QGraphicsView)
     items = [it for g in gv if g.scene() is not None for it in g.scene().items() if isinstance(it, BlockItem)]
     blk = next((it for it in items if it.node.key == "fond" and not it.dim), items[0] if items else None)

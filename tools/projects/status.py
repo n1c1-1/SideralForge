@@ -1,4 +1,4 @@
-"""P8 step 5: where the two queues are, in one call (read only: nothing is written).
+"""Where the project queues (tools/projects/queue.py) are, in one call (read only: nothing is written).
 
     python tools/projects/status.py [--json]
 

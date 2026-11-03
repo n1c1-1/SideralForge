@@ -62,15 +62,12 @@ sys.path.insert(0, str(C.REPO))
 C.utf8_console()
 
 import cv2  # noqa: E402
+from aperture import GROWTH_RADII, MAD, aperture_depth, aperture_sums, gather, ring_offsets, rstd, sky_level, star_flux  # noqa: E402,F401
 from astropy.io import fits  # noqa: E402
 from astropy.wcs import WCS  # noqa: E402
+from regions import BoxMap, boxes, choose, on_regions, save_maps  # noqa: E402,F401
 from scipy import ndimage as ndi  # noqa: E402
 from scipy.spatial import cKDTree  # noqa: E402
-
-from regions import BoxMap, boxes, choose, on_regions, save_maps  # noqa: E402,F401
-from aperture import (GROWTH_RADII, MAD, aperture_depth, aperture_sums, gather, ring_offsets, rstd,  # noqa: E402,F401
-                      sky_level, star_flux)
-
 
 # ---------------------------------------------------------------------------------------------- loading
 

@@ -1,9 +1,9 @@
-"""The interactive charts (client/chartview.py, client/charts.py), offscreen.
+"""The interactive charts (client/chartview.py, client/charts.py), offscreen, synthetic and on the test project.
 
-Synthetic data for the widget's behaviour (zoom, pan, readout, legend, CSV, PNG); the test project
-F:/astro_essais/v2/heart_a7s_p10 (read only) for the Registration and Color charts. ASTRO_GPU_SETTINGS points to a
+Synthetic data for the widget's behaviour (zoom, pan, readout, legend, CSV, PNG); the test project (tests/conftest.py,
+read only) for the Registration and Color charts. ASTRO_GPU_SETTINGS points to a
 temporary file in every test, and the user's settings file is checked untouched. The screenshots go to
-$TEMP/a2_shots (ASTRO_GPU_SHOTS_A2 names another folder), English and French.
+$TEMP/chart_shots (ASTRO_GPU_SHOTS_A2 names another folder), English and French.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")          # the offscreen platform has no fonts else
 
 pytest.importorskip("PySide6")
+from conftest import HAVE_TEST_PROJECT, NO_TEST_PROJECT, TEST_PROJECT, needs_test_project  # noqa: E402
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QContextMenuEvent, QFontMetricsF, QImage, QMouseEvent, QWheelEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
@@ -37,9 +38,9 @@ from astro_gpu.client.i18n import _  # noqa: E402
 from astro_gpu.client.widgets import QSS  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-F_PROJECT = Path("F:/astro_essais/v2/heart_a7s_p10")
-HAVE_PROJECT = (F_PROJECT / "project.astroproj").is_file()
-needs_project = pytest.mark.skipif(not HAVE_PROJECT, reason="the heart_a7s_p10 v2 test project is not on this machine")
+F_PROJECT = TEST_PROJECT
+HAVE_PROJECT = HAVE_TEST_PROJECT
+needs_project = needs_test_project
 
 
 def _user_settings() -> Path:
@@ -62,7 +63,7 @@ USER_BEFORE = _fingerprint(USER_SETTINGS)
 
 
 def shots_dir() -> Path:
-    d = Path(os.environ.get("ASTRO_GPU_SHOTS_A2") or Path(os.environ.get("TEMP", ".")) / "a2_shots")
+    d = Path(os.environ.get("ASTRO_GPU_SHOTS_A2") or Path(os.environ.get("TEMP", ".")) / "chart_shots")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -97,7 +98,7 @@ def env(tmp_path, monkeypatch, qapp):
 def project_data(qapp):
     """The Registration data of the test project, read once; the project is checked unchanged at the end."""
     if not HAVE_PROJECT:
-        pytest.skip("the test project is not on this machine")
+        pytest.skip(NO_TEST_PROJECT)
     before = _snapshot(F_PROJECT)
     p = api.open_project(F_PROJECT)
     yield p, charts.registration_data(p, 1)
@@ -592,7 +593,8 @@ def test_the_registration_data_come_from_the_stage_outputs(project_data):
     assert np.allclose(d.dx, cache["width"] / 2 - coef[:, 0, 0]) and np.allclose(d.dy, cache["height"] / 2 - coef[:, 1, 0])
     assert abs(d.dx[d.ref]) < 1.5 and abs(d.dy[d.ref]) < 1.5                      # the reference is where it is
     assert np.array_equal(d.nmatch, nmatch) and np.array_equal(d.nstars, nstars)
-    assert d.roundness is None                                                    # the stage does not measure it yet
+    assert d.roundness is not None and d.roundness.shape == (40,)                 # the stage measures it
+    assert np.all((d.roundness > 0) & (d.roundness <= 1))
     assert np.nanpercentile(d.transp, 90) == pytest.approx(100.0)
     assert d.dates == "2026-08-17" and d.iso[0] == "2026-08-17T00:25:13" and np.all(np.diff(d.secs) > 0)
 
@@ -601,10 +603,11 @@ def test_the_registration_data_come_from_the_stage_outputs(project_data):
 def test_the_registration_charts_and_their_unit_and_time_choices(project_data):
     _p, d = project_data
     tabs = charts.registration_tabs(d)
-    assert [t for t, _w in tabs] == ["Quality", "Drift", "Drift path", "Distribution"]
+    assert [t for t, _w in tabs] == ["Quality", "Drift", "Tracking x / y (Lissajous)", "Distribution"]
     quality, drift, track, dist = (show(w, (900, 520)) for _t, w in tabs)
-    # quality: FWHM, stars, transparency (no roundness yet), time by default, frames on request
-    assert [p.title for p in quality.panels] == ["Star size (FWHM, px)", "Stars per frame", "Transparency (% of the best frames)"]
+    # quality: FWHM, roundness, stars, transparency, time by default, frames on request
+    assert [p.title for p in quality.panels] == ["Star size (FWHM, px)", "Roundness (1 = round)", "Stars per frame",
+                                                 "Transparency (% of the best frames)"]
     assert quality.xmode == "time" and quality.x_kind == "time"
     assert [b.text() for b in quality.controls] == ["Frame number", "Time"]
     quality.set_xmode("frame")

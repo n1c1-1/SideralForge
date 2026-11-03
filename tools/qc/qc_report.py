@@ -8,6 +8,8 @@
   |after - before| in 8-bit levels, share of pixels over 2 levels, a map of the differences x20, where they differ
   most), after putting both in one frame with their own projects' files. The v1 nonreg.py did this on copies of the
   project; v2 stores are not rewritten, so two renders (a project before and after, or v1 and v2) are compared.
+
+A module of tools/qc/qc2.py (``python tools/qc/qc2.py --help``): not run by itself.
 """
 from __future__ import annotations
 

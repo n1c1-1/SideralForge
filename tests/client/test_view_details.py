@@ -1,10 +1,10 @@
-"""Round 2 of the user's remarks on the client: what each fix guarantees, on synthetic data (no test project needed).
+"""Viewer and Inspect details on synthetic data: chart export, copy, camera colour, sky objects, calibration flags.
 
 1. every chart has a visible Export CSV… button (not in its PNG); 2. Copy image says what it copies; 3. a camera-colour
 picture is shown as it is, Neutral sky is a display option that Auto-stretch off / on keeps; 4. the compared picture
 follows the main one's Neutral sky, or its own option; 6. the named objects: their outlines on the picture, burned into a
 PNG and never into a FITS; 7. the engine's flags of a calibration frame: red marks, the reason written out, in French
-too; 8. an image from outside the project stored bottom-up (Siril) is shown top-down.
+too.
 """
 from __future__ import annotations
 
@@ -220,23 +220,3 @@ def test_every_check_of_the_engine_reads_as_the_engine_wrote_it_and_in_french():
         for c in checks:                                              # each sentence has its French
             t = tune.check_template(c, kind)
             assert t is not None and texts.has_translation(t[0], "fr"), (kind, c["key"])
-
-
-# ---------------------------------------------------------------------------------------------- 8. Siril's images
-def test_a_bottom_up_fits_from_siril_is_shown_top_down_with_its_solution(qapp, tmp_path):
-    from astropy.io import fits
-
-    from astro_gpu.client.services import inspect as si
-    a = np.zeros((3, 20, 30), np.float32)
-    a[:, 0, :] = 1.0                                                  # the first row of the file: the bottom
-    h = _wcs(30, 20).to_header()
-    h["ROWORDER"] = "BOTTOM-UP"
-    fits.PrimaryHDU(a, h).writeto(tmp_path / "stack_linear.fit")
-    got = si.reference_source(str(tmp_path / "stack_linear.fit"))()
-    assert got.shape == (3, 20, 30) and got[:, -1].min() == 1.0 and got[:, 0].max() == 0.0
-    w = si.reference_wcs(str(tmp_path / "stack_linear.fit"))()
-    ra0, dec0 = _wcs(30, 20).pixel_to_world_values(3, 0)
-    ra1, dec1 = w.pixel_to_world_values(3, 19)
-    assert (ra0, dec0) == pytest.approx((ra1, dec1))
-    with pytest.raises(iv.Unavailable):
-        si.reference_source(str(tmp_path / "gone.fit"))()

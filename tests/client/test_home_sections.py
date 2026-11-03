@@ -1,6 +1,7 @@
-"""Home in sections, offscreen: "My projects" (the workspace, projects up to two levels down), "Test copies" (closed
-until its header is clicked); hidden folders; Settings › Folders edits the sections; every text has its French; no disk
-access in the GUI thread.
+"""Home in sections (the workspace and the folders the user adds), and Settings › Folders, offscreen.
+
+"My projects" (the workspace, projects up to two levels down), "Test copies" (closed until its header is clicked);
+hidden folders; Settings › Folders edits the sections; every text has its French; no disk access in the GUI thread.
 
 Everything is built in a scratch folder: the user's F:/astro_projets and F:/astro_essais are never read here.
 """
@@ -61,7 +62,7 @@ def env(tmp_path, monkeypatch, qapp):
     for hidden in ("_qc", "pytest-12", "tmp3", "temp", "Heart_tmp", ".git"):
         _project(ws / hidden, f"hidden {hidden}")
     _project(ws / "Old" / "Wizard", "Wizard", "NGC 7380")                 # a project one level down
-    for n in ("heart_a7s", "heart_a7s_p10"):
+    for n in ("heart_a7s", "heart_a7s_copy"):
         _project(copies / n, "heart_a7s", "IC 1805", "The reference Heart")
     prefs.set("workspace", ws.as_posix())
     prefs.set("cache_dir", (tmp_path / "scratch").as_posix())
@@ -102,7 +103,7 @@ def test_hidden_folders():
     for name in ("_qc", "__pycache__", ".git", "pytest-12", "pytest-of-Nicolas", "tmp", "tmp3", "tmpabc", "temp",
                  "temp_2", "Temp-old", "heart_tmp", "M31_temp", "x.tmp"):
         assert home.hidden(name), name
-    for name in ("Heart", "NGC7822", "Tempest", "Template", "heart_a7s_p10", "ours_express", "Rosette"):
+    for name in ("Heart", "NGC7822", "Tempest", "Template", "heart_a7s_copy", "ours_express", "Rosette"):
         assert not home.hidden(name), name
 
 
@@ -126,7 +127,7 @@ def test_the_scan_finds_projects_two_levels_down_and_skips_hidden_ones(env):
     scan = home.scan_home(home.section_rows(), [])
     mine, copies = scan.sections
     assert sorted(i.name for i in mine.infos) == ["HeartSoul", "Iris", "Wizard"] and scan.n_ws == 3
-    assert sorted(i.title for i in copies.infos) == ["heart_a7s", "heart_a7s_p10"]      # same name: the folders
+    assert sorted(i.title for i in copies.infos) == ["heart_a7s", "heart_a7s_copy"]      # same name: the folders
     assert all(not i.title for i in mine.infos)
     missing = home.scan_home([{"label": "Gone", "folder": (env["tmp"] / "nowhere").as_posix()}], [])
     assert not missing.sections[0].found and not missing.sections[0].infos
@@ -156,7 +157,7 @@ def test_home_shows_the_sections_and_opens_test_copies_on_a_click(env, qapp):
         copies.header.clicked.emit()
         w.worker.wait()
         assert copies.is_open and not copies.body.isHidden()
-        assert sorted(c.title.full_text() for c in copies.cards) == ["heart_a7s", "heart_a7s_p10"]
+        assert sorted(c.title.full_text() for c in copies.cards) == ["heart_a7s", "heart_a7s_copy"]
     assert watch.count == 0, watch.where[:3]
     assert home.section_rows()[1]["open"]                                    # kept in the settings
     w.change_language("fr")                                                  # rebuilt: the opened section stays open
@@ -204,9 +205,12 @@ def test_settings_edit_the_sections(env, qapp):
 
 
 def test_every_text_of_home_has_its_french():
+    """Every text Home and Settings › Folders can show (their ``_()`` and ``plural()`` calls, the default sections) has
+    a French translation, and no French text of Home is empty."""
     cat: dict[str, str] = {}
     for f in sorted((CLIENT / "locale" / "fr").glob("*.json")):
         cat.update(json.loads(f.read_text(encoding="utf-8")))
+    checked: dict[str, int] = {}
     for name in ("home", "settingsdlg"):
         tree = ast.parse((CLIENT / f"{name}.py").read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -216,7 +220,9 @@ def test_every_text_of_home_has_its_french():
             for a in args:
                 if isinstance(a, ast.Constant) and isinstance(a.value, str):
                     assert a.value in cat, (name, node.lineno, a.value)
+                    checked[name] = checked.get(name, 0) + 1
+    assert checked.get("home", 0) > 10 and checked.get("settingsdlg", 0) > 10, checked   # the scan found the texts
     shown = [r[k] for r in prefs.DEFAULTS["home_sections"] for k in ("label", "note")]
     assert not [t for t in shown if t not in cat]
     mine = json.loads((CLIENT / "locale" / "fr" / "home.json").read_text(encoding="utf-8"))
-    assert len(mine) > 20 and all(isinstance(v, str) and v for v in mine.values())
+    assert mine and all(isinstance(v, str) and v for v in mine.values())

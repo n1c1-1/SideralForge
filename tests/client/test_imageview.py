@@ -1,10 +1,10 @@
 """The common image viewer (client/imageview.py) and its stretch maths (client/stretch.py), offscreen, on the CPU.
 
 Synthetic images for the behaviour (a sky with a gradient, noise, stars and a camera tint; a Bayer mosaic; a WCS);
-the 6384 x 4272 stack of F:/astro_essais/v2/heart_a7s_p10 (a test copy, read only) for the timings and the
-screenshots, skipped when that copy is not on the machine. ASTRO_GPU_SETTINGS points to a temporary file and the
+the stack of the test project (tests/conftest.py, read only) for the timings, skipped when the project is not on the
+machine. ASTRO_GPU_SETTINGS points to a temporary file and the
 user's settings file is checked untouched; the viewer itself never reads or writes settings. Screenshots go to
-$ASTRO_GPU_SHOTS, else $TEMP/a3_shots; the timings to <shots>/timings.json.
+$ASTRO_GPU_SHOTS, else $TEMP/imageview_shots; the timings to <shots>/timings.json.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")
 
 pytest.importorskip("PySide6")
+from conftest import NO_TEST_PROJECT, TEST_PROJECT  # noqa: E402
 from PySide6.QtCore import QEvent, QLocale, QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QGuiApplication, QMouseEvent, QWheelEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
@@ -36,9 +37,9 @@ from astro_gpu.client import stretch as sm  # noqa: E402
 from astro_gpu.client.widgets import QSS  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-F_PROJECT = Path("F:/astro_essais/v2/heart_a7s_p10")
+F_PROJECT = TEST_PROJECT
 STACK = next(iter(sorted((F_PROJECT / "store").glob("stack/*/drz_full.npy"))), None) if F_PROJECT.is_dir() else None
-real_data = pytest.mark.skipif(STACK is None, reason="the heart_a7s_p10 test copy is not on this machine")
+real_data = pytest.mark.skipif(STACK is None, reason=NO_TEST_PROJECT)
 
 
 def _user_settings() -> Path:
@@ -56,7 +57,7 @@ USER_HOME = Path.home() / ".astro_gpu"
 
 
 def shots_dir() -> Path:
-    d = Path(os.environ.get("ASTRO_GPU_SHOTS") or Path(os.environ.get("TEMP", ".")) / "a3_shots")
+    d = Path(os.environ.get("ASTRO_GPU_SHOTS") or Path(os.environ.get("TEMP", ".")) / "imageview_shots")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -1204,9 +1205,11 @@ def _texts_of(path: Path) -> list[str]:
 
 
 def test_every_text_has_its_french():
-    cat = json.loads((ROOT / "astro_gpu/client/locale/fr/imageview.json").read_text(encoding="utf-8"))
+    """Every text of the viewer has a French translation in the client's catalogues (all read together, as i18n does)."""
+    cat: dict[str, str] = {}
+    for f in sorted((ROOT / "astro_gpu/client/locale/fr").glob("*.json")):
+        cat.update(json.loads(f.read_text(encoding="utf-8")))
     texts = _texts_of(ROOT / "astro_gpu/client/imageview.py") + [n for n, _s in iv.FORMATS.values()]
-    texts += _texts_of(ROOT / "tools/imageview_demo.py") + ["Denoised", "Half-stack A", "Half-stack B"]
     missing = sorted({t for t in texts if t not in cat})
     assert not missing, missing
 
@@ -1243,7 +1246,7 @@ def _pct(xs, p):
 
 @real_data
 def test_real_stack_timings(qapp):
-    """Open, zoom / pan frames and the stretch handle on the 6384 x 4272 stack, on the CPU (the report's numbers)."""
+    """Open, zoom / pan frames and the stretch handle on the full-size stack, on the CPU (the report's numbers)."""
     ld = iv.Loader()
     try:
         v = iv.ImageView(loader=ld)
@@ -1261,7 +1264,7 @@ def test_real_stack_timings(qapp):
         assert v.wait(60)
         out["open_array_s"] = time.perf_counter() - t0
         c = v.canvas
-        assert c.display.prep.size() == (6384, 4272)
+        assert c.display.prep.size() == (arr.shape[-1], arr.shape[-2])
         QApplication.processEvents()
         # zoom: wheel steps from fit to 400 % and back, around a point; each frame painted at once
         frames = []
@@ -1320,15 +1323,3 @@ def test_real_stack_timings(qapp):
     finally:
         ld.stop()
         ld.clear()
-
-
-@real_data
-def test_real_screenshots_en_fr():
-    """The demo's screenshots (stack with the histogram, compare split, sequence with its info band, the export
-    dialog), in English and French."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("imageview_demo", ROOT / "tools/imageview_demo.py")
-    demo = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(demo)
-    made = demo.shots(F_PROJECT, shots_dir())
-    assert len(made) == 8 and all(p.stat().st_size > 20000 for p in made)

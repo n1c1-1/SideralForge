@@ -1,8 +1,8 @@
-"""P8, the user's projects: the shared settings of the tools/projects scripts (DESIGN §6.3 P8).
+"""The shared settings of tools/projects/queue.py and status.py (the runs of the user's projects).
 
-Everything P8 writes goes under F:/astro_projets/:
+Not run by itself: imported first by queue.py and status.py. Everything they write goes under F:/astro_projets/:
 
-    _home/                 the pilot ASTRO_GPU_HOME (a copy of the camera profiles, the seeded timing history)
+    _home/                 the ASTRO_GPU_HOME of these runs (a copy of the camera profiles, the seeded timing history)
     _raw/<project>/<kind>/ the raw frames that were not on F:, copied (frame files only, dates kept)
     _p8/                   reports, no-write proofs, queue definitions, states and logs
     <project>/             the v2 projects

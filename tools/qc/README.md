@@ -16,14 +16,14 @@ installed (on the development PC: `C:\Users\Nicolas\sandbox\ComfyUI\.venv\Script
 | `jeux.py` | Test sets: chosen frames of other cameras' sessions (and of the user's) copied to `F:\astro_essais`, processed as projects kept apart from the user's (`ASTRO_GPU_HOME`), rendered with 'Natural'. `build`, `run`, `list`. |
 | `bulletin.py` | Report card of a processed set: the stages' measurements, the export's checks, sky flatness and colour cast, star size and elongation measured on the render; `--sheet` adds a sheet (whole image and 100 % crops). |
 
-## The v2 set (P17)
+## The v2 set
 
 `qc2.py` is the v2 port of `judge.py`, `blind.py`, `bulletin.py` and `nonreg.py` (modules `qc_addr`, `qc_pairs`,
-`qc_frame`, `qc_sheets`, `qc_report`, `qc_render`, `qc_out`; tests `tests/test_qc_v2.py`). The old scripts above still
-work on v1 projects and are not edited.
+`qc_frame`, `qc_sheets`, `qc_report`, `qc_render`, `qc_out`; tests `tests/test_qc_v2.py`). The scripts above work on v1
+projects.
 
 - A render is `PROJECT::WORKFLOW` (v2) or `PROJECT::DELIVERABLE` (v1), with `=IMAGE` to name the file to judge.
-- Everything is written into the folder given by `--out` (P14: `F:/astro_projets/_qc/`): `sheets/` for the judges,
+- Everything is written into the folder given by `--out` (for example `F:/astro_projets/_qc/`): `sheets/` for the judges,
   `_keys/` (letter -> render, seed) kept apart, `bulletin/`, `nonreg/`, `pairs/`, `renders/`. An `--out` inside a project
   or in the folder of an image read is refused, and no write under a project is possible during a run.
 - Each old image is paired with the v2 workflow of the same preparation (`pairs`): `render_prep_learned` goes with
@@ -45,6 +45,3 @@ qc2.py bulletin --out DIR [--sheet] CAND ...        qc2.py nonreg --out DIR --ca
    reference.
 3. Give the sheets to judges that know nothing of the change (`qc_prompt.md`); they score and give a verdict.
 4. A change is kept only if it is not worse anywhere. Not worse does not mean identical.
-
-Earlier diagnostic scripts (2026-10-13 to 2026-10-17) remain in `D:\astro_gpu_diag\scripts` as an archive; they
-call a Python environment that no longer exists.

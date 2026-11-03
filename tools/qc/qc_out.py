@@ -1,6 +1,6 @@
 """Where the QC tools may write, and the proof that they write nowhere else.
 
-Every tool of the v2 QC set (qc2.py and the qc_*.py modules) writes into one folder given as an argument (P14 uses
+Every tool of the v2 QC set (qc2.py and the qc_*.py modules) writes into one folder given as an argument (for example
 F:/astro_projets/_qc/). That folder is refused when it is inside a project, v1 or v2, that the tools read, or inside
 the folder of an image they read: the v1 tools wrote into ``<project>/results/`` (bulletin.py --sheet), and the old
 deliverables must stay as they are.

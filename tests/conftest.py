@@ -26,6 +26,9 @@ Test levels (tests/README.md): the default run is level 2 (``-m "not level3 and 
 pyproject.toml). ``level3`` is added here, from tests/levels.toml, to the tests that are too heavy for the fast suite,
 so that no test file has to be edited for it. At the end of a level 1 / 2 run, the tests over 2 s and the total are
 listed, with a warning when the budget is over.
+
+The test project (``TEST_PROJECT``, built by tools/make_test_project.py) is named here once for every test that reads a
+computed project; the tests skip with "run tools/make_test_project.py" when it is absent, and never write into it.
 """
 from __future__ import annotations
 
@@ -49,22 +52,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 _REAL_ENV = "ASTRO_GPU_TEST_REAL_HOME"
 _T0 = time.time()
 
-
-def gpu_hidden() -> bool:
-    """True when this run must not use a GPU (the projects' runs have them): CUDA_VISIBLE_DEVICES empty or -1 (on this
-    Windows machine only -1 hides the GPUs, an empty value does not, but both say "no GPU"), or no GPU is visible."""
-    v = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if v is not None and v.strip() in ("", "-1"):
-        return True
-    try:
-        import torch
-        return not torch.cuda.is_available()
-    except Exception:  # noqa: BLE001
-        return True
-
-
-# the ComfyUI nodes pick a CUDA device when imported: without a visible GPU their test files cannot even be collected
-collect_ignore = ["test_comfy_masks.py", "test_comfy_project_node.py"] if gpu_hidden() else []
 
 # ------------------------------------------------------------------------------------------ the private state folder
 
@@ -410,6 +397,44 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
         terminalreporter.write_line("note (not a failure): " + "; ".join(live) + " - a real run of yours writes these "
                                     "while a session runs; a write by a test would have been refused above.")
     _time_budget(terminalreporter, config)
+
+
+# ------------------------------------------------------------------------------------------------ the test project
+
+#: the computed project the client tests read (heart_a7s raw frames, workflow Full computed), built by
+#: tools/make_test_project.py; ASTRO_TEST_PROJECT names another one. Tests only read it: a test that changes a project
+#: works on a copy (``scratch_project`` below, or its own copy in tmp_path).
+TEST_PROJECT = Path(os.environ.get("ASTRO_TEST_PROJECT") or "F:/astro_essais/tests/heart_small")
+#: a second workflow whose results are in the test project's store (name, template, settings: CLASSIC_NAME and
+#: CLASSIC_PARAMS of tools/make_test_project.py), for the tests that add it in memory and need it computed. A
+#: Classic stack added with the default settings is still to compute.
+TEST_PROJECT_CLASSIC = ("Classic", "Classic stack", {"background_poly": {"samples": 18}})
+HAVE_TEST_PROJECT = (TEST_PROJECT / "project.astroproj").is_file()
+NO_TEST_PROJECT = f"the test project {TEST_PROJECT.as_posix()} is not here: run tools/make_test_project.py"
+#: the raw frames the test project is made of (40 lights, 15 darks, 15 flats of a Sony A7S)
+TEST_DATA = Path("F:/astro_essais/donnees/heart_a7s")
+needs_test_project = pytest.mark.skipif(not HAVE_TEST_PROJECT, reason=NO_TEST_PROJECT)
+needs_test_data = pytest.mark.skipif(not (TEST_DATA / "lights").is_dir(),
+                                     reason=f"the raw test frames {TEST_DATA.as_posix()} are not here")
+
+
+def scratch_project(folder: Path, source: Path = TEST_PROJECT) -> Path:
+    """A copy of the test project's definition in ``folder`` whose ``store`` and ``inputs`` are directory junctions onto
+    the real ones: the results are read (done states, previews), and what a test writes (state.json, the definition)
+    lands in ``folder``. Skips where junctions cannot be made."""
+    import subprocess
+    folder.mkdir(parents=True, exist_ok=True)
+    shutil.copy(source / "project.astroproj", folder / "project.astroproj")
+    for name in ("store", "inputs"):
+        if (source / name).is_dir() and not (folder / name).exists():
+            try:
+                r = subprocess.run(["cmd", "/c", "mklink", "/J", str(folder / name), str(source / name)],
+                                   capture_output=True, text=True)
+            except OSError as e:
+                pytest.skip(f"no directory junction here: {e}")
+            if r.returncode:
+                pytest.skip(f"no directory junction here: {r.stderr.strip()}")
+    return folder
 
 
 @pytest.fixture(scope="session")

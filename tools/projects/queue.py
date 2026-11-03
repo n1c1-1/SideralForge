@@ -1,4 +1,4 @@
-"""P8 step 4: a queue of projects run one after another on one GPU, detached (it survives the session).
+"""A queue of projects run one after another on one GPU, detached (it survives the session).
 
     python tools/projects/queue.py start NAME --device cuda:N PROJECT [PROJECT ...] [--all-at-once]
     python tools/projects/queue.py stop NAME        the job in progress stops at its next checkpoint, then the queue

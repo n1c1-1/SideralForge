@@ -7,6 +7,8 @@ project's store; it writes nothing there.
 
 ``base``: None (the suggested settings), a preset or ``render_bases`` name, or a dict of render settings. To compare a
 new workflow with an old image like for like, pass the old image's saved settings (``old.settings["settings"]``).
+
+A module of tools/qc/qc2.py (``python tools/qc/qc2.py --help``): not run by itself.
 """
 from __future__ import annotations
 

@@ -1,10 +1,8 @@
-"""P10: Inspect and Frames, offscreen, on F:/astro_essais/v2/heart_a7s_p10 (a copy of the v2 test project with adopted
-results: all 15 stages of Full done).
+"""Inspect, Frames and Sources in the real main window, offscreen, on the test project (Full computed).
 
-The model is read-only (nothing is saved into the project). The window is the real shell (``client/app.Main``) with the
-views of P10 mounted in its three mount points, as P13 will do. ASTRO_GPU_SETTINGS points to a temporary file in every
-test; the user's settings file is checked untouched. ASTRO_GPU_SHOTS names the folder of the screenshots (default:
-$TEMP/p10_shots).
+The model is read-only (nothing is saved into the project; the tests that edit work on a scratch copy of its
+definition). ASTRO_GPU_SETTINGS points to a temporary file in every test; the user's settings file is checked untouched.
+ASTRO_GPU_SHOTS names the folder of the screenshots (default: $TEMP/inspect_shots).
 """
 from __future__ import annotations
 
@@ -13,7 +11,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import time
 from pathlib import Path
 
@@ -26,6 +23,7 @@ if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")      # the offscreen platform has no fonts else
 
 pytest.importorskip("PySide6")
+from conftest import TEST_DATA, TEST_PROJECT, needs_test_project, scratch_project  # noqa: E402
 from PySide6.QtCore import QEvent, QPoint, Qt  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractButton,
@@ -58,10 +56,9 @@ from astro_gpu.core import project2  # noqa: E402
 from astro_gpu.core.project import Target  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-F_PROJECT = Path("F:/astro_essais/v2/heart_a7s_p10")
-DATA = Path("F:/astro_essais/donnees/heart_a7s")
-pytestmark = pytest.mark.skipif(not (F_PROJECT / "project.astroproj").is_file(),
-                                reason="the heart_a7s_p10 v2 test project is not on this machine")
+F_PROJECT = TEST_PROJECT
+DATA = TEST_DATA
+pytestmark = needs_test_project
 
 
 def _user_settings() -> Path:
@@ -85,7 +82,7 @@ PROJECT_BEFORE = _snapshot(F_PROJECT) if F_PROJECT.is_dir() else None
 
 
 def shots_dir() -> Path:
-    d = Path(os.environ.get("ASTRO_GPU_SHOTS") or Path(os.environ.get("TEMP", ".")) / "p10_shots")
+    d = Path(os.environ.get("ASTRO_GPU_SHOTS") or Path(os.environ.get("TEMP", ".")) / "inspect_shots")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -134,7 +131,7 @@ def settle(win, n=8, timeout=120.0):
 
 
 class Harness(appmod.Main):
-    """The shell with the views of P10 in the Inspect mount point (Graph and Post stay placeholders)."""
+    """The main window with Inspect, Frames and Sources mounted (Graph and Post stay placeholders)."""
 
     def __init__(self, readonly=True, **kw):
         self.readonly = readonly
@@ -456,21 +453,24 @@ def test_the_astrometry_block_opens_on_the_users_image_with_its_solution(win):
     t._sky("stars", False)
     no_stars = grab()
     t._sky("grid", False)
+    t._sky("objects", False)                                        # the named objects found in the field
     plain = grab()
     assert diff(on, no_stars) > 200 and diff(no_stars, plain) > 200
     ov = v.canvas.overlays[:]
     v.canvas.overlays.clear()
-    assert diff(plain, grab()) == 0                                 # both off: the picture as it is
+    assert diff(plain, grab()) == 0                                 # all off: the picture as it is
     v.canvas.overlays[:] = ov
     t._sky("grid", True)
     t._sky("stars", True)
+    t._sky("objects", True)
+    found = list(sky.objects)
     sky.objects.append((3000.0, 2000.0, "IC 1805", "nebula"))       # all the annotation package has to fill
     try:
         with_obj = grab()
         sky.objects.clear()
         assert diff(with_obj, grab()) > 100
     finally:
-        sky.objects.clear()
+        sky.objects[:] = found
     shot(win, "inspect_astrometry")
     tb.setCurrentIndex(1)
     settle(win)
@@ -519,35 +519,52 @@ def test_the_color_chart_draws_the_fitted_curves(win):
 
 
 def test_the_selection_chart_updates_the_kept_count_through_selection_preview(win):
-    inspect(win, "selection")
-    t = win.tune
-    ch = t.chart
-    assert isinstance(ch, FramesChart) and ch.n == 40 and t.table.total == 40
-    assert abs(ch.tmin - 60.0) < 1e-6 and abs(ch.fmax - win.s.thresholds_now()[1]) < 1e-6
-    assert ch.kept() == 40
-    # the frames below the chart: the common viewer, one frame per point, with the numbers of the frame table
-    v = t.view
-    assert isinstance(v, ImageView) and len(v.frames()) == 40
-    assert v.frames()[0].name == t.table.rows[0].name and v.frames()[0].info["fwhm"] == t.table.rows[0].fwhm
-    if win.s.state(win.s.path, "register") != "done":
-        pytest.skip("Registration of the test project is Outdated: selection_preview needs it current")
-    from PySide6.QtTest import QTest
-    top, bot = ch._panels()
-    (f0, f1), (t0, t1) = ch._ranges()
-    start = ch._xy(bot, 0, ch.tmin, t0, t1)
-    dest = ch._xy(bot, 0, 90.0, t0, t1)
-    QTest.mousePress(ch, Qt.LeftButton, Qt.NoModifier, QPoint(int(bot.left() + 30), int(start.y())))
-    QTest.mouseMove(ch, QPoint(int(bot.left() + 30), int(dest.y())))
-    QTest.mouseRelease(ch, Qt.LeftButton, Qt.NoModifier, QPoint(int(bot.left() + 30), int(dest.y())))
-    settle(win)
-    assert 88 < ch.tmin < 92
-    want = api.selection_preview(win.s.p, 1, ch.tmin / 100, ch.fmax / win.s.fwhm_median()).kept
-    assert want < 40 and ch.kept() == want
-    assert t.kept_label.text().startswith(f"{want} of 40 frames kept")
-    assert win.s.pending_change is not None and win.s.pending_change["step"] == "selection"
-    assert any(b.text().startswith("Try as variant") for b in t.panel.findChildren(QPushButton))
-    win.s.pending_change = None
-    shot(win, "inspect_selection")
+    """With the Thresholds selection rule (set in memory: the model is read-only), the chart's grips move the
+    thresholds and the kept count is the engine's selection_preview."""
+    stored = win.s.path.params.setdefault("stack", {})
+    engine = win.s.p.workflow(1).params.setdefault("stack", {})         # what api.selection_preview reads below
+    before, engine_before = stored.get("selection", "<unset>"), engine.get("selection", "<unset>")
+    stored["selection"] = engine["selection"] = "thresholds"
+    win.s._cache.clear()
+    try:
+        inspect(win, "selection")
+        t = win.tune
+        ch = t.chart
+        assert isinstance(ch, FramesChart) and ch.n == 40 and t.table.total == 40
+        assert abs(ch.tmin - 60.0) < 1e-6 and abs(ch.fmax - win.s.thresholds_now()[1]) < 1e-6
+        assert ch.kept() == 40
+        # the frames below the chart: the common viewer, one frame per point, with the numbers of the frame table
+        v = t.view
+        assert isinstance(v, ImageView) and len(v.frames()) == 40
+        assert v.frames()[0].name == t.table.rows[0].name and v.frames()[0].info["fwhm"] == t.table.rows[0].fwhm
+        if win.s.state(win.s.path, "register") != "done":
+            pytest.skip("Registration of the test project is Outdated: selection_preview needs it current")
+        from PySide6.QtTest import QTest
+        top, bot = ch._panels()
+        (f0, f1), (t0, t1) = ch._ranges()
+        start = ch._xy(bot, 0, ch.tmin, t0, t1)
+        trs = sorted(100 * r.transparency for r in t.table.rows)
+        goal = min(99.5, (trs[1] + trs[2]) / 2)                          # leaves out at least the least transparent
+        dest = ch._xy(bot, 0, goal, t0, t1)
+        QTest.mousePress(ch, Qt.LeftButton, Qt.NoModifier, QPoint(int(bot.left() + 30), int(start.y())))
+        QTest.mouseMove(ch, QPoint(int(bot.left() + 30), int(dest.y())))
+        QTest.mouseRelease(ch, Qt.LeftButton, Qt.NoModifier, QPoint(int(bot.left() + 30), int(dest.y())))
+        settle(win)
+        assert abs(ch.tmin - goal) < 2, (ch.tmin, goal)
+        want = api.selection_preview(win.s.p, 1, ch.tmin / 100, ch.fmax / win.s.fwhm_median()).kept
+        assert want < 40 and ch.kept() == want
+        assert t.kept_label.text().startswith(f"{want} of 40 frames kept")
+        assert win.s.pending_change is not None and win.s.pending_change["step"] == "selection"
+        assert any(b.text().startswith("Try as variant") for b in t.panel.findChildren(QPushButton))
+        win.s.pending_change = None
+        shot(win, "inspect_selection")
+    finally:
+        for d, b in ((stored, before), (engine, engine_before)):
+            if b == "<unset>":
+                d.pop("selection", None)
+            else:
+                d["selection"] = b
+        win.s._cache.clear()
 
 
 def test_a_frame_is_picked_on_the_chart_and_excluded_by_hand_for_the_whole_project(win):
@@ -788,24 +805,9 @@ def test_two_sessions_merge_their_flats_and_offer_the_stacking_mode(win):
 
 
 # ---------------------------------------------------------------------------------------------- import, Outdated
-def _scratch_project(folder: Path) -> Path:
-    """A copy of the test project's definition whose store is a junction onto the real one: the results are read, and
-    what the model writes (state.json, the definition) lands in the temporary folder."""
-    import subprocess
-    folder.mkdir(parents=True, exist_ok=True)
-    shutil.copy(F_PROJECT / "project.astroproj", folder / "project.astroproj")
-    for name in ("store", "inputs"):
-        if (F_PROJECT / name).is_dir() and not (folder / name).exists():
-            r = subprocess.run(["cmd", "/c", "mklink", "/J", str(folder / name), str(F_PROJECT / name)],
-                               capture_output=True, text=True)
-            if r.returncode:
-                pytest.skip(f"no directory junction here: {r.stderr.strip()}")
-    return folder
-
-
 @pytest.fixture()
 def scratch(tmp_path):
-    folder = _scratch_project(tmp_path / "heart")
+    folder = scratch_project(tmp_path / "heart")
     p = api.open_project(folder)
     api.add_workflow(p, "Classic stack", "Classic stack", None)
     api.add_workflow(p, "Full + neural stars", "Full + neural stars", {"denoise": {"iterations": 6000}})
@@ -1229,7 +1231,7 @@ def test_the_stacking_tabs_say_the_frames_left_out_the_rejection_rate_and_the_co
     assert "Rejected pixels: 0.83 %" in t and "Usual range: 0.1 to 0.5 %" in t and "above it" in t
     assert "#e6a23c" in t.lower()                                       # amber: outside the usual range
     c = coverage_text(Bundle.diag, True)
-    assert "red" in c and "26 %" in c and "blue" in c and "under 20 % (DrizzlePac)" in c
+    assert "red" in c and "26 %" in c and "blue" in c and "even under 20 %" in c
     assert coverage_text(Bundle.diag, False) == ""                      # Classic: the colours are filled alike
     ok = api.StackDiag(rejection={"rejected_pct": 0.3, "classic": "winsorized",
                                   "reason_template": {"template": "{n} frames: winsorized sigma clipping", "args": {"n": 9}}})
@@ -1269,7 +1271,7 @@ def cut_texts(root: QWidget) -> list[str]:
 
 
 NAMES = {"Full", "Classic stack", "Classic + denoise", "Full + neural stars", "Raw stack", "Session 1", "heart_a7s",
-         "IC 1805", "OSC", "ILCE-7S", "Heart", "FWHM"}
+         "heart_small", "IC 1805", "OSC", "ILCE-7S", "Heart", "FWHM"}
 
 
 def untranslated(texts_) -> list[str]:
@@ -1334,7 +1336,7 @@ def test_french_translates_every_screen_with_decimal_commas(module_win, env):
         # numbers: the readout, the thresholds, the measurements, the table
         joined = " ".join(seen)
         assert "06,6s" in joined or "RA 02h" in joined
-        assert "7,9 px" in joined and "10 min" in joined and "4,0 px" in joined
+        assert len(set(re.findall(r"\d,\d px", joined))) >= 2 and "10 min" in joined    # star sizes, thresholds
         assert "16 → 17 août 2026" in joined and "aucun" in joined
     finally:
         prefs.set("spec_mode", False)
@@ -1418,7 +1420,8 @@ def test_the_shots_in_english_and_french_have_no_cut_text(module_win, env):
             assert f"{n}_{lang}.png" in names, n
 
 
-def test_the_modules_of_inspect_have_no_mockup_leftovers():
+def test_the_modules_of_inspect_import_only_the_client_libraries():
+    """No leftover of the old prototype (its data files, its modules), and only the allowed imports."""
     root = ROOT / "astro_gpu" / "client"
     allowed = {"__future__", "os", "sys", "threading", "collections", "dataclasses", "pathlib", "typing", "weakref",
                "numpy", "PySide6", "PIL", "astropy", "datetime", "json", "html", "warnings", "traceback", "re", "time",
@@ -1436,7 +1439,7 @@ def test_the_modules_of_inspect_have_no_mockup_leftovers():
 
 
 def _shown_texts() -> dict[str, list[str]]:
-    """Every English text the modules of P10 can show: the ``_("...")`` of the code, the captions of the pictures and the
+    """Every English text the modules of Inspect can show: the ``_("...")`` of the code, the captions of the pictures and the
     fixed tables."""
     root = ROOT / "astro_gpu" / "client"
     found: dict[str, list[str]] = {}

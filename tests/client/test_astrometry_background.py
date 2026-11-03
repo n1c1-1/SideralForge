@@ -1,9 +1,8 @@
-"""Inspect > Astrometry: the picture behind the solution is the user's choice (the stack, the colour-calibrated stack, the
-gradient removed, the final image...), only among the images the workflow has computed and up to date; no Compare with
-list on that tab.
+"""Inspect > Astrometry: the user picks the picture behind the solution among the workflow's computed images.
 
-The list is checked on a model of stages (no project); the tab on a computed bench project, opened read-only, when this
-machine has one.
+The choices (the stack, the colour-calibrated stack, the gradient removed, the final image...) are only the images the
+workflow has computed and up to date; no Compare with list on that tab. The list is checked on a model of stages (no
+project); the tab on a computed bench project, opened read-only, when this machine has one.
 """
 from __future__ import annotations
 

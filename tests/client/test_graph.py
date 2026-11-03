@@ -1,10 +1,10 @@
-"""P9b: the graph, the panel and the model, offscreen, on F:/astro_essais/v2/heart_a7s with four workflows.
+"""The graph, the panel and the model, offscreen, on the test project with four workflows.
 
-The test project is a v2 copy with adopted results (all 15 stages of Full done). The tests add Classic stack, Classic +
-denoise and Full + neural stars in memory; the model is read-only (nothing is saved into the project), except the
-autosave test, which works on a copy of the definition in a temporary folder. ASTRO_GPU_SETTINGS points to a temporary
-file in every test; the user's settings file is checked untouched. ASTRO_GPU_SHOTS names the folder of the screenshots
-(default: a temporary folder).
+The test project (tests/conftest.py, TEST_PROJECT) has Full computed; the tests add Classic stack, Classic + denoise and
+Full + neural stars in memory. The model is read-only (nothing is saved into the project), except the autosave test,
+which works on a copy of the definition in a temporary folder. ASTRO_GPU_SETTINGS points to a temporary file in every
+test; the user's settings file is checked untouched. ASTRO_GPU_SHOTS names the folder of the screenshots (default: a
+temporary folder).
 """
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -25,6 +24,7 @@ if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")      # the offscreen platform has no fonts else
 
 pytest.importorskip("PySide6")
+from conftest import TEST_PROJECT, needs_test_project, scratch_project  # noqa: E402
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QFont, QFontMetricsF  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -58,9 +58,8 @@ from astro_gpu.client.widgets import QSS  # noqa: E402
 from astro_gpu.core import project2  # noqa: E402
 from astro_gpu.core.project import Target  # noqa: E402
 
-F_PROJECT = Path("F:/astro_essais/v2/heart_a7s")
-pytestmark = pytest.mark.skipif(not (F_PROJECT / "project.astroproj").is_file(),
-                                reason="the heart_a7s v2 test project is not on this machine")
+F_PROJECT = TEST_PROJECT
+pytestmark = needs_test_project
 FOUR = (("Classic stack", "Classic stack", None),
         ("Classic + denoise", "Classic + denoise", {"denoise": {"iterations": 6000}}),
         ("Full + neural stars", "Full + neural stars", {"denoise": {"iterations": 6000}}))
@@ -107,23 +106,6 @@ def env(tmp_path, monkeypatch, qapp):
     assert _fingerprint(USER_SETTINGS) == USER_BEFORE, "the user's settings file was touched"
 
 
-def _scratch_project(folder: Path) -> Path:
-    """A copy of the test project's definition whose store is a junction onto the real one: the results are read
-    (done states, previews), and what the model writes (state.json, the definition) lands in the temporary folder."""
-    folder.mkdir(parents=True, exist_ok=True)
-    shutil.copy(F_PROJECT / "project.astroproj", folder / "project.astroproj")
-    for name in ("store", "inputs"):
-        if (F_PROJECT / name).is_dir() and not (folder / name).exists():
-            try:
-                r = subprocess.run(["cmd", "/c", "mklink", "/J", str(folder / name), str(F_PROJECT / name)],
-                                   capture_output=True, text=True)
-            except OSError as e:
-                pytest.skip(f"no directory junction here: {e}")
-            if r.returncode:
-                pytest.skip(f"no directory junction here: {r.stderr.strip()}")
-    return folder
-
-
 def _open_four(folder: Path | None = None):
     p = api.open_project(folder or F_PROJECT)
     for name, template, params in FOUR:
@@ -133,7 +115,7 @@ def _open_four(folder: Path | None = None):
 
 @pytest.fixture(scope="module")
 def world(qapp, tmp_path_factory):
-    folder = _scratch_project(tmp_path_factory.mktemp("graph") / "heart")
+    folder = scratch_project(tmp_path_factory.mktemp("graph") / "heart")
     p = _open_four(folder)
     w = ApiWorker()
     m = ProjectModel(p, w)
@@ -791,7 +773,8 @@ def test_the_panel_lists_the_settings_of_the_engine(world, model, page):
     rows = {r.r["key"]: r for r in live_rows(page)}
     assert {"stack.scale", "stack.pixfrac"} <= set(rows)
     sc = rows["stack.scale"].r
-    assert sc["suggested"] == 1.5 and "FWHM" in sc["reason"] and sc["min"] == 1.0 and sc["max"] == 3.0
+    assert sc["suggested"] == 1.5 and re.search(r"stars of [\d.]+ px", sc["reason"]), sc["reason"]   # from the star size
+    assert sc["min"] == 1.0 and sc["max"] == 3.0
     assert sc["unit"] == "×" and not sc["changed"] and sc["type"] == "float"
     # advanced settings: the others, from the engine, nothing left out
     page.panel.expert = True
@@ -803,7 +786,7 @@ def test_the_panel_lists_the_settings_of_the_engine(world, model, page):
     rows = {r.r["key"]: r for r in live_rows(page)}
     rows["stack.scale"].focused.emit(rows["stack.scale"].r)                          # a click on the row
     dt = texts_of(page.panel.details)
-    assert any(t.startswith("Suggested: 1.5 · FWHM 4.0 px with 40 frames") for t in dt)
+    assert any(t.startswith("Suggested: 1.5 · " + sc["reason"][:12]) for t in dt), dt
     page.panel.expert = False
 
 
@@ -995,7 +978,7 @@ def test_the_selection_rule_is_said_and_the_thresholds_act_only_with_the_thresho
             page.panel.refresh(page.panel.node)
             settle(world["w"], page)
             assert "Toutes les images alignées sont gardées, sauf celles qui pèsent moins de 5 % de la meilleure."                 in texts_of(page.panel)
-            assert reason() == ["Ces seuils n'agissent que si la sélection des poses est sur « Seuils »."]
+            assert reason() == ["Ces seuils n'agissent que si la sélection des images est sur « Seuils »."]
         finally:
             appmod.apply_language("en")
     finally:
@@ -1009,12 +992,12 @@ def test_the_selection_rule_is_said_and_the_thresholds_act_only_with_the_thresho
 
 
 def test_selection_thresholds_come_from_the_stack_settings(world, model, page):
-    """With the previous selection rule ("legacy": the only one the thresholds act with) they are the stack's settings
-    and the panel's count is the engine's preview. (Needs Registration done at the present settings.)"""
+    """With the Thresholds selection rule (the only one the thresholds act with) they are the stack's settings and the
+    panel's count is the engine's preview. (Needs Registration done at the present settings.)"""
     model.scope = None
     stored = model.path.params.setdefault("stack", {})
     before = stored.get("selection", "<unset>")
-    stored["selection"] = "legacy"
+    stored["selection"] = "thresholds"
     model._cache.clear()
     try:
         page.select_node(node(page, "selection"))
@@ -1130,7 +1113,7 @@ def test_decimal_commas_in_french_reasons(world, model, page):
     page.select_node(node(page, "empilement"))
     settle(world["w"], page)
     r = next(x for x in live_rows(page) if x.r["key"] == "stack.scale").r
-    assert "4,0 px" in r["reason"] and "." not in r["reason"].split("px")[0].split("FWHM")[-1]
+    assert re.search(r"\d,\d+ px", r["reason"]) and not re.search(r"\d\.\d", r["reason"]), r["reason"]   # the star size
 
 
 # ---------------------------------------------------------------------------------------------- GUI thread

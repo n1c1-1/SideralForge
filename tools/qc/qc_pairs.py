@@ -12,6 +12,8 @@ images of both preparations. A settings file that predates the key is taken as `
 preparation came later) and the table says so.
 
 Nothing here writes. The old project is read through ``project.json`` and ``results/*/*_settings.json`` only.
+
+A module of tools/qc/qc2.py (``python tools/qc/qc2.py --help``): not run by itself.
 """
 from __future__ import annotations
 

@@ -1,9 +1,7 @@
-"""The ProjectModel surface (P9b): every member the views use exists, and what the model returns has the views' shape.
+"""The ProjectModel surface: every member the views use exists, and what the model returns has the views' shape.
 
-The views of P10 (Inspect, Frames), P11 (Run) and P12 (Post) are ported from the mockup (``mockup/alt3/app``) and build
-on ``client/model.py`` without editing it. ``SURFACE`` lists what they use, by group; a static scan of the mockup's views
-checks that nothing they read on the project is missing from it, and ``REPLACED`` names what the model deliberately
-does not serve any more (the mockup's ``s.data`` and what hung on it).
+``SURFACE`` lists what the views (Inspect, Frames, Run, Post, the graph and its panel) use on the model, by group;
+``REPLACED`` names what the model deliberately does not serve (the project's raw data: the views go through the API).
 """
 from __future__ import annotations
 
@@ -16,6 +14,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
+from conftest import HAVE_TEST_PROJECT, NO_TEST_PROJECT, TEST_PROJECT  # noqa: E402
 from PySide6.QtCore import QObject  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -26,9 +25,8 @@ from astro_gpu.core import project2  # noqa: E402
 from astro_gpu.core.project import Target  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-MOCKUP = ROOT / "mockup" / "alt3" / "app"
 
-#: DESIGN §5.2 and what the mockup's views read on the project, by group
+#: what the views use on the model, by group
 SURFACE = {
     "signals": ["pathsChanged", "currentChanged", "costChanged", "sourcesChanged", "testChanged", "readyChanged",
                 "paramsChanged", "factsChanged", "selectionChanged"],
@@ -53,21 +51,13 @@ SURFACE = {
     "Post": ["slider_infos", "slider_state", "available_sliders", "unlock_text"],
     "lifecycle": ["flush", "close", "log", "edited"],
 }
-#: what the mockup's views read on the project that the model replaces on purpose: the name, and what to use instead
+#: what the model does not serve on purpose: the name, and what to use instead
 REPLACED = {
     "data": "info() and image_size() (the project's facts), frame_table / stage_array of the API (the frames)",
     "stages": "settings.resolve() and the model's params(p, stage) (the engine's describe)",
-    "layers": "api.render_layer / the RenderWorker of P12 (the layers are the engine's)",
+    "layers": "api.render_layer / the RenderWorker of Post (the layers are the engine's)",
     "sliders": "slider_infos(p) (api.sliders_of)",
 }
-#: names the scan finds on ``s`` that are not the project: string methods, a Qt slider named ``s`` in post3
-NOT_THE_MODEL = {"replace", "blockSignals", "isSliderDown", "setEnabled", "setRange", "setValue", "sliderReleased",
-                 "value", "valueChanged"}
-VIEWS = ["steps", "tune", "charts", "frames", "sources", "runs", "post3", "exportdlg", "postengine", "dialogs", "home",
-         "logview"]
-NAMES = {"s", "session", "project", "sess"}
-
-
 @pytest.fixture(scope="module")
 def qapp():
     return QApplication.instance() or QApplication([])
@@ -86,21 +76,6 @@ def empty_model(qapp, tmp_path_factory):
     w.stop()
 
 
-def _mockup_members() -> dict[str, set[str]]:
-    found: dict[str, set[str]] = {}
-    for v in VIEWS:
-        tree = ast.parse((MOCKUP / f"{v}.py").read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Attribute):
-                continue
-            val = node.value
-            ok = (isinstance(val, ast.Name) and val.id in NAMES) or \
-                 (isinstance(val, ast.Attribute) and (val.attr in NAMES or val.attr == "s"))
-            if ok:
-                found.setdefault(node.attr, set()).add(v)
-    return found
-
-
 def test_every_member_of_the_surface_exists(empty_model):
     m = empty_model
     missing = [f"{group}: {n}" for group, names in SURFACE.items() for n in names if not hasattr(m, n)]
@@ -110,20 +85,13 @@ def test_every_member_of_the_surface_exists(empty_model):
     assert isinstance(m, QObject)
 
 
-def test_the_views_of_the_mockup_find_what_they_read(empty_model):
-    """Static: every member the mockup's views read on the project is on the model, or replaced on purpose."""
-    found = _mockup_members()
-    assert len(found) > 30, "the scan found almost nothing: the views moved?"
-    lacking = {name: sorted(views) for name, views in sorted(found.items())
-               if name not in NOT_THE_MODEL and name not in REPLACED and not hasattr(empty_model, name)}
-    assert not lacking, lacking
+def test_the_model_does_not_serve_what_it_replaced(empty_model):
     for name in REPLACED:
-        assert name in found, f"{name} is no longer read by the views: drop it from REPLACED"
         assert not hasattr(empty_model, name), f"{name} is replaced: the model should not have it"
 
 
 def test_the_panel_the_graph_and_the_dialogs_find_what_they_read(empty_model):
-    """The Panel, the GraphView and the dialogs use these (the mockup's app3 / graph / panel / dialogs)."""
+    """The Panel, the GraphView and the dialogs use these."""
     need = ["scope_paths", "pending_change", "paths", "path", "current", "sel_step", "scope", "slider_state",
             "thresholds_now", "kept_frames", "sessions", "frames_excluded", "stack_mode", "gpu", "has_tool",
             "with_tool", "without_tool", "add_variant", "keep_variant", "drop_variant", "cost_with", "apply_change",
@@ -139,8 +107,8 @@ def test_the_workflow_view_has_the_fields_of_pathdef():
     assert modelmod.PathDef is WorkflowView and modelmod.Session is ProjectModel
     assert modelmod.TEMPLATES.keys() == {"Vierge", "Classique + débruitage", "Complet"}
     assert callable(modelmod.hm)
-    # what the views import from the mockup's model module: TRUNK, PathDef, Session, hm (steps, sources, tune), TOOLS
-    # (the window), TEMPLATES (dialogs); DATA is replaced by info() and the API
+    # what the views import from the model module: TRUNK, PathDef, Session, hm (steps, sources, tune), TOOLS (the
+    # window), TEMPLATES (dialogs); no DATA (info() and the API serve the project's facts)
     assert modelmod.TRUNK == ["inventory", "calibrate", "register", "stack"]
     assert {"debruitage", "etoiles", "appris", "deconv"} <= set(modelmod.TOOLS)
     assert not hasattr(modelmod, "DATA")
@@ -158,14 +126,15 @@ def test_empty_project_answers(empty_model):
     assert m.history[-1][1] == "Project opened"
 
 
-def test_options_speak_the_mockups_vocabulary():
+def test_options_speak_the_views_vocabulary():
+    """The views' option names (debruitage, etoiles, fond...) go to the engine's options and back."""
     for key, opts in modelmod.TEMPLATES.items():
         eng = modelmod.to_engine(opts)
         back = modelmod.from_engine(eng)
         assert modelmod.to_engine(back) == eng, key
         assert back["debruitage"] == opts["debruitage"] and back["fond"] == opts["fond"]
     assert modelmod.to_engine({**modelmod.TEMPLATES["Complet"], "appris": True})["stars"] == "psf_neural"
-    # the mockup's with / without cases hold, through the engine's rules
+    # the with / without cases hold, through the engine's rules
     full = modelmod.from_engine(modelmod.to_engine(modelmod.TEMPLATES["Complet"]))
     classic = modelmod.from_engine(modelmod.to_engine(modelmod.TEMPLATES["Vierge"]))
     new, notes = ProjectModel.with_tool(classic, "etoiles")
@@ -191,7 +160,7 @@ def test_options_speak_the_mockups_vocabulary():
 
 # ---------------------------------------------------------------------------------------------- the French
 def _shown_texts() -> dict[str, list[str]]:
-    """Every English text the modules of P9b can show: the ``_("...")`` of the code, the catalogue of settings, the
+    """Every English text the graph's modules can show: the ``_("...")`` of the code, the catalogue of settings, the
     block table, the methods and the states."""
     from astro_gpu import api
     from astro_gpu.client import blocks, settings
@@ -238,7 +207,7 @@ def _shown_texts() -> dict[str, list[str]]:
 
 
 def test_every_text_of_the_graph_has_its_french():
-    """The French catalogue (base, shell, engine, graph) holds every text P9b can show: none is left in English."""
+    """The French catalogue (base, shell, engine, graph) holds every text the graph can show: none is left in English."""
     import json
     cat: dict[str, str] = {}
     for f in sorted((ROOT / "astro_gpu" / "client" / "locale" / "fr").glob("*.json")):
@@ -247,13 +216,13 @@ def test_every_text_of_the_graph_has_its_french():
     assert not missing, missing
     graph = json.loads((ROOT / "astro_gpu" / "client" / "locale" / "fr" / "graph.json").read_text(encoding="utf-8"))
     assert len(graph) > 20 and all(isinstance(v, str) and v for v in graph.values())
-    # the engine's own texts: P16 keeps them whole
+    # the engine's own texts are all translated too
     from astro_gpu import texts
     assert not any(texts.coverage("fr").values())
 
 
-def test_the_new_modules_have_no_mockup_leftovers():
-    """No mockup import, no Demo menu, no alt2 / data.json in the files of P9b (DESIGN §6.3, P9a's grep)."""
+def test_the_graph_modules_import_only_the_client_libraries():
+    """No leftover of the old prototype (its imports, its Demo menu, its data files) in the graph's modules."""
     root = ROOT / "astro_gpu" / "client"
     for name in ("model", "blocks", "graph", "panel", "settings"):
         src = (root / f"{name}.py").read_text(encoding="utf-8")
@@ -307,9 +276,9 @@ def test_durations_are_read_by_the_worker_before_the_views_are_told(qapp, tmp_pa
     fills the model's cache before ``readyChanged``, so that drawing them reads nothing in the GUI thread."""
     from astro_gpu import api
     from astro_gpu.client.model import TEMPLATES
-    data = Path("F:/astro_essais/v2/heart_a7s")
-    if not (data / "project.astroproj").is_file():
-        pytest.skip("the heart_a7s test project (F:/astro_essais) is not here")
+    data = TEST_PROJECT
+    if not HAVE_TEST_PROJECT:
+        pytest.skip(NO_TEST_PROJECT)
     p = project2.load(data)                                  # read only: the model never writes it
     w = ApiWorker()
     m = ProjectModel(p, w, readonly=True)

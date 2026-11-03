@@ -16,6 +16,8 @@ of a render with frame (x0, x1) and width W covers the grid span x0 + i * f .. x
 
 A render larger than the view is first reduced with INTER_AREA (so that all renders are sampled alike, and none is
 blurrier for being enlarged); then resampled with Lanczos.
+
+A module of tools/qc/qc2.py (``python tools/qc/qc2.py --help``): not run by itself.
 """
 from __future__ import annotations
 

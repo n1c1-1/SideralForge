@@ -1,7 +1,8 @@
-"""The scripted tour of the client (tools/client_walkthrough.py), in its short version: a project created from scratch on
-the heart_a7s raw frames, its frames read, its workflows edited, every screen and dialog shown in English then in
-French, closed and opened again, Undo and Redo, the check of a project of the previous version. No run, no export, no
-import copy (the full tour does those).
+"""The short scripted tour of the client (tools/client_walkthrough.py --short): every screen in English and French.
+
+A project created from scratch on the heart_a7s raw frames, its frames read, its workflows edited, every screen and
+dialog shown in English then in French, closed and opened again, Undo and Redo, the check of a project of an older
+version. No run, no export, no import copy (the full tour does those).
 
 Each screenshot is checked by the tour itself: no text cut short, no English left in French; and the tour fails on any
 Qt warning, Python warning or exception. It runs in its own process (offscreen, CPU only, its own settings file and
@@ -15,13 +16,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+from conftest import needs_test_data
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "tools" / "client_walkthrough.py"
-DATA = Path("F:/astro_essais/v2/heart_a7s/project.astroproj")
-
-pytestmark = pytest.mark.skipif(not DATA.is_file(), reason="the heart_a7s test data (F:/astro_essais) is not here")
+pytestmark = needs_test_data
 
 
 def test_the_short_walkthrough_shows_every_screen_in_both_languages_without_a_problem(tmp_path):
