@@ -195,8 +195,9 @@ est écrit à partir de cette description ; il ne traduit pas le leur.
 (écarts au gradient injecté en %, nuage gardé en %, planéité en % du niveau du ciel)
 
 Ce que ça dit :
-- **Notre version fait jeu égal ou mieux que Siril** sur cinq cas, nettement mieux sur M8 ; elle garde un peu plus du
-  nuage faible.
-- **Une exception : le coin éclairé de Heart** (9,7 % contre 2,5 %). C'est la trace de la différence inexpliquée.
+- **Notre version est du même niveau que Siril, avec un écart résiduel inexpliqué.** Ses chiffres s'écartent des siens
+  dans un sens ou dans l'autre : plus favorables sur la plupart des gradients injectés (nettement sur M8), moins bons
+  sur le coin éclairé de Heart (9,7 % contre 2,5 %). Ce n'est pas une amélioration voulue : c'est la différence
+  inexpliquée, et six cas ne disent pas si elle est bonne ou mauvaise en général.
 - Comme Siril, elle **retire la plus grande partie d'un nuage faible et très étendu** (15 à 27 % gardés, M8 à part) :
   c'est le prix de la souplesse. Le polynôme, lui, le garde (33 à 108 %) mais rate le coin éclairé.
