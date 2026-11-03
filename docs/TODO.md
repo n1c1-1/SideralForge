@@ -30,5 +30,8 @@ obsolètes.
 - **M8 express** : relancer `python tools/bench/gradient_projects.py --cases m8` quand les services Gaia répondent.
 - **Le gradient automatique sur la Rosette** emporte environ un tiers de la nébuleuse : l'échelle du modèle ou le seuil
   de protection, à voir dans l'onglet « Modèle du ciel ».
+- **Le panneau des calques du Post-traitement** : le bouton « Panneau des calques » au bout de la barre est à refaire
+  comme dans Photoshop ou Lightroom (un chevron sur le bord du panneau lui-même, le bord qu'on fait glisser, Tab pour
+  masquer les panneaux, l'état gardé).
 - **Les filtres « netteté » et « débruitage » du Post-traitement** ne changent rien à l'image d'après les captures
   (`ml_sharpen`, `ml_denoise`) : à regarder.

@@ -480,7 +480,7 @@ class PostView(QWidget):
         self.split.splitterMoved.connect(self._panel_moved)
         root.addWidget(self.split)
         self.right.setVisible(prefs.get("post_panel_shown") is not False)
-        self.b_panel.setChecked(self.right.isVisible())
+        self.b_panel.setChecked(not self.right.isHidden())     # isVisible is False until the window shows
         self._connect(own_worker=worker is None)
         if self.layers:
             self.sel = (self.layers[-1]["id"], "layer")
