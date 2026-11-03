@@ -3,10 +3,9 @@
 The output of the workflows without Stars (Classic stack, Classic + denoise) and of the Raw stack exit:
 
 * lin.npy = M x stack - sky, in display RGB: the denoised stack when the workflow has Denoise, else the stack with the
-  sky gradient removed (stages/gradient.py); the sky is then a level, the median of each channel;
-* with Color, M is the colour stage's matrix with the emission anchor of render_prep (``anchor_matrix``): the line
-  emission measured on the stack gets the colour of an HII spectrum, the star colours are unchanged. Without it the
-  matrix, fitted on the stars, rendered the H-alpha of an astro-modified camera violet (heart_a7s);
+  sky gradient removed (stages/gradient.py); the sky is then a level: the one the Gradient block measured between
+  the objects (a median over the whole field would take a nebula that fills it for sky, differently in each colour);
+* with Color, M is the colour stage's white balance (one factor per colour);
 * without Color (the Raw stack exit), M is the identity; the sky of each channel (a smooth polynomial) is subtracted,
   the channels are scaled to the same sky spread, and the sky's brightness is added back grey: the camera's colour
   balance and the colour of the light pollution do not tint the preview, the gradient stays visible (it is the
@@ -23,12 +22,9 @@ from pydantic import field_validator
 from ..core.params import P, StageParams
 from ..core.stage import Context, Stage, StageError
 from .gradient import LUM, GradientParams, coverage, fit_poly_sky, poly_sky, stack_image
-from .render_prep import anchor_matrix, crop_box
+from .render_prep import crop_box
 
 STRETCHES = ["auto"]                       # the other stretches of the spec (GHS, arcsinh, STF, none) are not in the engine
-#: side of the blocks the emission colour is measured in (stack pixels): the area of render_prep's blocks (64 px of the
-#: image reduced by 2)
-EMISSION_BLOCK = 128
 
 
 def sky_spread(v: np.ndarray) -> float:
@@ -58,63 +54,6 @@ def raw_exit_sky(ctx: Context, cam: np.ndarray, valid: np.ndarray) -> tuple[np.n
         ctx.log(f"the sky could not be modelled ({exc}): the median of each channel is taken", "warning")
         return np.array([np.median(cam[c][valid]) for c in range(3)], np.float32)[:, None, None], "channel medians"
     return poly_sky(fit["coefs"], bp.degree, *cam.shape[1:]), "camera-colour polynomial, made grey"
-
-
-def emission_colour(cam: np.ndarray, shown: np.ndarray, block: int = EMISSION_BLOCK) -> np.ndarray | None:
-    """Camera colour (R = 1) of the line emission of a stack that still has its stars, its sky removed.
-
-    render_prep measures it on the starless image, on the structure of the nebula (a band-pass, free of any zero
-    point). With the stars in, their light dominates that structure everywhere (heart_a7s: G / R 1.06, a star colour,
-    against 0.35 on the starless image), so the emission is never found. With the sky removed, the diffuse light
-    itself can be measured: the median of each channel in blocks (the stars cover a minority of the pixels and do not
-    move it), and as in render_prep the reddest fifth (lowest G / R) of the brightest fifth of the blocks (in red).
-    heart_a7s: (1, 0.39, 0.24) here, (1, 0.35-0.37, 0.19-0.21) on the starless image. None if too few blocks."""
-    C, H, W = cam.shape
-    hb, wb = H // block, W // block
-    if hb * wb < 20:
-        return None
-    ok = shown[:hb * block, :wb * block].reshape(hb, block, wb, block).mean(axis=(1, 3)) >= 0.99
-    med = np.stack([np.median(cam[c, :hb * block, :wb * block].reshape(hb, block, wb, block).transpose(0, 2, 1, 3)
-                              .reshape(hb, wb, -1)[ok], axis=-1) for c in range(C)]).astype(np.float64)
-    if med.shape[1] < 20:
-        return None
-    bright = (med[0] > np.percentile(med[0], 80)) & (med[0] > 0)
-    if bright.sum() < 10:
-        return None
-    gr, br = med[1, bright] / med[0, bright], med[2, bright] / med[0, bright]
-    red = gr <= np.percentile(gr, 20)
-    return np.array([1.0, float(np.median(gr[red])), float(np.median(br[red]))])
-
-
-def emission_matrix(ctx: Context, M: np.ndarray, stack: np.ndarray, valid: np.ndarray, shown: np.ndarray):
-    """The colour matrix with the emission anchor of render_prep (``anchor_matrix``), measured on the stack (not
-    denoised): the star colours are those the colour stage fitted the matrix on (``color.colour_stars``), the emission
-    is measured against the stack's own sky, a polynomial in camera colours with the Gradient block's default settings.
-    The workflow's denoiser and Gradient settings do not change it: Classic and Classic + denoise get the same
-    matrix.
-    Returns (matrix, measured emission colour or None, weight)."""
-    from .color import colour_stars, saturation_map
-    try:
-        cam_hii = np.load(ctx.input("color", "specresp.npz"))["cam_hii"].astype(np.float64)
-        xp = np.load(ctx.input("catalogs", "gaia_xp.npz"))
-    except StageError:
-        return M, None, 0.0
-    if not np.isfinite(cam_hii).all() or cam_hii[0] <= 0:
-        return M, None, 0.0
-    aperture = float(ctx.manifest("color").get("params", {}).get("aperture", 5.0))
-    _, F = colour_stars(stack, xp["x"], xp["y"], aperture, saturation_map(ctx))
-    if len(F) < 50:
-        return M, None, 0.0
-    bp = GradientParams()
-    try:
-        fit = fit_poly_sky(stack, valid, bp.degree, bp.samples, bp.object_clip)
-    except StageError:
-        return M, None, 0.0
-    e = emission_colour(stack - poly_sky(fit["coefs"], bp.degree, *stack.shape[1:]), shown)
-    if e is None:
-        return M, None, 0.0
-    Ma, w = anchor_matrix(M, cam_hii, F.T.astype(np.float64), e)
-    return Ma, e, w
 
 
 def repair_saturated(lin: np.ndarray, sat: np.ndarray, valid: np.ndarray, ring_px: float) -> tuple[np.ndarray, int]:
@@ -172,10 +111,11 @@ class RenderSimple(Stage):
                    "stretch. Post renders it with its sliders (sky, contrast, saturation, noise).")
     deps = ("stack",)
     Params = RenderSimpleParams
-    version = "5"          # 2: the emission anchor of render_prep (the H-alpha of Classic was violet on heart_a7s);
+    version = "6"          # 2: the emission anchor of render_prep (the H-alpha of Classic was violet on heart_a7s);
                            # 3: the Raw stack exit's sky made grey (it had the green of the light pollution);
                            # 4: the colour of the places near saturation from their surroundings (repair_saturated);
-                           # 5: the sky gradient removed before (the Gradient block): a level here
+                           # 5: the sky gradient removed before (the Gradient block): a level here;
+                           # 6: that level is the Gradient block's; no emission anchor (the colour is a white balance)
 
     def run(self, ctx: Context, p: RenderSimpleParams) -> None:
         from ..render.simple import SimpleRenderEngine, SimpleSettings, image_stats
@@ -198,27 +138,13 @@ class RenderSimple(Stage):
             spread = np.array([sky_spread(lin[c][shown]) for c in range(3)])
         if not color:                               # the Raw stack exit: a grey sky (below)
             sky, sky_name = raw_exit_sky(ctx, lin, valid)
-        else:                                       # the gradient is removed: the median of each channel
+        elif ctx.has("gradient"):                   # the level the Gradient block measured between the objects
+            level = np.asarray(ctx.load_json("gradient", "gradient.json")["level"], np.float64)
+            sky = (M @ level).astype(np.float32)[:, None, None]
+            sky_name = "sky level of the Gradient block"
+        else:
             sky = np.array([np.median(lin[c][shown]) for c in range(3)], np.float32)[:, None, None]
         lin -= sky
-        e, w = None, 0.0
-        if color:
-            ctx.progress(0.3, "emission colour")
-            stack = src if name == "stack/drz_full" else stack_image(ctx)
-            Ma, e, w = emission_matrix(ctx, M, stack, valid, shown)
-            del stack
-            if w > 0:
-                # the same image and sky in the colours of the anchored matrix: Ma x stack - T x sky = T x lin
-                T = (Ma @ np.linalg.inv(M)).astype(np.float32)
-                lin = np.tensordot(T, lin, 1)
-                sky = np.tensordot(T, sky, 1)
-                M = Ma
-            if e is not None:
-                ctx.metric("emission_colour_measured", np.round(e, 3).tolist())
-                ctx.metric("emission_anchor_weight", round(w, 2))
-                ctx.log(f"line emission measured on the stack: camera colour R 1 : G {e[1]:.2f} : B {e[2]:.2f}"
-                        + (f"; rendered with the colour of an HII spectrum (weight {w:.2f}), the star colours "
-                           f"unchanged" if w > 0 else " - within the colours of the stars: matrix unchanged"))
         del src
         from .color import saturation_map
         sat = saturation_map(ctx, clipped=True)
@@ -251,7 +177,6 @@ class RenderSimple(Stage):
                 "stats": stats, "stretch": p.stretch, "linked": p.linked, "denoised": denoised, "color": color,
                 "sky": sky_name, "source": name, "gains": gains.tolist(),
                 "exit": None if color else "stacking", "width": W, "height": H,
-                "emission": None if e is None else e.tolist(), "emission_anchor_weight": w,
                 "drizzle_scale": float(ctx.load_json("stack", "drz_meta.json").get("scale", 1.0))}
         del lin
         if denoised:

@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from ..core.params import ADVANCED, P, StageParams
-from ..core.stage import Context, Stage
+from ..core.stage import Context, Stage, StageError
 from .optics import basis, sample_E
 
 
@@ -139,7 +139,11 @@ class RenderPrep(Stage):
         fs = np.load(ctx.input("stars", "star_fluxes.npz"))
         flat = ctx.load("background", "flat.npy")
         coefs = ctx.load_json("background", "coefs.json")["fit"]
-        spec = np.load(ctx.input("color", "specresp.npz"))
+        try:
+            spec = np.load(ctx.input("color", "specresp.npz"))
+        except StageError:
+            raise StageError("this output needs the colour curves the colour calibration no longer makes (it is a "
+                             "white balance now): the Full workflow is to be redone with the star removal work") from None
         M, e_meas, w_e = emission_anchor(astro, M, spec["cam_hii"].astype(np.float64), fs, dm)
         sl_name, n2_name = "sl_final.npy", "n2n_final.npy"
         if self.learned:

@@ -210,12 +210,6 @@ CATALOG = {
                                                              "catalogue.")]),
     ],
     "couleur": [
-        ("Correction", [
-            E("color", "correction", label="Colour correction",
-              help="Full: a colour matrix makes the star colours right when the camera's sensitivity curves are "
-                   "known. One factor per colour: only the white balance of the stars; less colour noise, star "
-                   "colours less corrected."),
-        ]),
         ("White reference", [
             N("color", "white_ref", "White reference", "choice", "The Sun",
               "What should appear white.",
@@ -229,13 +223,6 @@ CATALOG = {
         ]),
         ("Color measurement", [
             E("color", "aperture", "expert", help="Radius of the light measurement of each star."),
-            E("color", "camera_profile", "expert", help="Uses the measured response of the sensor rather than a "
-                                                        "typical response."),
-            E("color", "synthetic_weight", "expert", help="Weight of the reconstructed Gaia spectra relative to the "
-                                                          "measured spectra."),
-            E("color", "profile_tolerance", "expert", help="Allowed deviation between the measured profile and the "
-                                                           "typical profile."),
-            E("color", "hii_weight", "expert", help="Weight given to the H-alpha line in the color fit."),
         ]),
         ("Color stars (Gaia)", [
             E("catalogs", "xp_gmin", "expert", help="Magnitude of the brightest star used for the color."),

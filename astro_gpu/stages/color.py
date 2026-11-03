@@ -1,38 +1,34 @@
-"""Colour calibration: spectral response of the sensor from Gaia XP spectra, camera -> sRGB matrix."""
+"""Colour calibration: the photometric white balance of the stars, one factor per colour channel.
+
+The colours of a few thousand isolated stars of the field are measured on the stack (aperture photometry, local
+background) and compared with the colours their Gaia XP spectra give in the output's RGB (linear sRGB, the white
+reference ``white_temp`` rendered neutral). For red and blue, a robust straight line through the stars (measured
+colour ratio against the catalogue's) gives the factor that brings the white reference to neutral; green is 1. The
+camera's channels are not mixed: this is the white balance of the photometric calibrations of Siril and PixInsight
+(PCC, SPCC). An earlier version also reconstructed the sensor's sensitivity curves from the stars and fitted a colour
+matrix on them; the matrix mixed the channels arbitrarily where the stars do not constrain it (emission lines: the
+H-alpha of the Rosette and of the Heart came out magenta) and was taken out.
+
+Outputs: M.npy (3, 3) camera -> linear sRGB (diagonal), color_stars.npz (every catalogue star: measured, expected,
+used or why not, for the Inspect mode).
+"""
 from __future__ import annotations
 
-import re
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from pydantic import field_validator
-from scipy.optimize import least_squares, nnls
 
-from ..core.params import ADVANCED, Auto, P, StageParams, check_choice
-from ..core.project import STATE
+from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage, StageError
 from .gradient import stack_image
 
 XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
                         [-0.9692660, 1.8760108, 0.0415560],
                         [0.0556434, -0.2040259, 1.0572252]])
-# typical HII region spectrum (Balmer case B reddened, [NII], [SII], weak [OIII])
-HII_LINES = {656.3: 1.0, 658.4: 0.30, 654.8: 0.10, 486.1: 1 / 7.0, 434.0: 1 / 7.0 * 0.35, 671.6: 0.08, 673.1: 0.07,
-             500.7: 0.05, 495.9: 0.017}
-OIII_LINES = {500.7: 1.0, 495.9: 0.33, 486.1: 0.3}
-PROFILES = STATE / "camera_profiles"   # per-user state (core/project.py)
-#: the fit of every catalogue star, for the Inspect mode (``star_fit``; an extra file: an older result lacks it)
+#: the fit of every catalogue star, for the Inspect mode (``star_fit``)
 STARS = "color_stars.npz"
-#: ``response_source`` when no sensitivity curves are trusted: no matrix, one factor per colour (SPCC's white balance)
-PER_COLOUR = "one factor per colour (no reliable sensitivity curves)"
-#: ``correction``: "full" (a colour matrix when sensitivity curves are trusted, else one factor per colour) or
-#: "per_colour" (always one factor per colour: the white balance of the PER_COLOUR fallback, never a matrix). "full"
-#: is the behaviour of the results computed before the setting existed: at that default it stays out of the key
-#: (core/store.py), so those results keep their keys
-CORRECTIONS = ("full", "per_colour")
-#: the ``correction`` metric: what the matrix applied is
-APPLIED = {"matrix": "colour matrix", "per_colour": "one factor per colour"}
+#: what the stage applies
+APPLIED = "one factor per colour"
 
 
 class ColorParams(StageParams):
@@ -44,56 +40,21 @@ class ColorParams(StageParams):
                                "white, hotter stars blue, cooler stars orange, as in professional colour images.",
                           tip="This is the physical calibration; the final rendering tab can still warm or cool "
                               "the image without touching this.")
-    hii_weight: float = P(60.0, label="H-alpha anchor weight", level=ADVANCED, ge=0, le=500,
-                          help="How strongly the matrix is constrained to render a typical HII emission spectrum "
-                               "with its true colour (stars alone constrain the continuum only).")
-    camera_profile: bool = P(True, label="Camera profile", level=ADVANCED,
-                             help="The sensitivity curves found on a project are kept as the profile of the camera. "
-                                  "When the stars of a field are too similar to determine the curves (fields far "
-                                  "from the Milky Way, few reddened stars) and the free fit is not physical, the "
-                                  "profile is used instead - after checking that it predicts the measured star "
-                                  "colours of this field.")
-    synthetic_weight: float = P(0.5, label="Synthetic spectra weight", level=ADVANCED, ge=0, le=5, step=0.1,
-                                help="Besides the measured stars, the colour matrix is fitted on spectra predicted with "
-                                     "the sensitivity curves: black bodies from 2500 to 30000 K, unreddened to heavily "
-                                     "reddened. The stars of one field often cover a narrow range of colours (far from "
-                                     "the Milky Way especially); without these spectra the matrix is under-determined "
-                                     "and its large coefficients amplify the colour noise. Relative to the measured "
-                                     "stars; 0 = measured stars only.")
-    profile_tolerance: float = P(5.0, label="Profile agreement", level=ADVANCED, ge=1, le=20, step=0.5, unit="%",
-                                 help="A camera profile is accepted if it predicts the measured star colours of this "
-                                      "field within this scatter (a modified / unmodified camera of the same model "
-                                      "fails this test).")
-    correction: str = P("full", label="Colour correction", choices=list(CORRECTIONS),
-                        help="Full: when the sensitivity curves of the camera predict the star colours, a colour "
-                             "matrix mixes the three colours of the sensor to make the star colours right; otherwise "
-                             "one factor per colour. One factor per colour: always only the white balance of the "
-                             "stars. Less colour noise, but the star colours are less corrected.",
-                        tip="The colour matrix can multiply the colour noise up to 4 times. Choose one factor per "
-                            "colour for a noisy image or when the star colours matter less than a clean background.")
-
-    @field_validator("correction")
-    @classmethod
-    def _choice(cls, v: str, info) -> str:
-        return check_choice(info.field_name, v, CORRECTIONS)
 
 
 class Color(Stage):
     name = "color"
     title = "Colour calibration"
-    description = ("Measures a few thousand isolated stars whose full spectrum is known from Gaia XP, reconstructs "
-                   "the spectral sensitivity curves of your camera (sensor + filter) and derives the colour matrix "
-                   "camera -> sRGB. Star colours become physical (no 'neutral background' guess) and emission "
-                   "nebulae are anchored on the true colour of an H-alpha + H-beta + [NII] + [SII] spectrum.")
+    description = ("Measures a few thousand isolated stars whose spectrum is known from Gaia XP and sets one factor "
+                   "per colour so that their colours come out right, the chosen white reference neutral: the "
+                   "photometric white balance of the usual colour calibrations. The colours of the camera are not "
+                   "mixed.")
     deps = ("catalogs", "stack", "register")
     Params = ColorParams
-    # 2: physical check, camera profiles, synthetic spectra in the matrix fit; 3: a star is left out when a sample of
-    # its aperture was near saturation in a frame (the stack's map), not when its peak passes 45 % of the brightest
-    # pixel (on heart_a7s that left out 1121 of 4000 stars; on m8, half of them had no sample above 65 %); 4: the
-    # white point set by the stars' white balance (star_white_balance, as SPCC), not by the matrix fit alone; 5: when
-    # neither the fitted curves, a profile nor the typical curves are trusted (profile_tolerance), one factor per
-    # colour (PER_COLOUR) instead of a matrix fitted on curves that do not predict the stars
-    version = "5"
+    # 2: physical check, camera profiles, synthetic spectra in the matrix fit; 3: saturation from the stack's map;
+    # 4: the white point set by the stars' white balance; 5: one factor per colour when no curves are trusted;
+    # 6: one factor per colour always: the reconstructed curves and their colour matrix are taken out
+    version = "6"
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
@@ -108,129 +69,31 @@ class Color(Stage):
         import colour
         img = stack_image(ctx)
         xp = np.load(ctx.input("catalogs", "gaia_xp.npz"))
-        lam = xp["lam"]
         table, star_why = colour_star_table(img, xp["x"], xp["y"], p.aperture, saturation_map(ctx))
         idx = np.where(star_why == "")[0]
         cam = table[idx]
         if len(idx) < 50:
             raise StageError(f"only {len(idx)} colour stars could be measured (need 50)")
-        ctx.progress(0.3, f"fitting the spectral response on {len(idx)} stars")
-        kept: list = []
-        S, rel = fit_response(xp["flux"][idx], lam, cam, kept=kept)
-        good, why = physical_response(lam, S)
-        camera = str(ctx.metric_of("inventory", "camera", "") or "")
-        prof = load_profile(camera, lam) if p.camera_profile and camera else None
-        source = "fit"
-        agree_fit = colour_agreement(xp["flux"][idx], lam, cam, S)
-        ctx.metric("fit_agreement_pct", round(agree_fit, 2))
-        if prof is not None:
-            agree = colour_agreement(xp["flux"][idx], lam, cam, prof["S"])
-            ctx.metric("profile_agreement_pct", round(agree, 2))
-        if prof is not None and agree <= p.profile_tolerance and (not good or agree < agree_fit):
-            # the profile was measured on a field that determines the curves better; it is used when it predicts the
-            # star colours of this field better than the free fit (or when the free fit is not physical)
-            S = prof["S"] * np.median(cam / predict(xp["flux"][idx], lam, prof["S"]), 0)[:, None]
-            rel = [agree / 100] * 3
-            source = f"camera profile ({prof['project']})"
-            reason = (f"the free fit is not physical ({why}): the stars of this field are too similar to determine "
-                      f"the curves" if not good else f"the free fit predicts them within {agree_fit:.1f} % only")
-            ctx.log(f"using the {camera} sensitivity curves measured on '{prof['project']}', which predict the star "
-                    f"colours of this field within {agree:.1f} % ({reason})", "warning" if not good else "info")
-        elif not good:
-            # no profile of this camera: the curves of a typical colour sensor, each scaled to this field's stars.
-            # A wrong shape costs some accuracy; unphysical curves give H-alpha a blue signature and pink skies
-            gen = generic_response(lam)
-            agree = colour_agreement(xp["flux"][idx], lam, cam, gen)
-            S = gen * np.median(cam / predict(xp["flux"][idx], lam, gen), 0)[:, None]
-            rel = [agree / 100] * 3
-            ctx.metric("generic_agreement_pct", round(agree, 2))
-            if agree <= p.profile_tolerance:
-                source = "generic colour sensor"
-                ctx.log(f"the sensitivity curves found are not physical ({why}) and no validated profile of this "
-                        f"camera is available: the curves of a typical colour sensor are used, scaled to this field's "
-                        f"stars (they predict them within {agree:.1f} %). Processing a Milky Way field with the same "
-                        f"camera first gives it its own profile", "warning")
-            else:
-                # the typical curves do not predict this field's stars either (the test a camera profile must pass):
-                # a matrix fitted between them and the stars mixes the channels with large opposite terms (more
-                # red noise, H-alpha rendered orange). No curves are trusted, so no matrix: one factor per colour
-                # from the stars' white balance, as the spectrophotometric calibrations of Siril and PixInsight make
-                # it (SPCC [P21][S13])
-                source = PER_COLOUR
-                ctx.log(f"the sensitivity curves found are not physical ({why}), and neither a profile of this camera "
-                        f"nor the curves of a typical colour sensor predict this field's star colours (the typical "
-                        f"curves within {agree:.1f} %, more than {p.profile_tolerance:.1f} %): the colours are "
-                        f"calibrated with one factor per colour from the stars' white balance, as the usual "
-                        f"photometric colour calibrations do", "warning")
-        elif p.camera_profile and camera and max(rel) < 0.06:
-            save_profile(camera, lam, S, ctx.project.config.name, max(rel))
-        ctx.metric("response_source", source)
-        # one factor per colour: when no curves are trusted, or when the settings ask for it (the same white balance,
-        # never a matrix: less colour noise, the star colours less corrected)
-        per_colour = source == PER_COLOUR or p.correction == "per_colour"
-        if p.correction == "per_colour" and source != PER_COLOUR:
-            ctx.log("one factor per colour from the stars' white balance, as chosen in the settings: no colour matrix")
-        ctx.metric("correction", APPLIED["per_colour" if per_colour else "matrix"])
-        cam_hii, xyz_hii = line_vec(S, lam, HII_LINES)
-        cam_oiii, xyz_oiii = line_vec(S, lam, OIII_LINES)
-        xyz = xp["xyz"][idx]
-        cam_n = cam / cam.sum(1, keepdims=True)
-        xyz_n = xyz / xyz.sum(1, keepdims=True)
-        anchors = [(cam_hii, xyz_hii, p.hii_weight), (cam_oiii, xyz_oiii, p.hii_weight / 6)]
-        syn = synthetic_spectra(lam)
-        cam_s = predict(syn, lam, S)
-        cam_s = cam_s / cam_s.sum(1, keepdims=True)
-        xyz_s = spectra_xyz(lam, syn)
-        xyz_s = xyz_s / xyz_s.sum(1, keepdims=True)
-        w_s = np.sqrt(p.synthetic_weight * len(cam_n) / len(cam_s))
-        M0 = np.linalg.lstsq(np.r_[cam_n, w_s * cam_s], np.r_[xyz_n, w_s * xyz_s], rcond=None)[0].T
-
-        def resid(q):
-            Mq = q.reshape(3, 3)
-            v = cam_n @ Mq.T
-            v = v / v.sum(1, keepdims=True)
-            vs = cam_s @ Mq.T
-            vs = vs / vs.sum(1, keepdims=True)
-            r = [((v - xyz_n)[:, :2]).ravel(), w_s * ((vs - xyz_s)[:, :2]).ravel()]
-            for cv, xv, w in anchors:
-                qa = Mq @ (cv / cv.sum())
-                qa = qa / qa.sum()
-                r.append(w * (qa - xv / xv.sum())[:2])
-            return np.concatenate(r)
-
+        ctx.progress(0.5, f"white balance on {len(idx)} stars")
         W_ref = white_xyz(p.white_temp)
         W_d65 = colour.xy_to_XYZ(colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D65"])
-        to_out = XYZ_TO_SRGB @ bradford(W_ref, W_d65)
-        if per_colour:
-            M = np.linalg.inv(to_out)          # camera colours as the output's: the white balance below is all
-        else:
-            sol = least_squares(resid, M0.ravel(), loss="soft_l1", f_scale=0.01)
-            M = sol.x.reshape(3, 3)
-        wb = star_white_balance(cam @ (to_out @ M).T, xyz @ to_out.T)
+        to_out = XYZ_TO_SRGB @ bradford(W_ref, W_d65)          # XYZ -> the output's RGB, the white reference neutral
+        expected = xp["xyz"][idx] @ to_out.T
+        wb = star_white_balance(cam, expected)
+        M = np.diag(wb["k"]) / float(np.mean(1.0 / wb["k"]))   # a grey of the camera keeps its brightness
+        ctx.save("M.npy", M)
+        np.savez(ctx.out(STARS), source_kind=APPLIED, **star_fit(xp, table, star_why, idx, M, to_out))
+        q = cam @ M.T
+        q = q / q.sum(1, keepdims=True)
+        e = expected / expected.sum(1, keepdims=True)
+        rs = np.hypot(*(q - e)[:, [0, 2]].T)
+        ctx.metric("stars", int(len(idx)))
         ctx.metric("white_balance", [round(float(v), 4) for v in wb["k"]])
         ctx.metric("white_balance_stars", wb["stars"])
-        M = np.linalg.solve(to_out, np.diag(wb["k"]) @ to_out @ M)       # the camera -> XYZ matrix applied
-        q = cam_n @ M.T
-        q = q / q.sum(1, keepdims=True)
-        rs = np.hypot(*(q - xyz_n)[:, :2].T)
-        Mtot = to_out @ M
-        white_cam = np.linalg.solve(Mtot, np.ones(3))
-        Mtot = Mtot * white_cam.mean()
-        ctx.save("M.npy", Mtot)
-        np.savez(ctx.out("specresp.npz"), lam=lam, S=S, cam_hii=cam_hii, cam_oiii=cam_oiii)
-        np.savez(ctx.out(STARS), source_kind=source, **star_fit(xp, table, star_why, idx, kept, S, M))
-        ctx.metric("stars", int(len(idx)))
-        ctx.metric("fit_residual", [round(float(v), 4) for v in rel])
         ctx.metric("chromaticity_residual", round(float(np.median(rs)), 4))
-        ctx.metric("matrix", np.round(Mtot, 4).tolist())
-        resp = {f"{l0:.0f}nm": [round(float(np.interp(l0, lam, S[c]) / S.max()), 3) for c in range(3)]
-                for l0 in (486.1, 500.7, 656.3)}
-        ctx.metric("response_at_lines", resp)
-        if (np.median(rs) > 0.03 and p.correction != "per_colour") or (np.diag(Mtot) < 0).any():
-            ctx.log("the colour fit is poor: check that the colour pattern (Bayer) of the camera is right",
-                    "warning")
-        ctx.log(f"spectral response from {len(idx)} Gaia XP stars, chromaticity residual {np.median(rs):.4f}")
-        ctx.preview("spectral_response", response_plot(lam, S, len(idx)))
+        ctx.metric("matrix", np.round(M, 4).tolist())
+        ctx.log(f"white balance from {wb['stars']} Gaia XP stars: red x {wb['k'][0]:.3f}, blue x {wb['k'][2]:.3f} "
+                f"(green 1); colour residual {np.median(rs):.4f}")
 
 
 def star_white_balance(measured, expected) -> dict:
@@ -320,113 +183,29 @@ def colour_star_table(img, x, y, aperture, sat=None):
     return out, why.astype(str)
 
 
-def star_fit(xp, table, why, idx, kept, S, M) -> dict[str, np.ndarray]:
-    """The fit of every catalogue star of ``xp`` (gaia_xp.npz), as the stage made it: position (stack pixels),
-    measured camera fluxes ``flux`` (NaN when not measured) and ``reason`` ('' for a colour star), ``used`` (the
-    colour stars ``idx``: the matrix is fitted on all of them), ``resp_keep`` (N, 3) the stars each channel of the
-    sensitivity-curve fit kept (``kept``), the CIE xy chromaticity of the star's spectrum (``cat_xy``, what the fit
-    aims at) and the one the fitted camera -> XYZ matrix ``M`` gives from the measured colour (``pred_xy``), their
-    distance ``resid``, and the camera fluxes the curves ``S`` predict from the spectrum (``cam_pred``)."""
+def star_fit(xp, table, why, idx, M, to_out) -> dict[str, np.ndarray]:
+    """Every catalogue star of ``xp`` (gaia_xp.npz) as the stage saw it: position (stack pixels), measured camera
+    fluxes ``flux`` (NaN when not measured) and ``reason`` ('' for a colour star), ``used`` (the colour stars ``idx``),
+    the colour of its spectrum (``cat_xy``, rg chromaticity in the output's RGB) and the one the white balance ``M``
+    gives from its measured colour (``pred_xy``), their distance ``resid``, and the camera fluxes the white balance
+    expects from the spectrum (``cam_pred``)."""
     x = np.asarray(xp["x"], float)
     n = len(x)
     used = np.zeros(n, bool)
     used[idx] = True
-    resp_keep = np.ones((n, 3), bool)
-    for c, k in enumerate(kept):
-        resp_keep[idx, c] = k
-    xyz = np.asarray(xp["xyz"], float)
-    cat_xy = (xyz / xyz.sum(1, keepdims=True))[:, :2]
+    out_rgb = np.asarray(xp["xyz"], float) @ np.asarray(to_out, float).T
+    cat = out_rgb / out_rgb.sum(1, keepdims=True)
     cam = np.asarray(table, float)[idx]
-    q = (cam / cam.sum(1, keepdims=True)) @ np.asarray(M, float).T
+    q = cam @ np.asarray(M, float).T
     q = q / q.sum(1, keepdims=True)
-    pred_xy = np.full((n, 2), np.nan)
-    pred_xy[idx] = q[:, :2]
+    pred = np.full((n, 2), np.nan)
+    pred[idx] = q[:, :2]
     resid = np.full(n, np.nan)
-    resid[idx] = np.hypot(*(pred_xy[idx] - cat_xy[idx]).T)
+    resid[idx] = np.hypot(*(pred[idx] - cat[idx, :2]).T)
     return {"x": x, "y": np.asarray(xp["y"], float), "source": np.asarray(xp["source"]), "g": np.asarray(xp["g"]),
-            "flux": np.asarray(table, float), "reason": np.asarray(why, str), "used": used, "resp_keep": resp_keep,
-            "cat_xy": cat_xy, "pred_xy": pred_xy, "resid": resid,
-            "cam_pred": predict(np.asarray(xp["flux"], float), np.asarray(xp["lam"], float), S),
-            "M_xyz": np.asarray(M, float)}
-
-
-def synthetic_spectra(lam) -> np.ndarray:
-    """Black bodies 2500-30000 K, unreddened to E(B-V) = 2 (A_lambda ~ lambda^-1.3, R_V = 3.1): (N, L) per nm."""
-    T = np.geomspace(2500, 30000, 24)
-    ebv = np.array([0.0, 0.4, 0.8, 1.4, 2.0])
-    lm = lam * 1e-9
-    bb = 1 / (lm[None] ** 5 * (np.exp(1.4388e-2 / (lm[None] * T[:, None])) - 1))
-    bb = bb / bb.max(1, keepdims=True)
-    ext = 10 ** (-0.4 * 3.1 * ebv[:, None] * (550.0 / lam[None]) ** 1.3)
-    return (bb[:, None, :] * ext[None]).reshape(-1, len(lam))
-
-
-def spectra_xyz(lam, spec) -> np.ndarray:
-    """CIE 1931 XYZ of spectra (N, L) sampled on lam (nm)."""
-    import colour
-    cmfs = colour.MSDS_CMFS["CIE 1931 2 Degree Standard Observer"]
-    xbar = np.stack([np.interp(lam, cmfs.wavelengths, cmfs.values[:, i], left=0, right=0) for i in range(3)], 1)
-    return (spec * np.gradient(lam)) @ xbar
-
-
-def predict(spec, lam, S):
-    """Camera fluxes (N, 3) predicted for spectra (N, L) with sensitivity curves S (3, L)."""
-    return (spec * np.gradient(lam)) @ S.T
-
-
-def colour_agreement(spec, lam, cam, S) -> float:
-    """Robust scatter (%) of the measured / predicted G/R and B/G colours of the stars."""
-    pr = predict(spec, lam, S)
-    out = []
-    for a, b in ((1, 0), (2, 1)):
-        r = np.log(cam[:, a] / cam[:, b]) - np.log(np.maximum(pr[:, a], 1e-30) / np.maximum(pr[:, b], 1e-30))
-        out.append(1.4826 * np.median(np.abs(r - np.median(r))))
-    return 100 * float(max(out))
-
-
-def physical_response(lam, S) -> tuple[bool, str]:
-    """Bayer sensitivity curves must be ordered blue < green < red, with the red channel mostly above 590 nm."""
-    vis = (lam >= 380) & (lam <= 720)
-    cen = [float((lam[vis] * S[c, vis]).sum() / max(S[c, vis].sum(), 1e-30)) for c in range(3)]
-    red = float(S[0, (lam >= 590) & (lam <= 700)].sum() / max(S[0, vis].sum(), 1e-30))
-    if not cen[2] < cen[1] < cen[0]:
-        return False, f"channel centroids R {cen[0]:.0f}, G {cen[1]:.0f}, B {cen[2]:.0f} nm are not ordered"
-    if cen[0] < 595 or red < 0.5:
-        return False, f"red channel centred at {cen[0]:.0f} nm with {100 * red:.0f} % of its response above 590 nm"
-    return True, ""
-
-
-def generic_response(lam) -> np.ndarray:
-    """Sensitivity curves of a typical colour (Bayer) sensor on lam: those measured for an unmodified Sony A7S
-    (resources/generic_bayer_response.npz), used when a camera has neither physical fitted curves nor a profile."""
-    d = np.load(Path(__file__).resolve().parents[1] / "resources" / "generic_bayer_response.npz")
-    return np.stack([np.interp(lam, d["lam"], c) for c in d["S"]])
-
-
-def _profile_path(camera: str) -> Path:
-    return PROFILES / (re.sub(r"[^A-Za-z0-9_.-]+", "_", camera) + ".npz")
-
-
-def load_profile(camera: str, lam) -> dict | None:
-    p = _profile_path(camera)
-    if not p.exists():
-        return None
-    d = np.load(p)
-    S = np.stack([np.interp(lam, d["lam"], c) for c in d["S"]])
-    return {"S": S, "project": str(d["project"])}
-
-
-def save_profile(camera: str, lam, S, project: str, residual: float) -> None:
-    """Keep the best (lowest residual) physical sensitivity curves found for this camera. Only curves over the full
-    range of the XP spectra (336-1020 nm) are kept: curves fitted on the 400-800 nm spectra of the GAVO service
-    would be extended flat outside it when another project reads them."""
-    if float(np.min(lam)) > 340.0 or float(np.max(lam)) < 1000.0:
-        return
-    p = _profile_path(camera)
-    if p.exists() and float(np.load(p)["residual"]) <= residual:
-        return
-    PROFILES.mkdir(parents=True, exist_ok=True)
-    np.savez(p, lam=lam, S=S, project=project, residual=residual, date=datetime.now().isoformat(timespec="seconds"))
+            "flux": np.asarray(table, float), "reason": np.asarray(why, str), "used": used,
+            "resp_keep": np.ones((n, 3), bool), "cat_xy": cat[:, :2], "pred_xy": pred, "resid": resid,
+            "cam_pred": out_rgb @ np.linalg.inv(np.asarray(M, float)).T, "M_xyz": np.asarray(M, float)}
 
 
 def white_xyz(T: float = 5778.0) -> np.ndarray:
@@ -454,63 +233,3 @@ def star_photometry(img, xy, r_ap):
         flux.append(f)
         peak.append(st.max)
     return np.stack(flux, 1), np.stack(peak, 1)
-
-
-def fit_response(spec, lam, cam, mu=3.0, kept: list | None = None):
-    """cam (N,3) = integral spec(N,L) S_c(L) dl ; S_c = non-negative sum of smooth gaussians, regularised.
-    ``kept``: receives, per channel, which stars the last iteration kept (the others are outliers of the fit)."""
-    centers = np.arange(380, 1001, 15.0)
-    B = np.exp(-0.5 * ((lam[:, None] - centers[None]) / 12.0) ** 2)
-    dl = np.gradient(lam)
-    Fm = (spec * dl) @ B
-    K = len(centers)
-    D = np.diff(np.eye(K), 2, axis=0)
-    curves, rel = [], []
-    for c in range(3):
-        yv = cam[:, c]
-        A = Fm * (1.0 / yv)[:, None]
-        sc = A.std(0) + 1e-30
-        An = A / sc
-        Aa = np.vstack([An, np.sqrt(mu) * D / sc * sc.mean()])
-        ya = np.concatenate([np.ones(len(yv)), np.zeros(len(D))])
-        keep = np.ones(len(yv), bool)
-        a = np.zeros(K)
-        r = np.zeros(len(yv))
-        for _ in range(4):
-            rows = np.concatenate([np.where(keep)[0], len(yv) + np.arange(len(D))])
-            a, _ = nnls(Aa[rows], ya[rows], maxiter=5000)
-            r = An @ a - 1
-            s = 1.4826 * np.median(np.abs(r[keep]))
-            keep = np.abs(r) < 4 * s
-        curves.append(B @ (a / sc))
-        rel.append(float(np.median(np.abs(r[keep]))))
-        if kept is not None:
-            kept.append(keep.copy())
-    return np.stack(curves), rel
-
-
-def line_vec(S, lam, lines):
-    import colour
-    cmfs = colour.MSDS_CMFS["CIE 1931 2 Degree Standard Observer"]
-    cam = np.zeros(3)
-    xyz = np.zeros(3)
-    for l0, f in lines.items():
-        cam += f * np.array([np.interp(l0, lam, S[c]) for c in range(3)])
-        xyz += f * np.array([np.interp(l0, cmfs.wavelengths, cmfs.values[:, i]) for i in range(3)])
-    return cam, xyz
-
-
-def response_plot(lam, S, n):
-    from ..core import plots
-    fig, ax = plots.figure(size=(8, 3.6))
-    for c, col in zip(range(3), ("#e0605a", "#6fbf73", "#5aa0d8")):
-        ax.plot(lam, S[c] / S.max(), color=col, lw=2)
-    for l0, nm in ((486.1, "Hb"), (500.7, "[OIII]"), (656.3, "Ha")):
-        ax.axvline(l0, color=plots.MUTED, lw=0.8, ls=":")
-        ax.text(l0 + 3, 1.02, nm, fontsize=9, color=plots.FG)
-    ax.set_xlim(350, 1000)
-    ax.set_ylim(0, 1.1)
-    ax.set_xlabel("wavelength (nm)")
-    ax.set_ylabel("relative response")
-    ax.set_title(f"Sensor spectral response reconstructed from {n} Gaia XP stars", fontsize=11)
-    return plots.to_rgb(fig)

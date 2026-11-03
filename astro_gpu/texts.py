@@ -361,7 +361,10 @@ _METRIC_ROWS: list[tuple] = [
 METRICS: dict[str, Metric] = {r[0]: Metric(*r) for r in _METRIC_ROWS}
 #: metrics no stage writes any more, kept for the results computed before (the background anchored on the H-alpha
 #: survey, replaced by the Gradient block)
-RETIRED_METRICS = frozenset({"ha_fit", "ha_signature", "large_scale_correction_adu"})
+RETIRED_METRICS = frozenset({"ha_fit", "ha_signature", "large_scale_correction_adu",
+                             # the colour stage's reconstructed sensitivity curves and matrix, taken out
+                             "response_source", "correction", "fit_agreement_pct", "profile_agreement_pct",
+                             "generic_agreement_pct", "fit_residual", "response_at_lines"})
 #: how some metrics read on screen, beyond their number format (display only: the stored values are unchanged):
 #: "hours" a duration given in hours, in minutes under one hour (0.17 -> "10 min", 3.02 -> "3.0 h"); "sig2" two
 #: significant digits (1.821 -> "1.8", 0.0123 -> "0.012")
@@ -390,6 +393,7 @@ VALUE_TEXTS: dict[str, str] = {
     "measured on the nebula": "measured on the nebula",
     "background_poly": "simple polynomial background",
     "channel medians": "median of each channel",
+    "sky level of the Gradient block": "sky level of the Gradient block",
     "camera-colour polynomial, made grey": "smooth sky of each channel, made grey",
 }
 #: texts of the interface the formatting needs

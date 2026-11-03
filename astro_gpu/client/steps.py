@@ -39,9 +39,8 @@ FACTS = {
     "astrometrie": [("astrometry", "ra"), ("astrometry", "dec"), ("astrometry", "field_deg"),
                     ("astrometry", "scale_arcsec"), ("astrometry", "stars_used"), ("astrometry", "residual_px"),
                     ("astrometry", "focal_estimate_mm"), ("reference", "stars_matched")],
-    "couleur": [("color", "stars"), ("color", "fit_agreement_pct"), ("color", "profile_agreement_pct"),
-                ("color", "response_source"), ("color", "correction"), ("color", "chromaticity_residual"),
-                ("color", "white_balance"), ("color", "white_balance_stars")],
+    "couleur": [("color", "stars"), ("color", "white_balance"), ("color", "white_balance_stars"),
+                ("color", "chromaticity_residual")],
     "debruitage": [("denoise", "noise_before"), ("denoise", "noise_after"), ("denoise", "noise_reduction")],
     "etoiles": [("stars", "modelled_stars"), ("stars", "faint_stars"), ("stars", "prediction_scatter_pct"),
                 ("stars", "local_psf_grid"), ("optics", "psf_residual_pct"), ("optics", "lateral_shift_max_px"),
@@ -248,8 +247,6 @@ class Steps(QObject):
             return [V("colors", "Before / after", "color", "color", "", True, True, camera=False,
                       base=("stack", "drz_full"), compare=("stack",), open_compare=True, note=COLOR_NOTE,
                       shown="After: colour-calibrated", compare_names=("Before: stack output, camera colours",)),
-                    V("spectral", "Spectral response", "chart", "color", "0"),
-                    V("lines", "Colour of the lines", "chart", "color", "1"),
                     V("fit", "Star colours", "colorfit", "color")]
         if k == "debruitage":
             return [V("denoised", "Denoised stack", "array", "denoise", "n2n_full", True, True, camera=True,
@@ -404,8 +401,6 @@ class Steps(QObject):
             if isinstance(value, dict) and not value:
                 continue
             rows.append(metric_row(stage, key, value))
-        if k == "couleur" and "color" in s.all_stages(p):
-            self._correction_fact(p, rows)
         if k == "empilement" and "stack" in s.all_stages(p):
             m = self._method_fact(p)
             if m is not None:
@@ -418,19 +413,6 @@ class Steps(QObject):
         if k == "post":
             rows += self._output_facts(p)
         return rows
-
-    def _correction_fact(self, p, rows: list) -> None:
-        """A colour result made before the colour stage named its correction (``correction``): a colour matrix,
-        unless no sensitivity curves were trusted (one factor per colour). Put after "Sensitivity curves"."""
-        out = self.outputs(p, "color", self.which_for(p, "color"))
-        if out is None or "correction" in out.metrics or "response_source" not in out.metrics:
-            return
-        # stages/color.py: PER_COLOUR and APPLIED (not imported: the engine's stage modules stay out of the client)
-        per_colour = out.metrics["response_source"] == "one factor per colour (no reliable sensitivity curves)"
-        v = "one factor per colour" if per_colour else "colour matrix"
-        lab = html.escape(texts.metric_label("response_source", language()))
-        at = next((i + 1 for i, r in enumerate(rows) if r[0] == lab), len(rows))
-        rows.insert(at, metric_row("color", "correction", v))
 
     def _method_fact(self, p) -> tuple[str, str] | None:
         """("Method", the stacking method of the done result and its main settings), from its manifest; a stack made

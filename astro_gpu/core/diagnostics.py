@@ -385,20 +385,3 @@ def bp_rp(catalog_dir: Path | None, sources: np.ndarray) -> np.ndarray:
     return out
 
 
-def colour_fit_again(img: np.ndarray, xp: Any, aperture: float, white_temp: float, Mtot: np.ndarray,
-                     S: np.ndarray, from_fit: bool) -> dict[str, np.ndarray]:
-    """The per-star fit of a colour result made before the stage kept it (``color.star_fit``), made again from what
-    it kept: the same photometry on its stack (the same code, so the same stars and fluxes), the outliers of the
-    sensitivity-curve fit (``from_fit``: when the free fit gave the curves), and the camera -> XYZ matrix taken back
-    from M.npy (its scale, lost there, does not change a chromaticity)."""
-    import colour
-
-    from ..stages.color import XYZ_TO_SRGB, bradford, colour_star_table, fit_response, star_fit, white_xyz
-    table, why = colour_star_table(img, np.asarray(xp["x"]), np.asarray(xp["y"]), aperture)
-    idx = np.where(why == "")[0]
-    kept: list = []
-    if from_fit and len(idx):
-        fit_response(np.asarray(xp["flux"])[idx], np.asarray(xp["lam"]), table[idx], kept=kept)
-    w_d65 = colour.xy_to_XYZ(colour.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D65"])
-    M = np.linalg.solve(XYZ_TO_SRGB @ bradford(white_xyz(white_temp), w_d65), np.asarray(Mtot, float))
-    return star_fit(xp, table, why, idx, kept, S, M)

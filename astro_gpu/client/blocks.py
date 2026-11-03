@@ -309,9 +309,7 @@ class Graph:
         if k == "astrometrie":
             return _("plate solved · Gaia DR3")
         if k == "couleur":
-            if s.param_value(p, "color", "correction") == "per_colour":
-                return _("Gaia spectra · one factor per colour")
-            return _("Gaia spectra · colour matrix")
+            return _("Gaia stars · white balance")
         return ""
 
     def side_inputs(self, node: Node):

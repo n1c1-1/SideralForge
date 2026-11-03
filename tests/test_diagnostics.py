@@ -17,7 +17,7 @@ from astro_gpu.core import diagnostics as dg
 from astro_gpu.core.journal import Journal
 from astro_gpu.core.project import Inputs, Project
 from astro_gpu.core.stage import Context
-from astro_gpu.core.store import Store, StoreProject
+from astro_gpu.core.store import Store
 
 RECOMPUTE = "missing: recompute {} to get it"
 
@@ -611,96 +611,3 @@ def colour_scene(rng):
     return img.astype(np.float32), xp, deep
 
 
-def test_color_fit_reads_the_stars_the_stage_kept_and_makes_them_again_for_an_older_result(project):
-    from astro_gpu.stages.color import STARS, Color, ColorParams
-    img, xp, deep = colour_scene(np.random.default_rng(11))
-    fake_done(project, 1, "inventory", {"camera": ""})
-    fake_done(project, 1, "register", {"fwhm_px": 2.5})
-    fake_done(project, 1, "stack", files={"drz_full.npy": img, "drz_meta.json": {"scale": 1.0}})
-    cat = fake_done(project, 1, "catalogs")
-    np.savez(cat / "gaia_xp.npz", **xp)
-    np.savez(cat / "gaia_deep.npz", **deep)
-    keys = api._keys(project)
-    w = keys.project.workflow(1)
-    d = Store(project.root).dir("color", keys.key(w, "color"))
-    d.mkdir(parents=True)
-    sp = StoreProject(keys, w, "color", own_dir=d)
-    ctx = Context(sp, Color(), Journal(project.logs, echo=False), "cpu")
-    params = ColorParams(aperture=4.0)
-    Color().run(ctx, params)
-    (d / "manifest.json").write_text(json.dumps({"stage": "color", "status": "done", "key": d.name,
-                                                 "metrics": ctx.metrics, "params": params.model_dump(mode="json")}))
-    api.refresh(project)
-    a = api.color_fit(project, 1)
-    assert not a.missing and a.stats["computed"] == "stage" and len(a.stars) == len(xp["x"])
-    assert np.allclose(a.matrix, np.load(d / "M.npy"))
-    assert a.stats["chromaticity_residual"] == pytest.approx(ctx.metrics["chromaticity_residual"], abs=1e-4)
-    assert a.stats["used"] == ctx.metrics["stars"] >= 80
-    edge = [s for s in a.stars if s.reason.startswith("within 50 px")]
-    assert len(edge) == 3 and all(s.measured is None and s.predicted is None for s in edge)
-    assert sum(1 for s in a.stars if s.reason.startswith("saturated")) >= 2
-    u = next(s for s in a.stars if s.used)
-    assert sum(u.measured) == pytest.approx(1) and u.residual == pytest.approx(np.hypot(
-        u.predicted[0] - u.catalogue[0], u.predicted[1] - u.catalogue[1]))
-    assert a.stars[0].bp_rp == pytest.approx(deep["bp"][-1] - 12.0) and a.stars[0].source == 1000
-    # an older colour result (no per-star file): measured again on its stack, the same fit
-    (d / STARS).unlink()
-    b = api.color_fit(project, 1)
-    assert b.stats["computed"] == "again" and not b.missing and b.notes
-    assert [s.used for s in b.stars] == [s.used for s in a.stars]
-    assert [s.reason for s in b.stars] == [s.reason for s in a.stars]
-    assert [s.outlier for s in b.stars] == [s.outlier for s in a.stars]
-    ra = np.array([s.residual for s in a.stars if s.used])
-    rb = np.array([s.residual for s in b.stars if s.used])
-    assert np.allclose(ra, rb, atol=1e-9) and [s.measured for s in a.stars] == [s.measured for s in b.stars]
-
-
-@pytest.mark.parametrize("leak", [False, True])
-def test_color_uses_one_factor_per_colour_when_no_curves_predict_the_stars(project, monkeypatch, leak):
-    """Unphysical fitted curves and no camera profile: the typical sensor's curves are used when they predict the
-    stars (within profile_tolerance), with a matrix; when they do not (here green flux moved into blue and red, as
-    RCD on an unbalanced frame does: heart's Siril-debayered Classic stack), no matrix: one factor per colour from the
-    stars' white balance (SPCC), a diagonal camera -> output matrix."""
-    from astro_gpu.stages import color as K
-    img, xp, deep = colour_scene(np.random.default_rng(11))
-    if leak:
-        sky = 50.0
-        s = img - sky
-        img = np.stack([s[0] + 0.15 * s[1], s[1], s[2] + 0.5 * s[1]]).astype(np.float32) + sky
-    monkeypatch.setattr(K, "physical_response", lambda lam, S: (False, "test: not physical"))
-    fake_done(project, 1, "inventory", {"camera": ""})
-    fake_done(project, 1, "register", {"fwhm_px": 2.5})
-    fake_done(project, 1, "stack", files={"drz_full.npy": img, "drz_meta.json": {"scale": 1.0}})
-    cat = fake_done(project, 1, "catalogs")
-    np.savez(cat / "gaia_xp.npz", **xp)
-    keys = api._keys(project)
-    w = keys.project.workflow(1)
-    d = Store(project.root).dir("color", keys.key(w, "color"))
-    d.mkdir(parents=True)
-    ctx = Context(StoreProject(keys, w, "color", own_dir=d), K.Color(), Journal(project.logs, echo=False), "cpu")
-    K.Color().run(ctx, K.ColorParams(aperture=4.0))
-    M = np.load(d / "M.npy")
-    off = M - np.diag(np.diag(M))
-    if leak:
-        assert ctx.metrics["generic_agreement_pct"] > 5.0
-        assert ctx.metrics["response_source"] == K.PER_COLOUR and ctx.metrics["correction"] == "one factor per colour"
-        assert np.abs(off).max() < 1e-9 and (np.diag(M) > 0).all()
-        # the white reference of the stars comes out neutral: the factors are the stars' white balance
-        cam = K.colour_stars(img, xp["x"], xp["y"], 4.0)[1]
-        import colour as CS
-        to_out = K.XYZ_TO_SRGB @ K.bradford(K.white_xyz(5778.0), CS.xy_to_XYZ(
-            CS.CCS_ILLUMINANTS["CIE 1931 2 Degree Standard Observer"]["D65"]))
-        ok = np.isin(np.arange(len(xp["x"])), K.colour_stars(img, xp["x"], xp["y"], 4.0)[0])
-        wb = K.star_white_balance(cam @ M.T, xp["xyz"][ok] @ to_out.T)
-        assert np.allclose(wb["k"], 1, atol=0.02)
-    else:
-        assert ctx.metrics["generic_agreement_pct"] <= 5.0
-        assert ctx.metrics["response_source"] == "generic colour sensor"
-        assert ctx.metrics["correction"] == "colour matrix"
-        assert np.abs(off).max() > 0.05
-        # the same field with one factor per colour chosen in the settings: the fallback's white balance, no matrix
-        K.Color().run(ctx, K.ColorParams(aperture=4.0, correction="per_colour"))
-        M = np.load(d / "M.npy")
-        assert ctx.metrics["response_source"] == "generic colour sensor"
-        assert ctx.metrics["correction"] == "one factor per colour"
-        assert np.abs(M - np.diag(np.diag(M))).max() < 1e-9 and (np.diag(M) > 0).all()

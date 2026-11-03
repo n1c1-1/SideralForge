@@ -2352,29 +2352,10 @@ def color_fit(p: Project2, wf: int | Workflow, which: str = "current") -> ColorF
         with np.load(d / STARS) as z:
             t = {k: z[k] for k in z.files}
         source_kind = str(t.get("source_kind", source_kind))
-    else:
-        stack_dir = _upstream(p, wf, d, "stack", which)
-        ok = (stack_dir is not None and (stack_dir / "drz_full.npy").is_file() and cat_dir is not None
-              and (cat_dir / "gaia_xp.npz").is_file() and (d / "specresp.npz").is_file() and out.matrix is not None)
-        if not ok:
-            out.missing.append(_missing("the fit of each star", "color"))
-            out.stats = {"response_source": source_kind, "aperture": aperture, "white_temp": white_temp}
-            return out
-        ck = (str(d), (d / "M.npy").stat().st_mtime_ns, str(stack_dir), str(cat_dir))
-        t = _DIAG.get(ck)
-        if t is None:
-            img = np.load(stack_dir / "drz_full.npy").astype(np.float32)
-            with np.load(cat_dir / "gaia_xp.npz") as z:
-                xp = {k: z[k] for k in z.files}
-            with np.load(d / "specresp.npz") as z:
-                S = z["S"]
-            t = dg.colour_fit_again(img, xp, aperture, white_temp, out.matrix, S, source_kind == "fit")
-            del img
-            _DIAG.clear()                                # one at a time: a stack is large
-            _DIAG[ck] = t
-        computed = "again"
-        out.notes.append("The stars were measured again on the stack: this colour result was made before the colour "
-                         "stage kept them.")
+    else:                                            # a result made before the stage kept its stars: run it again
+        out.missing.append(_missing("the fit of each star", "color"))
+        out.stats = {"response_source": source_kind, "aperture": aperture, "white_temp": white_temp}
+        return out
     bprp = dg.bp_rp(cat_dir, t["source"])
     flux, cam_pred = np.asarray(t["flux"], float), np.asarray(t["cam_pred"], float)
     from_fit = source_kind == "fit"

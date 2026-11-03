@@ -132,7 +132,7 @@ def test_render_simple_writes_its_files(classic):
     prep = json.loads((out.dir / "prep_simple.json").read_text())
     for k in ("M", "crop", "median", "mad", "p99995", "stats", "stats_raw", "linked", "stretch", "drizzle_scale"):
         assert k in prep
-    assert prep["denoised"] and prep["color"] and prep["exit"] is None and prep["sky"] == "channel medians"
+    assert prep["denoised"] and prep["color"] and prep["exit"] is None and prep["sky"] == "sky level of the Gradient block"
     assert np.allclose(prep["M"], M)
     # lin = M x denoised stack (its gradient removed before) - a level; lin_raw the same from the raw stack
     lin, raw = np.load(out.dir / "lin.npy"), np.load(out.dir / "lin_raw.npy")
@@ -153,20 +153,16 @@ def test_render_simple_without_denoise(tmp_path):
     out = run_stage(proj, RenderSimple(), RenderSimpleParams())
     prep = json.loads((out.dir / "prep_simple.json").read_text())
     assert not (out.dir / "lin_raw.npy").exists() and not prep["denoised"] and prep["source"] == "stack/drz_full"
-    assert prep["emission"] is None and prep["emission_anchor_weight"] == 0.0     # no catalogue: matrix unchanged
 
 
-# a star-fitted matrix of an astro-modified camera (heart_a7s, rounded): it renders the HII spectrum the colour stage
-# anchored red, and the emission the camera really records violet
-M_HEART = np.array([[0.13, 1.69, -1.96], [-0.50, 1.36, -0.39], [0.17, -0.94, 3.02]])
-CAM_HII = np.array([1.0, 0.403, 0.124])
+# the colour stage's white balance (one factor per colour) and the camera colour of a line emission
+M_WB = np.diag([1.13, 0.75, 1.29])
 EMISSION = np.array([1.0, 0.35, 0.20])
 
 
 def emission_project(root: Path, denoise: bool):
     """A stack with stars of many colours (on a plane of camera colours), a red line-emission nebula off that plane,
-    a sky gradient and noise, its Gradient block, its colour stage (matrix, response at the HII lines) and its Gaia XP
-    stars."""
+    a sky gradient and noise, its Gradient block, its colour stage (a white balance) and its Gaia XP stars."""
     rng = np.random.default_rng(5)
     h, w = 1024, 1536
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
@@ -197,30 +193,28 @@ def emission_project(root: Path, denoise: bool):
     stage("stack", {"drz_full.npy": raw, "drz_weight.npy": np.full((3, h, w), 20, np.float32)})
     (proj.stage_dir("stack") / "drz_meta.json").write_text(json.dumps({"scale": 1.0}))
     g = run_stage(proj, Gradient(), GradientParams())
-    stage("color", {"M.npy": M_HEART})
+    stage("color", {"M.npy": M_WB})
     stage("catalogs", {})
     if denoise:
         stage("denoise", {"n2n_full.npy": raw - sky_variation(g, h, w)})
-    np.savez(proj.stage_dir("color") / "specresp.npz", cam_hii=CAM_HII)
     np.savez(proj.stage_dir("catalogs") / "gaia_xp.npz", x=x, y=y)
     return proj, col
 
 
 @pytest.mark.parametrize("denoise", [False, True])
-def test_render_simple_gives_the_emission_its_hii_colour(tmp_path, denoise):
-    """The Classic exits anchor the emission as render_prep does (the H-alpha of heart_a7s was violet): the emission
-    measured on the stack gets the colour the matrix gives the HII spectrum, the star colours do not move."""
+def test_render_simple_keeps_the_white_balance_and_the_gradient_sky_level(tmp_path, denoise):
+    """The simple output applies the colour stage's white balance as it is (no matrix mixes the channels: the
+    emission keeps its camera colour, balanced) and takes off the sky level the Gradient block measured between the
+    objects (a median over the whole field would take the nebula for sky)."""
     proj, col = emission_project(tmp_path / "p", denoise)
     out = run_stage(proj, RenderSimple(), RenderSimpleParams())
     prep = json.loads((out.dir / "prep_simple.json").read_text())
     Ma = np.array(prep["M"])
-    assert prep["emission_anchor_weight"] == 1.0 and np.allclose(prep["emission"], EMISSION, atol=0.03)
-    before, after, hii = M_HEART @ EMISSION, Ma @ EMISSION, M_HEART @ CAM_HII
-    assert before[2] > before[0]                                             # violet: more blue than red
-    assert after[0] > 2.5 * after[2] and np.allclose(after / after[0], hii / hii[0], atol=0.12)
-    stars = M_HEART @ col
-    assert np.abs(Ma @ col - stars).max() < 0.03 * np.abs(stars).max()      # the star colours unchanged
-    # lin is the stack (its gradient removed before) in the anchored colours minus a level
+    assert np.allclose(Ma, M_WB) and prep["sky"] == "sky level of the Gradient block"
+    after = Ma @ EMISSION
+    assert after[0] > after[2] > 0 and after[0] > after[1] > 0             # red stays red: no blue mixed in
+    level = np.array(json.loads((proj.stage_dir("gradient") / "gradient.json").read_text())["level"])
+    # lin is the stack (its gradient removed before) in the balanced colours minus the Gradient block's level
     lin = np.load(out.dir / "lin.npy")
     if denoise:
         src = np.load(proj.stage_dir("denoise") / "n2n_full.npy")
@@ -228,6 +222,7 @@ def test_render_simple_gives_the_emission_its_hii_colour(tmp_path, denoise):
         src = np.load(proj.stage_dir("stack") / "drz_full.npy")
         src -= sky_variation(Context(proj, Gradient(), Journal(proj.logs, echo=False), "cpu"), *src.shape[1:])
     assert is_level(lin - np.tensordot(Ma, src, 1), np.ones(src.shape[1:], bool), 0.05)
+    assert np.allclose((np.tensordot(Ma, src, 1) - lin).reshape(3, -1)[:, 0], Ma @ level, atol=0.05)
 
 
 def test_raw_stack_exit_has_no_colour_cast(tmp_path):

@@ -29,6 +29,7 @@ KEY_BASELINE: dict[str, dict[str, object]] = {
 RETIRED: dict[str, frozenset[str]] = {
     "stack": frozenset({"rejection", "weighting", "normalisation", "scale_rule"}),
     "register": frozenset({"channel_align", "fwhm_method"}),
+    "color": frozenset({"correction", "hii_weight", "camera_profile", "synthetic_weight", "profile_tolerance"}),
     "background": frozenset({"sky_order", "large_scale_px"}),
 }
 #: removed settings whose last value stays in every key, so that the results computed with it keep their keys:
