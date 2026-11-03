@@ -45,12 +45,14 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QSplitter,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from . import prefs
 from .curveseditor import CurvesEditor, FunctionGraph, caption
 from .i18n import _, language, maybe, plural
 from .postengine import (
@@ -83,7 +85,7 @@ from .postengine import (
 )
 from .services.render import CPU_DRAFT_LEVEL, DRAFT_LEVEL, HALF_LEVEL, RenderWorker, Request, default_device_pref
 from .viewer import Viewer, to_qimage
-from .widgets import ACCENT, WARN, clear, hline, label
+from .widgets import ACCENT, WARN, ElidedLabel, clear, hline, label
 
 NL = "\n"                                                   # a line break in a tooltip
 
@@ -229,6 +231,10 @@ class ContSlider(QWidget):
 
 
 # ======================================================================== the layers panel
+#: the right panel's width: by default, and the limits of the user's drag
+PANEL_W, PANEL_MIN, PANEL_MAX = 400, 320, 760
+
+
 class LayerRow(QFrame):
     """A row of the layers panel. ``depth`` 1: a filter nested in the pixel layer above it (indented, with a guide
     line); ``kids``: how many children a pixel layer has (its ▾ / ▸)."""
@@ -287,7 +293,8 @@ class LayerRow(QFrame):
             h.addWidget(self.m)
         v = QVBoxLayout()
         v.setSpacing(0)
-        self.n = QLabel(layer_name(lay))
+        self.n = ElidedLabel(layer_name(lay), mode=Qt.ElideRight)     # a long name never widens the row
+        self.n.setMinimumWidth(40)
         self.n.setStyleSheet("font-weight: 600;" + ("" if lay["visible"] else " color: #8b93a1;"))
         v.addWidget(self.n)
         self.sub = label(panel.sub_text(lay), "small")
@@ -460,8 +467,20 @@ class PostView(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(self._build_centre(), 1)
-        root.addWidget(self._build_panel())
+        # the right panel: its width is the user's (dragged on the splitter, kept in the settings), and it can be
+        # hidden (the Panel button, or dragged to the edge)
+        self.split = QSplitter(Qt.Horizontal)
+        self.split.setChildrenCollapsible(False)
+        self.split.addWidget(self._build_centre())
+        self.right = self._build_panel()
+        self.split.addWidget(self.right)
+        self.split.setStretchFactor(0, 1)
+        self.split.setStretchFactor(1, 0)
+        self.split.setSizes([10_000, int(prefs.get("post_panel_width") or PANEL_W)])
+        self.split.splitterMoved.connect(self._panel_moved)
+        root.addWidget(self.split)
+        self.right.setVisible(prefs.get("post_panel_shown") is not False)
+        self.b_panel.setChecked(self.right.isVisible())
         self._connect(own_worker=worker is None)
         if self.layers:
             self.sel = (self.layers[-1]["id"], "layer")
@@ -508,7 +527,13 @@ class PostView(QWidget):
         for w in (self.b_fit, self.b_100, self.zoom_lab):
             bar.addWidget(w)
         bar.addStretch(1)
-        for w in (self.b_grid, self.b_names, self.b_cmp, self.b_mask, self.b_undo, self.b_redo, self.b_export):
+        self.b_panel = QPushButton(_("Layers panel"))
+        self.b_panel.setCheckable(True)
+        self.b_panel.setObjectName("toggle")
+        self.b_panel.setToolTip(_("Show or hide the layers panel (its width: drag its left edge)"))
+        self.b_panel.toggled.connect(self._show_panel)
+        for w in (self.b_grid, self.b_names, self.b_cmp, self.b_mask, self.b_undo, self.b_redo, self.b_export,
+                  self.b_panel):
             bar.addWidget(w)
         mv.addLayout(bar)
         self.src = PostSource(self)
@@ -527,7 +552,8 @@ class PostView(QWidget):
         """The right side: the layers, their buttons, then the properties of the selection."""
         right = QWidget()
         right.setObjectName("panel")
-        right.setFixedWidth(400)
+        right.setMinimumWidth(PANEL_MIN)
+        right.setMaximumWidth(PANEL_MAX)
         rv = QVBoxLayout(right)
         rv.setContentsMargins(10, 10, 10, 8)
         rv.setSpacing(6)
@@ -1116,7 +1142,10 @@ class PostView(QWidget):
         self.lsc.setFixedHeight(int(min(382, want + 2 * self.lsc.frameWidth())))
         sel_row = next((r for r in self.rows if self.sel and r.lay["id"] == self.sel[0]), None)
         if sel_row is not None:
-            QTimer.singleShot(0, lambda: self.lsc.ensureWidgetVisible(sel_row, 0, 10))
+            # scrolled to the selected row up and down only: the list never stays scrolled sideways (it has no
+            # horizontal bar, so its left column, the visibility boxes, could not be brought back)
+            QTimer.singleShot(0, lambda: (self.lsc.ensureWidgetVisible(sel_row, 0, 10),
+                                          self.lsc.horizontalScrollBar().setValue(0)))
         lay = self.layer(self.sel[0]) if self.sel else None
         self.b_dup.setEnabled(lay is not None)
         self.b_del.setEnabled(lay is not None and (not is_pixel(lay) or sum(map(is_pixel, self.layers)) > 1))
@@ -1325,6 +1354,14 @@ class PostView(QWidget):
             m.addSeparator()
             m.addAction(_("Delete")).triggered.connect(lambda: (self.select(lay["id"], "layer"), self.delete()))
         m.exec(gpos)
+
+    def _show_panel(self, on: bool):
+        self.right.setVisible(on)
+        prefs.set("post_panel_shown", bool(on))
+
+    def _panel_moved(self, *_a):
+        if self.right.isVisible():
+            prefs.set("post_panel_width", int(self.right.width()))
 
     def rename(self, lay, new: str | None = None):
         old = layer_name(lay)

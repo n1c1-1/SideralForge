@@ -401,16 +401,16 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
 
 # ------------------------------------------------------------------------------------------------ the test project
 
-#: the computed project the client tests read (heart_a7s raw frames, workflow Full computed), built by
-#: tools/make_test_project.py; ASTRO_TEST_PROJECT names another one. Tests only read it: a test that changes a project
-#: works on a copy (``scratch_project`` below, or its own copy in tmp_path).
-TEST_PROJECT = Path(os.environ.get("ASTRO_TEST_PROJECT") or "F:/astro_essais/tests/heart_small")
-#: a second workflow whose results are in the test project's store (name, template, settings: CLASSIC_NAME and
-#: CLASSIC_PARAMS of tools/make_test_project.py), for the tests that add it in memory and need it computed. A
-#: Classic stack added with the default settings is still to compute.
-TEST_PROJECT_CLASSIC = ("Classic", "Classic stack", {"gradient": {"samples": 18}})
+#: the computed project the client tests read: a case of the bench (Heart, express session), computed up to the
+#: output of its two workflows, Classic stack (polynomial gradient) and its copy with the automatic gradient
+#: (tools/bench/gradient_projects.py); ASTRO_TEST_PROJECT names another one. Tests only read it: a test that changes a
+#: project works on a copy (``scratch_project`` below, or its own copy in tmp_path).
+TEST_PROJECT = Path(os.environ.get("ASTRO_TEST_PROJECT") or "F:/astro_essais/bench/heart/ours_express")
+#: a workflow whose results are in the test project's store (name, template, settings), for the tests that add it in
+#: memory and need it computed
+TEST_PROJECT_CLASSIC = ("Classic", "Classic stack", {})
 HAVE_TEST_PROJECT = (TEST_PROJECT / "project.astroproj").is_file()
-NO_TEST_PROJECT = f"the test project {TEST_PROJECT.as_posix()} is not here: run tools/make_test_project.py"
+NO_TEST_PROJECT = f"the test project {TEST_PROJECT.as_posix()} is not here: run tools/bench/gradient_projects.py"
 #: the raw frames the test project is made of (40 lights, 15 darks, 15 flats of a Sony A7S)
 TEST_DATA = Path("F:/astro_essais/donnees/heart_a7s")
 needs_test_project = pytest.mark.skipif(not HAVE_TEST_PROJECT, reason=NO_TEST_PROJECT)
