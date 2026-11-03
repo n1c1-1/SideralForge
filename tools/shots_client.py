@@ -215,6 +215,7 @@ def part_graph():
 
 
 def part_stack():
+    from PySide6.QtWidgets import QLabel
     print("Stacking settings", flush=True)
     open_it()
     s = w.s
@@ -236,6 +237,8 @@ def part_stack():
             dot = rec[0].info
             at = dot.mapTo(w, QPoint(dot.width() - 300, dot.height() + 6))
             shot_with_tip(f"stack_{tag}_recommended", dot, dot.toolTip(), at)
+        elif any(lb.objectName() == "advice_pending" and lb.isVisible() for lb in panel.findChildren(QLabel)):
+            note(f"{tag}: no advice yet (the registration is not computed): the panel says so")
         else:
             walk.problem(f"{tag}: no Recommended card with its i")
             walk.shot(f"stack_{tag}")
