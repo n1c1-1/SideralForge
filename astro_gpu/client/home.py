@@ -1,7 +1,8 @@
 """Home: the projects, in sections. New project, open, import a folder as a new project, recent projects.
 
 Home shows SECTIONS (Settings › Folders: a list of rows, prefs "home_sections"), each a folder with its name and a
-one-line description: by default "My projects" (the workspace, prefs "workspace": where New project creates its
+one-line description (a row's "only", a folder-name pattern such as "ours_*", keeps only the projects whose folder
+matches it): by default "My projects" (the workspace, prefs "workspace": where New project creates its
 folders) and "Test copies" (F:/astro_essais/v2, closed until its header is clicked). Above them, the projects opened
 last.
 
@@ -63,7 +64,7 @@ def section_rows() -> list[dict]:
         ws = bool(r.get("workspace"))
         folder = (prefs.get("workspace") or "") if ws else str(r.get("folder") or "")
         rows.append({"label": str(r.get("label") or ""), "folder": folder, "note": str(r.get("note") or ""),
-                     "open": bool(r.get("open", True)), "workspace": ws})
+                     "open": bool(r.get("open", True)), "workspace": ws, "only": str(r.get("only") or "")})
     if not any(r["workspace"] for r in rows):
         base = copy.deepcopy(prefs.DEFAULTS["home_sections"][0])
         rows.insert(0, {"label": base["label"], "folder": prefs.get("workspace") or "", "note": base["note"],
@@ -76,6 +77,8 @@ def save_rows(rows: list[dict]):
     out = []
     for r in rows:
         d = {"label": r.get("label", ""), "note": r.get("note", ""), "open": bool(r.get("open", True))}
+        if r.get("only"):
+            d["only"] = r["only"]
         if r.get("workspace"):
             d["workspace"] = True
         else:
@@ -287,16 +290,18 @@ def _is_project(d: Path) -> bool:
         return False
 
 
-def find_projects(folder: Path) -> list[Path]:
+def find_projects(folder: Path, only: str = "") -> list[Path]:
     """The projects of a section's folder: its sub-folders holding a project.astroproj and, for a sub-folder holding
-    none, its own sub-folders that do (two levels: <group>/<project>). Hidden names are skipped at both."""
+    none, its own sub-folders that do (two levels: <group>/<project>). Hidden names are skipped at both; with
+    ``only`` (a pattern such as "ours_*"), the projects whose folder name does not match it too."""
+    from fnmatch import fnmatch
     out = []
     for d in _dirs(folder):
         if _is_project(d):
             out.append(d)
         else:
             out += [g for g in _dirs(d) if _is_project(g)]
-    return out
+    return [d for d in out if not only or fnmatch(d.name.lower(), only.lower())]
 
 
 def _mtime(d: Path) -> float:
@@ -341,7 +346,7 @@ def scan_home(rows: list[dict], recent: list[str]) -> HomeScan:
             found = bool(folder) and Path(folder).is_dir()
         except OSError:
             found = False
-        dirs = find_projects(Path(folder)) if found else []
+        dirs = find_projects(Path(folder), row.get("only") or "") if found else []
         dirs.sort(key=lambda d: (rank.get(_key(d), len(rank)), -_mtime(d)))
         infos = [info_of(d) for d in dirs]
         _titles(infos)
