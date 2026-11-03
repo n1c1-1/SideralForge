@@ -44,7 +44,7 @@ from collections import OrderedDict
 from functools import partial
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QAbstractTableModel, QSortFilterProxyModel, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -59,8 +59,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QTabBar,
-    QTableWidget,
-    QTableWidgetItem,
+    QTableView,
     QVBoxLayout,
     QWidget,
 )
@@ -91,6 +90,16 @@ from .steps import CAMERA_NOTE, COVERAGE_DRIZZLE_NOTE, MODEL_COLOURS_NOTE, Steps
 from .widgets import ACCENT, WARN, clear, label
 
 STATE_COL = dict(STATE_COLOR, pending="#5d6470")      # the strip: a block not computed yet is a dark grey
+
+
+#: what the worker read for the blocks (tables, measures, fits), the last ones kept: a block shown again needs no read
+DATA_KEPT = 64
+#: the pictures of the next tabs prepared ahead of time (``TuneView._prefetch``): after the picture shown has been
+#: asked for, with a memory budget of at least this (a drizzled stack takes several hundred MB once prepared)
+PREFETCH_DELAY_MS = 400
+PREFETCH_MIN_BUDGET = 6 * 2 ** 30
+#: the kinds of tabs that show one picture of ``Steps.view_image`` (``_image_tab``)
+PREFETCH_KINDS = ("array", "preview", "color", "gradient", "removed", "calibrated")
 
 
 class Strip(QFrame):
@@ -159,46 +168,114 @@ class Strip(QFrame):
 
 
 # ---------------------------------------------------------------------------------------------- small pieces
-class NumItem(QTableWidgetItem):
-    """A table cell sorted by its number."""
+class _Cell:
+    """What ``Table.item`` gives: the text of a cell as shown."""
 
-    def __init__(self, value, text: str):
-        super().__init__(text)
-        self.v = value if value is not None and np.isfinite(value) else -np.inf
-        self.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    def __init__(self, text: str):
+        self._t = text
 
-    def __lt__(self, other):
-        return self.v < getattr(other, "v", -np.inf)
+    def text(self) -> str:
+        return self._t
+
+
+class TableModel(QAbstractTableModel):
+    """The rows of a ``Table``: texts made once, numbers kept for sorting (−inf when unknown), red rows."""
+
+    def __init__(self, headers: list[str], rows: list[list], digits: dict[int, int], red: list[bool] | None):
+        super().__init__()
+        self.headers = list(headers)
+        self.texts: list[list[str]] = []
+        self.keys: list[list] = []
+        for row in rows:
+            tr, kr = [], []
+            for c, v in enumerate(row):
+                if c in digits:
+                    x = _f(v)
+                    ok = np.isfinite(x)
+                    tr.append(number(x, digits[c]) if ok else "–")
+                    kr.append(x if ok else -np.inf)
+                else:
+                    t = "" if v is None else str(v)
+                    tr.append(t)
+                    kr.append(t)
+            self.texts.append(tr)
+            self.keys.append(kr)
+        self.numeric = set(digits)
+        self.red = list(red) if red is not None else [False] * len(rows)
+
+    def rowCount(self, parent=None):  # noqa: N802 - Qt's name
+        return 0 if parent is not None and parent.isValid() else len(self.texts)
+
+    def columnCount(self, parent=None):  # noqa: N802 - Qt's name
+        return 0 if parent is not None and parent.isValid() else len(self.headers)
+
+    def data(self, index, role=Qt.DisplayRole):
+        r, c = index.row(), index.column()
+        if role == Qt.DisplayRole:
+            return self.texts[r][c]
+        if role == Qt.UserRole:
+            return self.keys[r][c]
+        if role == Qt.TextAlignmentRole and c in self.numeric:
+            return int(Qt.AlignRight | Qt.AlignVCenter)
+        if role == Qt.ForegroundRole and self.red[r]:
+            return QColor("#e06c6c")
+        return None
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):  # noqa: N802 - Qt's name
+        if role == Qt.DisplayRole and orientation == Qt.Horizontal:
+            return self.headers[section]
+        return None
+
+
+class Table(QTableView):
+    """A sortable table of many rows (a model and a view: only the visible rows are drawn). A cell is text, or a
+    number shown with ``digits[column]`` decimals (– when unknown) and sorted by its value; the rows stay as given
+    until a header is clicked."""
+
+    def __init__(self, headers: list[str], rows: list[list], digits: dict[int, int] | None = None,
+                 red: list[bool] | None = None, parent=None):
+        super().__init__(parent)
+        self.src = TableModel(headers, rows, digits or {}, red)
+        self.proxy = QSortFilterProxyModel(self)
+        self.proxy.setSourceModel(self.src)
+        self.proxy.setSortRole(Qt.UserRole)
+        self.setModel(self.proxy)
+        self.verticalHeader().setVisible(False)
+        self.verticalHeader().setDefaultSectionSize(self.fontMetrics().height() + 8)
+        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.setStyleSheet("QTableView { background: #1c1f26; gridline-color: #2a2f38; } "
+                           "QHeaderView::section { background: #23272f; border: none; padding: 4px; }")
+        self.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+        self.setSortingEnabled(True)
+        fm = self.fontMetrics()
+        sample = self.src.texts[:200]
+        for c, h in enumerate(self.src.headers):                # the widths from the header and the first rows
+            w = max([fm.horizontalAdvance(h) + 24] + [fm.horizontalAdvance(r[c]) for r in sample])
+            self.setColumnWidth(c, w + 14)
+        self.horizontalHeader().setStretchLastSection(True)
+
+    # the accessors of a QTableWidget the callers and the tests use
+    def rowCount(self) -> int:  # noqa: N802
+        return self.proxy.rowCount()
+
+    def columnCount(self) -> int:  # noqa: N802
+        return self.proxy.columnCount()
+
+    def item(self, row: int, column: int) -> _Cell:
+        return _Cell(self.proxy.data(self.proxy.index(row, column)))
+
+    def horizontalHeaderItem(self, column: int) -> _Cell:  # noqa: N802
+        return _Cell(self.src.headers[column])
+
+    def sortItems(self, column: int, order=Qt.AscendingOrder):  # noqa: N802
+        self.sortByColumn(column, order)
 
 
 def make_table(headers: list[str], rows: list[list], digits: dict[int, int] | None = None,
-               red: list[bool] | None = None) -> QTableWidget:
+               red: list[bool] | None = None) -> Table:
     """A sortable table: a cell is text, or a number shown with ``digits[column]`` decimals (– when unknown)."""
-    digits = digits or {}
-    t = QTableWidget(len(rows), len(headers))
-    t.setHorizontalHeaderLabels(headers)
-    t.verticalHeader().setVisible(False)
-    t.setEditTriggers(QAbstractItemView.NoEditTriggers)
-    t.setSelectionBehavior(QAbstractItemView.SelectRows)
-    t.setStyleSheet("QTableWidget { background: #1c1f26; gridline-color: #2a2f38; } "
-                    "QHeaderView::section { background: #23272f; border: none; padding: 4px; }")
-    for r, row in enumerate(rows):
-        for c, v in enumerate(row):
-            if c in digits:
-                ok = v is not None and np.isfinite(float(v))
-                it = NumItem(float(v) if ok else None, number(float(v), digits[c]) if ok else "–")
-            else:
-                it = QTableWidgetItem("" if v is None else str(v))
-            if red is not None and red[r]:
-                it.setForeground(QColor("#e06c6c"))
-            t.setItem(r, c, it)
-    t.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)       # the rows as given until a header is clicked
-    t.setSortingEnabled(True)
-    t.resizeColumnsToContents()
-    for c in range(len(headers)):
-        t.setColumnWidth(c, t.columnWidth(c) + 14)
-    t.horizontalHeader().setStretchLastSection(True)
-    return t
+    return Table(headers, rows, digits, red)
 
 
 def _f(v) -> float:
@@ -625,6 +702,35 @@ class TuneView(QWidget):
         self.head.addStretch(1)
         self._cur = (p, k, vis[i])
         self._fill()
+        QTimer.singleShot(PREFETCH_DELAY_MS, lambda pp=p, kk=k: self._prefetch(pp, kk))
+
+    def _prefetch(self, p, k: str):
+        """The pictures of the other tabs of the block shown and of the next block, prepared ahead of time (low
+        priority, after the picture shown): the tab the user opens next is shown at once. Only with a memory budget
+        that holds them without pushing out the picture shown."""
+        from .imageview import default_loader
+        loader = default_loader()
+        if loader.budget < PREFETCH_MIN_BUDGET or self.s.path is not p or self.s.sel_step != k:
+            return
+        blocks = [k]
+        chain_ = chain(p)
+        if k in chain_ and chain_.index(k) + 1 < len(chain_):
+            blocks.append(chain_[chain_.index(k) + 1])
+        pr = 3
+        for b in blocks:
+            for spec in self.visuals(p, b):
+                if spec.spec or spec.backgrounds or spec.kind not in PREFETCH_KINDS:
+                    continue
+                try:
+                    vi = self.steps.view_image(p, spec)
+                except Exception:  # noqa: BLE001 - ahead of time only: the tab says why when it is opened
+                    continue
+                if vi is None or loader.cached(vi.identity()) is not None:
+                    continue
+                if spec.kind == "preview":                # as _image_tab shows it
+                    vi.stretched, vi.white, vi.units = True, 255.0, ""
+                loader.request(vi, pr)
+                pr += 1
 
     def _clear_center(self):
         for v in list(self.views):
@@ -792,7 +898,7 @@ class TuneView(QWidget):
             return
         del self._asked[name]
         self._data[asked[1]] = result
-        while len(self._data) > 16:
+        while len(self._data) > DATA_KEPT:
             self._data.popitem(last=False)
         if name == "sky":
             self._add_sky(result)
@@ -1261,12 +1367,10 @@ class TuneView(QWidget):
         if isinstance(data, _Failed):
             self._message(_("The calibration cannot be read: {why}").format(why=data.why), warn=True)
             return
-        # the engine's word on each frame: it reads every raw frame the first time, so it is asked when the frames
-        # are looked at (the tab shows without it first); the masters' tab shows its notes once it is there
-        if spec.kind == "calframes":
-            rep = self._need("calreport", self._cal_keys(p), si.calibration_report, p.pid, which)
-        else:
-            rep = self._data.get(("calreport", self._cal_keys(p)))
+        # the engine's word on each frame: it reads every raw frame the first time (seconds), so it is asked as soon
+        # as a tab of Calibration is shown, in the background (the tab shows without it first, and the frames' tabs
+        # find it ready); the masters' tab shows its notes once it is there
+        rep = self._need("calreport", self._cal_keys(p), si.calibration_report, p.pid, which)
         self._report = rep if isinstance(rep, si.CalibrationReport) else None
         if si.diag("calibration_frames") is None or isinstance(rep, _Failed):
             self._report_state = "none"

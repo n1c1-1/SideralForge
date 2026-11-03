@@ -817,10 +817,22 @@ class Loader(QObject):
 _default_loader: Loader | None = None
 
 
+def memory_budget() -> int:
+    """The prepared images kept in memory: a fifth of the machine's memory, from 3 to 24 GB (a drizzled stack takes
+    several hundred MB once prepared; with too small a budget a tab shown again is read from the disk again)."""
+    try:
+        import psutil
+        total = int(psutil.virtual_memory().total)
+    except Exception:  # noqa: BLE001 - unknown machine: the smallest budget
+        return 3 * 2 ** 30
+    return int(min(max(total // 5, 3 * 2 ** 30), 24 * 2 ** 30))
+
+
 def default_loader() -> Loader:
     global _default_loader
     if _default_loader is None:
-        _default_loader = Loader(parent=QApplication.instance())
+        _default_loader = Loader(budget=memory_budget(), threads=max(2, min(4, (os.cpu_count() or 2) // 4)),
+                                 parent=QApplication.instance())
     return _default_loader
 
 

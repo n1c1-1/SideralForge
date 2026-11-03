@@ -46,6 +46,7 @@ from astro_gpu.client import i18n, prefs  # noqa: E402
 from astro_gpu.client.charts import FramesChart, SpectralChart  # noqa: E402
 from astro_gpu.client.frames import FramesView, GroupingDialog, check_lines, night_text  # noqa: E402
 from astro_gpu.client.imageview import ImageView, default_loader  # noqa: E402
+from astro_gpu.client.tune import Table  # noqa: E402
 from astro_gpu.client.model import ProjectModel  # noqa: E402
 from astro_gpu.client.services import inspect as si  # noqa: E402
 from astro_gpu.client.sources import ImportDialog, SourcesView, import_folder  # noqa: E402
@@ -224,7 +225,7 @@ def texts_of(root: QWidget) -> list[str]:
             out += [w.itemText(i) for i in range(w.count())]
         elif isinstance(w, QTabBar):
             out += [w.tabText(i) for i in range(w.count())]
-        elif isinstance(w, QTableWidget):
+        elif isinstance(w, (QTableWidget, Table)):
             out += [w.horizontalHeaderItem(c).text() for c in range(w.columnCount()) if w.horizontalHeaderItem(c)]
             out += [w.item(r, c).text() for r in range(min(w.rowCount(), 60)) for c in range(w.columnCount())
                     if w.item(r, c) is not None]
@@ -318,7 +319,7 @@ def test_each_block_shows_its_real_picture(win):
             elif kind in ("regchart", "chart", "colorfit", "weights"):
                 assert t.findChildren(ChartView), (step, key)
             elif kind == "regtable":
-                assert [x for x in t.findChildren(QTableWidget) if x.isVisible()][0].rowCount() == 40
+                assert [x for x in t.findChildren(Table) if x.isVisible()][0].rowCount() == 40
             elif kind == "rejection":                                  # an older result: said plainly
                 assert t.view is not None or any("Rejection maps" in x for x in texts_of(t))
             elif kind == "coverage":                                   # the drizzle's red, blue, green maps

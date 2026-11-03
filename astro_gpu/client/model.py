@@ -876,10 +876,14 @@ class ProjectModel(QObject):
         return api.plan_all(self.p, self.device, self._history_est) if self.ready else api.Plan()
 
     def plan_to_block(self, p: WorkflowView, key: str):
-        """The plan of Run to here for a block of the views."""
+        """The plan of Run to here for a block of the views (kept until the next sync: planning reads the manifests
+        of the store)."""
         if not self.ready:
             return api.Plan()
-        return api.plan_to_block(self.p, p.pid, KEY_ENGINE_BLOCK[key], self.device, self._history_est)
+        k = ("plan_to", p.pid, key, self.device)
+        if k not in self._cache:
+            self._cache[k] = api.plan_to_block(self.p, p.pid, KEY_ENGINE_BLOCK[key], self.device, self._history_est)
+        return self._cache[k]
 
     # ------------------------------------------------------------ breakpoints: pause for the user to check
     # A breakpoint is a block of one workflow ("Pause here for review"): a run stops after it, and goes on only when
