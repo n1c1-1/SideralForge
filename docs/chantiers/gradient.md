@@ -75,3 +75,42 @@ Les mesures portent sur les empilements du banc déjà calculés (Heart, Iris, M
 - **nos deux méthodes**.
 
 PixInsight n'est pas installé : il reste comparé sur la documentation et les publications.
+
+## 4. Les résultats du banc (3 novembre)
+
+Six cas, cinq versions de chaque image, six méthodes avec leurs réglages par défaut. Outil : `tools/bench/gradient.py` ;
+chiffres : `F:\astro_essais\bench\gradient\results.json` ; planches : `F:\astro_essais\bench\gradient\sheet_<cas>.jpg`
+(l'image d'entrée, chaque résultat, chaque fond retiré).
+
+Méthodes : Siril 1.4.5 (polynôme degré 2 et 4, RBF), Siril 1.5 en développement (automatique, sans échantillons),
+GraXpert 3.1.0-RC2 (réseau de neurones), notre polynôme (degré 2).
+
+| Méthode | Gradients injectés : écart au vrai (pente, dôme, coin éclairé) | Nuage faible gardé | Planéité du fond |
+|---|---|---|---|
+| Notre polynôme | **1 à 3 %**, **1 à 3 %**, 24 à 51 % | **76 à 104 %** | 3,6 à 8,5 % |
+| Siril polynôme 2 | 5 à 17 %, 8 à 37 %, 27 à 57 % | 82 à 95 % | 3,7 à 9,6 % |
+| Siril polynôme 4 | 7 à 71 %, 25 à 44 %, 9 à 50 % | 52 à 85 % | 3,3 à 9,2 % |
+| Siril RBF | 9 à 21 %, 25 à 42 %, 11 à 47 % | 36 à 78 % | 2,0 à 8,3 % |
+| Siril automatique (1.5) | **2 à 4 %** (M8 : 18 %), **5 à 10 %** (M8 : 27 %), **3 %** (M8 : 14 %) | 11 à 20 % (M8 : 53 %) | **1,6 à 3,5 %** (M8 : 6,4 %) |
+| GraXpert IA | 7 à 27 %, 9 à 43 %, 7 à 37 % | 13 à 24 % (M8 : 76 %) | 1,6 à 9,1 % |
+
+Ce que ça dit :
+- **Deux familles, un même compromis.**
+  - **Les méthodes rigides** (les polynômes) **gardent le signal faible et étendu**, mais ne suivent pas un gradient
+    qui n'a pas une forme de polynôme : le coin éclairé par la Lune laisse 24 à 57 % d'erreur.
+  - **Les méthodes souples** (Siril automatique, GraXpert, et la RBF dans une moindre mesure) **suivent les
+    gradients compliqués**, mais **retirent aussi les grandes structures faibles**. Sur la Rosette, la planche montre
+    que la nébuleuse elle-même passe en partie dans le fond retiré, avec GraXpert comme avec Siril automatique.
+- **Notre polynôme est meilleur que celui de Siril** sur les gradients lisses (1 à 3 % contre 5 à 37 %). Siril écarte
+  les échantillons plus brillants que la médiane de toute l'image : avec un gradient fort, il ignore tout le côté
+  éclairé et extrapole depuis le côté sombre. Sa documentation conseille d'ailleurs de garder tous les échantillons
+  dans ce cas. Réserve : la pente et le dôme injectés ont une forme de polynôme, ce qui avantage les polynômes. Le coin
+  éclairé est la mesure honnête pour eux.
+- **Siril automatique est la meilleure des méthodes souples** : il retrouve les trois gradients à quelques % près, mieux
+  que GraXpert, et donne le fond le plus plat.
+- **M8 (Voie lactée dense) met toutes les méthodes en difficulté.**
+- **Une méthode qui ne regarde que l'image ne peut pas distinguer un nuage faible très étendu d'un gradient.** Seule une
+  référence extérieure du ciel le peut : c'est l'idée de MGC et de MARS chez PixInsight, et celle de notre fond ancré
+  sur le relevé H-alpha. C'est la piste de l'état de l'art pour garder les nébulosités faibles.
+- **Notre fond « physique » n'est pas dans ce banc** : il demande toute la chaîne du workflow Complet. Ses résultats
+  précédents sur Rosette et Iris restent visibles dans le GUI.
