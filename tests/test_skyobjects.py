@@ -446,11 +446,11 @@ def test_api_sky_objects_reads_the_solution_and_the_stack_grid(home, shipped_tin
         api.sky_objects(None, 1)
 
 
-HEART = Path("F:/astro_essais/v2/heart_a7s_tour")
+from conftest import TEST_PROJECT as HEART  # noqa: E402  (the maintained test project, read only)
 
 
 @pytest.mark.level3                                       # real data (tests/README.md)
-@pytest.mark.skipif(not (HEART / "project.astroproj").is_file(), reason="the heart_a7s_tour test project is not here")
+@pytest.mark.skipif(not (HEART / "project.astroproj").is_file(), reason="the test project is not here: run tools/make_test_project.py")
 def test_real_heart_field_names_the_heart_nebula(tmp_path, monkeypatch):
     monkeypatch.setenv("ASTRO_GPU_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("ASTRO_GPU_OFFLINE", "1")                      # no network: the shipped catalogue

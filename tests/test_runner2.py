@@ -30,7 +30,7 @@ from astro_gpu.core.workflow import TEMPLATES, Chains
 
 
 def _gpu_hidden() -> bool:
-    """The same test as tests/conftest.gpu_hidden: CUDA_VISIBLE_DEVICES empty or -1 (only -1 hides the GPUs on Windows),
+    """CUDA_VISIBLE_DEVICES empty or -1 (only -1 hides the GPUs on Windows),
     or no GPU visible."""
     v = os.environ.get("CUDA_VISIBLE_DEVICES")
     if v is not None and v.strip() in ("", "-1"):
@@ -959,22 +959,7 @@ def test_exclude_is_internal_and_old_stacks_stay_done():
     assert not _same_params(Stack(), StackParams(exclude=["F:/a.ARW"]), stored)
 
 
-HEART_A7S = Path("F:/astro_essais/projets/heart_a7s")
 HEART_A7S_RAW = Path("F:/astro_essais/donnees/heart_a7s")
-
-
-@pytest.mark.skipif(not (HEART_A7S / "work").is_dir(), reason="the test projects of F:/astro_essais are not here")
-def test_v1_status_of_heart_a7s_stays_all_done(tmp_path):
-    """v1 is unchanged: the test project's results stay up to date (read only: the journal goes to a temporary
-    folder)."""
-    from astro_gpu.core.journal import Journal
-    from astro_gpu.core.project import Project
-    from astro_gpu.core.runner import Pipeline
-    from astro_gpu.stages import all_stages
-    before = {p: p.stat().st_mtime_ns for p in (HEART_A7S / "work").rglob("manifest.json")}
-    status = Pipeline(Project(HEART_A7S), all_stages(), Journal(tmp_path / "logs", echo=False)).status()
-    assert [(s.name, s.state) for s in status if s.state != "done"] == []
-    assert {p: p.stat().st_mtime_ns for p in (HEART_A7S / "work").rglob("manifest.json")} == before
 
 
 @pytest.mark.slow

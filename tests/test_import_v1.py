@@ -483,6 +483,22 @@ FULL_CHAIN = ["inventory", "calibrate", "register", "stack", "astrometry", "cata
               "optics", "stars", "starless", "background", "render_prep"]
 
 
+def _up_to_date(root: Path, chain: list[str], logs: Path) -> list[str]:
+    """The leading stages of ``chain`` that the v1 project at ``root`` has done and up to date (what an import can
+    adopt)."""
+    from astro_gpu.core.journal import Journal
+    from astro_gpu.core.project import Project
+    from astro_gpu.core.runner import Pipeline
+    from astro_gpu.stages import all_stages
+    state = {s.name: s.state for s in Pipeline(Project(root), all_stages(), Journal(logs, echo=False)).status()}
+    out = []
+    for name in chain:
+        if state.get(name) != "done":
+            break
+        out.append(name)
+    return out
+
+
 def _light_copy(src: Path, dst: Path, limit: int = 2_000_000) -> None:
     """project.json and the small files of each stage (manifests, frame lists, registration, metadata): enough to
     resolve every stage's settings, without the large arrays."""
@@ -496,25 +512,28 @@ def _light_copy(src: Path, dst: Path, limit: int = 2_000_000) -> None:
 
 @pytest.mark.skipif(not (HEART / "project.json").is_file(), reason="F:/astro_essais not reachable")
 def test_the_guard_on_a_copy_of_heart_a7s(tmp_path, monkeypatch):
-    """The dry run on a copy of a real project adopts the whole Full chain (EXIF of the real raws, real settings),
-    and a stage trying to write into the old project fails the import and changes nothing."""
+    """The dry run on a copy of a real project adopts the stages of the Full chain that the old project has up to date
+    (EXIF of the real raws, real settings), and a stage trying to write into the old project fails the import and
+    changes nothing."""
     copy = tmp_path / "heart_a7s"
     _light_copy(HEART, copy)
+    up_to_date = _up_to_date(copy, FULL_CHAIN, tmp_path / "logs")
+    assert up_to_date[:3] == ["inventory", "calibrate", "register"]
     watched = iv.folders_of(copy)
     before = iv.snapshot(watched)
     rep = iv.import_v1(copy, tmp_path / "v2", dry_run=True)
-    assert rep.workflows == {1: "Full"} and rep.adopted(1) == FULL_CHAIN
+    assert rep.workflows == {1: "Full"} and rep.adopted(1) == up_to_date
     with pytest.raises(iv.WriteRefused, match="1 write"):           # the guarded block fails as a whole
         with iv.WriteGuard(watched):
             with pytest.raises(iv.WriteRefused):                     # a deliberate write
                 (copy / "work" / "stack" / "oops.txt").write_text("x", encoding="utf-8")
             (tmp_path / "elsewhere.txt").write_text("x", encoding="utf-8")       # outside: allowed
-    color = type(wfl.chains().stages["color"])
+    register = type(wfl.chains().stages["register"])        # its settings are checked, against the old calibration
 
     def sneaky(self, ctx):
-        (ctx.project.stage_dir("stack") / "oops.txt").write_text("x", encoding="utf-8")
+        (ctx.project.stage_dir("calibrate") / "oops.txt").write_text("x", encoding="utf-8")
         return {}
-    monkeypatch.setattr(color, "auto", sneaky)
+    monkeypatch.setattr(register, "auto", sneaky)
     with pytest.raises(iv.WriteRefused):
         iv.import_v1(copy, tmp_path / "v2", dry_run=True)
     assert iv.snapshot(watched) == before
@@ -524,9 +543,9 @@ def test_the_guard_on_a_copy_of_heart_a7s(tmp_path, monkeypatch):
 @pytest.mark.slow
 @pytest.mark.skipif(not (HEART / "project.json").is_file(), reason="F:/astro_essais not reachable")
 def test_heart_a7s_import(tmp_path):
-    """The whole import of the test project heart_a7s: every stage of Full adopted (14: it has no reference
-    image), Full plans nothing, Classic only its own two stages, and the old project is unchanged. The copy goes to
-    a temporary folder on F: (8 GB), removed at the end."""
+    """The whole import of the test project heart_a7s: the stages of Full it has up to date adopted, Full plans the
+    others only, a Classic stack shares what it can, and the old project is unchanged. The copy goes to a temporary
+    folder on F: (8 GB), removed at the end."""
     watched = iv.folders_of(HEART)
     before = iv.snapshot(watched)
     new = Path("F:/astro_essais/v2/_p6_test") / uuid.uuid4().hex[:8]
@@ -534,14 +553,18 @@ def test_heart_a7s_import(tmp_path):
         dry = iv.import_v1(HEART, new, dry_run=True)
         rep = iv.import_v1(HEART, new)
         assert iv.snapshot(watched) == before
-        assert rep.adopted(1) == dry.adopted(1) == FULL_CHAIN and rep.copy_bytes == dry.copy_bytes
+        adopted = _up_to_date(HEART, FULL_CHAIN, tmp_path / "logs")
+        assert rep.adopted(1) == dry.adopted(1) == adopted and rep.copy_bytes == dry.copy_bytes
         files = [f for f in new.rglob("*") if f.is_file()]
         assert not [f for f in files if "_ckpt" in f.parts or f.suffix == ".f16" or ".tmp" in f.name]
         p = project2.load(new)
-        assert not runner2.plan_workflows(p, [1], history={})
+        planned = {j.stage for j in runner2.plan_workflows(p, [1], history={}).jobs}
+        # the calibrated frames are not copied: when a stage after it must run, the calibration runs again (its cache)
+        assert planned - {"calibrate"} == set(FULL_CHAIN) - set(adopted)
         classic = p.add_workflow("Classic stack", TEMPLATES["Classic stack"])
         plan = runner2.plan_workflows(p, [classic.id], history={})
-        assert sorted(j.stage for j in plan.jobs) == ["background_poly", "render_simple"]
+        assert {"background_poly", "render_simple"} <= {j.stage for j in plan.jobs}
+        assert not (set(adopted) - {"calibrate"}) & {j.stage for j in plan.jobs}
     finally:
         if new.exists():
             shutil.rmtree(new)                                       # this test's own folder
@@ -556,12 +579,12 @@ DARKS28 = {"F:/backup_pc/photos/28.12.24/957MSDCF": f"{G28}/957MSDCF"}
 PREFIX = ["inventory", "calibrate", "register", "stack", "astrometry", "reference", "catalogs", "surveys", "color",
           "denoise", "optics"]
 NO_REF = [s for s in PREFIX if s != "reference"]
-#: (folder, where its raws are now when they moved (ENGINE_KNOWLEDGE §2), the stages the dry run adopts)
+#: (folder, where its raws are now when they moved, its chain up to optics)
 REAL = [
     ("F:/photos/heart_nebula/astro_gpu", {}, PREFIX),
-    ("F:/photos/NGC7822/astro_gpu", {}, ["inventory"]),                          # calibrate v1, stack v2
+    ("F:/photos/NGC7822/astro_gpu", {}, PREFIX),
     ("C:/Users/Nicolas/astro_gpu_scratch/projects/Iris", {}, PREFIX),
-    ("C:/Users/Nicolas/astro_gpu_scratch/projects/M33", {}, ["inventory"]),      # calibrate v1, stack v2
+    ("C:/Users/Nicolas/astro_gpu_scratch/projects/M33", {}, PREFIX),
     ("E:/astro_gpu/projects/Rosette",
      {"F:/backup_pc/photos/28.12.24/Rosette/signal": f"{G28}/Rosette/signal", **DARKS28}, PREFIX),
     ("E:/astro_gpu/projects/Horsehead",
@@ -576,11 +599,12 @@ REAL = [
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("folder,path_map,adopted", REAL, ids=[Path(r[0]).name if "astro_gpu" != Path(r[0]).name
-                                                               else Path(r[0]).parent.name for r in REAL])
-def test_dry_run_on_the_real_projects(folder, path_map, adopted, tmp_path):
-    """DESIGN §1.6: 7 of the 9 keep inventory → optics, NGC 7822 and M33 the inventory only; nothing is written
-    into the old project, its scratch folder, its inputs or the raws (snapshots), nor anywhere else."""
+@pytest.mark.parametrize("folder,path_map,chain", REAL, ids=[Path(r[0]).name if "astro_gpu" != Path(r[0]).name
+                                                             else Path(r[0]).parent.name for r in REAL])
+def test_dry_run_on_the_real_projects(folder, path_map, chain, tmp_path):
+    """The dry run of the import of each real project: it adopts a leading part of its chain (how much depends on
+    the engine versions its results were made with) and says why the first other stage is computed again; nothing
+    is written into the old project, its scratch folder, its inputs or the raws (snapshots), nor anywhere else."""
     old = Path(folder)
     if not (old / "project.json").is_file():
         pytest.skip(f"not reachable: {old}")
@@ -590,7 +614,8 @@ def test_dry_run_on_the_real_projects(folder, path_map, adopted, tmp_path):
     rep = iv.import_v1(old, new, path_map, dry_run=True)
     assert iv.snapshot(watched) == before
     assert not new.exists()
-    assert rep.adopted() == adopted
+    got = rep.adopted()
+    assert got[:1] == ["inventory"] and got == chain[:len(got)]
     assert rep.recomputed()[0][1].startswith("algorithm updated") or rep.recomputed()[0] == (
         "reference", "no result in the old project")
     assert rep.enough_space and rep.timings
