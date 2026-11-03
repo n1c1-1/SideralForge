@@ -605,7 +605,7 @@ def test_methods_table_marks_what_is_not_in_the_engine():
     dn = {m.key: m for m in api.methods("denoise")}
     assert list(dn) == ["n2n", "finetuned", "pretrained", "nlbayes"]
     assert not dn["n2n"].new and dn["n2n"].runs_on == "gpu" and dn["nlbayes"].new and dn["nlbayes"].runs_on == "cpu"
-    assert [(m.key, m.new) for m in api.methods("gradient")] == [("polynomial", False)]
+    assert [(m.key, m.new) for m in api.methods("gradient")] == [("polynomial", False), ("anchored", False)]
     assert api.methods("stars")[1].stage == "star_net" and api.methods("deconvolution")[0].new
     from astro_gpu.core import workflow
     for block, opt in (("denoise", "denoise"), ("gradient", "gradient"), ("stars", "stars")):
@@ -627,10 +627,10 @@ def test_chain_deps_blocks_and_sharing_on_the_real_graph(real):
     b = {x.block: x for x in api.blocks(p, 3)}
     assert list(b) == ["calibration", "registration", "selection", "stacking", "astrometry", "gradient", "color",
                        "denoise", "stars", "output"]
-    assert b["astrometry"].stages == ("astrometry", "catalogs") and len(b["astrometry"].key) == 2
+    assert b["astrometry"].stages == ("astrometry", "catalogs", "surveys") and len(b["astrometry"].key) == 2
     assert b["selection"].stages == () and b["output"].key[-1] == "workflow 3"
     assert api.blocks(p, 1)[-1].key[-1] == "workflow 1" and api.blocks(p, 1)[-1].key != b["output"].key
-    assert api.sharing(p, 1, "stack") == [1, 2, 3, 4] and api.sharing(p, 3, "denoise") == [2, 3, 4]
+    assert api.sharing(p, 1, "stack") == [1, 2, 3, 4] and api.sharing(p, 3, "denoise") == [3, 4]
     assert api.sharing(p, 3, "stars") == [3, 4] and api.sharing(p, 3, "optics") == [3, 4]
     assert api.sharing(p, 4, "star_net") == [4] and api.sharing(p, 1, "render_simple") == [1]
     # the Astrometry block's key does not depend on the survey, which follows the Gradient method
@@ -645,12 +645,12 @@ def test_chain_deps_blocks_and_sharing_on_the_real_graph(real):
 def test_the_toy_scenario_cost_equals_the_plan_after_each_change(real):
     p = real
     plan0 = cost_equals_plan(p)
-    assert len(plan0) == 20 and plan0.seconds > 3600 and not plan0.measured
+    assert len(plan0) == 24 and plan0.seconds > 3600 and not plan0.measured
     # a setting on two workflows: the others still share the stack
     api.set_param(p, [3, 4], "stack", "kappa", 6)
     plan1 = cost_equals_plan(p)
     assert api.sharing(p, 3, "stack") == [3, 4] and api.sharing(p, 1, "stack") == [1, 2]
-    assert len(plan1) == 26 and len(set(plan1.keys) & set(plan0.keys)) < len(plan0)
+    assert len(plan1) == 27 and len(set(plan1.keys) & set(plan0.keys)) < len(plan0)
     # the what-if of a change equals the plan once the change is made
     change = {"kind": "param", "stage": "gradient", "name": "degree", "value": 3}
     ask = api.cost(p, [api.with_change(p, 1, change)])
@@ -727,9 +727,9 @@ def test_warm_fills_the_disk_caches_so_that_keys_states_and_plans_do_not_scan(re
     monkeypatch.setattr("astro_gpu.io.frames.read_info", no_scan)
     key = api.stage_key(p, 3, "stack")
     assert api.states(p, update=False)[(3, "stack")].key == key
-    assert api.cost(p).jobs == len(api.plan_all(p)) == 20 and api.blocks(p, 3) and api.sharing(p, 1, "stack")
+    assert api.cost(p).jobs == len(api.plan_all(p)) == 24 and api.blocks(p, 3) and api.sharing(p, 1, "stack")
     api.set_param(p, 3, "stack", "kappa", 6)                       # an edit changes the keys, not the disk parts
-    assert api.stage_key(p, 3, "stack") != key and api.cost(p).jobs > 20
+    assert api.stage_key(p, 3, "stack") != key and api.cost(p).jobs > 24
     api.add_session(p, lights=["elsewhere"])                       # a new session: its files are not cached yet
     assert not api.is_warm(p)
 

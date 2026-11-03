@@ -1463,6 +1463,9 @@ _METHODS: dict[str, list[MethodInfo]] = {
     "gradient": [
         MethodInfo("polynomial", "Polynomial", "polynomial", "cpu", "gradient", False,
                    "A smooth surface fitted on the sky between the objects, removed right after stacking."),
+        MethodInfo("anchored", "Anchored on a sky survey", "anchored", "cpu", "gradient", False,
+                   "The same surface, a professional H-alpha survey of the field telling the faint emission (kept) "
+                   "from the gradient (removed)."),
     ],
     "stars": [
         MethodInfo("psf", "PSF model (Gaia)", "PSF model", "both", "stars", False,

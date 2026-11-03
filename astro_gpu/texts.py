@@ -330,6 +330,8 @@ _METRIC_ROWS: list[tuple] = [
      "Correction toward the survey: 1 %, median and 99 % of the image."),
     ("emission_dips", "Emission dips", "", "", "Stars that leave a dark dip in the emission (4 and 8 sigma)."),
     ("gradient_pct", "Sky gradient", "%", ".2f", "Size of the gradient removed, against the sky level."),
+    ("survey_gain", "Survey gain", "ADU/R", ".4g",
+     "Brightness of the H-alpha survey's emission in the stack, in red, green and blue (ADU per rayleigh)."),
     ("samples_used", "Sky samples", "", "d", "Sky samples kept for the fit."),
     # render_prep
     ("inner_low_coverage_kept_px", "Low coverage kept", "px", "d", "Pixels inside the image kept where few frames overlap."),
@@ -534,6 +536,8 @@ CHOICE_TEXTS: dict[str, str] = {
     "gesdt": "Generalized ESD test",
     # the colour stage's correction (stages/color.py)
     "full": "Full correction", "per_colour": "One factor per colour",
+    # the Gradient block's methods (stages/gradient.py)
+    "polynomial": "Polynomial", "anchored": "Anchored on a sky survey",
 }
 
 _stage_index: dict[str, dict] | None = None

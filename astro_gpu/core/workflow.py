@@ -8,15 +8,15 @@ stored. The options give its chain: the stages it runs, in the global order. Two
 when the stage key is the same (core/store.py); this module only says which stages a workflow has and which of them
 each stage reads.
 
-    options   {"denoise": None | "n2n", "stars": None | "psf" | "psf_neural", "gradient": "polynomial",
+    options   {"denoise": None | "n2n", "stars": None | "psf" | "psf_neural", "gradient": "polynomial" | "anchored",
                "deconvolution": None}
     end       None, or "stacking" for the Raw stack exit (inventory → stack, then render_simple)
 
 The Gradient block comes right after stacking: its method models the sky gradient, which every later stage reads
-removed (stages/gradient.py). Rules: Stars needs Denoise; psf_neural with a stored ``starless.learned_stars`` file
-omits star_net (an earlier neural layer). Other option values are not in the engine and raise. A stored gradient
-"halpha" (the background anchored on the H-alpha survey, which worked on the starless image) is read as the method
-that replaces it.
+removed (stages/gradient.py); the anchored method reads the H-alpha survey (stage surveys, in the chain with it).
+Rules: Stars needs Denoise; psf_neural with a stored ``starless.learned_stars`` file omits star_net (an earlier neural
+layer). Other option values are not in the engine and raise. A stored gradient "halpha" (the background anchored on
+the H-alpha survey, which worked on the starless image) is read as the method that replaces it, "anchored".
 
 The stage list comes from ``stages/v2.py`` (``V2_STAGES``, loaded lazily); tests build toy ``Chains``.
 """
@@ -31,7 +31,7 @@ from typing import Any
 OPTION_VALUES: dict[str, tuple[Any, ...]] = {
     "denoise": (None, "n2n"),
     "stars": (None, "psf", "psf_neural"),
-    "gradient": ("polynomial",),
+    "gradient": ("polynomial", "anchored"),
     "deconvolution": (None,),
 }
 #: a missing option takes this value (the Classic stack)
@@ -43,8 +43,8 @@ EXITS = ("stacking",)
 TEMPLATES: dict[str, dict[str, Any]] = {
     "Classic stack": {"denoise": None, "stars": None, "gradient": "polynomial", "deconvolution": None},
     "Classic + denoise": {"denoise": "n2n", "stars": None, "gradient": "polynomial", "deconvolution": None},
-    "Full": {"denoise": "n2n", "stars": "psf", "gradient": "polynomial", "deconvolution": None},
-    "Full + neural stars": {"denoise": "n2n", "stars": "psf_neural", "gradient": "polynomial", "deconvolution": None},
+    "Full": {"denoise": "n2n", "stars": "psf", "gradient": "anchored", "deconvolution": None},
+    "Full + neural stars": {"denoise": "n2n", "stars": "psf_neural", "gradient": "anchored", "deconvolution": None},
 }
 
 # the notes of the option rules (shown in the client, translated by its catalogues)
@@ -54,7 +54,7 @@ NOTE_NEURAL_REMOVED = "Neural star removal removed too: it starts from the star 
 REFUSE_DENOISE = "the star measurement needs it: remove Stars first"
 REFUSE_GRADIENT = "the sky gradient is always removed: choose another method instead"
 #: stored option values of earlier versions, read as the current ones
-OPTION_ALIASES: dict[str, dict[Any, Any]] = {"gradient": {"halpha": "polynomial"}}
+OPTION_ALIASES: dict[str, dict[Any, Any]] = {"gradient": {"halpha": "anchored"}}
 REFUSE_AFTER_EXIT = "No block can be added after an early output"
 
 
@@ -119,7 +119,7 @@ def set_option(options: dict[str, Any], key: str, value: Any, end: str | None = 
 
 
 def method_of(options: dict[str, Any], block: str) -> str | None:
-    """The method of a block: denoise 'n2n', stars 'psf' / 'psf_neural', gradient 'polynomial'; None when the
+    """The method of a block: denoise 'n2n', stars 'psf' / 'psf_neural', gradient 'polynomial' / 'anchored'; None when the
     workflow does not have the block."""
     o = check_options(options)
     if block in ("gradient", "denoise", "stars", "deconvolution"):
@@ -160,6 +160,7 @@ EXTRA: dict[str, tuple[str, ...]] = {"starless": ("star_net",)}
 #: dependencies that may be absent from a chain (the stage then runs without them); the stages that read the stack
 #: read it with the sky gradient removed when the chain has the Gradient block (gradient.stack_image)
 OPTIONAL: dict[str, tuple[str, ...]] = {
+    "gradient": ("surveys",),
     "color": ("gradient",),
     "denoise": ("gradient",),
     "optics": ("gradient",),
@@ -184,7 +185,7 @@ BLOCK_TITLES = {"calibration": "Calibration", "registration": "Registration", "s
                 "stars": "Stars", "gradient": "Gradient", "output": "Output"}
 #: what Run to here runs for a block without stages of its own
 RUN_TO: dict[str, tuple[str, ...]] = {"selection": ("register",)}
-#: stages a block's key leaves out: the survey follows the Gradient method, not the Astrometry block
+#: stages a block's key leaves out: the survey follows the Gradient method (anchored), not the Astrometry block
 KEY_LEAVES_OUT: dict[str, tuple[str, ...]] = {"astrometry": ("surveys",)}
 
 
@@ -197,7 +198,10 @@ def chain_stages(options: dict[str, Any], end: str | None = None, reference: boo
     out = ["inventory", "calibrate", "register", "stack"]
     if check_end(end) == "stacking":
         return out + ["render_simple"]
-    out += ["astrometry"] + (["reference"] if reference else []) + ["catalogs", "gradient", "color"]
+    out += ["astrometry"] + (["reference"] if reference else []) + ["catalogs"]
+    if o["gradient"] == "anchored":
+        out.append("surveys")
+    out += ["gradient", "color"]
     if o["denoise"]:
         out.append("denoise")
     if o["stars"]:

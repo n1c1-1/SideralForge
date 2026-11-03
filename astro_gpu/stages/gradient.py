@@ -15,6 +15,13 @@ Methods (``method``, set by the workflow's Gradient option):
   between neighbouring samples. An object that fills most of the field (a large galaxy) is left out whole and the
   surface passes under it. Each channel is then fitted on those samples, leaving out, iteratively, the ones farther
   than ``object_clip`` sigmas from its surface.
+* ``anchored``: the same, with a reference of the sky as an extra term, the principle of PixInsight's Multiscale
+  Gradient Correction (an image of the same sky without gradient tells what is sky at large scales; only the smooth
+  difference between the stack and it is the gradient). The reference is the professional H-alpha survey reprojected
+  on the stack (stage ``surveys``): each channel's samples are fitted as gain x survey + polynomial (gain >= 0), and
+  only the polynomial is removed. Faint emission spread over the field, which a polynomial alone takes for sky, is
+  then kept. What the survey does not see (reflection nebulae, galaxies, dust lit by starlight) is left out of the
+  fit as objects, as with the polynomial.
 
 Outputs: sky.npy, the sky's variation (3, h, w) on a grid of ``SKY_FACTOR`` px (its mean over the covered field is 0
 in each channel); gradient.json (method, grid, the sky level kept, the polynomial); samples.npz (the samples, those
@@ -32,7 +39,7 @@ from ..core.stage import Context, Stage, StageError
 
 LUM = np.array([0.2126, 0.7152, 0.0722])
 #: the methods of the stage (the workflow's Gradient option chooses one; the first is the default)
-METHODS = ("polynomial",)
+METHODS = ("polynomial", "anchored")
 #: side of the cells of the grid sky.npy is kept on (the sky is smooth: bicubic interpolation gives it back)
 SKY_FACTOR = 8
 SKY_FILE = "sky.npy"
@@ -42,7 +49,8 @@ INFO_FILE = "gradient.json"
 class GradientParams(StageParams):
     method: str = P("polynomial", label="Method", choices=list(METHODS),
                     help="How the sky gradient is modelled. Polynomial: a smooth surface fitted on the sky between the "
-                         "objects.")
+                         "objects. Anchored: the same surface, the faint H-alpha emission of a professional survey of "
+                         "the field being taken as sky, not as gradient.")
     degree: int = P(2, label="Surface degree", ge=1, le=5, step=1,
                     help="Degree of the smooth polynomial surface describing the sky gradient (light pollution, the "
                          "Moon, what is left of the vignetting).",
@@ -86,11 +94,13 @@ def block_size(H: int, W: int, samples: int) -> int:
     return max(4, int(min(H / samples, W / samples) // 4))
 
 
-def fit_poly_sky(rgb: np.ndarray, valid: np.ndarray, degree: int, samples: int, clip: float, iters: int = 10) -> dict:
-    """Polynomial sky of a linear (3, H, W) image, fitted on sky samples (see the module).
+def fit_poly_sky(rgb: np.ndarray, valid: np.ndarray, degree: int, samples: int, clip: float, iters: int = 10,
+                 ref: np.ndarray | None = None) -> dict:
+    """Polynomial sky of a linear (3, H, W) image, fitted on sky samples (see the module); with ``ref`` (H, W), a map
+    of the sky without gradient (NaN where unknown), each channel's samples are gain x ref + polynomial.
 
-    Returns {coefs (3, n_terms) on ``poly_terms`` of the pixel position, x, y (block centres), values (3, n), candidate
-    (n,), used (3, n), valid (n,), block}."""
+    Returns {coefs (3, n_terms) on ``poly_terms`` of the pixel position, gain (3,) of ``ref`` (zeros without it), x, y
+    (block centres), values (3, n), candidate (n,), used (3, n), valid (n,), block}."""
     c, H, W = rgb.shape
     b = block_size(H, W, samples)
     hb, wb = H // b, W // b
@@ -101,30 +111,39 @@ def fit_poly_sky(rgb: np.ndarray, valid: np.ndarray, degree: int, samples: int, 
     vb = valid[:hb * b, :wb * b].reshape(hb, b, wb, b).mean(axis=(1, 3)) >= 0.99
     yc, xc = (np.mgrid[0:hb, 0:wb] + 0.5) * b - 0.5
     L = np.tensordot(LUM, blk, 1)
+    A = poly_terms(xc.ravel(), yc.ravel(), W, H, degree)
+    n_ref = 0
+    if ref is not None:
+        rb = ref[:hb * b, :wb * b].reshape(hb, b, wb, b).mean(axis=(1, 3))         # NaN where the survey has a hole
+        vb &= np.isfinite(rb)
+        A = np.c_[np.nan_to_num(rb).ravel(), A]
+        n_ref = 1
     if vb.sum() < 10:
         raise StageError("too few covered areas to fit a background")
-    A = poly_terms(xc.ravel(), yc.ravel(), W, H, degree)
     ok = sky_blocks(L.ravel().astype(np.float64), vb.ravel(), A, clip, vb.shape)
     if ok.sum() < 3 * A.shape[1]:
         raise StageError(f"only {int(ok.sum())} sky samples for a degree-{degree} surface: lower the degree or the "
                          f"number of samples")
-    coefs, used = [], []
+    coefs, gain, used = [], [], []
     for k in range(c):
         y = blk[k].ravel().astype(np.float64)
         m = ok.copy()
         q = np.zeros(A.shape[1])
         for _ in range(iters):
             q = np.linalg.lstsq(A[m], y[m], rcond=None)[0]
+            if n_ref and q[0] < 0:                  # the sky is not negative emission: the polynomial alone
+                q = np.r_[0.0, np.linalg.lstsq(A[m, 1:], y[m], rcond=None)[0]]
             r = y - A @ q
             s = 1.4826 * float(np.median(np.abs(r[m] - np.median(r[m])))) + 1e-12
             new = ok & (np.abs(r) < clip * s)
             if new.sum() < A.shape[1] or (new == m).all():
                 break
             m = new
-        coefs.append(q)
+        coefs.append(q[n_ref:])
+        gain.append(q[0] if n_ref else 0.0)
         used.append(m)
-    return {"coefs": np.array(coefs), "x": xc.ravel(), "y": yc.ravel(), "values": blk.reshape(c, -1),
-            "candidate": ok, "used": np.array(used), "valid": vb.ravel(), "block": b}
+    return {"coefs": np.array(coefs), "gain": np.array(gain), "x": xc.ravel(), "y": yc.ravel(),
+            "values": blk.reshape(c, -1), "candidate": ok, "used": np.array(used), "valid": vb.ravel(), "block": b}
 
 
 def sky_blocks(y: np.ndarray, valid: np.ndarray, A: np.ndarray, clip: float, shape: tuple[int, int],
@@ -205,6 +224,16 @@ def stack_image(ctx: Context, name: str = "drz_full.npy") -> np.ndarray:
     return a
 
 
+def survey_reference(ctx: Context, H: int, W: int) -> np.ndarray:
+    """The H-alpha survey on the stack's grid (stage ``surveys``), the reference of the anchored method."""
+    if not ctx.has("surveys") or ctx.load_json("surveys", "survey.json")["survey"] == "none":
+        raise StageError("the anchored gradient needs the H-alpha survey of the field: set the survey to 'auto'")
+    ref = ctx.load("surveys", "ref_ha.npy").astype(np.float32)
+    if ref.shape != (H, W):
+        raise StageError(f"the H-alpha survey is on a {ref.shape[1]} x {ref.shape[0]} grid, the stack is {W} x {H}")
+    return ref
+
+
 # ---------------------------------------------------------------------------------------------- the stage
 class Gradient(Stage):
     name = "gradient"
@@ -221,8 +250,13 @@ class Gradient(Stage):
         stack = ctx.load("stack", "drz_full.npy").astype(np.float32)
         H, W = stack.shape[1:]
         valid = coverage(ctx)
+        ref = survey_reference(ctx, H, W) if p.method == "anchored" else None
         ctx.progress(0.3, "sky samples")
-        fit = fit_poly_sky(stack, valid, p.degree, p.samples, p.object_clip)
+        fit = fit_poly_sky(stack, valid, p.degree, p.samples, p.object_clip, ref=ref)
+        if ref is not None:
+            ctx.metric("survey_gain", [round(float(g), 4) for g in fit["gain"]])
+            ctx.log("H-alpha survey in the sky model: gain " + ", ".join(f"{'RGB'[c]} {fit['gain'][c]:.4g}"
+                                                                         for c in range(3)) + " ADU per rayleigh")
         ctx.progress(0.7, "sky model")
         xx, yy = grid_centres(H, W)
         A = poly_terms(xx.ravel(), yy.ravel(), W, H, p.degree)
@@ -239,6 +273,7 @@ class Gradient(Stage):
         ctx.metric("samples_used", int(both.sum()))
         ctx.save_json(INFO_FILE, {"method": p.method, "factor": SKY_FACTOR, "width": W, "height": H,
                                   "level": level.tolist(), "degree": p.degree, "coefs": fit["coefs"].tolist(),
+                                  "survey_gain": fit["gain"].tolist(),
                                   "block_px": fit["block"],
                                   "basis": "u^i v^j for i in 0..degree, j in 0..degree-i; u = x / (W/2) - 1, "
                                            "v = y / (H/2) - 1 (pixel indices)",

@@ -114,3 +114,37 @@ Ce que ça dit :
   sur le relevé H-alpha. C'est la piste de l'état de l'art pour garder les nébulosités faibles.
 - **Notre fond « physique » n'est pas dans ce banc** : il demande toute la chaîne du workflow Complet. Ses résultats
   précédents sur Rosette et Iris restent visibles dans le GUI.
+
+## 5. La méthode ancrée sur le relevé H-alpha (3 novembre, soir)
+
+**Ce qu'elle fait** : la même surface lisse que notre polynôme, mais le relevé H-alpha professionnel du champ entre
+dans l'ajustement comme une partie du vrai ciel (gain × relevé + surface). Seule la surface est retirée. C'est le
+principe de MGC chez PixInsight (une image du même ciel, sans gradient, dit ce qui est du ciel), limité ici à ce que
+voit le relevé : l'émission H-alpha. Méthode `anchored` de l'étape Gradient ; elle a besoin du relevé (étape
+`surveys`) et donc d'Internet.
+
+**Le banc** : les mêmes six cas, mais pris désormais **en couleurs de l'appareil**, comme la nouvelle étape les voit
+(avant la calibration des couleurs). Toutes les méthodes ont été relancées sur cette entrée. Une mesure s'ajoute :
+une émission faible ayant la forme que montre le relevé est injectée, et l'on mesure la part qui reste. C'est le cas
+le plus favorable à la méthode ancrée (sa référence a exactement cette forme). Chiffres :
+`F:\astro_essais\bench\gradient_anchored\results.json`, planches à côté.
+
+| Méthode | Gradients injectés : écart au vrai (pente, dôme, coin) | Nuage neutre gardé | Émission du relevé gardée | Planéité |
+|---|---|---|---|---|
+| Notre polynôme | 0 à 2 %, 0 à 2 %, 23 à 52 % | 33 à 108 % | 65 à 94 % | 3,1 à 15 % |
+| **Ancrée** | 0 à 2 %, 1 à 2 %, 33 à 52 % | 19 à 103 % | **96 à 101 %** (Iris : 135 %) | 3,0 à 12 % |
+| Siril polynôme 2 | 5 à 15 %, 5 à 30 %, 26 à 56 % | 80 à 96 % | 85 à 103 % | 3,6 à 17 % |
+| Siril automatique (1.5) | 1 à 5 % (M8 : 21 %), 5 à 13 %, 3 à 4 % | 13 à 24 % (M8 : 64 %) | 26 à 100 % | 1,2 à 11 % |
+| GraXpert IA | 4 à 14 %, 6 à 17 %, 5 à 12 % | 10 à 22 % (M8 : 75 %) | 88 à 106 % | 1,1 à 17 % |
+
+Ce que ça dit :
+- **L'ancrage garde l'émission que le relevé voit** : 96 à 101 % contre 65 à 94 % pour le polynôme seul. Sur Rosette,
+  Siril automatique n'en garde que 26 % (la planche montre la nébuleuse creusée).
+- **Il ne rend pas la surface plus souple** : le coin éclairé reste à 33 à 52 % d'erreur, comme avec le polynôme.
+- **Il a un défaut** : sur Iris (peu d'H-alpha, beaucoup de poussière), le gain du relevé s'emballe et l'émission
+  injectée ressort à 135 %. Le relevé y ressemble à la poussière, et l'ajustement lui attribue de la lumière qui n'est
+  pas la sienne. Sur Rosette, le nuage neutre injecté (absent du relevé) est moins bien gardé (19 % contre 33 %).
+- **M8 manque** : trop au sud pour NSNS, et le service du CDS qui sert le relevé de Finkbeiner ne répondait pas.
+- **L'entrée en couleurs de l'appareil change les chiffres** par rapport au tableau du 3 novembre : le ciel très
+  vert de l'appareil pèse dans la planéité, pour toutes les méthodes. Sur Rosette, notre polynôme garde 33 % du nuage
+  neutre (93 % avant) ; c'est à comprendre.
