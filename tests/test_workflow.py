@@ -12,10 +12,10 @@ BASE = ["inventory", "calibrate", "register", "stack"]
 TABLE = {      # §2.1: the stages after stack, without the reference image
     "Classic stack": ["astrometry", "catalogs", "gradient", "color", "render_simple"],
     "Classic + denoise": ["astrometry", "catalogs", "gradient", "color", "denoise", "render_simple"],
-    "Full": ["astrometry", "catalogs", "surveys", "gradient", "color", "denoise", "optics", "stars", "starless",
-             "background", "render_prep"],
-    "Full + neural stars": ["astrometry", "catalogs", "surveys", "gradient", "color", "denoise", "optics", "stars",
-                            "star_net", "starless", "background", "render_prep_learned"],
+    "Full": ["astrometry", "catalogs", "gradient", "color", "denoise", "optics", "stars", "starless", "background",
+             "render_prep"],
+    "Full + neural stars": ["astrometry", "catalogs", "gradient", "color", "denoise", "optics", "stars", "star_net",
+                            "starless", "background", "render_prep_learned"],
 }
 CLASSIC, CLASSIC_DN, FULL, NEURAL = (TEMPLATES[k] for k in TABLE)
 
@@ -47,11 +47,10 @@ def test_earlier_neural_layer_omits_star_net():
 
 
 def test_gradient_method():
-    assert wfl.method_of(CLASSIC, "gradient") == "polynomial" and wfl.method_of(FULL, "gradient") == "anchored"
-    assert wfl.implied(CLASSIC, "gradient") == {"method": "polynomial"}
-    assert wfl.implied(FULL, "gradient") == {"method": "anchored"}
-    assert "surveys" not in chain(CLASSIC)                     # the survey only comes with the anchored method
-    assert chains().deps_in_chain(chain(FULL), "gradient") == ("stack", "surveys")
+    for o in (CLASSIC, FULL):
+        assert wfl.method_of(o, "gradient") == "polynomial"
+        assert wfl.implied(o, "gradient") == {"method": "polynomial"}
+        assert "surveys" not in chain(o)
     # the H-alpha anchored background of earlier versions is read as the method that replaces it
     assert wfl.check_options({**FULL, "gradient": "halpha"}) == FULL
 
@@ -96,16 +95,15 @@ TOOL_CASES = [
     (FULL, "stars", "psf_neural", NEURAL, []),
     # with Denoise
     (CLASSIC, "denoise", "n2n", CLASSIC_DN, []),
-    # without Stars: the neural removal goes, the Gradient method stays
-    (NEURAL, "stars", None, {**CLASSIC_DN, "gradient": "anchored"}, [wfl.NOTE_NEURAL_REMOVED]),
-    (FULL, "stars", None, {**CLASSIC_DN, "gradient": "anchored"}, []),
+    # without Stars: the neural removal goes
+    (NEURAL, "stars", None, CLASSIC_DN, [wfl.NOTE_NEURAL_REMOVED]),
+    (FULL, "stars", None, CLASSIC_DN, []),
     # without the neural removal
     (NEURAL, "stars", "psf", FULL, []),
     # without Denoise (no Stars)
     (CLASSIC_DN, "denoise", None, CLASSIC, []),
     # no change, no note
-    (FULL, "gradient", "anchored", FULL, []),
-    (CLASSIC, "gradient", "anchored", {**CLASSIC, "gradient": "anchored"}, []),
+    (FULL, "gradient", "polynomial", FULL, []),
 ]
 
 

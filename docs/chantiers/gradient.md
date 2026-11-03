@@ -148,3 +148,7 @@ Ce que ça dit :
 - **L'entrée en couleurs de l'appareil change les chiffres** par rapport au tableau du 3 novembre : le ciel très
   vert de l'appareil pèse dans la planéité, pour toutes les méthodes. Sur Rosette, notre polynôme garde 33 % du nuage
   neutre (93 % avant) ; c'est à comprendre.
+
+**Décision (3 novembre, 17h20) : la méthode ancrée est abandonnée**, retirée du moteur. Elle ne rend pas la surface
+plus souple, et seul le relevé H-alpha est à notre portée comme référence. Le chantier continue avec la réécriture de
+la méthode automatique de Siril (étape Gradient) et un retrait du gradient image par image avant l'empilement.

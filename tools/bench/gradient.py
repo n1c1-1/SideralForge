@@ -1,5 +1,5 @@
 """Bench of the gradient removal methods: Siril (polynomial, RBF; automatic in its development version), GraXpert
-(AI), ours (polynomial, and anchored on the H-alpha survey), on the bench's
+(AI), ours (polynomial), on the bench's
 stacks, with injected gradients and an injected faint object (docs/chantiers/gradient.md, part 3).
 
     python tools/bench/gradient.py [--cases heart,iris,...] [--out F:/astro_essais/bench/gradient]
@@ -14,13 +14,7 @@ Measures (results.json, and a table printed):
   injected gradient, up to a constant: the RMS of the difference in % of the gradient's RMS (0 = recovered exactly);
 - object survival: how much of the injected faint object is still in the output (100 % = kept whole);
 - flatness: the robust spread (5th to 95th percentile) of the sky blocks of the output, in % of the input's sky level
-  (a method may leave its own pedestal or none: the input's level is the one common scale);
-- survey emission survival: a faint H-alpha emission shaped as the survey of the field shows it, injected, and how
-  much of it is still in the output (the injected cloud is not in the survey: this one is, as the faint emission of a
-  real field is). It is the best case of the anchored method, whose reference is exactly that shape; a real nebula
-  departs from the survey (its resolution, 1' to 6', and its calibration).
-The survey of each case (the stage ``surveys``' download, NSNS where it covers the field, else Finkbeiner) is kept in
-the output folder (survey_<case>.npy).
+  (a method may leave its own pedestal or none: the input's level is the one common scale).
 A sheet per case (sheet_<case>.jpg): the input, each output and each removed background, one stretch for all.
 """
 from __future__ import annotations
@@ -51,9 +45,8 @@ LUM = np.array([0.2126, 0.7152, 0.0722])
 
 
 # ---------------------------------------------------------------------------------------------- the input
-def load_case(case: str) -> tuple[np.ndarray, dict]:
-    """The linear stack of the case's reference workflow, in camera colours, cropped to the fully covered area, and
-    what the survey needs (the astrometric solution, the stack's size, the crop)."""
+def load_case(case: str) -> np.ndarray:
+    """The linear stack of the case's reference workflow, in camera colours, cropped to the fully covered area."""
     from astro_gpu.core import project2
     from astro_gpu.core.store import Keys
     root = BENCH / case / "v2x_express"
@@ -67,39 +60,7 @@ def load_case(case: str) -> tuple[np.ndarray, dict]:
     full = np.asarray(weight) > 0.8 * float(np.median(weight[weight > 0]))
     y0, y1, x0, x1 = inner_box(full)
     m = max(4, int(0.01 * min(y1 - y0, x1 - x0)))          # a margin: the edges of the coverage
-    ast = sd / "astrometry" / k.key(w, "astrometry")
-    info = {"wcs": ast / "wcs.fits", "scale": json.loads((ast / "manifest.json").read_text())["metrics"]["scale_arcsec"],
-            "shape": stack.shape[1:], "box": (y0 + m, y1 - m, x0 + m, x1 - m)}
-    return np.ascontiguousarray(rgb[:, y0 + m:y1 - m, x0 + m:x1 - m]), info
-
-
-def load_survey(case: str, info: dict, out_dir: Path) -> np.ndarray:
-    """The H-alpha survey on the case's crop, as the stage ``surveys`` gets it ('auto': NSNS when it covers 95 % of
-    the field, else Finkbeiner); kept in ``out_dir``."""
-    f = out_dir / f"survey_{case}.npy"
-    if not f.exists():
-        from astropy.io import fits
-        from astropy.wcs import WCS
-
-        from astro_gpu.stages.surveys import fetch_survey
-        wd = WCS(fits.getheader(info["wcs"]))
-        H, W = info["shape"]
-        img = np.full((H, W), np.nan, np.float32)
-        for name in ("nsns", "finkbeiner"):
-            try:
-                img = fetch_survey(name, wd, W, H, info["scale"])
-            except Exception as e:  # noqa: BLE001 - NSNS does not cover the south: Finkbeiner
-                print(f"  {case}: {name} unavailable ({str(e)[:100]})", flush=True)
-                continue
-            if np.isfinite(img).mean() >= 0.95 or name == "finkbeiner":
-                print(f"  {case}: survey {name}, {100 * np.isfinite(img).mean():.0f} % of the field", flush=True)
-                break
-        y0, y1, x0, x1 = info["box"]
-        if not np.isfinite(img).any():
-            print(f"  {case}: no survey of the field could be read", flush=True)
-            return img[y0:y1, x0:x1]                # not kept: the next run tries again
-        np.save(f, img[y0:y1, x0:x1].astype(np.float32))
-    return np.load(f)
+    return np.ascontiguousarray(rgb[:, y0 + m:y1 - m, x0 + m:x1 - m])
 
 
 def inner_box(mask: np.ndarray, fill: float = 0.998) -> tuple[int, int, int, int]:
@@ -157,24 +118,6 @@ def faint_object(H: int, W: int, level: float) -> tuple[np.ndarray, np.ndarray]:
     return np.repeat(g[None], 3, 0).astype(np.float32), r2 < 4
 
 
-#: the colour of H-alpha emission in camera colours (a colour camera: red, a little green and blue)
-HII_COLOUR = np.array([1.0, 0.4, 0.15])
-
-
-def survey_object(ref: np.ndarray, level: float) -> tuple[np.ndarray, np.ndarray] | None:
-    """A faint H-alpha emission shaped as the survey (5th to 99th percentile mapped to 0..1), its brightest part at
-    8 % of the sky in red; and the area where it is measured (above a quarter of its peak). None without a survey."""
-    ok = np.isfinite(ref)
-    if ok.mean() < 0.5:
-        return None
-    r = np.where(ok, ref, np.nanmedian(ref))
-    lo, hi = np.percentile(r[::4, ::4], [5, 99])
-    if hi <= lo:
-        return None
-    e = np.clip((r - lo) / (hi - lo), 0, 1).astype(np.float32)
-    return (0.08 * level * HII_COLOUR[:, None, None] * e[None]).astype(np.float32), (e > 0.25) & ok
-
-
 # ---------------------------------------------------------------------------------------------- the methods
 def write_fits(path: Path, img: np.ndarray):
     from astropy.io import fits
@@ -226,21 +169,12 @@ def graxpert(img: np.ndarray, work: Path) -> np.ndarray:
     return a
 
 
-def ours_poly(img: np.ndarray, work: Path, ref: np.ndarray | None = None) -> np.ndarray:
-    """Our Gradient stage's model with its default settings (stages/gradient.py), removed whole."""
+def ours_poly(img: np.ndarray, work: Path) -> np.ndarray:
     from astro_gpu.stages.gradient import GradientParams, fit_poly_sky, poly_sky
     p = GradientParams()
     valid = np.ones(img.shape[1:], bool)
-    fit = fit_poly_sky(img, valid, p.degree, p.samples, p.object_clip, ref=ref)
+    fit = fit_poly_sky(img, valid, p.degree, p.samples, p.object_clip)
     return img - poly_sky(fit["coefs"], p.degree, *img.shape[1:])
-
-
-#: the survey of the case being run (ours_anchored reads it)
-SURVEY: dict[str, np.ndarray] = {}
-
-
-def ours_anchored(img: np.ndarray, work: Path) -> np.ndarray:
-    return ours_poly(img, work, ref=SURVEY["ref"])
 
 
 METHODS = {
@@ -250,7 +184,6 @@ METHODS = {
     "siril_auto": lambda img, work: siril(img, work, "subsky -auto", SIRIL_DEV),
     "graxpert_ai": graxpert,
     "ours_poly": ours_poly,
-    "ours_anchored": ours_anchored,
 }
 
 
@@ -326,15 +259,13 @@ def sheet(path: Path, img: np.ndarray, outs: dict[str, np.ndarray]):
 # ---------------------------------------------------------------------------------------------- the run
 def run_case(case: str, out_dir: Path, methods: list[str]) -> dict:
     t0 = time.time()
-    raw, info = load_case(case)
-    SURVEY["ref"] = load_survey(case, info, out_dir)
+    raw = load_case(case)
     img, lo, span = to_unit(raw)
     del raw
     H, W = img.shape[1:]
     level = sky_level(img)
     grads = gradients(H, W, level)
     obj, area = faint_object(H, W, level)
-    emis = survey_object(SURVEY["ref"], level)
     res: dict = {"size": [W, H], "sky_level": level, "methods": {}}
     outs_plain = {}
     with tempfile.TemporaryDirectory(prefix=f"grad_{case}_") as td:
@@ -353,9 +284,6 @@ def run_case(case: str, out_dir: Path, methods: list[str]) -> dict:
                     bg = (img + g) - fn(np.clip(img + g, 0, 1), work)
                     r[f"recovery_{gname}_pct"] = round(recovery(bg, bg0, g), 1)
                 r["object_kept_pct"] = round(survival(fn(np.clip(img + obj, 0, 1), work), base, obj, area), 1)
-                if emis is not None:
-                    r["survey_emission_kept_pct"] = round(survival(fn(np.clip(img + emis[0], 0, 1), work), base,
-                                                                   *emis), 1)
             except Exception as e:  # noqa: BLE001 - one method failing does not stop the bench
                 r["error"] = f"{type(e).__name__}: {e}"[:400]
             res["methods"][m] = r
@@ -380,13 +308,11 @@ def main(argv=None) -> int:
         print(f"{case}", flush=True)
         allres[case] = run_case(case, out, a.methods.split(","))
         f.write_text(json.dumps(allres, indent=1))
-    keys = ["recovery_tilt_pct", "recovery_dome_pct", "recovery_corner_pct", "object_kept_pct", "flatness_pct",
-            "survey_emission_kept_pct"]
+    keys = ["recovery_tilt_pct", "recovery_dome_pct", "recovery_corner_pct", "object_kept_pct", "flatness_pct"]
     print("\ncase      method        " + "  ".join(k.replace("_pct", "") for k in keys))
     for case, r in allres.items():
         for m, v in r["methods"].items():
-            print(f"{case:9} {m:13} " + "  ".join(f"{v.get(k) if v.get(k) is not None else float('nan'):>{len(k) - 4}}"
-                                                    for k in keys))
+            print(f"{case:9} {m:13} " + "  ".join(f"{v.get(k, float('nan')):>{len(k) - 4}}" for k in keys))
     return 0
 
 
