@@ -7,9 +7,10 @@ stacked by our own chain, their half-stack pairs exported, and the pretraining.
     python tools/bench/denoise_dataset.py night  [--hours 10]           all of it in a row
 
 ``stack``: one project per set in F:/astro_essais/dataset_projets/<id> (its own engine state in _state), computed up
-to the stack only; a set that fails is noted (stack.json) and the next one goes on. Every set is stacked whole first;
-then the sets of QUARTER_MIN lights or more are stacked again from a quarter of their lights (the same field at a lower
-signal-to-noise: the network learns the noise, not the fields). ``export``: for every stacked set,
+to the stack only; a set that fails is noted (stack.json) and the next one goes on (a registration that finds too
+few stars is tried again with a lower detection threshold). Every set is stacked whole first, then from a half, a
+quarter and an eighth of its lights (LEVELS): the same field at several signal-to-noise ratios, so that the network
+learns the noise, not the fields. ``export``: for every stacked set,
 for the user's projects (read only: their latest stack) and for the six bench cases (held out, for the validation),
 drz_A, drz_B and the noise map, normalised as the denoiser normalises them (stages/denoise.norm_params), in float16,
 in F:/astro_essais/denoise_dataset/<name>/. ``train``: the U-Net of stages/denoise.py, Noise2Noise on random tiles of
@@ -41,8 +42,13 @@ BENCH = Path("F:/astro_essais/bench")
 BENCH_CASES = ("heart", "iris", "m51", "m8", "rosette", "seestar")
 #: the colour sets our chain can stack (Bayer, not a fixed-foreground nightscape, a comet or a mosaic, 14 lights or
 #: more); the monochrome sets and the X-Trans one are not (the chain refuses them)
-#: a set with this many lights or more is stacked a second time from a quarter of them
-QUARTER_MIN = 80
+#: the signal-to-noise levels: every set is stacked whole, then again from a half, a quarter and an eighth of its
+#: lights (evenly spread over the night), each level only when it keeps MIN_LEVEL_LIGHTS lights or more (5 per
+#: half-stack)
+LEVELS = {"1/2": 2, "1/4": 4, "1/8": 8}
+MIN_LEVEL_LIGHTS = 10
+#: the star detection threshold of a second try when the registration finds too few stars (short or faint frames)
+FAINT_SIGMA = 5.0
 SETS = ("02", "03", "04", "05", "08", "14", "15", "16", "18", "22", "24", "25", "27", "29", "30", "31", "32", "33",
         "34", "36", "37", "38", "44", "47", "49", "52", "53", "55")
 
@@ -69,46 +75,68 @@ def stack(only: list[str] | None, device: str) -> int:
     report_f = PROJECTS / "stack.json"
     report = json.loads(report_f.read_text()) if report_f.exists() else {}
     def run(p, wf: int) -> tuple[bool, str]:
-        plan = api.plan_to_block(p, wf, "stacking", device)
-        if plan.jobs:
-            log(f"{p.name}: {len(plan.jobs)} jobs: {', '.join(j.stage for j in plan.jobs)}")
-            mtp.follow(api, p, api.start_run(p, plan, device))
+        cur = api.running(p)
+        if cur is not None:                              # a run left by an earlier night: its end first
+            log(f"{p.name}: a run is in progress, followed to its end")
+            mtp.follow(api, p, cur)
             api.refresh(p)
-        st = api.states(p).get((wf, "stack"))
-        ok = st is not None and st.state == "done"
-        return ok, "" if ok else (st.reason if st is not None else "no state")
+        for attempt in (1, 2):
+            plan = api.plan_to_block(p, wf, "stacking", device)
+            if plan.jobs:
+                log(f"{p.name}: {len(plan.jobs)} jobs: {', '.join(j.stage for j in plan.jobs)}")
+                mtp.follow(api, p, api.start_run(p, plan, device))
+                api.refresh(p)
+            states = api.states(p)
+            st, reg = states.get((wf, "stack")), states.get((wf, "register"))
+            if st is not None and st.state == "done":
+                return True, ""
+            why = " ".join(x.reason for x in (reg, st) if x is not None and x.state == "failed")
+            if attempt == 1 and ("too few stars" in why or "usable frames" in why):
+                # short or faint frames: the detection threshold the registration's help advises for them
+                log(f"{p.name}: {why}: again with the star detection threshold at {FAINT_SIGMA}")
+                api.set_param(p, [wf], "register", "detect_sigma", FAINT_SIGMA)
+                api.save(p)
+                continue
+            return False, why or (st.reason if st is not None else "no state")
+        return False, "no state"
 
-    for quarter in (False, True):
+    def level_wf(p, frac: str, lights: int):
+        name = f"Stack {frac}"
+        w = next((x for x in p.workflows if x.name == name), None)
+        if w is None:
+            base = p.workflows[0]
+            params = {k: dict(v) for k, v in base.params.items()}
+            params["inventory"] = {**params.get("inventory", {}), "max_lights": lights // LEVELS[frac]}
+            w = api.add_workflow(p, name, "Classic stack", params)
+            api.save(p)
+        return w
+
+    for frac in (None, *LEVELS):
         for d in set_dirs(only):
-            tag = d.name + (" quarter" if quarter else "")
+            tag = d.name + (f" {frac}" if frac else "")
             if report.get(tag, {}).get("status") == "done":
                 continue
             root = PROJECTS / d.name
             t0 = time.time()
             try:
-                if (root / "project.astroproj").exists():
-                    p = api.open_project(root)
-                elif quarter:
-                    continue
-                else:
-                    p = api.create_project(root, d.name, d.name.split("_", 3)[-1])
-                    scan = api.scan_folder(d / "lights")
-                    log(f"{d.name}: {({k: len(v) for k, v in scan.frames.items()})}, {len(scan.errors)} unreadable")
-                    api.add_frames(p, scan)
-                    p.devices["main"] = device
-                    api.add_workflow(p, "Stack", "Classic stack")
-                    api.save(p)
-                if quarter:
+                if frac is not None:
                     lights = int(report.get(d.name, {}).get("lights") or 0)
-                    if report.get(d.name, {}).get("status") != "done" or lights < QUARTER_MIN:
+                    if report.get(d.name, {}).get("status") != "done" or lights // LEVELS[frac] < MIN_LEVEL_LIGHTS:
                         continue
-                    w = next((x for x in p.workflows if x.name == "Stack quarter"), None)
-                    if w is None:
-                        w = api.add_workflow(p, "Stack quarter", "Classic stack",
-                                             {"inventory": {"max_lights": lights // 4}})
-                        api.save(p)
-                    ok, why = run(p, w.id)
+                    p = api.open_project(root)
+                    ok, why = run(p, level_wf(p, frac, lights).id)
                 else:
+                    if (root / "project.astroproj").exists():
+                        p = api.open_project(root)
+                    else:
+                        p = api.create_project(root, d.name, d.name.split("_", 3)[-1])
+                        scan = api.scan_folder(d / "lights")
+                        log(f"{d.name}: {({k: len(v) for k, v in scan.frames.items()})}, "
+                            f"{len(scan.errors)} unreadable")
+                        api.add_frames(p, scan)
+                        p.devices["main"] = device
+                        api.add_workflow(p, "Stack", "Classic stack")
+                        api.save(p)
                     ok, why = run(p, p.workflows[0].id)
                 inv = api.stage_outputs(p, p.workflows[0].id, "inventory")
                 report[tag] = {"status": "done" if ok else "failed", "minutes": round((time.time() - t0) / 60, 1),
@@ -161,8 +189,8 @@ def export() -> int:
         for w in p.workflows:
             o = api.stage_outputs(p, w.id, "stack")
             if o is not None and (Path(o.dir) / "drz_A.npy").is_file():
-                pairs.append((f"set_{d.name}" + ("_quarter" if w.name == "Stack quarter" else ""), Path(o.dir),
-                              "train"))
+                level = {"Stack 1/2": "_half", "Stack 1/4": "_quarter", "Stack 1/8": "_eighth"}.get(w.name, "")
+                pairs.append((f"set_{d.name}{level}", Path(o.dir), "train"))
     for d in sorted(USER_PROJECTS.iterdir()):
         s = latest_stack(d / "store") if (d / "store").is_dir() and not d.name.startswith("_") else None
         if s is not None:
