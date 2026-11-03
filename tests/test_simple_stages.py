@@ -1,4 +1,4 @@
-"""The new stages of v2 (background_poly, render_simple), the simple rendering and the v2 stage registry, on synthetic
+"""The new stages of v2 (gradient, render_simple), the simple rendering and the v2 stage registry, on synthetic
 stacks (CPU)."""
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from astro_gpu.core.journal import Journal
 from astro_gpu.core.project import Inputs, Project
 from astro_gpu.core.stage import Context
 from astro_gpu.render.simple import SimpleRenderEngine, SimpleSettings, image_stats
-from astro_gpu.stages.background_poly import BackgroundPoly, BackgroundPolyParams, poly_sky
+from astro_gpu.stages.gradient import Gradient, GradientParams, sky_variation
 from astro_gpu.stages.render_simple import RenderSimple, RenderSimpleParams
 
 DEV = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -45,8 +45,10 @@ def scene(h: int, w: int, seed: int = 1):
     return sky, raw, dn
 
 
-def make_project(root: Path, denoise: bool = True, color: bool = True):
-    """A v1 project folder holding done stack (and color, denoise) results; returns (project, true sky)."""
+def make_project(root: Path, denoise: bool = True, color: bool = True, gradient: bool = True):
+    """A v1 project folder holding done stack (and gradient, color, denoise) results; the denoised stack is made from
+    the stack with its gradient removed, as the Denoise block reads it. Returns (project, true sky, the gradient's
+    context or None)."""
     sky, raw, dn = scene(H, W)
     proj = Project.create(root, "t", Inputs(lights=[]))
     wt = np.full((3, H, W), 20, np.float32)
@@ -65,11 +67,12 @@ def make_project(root: Path, denoise: bool = True, color: bool = True):
                 np.save(d / k, val)
         (d / "manifest.json").write_text(json.dumps({"status": "done"}))
     stage("stack", {"drz_full.npy": raw, "drz_weight.npy": wt, "drz_meta.json": {"scale": 1.5}})
+    g = run_stage(proj, Gradient(), GradientParams()) if gradient else None
     if color:
         stage("color", {"M.npy": M})
     if denoise:
-        stage("denoise", {"n2n_full.npy": dn})
-    return proj, sky
+        stage("denoise", {"n2n_full.npy": dn - sky_variation(g, H, W) if g else dn})
+    return proj, sky, g
 
 
 def run_stage(proj, st, p):
@@ -78,28 +81,34 @@ def run_stage(proj, st, p):
     return ctx
 
 
+def is_level(a: np.ndarray, valid: np.ndarray, tol: float) -> bool:
+    """Whether ``a`` (3, H, W) is a constant per channel over ``valid``, to ``tol``."""
+    return all(float(np.ptp(a[c][valid])) < tol for c in range(a.shape[0]))
+
+
 @pytest.fixture(scope="module")
 def classic(tmp_path_factory):
-    """Classic + denoise: background_poly then render_simple."""
-    proj, sky = make_project(tmp_path_factory.mktemp("classic") / "p")
-    bg = run_stage(proj, BackgroundPoly(), BackgroundPolyParams())
+    """Classic + denoise: gradient, then render_simple."""
+    proj, sky, g = make_project(tmp_path_factory.mktemp("classic") / "p")
     out = run_stage(proj, RenderSimple(), RenderSimpleParams())
-    return proj, sky, bg, out
+    return proj, sky, g, out
 
 
-def test_background_poly_recovers_a_degree_2_gradient(classic):
-    proj, sky, bg, _ = classic
-    cj = json.loads((bg.dir / "coefs.json").read_text())
-    assert cj["degree"] == 2 and (cj["width"], cj["height"]) == (W, H) and cj["source"] == "denoise/n2n_full"
-    fit = poly_sky(cj["coefs"], cj["degree"], H, W)
-    true = np.tensordot(M, sky, 1)                       # the sky in display RGB
-    err = np.abs(fit - true)[:, 12:, :-9] / true[:, 12:, :-9]
-    assert float(err.max()) < 0.01                       # within 1 % everywhere, nebulae and stars left out
-    s = np.load(bg.dir / "samples.npz")
+def test_gradient_recovers_a_degree_2_gradient(classic):
+    proj, sky, g, _ = classic
+    info = json.loads((g.dir / "gradient.json").read_text())
+    assert info["degree"] == 2 and (info["width"], info["height"]) == (W, H) and info["method"] == "polynomial"
+    var = sky_variation(g, H, W)
+    true = sky[:, 12:, :-9]                              # the covered field, in camera colours
+    level = np.array(info["level"])
+    assert np.allclose(level, true.mean(axis=(1, 2)), rtol=0.01)          # the sky's level is kept...
+    err = np.abs(var[:, 12:, :-9] + level[:, None, None] - true) / true
+    assert float(err.max()) < 0.01                       # ...its variation within 1 % everywhere, objects left out
+    s = np.load(g.dir / "samples.npz")
     assert s["values"].shape == (3, len(s["x"])) and s["used"].shape == (3, len(s["x"])) and s["used"].any()
-    assert 0 < bg.metrics["sky_fit_blocks_pct"] < 100
-    assert abs(bg.metrics["gradient_pct"] - 100 * _range_ratio(true[:, 12:, :-9])) < 2.0
-    assert (bg.dir / "previews" / "background.jpg").exists()
+    assert 0 < g.metrics["samples_used"] < len(s["x"])
+    assert abs(g.metrics["gradient_pct"] - 100 * _range_ratio(true)) < 2.0
+    assert (g.dir / "previews" / "gradient.jpg").exists()
 
 
 def _range_ratio(rgb):
@@ -107,33 +116,32 @@ def _range_ratio(rgb):
     return float((np.percentile(L, 99) - np.percentile(L, 1)) / np.median(L))
 
 
-def test_background_poly_params():
-    p = BackgroundPolyParams()
-    assert (p.degree, p.samples, p.object_clip) == (2, 16, 2.5)
-    with pytest.raises(ValueError):
-        BackgroundPolyParams(degree=6)
-    with pytest.raises(ValueError):
-        BackgroundPolyParams(samples=2)
+def test_gradient_params():
+    p = GradientParams()
+    assert (p.method, p.degree, p.samples, p.object_clip) == ("polynomial", 2, 16, 2.5)
+    for bad in ({"degree": 6}, {"samples": 2}, {"method": "rbf"}):
+        with pytest.raises(ValueError):
+            GradientParams(**bad)
 
 
 def test_render_simple_writes_its_files(classic):
-    proj, sky, bg, out = classic
+    proj, sky, g, out = classic
     names = {p.name for p in out.dir.iterdir()}
     assert {"lin.npy", "lin_raw.npy", "valid.npy", "prep_simple.json"} <= names
     assert (out.dir / "previews" / "output.jpg").exists()
     prep = json.loads((out.dir / "prep_simple.json").read_text())
     for k in ("M", "crop", "median", "mad", "p99995", "stats", "stats_raw", "linked", "stretch", "drizzle_scale"):
         assert k in prep
-    assert prep["denoised"] and prep["color"] and prep["exit"] is None and prep["sky"] == "background_poly"
+    assert prep["denoised"] and prep["color"] and prep["exit"] is None and prep["sky"] == "channel medians"
     assert np.allclose(prep["M"], M)
-    # lin = M x denoised stack - sky of the Gradient block; lin_raw the same from the raw stack
+    # lin = M x denoised stack (its gradient removed before) - a level; lin_raw the same from the raw stack
     lin, raw = np.load(out.dir / "lin.npy"), np.load(out.dir / "lin_raw.npy")
     dn = np.load(proj.stage_dir("denoise") / "n2n_full.npy")
-    cj = json.loads((bg.dir / "coefs.json").read_text())
-    want = np.tensordot(M, dn, 1) - poly_sky(cj["coefs"], 2, H, W)
     valid = np.load(out.dir / "valid.npy")
     assert valid.dtype == bool and not valid[:12].any() and valid[100:200, 100:200].all()
-    assert np.allclose(lin[:, valid], want[:, valid], atol=1e-2)
+    assert is_level(lin - np.tensordot(M, dn, 1), valid, 1e-2)
+    left = np.tensordot(M, sky - sky_variation(g, H, W), 1)                 # the true sky as it reads in lin
+    assert is_level(left, valid, 0.02 * float(left.mean()))                 # flat to 2 % of the sky
     assert abs(float(np.median((raw - lin)[:, valid]))) < 1                # the same sky removed from both
     noise = lambda a: float(np.median(np.abs(np.diff(a[1, 50:400, 50:600], axis=1))))   # noqa: E731
     assert noise(raw) > 3 * noise(lin)                                      # the raw stack is the noisier one
@@ -141,8 +149,7 @@ def test_render_simple_writes_its_files(classic):
 
 
 def test_render_simple_without_denoise(tmp_path):
-    proj, _ = make_project(tmp_path / "p", denoise=False)
-    run_stage(proj, BackgroundPoly(), BackgroundPolyParams())
+    proj, _, _ = make_project(tmp_path / "p", denoise=False)
     out = run_stage(proj, RenderSimple(), RenderSimpleParams())
     prep = json.loads((out.dir / "prep_simple.json").read_text())
     assert not (out.dir / "lin_raw.npy").exists() and not prep["denoised"] and prep["source"] == "stack/drz_full"
@@ -158,7 +165,8 @@ EMISSION = np.array([1.0, 0.35, 0.20])
 
 def emission_project(root: Path, denoise: bool):
     """A stack with stars of many colours (on a plane of camera colours), a red line-emission nebula off that plane,
-    a sky gradient and noise, its colour stage (matrix, response at the HII lines) and its Gaia XP stars."""
+    a sky gradient and noise, its Gradient block, its colour stage (matrix, response at the HII lines) and its Gaia XP
+    stars."""
     rng = np.random.default_rng(5)
     h, w = 1024, 1536
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
@@ -179,16 +187,20 @@ def emission_project(root: Path, denoise: bool):
     cam = sky + EMISSION[:, None, None] * E + st
     raw = (cam + rng.normal(0, 4, cam.shape)).astype(np.float32)
     proj = Project.create(root, "t", Inputs(lights=[]))
-    for name, files in {"stack": {"drz_full.npy": raw, "drz_weight.npy": np.full((3, h, w), 20, np.float32)},
-                        "color": {"M.npy": M_HEART}, "catalogs": {}, "denoise": {"n2n_full.npy": raw}}.items():
-        if name == "denoise" and not denoise:
-            continue
+
+    def stage(name, files):
         d = proj.stage_dir(name)
         d.mkdir(parents=True, exist_ok=True)
         for k, val in files.items():
             np.save(d / k, val)
         (d / "manifest.json").write_text(json.dumps({"status": "done", "params": {"aperture": 4.0}}))
+    stage("stack", {"drz_full.npy": raw, "drz_weight.npy": np.full((3, h, w), 20, np.float32)})
     (proj.stage_dir("stack") / "drz_meta.json").write_text(json.dumps({"scale": 1.0}))
+    g = run_stage(proj, Gradient(), GradientParams())
+    stage("color", {"M.npy": M_HEART})
+    stage("catalogs", {})
+    if denoise:
+        stage("denoise", {"n2n_full.npy": raw - sky_variation(g, h, w)})
     np.savez(proj.stage_dir("color") / "specresp.npz", cam_hii=CAM_HII)
     np.savez(proj.stage_dir("catalogs") / "gaia_xp.npz", x=x, y=y)
     return proj, col
@@ -199,7 +211,6 @@ def test_render_simple_gives_the_emission_its_hii_colour(tmp_path, denoise):
     """The Classic exits anchor the emission as render_prep does (the H-alpha of heart_a7s was violet): the emission
     measured on the stack gets the colour the matrix gives the HII spectrum, the star colours do not move."""
     proj, col = emission_project(tmp_path / "p", denoise)
-    run_stage(proj, BackgroundPoly(), BackgroundPolyParams())
     out = run_stage(proj, RenderSimple(), RenderSimpleParams())
     prep = json.loads((out.dir / "prep_simple.json").read_text())
     Ma = np.array(prep["M"])
@@ -209,17 +220,18 @@ def test_render_simple_gives_the_emission_its_hii_colour(tmp_path, denoise):
     assert after[0] > 2.5 * after[2] and np.allclose(after / after[0], hii / hii[0], atol=0.12)
     stars = M_HEART @ col
     assert np.abs(Ma @ col - stars).max() < 0.03 * np.abs(stars).max()      # the star colours unchanged
-    # lin is the stack in the anchored colours minus the Gradient block's sky converted to them
+    # lin is the stack (its gradient removed before) in the anchored colours minus a level
     lin = np.load(out.dir / "lin.npy")
-    src = np.load(proj.stage_dir("denoise" if denoise else "stack") / ("n2n_full.npy" if denoise else "drz_full.npy"))
-    cj = json.loads((proj.stage_dir("background_poly") / "coefs.json").read_text())
-    sky = poly_sky(cj["coefs"], cj["degree"], *src.shape[1:])
-    want = np.tensordot(Ma, src, 1) - np.tensordot(Ma @ np.linalg.inv(M_HEART), sky, 1)
-    assert np.allclose(lin, want, atol=0.05)
+    if denoise:
+        src = np.load(proj.stage_dir("denoise") / "n2n_full.npy")
+    else:
+        src = np.load(proj.stage_dir("stack") / "drz_full.npy")
+        src -= sky_variation(Context(proj, Gradient(), Journal(proj.logs, echo=False), "cpu"), *src.shape[1:])
+    assert is_level(lin - np.tensordot(Ma, src, 1), np.ones(src.shape[1:], bool), 0.05)
 
 
 def test_raw_stack_exit_has_no_colour_cast(tmp_path):
-    proj, _ = make_project(tmp_path / "p", denoise=False, color=False)
+    proj, _, _ = make_project(tmp_path / "p", denoise=False, color=False, gradient=False)
     out = run_stage(proj, RenderSimple(), RenderSimpleParams())
     prep = json.loads((out.dir / "prep_simple.json").read_text())
     assert prep["exit"] == "stacking" and prep["sky"] == "camera-colour polynomial, made grey" and not prep["color"]
@@ -317,16 +329,16 @@ def test_v2_stages_and_chains():
     from astro_gpu.stages.v2 import AUTO_FIELDS, NEW_STAGES, PATH_FIELDS, V2_STAGES
     names = [s.name for s in V2_STAGES()]
     assert names == [s.name for s in all_stages()] + list(NEW_STAGES)
-    assert "background_poly" not in [s.name for s in all_stages()]               # v1's Pipeline never runs them
+    assert "gradient" not in [s.name for s in all_stages()]                      # v1's Pipeline never runs them
     workflow._CHAINS.clear()
     ch = workflow.chains()
     assert type(ch.stages["render_simple"]).__name__ == "RenderSimple"           # the real stages, no stand-ins
     classic = ch.chain(workflow.TEMPLATES["Classic + denoise"])
-    assert classic[-2:] == ["background_poly", "render_simple"]
-    assert ch.deps_in_chain(classic, "render_simple") == ("stack", "color", "denoise", "background_poly")
+    assert classic[-4:] == ["gradient", "color", "denoise", "render_simple"]
+    assert ch.deps_in_chain(classic, "render_simple") == ("stack", "color", "denoise", "gradient")
     raw_exit = ch.chain(workflow.TEMPLATES["Classic stack"], "stacking")
     assert ch.deps_in_chain(raw_exit, "render_simple") == ("stack",)
-    assert ch.deps_in_chain(ch.chain(workflow.TEMPLATES["Classic stack"]), "background_poly") == ("stack", "color")
+    assert ch.deps_in_chain(ch.chain(workflow.TEMPLATES["Classic stack"]), "gradient") == ("stack",)
     assert PATH_FIELDS["starless"] == {"learned_stars"} and PATH_FIELDS["denoise"] == {"reuse_model"}
     stages = {s.name: s for s in V2_STAGES()}
     for st, fields in {**AUTO_FIELDS, **PATH_FIELDS}.items():

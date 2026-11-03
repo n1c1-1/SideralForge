@@ -11,6 +11,7 @@ from ..core.imgutil import fill_holes, starlet
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage
 from .denoise import apply_net, load_model, norm_params
+from .gradient import stack_image
 
 
 class StarlessParams(StageParams):
@@ -96,7 +97,7 @@ class Starless(Stage):
         ctx.progress(0.7, "Noise2Noise detail layer")
         net, bk, sg = load_model(ctx)
         Wt = ctx.load("stack", "drz_weight.npy").astype(np.float32)
-        _, _, nm = norm_params(ctx.load("stack", "drz_A.npy").astype(np.float32), Wt)
+        _, _, nm = norm_params(stack_image(ctx, "drz_A.npy"), Wt)
         sl_n2n = 0.5 * (apply_net(net, A + delta, nm, bk, sg, ctx.device) + apply_net(net, B + delta, nm, bk, sg, ctx.device))
         del net
         if ctx.device.type == "cuda":
@@ -209,7 +210,7 @@ class Starless(Stage):
         wl = wiener(A, B, M, p, model, log=ctx.log)
         ctx.save("sl_final_learned.npy", wl)
         net, bk, sg = load_model(ctx)
-        _, _, nm = norm_params(ctx.load("stack", "drz_A.npy").astype(np.float32), Wt)
+        _, _, nm = norm_params(stack_image(ctx, "drz_A.npy"), Wt)
         n2l = 0.5 * (apply_net(net, A, nm, bk, sg, ctx.device) + apply_net(net, B, nm, bk, sg, ctx.device))
         del net
         # the filled cores hold no detail: the network turned the fill's noise into a checkered pattern (the Wiener

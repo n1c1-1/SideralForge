@@ -777,7 +777,7 @@ class Walk:
                 w.graph.panel._cancel()
             # Replace on a cheap block, and its run: the plan, the progress and the recap in French
             self.select("fond", p.pid)
-            self.set_setting(w.graph.panel, "background_poly", "degree", 3)
+            self.set_setting(w.graph.panel, "gradient", "degree", 3)
             if s.pending_change:
                 self.shot("replace_choice")
                 w.graph.panel._replace()

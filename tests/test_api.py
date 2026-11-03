@@ -555,8 +555,8 @@ def test_set_option_notes_refusals_and_all_or_nothing(tmp_path):
     with pytest.raises(api.OptionRefused):
         api.set_option(p, [2, 1], "denoise", None)                            # both have Stars
     assert p.workflow(1).options["denoise"] == "n2n" and p.workflow(2).options["denoise"] == "n2n"
-    notes = api.set_option(p, [1, 2], "stars", None)                          # Stars off: H-alpha becomes polynomial
-    assert any("Simple background" in n for n in notes) and p.workflow(2).options["gradient"] == "polynomial"
+    notes = api.set_option(p, [1, 2], "stars", None)                          # Stars off
+    assert notes == [] and p.workflow(2).options["stars"] is None
     assert api.set_option(p, 1, "stars", None) == []                          # nothing to do
     assert api.set_option(p, [1, 2], "denoise", None) == []
     with pytest.raises(ValueError):
@@ -569,11 +569,11 @@ def test_set_option_notes_refusals_and_all_or_nothing(tmp_path):
 
 def test_variants_make_keep_discard_and_exits(real):
     p = real
-    change = {"kind": "param", "stage": "background_poly", "name": "degree", "value": 3}
+    change = {"kind": "param", "stage": "gradient", "name": "degree", "value": 3}
     v = api.make_variant(p, 1, change, "Classic · degree 3")
-    assert v.variant_of == 1 and v.params == {"background_poly": {"degree": 3}} and p.workflow(1).params == {}
+    assert v.variant_of == 1 and v.params == {"gradient": {"degree": 3}} and p.workflow(1).params == {}
     assert api.stage_key(p, 1, "stack") == api.stage_key(p, v.id, "stack")           # shared up to the change
-    assert api.stage_key(p, 1, "background_poly") != api.stage_key(p, v.id, "background_poly")
+    assert api.stage_key(p, 1, "gradient") != api.stage_key(p, v.id, "gradient")
     k = api.keep_variant(p, v.id)
     assert k.name == "Classic stack" and k.variant_of is None and p.current == v.id
     assert [w.id for w in p.workflows] == [2, 3, 4, v.id]                                # the original is retired
@@ -605,7 +605,7 @@ def test_methods_table_marks_what_is_not_in_the_engine():
     dn = {m.key: m for m in api.methods("denoise")}
     assert list(dn) == ["n2n", "finetuned", "pretrained", "nlbayes"]
     assert not dn["n2n"].new and dn["n2n"].runs_on == "gpu" and dn["nlbayes"].new and dn["nlbayes"].runs_on == "cpu"
-    assert [(m.key, m.new) for m in api.methods("gradient")] == [("halpha", False), ("polynomial", False)]
+    assert [(m.key, m.new) for m in api.methods("gradient")] == [("polynomial", False)]
     assert api.methods("stars")[1].stage == "star_net" and api.methods("deconvolution")[0].new
     from astro_gpu.core import workflow
     for block, opt in (("denoise", "denoise"), ("gradient", "gradient"), ("stars", "stars")):
@@ -619,15 +619,15 @@ def test_methods_table_marks_what_is_not_in_the_engine():
 
 def test_chain_deps_blocks_and_sharing_on_the_real_graph(real):
     p = real
-    assert api.chain(p, 1) == ["inventory", "calibrate", "register", "stack", "astrometry", "catalogs", "color",
-                               "background_poly", "render_simple"]
+    assert api.chain(p, 1) == ["inventory", "calibrate", "register", "stack", "astrometry", "catalogs", "gradient",
+                               "color", "render_simple"]
     assert "star_net" in api.chain(p, 4) and "star_net" not in api.chain(p, 3)
-    assert api.deps(p, 1, "render_simple") == ("stack", "color", "background_poly")
-    assert api.deps(p, 4, "starless")[-1] == "star_net"
+    assert api.deps(p, 1, "render_simple") == ("stack", "color", "gradient")
+    assert "star_net" in api.deps(p, 4, "starless")
     b = {x.block: x for x in api.blocks(p, 3)}
-    assert list(b) == ["calibration", "registration", "selection", "stacking", "astrometry", "color", "denoise",
-                       "stars", "gradient", "output"]
-    assert b["astrometry"].stages == ("astrometry", "catalogs", "surveys") and len(b["astrometry"].key) == 2
+    assert list(b) == ["calibration", "registration", "selection", "stacking", "astrometry", "gradient", "color",
+                       "denoise", "stars", "output"]
+    assert b["astrometry"].stages == ("astrometry", "catalogs") and len(b["astrometry"].key) == 2
     assert b["selection"].stages == () and b["output"].key[-1] == "workflow 3"
     assert api.blocks(p, 1)[-1].key[-1] == "workflow 1" and api.blocks(p, 1)[-1].key != b["output"].key
     assert api.sharing(p, 1, "stack") == [1, 2, 3, 4] and api.sharing(p, 3, "denoise") == [2, 3, 4]
@@ -645,25 +645,27 @@ def test_chain_deps_blocks_and_sharing_on_the_real_graph(real):
 def test_the_toy_scenario_cost_equals_the_plan_after_each_change(real):
     p = real
     plan0 = cost_equals_plan(p)
-    assert len(plan0) == 22 and plan0.seconds > 3600 and not plan0.measured
+    assert len(plan0) == 20 and plan0.seconds > 3600 and not plan0.measured
     # a setting on two workflows: the others still share the stack
     api.set_param(p, [3, 4], "stack", "kappa", 6)
     plan1 = cost_equals_plan(p)
     assert api.sharing(p, 3, "stack") == [3, 4] and api.sharing(p, 1, "stack") == [1, 2]
-    assert len(plan1) == 27 and len(set(plan1.keys) & set(plan0.keys)) < len(plan0)
+    assert len(plan1) == 26 and len(set(plan1.keys) & set(plan0.keys)) < len(plan0)
     # the what-if of a change equals the plan once the change is made
-    change = {"kind": "param", "stage": "background_poly", "name": "degree", "value": 3}
+    change = {"kind": "param", "stage": "gradient", "name": "degree", "value": 3}
     ask = api.cost(p, [api.with_change(p, 1, change)])
     assert ask.jobs == 9 and ask.seconds < plan1.seconds                                # the whole chain, from nothing
     v = api.make_variant(p, 1, change, "Classic · degree 3")
     plan2 = cost_equals_plan(p)
-    assert set(plan2.keys) - set(plan1.keys) == {api.stage_key(p, v.id, "background_poly"),
-                                                 api.stage_key(p, v.id, "render_simple")}
+    assert set(plan2.keys) - set(plan1.keys) == {api.stage_key(p, v.id, s) for s in ("gradient", "color",
+                                                                                      "render_simple")}
     assert api.cost(p, [v.id]).keys == ask.keys                                       # the what-if was exact
-    # keep: the variant replaces its original
+    # keep: the variant replaces its original (whose Gradient and Color Classic + denoise still shares)
+    gone = api.stage_key(p, 1, "render_simple")
     api.keep_variant(p, v.id)
     plan3 = cost_equals_plan(p)
-    assert len(plan3) == len(plan1) and set(plan3.keys) - set(plan1.keys) == set(plan2.keys) - set(plan1.keys)
+    assert set(plan3.keys) - set(plan1.keys) == set(plan2.keys) - set(plan1.keys)
+    assert set(plan1.keys) - set(plan3.keys) == {gone}
     # another variant, discarded: back to the plan before it
     w = api.make_variant(p, 3, {"kind": "param", "stage": "denoise", "name": "iterations", "value": 8000},
                          "Full · short denoise")
@@ -695,7 +697,7 @@ def test_the_toy_scenario_cost_equals_the_plan_after_each_change(real):
     done = cost_equals_plan(p)
     assert len(done) == len(plan3) - 4 and done.seconds < plan3.seconds
     one = api.plan_to_block(p, classic, "color")
-    assert [j.stage for j in one.jobs] == ["astrometry", "catalogs", "color"]
+    assert [j.stage for j in one.jobs] == ["astrometry", "catalogs", "gradient", "color"]
     sel = api.plan_to_block(p, 2, "selection")                                 # Selection runs Registration
     assert not sel                                                             # it is done
     assert api.estimate(p, 1, "stack").seconds > 0 and not api.estimate(p, 1, "stack").measured
@@ -725,9 +727,9 @@ def test_warm_fills_the_disk_caches_so_that_keys_states_and_plans_do_not_scan(re
     monkeypatch.setattr("astro_gpu.io.frames.read_info", no_scan)
     key = api.stage_key(p, 3, "stack")
     assert api.states(p, update=False)[(3, "stack")].key == key
-    assert api.cost(p).jobs == len(api.plan_all(p)) == 22 and api.blocks(p, 3) and api.sharing(p, 1, "stack")
+    assert api.cost(p).jobs == len(api.plan_all(p)) == 20 and api.blocks(p, 3) and api.sharing(p, 1, "stack")
     api.set_param(p, 3, "stack", "kappa", 6)                       # an edit changes the keys, not the disk parts
-    assert api.stage_key(p, 3, "stack") != key and api.cost(p).jobs > 22
+    assert api.stage_key(p, 3, "stack") != key and api.cost(p).jobs > 20
     api.add_session(p, lights=["elsewhere"])                       # a new session: its files are not cached yet
     assert not api.is_warm(p)
 

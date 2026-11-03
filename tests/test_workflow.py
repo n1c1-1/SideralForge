@@ -10,11 +10,11 @@ from astro_gpu.core.workflow import TEMPLATES, Chains, OptionRefused, chain, cha
 
 BASE = ["inventory", "calibrate", "register", "stack"]
 TABLE = {      # §2.1: the stages after stack, without the reference image
-    "Classic stack": ["astrometry", "catalogs", "color", "background_poly", "render_simple"],
-    "Classic + denoise": ["astrometry", "catalogs", "color", "denoise", "background_poly", "render_simple"],
-    "Full": ["astrometry", "catalogs", "surveys", "color", "denoise", "optics", "stars", "starless", "background",
+    "Classic stack": ["astrometry", "catalogs", "gradient", "color", "render_simple"],
+    "Classic + denoise": ["astrometry", "catalogs", "gradient", "color", "denoise", "render_simple"],
+    "Full": ["astrometry", "catalogs", "gradient", "color", "denoise", "optics", "stars", "starless", "background",
              "render_prep"],
-    "Full + neural stars": ["astrometry", "catalogs", "surveys", "color", "denoise", "optics", "stars", "star_net",
+    "Full + neural stars": ["astrometry", "catalogs", "gradient", "color", "denoise", "optics", "stars", "star_net",
                             "starless", "background", "render_prep_learned"],
 }
 CLASSIC, CLASSIC_DN, FULL, NEURAL = (TEMPLATES[k] for k in TABLE)
@@ -42,17 +42,17 @@ def test_earlier_neural_layer_omits_star_net():
     assert "star_net" not in c and c[-1] == "render_prep_learned"
     assert c == [s for s in BASE + TABLE["Full + neural stars"] if s != "star_net"]
     assert chain(FULL, learned_layer=True) == BASE + TABLE["Full"]          # psf: the layer changes nothing here
-    assert chains().deps_in_chain(c, "starless") == ("stars", "optics", "denoise", "stack", "color", "catalogs")
+    assert chains().deps_in_chain(c, "starless") == ("stars", "optics", "denoise", "stack", "color", "catalogs",
+                                                     "gradient")
 
 
-def test_polynomial_with_stars_keeps_the_physical_background():
-    o, _ = set_option(FULL, "gradient", "polynomial")
-    c = chain(o)
-    assert "background" in c and "surveys" in c and "background_poly" not in c
-    assert wfl.method_of(o, "gradient") == "poly_physical"
-    assert wfl.implied(o, "surveys") == {"survey": "none"}
-    assert wfl.method_of(CLASSIC, "gradient") == "poly_simple"
-    assert wfl.implied(CLASSIC, "surveys") == {} and wfl.implied(FULL, "surveys") == {}
+def test_gradient_method():
+    for o in (CLASSIC, FULL):
+        assert wfl.method_of(o, "gradient") == "polynomial"
+        assert wfl.implied(o, "gradient") == {"method": "polynomial"}
+        assert "surveys" not in chain(o)
+    # the H-alpha anchored background of earlier versions is read as the method that replaces it
+    assert wfl.check_options({**FULL, "gradient": "halpha"}) == FULL
 
 
 def test_implied_star_net():
@@ -63,12 +63,11 @@ def test_implied_star_net():
 
 @pytest.mark.parametrize("options,end", [
     ({"denoise": "nlbayes"}, None),                                   # ◇ methods
-    ({"denoise": "n2n", "stars": "psf", "gradient": "halpha", "deconvolution": "rl"}, None),
+    ({"denoise": "n2n", "stars": "psf", "gradient": "polynomial", "deconvolution": "rl"}, None),
     ({"stars": "learned"}, None),
     ({"gradient": None}, None),
     ({"gradient": "mars"}, None),
     ({"stars": "psf", "gradient": "polynomial"}, None),               # Stars needs Denoise
-    ({"denoise": "n2n", "gradient": "halpha"}, None),                 # H-alpha needs Stars in v1
     ({"denoise": "n2n", "colour": True}, None),                       # unknown option
     (CLASSIC, "astrometry"),                                          # not an exit
 ])
@@ -94,22 +93,17 @@ TOOL_CASES = [
     (CLASSIC, "stars", "psf_neural", {**CLASSIC, "denoise": "n2n", "stars": "psf_neural"},
      [wfl.NOTE_STARS_ADDED_NEURAL, wfl.NOTE_DENOISE_ADDED]),
     (FULL, "stars", "psf_neural", NEURAL, []),
-    # with H-alpha: replaces the polynomial, Stars and Denoise come with it
-    (CLASSIC, "gradient", "halpha", FULL,
-     [wfl.NOTE_REPLACES_POLYNOMIAL, wfl.NOTE_STARS_ADDED_HALPHA, wfl.NOTE_DENOISE_ADDED]),
-    # with the polynomial (or without H-alpha): Stars stays
-    (FULL, "gradient", "polynomial", {**FULL, "gradient": "polynomial"}, [wfl.NOTE_REPLACES_HALPHA]),
     # with Denoise
     (CLASSIC, "denoise", "n2n", CLASSIC_DN, []),
-    # without Stars: the neural removal goes, H-alpha turns polynomial
-    (NEURAL, "stars", None, CLASSIC_DN, [wfl.NOTE_NEURAL_REMOVED, wfl.NOTE_POLYNOMIAL_INSTEAD]),
-    ({**FULL, "gradient": "polynomial"}, "stars", None, CLASSIC_DN, []),
+    # without Stars: the neural removal goes
+    (NEURAL, "stars", None, CLASSIC_DN, [wfl.NOTE_NEURAL_REMOVED]),
+    (FULL, "stars", None, CLASSIC_DN, []),
     # without the neural removal
     (NEURAL, "stars", "psf", FULL, []),
     # without Denoise (no Stars)
     (CLASSIC_DN, "denoise", None, CLASSIC, []),
     # no change, no note
-    (FULL, "gradient", "halpha", FULL, []),
+    (FULL, "gradient", "polynomial", FULL, []),
 ]
 
 
@@ -157,9 +151,9 @@ def test_optional_and_extra_dependencies():
     full, neural = chain(FULL), chain(NEURAL)
     assert "star_net" not in ch.deps_in_chain(full, "starless")
     assert "star_net" in ch.deps_in_chain(neural, "starless")                 # the EXTRA edge, when present
-    assert ch.deps_in_chain(chain(CLASSIC), "background_poly") == ("stack", "color")
-    assert ch.deps_in_chain(chain(CLASSIC_DN), "background_poly") == ("stack", "color", "denoise")
-    assert ch.deps_in_chain(chain(CLASSIC_DN), "render_simple") == ("stack", "color", "denoise", "background_poly")
+    assert set(ch.deps_in_chain(chain(CLASSIC), "color")) == {"stack", "catalogs", "register", "gradient"}
+    assert ch.deps_in_chain(chain(CLASSIC_DN), "denoise") == ("stack", "gradient")
+    assert ch.deps_in_chain(chain(CLASSIC_DN), "render_simple") == ("stack", "color", "denoise", "gradient")
     assert ch.deps_in_chain(chain(CLASSIC, "stacking"), "render_simple") == ("stack",)
     assert ch.ancestors(chain(CLASSIC, "stacking"), "render_simple") == BASE
     assert ch.downstream(full, "denoise") == ["optics", "stars", "starless", "background", "render_prep"]
@@ -177,8 +171,8 @@ def test_missing_required_dependency_names_the_block():
 def test_v2_stage_graph():
     ch = chains()
     assert ch.order == wfl.ORDER and set(ch.stages) == set(wfl.ORDER)
-    new_stages = {"background_poly": ("stack", "color", "denoise"),        # the dependencies of the new stages
-                  "render_simple": ("stack", "color", "denoise", "background_poly")}
+    new_stages = {"gradient": ("stack",),                                  # the dependencies of the new stages
+                  "render_simple": ("stack", "color", "denoise", "gradient")}
     for name, deps in new_stages.items():
         assert set(deps) <= set(ch.deps2[name])
     for name in wfl.ORDER:                                     # every stage sits in exactly one block
@@ -189,11 +183,12 @@ def test_blocks():
     ch = chains()
     c = chain(NEURAL, reference=True)
     blocks = ch.blocks_in(c)
-    assert [b for b, _ in blocks] == ["calibration", "registration", "selection", "stacking", "astrometry", "color",
-                                      "denoise", "stars", "gradient", "output"]
-    assert dict(blocks)["stars"] == ("optics", "stars", "star_net", "starless")
+    assert [b for b, _ in blocks] == ["calibration", "registration", "selection", "stacking", "astrometry",
+                                      "gradient", "color", "denoise", "stars", "output"]
+    assert dict(blocks)["stars"] == ("optics", "stars", "star_net", "starless", "background")
     assert ch.run_to("selection", c) == ["register"]
-    assert ch.run_to("stars", c) == ["optics", "stars", "star_net", "starless"]
+    assert ch.run_to("gradient", c) == ["gradient"]
+    assert ch.run_to("stars", c) == ["optics", "stars", "star_net", "starless", "background"]
     assert ch.key_stages("astrometry", c) == ["astrometry", "reference", "catalogs"]   # the survey follows Gradient
     assert ch.block_of("star_net") == "stars" and ch.block_of("register") == "registration"
     assert [b for b, _ in ch.blocks_in(chain(CLASSIC, "stacking"))] == ["calibration", "registration", "selection",

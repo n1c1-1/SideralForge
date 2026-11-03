@@ -42,10 +42,10 @@ DENOISE_ITERATIONS = 6000
 #: the Heart (IC 1805) and the instrument's focal length: the astrometry starts at the right scale instead of a blind
 #: search over every scale (which downloads hundreds of Gaia tiles and takes most of an hour)
 TARGET = {"name": "IC 1805", "ra": 38.173, "dec": 61.4569, "focal_mm": 272.0}
-#: the computed Classic workflow (tests/conftest.py TEST_PROJECT_CLASSIC): not the default background setting, so that
+#: the computed Classic workflow (tests/conftest.py TEST_PROJECT_CLASSIC): not the default gradient setting, so that
 #: a Classic stack the tests add with the defaults is still to compute
 CLASSIC_NAME = "Classic"
-CLASSIC_PARAMS = {"background_poly": {"samples": 18}}
+CLASSIC_PARAMS = {"gradient": {"samples": 18}}
 INFO = "test_project.json"
 
 

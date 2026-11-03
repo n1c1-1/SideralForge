@@ -205,7 +205,6 @@ def test_stack_without_darks_reason(tmp_path, monkeypatch):
 
 def test_the_other_stages(tmp_path):
     from astro_gpu.stages.astrometry import Astrometry
-    from astro_gpu.stages.background import Background
     from astro_gpu.stages.calibrate import Calibrate
     from astro_gpu.stages.color import Color
     from astro_gpu.stages.denoise import Denoise
@@ -224,11 +223,6 @@ def test_the_other_stages(tmp_path):
     assert c["aperture"].reason == "star FWHM 3.0 px x drizzle 1.5"
     assert c["aperture"].text("fr") == "FWHM des étoiles 3,0 px × drizzle 1,5"
     assert c["aperture"].value == 4.0
-
-    b = Background().auto(FakeCtx(tmp_path, metrics={("astrometry", "scale_arcsec"): 2.0}))
-    assert b["large_scale_px"].value == 420.0
-    assert b["large_scale_px"].reason == '14 arcmin at 2.00"/px'
-    assert b["large_scale_px"].text("fr") == '14 arcmin à 2,00"/px'
 
     inv = {("inventory", "pointing_ra"): 270.9, ("inventory", "pointing_dec"): -23.5, ("inventory", "object"): "IC 1805",
            ("inventory", "pixel_um"): 3.76, ("inventory", "focal_mm"): 388.0, ("inventory", "camera"): "ILCE-7S"}
@@ -313,7 +307,7 @@ def test_every_metric_the_stages_write_has_a_catalogue_entry():
     missing = sorted(k for k in written if k not in texts.METRICS)
     assert not missing, f"metrics with no catalogue entry (astro_gpu/texts.py): {missing}"
     # and no entry for a key nobody writes (a typo)
-    dead = sorted(k for k in texts.METRICS if k not in written)
+    dead = sorted(k for k in texts.METRICS if k not in written and k not in texts.RETIRED_METRICS)
     assert not dead, f"catalogue entries no stage writes: {dead}"
 
 

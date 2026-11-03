@@ -563,7 +563,7 @@ def test_heart_a7s_import(tmp_path):
         assert planned - {"calibrate"} == set(FULL_CHAIN) - set(adopted)
         classic = p.add_workflow("Classic stack", TEMPLATES["Classic stack"])
         plan = runner2.plan_workflows(p, [classic.id], history={})
-        assert {"background_poly", "render_simple"} <= {j.stage for j in plan.jobs}
+        assert {"gradient", "render_simple"} <= {j.stage for j in plan.jobs}
         assert not (set(adopted) - {"calibrate"}) & {j.stage for j in plan.jobs}
     finally:
         if new.exists():

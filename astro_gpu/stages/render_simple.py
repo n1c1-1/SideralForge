@@ -2,8 +2,8 @@
 
 The output of the workflows without Stars (Classic stack, Classic + denoise) and of the Raw stack exit:
 
-* lin.npy = M x stack - sky, in display RGB: the denoised stack when the workflow has Denoise, else the stack; the sky
-  of the Gradient block (background_poly) when there is one;
+* lin.npy = M x stack - sky, in display RGB: the denoised stack when the workflow has Denoise, else the stack with the
+  sky gradient removed (stages/gradient.py); the sky is then a level, the median of each channel;
 * with Color, M is the colour stage's matrix with the emission anchor of render_prep (``anchor_matrix``): the line
   emission measured on the stack gets the colour of an HII spectrum, the star colours are unchanged. Without it the
   matrix, fitted on the stars, rendered the H-alpha of an astro-modified camera violet (heart_a7s);
@@ -22,7 +22,7 @@ from pydantic import field_validator
 
 from ..core.params import P, StageParams
 from ..core.stage import Context, Stage, StageError
-from .background_poly import LUM, coverage, has_input, sky_of, stack_source
+from .gradient import LUM, GradientParams, coverage, fit_poly_sky, poly_sky, stack_image
 from .render_prep import anchor_matrix, crop_box
 
 STRETCHES = ["auto"]                       # the other stretches of the spec (GHS, arcsinh, STF, none) are not in the engine
@@ -39,12 +39,19 @@ def sky_spread(v: np.ndarray) -> float:
     return 1.4826 * float(np.median(below)) if below.size else 0.0
 
 
+def stack_source(ctx: Context) -> tuple[np.ndarray, str]:
+    """The stack the rendering works on: the denoised one when the workflow has Denoise, else the stack (its sky
+    gradient removed when the workflow has the Gradient block)."""
+    if ctx.has("denoise"):
+        return ctx.load("denoise", "n2n_full.npy").astype(np.float32), "denoise/n2n_full"
+    return stack_image(ctx), "stack/drz_full"
+
+
 def raw_exit_sky(ctx: Context, cam: np.ndarray, valid: np.ndarray) -> tuple[np.ndarray, str]:
     """The sky of the Raw stack exit, per camera channel: the Gradient block's polynomial with its default settings
-    (in camera colours). The exit does not remove it: the stage subtracts it per channel and adds back its brightness,
-    grey. Where it cannot be fitted (a tiny stack), the median of each channel."""
-    from .background_poly import BackgroundPolyParams, fit_poly_sky, poly_sky
-    bp = BackgroundPolyParams()
+    (in camera colours; the exit has no Gradient block). The exit does not remove it: the stage subtracts it per
+    channel and adds back its brightness, grey. Where it cannot be fitted (a tiny stack), the median of each channel."""
+    bp = GradientParams()
     try:
         fit = fit_poly_sky(cam, valid, bp.degree, bp.samples, bp.object_clip)
     except StageError as exc:
@@ -80,13 +87,12 @@ def emission_colour(cam: np.ndarray, shown: np.ndarray, block: int = EMISSION_BL
 
 
 def emission_matrix(ctx: Context, M: np.ndarray, stack: np.ndarray, valid: np.ndarray, shown: np.ndarray):
-    """The colour matrix with the emission anchor of render_prep (``anchor_matrix``), measured on the raw stack: the
-    star colours are those the colour stage fitted the matrix on (``color.colour_stars``), the emission is measured
-    against the stack's own sky, a polynomial in camera colours with the Gradient block's default settings (a camera
-    colour is measured in camera colours: the Gradient block fits each display channel apart). The workflow's
-    denoiser and Gradient settings do not change it: Classic and Classic + denoise get the same matrix.
+    """The colour matrix with the emission anchor of render_prep (``anchor_matrix``), measured on the stack (not
+    denoised): the star colours are those the colour stage fitted the matrix on (``color.colour_stars``), the emission
+    is measured against the stack's own sky, a polynomial in camera colours with the Gradient block's default settings.
+    The workflow's denoiser and Gradient settings do not change it: Classic and Classic + denoise get the same
+    matrix.
     Returns (matrix, measured emission colour or None, weight)."""
-    from .background_poly import BackgroundPolyParams, fit_poly_sky, poly_sky
     from .color import colour_stars, saturation_map
     try:
         cam_hii = np.load(ctx.input("color", "specresp.npz"))["cam_hii"].astype(np.float64)
@@ -99,7 +105,7 @@ def emission_matrix(ctx: Context, M: np.ndarray, stack: np.ndarray, valid: np.nd
     _, F = colour_stars(stack, xp["x"], xp["y"], aperture, saturation_map(ctx))
     if len(F) < 50:
         return M, None, 0.0
-    bp = BackgroundPolyParams()
+    bp = GradientParams()
     try:
         fit = fit_poly_sky(stack, valid, bp.degree, bp.samples, bp.object_clip)
     except StageError:
@@ -166,15 +172,15 @@ class RenderSimple(Stage):
                    "stretch. Post renders it with its sliders (sky, contrast, saturation, noise).")
     deps = ("stack",)
     Params = RenderSimpleParams
-    version = "4"          # 2: the emission anchor of render_prep (the H-alpha of Classic was violet on heart_a7s);
+    version = "5"          # 2: the emission anchor of render_prep (the H-alpha of Classic was violet on heart_a7s);
                            # 3: the Raw stack exit's sky made grey (it had the green of the light pollution);
-                           # 4: the colour of the places near saturation from their surroundings (repair_saturated)
+                           # 4: the colour of the places near saturation from their surroundings (repair_saturated);
+                           # 5: the sky gradient removed before (the Gradient block): a level here
 
     def run(self, ctx: Context, p: RenderSimpleParams) -> None:
         from ..render.simple import SimpleRenderEngine, SimpleSettings, image_stats
         ctx.progress(0.05, "loading the stack")
-        color, denoised = has_input(ctx, "color"), has_input(ctx, "denoise")
-        poly = has_input(ctx, "background_poly")
+        color, denoised = ctx.has("color"), ctx.has("denoise")
         src, name = stack_source(ctx)
         H, W = src.shape[1:]
         valid = coverage(ctx)
@@ -185,22 +191,20 @@ class RenderSimple(Stage):
         M = ctx.load("color", "M.npy").astype(np.float64) if color else np.eye(3)
         lin = np.tensordot(M.astype(np.float32), src, 1)
         ctx.progress(0.2, "sky")
-        sky_name = "background_poly" if poly else "channel medians"
+        sky_name = "channel medians"
         if not color:
             # the spread of the sky of each channel, for the gains below, measured on the stack (the objects keep the
             # scaling they had before the sky was made grey)
             spread = np.array([sky_spread(lin[c][shown]) for c in range(3)])
-        if poly:
-            sky = sky_of(ctx, H, W)
-        elif not color:                             # the Raw stack exit: a grey sky (below)
+        if not color:                               # the Raw stack exit: a grey sky (below)
             sky, sky_name = raw_exit_sky(ctx, lin, valid)
-        else:                                       # no Gradient block: the median of each channel
+        else:                                       # the gradient is removed: the median of each channel
             sky = np.array([np.median(lin[c][shown]) for c in range(3)], np.float32)[:, None, None]
         lin -= sky
         e, w = None, 0.0
         if color:
             ctx.progress(0.3, "emission colour")
-            stack = src if name == "stack/drz_full" else ctx.load("stack", "drz_full.npy").astype(np.float32)
+            stack = src if name == "stack/drz_full" else stack_image(ctx)
             Ma, e, w = emission_matrix(ctx, M, stack, valid, shown)
             del stack
             if w > 0:
@@ -252,7 +256,7 @@ class RenderSimple(Stage):
         del lin
         if denoised:
             ctx.progress(0.65, "raw stack")
-            raw = np.tensordot(M.astype(np.float32), ctx.load("stack", "drz_full.npy").astype(np.float32), 1)
+            raw = np.tensordot(M.astype(np.float32), stack_image(ctx), 1)
             raw -= sky
             raw *= gains.astype(np.float32)[:, None, None]
             raw[:, ~valid] = 0

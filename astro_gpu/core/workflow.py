@@ -8,13 +8,15 @@ stored. The options give its chain: the stages it runs, in the global order. Two
 when the stage key is the same (core/store.py); this module only says which stages a workflow has and which of them
 each stage reads.
 
-    options   {"denoise": None | "n2n", "stars": None | "psf" | "psf_neural",
-               "gradient": "halpha" | "polynomial", "deconvolution": None}
+    options   {"denoise": None | "n2n", "stars": None | "psf" | "psf_neural", "gradient": "polynomial",
+               "deconvolution": None}
     end       None, or "stacking" for the Raw stack exit (inventory → stack, then render_simple)
 
-Rules: Stars needs Denoise; the H-alpha gradient needs Stars (the background stage works on the starless image);
-psf_neural with a stored ``starless.learned_stars`` file omits star_net (an earlier neural layer). Other option
-values are not in the engine and raise.
+The Gradient block comes right after stacking: its method models the sky gradient, which every later stage reads
+removed (stages/gradient.py). Rules: Stars needs Denoise; psf_neural with a stored ``starless.learned_stars`` file
+omits star_net (an earlier neural layer). Other option values are not in the engine and raise. A stored gradient
+"halpha" (the background anchored on the H-alpha survey, which worked on the starless image) is read as the method
+that replaces it.
 
 The stage list comes from ``stages/v2.py`` (``V2_STAGES``, loaded lazily); tests build toy ``Chains``.
 """
@@ -29,7 +31,7 @@ from typing import Any
 OPTION_VALUES: dict[str, tuple[Any, ...]] = {
     "denoise": (None, "n2n"),
     "stars": (None, "psf", "psf_neural"),
-    "gradient": ("halpha", "polynomial"),
+    "gradient": ("polynomial",),
     "deconvolution": (None,),
 }
 #: a missing option takes this value (the Classic stack)
@@ -41,21 +43,18 @@ EXITS = ("stacking",)
 TEMPLATES: dict[str, dict[str, Any]] = {
     "Classic stack": {"denoise": None, "stars": None, "gradient": "polynomial", "deconvolution": None},
     "Classic + denoise": {"denoise": "n2n", "stars": None, "gradient": "polynomial", "deconvolution": None},
-    "Full": {"denoise": "n2n", "stars": "psf", "gradient": "halpha", "deconvolution": None},
-    "Full + neural stars": {"denoise": "n2n", "stars": "psf_neural", "gradient": "halpha", "deconvolution": None},
+    "Full": {"denoise": "n2n", "stars": "psf", "gradient": "polynomial", "deconvolution": None},
+    "Full + neural stars": {"denoise": "n2n", "stars": "psf_neural", "gradient": "polynomial", "deconvolution": None},
 }
 
 # the notes of the option rules (shown in the client, translated by its catalogues)
 NOTE_DENOISE_ADDED = "Denoise added: the star measurement needs it"
 NOTE_STARS_ADDED_NEURAL = "Stars added: neural star removal starts from the star model"
-NOTE_STARS_ADDED_HALPHA = "Stars added: the anchored background is computed on the starless image"
-NOTE_REPLACES_POLYNOMIAL = "Replaces the simple background"
-NOTE_REPLACES_HALPHA = "Replaces the H-alpha anchored background"
 NOTE_NEURAL_REMOVED = "Neural star removal removed too: it starts from the star model"
-NOTE_POLYNOMIAL_INSTEAD = ("Simple background instead of the anchored one: the anchored background is computed on the "
-                           "starless image")
 REFUSE_DENOISE = "the star measurement needs it: remove Stars first"
-REFUSE_GRADIENT = "a background step is required: drop the H-alpha anchored background on it to replace it"
+REFUSE_GRADIENT = "the sky gradient is always removed: choose another method instead"
+#: stored option values of earlier versions, read as the current ones
+OPTION_ALIASES: dict[str, dict[Any, Any]] = {"gradient": {"halpha": "polynomial"}}
 REFUSE_AFTER_EXIT = "No block can be added after an early output"
 
 
@@ -71,15 +70,14 @@ def check_options(options: dict[str, Any]) -> dict[str, Any]:
     if unknown:
         raise ValueError(f"unknown workflow option(s): {sorted(unknown)}")
     o = {k: options.get(k, DEFAULT_OPTIONS[k]) for k in OPTION_VALUES}
+    for k, alias in OPTION_ALIASES.items():
+        o[k] = alias.get(o[k], o[k])
     for k, allowed in OPTION_VALUES.items():
         if o[k] not in allowed:
             raise ValueError(f"workflow option {k}={o[k]!r} is not in the engine (allowed: {list(allowed)})")
     if o["stars"] and not o["denoise"]:
         raise ValueError(f"workflow option stars={o['stars']!r} needs denoise: the star measurement works on the "
                          "denoised stack")
-    if o["gradient"] == "halpha" and not o["stars"]:
-        raise ValueError("workflow option gradient='halpha' needs stars: the H-alpha gradient is computed on the "
-                         "starless image")
     return o
 
 
@@ -111,19 +109,8 @@ def set_option(options: dict[str, Any], key: str, value: Any, end: str | None = 
         if value is None:
             if o["stars"] == "psf_neural":
                 notes.append(NOTE_NEURAL_REMOVED)
-            if o["gradient"] == "halpha":
-                o["gradient"] = "polynomial"
-                notes.append(NOTE_POLYNOMIAL_INSTEAD)
         elif value == "psf_neural" and o["stars"] is None:
             notes.append(NOTE_STARS_ADDED_NEURAL)
-    elif key == "gradient":
-        if value == "halpha":
-            notes.append(NOTE_REPLACES_POLYNOMIAL)
-            if not o["stars"]:
-                o["stars"] = "psf"
-                notes.append(NOTE_STARS_ADDED_HALPHA)
-        else:
-            notes.append(NOTE_REPLACES_HALPHA)
     o[key] = value
     if o["stars"] and not o["denoise"]:
         o["denoise"] = "n2n"
@@ -132,27 +119,22 @@ def set_option(options: dict[str, Any], key: str, value: Any, end: str | None = 
 
 
 def method_of(options: dict[str, Any], block: str) -> str | None:
-    """The internal method of a block: denoise 'n2n', stars 'psf' / 'psf_neural', gradient 'halpha' /
-    'poly_simple' (background_poly, without Stars) / 'poly_physical' (background with surveys.survey 'none', with
-    Stars); None when the workflow does not have the block. The definition keeps gradient 'polynomial' for both."""
+    """The method of a block: denoise 'n2n', stars 'psf' / 'psf_neural', gradient 'polynomial'; None when the
+    workflow does not have the block."""
     o = check_options(options)
-    if block == "gradient":
-        if o["gradient"] == "halpha":
-            return "halpha"
-        return "poly_physical" if o["stars"] else "poly_simple"
-    if block in ("denoise", "stars", "deconvolution"):
+    if block in ("gradient", "denoise", "stars", "deconvolution"):
         return o[block]
     raise ValueError(f"block {block!r} has no method")
 
 
 def implied(options: dict[str, Any], stage: str) -> dict[str, Any]:
     """The parameter values the options impose on a stage (they win over the stored ones): star_net enabled with
-    psf_neural; no H-alpha survey for the polynomial gradient with Stars."""
+    psf_neural; the Gradient block's method."""
     o = check_options(options)
     if stage == "star_net" and o["stars"] == "psf_neural":
         return {"enabled": True}
-    if stage == "surveys" and o["gradient"] == "polynomial" and o["stars"]:
-        return {"survey": "none"}
+    if stage == "gradient":
+        return {"method": o["gradient"]}
     return {}
 
 
@@ -170,16 +152,19 @@ def has_learned_layer(params: dict[str, dict[str, Any]]) -> bool:
 # ---------------------------------------------------------------------------------------------- the chain table
 
 #: the global order of the v2 stages (each stage only reads stages before it)
-ORDER = ["inventory", "calibrate", "register", "stack", "astrometry", "reference", "catalogs", "surveys", "color",
-         "denoise", "optics", "stars", "star_net", "starless", "background", "background_poly", "render_prep",
+ORDER = ["inventory", "calibrate", "register", "stack", "astrometry", "reference", "catalogs", "surveys", "gradient",
+         "color", "denoise", "optics", "stars", "star_net", "starless", "background", "render_prep",
          "render_prep_learned", "render_simple"]
 #: dependencies a stage has beyond its declared ``deps`` (an implicit read through starless' auto value)
 EXTRA: dict[str, tuple[str, ...]] = {"starless": ("star_net",)}
-#: dependencies that may be absent from a chain (the stage then runs without them)
+#: dependencies that may be absent from a chain (the stage then runs without them); the stages that read the stack
+#: read it with the sky gradient removed when the chain has the Gradient block (gradient.stack_image)
 OPTIONAL: dict[str, tuple[str, ...]] = {
-    "starless": ("star_net",),
-    "background_poly": ("denoise",),
-    "render_simple": ("color", "denoise", "background_poly"),
+    "color": ("gradient",),
+    "denoise": ("gradient",),
+    "optics": ("gradient",),
+    "starless": ("star_net", "gradient"),
+    "render_simple": ("color", "denoise", "gradient"),
 }
 #: the blocks of the graph and their stages; Selection has no stage of its own (it follows register)
 BLOCKS: dict[str, tuple[str, ...]] = {
@@ -188,10 +173,10 @@ BLOCKS: dict[str, tuple[str, ...]] = {
     "selection": (),
     "stacking": ("stack",),
     "astrometry": ("astrometry", "reference", "catalogs", "surveys"),
+    "gradient": ("gradient",),
     "color": ("color",),
     "denoise": ("denoise",),
-    "stars": ("optics", "stars", "star_net", "starless"),
-    "gradient": ("background", "background_poly"),
+    "stars": ("optics", "stars", "star_net", "starless", "background"),
     "output": ("render_prep", "render_prep_learned", "render_simple"),
 }
 BLOCK_TITLES = {"calibration": "Calibration", "registration": "Registration", "selection": "Selection",
@@ -212,10 +197,7 @@ def chain_stages(options: dict[str, Any], end: str | None = None, reference: boo
     out = ["inventory", "calibrate", "register", "stack"]
     if check_end(end) == "stacking":
         return out + ["render_simple"]
-    out += ["astrometry"] + (["reference"] if reference else []) + ["catalogs"]
-    if o["stars"]:
-        out.append("surveys")                       # background reads it (survey 'none' for the polynomial)
-    out.append("color")
+    out += ["astrometry"] + (["reference"] if reference else []) + ["catalogs", "gradient", "color"]
     if o["denoise"]:
         out.append("denoise")
     if o["stars"]:
@@ -224,7 +206,7 @@ def chain_stages(options: dict[str, Any], end: str | None = None, reference: boo
             out.append("star_net")
         out += ["starless", "background", "render_prep_learned" if o["stars"] == "psf_neural" else "render_prep"]
     else:
-        out += ["background_poly", "render_simple"]
+        out.append("render_simple")
     return [s for s in ORDER if s in out]
 
 

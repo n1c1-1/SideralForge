@@ -18,7 +18,6 @@ AUTO_FIELDS: dict[str, frozenset[str]] = {
     "color": frozenset({"aperture"}),
     "denoise": frozenset({"iterations"}),
     "starless": frozenset({"learned_stars"}),
-    "background": frozenset({"large_scale_px"}),
 }
 #: settings whose default changed after results had been keyed under the previous one: {stage: {field: the previous
 #: default}}. The key holds such a field's effective value unless it is the previous default (core/store.py), so a
@@ -30,6 +29,7 @@ KEY_BASELINE: dict[str, dict[str, object]] = {
 RETIRED: dict[str, frozenset[str]] = {
     "stack": frozenset({"rejection", "weighting", "normalisation", "scale_rule"}),
     "register": frozenset({"channel_align", "fwhm_method"}),
+    "background": frozenset({"sky_order", "large_scale_px"}),
 }
 #: removed settings whose last value stays in every key, so that the results computed with it keep their keys:
 #: {stage: {field: value}} (the Moffat star measure and the drizzle coverage rule are now the only behaviour)
@@ -49,13 +49,13 @@ NON_KEY: dict[str, frozenset[str]] = {
     "star_net": frozenset({"device"}),
 }
 #: the stages only v2 workflows have
-NEW_STAGES = ("background_poly", "render_simple")
+NEW_STAGES = ("gradient", "render_simple")
 
 
 def new_stages() -> list[Stage]:
-    from .background_poly import BackgroundPoly
+    from .gradient import Gradient
     from .render_simple import RenderSimple
-    return [BackgroundPoly(), RenderSimple()]
+    return [Gradient(), RenderSimple()]
 
 
 def V2_STAGES() -> list[Stage]:            # noqa: N802 (a table, built on first use: it imports every stage)

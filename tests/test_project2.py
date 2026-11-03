@@ -418,7 +418,7 @@ def test_from_v1_on_the_real_projects(folder, name, wf_name):
     assert p.name == name and p.root is None and p.scratch_dir == ""
     assert [(w.id, w.name, w.end, w.variant_of) for w in p.workflows] == [(1, wf_name, None, None)]
     w = p.workflows[0]
-    assert w.options == {"denoise": "n2n", "stars": "psf_neural", "gradient": "halpha", "deconvolution": None}
+    assert w.options == {"denoise": "n2n", "stars": "psf_neural", "gradient": "polynomial", "deconvolution": None}
     assert w.params == {st: kv for st, kv in (old.get("params") or {}).items() if kv}
     assert [getattr(p.sessions[0], k) for k in p2.KINDS] == [old["inputs"].get(k, []) for k in p2.KINDS]
     c = p.chain(w)

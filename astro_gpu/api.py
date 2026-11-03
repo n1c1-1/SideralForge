@@ -1461,10 +1461,8 @@ _METHODS: dict[str, list[MethodInfo]] = {
                    "Averages similar patches after stabilising the photon noise. Classic, predictable."),
     ],
     "gradient": [
-        MethodInfo("halpha", "H-alpha survey", "H-alpha survey", "cpu", "background", False,
-                   "Tells the sky background from the instrument's defects with a professional H-alpha survey."),
-        MethodInfo("polynomial", "Polynomial", "polynomial", "cpu", "background_poly", False,
-                   "A smooth surface fitted on dark samples."),
+        MethodInfo("polynomial", "Polynomial", "polynomial", "cpu", "gradient", False,
+                   "A smooth surface fitted on the sky between the objects, removed right after stacking."),
     ],
     "stars": [
         MethodInfo("psf", "PSF model (Gaia)", "PSF model", "both", "stars", False,

@@ -1,6 +1,6 @@
 """End to end: the v2 path (project, store, runner, API) against v1, bit for bit (P7).
 
-* Fast tests, on the CPU, on toy stages that use the real new stages (background_poly, render_simple): the same
+* Fast tests, on the CPU, on toy stages that use the real new stages (gradient, render_simple): the same
   chains are run by v1's Pipeline and, through ``astro_gpu.api`` in a detached worker, by the v2 runner; the stage
   folders must be identical; the sharing, the empty second plan and ``render_layer`` against the rendering engine are
   checked, and the comparison tools are shown to catch a difference.
@@ -37,7 +37,7 @@ from astro_gpu.core.stage import Stage
 from astro_gpu.core.store import KeyRules
 from astro_gpu.core.workflow import Chains
 from astro_gpu.render.simple import SimpleRenderEngine, SimpleSettings
-from astro_gpu.stages.background_poly import BackgroundPoly
+from astro_gpu.stages.gradient import Gradient, stack_image
 from astro_gpu.stages.render_simple import RenderSimple
 
 TESTS = Path(__file__).parent
@@ -148,7 +148,7 @@ class ToyDenoise(Stage):
     Params = ToyDenoiseParams
 
     def run(self, ctx, p):
-        src = ctx.load("stack", "drz_full.npy")
+        src = stack_image(ctx)
         out = np.stack([cv2.GaussianBlur(c, (0, 0), 0.8 + 0.01 * p.iterations) for c in src]).astype(np.float32)
         ctx.save("n2n_full.npy", out)
         ctx.metric("noise_reduction", float(src.std() / out.std()))
@@ -158,23 +158,24 @@ def toy_rule(options, end, reference, learned_layer):
     out = ["inventory", "stack"]
     if end == "stacking":
         return out + ["render_simple"]
-    return out + ["color"] + (["denoise"] if options.get("denoise") else []) + ["background_poly", "render_simple"]
+    return out + ["gradient", "color"] + (["denoise"] if options.get("denoise") else []) + ["render_simple"]
 
 
 def toy_rules() -> KeyRules:
     """Also built by the detached worker (plan.rules = SPEC)."""
-    chains = Chains([Inv(), ToyStack(), ToyColor(), ToyDenoise(), BackgroundPoly(), RenderSimple()],
-                    optional={"background_poly": ("denoise",), "render_simple": ("color", "denoise", "background_poly")},
-                    blocks={"calibration": ("inventory",), "stacking": ("stack",), "color": ("color",),
-                            "denoise": ("denoise",), "gradient": ("background_poly",), "output": ("render_simple",)},
+    chains = Chains([Inv(), ToyStack(), Gradient(), ToyColor(), ToyDenoise(), RenderSimple()],
+                    optional={"color": ("gradient",), "denoise": ("gradient",),
+                              "render_simple": ("color", "denoise", "gradient")},
+                    blocks={"calibration": ("inventory",), "stacking": ("stack",), "gradient": ("gradient",),
+                            "color": ("color",), "denoise": ("denoise",), "output": ("render_simple",)},
                     rule=toy_rule)
     return KeyRules(chains, auto_fields={}, path_fields={}, non_key={"stack": ("workers",)},
                     implied=lambda options, stage: {})
 
 
 def v1_chain(name: str) -> list[Stage]:
-    return {"classic": [Inv(), ToyStack(), ToyColor(), BackgroundPoly(), RenderSimple()],
-            "classic_dn": [Inv(), ToyStack(), ToyColor(), ToyDenoise(), BackgroundPoly(), RenderSimple()],
+    return {"classic": [Inv(), ToyStack(), Gradient(), ToyColor(), RenderSimple()],
+            "classic_dn": [Inv(), ToyStack(), Gradient(), ToyColor(), ToyDenoise(), RenderSimple()],
             "raw": [Inv(), ToyStack(), RenderSimple()]}[name]
 
 
@@ -342,9 +343,10 @@ def test_toy_v2_run_equals_v1_bit_for_bit(tmp_path, state):
 
     # the sharing: one job per distinct key, the common stages shared by every workflow that has them
     distinct = {(s, api.stage_key(p, w, s)) for w in (classic, dn, raw) for s in api.chain(p, w)}
-    assert {(j.stage, j.key) for j in plan.jobs} == distinct and len(plan.jobs) == len(distinct) == 9
+    assert {(j.stage, j.key) for j in plan.jobs} == distinct and len(plan.jobs) == len(distinct) == 8
     shared = {j.stage: j.wf for j in plan.jobs if len(j.wf) > 1}
-    assert shared == {"inventory": [classic, dn, raw], "stack": [classic, dn, raw], "color": [classic, dn]}
+    assert shared == {"inventory": [classic, dn, raw], "stack": [classic, dn, raw], "gradient": [classic, dn],
+                      "color": [classic, dn]}
     assert api.sharing(p, dn, "stack") == [classic, dn, raw] and api.sharing(p, classic, "render_simple") == [classic]
     assert api.stage_key(p, dn, "stack") == api.stage_key(p, raw, "stack")
 
@@ -361,10 +363,11 @@ def test_toy_v2_run_equals_v1_bit_for_bit(tmp_path, state):
     assert {s.state for s in api.states(p).values()} == {"done"}
 
     # a change plans only its downstream
-    api.set_param(p, [classic], "background_poly", "degree", 3)
+    api.set_param(p, [classic], "gradient", "degree", 3)
     again = api.plan_all(p, "cpu")
-    assert [(j.stage, j.wf) for j in again.jobs] == [("background_poly", [classic]), ("render_simple", [classic])]
-    api.set_param(p, [classic], "background_poly", "degree", 2)              # reverting restores the old keys
+    assert [(j.stage, j.wf) for j in again.jobs] == [("gradient", [classic]), ("color", [classic]),
+                                                      ("render_simple", [classic])]
+    api.set_param(p, [classic], "gradient", "degree", 2)              # reverting restores the old keys
     assert len(api.plan_all(p, "cpu")) == 0
 
     # v2 equals v1, file by file, for every stage both have

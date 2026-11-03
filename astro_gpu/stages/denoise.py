@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from ..core.imgutil import asinh_preview
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage
+from .gradient import stack_image
 
 
 class DenoiseParams(StageParams):
@@ -53,8 +54,8 @@ class Denoise(Stage):
 
     def run(self, ctx: Context, p: DenoiseParams) -> None:
         dev = ctx.device
-        A = ctx.load("stack", "drz_A.npy").astype(np.float32)
-        B = ctx.load("stack", "drz_B.npy").astype(np.float32)
+        A = stack_image(ctx, "drz_A.npy")
+        B = stack_image(ctx, "drz_B.npy")
         Wt = ctx.load("stack", "drz_weight.npy").astype(np.float32)
         bk, sg, nm = norm_params(A, Wt)
         if p.reuse_model:
@@ -73,7 +74,7 @@ class Denoise(Stage):
         dB = apply_net(net, B, nm, bk, sg, dev)
         ctx.save("n2n_avg.npy", 0.5 * (dA + dB))
         ctx.progress(0.96, "denoising the full stack")
-        full = ctx.load("stack", "drz_full.npy").astype(np.float32)
+        full = stack_image(ctx)
         dF = apply_net(net, full, (nm / np.sqrt(2)).astype(np.float32), bk, sg, dev)
         ctx.save("n2n_full.npy", dF)
         g0 = _noise(full[1])

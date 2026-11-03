@@ -37,14 +37,14 @@ KEEP = 20                                      # entries kept per stage
 LOCK_WAIT = 5.0                                # seconds a writer of the history waits for another one
 LOCK_STALE = 30.0                              # a lock file older than this was left by a process that died
 
-#: the reference project, Heart: (seconds, GB in the stage folder) per stage, from its manifests; background_poly and
+#: the reference project, Heart: (seconds, GB in the stage folder) per stage, from its manifests; gradient and
 #: render_simple are guesses at Heart size (60 s and 30 s)
 HEART: dict[str, tuple[float, float]] = {
     "inventory": (5.0, 0.0), "calibrate": (310.8, 0.11), "register": (121.4, 0.0), "stack": (2064.0, 1.31),
     "astrometry": (124.1, 0.0), "reference": (89.8, 0.0), "catalogs": (178.3, 0.07), "surveys": (42.5, 0.11),
     "color": (2.9, 0.0), "denoise": (1865.5, 0.68), "optics": (179.9, 0.98), "stars": (1929.2, 1.07),
     "star_net": (2453.3, 0.37), "starless": (622.5, 2.01), "background": (44.7, 0.98), "render_prep": (116.8, 1.44),
-    "render_prep_learned": (99.6, 1.6), "background_poly": (60.0, 0.01), "render_simple": (30.0, 0.7),
+    "render_prep_learned": (99.6, 1.6), "gradient": (60.0, 0.01), "render_simple": (30.0, 0.7),
 }
 #: a stage the table does not know (tests' toy stages): one minute at Heart size
 OTHER = (60.0, 0.0)
@@ -52,7 +52,7 @@ OTHER = (60.0, 0.0)
 CPU_FACTOR: dict[str, float] = {
     "inventory": 1, "calibrate": 1.3, "register": 1.5, "stack": 5, "astrometry": 1, "catalogs": 1, "surveys": 1,
     "color": 1.5, "denoise": 45, "optics": 3, "stars": 8, "star_net": 60, "starless": 4, "background": 2,
-    "render_prep": 10, "render_prep_learned": 10, "background_poly": 1, "render_simple": 2,
+    "render_prep": 10, "render_prep_learned": 10, "gradient": 1, "render_simple": 2,
 }
 DEFAULT_CPU_FACTOR = 2.0
 

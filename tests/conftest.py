@@ -408,7 +408,7 @@ TEST_PROJECT = Path(os.environ.get("ASTRO_TEST_PROJECT") or "F:/astro_essais/tes
 #: a second workflow whose results are in the test project's store (name, template, settings: CLASSIC_NAME and
 #: CLASSIC_PARAMS of tools/make_test_project.py), for the tests that add it in memory and need it computed. A
 #: Classic stack added with the default settings is still to compute.
-TEST_PROJECT_CLASSIC = ("Classic", "Classic stack", {"background_poly": {"samples": 18}})
+TEST_PROJECT_CLASSIC = ("Classic", "Classic stack", {"gradient": {"samples": 18}})
 HAVE_TEST_PROJECT = (TEST_PROJECT / "project.astroproj").is_file()
 NO_TEST_PROJECT = f"the test project {TEST_PROJECT.as_posix()} is not here: run tools/make_test_project.py"
 #: the raw frames the test project is made of (40 lights, 15 darks, 15 flats of a Sony A7S)

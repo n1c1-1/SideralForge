@@ -12,6 +12,7 @@ from scipy.optimize import least_squares, nnls
 from ..core.params import ADVANCED, Auto, P, StageParams, check_choice
 from ..core.project import STATE
 from ..core.stage import Context, Stage, StageError
+from .gradient import stack_image
 
 XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
                         [-0.9692660, 1.8760108, 0.0415560],
@@ -105,7 +106,7 @@ class Color(Stage):
 
     def run(self, ctx: Context, p: ColorParams) -> None:
         import colour
-        img = ctx.load("stack", "drz_full.npy").astype(np.float32)
+        img = stack_image(ctx)
         xp = np.load(ctx.input("catalogs", "gaia_xp.npz"))
         lam = xp["lam"]
         table, star_why = colour_star_table(img, xp["x"], xp["y"], p.aperture, saturation_map(ctx))

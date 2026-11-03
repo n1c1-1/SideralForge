@@ -13,6 +13,7 @@ from scipy.optimize import least_squares
 from ..core.determinism import deterministic
 from ..core.params import ADVANCED, P, StageParams
 from ..core.stage import Context, Stage
+from .gradient import stack_image
 
 G_SAT_REF = 11.25      # saturation magnitude of the reference setup the default thresholds were tuned on
 OS, RAD, ST = 3, 11, 9  # PSF oversampling, core radius (px), half-size of fitting stamps
@@ -61,7 +62,7 @@ class Optics(Stage):
         ctx.log(f"lateral colour shift up to {sh:.2f} px (red/blue vs green)")
         for h in ("A", "B", "full"):
             ctx.progress(0.05 + 0.05 * ("A", "B", "full").index(h), f"realigning colours of {h}")
-            img = ctx.load("stack", f"drz_{h}.npy").astype(np.float32)
+            img = stack_image(ctx, f"drz_{h}.npy")
             ctx.save(f"lat_{h}.npy", apply_lateral(img, grid))
         del n2n
         img = ctx.load(self.name, "lat_full.npy").astype(np.float32)

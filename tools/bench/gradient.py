@@ -171,8 +171,8 @@ def graxpert(img: np.ndarray, work: Path) -> np.ndarray:
 
 
 def ours_poly(img: np.ndarray, work: Path) -> np.ndarray:
-    from astro_gpu.stages.background_poly import BackgroundPolyParams, fit_poly_sky, poly_sky
-    p = BackgroundPolyParams()
+    from astro_gpu.stages.gradient import GradientParams, fit_poly_sky, poly_sky
+    p = GradientParams()
     valid = np.ones(img.shape[1:], bool)
     fit = fit_poly_sky(img, valid, p.degree, p.samples, p.object_clip)
     return img - poly_sky(fit["coefs"], p.degree, *img.shape[1:])
