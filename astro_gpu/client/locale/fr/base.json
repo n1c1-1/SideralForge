@@ -221,7 +221,7 @@
  "Size of the cells where the sky level is measured.": "Taille des cellules où le niveau du ciel est mesuré.",
  "A smooth surface fitted on the sky between the objects, removed right after stacking.": "Une surface lisse ajustée sur le ciel entre les objets, retirée juste après l'empilement.",
  "A flexible surface fitted on every pixel that does not look like an object: follows complex gradients, may take part of the faintest wide structures.": "Une surface souple ajustée sur tous les pixels qui ne ressemblent pas à un objet : suit les gradients compliqués, peut emporter une partie des structures étendues les plus faibles.",
- "polynomial": "polynomial",
+ "polynomial": "polynôme",
  "PSF model (Gaia)": "Modèle de PSF (Gaia)",
  "Each star measured with the optics' real PSF, positioned by Gaia, then subtracted: star sliders in Post.": "Chaque étoile mesurée avec la PSF réelle de l'optique, positionnée par Gaia, puis soustraite : curseurs d'étoiles en Post-traitement.",
  "PSF model": "Modèle de PSF",

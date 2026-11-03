@@ -41,7 +41,7 @@
   "Variant \"{name}\" created": "Variante « {name} » créée",
   "Not in the engine yet.": "Pas encore dans le moteur.",
   "Gradient": "Gradient",
-  "Polynomial": "Polynomial",
+  "Polynomial": "Polynôme",
   "Undone": "Annulé",
   "Redone": "Rétabli",
   "The settings cannot be read: {why}": "Les paramètres ne peuvent pas être lus : {why}",
