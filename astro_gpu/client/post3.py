@@ -467,8 +467,9 @@ class PostView(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        # the right panel: its width is the user's (dragged on the splitter, kept in the settings), and it can be
-        # hidden (the Panel button, or dragged to the edge)
+        # the right panel, as the docks of the usual image editors: its width is the user's (its left edge dragged,
+        # kept in the settings); the double chevron at the top of the panel folds it into a thin strip at the window's
+        # edge, whose chevron opens it again (kept too)
         self.split = QSplitter(Qt.Horizontal)
         self.split.setChildrenCollapsible(False)
         self.split.addWidget(self._build_centre())
@@ -479,8 +480,8 @@ class PostView(QWidget):
         self.split.setSizes([10_000, int(prefs.get("post_panel_width") or PANEL_W)])
         self.split.splitterMoved.connect(self._panel_moved)
         root.addWidget(self.split)
-        self.right.setVisible(prefs.get("post_panel_shown") is not False)
-        self.b_panel.setChecked(not self.right.isHidden())     # isVisible is False until the window shows
+        root.addWidget(self._build_strip())
+        self._show_panel(prefs.get("post_panel_shown") is not False)
         self._connect(own_worker=worker is None)
         if self.layers:
             self.sel = (self.layers[-1]["id"], "layer")
@@ -527,13 +528,7 @@ class PostView(QWidget):
         for w in (self.b_fit, self.b_100, self.zoom_lab):
             bar.addWidget(w)
         bar.addStretch(1)
-        self.b_panel = QPushButton(_("Layers panel"))
-        self.b_panel.setCheckable(True)
-        self.b_panel.setObjectName("toggle")
-        self.b_panel.setToolTip(_("Show or hide the layers panel (its width: drag its left edge)"))
-        self.b_panel.toggled.connect(self._show_panel)
-        for w in (self.b_grid, self.b_names, self.b_cmp, self.b_mask, self.b_undo, self.b_redo, self.b_export,
-                  self.b_panel):
+        for w in (self.b_grid, self.b_names, self.b_cmp, self.b_mask, self.b_undo, self.b_redo, self.b_export):
             bar.addWidget(w)
         mv.addLayout(bar)
         self.src = PostSource(self)
@@ -560,12 +555,19 @@ class PostView(QWidget):
         head = QHBoxLayout()
         head.addWidget(label(_("Layers"), "h2"))
         head.addStretch(1)
+        fold = QToolButton()
+        fold.setText("»")
+        fold.setAutoRaise(True)
+        fold.setToolTip(_("Fold the panel"))
+        fold.setStyleSheet("QToolButton { border: none; color: #aab2bf; font-size: 13pt; padding: 0 4px; }")
+        fold.clicked.connect(lambda: self._show_panel(False))
         # while a row is dragged between two others: what the drop does, beside the panel's title (a drop onto a layer
         # says it in that layer's row)
         self.drop_text = QLabel()
         self.drop_text.setStyleSheet(f"color: {ACCENT}; font-weight: 600;")
         self.drop_text.hide()
         head.addWidget(self.drop_text)
+        head.addWidget(fold)
         rv.addLayout(head)
         self.lsc = QScrollArea()
         self.lsc.setWidgetResizable(True)
@@ -1355,8 +1357,26 @@ class PostView(QWidget):
             m.addAction(_("Delete")).triggered.connect(lambda: (self.select(lay["id"], "layer"), self.delete()))
         m.exec(gpos)
 
+    def _build_strip(self) -> QWidget:
+        """The folded panel: a thin strip at the window's edge, its chevron opens the panel again."""
+        self.strip = QWidget()
+        self.strip.setObjectName("panel")
+        self.strip.setFixedWidth(26)
+        v = QVBoxLayout(self.strip)
+        v.setContentsMargins(0, 8, 0, 0)
+        unfold = QToolButton()
+        unfold.setText("«")
+        unfold.setAutoRaise(True)
+        unfold.setToolTip(_("Open the layers panel"))
+        unfold.setStyleSheet("QToolButton { border: none; color: #aab2bf; font-size: 13pt; }")
+        unfold.clicked.connect(lambda: self._show_panel(True))
+        v.addWidget(unfold, 0, Qt.AlignHCenter)
+        v.addStretch(1)
+        return self.strip
+
     def _show_panel(self, on: bool):
         self.right.setVisible(on)
+        self.strip.setVisible(not on)
         prefs.set("post_panel_shown", bool(on))
 
     def _panel_moved(self, *_a):
