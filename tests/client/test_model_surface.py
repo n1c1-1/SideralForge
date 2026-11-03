@@ -139,21 +139,21 @@ def test_options_speak_the_views_vocabulary():
     classic = modelmod.from_engine(modelmod.to_engine(modelmod.TEMPLATES["Vierge"]))
     new, notes = ProjectModel.with_tool(classic, "etoiles")
     assert new["etoiles"] == "mesurer" and new["debruitage"] and any("Denoise added" in n for n in notes)
-    new, notes = ProjectModel.with_tool(classic, "halpha")
-    assert new["fond"] == "halpha" and new["etoiles"] == "mesurer" and len(notes) >= 2
+    new, notes = ProjectModel.with_tool(classic, "auto")
+    assert new["fond"] == "auto" and new["etoiles"] == "garder" and not notes
     new, notes = ProjectModel.with_tool(classic, "appris")
     assert new["appris"] and new["etoiles"] == "mesurer"
     no, why = ProjectModel.without_tool(full, "debruitage")
     assert no is None and "remove Stars first" in why[0]
     new, notes = ProjectModel.without_tool({**full, "appris": True}, "etoiles")
-    assert new["etoiles"] == "garder" and not new["appris"] and new["fond"] == "simple" and len(notes) == 2
+    assert new["etoiles"] == "garder" and not new["appris"] and new["fond"] == "simple" and len(notes) == 1
     no, why = ProjectModel.without_tool(full, "simple")
     assert no is None
     new, notes = ProjectModel.without_tool({**full, "appris": True}, "appris")
     assert new["etoiles"] == "mesurer" and not new["appris"]
     new, _n = ProjectModel.without_tool(classic, "debruitage")
     assert new is not None and not new["debruitage"]
-    assert ProjectModel.has_tool(full, "halpha") and not ProjectModel.has_tool(full, "simple")
+    assert ProjectModel.has_tool(full, "simple") and not ProjectModel.has_tool(full, "auto")
     _new, notes = ProjectModel.with_tool(full, "deconv")                 # the ◇ block: nothing to add, said so
     assert notes == [modelmod.NOT_IN_ENGINE]
 

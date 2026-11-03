@@ -1170,7 +1170,7 @@ def test_the_output_says_what_the_final_image_is():
     """One line under Output says what the final image is and which steps it holds: the simple output is the Gradient
     removed picture with Post's stretch, the engine's rendering is another preparation."""
     from astro_gpu.client import steps as st
-    base = {"stack", "color", "background_poly", "render_simple"}
+    base = {"stack", "color", "gradient", "render_simple"}
     assert st.output_note("render_simple", base) == st.OUTPUT_SIMPLE_NOTE
     assert st.output_note("render_simple", base | {"denoise"}) == st.OUTPUT_SIMPLE_DENOISED_NOTE
     assert st.output_note("render_simple", {"stack", "color", "render_simple"}) == st.OUTPUT_COLOR_NOTE

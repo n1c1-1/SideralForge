@@ -502,11 +502,6 @@ class Panel(QWidget):
             self.hv.addWidget(label(p.name, "small"))
         self.variant_row(p)
         self.choice_box(node, p)
-        if k == "fond" and prefs.spec():
-            note = label("◇ " + _("Gradient before Color, from the stack and the catalogue: in a later version."),
-                         "small", wrap=True)
-            note.setStyleSheet(f"color: {NEW};")
-            self.hv.addWidget(note)
         # measurements, in Inspect
         if self.tune and self.steps is not None and st != "pending":
             facts = self.steps.facts(p, k)

@@ -4,14 +4,15 @@ A workflow is a chain of blocks, named as in the standard tools (Calibration, Re
 Astrometry, Color, Denoise, Stars, Gradient, Output). The engine's internal steps (the half-stacks, the starless image)
 are not blocks: they are shown inside the block that makes them and as a wire to the block that uses them.
 
-The order is the engine's real one: Gradient comes after Stars, whose starless image it works on. Two
+The order is the engine's real one: Gradient comes right after Astrometry, before Color: it works on the stack, and
+every later block reads the stack with the gradient removed. Two
 workflows share a block as long as they compute it, and everything before it, the same way (the keys of the engine,
 ``api.blocks``). The graph is therefore a tree: one root (the frames), a branch where two workflows start to differ, one
 leaf (the output) per workflow, all leaves going to Post.
 
 The views use their own block keys (calibration, alignement, selection, empilement, astrometrie, couleur,
 deconv, debruitage, etoiles, fond, post): ``ENGINE_BLOCK`` maps the engine's names to them. The stage names are the
-engine's (``background_poly``, ``render_simple``...).
+engine's (``gradient``, ``render_simple``...).
 
 This module also holds the block table (``STEPS``, ``BY_KEY``) that the Inspect strip and the panel share, and the
 block-level answers (stages, state, duration, summary) over a ``ProjectModel``. ``Graph`` builds the tree of
@@ -25,12 +26,12 @@ from .. import texts
 from .i18n import _, hm, language, number, plural
 
 # the columns of the graph, left to right; optional columns only appear when a workflow uses them
-COLUMNS = ["sources", "calibration", "alignement", "selection", "empilement", "astrometrie", "couleur", "deconv",
-           "debruitage", "etoiles", "fond", "post", "final"]
+COLUMNS = ["sources", "calibration", "alignement", "selection", "empilement", "astrometrie", "fond", "couleur",
+           "deconv", "debruitage", "etoiles", "post", "final"]
 OPTIONAL = {"debruitage", "deconv", "etoiles"}
-PHASES = [("Pre-processing", "calibration", "empilement"), ("Linear processing", "astrometrie", "fond")]
+PHASES = [("Pre-processing", "calibration", "empilement"), ("Linear processing", "astrometrie", "etoiles")]
 TOOL_COLUMN = {"debruitage": "debruitage", "etoiles": "etoiles", "appris": "etoiles", "deconv": "deconv",
-               "halpha": "fond", "simple": "fond"}
+               "auto": "fond", "simple": "fond"}
 TITLES = {"sources": "Frames", "final": "Post", "calibration": "Calibration", "alignement": "Registration",
           "selection": "Selection", "empilement": "Stacking", "astrometrie": "Astrometry", "fond": "Gradient",
           "couleur": "Color", "debruitage": "Denoise", "deconv": "Deconvolution", "etoiles": "Stars",
@@ -49,7 +50,6 @@ SIDE_INPUTS = {
     "etoiles": [("astrometrie", "Gaia stars")],
     "couleur": [("astrometrie", "Gaia spectra")],
 }
-SIDE_INPUTS_HALPHA = [("astrometrie", "H-alpha survey")]
 TRUNK = ["inventory", "calibrate", "register", "stack"]
 
 # every state a block can be in: up to date, pending, outdated, and what a run adds
@@ -80,9 +80,9 @@ STEPS = [
          what="Two independent stacks of about 360 frames each: their difference measures the noise, which lets "
               "Denoise work without inventing anything. Computed during stacking, at no extra time."),
     dict(key="astrometrie", phase=4, title="Astrometry", kind="fixed",
-         stages=["astrometry", "reference", "catalogs", "surveys"],
+         stages=["astrometry", "reference", "catalogs"],
          what="Finds where the image points on the sky by matching its stars to Gaia, then fetches the catalogue "
-              "stars (and the H-alpha survey if the background uses it)."),
+              "stars."),
     dict(key="couleur", phase=4, title="Color", kind="fixed", stages=["color"],
          what="Measures the sensor's response on the Gaia spectra of the field stars, then the matrix to the true "
               "sky colors."),
@@ -92,7 +92,7 @@ STEPS = [
          what="A network learns on the two half-stacks to predict one from the other: it removes the noise without "
               "inventing anything."),
     dict(key="etoiles", phase=4, title="Stars", kind="tool", tool="etoiles",
-         stages=["optics", "stars", "star_net", "starless"],
+         stages=["optics", "stars", "star_net", "starless", "background"],
          what="Each star measured on Gaia with the real PSF of the optics, subtracted, then redrawn at output: this "
               "gives the star sliders in Post."),
     dict(key="appris", phase=4, title="Neural star removal", kind="tool", tool="appris", stages=["star_net"],
@@ -101,9 +101,10 @@ STEPS = [
     dict(key="sans_etoiles", phase=4, title="Starless image", kind="auto", stages=["starless"],
          what="Subtracts the star model (the nebula under the stars is kept), then denoises the starless image. "
               "Comes with Stars."),
-    dict(key="fond", phase=4, title="Gradient", kind="slot", stages=["background", "background_poly"],
-         what="Polynomial: a smooth surface fitted on the dark areas. H-alpha survey: separates the true sky "
-              "background from instrument defects using a professional survey."),
+    dict(key="fond", phase=4, title="Gradient", kind="slot", stages=["gradient"],
+         what="Models the sky gradient (light pollution, the Moon, vignetting) on the stack and removes it from what "
+              "every later block reads. Polynomial: a smooth surface fitted on the sky between the objects. "
+              "Automatic: a more flexible surface that follows complex gradients."),
     dict(key="post", phase=5, title="Output", kind="fixed",
          stages=["render_prep", "render_prep_learned", "render_simple"],
          what="Prepares the render: what this workflow gives in Post, its image and its sliders."),
@@ -319,8 +320,6 @@ class Graph:
             return []
         p = node.paths[0]
         pairs = list(SIDE_INPUTS.get(node.key, []))
-        if node.key == "fond" and p.opts["fond"] == "halpha":
-            pairs = SIDE_INPUTS_HALPHA
         out = []
         for k, lab in pairs:
             src = self.node_of(p, k)

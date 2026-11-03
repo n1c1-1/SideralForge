@@ -958,20 +958,17 @@ def color_source(p, wid: int, base: tuple[str, str], which: str = "current"):
     return load
 
 
-def _poly_background(p, wid: int, which: str) -> tuple[np.ndarray, np.ndarray]:
-    """(the image the simple background works on, in display RGB; its sky model): the stage keeps the coefficients,
-    the surface is made again from them as the stage made it."""
+def _sky_model(p, wid: int, which: str, H: int, W: int) -> tuple[np.ndarray, np.ndarray]:
+    """(the sky variation the Gradient block removes, (3, H, W) in the camera's colours, read back as the stage reads
+    it; the sky level it keeps, (3,))."""
     import json
 
-    from ...stages.background_poly import poly_sky
-    out = api.stage_outputs(p, wid, "background_poly", _w(which, "background_poly"))
+    from ...stages.gradient import INFO_FILE, SKY_FILE, read_grid
+    out = api.stage_outputs(p, wid, "gradient", _w(which, "gradient"))
     if out is None:
-        raise _unavailable(not_computed("background_poly"))
-    c = json.loads((Path(out.dir) / "coefs.json").read_text(encoding="utf-8"))
-    src = str(c.get("source") or "stack/drz_full").split("/")
-    rgb = apply_matrix(_array(p, wid, "color", "M", which), _array(p, wid, src[0], src[1], which).astype(np.float32))
-    sky = poly_sky(np.asarray(c["coefs"]), int(c["degree"]), rgb.shape[1], rgb.shape[2]).astype(np.float32)
-    return rgb, sky
+        raise _unavailable(not_computed("gradient"))
+    info = json.loads((Path(out.dir) / INFO_FILE).read_text(encoding="utf-8"))
+    return read_grid(np.load(Path(out.dir) / SKY_FILE), info, H, W), np.asarray(info["level"], np.float32)
 
 
 def calibrated_source(p, wid: int, base: tuple[str, str], which: str = "current"):
@@ -983,43 +980,24 @@ def calibrated_source(p, wid: int, base: tuple[str, str], which: str = "current"
     return load
 
 
-def full_gradient_image(p, wid: int, which="current") -> np.ndarray:
-    """The whole image with the gradient removed, stars included, in calibrated colours (a Full workflow). The H-alpha
-    background works on the starless image: its result is (starless / star flat) - gradient, plus the continuum's zero
-    point. The stars are what the Stars block took away, (its input - the starless image), divided by the same star
-    flat, as Output's render puts them back: result + (lat_full - sl_final) / flat. Then the colour matrix."""
-    out = _array(p, wid, "background", "astro", which).astype(np.float32)
-    flat = _array(p, wid, "background", "flat", which).astype(np.float32, copy=False)
-    full = _array(p, wid, "optics", "lat_full", which)
-    sl = _array(p, wid, "starless", "sl_final", which)
-    for c in range(out.shape[0]):
-        out[c] += (np.asarray(full[c], np.float32) - np.asarray(sl[c], np.float32)) / np.where(flat[c] > 0, flat[c], 1)
-    del full, sl, flat
-    return apply_matrix(_array(p, wid, "color", "M", which), out)
-
-
-def gradient_source(p, wid: int, stage: str, which: str = "current"):
-    """The image with the gradient removed, the stars in it, in calibrated colours: for the H-alpha background (which
-    works on the starless image) its result with the stars put back (``full_gradient_image``), for the simple one the
-    stack (or the denoised stack) in calibrated colours minus the polynomial."""
+def gradient_source(p, wid: int, stage: str = "gradient", which: str = "current"):
+    """The stack with its sky gradient removed, in the camera's colours, as the later blocks read it: the stack minus
+    the Gradient block's sky variation (the level stays)."""
     def load():
-        if stage == "background":
-            return full_gradient_image(p, wid, which)
-        rgb, sky = _poly_background(p, wid, which)
-        rgb -= sky
-        return rgb
+        stack = _array(p, wid, "stack", "drz_full", which).astype(np.float32)
+        stack -= _sky_model(p, wid, which, *stack.shape[1:])[0]
+        return stack
     return load
 
 
-def removed_source(p, wid: int, stage: str, which: str = "current"):
-    """What the Gradient block took away: its input minus its result (the starless image for the H-alpha
-    background, the sky model of the simple one)."""
+def removed_source(p, wid: int, stage: str = "gradient", which: str = "current"):
+    """What the Gradient block took away: its sky model (the variation, on the level it keeps), in the camera's
+    colours."""
     def load():
-        if stage == "background":
-            sl = _array(p, wid, "starless", "sl_final", which).astype(np.float32)
-            sl -= _array(p, wid, "background", "astro", which)
-            return sl
-        return _poly_background(p, wid, which)[1]
+        stack = _array(p, wid, "stack", "drz_full", which)
+        var, level = _sky_model(p, wid, which, *stack.shape[1:])
+        var += level[:, None, None]
+        return var
     return load
 
 

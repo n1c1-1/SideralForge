@@ -52,7 +52,7 @@ BY_OUTPUT = ("render_prep", "render_prep_learned", "render_simple")
 TEMPLATES = {
     "Vierge": dict(debruitage=False, etoiles="garder", appris=False, fond="simple"),
     "Classique + débruitage": dict(debruitage=True, etoiles="garder", appris=False, fond="simple"),
-    "Complet": dict(debruitage=True, etoiles="mesurer", appris=False, fond="halpha"),
+    "Complet": dict(debruitage=True, etoiles="mesurer", appris=False, fond="simple"),
 }
 DN_SUMMARY = {"affine": "fine-tuned", "generique": "pretrained", "nlbayes": "NL-Bayes"}
 CALIBRATION_KINDS = ("darks", "flats", "bias", "flat_darks")    # the session's lists a frame can be left out of
@@ -64,12 +64,12 @@ METHOD_BLOCK = {"debruitage": "denoise", "fond": "gradient", "etoiles": "stars",
 METHOD_OPT = {"debruitage": "dn", "fond": "fond", "etoiles": "appris", "deconv": "deconv_m"}
 #: the engine's method keys → the views'
 METHOD_KEY = {"debruitage": {"n2n": "appris", "finetuned": "affine", "pretrained": "generique", "nlbayes": "nlbayes"},
-              "fond": {"halpha": "halpha", "polynomial": "simple"},
+              "fond": {"polynomial": "simple", "automatic": "auto"},
               "etoiles": {"psf": "psf", "psf_neural": "psf_neural"},
               "deconv": {"rl": "psf", "neural": "neural"}}
 #: the toolbox: key of a tool → (engine option, value that adds it, value that removes it)
 TOOL_OPTION = {"debruitage": ("denoise", "n2n", None), "etoiles": ("stars", "psf", None),
-               "appris": ("stars", "psf_neural", "psf"), "halpha": ("gradient", "halpha", "polynomial"),
+               "appris": ("stars", "psf_neural", "psf"), "auto": ("gradient", "automatic", "polynomial"),
                "simple": ("gradient", "polynomial", None)}
 #: the stages whose settings the summaries of the blocks quote: asked of the worker for each workflow
 PREFETCH = ("stack", "denoise", "star_net")
@@ -85,13 +85,13 @@ def to_engine(o: dict) -> dict:
     if o.get("etoiles") == "mesurer":
         stars = "psf_neural" if o.get("appris") else "psf"
     return {"denoise": "n2n" if o.get("debruitage") else None, "stars": stars,
-            "gradient": "halpha" if o.get("fond") == "halpha" else "polynomial", "deconvolution": None}
+            "gradient": "automatic" if o.get("fond") == "auto" else "polynomial", "deconvolution": None}
 
 
 def from_engine(o: dict) -> dict:
     """The engine's options as the views' (``dn`` is always the engine's Noise2Noise)."""
     return {"debruitage": bool(o.get("denoise")), "dn": "appris", "etoiles": "mesurer" if o.get("stars") else "garder",
-            "appris": o.get("stars") == "psf_neural", "fond": "halpha" if o.get("gradient") == "halpha" else "simple",
+            "appris": o.get("stars") == "psf_neural", "fond": "auto" if o.get("gradient") == "automatic" else "simple",
             "deconv": bool(o.get("deconvolution"))}
 
 
@@ -640,7 +640,7 @@ class ProjectModel(QObject):
                  "stack": "Stacking", "astrometry": "Astrometry", "reference": "Reference image",
                  "catalogs": "Gaia catalogues", "surveys": "H-alpha survey", "color": "Color", "denoise": "Denoise",
                  "optics": "Optics", "stars": "Star measurement", "star_net": "Neural star removal",
-                 "starless": "Starless image", "background": "Background", "background_poly": "Polynomial background",
+                 "starless": "Starless image", "background": "Sky level", "gradient": "Sky gradient",
                  "render_prep": "Output prep", "render_prep_learned": "Output prep (neural removal)",
                  "render_simple": "Output prep (simple)", "deconv": "Deconvolution"}
         return _(names.get(stage, stage))
@@ -775,7 +775,7 @@ class ProjectModel(QObject):
     def _method_key(self, p: WorkflowView, block: str, method: str, device: str | None):
         """(the cache key, the options the method needs) of a method's duration, or None when the engine refuses them.
         ``device``: "gpu", "cpu", or None for the machine's."""
-        tool = {"fond": {"halpha": "halpha", "simple": "simple"}, "etoiles": {"psf": "etoiles", "psf_neural": "appris"},
+        tool = {"fond": {"auto": "auto", "simple": "simple"}, "etoiles": {"psf": "etoiles", "psf_neural": "appris"},
                 "debruitage": {"appris": "debruitage"}}.get(block, {}).get(method)
         try:
             opts = self.with_tool(p.opts, tool)[0] if tool else dict(p.opts)      # the options the method needs
@@ -1044,7 +1044,7 @@ class ProjectModel(QObject):
     @staticmethod
     def has_tool(o: dict, key: str) -> bool:
         return {"debruitage": bool(o.get("debruitage")), "etoiles": o.get("etoiles") == "mesurer",
-                "appris": bool(o.get("appris")), "halpha": o.get("fond") == "halpha",
+                "appris": bool(o.get("appris")), "auto": o.get("fond") == "auto",
                 "simple": o.get("fond") == "simple", "deconv": bool(o.get("deconv"))}[key]
 
     @staticmethod
@@ -1155,7 +1155,7 @@ class ProjectModel(QObject):
         if key == "appris":
             return [{"kind": "opt", "key": "stars", "value": "psf_neural" if v else "psf"}]
         if key == "fond":
-            return [{"kind": "opt", "key": "gradient", "value": "halpha" if v == "halpha" else "polynomial"}]
+            return [{"kind": "opt", "key": "gradient", "value": "automatic" if v == "auto" else "polynomial"}]
         if key == "debruitage":
             return [{"kind": "opt", "key": "denoise", "value": "n2n" if v else None}]
         if key == "etoiles":

@@ -61,7 +61,7 @@ def keys(stages):
 
 def test_the_backgrounds_are_the_computed_images_in_the_order_of_the_workflow():
     assert keys(BASE) == ["stack"]
-    assert keys({**BASE, "color": "done", "background_poly": "done", "render_simple": "done"}) == \
+    assert keys({**BASE, "color": "done", "gradient": "done", "render_simple": "done"}) == \
         ["stack", "color", "result", "output"]
     full = {**BASE, "color": "done", "denoise": "done", "background": "done", "starless": "done", "optics": "done",
             "render_prep": "done"}
@@ -72,10 +72,10 @@ def test_the_backgrounds_are_the_computed_images_in_the_order_of_the_workflow():
 
 
 def test_an_image_not_computed_is_not_listed_an_outdated_one_is_with_its_previous_result():
-    assert keys({**BASE, "color": "pending", "background_poly": "done", "render_simple": "done"}) == ["stack", "output"]
+    assert keys({**BASE, "color": "pending", "gradient": "done", "render_simple": "done"}) == ["stack", "output"]
     # an Outdated result is listed (its previous one, marked), as the rest of Inspect shows it (M31, 2 November: every
     # stage Outdated after an engine update left the list empty)
-    assert keys({**BASE, "color": "stale", "background_poly": "done", "render_simple": "done"}) ==         ["stack", "color", "result", "output"]
+    assert keys({**BASE, "color": "stale", "gradient": "done", "render_simple": "done"}) ==         ["stack", "color", "result", "output"]
     bgs = steps_of({**BASE, "stack": "stale"}).backgrounds(P)
     assert [b.key for b in bgs] == ["stack"] and bgs[0].previous
 

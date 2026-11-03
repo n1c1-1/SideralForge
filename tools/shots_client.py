@@ -693,7 +693,7 @@ def part_evening(stale="S1"):
     sp.post = {**(old or {}), "layers": [
         {"id": "t1", "kind": "image", "key": "inspect:" + _json.dumps({"wid": drz, "kind": "gradient", "name": "",
                                                                       "channel": None, "base": [],
-                                                                      "stages": ["background_poly", "color"]}),
+                                                                      "stages": ["gradient", "color"]}),
          "name": "Gradient removed", "visible": True},
         {"id": "t2", "kind": "image", "key": f"stack/{skey}/drz_full", "name": "Stack", "visible": True}]}
     w.set_mode(0)

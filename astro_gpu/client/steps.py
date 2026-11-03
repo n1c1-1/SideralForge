@@ -38,8 +38,7 @@ FACTS = {
                    ("stack", "rejected_pct")],
     "astrometrie": [("astrometry", "ra"), ("astrometry", "dec"), ("astrometry", "field_deg"),
                     ("astrometry", "scale_arcsec"), ("astrometry", "stars_used"), ("astrometry", "residual_px"),
-                    ("astrometry", "focal_estimate_mm"), ("reference", "stars_matched"), ("surveys", "survey"),
-                    ("surveys", "coverage")],
+                    ("astrometry", "focal_estimate_mm"), ("reference", "stars_matched")],
     "couleur": [("color", "stars"), ("color", "fit_agreement_pct"), ("color", "profile_agreement_pct"),
                 ("color", "response_source"), ("color", "correction"), ("color", "chromaticity_residual"),
                 ("color", "white_balance"), ("color", "white_balance_stars")],
@@ -47,9 +46,7 @@ FACTS = {
     "etoiles": [("stars", "modelled_stars"), ("stars", "faint_stars"), ("stars", "prediction_scatter_pct"),
                 ("stars", "local_psf_grid"), ("optics", "psf_residual_pct"), ("optics", "lateral_shift_max_px"),
                 ("starless", "filled_pct"), ("star_net", "training_steps"), ("star_net", "final_loss")],
-    "fond": [("background", "sky_fit_blocks_pct"), ("background", "ha_fit"), ("background", "emission_dips"),
-             ("background", "large_scale_correction_adu"), ("background_poly", "sky_fit_blocks_pct"),
-             ("background_poly", "gradient_pct"), ("background_poly", "samples_used")],
+    "fond": [("gradient", "gradient_pct"), ("gradient", "samples_used")],
     "post": [("render_prep", "crop"), ("render_prep", "vignetted_pct"), ("render_prep", "star_depth_snr10"),
              ("render_simple", "crop"), ("render_simple", "sky_source")],
 }
@@ -61,8 +58,6 @@ SOLUTION_NOTE = ("Your image with the sky grid (RA / Dec) of its astrometric sol
                  "them, up to the final image.")
 #: the pictures that can be behind the solution, in the order of the workflow (``Steps.picture`` makes each)
 BACKGROUNDS = ("stack", "color", "denoised", "color_denoised", "result", "output")
-SURVEY_NOTE = ("Not your data: a professional H-alpha map of the same field. The Gradient block compares it with your "
-               "image to tell faint nebulosity from light pollution.")
 OUTPUT_NOTE = "The workflow's result at the suggested render settings, as Post shows its layer. Adjust it in Post."
 #: what the final image is, by the output of the workflow (``output_note``): the simple output is the Gradient removed
 #: picture stretched by Post (the same data, its sky stretched to another level, so its noise shows more or less); the
@@ -98,7 +93,7 @@ def output_note(stage: str, stages: set) -> str:
         return OUTPUT_NOTE
     if "color" not in stages:
         return OUTPUT_RAW_NOTE
-    if "background_poly" not in stages:
+    if "gradient" not in stages:
         return OUTPUT_COLOR_NOTE
     return OUTPUT_SIMPLE_DENOISED_NOTE if "denoise" in stages else OUTPUT_SIMPLE_NOTE
 
@@ -117,19 +112,10 @@ COLOR_NOTE = ("Before, left of the divider: the stack output as it is, in the ca
 DENOISE_NOTE = "Before (the stack) and after (denoised), with the same stretch on both. Drag the divider."
 STACK_NOTE = "The stack output in the camera's colours, before colour calibration: its green cast is normal."
 CAMERA_NOTE = "In the camera's colours, before colour calibration."
-GRADIENT_NOTE = ("Your image with the gradient removed, stars included, in calibrated colours. Compare it with the "
-                 "earlier steps.")
-GRADIENT_FULL_NOTE = ("Your image with the gradient removed, stars included, in calibrated colours: the starless image "
-                      "without its gradient (the next tab) with what the Stars block took away put back (the stars, and "
-                      "the noise its filter removed): the stack itself, not denoised. Compare it with the earlier steps.")
-STARLESS_BG_NOTE = ("The starless image without its gradient, in calibrated colours: what the block works on. The "
-                    "stars are put back in the first tab.")
-SKY_MODEL_NOTE = "What the block removed: its input minus its result."
-SKY_MODEL_FULL_NOTE = ("What the block removed from the starless image (its input minus its result), in the camera's "
-                       "colours.")
-GRADIENT_SURFACE_NOTE = ("The smooth surface of light pollution the block fitted, channel by channel, in the camera's "
-                         "colours.")
-STAR_FLAT_NOTE = "The correction of the flat field measured on the stars (1: no change)."
+GRADIENT_NOTE = ("The stack with its sky gradient removed, in the camera's colours, as every later block reads it (the "
+                 "colour calibration comes next). The sky keeps its level. Compare it with the stack.")
+SKY_MODEL_NOTE = ("What the block removed: the sky model of its method, in the camera's colours. A nebula or a galaxy "
+                  "that shows here was taken for sky.")
 #: the line after the note of a model (display "model"): what its colours mean
 MODEL_COLOURS_NOTE = ("Shown with the channels linked, from zero to its highest value: the colours are the model's own, "
                       "not stretched apart. Untick Linked channels to see the shape of each channel.")
@@ -256,9 +242,6 @@ class Steps(QObject):
             # with the stack on the same sky (it is reprojected on the stack grid)
             out = [V("solution", "Stack and solution", "array", "stack", "drz_full", True, True, sky=True,
                      note=SOLUTION_NOTE, camera=True, backgrounds=True)]
-            if "surveys" in stages:
-                out.append(V("survey", "Reference H-alpha survey", "preview", "surveys", "halpha_reference", True,
-                             note=SURVEY_NOTE, camera=False, compare=("stack",)))
             out.append(V("objects", "Identified objects", "preview", "astrometry", "", spec=True))
             return out
         if k == "couleur":
@@ -281,28 +264,11 @@ class Steps(QObject):
                 out.append(V("removal", "Neural star removal", "preview", "star_net", "star_removal", camera=False))
             return out
         if k == "fond":
-            # the main picture is always the whole image with the gradient removed, stars included, in calibrated
-            # colours: the H-alpha background works on the starless image, its result gets the stars back
-            # (services/inspect.full_gradient_image); the simple one's result is the whole image already
-            st = "background" if "background" in stages else "background_poly"
-            full = st == "background"
-            cmp_ = ("color_denoised", "color", "stack")
-            out = [V("result", "Gradient removed", "gradient", st, "", True, True, camera=False, compare=cmp_,
-                     note=GRADIENT_FULL_NOTE if full else GRADIENT_NOTE)]
-            if full:
-                out += [V("starless_bg", "Starless, gradient removed", "calibrated", "background", "", True, True,
-                          camera=False, base=("background", "astro"), compare=("starless_calibrated",),
-                          note=STARLESS_BG_NOTE),
-                        V("removed", "Sky model", "removed", st, "", True, True, camera=True,
-                          note=SKY_MODEL_FULL_NOTE, display="model"),
-                        V("sky", "Gradient", "array", "background", "sky", True, True, camera=True,
-                          note=GRADIENT_SURFACE_NOTE, display="model"),
-                        V("star_flat", "Star flat", "array", "background", "flat", True, True, camera=False,
-                          note=STAR_FLAT_NOTE, display="model")]
-            else:
-                out.append(V("removed", "Sky model", "removed", st, "", True, True, camera=False, note=SKY_MODEL_NOTE,
-                             display="model"))
-            return out
+            # the block's own input and output, in the camera's colours: it works before the colour calibration
+            return [V("result", "Gradient removed", "gradient", "gradient", "", True, True, camera=True,
+                      compare=("stack",), open_compare=True, same_stretch=True, note=GRADIENT_NOTE),
+                    V("removed", "Sky model", "removed", "gradient", "", True, True, camera=True, note=SKY_MODEL_NOTE,
+                      display="model")]
         if k == "post":
             return [dataclasses.replace(self.picture(p, "output"), compare=("result", "color"))]
         return []
@@ -319,9 +285,6 @@ class Steps(QObject):
         V = VisualSpec
         if key == "stack":
             return V("stack", "Stack", "array", "stack", "drz_full", True, True, camera=True)
-        if key == "survey" and "surveys" in stages:
-            return V("survey", "Reference H-alpha survey", "preview", "surveys", "halpha_reference", True,
-                     camera=False)
         if key in ("half_a", "half_b"):
             return V(key, "Half-stack A" if key == "half_a" else "Half-stack B", "array", "stack",
                      "drz_A" if key == "half_a" else "drz_B", True, True, camera=True)
@@ -338,11 +301,8 @@ class Steps(QObject):
         if key == "color_denoised" and "color" in stages and "denoise" in stages:
             return V("color_denoised", "Colour-calibrated denoised stack", "color", "color", "", True, True,
                      camera=False, base=("denoise", "n2n_full"))
-        if key == "result":
-            st = "background" if "background" in stages else ("background_poly" if "background_poly" in stages
-                                                              else None)
-            if st is not None:
-                return V("result", "Gradient removed", "gradient", st, "", True, True, camera=False)
+        if key == "result" and "gradient" in stages:
+            return V("result", "Gradient removed", "gradient", "gradient", "", True, True, camera=True)
         if key == "output":
             # the final image, not an engine preview: rendered with the project's render worker, as Post shows it
             stage = self.render_stage(p)
@@ -371,10 +331,7 @@ class Steps(QObject):
         if spec.kind == "calibrated":
             return ["color", spec.base[0]]
         if spec.kind in ("gradient", "removed"):
-            if spec.stage == "background":
-                return ["background", "starless"] + (["optics", "color"] if spec.kind == "gradient" else [])
-            stages = set(self.s.all_stages(p))
-            return ["background_poly", "color", "denoise" if "denoise" in stages else "stack"]
+            return ["gradient", "stack"]
         return [spec.stage]
 
     def view_image(self, p, spec: VisualSpec, prefix: str = "") -> ViewImage | None:

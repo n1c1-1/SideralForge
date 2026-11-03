@@ -314,6 +314,12 @@ CATALOG = {
                                                        "flux estimate."),
             E("stars", "cg_iterations", "expert", help="Solver iterations at each pass."),
         ]),
+        ("Sky level", [
+            E("background", "star_flat"),
+            E("background", "bin_px", "expert", help="Size of the cells where the sky level is measured."),
+            E("background", "object_clip", "expert", help="Areas brighter than this threshold are not used to "
+                                                          "measure the sky level."),
+        ]),
     ],
     "appris": [
         ("Training", [
@@ -351,45 +357,31 @@ CATALOG = {
             E("starless", "learned_stars", "expert"),
         ]),
     ],
-    "fond:halpha": [
-        ("Reference survey", [
-            E("surveys", "survey"),
-            E("surveys", "min_coverage", "expert", help="Share of the field the survey must cover to be used."),
-        ]),
+    "fond:simple": [
         ("Sky gradient", [
-            E("background", "sky_order"), E("background", "star_flat"),
-            E("background", "bin_px", "expert", help="Size of the cells where the background is measured."),
-            E("background", "large_scale_px", "expert", help="Scale beyond which the background is corrected."),
-            E("background", "object_clip", "expert", help="Areas brighter than this threshold are not used to "
-                                                          "measure the background."),
+            E("gradient", "degree", help="1: a tilted plane; 2 or 3: a more flexible surface, for wide fields."),
+            E("gradient", "samples", help="Number of background measurement points along each side of the image."),
+            E("gradient", "object_clip", "expert", help="Areas brighter than this threshold are not used to "
+                                                        "measure the background."),
         ]),
         ("Samples", [
-            N("background", "exclusions", "Areas to exclude", "zone", NO_ZONE,
+            N("gradient", "exclusions", "Areas to exclude", "zone", NO_ZONE,
               "The drawn areas are not used to measure the background: faint nebula, galaxy, reflection."),
-            N("background", "show_samples", "Show sample points", "bool", False,
+            N("gradient", "show_samples", "Show sample points", "bool", False,
               "Shows on the image the points where the background is measured, and lets them be moved or removed."),
         ]),
     ],
-    "fond:simple": [
+    "fond:auto": [
         ("Sky gradient", [
-            E("background_poly", "degree", help="1: a tilted plane; 2 or 3: a more flexible surface, for wide "
-                                                "fields."),
-            E("background_poly", "samples", help="Number of background measurement points along each side of the "
-                                                 "image."),
-            E("background_poly", "object_clip", "expert", help="Areas brighter than this threshold are not used to "
-                                                               "measure the background."),
-            E("background", "sky_order"), E("background", "star_flat"),
-            E("background", "bin_px", "expert", help="Size of the cells where the background is measured."),
-            E("background", "large_scale_px", "expert", help="Scale beyond which the background is corrected."),
-            E("background", "object_clip", "expert", help="Areas brighter than this threshold are not used to "
-                                                          "measure the background."),
+            E("gradient", "scale"), E("gradient", "smoothness"),
         ]),
-        ("Samples", [
-            N("background_poly", "exclusions", "Areas to exclude", "zone", NO_ZONE,
-              "The drawn areas are not used to measure the background: faint nebula, galaxy, reflection."),
-            N("background_poly", "show_samples", "Show sample points", "bool", False,
-              "Shows on the image the points where the background is measured, and lets them be moved or removed."),
+        ("Structure protection", [
+            E("gradient", "protect"), E("gradient", "protect_threshold"), E("gradient", "protect_amount"),
         ]),
+        ("Strong gradients", [
+            E("gradient", "simplified"), E("gradient", "simple_degree"),
+        ]),
+        ("System", [E("gradient", "downsample", "system")]),
     ],
     "post": [
         ("Stretch", [
@@ -448,8 +440,6 @@ TIPS = {
                              "are downloaded.",
     ("astrometry", "sip_order"): "3 for refractors with a reducer and for wide fields; 2 for small fields; 0 = pure "
                                  "tangent plane.",
-    ("background", "sky_order"): "2 or 3 for most fields; more for very wide fields with complex gradients. Too high, "
-                                 "it can absorb a large faint nebula when no H-alpha survey serves as reference.",
     ("calibrate", "hot_sigma"): "Low values (0.5 to 1) exclude more pixels; with many frames this costs nothing. "
                                 "Raise it if more than about 5 % of the pixels are excluded.",
     ("calibrate", "flat_defect"): "0.3 = 30 %. Lower it if dust remains visible after calibration.",
@@ -487,9 +477,6 @@ TIPS = {
                             "curvature): otherwise each star leaves a ring in the starless image.",
     ("stars", "angular_shape"): "The spikes then leave the nebula with the stars and are redrawn with them.",
     ("stars", "far_halo"): "The glow then leaves the nebula with the stars; the redrawn stars do not carry it.",
-    ("surveys", "survey"): "\"auto\" takes NSNS (finer) when it covers the field, otherwise Finkbeiner's all-sky map. "
-                           "\"none\" for fields without emission (galaxies, clusters): the background is then a "
-                           "smooth polynomial.",
 }
 UNITS = {"x median": "× median", "frames": "frames", "deg": "°", "sigma": "σ", "x": "×", "G mag": "G",
          "arcsec/px": "″/px", "e-/ADU": "e⁻/ADU", "um": "µm", "x field": "× field", "x noise": "× noise",
@@ -499,7 +486,7 @@ STAGE_STEP = {"inventory": "Calibration", "calibrate": "Calibration", "register"
               "stack": "Stacking", "astrometry": "Astrometry", "catalogs": "Astrometry", "surveys": "Astrometry",
               "reference": "Astrometry", "color": "Color", "denoise": "Denoise", "optics": "Stars",
               "stars": "Stars", "star_net": "Neural star removal", "starless": "Starless image",
-              "background": "Gradient", "background_poly": "Gradient"}
+              "background": "Stars", "gradient": "Gradient"}
 ENGINE_LEVEL = {"basic": "normal", "advanced": "expert", "expert": "expert", "system": "system"}
 TYPES = {"int": "int", "float": "float", "bool": "bool", "str": "str", "float | None": "optfloat"}
 

@@ -298,13 +298,14 @@ def test_the_model_does_not_wait_for_the_disk(qapp):
 
 
 def test_the_tree_shares_blocks_as_the_engine_does(world, model, page):
-    """Calibration to Color shared by the 4 workflows, Denoise by 3, a split at Stars, 4 outputs."""
+    """Calibration to Color (Gradient included) shared by the 4 workflows, Denoise by 3, a split at Stars, 4
+    outputs."""
     g = Graph(model)
     by_key = {}
     for n in g.nodes:
         by_key.setdefault(n.key, []).append(n)
     ids = {v.name: v.pid for v in model.paths}
-    for key in ("calibration", "alignement", "selection", "empilement", "astrometrie", "couleur"):
+    for key in ("calibration", "alignement", "selection", "empilement", "astrometrie", "fond", "couleur"):
         assert len(by_key[key]) == 1 and len(by_key[key][0].paths) == 4, key
     den = by_key["debruitage"]
     assert len(den) == 1 and {q.name for q in den[0].paths} == {"Full", "Classic + denoise", "Full + neural stars"}
@@ -312,7 +313,6 @@ def test_the_tree_shares_blocks_as_the_engine_does(world, model, page):
     assert len(stars) == 2 and all(len(n.paths) == 1 for n in stars)           # the methods differ
     assert {q.name for n in stars for q in n.paths} == {"Full", "Full + neural stars"}
     assert len(by_key["post"]) == 4 and all(len(n.paths) == 1 for n in by_key["post"])
-    assert len(by_key["fond"]) == 4                                            # after the split: one each
     assert g.final.paths and len(g.final.paths) == 4
     # the leaves go to Post, one per workflow
     assert {g.leaves[pid].key for pid in ids.values()} == {"post"}
@@ -320,18 +320,18 @@ def test_the_tree_shares_blocks_as_the_engine_does(world, model, page):
 
 
 def test_the_graph_shows_the_real_engine_order(world, model, page):
-    """Frames, Calibration, Registration, Selection, Stacking, Astrometry, Color, Denoise, Stars, Gradient, Output,
-    Post (DESIGN §2.4); the phase bands; Deconvolution only when something uses it."""
-    assert COLUMNS == ["sources", "calibration", "alignement", "selection", "empilement", "astrometrie", "couleur",
-                       "deconv", "debruitage", "etoiles", "fond", "post", "final"]
+    """Frames, Calibration, Registration, Selection, Stacking, Astrometry, Gradient, Color, Denoise, Stars, Output,
+    Post (the engine's order); the phase bands; Deconvolution only when something uses it."""
+    assert COLUMNS == ["sources", "calibration", "alignement", "selection", "empilement", "astrometrie", "fond",
+                       "couleur", "deconv", "debruitage", "etoiles", "post", "final"]
     assert model.block_keys(model.paths[0]) == ["calibration", "alignement", "selection", "empilement", "astrometrie",
-                                                "couleur", "debruitage", "etoiles", "fond", "post"]
+                                                "fond", "couleur", "debruitage", "etoiles", "post"]
     items = {it.node.key + str(id(it.node)): it for it in page.graph.scene().items() if isinstance(it, BlockItem)}
     xs = sorted({it.pos().x() for it in items.values()})
     assert len(xs) == 12                                                        # no Deconvolution column
     gradient = [it for it in items.values() if it.node.key == "fond"]
-    stars = [it for it in items.values() if it.node.key == "etoiles"]
-    assert min(g.pos().x() for g in gradient) > max(s.pos().x() for s in stars)  # Gradient after Stars
+    color = [it for it in items.values() if it.node.key == "couleur"]
+    assert max(g.pos().x() for g in gradient) < min(c.pos().x() for c in color)  # Gradient before Color
     bands = [it for it in page.graph.scene().items() if type(it).__name__ == "BandItem"]
     assert sorted(b.text for b in bands) == ["Linear processing", "Pre-processing"]
 
@@ -349,9 +349,9 @@ def test_states_come_from_the_api(world, model, page):
     assert states[("etoiles", "Full + neural stars")] == "pending" and states[("etoiles", "Full")] == "done"
     assert g.state(g.final) == "pending"                                       # not every layer is rendered
     # a block is as bad as its worst stage in any of its workflows
-    model._states[(2, "background_poly")] = api.StageState("failed", "boom", "k")
+    model._states[(2, "gradient")] = api.StageState("failed", "boom", "k")
     assert block_state(model, model.view(2), "fond") == "failed"
-    model._states[(2, "background_poly")] = api.StageState("running", "", "k")
+    model._states[(2, "gradient")] = api.StageState("running", "", "k")
     assert block_state(model, model.view(2), "fond") == "running"
     model._sync()
     assert block_state(model, model.view(2), "fond") == "pending"
@@ -366,7 +366,7 @@ def test_a_shared_stage_is_one_key(world, model):
     assert model.stage_key(full, "stack") == api.stage_key(model.p, full.pid, "stack")
     assert model.upstream(full, "color") >= {"inventory", "calibrate", "register", "stack", "astrometry"}
     assert "render_prep" in model.downstream(full, "stars")
-    assert [x for _p, x in model.pending_upto(classic, ["render_simple"])] == ["background_poly", "render_simple"]
+    assert [x for _p, x in model.pending_upto(classic, ["render_simple"])] == ["gradient", "render_simple"]
     assert model.pending(full) == []
     assert model.seconds("stack", full) > 0 and model.seconds("denoise_cl") == 300.0
 

@@ -1340,7 +1340,7 @@ real = needs_test_project
 #: the store folders a Classic stack workflow reads (its own chain, and the survey its Astrometry block shows): what a
 #: copy that runs it needs
 CLASSIC_STORE = ("inventory", "calibrate", "register", "stack", "astrometry", "surveys", "catalogs", "color",
-                 "background_poly", "render_simple")
+                 "gradient", "render_simple")
 
 
 def _classic_copy(tmp: Path) -> Path:
@@ -1412,7 +1412,7 @@ def _shell(w: World):
 @real
 @pytest.mark.slow
 def test_a_real_render_simple_job_runs_with_the_heartbeat_under_200_ms_and_the_screenshots(env, monkeypatch):
-    """Run the Classic stack of a copy of the test project for real on the CPU: background_poly and render_simple.
+    """Run the Classic stack of a copy of the test project for real on the CPU: gradient and render_simple.
     The stripes turn green and the layer appears. Takes the screenshots in English and in French."""
     w = _real_world(_classic_copy(env["tmp"]))
     root = None
@@ -1450,13 +1450,13 @@ def test_a_real_render_simple_job_runs_with_the_heartbeat_under_200_ms_and_the_s
                 w.worker.wait(30)
                 QApplication.processEvents()
             # a late, cheap setting of the Classic workflow: Run to its Output only runs two short jobs
-            w.model.set_param(classic, "background_poly", "object_clip", 2.5 + (int(time.time()) % 100000 + n) / 1e6)
+            w.model.set_param(classic, "gradient", "object_clip", 2.5 + (int(time.time()) % 100000 + n) / 1e6)
             for _i in range(10):
                 w.worker.wait(30)
                 QApplication.processEvents()
             d = w.ctl.run_to_here()
             jobs = [(j.stage, j.measured) for j in d.plan.jobs]
-            assert [s for s, _m in jobs] == ["background_poly", "render_simple"], jobs
+            assert [s for s, _m in jobs] == ["gradient", "render_simple"], jobs
             w.beat.start()
             d.start()
             shot = False
