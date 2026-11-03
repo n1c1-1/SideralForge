@@ -101,7 +101,7 @@ def test_gradient_recovers_a_degree_2_gradient(classic):
     var = sky_variation(g, H, W)
     true = sky[:, 12:, :-9]                              # the covered field, in camera colours
     level = np.array(info["level"])
-    assert np.allclose(level, true.mean(axis=(1, 2)), rtol=0.01)          # the sky's level is kept...
+    assert np.allclose(level, np.median(true, axis=(1, 2)), rtol=0.01)    # the sky's level is kept...
     err = np.abs(var[:, 12:, :-9] + level[:, None, None] - true) / true
     assert float(err.max()) < 0.01                       # ...its variation within 1 % everywhere, objects left out
     s = np.load(g.dir / "samples.npz")

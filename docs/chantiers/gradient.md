@@ -152,3 +152,51 @@ Ce que ça dit :
 **Décision (3 novembre, 17h20) : la méthode ancrée est abandonnée**, retirée du moteur. Elle ne rend pas la surface
 plus souple, et seul le relevé H-alpha est à notre portée comme référence. Le chantier continue avec la réécriture de
 la méthode automatique de Siril (étape Gradient) et un retrait du gradient image par image avant l'empilement.
+
+## 6. La méthode automatique de Siril, réécrite (3 novembre, soir)
+
+**Ce qu'elle est.** La méthode « automatique, sans échantillons » de Siril 1.5 (`subsky -auto`), réécrite dans notre
+moteur (`astro_gpu/stages/gradient_auto.py`, méthode `automatic` de l'étape Gradient). Sa marche vient de la
+documentation de Siril ; les valeurs que la documentation ne donne pas viennent de leur code source (version du
+2 novembre) : rejet au-dessus de médiane + 2 σ et au-dessous de médiane − 4 σ, 20 tours au plus, flou de rayon 5 % du
+petit côté de l'image réduite 4 fois, bouchage des trous en 10 passes, masque de protection des structures. Notre code
+est écrit à partir de cette description ; il ne traduit pas le leur.
+
+**La fidélité, mesurée.**
+- Les fonctions du code source de Siril, compilées à part, donnent **exactement** nos résultats (écart 0,00004).
+- Mais **le programme Siril distribué ne fait pas exactement ce que dit son code source.** Deux différences trouvées
+  et reproduites :
+  1. aux bords, le programme continue l'image selon sa pente (le code source répète le dernier pixel, ce qui fait
+     s'affaisser le fond aux bords puis dériver tout le modèle tour après tour) ;
+  2. les statistiques du rejet se comportent comme si elles portaient sur toute l'image, pas sur les seuls pixels
+     gardés.
+- Avec ces deux corrections, l'écart entre notre fond et celui du programme Siril est de **1 à 10 % de l'amplitude du
+  fond** selon les cas (le plus grand sur M8 et le Seestar). Une troisième différence reste inexpliquée ; le nombre de
+  passes, de tours, la règle d'arrêt et la protection ont été testés sans la trouver.
+
+**Le banc** (mêmes six cas, en couleurs de l'appareil ; Siril : `F:\astro_essais\bench\gradient_auto`, notre version :
+`F:\astro_essais\bench\gradient_auto_v2`).
+
+| Cas | Méthode | Pente | Dôme | Coin | Nuage gardé | Planéité |
+|---|---|---|---|---|---|---|
+| Heart | Siril | 1,3 | 4,7 | **2,5** | 15 | 3,6 |
+| | nôtre | 3,5 | 6,6 | 9,7 | 20 | 3,6 |
+| Iris | Siril | 2,9 | 5,6 | 2,9 | 14 | 2,7 |
+| | nôtre | 2,5 | 2,4 | 2,2 | 18 | 2,8 |
+| M51 | Siril | 2,6 | 5,7 | 3,5 | 16 | 1,2 |
+| | nôtre | 2,2 | 2,6 | 2,9 | 20 | 1,5 |
+| M8 | Siril | 21 | 30 | 16 | 64 | 11 |
+| | nôtre | **4,1** | **10** | **4,2** | 60 | 12 |
+| Rosette | Siril | 2,5 | 5,3 | 2,7 | 24 | 5,0 |
+| | nôtre | 2,1 | 2,2 | 2,3 | 27 | 5,2 |
+| Seestar | Siril | 5,3 | 13 | 3,8 | 13 | 1,5 |
+| | nôtre | 2,8 | 9,2 | 2,8 | 16 | 1,5 |
+
+(écarts au gradient injecté en %, nuage gardé en %, planéité en % du niveau du ciel)
+
+Ce que ça dit :
+- **Notre version fait jeu égal ou mieux que Siril** sur cinq cas, nettement mieux sur M8 ; elle garde un peu plus du
+  nuage faible.
+- **Une exception : le coin éclairé de Heart** (9,7 % contre 2,5 %). C'est la trace de la différence inexpliquée.
+- Comme Siril, elle **retire la plus grande partie d'un nuage faible et très étendu** (15 à 27 % gardés, M8 à part) :
+  c'est le prix de la souplesse. Le polynôme, lui, le garde (33 à 108 %) mais rate le coin éclairé.

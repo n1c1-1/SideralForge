@@ -8,7 +8,7 @@ stored. The options give its chain: the stages it runs, in the global order. Two
 when the stage key is the same (core/store.py); this module only says which stages a workflow has and which of them
 each stage reads.
 
-    options   {"denoise": None | "n2n", "stars": None | "psf" | "psf_neural", "gradient": "polynomial",
+    options   {"denoise": None | "n2n", "stars": None | "psf" | "psf_neural", "gradient": "polynomial" | "automatic",
                "deconvolution": None}
     end       None, or "stacking" for the Raw stack exit (inventory → stack, then render_simple)
 
@@ -31,7 +31,7 @@ from typing import Any
 OPTION_VALUES: dict[str, tuple[Any, ...]] = {
     "denoise": (None, "n2n"),
     "stars": (None, "psf", "psf_neural"),
-    "gradient": ("polynomial",),
+    "gradient": ("polynomial", "automatic"),
     "deconvolution": (None,),
 }
 #: a missing option takes this value (the Classic stack)
@@ -119,7 +119,7 @@ def set_option(options: dict[str, Any], key: str, value: Any, end: str | None = 
 
 
 def method_of(options: dict[str, Any], block: str) -> str | None:
-    """The method of a block: denoise 'n2n', stars 'psf' / 'psf_neural', gradient 'polynomial'; None when the
+    """The method of a block: denoise 'n2n', stars 'psf' / 'psf_neural', gradient 'polynomial' / 'automatic'; None when the
     workflow does not have the block."""
     o = check_options(options)
     if block in ("gradient", "denoise", "stars", "deconvolution"):

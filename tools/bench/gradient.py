@@ -1,5 +1,5 @@
 """Bench of the gradient removal methods: Siril (polynomial, RBF; automatic in its development version), GraXpert
-(AI), ours (polynomial), on the bench's
+(AI), ours (polynomial, and the automatic model of Siril written again), on the bench's
 stacks, with injected gradients and an injected faint object (docs/chantiers/gradient.md, part 3).
 
     python tools/bench/gradient.py [--cases heart,iris,...] [--out F:/astro_essais/bench/gradient]
@@ -177,6 +177,20 @@ def ours_poly(img: np.ndarray, work: Path) -> np.ndarray:
     return img - poly_sky(fit["coefs"], p.degree, *img.shape[1:])
 
 
+def ours_auto(img: np.ndarray, work: Path) -> np.ndarray:
+    """Our version of Siril's automatic model (stages/gradient_auto.py), applied as Siril does: each channel minus its
+    background plus the background's median. Siril works on the image upside down (FITS rows): so does this, so that
+    the same rows are dropped by the reduction."""
+    from astro_gpu.stages.gradient_auto import AutoSettings, enlarge, sky_model
+    s = AutoSettings()
+    out = np.empty_like(img)
+    for c in range(img.shape[0]):
+        ch = img[c, ::-1]
+        bg = enlarge(sky_model(ch, s), *ch.shape)
+        out[c] = (ch - bg + np.float32(np.partition(bg, bg.size // 2, axis=None)[bg.size // 2]))[::-1]
+    return out
+
+
 METHODS = {
     "siril_poly2": lambda img, work: siril(img, work, "subsky 2 -samples=20 -tolerance=1.0"),
     "siril_poly4": lambda img, work: siril(img, work, "subsky 4 -samples=20 -tolerance=1.0"),
@@ -184,6 +198,7 @@ METHODS = {
     "siril_auto": lambda img, work: siril(img, work, "subsky -auto", SIRIL_DEV),
     "graxpert_ai": graxpert,
     "ours_poly": ours_poly,
+    "ours_auto": ours_auto,
 }
 
 
