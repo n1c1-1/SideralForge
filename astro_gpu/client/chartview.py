@@ -438,6 +438,7 @@ class ChartView(QWidget):
         self._legend: dict[str, list[Trace]] = {}
         self.xticks: list[tuple[float, str]] = []
         self._ctrl_left = 0.0
+        self._legend_wrap = False                  # the legend on a row of its own, under the title and the buttons
         self.setMouseTracking(True)
         self.setMinimumSize(280, 200)
         self._canvas = _Canvas(self)
@@ -695,7 +696,30 @@ class ChartView(QWidget):
         return [(v, num(v, d)) for v in tick_values(p.y0, p.y1, step)]
 
     def _head_h(self) -> float:
-        return max(self.HEAD, QFontMetricsF(self._font()).height() + 14.0)       # the title row (Export CSV… is there)
+        """The title row (Export CSV… is there), and the legend's own row when it does not fit beside them."""
+        row = max(self.HEAD, QFontMetricsF(self._font()).height() + 14.0)
+        return row + (row - 6.0 if self._legend_wrap else 0.0)
+
+    def _legend_width(self, fm: QFontMetricsF) -> float:
+        """The width the legend (and the colour bar) takes in the header."""
+        w = sum(10 + 6 + fm.horizontalAdvance(key) + 16 for key in self._legend)
+        if self.colorbar:
+            cap, lo, hi = self.colorbar
+            w += fm.horizontalAdvance(lo) + 6 + 84 + 6 + fm.horizontalAdvance(hi) + 10 + fm.horizontalAdvance(cap) + 16
+        return w
+
+    def _check_legend_wrap(self) -> bool:
+        """Whether the legend must go to its own row: it does not fit between the title (at least 120 px of it, less
+        when the title is shorter) and the buttons. True when that changed (the panels must be placed again)."""
+        fm = QFontMetricsF(self._font())
+        fb = QFont(self._font())
+        fb.setBold(True)
+        title = min(QFontMetricsF(fb).horizontalAdvance(self.title), 120.0) if self.title else 0.0
+        room = (self._ctrl_left or self.width() - 12.0) - 4.0 - 8.0 - 14.0 - title
+        wrap = bool(self._legend or self.colorbar) and self._legend_width(fm) > room
+        changed = wrap != self._legend_wrap
+        self._legend_wrap = wrap
+        return changed
 
     def resizeEvent(self, e):                                            # noqa: N802
         super().resizeEvent(e)
@@ -750,6 +774,9 @@ class ChartView(QWidget):
             p.yticks = self._yticks(p)
         self.xticks = self._xticks(self.panels[-1])
         self._place_controls(W)
+        if self._check_legend_wrap():                   # the header's height changed: place the panels again
+            self._layout()
+            return
         self.update()
 
     def _place_controls(self, W: int):
@@ -1003,7 +1030,12 @@ class ChartView(QWidget):
         if not (self.title or self._legend or self.colorbar):
             return
         y0 = 4.0
-        hh = self._head_h() - 8.0
+        row = max(self.HEAD, fm.height() + 14.0)
+        hh = row - 8.0
+        title_right = x_right
+        if self._legend_wrap:                           # the legend on the second row, right-aligned
+            y0 = row - 2.0
+            x_right = W - 12.0
         items = []
         for key, ts in self._legend.items():
             w = 10 + 6 + fm.horizontalAdvance(key)
@@ -1042,6 +1074,8 @@ class ChartView(QWidget):
             p.drawText(QRectF(x + 16, y0, w - 14, hh), int(Qt.AlignLeft | Qt.AlignVCenter), key)
             x -= 16
         self._legend_hits.reverse()                                  # left to right, as they read
+        if self._legend_wrap:
+            y0, x = 4.0, title_right + 8.0
         if self.title:
             p.setPen(TEXT)
             f = p.font()

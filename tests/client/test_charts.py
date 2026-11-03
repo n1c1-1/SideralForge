@@ -688,9 +688,10 @@ def readable(w: cv.ChartView):
         rects.append(QRectF(w._reset_btn.geometry()))
     if not w._title_rect.isEmpty():
         rects.append(w._title_rect)
-    rects.sort(key=lambda r: r.left())
-    for a, b in zip(rects, rects[1:]):
-        assert a.right() <= b.left() + 1, (a, b)
+    for i, a in enumerate(rects):
+        for b in rects[i + 1:]:
+            inter = a.intersected(b)
+            assert inter.width() <= 1 or inter.height() <= 1, (a, b)
     assert all(r.right() <= w.width() and r.left() >= 0 for r in rects)
 
 
