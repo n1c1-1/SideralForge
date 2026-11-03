@@ -2538,9 +2538,10 @@ def test_real_the_exports_read_back_with_their_wcs_and_the_reduced_one_matches_t
     s = real
     v = s.view
     full, classic = named(v, "Full"), named(v, "Classic")
+    # the reduced export against the screen, on one layer: the engine's own resolution differences are measured on
+    # that layer (below), so what Post adds is what is left
     v.select(full["id"], "layer")
-    v.add_filter("saturation")["params"]["strength"] = 50.0
-    classic["visible"], classic["opacity"] = True, 30.0
+    classic["visible"] = False
     full["sliders"]["sky"] = 2.4
     v.push()
     assert s.settle(600)
@@ -2562,16 +2563,7 @@ def test_real_the_exports_read_back_with_their_wcs_and_the_reduced_one_matches_t
     done = {}
     answers = []
     s.worker.exported.connect(lambda files, err: answers.append((files, err)))
-    # the dialog makes the job; two jobs: the image reduced to the screen's size, then JPEG and FITS at full size
-    d = ExportDialog(v)
-    d.dest.setText((out / "heart_16bit.tif").as_posix())
-    d.size_cb.addItem("Screen", 3108)
-    d.size_cb.setCurrentIndex(d.size_cb.count() - 1)
-    jobs = [d.job()]
-    jobs.append(dc.replace(d.job(), format=["jpeg", "fits32f"], size=0, wcs=True, name="heart", history=False))
-    d.reject()
-    d.deleteLater()
-    for job in jobs:
+    def export(job):
         t0 = time.monotonic()
         n = len(answers)
         s.worker.export(job)
@@ -2580,6 +2572,16 @@ def test_real_the_exports_read_back_with_their_wcs_and_the_reduced_one_matches_t
             time.sleep(0.02)
         done["+".join(job.format) if isinstance(job.format, list) else job.format] = round(time.monotonic() - t0, 1)
         assert answers[-1][1] == "", answers[-1]
+
+    # the dialog makes the job: the image reduced to the screen's size
+    d = ExportDialog(v)
+    d.dest.setText((out / "heart_16bit.tif").as_posix())
+    d.size_cb.addItem("Screen", 3108)
+    d.size_cb.setCurrentIndex(d.size_cb.count() - 1)
+    reduced = d.job()
+    d.reject()
+    d.deleteLater()
+    export(reduced)
     a = tifffile.imread(out / "heart_16bit.tif")                                       # the one reduced to the screen's size
     assert a.dtype == np.uint16 and a.shape == preview.shape
     diff = np.abs(a.astype(np.float64) / 65535 * 255 - preview.astype(np.float64))
@@ -2590,12 +2592,19 @@ def test_real_the_exports_read_back_with_their_wcs_and_the_reduced_one_matches_t
     # the engine's own 1/2 rendering is not its reduced full rendering (p99.9 of 20 levels on Heart, on nebula details
     # only the full resolution has): Post adds no more than 2 levels to that
     assert p999 <= base999 + 2.0 and p99 <= base99 + 2.0 and diff.mean() < 1.5
+    # JPEG and FITS at full size of a composition (two layers, a filter), the FITS with its astrometric solution
+    v.add_filter("saturation")["params"]["strength"] = 50.0
+    classic["visible"], classic["opacity"] = True, 30.0
+    v.push()
+    assert s.settle(600)
+    cw, ch = v.src.canvas
+    export(dc.replace(reduced, format=["jpeg", "fits32f"], size=0, wcs=True, name="heart", history=False))
     with Image.open(out / "heart.jpg") as im:
         assert im.size == (cw, ch) and im.mode == "RGB"
     with fits.open(out / "heart.fits") as h:
         assert h[0].data.dtype.itemsize == 4 and h[0].data.shape == (3, ch, cw)
         w2 = WCS(h[0].header, naxis=2).celestial
-    ox, oy = 120, 24                                                                   # where the canvas starts on the grid
+    ox, oy = ref_src.canvas([w.id for w in s.project.workflows]).origin               # where the canvas starts on the grid
     for x, y in ((0, 0), (cw // 2, ch // 2), (cw - 1, ch - 1)):
         ra, dec = api.pixel_to_sky(s.project, 1, ox + x, oy + y)
         ra2, dec2 = w2.pixel_to_world_values(x, ch - 1 - y)                                   # (FITS rows bottom up)
