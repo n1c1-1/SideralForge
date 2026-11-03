@@ -451,6 +451,23 @@ def guard():
 
 
 @pytest.fixture(autouse=True)
+def _collect_on_the_main_thread(request):
+    """Client tests: Python's cyclic collector runs on the main (GUI) thread only, after each test, as the client's
+    gcguard.GuiGarbageCollector does; a collection started by a worker thread can destroy a Qt object there and crash
+    the process. (Enabled again after the test, for the engine tests that may follow in the same process.)"""
+    if "client" not in Path(str(request.fspath)).parts:
+        yield
+        return
+    import gc
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.collect()
+        gc.enable()
+
+
+@pytest.fixture(autouse=True)
 def _private_project_registry(tmp_path, monkeypatch):
     """Each test has its own list of recent projects (inside the session's private folder, never the user's)."""
     import astro_gpu.core.project as project

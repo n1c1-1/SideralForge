@@ -52,6 +52,7 @@ from ..core import project2
 from ..core.newproject import guess_names
 from ..core.project import Target
 from . import prefs
+from .gcguard import GuiGarbageCollector
 from .home import HomeView
 from .i18n import _, language, plural, set_language
 from .logview import LogPanel
@@ -1047,6 +1048,7 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     prefs.load()
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    app._gc = GuiGarbageCollector(app)                  # cycles collected on the GUI thread only (gcguard.py)
     app.setApplicationName("astro_gpu")
     app.setStyleSheet(QSS + EXTRA_QSS)
     apply_language(prefs.get("language"))
