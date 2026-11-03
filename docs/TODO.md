@@ -15,6 +15,12 @@ obsolètes.
 
 ## Plus tard
 
+- **L'empilement face au jeu de données varié** (28 jeux, nuit du 3 au 4 novembre) : relever ce que la chaîne a mal
+  fait, à partir du rapport `docs/chantiers/empilement_jeu_varie.md` (régénéré par
+  `python tools/bench/denoise_dataset.py report`). Déjà vus : le monochrome et le X-Trans refusés ; l'ASI533 en poses
+  de 0,5 s (14 poses sur 15 non alignées) ; le Seestar S50 sur M51 (trop peu d'étoiles, même au seuil 5) ; 9 % de
+  pixels défectueux sur la DWARF mini ; un alignement moins précis sur le Celestron Origin (0,94 px).
+
 - **La couleur** (fiche : `docs/chantiers/couleur.md`) : c'est désormais une balance des blancs photométrique, comme
   Siril (la matrice qui produisait le magenta est sortie du code, la sortie simple prend le niveau du ciel du bloc
   Gradient). Reste à la mesurer face à la calibration photométrique de Siril sur les 6 cas.

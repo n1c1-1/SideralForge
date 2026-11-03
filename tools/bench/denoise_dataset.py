@@ -5,6 +5,7 @@ stacked by our own chain, their half-stack pairs exported, and the pretraining.
     python tools/bench/denoise_dataset.py export                         the pairs (A, B, noise map) of every stack
     python tools/bench/denoise_dataset.py train  [--hours 4]             pretrain the U-Net on all the pairs
     python tools/bench/denoise_dataset.py night  [--hours 10]           all of it in a row
+    python tools/bench/denoise_dataset.py report                         what the stacking met, per set (markdown)
 
 ``stack``: one project per set in F:/astro_essais/dataset_projets/<id> (its own engine state in _state), computed up
 to the stack only; a set that fails is noted (stack.json) and the next one goes on (a registration that finds too
@@ -148,6 +149,77 @@ def stack(only: list[str] | None, device: str) -> int:
             report_f.write_text(json.dumps(report, indent=1))
     n = sum(r["status"] == "done" for r in report.values())
     log(f"stacked: {n} of {len(report)}")
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------- report
+#: the measures of the chain quoted per set: (stage, metric, column title)
+REPORT_METRICS = [("register", "aligned", "aligned"), ("register", "rms_px", "align. RMS px"),
+                  ("register", "fwhm_px", "FWHM px"), ("stack", "frames_used", "frames used"),
+                  ("stack", "rejected_pct", "rejected %"), ("stack", "grid", "grid"),
+                  ("calibrate", "bad_pixels_pct", "bad px %")]
+
+
+def log_events(log_files: list[Path]) -> dict[str, list[str]]:
+    """The warnings and errors of the night logs, per set (the lines between a set's first and last mention)."""
+    out: dict[str, list[str]] = {}
+    cur = None
+    for lf in log_files:
+        if not lf.exists():
+            continue
+        for line in lf.read_text(encoding="utf-8", errors="replace").splitlines():
+            body = line[9:] if len(line) > 9 else ""
+            head = body.split(":", 1)[0].strip()
+            if head[:2].isdigit() and "_" in head:
+                cur = head.split(" ")[0]
+            elif cur and ("warning:" in body or "error:" in body):
+                msg = body.split("]", 1)[-1].strip() if "]" in body else body.strip()
+                stage = body.split("[", 1)[-1].split("]", 1)[0] if "[" in body else ""
+                kind = "error" if "error:" in body else "warning"
+                item = f"{kind} ({stage}): {msg}"
+                if item not in out.setdefault(cur, []):
+                    out[cur].append(item)
+    return out
+
+
+def report() -> int:
+    os.environ["ASTRO_GPU_HOME"] = str(PROJECTS / "_state")
+    from astro_gpu import api
+    st = json.loads((PROJECTS / "stack.json").read_text()) if (PROJECTS / "stack.json").exists() else {}
+    events = log_events([Path("F:/astro_essais/denoise_night_1.log"), Path("F:/astro_essais/denoise_night.log")])
+    cat = {r["id"]: r for r in csv.DictReader(open(CATALOG, encoding="utf-8-sig"), delimiter=";")}
+    lines = ["# L'empilement sur le jeu de données varié (rapport automatique)", "",
+             f"Généré le {datetime.now():%d/%m/%Y à %H:%M} par `tools/bench/denoise_dataset.py report`, à partir de "
+             "`stack.json`, des journaux de la nuit et des mesures de chaque projet "
+             "(`F:\\astro_essais\\dataset_projets`).", "",
+             "| Jeu | Appareil | Poses | Niveau | État | Minutes | " +
+             " | ".join(t for _s, _m, t in REPORT_METRICS) + " |",
+             "|---|---|---|---|---|---|" + "---|" * len(REPORT_METRICS)]
+    for tag, r in sorted(st.items()):
+        sid = tag.split(" ")[0]
+        level = tag[len(sid):].strip() or "toutes"
+        vals = []
+        try:
+            p = api.open_project(PROJECTS / sid)
+            w = next((x for x in p.workflows if x.name == ("Stack" if level == "toutes" else f"Stack {level}")), None)
+            for stage, key, _t in REPORT_METRICS:
+                o = api.stage_outputs(p, w.id, stage) if w is not None else None
+                v = o.metrics.get(key) if o is not None else None
+                vals.append("" if v is None else (", ".join(str(x) for x in v) if isinstance(v, list) else str(v)))
+        except Exception:  # noqa: BLE001
+            vals = [""] * len(REPORT_METRICS)
+        c = cat.get(sid, {})
+        state = "fait" if r.get("status") == "done" else f"**échec** : {r.get('why', '')}"
+        lines.append(f"| {sid} | {c.get('camera', '')[:28]} | {r.get('lights') or c.get('n_lights', '')} | {level} | "
+                     f"{state} | {r.get('minutes', '')} | " + " | ".join(vals) + " |")
+    lines += ["", "## Avertissements et erreurs, par jeu", ""]
+    for sid in sorted(events):
+        lines.append(f"**{sid}**")
+        lines += [f"- {e}" for e in events[sid]]
+        lines.append("")
+    out = ROOT / "docs" / "chantiers" / "empilement_jeu_varie.md"
+    out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    log(f"report: {out}")
     return 0
 
 
@@ -320,7 +392,7 @@ def train(hours: float, device: str, patch: int, batch: int, lr: float, resume: 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("cmd", choices=("stack", "export", "train", "night"))
+    ap.add_argument("cmd", choices=("stack", "export", "train", "night", "report"))
     ap.add_argument("--only", default="")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--hours", type=float, default=4.0)
@@ -334,6 +406,8 @@ def main(argv=None) -> int:
         return stack(only, a.device)
     if a.cmd == "export":
         return export()
+    if a.cmd == "report":
+        return report()
     if a.cmd == "night":
         stack(only, a.device)
         export()
