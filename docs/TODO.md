@@ -15,23 +15,14 @@ obsolètes.
 
 ## Plus tard
 
-- **La couleur** (détail à ce stade, fiche : `docs/chantiers/couleur.md`) :
-  - faire de l'étape Couleur une balance des blancs photométrique sur les étoiles Gaia, comme la calibration
-    photométrique de Siril (un facteur par canal) ;
-  - sortir du code la matrice reconstruite qui produit le magenta (Rosette, Heart) : l'ajustement des courbes de
-    sensibilité, les profils d'appareil, l'ancrage H-alpha, les spectres de synthèse, l'option « Correction des
-    couleurs », et l'ancrage de l'émission de la sortie simple (qui refait une matrice à partir des mêmes courbes) ;
-  - la sortie simple prend comme niveau du ciel la médiane de chaque canal sur tout le champ, biaisée par la
-    nébuleuse : prendre le niveau mesuré par le bloc Gradient ;
-  - mesurer face à la calibration photométrique de Siril sur les 6 cas, puis recalculer le banc.
+- **La couleur** (fiche : `docs/chantiers/couleur.md`) : c'est désormais une balance des blancs photométrique, comme
+  Siril (la matrice qui produisait le magenta est sortie du code, la sortie simple prend le niveau du ciel du bloc
+  Gradient). Reste à la mesurer face à la calibration photométrique de Siril sur les 6 cas.
 - **Les tests de l'interface** sur Heart express : 42 rouges (aucun défaut du code). Écarter ceux du débruitage, des
   étoiles et du workflow Complet (« à réintroduire avec leur chantier »), recaler les chiffres de l'ancien petit projet
   de test, mettre à jour ceux de l'ancien Gradient.
 - **M8 express** : relancer `python tools/bench/gradient_projects.py --cases m8` quand les services Gaia répondent.
 - **Le gradient automatique sur la Rosette** emporte environ un tiers de la nébuleuse : l'échelle du modèle ou le seuil
   de protection, à voir dans l'onglet « Modèle du ciel ».
-- **Le panneau des calques du Post-traitement** : le bouton « Panneau des calques » au bout de la barre est à refaire
-  comme dans Photoshop ou Lightroom (un chevron sur le bord du panneau lui-même, le bord qu'on fait glisser, Tab pour
-  masquer les panneaux, l'état gardé).
 - **Les filtres « netteté » et « débruitage » du Post-traitement** ne changent rien à l'image d'après les captures
   (`ml_sharpen`, `ml_denoise`) : à regarder.
