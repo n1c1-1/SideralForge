@@ -19,7 +19,8 @@ Run it again after an engine change that makes the results outdated (the client 
 Gaia tiles already in ``<out>/../_state/cache`` it takes about 50 minutes (the Stars stage alone about 30); the first
 build also downloads about 160 Gaia tiles (an hour when VizieR does not answer). The engine's state (timings, recent
 projects, download cache) goes to ``<out>/../_state``, never the user's ``~/.astro_gpu`` (its camera profiles are
-copied, its download cache is read). The tests only read this project; a test that changes it works on a copy.
+copied, its download cache and its offline Gaia extracts are read: with the extracts installed, nothing is
+downloaded). The tests only read this project; a test that changes it works on a copy.
 """
 from __future__ import annotations
 
@@ -148,6 +149,10 @@ def main(argv: list[str] | None = None) -> int:
     profiles = Path.home() / ".astro_gpu" / "camera_profiles"
     if profiles.is_dir():
         shutil.copytree(profiles, state / "camera_profiles", dirs_exist_ok=True)
+    # the offline Gaia extracts the user installed (Settings › Catalogs & astrometry), read in place: no download
+    extracts = Path.home() / ".astro_gpu" / "cache" / "gaia_extracts"
+    if extracts.is_dir():
+        os.environ.setdefault("ASTRO_GPU_GAIA_EXTRACTS", str(extracts))
     sys.path.insert(0, str(ROOT))
     from astro_gpu import api
 

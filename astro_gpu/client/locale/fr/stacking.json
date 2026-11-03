@@ -38,5 +38,6 @@
  "These thresholds act only when the frame selection is “{rule}”.": "Ces seuils n'agissent que si la sélection des images est sur « {rule} ».",
  "every frame, weight ≥ 5 % of the best": "toutes les images, poids ≥ 5 % du meilleur",
  "k × σ filters · weight ≥ 5 % of the best": "filtres k × σ · poids ≥ 5 % du meilleur",
- "Frame: click": "Image : cliquer"
+ "Frame: click": "Image : cliquer",
+ "The recommended method shows once the registration is computed.": "La méthode conseillée s'affiche une fois l'alignement calculé."
 }

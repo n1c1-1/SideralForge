@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import html
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -1044,6 +1045,15 @@ def _clear_closed(roots: list[str]) -> tuple[int, int]:
     return freed, len(roots)
 
 
+def _warm_up():
+    """What the first render would otherwise load while the user waits (core/determinism.warm_up)."""
+    try:
+        from ..core.determinism import warm_up
+        warm_up()
+    except Exception:  # noqa: BLE001 - a warm-up only: the render loads it anyway
+        pass
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     prefs.load()
@@ -1057,6 +1067,7 @@ def main(argv=None):
         QMessageBox.critical(None, "astro_gpu", "".join(traceback.format_exception(t, v, tb))[-3000:])
 
     sys.excepthook = show_error
+    threading.Thread(target=_warm_up, name="warm-up", daemon=True).start()
     w = Main()
     w.resize(1680, 1000)
     w.showMaximized()

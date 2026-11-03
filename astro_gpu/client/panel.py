@@ -702,6 +702,11 @@ class Panel(QWidget):
                     STACK_METHOD[0], STACK_METHOD[1], k_, None, _("Stacking method: {name}").format(name=nm),
                     nm.lower()))
             self.bv.addWidget(card)
+        if advice is None and self.s.state(p, "register") != "done":
+            # the advice reads the registration (star size, coverage of the frames kept): none without it
+            why = label(_("The recommended method shows once the registration is computed."), "small", wrap=True)
+            why.setObjectName("advice_pending")
+            self.bv.addWidget(why)
 
     def _cancel(self):
         self.s.pending_change = None

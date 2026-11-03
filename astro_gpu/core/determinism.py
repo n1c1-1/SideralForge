@@ -32,3 +32,11 @@ def deterministic(strict: bool = False):
         torch.use_deterministic_algorithms(prev[0], warn_only=prev[1])
         torch.backends.cudnn.benchmark = prev[2]
         torch.backends.cudnn.deterministic = prev[3]
+
+
+def warm_up() -> None:
+    """Load what the first ``deterministic()`` block loads: in this PyTorch, ``use_deterministic_algorithms`` imports
+    the compiler's configuration (torch._inductor, torch._dynamo), about a second once. The client calls it in a
+    background thread at start, so that its first render does not wait for it."""
+    torch.use_deterministic_algorithms(torch.are_deterministic_algorithms_enabled(),
+                                       warn_only=torch.is_deterministic_algorithms_warn_only_enabled())
