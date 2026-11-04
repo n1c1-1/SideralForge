@@ -26,18 +26,10 @@ option ; meilleur que notre ancien apprentissage sur chaque image, que GraXpert 
 - **La couleur** (fiche : `docs/chantiers/couleur.md`) : c'est désormais une balance des blancs photométrique, comme
   Siril (la matrice qui produisait le magenta est sortie du code, la sortie simple prend le niveau du ciel du bloc
   Gradient). Mesurée face à Siril le 4 novembre sur 5 cas (fiche, §5) : d'accord à 0,5 % avec SPCC, PCC s'écarte de 3
-  à 15 %. Reste M8 (SPCC), quand les services Gaia répondent.
+  à 15 %. M8 (SPCC) fait le 4 novembre au soir : d'accord à 2 % près.
 - **Les tests de l'interface** sur Heart express : 42 rouges (aucun défaut du code). Écarter ceux du débruitage, des
   étoiles et du workflow Complet (« à réintroduire avec leur chantier »), recaler les chiffres de l'ancien petit projet
   de test, mettre à jour ceux de l'ancien Gradient.
-- **M8 express** : relancer `python tools/bench/gradient_projects.py --cases m8` quand les services Gaia répondent.
-- **Les étoiles faibles de Gaia bloquent la couleur** (vu le 4 novembre sur M8 : VizieR injoignable, GAVO trop lent,
-  archive de l'ESA en erreur 500) : l'étape Catalogues télécharge toujours en ligne les étoiles jusqu'à G 18,5 (plus
-  profond que l'extrait Gaia local), alors qu'elles ne servent qu'au bloc Étoiles (`optics`, `stars`, `starless`) ; si
-  ce téléchargement échoue, toute l'étape échoue et la Couleur, qui n'a besoin que des spectres XP présents sur le
-  disque, ne se calcule pas. Siril n'a pas ce problème : sa calibration lit l'extrait local seul. À faire avec le
-  chantier Étoiles : ne télécharger les étoiles faibles que si le bloc Étoiles est là, et ne pas bloquer la Couleur
-  sans elles.
 - **L'édition des échantillons et zones du Gradient** (Inspect), restes de la revue d'ergonomie du 4 novembre :
   l'aperçu aussi dans l'onglet « Modèle du ciel » ; compacter les touches de pinceau enregistrées (chaque coup de
   pinceau entre dans la définition du projet) ; la question « Remplacer / Essayer en variante » des autres réglages

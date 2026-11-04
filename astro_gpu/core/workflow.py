@@ -129,7 +129,7 @@ def method_of(options: dict[str, Any], block: str) -> str | None:
 
 def implied(options: dict[str, Any], stage: str) -> dict[str, Any]:
     """The parameter values the options impose on a stage (they win over the stored ones): star_net enabled with
-    psf_neural; the method of the Gradient and Denoise blocks."""
+    psf_neural; the method of the Gradient and Denoise blocks; the deep Gaia catalogue with the Stars block."""
     o = check_options(options)
     if stage == "star_net" and o["stars"] == "psf_neural":
         return {"enabled": True}
@@ -137,6 +137,8 @@ def implied(options: dict[str, Any], stage: str) -> dict[str, Any]:
         return {"method": o["gradient"]}
     if stage == "denoise" and o["denoise"]:
         return {"method": o["denoise"]}
+    if stage == "catalogs":                    # the deep catalogue only for the Stars block (stages/catalogs.py)
+        return {"deep_stars": bool(o["stars"])}
     return {}
 
 

@@ -77,7 +77,7 @@ Outil : `tools/bench/colour_compare.py` ; résultats : `F:\astro_essais\bench\co
 
 Notre étape est désormais une balance des blancs seule (un facteur par couleur, comme SPCC). Siril a tourné sur le
 banc avec sa calibration : PCC sur Heart, Iris, M51 et Rosette ; SPCC (les vraies courbes du capteur) sur Seestar
-(capteur du S50) et M8. M8 manque : les services Gaia étaient en panne ce jour-là (voir `docs/TODO.md`).
+(capteur du S50) et M8 (IMX571 ; mesuré le soir, une fois l'étape Catalogues rendue hors ligne).
 
 **Le juge, le même pour les deux images.** Les étoiles Gaia XP du champ sont mesurées de la même façon (la photométrie
 de notre étape, fond local) sur notre image (la sortie de l'étape Couleur) et sur celle de Siril (`color_linear.fit`,
@@ -99,6 +99,7 @@ Ce qu'il resterait à corriger (rouge / bleu), blanc G2V :
 | M51 | +1,9 % / −2,6 % | −15,3 % / +12,6 % | PCC |
 | Rosette | +2,1 % / −2,4 % | −6,7 % / −2,5 % | PCC |
 | Seestar | +1,6 % / −2,1 % | +1,8 % / −1,7 % | SPCC |
+| M8 | +3,6 % / −2,3 % | +2,9 % / −4,5 % | SPCC |
 
 Avec le blanc « galaxie spirale moyenne », les deux colonnes se décalent d'autant (nous : environ −6 % / +3,5 %) : un
 choix de blanc, pas une erreur.
@@ -108,8 +109,8 @@ La dispersion des étoiles autour de leur couleur Gaia (écart absolu médian du
 photométrie : nous 0,13 / 0,24, Siril 0,21 / 0,39 sur Heart ; nous un peu mieux ou à égalité sur les autres cas.
 
 Ce qu'on en tire :
-- **Avec SPCC (Seestar), Siril et nous tombons d'accord à 0,5 % près.** C'est la meilleure validation possible : SPCC
-  connaît les vraies courbes de ce capteur, nous les retrouvons à partir des étoiles seules.
+- **Avec SPCC, Siril et nous tombons d'accord à 0,5 % près sur Seestar et à 2 % près sur M8.** C'est la meilleure
+  validation possible : SPCC connaît les vraies courbes de ces capteurs, nous les retrouvons à partir des étoiles
+  seules.
 - **PCC s'écarte de 3 à 15 %** selon les cas (jusqu'à −15 % / +13 % sur M51, avec 163 étoiles) ; son journal le
   signale lui-même (« solution imprécise », de grands écarts).
-- À refaire sur M8 (SPCC, capteur IMX571) quand les services Gaia répondent.

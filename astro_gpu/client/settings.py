@@ -377,6 +377,7 @@ CATALOG = {
 # the engine's settings that no panel shows: the project or the options set them, or a block control owns them
 HIDDEN = {("stack", "exclude"), ("stack", "min_transparency"), ("stack", "max_fwhm_ratio"), ("star_net", "enabled"),
           ("render_simple", "stretch"), ("stack", "method"), ("gradient", "method"), ("denoise", "method"),
+          ("catalogs", "deep_stars"),
           ("gradient", "sample_points"), ("gradient", "exclude_ellipses"), ("gradient", "exclude_brush")}
 #: the stacking method: chosen on the cards of the Stacking panel, never as a row
 STACK_METHOD = ("stack", "method")

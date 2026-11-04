@@ -61,6 +61,14 @@ def test_implied_star_net():
     assert wfl.implied(NEURAL, "stack") == {}
 
 
+def test_implied_catalogue_depth():
+    """The deep Gaia catalogue (downloaded) only with the Stars block; otherwise the bright stars, offline."""
+    assert wfl.implied(FULL, "catalogs") == {"deep_stars": True}
+    assert wfl.implied(NEURAL, "catalogs") == {"deep_stars": True}
+    assert wfl.implied(CLASSIC, "catalogs") == {"deep_stars": False}
+    assert wfl.implied(CLASSIC_DN, "catalogs") == {"deep_stars": False}
+
+
 @pytest.mark.parametrize("options,end", [
     ({"denoise": "nlbayes"}, None),                                   # ◇ methods
     ({"denoise": "pretrained", "stars": "psf", "gradient": "polynomial", "deconvolution": "rl"}, None),

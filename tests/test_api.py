@@ -645,7 +645,8 @@ def test_chain_deps_blocks_and_sharing_on_the_real_graph(real):
 def test_the_toy_scenario_cost_equals_the_plan_after_each_change(real):
     p = real
     plan0 = cost_equals_plan(p)
-    assert len(plan0) == 20 and plan0.seconds > 3600 and not plan0.measured
+    # 22: the workflows with Stars have their own deep Gaia catalogue, and so their own colour calibration
+    assert len(plan0) == 22 and plan0.seconds > 3600 and not plan0.measured
     # a setting on two workflows: the others still share the stack
     api.set_param(p, [3, 4], "stack", "kappa", 6)
     plan1 = cost_equals_plan(p)
@@ -727,7 +728,7 @@ def test_warm_fills_the_disk_caches_so_that_keys_states_and_plans_do_not_scan(re
     monkeypatch.setattr("astro_gpu.io.frames.read_info", no_scan)
     key = api.stage_key(p, 3, "stack")
     assert api.states(p, update=False)[(3, "stack")].key == key
-    assert api.cost(p).jobs == len(api.plan_all(p)) == 20 and api.blocks(p, 3) and api.sharing(p, 1, "stack")
+    assert api.cost(p).jobs == len(api.plan_all(p)) == 22 and api.blocks(p, 3) and api.sharing(p, 1, "stack")
     api.set_param(p, 3, "stack", "kappa", 6)                       # an edit changes the keys, not the disk parts
     assert api.stage_key(p, 3, "stack") != key and api.cost(p).jobs > 20
     api.add_session(p, lights=["elsewhere"])                       # a new session: its files are not cached yet

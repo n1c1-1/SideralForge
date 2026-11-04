@@ -2,13 +2,13 @@
 (docs/chantiers/etoiles_etat_de_lart.md).
 
     python tools/bench/stars_samples.py projects [--cases ...] [--device cuda:1]   our method on the bench
-    python tools/bench/stars_samples.py export   [--cases ...]                    the input image of each case
+    python tools/bench/stars_samples.py export   [--cases ...] [--device cpu]     the input image of each case
     python tools/bench/stars_samples.py starnet  [--cases ...]                    StarNet on it
 
-The input of every method is the same linear image: the Classic stack · denoise workflow of ``ours_express`` (the
-stack minus its gradient, denoised by the pretrained network, times the Color stage's white balance; M8, without
-Gaia today, keeps the camera's colours), divided by one factor so that its brightest pixel is 1 (StarNet clips above
-1). ``projects`` adds to each bench project the workflows of our method (Full: the star model measured with Gaia and
+The input of every method is the same linear image: the two half-stacks our starless stage starts from (the Optics
+stage's, of the Full · denoise workflow of ``ours_express``), each denoised by the Denoise stage's network, averaged,
+times the Color stage's white balance, divided by one factor so that its brightest pixel is 1 (StarNet clips above
+1). Our starless image is this minus the stars: O - S is then the stars only. ``projects`` adds to each bench project the workflows of our method (Full: the star model measured with Gaia and
 the starless image; Full + neural stars: and our per-image neural star removal) and computes them.
 
 StarNet 2 (command line, 2.6.2): ``--linear`` (it stretches with a midtones transfer, removes the stars, then undoes the
@@ -78,26 +78,48 @@ def projects(cases, device: str) -> int:
     return 1 if bad else 0
 
 
-def export(cases) -> int:
+def export(cases, device: str = "cpu") -> int:
+    """The common original of each case: the two half-stacks as our starless stage starts from them (the Optics
+    stage's, lateral colour shift corrected), each denoised by the Denoise stage's network, averaged, times the white
+    balance: our starless image is this minus the stars, so the star layer O - S holds the stars only. A case whose
+    Full workflow has no Optics result yet is left for later."""
+    import torch
     from astropy.io import fits
+
+    from astro_gpu.stages.denoise import UNet, apply_net, norm_params
     api = _api()
+    dev = torch.device(device)
     for case in cases:
         p = api.open_project(BENCH / case / "ours_express")
-        w = next(x for x in p.workflows if x.name == SOURCE)
-        dn = api.stage_outputs(p, w.id, "denoise")
-        col = api.stage_outputs(p, w.id, "color")
-        img = np.load(Path(dn.dir) / "n2n_full.npy").astype(np.float32)
+        w = next(x for x in p.workflows if x.name == next(iter(OURS)))
+        opt, dn = api.stage_outputs(p, w.id, "optics"), api.stage_outputs(p, w.id, "denoise")
+        st, col = api.stage_outputs(p, w.id, "stack"), api.stage_outputs(p, w.id, "color")
+        if opt is None or dn is None:
+            log(f"{case}: no Optics result in '{w.name}' yet: later")
+            continue
+        ck = torch.load(Path(dn.dir) / "n2n_model.pt", map_location=dev, weights_only=False)
+        net = UNet().to(dev)
+        net.load_state_dict(ck["net"])
+        net.eval()
+        A = np.load(Path(opt.dir) / "lat_A.npy").astype(np.float32)
+        B = np.load(Path(opt.dir) / "lat_B.npy").astype(np.float32)
+        _, _, nm = norm_params(A, np.load(Path(st.dir) / "drz_weight.npy").astype(np.float32))
+        t = time.time()
+        img = 0.5 * (apply_net(net, A, nm, ck["bk"], ck["sg"], dev) + apply_net(net, B, nm, ck["bk"], ck["sg"], dev))
+        del A, B
         M = np.load(Path(col.dir) / "M.npy") if col is not None else np.eye(3)
-        img = np.einsum("ij,jhw->ihw", M, img)
-        img = np.clip(img, 0, None)
+        img = np.clip(np.einsum("ij,jhw->ihw", M, img), 0, None)
         scale = float(img.max())
         d = OUT / case
         d.mkdir(parents=True, exist_ok=True)
         fits.PrimaryHDU((img / scale).astype(np.float32)).writeto(d / "input.fits", overwrite=True)
         (d / "meta.json").write_text(json.dumps({"case": case, "scale": scale, "colour": col is not None,
-                                                 "source": str(dn.dir), "shape": list(img.shape)}, indent=1))
-        log(f"{case}: input.fits {img.shape[2]}x{img.shape[1]} (scale {scale:.1f}"
-            f"{'' if col is not None else ', camera colours: no Color result'})")
+                                                 "source": str(opt.dir), "shape": list(img.shape)}, indent=1))
+        for old in ("starnet_starless.fits", "starnet_unscreen.fits"):      # made from the earlier input
+            if (d / old).exists():
+                (d / old).replace(d / f"{old}.old")
+        log(f"{case}: input.fits {img.shape[2]}x{img.shape[1]} (scale {scale:.1f}, denoised in "
+            f"{time.time() - t:.0f} s{'' if col is not None else ', camera colours: no Color result'})")
     return 0
 
 
@@ -119,13 +141,13 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("cmd", choices=("projects", "export", "starnet"))
     ap.add_argument("--cases", default=",".join(CASES))
-    ap.add_argument("--device", default="cuda:1")
+    ap.add_argument("--device", default=None, help="projects: cuda:1 by default; export: cpu")
     a = ap.parse_args(argv)
     cases = a.cases.split(",")
     if a.cmd == "projects":
-        return projects(cases, a.device)
+        return projects(cases, a.device or "cuda:1")
     if a.cmd == "export":
-        return export(cases)
+        return export(cases, a.device or "cpu")
     return starnet(cases)
 
 

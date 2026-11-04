@@ -706,5 +706,7 @@
  "Noise correlation between neighbours": "Corrélation du bruit entre voisins",
  "Correlation of the noise between neighbouring pixels: near 0 for a session without dithering.": "Corrélation du bruit entre pixels voisins : proche de 0 pour une séance sans dithering.",
  "Adaptation steps": "Pas d'adaptation",
- "Steps the network learned this image for (0: pretrained only).": "Nombre de pas pendant lesquels le réseau a appris cette image (0 : pré-entraîné seul)."
+ "Steps the network learned this image for (0: pretrained only).": "Nombre de pas pendant lesquels le réseau a appris cette image (0 : pré-entraîné seul).",
+ "Deep star catalogue": "Catalogue d'étoiles profond",
+ "Every Gaia star down to the measured and modelled limits, for the Stars block (set by the workflow). Off, only the bright stars the colour calibration needs, from the offline Gaia extract: no download.": "Toutes les étoiles Gaia jusqu'aux limites mesurée et modélisée, pour le bloc Étoiles (réglé par le workflow). Désactivé : seulement les étoiles brillantes dont la calibration des couleurs a besoin, lues dans l'extrait Gaia local, sans téléchargement."
 }
