@@ -63,12 +63,12 @@ def test_implied_star_net():
 
 @pytest.mark.parametrize("options,end", [
     ({"denoise": "nlbayes"}, None),                                   # ◇ methods
-    ({"denoise": "n2n", "stars": "psf", "gradient": "polynomial", "deconvolution": "rl"}, None),
+    ({"denoise": "pretrained", "stars": "psf", "gradient": "polynomial", "deconvolution": "rl"}, None),
     ({"stars": "learned"}, None),
     ({"gradient": None}, None),
     ({"gradient": "mars"}, None),
     ({"stars": "psf", "gradient": "polynomial"}, None),               # Stars needs Denoise
-    ({"denoise": "n2n", "colour": True}, None),                       # unknown option
+    ({"denoise": "pretrained", "colour": True}, None),                       # unknown option
     (CLASSIC, "astrometry"),                                          # not an exit
 ])
 def test_invalid_options_raise(options, end):
@@ -80,7 +80,7 @@ def test_invalid_options_raise(options, end):
 
 def test_missing_options_take_the_classic_defaults():
     assert wfl.check_options({}) == CLASSIC
-    assert list(wfl.check_options({"deconvolution": None, "denoise": "n2n"})) == list(wfl.OPTION_VALUES)
+    assert list(wfl.check_options({"deconvolution": None, "denoise": "pretrained"})) == list(wfl.OPTION_VALUES)
 
 
 # ---------------------------------------------------------------------------------------------- the option rules
@@ -88,13 +88,13 @@ def test_missing_options_take_the_classic_defaults():
 # the mockup's with_tool / without_tool (model.py:279-332), in the v2 options
 TOOL_CASES = [
     # with Stars: Denoise comes with it
-    (CLASSIC, "stars", "psf", {**CLASSIC, "denoise": "n2n", "stars": "psf"}, [wfl.NOTE_DENOISE_ADDED]),
+    (CLASSIC, "stars", "psf", {**CLASSIC, "denoise": "pretrained", "stars": "psf"}, [wfl.NOTE_DENOISE_ADDED]),
     # with the neural removal: Stars, then Denoise, come with it
-    (CLASSIC, "stars", "psf_neural", {**CLASSIC, "denoise": "n2n", "stars": "psf_neural"},
+    (CLASSIC, "stars", "psf_neural", {**CLASSIC, "denoise": "pretrained", "stars": "psf_neural"},
      [wfl.NOTE_STARS_ADDED_NEURAL, wfl.NOTE_DENOISE_ADDED]),
     (FULL, "stars", "psf_neural", NEURAL, []),
     # with Denoise
-    (CLASSIC, "denoise", "n2n", CLASSIC_DN, []),
+    (CLASSIC, "denoise", "pretrained", CLASSIC_DN, []),
     # without Stars: the neural removal goes
     (NEURAL, "stars", None, CLASSIC_DN, [wfl.NOTE_NEURAL_REMOVED]),
     (FULL, "stars", None, CLASSIC_DN, []),
@@ -128,7 +128,7 @@ def test_option_rules_refuse(before, key, value, why):
 
 def test_no_block_after_an_early_output():
     with pytest.raises(OptionRefused):
-        set_option(CLASSIC, "denoise", "n2n", end="stacking")
+        set_option(CLASSIC, "denoise", "pretrained", end="stacking")
 
 
 def test_set_option_rejects_invalid_values():

@@ -1450,15 +1450,12 @@ def add_exit(p: Project2, wf: int, block: str, name: str) -> Workflow:
 
 _METHODS: dict[str, list[MethodInfo]] = {
     "denoise": [
-        MethodInfo("n2n", "Noise2Noise on this image", "Noise2Noise", "gpu", "denoise", False,
-                   "A network learns, on this image alone, to predict one half-stack from the other: the noise goes, "
-                   "nothing is invented."),
-        MethodInfo("finetuned", "Pretrained + fine-tuned", "fine-tuned", "both", "denoise_ft", True,
-                   "Starts from a network trained on earlier projects and fine-tunes it on the half-stacks."),
-        MethodInfo("pretrained", "Pretrained network", "pretrained", "both", "denoise_ai", True,
-                   "A pretrained network applied as is: the fastest. May smooth or invent detail: compare."),
-        MethodInfo("nlbayes", "NL-Bayes", "NL-Bayes", "cpu", "denoise_cl", True,
-                   "Averages similar patches after stabilising the photon noise. Classic, predictable."),
+        MethodInfo("pretrained", "Pretrained network", "pretrained", "both", "denoise", False,
+                   "A Noise2Noise network pretrained on many pairs of half-stacks, applied as it is: seconds, also on "
+                   "a processor. Nothing is invented: it learned to predict one half-stack from the other."),
+        MethodInfo("adapted", "Pretrained + adapted to the image", "adapted", "both", "denoise", False,
+                   "The same network first learns this image's noise on its half-stacks: about 40 s on a GPU (5 min "
+                   "for a session without dithering). The best denoising."),
     ],
     "gradient": [
         MethodInfo("polynomial", "Polynomial", "polynomial", "cpu", "gradient", False,

@@ -393,7 +393,7 @@ def write_state(root: str | Path, state: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------------------------- v1 projects
 
 def v1_options(params: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], str]:
-    """The options and the name of the workflow a v1 parameter set gives: denoise n2n; gradient
+    """The options and the name of the workflow a v1 parameter set gives: denoise pretrained; gradient
     polynomial (the only method of the Gradient block, which v1 did not have); stars psf_neural without star_net when
     starless.learned_stars names a file ("Full + earlier neural layer"), psf_neural when star_net.enabled (default
     true, "Full + neural stars"), else psf ("Full")."""
@@ -403,7 +403,8 @@ def v1_options(params: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], str]:
         stars, name = "psf_neural", "Full + neural stars"
     else:
         stars, name = "psf", "Full"
-    return wfl.check_options({"denoise": "n2n", "stars": stars, "gradient": "polynomial", "deconvolution": None}), name
+    return wfl.check_options({"denoise": "pretrained", "stars": stars, "gradient": "polynomial",
+                              "deconvolution": None}), name
 
 
 def _merge_variant(main: dict[str, dict[str, Any]], changes: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:

@@ -512,8 +512,8 @@ def test_workflow_editing_templates_copies_rename_delete_and_undo(tmp_path):
     p = api.create_project(tmp_path / "p", "p")
     a = api.add_workflow(p, "Classic", "Classic stack")
     b = api.add_workflow(p, "Full", "Full", {"stack": {"scale": 2.0}})
-    c = api.add_workflow(p, "Custom", {"denoise": "n2n", "stars": None, "gradient": "polynomial"})
-    assert [w.id for w in p.workflows] == [1, 2, 3] and c.options["denoise"] == "n2n" and a.options["stars"] is None
+    c = api.add_workflow(p, "Custom", {"denoise": "pretrained", "stars": None, "gradient": "polynomial"})
+    assert [w.id for w in p.workflows] == [1, 2, 3] and c.options["denoise"] == "pretrained" and a.options["stars"] is None
     d = api.add_workflow(p, "Full 2", None, {"stack": {"kappa": 6.0}}, copy_of=b.id)
     assert d.options == b.options and d.params == {"stack": {"scale": 2.0, "kappa": 6.0}}
     assert p.workflow(b.id).params == {"stack": {"scale": 2.0}}               # the source is untouched
@@ -550,11 +550,11 @@ def test_set_option_notes_refusals_and_all_or_nothing(tmp_path):
     api.add_workflow(p, "Classic", "Classic stack")
     api.add_workflow(p, "Full", "Full")
     notes = api.set_option(p, 1, "stars", "psf")
-    assert notes and p.workflow(1).options["stars"] == "psf" and p.workflow(1).options["denoise"] == "n2n"
+    assert notes and p.workflow(1).options["stars"] == "psf" and p.workflow(1).options["denoise"] == "pretrained"
     assert any("Denoise" in n for n in notes)
     with pytest.raises(api.OptionRefused):
         api.set_option(p, [2, 1], "denoise", None)                            # both have Stars
-    assert p.workflow(1).options["denoise"] == "n2n" and p.workflow(2).options["denoise"] == "n2n"
+    assert p.workflow(1).options["denoise"] == "pretrained" and p.workflow(2).options["denoise"] == "pretrained"
     notes = api.set_option(p, [1, 2], "stars", None)                          # Stars off
     assert notes == [] and p.workflow(2).options["stars"] is None
     assert api.set_option(p, 1, "stars", None) == []                          # nothing to do
@@ -590,7 +590,7 @@ def test_variants_make_keep_discard_and_exits(real):
     with pytest.raises(ValueError):
         api.make_variant(p, 3, {"kind": "what"}, "x")
     # a Raw stack exit keeps only the settings of the stages it runs
-    api.set_param(p, 3, "denoise", "iterations", 8000)
+    api.set_param(p, 3, "denoise", "adaptation", "long")
     api.set_param(p, 3, "stack", "kappa", 6)
     x = api.add_exit(p, 3, "stacking", "Raw stack")
     assert x.end == "stacking" and x.params == {"stack": {"kappa": 6.0}}
@@ -598,13 +598,13 @@ def test_variants_make_keep_discard_and_exits(real):
     with pytest.raises(ValueError):
         api.add_exit(p, 3, "denoise", "no")
     with pytest.raises(api.OptionRefused):
-        api.set_option(p, x.id, "denoise", "n2n")                                       # nothing after an exit
+        api.set_option(p, x.id, "denoise", "pretrained")                                       # nothing after an exit
 
 
 def test_methods_table_marks_what_is_not_in_the_engine():
     dn = {m.key: m for m in api.methods("denoise")}
-    assert list(dn) == ["n2n", "finetuned", "pretrained", "nlbayes"]
-    assert not dn["n2n"].new and dn["n2n"].runs_on == "gpu" and dn["nlbayes"].new and dn["nlbayes"].runs_on == "cpu"
+    assert list(dn) == ["pretrained", "adapted"]
+    assert not dn["pretrained"].new and not dn["adapted"].new and dn["pretrained"].runs_on == "both"
     assert [(m.key, m.new) for m in api.methods("gradient")] == [("polynomial", False), ("rbf", False), ("automatic", False)]
     assert api.methods("stars")[1].stage == "star_net" and api.methods("deconvolution")[0].new
     from astro_gpu.core import workflow
@@ -667,7 +667,7 @@ def test_the_toy_scenario_cost_equals_the_plan_after_each_change(real):
     assert set(plan3.keys) - set(plan1.keys) == set(plan2.keys) - set(plan1.keys)
     assert set(plan1.keys) - set(plan3.keys) == {gone}
     # another variant, discarded: back to the plan before it
-    w = api.make_variant(p, 3, {"kind": "param", "stage": "denoise", "name": "iterations", "value": 8000},
+    w = api.make_variant(p, 3, {"kind": "param", "stage": "denoise", "name": "adaptation", "value": "long"},
                          "Full · short denoise")
     plan4 = cost_equals_plan(p)
     assert len(plan4) > len(plan3)
@@ -1126,7 +1126,7 @@ def test_cli2_creates_plans_runs_follows_and_stops_a_toy_project(tmp_path, state
     code, out = cli("add-workflow", proj, "Denoise", "--template", "Classic + denoise")
     assert code == 0 and "workflow 2 added" in out
     code, out = cli("add-workflow", proj, "Custom", "--option", "denoise=n2n", "--copy-of", 1)
-    assert code == 0 and project2.load(proj).workflow(3).options["denoise"] == "n2n"
+    assert code == 0 and project2.load(proj).workflow(3).options["denoise"] == "pretrained"
     code, out = cli("set", proj, "--wf", 2, "b.steps=12", "stack.kappa=6", "--option", "denoise=n2n")
     assert code == 0 and project2.load(proj).workflow(2).params == {"b": {"steps": 12}, "stack": {"kappa": 6.0}}
     code, out = cli("set", proj, "--wf", 2, "stack.kappa=auto")

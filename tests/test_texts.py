@@ -215,8 +215,12 @@ def test_the_other_stages(tmp_path):
         a = stage.auto(None)["workers"]
         assert a.reason == f"{cores} CPU cores detected" and a.text("fr") == f"{cores} cœurs de processeur détectés"
 
-    d = Denoise().auto(FakeCtx(tmp_path, jsons={("stack", "drz_meta.json"): {"width": 6000, "height": 4500}}))
-    assert d["iterations"].reason == "27 Mpx stack" and d["iterations"].text("fr") == "empilement de 27 Mpx"
+    rng = np.random.default_rng(0)                           # independent noise: an undithered session
+    for k in "AB":
+        np.save(tmp_path / f"stack_drz_{k}.npy", rng.normal(100, 5, (3, 900, 900)).astype(np.float32))
+    d = Denoise().auto(FakeCtx(tmp_path))
+    assert d["adaptation"].value == "long" and d["adaptation"].reason.startswith("noise nearly independent")
+    assert d["adaptation"].text("fr").startswith("bruit presque indépendant entre pixels voisins (corrélation ")
 
     c = Color().auto(FakeCtx(tmp_path, jsons={("stack", "drz_meta.json"): {"scale": 1.5}},
                              metrics={("register", "fwhm_px"): 3.04}))

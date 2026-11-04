@@ -31,6 +31,8 @@ RETIRED: dict[str, frozenset[str]] = {
     "register": frozenset({"channel_align", "fwhm_method"}),
     "color": frozenset({"correction", "hii_weight", "camera_profile", "synthetic_weight", "profile_tolerance"}),
     "background": frozenset({"sky_order", "large_scale_px"}),
+    # the network trained from scratch on each image, replaced by the pretrained one (stages/denoise.py)
+    "denoise": frozenset({"iterations", "patch", "batch", "learning_rate", "reuse_model"}),
 }
 #: removed settings whose last value stays in every key, so that the results computed with it keep their keys:
 #: {stage: {field: value}} (the Moffat star measure and the drizzle coverage rule are now the only behaviour)
@@ -41,7 +43,6 @@ KEY_CONSTANTS: dict[str, dict[str, object]] = {
 #: fields naming a file: keyed by the file (name, size, modification time), not by the path string
 PATH_FIELDS: dict[str, frozenset[str]] = {
     "starless": frozenset({"learned_stars"}),
-    "denoise": frozenset({"reuse_model"}),
 }
 #: fields without effect on the results (left out of the keys)
 NON_KEY: dict[str, frozenset[str]] = {

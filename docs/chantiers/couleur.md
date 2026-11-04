@@ -70,3 +70,46 @@ mesuré par le bloc Gradient, qui ignore les objets.
 pour les appareils de la base SPCC, une matrice calculée sur leurs vraies courbes (moindres carrés sur des spectres
 d'étoiles et d'émission, méthode standard de calibration des appareils photo) ; pour le Canon 6D non modifié, sa
 matrice Adobe DNG.
+
+## 5. Face à Siril, sur 5 cas du banc (4 novembre)
+
+Outil : `tools/bench/colour_compare.py` ; résultats : `F:\astro_essais\bench\colour_compare.json`.
+
+Notre étape est désormais une balance des blancs seule (un facteur par couleur, comme SPCC). Siril a tourné sur le
+banc avec sa calibration : PCC sur Heart, Iris, M51 et Rosette ; SPCC (les vraies courbes du capteur) sur Seestar
+(capteur du S50) et M8. M8 manque : les services Gaia étaient en panne ce jour-là (voir `docs/TODO.md`).
+
+**Le juge, le même pour les deux images.** Les étoiles Gaia XP du champ sont mesurées de la même façon (la photométrie
+de notre étape, fond local) sur notre image (la sortie de l'étape Couleur) et sur celle de Siril (`color_linear.fit`,
+ses étoiles placées par sa propre solution astrométrique). On calcule la balance des blancs qu'il faudrait encore
+appliquer à chaque image pour que les étoiles aient la couleur que leur spectre donne, avec un blanc de référence
+neutre : 0 % = parfait. Deux blancs de référence, ceux de la base SPCC de Siril : une étoile G2V (le Soleil ; celui de
+notre étape) et la « galaxie spirale moyenne » (celui que SPCC prend par défaut,
+[doc Siril](https://siril.readthedocs.io/en/latest/processing/color-calibration/spcc.html)). Notre image est réglée par
+notre étape sur ce même critère et ces mêmes étoiles : elle est près de 0 par construction (l'écart d'environ 2 %
+vient de ce que notre étape prend un corps noir à 5778 K et le juge le spectre G2V de la base). Ce qui compte : où se
+place Siril, et l'accord avec SPCC.
+
+Ce qu'il resterait à corriger (rouge / bleu), blanc G2V :
+
+| Cas | Nous | Siril | Méthode de Siril |
+|---|---|---|---|
+| Heart | +1,7 % / −2,6 % | −8,4 % / −8,2 % | PCC |
+| Iris | +1,9 % / −2,6 % | −2,8 % / −4,3 % | PCC |
+| M51 | +1,9 % / −2,6 % | −15,3 % / +12,6 % | PCC |
+| Rosette | +2,1 % / −2,4 % | −6,7 % / −2,5 % | PCC |
+| Seestar | +1,6 % / −2,1 % | +1,8 % / −1,7 % | SPCC |
+
+Avec le blanc « galaxie spirale moyenne », les deux colonnes se décalent d'autant (nous : environ −6 % / +3,5 %) : un
+choix de blanc, pas une erreur.
+
+La dispersion des étoiles autour de leur couleur Gaia (écart absolu médian du logarithme du rapport de couleur, rouge
+/ bleu) ne dépend pas de la calibration (une balance des blancs ne fait que décaler) mais de l'empilement et de la
+photométrie : nous 0,13 / 0,24, Siril 0,21 / 0,39 sur Heart ; nous un peu mieux ou à égalité sur les autres cas.
+
+Ce qu'on en tire :
+- **Avec SPCC (Seestar), Siril et nous tombons d'accord à 0,5 % près.** C'est la meilleure validation possible : SPCC
+  connaît les vraies courbes de ce capteur, nous les retrouvons à partir des étoiles seules.
+- **PCC s'écarte de 3 à 15 %** selon les cas (jusqu'à −15 % / +13 % sur M51, avec 163 étoiles) ; son journal le
+  signale lui-même (« solution imprécise », de grands écarts).
+- À refaire sur M8 (SPCC, capteur IMX571) quand les services Gaia répondent.

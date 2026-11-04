@@ -157,7 +157,7 @@ Ce qu'on en tire :
 
 ### La v2 (sans les sources du banc) face à la référence
 
-Modèle `pretrained_unet_v2_mid.pt` (l'état de la v2 à 11 h 10, environ 67 000 pas, 256 px par zone, 76 paires).
+Modèle `pretrained_unet_v2_mid.pt` : le meilleur point de validation de la v2 copié à 11 h 10, le pas 52 500 (256 px par zone, 76 paires). C'est le modèle livré (`astro_gpu/resources/denoise/pretrained_unet.pt`, en demi-précision). La v2 a tourné 5 h (171 000 pas) : la fin de l'entraînement dégrade Heart (2,194 → 2,453) et M8 (1,488 → 1,595) et ne gagne que moins de 1 % sur M51, Rosette et Seestar ; entraîner plus longtemps n'apporte rien.
 
 | Cas | Sans | v2 seul (1 s) | v2 + 500 pas, lr 2e-4 (40 s) | v2 + 4 000 pas, lr 3e-4 (5 min) | v2 + 8 000 pas (10 min) | Référence (21 min) |
 |---|---|---|---|---|---|---|
@@ -212,3 +212,19 @@ aigrettes sont respectées. GraXpert est fidèle aux étoiles mais laisse un gra
 d'étoiles faibles, rend les étoiles allongées en points à cœur noir, supprime les aigrettes et marbre le fond ; il
 accentue les étoiles (le haut des étoiles brillantes de Heart passe de 46 500 à 51 700 sur 65 535), d'où ses scores
 sur l'image entière.
+
+## 7. Dans le logiciel (4 novembre)
+
+L'étape Débruitage (`astro_gpu/stages/denoise.py`, version `2-<empreinte du modèle>` : changer le modèle livré rend
+les résultats périmés) a deux méthodes, choisies sur les cartes du bloc :
+- **Réseau pré-entraîné** (par défaut) : le modèle livré (`astro_gpu/resources/denoise/pretrained_unet.pt`) appliqué
+  tel quel ; quelques secondes sur la carte graphique, environ une minute sur le processeur pour 12 Mpx.
+- **Pré-entraîné + adapté à l'image** : 500 pas d'adaptation (courte, environ 40 s sur la carte graphique) ou 4000
+  (longue, environ 5 min). L'étape propose d'elle-même la longue quand le bruit est presque indépendant d'un pixel à
+  l'autre (corrélation sous 0,08 : une séance sans dithering) ; avec le réseau seul dans ce cas, elle le signale dans
+  le journal.
+
+Mesures affichées : bruit avant, après, réduction, corrélation du bruit entre voisins, pas d'adaptation. L'ancien
+apprentissage complet sur chaque image n'existe plus ; ses réglages enregistrés dans un projet sont ignorés. Le banc a
+deux workflows de plus par projet, « Classic stack · denoise » et « Classic stack · denoise adapted »
+(`tools/bench/denoise_projects.py`).

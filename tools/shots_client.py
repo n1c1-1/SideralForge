@@ -806,7 +806,29 @@ def part_gradedit():
     w.set_mode(1)
 
 
-PART_FN = {"gradedit": part_gradedit,
+def part_denoise():
+    """The Denoise block of the two denoise workflows of the bench (tools/bench/denoise_projects.py): the panel with
+    its method cards and settings, then Inspect on the block."""
+    print("Denoise", flush=True)
+    open_it()
+    for name, tag in (("Classic stack · denoise", "pretrained"), ("Classic stack · denoise adapted", "adapted")):
+        try:
+            pid = pid_of(name)
+        except KeyError:
+            walk.problem(f"no workflow {name!r}")
+            continue
+        w.set_mode(0)
+        walk.select("debruitage", pid)
+        walk.settle()
+        walk.shot(f"denoise_{tag}_panel")
+        w.set_mode(1)
+        walk.select("debruitage", pid)
+        walk.settle()
+        walk.shot(f"denoise_{tag}_inspect")
+    w.set_mode(0)
+
+
+PART_FN = {"gradedit": part_gradedit, "denoise": part_denoise,
            "home": part_home, "evening": part_evening, "graph": part_graph, "stack": part_stack, "inspect": part_inspect,
            "post": part_post, "export": part_export, "naming": part_naming}
 

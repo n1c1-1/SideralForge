@@ -54,16 +54,18 @@ TEMPLATES = {
     "Classique + débruitage": dict(debruitage=True, etoiles="garder", appris=False, fond="simple"),
     "Complet": dict(debruitage=True, etoiles="mesurer", appris=False, fond="simple"),
 }
-DN_SUMMARY = {"affine": "fine-tuned", "generique": "pretrained", "nlbayes": "NL-Bayes"}
+#: the Denoise methods: the views' keys and the engine's
+DN_ENGINE = {"generique": "pretrained", "affine": "adapted"}
+DN_VIEW = {v: k for k, v in DN_ENGINE.items()}
 CALIBRATION_KINDS = ("darks", "flats", "bias", "flat_darks")    # the session's lists a frame can be left out of
 #: seconds of the methods the engine does not have yet (the spec's estimates)
-EXTRA_SECONDS = {"denoise_ft": 180.0, "denoise_ai": 45.0, "denoise_cl": 300.0, "deconv": 150.0}
+EXTRA_SECONDS = {"deconv": 150.0}
 NOT_IN_ENGINE = "Not in the engine yet."
 #: the block of the views → the engine's block of ``api.methods``, and the option each method sets
 METHOD_BLOCK = {"debruitage": "denoise", "fond": "gradient", "etoiles": "stars", "deconv": "deconvolution"}
 METHOD_OPT = {"debruitage": "dn", "fond": "fond", "etoiles": "appris", "deconv": "deconv_m"}
 #: the engine's method keys → the views'
-METHOD_KEY = {"debruitage": {"n2n": "appris", "finetuned": "affine", "pretrained": "generique", "nlbayes": "nlbayes"},
+METHOD_KEY = {"debruitage": {"pretrained": "generique", "adapted": "affine"},
               "fond": {"polynomial": "simple", "rbf": "rbf", "automatic": "auto"},
               "etoiles": {"psf": "psf", "psf_neural": "psf_neural"},
               "deconv": {"rl": "psf", "neural": "neural"}}
@@ -71,7 +73,7 @@ METHOD_KEY = {"debruitage": {"n2n": "appris", "finetuned": "affine", "pretrained
 GRADIENT_ENGINE = {"simple": "polynomial", "rbf": "rbf", "auto": "automatic"}
 GRADIENT_VIEW = {v: k for k, v in GRADIENT_ENGINE.items()}
 #: the toolbox: key of a tool → (engine option, value that adds it, value that removes it)
-TOOL_OPTION = {"debruitage": ("denoise", "n2n", None), "etoiles": ("stars", "psf", None),
+TOOL_OPTION = {"debruitage": ("denoise", "pretrained", None), "etoiles": ("stars", "psf", None),
                "appris": ("stars", "psf_neural", "psf"), "auto": ("gradient", "automatic", "polynomial"),
                "rbf": ("gradient", "rbf", "polynomial"),
                "simple": ("gradient", "polynomial", None)}
@@ -88,13 +90,13 @@ def to_engine(o: dict) -> dict:
     stars = None
     if o.get("etoiles") == "mesurer":
         stars = "psf_neural" if o.get("appris") else "psf"
-    return {"denoise": "n2n" if o.get("debruitage") else None, "stars": stars,
+    return {"denoise": DN_ENGINE.get(o.get("dn"), "pretrained") if o.get("debruitage") else None, "stars": stars,
             "gradient": GRADIENT_ENGINE.get(o.get("fond"), "polynomial"), "deconvolution": None}
 
 
 def from_engine(o: dict) -> dict:
-    """The engine's options as the views' (``dn`` is always the engine's Noise2Noise)."""
-    return {"debruitage": bool(o.get("denoise")), "dn": "appris", "etoiles": "mesurer" if o.get("stars") else "garder",
+    """The engine's options as the views'."""
+    return {"debruitage": bool(o.get("denoise")), "dn": DN_VIEW.get(o.get("denoise"), "generique"), "etoiles": "mesurer" if o.get("stars") else "garder",
             "appris": o.get("stars") == "psf_neural", "fond": GRADIENT_VIEW.get(o.get("gradient"), "simple"),
             "deconv": bool(o.get("deconvolution"))}
 
@@ -113,7 +115,7 @@ def method_of(p: WorkflowView, block: str) -> str:
         return "psf_neural" if p.opts.get("appris") else "psf"
     if block == "deconv":
         return p.opts.get("deconv_m", "psf")
-    return p.opts.get("dn", "appris")
+    return p.opts.get("dn", "generique")
 
 
 def method_value(block: str, key: str):
@@ -780,11 +782,13 @@ class ProjectModel(QObject):
         """(the cache key, the options the method needs) of a method's duration, or None when the engine refuses them.
         ``device``: "gpu", "cpu", or None for the machine's."""
         tool = {"fond": {"auto": "auto", "rbf": "rbf", "simple": "simple"}, "etoiles": {"psf": "etoiles", "psf_neural": "appris"},
-                "debruitage": {"appris": "debruitage"}}.get(block, {}).get(method)
+                "debruitage": {"generique": "debruitage", "affine": "debruitage"}}.get(block, {}).get(method)
         try:
             opts = self.with_tool(p.opts, tool)[0] if tool else dict(p.opts)      # the options the method needs
         except wfl.OptionRefused:
             return None
+        if block == "debruitage":
+            opts["dn"] = method
         dev = self.DEVICE_OF[device or ("gpu" if self.gpu else "cpu")]      # the machine's own: the class it computes with
         return ("method", block, repr(sorted(opts.items())), repr(sorted(p.params.items())), dev, self._epoch,
                 self._sources_sig()), opts
@@ -1153,15 +1157,15 @@ class ProjectModel(QObject):
             return [{"kind": "param", "stage": ch["stage"], "name": ch["name"], "value": v}]
         key, v = ch["key"], ch["value"]
         if key == "dn":
-            if v != "appris":
+            if v not in DN_ENGINE:
                 raise NotInEngine(NOT_IN_ENGINE)
-            return [{"kind": "opt", "key": "denoise", "value": "n2n"}]
+            return [{"kind": "opt", "key": "denoise", "value": DN_ENGINE[v]}]
         if key == "appris":
             return [{"kind": "opt", "key": "stars", "value": "psf_neural" if v else "psf"}]
         if key == "fond":
             return [{"kind": "opt", "key": "gradient", "value": GRADIENT_ENGINE.get(v, "polynomial")}]
         if key == "debruitage":
-            return [{"kind": "opt", "key": "denoise", "value": "n2n" if v else None}]
+            return [{"kind": "opt", "key": "denoise", "value": "pretrained" if v else None}]
         if key == "etoiles":
             return [{"kind": "opt", "key": "stars", "value": "psf" if v == "mesurer" else None}]
         raise NotInEngine(NOT_IN_ENGINE)

@@ -783,19 +783,23 @@ def test_the_cuda_check(monkeypatch):
 # ---------------------------------------------------------------------------------------------- estimates
 
 def test_estimates_follow_units_history_and_the_cpu():
-    f = est.Facts(frames=100, lights=80, mpx=24.0, scale=1.0, grid_mpx=24.0, iterations=6000, steps=11000)
+    f = est.Facts(frames=100, lights=80, mpx=24.0, scale=1.0, grid_mpx=24.0, iterations=500, steps=11000)
     heart = est.HEART_FACTS
     e = est.estimate("stack", f, history={})
     assert not e.measured and e.seconds == pytest.approx(2064.0 * 80 * 24.0 / (721 * heart.mpx * 2.25))
     assert est.estimate("calibrate", f, history={}).disk_gb == pytest.approx(0.11 * 80 * 24 / (721 * heart.mpx)
                                                                              + 80 * 24e6 * 2 / 1e9)
-    assert est.estimate("denoise", f, gpu=False, history={}).seconds == pytest.approx(1865.5 / 4 * 45)
+    # Denoise: its measured times per adaptation step and per Mpx applied, not the reference x the CPU factor
+    assert est.estimate("denoise", f, gpu=False, history={}).seconds == pytest.approx(3.6 * 500 + 3.3 * 24.0)
+    assert est.estimate("denoise", f, history={}).seconds == pytest.approx(0.088 * 500 + 0.75 * 24.0)
+    assert est.units("denoise", f) == pytest.approx(500 + 8.5 * 24.0)
     hist = {"stack": [[100.0, 1000.0, "gpu"], [300.0, 1000.0, "gpu"], [9.0, 1.0, "cpu"]]}
     m = est.estimate("stack", f, history=hist)
     assert m.measured and m.seconds == pytest.approx(0.2 * 80 * 24.0)
     assert est.estimate("stack", f, gpu=False, history=hist).seconds == pytest.approx(9.0 * 80 * 24.0)
     assert not est.estimate("stack", f, gpu=False, history={"stack": hist["stack"][:2]}).measured
-    assert est.denoise_iterations(27.3) == 24000 and est.denoise_iterations(2.0) == 6000
+    assert est.denoise_steps("pretrained", None) == 0 and est.denoise_steps("adapted", None) == 500
+    assert est.denoise_steps("adapted", "long") == 4000
 
 
 def test_record_keeps_the_last_20_written_atomically(state):

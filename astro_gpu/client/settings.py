@@ -230,42 +230,12 @@ CATALOG = {
             E("catalogs", "xp_max", "expert", help="Maximum number of stars used."),
         ]),
     ],
-    "debruitage": [
-        ("Denoise", [
-            N("denoise", "strength", "Strength", "int", 100,
-              "Blend with the original stack: 100 % keeps all the denoising, 70 % leaves some natural grain.",
-              lo=0, hi=100, step=5, unit="%", reason=AS_TODAY),
-            E("denoise", "iterations"),
+    "debruitage:generique": [],
+    "debruitage:affine": [
+        ("Adaptation to the image", [
+            E("denoise", "adaptation", help="How long the network learns this image's noise before denoising it."),
         ]),
-        ("Training", [
-            E("denoise", "patch", "expert", help="Size of the image tiles the network learns on."),
-            E("denoise", "learning_rate", "expert", help="Learning step: too large, it diverges; too small, it does "
-                                                         "not progress."),
-            E("denoise", "reuse_model", "expert", help="Starts from an already trained network (file) instead of "
-                                                       "from scratch."),
-        ]),
-        ("System", [E("denoise", "batch", "system"), E("denoise", "seed", "system")]),
-        ("Fine-tuning", [
-            N("denoise_ft", "steps", "Fine-tuning iterations", "int", 600, "How many iterations the pretrained "
-              "network is fine-tuned on the half-stacks.", lo=100, hi=3000, step=100),
-            N("denoise_ft", "start", "Starting network", "choice", "Closest earlier project",
-              "The network the fine-tuning starts from.",
-              choices=["Closest earlier project", "Bundled generic network"]),
-        ]),
-        ("Pretrained network", [
-            N("denoise_ai", "force", "Strength", "float", 0.8, "Blend between the denoised and the original image.",
-              lo=0.0, hi=1.0, step=0.05),
-            N("denoise_ai", "model", "Model", "choice", "Bundled", "The network applied.",
-              choices=["Bundled", "Generic network"]),
-        ]),
-        ("NL-Bayes", [
-            N("denoise_cl", "force", "Strength", "float", 1.0, "How much of the measured noise is removed.", lo=0.0,
-              hi=3.0, step=0.05),
-            N("denoise_cl", "vst", "Stabilise photon noise", "bool", True, "Anscombe transform before denoising: the "
-              "noise becomes the same in faint and bright areas."),
-            N("denoise_cl", "da3d", "DA3D refinement", "bool", False, "A second pass that keeps fine detail better; "
-              "slower.", level="expert"),
-        ]),
+        ("System", [E("denoise", "seed", "system")]),
     ],
     "deconv": [
         ("Deconvolution", [
@@ -406,7 +376,7 @@ CATALOG = {
 }
 # the engine's settings that no panel shows: the project or the options set them, or a block control owns them
 HIDDEN = {("stack", "exclude"), ("stack", "min_transparency"), ("stack", "max_fwhm_ratio"), ("star_net", "enabled"),
-          ("render_simple", "stretch"), ("stack", "method"), ("gradient", "method"),
+          ("render_simple", "stretch"), ("stack", "method"), ("gradient", "method"), ("denoise", "method"),
           ("gradient", "sample_points"), ("gradient", "exclude_ellipses"), ("gradient", "exclude_brush")}
 #: the stacking method: chosen on the cards of the Stacking panel, never as a row
 STACK_METHOD = ("stack", "method")
@@ -443,8 +413,6 @@ TIPS = {
     ("color", "aperture"): "About twice the star size; larger, it is safer in poor seeing, but noisier.",
     ("color", "white_temp"): "This is the physical calibration; the render can still warm or cool the image without "
                              "touching it.",
-    ("denoise", "iterations"): "More steps give a slightly better denoising; the gain levels off near 20,000. "
-                               "Training is saved every 1000 steps and resumes after an interruption.",
     ("inventory", "max_lights"): "Useful for a quick test of the whole chain; keep 0 for the real run.",
     ("register", "detect_sigma"): "Lower it (5) for very short or very faint frames; raise it in very dense Milky Way "
                                   "fields to keep only clean stars.",
@@ -483,7 +451,11 @@ TYPES = {"int": "int", "float": "float", "bool": "bool", "str": "str", "float | 
 
 # ======================================================================== resolving a setting for a workflow
 def catalog_key(p, step: str) -> str:
-    return f"fond:{p.opts['fond']}" if step == "fond" else step
+    if step == "fond":
+        return f"fond:{p.opts['fond']}"
+    if step == "debruitage":
+        return f"debruitage:{p.opts.get('dn', 'generique')}"
+    return step
 
 
 def render_stage(s, p) -> str | None:

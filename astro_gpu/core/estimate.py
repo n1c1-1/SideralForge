@@ -5,7 +5,7 @@ A stage's cost grows with its *units*:
     inventory              frames (all kinds)
     calibrate, register    light frames x sensor Mpx
     stack                  light frames x sensor Mpx x drizzle scale²
-    denoise                training iterations
+    denoise                adaptation steps + DENOISE_MPX_UNITS x stack grid Mpx (applying the network)
     star_net               training steps
     any other stage        stack grid Mpx
 
@@ -42,7 +42,7 @@ LOCK_STALE = 30.0                              # a lock file older than this was
 HEART: dict[str, tuple[float, float]] = {
     "inventory": (5.0, 0.0), "calibrate": (310.8, 0.11), "register": (121.4, 0.0), "stack": (2064.0, 1.31),
     "astrometry": (124.1, 0.0), "reference": (89.8, 0.0), "catalogs": (178.3, 0.07), "surveys": (42.5, 0.11),
-    "color": (2.9, 0.0), "denoise": (1865.5, 0.68), "optics": (179.9, 0.98), "stars": (1929.2, 1.07),
+    "color": (2.9, 0.0), "denoise": (20.4, 0.68), "optics": (179.9, 0.98), "stars": (1929.2, 1.07),
     "star_net": (2453.3, 0.37), "starless": (622.5, 2.01), "background": (44.7, 0.98), "render_prep": (116.8, 1.44),
     "render_prep_learned": (99.6, 1.6), "gradient": (60.0, 0.01), "render_simple": (30.0, 0.7),
 }
@@ -55,6 +55,14 @@ CPU_FACTOR: dict[str, float] = {
     "render_prep": 10, "render_prep_learned": 10, "gradient": 1, "render_simple": 2,
 }
 DEFAULT_CPU_FACTOR = 2.0
+#: Denoise (stages/denoise.py): applying the pretrained network costs this many adaptation steps per Mpx of the stack
+#: grid; measured on the bench on 4 November 2026 (RTX 4060 Ti; 8 processor threads): seconds per adaptation step and
+#: per Mpx applied. Its two parts do not slow down alike without a GPU, so without a history of this kind of machine
+#: the estimate is these times, not the reference's x CPU_FACTOR.
+DENOISE_MPX_UNITS = 8.5
+DENOISE_SECONDS = {"gpu": {"step": 0.088, "mpx": 0.75}, "cpu": {"step": 3.6, "mpx": 3.3}}
+#: the adaptation lengths (stages/denoise.ADAPTATIONS: steps)
+DENOISE_ADAPT_STEPS = {"short": 500, "long": 4000}
 
 
 @dataclass
@@ -66,7 +74,7 @@ class Facts:
     mpx: float = 4256 * 2848 / 1e6   # sensor
     scale: float = 1.5               # drizzle
     grid_mpx: float = 6384 * 4272 / 1e6
-    iterations: int = 24000          # denoise
+    iterations: int = 0              # denoise: adaptation steps (0: the pretrained network as it is)
     steps: int = 11000               # star_net
 
 
@@ -88,7 +96,7 @@ def units(stage: str, f: Facts) -> float:
     if stage == "stack":
         return f.lights * f.mpx * f.scale ** 2
     if stage == "denoise":
-        return float(f.iterations)
+        return float(f.iterations) + DENOISE_MPX_UNITS * f.grid_mpx
     if stage == "star_net":
         return float(f.steps)
     return f.grid_mpx
@@ -217,6 +225,9 @@ def estimate(stage: str, f: Facts, gpu: bool = True, history: dict | None = None
     own = _rates(hist, stage, _kind(gpu))
     if own:
         return Estimate(statistics.median(own) * u, True, gb)
+    if stage == "denoise":
+        t = DENOISE_SECONDS[_kind(gpu)]
+        return Estimate(t["step"] * f.iterations + t["mpx"] * f.grid_mpx, False, gb)
     other = _rates(hist, stage, _kind(not gpu))          # measured on the other kind of machine: scaled, ≈
     if other:
         return Estimate(statistics.median(other) * u * (1 / factor if gpu else factor), False, gb)
@@ -240,9 +251,9 @@ def _sensor_mpx(path: str) -> float | None:
     return _SENSOR[path]
 
 
-def denoise_iterations(grid_mpx: float) -> int:
-    """The iterations denoise chooses for a stack of that size (its automatic rule, stages/denoise.py)."""
-    return int(min(30000, max(6000, round(24000 * (grid_mpx / 27.3) ** 0.5 / 1000) * 1000)))
+def denoise_steps(method: str | None, adaptation: str | None) -> int:
+    """The adaptation steps of a Denoise job: 0 for the pretrained network, else those of its adaptation length."""
+    return DENOISE_ADAPT_STEPS.get(adaptation or "short", 500) if method == "adapted" else 0
 
 
 def facts(keys: Any, wf: Any, store: Any = None) -> Facts:
@@ -302,8 +313,9 @@ def facts(keys: Any, wf: Any, store: Any = None) -> Facts:
     f.scale = float(scale or f.scale)
     grid = (stack.get("metrics") or {}).get("grid")
     f.grid_mpx = grid[0] * grid[1] / 1e6 if grid else f.mpx * f.scale ** 2
-    it = (done("denoise").get("params") or {}).get("iterations") or given("denoise").get("iterations")
-    f.iterations = int(it or denoise_iterations(f.grid_mpx))
+    dn = {**given("denoise"), **(done("denoise").get("params") or {})}
+    f.iterations = denoise_steps(dn.get("method") or (getattr(wf, "options", None) or {}).get("denoise"),
+                                 dn.get("adaptation"))
     st = (done("star_net").get("params") or {}).get("steps") or given("star_net").get("steps")
     f.steps = int(st or f.steps)
     return f
@@ -333,7 +345,7 @@ def v1_facts(root: str | Path) -> Facts:
     f.scale = float((stack.get("params") or {}).get("scale") or f.scale)
     grid = (stack.get("metrics") or {}).get("grid")
     f.grid_mpx = grid[0] * grid[1] / 1e6 if grid else f.mpx * f.scale ** 2
-    f.iterations = int((man("denoise").get("params") or {}).get("iterations") or denoise_iterations(f.grid_mpx))
+    f.iterations = 0                 # v1 trained its network from scratch: no adaptation steps to count
     f.steps = int((man("star_net").get("params") or {}).get("steps") or f.steps)
     return f
 

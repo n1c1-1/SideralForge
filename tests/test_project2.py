@@ -33,7 +33,7 @@ def _project(root: Path) -> Project2:
     ]
     p.excluded = [(1, "DSC01234.ARW"), (2, "DSC01234.ARW")]            # camera counters restart: same name twice
     p.add_workflow("Full", FULL, {"stack": {"scale": 1.5, "min_transparency": 0.6},
-                                  "denoise": {"iterations": 24000}})
+                                  "denoise": {"adaptation": "short"}})
     p.add_workflow("Classic stack", CLASSIC)
     p.render_bases = {"faithful": {"sky_level": 24.0}}
     return p
@@ -58,11 +58,11 @@ def test_stored_value_equal_to_the_static_default_is_kept(tmp_path):
     stages = wfl.chains().stages
     assert stages["stack"].Params.model_fields["scale"].default == 1.5
     assert stages["stack"].Params.model_fields["min_transparency"].default == 0.6
-    assert stages["denoise"].Params.model_fields["iterations"].default == 24000
+    assert stages["denoise"].Params.model_fields["adaptation"].default == "short"
     root = tmp_path / "p"
     p2.save(_project(root))
     q = p2.load(root)
-    assert q.workflow(1).params == {"stack": {"scale": 1.5, "min_transparency": 0.6}, "denoise": {"iterations": 24000}}
+    assert q.workflow(1).params == {"stack": {"scale": 1.5, "min_transparency": 0.6}, "denoise": {"adaptation": "short"}}
     assert q.workflow(1).stored("stack") == {"scale": 1.5, "min_transparency": 0.6}
     raw = json.loads((root / p2.FILE).read_text(encoding="utf-8"))
     assert raw["workflows"][0]["params"]["stack"] == {"scale": 1.5, "min_transparency": 0.6}
@@ -181,7 +181,7 @@ def _keyed_project(root: Path) -> Project2:
         (raws / f"IMG_{i:03d}.ARW").write_bytes(b"\0" * (100 + 10 * i))
     p = p2.create(root, "Keyed", Target(name="IC 1805"))
     p.sessions = [Session(1, "night 1", lights=[str(raws)])]
-    p.add_workflow("Full", FULL, {"stack": {"scale": 2.0}, "denoise": {"iterations": 6000}})
+    p.add_workflow("Full", FULL, {"stack": {"scale": 2.0}, "denoise": {"adaptation": "long"}})
     p.add_workflow("Classic stack", CLASSIC)
     return p
 
@@ -418,7 +418,7 @@ def test_from_v1_on_the_real_projects(folder, name, wf_name):
     assert p.name == name and p.root is None and p.scratch_dir == ""
     assert [(w.id, w.name, w.end, w.variant_of) for w in p.workflows] == [(1, wf_name, None, None)]
     w = p.workflows[0]
-    assert w.options == {"denoise": "n2n", "stars": "psf_neural", "gradient": "polynomial", "deconvolution": None}
+    assert w.options == {"denoise": "pretrained", "stars": "psf_neural", "gradient": "polynomial", "deconvolution": None}
     assert w.params == {st: kv for st, kv in (old.get("params") or {}).items() if kv}
     assert [getattr(p.sessions[0], k) for k in p2.KINDS] == [old["inputs"].get(k, []) for k in p2.KINDS]
     c = p.chain(w)

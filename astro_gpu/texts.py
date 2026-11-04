@@ -252,6 +252,9 @@ _METRIC_ROWS: list[tuple] = [
     ("noise_before", "Noise before", "", ".3f", "Noise measured before denoising."),
     ("noise_after", "Noise after", "", ".3f", "Noise measured after denoising."),
     ("noise_reduction", "Noise reduction", "×", ".2f", "How many times the noise went down."),
+    ("noise_correlation", "Noise correlation between neighbours", "", ".2f",
+     "Correlation of the noise between neighbouring pixels: near 0 for a session without dithering."),
+    ("adaptation_steps", "Adaptation steps", "", "d", "Steps the network learned this image for (0: pretrained only)."),
     # optics
     ("lateral_shift_max_px", "Largest color shift", "px", ".2f", "Largest shift of red or blue against green, at the edges."),
     ("g_sat", "Saturation magnitude", "mag", ".2f", "Gaia magnitude (G) where stars start to saturate."),
@@ -540,6 +543,8 @@ CHOICE_TEXTS: dict[str, str] = {
     "full": "Full correction", "per_colour": "One factor per colour",
     # the Gradient block's methods (stages/gradient.py)
     "polynomial": "Polynomial", "rbf": "RBF", "automatic": "Automatic",
+    # the Denoise block's methods and adaptation lengths (stages/denoise.py)
+    "pretrained": "Pretrained network", "adapted": "Pretrained + adapted", "short": "Short", "long": "Long",
 }
 
 _stage_index: dict[str, dict] | None = None

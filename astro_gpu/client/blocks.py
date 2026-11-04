@@ -299,11 +299,10 @@ class Graph:
                 txt += " · " + _("+ half-stacks")
             return txt
         if k == "debruitage":
-            from .model import DN_SUMMARY
-            dn = p.opts.get("dn", "appris")
-            if dn in DN_SUMMARY:
-                return _(DN_SUMMARY[dn])
-            return _("Noise2Noise · {n} it.").format(n=fmt_int(s.param_value(p, "denoise", "iterations") or 0))
+            if p.opts.get("dn") == "affine":
+                return _("pretrained + adapted · {length}").format(length=texts.choice_label(
+                    str(s.param_value(p, "denoise", "adaptation") or "short"), language()))
+            return _("pretrained network")
         if k in ("fond", "etoiles", "deconv"):
             return method_summary(s, p, k)
         if k == "astrometrie":

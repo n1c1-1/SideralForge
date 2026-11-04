@@ -1,56 +1,89 @@
-"""Noise2Noise denoiser trained on the two independent half-stacks of the very data being processed."""
+"""The Denoise block: a Noise2Noise network pretrained on many half-stack pairs, applied to this stack, and, as the
+second method, adapted to it first (docs/chantiers/debruitage.md).
+
+Noise2Noise: the network learns to predict one half-stack from the other; their noise is independent, so the only
+thing it can learn is the sky common to both, never detail that is not in the data. Pretrained on 76 pairs (a varied
+dataset stacked by this chain at four signal-to-noise levels, and projects), it beat on the bench a network trained
+from scratch on each image (21 min of GPU) and GraXpert; adapting it to the image (all its weights, a few hundred
+Noise2Noise steps on the half-stacks) helps most when the image differs from what it has seen: a session without
+dithering, whose noise is independent from one pixel to the next, needs the long adaptation.
+
+Methods (the workflow's ``denoise`` option, ``method`` here): ``pretrained`` the network as it is (seconds, also on a
+processor); ``adapted`` the network adapted first (``adaptation``: short, about 40 s on a GPU; long, about 5 min).
+"""
 from __future__ import annotations
 
+import hashlib
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pydantic import field_validator
 
 from ..core.imgutil import asinh_preview
-from ..core.params import ADVANCED, Auto, P, StageParams
+from ..core.params import ADVANCED, Auto, P, StageParams, check_choice
 from ..core.stage import Context, Stage
 from .gradient import stack_image
 
+METHODS = ("pretrained", "adapted")
+#: the adaptation lengths: (steps, peak learning rate), as measured on the bench (docs/chantiers/debruitage.md §5)
+ADAPTATIONS = {"short": (500, 2e-4), "long": (4000, 3e-4)}
+#: below this correlation of the noise between neighbouring pixels the session was not dithered: the pretrained
+#: network has not seen such noise (its pairs go from 0.09 to 0.42; the bench's undithered M8: 0.03)
+UNDITHERED_CORRELATION = 0.08
+MODEL = Path(__file__).resolve().parents[1] / "resources" / "denoise" / "pretrained_unet.pt"
+MODEL_ID = hashlib.sha256(MODEL.read_bytes()).hexdigest()[:10] if MODEL.exists() else "missing"
+PATCH, BATCH = 192, 12
+
 
 class DenoiseParams(StageParams):
-    iterations: int = P(24000, label="Training iterations", ge=500, le=200000, step=1000,
-                        help="Number of training steps of the denoising network on your own data.",
-                        tip="More steps give a slightly better denoiser; the gain flattens beyond ~20 000. Training "
-                            "is checkpointed every 1000 steps and resumes after an interruption.")
-    patch: int = P(192, label="Patch size", level=ADVANCED, ge=64, le=512, step=32, unit="px",
-                   help="Size of the image tiles shown to the network at each step.")
-    batch: int = P(12, label="Batch size", level=ADVANCED, ge=1, le=64,
-                   help="Tiles per training step; lower it if the GPU runs out of memory.")
-    learning_rate: float = P(3e-4, label="Learning rate", level=ADVANCED, gt=0, le=0.01,
-                             help="Peak learning rate of the one-cycle schedule.")
+    method: str = P("pretrained", label="Method", choices=list(METHODS),
+                    help="Pretrained: the network as it is, in seconds (also on a processor). Adapted: the network "
+                         "first learns this image's noise for a while on the half-stacks.")
+    adaptation: str = P("short", label="Adaptation", choices=list(ADAPTATIONS),
+                        help="How long the network learns this image before denoising it: short, 500 steps (about "
+                             "40 s on a GPU); long, 4000 steps (about 5 min).",
+                        tip="Long for a session without dithering (the noise independent from one pixel to the next), "
+                            "which the pretrained network has not seen; short otherwise. On a processor, a step takes "
+                            "about 4 s.")
     seed: int = P(0, label="Random seed", level=ADVANCED, ge=0,
-                  help="Seed of the random tile selection (for reproducible runs).")
-    reuse_model: str = P("", label="Reuse a trained network", level=ADVANCED,
-                         help="Path of an n2n_model.pt trained earlier on the same kind of data: no training, the "
-                              "network is applied as is (re-runs, A/B tests where only the processing should change).")
+                  help="Seed of the random tile selection of the adaptation (for reproducible runs).")
+
+    @field_validator("method")
+    @classmethod
+    def _method(cls, v: str) -> str:
+        return check_choice("method", v, METHODS)
+
+    @field_validator("adaptation")
+    @classmethod
+    def _adaptation(cls, v: str) -> str:
+        return check_choice("adaptation", v, tuple(ADAPTATIONS))
 
 
 class Denoise(Stage):
     name = "denoise"
-    title = "Noise2Noise denoiser"
-    description = ("Trains a neural network (U-Net) to predict half-stack B from half-stack A and the reverse. "
-                   "Their noise is independent, so the only thing the network can learn is the sky common to both: "
-                   "it cannot invent detail that is not in the data. Trained on your own images, it knows exactly "
-                   "your noise, sampling and stars. Used for measurements and as a source of fine nebula detail.")
+    title = "Denoise"
+    description = ("A Noise2Noise network, pretrained on many pairs of half-stacks, removes the noise of the stack: "
+                   "trained to predict one half-stack from the other, it cannot invent detail that is not in the "
+                   "data. Optionally adapted to this image first.")
     deps = ("stack",)
     Params = DenoiseParams
-    version = "1"
+    version = f"2-{MODEL_ID}"
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
-            m = ctx.load_json("stack", "drz_meta.json")
-            mp = m["width"] * m["height"] / 1e6
-            it = int(np.clip(round(24000 * np.sqrt(mp / 27.3) / 1000) * 1000, 6000, 30000))
-            return {"iterations": Auto(it, "{mpx:.0f} Mpx stack", {"mpx": mp})}
+            c = noise_correlation(np.load(ctx.input("stack", "drz_A.npy"), mmap_mode="r"),
+                                  np.load(ctx.input("stack", "drz_B.npy"), mmap_mode="r"))
         except Exception:  # noqa: BLE001
             return {}
+        if c < UNDITHERED_CORRELATION:
+            return {"adaptation": Auto("long", "noise nearly independent between neighbouring pixels (correlation "
+                                               "{c:.2f}): a session without dithering", {"c": c})}
+        return {"adaptation": Auto("short", "noise correlation between neighbouring pixels {c:.2f}, as in the "
+                                            "pretraining", {"c": c})}
 
     def run(self, ctx: Context, p: DenoiseParams) -> None:
         dev = ctx.device
@@ -58,15 +91,19 @@ class Denoise(Stage):
         B = stack_image(ctx, "drz_B.npy")
         Wt = ctx.load("stack", "drz_weight.npy").astype(np.float32)
         bk, sg, nm = norm_params(A, Wt)
-        if p.reuse_model:
-            ck_ = torch.load(p.reuse_model, map_location=dev, weights_only=False)
-            net = UNet().to(dev)
-            net.load_state_dict(ck_["net"])
-            bk, sg = ck_["bk"], ck_["sg"]
-            ctx.log(f"network reused from {p.reuse_model} (no training)")
+        corr = noise_correlation(ctx.load("stack", "drz_A.npy", mmap=True), ctx.load("stack", "drz_B.npy", mmap=True))
+        ctx.metric("noise_correlation", round(corr, 3))
+        net = pretrained(dev)
+        if p.method == "adapted":
+            steps, lr = ADAPTATIONS[p.adaptation]
+            adapt(ctx, net, A, B, nm, bk, sg, dev, steps, lr, p.seed)
+            ctx.metric("adaptation_steps", steps)
         else:
-            ck = ctx.ckpt / "train.pt"
-            net = train(ctx, A, B, nm, bk, sg, p, dev, ck)
+            ctx.metric("adaptation_steps", 0)
+            if corr < UNDITHERED_CORRELATION:
+                ctx.log(f"the noise is nearly independent between neighbouring pixels (correlation {corr:.2f}, a "
+                        "session without dithering): the pretrained network has not seen such noise, the Adapted "
+                        "method (long) denoises it much better", "warning")
         torch.save({"net": net.state_dict(), "bk": bk, "sg": sg}, ctx.out("n2n_model.pt"))
         net.eval()
         ctx.progress(0.92, "denoising the half-stacks")
@@ -88,6 +125,34 @@ class Denoise(Stage):
         a = asinh_preview(full[:, y0:y0 + 800, x0:x0 + 800])
         b = asinh_preview(dF[:, y0:y0 + 800, x0:x0 + 800])
         ctx.preview("before_after", np.concatenate([a, np.ones((3, 800, 6)) * 0.2, b], 2))
+
+
+def noise_correlation(A, B, size: int = 800) -> float:
+    """The correlation of the noise between horizontally neighbouring pixels, on the difference of the two half-stacks
+    (green, a central square; the sky only: differences under 6 noise sigmas). About 0.15 to 0.4 for a dithered
+    session (registration and drizzle spread each pixel over its neighbours), near 0 without dithering."""
+    H, W = A.shape[1:]
+    y0, x0 = max(0, H // 2 - size // 2), max(0, W // 2 - size // 2)
+    d = (np.asarray(A[1, y0:y0 + size, x0:x0 + size], np.float32)
+         - np.asarray(B[1, y0:y0 + size, x0:x0 + size], np.float32))
+    ok = d != 0
+    if ok.sum() < 1000:
+        return 0.25
+    s = 1.4826 * np.median(np.abs(d[ok] - np.median(d[ok])))
+    ok &= np.abs(d - np.median(d[ok])) < 6 * max(s, 1e-12)
+    d = np.where(ok, d - d[ok].mean(), 0.0)
+    den = float((d ** 2).sum())
+    return float((d[:, 1:] * d[:, :-1]).sum() / den) if den > 0 else 0.25
+
+
+def pretrained(dev) -> nn.Module:
+    """The bundled pretrained network (resources/denoise), in float32."""
+    if not MODEL.exists():
+        raise FileNotFoundError(f"the pretrained denoising network is missing: {MODEL}")
+    net = UNet().to(dev)
+    state = torch.load(MODEL, map_location=dev, weights_only=False)["net"]
+    net.load_state_dict({k: v.float() for k, v in state.items()})
+    return net
 
 
 def _noise(a):
@@ -149,29 +214,21 @@ def to_input(x, nm, bk, sg):
     return torch.cat([torch.asinh(a / 8.0), nm], 1)
 
 
-def train(ctx, A, B, nm, bk, sg, p, dev, ck_path):
-    steps = p.iterations
+def adapt(ctx, net, A, B, nm, bk, sg, dev, steps: int, lr: float, seed: int) -> None:
+    """Noise2Noise steps on random tiles of the half-stacks (one predicts the other, both ways), all the weights,
+    a one-cycle learning rate: the network learns this image's noise. The loss is weighted by the expected noise."""
     tA, tB = torch.from_numpy(A).to(dev), torch.from_numpy(B).to(dev)
     tN = torch.from_numpy(nm).to(dev)[None]
     bk_t, sg_t = torch.from_numpy(bk).to(dev), torch.from_numpy(sg).to(dev)
     Hh, Ww = tA.shape[1:]
     valid = (tN[0] > 0) & (tN[0] < 1.6)
-    torch.manual_seed(p.seed)                       # before the network is made: its starting weights are drawn too
-    net = UNet().to(dev)
-    opt = torch.optim.AdamW(net.parameters(), lr=p.learning_rate, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=p.learning_rate, total_steps=steps, pct_start=0.05)
-    start, run = 0, 0.0
-    if ck_path.exists():
-        ck = torch.load(ck_path, map_location=dev, weights_only=False)
-        net.load_state_dict(ck["net"])
-        opt.load_state_dict(ck["opt"])
-        sched.load_state_dict(ck["sched"])
-        start, run = ck["it"], ck["run"]
-        torch.set_rng_state(ck["rng"].cpu())        # the checkpoint was loaded onto the GPU
-        ctx.log(f"resuming the training at step {start}/{steps}")
+    torch.manual_seed(seed)
+    opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=lr, total_steps=steps, pct_start=0.05)
+    net.train()
+    run = 0.0
     t0 = time.time()
-    PATCH, BATCH = p.patch, p.batch
-    for it in range(start, steps):
+    for it in range(steps):
         ys = torch.randint(0, Hh - PATCH, (BATCH * 2,), device="cpu")
         xs = torch.randint(0, Ww - PATCH, (BATCH * 2,), device="cpu")
         xin, tgt, nmp = [], [], []
@@ -182,10 +239,7 @@ def train(ctx, A, B, nm, bk, sg, p, dev, ck_path):
             p_in, p_t, p_n = (src[:, y:y + PATCH, x:x + PATCH], dst[:, y:y + PATCH, x:x + PATCH],
                               tN[:, y:y + PATCH, x:x + PATCH])
             k = int(torch.randint(0, 4, (1,)))
-            fl = bool(torch.rand(1) < 0.5)
             p_in, p_t, p_n = (torch.rot90(t, k, (1, 2)) for t in (p_in, p_t, p_n))
-            if fl:
-                p_in, p_t, p_n = (torch.flip(t, (2,)) for t in (p_in, p_t, p_n))
             xin.append(p_in)
             tgt.append(p_t)
             nmp.append(p_n)
@@ -197,25 +251,21 @@ def train(ctx, A, B, nm, bk, sg, p, dev, ck_path):
         with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
             out = net(to_input(xin, nmp, bk_t, sg_t)).float()
         a_in = (xin - bk_t.view(1, 3, 1, 1)) / sg_t.view(1, 3, 1, 1)
-        pred = a_in + out
         b_t = (tgt - bk_t.view(1, 3, 1, 1)) / sg_t.view(1, 3, 1, 1)
         with torch.no_grad():
             sm = F.avg_pool2d(a_in, 5, 1, 2).clamp(min=0)
             wgt = 1.0 / ((nmp ** 2).clamp(min=0.25) + sm / 40.0)
-        loss = (wgt * (pred - b_t) ** 2).mean()
+        loss = (wgt * (a_in + out - b_t) ** 2).mean()
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
         opt.step()
         sched.step()
         run = 0.98 * run + 0.02 * loss.item() if it else loss.item()
-        if (it + 1) % 100 == 0:
-            ctx.progress(0.9 * (it + 1) / steps, f"training step {it + 1}/{steps}, loss {run:.4f}")
-        if (it + 1) % 1000 == 0 and it + 1 < steps:
-            torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "sched": sched.state_dict(),
-                        "it": it + 1, "run": run, "rng": torch.get_rng_state()}, ck_path)
-    ctx.log(f"training done in {(time.time() - t0) / 60:.1f} min, final loss {run:.4f}")
-    return net
+        if (it + 1) % 50 == 0:
+            ctx.check_stop()
+            ctx.progress(0.9 * (it + 1) / steps, f"adapting to the image: step {it + 1}/{steps}, loss {run:.4f}")
+    ctx.log(f"adapted to the image in {steps} steps ({(time.time() - t0) / 60:.1f} min), loss {run:.4f}")
 
 
 @torch.no_grad()
