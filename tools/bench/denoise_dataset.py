@@ -47,6 +47,9 @@ BENCH_CASES = ("heart", "iris", "m51", "m8", "rosette", "seestar")
 #: lights (evenly spread over the night), each level only when it keeps MIN_LEVEL_LIGHTS lights or more (5 per
 #: half-stack)
 LEVELS = {"1/2": 2, "1/4": 4, "1/8": 8}
+#: pairs left out of the training because the bench cases come from the same raw frames (bench M8 = set 02, bench
+#: M51 = set 03, bench Heart / Iris / Rosette = the user's projects of those names): the validation stays unseen
+HELD_OUT = ("set_02_", "set_03_", "user_Heart", "user_Iris", "user_Rosette")
 MIN_LEVEL_LIGHTS = 10
 #: the star detection threshold of a second try when the registration finds too few stars (short or faint frames)
 FAINT_SIGMA = 5.0
@@ -282,23 +285,26 @@ def export() -> int:
 
 
 # ---------------------------------------------------------------------------------------------- train
-def train(hours: float, device: str, patch: int, batch: int, lr: float, resume: bool) -> int:
+def train(hours: float, device: str, patch: int, batch: int, lr: float, resume: bool, tag: str = "") -> int:
     import torch
     import torch.nn.functional as F
 
     from astro_gpu.stages.denoise import UNet
     dev = torch.device(device)
     metas = [json.loads(f.read_text()) for f in sorted(OUT.glob("*/pair.json"))]
-    tr = [m for m in metas if m["role"] == "train"]
+    tr = [m for m in metas if m["role"] == "train" and not m["name"].startswith(HELD_OUT)]
     va = [m for m in metas if m["role"] == "validation"]
     log(f"training pairs: {len(tr)}, validation pairs: {len(va)}")
 
-    def load(m):
+    def load(m, ram):
         d = OUT / m["name"]
-        return (np.load(d / "A.npy", mmap_mode="r"), np.load(d / "B.npy", mmap_mode="r"),
-                np.load(d / "nm.npy", mmap_mode="r"))
-    data = [load(m) for m in tr]
-    vdata = [load(m) for m in va]
+        mode = None if ram else "r"
+        return (np.load(d / "A.npy", mmap_mode=mode), np.load(d / "B.npy", mmap_mode=mode),
+                np.load(d / "nm.npy", mmap_mode=mode))
+    t0 = time.time()
+    data = [load(m, True) for m in tr]                    # the whole set in memory (20 GB): no disk wait per tile
+    vdata = [load(m, False) for m in va]
+    log(f"pairs loaded in memory in {time.time() - t0:.0f} s")
     rng = np.random.default_rng(0)
 
     def tiles(src, n, P, rng):
@@ -338,8 +344,9 @@ def train(hours: float, device: str, patch: int, batch: int, lr: float, resume: 
 
     vrng = np.random.default_rng(1)
     vset = [tuple(tiles([v], 8, 256, vrng)) for v in vdata]           # fixed validation tiles, 8 per bench case
-    ck = OUT / "pretrain.pt"
-    hist_f = OUT / "pretrain_history.json"
+    ck = OUT / f"pretrain{tag}.pt"
+    hist_f = OUT / f"pretrain{tag}_history.json"
+    best_val = None
     torch.manual_seed(0)
     net = UNet().to(dev)
     opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
@@ -350,22 +357,18 @@ def train(hours: float, device: str, patch: int, batch: int, lr: float, resume: 
         opt.load_state_dict(c["opt"])
         start, hist = c["it"], json.loads(hist_f.read_text()) if hist_f.exists() else []
         log(f"resuming at step {start}")
-    # the number of steps from the speed measured on the first 200 (cosine schedule to the end of the time given)
+    # the learning rate follows the time spent: a short warm-up, then a cosine to zero at the end of the time given
+    # (a schedule in steps fixed from the first steps' speed ended the first night's run after 2 h 20 instead of 10 h)
     t0 = time.time()
     it = start
-    total = None
     run = None
+    warm = 500
     while True:
-        if total is not None and it >= total:
+        frac = (time.time() - t0) / (hours * 3600)
+        if frac >= 1.0:
             break
-        if total is None and it == start + 200:
-            per = (time.time() - t0) / 200
-            total = start + int(hours * 3600 / per)
-            log(f"{per * 1000:.0f} ms per step: {total - start} steps in {hours} h")
-        if total is not None:
-            frac = (it - start) / max(total - start, 1)
-            for g in opt.param_groups:
-                g["lr"] = lr * 0.5 * (1 + np.cos(np.pi * frac))
+        for g in opt.param_groups:
+            g["lr"] = lr * min(1.0, (it - start + 1) / warm) * 0.5 * (1 + np.cos(np.pi * frac))
         net.train()
         xin, tgt, nmp = tiles(data, batch, patch, rng)
         loss = step_loss(net, xin, tgt, nmp)
@@ -383,9 +386,13 @@ def train(hours: float, device: str, patch: int, batch: int, lr: float, resume: 
                          "val_mean": round(float(np.mean(vl)), 4), "minutes": round((time.time() - t0) / 60, 1)})
             hist_f.write_text(json.dumps(hist, indent=1))
             torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "it": it}, ck)
-            log(f"step {it}: train {run:.4f}, validation {np.mean(vl):.4f} ({', '.join(f'{v:.3f}' for v in vl)})")
+            if best_val is None or np.mean(vl) < best_val:
+                best_val = float(np.mean(vl))
+                torch.save({"net": net.state_dict(), "it": it}, OUT / f"pretrained_unet{tag}_best.pt")
+            log(f"step {it}: train {run:.4f}, validation {np.mean(vl):.4f} ({', '.join(f'{v:.3f}' for v in vl)}), "
+                f"lr {opt.param_groups[0]['lr']:.2e}")
     torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "it": it}, ck)
-    torch.save({"net": net.state_dict()}, OUT / "pretrained_unet.pt")
+    torch.save({"net": net.state_dict()}, OUT / f"pretrained_unet{tag}.pt")
     log(f"done: {it} steps in {(time.time() - t0) / 60:.0f} min")
     return 0
 
@@ -400,6 +407,7 @@ def main(argv=None) -> int:
     ap.add_argument("--batch", type=int, default=12)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--tag", default="", help="suffix of the checkpoint and model files (another run beside the first)")
     a = ap.parse_args(argv)
     only = [x.strip() for x in a.only.split(",") if x.strip()] or None
     if a.cmd == "stack":
@@ -414,7 +422,7 @@ def main(argv=None) -> int:
         hours = a.hours
         log(f"training for {hours:.1f} h (a checkpoint and the validation every 2500 steps)")
         return train(hours, a.device, a.patch, a.batch, a.lr, a.resume)
-    return train(a.hours, a.device, a.patch, a.batch, a.lr, a.resume)
+    return train(a.hours, a.device, a.patch, a.batch, a.lr, a.resume, a.tag)
 
 
 if __name__ == "__main__":

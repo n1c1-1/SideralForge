@@ -109,8 +109,106 @@ Outil : `tools/bench/denoise_dataset.py night --hours 10` ; journal : `F:\astro_
    10 heures ; une sauvegarde et une mesure sur les 6 cas du banc tous les 2 500 pas
    (`pretrain_history.json`).
 
-## 5. Après la nuit
+Ce qui s'est réellement passé : chaque jeu a été empilé à quatre niveaux (toutes les poses, la moitié, le quart, le
+huitième, un niveau seulement s'il garde 10 poses ou plus) ; 84 paires d'entraînement. L'entraînement s'est arrêté
+après **2 h 20** au lieu de 10 h : le nombre de pas avait été fixé d'après la vitesse des 200 premiers pas, quatre fois
+plus lents que la suite. Corrigé pour la v2 (la vitesse d'apprentissage suit l'horloge).
 
-- Comparer, sur les cas du banc : le modèle pré-entraîné seul ; pré-entraîné + quelques centaines de pas d'affinage ;
-  pré-entraîné + GainTuning ; notre Noise2Noise complet actuel (la référence). Mesures : la perte Noise2Noise sur les
-  demi-empilements, le résidu sans structure (« rien n'est inventé »), le temps sur GPU et sur processeur.
+## 5. La comparaison du 4 novembre
+
+Outil : `tools/bench/denoise_eval.py` ; résultats : `F:\astro_essais\denoise_eval\` (`results*.json`, une image de
+détail par cas). Protocole : les méthodes qui apprennent sur l'image n'en voient que les 80 % de gauche ; toutes sont
+mesurées sur les 20 % de droite (une marge de 192 px pour le contexte). La mesure : l'erreur Noise2Noise sur cette zone
+(A débruité comparé à B, et l'inverse). Plus bas = mieux ; le plancher (rien d'autre que le bruit de B) vaut à peu près
+la moitié de la valeur « sans débruitage ».
+
+### Une fuite dans la v1
+
+Cinq des six cas du banc viennent des mêmes poses brutes que des paires d'entraînement : M8 du banc = le jeu 02 (le
+même empilement), M51 = le jeu 03, Heart, Iris et Rosette = tes projets du même nom. Seul Seestar (M31) est
+indépendant. Les chiffres de la v1 sur ces cinq cas sont donc trop flatteurs. Pour la v2, ces sources sont écartées de
+l'entraînement (`HELD_OUT` dans `denoise_dataset.py`, 76 paires).
+
+### Résultats de la v1 (modèle de la nuit)
+
+| Cas | Sans débruitage | v1 seul | v1 + 500 pas | v1 + 2 000 pas | v1 + GainTuning 500 | Référence (de zéro, 16 000 pas) |
+|---|---|---|---|---|---|---|
+| Heart | 3,159 | 2,310 | 2,020 | 1,995 | 2,117 | 2,102 |
+| Iris | 2,730 | 1,450 | 1,438 | 1,433 | 1,444 | 1,449 |
+| M51 | 1,189 | 0,625 | 0,629 | 0,628 | 0,629 | 0,668 |
+| M8 | 2,051 | 1,009 | 1,027 | 1,002 | 1,020 | **0,885** |
+| Rosette | 1,943 | 1,059 | 1,089 | 1,112 | 1,060 | 1,124 |
+| Seestar (indépendant) | 1,574 | **0,800** | 0,800 | 0,801 | 0,800 | 0,813 |
+
+Temps sur la carte graphique (RTX 4060 Ti) : appliquer le modèle ≈ 1 s ; 500 pas d'adaptation ≈ 40 s ; la référence
+≈ 21 min. Sur le processeur (8 fils) : appliquer le modèle à une image entière de Heart ≈ 40 s ; un pas d'adaptation
+3,6 s (500 pas ≈ 30 min, la référence ≈ 16 h).
+
+Ce qu'on en tire :
+- Sur Seestar, le seul cas propre, le modèle pré-entraîné seul fait mieux que la référence.
+- L'adaptation à l'image n'aide que Heart ; elle dégrade Rosette, et d'autant plus qu'elle dure.
+- **M8 est le point faible** : son bruit n'a presque aucune corrélation d'un pixel au voisin (0,03 contre 0,15 à 0,35
+  ailleurs), et aucune autre paire d'entraînement ne lui ressemble. La référence, qui apprend ce bruit sur l'image,
+  fait nettement mieux.
+- Sur Heart, l'erreur en trop est à 88 % dans le cœur des étoiles brillantes (le 1 % le plus lumineux) ; les étoiles
+  saturées n'en font que 18 %. Le fond du ciel est bon.
+- M8 vient d'une séance sans décalage entre les poses (dérive totale 4,4 px, contre 80 à 115 px ailleurs) : sans ce
+  décalage, l'empilement ne mélange pas les pixels voisins et le bruit reste indépendant d'un pixel à l'autre.
+
+### La v2 (sans les sources du banc) face à la référence
+
+Modèle `pretrained_unet_v2_mid.pt` (l'état de la v2 à 11 h 10, environ 67 000 pas, 256 px par zone, 76 paires).
+
+| Cas | Sans | v2 seul (1 s) | v2 + 500 pas, lr 2e-4 (40 s) | v2 + 4 000 pas, lr 3e-4 (5 min) | v2 + 8 000 pas (10 min) | Référence (21 min) |
+|---|---|---|---|---|---|---|
+| Heart | 3,159 | 2,194 | **1,975** | 1,982 | | 2,102 |
+| Iris | 2,730 | 1,453 | 1,437 | | | 1,449 |
+| M51 | 1,189 | 0,631 | 0,632 | | | 0,668 |
+| M8 | 2,051 | 1,488 | 1,131 | 0,843 | **0,722** | 0,885 |
+| Rosette | 1,943 | 1,063 | **1,000** | 1,075 | | 1,124 |
+| Seestar | 1,574 | 0,801 | 0,800 | | | 0,813 |
+
+Partir du modèle pré-entraîné bat la référence partout ; sur M8, il faut une adaptation longue (la référence, partie
+de zéro, n'avait pas fini d'apprendre).
+
+## 6. Face à GraXpert et Topaz
+
+Outil : `tools/bench/denoise_compare.py` ; tout dans `F:\astro_essais\denoise_compare\` (résultats `results.json`,
+images de détail `crops\<cas>.jpg`). Chaque outil débruite A et B séparément (l'image entière) ; même mesure que plus
+haut, sur la même zone, sur l'image entière et sans les étoiles (les étoiles et leurs abords, 1 à 41 % de la zone).
+- **GraXpert 3.0.2**, le dernier modèle de débruitage publié (les préversions 3.1 n'ajoutent que la déconvolution).
+  Sa « force » est un mélange de l'entrée et du débruitage complet (vérifié) : il tourne une fois à 1, et la mesure
+  donne sa force par défaut (0,5) et la meilleure pour chaque cas (toujours 1).
+- **Topaz DeNoise AI**, passé par l'utilisateur sur A et B étirés (TIFF 16 bits, un étirement connu, défait pour la
+  mesure).
+
+Image entière :
+
+| Cas | Sans | Nous, seul | Nous + 40 s | Nous + 5 min | GraXpert 0,5 | GraXpert 1 | Topaz |
+|---|---|---|---|---|---|---|---|
+| Heart | 3,159 | 2,196 | **1,976** | 1,984 | 2,818 | 2,680 | 105 |
+| Iris | 2,730 | 1,454 | 1,437 | **1,426** | 1,872 | 1,532 | 34 |
+| M51 | 1,189 | **0,631** | 0,632 | 0,642 | 0,825 | 0,676 | 2,10 |
+| M8 | 2,051 | 1,487 | 1,130 | **0,843** | 1,925 | 1,871 | 124 |
+| Rosette | 1,943 | 1,063 | **0,997** | 1,073 | 1,380 | 1,154 | 48 |
+| Seestar | 1,574 | 0,801 | **0,800** | 0,802 | 1,027 | 0,813 | 5,5 |
+
+Sans les étoiles (le plancher ≈ la moitié de « sans ») :
+
+| Cas | Plancher ≈ | Nous, seul | Nous + 40 s | GraXpert 1 | Topaz |
+|---|---|---|---|---|---|
+| Heart | 0,488 | 0,521 | **0,518** | 0,520 | 0,645 |
+| Iris | 1,214 | 1,230 | **1,228** | 1,238 | 1,275 |
+| M51 | 0,521 | **0,525** | **0,525** | 0,533 | 0,551 |
+| M8 | 0,162 | 0,175 | 0,173 | **0,172** | 0,246 |
+| Rosette | 0,790 | **0,802** | **0,802** | 0,808 | 0,848 |
+| Seestar | 0,766 | **0,770** | **0,770** | 0,776 | 0,796 |
+
+Temps par image de la taille de Heart (12 Mpx) : nous ≈ 3 s sur la carte graphique, ≈ 40 s sur le processeur ;
+GraXpert ≈ 105 s sur la carte graphique.
+
+À l'œil (`crops\`) : chez nous, le fond est propre, toutes les étoiles faibles restent, les étoiles allongées et les
+aigrettes sont respectées. GraXpert est fidèle aux étoiles mais laisse un grain sur le fond. Topaz efface beaucoup
+d'étoiles faibles, rend les étoiles allongées en points à cœur noir, supprime les aigrettes et marbre le fond ; il
+accentue les étoiles (le haut des étoiles brillantes de Heart passe de 46 500 à 51 700 sur 65 535), d'où ses scores
+sur l'image entière.

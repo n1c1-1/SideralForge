@@ -226,8 +226,9 @@ def main(argv=None) -> int:
             secs = 0.0
             if m not in ("scratch", "none"):
                 net.load_state_dict(state)
-            if m.startswith("ft"):
-                secs = learn(net, list(net.parameters()), A, B, N, dev, int(m[2:]), 5e-5, x0)
+            if m.startswith("ft"):                       # ftN or ftN@lr: N steps of all weights (lr 5e-5 by default)
+                steps, _, lr = m[2:].partition("@")
+                secs = learn(net, list(net.parameters()), A, B, N, dev, int(steps), float(lr or 5e-5), x0)
             elif m.startswith("gain"):
                 gains = with_gains(net)
                 net.to(dev)
