@@ -62,6 +62,7 @@ class AutoSettings:
     simplified: bool = False         # a stiff polynomial first
     degree: int = 1                  # its degree (1: a plane)
     downsample: int = 4              # 1, 2, 4 or 8
+    protect_sigmas: float = 0.0      # not 0: the protection threshold in sigmas of the residual (not Siril's)
 
 
 def _round(x: float) -> int:
@@ -178,7 +179,8 @@ def estimate(img: np.ndarray, valid: np.ndarray, radius: int, s: AutoSettings, u
         sigma = 1.4826 * _histogram_median(np.abs(ref - np.float32(med))) + 1e-12
         new = (res <= med + HIGH_K * sigma) & (res >= med - LOW_K * sigma) & valid
         if s.protect:
-            new &= ~structure_mask(res - med, radius, s.protect_threshold, s.protect_amount)
+            thr = s.protect_sigmas * sigma if s.protect_sigmas > 0 else s.protect_threshold
+            new &= ~structure_mask(res - med, radius, thr, s.protect_amount)
         kept = int(new.sum())
         if kept < min_keep:                                 # never empty the fit set
             thr = np.sort(res[valid], axis=None)[min(min_keep, int(valid.sum()) - 1)]

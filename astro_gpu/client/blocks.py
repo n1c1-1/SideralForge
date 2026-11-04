@@ -31,7 +31,7 @@ COLUMNS = ["sources", "calibration", "alignement", "selection", "empilement", "a
 OPTIONAL = {"debruitage", "deconv", "etoiles"}
 PHASES = [("Pre-processing", "calibration", "empilement"), ("Linear processing", "astrometrie", "etoiles")]
 TOOL_COLUMN = {"debruitage": "debruitage", "etoiles": "etoiles", "appris": "etoiles", "deconv": "deconv",
-               "auto": "fond", "simple": "fond"}
+               "auto": "fond", "rbf": "fond", "simple": "fond"}
 TITLES = {"sources": "Frames", "final": "Post", "calibration": "Calibration", "alignement": "Registration",
           "selection": "Selection", "empilement": "Stacking", "astrometrie": "Astrometry", "fond": "Gradient",
           "couleur": "Color", "debruitage": "Denoise", "deconv": "Deconvolution", "etoiles": "Stars",

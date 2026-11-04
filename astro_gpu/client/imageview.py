@@ -1092,6 +1092,9 @@ class ImageCanvas(QWidget):
         self.overlays: list = []                    # callables (painter, canvas)
         self.minimap_on = True
         self.mode = "pan"                           # pan | rect
+        #: an editing tool (the Gradient block's samples and areas): press(canvas, x, y, button) -> bool (taken),
+        #: move(canvas, x, y), release(canvas), hover(canvas, x, y), cursor (a Qt cursor), in image coordinates
+        self.tool = None
         self.frame_ms: list[float] = []             # paint times (the measurements)
         self._drag = None
         self._rect = None
@@ -1403,6 +1406,8 @@ class ImageCanvas(QWidget):
         elif e.button() == Qt.LeftButton and self.mode == "rect":
             self._rect = [(ix, iy), (ix, iy)]
             self._drag = ("rect",)
+        elif self.tool is not None and e.button() != Qt.MiddleButton and self.tool.press(self, ix, iy, e.button()):
+            self._drag = ("tool",)
         elif e.button() in (Qt.LeftButton, Qt.MiddleButton):
             self._drag = ("pan", pos, self.cx, self.cy)
             self.setCursor(Qt.ClosedHandCursor)
@@ -1419,6 +1424,11 @@ class ImageCanvas(QWidget):
                 self.hovered.emit(ix * r, iy * r, 1)
             else:
                 self.hovered.emit(ix, iy, 0)
+            if self.tool is not None and not self._near_split(pos.x()) and not self._in_minimap(pos):
+                self.tool.hover(self, ix, iy)
+                self.setCursor(self.tool.cursor)
+                self.update()
+                return
             self.setCursor(Qt.SplitHCursor if self._near_split(pos.x()) else
                            Qt.PointingHandCursor if self._in_minimap(pos) else
                            Qt.CrossCursor if self.mode == "rect" else Qt.CrossCursor)
@@ -1430,6 +1440,8 @@ class ImageCanvas(QWidget):
             self._minimap_goto(pos)
         elif d[0] == "rect":
             self._rect[1] = (ix, iy)
+        elif d[0] == "tool":
+            self.tool.move(self, ix, iy)
         elif d[0] == "pan":
             self.cx = d[2] - (pos.x() - d[1].x()) / self.scale
             self.cy = d[3] - (pos.y() - d[1].y()) / self.scale
@@ -1441,7 +1453,9 @@ class ImageCanvas(QWidget):
     def mouseReleaseEvent(self, e):  # noqa: N802
         d = self._drag
         self._drag = None
-        self.setCursor(Qt.CrossCursor)
+        self.setCursor(Qt.CrossCursor if self.tool is None else self.tool.cursor)
+        if d and d[0] == "tool" and self.tool is not None:
+            self.tool.release(self)
         if d and d[0] == "rect" and self._rect:
             (ax, ay), (bx, by) = self._rect
             self._rect = None
@@ -1450,7 +1464,7 @@ class ImageCanvas(QWidget):
         self.update()
 
     def mouseDoubleClickEvent(self, e):  # noqa: N802
-        if self.display is None or self.mode != "pan" or self._near_split(e.position().x()):
+        if self.display is None or self.mode != "pan" or self.tool is not None or self._near_split(e.position().x()):
             return
         if self.fitted or self.scale <= self.fit_scale() * 1.01:
             self.set_zoom_percent(100.0, e.position())

@@ -1463,6 +1463,9 @@ _METHODS: dict[str, list[MethodInfo]] = {
     "gradient": [
         MethodInfo("polynomial", "Polynomial", "polynomial", "cpu", "gradient", False,
                    "A smooth surface fitted on the sky between the objects, removed right after stacking."),
+        MethodInfo("rbf", "RBF", "RBF", "cpu", "gradient", False,
+                   "A surface through the samples of sky (thin-plate splines): follows a gradient of any shape; best "
+                   "with samples placed by hand."),
         MethodInfo("automatic", "Automatic", "automatic", "cpu", "gradient", False,
                    "A flexible surface fitted on every pixel that does not look like an object: follows complex "
                    "gradients, may take part of the faintest wide structures."),

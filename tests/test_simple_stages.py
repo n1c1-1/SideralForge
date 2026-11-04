@@ -105,7 +105,7 @@ def test_gradient_recovers_a_degree_2_gradient(classic):
     err = np.abs(var[:, 12:, :-9] + level[:, None, None] - true) / true
     assert float(err.max()) < 0.01                       # ...its variation within 1 % everywhere, objects left out
     s = np.load(g.dir / "samples.npz")
-    assert s["values"].shape == (3, len(s["x"])) and s["used"].shape == (3, len(s["x"])) and s["used"].any()
+    assert s["used"].shape == (len(s["x"]),) and s["used"].any() and not bool(s["manual"])
     assert 0 < g.metrics["samples_used"] < len(s["x"])
     assert abs(g.metrics["gradient_pct"] - 100 * _range_ratio(true)) < 2.0
     assert (g.dir / "previews" / "gradient.jpg").exists()
@@ -119,7 +119,7 @@ def _range_ratio(rgb):
 def test_gradient_params():
     p = GradientParams()
     assert (p.method, p.degree, p.samples, p.object_clip) == ("polynomial", 2, 16, 2.5)
-    for bad in ({"degree": 6}, {"samples": 2}, {"method": "rbf"}):
+    for bad in ({"degree": 6}, {"samples": 2}, {"method": "spline"}):
         with pytest.raises(ValueError):
             GradientParams(**bad)
 

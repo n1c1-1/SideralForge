@@ -20,6 +20,13 @@ Methods (``method``, set by the workflow's Gradient option):
   thresholds are in units of an image scaled to 0..1: the stack is scaled as an image exported for it would be, from
   its darkest to its brightest pixels (0.01th and 99.99th percentiles of the covered field, 20 % of headroom above).
 
+* ``rbf``: radial basis functions (thin-plate splines, with a smoothing), Siril's second sample-based model: the
+  surface passes near every sample, so it follows a gradient of any shape, and depends on where the samples are.
+
+The samples of the polynomial and the RBF: a grid found automatically (the sky between the objects), or the points the
+user placed and moved on the image (``sample_points``, stack pixels). The areas the user excluded (``exclude_ellipses``,
+``exclude_brush``: painted and erased dabs, in order) never enter any of the three models.
+
 Outputs: sky.npy, the sky's variation (3, h, w) on a grid (its median over the covered field is 0 in each channel):
 cells of ``SKY_FACTOR`` px read back bicubically for the polynomial, the automatic model's reduced grid read back
 bilinearly (corners aligned) as Siril does; gradient.json (method, grid, the sky level kept, the model's settings);
@@ -38,7 +45,7 @@ from .gradient_auto import AutoSettings, enlarge, sky_model
 
 LUM = np.array([0.2126, 0.7152, 0.0722])
 #: the methods of the stage (the workflow's Gradient option chooses one; the first is the default)
-METHODS = ("polynomial", "automatic")
+METHODS = ("polynomial", "rbf", "automatic")
 #: how the image is scaled to 0..1 for the automatic model: these percentiles of the covered field, and headroom
 UNIT_PERCENTILES = (0.01, 99.99)
 UNIT_HEADROOM = 1.2
@@ -51,8 +58,8 @@ INFO_FILE = "gradient.json"
 class GradientParams(StageParams):
     method: str = P("polynomial", label="Method", choices=list(METHODS),
                     help="How the sky gradient is modelled. Polynomial: a smooth surface fitted on the sky between the "
-                         "objects. Automatic: a more flexible surface that follows complex gradients (a corner lit by "
-                         "the Moon), fitted on every pixel that does not look like an object.",
+                         "objects. RBF: a surface through the samples, which follows a gradient of any shape. "
+                         "Automatic: a flexible surface fitted on every pixel that does not look like an object.",
                     tip="The polynomial keeps faint, very wide structures best; the automatic model removes complex "
                         "gradients best, and with them part of the faintest wide structures.")
     degree: int = P(2, label="Surface degree", ge=1, le=5, step=1,
@@ -93,6 +100,20 @@ class GradientParams(StageParams):
     downsample: int = P(4, label="Working reduction", level=ADVANCED, ge=1, le=8, unit="x",
                         help="Automatic model: the model is computed on a copy reduced this many times: faster, "
                              "coarser; the scale of the background itself does not change.")
+    protect_sigmas: float = P(0.0, label="Protection in sky noise", level=ADVANCED, ge=0.0, le=50.0, step=0.5,
+                              help="Automatic model: when not 0, the protection threshold is this many times the "
+                                   "noise of the sky instead of a fraction of the image's range (a faint nebula is "
+                                   "far below that fraction when bright stars set the range).")
+    rbf_smooth: float = P(0.5, label="RBF smoothing", level=ADVANCED, ge=0.0, le=1.0, step=0.05,
+                          help="RBF: 0, the surface passes through every sample; higher, it passes near them, "
+                               "smoother.")
+    sample_points: list[list[float]] = P([], label="Sample points", level="internal",
+                                         help="The samples placed on the image (stack pixels); empty: the automatic "
+                                              "grid.")
+    exclude_ellipses: list[list[float]] = P([], label="Excluded ellipses", level="internal",
+                                            help="Areas left out of the sky model: centre x, y and half axes.")
+    exclude_brush: list[list[float]] = P([], label="Excluded brush strokes", level="internal",
+                                         help="Brush dabs x, y, radius, 1 to exclude / 0 to erase, in order.")
     @field_validator("method")
     @classmethod
     def _method(cls, v: str) -> str:
@@ -106,7 +127,8 @@ class GradientParams(StageParams):
     def auto_settings(self) -> AutoSettings:
         return AutoSettings(scale=self.scale, smoothness=self.smoothness, protect=self.protect,
                             protect_threshold=self.protect_threshold, protect_amount=self.protect_amount,
-                            simplified=self.simplified, degree=self.simple_degree, downsample=self.downsample)
+                            simplified=self.simplified, degree=self.simple_degree, downsample=self.downsample,
+                            protect_sigmas=self.protect_sigmas)
 
 
 # ---------------------------------------------------------------------------------------------- the polynomial sky
@@ -283,6 +305,131 @@ def stack_image(ctx: Context, name: str = "drz_full.npy") -> np.ndarray:
     return a
 
 
+# ---------------------------------------------------------------------------------------------- samples and areas
+def exclusion_mask(p: GradientParams, h: int, w: int, f: float = 1.0) -> np.ndarray | None:
+    """The excluded areas on an array of (h, w) whose pixels are ``f`` stack pixels^-1 (a reduced copy: f < 1): True
+    where excluded; None when nothing is excluded."""
+    if not p.exclude_ellipses and not p.exclude_brush:
+        return None
+    m = np.zeros((h, w), np.uint8)
+    for cx, cy, rx, ry in p.exclude_ellipses:
+        cv2.ellipse(m, (round(cx * f), round(cy * f)), (max(1, round(rx * f)), max(1, round(ry * f))), 0, 0, 360, 1,
+                    -1)
+    for x, y, r, paint in p.exclude_brush:
+        cv2.circle(m, (round(x * f), round(y * f)), max(1, round(r * f)), 1 if paint else 0, -1)
+    return m > 0
+
+
+def point_values(rgb: np.ndarray, valid: np.ndarray, pts: np.ndarray, box: int) -> tuple[np.ndarray, np.ndarray]:
+    """The median of each channel in a ``box`` px square around each point (array pixels); a point is usable when
+    most of its square is valid. Returns (values (3, n), usable (n,))."""
+    H, W = valid.shape
+    vals = np.full((rgb.shape[0], len(pts)), np.nan)
+    ok = np.zeros(len(pts), bool)
+    r = max(1, box // 2)
+    for i, (x, y) in enumerate(np.asarray(pts, float)):
+        x0, x1, y0, y1 = int(x) - r, int(x) + r + 1, int(y) - r, int(y) + r + 1
+        if x0 < 0 or y0 < 0 or x1 > W or y1 > H:
+            continue
+        v = valid[y0:y1, x0:x1]
+        if v.mean() < 0.5:
+            continue
+        vals[:, i] = [np.median(rgb[c, y0:y1, x0:x1][v]) for c in range(rgb.shape[0])]
+        ok[i] = True
+    return vals, ok
+
+
+def grid_points(rgb: np.ndarray, valid: np.ndarray, samples: int, clip: float) -> tuple[np.ndarray, np.ndarray, int]:
+    """Siril's generated grid: ``samples`` points along the shorter side, a square box around each; the samples of
+    sky are kept (``sky_blocks``: the ones not above a smooth surface through them by ``clip`` sigmas). Returns
+    (points (n, 2) array pixels, kept (n,), box px)."""
+    H, W = valid.shape
+    step = min(H, W) / samples
+    box = max(4, int(step / 2))
+    ys = np.arange(step / 2, H, step)
+    xs = np.arange(step / 2, W, step)
+    yy, xx = np.meshgrid(ys, xs, indexing="ij")
+    pts = np.c_[xx.ravel(), yy.ravel()]
+    vals, ok = point_values(rgb, valid, pts, box)
+    L = LUM @ np.nan_to_num(vals)
+    A = poly_terms(pts[:, 0], pts[:, 1], W, H, 2)
+    kept = sky_blocks(L, ok, A, clip, xx.shape) if ok.sum() >= 3 * A.shape[1] else ok
+    return pts, kept, box
+
+
+def rbf_grid(pts: np.ndarray, vals: np.ndarray, xx: np.ndarray, yy: np.ndarray, H: int, W: int,
+             smooth: float) -> np.ndarray:
+    """Thin-plate splines through the samples, evaluated at (xx, yy). The coordinates are in units of the image's
+    longer side and each channel's values in units of their own spread, so that the smoothing means the same on every
+    image (0: through every sample)."""
+    from scipy.interpolate import RBFInterpolator
+    s = float(max(H, W))
+    out = np.empty((vals.shape[0], *xx.shape), np.float32)
+    q = np.c_[xx.ravel() / s, yy.ravel() / s]
+    for c in range(vals.shape[0]):
+        v = vals[c]
+        mid, spread = float(np.median(v)), float(np.std(v)) + 1e-12
+        f = RBFInterpolator(pts / s, (v - mid) / spread, kernel="thin_plate_spline", smoothing=float(smooth))
+        out[c] = (f(q) * spread + mid).reshape(xx.shape)
+    return out
+
+
+def sky_model_of(stack: np.ndarray, valid: np.ndarray, p: GradientParams, f: float = 1.0, progress=None) -> dict:
+    """The sky model of the stage's method on ``stack`` (3, H, W), which may be a copy reduced ``1 / f`` times (the
+    preview of the editor: the points and areas are in stack pixels). Returns {grid (3, h, w), info (how to read it
+    back), covered (the grid's covered cells), samples: {x, y, used, manual} in stack pixels or None, detail}."""
+    H, W = stack.shape[1:]
+    excl = exclusion_mask(p, H, W, f)
+    ok = valid & ~excl if excl is not None else valid
+    info = {"method": p.method}
+    samples = None
+    if p.method == "automatic":
+        # a reduced copy (the editor's preview): at least halved again, the model's cost falls with the pixels
+        ds = int(min((d for d in (2, 4, 8) if d >= p.downsample * f), default=2)) if f < 1 else p.downsample
+        pp = p.model_copy(update={"downsample": max(1, ds)})
+        grid = automatic_grid(stack, ok, pp, progress)
+        covered = enlarge_mask(valid, grid.shape[1:], pp.downsample)
+        info.update(grid="corners", factor=pp.downsample, settings=pp.auto_settings().__dict__)
+        detail = f"automatic model, scale {p.scale:g}"
+        return {"grid": grid, "info": info, "covered": covered, "samples": None, "detail": detail}
+    xx, yy = grid_centres(H, W)
+    covered = cv2.resize(valid.astype(np.uint8), (xx.shape[1], xx.shape[0]), interpolation=cv2.INTER_AREA) > 0
+    manual = bool(p.sample_points)
+    if p.method == "polynomial" and not manual:
+        fit = fit_poly_sky(stack, ok, p.degree, p.samples, p.object_clip)
+        grid = (fit["coefs"] @ poly_terms(xx.ravel(), yy.ravel(), W, H, p.degree).T).reshape(3, *xx.shape)
+        both = fit["used"].all(0)
+        samples = {"x": fit["x"][fit["candidate"]] / f, "y": fit["y"][fit["candidate"]] / f,
+                   "used": both[fit["candidate"]], "manual": False, "box": fit["block"] / f}
+        info.update(degree=p.degree, coefs=fit["coefs"].tolist(), block_px=fit["block"] / f)
+        detail = f"fitted on {int(both.sum())} of {int(fit['candidate'].sum())} sky samples"
+        return {"grid": grid.astype(np.float32), "info": {**info, "grid": "centres", "factor": SKY_FACTOR},
+                "covered": covered, "samples": samples, "detail": detail, "fit": fit}
+    if manual:
+        pts = np.asarray(p.sample_points, float) * f
+        box = max(4, int(min(H, W) / p.samples / 2))
+        vals, use = point_values(stack, ok, pts, box)
+    else:
+        pts, use, box = grid_points(stack, ok, p.samples, p.object_clip)
+        vals, _ok = point_values(stack, ok, pts, box)
+        use &= _ok
+    n_min = 3 if p.method == "rbf" else (p.degree + 1) * (p.degree + 2) // 2 + 1
+    if use.sum() < n_min:
+        raise StageError(f"only {int(use.sum())} usable sky samples: place more samples, or exclude less")
+    if p.method == "rbf":
+        grid = rbf_grid(pts[use], vals[:, use], xx, yy, H, W, p.rbf_smooth)
+        info.update(smoothing=p.rbf_smooth)
+    else:
+        A = poly_terms(pts[use, 0], pts[use, 1], W, H, p.degree)
+        coefs = np.stack([np.linalg.lstsq(A, vals[c, use], rcond=None)[0] for c in range(3)])
+        grid = (coefs @ poly_terms(xx.ravel(), yy.ravel(), W, H, p.degree).T).reshape(3, *xx.shape)
+        info.update(degree=p.degree, coefs=coefs.tolist())
+    samples = {"x": pts[:, 0] / f, "y": pts[:, 1] / f, "used": use, "manual": manual, "box": box / f}
+    detail = f"{p.method} on {int(use.sum())} of {len(use)} {'placed' if manual else 'grid'} samples"
+    return {"grid": grid.astype(np.float32), "info": {**info, "grid": "centres", "factor": SKY_FACTOR},
+            "covered": covered, "samples": samples, "detail": detail}
+
+
 # ---------------------------------------------------------------------------------------------- the stage
 class Gradient(Stage):
     name = "gradient"
@@ -292,40 +439,24 @@ class Gradient(Stage):
                    "denoising, the star removal and the output see a flat sky. The sky's level stays.")
     deps = ("stack",)
     Params = GradientParams
-    version = "2"          # 2: the automatic method; the level kept is the model's median over the covered field
+    version = "3"          # 2: the automatic method; the level kept is the model's median over the covered field;
+                           # 3: the RBF, the placed samples and the excluded areas
 
     def run(self, ctx: Context, p: GradientParams) -> None:
         ctx.progress(0.05, "loading the stack")
         stack = ctx.load("stack", "drz_full.npy").astype(np.float32)
         H, W = stack.shape[1:]
         valid = coverage(ctx)
-        info = {"method": p.method, "width": W, "height": H, "space": "camera RGB, linear (before the colour "
-                                                                       "calibration)"}
-        if p.method == "automatic":
-            ctx.progress(0.1, "automatic model")
-            grid = automatic_grid(stack, valid, p, lambda c: ctx.progress(0.1 + 0.25 * c, f"automatic model, "
+        ctx.progress(0.2, f"{p.method} sky model")
+        m = sky_model_of(stack, valid, p, progress=lambda c: ctx.progress(0.2 + 0.25 * c, f"automatic model, "
                                                                                         f"{'RGB'[c]}"))
-            vg = enlarge_mask(valid, grid.shape[1:], p.downsample)
-            info.update(grid="corners", factor=p.downsample, settings=p.auto_settings().__dict__)
-            detail = f"automatic model, scale {p.scale:g}, on a copy reduced {p.downsample} times"
-        else:
-            ctx.progress(0.3, "sky samples")
-            fit = fit_poly_sky(stack, valid, p.degree, p.samples, p.object_clip)
-            ctx.progress(0.7, "sky model")
-            xx, yy = grid_centres(H, W)
-            A = poly_terms(xx.ravel(), yy.ravel(), W, H, p.degree)
-            grid = (fit["coefs"] @ A.T).reshape(3, *xx.shape).astype(np.float32)
-            vg = cv2.resize(valid.astype(np.uint8), (xx.shape[1], xx.shape[0]), interpolation=cv2.INTER_AREA) > 0
-            both = fit["used"].all(0)
-            ctx.metric("samples_used", int(both.sum()))
-            np.savez(ctx.out("samples.npz"), x=fit["x"].astype(np.float32), y=fit["y"].astype(np.float32),
-                     values=fit["values"].astype(np.float32), candidate=fit["candidate"], used=fit["used"],
-                     valid=fit["valid"])
-            info.update(grid="centres", factor=SKY_FACTOR, degree=p.degree, coefs=fit["coefs"].tolist(),
-                        block_px=fit["block"],
-                        basis="u^i v^j for i in 0..degree, j in 0..degree-i; u = x / (W/2) - 1, v = y / (H/2) - 1 "
-                              "(pixel indices)")
-            detail = f"fitted on {int(both.sum())} of {int(fit['candidate'].sum())} sky samples ({fit['block']} px blocks)"
+        grid, vg, detail = m["grid"], m["covered"], m["detail"]
+        info = {**m["info"], "width": W, "height": H, "space": "camera RGB, linear (before the colour calibration)"}
+        if m["samples"] is not None:
+            sm = m["samples"]
+            ctx.metric("samples_used", int(np.sum(sm["used"])))
+            np.savez(ctx.out("samples.npz"), x=np.asarray(sm["x"], np.float32), y=np.asarray(sm["y"], np.float32),
+                     used=np.asarray(sm["used"]), manual=bool(sm["manual"]), box=float(sm["box"]))
         level = np.array([float(np.median(grid[c][vg])) for c in range(3)])
         grid -= level.astype(np.float32)[:, None, None]
         np.save(ctx.out(SKY_FILE), grid)

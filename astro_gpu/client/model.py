@@ -64,12 +64,16 @@ METHOD_BLOCK = {"debruitage": "denoise", "fond": "gradient", "etoiles": "stars",
 METHOD_OPT = {"debruitage": "dn", "fond": "fond", "etoiles": "appris", "deconv": "deconv_m"}
 #: the engine's method keys → the views'
 METHOD_KEY = {"debruitage": {"n2n": "appris", "finetuned": "affine", "pretrained": "generique", "nlbayes": "nlbayes"},
-              "fond": {"polynomial": "simple", "automatic": "auto"},
+              "fond": {"polynomial": "simple", "rbf": "rbf", "automatic": "auto"},
               "etoiles": {"psf": "psf", "psf_neural": "psf_neural"},
               "deconv": {"rl": "psf", "neural": "neural"}}
+#: the Gradient methods: the views' keys and the engine's
+GRADIENT_ENGINE = {"simple": "polynomial", "rbf": "rbf", "auto": "automatic"}
+GRADIENT_VIEW = {v: k for k, v in GRADIENT_ENGINE.items()}
 #: the toolbox: key of a tool → (engine option, value that adds it, value that removes it)
 TOOL_OPTION = {"debruitage": ("denoise", "n2n", None), "etoiles": ("stars", "psf", None),
                "appris": ("stars", "psf_neural", "psf"), "auto": ("gradient", "automatic", "polynomial"),
+               "rbf": ("gradient", "rbf", "polynomial"),
                "simple": ("gradient", "polynomial", None)}
 #: the stages whose settings the summaries of the blocks quote: asked of the worker for each workflow
 PREFETCH = ("stack", "denoise", "star_net")
@@ -85,13 +89,13 @@ def to_engine(o: dict) -> dict:
     if o.get("etoiles") == "mesurer":
         stars = "psf_neural" if o.get("appris") else "psf"
     return {"denoise": "n2n" if o.get("debruitage") else None, "stars": stars,
-            "gradient": "automatic" if o.get("fond") == "auto" else "polynomial", "deconvolution": None}
+            "gradient": GRADIENT_ENGINE.get(o.get("fond"), "polynomial"), "deconvolution": None}
 
 
 def from_engine(o: dict) -> dict:
     """The engine's options as the views' (``dn`` is always the engine's Noise2Noise)."""
     return {"debruitage": bool(o.get("denoise")), "dn": "appris", "etoiles": "mesurer" if o.get("stars") else "garder",
-            "appris": o.get("stars") == "psf_neural", "fond": "auto" if o.get("gradient") == "automatic" else "simple",
+            "appris": o.get("stars") == "psf_neural", "fond": GRADIENT_VIEW.get(o.get("gradient"), "simple"),
             "deconv": bool(o.get("deconvolution"))}
 
 
@@ -775,7 +779,7 @@ class ProjectModel(QObject):
     def _method_key(self, p: WorkflowView, block: str, method: str, device: str | None):
         """(the cache key, the options the method needs) of a method's duration, or None when the engine refuses them.
         ``device``: "gpu", "cpu", or None for the machine's."""
-        tool = {"fond": {"auto": "auto", "simple": "simple"}, "etoiles": {"psf": "etoiles", "psf_neural": "appris"},
+        tool = {"fond": {"auto": "auto", "rbf": "rbf", "simple": "simple"}, "etoiles": {"psf": "etoiles", "psf_neural": "appris"},
                 "debruitage": {"appris": "debruitage"}}.get(block, {}).get(method)
         try:
             opts = self.with_tool(p.opts, tool)[0] if tool else dict(p.opts)      # the options the method needs
@@ -1044,7 +1048,7 @@ class ProjectModel(QObject):
     @staticmethod
     def has_tool(o: dict, key: str) -> bool:
         return {"debruitage": bool(o.get("debruitage")), "etoiles": o.get("etoiles") == "mesurer",
-                "appris": bool(o.get("appris")), "auto": o.get("fond") == "auto",
+                "appris": bool(o.get("appris")), "auto": o.get("fond") == "auto", "rbf": o.get("fond") == "rbf",
                 "simple": o.get("fond") == "simple", "deconv": bool(o.get("deconv"))}[key]
 
     @staticmethod
@@ -1155,7 +1159,7 @@ class ProjectModel(QObject):
         if key == "appris":
             return [{"kind": "opt", "key": "stars", "value": "psf_neural" if v else "psf"}]
         if key == "fond":
-            return [{"kind": "opt", "key": "gradient", "value": "automatic" if v == "auto" else "polynomial"}]
+            return [{"kind": "opt", "key": "gradient", "value": GRADIENT_ENGINE.get(v, "polynomial")}]
         if key == "debruitage":
             return [{"kind": "opt", "key": "denoise", "value": "n2n" if v else None}]
         if key == "etoiles":

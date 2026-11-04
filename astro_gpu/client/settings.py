@@ -351,11 +351,12 @@ CATALOG = {
             E("gradient", "object_clip", "expert", help="Areas brighter than this threshold are not used to "
                                                         "measure the background."),
         ]),
-        ("Samples", [
-            N("gradient", "exclusions", "Areas to exclude", "zone", NO_ZONE,
-              "The drawn areas are not used to measure the background: faint nebula, galaxy, reflection."),
-            N("gradient", "show_samples", "Show sample points", "bool", False,
-              "Shows on the image the points where the background is measured, and lets them be moved or removed."),
+    ],
+    "fond:rbf": [
+        ("Sky gradient", [
+            E("gradient", "rbf_smooth"),
+            E("gradient", "samples", help="Number of samples along the shorter side of the generated grid."),
+            E("gradient", "object_clip", "expert", help="Grid samples brighter than this threshold are left out."),
         ]),
     ],
     "fond:auto": [
@@ -363,7 +364,8 @@ CATALOG = {
             E("gradient", "scale"), E("gradient", "smoothness"),
         ]),
         ("Structure protection", [
-            E("gradient", "protect"), E("gradient", "protect_threshold"), E("gradient", "protect_amount"),
+            E("gradient", "protect"), E("gradient", "protect_threshold"), E("gradient", "protect_sigmas"),
+            E("gradient", "protect_amount"),
         ]),
         ("Strong gradients", [
             E("gradient", "simplified"), E("gradient", "simple_degree"),
@@ -404,7 +406,8 @@ CATALOG = {
 }
 # the engine's settings that no panel shows: the project or the options set them, or a block control owns them
 HIDDEN = {("stack", "exclude"), ("stack", "min_transparency"), ("stack", "max_fwhm_ratio"), ("star_net", "enabled"),
-          ("render_simple", "stretch"), ("stack", "method"), ("gradient", "method")}
+          ("render_simple", "stretch"), ("stack", "method"), ("gradient", "method"),
+          ("gradient", "sample_points"), ("gradient", "exclude_ellipses"), ("gradient", "exclude_brush")}
 #: the stacking method: chosen on the cards of the Stacking panel, never as a row
 STACK_METHOD = ("stack", "method")
 #: the stacking methods' names and what each does, by the engine's key (an engine method missing here shows its

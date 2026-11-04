@@ -704,7 +704,53 @@ def part_evening(stale="S1"):
     sp.post = old
 
 
-PART_FN = {"home": part_home, "evening": part_evening, "graph": part_graph, "stack": part_stack, "inspect": part_inspect,
+def part_gradedit():
+    """The Gradient block's samples and areas on the image (gradientedit.py), on the --drizzle workflow: the samples
+    of the method shown, the generated grid, an ellipse and a brush stroke excluded, the previews (nothing applied)."""
+    print("Gradient editing", flush=True)
+    open_it()
+    pid = pid_of(DRIZZLE)
+    walk.show_tab("fond", "result", "gradedit_result", pid)
+    ed = w.tune.grad_editor
+    v = w.tune.view
+    ed.set_mode("points")
+    walk.until(lambda: not ed.busy and ed.small is not None, 120, "the reduced stack and its preview")
+    walk.settle()
+    walk.shot("gradedit_samples")
+    ed.generate()
+    walk.until(lambda: not ed.busy and ed.work["sample_points"], 60, "the generated grid")
+    walk.until(lambda: not ed.busy, 60, "the grid's preview")
+    walk.pump(1.0)
+    walk.settle()
+    walk.shot("gradedit_grid")
+    W, H = ed.small["W"], ed.small["H"]
+    ed.set_mode("ellipse")
+    ed.work["exclude_ellipses"].append([W * 0.5, H * 0.5, W * 0.2, H * 0.28])
+    ed._edited()
+    ed.preview()
+    walk.until(lambda: not ed.busy, 60, "the ellipse's preview")
+    walk.pump(1.0)
+    walk.settle()
+    walk.shot("gradedit_ellipse")
+    ed.set_mode("brush")
+    walk.settle()
+    c = v.canvas
+    f = ed._f(c)
+    for t in range(20):
+        ed._dab(W * (0.15 + 0.01 * t), H * 0.2)
+    ed._last = None
+    ed._hover = (W * 0.36 * f, H * 0.2 * f)
+    ed._edited()
+    walk.until(lambda: not ed.busy, 60, "the brush's preview")
+    walk.pump(1.0)
+    walk.settle()
+    walk.shot("gradedit_brush")
+    ed.discard()
+    walk.settle()
+
+
+PART_FN = {"gradedit": part_gradedit,
+           "home": part_home, "evening": part_evening, "graph": part_graph, "stack": part_stack, "inspect": part_inspect,
            "post": part_post, "export": part_export, "naming": part_naming}
 
 for lang in LANGS:

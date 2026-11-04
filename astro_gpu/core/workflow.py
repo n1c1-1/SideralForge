@@ -31,7 +31,7 @@ from typing import Any
 OPTION_VALUES: dict[str, tuple[Any, ...]] = {
     "denoise": (None, "n2n"),
     "stars": (None, "psf", "psf_neural"),
-    "gradient": ("polynomial", "automatic"),
+    "gradient": ("polynomial", "rbf", "automatic"),
     "deconvolution": (None,),
 }
 #: a missing option takes this value (the Classic stack)

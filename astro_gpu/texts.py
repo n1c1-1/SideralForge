@@ -539,7 +539,7 @@ CHOICE_TEXTS: dict[str, str] = {
     # the colour stage's correction (stages/color.py)
     "full": "Full correction", "per_colour": "One factor per colour",
     # the Gradient block's methods (stages/gradient.py)
-    "polynomial": "Polynomial", "automatic": "Automatic",
+    "polynomial": "Polynomial", "rbf": "RBF", "automatic": "Automatic",
 }
 
 _stage_index: dict[str, dict] | None = None

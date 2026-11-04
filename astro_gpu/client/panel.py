@@ -511,6 +511,9 @@ class Panel(QWidget):
                 self.bv.addSpacing(6)
         if k in ("fond", "debruitage", "etoiles", "deconv"):
             self.methods(p, k)
+        if k == "fond" and self.tune and getattr(self, "grad_editor", None) is not None:
+            self.bv.addWidget(self.group_title(_("Samples and areas")))
+            self.bv.addWidget(self.grad_editor.controls(p))
         groups = self._groups(p, k)
         units = [r.get("unit") for _t, rs in groups for r in rs]          # hidden rows too: the column stays put
         if k == "selection":
