@@ -29,7 +29,7 @@ obsolètes.
   de test, mettre à jour ceux de l'ancien Gradient.
 - **M8 express** : relancer `python tools/bench/gradient_projects.py --cases m8` quand les services Gaia répondent.
 - **L'édition des échantillons et zones du Gradient** (Inspect), restes de la revue d'ergonomie du 4 novembre :
-  déplacer / redimensionner / tourner une ellipse (poignées) ; prévenir avant de changer de workflow ou d'exécuter avec
+  prévenir avant de changer de workflow ou d'exécuter avec
   des modifications non appliquées, et le marquer dans l'en-tête du bloc ; l'aperçu aussi dans l'onglet « Modèle du
   ciel » ; compacter les touches de pinceau enregistrées.
 - **Les filtres « netteté » et « débruitage » du Post-traitement** ne changent rien à l'image d'après les captures
