@@ -16,7 +16,7 @@ AUTO_FIELDS: dict[str, frozenset[str]] = {
     "stack": frozenset({"scale", "pixfrac", "min_transparency", "half_block", "read_noise", "gain"}),
     "astrometry": frozenset({"ra", "dec", "target", "pixel_um", "focal_mm"}),
     "color": frozenset({"aperture"}),
-    "denoise": frozenset({"iterations"}),
+    "denoise": frozenset({"adaptation"}),                # long when the half-stacks' noise is not dithered
     "starless": frozenset({"learned_stars"}),
 }
 #: settings whose default changed after results had been keyed under the previous one: {stage: {field: the previous

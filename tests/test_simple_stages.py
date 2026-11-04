@@ -334,7 +334,7 @@ def test_v2_stages_and_chains():
     raw_exit = ch.chain(workflow.TEMPLATES["Classic stack"], "stacking")
     assert ch.deps_in_chain(raw_exit, "render_simple") == ("stack",)
     assert ch.deps_in_chain(ch.chain(workflow.TEMPLATES["Classic stack"]), "gradient") == ("stack",)
-    assert PATH_FIELDS["starless"] == {"learned_stars"} and PATH_FIELDS["denoise"] == {"reuse_model"}
+    assert PATH_FIELDS["starless"] == {"learned_stars"} and "denoise" not in PATH_FIELDS     # reuse_model retired
     stages = {s.name: s for s in V2_STAGES()}
     for st, fields in {**AUTO_FIELDS, **PATH_FIELDS}.items():
         assert fields <= set(stages[st].Params.model_fields), st
@@ -372,5 +372,5 @@ def test_every_auto_key_of_heart_a7s_is_in_auto_fields(tmp_path):
         seen[st.name] = keys
         allowed = AUTO_FIELDS.get(st.name, frozenset())
         assert keys <= allowed, (st.name, keys)
-    assert seen["stack"] and seen["denoise"] == {"iterations"} and seen["calibrate"] == {"workers"}
+    assert seen["stack"] and seen["denoise"] == {"adaptation"} and seen["calibrate"] == {"workers"}
     assert {p: p.stat().st_mtime_ns for p in (HEART_A7S / "work").rglob("manifest.json")} == before

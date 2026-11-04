@@ -243,7 +243,7 @@ def test_home_lists_the_workspace_and_skips_underscore(env):
     names = [c.info.name for c in w.home.cards]
     assert sorted(names) == ["HeartSoul", "Iris", "NGC 7822"]
     assert w.home.count.text() == "3 projects in the workspace"
-    assert w.windowTitle() == "astro_gpu · Home"
+    assert w.windowTitle() == "SideralForge · Home"
     infos, n = scan_workspace(env["ws"].as_posix(), [])
     assert n == 3 and "QC sheets" not in [i.name for i in infos]
 
@@ -308,7 +308,7 @@ def test_new_project_writes_a_v2_folder(env):
     assert d["format"] == 2 and d["name"] == "M42" and d["target"]["name"] == "Orion nebula"
     assert d["scratch_dir"] == (env["tmp"] / "scratch" / "M42").as_posix()
     assert project2.load(root).name == "M42"
-    assert w.project is not None and w.windowTitle() == "astro_gpu · M42"
+    assert w.project is not None and w.windowTitle() == "SideralForge · M42"
     assert w.screens.currentWidget() is w.proj_screen
     assert prefs.recent()[0]["path"] == root.as_posix()
     saved = json.loads(Path(os.environ["ASTRO_GPU_SETTINGS"]).read_text(encoding="utf-8"))
@@ -376,7 +376,7 @@ def test_french_and_back_rebuild_the_menus(env, qapp):
     qapp.processEvents()
     assert titles() == ["Fichier", "Édition", "Affichage", "Exécuter", "Aide"]
     assert d.windowTitle() == "Paramètres" and d.nav.item(0).text() == "Général"
-    assert w.windowTitle() == "astro_gpu · Accueil" and w.screens.currentWidget() is w.home
+    assert w.windowTitle() == "SideralForge · Accueil" and w.screens.currentWidget() is w.home
     assert w.home.count.text() == "3 projets dans le répertoire de travail"
     assert [m.text() for m in w.mode_btns] == ["Graphe", "Inspection", "Post-traitement"]
     assert prefs.get("language") == "fr"

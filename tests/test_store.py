@@ -545,7 +545,7 @@ def test_default_rules_read_stages_v2(monkeypatch):
     monkeypatch.setattr(store, "_RULES", [])
     r = store.key_rules()
     assert r.auto_fields("stack") == v2.AUTO_FIELDS["stack"] and r.auto_fields("optics") == frozenset()
-    assert r.path_fields("starless") == {"learned_stars"} and r.path_fields("denoise") == {"reuse_model"}
+    assert r.path_fields("starless") == {"learned_stars"} and not r.path_fields("denoise")     # reuse_model retired
     assert r.non_key("calibrate") == {"workers"} and r.non_key("star_net") == {"device"}
     assert r.retired("stack") == v2.RETIRED["stack"] and r.constants("register") == {"fwhm_method": "moffat"}
 
@@ -557,9 +557,12 @@ def test_real_stage_graph_shares_as_designed(tmp_path, raws):
     classic, cdn, full, neural = (ids[n] for n in ("Classic stack", "Classic + denoise", "Full",
                                                    "Full + neural stars"))
     k = Keys(p)
-    for s in ("inventory", "calibrate", "register", "stack", "astrometry", "catalogs", "color"):
+    for s in ("inventory", "calibrate", "register", "stack", "astrometry"):
         assert len({k.key(i, s) for i in ids.values()}) == 1, s
-    assert k.sharing(classic, "color") == sorted(ids.values())
+    # the catalogue is deep only with the Stars block (deep_stars, implied): two catalogues, and two colours after them
+    for s in ("catalogs", "color"):
+        assert k.key(classic, s) == k.key(cdn, s) != k.key(full, s) == k.key(neural, s), s
+    assert k.sharing(classic, "color") == sorted([classic, cdn])
     assert k.key(cdn, "denoise") == k.key(full, "denoise") == k.key(neural, "denoise")
     assert k.key(full, "stars") == k.key(neural, "stars")
     assert k.key(full, "starless") != k.key(neural, "starless")          # star_net is read (EXTRA)
