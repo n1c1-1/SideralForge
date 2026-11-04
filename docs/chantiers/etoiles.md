@@ -112,6 +112,31 @@ brillantes (G < 16) et leurs spectres XP viennent de l'extrait Gaia local, sans 
 en local (environ 66 Go, Gaia DR3 en Parquet, `data.lsdb.io` ou `stpubdata` sur AWS) reste possible si le recours
 « resynthèse des étoiles » en a besoin un jour ; pas maintenant.
 
+## La piste B lancée (4 novembre, nuit)
+
+Choix fait après la revue : un réseau qui retire directement les étoiles, entraîné une fois sur nos empilements
+(`tools/bench/stars_train.py`), plutôt que masquer puis combler (la piste A bute sur les champs denses : le masque
+couvre 78 % de Heart).
+
+- **Les paires** : 23 champs du jeu de données (sans le banc, sans le set 53 non relu), 56 images en tout (les niveaux
+  de profondeur d'un même champ), chacune avec son image sans étoiles : celle de StarNet, corrigée à la main sous
+  Photoshop par Nicolas (15 champs retouchés, de 0,01 % à 2,7 % de l'image). Les pixels retouchés reviennent dans les
+  données en défaisant l'étirement connu des TIFF ; les autres gardent la précision de StarNet.
+- **Zones ignorées** (aucun apprentissage) : le halo d'Alnitak (impossible à effacer proprement), l'étoile de NGC 2023
+  restée dans l'image sans étoiles, un nœud de M33 effacé (région H II ?) ; dans les autres niveaux d'un champ, les
+  zones retouchées sur le niveau relu.
+- **Étoiles de synthèse** (60 % des exemples) : posées sur l'image sans étoiles (vérité exacte) ou sur l'empilement
+  lui-même ; profil de Moffat (Moffat 1969) à la largeur mesurée sur les étoiles du champ ou tirée plus large, auréole
+  en r^-3 (Racine 1996), aigrettes une fois sur cinq, couleurs autour du blanc de la balance, saturation au niveau du
+  champ, un peu de bruit de photons.
+- **Le réseau** : NAFNet (Chen et al. 2022), celui de Dark Star et de SyQon, 29 M paramètres, perte L1 sur un
+  étirement asinh fixe et connu (défait exactement à la sortie).
+- **Deux entraînements cette nuit**, pour savoir ce qu'apportent les étoiles de synthèse : « mixed » (vraies paires et
+  synthèse, carte 0, lots de 8, 9 h) et « real » (vraies paires seules, carte 1, lots de 4, 8 h 36). Validation pendant
+  l'entraînement : des étoiles de synthèse posées sur les images sans étoiles de StarNet du banc (une vérité exacte,
+  sur des champs jamais vus). À la fin, chacun produit les images sans étoiles du banc
+  (`stars_compare/<cas>/net_<nom>_starless.fits`) et les cinq épreuves sont refaites (`stars_compare.py`).
+
 ## Le calendrier proposé
 
 | Quand | Quoi |
