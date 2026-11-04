@@ -705,6 +705,7 @@ def part_evening(stale="S1"):
 
 
 def part_gradedit():
+    from PySide6.QtCore import Qt
     """The Gradient block's samples and areas on the image (gradientedit.py), on the --drizzle workflow: the samples
     of the method shown, the generated grid, an ellipse and a brush stroke excluded, the previews (nothing applied)."""
     print("Gradient editing", flush=True)
@@ -725,8 +726,24 @@ def part_gradedit():
     walk.shot("gradedit_grid")
     W, H = ed.small["W"], ed.small["H"]
     ed.set_mode("ellipse")
-    ed.work["exclude_ellipses"].append([W * 0.5, H * 0.5, W * 0.2, H * 0.28])
-    ed._edited()
+    c = v.canvas
+    f = ed._f(c)
+
+    def drag(a, b):                      # a drag of the tool, in stack pixels
+        ed.press(c, a[0] * f, a[1] * f, Qt.LeftButton)
+        ed.move(c, b[0] * f, b[1] * f)
+        ed.release(c)
+    drag((W * 0.32, H * 0.25), (W * 0.62, H * 0.8))            # drawn
+    hs = ed._handles(c, f)
+    rot = c.w_to_img(*hs["rot"])
+    e = ed.work["exclude_ellipses"][ed._sel]
+    drag((rot[0] / f, rot[1] / f), (e[0] / 1 + W * 0.15, e[1] - H * 0.3))   # turned
+    hs = ed._handles(c, f)
+    rx = c.w_to_img(*hs["rx"])
+    e = ed.work["exclude_ellipses"][ed._sel]
+    drag((rx[0] / f, rx[1] / f), (rx[0] / f + W * 0.04, rx[1] / f))          # widened
+    if not (len(ed.work["exclude_ellipses"]) == 1 and abs(ed.work["exclude_ellipses"][0][4]) > 5):
+        walk.problem(f"the ellipse was not turned: {ed.work['exclude_ellipses']}")
     ed.preview()
     walk.until(lambda: not ed.busy, 60, "the ellipse's preview")
     walk.pump(1.0)
@@ -734,8 +751,6 @@ def part_gradedit():
     walk.shot("gradedit_ellipse")
     ed.set_mode("brush")
     walk.settle()
-    c = v.canvas
-    f = ed._f(c)
     for t in range(20):
         ed._dab(W * (0.15 + 0.01 * t), H * 0.2)
     ed._last = None

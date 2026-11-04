@@ -58,3 +58,13 @@ def test_exclusion_mask_paints_and_erases_in_order():
     half = exclusion_mask(p, 100, 200, 0.5)
     assert half.shape == (100, 200) and half[25, 150]
     assert exclusion_mask(GradientParams(), 10, 10) is None
+
+
+def test_a_turned_ellipse_is_excluded_along_its_axes():
+    from astro_gpu.client.gradientedit import _inside, _local, _world
+    e = [200.0, 100.0, 80.0, 20.0, 90.0]                    # turned a quarter: its long axis vertical
+    m = exclusion_mask(GradientParams(exclude_ellipses=[e]), 200, 400)
+    assert m[160, 200] and not m[100, 270]
+    assert _inside(e, 200, 160) and not _inside(e, 270, 100)
+    u, v = _local(e, *_world(e, 30.0, -7.0))
+    assert abs(u - 30) < 1e-9 and abs(v + 7) < 1e-9

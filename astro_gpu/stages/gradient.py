@@ -111,7 +111,8 @@ class GradientParams(StageParams):
                                          help="The samples placed on the image (stack pixels); empty: the automatic "
                                               "grid.")
     exclude_ellipses: list[list[float]] = P([], label="Excluded ellipses", level="internal",
-                                            help="Areas left out of the sky model: centre x, y and half axes.")
+                                            help="Areas left out of the sky model: centre x, y, half axes and "
+                                                 "angle (degrees).")
     exclude_brush: list[list[float]] = P([], label="Excluded brush strokes", level="internal",
                                          help="Brush dabs x, y, radius, 1 to exclude / 0 to erase, in order.")
     @field_validator("method")
@@ -312,9 +313,11 @@ def exclusion_mask(p: GradientParams, h: int, w: int, f: float = 1.0) -> np.ndar
     if not p.exclude_ellipses and not p.exclude_brush:
         return None
     m = np.zeros((h, w), np.uint8)
-    for cx, cy, rx, ry in p.exclude_ellipses:
-        cv2.ellipse(m, (round(cx * f), round(cy * f)), (max(1, round(rx * f)), max(1, round(ry * f))), 0, 0, 360, 1,
-                    -1)
+    for e in p.exclude_ellipses:
+        cx, cy, rx, ry = e[:4]
+        angle = float(e[4]) if len(e) > 4 else 0.0           # degrees, clockwise on the image (y down)
+        cv2.ellipse(m, (round(cx * f), round(cy * f)), (max(1, round(rx * f)), max(1, round(ry * f))), angle, 0, 360,
+                    1, -1)
     for x, y, r, paint in p.exclude_brush:
         cv2.circle(m, (round(x * f), round(y * f)), max(1, round(r * f)), 1 if paint else 0, -1)
     return m > 0

@@ -38,6 +38,33 @@ USED, UNUSED, OUTLINE = QColor("#56c8f5"), QColor("#ff4d55"), QColor(255, 255, 2
 VEIL = (229, 72, 77, 128)                      # the excluded areas: red, 50 %
 FIELDS = ("sample_points", "exclude_ellipses", "exclude_brush")
 UNDO_MAX = 50
+#: an ellipse's handles: their size, and how far above the ellipse the rotation one is (screen px)
+HANDLE_PX, ROT_PX = 5, 26
+
+
+def _ell(e) -> tuple[float, float, float, float, float]:
+    """An ellipse of exclude_ellipses: centre, half axes, angle (degrees; an earlier one has none)."""
+    return float(e[0]), float(e[1]), float(e[2]), float(e[3]), float(e[4]) if len(e) > 4 else 0.0
+
+
+def _local(e, x, y) -> tuple[float, float]:
+    """(x, y) in the frame of the ellipse: along its first axis, along its second."""
+    cx, cy, _rx, _ry, a = _ell(e)
+    c, s = math.cos(math.radians(a)), math.sin(math.radians(a))
+    dx, dy = x - cx, y - cy
+    return dx * c + dy * s, -dx * s + dy * c
+
+
+def _world(e, u, v) -> tuple[float, float]:
+    cx, cy, _rx, _ry, a = _ell(e)
+    c, s = math.cos(math.radians(a)), math.sin(math.radians(a))
+    return cx + u * c - v * s, cy + u * s + v * c
+
+
+def _inside(e, x, y) -> bool:
+    _cx, _cy, rx, ry, _a = _ell(e)
+    u, v = _local(e, x, y)
+    return (u / max(rx, 1e-6)) ** 2 + (v / max(ry, 1e-6)) ** 2 <= 1
 
 
 class _Job(QRunnable):
@@ -78,7 +105,9 @@ class GradientEditor(QObject):
         self._pending = None                   # the request waiting for the one running
         self._hover = None
         self._grab = None
-        self._ell = None
+        self._ell = None                       # the ellipse being drawn (two corners, stack px)
+        self._sel = None                       # the ellipse selected (its handles shown)
+        self._edit_ell = None                  # (what is dragged: move / rx / ry / rot, the start)
         self._last = None
         self._stroke0 = None                   # where the brush stroke in progress starts in exclude_brush
         self._veil = None                      # (key, QImage)
@@ -196,11 +225,27 @@ class GradientEditor(QObject):
         self._ui["size"] = sz
         row = QHBoxLayout()
         if sampled:
+            from PySide6.QtWidgets import QSpinBox
+            row.addWidget(label(_("Density"), "small"))
+            dens = QSpinBox()
+            dens.setRange(4, 64)
+            dens.setValue(int(self.s.param_value(p, "gradient", "samples") or 16))
+            dens.setToolTip(_("Samples along the shorter side of the grid (the setting Samples per side)"))
+            dens.setFixedWidth(64)
+            self._dens_t = QTimer(box)
+            self._dens_t.setSingleShot(True)
+            self._dens_t.setInterval(500)
+            self._dens_t.timeout.connect(lambda: self._density(dens.value()))
+            dens.valueChanged.connect(lambda _v: self._dens_t.start())
+            row.addWidget(dens)
             g = QPushButton(_("Generate the grid"))
             g.setToolTip(_("Samples on a regular grid, the brighter areas left out (Samples per side, Object "
                            "rejection); then move or remove them by hand"))
             g.clicked.connect(self.generate)
             row.addWidget(g)
+            row.addStretch(1)
+            v.addLayout(row)
+            row = QHBoxLayout()                # the grid on its line, the undo and removal on the next
         for key, text, tip, fn in (("undo", "↶", "Undo the last edit (Ctrl+Z)", self.undo),
                                    ("redo", "↷", "Redo (Ctrl+Y)", self.redo)):
             b = QPushButton(text)
@@ -257,8 +302,8 @@ class GradientEditor(QObject):
                          "image · M hide · Ctrl+Z undo"),
              "brush": _("Brush: drag to paint · X paint / erase · [ ] size · right drag: move the image · M hide · "
                         "Ctrl+Z undo"),
-             "ellipse": _("Ellipse: drag around the object · right click inside: remove · Space: move the image · "
-                          "M hide · Ctrl+Z undo")}.get(self.mode, "")
+             "ellipse": _("Ellipse: drag to draw · click inside: select and move · handles: size and rotation · "
+                          "Delete or right click inside: remove · Space: move the image · Ctrl+Z undo")}.get(self.mode, "")
         try:
             self.view.tool_hint.setText(t)
             self.view.tool_hint.setVisible(bool(t))
@@ -291,6 +336,7 @@ class GradientEditor(QObject):
     # ------------------------------------------------------------ modes
     def set_mode(self, mode: str | None):
         self.mode = mode
+        self._sel = None
         if self.view is not None:
             try:
                 c = self.view.canvas
@@ -308,6 +354,12 @@ class GradientEditor(QObject):
             self._run("load")
         self._hint()
         self._sync()
+
+    def _density(self, n: int):
+        """The grid's density (the setting Samples per side), then a new grid."""
+        if n != int(self.s.param_value(self.p, "gradient", "samples") or 16):
+            self.s.set_param(self.p, "gradient", "samples", int(n))
+            self.generate()
 
     def _set_paint(self, on: bool):
         self.paint = on
@@ -330,6 +382,11 @@ class GradientEditor(QObject):
             self.shown = not self.shown
             if self.view is not None:
                 self.view.canvas.update()
+        elif k in (Qt.Key_Delete, Qt.Key_Backspace) and self.mode == "ellipse" and self._sel is not None:
+            self._push()
+            self.work["exclude_ellipses"].pop(self._sel)
+            self._sel = None
+            self._edited()
         elif k == Qt.Key_Escape:
             self.set_mode(None)
         else:
@@ -449,18 +506,57 @@ class GradientEditor(QObject):
             self._dab(sx, sy)
             return True
         elif self.mode == "ellipse":
+            ells = self.work["exclude_ellipses"]
             if button == Qt.RightButton:
-                for j, (cx, cy, rx, ry) in enumerate(self.work["exclude_ellipses"]):
-                    if ((sx - cx) / max(rx, 1)) ** 2 + ((sy - cy) / max(ry, 1)) ** 2 <= 1:
+                for j in reversed(range(len(ells))):
+                    if _inside(ells[j], sx, sy):
                         self._push()
-                        self.work["exclude_ellipses"].pop(j)
+                        ells.pop(j)
+                        self._sel = None
                         self._edited()
                         break
                 return True
             if button == Qt.LeftButton:
+                # the handles of the selected ellipse, then inside an ellipse (select and move), else a new one
+                h = self._handle(canvas, ix, iy)
+                if h is not None:
+                    self._push()
+                    self._edit_ell = (h, list(ells[self._sel]), (sx, sy))
+                    return True
+                hit = next((j for j in reversed(range(len(ells))) if _inside(ells[j], sx, sy)), None)
+                if hit is not None:
+                    self._sel = hit
+                    self._push()
+                    self._edit_ell = ("move", list(ells[hit]), (sx, sy))
+                    canvas.update()
+                    return True
+                self._sel = None
                 self._ell = [(sx, sy), (sx, sy)]
                 return True
         return False
+
+    def _handles(self, canvas, f) -> dict[str, tuple[float, float]]:
+        """The selected ellipse's handles, in screen px: its four axis ends and the rotation one above it."""
+        if self._sel is None or self._sel >= len(self.work["exclude_ellipses"]):
+            return {}
+        e = self.work["exclude_ellipses"][self._sel]
+        _cx, _cy, rx, ry, _a = _ell(e)
+        k = f * canvas.scale
+        out = {}
+        for name, (u, v) in (("rx", (rx, 0)), ("-rx", (-rx, 0)), ("ry", (0, ry)), ("-ry", (0, -ry)),
+                             ("rot", (0, -ry - ROT_PX / max(k, 1e-9)))):
+            x, y = _world(e, u, v)
+            p = canvas.img_to_w(x * f, y * f)
+            out[name] = (p.x(), p.y())
+        return out
+
+    def _handle(self, canvas, ix, iy) -> str | None:
+        f = self._f(canvas)
+        p = canvas.img_to_w(ix, iy)
+        for name, (hx, hy) in self._handles(canvas, f).items():
+            if math.hypot(p.x() - hx, p.y() - hy) <= HANDLE_PX + 4:
+                return name
+        return None
 
     def move(self, canvas, ix, iy):
         f = self._f(canvas)
@@ -470,6 +566,18 @@ class GradientEditor(QObject):
             self.work["sample_points"][self._grab] = [sx, sy]
         elif self.mode == "brush":
             self._dab(sx, sy)
+        elif self.mode == "ellipse" and self._edit_ell is not None:
+            what, e0, (x0, y0) = self._edit_ell
+            cx, cy, rx, ry, a = _ell(e0)
+            if what == "move":
+                e = [cx + sx - x0, cy + sy - y0, rx, ry, a]
+            elif what == "rot":                  # the handle above the ellipse follows the mouse around its centre
+                e = [cx, cy, rx, ry, math.degrees(math.atan2(sy - cy, sx - cx)) + 90.0]
+            else:
+                u, v = _local(e0, sx, sy)
+                e = [cx, cy, max(abs(u), 2.0), ry, a] if what.endswith("rx") else [cx, cy, rx, max(abs(v), 2.0), a]
+            self.work["exclude_ellipses"][self._sel] = e
+            self._veil = None
         elif self.mode == "ellipse" and self._ell:
             self._ell[1] = (sx, sy)
         canvas.update()
@@ -482,13 +590,18 @@ class GradientEditor(QObject):
             self._last = None
             self._stroke0 = None
             self._edited()
+        elif self.mode == "ellipse" and self._edit_ell is not None:
+            self._edit_ell = None
+            self._edited()
         elif self.mode == "ellipse" and self._ell:
             (ax, ay), (bx, by) = self._ell
             self._ell = None
             k = self._f(canvas) * canvas.scale
             if abs(bx - ax) * k > 6 and abs(by - ay) * k > 6:
                 self._push()
-                self.work["exclude_ellipses"].append([(ax + bx) / 2, (ay + by) / 2, abs(bx - ax) / 2, abs(by - ay) / 2])
+                self.work["exclude_ellipses"].append([(ax + bx) / 2, (ay + by) / 2, abs(bx - ax) / 2, abs(by - ay) / 2,
+                                                      0.0])
+                self._sel = len(self.work["exclude_ellipses"]) - 1     # selected: its handles at once
                 self._edited()
         canvas.update()
 
@@ -525,10 +638,26 @@ class GradientEditor(QObject):
         if self.shown:
             self._paint_veil(painter, canvas, f, dw, dh)
             self._paint_samples(painter, canvas, f)
-            painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(OUTLINE, 1.2, Qt.DashLine))
-            for cx, cy, rx, ry in self.work["exclude_ellipses"]:
-                painter.drawEllipse(canvas.img_to_w(cx * f, cy * f), rx * f * canvas.scale, ry * f * canvas.scale)
+            for j, e in enumerate(self.work["exclude_ellipses"]):
+                cx, cy, rx, ry, a = _ell(e)
+                sel = j == self._sel and self.mode == "ellipse"
+                painter.save()
+                painter.translate(canvas.img_to_w(cx * f, cy * f))
+                painter.rotate(a)
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(OUTLINE, 1.6 if sel else 1.2, Qt.SolidLine if sel else Qt.DashLine))
+                painter.drawEllipse(QPointF(0, 0), rx * f * canvas.scale, ry * f * canvas.scale)
+                painter.restore()
+            hs = self._handles(canvas, f) if self.mode == "ellipse" else {}
+            if hs:
+                painter.setPen(QPen(OUTLINE, 1.2))
+                painter.drawLine(QPointF(*hs["-ry"]), QPointF(*hs["rot"]))
+                painter.setBrush(QColor("#15171c"))
+                for name, (hx, hy) in hs.items():
+                    if name == "rot":
+                        painter.drawEllipse(QPointF(hx, hy), HANDLE_PX + 1, HANDLE_PX + 1)
+                    else:
+                        painter.drawRect(QRectF(hx - HANDLE_PX, hy - HANDLE_PX, 2 * HANDLE_PX, 2 * HANDLE_PX))
         if self._ell:
             (ax, ay), (bx, by) = self._ell
             painter.setPen(QPen(OUTLINE, 1.5, Qt.DashLine))

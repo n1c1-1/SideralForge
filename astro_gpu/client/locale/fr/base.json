@@ -1,4 +1,8 @@
 {
+ "Preview": "Aperçu",
+ "Ellipse: drag to draw · click inside: select and move · handles: size and rotation · Delete or right click inside: remove · Space: move the image · Ctrl+Z undo": "Ellipse : glisser pour tracer · clic dedans : sélectionner et déplacer · poignées : taille et rotation · Suppr ou clic droit dedans : retirer · Espace : déplacer l'image · Ctrl+Z annuler",
+ "Samples along the shorter side of the grid (the setting Samples per side)": "Échantillons sur le petit côté de la grille (le réglage Échantillons par côté)",
+ "Density": "Densité",
  "Remove the placed samples and the excluded areas: back to the automatic grid (undo brings them back)": "Retirer les échantillons placés et les zones exclues : retour à la grille automatique (Annuler les rétablit)",
  "Remove all…": "Tout retirer…",
  "Exclude:": "Exclure :",
