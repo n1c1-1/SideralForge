@@ -2,12 +2,13 @@
 
     python tools/bench/stars_mask_fill.py [--cases rosette,heart]
 
-The mask: the Gaia stars of the field (the catalogue stage's ``gaia_deep.npz``) whose peak measured on the image
-stands PEAK_K noise sigmas above the local median, each with the radius where its own profile falls to EDGE_K noise
-sigmas (a Moffat profile, beta 2.5, of the registration's FWHM, scaled to the star's peak; at most 80 px), plus
-the stars Gaia does not have: the local maxima standing 5 noise sigmas above the local median (a disc of 2 FWHM). The fill: Telea's fast marching inpainting (Telea 2004, "An image
-inpainting technique based on the fast marching method", J. Graphics Tools 9(1); OpenCV ``INPAINT_TELEA``), channel by
-channel, on the linear image. Outside the mask the image is not touched.
+The mask: the Gaia stars of the field (the catalogue stage's ``gaia_deep.npz``) whose peak measured on the image stands
+PEAK_K noise sigmas above the local median, each with the radius where its own profile falls to EDGE_K noise sigmas (a
+Moffat profile, beta 2.5, of the registration's FWHM, scaled to the star's peak; at most 80 px), plus the stars Gaia
+does not have: the local maxima standing 5 noise sigmas above the local median (a disc of 2 FWHM). The fill: Telea's
+fast marching inpainting (Telea 2004, "An image inpainting technique based on the fast marching method", J. Graphics
+Tools 9(1); OpenCV ``INPAINT_TELEA``), channel by channel, on the linear image. Outside the mask the image is not
+touched.
 
 Input: the common original of ``stars_samples.py`` (F:/astro_essais/stars_compare/<case>/input.fits). Output, beside
 it: ``a_telea_starless.fits`` (same units) and ``a_mask.png``; ``stars_compare.py`` measures it as ``a_telea``.

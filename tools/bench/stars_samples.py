@@ -7,9 +7,10 @@
 
 The input of every method is the same linear image: the two half-stacks our starless stage starts from (the Optics
 stage's, of the Full · denoise workflow of ``ours_express``), each denoised by the Denoise stage's network, averaged,
-times the Color stage's white balance, divided by one factor so that its brightest pixel is 1 (StarNet clips above
-1). Our starless image is this minus the stars: O - S is then the stars only. ``projects`` adds to each bench project the workflows of our method (Full: the star model measured with Gaia and
-the starless image; Full + neural stars: and our per-image neural star removal) and computes them.
+times the Color stage's white balance, divided by one factor so that its brightest pixel is 1 (StarNet clips above 1).
+Our starless image is this minus the stars: O - S is then the stars only. ``projects`` adds to each bench project the
+workflows of our method (Full: the star model measured with Gaia and the starless image; Full + neural stars: and our
+per-image neural star removal) and computes them.
 
 StarNet 2 (command line, 2.6.2): ``--linear`` (it stretches with a midtones transfer, removes the stars, then undoes the
 stretch), the starless image in the input's units and the star layer as its "unscreen" fraction U (the original is
@@ -127,7 +128,8 @@ def starnet(cases) -> int:
     for case in cases:
         d = OUT / case
         t = time.time()
-        r = subprocess.run([str(STARNET), "--input", str(d / "input.fits"), "--output", str(d / "starnet_starless.fits"),
+        r = subprocess.run([str(STARNET), "--input", str(d / "input.fits"),
+                            "--output", str(d / "starnet_starless.fits"),
                             "--unscreen", str(d / "starnet_unscreen.fits"), "--linear", "--quiet"],
                            capture_output=True, text=True, cwd=str(STARNET.parent))
         ok = (d / "starnet_starless.fits").exists()

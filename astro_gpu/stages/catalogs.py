@@ -45,8 +45,8 @@ class CatalogsParams(StageParams):
                         help="Size of the cones in which the Gaia archive is queried.")
     deep_stars: bool = P(False, label="Deep star catalogue", level=ADVANCED,
                          help="Every Gaia star down to the measured and modelled limits, for the Stars block (set by "
-                              "the workflow). Off, only the bright stars the colour calibration needs, from the offline "
-                              "Gaia extract: no download.")
+                              "the workflow). Off, only the bright stars the colour calibration needs, from the "
+                              "offline Gaia extract: no download.")
 
 
 class Catalogs(Stage):
