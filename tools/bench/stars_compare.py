@@ -86,6 +86,8 @@ def load_case(api, case: str):
         S["starnet"] = read_fits(d / "starnet_starless.fits")
     if (d / "a_telea_starless.fits").exists():                     # path A without its network (stars_mask_fill.py)
         S["a_telea"] = read_fits(d / "a_telea_starless.fits")
+    for f in sorted(d.glob("net_*_starless.fits")):                # the trained star removal networks (stars_train.py)
+        S[f.name[:-len("_starless.fits")]] = read_fits(f)
     p = api.open_project(BENCH / case / "ours_express")
     src = next(w for w in p.workflows if w.name == SOURCE)
     col = api.stage_outputs(p, src.id, "color")
@@ -98,7 +100,9 @@ def load_case(api, case: str):
     cat = api.stage_outputs(p, src.id, "catalogs")
     stars = None
     if cat is not None:
-        z = np.load(Path(cat.dir) / "gaia_deep.npz")
+        # the deepest catalogue the case has had: since 4 November a workflow without Stars keeps the bright stars only
+        deep = max(Path(cat.dir).parent.glob("*/gaia_deep.npz"), key=lambda f: f.stat().st_size)
+        z = np.load(deep)
         stars = (np.asarray(z["x"], float), np.asarray(z["y"], float), np.asarray(z["g"], float))
     ast = api.stage_outputs(p, src.id, "astrometry")
     wcs = WCS(fits.getheader(Path(ast.dir) / "wcs.fits")) if ast is not None else None

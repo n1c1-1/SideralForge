@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 import time
@@ -131,7 +130,7 @@ def user_white_balance(name: str, stack_dir: Path) -> dict:
     stack minus its gradient, its Gaia XP stars (its catalogue result), the stage's photometry and fit."""
     import colour as colour_lib
 
-    from astro_gpu.stages.color import (XYZ_TO_SRGB, bradford, colour_star_table, star_white_balance, white_xyz)
+    from astro_gpu.stages.color import XYZ_TO_SRGB, bradford, colour_star_table, star_white_balance, white_xyz
     store = USER / name / "store"
     cats = sorted((store / "catalogs").glob("*/gaia_xp.npz"), key=lambda f: f.stat().st_mtime)
     if not cats:
@@ -307,30 +306,42 @@ def generate(only, device: str) -> int:
 
 
 # ---------------------------------------------------------------------------------------------- review
-def review() -> int:
+def review(dest: Path | None = None, watch: bool = False) -> int:
+    """The review TIFFs of every field ready (its deepest level made), into ``dest`` (default OUT/_revue); with
+    ``watch``, again every minute as the generation goes on, until every field has its TIFFs (a field already written
+    is not written again)."""
     import tifffile
-    rv = OUT / "_revue"
+    rv = dest or OUT / "_revue"
     rv.mkdir(parents=True, exist_ok=True)
-    fields: dict[str, str] = {}
-    for f in sorted(OUT.glob("*/meta.json")):
-        m = json.loads(f.read_text())
-        name, fld = m["name"], m["field"]
-        if fld not in fields or LEVELS.index(name[len(fld):]) < LEVELS.index(fields[fld][len(fld):]):
-            fields[fld] = name
-    stretch = {}
-    for fld, name in sorted(fields.items()):
-        d = OUT / name
-        m = json.loads((d / "meta.json").read_text())
-        top = np.arcsinh((m["top"] + OFFSET) / SOFT)
-        for kind, fname in (("original", "input.npy"), ("starless", "starless.npy")):
-            v = np.load(d / fname).astype(np.float32)
-            y = np.arcsinh(np.clip(v + OFFSET, 0, None) / SOFT) / top
-            tifffile.imwrite(rv / f"{fld}_{kind}.tif", np.round(np.clip(y, 0, 1) * 65535).astype(np.uint16)
-                             .transpose(1, 2, 0), photometric="rgb")
-        stretch[fld] = {"pair": name, "top": m["top"], "offset": OFFSET, "soft": SOFT}
-        log(f"{fld}: review TIFFs from {name}")
-    (rv / "stretch.json").write_text(json.dumps(stretch, indent=1))
-    log(f"{len(fields)} fields in {rv}")
+    sf = rv / "stretch.json"
+    stretch = json.loads(sf.read_text()) if sf.exists() else {}
+    expected = {field_of(m["name"]) for m in pairs()}
+    while True:
+        fields: dict[str, str] = {}
+        for f in sorted(OUT.glob("*/meta.json")):
+            m = json.loads(f.read_text())
+            name, fld = m["name"], m["field"]
+            if fld not in fields or LEVELS.index(name[len(fld):]) < LEVELS.index(fields[fld][len(fld):]):
+                fields[fld] = name
+        for fld, name in sorted(fields.items()):
+            if stretch.get(fld, {}).get("pair") == name and (rv / f"{fld}_starless.tif").exists():
+                continue
+            d = OUT / name
+            m = json.loads((d / "meta.json").read_text())
+            top = np.arcsinh((m["top"] + OFFSET) / SOFT)
+            for kind, fname in (("original", "input.npy"), ("starless", "starless.npy")):
+                v = np.load(d / fname).astype(np.float32)
+                y = np.arcsinh(np.clip(v + OFFSET, 0, None) / SOFT) / top
+                tifffile.imwrite(rv / f"{fld}_{kind}.tif", np.round(np.clip(y, 0, 1) * 65535).astype(np.uint16)
+                                 .transpose(1, 2, 0), photometric="rgb")
+            stretch[fld] = {"pair": name, "top": m["top"], "offset": OFFSET, "soft": SOFT,
+                            "white_balance": m.get("white_balance"), "white_balanced": m.get("white_balanced")}
+            sf.write_text(json.dumps(stretch, indent=1))
+            log(f"{fld}: review TIFFs from {name}")
+        if not watch or expected <= set(stretch):
+            break
+        time.sleep(60)
+    log(f"{len(stretch)} fields in {rv}")
     return 0
 
 
@@ -339,12 +350,14 @@ def main(argv=None) -> int:
     ap.add_argument("cmd", choices=("prepare", "generate", "review"))
     ap.add_argument("--only", default="")
     ap.add_argument("--device", default="cuda:1")
+    ap.add_argument("--dest", default="", help="review: where the TIFFs go (default: the dataset's _revue)")
+    ap.add_argument("--watch", action="store_true", help="review: again every minute until every field is there")
     a = ap.parse_args(argv)
     if a.cmd == "prepare":
         return prepare(a.device)
     if a.cmd == "generate":
         return generate([x for x in a.only.split(",") if x] or None, a.device)
-    return review()
+    return review(Path(a.dest) if a.dest else None, a.watch)
 
 
 if __name__ == "__main__":
