@@ -177,12 +177,12 @@ def ours_poly(img: np.ndarray, work: Path) -> np.ndarray:
     return img - poly_sky(fit["coefs"], p.degree, *img.shape[1:])
 
 
-def ours_auto(img: np.ndarray, work: Path) -> np.ndarray:
+def ours_auto(img: np.ndarray, work: Path, **settings) -> np.ndarray:
     """Our version of Siril's automatic model (stages/gradient_auto.py), applied as Siril does: each channel minus its
     background plus the background's median. Siril works on the image upside down (FITS rows): so does this, so that
     the same rows are dropped by the reduction."""
     from astro_gpu.stages.gradient_auto import AutoSettings, enlarge, sky_model
-    s = AutoSettings()
+    s = AutoSettings(**settings)
     out = np.empty_like(img)
     for c in range(img.shape[0]):
         ch = img[c, ::-1]
@@ -199,6 +199,11 @@ METHODS = {
     "graxpert_ai": graxpert,
     "ours_poly": ours_poly,
     "ours_auto": ours_auto,
+    # the automatic model's protection in sky noise (not Siril's: its threshold is a fraction of the image's range),
+    # and its largest scale
+    "ours_auto_prot3": lambda img, work: ours_auto(img, work, protect_sigmas=3.0),
+    "ours_auto_prot5": lambda img, work: ours_auto(img, work, protect_sigmas=5.0),
+    "ours_auto_scale10": lambda img, work: ours_auto(img, work, scale=10.0),
 }
 
 
