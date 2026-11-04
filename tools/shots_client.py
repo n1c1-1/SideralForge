@@ -747,6 +747,23 @@ def part_gradedit():
     walk.shot("gradedit_brush")
     ed.discard()
     walk.settle()
+    # Post's mask brush, the same gestures (for the comparison of the two editors)
+    w.set_mode(2)
+    post_render()
+    view = w.post.view
+    lay = next((x for x in view.layers if x["kind"] == "workflow"), None)
+    if lay is not None:
+        view.select(lay["id"], "layer")
+        view.add_mask(lay)
+        view.add_part(view.layer(lay["id"]), "brush")
+        view.select(lay["id"], "mask")
+        walk.settle()
+        vw = view.viewer
+        vw._mouse = vw.img_to_w(*[a / 2 for a in vw.source.size()])
+        vw.update()
+        walk.settle()
+        walk.shot("gradedit_post_mask_brush")
+    w.set_mode(1)
 
 
 PART_FN = {"gradedit": part_gradedit,
