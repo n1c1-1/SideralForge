@@ -605,7 +605,7 @@ def test_methods_table_marks_what_is_not_in_the_engine():
     dn = {m.key: m for m in api.methods("denoise")}
     assert list(dn) == ["n2n", "finetuned", "pretrained", "nlbayes"]
     assert not dn["n2n"].new and dn["n2n"].runs_on == "gpu" and dn["nlbayes"].new and dn["nlbayes"].runs_on == "cpu"
-    assert [(m.key, m.new) for m in api.methods("gradient")] == [("polynomial", False), ("automatic", False)]
+    assert [(m.key, m.new) for m in api.methods("gradient")] == [("polynomial", False), ("rbf", False), ("automatic", False)]
     assert api.methods("stars")[1].stage == "star_net" and api.methods("deconvolution")[0].new
     from astro_gpu.core import workflow
     for block, opt in (("denoise", "denoise"), ("gradient", "gradient"), ("stars", "stars")):
