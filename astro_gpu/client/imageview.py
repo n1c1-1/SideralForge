@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QObject, QPointF, QRectF, QStandardPaths, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QStandardPaths, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -1466,6 +1466,14 @@ class ImageCanvas(QWidget):
             if abs(bx - ax) * self.scale > 6 and abs(by - ay) * self.scale > 6:
                 self.rectDone.emit(min(ax, bx), min(ay, by), max(ax, bx), max(ay, by))
         self.update()
+
+    def event(self, e):
+        # the keys of the tool on (Escape, Delete, M…) before Inspect's and the window's shortcuts
+        if (e.type() == QEvent.ShortcutOverride and self.tool is not None and hasattr(self.tool, "wants")
+                and self.tool.wants(e)):
+            e.accept()
+            return True
+        return super().event(e)
 
     def keyPressEvent(self, e):  # noqa: N802
         if self.tool is not None and e.key() != Qt.Key_Space and self.tool.key(e):

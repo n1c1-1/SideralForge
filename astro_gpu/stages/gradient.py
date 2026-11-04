@@ -68,8 +68,9 @@ class GradientParams(StageParams):
                     tip="2 for most fields; 3-4 for wide fields with complex gradients. A high degree on a field "
                         "filled with nebula can take a part of it for sky.")
     samples: int = P(16, label="Samples per side", ge=4, le=64, step=2,
-                     help="The field is cut into 4 times this many blocks per side; the blocks of sky (not the "
-                          "objects) are the samples of the fit.",
+                     help="With no sample placed. Polynomial: the field is cut into 4 times this many blocks per "
+                          "side, the blocks of sky (not the objects) are the samples of the fit. RBF: this many "
+                          "samples along the shorter side.",
                      tip="More, smaller blocks find sky between the objects of a crowded field; fewer, larger ones "
                          "average more noise.")
     object_clip: float = P(2.5, label="Object rejection", level=ADVANCED, ge=1.0, le=10, step=0.1, unit="sigma",
@@ -107,13 +108,13 @@ class GradientParams(StageParams):
     rbf_smooth: float = P(0.5, label="RBF smoothing", level=ADVANCED, ge=0.0, le=1.0, step=0.05,
                           help="RBF: 0, the surface passes through every sample; higher, it passes near them, "
                                "smoother.")
-    sample_points: list[list[float]] = P([], label="Sample points", level="internal",
+    sample_points: list[list[float]] = P([], label="Sample points", level=ADVANCED,
                                          help="The samples placed on the image (stack pixels); empty: the automatic "
                                               "grid.")
-    exclude_ellipses: list[list[float]] = P([], label="Excluded ellipses", level="internal",
+    exclude_ellipses: list[list[float]] = P([], label="Excluded ellipses", level=ADVANCED,
                                             help="Areas left out of the sky model: centre x, y, half axes and "
                                                  "angle (degrees).")
-    exclude_brush: list[list[float]] = P([], label="Excluded brush strokes", level="internal",
+    exclude_brush: list[list[float]] = P([], label="Excluded brush strokes", level=ADVANCED,
                                          help="Brush dabs x, y, radius, 1 to exclude / 0 to erase, in order.")
     @field_validator("method")
     @classmethod

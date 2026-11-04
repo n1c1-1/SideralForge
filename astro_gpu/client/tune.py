@@ -606,6 +606,9 @@ class TuneView(QWidget):
     # ------------------------------------------------------------ refresh
     def request_refresh(self, *_a):
         self._dirty = True
+        ed = getattr(self, "grad_editor", None)
+        if ed is not None and ed.gesture:
+            return                             # not built again under the mouse: the editor asks again on release
         if self.isVisible() and not self._pending:
             self._pending = True
             QTimer.singleShot(0, self.refresh)

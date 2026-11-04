@@ -177,6 +177,21 @@ def ours_poly(img: np.ndarray, work: Path) -> np.ndarray:
     return img - poly_sky(fit["coefs"], p.degree, *img.shape[1:])
 
 
+def ours_poly_grid(img: np.ndarray, work: Path) -> np.ndarray:
+    """Our polynomial on the generated grid (Siril's: Samples per side along the shorter side), as the editor's
+    Generate the grid shows it."""
+    from astro_gpu.stages.gradient import GradientParams, grid_points, point_values, poly_sky, poly_terms
+    p = GradientParams()
+    valid = np.ones(img.shape[1:], bool)
+    H, W = valid.shape
+    pts, use, box = grid_points(img, valid, p.samples, p.object_clip)
+    vals, ok = point_values(img, valid, pts, box)
+    use &= ok
+    A = poly_terms(pts[use, 0], pts[use, 1], W, H, p.degree)
+    coefs = np.stack([np.linalg.lstsq(A, vals[c, use], rcond=None)[0] for c in range(3)])
+    return img - poly_sky(coefs, p.degree, H, W)
+
+
 def ours_auto(img: np.ndarray, work: Path, **settings) -> np.ndarray:
     """Our version of Siril's automatic model (stages/gradient_auto.py), applied as Siril does: each channel minus its
     background plus the background's median. Siril works on the image upside down (FITS rows): so does this, so that
@@ -198,6 +213,7 @@ METHODS = {
     "siril_auto": lambda img, work: siril(img, work, "subsky -auto", SIRIL_DEV),
     "graxpert_ai": graxpert,
     "ours_poly": ours_poly,
+    "ours_poly_grid": ours_poly_grid,
     "ours_auto": ours_auto,
     # the automatic model's protection in sky noise (not Siril's: its threshold is a fraction of the image's range),
     # and its largest scale

@@ -1,4 +1,5 @@
 {
+ "With no sample placed. Polynomial: the field is cut into 4 times this many blocks per side, the blocks of sky (not the objects) are the samples of the fit. RBF: this many samples along the shorter side.": "Sans échantillon placé. Polynôme : le champ est découpé en 4 fois ce nombre de blocs par côté, les blocs de ciel (pas les objets) sont les échantillons de l'ajustement. RBF : ce nombre d'échantillons sur le petit côté.",
  "Areas left out of the sky model: centre x, y, half axes and angle (degrees).": "Zones écartées du modèle de ciel : centre x, y, demi-axes et angle (degrés).",
  "Brush dabs x, y, radius, 1 to exclude / 0 to erase, in order.": "Touches de pinceau x, y, rayon, 1 pour exclure / 0 pour effacer, dans l'ordre.",
  "Excluded brush strokes": "Coups de pinceau exclus",
@@ -593,7 +594,6 @@
  "Share of the pixels of the stack with samples near saturation (star cores).": "Part des pixels de la pile ayant des échantillons près de la saturation (cœurs d'étoiles).",
  "Saturated places": "Zones saturées",
  "Star cores near saturation that take the color of their surroundings.": "Cœurs d'étoiles près de la saturation, qui prennent la couleur de leur entourage.",
- "The field is cut into 4 times this many blocks per side; the blocks of sky (not the objects) are the samples of the fit.": "Le champ est découpé en 4 fois ce nombre de blocs par côté ; les blocs de ciel (pas les objets) sont les échantillons de l'ajustement.",
  "More, smaller blocks find sky between the objects of a crowded field; fewer, larger ones average more noise.": "Des blocs plus nombreux et plus petits trouvent du ciel entre les objets d'un champ encombré ; moins nombreux et plus grands, ils moyennent plus de bruit.",
  "Frame selection": "Sélection des images",
  "Stacking method": "Méthode d'empilement",
