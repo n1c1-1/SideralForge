@@ -18,6 +18,7 @@ from PySide6.QtCore import QObject, QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 
 from .. import texts
+from . import APP_NAME
 from .blocks import BY_KEY, STEPS, fmt_int
 from .i18n import _, hours_text, language, number
 from .imageview import ViewImage
@@ -379,7 +380,7 @@ class Steps(QObject):
         neutral = spec.neutral if spec.neutral is not None else (False if spec.camera and spec.kind != "preview"
                                                                  else None)
         return ViewImage(src, name, key=ident, wcs=wcs, camera=spec.camera, units=spec.units, neutral=neutral,
-                         header={"HISTORY": [f"astro_gpu: {spec.caption} of workflow {p.name}"]}, kind=spec.display,
+                         header={"HISTORY": [f"{APP_NAME}: {spec.caption} of workflow {p.name}"]}, kind=spec.display,
                          place=place)
 
     def overlay(self, k: str, spec: VisualSpec, sky: SkyData | None = None, show: dict | None = None):

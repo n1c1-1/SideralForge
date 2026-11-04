@@ -6,3 +6,6 @@ The shell: app.py (main window, menus, modes), home.py, settingsdlg.py, logview.
 widgets (widgets.py, viewer.py), the language (i18n.py, locale/), the preferences (prefs.py) and the ApiWorker
 (services/worker.py). The views of the blocks, the runs and Post are mounted in app.py (see its docstring).
 """
+
+#: the product's name, as the user sees it (window titles, About, the files it writes); the package keeps its name
+APP_NAME = "SideralForge"

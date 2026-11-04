@@ -52,7 +52,7 @@ from .. import __version__, api
 from ..core import project2
 from ..core.newproject import guess_names
 from ..core.project import Target
-from . import prefs
+from . import APP_NAME, prefs
 from .gcguard import GuiGarbageCollector
 from .home import HomeView
 from .i18n import _, language, plural, set_language
@@ -300,7 +300,7 @@ class Main(QMainWindow):
         self.screens.setCurrentWidget(self.home)
         self._flash = ""
         self._flash_timer.stop()
-        self.setWindowTitle("astro_gpu · " + _("Home"))
+        self.setWindowTitle(f"{APP_NAME} · " + _("Home"))
         self.status.setText(prefs.get("workspace"))
         self.update_spec_note()
 
@@ -666,7 +666,7 @@ class Main(QMainWindow):
             return
         s = self.s
         self.title.setText(self.project_name())
-        self.setWindowTitle("astro_gpu · " + pr.name)
+        self.setWindowTitle(f"{APP_NAME} · " + pr.name)
         text, gpu = machine_text(self.machine, prefs.get("device"))
         self.machine_lb.setText(text)
         self.machine_lb.setStyleSheet("" if gpu else f"color: {WARN};")
@@ -974,7 +974,7 @@ class Main(QMainWindow):
         d.setWindowTitle(_("About"))
         lv = QVBoxLayout(d)
         t = QLabel(HELP.format(
-            title=f"astro_gpu {__version__}",
+            title=f"{APP_NAME} {__version__}",
             p1=_("Deep-sky images from a camera's raw frames: calibration, registration, stacking, astrometry, "
                  "color calibration on Gaia, denoise, stars and gradient, then the final image in Post. Each "
                  "workflow keeps its own settings; a block shared by several workflows is computed once."),
@@ -1059,12 +1059,12 @@ def main(argv=None):
     prefs.load()
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app._gc = GuiGarbageCollector(app)                  # cycles collected on the GUI thread only (gcguard.py)
-    app.setApplicationName("astro_gpu")
+    app.setApplicationName(APP_NAME)
     app.setStyleSheet(QSS + EXTRA_QSS)
     apply_language(prefs.get("language"))
 
     def show_error(t, v, tb):
-        QMessageBox.critical(None, "astro_gpu", "".join(traceback.format_exception(t, v, tb))[-3000:])
+        QMessageBox.critical(None, APP_NAME, "".join(traceback.format_exception(t, v, tb))[-3000:])
 
     sys.excepthook = show_error
     threading.Thread(target=_warm_up, name="warm-up", daemon=True).start()

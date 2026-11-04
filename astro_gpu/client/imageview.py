@@ -92,6 +92,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import APP_NAME
 from . import stretch as sm
 from .i18n import _, language, number
 from .widgets import ACCENT, BAD, OK, WARN, ElidedLabel, label
@@ -3667,7 +3668,7 @@ def _write_fits(path: Path, img: np.ndarray, prep: Prepared, origin, with_wcs: b
             w.wcs.crpix = [w.wcs.crpix[0] - origin[0], w.wcs.crpix[1] - origin[1]]
             hdr.update(w.to_header(relax=True))
     if vi.name:
-        hdr["OBJECT"] = (vi.name[:68], "the image's name in astro_gpu")
+        hdr["OBJECT"] = (vi.name[:68], f"the image's name in {APP_NAME}")
     hdr["BUNIT"] = ("ADU" if vi.units == "adu" else "", "data units")
     if prep.cfa:
         hdr["BAYERPAT"] = (prep.cfa, "Bayer pattern of the mosaic")
@@ -3676,7 +3677,7 @@ def _write_fits(path: Path, img: np.ndarray, prep: Prepared, origin, with_wcs: b
     if origin != (0, 0):
         hdr["XORIGIN"] = (int(origin[0]), "x of the first column in the full image")
         hdr["YORIGIN"] = (int(origin[1]), "y of the first row in the full image")
-    hdr["CREATOR"] = "astro_gpu"
+    hdr["CREATOR"] = APP_NAME
     hdr["DATE"] = (dt.datetime.now().isoformat(timespec="seconds"), "file written")
     for k, v in {**(vi.header or {}), **(extra or {})}.items():
         key = str(k).upper()[:8]
@@ -3685,7 +3686,7 @@ def _write_fits(path: Path, img: np.ndarray, prep: Prepared, origin, with_wcs: b
                 hdr.add_history(str(line)) if key == "HISTORY" else hdr.add_comment(str(line))
         elif isinstance(v, str | int | float | bool):
             hdr[key] = v
-    hdr.add_history("Written by the astro_gpu image viewer: the data as they are (no display stretch).")
+    hdr.add_history(f"Written by the {APP_NAME} image viewer: the data as they are (no display stretch).")
     fits.PrimaryHDU(a, header=hdr).writeto(path, overwrite=True)
 
 
