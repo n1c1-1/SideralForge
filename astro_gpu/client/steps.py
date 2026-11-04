@@ -109,7 +109,8 @@ COVERAGE_DRIZZLE_NOTE = ("With the drizzle, red and blue are one pixel in four o
 COLOR_NOTE = ("Before, left of the divider: the stack output as it is, in the camera's colours. After, right: the "
               "same stack colour-calibrated (the colour matrix measured on the Gaia stars, the sky set grey). Drag the "
               "divider.")
-DENOISE_NOTE = "Before (the stack) and after (denoised), with the same stretch on both. Drag the divider."
+DENOISE_NOTE = ("Before (the stack, its gradient removed: what the block reads) and after (denoised), with the same "
+                "stretch on both. Drag the divider.")
 STACK_NOTE = "The stack output in the camera's colours, before colour calibration: its green cast is normal."
 CAMERA_NOTE = "In the camera's colours, before colour calibration."
 GRADIENT_NOTE = ("The stack with its sky gradient removed, in the camera's colours, as every later block reads it (the "
@@ -251,7 +252,8 @@ class Steps(QObject):
                     V("fit", "Star colours", "colorfit", "color")]
         if k == "debruitage":
             return [V("denoised", "Denoised stack", "array", "denoise", "n2n_full", True, True, camera=True,
-                      compare=("stack", "half_a"), open_compare=True, same_stretch=True, note=DENOISE_NOTE)]
+                      neutral=True, compare=("result", "stack", "half_a"), open_compare=True, same_stretch=True,
+                      note=DENOISE_NOTE)]
         if k == "etoiles":
             out = [V("starless", "Starless image", "array", "starless", "sl_final", True, True, camera=True,
                      compare=("denoised", "stack")),
@@ -263,7 +265,7 @@ class Steps(QObject):
             return out
         if k == "fond":
             # the block's own input and output, in the camera's colours: it works before the colour calibration
-            return [V("result", "Gradient removed", "gradient", "gradient", "", True, True, camera=True,
+            return [V("result", "Gradient removed", "gradient", "gradient", "", True, True, camera=True, neutral=True,
                       compare=("stack",), open_compare=True, same_stretch=True, note=GRADIENT_NOTE),
                     V("removed", "Sky model", "removed", "gradient", "", True, True, camera=True, note=SKY_MODEL_NOTE,
                       display="model")]
@@ -371,9 +373,12 @@ class Steps(QObject):
         ident = ("inspect", spec.kind, spec.name, spec.channel, spec.base, tuple(zip(stages, keys)))
         name = (prefix + "  ·  " if prefix else "") + _(spec.shown or spec.caption)
         # an array in the camera's colours is shown as it is (its green cast and all): Neutral sky is a display
-        # option the user ticks, never the default (on by default, the stack would look colour-calibrated)
-        return ViewImage(src, name, key=ident, wcs=wcs, camera=spec.camera, units=spec.units,
-                         neutral=False if spec.camera and spec.kind != "preview" else None,
+        # option the user ticks (on by default, the stack would look colour-calibrated); the blocks that work on the
+        # sky before the colour calibration (Gradient, Denoise) open with it on, their effect hidden by the cast
+        # otherwise
+        neutral = spec.neutral if spec.neutral is not None else (False if spec.camera and spec.kind != "preview"
+                                                                 else None)
+        return ViewImage(src, name, key=ident, wcs=wcs, camera=spec.camera, units=spec.units, neutral=neutral,
                          header={"HISTORY": [f"astro_gpu: {spec.caption} of workflow {p.name}"]}, kind=spec.display,
                          place=place)
 

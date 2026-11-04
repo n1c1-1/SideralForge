@@ -81,7 +81,7 @@
   "Every frame of this kind, raw, as the master is made from them.": "Chaque image de ce type, brute, telle que le master est fait avec.",
   "Each light after calibration: the master dark subtracted, divided by the master flat, the defective pixels left empty.": "Chaque brute après calibration : le master de dark soustrait, divisée par le master de flat, les pixels défectueux laissés vides.",
   "How many frames (weighted) cover each pixel of the stack: the edges and the dithering show here.": "Combien d'images (pondérées) couvrent chaque pixel de l'empilement : les bords et le dithering se voient ici.",
-  "Before (the stack) and after (denoised), with the same stretch on both. Drag the divider.": "Avant (l'empilement) et après (débruité), avec le même étirement des deux côtés. Faites glisser le séparateur.",
+  "Before (the stack, its gradient removed: what the block reads) and after (denoised), with the same stretch on both. Drag the divider.": "Avant (l'empilement sans son gradient : ce que lit le bloc) et après (débruité), avec le même étirement des deux côtés. Faites glisser le séparateur.",
   "The frame every other frame is aligned on, calibrated.": "L'image sur laquelle toutes les autres sont alignées, calibrée.",
   "Where the stack rejected pixels: satellite trails, planes, cosmic rays, hot pixels.": "Où l'empilement a rejeté des pixels : traînées de satellites, avions, rayons cosmiques, pixels chauds.",
   "What the block removed: its input minus its result.": "Ce que le bloc a retiré : son entrée moins son résultat.",

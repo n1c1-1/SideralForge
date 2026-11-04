@@ -107,6 +107,8 @@ class VisualSpec:
     sky: bool = False        # the astrometric solution is drawn over it (grid, catalogue stars, named objects)
     note: str = ""           # one line under the tabs: what this picture is for (English, translated where shown)
     camera: bool | None = None       # still in the camera's colours (the viewer's Neutral sky); None: guessed
+    neutral: bool | None = None      # Neutral sky at first (display only, the user unticks it); None: off for a camera
+    #                                  array (the stack as it is), the viewer's own rule otherwise
     compare: tuple = ()      # the pictures it is compared with (keys of ``Steps.picture``): the previous steps
     open_compare: bool = False       # opened compared with the first of them (split)
     same_stretch: bool = False       # the compared picture with the same stretch

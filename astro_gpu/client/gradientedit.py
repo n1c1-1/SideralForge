@@ -828,10 +828,12 @@ class GradientEditor(QObject):
             return
         try:
             v = self.view
+            # Neutral sky at first (display only, as the block's view): before the colour calibration, the green of
+            # the camera hides what the edits do to the sky
             vi = ViewImage(res, _("Preview: gradient removed"), key=("gradient-preview", self.p.pid, self.gen),
-                           camera=True, neutral=False)
+                           camera=True, neutral=True)
             before = ViewImage(self.small["arr"], _("Stack"), key=("gradient-small", self.p.pid), camera=True,
-                               neutral=False)
+                               neutral=True)
             v.set_image(vi, keep_view=True, keep_stretch=True)
             v.set_compare_targets([before], 0)        # the stack behind the curtain, as before the edits
             v.set_same_stretch(True)

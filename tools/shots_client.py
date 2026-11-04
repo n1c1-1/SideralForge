@@ -821,10 +821,7 @@ def part_denoise():
         walk.select("debruitage", pid)
         walk.settle()
         walk.shot(f"denoise_{tag}_panel")
-        w.set_mode(1)
-        walk.select("debruitage", pid)
-        walk.settle()
-        walk.shot(f"denoise_{tag}_inspect")
+        walk.show_tab("debruitage", "denoised", f"denoise_{tag}_inspect", pid)     # the image loaded
     w.set_mode(0)
 
 
