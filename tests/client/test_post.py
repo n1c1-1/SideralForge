@@ -1295,8 +1295,12 @@ def test_the_brush_paints_erases_and_is_one_undo_step(post):
     assert post.settle() and v.mask1.max() == 0
 
 
-def test_spot_healing_heals_a_click_moves_removes_and_undoes(post):
+def test_spot_healing_is_a_brush_healed_on_release_with_nothing_left_on_the_image(post):
+    """Issue #20, Photoshop's Spot Healing Brush: a click or a stroke heals when let go (one Undo step); a stroke is
+    spots every half radius, none healed from the stroke itself; Alt+click sets the source by hand for the strokes
+    that follow (Photoshop's Healing Brush); nothing is drawn on the image afterwards."""
     from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QPainter
     v = post.view
     f = v.add_filter("heal")
     v.select(f["id"], "layer")
@@ -1304,22 +1308,39 @@ def test_spot_healing_heals_a_click_moves_removes_and_undoes(post):
     assert post.settle()
     before = shown(v).copy()
     n0 = len(v.undo)
-    v._heal_press(200.0, 150.0, int(Qt.LeftButton.value), False)                       # a click: a spot, its source
+    left = int(Qt.LeftButton.value)
+    v._heal_press(200.0, 150.0, left, False)
+    assert f["params"]["spots"] == [] and len(v.undo) == n0                            # healed when let go
+    v._heal_release()
     spots = f["params"]["spots"]
     assert len(spots) == 1 and len(v.undo) == n0 + 1 and spots[0][2] == pytest.approx(v.heal_size / 2)
     assert np.hypot(spots[0][3], spots[0][4]) > spots[0][2]                            # the source beside the spot
     assert post.settle() and not np.array_equal(shown(v), before)
-    x, y, r, dx, dy = spots[0]
-    v._heal_press(x + dx, y + dy, int(Qt.LeftButton.value), False)                     # drag its source
-    v._heal_move(x + dx + 30, y + dy)
+    # a stroke along a trail: spots every half radius, their sources off the stroke, one Undo step
+    r = v.heal_size / 2
+    v._heal_press(100.0, 300.0, left, False)
+    v._heal_move(100.0 + 4 * r, 300.0)
     v._heal_release()
-    assert f["params"]["spots"][0][3] == pytest.approx(dx + 30) and len(v.undo) == n0 + 2
-    v._heal_press(x, y, int(Qt.LeftButton.value), True)                                 # Alt+click: source here
-    assert f["params"]["spots"][0][3:] == [0.0, 0.0]
-    v._heal_press(x, y, int(Qt.RightButton.value), False)                               # right click: removed
-    assert f["params"]["spots"] == []
+    trail = f["params"]["spots"][1:]
+    assert len(trail) == 9 and len(v.undo) == n0 + 2
+    assert all(abs(y + dy - 300.0) >= 2 * r - 1 or not (100.0 - r <= x + dx <= 100.0 + 5 * r)
+               for x, y, _r, dx, dy in trail)
+    # Alt+click: the source by hand; the next stroke keeps the offset (Photoshop's Aligned)
+    v._heal_press(400.0, 100.0, left, True)
+    assert len(f["params"]["spots"]) == 10                                              # sets the source only
+    v._heal_press(300.0, 100.0, left, False)
+    v._heal_release()
+    assert f["params"]["spots"][-1][3:] == [100.0, 0.0]
     v.do_undo()
-    assert len(v._heal_layer()["params"]["spots"]) == 1
+    assert len(v._heal_layer()["params"]["spots"]) == 10
+    # nothing on the image when no stroke is painted
+    img = QImage(64, 64, QImage.Format_ARGB32)
+    img.fill(0)
+    qp = QPainter(img)
+    v._heal_src = v._heal_off = None
+    v._heal_overlay(qp, v.viewer)
+    qp.end()
+    assert img.constBits().tobytes() == bytes(64 * 64 * 4)
     assert post.settle()
 
 

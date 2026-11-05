@@ -117,12 +117,13 @@ def heal(x: np.ndarray, spots, scale: float, origin: tuple[int, int]) -> np.ndar
     return out
 
 
-def find_source(img: np.ndarray, x: float, y: float, r: float) -> tuple[float, float]:
+def find_source(img: np.ndarray, x: float, y: float, r: float, avoid=()) -> tuple[float, float]:
     """(dx, dy) of the best source for a spot at (x, y), radius r, on ``img`` (h x w x 3, any scale, the same as the
     coordinates): the candidate disc whose rim matches the spot's rim best (mean squared difference of the rims at
     r to 1.4 r), a candidate holding pixels much brighter than the spot's rim (a star) penalised. (0, 0) when no
     candidate fits in the image. On the image's edge, the part of the rims inside the image; the source itself must be
-    inside it."""
+    inside it. ``avoid``: discs (x, y, r) no source may touch (the other spots of a stroke: a trail is not healed from
+    itself)."""
     ring_lo, ring_hi = r, r * 1.4
     S = int(math.ceil(ring_hi)) + 1
     a = np.pad(img.astype(np.float32), ((S, S), (S, S), (0, 0)), constant_values=np.nan)    # off the image: NaN
@@ -150,6 +151,8 @@ def find_source(img: np.ndarray, x: float, y: float, r: float) -> tuple[float, f
         for j in range(SOURCE_DIRECTIONS):
             ang = 2 * math.pi * j / SOURCE_DIRECTIONS
             dx, dy = k * r * math.cos(ang), k * r * math.sin(ang)
+            if any(math.hypot(x + dx - ax, y + dy - ay) < r + ar for ax, ay, ar in avoid):
+                continue
             c = patch(x + dx, y + dy)
             if c is None or not np.isfinite(c[disc]).all():     # the source must be inside the image
                 continue
