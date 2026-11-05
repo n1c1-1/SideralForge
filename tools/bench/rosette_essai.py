@@ -7,7 +7,8 @@ that the GUI opens it as it was.
 ESSAI.json: {"name": "01_...", "note": "what is tried and why", "layers": [...]} with layers top first, each one of
     {"workflow": "Full", "part": null | "starless" | "stars" | "combined", "sliders": {...}, "blend": "Screen",
      "mode": "Normal", "opacity": 100, "name": "..."}
-    {"filter": "local_contrast", "params": {...}, "on": "previous" | "all", "mode": "Normal", "opacity": 100}
+    {"filter": "local_contrast", "params": {...}, "on": "previous" | "all", "mode": "Normal", "opacity": 100,
+     "mask": {"parts": [{"src": "halpha"}], "feather": 0}}
 A filter "on": "previous" applies to the pixel layer just below it in the list (its clipping target), "all" to
 everything below. Writes into F:/astro_essais/rosette_verdict/essais/<name>/: the export (TIFF 16 bits, JPEG), the
 composition (composition.json), the comparison (board.jpg, measures.json).
@@ -55,6 +56,11 @@ def build(p, spec: list[dict]) -> list[dict]:
             for k in ("mode", "opacity", "name"):
                 if k in d:
                     f[k] = d[k]
+            if d.get("mask"):                        # {"parts": [{"src": ..., settings}], "feather", "invert", ...}
+                m = pe.new_mask()
+                m.update({k: v for k, v in d["mask"].items() if k != "parts"})
+                m["parts"] = [dict(pe.new_part(q["src"]), **q) for q in d["mask"]["parts"]]
+                f["mask"] = m
             if d.get("on", "previous") == "previous":
                 pending.append(f)
             layers.append(f)

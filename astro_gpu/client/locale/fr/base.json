@@ -1,6 +1,6 @@
 {
  "Reduced preview · not computed yet": "Aperçu réduit · pas encore calculé",
- "Samples: left click add or move (none placed: the grid first) · right click remove · Space or middle button: move the image · M hide · Ctrl+Z undo": "Échantillons : clic gauche ajouter ou déplacer (aucun placé : la grille d'abord) · clic droit retirer · Espace ou bouton du milieu : déplacer l'image · M masquer · Ctrl+Z annuler",
+ "Samples: left click add or move (none placed: the grid first) · right click remove · Space or middle button: move the image · H H-alpha survey · M hide · Ctrl+Z undo": "Échantillons : clic gauche ajouter ou déplacer (aucun placé : la grille d'abord) · clic droit retirer · Espace ou bouton du milieu : déplacer l'image · H relevé H-alpha · M masquer · Ctrl+Z annuler",
  "saved: Gradient will be computed again": "enregistré : le gradient sera recalculé",
  "No sample placed: they are chosen automatically at each run": "Aucun échantillon placé : ils sont choisis automatiquement à chaque calcul",
  "No sample placed: they are chosen automatically at each run ({n} of sky the last time)": "Aucun échantillon placé : ils sont choisis automatiquement à chaque calcul ({n} de ciel la dernière fois)",
@@ -829,5 +829,19 @@
  "Stars alone": "Étoiles seules",
  "A network trained on many pairs of half-stacks (Noise2Noise), applied as it is. Nothing is invented: it learned to predict one half-stack from the other.": "Un réseau entraîné sur de nombreuses paires de demi-empilements (Noise2Noise), appliqué tel quel. Rien n'est inventé : il a appris à prédire un demi-empilement à partir de l'autre.",
  "The same network first learns this image's own noise on its half-stacks: longer, fitted to this image (a session without dithering most of all).": "Le même réseau apprend d'abord le bruit propre à cette image sur ses demi-empilements : plus long, ajusté à cette image (surtout pour une séance sans décalage entre les poses).",
- "+ Mask": "+ Masque"
+ "+ Mask": "+ Masque",
+ "Away from emission": "Loin de l'émission",
+ "Generate the grid leaves out the cells where the H-alpha survey shows nebulosity (shown with H-alpha survey)": "Générer la grille écarte les cases où le relevé H-alpha montre de la nébulosité (visible avec Relevé H-alpha)",
+ "Show where the professional H-alpha survey of the field sees nebulosity, in amber under the samples (H): no sample should sit there. Downloaded once, the field must be solved": "Montrer où le relevé H-alpha professionnel du champ voit de la nébulosité, en ambre sous les échantillons (H) : aucun échantillon ne doit s'y trouver. Téléchargé une fois, le champ doit être résolu",
+ "H-alpha survey: downloading…": "Relevé H-alpha : téléchargement…",
+ "H-alpha survey: {why}": "Relevé H-alpha : {why}",
+ "H-alpha survey: {name}": "Relevé H-alpha : {name}",
+ "The H-alpha survey shows no clear nebulosity here: no sample left out": "Le relevé H-alpha ne montre pas de nébulosité nette ici : aucun échantillon écarté",
+ "the field is not solved yet (Astrometry)": "le champ n'est pas encore résolu (Astrométrie)",
+ "the survey's servers do not answer: try again later": "les serveurs du relevé ne répondent pas : réessayer plus tard",
+ "not available ({why})": "indisponible ({why})",
+ "no H-alpha survey covers this field": "aucun relevé H-alpha ne couvre ce champ",
+ "Show:": "Afficher :",
+ "NSNS DR0.2 H-alpha (northern sky, ~1')": "NSNS DR0.2 H-alpha (ciel nord, ~1')",
+ "Finkbeiner 2003 H-alpha composite (all sky, 6')": "Finkbeiner 2003, composite H-alpha (tout le ciel, 6')"
 }

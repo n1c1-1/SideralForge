@@ -56,18 +56,8 @@ class Surveys(Stage):
         meta = ctx.load_json("stack", "drz_meta.json")
         W, H = meta["width"], meta["height"]
         scale = float(ctx.metric_of("astrometry", "scale_arcsec"))
-        order = ["nsns", "finkbeiner"] if p.survey == "auto" else [p.survey]
-        out = None
-        for k, name in enumerate(order):
-            ctx.progress(0.1 + 0.4 * k, f"downloading {SURVEYS[name][1]}")
-            img = fetch_survey(name, wd, W, H, scale, ctx.log)
-            cov = float(np.isfinite(img).mean())
-            ctx.log(f"{SURVEYS[name][1]}: covers {100 * cov:.0f} % of the field")
-            if cov >= p.min_coverage or name == order[-1]:
-                out, used = img, name
-                break
-        if out is None or np.isfinite(out).mean() < 0.3:
-            raise StageError("no H-alpha survey covers this field: set the survey to 'none'")
+        out, used = survey_on_grid(wd, W, H, scale, p.survey, p.min_coverage, ctx.log,
+                                   lambda f, m: ctx.progress(0.1 + 0.8 * f, m))
         ctx.save("ref_ha.npy", out.astype(np.float32))
         ctx.save_json("survey.json", {"survey": used, "title": SURVEYS[used][1]})
         ctx.metric("survey", used)
@@ -77,6 +67,38 @@ class Surveys(Stage):
         sm = np.nan_to_num(out[::4, ::4])
         lo, hi = np.percentile(sm, [1, 99.5])
         ctx.preview("halpha_reference", np.clip((sm - lo) / max(hi - lo, 1e-6), 0, 1) ** 0.5)
+
+
+def survey_on_grid(wd, W: int, H: int, scale: float, which: str = "auto", min_coverage: float = 0.95, log=print,
+                   progress=None) -> tuple[np.ndarray, str]:
+    """The H-alpha survey of the field on a W x H grid of WCS ``wd`` (``scale`` arcsec per pixel), and the survey's
+    name: with ``auto``, NSNS when it covers ``min_coverage`` of the field, else Finkbeiner. NaN outside the survey."""
+    order = ["nsns", "finkbeiner"] if which == "auto" else [which]
+    for k, name in enumerate(order):
+        if progress is not None:
+            progress(k / len(order), f"downloading {SURVEYS[name][1]}")
+        img = fetch_survey(name, wd, W, H, scale, log)
+        cov = float(np.isfinite(img).mean())
+        log(f"{SURVEYS[name][1]}: covers {100 * cov:.0f} % of the field")
+        if cov >= min_coverage or name == order[-1]:
+            if cov < 0.3:
+                break
+            return img, name
+    raise StageError("no H-alpha survey covers this field: set the survey to 'none'")
+
+
+#: the survey's levels taken as its sky and as its bright emission (percentiles of the field)
+LEVEL_PERCENTILES = (1.0, 99.5)
+
+
+def emission_level(img: np.ndarray) -> np.ndarray:
+    """The survey scaled so that its sky is 0 and its bright emission 1 (``LEVEL_PERCENTILES`` of the field), NaN
+    outside it: the same reading on every survey and every field."""
+    v = img[np.isfinite(img)]
+    if v.size == 0:
+        return np.full(img.shape, np.nan, np.float32)
+    lo, hi = np.percentile(v, LEVEL_PERCENTILES)
+    return ((img - lo) / max(float(hi - lo), 1e-9)).astype(np.float32)
 
 
 def fetch_survey(name: str, wd, W: int, H: int, scale: float, log=print) -> np.ndarray:

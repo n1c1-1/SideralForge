@@ -16,6 +16,11 @@ the sensor), with the stack before them behind the curtain: one computation at a
 after the last edit, the last edit only (the ones in between are skipped); the automatic model, slower, is previewed on
 request. No sample placed: the block chooses its own at each run (the polynomial: small blocks of sky all over the
 field, the RBF: the generated grid), drawn as the last run used them; Generate the grid places editable ones.
+
+The H-alpha survey (H, or the button): the professional H-alpha map of the field (NSNS, else Finkbeiner), fetched on
+request from the solved field (cached on disk) and drawn under the samples in amber, the way Lightroom shows a mask: it
+shows where the faint nebulosity is, which no sample should sit on (the rule of DBE's users), and Generate the grid
+then leaves those cells out (Away from emission). It is a guide only: the sky model never reads it.
 """
 from __future__ import annotations
 
@@ -37,12 +42,13 @@ DEBOUNCE_MS = 300
 PICK_PX = 9
 USED, UNUSED, OUTLINE = QColor("#56c8f5"), QColor("#ff4d55"), QColor(255, 255, 255, 220)
 VEIL = (229, 72, 77, 128)                      # the excluded areas: red, 50 %
+SURVEY_TINT, SURVEY_ALPHA = (255, 176, 32), 128   # the H-alpha survey's emission: amber, 18 to 50 %
 FIELDS = ("sample_points", "exclude_ellipses", "exclude_brush")
 #: an ellipse's handles: their size, and how far above the ellipse the rotation one is (screen px)
 HANDLE_PX, ROT_PX = 5, 26
 #: the keys of the tools: the image takes them before the window's and Inspect's shortcuts (Escape goes back to the
 #: graph otherwise)
-TOOL_KEYS = (Qt.Key_Escape, Qt.Key_Delete, Qt.Key_Backspace, Qt.Key_M, Qt.Key_X, Qt.Key_BracketLeft,
+TOOL_KEYS = (Qt.Key_Escape, Qt.Key_Delete, Qt.Key_Backspace, Qt.Key_M, Qt.Key_H, Qt.Key_X, Qt.Key_BracketLeft,
              Qt.Key_BracketRight)
 
 
@@ -117,6 +123,11 @@ class GradientEditor(QObject):
         self._stroke0 = None                   # where the brush stroke in progress starts in exclude_brush
         self._extra = None                     # the click that asked for the grid: a sample added to it
         self._veil = None                      # (key, QImage)
+        self.survey = None                     # {"pid", "level" (h, w) on the reduced copy, "title"} or {"pid", "error"}
+        self.survey_shown = False              # the survey drawn under the samples (H)
+        self.avoid = True                      # Generate the grid leaves the survey's emission out
+        self._survey_wanted = False            # asked while a computation ran
+        self._survey_img = None                # (key, QImage)
         self._ui: dict = {}
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -141,6 +152,10 @@ class GradientEditor(QObject):
             self.result, self.samples, self._sel, self.density, self._veil = None, None, None, None, None
             if self.small is not None and self.small["pid"] != p.pid:
                 self.small = None
+            if self.survey is not None and self.survey["pid"] != p.pid:
+                self.survey, self._survey_img = None, None
+                if self.survey_shown:
+                    self._run("survey")        # shown: the survey of the workflow now shown
         new = self._settings()
         if new != self.work:                   # an Undo, or the settings changed elsewhere
             self.work = new
@@ -194,7 +209,7 @@ class GradientEditor(QObject):
         """Samples and excluded areas: the tools, the brush, the grid, undo, Run to here, the state. Built whole (the
         brush's row is there in every mode, enabled with the brush): a tool switched on or off never moves the panel."""
         self._load(p)
-        from PySide6.QtWidgets import QSpinBox
+        from PySide6.QtWidgets import QCheckBox, QSpinBox
 
         from .post3 import ContSlider
         box = QFrame()
@@ -259,6 +274,13 @@ class GradientEditor(QObject):
             t.timeout.connect(lambda: self._set_density(dens.value()))
             dens.valueChanged.connect(lambda _v: t.start())
             row.addWidget(dens)
+            av = QCheckBox(_("Away from emission"))
+            av.setChecked(self.avoid)
+            av.setToolTip(_("Generate the grid leaves out the cells where the H-alpha survey shows nebulosity (shown "
+                            "with H-alpha survey)"))
+            av.toggled.connect(self._set_avoid)
+            row.addWidget(av)
+            self._ui["avoid"] = av
             row.addStretch(1)
             v.addLayout(row)
             row = QHBoxLayout()                # the grid on its line, the undo and removal on the next
@@ -279,6 +301,18 @@ class GradientEditor(QObject):
             pv.clicked.connect(lambda: self.preview(force=True))
             row.addWidget(pv)
         row.addStretch(1)
+        v.addLayout(row)
+        row = QHBoxLayout()                    # what is drawn over the image, as Exclude: groups its tools
+        row.addWidget(label(_("Show:"), "small"))
+        sv = QPushButton(_("H-alpha survey"))
+        sv.setObjectName("face")
+        sv.setCheckable(True)
+        sv.setChecked(self.survey_shown)
+        sv.setToolTip(_("Show where the professional H-alpha survey of the field sees nebulosity, in amber under the "
+                        "samples (H): no sample should sit there. Downloaded once, the field must be solved"))
+        sv.toggled.connect(self._set_survey_shown)
+        row.addWidget(sv)
+        self._ui["survey"] = sv
         mk = QPushButton(_("Marks"))
         mk.setObjectName("face")
         mk.setCheckable(True)
@@ -287,6 +321,7 @@ class GradientEditor(QObject):
         mk.toggled.connect(self._set_shown)
         row.addWidget(mk)
         self._ui["marks"] = mk
+        row.addStretch(1)
         v.addLayout(row)
         if not self.done and self.s.state(p, "gradient") != "running":
             run = self.tv._run_button(p, "fond")     # the edits are saved; computing them is the block's run
@@ -314,6 +349,13 @@ class GradientEditor(QObject):
             bits.append(_("{n} excluded areas").format(n=n) if n > 1 else _("1 excluded area"))
         if not self.done:
             bits.append(_("saved: Gradient will be computed again"))
+        sv = self.survey
+        if self.survey_shown and sv is None:
+            bits.append(_("H-alpha survey: downloading…"))
+        elif sv is not None and "error" in sv:
+            bits.append(_("H-alpha survey: {why}").format(why=sv["error"]))
+        elif sv is not None:
+            bits.append(_("H-alpha survey: {name}").format(name=_(sv["title"])))
         return " · ".join(bits)
 
     def _hint(self):
@@ -321,7 +363,7 @@ class GradientEditor(QObject):
         if self.view is None:
             return
         t = {"points": _("Samples: left click add or move (none placed: the grid first) · right click remove · Space "
-                         "or middle button: move the image · M hide · Ctrl+Z undo"),
+                         "or middle button: move the image · H H-alpha survey · M hide · Ctrl+Z undo"),
              "brush": _("Brush: drag to paint · X paint / erase · [ ] size · right drag: move the image · M hide · "
                         "Ctrl+Z undo"),
              "ellipse": _("Ellipse: drag to draw · click inside: select and move · handles: size and rotation · "
@@ -348,6 +390,10 @@ class GradientEditor(QObject):
                 self._ui["size"].setEnabled(self.mode == "brush")
             if "marks" in self._ui:
                 self._ui["marks"].setChecked(self.shown)
+            if "survey" in self._ui:
+                self._ui["survey"].setChecked(self.survey_shown)
+            if "avoid" in self._ui:
+                self._ui["avoid"].setEnabled(self.survey is not None and "level" in self.survey)
             if "status" in self._ui:
                 self._ui["status"].setText(self._status())
             if "undo" in self._ui:
@@ -395,6 +441,18 @@ class GradientEditor(QObject):
         if self.view is not None:
             self.view.canvas.update()
 
+    def _set_survey_shown(self, on: bool):
+        """The H-alpha survey under the samples (H): fetched the first time for this workflow."""
+        self.survey_shown = bool(on)
+        if on and (self.survey is None or self.survey["pid"] != self.p.pid):
+            self._run("survey")
+        self._sync()
+        if self.view is not None:
+            self.view.canvas.update()
+
+    def _set_avoid(self, on: bool):
+        self.avoid = bool(on)
+
     def wants(self, e) -> bool:
         """Whether the image takes this key before the shortcuts (the canvas asks, ShortcutOverride)."""
         return e.key() in TOOL_KEYS and not e.modifiers() & (Qt.ControlModifier | Qt.AltModifier)
@@ -413,6 +471,8 @@ class GradientEditor(QObject):
             self._set_paint(not self.paint)
         elif k == Qt.Key_M:
             self._set_shown(not self.shown)
+        elif k == Qt.Key_H:
+            self._set_survey_shown(not self.survey_shown)
         elif k in (Qt.Key_Delete, Qt.Key_Backspace) and self.mode == "ellipse" and self._sel is not None:
             self.work["exclude_ellipses"].pop(self._sel)
             self._sel = None
@@ -675,6 +735,8 @@ class GradientEditor(QObject):
             return
         f = self._f(canvas)
         dw, dh = canvas.display.size()
+        if self.survey_shown:
+            self._paint_survey(painter, canvas, dw, dh)
         if self.shown:
             self._paint_veil(painter, canvas, f, dw, dh)
             self._paint_samples(painter, canvas, f)
@@ -734,6 +796,23 @@ class GradientEditor(QObject):
                 painter.setBrush(QColor(*VEIL) if paint else QColor(0, 0, 0, 90))
                 painter.drawEllipse(canvas.img_to_w(x * f, y * f), r * f * canvas.scale, r * f * canvas.scale)
 
+    def _paint_survey(self, painter, canvas, dw, dh):
+        """The survey's emission in amber where a sample should not sit (above ``EMISSION_FREE``), stronger where it is
+        brighter (its square root, as a stretched image); its sky left clear."""
+        from ..stages.gradient import EMISSION_FREE
+        sv = self.survey
+        if sv is None or "level" not in sv or sv["pid"] != self.p.pid:
+            return
+        if self._survey_img is None or self._survey_img[0] != id(sv):
+            lv = np.nan_to_num(sv["level"])
+            a = np.where(lv > EMISSION_FREE, 0.35 + 0.65 * np.sqrt(np.clip(lv, 0, 1)), 0.0)
+            rgba = np.zeros((*a.shape, 4), np.uint8)
+            rgba[..., :3] = SURVEY_TINT
+            rgba[..., 3] = (a * SURVEY_ALPHA).astype(np.uint8)
+            img = QImage(rgba.data, a.shape[1], a.shape[0], 4 * a.shape[1], QImage.Format_RGBA8888).copy()
+            self._survey_img = (id(sv), img)
+        painter.drawImage(QRectF(canvas.img_to_w(0, 0), canvas.img_to_w(dw, dh)), self._survey_img[1])
+
     def _paint_samples(self, painter, canvas, f):
         """The placed samples, coloured as the last computation (run or preview) used them, white while not computed;
         none placed: the ones the block chose at its last run."""
@@ -773,10 +852,15 @@ class GradientEditor(QObject):
             return
         self.gen += 1
         if self.busy:
-            self._pending = what if what != "preview" or self._pending != "grid" else "grid"
+            if what == "survey":
+                self._survey_wanted = True
+            else:
+                self._pending = what if what != "preview" or self._pending != "grid" else "grid"
             return
         gen, params, pid, n = self.gen, self._params(), self.p.pid, self._density()
         small = self.small if self.small and self.small["pid"] == pid else None
+        sv = self.survey if self.avoid and self.survey and self.survey["pid"] == pid else None
+        level = sv.get("level") if sv else None
         project = self.s.p
         self.busy = True
         if self.view is not None:
@@ -790,10 +874,18 @@ class GradientEditor(QObject):
                     from ..stages.gradient import exclusion_mask, grid_points
                     ex = exclusion_mask(params, *sm["valid"].shape, sm["f"])
                     ok = sm["valid"] & ~ex if ex is not None else sm["valid"]
-                    pts, kept, _box = grid_points(sm["arr"], ok, n, params.object_clip)
+                    pts, kept, box = grid_points(sm["arr"], ok, n, params.object_clip)
+                    if level is not None:
+                        from ..stages.gradient import away_from_emission
+                        kept, out["avoided"] = away_from_emission(pts, kept, level, box)
                     out["grid"] = [[float(x) / sm["f"], float(y) / sm["f"]] for x, y in pts[kept]]
                 elif what == "preview":
                     out.update(_preview(sm, params))
+                elif what == "survey":
+                    try:
+                        out["survey"] = {"pid": pid, **_survey_small(project, pid, sm)}
+                    except Exception as e:  # noqa: BLE001 - no survey for this field: said, the editor goes on
+                        out["survey"] = {"pid": pid, "error": _survey_why(e)}
                 self._done.emit(gen, out)
             except Exception as e:  # noqa: BLE001 - said in the panel, the editor goes on
                 self._done.emit(gen, {"error": str(e)})
@@ -805,14 +897,25 @@ class GradientEditor(QObject):
             self.small = out["small"]
         if "error" in out:
             self.tv.toasted.emit(out["error"])
+        elif "survey" in out:
+            self.survey, self._survey_img = out["survey"], None
+            if "error" in out["survey"]:
+                self.tv.toasted.emit(_("H-alpha survey: {why}").format(why=out["survey"]["error"]))
         elif "grid" in out:
             self.work["sample_points"] = out["grid"] + ([self._extra] if self._extra else [])
             self._extra = None
+            if out.get("avoided") is False:
+                self.tv.toasted.emit(_("The H-alpha survey shows no clear nebulosity here: no sample left out"))
             self._commit()
         elif "result" in out and gen == self.gen:
             self.result = out["result"]
             self.samples = out["samples"]
             self._show(self.result)
+        if self._survey_wanted:
+            self._survey_wanted = False
+            if self.survey is None or self.survey["pid"] != self.p.pid:
+                self._run("survey")
+                return
         if self._pending is not None:
             what, self._pending = self._pending, None
             self._run(what)
@@ -859,6 +962,43 @@ def _reduced_stack(project, pid: int) -> dict:
     valid = (wt > 0.6 * float(np.median(pos))) if pos.size else wt > 0
     valid = valid[:h * k, :w * k].reshape(h, k, w, k).mean(axis=(1, 3)) > 0.99
     return {"pid": pid, "arr": small, "valid": valid, "f": 1.0 / k, "W": W, "H": H}
+
+
+def _survey_small(project, pid: int, sm: dict) -> dict:
+    """The H-alpha survey of the workflow's solved field on the reduced copy's grid, as its emission level
+    (surveys.emission_level: 0 its sky, 1 its bright emission), and its name."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    from astropy.wcs.utils import proj_plane_pixel_scales
+
+    from ..api import stage_outputs
+    from ..stages.surveys import SURVEYS, emission_level, survey_on_grid
+    out = stage_outputs(project, pid, "astrometry")
+    if out is None:
+        raise ValueError(_("the field is not solved yet (Astrometry)"))
+    wd = WCS(fits.getheader(f"{out.dir}/wcs.fits"))
+    scale = float(np.mean(proj_plane_pixel_scales(wd.celestial))) * 3600.0
+    img, name = survey_on_grid(wd, sm["W"], sm["H"], scale, log=lambda *a: None)
+    k = int(round(1 / sm["f"]))
+    h, w = sm["arr"].shape[1:]
+    with np.errstate(all="ignore"):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)       # cells outside the survey: NaN
+            small = np.nanmean(img[:h * k, :w * k].reshape(h, k, w, k), axis=(1, 3))
+    return {"level": emission_level(small), "title": SURVEYS[name][1]}
+
+
+def _survey_why(e: Exception) -> str:
+    from ..core import online
+    from ..core.stage import StageError
+    if isinstance(e, StageError):
+        return _("no H-alpha survey covers this field")
+    if isinstance(e, ValueError):
+        return str(e)
+    if isinstance(e, online.ServiceDown):
+        return _("the survey's servers do not answer: try again later")
+    return _("not available ({why})").format(why=str(e)[:120])
 
 
 def _preview(sm: dict, params) -> dict:

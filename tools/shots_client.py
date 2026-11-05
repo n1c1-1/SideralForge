@@ -734,6 +734,19 @@ def part_gradedit():
     walk.shot("gradedit_grid")
     if not ed.s.param_value(ed.p, "gradient", "sample_points"):
         walk.problem("the generated grid is not in the settings")
+    # the H-alpha survey under the samples (H), then the grid again away from its emission
+    n_all = len(ed.work["sample_points"])
+    ed._set_survey_shown(True)
+    walk.until(lambda: not ed.busy and ed.survey is not None, 180, "the H-alpha survey")
+    walk.settle()
+    walk.shot("gradedit_survey")
+    if "level" in (ed.survey or {}):
+        ed.generate()
+        walk.until(lambda: not ed.busy and len(ed.work["sample_points"]) != n_all, 60, "the grid away from emission")
+        idle("the grid's preview")
+        walk.shot("gradedit_grid_away")
+    else:
+        walk.shot("gradedit_survey_none")
     W, H = ed.small["W"], ed.small["H"]
     ed.set_mode("ellipse")
 
