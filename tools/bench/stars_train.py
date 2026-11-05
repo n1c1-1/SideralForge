@@ -378,7 +378,8 @@ def bench_case(case: str):
     w = next(x for x in p.workflows if x.name == SOURCE)
     st, col = api.stage_outputs(p, w.id, "stack"), api.stage_outputs(p, w.id, "color")
     M = np.load(Path(col.dir) / "M.npy") if col is not None else np.eye(3)
-    A = np.load(Path(meta["source"]) / "lat_A.npy", mmap_mode="r")
+    half = Path(meta["source"]) / "lat_A.npy"           # M8's original comes from a stage without half-stacks
+    A = np.load(half if half.exists() else Path(st.dir) / "drz_A.npy", mmap_mode="r")
     _, sg, nm = norm_params(np.asarray(A, np.float32), np.load(Path(st.dir) / "drz_weight.npy").astype(np.float32))
     unit = float(np.mean(np.sqrt((M ** 2) @ (np.asarray(sg, float) ** 2))))
     O = read_fits(OUT / case / "input.fits") * meta["scale"]
