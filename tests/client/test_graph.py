@@ -1744,3 +1744,27 @@ def test_a_rebuild_keeps_where_the_graph_was_scrolled(page, qapp):
     kept = hb.value()
     gv.rebuild()
     assert hb.value() == kept
+
+
+def test_the_panel_built_again_keeps_the_setting_being_edited_focused(page, qapp):
+    """Issue #24: the panel is built again at each change; the setting being edited keeps the focus (it was lost after
+    Enter or Tab in a number field)."""
+    from astro_gpu.client.panel import CompactRow
+    pn = page.panel
+    node = page.graph.graph.node_of(page.s.path, "empilement")
+    pn.refresh(node)
+    qapp.processEvents()
+    rows = [r for r in pn.findChildren(CompactRow) if getattr(r, "editor", None) is not None and r.editor.isEnabled()]
+    if not rows:
+        pytest.skip("no editable setting shown")
+    row = rows[0]
+    pn.focus_key = row.r["key"]
+    row.editor.setFocus()
+    qapp.processEvents()
+    pn.refresh(node)
+    for _i in range(5):
+        qapp.processEvents()
+    fw = QApplication.focusWidget()
+    shown = [pn.bv.itemAt(i).widget() for i in range(pn.bv.count())]
+    new = next(r for r in shown if isinstance(r, CompactRow) and r.r.get("key") == row.r["key"])
+    assert fw is new.editor

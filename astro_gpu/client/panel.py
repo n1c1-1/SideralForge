@@ -132,6 +132,7 @@ class CompactRow(SettingRow):
         h.addWidget(name, 1)
         spec_mark(h, r["kind"] == "new")
         ed = self._editor()
+        self.editor = ed                                # the panel gives it the focus back after a rebuild (#24)
         back = r["changed"] and not r.get("locked")
         if isinstance(ed, QComboBox):                 # a choice: its own line, full width, never truncated
             ed.setToolTip(ed.currentText() if ed.isEnabled() else ed.toolTip())
@@ -344,6 +345,7 @@ class Panel(QWidget):
         sc = QScrollArea()
         sc.setWidgetResizable(True)
         sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._sc = sc
         host = QWidget()
         self.bv = QVBoxLayout(host)
         self.bv.setContentsMargins(10, 8, 10, 8)
@@ -391,6 +393,24 @@ class Panel(QWidget):
 
     # ------------------------------------------------------------ build
     def refresh(self, node):
+        # issue #24: built again at each change; the same block keeps its scroll and the setting being edited keeps
+        # the focus (it was lost after Enter or Tab in a number field)
+        same = (node is not None and self.node is not None and node.key == self.node.key
+                and [q.pid for q in node.paths] == [q.pid for q in self.node.paths])
+        fw = QApplication.focusWidget()
+        had_focus = fw is not None and self.isAncestorOf(fw)
+        scroll = self._sc.verticalScrollBar().value() if same else 0
+        self._refresh(node)
+        if same:
+            QTimer.singleShot(0, lambda v=scroll: self._sc.verticalScrollBar().setValue(v))
+            if had_focus and self.focus_key is not None:
+                shown = [self.bv.itemAt(i).widget() for i in range(self.bv.count())]   # not the rows going away
+                row = next((r for r in shown if isinstance(r, CompactRow) and r.r.get("key") == self.focus_key), None)
+                ed = getattr(row, "editor", None)
+                if ed is not None and ed.isEnabled():
+                    QTimer.singleShot(0, ed.setFocus)
+
+    def _refresh(self, node):
         clear(self.hv)
         clear(self.bv)
         self.details.hide()
