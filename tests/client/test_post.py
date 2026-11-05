@@ -1446,12 +1446,12 @@ def test_a_starless_slider_leaves_the_stars_as_they_are(preps, qapp):
         asked = []
         real = s.worker.renderer.source.layer
         s.worker.renderer.source.layer = lambda lay, *a, **k: (asked.append(lay.get("part")), real(lay, *a, **k))[1]
-        full["sliders"]["contrast"] = 3.0
+        full["sliders"]["contrast"] = 3.17                                        # values no other test uses (a cache)
         v.request(final_only=True)
         assert s.settle()
         assert asked and "stars" not in asked and "starless" in asked
         asked.clear()
-        full["sliders"]["star_strength"] = 3.0
+        full["sliders"]["star_strength"] = 3.31
         v.request(final_only=True)
         assert s.settle()
         assert "stars" in asked and "starless" not in asked
