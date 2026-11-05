@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import ours  # noqa: E402  (the bench's environment before the engine)
+import ours  # noqa: E402, I001  (the bench's environment before the engine)
 
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
