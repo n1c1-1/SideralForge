@@ -158,5 +158,15 @@
   "The Stars block's starless image, stretched like the whole image.": "L'image sans étoiles du bloc Étoiles, étirée comme l'image entière.",
   "The Stars block's stars alone, on black: in Screen mode above the background.": "Les étoiles seules du bloc Étoiles, sur fond noir : en mode Écran au-dessus du fond.",
   "Strength": "Intensité",
-  "The starless image and the stars, recombined. The same settings as its block in the graph.": "L'image sans étoiles et les étoiles, recombinées. Les mêmes réglages que son bloc dans le graphe."
+  "The starless image and the stars, recombined. The same settings as its block in the graph.": "L'image sans étoiles et les étoiles, recombinées. Les mêmes réglages que son bloc dans le graphe.",
+  "Colours": "Couleurs",
+  "faded": "délavées",
+  "true": "fidèles",
+  "Highlight compression": "Compression des hautes lumières",
+  "Brings the bright areas down above a start level and keeps their detail (a base and its detail by the guided filter, He et al. 2013)": "Redescend les zones brillantes au-dessus d'un niveau de départ en gardant leur détail (une base et son détail par le filtre guidé, He et al. 2013)",
+  "Start": "Départ",
+  "Detail kept": "Détail gardé",
+  "Faint area smoothing": "Lissage des zones faibles",
+  "Smooths the areas fainter than a level, the brighter ones untouched: the faint extensions can then be raised without their grain": "Lisse les zones plus faibles qu'un niveau, sans toucher aux plus brillantes : on peut ensuite remonter les extensions faibles sans leur grain",
+  "Below": "En dessous de"
 }

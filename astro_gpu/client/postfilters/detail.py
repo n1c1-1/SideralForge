@@ -18,6 +18,16 @@
   the tables interpolated bilinearly between tile centres and linearly between levels (no posterisation of smooth
   gradients), then mixed with the original lightness by the amount (PixInsight's Amount).
 
+* **Highlight compression** (a base and its detail by the guided filter: K. He, J. Sun, X. Tang, "Guided Image
+  Filtering", IEEE TPAMI 35(6), 2013, section 4.1 "detail enhancement and HDR compression"): the lightness split into a
+  smooth base (the mean of two guided filters, at a third of the radius and at the radius) and the detail above it; the
+  base compressed above a knee by a logarithm that brings 1 down to the ceiling, the detail kept (scaled by the local
+  slope, never below a half, then raised by Detail); the three channels scaled by the lightness's gain (the colours
+  kept). The bright cores of a nebula come down while their structure stays.
+* **Faint area smoothing**: the faint areas (lightness under a threshold, with a soft transition) replaced by a
+  Gaussian blur of themselves, the bright ones untouched, so that the faint extensions can be stretched up without
+  their grain.
+
 Sizes are full-resolution pixels: at a reduced resolution (a draft, the screen) the layers finer than a pixel are
 left out and the tiles are smaller, so that the reduced image looks like the full one reduced.
 """
@@ -228,3 +238,64 @@ def clahe(x: np.ndarray, amount: float, clip: float, radius: float, level: int =
     L2 = clahe_lightness(L, clip, tile, origin, canvas)
     lab[..., 0] = (L + amount * (L2 - L)) * 100
     return colour.from_lab(lab)
+
+
+def guided(I: np.ndarray, p: np.ndarray, r: float, eps: float) -> np.ndarray:
+    """The guided filter (He et al. 2013, algorithm 1) of p guided by I, box radius r (2-D float32 arrays)."""
+    import cv2
+    k = (2 * max(1, int(round(r))) + 1,) * 2
+
+    def box(a):
+        return cv2.boxFilter(a, -1, k, borderType=cv2.BORDER_REFLECT)
+    mI, mp = box(I), box(p)
+    a = (box(I * p) - mI * mp) / (box(I * I) - mI * mI + eps)
+    b = mp - a * mI
+    return box(a) * I + box(b)
+
+
+def highlights(x: np.ndarray, strength: float, knee: float, detail: float, radius: float,
+               level: int = 0) -> np.ndarray:
+    """The bright areas brought down above the knee, their detail kept (He et al. 2013's base and detail): the
+    lightness's base is compressed by c log(1 + (B - knee) / c), c chosen so that 1 goes to the ceiling
+    knee + (1 - knee)(1 - strength / 2); the detail is scaled by the curve's slope (never below a half) and raised by
+    ``detail`` where the base is compressed; the channels follow the lightness's gain."""
+    if strength <= 0:
+        return x
+    x = np.ascontiguousarray(x, np.float32)
+    L = np.clip(0.2126 * x[..., 0] + 0.7152 * x[..., 1] + 0.0722 * x[..., 2], 0, None).astype(np.float32)
+    r = radius / 2 ** level
+    B = 0.5 * guided(L, L, r / 3, 0.01) + 0.5 * guided(L, L, r, 0.01)
+    D = L - B
+    span = max(1.0 - knee, 1e-3)
+    top = (1.0 - knee) * (1.0 - 0.5 * min(strength, 1.0))
+    lo, hi = 1e-4, 1e3                                # c log(1 + span / c) = top: c by bisection (monotonic in c)
+    for _ in range(60):
+        c = float(np.sqrt(lo * hi))
+        if c * np.log1p(span / c) > top:
+            hi = c
+        else:
+            lo = c
+    over = np.clip(B - knee, 0, None)
+    above = B > knee
+    Bc = np.where(above, knee + c * np.log1p(over / c), B)
+    slope = np.where(above, 1.0 / (1.0 + over / c), 1.0)
+    gD = np.clip(slope, 0.5, 1.0) * (1.0 + detail * np.clip(over / span, 0, 1))
+    Lt = np.clip(Bc + gD * D, 0, 1)
+    gain = Lt / np.maximum(L, 1e-6)
+    return np.clip(x * gain[..., None], 0, 1).astype(np.float32)
+
+
+def faint_smoothing(x: np.ndarray, amount: float, threshold: float, radius: float, level: int = 0) -> np.ndarray:
+    """The areas fainter than ``threshold`` (lightness; a soft transition over +- 0.1) mixed with their Gaussian blur
+    of ``radius`` px by ``amount``; the brighter ones untouched."""
+    if amount <= 0:
+        return x
+    import cv2
+    x = np.ascontiguousarray(x, np.float32)
+    L = 0.2126 * x[..., 0] + 0.7152 * x[..., 1] + 0.0722 * x[..., 2]
+    s = radius / 2 ** level
+    Ls = cv2.GaussianBlur(L, (0, 0), max(s / 4, 0.5), borderType=cv2.BORDER_REFLECT)   # decided on the smooth level
+    t = np.clip((Ls - (threshold - 0.1)) / 0.2, 0, 1)
+    w = (amount * (1 - t * t * (3 - 2 * t)))[..., None]
+    blur = cv2.GaussianBlur(x, (0, 0), max(s, 0.5), borderType=cv2.BORDER_REFLECT)
+    return (x + w * (blur - x)).astype(np.float32)

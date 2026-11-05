@@ -1156,11 +1156,12 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     # the + Filter menu: the filters by family (the first Post's arcsinh stretch is no longer offered)
     fam = {a.text(): [x.text() for x in a.menu().actions()] for a in v.filter_menu.actions()}
     assert list(fam) == ["Stretch", "Contrast", "Color", "Detail", "Noise", "Combine"]
-    assert sum(len(x) for x in fam.values()) == len([f for f in FILTERS.values() if not f.get("hidden")]) == 15
+    assert sum(len(x) for x in fam.values()) == len([f for f in FILTERS.values() if not f.get("hidden")]) == 17
     # Curves and Levels are stretches (2 November: where the user looked for them first)
     assert fam["Stretch"] == ["Generalised hyperbolic stretch", "Arcsinh stretch", "Histogram transformation", "Curves",
                               "Levels"]
     assert "Curves" not in fam["Contrast"] and fam["Combine"] == ["H-alpha to red"]
+    assert "Highlight compression" in fam["Contrast"] and "Faint area smoothing" in fam["Noise"]
     assert all(x.isEnabled() for a in v.filter_menu.actions() for x in a.menu().actions())
 
 
@@ -1308,7 +1309,8 @@ def test_a_stars_workflow_comes_as_its_stars_and_background_image(preps, qapp):
         assert np.array_equal(shown(v), reference(s).rgb)
         v.select(full["id"], "layer")
         names = [x.name.text() for x in widgets_of(v, ContSlider)]
-        assert names == ["Opacity", "Strength", "Star size", "Star color", "Sky", "Contrast", "Saturation", "H-alpha"]
+        assert names == ["Opacity", "Strength", "Star size", "Star color", "Sky", "Contrast", "Saturation", "Colours",
+                         "H-alpha"]
         assert all(x.s.isEnabled() for x in widgets_of(v, ContSlider))
         combo = next(c for c in widgets_of(v, QComboBox) if c.currentData() == "Screen")
         before = shown(v).copy()

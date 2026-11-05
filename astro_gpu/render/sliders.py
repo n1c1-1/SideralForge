@@ -23,7 +23,7 @@ from .stars import StarSettings
 KINDS = ("simple", "stacking", "starless", "stars", "combined")
 STAR_KINDS = ("starless", "stars", "combined")
 #: settings moved by a step (the others by a ratio)
-ADDITIVE = frozenset({"sky", "contrast", "noise_mix", "smooth_px", "star_size", "halpha"})
+ADDITIVE = frozenset({"sky", "contrast", "noise_mix", "smooth_px", "star_size", "halpha", "keep_colours"})
 SUGGESTED = 2.0
 LO, HI = 0.0, 4.0
 
@@ -53,6 +53,8 @@ SLIDERS: tuple[Slider, ...] = (
     Slider("sky", "Sky", NEBULA, ("darker", "brighter"), {"sky": (0.10, 0.15, 0.20, 0.26, 0.32)}),
     Slider("contrast", "Contrast", NEBULA, ("softer", "stronger"), {"contrast": (-0.35, -0.18, 0.0, 0.25, 0.5)}),
     Slider("saturation", "Saturation", NEBULA, ("paler", "more vivid"), {"saturation": (0.6, 0.9, 1.2, 1.5, 1.85)}),
+    # how much of the stretch keeps the colours (render/simple.SimpleRenderEngine.tone)
+    Slider("colours", "Colours", NEBULA, ("faded", "true"), {"keep_colours": (0.0, 0.25, 0.5, 0.75, 1.0)}),
     # the measured H-alpha emission (render/simple.emission): taken out below 2, added above
     Slider("halpha", "H-alpha", NEBULA, ("less", "more"), {"halpha": (-0.6, -0.3, 0.0, 1.0, 2.0)}),
     # the denoised layer: the raw stack mixed back below 2, faint areas smoothed above

@@ -55,10 +55,13 @@ class SimpleSettings(StageParams):
     smooth_px: float = P(0.0, label="Faint area smoothing", level=ADVANCED, ge=0.0, le=8.0, step=0.1, unit="px",
                          help="Smoothing of the faint areas (Gaussian radius); the bright areas keep full "
                               "resolution.")
-    keep_colours: float = P(0.0, label="Keep the colours", ge=0.0, le=1.0, step=0.05,
+    keep_colours: float = P(0.5, label="Keep the colours", ge=0.0, le=1.0, step=0.05,
                             help="How much of the stretch keeps the colours: 0 = each channel through the same curve "
-                                 "(the faint colours turn grey), 1 = the luminance stretched and the three channels "
-                                 "scaled with it (Lupton et al. 2004: the colours of the linear image kept).")
+                                 "(the faint colours turn grey, the bright cores white), 1 = the luminance stretched "
+                                 "and the three channels scaled with it (Lupton et al. 2004: the colours of the linear "
+                                 "image kept). 0.5 by default: on Rosette, Heart and M8 (bench, 5 November) the "
+                                 "nebulae keep their colour and M8's core its structure, without the strong reds of "
+                                 "1.")
     halpha: float = P(0.0, label="H-alpha", ge=-1.0, le=3.0, step=0.05,
                       help="The H-alpha emission, measured as the red above the continuum of the stars, added to the "
                            "red before the stretch (above 0) or taken out of it (below 0). 0 = the image as it is.")
