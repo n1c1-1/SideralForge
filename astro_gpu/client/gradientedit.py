@@ -17,10 +17,10 @@ after the last edit, the last edit only (the ones in between are skipped); the a
 request. No sample placed: the block chooses its own at each run (the polynomial: small blocks of sky all over the
 field, the RBF: the generated grid), drawn as the last run used them; Generate the grid places editable ones.
 
-The H-alpha survey (H, or the button): the professional H-alpha map of the field (NSNS, else Finkbeiner), fetched on
+The H-alpha survey (R, or its toggle in the image's bar): the professional H-alpha map of the field (NSNS, else Finkbeiner), fetched on
 request from the solved field (cached on disk) and drawn under the samples in amber, the way Lightroom shows a mask: it
 shows where the faint nebulosity is, which no sample should sit on (the rule of DBE's users), and Generate the grid
-then leaves those cells out (Away from emission). It is a guide only: the sky model never reads it.
+then leaves those cells out (Away from emission; the survey fetched first when it is not yet). It is a guide only: the sky model never reads it.
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ FIELDS = ("sample_points", "exclude_ellipses", "exclude_brush")
 HANDLE_PX, ROT_PX = 5, 26
 #: the keys of the tools: the image takes them before the window's and Inspect's shortcuts (Escape goes back to the
 #: graph otherwise)
-TOOL_KEYS = (Qt.Key_Escape, Qt.Key_Delete, Qt.Key_Backspace, Qt.Key_M, Qt.Key_H, Qt.Key_X, Qt.Key_BracketLeft,
+TOOL_KEYS = (Qt.Key_Escape, Qt.Key_Delete, Qt.Key_Backspace, Qt.Key_M, Qt.Key_R, Qt.Key_X, Qt.Key_BracketLeft,
              Qt.Key_BracketRight)
 
 
@@ -127,6 +127,7 @@ class GradientEditor(QObject):
         self.survey_shown = False              # the survey drawn under the samples (H)
         self.avoid = True                      # Generate the grid leaves the survey's emission out
         self._survey_wanted = False            # asked while a computation ran
+        self._grid_after_survey = False        # Generate waits for the survey (Away from emission)
         self._survey_img = None                # (key, QImage)
         self._ui: dict = {}
         self._timer = QTimer(self)
@@ -188,6 +189,7 @@ class GradientEditor(QObject):
         self.view = view
         view.add_overlay(self._paint)
         view.canvas.tool = self if self.mode else None
+        view.set_tool_widgets(self._view_toggles())
         self._hint()
         if self.result is not None:
             self._show(self.result)
@@ -200,9 +202,30 @@ class GradientEditor(QObject):
             try:
                 self.view.canvas.tool = None
                 self.view.tool_hint.hide()
+                self.view.set_tool_widgets([])
             except RuntimeError:
                 pass
         self.view = None
+
+    def _view_toggles(self) -> list:
+        """What the editor draws over the image, as toggles in the image's bar (as Post's Mask view): the H-alpha
+        survey (R) and the marks (M)."""
+        out = []
+        for key, text, tip, on, slot in (
+                ("survey", "H-alpha survey", "Show in amber where the professional H-alpha survey of the field sees "
+                 "nebulosity (R): no sample should sit there. Downloaded once; the field must be solved",
+                 self.survey_shown, self._set_survey_shown),
+                ("marks", "Marks", "Show the samples and the excluded areas over the image (M)", self.shown,
+                 self._set_shown)):
+            b = QPushButton(_(text))
+            b.setObjectName("toggle")
+            b.setCheckable(True)
+            b.setChecked(on)
+            b.setToolTip(_(tip))
+            b.toggled.connect(slot)
+            self._ui[key] = b
+            out.append(b)
+        return out
 
     # ------------------------------------------------------------ the panel's section
     def controls(self, p) -> QWidget:
@@ -218,7 +241,7 @@ class GradientEditor(QObject):
         v.setSpacing(6)
         method = self._method()
         sampled = method in ("polynomial", "rbf")
-        self._ui = {}
+        self._ui = {k: w for k, w in self._ui.items() if k in ("survey", "marks")}     # the image bar's
         tools = QHBoxLayout()
         for key, text, tip in (
                 ("points", "Samples", "Left click: add or move a sample · right click: remove it"),
@@ -274,15 +297,15 @@ class GradientEditor(QObject):
             t.timeout.connect(lambda: self._set_density(dens.value()))
             dens.valueChanged.connect(lambda _v: t.start())
             row.addWidget(dens)
-            av = QCheckBox(_("Away from emission"))
+            row.addStretch(1)
+            v.addLayout(row)
+            av = QCheckBox(_("Away from emission"))           # under the grid it shapes (the panel stays narrow)
             av.setChecked(self.avoid)
             av.setToolTip(_("Generate the grid leaves out the cells where the H-alpha survey shows nebulosity (shown "
                             "with H-alpha survey)"))
             av.toggled.connect(self._set_avoid)
-            row.addWidget(av)
+            v.addWidget(av)
             self._ui["avoid"] = av
-            row.addStretch(1)
-            v.addLayout(row)
             row = QHBoxLayout()                # the grid on its line, the undo and removal on the next
         for key, text, tip, fn in (("undo", "↶", "Undo (Ctrl+Z)", self.undo), ("redo", "↷", "Redo (Ctrl+Y)", self.redo)):
             b = QPushButton(text)
@@ -300,27 +323,6 @@ class GradientEditor(QObject):
             pv.setToolTip(_("The automatic model on a reduced copy (a few seconds)"))
             pv.clicked.connect(lambda: self.preview(force=True))
             row.addWidget(pv)
-        row.addStretch(1)
-        v.addLayout(row)
-        row = QHBoxLayout()                    # what is drawn over the image, as Exclude: groups its tools
-        row.addWidget(label(_("Show:"), "small"))
-        sv = QPushButton(_("H-alpha survey"))
-        sv.setObjectName("face")
-        sv.setCheckable(True)
-        sv.setChecked(self.survey_shown)
-        sv.setToolTip(_("Show where the professional H-alpha survey of the field sees nebulosity, in amber under the "
-                        "samples (H): no sample should sit there. Downloaded once, the field must be solved"))
-        sv.toggled.connect(self._set_survey_shown)
-        row.addWidget(sv)
-        self._ui["survey"] = sv
-        mk = QPushButton(_("Marks"))
-        mk.setObjectName("face")
-        mk.setCheckable(True)
-        mk.setChecked(self.shown)
-        mk.setToolTip(_("Show the samples and the excluded areas over the image (M)"))
-        mk.toggled.connect(self._set_shown)
-        row.addWidget(mk)
-        self._ui["marks"] = mk
         row.addStretch(1)
         v.addLayout(row)
         if not self.done and self.s.state(p, "gradient") != "running":
@@ -350,7 +352,7 @@ class GradientEditor(QObject):
         if not self.done:
             bits.append(_("saved: Gradient will be computed again"))
         sv = self.survey
-        if self.survey_shown and sv is None:
+        if (self.survey_shown or self._grid_after_survey) and sv is None:
             bits.append(_("H-alpha survey: downloading…"))
         elif sv is not None and "error" in sv:
             bits.append(_("H-alpha survey: {why}").format(why=sv["error"]))
@@ -363,7 +365,7 @@ class GradientEditor(QObject):
         if self.view is None:
             return
         t = {"points": _("Samples: left click add or move (none placed: the grid first) · right click remove · Space "
-                         "or middle button: move the image · H H-alpha survey · M hide · Ctrl+Z undo"),
+                         "or middle button: move the image · R H-alpha survey · M hide · Ctrl+Z undo"),
              "brush": _("Brush: drag to paint · X paint / erase · [ ] size · right drag: move the image · M hide · "
                         "Ctrl+Z undo"),
              "ellipse": _("Ellipse: drag to draw · click inside: select and move · handles: size and rotation · "
@@ -388,12 +390,12 @@ class GradientEditor(QObject):
                     self._ui[k].setEnabled(self.mode == "brush")
             if "size" in self._ui:
                 self._ui["size"].setEnabled(self.mode == "brush")
-            if "marks" in self._ui:
-                self._ui["marks"].setChecked(self.shown)
-            if "survey" in self._ui:
-                self._ui["survey"].setChecked(self.survey_shown)
-            if "avoid" in self._ui:
-                self._ui["avoid"].setEnabled(self.survey is not None and "level" in self.survey)
+            for k, on in (("marks", self.shown), ("survey", self.survey_shown)):
+                if k in self._ui:
+                    b = self._ui[k]
+                    b.blockSignals(True)
+                    b.setChecked(on)
+                    b.blockSignals(False)
             if "status" in self._ui:
                 self._ui["status"].setText(self._status())
             if "undo" in self._ui:
@@ -471,7 +473,7 @@ class GradientEditor(QObject):
             self._set_paint(not self.paint)
         elif k == Qt.Key_M:
             self._set_shown(not self.shown)
-        elif k == Qt.Key_H:
+        elif k == Qt.Key_R:
             self._set_survey_shown(not self.survey_shown)
         elif k in (Qt.Key_Delete, Qt.Key_Backspace) and self.mode == "ellipse" and self._sel is not None:
             self.work["exclude_ellipses"].pop(self._sel)
@@ -536,7 +538,13 @@ class GradientEditor(QObject):
         self._commit()
 
     def generate(self):
-        """Siril's Generate: a grid of samples, the brighter areas left out; they become placed samples."""
+        """Siril's Generate: a grid of samples, the brighter areas left out (and, Away from emission, the survey's
+        emission: the survey fetched first when it is not yet); they become placed samples."""
+        if self.avoid and (self.survey is None or self.survey["pid"] != self.p.pid):
+            self._grid_after_survey = True
+            self._run("survey")
+            self._sync()
+            return
         self._run("grid")
 
     # ------------------------------------------------------------ the tool (ImageCanvas.tool)
@@ -901,6 +909,9 @@ class GradientEditor(QObject):
             self.survey, self._survey_img = out["survey"], None
             if "error" in out["survey"]:
                 self.tv.toasted.emit(_("H-alpha survey: {why}").format(why=out["survey"]["error"]))
+            if self._grid_after_survey:        # Generate asked for it: the grid now, with or without the survey
+                self._grid_after_survey = False
+                self._pending = "grid"
         elif "grid" in out:
             self.work["sample_points"] = out["grid"] + ([self._extra] if self._extra else [])
             self._extra = None
