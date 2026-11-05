@@ -445,6 +445,8 @@ FILTERS = {
 }
 FAMILIES = ["Stretch", "Contrast", "Color", "Detail", "Noise", "Combine"]
 #: a filter name older saved compositions hold (a layer keeps its name) -> the filter's name today
+#: the part names older saved compositions hold in their layers' names -> today's (issue #36)
+OLD_PART_NAMES = {"Stars and background": "Combine stars & background layers"}
 OLD_NAMES = {"Stretch (GHS)": "Arcsinh stretch (symmetry point)",
              # issue #15: no acronyms in the names (their sources still cite the methods)
              "Local histogram equalization (CLAHE)": "Local histogram equalization",
@@ -704,7 +706,11 @@ def load_layers(raw, alive: set[int]) -> list[dict]:
         if d.get("kind") == "workflow":
             if int(d.get("pid", -1)) not in alive or d.get("part") not in (None, *PARTS):
                 continue
-            lay = new_workflow_layer(int(d["pid"]), str(d.get("name") or "?"), bool(d.get("visible")), d.get("part"),
+            name = str(d.get("name") or "?")
+            for old, new in OLD_PART_NAMES.items():           # issue #36: a layer saved with the old name
+                if name.endswith(" · " + old):
+                    name = name[: -len(old)] + new
+            lay = new_workflow_layer(int(d["pid"]), name, bool(d.get("visible")), d.get("part"),
                                      d.get("base"))
             if lay.get("part") == "combined":
                 lay["blend"] = d.get("blend") if d.get("blend") in BLENDS else BLENDS[0]

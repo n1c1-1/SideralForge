@@ -56,6 +56,7 @@ from ..core import workflow as wfl
 from . import prefs
 from .blocks import (
     BREAK_COL,
+    BY_KEY,
     COLUMNS,
     OPTIONAL,
     PAUSE_COL,
@@ -85,6 +86,7 @@ MARGIN = 8                  # around the graph, left and right
 MIN_SCALE = 0.6             # the smallest the default view goes to show the whole chain; below, the text cannot be read:
 #                             the view keeps this scale, shows the left end (Frames) and scrolls right. Show all goes lower
 TITLE_PAD = 22              # a block's title, its state stripe and its padding
+STAR_MAX = 260               # the star blocks' columns: as wide as their long names (issue #36)
 OUT_MAX = BW + 30           # the widest Output column: a longer workflow name loses its middle (whole in the tooltip)
 STATE_COL = {"done": OK, "pending": "#5d6470", "stale": WARN, "running": ACCENT, "failed": BAD,
              "interrupted": WARN, "skipped": "#5d6470"}
@@ -134,7 +136,7 @@ class BlockItem(QGraphicsItem):
             tip += "\n" + _("Output ●: drag it onto Post to make a layer")
         elif node.key == "etoiles":
             tip += "\n" + _("● top: the starless image; ● bottom: the stars alone. Drag one onto Post to make it a "
-                            "layer, or onto Composition for a Stars and background block")
+                            "layer, or onto Composition for a Combine stars & background layers block")
         if bp is not None:
             tip += "\n" + review_tip(bp)
         self.setToolTip(tip.strip())
@@ -411,7 +413,9 @@ class GraphView(QGraphicsView):
         if key == "post":
             need = max((fm.horizontalAdvance(n) for n in names), default=0.0) + TITLE_PAD
             return max(BW, min(OUT_MAX, need))
-        return max(BW, min(BW + 40, fm.horizontalAdvance(block_title(None, key)) + TITLE_PAD))
+        # the star blocks' names are long (issue #36): their columns widen to them, as the outputs' do
+        cap = STAR_MAX if key in ("etoiles", "composition") else BW + 40
+        return max(BW, min(cap, fm.horizontalAdvance(block_title(None, key)) + TITLE_PAD))
 
     @staticmethod
     def lane_order(g: Graph) -> list[int]:
@@ -567,7 +571,7 @@ class GraphView(QGraphicsView):
         if item.node.key == "etoiles" and "composition" in getattr(self, "_cx", {}):
             x, w = self._cx["composition"], self._cw["composition"]
             y = item.node.y - BH / 2
-            self._comp_ghost = GhostItem(QRectF(x + 4, y + 4, w - 8, BH - 8), "+  " + _("Stars and background"))
+            self._comp_ghost = GhostItem(QRectF(x + 4, y + 4, w - 8, BH - 8), "+  " + _("Combine stars & background layers"))
             self._comp_ghost.setZValue(8)
             self.scene().addItem(self._comp_ghost)
 
@@ -778,7 +782,8 @@ class GraphView(QGraphicsView):
         if node.key == "etoiles" and len(node.paths) == 1:
             for what, text in (("starless", "Send the starless image to Post"), ("stars", "Send the stars alone to Post")):
                 m.addAction(_(text)).triggered.connect(lambda _c=False, w=what: self.partToPost.emit(node, w))
-            m.addAction(_("New Stars and background block")).triggered.connect(lambda: self.newComposition.emit(node))
+            m.addAction(_("New Combine stars & background layers block")).triggered.connect(
+                lambda: self.newComposition.emit(node))
             m.addSeparator()
         if node.key in OPTIONAL_BLOCKS:
             if node.shared:
@@ -908,6 +913,36 @@ class ToolCard(QFrame):
     def mouseDoubleClickEvent(self, e):                               # noqa: N802
         if self.state == "add" and self.page.s.path is not None:
             self.page.add_tool(self.key, self.page.s.path.pid)
+
+
+class CombineCard(QFrame):
+    """The Combine stars & background layers block in the toolbar (issue #36): a click adds one for the current
+    workflow's split block (a layer of Post that puts its stars back on its starless image); greyed without one."""
+
+    def __init__(self, page, split, parent=None):
+        super().__init__(parent)
+        self.page, self.split = page, split
+        on = split is not None
+        self.setObjectName("tool")
+        self.setCursor(Qt.PointingHandCursor if on else Qt.ArrowCursor)
+        self.setStyleSheet(f"QFrame#tool {{ background: {'#232831' if on else 'transparent'}; border: 1px "
+                           f"{'solid #353b47' if on else 'dashed #3a4150'}; border-radius: 6px; }}"
+                           f"QFrame#tool:hover {{ border-color: {ACCENT if on else '#3a4150'}; }}"
+                           " QLabel { background: transparent; }")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(10, 6, 8, 6)
+        v.setSpacing(1)
+        t = QLabel(("+  " if on else "") + block_title(None, "composition"))
+        t.setStyleSheet("font-weight: 600;" + ("" if on else " color: #6b7280;"))
+        v.addWidget(t)
+        v.addWidget(label(_("a layer of Post") if on else _("after a split block"), "small"))
+        self.setToolTip(_(BY_KEY["composition"]["what"]))
+        self.setMinimumWidth(140)
+        self.setEnabled(on)
+
+    def mouseReleaseEvent(self, e):                                   # noqa: N802
+        if self.split is not None and e.button() == Qt.LeftButton:
+            self.page.new_composition(self.split)
 
 
 class GraphPage(QWidget):
@@ -1054,6 +1089,11 @@ class GraphPage(QWidget):
             card = ToolCard(self, k, state, text, new)
             card.setEnabled(p is not None and not new)
             self.tl.addWidget(card)
+        # issue #36: the Combine block is added here too, not only from the split block's menu or its dots
+        g = getattr(self.graph, "graph", None)
+        split = g.node_of(p, "etoiles") if (g is not None and p is not None and s.ready) else None
+        self.combine_card = CombineCard(self, split)
+        self.tl.addWidget(self.combine_card)
         self.tl.addStretch(1)
 
     # ------------------------------------------------------------ selection
@@ -1184,7 +1224,7 @@ class GraphPage(QWidget):
         s = self.s
         p = s.path if s.path in node.paths else node.paths[0]
         lid = s.add_post_layer(p.pid, "combined", self)
-        s.log('Stars and background block for "{name}"', name=p.name)
+        s.log('Combine stars & background layers block for "{name}"', name=p.name)
         s.sel_layer = lid
         s.select(index=s.paths.index(p), step="composition")
         s.scope = [p.pid]
@@ -1193,7 +1233,7 @@ class GraphPage(QWidget):
         """A Stars and background block taken out of Post (its layer, with its settings)."""
         s = self.s
         s.remove_post_layer(lid, self)
-        s.log("Stars and background block removed")
+        s.log("Combine stars & background layers block removed")
         if s.sel_step == "composition" and getattr(s, "sel_layer", None) == lid:
             s.select(step="etoiles")
 

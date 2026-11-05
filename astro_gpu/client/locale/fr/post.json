@@ -189,5 +189,9 @@
   "Spot healing: click or paint over a defect, healed when released · [ ] size · Alt+click: the source by hand · Ctrl+Z: undo · middle button: move the image": "Tampon correcteur : cliquer ou peindre sur un défaut, corrigé au relâchement · [ ] taille · Alt+clic : la source à la main · Ctrl+Z : annuler · bouton du milieu : déplacer l'image",
   "Show / hide what is under it": "Afficher / masquer ce qui est en dessous",
   "Dehaze": "Dévoilage",
-  "The veil (residual sky glow, haze) measured as the background of SExtractor (Bertin and Arnouts 1996: meshes, 3-sigma clipping, mode, bicubic map) and taken off with He's haze model (He, Sun, Tang 2009), the white kept": "Le voile (lueur résiduelle du ciel, brume) mesuré comme le fond de SExtractor (Bertin et Arnouts 1996 : mailles, écrêtage à 3 sigma, mode, carte bicubique) et retiré avec le modèle de brume de He (He, Sun, Tang 2009), le blanc conservé"
+  "The veil (residual sky glow, haze) measured as the background of SExtractor (Bertin and Arnouts 1996: meshes, 3-sigma clipping, mode, bicubic map) and taken off with He's haze model (He, Sun, Tang 2009), the white kept": "Le voile (lueur résiduelle du ciel, brume) mesuré comme le fond de SExtractor (Bertin et Arnouts 1996 : mailles, écrêtage à 3 sigma, mode, carte bicubique) et retiré avec le modèle de brume de He (He, Sun, Tang 2009), le blanc conservé",
+  "Combine stars & background layers": "Combiner les calques étoiles et fond",
+  "Show / hide this image in its Combine stars & background layers layer": "Afficher / masquer cette image dans son calque Combiner les calques étoiles et fond",
+  "the star sliders work on the stars of the split block": "les curseurs d'étoiles agissent sur les étoiles du bloc Split",
+  "this layer leaves the graph before the split block": "ce calque quitte le graphe avant le bloc Split"
 }

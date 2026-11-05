@@ -681,7 +681,7 @@ def test_outputs_pulled_to_post_make_a_raw_stack_workflow(world, model, page):
     assert all(c.state == "in" for c in page.findChildren(ToolCard))
     assert [c.text() for c in page.findChildren(QLabel) if c.text() == "after the output"]
     ok, why, need = model.slider_state(q, "star_strength")
-    assert ok is False and "before the Stars block" in why and need is None             # nothing to add after the exit
+    assert ok is False and "before the split block" in why and need is None             # nothing to add after the exit
     assert model.slider_state(model.view(1), "star_strength", "combined")[0] is True
 
 

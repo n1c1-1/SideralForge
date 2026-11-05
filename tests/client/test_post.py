@@ -1356,7 +1356,7 @@ def test_a_stars_workflow_comes_as_its_stars_and_background_image(preps, qapp):
         assert s.settle()
         v = s.view
         assert [(lay["name"], lay.get("part")) for lay in v.layers] == [
-            ("Classic", None), ("Full · Stars and background", "combined")]
+            ("Classic", None), ("Full · Combine stars & background layers", "combined")]
         full = v.layers[1]
         assert full["blend"] == "Screen" and full["mode"] == "Normal" and full["visible"]
         assert np.array_equal(shown(v), reference(s).rgb)
@@ -1642,13 +1642,13 @@ def test_sliders_are_greyed_with_their_reason_and_double_click_resets(post):
     assert sl["Sky"].s.isEnabled() and sl["Noise smoothing"].s.isEnabled()
     for k in ("Strength", "Star size", "Star color"):
         assert not sl[k].s.isEnabled() and not sl[k].why.isHidden()
-    assert sl["Star size"].why.text() == "the star sliders work on the stars of the Stars block"
+    assert sl["Star size"].why.text() == "the star sliders work on the stars of the split block"
     post.model.paths.append(WF(3, "Raw stack", "stacking"))                              # pulled from Stacking
     post.model.pathsChanged.emit()
     v.select(named(v, "Raw stack")["id"], "layer")
     sl = sliders()
     assert sl["Noise smoothing"].why.text() == "this layer leaves the graph before the Denoise block"
-    assert sl["Star size"].why.text() == "this layer leaves the graph before the Stars block"
+    assert sl["Star size"].why.text() == "this layer leaves the graph before the split block"
     lay = named(v, "Classic")                                                            # a double-click: the suggestion
     v.select(lay["id"], "layer")
     sky = sliders()["Sky"]

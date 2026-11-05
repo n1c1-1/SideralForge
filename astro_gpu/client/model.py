@@ -48,7 +48,7 @@ from .services.worker import ApiWorker, norm_path
 BY_OUTPUT = ("render_simple",)
 #: the name a layer of the Stars block's images gets after its workflow's ("Full · Stars and background"); its words
 #: are translated where shown (post3.tr_name)
-POST_PART_NAMES = {"starless": "Starless image", "stars": "Stars alone", "combined": "Stars and background"}
+POST_PART_NAMES = {"starless": "Starless image", "stars": "Stars alone", "combined": "Combine stars & background layers"}
 
 # ---------------------------------------------------------------------------------------------- vocabulary
 #: the starting points of the New workflow dialog, by their keys (dialogs.TEMPLATE_NAME gives their names)
@@ -1703,7 +1703,8 @@ class ProjectModel(QObject):
         sec, _todo, reused = self.cost_of(need, p.params)
         stars = need["etoiles"] != p.opts["etoiles"]
         dn = need["debruitage"] != p.opts["debruitage"]
-        what = _("Stars and Denoise") if stars and dn else _("Stars") if stars else _("Denoise") if dn else ""
+        what = (_("Split stars & background and Denoise") if stars and dn else _("Split stars & background") if stars
+                else _("Denoise") if dn else "")
         t = _("Add {what} to the workflow: +{t}").format(what=what, t=hm(sec))
         if [s for s in reused if s not in set(self.all_stages(p))]:
             t += _(", the rest is already computed by another workflow")

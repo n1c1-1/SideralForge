@@ -443,7 +443,6 @@
  "Adaptation steps": "Étapes d'adaptation",
  "Steps the network learned this image for (0: pretrained only).": "Nombre de pas pendant lesquels le réseau a appris cette image (0 : pré-entraîné seul).",
  "Star removal": "Retrait des étoiles",
- "A network trained on our stacks takes the stars off the Output block's image: the starless image and the stars alone, two images that Post recombines (the Stars and background block) or takes as they are.": "Un réseau entraîné sur nos empilements retire les étoiles de l'image de la Sortie : l'image sans étoiles et les étoiles seules, deux images que Post-traitement recombine (le bloc Étoiles et fond) ou prend telles quelles.",
  "The bright Gaia DR3 stars of the field: positions (propagated to the date of the images), magnitudes and colours, plus the low-resolution XP spectra of a few thousand isolated stars used to calibrate the colour of the sensor. Results are cached and shared between projects.": "Les étoiles brillantes de Gaia DR3 dans le champ : positions (ramenées à la date des images), magnitudes et couleurs, plus les spectres XP basse résolution de quelques milliers d'étoiles isolées, qui servent à calibrer la couleur du capteur. Les résultats sont gardés en cache et partagés entre projets.",
  "Prepares the output of a workflow, or of one pulled from Stacking: the stack (or the denoised stack) in screen colours, with its sky removed, and the statistics of an automatic stretch. Post renders it with its sliders (sky, contrast, saturation, noise).": "Prépare la sortie d'un workflow, ou d'un workflow tiré de l'Empilement : l'empilement (ou l'empilement débruité) en couleurs d'écran, son ciel retiré, et les statistiques d'un étirement automatique. Post-traitement le rend avec ses curseurs (ciel, contraste, saturation, bruit).",
  "Field stars (Gaia)": "Étoiles du champ (Gaia)",
@@ -464,5 +463,6 @@
  "Colour mosaic pattern": "Motif de la mosaïque de couleurs",
  "Peaks of the colour mosaic's periodic pattern taken off the output image.": "Pics du motif périodique de la mosaïque de couleurs retirés de l'image de sortie.",
  "Network grid": "Grille du réseau",
- "Peaks of the star-removal network's own grid taken off the starless image.": "Pics de la grille propre au réseau de retrait des étoiles retirés de l'image sans étoiles."
+ "Peaks of the star-removal network's own grid taken off the starless image.": "Pics de la grille propre au réseau de retrait des étoiles retirés de l'image sans étoiles.",
+ "A network trained on our stacks takes the stars off the Output block's image: the starless image and the stars alone, two images that Post combines (the Combine stars & background layers block) or takes as they are.": "Un réseau entraîné sur nos empilements retire les étoiles de l'image du bloc Sortie : l'image sans étoiles et les étoiles seules, deux images que le Post combine (le bloc Combiner les calques étoiles et fond) ou prend telles quelles."
 }

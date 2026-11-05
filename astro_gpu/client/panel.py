@@ -559,7 +559,7 @@ class Panel(QWidget):
             self.bv.addWidget(kv([(_("Output of"), block_title(p, p.end))]))
         if k == "etoiles":
             self.bv.addWidget(label(_("No setting here: the network is applied as it was trained. Its two images are "
-                                      "adjusted in a Stars and background block, or each as a layer of Post."),
+                                      "adjusted in a Combine stars & background layers block, or each as a layer of Post."),
                                     "small", wrap=True))
         else:
             self.settings(p, k, groups, extra)
@@ -768,7 +768,7 @@ class Panel(QWidget):
                 p = node.paths[0]
                 sent = any(x.get("pid") == p.pid and x.get("part") == what for x in self.s.post_layers())
                 b = QPushButton(_("To Post"))
-                b.setToolTip(_("This image as a layer of Post, as it is (no Stars and background block)"))
+                b.setToolTip(_("This image as a layer of Post, as it is (no Combine stars & background layers block)"))
                 b.setEnabled(not sent)
                 b.clicked.connect(lambda _c=False, w=what, pp=p: self._part_to_post(pp, w))
                 row.addWidget(b, 0, Qt.AlignTop)
@@ -776,7 +776,7 @@ class Panel(QWidget):
             else:
                 self.bv.addWidget(lb)
         if len(node.paths) == 1:
-            nb = QPushButton(_("New Stars and background block"))
+            nb = QPushButton(_("New Combine stars & background layers block"))
             nb.setToolTip(_("A layer of Post that puts the stars back on the starless image; each of the two keeps "
                             "its own settings"))
             nb.clicked.connect(lambda _c=False, pp=node.paths[0]: self._new_composition(pp))
@@ -793,7 +793,7 @@ class Panel(QWidget):
     def _new_composition(self, p):
         """A Stars and background block for this workflow's Stars block (as dragging a dot onto Composition)."""
         lid = self.s.add_post_layer(p.pid, "combined", self)
-        self.s.log('Stars and background block for "{name}"', name=p.name)
+        self.s.log('Combine stars & background layers block for "{name}"', name=p.name)
         self.s.sel_layer = lid
         self.s.select(index=self.s.paths.index(p), step="composition")
         self.s.scope = [p.pid]
@@ -819,7 +819,7 @@ class Panel(QWidget):
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
         top.addWidget(chip)
         x = QPushButton(_("Delete block"))
-        x.setToolTip(_("Take this block out of Post (the Stars block's images stay computed)"))
+        x.setToolTip(_("Take this block out of Post (the split block's images stay computed)"))
         x.clicked.connect(self.removeTool.emit)
         top.addWidget(x)
         self.hv.addLayout(top)
@@ -827,7 +827,7 @@ class Panel(QWidget):
         from .blocks import BY_KEY
         self.bv.addWidget(label(_(BY_KEY["composition"]["what"]), "small", wrap=True))
         if st != "done":
-            self.bv.addWidget(label(_("The Stars block is not computed yet: run it to see the result in Post."),
+            self.bv.addWidget(label(_("The split block is not computed yet: run it to see the result in Post."),
                                     "warn", wrap=True))
         sliders = dict(lay.get("sliders") or {})
 

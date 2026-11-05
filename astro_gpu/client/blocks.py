@@ -40,8 +40,8 @@ TOOL_COLUMN = {"debruitage": "debruitage", "etoiles": "etoiles", "deconv": "deco
                "auto": "fond", "rbf": "fond", "simple": "fond"}
 TITLES = {"sources": "Frames", "final": "Post", "calibration": "Calibration", "alignement": "Registration",
           "selection": "Selection", "empilement": "Stacking", "astrometrie": "Astrometry", "fond": "Gradient",
-          "couleur": "Color", "debruitage": "Denoise", "deconv": "Deconvolution", "etoiles": "Stars",
-          "post": "Output", "demi_piles": "Half-stacks", "composition": "Stars and background"}
+          "couleur": "Color", "debruitage": "Denoise", "deconv": "Deconvolution", "etoiles": "Split stars & background",
+          "post": "Output", "demi_piles": "Half-stacks", "composition": "Combine stars & background layers"}
 # the optional blocks, in the toolbar's order
 TOOLBOX = ["debruitage", "deconv", "etoiles"]
 #: the two images of the Stars block (the parts of Post's layers) and their words on the wires
@@ -97,17 +97,17 @@ STEPS = [
     dict(key="debruitage", phase=4, title="Denoise", kind="tool", tool="debruitage", stages=["denoise"],
          what="A network learns on the two half-stacks to predict one from the other: it removes the noise without "
               "inventing anything."),
-    dict(key="etoiles", phase=4, title="Stars", kind="tool", tool="etoiles", stages=["star_removal"],
+    dict(key="etoiles", phase=4, title="Split stars & background", kind="tool", tool="etoiles", stages=["star_removal"],
          what="A network trained on our stacks takes the stars off the image: two images, the starless image and the "
-              "stars alone, sent to Post as they are or recombined by a Stars and background block."),
+              "stars alone, sent to Post as they are or combined by a Combine stars & background layers block."),
     dict(key="fond", phase=4, title="Gradient", kind="slot", stages=["gradient"],
          what="Models the sky gradient (light pollution, the Moon, vignetting) on the stack and removes it from what "
               "every later block reads. Polynomial: a smooth surface fitted on the sky between the objects. "
               "Automatic: a more flexible surface that follows complex gradients."),
     dict(key="post", phase=5, title="Output", kind="fixed", stages=["render_simple"],
          what="Prepares the render: what this workflow gives in Post, its image and its sliders."),
-    dict(key="composition", phase=6, title="Stars and background", kind="slot", stages=[],
-         what="Recombines the Stars block's two images: the starless image and the stars, each stretched, the stars "
+    dict(key="composition", phase=6, title="Combine stars & background layers", kind="slot", stages=[],
+         what="Combines the split block's two images: the starless image and the stars, each stretched, the stars "
               "put back on top (Screen, Linear dodge or Lighten). Its settings are those of its layer in Post."),
 ]
 BY_KEY = {b["key"]: b for b in STEPS}
@@ -116,9 +116,9 @@ TOOLS = {
     "debruitage": dict(title="Denoise", phase=4,
                        what="Removes the noise without inventing anything: a network learns on the two half-stacks "
                             "to predict one from the other."),
-    "etoiles": dict(title="Stars", phase=4,
+    "etoiles": dict(title="Split stars & background", phase=4,
                     what="Takes the stars off the image with a trained network: the starless image and the stars "
-                         "alone, two images for Post (recombined by a Stars and background block, or as they are)."),
+                         "alone, two images for Post (combined by a Combine stars & background layers block, or as they are)."),
     "deconv": dict(title="Deconvolution", phase=4,
                    what="Sharpens the image with the point spread function measured on the stars."),
 }
@@ -233,11 +233,12 @@ class Graph:
         self.post_layers: list[tuple[str, int | None]] = []
         layers = project.post_layers() if hasattr(project, "post_layers") else []
         have = {lay.get("pid") for lay in layers if lay.get("kind") == "workflow"}
+        from .model import POST_PART_NAMES
         for p in project.paths:                       # the layer Post gives a workflow it does not have yet
             if p.pid not in have:
                 stars = p.opts.get("etoiles") == "retirer" and self.node_of(p, "etoiles") is not None
                 layers.insert(0, {"kind": "workflow", "pid": p.pid, "part": "combined" if stars else None, "id": None,
-                                  "name": p.name + (" · Stars and background" if stars else "")})
+                                  "name": p.name + (" · " + POST_PART_NAMES["combined"] if stars else "")})
         for lay in layers:
             if lay.get("kind") == "image":
                 self.post_layers.append((str(lay.get("name") or "?"), None))
