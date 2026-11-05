@@ -16,7 +16,9 @@ stretching them less is the star reduction: no reduction is needed on the recomb
   reconstruction, L. Vincent 1993, so that the wider stars stay exactly as they were; on the stars alone, so the
   nebula's texture is never touched); their size by a round grey erosion (smaller) or dilation (larger), as Photoshop's
   Minimum and Maximum filters with Preserve roundness (an octagon: a cross and a square in turn, the usual
-  approximation of a disc), never a square; their colour by a saturation around the luminance;
+  approximation of a disc), never a square; smaller through a star mask (``star_mask``: the stars standing above
+  their local background's noise), as those tutorials select the stars first, so that the grain between the stars of
+  a dense field is not eroded into filaments; their colour by a saturation around the luminance;
 * recombined: Screen 1 - (1 - a)(1 - b), Linear dodge (add) a + b (clipped), or Lighten max(a, b).
 """
 from __future__ import annotations
@@ -255,7 +257,30 @@ def resize_stars(y: torch.Tensor, r: float) -> torch.Tensor:
         return y
     n, t = int(abs(r)), abs(r) - int(abs(r))
     lo = _morph(y, n, r > 0)
-    return lo if t < 1e-3 else (1 - t) * lo + t * _morph(y, n + 1, r > 0)
+    out = lo if t < 1e-3 else (1 - t) * lo + t * _morph(y, n + 1, r > 0)
+    if r > 0:
+        return out
+    # shrunk through a star mask, as the published star reductions do (Photoshop: the Minimum filter through a
+    # selection of the stars; PixInsight: MorphologicalTransformation through a star mask): an erosion of the faint
+    # background between the stars draws a web of filaments on a dense field (issue #18)
+    return y + (out - y) * star_mask(y, n + 1)
+
+
+#: a star of the mask stands this many local noise units above its local background (the usual detection threshold)
+MASK_SIGMAS = 3.0
+#: the scale of the local background and noise (pixels of the grid rendered)
+MASK_SCALE = 6.0
+
+
+def star_mask(y: torch.Tensor, r: int) -> torch.Tensor:
+    """Where the stars are (1, h, w in 0..1): the luminance above STAR_LEVEL and MASK_SIGMAS local noise units above
+    its local background (on a dense field the faint grain between the stars stands above STAR_LEVEL: it is not a
+    star), grown by r pixels (round) to hold the wings the reduction takes, its edge softened by a pixel."""
+    L = ops.luminance(y)[None]
+    bg = ops.gaussian_blur(L, MASK_SCALE)
+    noise = 1.2533 * ops.gaussian_blur((L - bg).abs(), MASK_SCALE)          # the mean deviation, as a sigma
+    sup = ((L > STAR_LEVEL) & (L > bg + MASK_SIGMAS * noise)).float()
+    return ops.gaussian_blur(_morph(sup, r, True), 0.7)[0].clamp(0, 1)
 
 
 def blend(a: torch.Tensor, b: torch.Tensor, mode: str) -> torch.Tensor:
