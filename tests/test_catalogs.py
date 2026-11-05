@@ -28,6 +28,7 @@ def test_isolated_xp_is_the_same_from_the_npz_file_and_from_arrays_read_once(tmp
     brighter = g[None] < g[:, None] + 3
     np.fill_diagonal(brighter, False)
     ok = np.where(cand & ~(near & brighter).any(1))[0]
-    want = ok[np.argsort(g[ok])][: p.xp_max]
+    ok = ok[np.argsort(g[ok])]                                 # spread over the magnitudes (issue #12)
+    want = ok[np.linspace(0, len(ok) - 1, p.xp_max).round().astype(int)]
     assert len(want) == p.xp_max                               # the cap is reached: the order matters
     assert np.array_equal(from_file, want) and np.array_equal(once, want)

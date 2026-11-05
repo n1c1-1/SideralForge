@@ -47,10 +47,12 @@ HEART: dict[str, tuple[float, float]] = {
 }
 #: a stage the table does not know (tests' toy stages): one minute at Heart size
 OTHER = (60.0, 0.0)
-#: without a GPU, each stage takes this many times longer (guesses, not measured)
+#: without a GPU, each stage takes this many times longer (guesses, not measured; star_removal measured on 5 November
+#: 2026, issue #9: 7.7 s per Mpx on 8 processor threads, about 4 times the reference's GPU time with its reading and
+#: writing; the 40 guessed before announced 50 minutes for North America, where the run takes about 4)
 CPU_FACTOR: dict[str, float] = {
     "inventory": 1, "calibrate": 1.3, "register": 1.5, "stack": 5, "astrometry": 1, "catalogs": 1, "surveys": 1,
-    "color": 1.5, "denoise": 45, "gradient": 1, "render_simple": 2, "star_removal": 40,
+    "color": 1.5, "denoise": 45, "gradient": 1, "render_simple": 2, "star_removal": 4,
 }
 DEFAULT_CPU_FACTOR = 2.0
 #: Denoise (stages/denoise.py): applying the pretrained network costs this many adaptation steps per Mpx of the stack

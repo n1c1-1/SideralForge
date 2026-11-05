@@ -24,7 +24,7 @@ KINDS = ("simple", "stacking", "starless", "stars", "combined")
 STAR_KINDS = ("starless", "stars", "combined")
 #: settings moved by a step (the others by a ratio)
 ADDITIVE = frozenset({"sky", "contrast", "noise_mix", "smooth_px", "star_size", "halpha", "keep_colours",
-                      "faint"})
+                      "faint", "star_small"})
 SUGGESTED = 2.0
 LO, HI = 0.0, 4.0
 
@@ -65,6 +65,10 @@ SLIDERS: tuple[Slider, ...] = (
            {"noise_mix": (0.4, 0.7, 1.0, 1.0, 1.0), "smooth_px": (0.0, 0.0, 0.0, 0.8, 1.6)}, needs="denoise"),
     Slider("star_strength", "Strength", STARS, ("subtler", "bolder"),
            {"star_strength": (0.25, 0.4, 0.6, 1.0, 1.6)}, needs="stars"),
+    # the small stars taken away (render/stars.fade_small_stars), left = fewer stars (the user, issue #7): those
+    # narrower than 1.0 then 0.6 times the image's typical star at 0 and 1, none at 2 (the default) and above
+    Slider("star_small", "Small stars", STARS, ("less", "more"), {"star_small": (1.0, 0.6, 0.0, 0.0, 0.0)},
+           needs="stars"),
     Slider("star_size", "Star size", STARS, ("smaller", "larger"), {"star_size": (-3.0, -2.0, -1.0, 0.0, 1.0)},
            needs="stars"),
     Slider("star_color", "Star color", STARS, ("whiter", "more colorful"),

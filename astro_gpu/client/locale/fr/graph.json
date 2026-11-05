@@ -87,5 +87,11 @@
   "{image} of \"{name}\" is already a layer of Post": "{image} de « {name} » : déjà un calque du Post-traitement",
   "{image} of \"{name}\" sent to Post as a new layer": "Nouveau calque du Post-traitement : {image} de « {name} »",
   "Star blend mode": "Mode de fusion des étoiles",
-  "A network trained on our stacks takes the stars off the image: two images, the starless image and the stars alone, sent to Post as they are or recombined by a Stars and background block.": "Un réseau entraîné sur nos empilements retire les étoiles de l'image : deux images, l'image sans étoiles et les étoiles seules, envoyées telles quelles au Post-traitement ou recombinées par un bloc Étoiles et fond."
+  "A network trained on our stacks takes the stars off the image: two images, the starless image and the stars alone, sent to Post as they are or recombined by a Stars and background block.": "Un réseau entraîné sur nos empilements retire les étoiles de l'image : deux images, l'image sans étoiles et les étoiles seules, envoyées telles quelles au Post-traitement ou recombinées par un bloc Étoiles et fond.",
+  "workflow": "workflow",
+  "To Post": "Vers le Post",
+  "This image as a layer of Post, as it is (no Stars and background block)": "Cette image comme calque du Post, telle quelle (sans bloc Étoiles et fond)",
+  "A layer of Post that puts the stars back on the starless image; each of the two keeps its own settings": "Un calque du Post qui remet les étoiles sur l'image sans étoiles ; chacune des deux garde ses propres réglages",
+  "Edit the samples on the image…": "Modifier les échantillons sur l'image…",
+  "Opens the block in Inspect: place, move or remove the samples and the excluded areas on the image": "Ouvre le bloc dans Inspect : placer, déplacer ou retirer les échantillons et les zones exclues sur l'image"
 }

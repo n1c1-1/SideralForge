@@ -535,6 +535,13 @@ class Panel(QWidget):
         if k == "fond" and self.tune and getattr(self, "grad_editor", None) is not None:
             self.bv.addWidget(self.group_title(_("Samples and excluded areas")))
             self.bv.addWidget(self.grad_editor.controls(p))
+        elif k == "fond" and not self.tune:            # issue #15: the samples are edited on the image, in Inspect
+            b = QPushButton(_("Edit the samples on the image…"))
+            b.setToolTip(_("Opens the block in Inspect: place, move or remove the samples and the excluded areas on "
+                           "the image"))
+            b.clicked.connect(self.openTune.emit)
+            self.bv.addWidget(b, 0, Qt.AlignLeft)
+            self.bv.addSpacing(6)
         groups = self._groups(p, k)
         units = [r.get("unit") for _t, rs in groups for r in rs]          # hidden rows too: the column stays put
         if k == "selection":
@@ -755,8 +762,41 @@ class Panel(QWidget):
                         + "".join(f"<br>&nbsp;&nbsp;&nbsp;→ {html.escape(t)}" for t in to))
             lb.setTextFormat(Qt.RichText)
             lb.setWordWrap(True)
-            self.bv.addWidget(lb)
+            if len(node.paths) == 1:            # issue #8: sent to Post from here too, not only by dragging its dot
+                row = QHBoxLayout()
+                row.addWidget(lb, 1)
+                p = node.paths[0]
+                sent = any(x.get("pid") == p.pid and x.get("part") == what for x in self.s.post_layers())
+                b = QPushButton(_("To Post"))
+                b.setToolTip(_("This image as a layer of Post, as it is (no Stars and background block)"))
+                b.setEnabled(not sent)
+                b.clicked.connect(lambda _c=False, w=what, pp=p: self._part_to_post(pp, w))
+                row.addWidget(b, 0, Qt.AlignTop)
+                self.bv.addLayout(row)
+            else:
+                self.bv.addWidget(lb)
+        if len(node.paths) == 1:
+            nb = QPushButton(_("New Stars and background block"))
+            nb.setToolTip(_("A layer of Post that puts the stars back on the starless image; each of the two keeps "
+                            "its own settings"))
+            nb.clicked.connect(lambda _c=False, pp=node.paths[0]: self._new_composition(pp))
+            self.bv.addWidget(nb, 0, Qt.AlignLeft)
         self.bv.addSpacing(6)
+
+    def _part_to_post(self, p, part):
+        """One of the Stars block's images sent to Post as a layer of its own (as dragging its dot onto Post)."""
+        from .blocks import STAR_OUTPUTS
+        self.s.add_post_layer(p.pid, part, self)
+        self.s.log('{image} of "{name}" sent to Post', image=dict(STAR_OUTPUTS)[part], name=p.name)
+        self.s.select(index=self.s.paths.index(p), step="etoiles")
+
+    def _new_composition(self, p):
+        """A Stars and background block for this workflow's Stars block (as dragging a dot onto Composition)."""
+        lid = self.s.add_post_layer(p.pid, "combined", self)
+        self.s.log('Stars and background block for "{name}"', name=p.name)
+        self.s.sel_layer = lid
+        self.s.select(index=self.s.paths.index(p), step="composition")
+        self.s.scope = [p.pid]
 
     def composition(self, node):
         """A Stars and background block: its layer of Post, recombining the Stars block's two images. How the stars go

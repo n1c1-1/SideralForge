@@ -418,6 +418,9 @@ def import_folder(model, parent=None, folder: str | None = None, new_session: bo
     else:
         made = add_scan(model.p, scan, svc.criteria)
     model.log('Folder "{folder}" imported · {lights} lights', folder=folder, lights=len(scan.frames.get("lights", [])))
+    if made and not model.p.workflows:             # issue #11: a project is never left without a workflow to run
+        from .model import TEMPLATES
+        model.add_path("Full", TEMPLATES["Complet"])
     model.load_sources()                              # saved 300 ms after, then the frames are read again
     return bool(made)
 

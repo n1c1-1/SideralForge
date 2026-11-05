@@ -105,7 +105,7 @@ class GradientParams(StageParams):
                               help="Automatic model: when not 0, the protection threshold is this many times the "
                                    "noise of the sky instead of a fraction of the image's range (a faint nebula is "
                                    "far below that fraction when bright stars set the range).")
-    rbf_smooth: float = P(0.5, label="RBF smoothing", level=ADVANCED, ge=0.0, le=1.0, step=0.05,
+    rbf_smooth: float = P(0.5, label="Smoothing of the model", level=ADVANCED, ge=0.0, le=1.0, step=0.05,
                           help="RBF: 0, the surface passes through every sample; higher, it passes near them, "
                                "smoother.")
     sample_points: list[list[float]] = P([], label="Sample points", level=ADVANCED,

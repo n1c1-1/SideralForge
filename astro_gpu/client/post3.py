@@ -77,8 +77,10 @@ from .postengine import (
     OLD_NAMES,
     OPS,
     PART_SETTINGS,
+    SUBS,
     THUMB,
     children,
+    is_group,
     is_pixel,
     load_layers,
     move,
@@ -258,7 +260,8 @@ PANEL_W, PANEL_MIN, PANEL_MAX = 400, 320, 760
 
 class LayerRow(QFrame):
     """A row of the layers panel. ``depth`` 1: a filter nested in the pixel layer above it (indented, with a guide
-    line); ``kids``: how many children a pixel layer has (its ▾ / ▸)."""
+    line), or one of a Stars and background layer's two images (``kind`` "sub", issue #3); 2: a filter of one of those
+    images; ``kids``: how many children a pixel layer has (its ▾ / ▸)."""
 
     def __init__(self, panel, lay, thumb, mthumb, sel_layer, sel_mask, depth=0, kids=0, collapsed=False, parent=None):
         super().__init__(parent)
@@ -272,15 +275,21 @@ class LayerRow(QFrame):
                            f"QFrame#lrow[drop=\"true\"] {{ border: 2px solid {ACCENT}; background: #22314a; }} "
                            "QLabel { background: transparent; }")
         h = QHBoxLayout(self)
-        h.setContentsMargins(4, 3, 6, 3)
+        compact = lay["kind"] in ("filter", "sub")      # issue #5: the filters, many, on one short line each
+        h.setContentsMargins(4, 1 if compact else 3, 6, 1 if compact else 3)
         h.setSpacing(6)
         eye = QCheckBox()
         eye.setChecked(lay["visible"])
         eye.setToolTip(_("Show / hide layer"))
-        eye.toggled.connect(lambda v: panel.set_visible(lay["id"], v))
+        if lay["kind"] == "sub":
+            eye.setToolTip(_("Show / hide this image in its Stars and background layer"))
+            eye.toggled.connect(lambda v: panel.set_shown(lay["id"], lay["sub"], v))
+        else:
+            eye.toggled.connect(lambda v: panel.set_visible(lay["id"], v))
         h.addWidget(eye)
         self.toggle = None
         if depth:                                       # a child: indented, a guide line down from its layer
+            h.addSpacing(INDENT * (depth - 1))
             guide = QFrame()
             guide.setFixedWidth(2)
             guide.setStyleSheet("background: #4a5366;")
@@ -299,8 +308,12 @@ class LayerRow(QFrame):
         else:
             h.addSpacing(TOGGLE_W)
         self.t = QLabel()
+        if compact:
+            thumb = thumb.scaled(TW * 2 // 3, TH * 2 // 3, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.t.setFixedSize(TW * 2 // 3 + 4, TH * 2 // 3 + 4)
+        else:
+            self.t.setFixedSize(TW + 4, TH + 4)
         self.t.setPixmap(thumb)
-        self.t.setFixedSize(TW + 4, TH + 4)
         self.t.setStyleSheet(f"border: 2px solid {ACCENT if sel_layer else 'transparent'};")
         self.t.setToolTip(_("Layer settings"))
         h.addWidget(self.t)
@@ -320,8 +333,16 @@ class LayerRow(QFrame):
         v.addWidget(self.n)
         self.sub = label(panel.sub_text(lay), "small")
         v.addWidget(self.sub)
+        # a filter at its usual blend (Normal, 100 %, no mask) says nothing more: one line
+        self.sub.setVisible(lay["kind"] != "sub" and not (compact and lay.get("target") and lay["mode"] == "Normal"
+                                                          and lay["opacity"] >= 100 and mthumb is None))
         h.addLayout(v, 1)
-        if depth:
+        if lay["kind"] == "sub":
+            self.setToolTip(_("The filters nested here apply to this image only, before the stars are put back on "
+                              "the starless image"))
+        elif lay.get("sub"):
+            self.setToolTip(_('Applies to "{name}" only').format(name=_(POST_PART_NAMES[lay["sub"]])))
+        elif depth:
             tgt = panel.layer(lay.get("target"))
             self.setToolTip(_('Applies to "{name}" only').format(name=layer_name(tgt)) if tgt else "")
         elif lay["kind"] == "filter":
@@ -333,6 +354,8 @@ class LayerRow(QFrame):
         if bool(self.property("drop")) == on and (not on or self.sub.text() == text):
             return
         self.setProperty("drop", on)
+        if on:
+            self.sub.setVisible(True)                   # a compact row says what the drop does too
         self.style().unpolish(self)
         self.style().polish(self)
         self.sub.setText(text if on else self.panel.sub_text(self.lay))
@@ -345,10 +368,12 @@ class LayerRow(QFrame):
         if e.button() == Qt.LeftButton:
             self._press = e.position().toPoint()
             self._dragging = False
-        elif e.button() == Qt.RightButton:
+        elif e.button() == Qt.RightButton and self.lay["kind"] != "sub":
             self.panel.layer_menu(self.lay, e.globalPosition().toPoint())
 
     def mouseMoveEvent(self, e):
+        if self.lay["kind"] == "sub":                    # a sub-layer stays in its layer
+            return
         if self._press is not None and (e.position().toPoint() - self._press).manhattanLength() > 8:
             if not self._dragging:
                 self._dragging = True
@@ -363,11 +388,12 @@ class LayerRow(QFrame):
             self._dragging = False
             self.panel.drag_end(self, e.globalPosition().toPoint())
         else:                                            # a click: select (after the event, the rows are rebuilt)
-            what = self._target(press)
+            what = self.lay["sub"] if self.lay["kind"] == "sub" else self._target(press)
             QTimer.singleShot(0, lambda: self.panel.select(self.lay["id"], what))
 
     def mouseDoubleClickEvent(self, e):
-        self.panel.rename(self.lay)
+        if self.lay["kind"] != "sub":
+            self.panel.rename(self.lay)
 
 
 def _upsample(a: np.ndarray, k: int = 2) -> np.ndarray:
@@ -462,6 +488,7 @@ class PostView(QWidget):
         self.sel = None                                 # (layer id, "layer" | "mask")
         self.part_sel = None                            # the mask part being edited (its id)
         self.heal_size = 80.0                           # Spot healing: the next spot's diameter (px)
+        self.heal_marks = True                          # its circles drawn (while the mouse is on the image)
         self._heal_sel = None                           # the spot selected (its index)
         self._heal_drag = None                          # (index, spot | source, x, y, spot, before)
         self.show_mask = False
@@ -716,7 +743,10 @@ class PostView(QWidget):
         known = {lay["pid"] for lay in self.layers if lay["kind"] == "workflow"}
         fresh = not known
         for p in paths:
-            if p.rendered and p.pid not in known:          # with Stars: its Stars and background block
+            # an empty composition is filled; afterwards only a block's output sent from the graph (an exit) comes
+            # (issue #10: every computed workflow came back on top, hidden, even one the user had taken away)
+            sent = getattr(p, "end", None) is not None
+            if (fresh or sent) and p.rendered and p.pid not in known:   # with Stars: its Stars and background block
                 stars = p.opts.get("etoiles") == "retirer"
                 self.layers.insert(0, new_workflow_layer(
                     p.pid, p.name + (" · " + POST_PART_NAMES["combined"] if stars else ""),
@@ -1175,9 +1205,16 @@ class PostView(QWidget):
             self._collapsed.discard(lay["target"])       # the selected filter is shown
         for lay, depth in rows(self.layers, self._collapsed):
             sl = self.sel is not None and self.sel[0] == lay["id"]
+            if lay["kind"] == "sub" or (sl and self.sel[1] in SUBS):      # a sub-layer is selected as (its layer, it)
+                sl = sl and self.sel[1] == lay.get("sub", "layer")
+                row = LayerRow(self, lay, self.thumb(lay), None, sl, False, depth)
+                self.lbox.addWidget(row)
+                self.rows.append(row)
+                continue
             row = LayerRow(self, lay, self.thumb(lay), self.mask_thumb(lay), sl and self.sel[1] == "layer",
-                           sl and self.sel[1] == "mask", depth, len(children(self.layers, lay["id"])) if is_pixel(lay)
-                           else 0, lay["id"] in self._collapsed)
+                           sl and self.sel[1] == "mask", depth,
+                           len(children(self.layers, lay["id"])) + 2 * is_group(lay) if is_pixel(lay) else 0,
+                           lay["id"] in self._collapsed)
             self.lbox.addWidget(row)
             self.rows.append(row)
         waiting = [p for p in self.s.paths if not p.rendered]
@@ -1230,6 +1267,13 @@ class PostView(QWidget):
         self.rebuild()
         self.request()
 
+    def set_shown(self, lid, sub, v):
+        """One of a Stars and background layer's two images shown or not in it (issue #3)."""
+        self.push()
+        self.layer(lid)["shown"][sub] = v
+        self.rebuild()
+        self.request()
+
     def toggle_children(self, lid):
         """▾ / ▸: show or hide a layer's filters in the panel (the image does not change). A hidden filter that was
         selected leaves the selection to its layer."""
@@ -1272,6 +1316,9 @@ class PostView(QWidget):
                             "text": _('Applies to "{name}" only').format(name=layer_name(r.lay))}
                 if is_f and is_pixel(r.lay) and 0.28 <= rel <= 0.72:
                     return None                         # onto its own layer: where it is
+                if is_f and r.lay["kind"] == "sub" and 0.28 <= rel <= 0.72:
+                    return {"parent": r.lay["target"], "index": 0, "row": i, "sub": r.lay["sub"],
+                            "text": _('Applies to "{name}" only').format(name=_(POST_PART_NAMES[r.lay["sub"]]))}
                 gap = i if rel < 0.5 else i + 1
                 break
         above = rs[gap - 1] if gap > 0 else None
@@ -1297,6 +1344,15 @@ class PostView(QWidget):
             index = len([k for k in kids if k in before])
             text = _('Applies to "{name}" only').format(name=layer_name(self.layer(parent)))
             depth = 1
+            if is_group(self.layer(parent)):              # between the filters of one of its two images: in it
+                near = below if below is not None and below.depth == 2 else \
+                    above if above is not None and (above.depth == 2 or above.lay["kind"] == "sub") else None
+                sub = near.lay.get("sub") if near is not None else None
+                if sub:
+                    text, depth = _('Applies to "{name}" only').format(name=_(POST_PART_NAMES[sub])), 2
+                return {"parent": parent, "index": index, "sub": sub, "text": text,
+                        "y": below.geometry().top() - 2 if below is not None else rs[-1].geometry().bottom() + 1,
+                        "x0": rs[0].geometry().left() + 30 + 4 + INDENT * depth}
         else:
             index = len([r for r in rs[:gap] if not r.depth and r.lay["id"] not in mine])
             text = _("Applies to everything below") if is_f else ""
@@ -1356,7 +1412,19 @@ class PostView(QWidget):
         if d is not None:
             if d["parent"] is not None:
                 self._collapsed.discard(d["parent"])
-            self.move(row.lay["id"], d["parent"], d["index"])
+            moved = self.move(row.lay["id"], d["parent"], d["index"])
+            if row.lay["kind"] == "filter" and d["parent"] is not None and is_group(self.layer(d["parent"])):
+                self._set_sub(self.layer(row.lay["id"]), d.get("sub"), push=not moved)
+
+    def _set_sub(self, fl, sub, push=True):
+        """A filter of a Stars and background layer put on one of its two images (``sub``), or on the two together."""
+        if fl.get("sub") == sub:
+            return
+        if push:
+            self.push()
+        fl["sub"] = sub
+        self.rebuild()
+        self.request(final_only=True)
 
     def move(self, lid, parent=None, index=0) -> bool:
         """Move a layer as a drop does (postengine.move): one undo step, nothing when it lands where it was."""
@@ -1379,7 +1447,14 @@ class PostView(QWidget):
             i = next(k for k, (x, _kids) in enumerate(t) if x["id"] == fl["id"])
             tgt = next((x for x, _kids in t[i + 1:] if is_pixel(x)), None)
         out = [(_('"{name}" only').format(name=layer_name(tgt)), tgt["id"])] if tgt else []
+        if tgt is not None and is_group(tgt):           # or one of its two images (issue #3)
+            out += [(_('"{name}" only').format(name=_(POST_PART_NAMES[sub])), (tgt["id"], sub)) for sub in SUBS]
         return out + [(_("Everything below"), None)]
+
+    @staticmethod
+    def scope_of(fl):
+        """What a filter applies to, as ``scope_choices`` says it."""
+        return (fl["target"], fl["sub"]) if fl.get("sub") else fl.get("target")
 
     def layer_menu(self, lay, gpos):
         m = QMenu(self)
@@ -1391,11 +1466,11 @@ class PostView(QWidget):
         if lay["kind"] == "filter":
             m.addSeparator()
             for _txt, val in self.scope_choices(lay):
-                a = m.addAction(_("Applies to everything below") if val is None else
-                                _('Applies to "{name}" only').format(name=layer_name(self.layer(val))))
+                a = m.addAction(_("Applies to everything below") if val is None else _("Applies to {what}").format(
+                    what=_txt))
                 a.setCheckable(True)
-                a.setChecked(lay.get("target") == val)
-                a.triggered.connect(lambda _c=False, t=val: self.set_target(lay, t) if lay.get("target") != t else None)
+                a.setChecked(self.scope_of(lay) == val)
+                a.triggered.connect(lambda _c=False, t=val: self.set_target(lay, t) if self.scope_of(lay) != t else None)
             m.addSeparator()
         if lay["kind"] == "workflow":
             m.addSeparator()
@@ -1473,11 +1548,15 @@ class PostView(QWidget):
         """A new filter is nested in the chosen pixel layer, on top of its children (or goes where the chosen filter
         is: in its layer, or above it on everything below)."""
         cur = self.layer(self.sel[0]) if self.sel else None
-        target = None
+        target = sub = None
         if cur is not None:
             target = cur["id"] if is_pixel(cur) else cur.get("target")
+            sub = self.sel[1] if self.sel[1] in SUBS else None if is_pixel(cur) else cur.get("sub")
         self.push()
-        fl = new_filter_layer(key, target)
+        fl = new_filter_layer(key, target, sub)
+        same = sum(1 for lay in self.layers if lay["kind"] == "filter" and lay.get("filter") == key)
+        if same:                                        # a second Curves is "Curves · 2" (issue #15: no twin names)
+            fl["name"] = f"{fl['name']} · {same + 1}"
         if target is not None:                          # on top of that layer's own filters
             group = [lay for lay in self.layers if lay.get("target") == target]
             self.sel = ((group[0] if group else self.layer(target))["id"], "layer")
@@ -1487,8 +1566,15 @@ class PostView(QWidget):
         return fl
 
     def set_target(self, fl, target):
-        """Nest a filter in a pixel layer (on top of its children), or take it out: then it is the row just above that
-        layer and applies to everything below."""
+        """Nest a filter in a pixel layer (on top of its children), or in one of a Stars and background layer's two
+        images (``target`` (its id, the image)), or take it out: then it is the row just above that layer and applies
+        to everything below."""
+        sub = None
+        if isinstance(target, tuple):
+            target, sub = target
+        if target is not None and target == fl.get("target"):
+            self._set_sub(fl, sub)
+            return
         if target is None:
             old = fl.get("target")
             t = [x["id"] for x, _kids in tree(self.layers)]
@@ -1496,7 +1582,9 @@ class PostView(QWidget):
         else:
             idx = 0
         self._collapsed.discard(target)
-        self.move(fl["id"], target, idx)
+        moved = self.move(fl["id"], target, idx)
+        if sub:
+            self._set_sub(self.layer(fl["id"]), sub, push=not moved)
 
     @staticmethod
     def _copy(lay):
@@ -1584,6 +1672,11 @@ class PostView(QWidget):
             return
         if self.sel[1] == "mask" and lay["mask"] is not None:
             self.mask_props(lay)
+        elif self.sel[1] in SUBS:
+            self.pbox.addWidget(label(_(POST_PART_NAMES[self.sel[1]]), "h2"))
+            self.pbox.addWidget(label(_('Image of "{name}". The filters added while it is selected apply to it only, '
+                                        "before the stars are put back on the starless image.").format(
+                                            name=layer_name(lay)), "small", wrap=True))
         else:
             self.layer_props(lay)
         self.pbox.addStretch(1)
@@ -1617,11 +1710,11 @@ class PostView(QWidget):
                 b = QPushButton(txt)
                 b.setObjectName("scope")
                 b.setCheckable(True)
-                b.setChecked(lay.get("target") == val)
+                b.setChecked(self.scope_of(lay) == val)
                 b.setStyleSheet("QPushButton#scope { padding: 4px 10px; text-align: left; }"
                                 f"QPushButton#scope:checked {{ background: #2b3446; border-color: {ACCENT}; "
                                 "color: #ffffff; font-weight: 600; }")
-                b.clicked.connect(lambda _=False, t=val: self.set_target(lay, t) if lay.get("target") != t else None)
+                b.clicked.connect(lambda _=False, t=val: self.set_target(lay, t) if self.scope_of(lay) != t else None)
                 r.addWidget(b)
             self.pbox.addLayout(r)
             self._group(_(f["name"]))
@@ -2039,6 +2132,12 @@ class PostView(QWidget):
         cl.clicked.connect(lambda: self._heal_set(lay, []))
         r.addWidget(cl)
         self.pbox.addLayout(r)
+        mk = QCheckBox(_("Show the spots"))
+        mk.setToolTip(_("The circles of the spots and their sources, while the mouse is on the image (as photo "
+                        "editors): untick to see the image alone"))
+        mk.setChecked(self.heal_marks)
+        mk.toggled.connect(lambda on: (setattr(self, "heal_marks", bool(on)), self.viewer.update()))
+        self.pbox.addWidget(mk)
 
     def _heal_layer(self):
         lay = self.layer(self.sel[0]) if self.sel and self.sel[1] == "layer" else None
@@ -2128,7 +2227,9 @@ class PostView(QWidget):
 
     def _heal_overlay(self, p: QPainter, v: Viewer):
         lay = self._heal_layer()
-        if lay is None or self.b_cmp.isChecked():
+        if lay is None or self.b_cmp.isChecked() or not self.heal_marks:
+            return
+        if v._mouse is None and self._heal_drag is None:          # the mouse off the image: the image alone
             return
         for i, (sx, sy, r, dx, dy) in enumerate(lay["params"]["spots"]):
             on = i == self._heal_sel

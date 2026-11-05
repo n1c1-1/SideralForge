@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import ours  # noqa: E402  (sets the bench's environment before the engine is imported)
+import ours  # noqa: E402, I001  (sets the bench's environment before the engine is imported)
 
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402

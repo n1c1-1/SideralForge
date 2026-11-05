@@ -108,13 +108,15 @@ def test_blends_and_the_size_change():
     assert torch.equal(blend(a, b, "Screen")[:, 0, 0], a[:, 0, 0])            # black stars change nothing
     y = torch.zeros((3, 9, 9))
     y[:, 4, 4] = 1.0
-    assert resize_stars(y, 1.0).sum() == 27 and resize_stars(y, -1.0).sum() == 0
-    assert 3 < resize_stars(y, 0.5).sum() < 27                                 # half a pixel: half way
+    assert resize_stars(y, 1.0).sum() == 15 and resize_stars(y, -1.0).sum() == 0    # a cross: round, not a square
+    assert resize_stars(y, 2.0)[0].bool().sum() == 21                                    # then a square: an octagon
+    assert 3 < resize_stars(y, 0.5).sum() < 15                                 # half a pixel: half way
 
 
 def test_the_sliders_of_each_kind():
     ok = S.availability("combined", True)
-    assert not any(ok[k] for k in ("sky", "contrast", "saturation", "star_strength", "star_size", "star_color"))
+    assert not any(ok[k] for k in ("sky", "contrast", "saturation", "star_strength", "star_small", "star_size",
+                                   "star_color"))
     assert ok["noise"] == S.WHY_WHOLE
     stars = S.availability("stars", True)
     assert stars["sky"] == S.WHY_STARS_ONLY and not stars["star_size"]
@@ -140,3 +142,24 @@ def test_the_stars_block_comes_after_the_output_and_reads_the_old_options():
     assert o["denoise"] == "pretrained" and notes == [wfl.NOTE_DENOISE_ADDED]
     c = wfl.chains()
     assert [b for b, _ in c.blocks_in(wfl.chain(full))][-2:] == ["stars", "output"]   # drawn before the Output
+
+
+def test_the_small_stars_go_and_the_large_ones_stay_exactly():
+    from astro_gpu.render.stars import fade_small_stars, measure_fwhm
+    y = torch.zeros(3, 60, 60)
+    y[:, 10, 10] = 0.9                                                   # a small star (one pixel)
+    yy, xx = torch.meshgrid(torch.arange(60.0), torch.arange(60.0), indexing="ij")
+    y += 0.95 * torch.exp(-((xx - 40) ** 2 + (yy - 40) ** 2) / (2 * 3.0 ** 2))[None]      # a large one
+    z = fade_small_stars(y, 1.0, 2.0)
+    assert float(z[0, 10, 10]) < 0.01                                    # the small star gone
+    assert float((z - y)[:, 34:47, 34:47].abs().max()) < 0.01           # the large one as it was
+    half = fade_small_stars(y, 0.5, 2.0)
+    assert abs(float(half[0, 10, 10]) - 0.45) < 0.01                    # half way
+    assert torch.equal(fade_small_stars(y, 0.0, 2.0), y)
+    rng = np.random.default_rng(2)
+    img = np.zeros((300, 300), np.float32)
+    gy, gx = np.mgrid[0:300, 0:300]
+    for _ in range(200):
+        cy, cx, a = rng.uniform(10, 290), rng.uniform(10, 290), rng.uniform(0.1, 1)
+        img += a * np.exp(-((gx - cx) ** 2 + (gy - cy) ** 2) / (2 * 2.0 ** 2))
+    assert abs(measure_fwhm(torch.from_numpy(np.stack([img] * 3))) - 2.355 * 2.0) < 0.35   # the width at half height

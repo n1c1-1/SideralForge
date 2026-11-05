@@ -232,10 +232,9 @@ def test_the_graph_modules_import_only_the_client_libraries():
 
 
 def test_exclusions_and_session_edits_are_saved_like_any_edit(qapp, tmp_path):
-    """Frames excluded by hand and the sessions are part of the definition: the model saves them 300 ms after the
-    change, as it does for the workflows (Undo stays for the workflows: an exclusion is not taken back by it)."""
+    """Frames excluded by hand and the sessions are part of the definition: Save writes them, as it does the
+    workflows (issue #1; Undo stays for the workflows: an exclusion is not taken back by it)."""
     import json
-    import time
 
     root = tmp_path / "P"
     p = project2.create(root, "P", Target(name="M 1"))
@@ -247,10 +246,8 @@ def test_exclusions_and_session_edits_are_saved_like_any_edit(qapp, tmp_path):
         assert w.wait(120)
 
         def saved():
-            end = time.monotonic() + 5
-            while m._dirty and time.monotonic() < end:
-                QApplication.processEvents()
-                time.sleep(0.02)
+            assert m.dirty                                  # waiting for Save, then saved by it
+            m.flush()
             return json.loads((root / "project.astroproj").read_text(encoding="utf-8"))
         m.set_excluded([(1, "DSC0001.ARW")], True)
         assert m._dirty and not m.can_undo()

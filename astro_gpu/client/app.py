@@ -363,7 +363,8 @@ class Main(QMainWindow):
         except (OSError, ValueError, KeyError, TypeError) as e:
             QMessageBox.warning(self, _("Open project"), _("This project cannot be opened: {why}").format(why=e))
             return False
-        self.close_project(go_home=False)
+        if self.close_project(go_home=False) is False:              # unsaved edits kept: Cancel
+            return False
         self.project = OpenProject(root, d)
         self.project.log("Project created" if created else "Project opened")
         prefs.add_recent(root.as_posix(), d.name, d.target.name or "")
@@ -385,6 +386,7 @@ class Main(QMainWindow):
         self.s = s
         for sig in (s.pathsChanged, s.currentChanged, s.costChanged, s.sourcesChanged, s.readyChanged):
             sig.connect(self.request_refresh)
+        s.dirtyChanged.connect(lambda _d: self._title())
         self.run = RunController(s, window=self, console=lambda: getattr(self, "logp", None))
         self.run.runningChanged.connect(lambda _on: self.request_refresh())
         self.run.updated.connect(self._run_updated)
@@ -424,9 +426,33 @@ class Main(QMainWindow):
             self.screens.setCurrentWidget(self.proj_screen)
             self.refresh()
 
-    def close_project(self, go_home=True):
-        """Save what is pending and close the project (a run in progress goes on: opening the project follows it
-        again)."""
+    def ask_save(self) -> str:
+        """The project has edits not saved: "save", "discard" or "cancel", as the user answers (offscreen, a test
+        harness: "save", as before Save existed)."""
+        if QApplication.platformName() == "offscreen":
+            return "save"
+        box = QMessageBox(QMessageBox.Warning, _("Unsaved changes"),
+                          _('Save the changes made to "{name}"?').format(name=self.project.name), parent=self)
+        box.setInformativeText(_("Without saving, the changes since the last save are lost (the computed results "
+                                 "stay)."))
+        b_save = box.addButton(_("Save"), QMessageBox.AcceptRole)
+        b_drop = box.addButton(_("Don't save"), QMessageBox.DestructiveRole)
+        box.addButton(_("Cancel"), QMessageBox.RejectRole)
+        box.setDefaultButton(b_save)
+        box.exec()
+        return "save" if box.clickedButton() is b_save else "discard" if box.clickedButton() is b_drop else "cancel"
+
+    def close_project(self, go_home=True) -> bool:
+        """Close the project, asking first when it has edits not saved (a run in progress goes on: opening the
+        project follows it again). False when the user cancels."""
+        save = True
+        if self.project is not None:
+            self._flush_post()
+            if self.s is not None and self.s.dirty:
+                answer = self.ask_save()
+                if answer == "cancel":
+                    return False
+                save = answer == "save"
         if self.project is not None:
             if self.run is not None:
                 self.run.close()
@@ -441,7 +467,7 @@ class Main(QMainWindow):
             if self.s is not None:
                 from .services.inspect import _services
                 sv = _services.get(self.s)
-                self.s.close()
+                self.s.close(save)
                 if sv is not None:
                     sv.stop()
             if self.render is not None:
@@ -457,6 +483,7 @@ class Main(QMainWindow):
             self.build_menus()
         if go_home:
             self.show_home()
+        return True
 
     def build_project(self):
         """The project screen, built again for a new project or a change of language."""
@@ -660,6 +687,12 @@ class Main(QMainWindow):
             self.graph.remove_tool(self.graph.current_node(), None)
 
     # ------------------------------------------------------------ refresh
+    def _title(self):
+        """The window's title: the project's name, a star when it has edits not saved (issue #1)."""
+        if self.project is not None:
+            star = " *" if self.s is not None and self.s.dirty else ""
+            self.setWindowTitle(f"{APP_NAME} · {self.project.name}{star}")
+
     def project_name(self) -> str:
         pr = self.project
         name = "<b>" + html.escape(pr.name) + "</b>"
@@ -677,7 +710,7 @@ class Main(QMainWindow):
             return
         s = self.s
         self.title.setText(self.project_name())
-        self.setWindowTitle(f"{APP_NAME} · " + pr.name)
+        self._title()
         text, gpu = machine_text(self.machine, prefs.get("device"))
         self.machine_lb.setText(text)
         self.machine_lb.setStyleSheet("" if gpu else f"color: {WARN};")
@@ -761,7 +794,8 @@ class Main(QMainWindow):
 
     # ------------------------------------------------------------ files
     def save(self):
-        """Edits are saved as they are made; Save writes what is still pending."""
+        """Save: the edits written into the project (nothing is written before, issue #1)."""
+        self._flush_post()
         if self.s is not None:
             self.s.flush()
         self.flash(_("Project saved"))
@@ -1009,7 +1043,9 @@ class Main(QMainWindow):
         return d
 
     def closeEvent(self, e):
-        self.close_project(go_home=False)
+        if self.close_project(go_home=False) is False:              # unsaved edits kept: Cancel
+            e.ignore()
+            return
         self.worker.wait(5)                          # what closing the project left to write (Home's thumbnail)
         self.worker.stop()
         super().closeEvent(e)

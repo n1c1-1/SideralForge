@@ -2,7 +2,7 @@
 
 The test project (tests/conftest.py, TEST_PROJECT) is taken down to its Full workflow, computed (conftest.full_only,
 whatever the bench added since); the tests add Classic stack (not computed from Gradient on), Classic + denoise and
-Full twin in memory. The model is read-only (nothing is saved into the project), except the autosave test,
+Full twin in memory. The model is read-only (nothing is saved into the project), except the Save test,
 which works on a copy of the definition in a temporary folder. ASTRO_GPU_SETTINGS points to a temporary file in every
 test; the user's settings file is checked untouched. ASTRO_GPU_SHOTS names the folder of the screenshots (default: a
 temporary folder).
@@ -407,7 +407,8 @@ def test_the_toolbar_cards_say_what_each_block_costs(world, model, page):
     cards = {c.key: c for c in page.findChildren(ToolCard)}
     assert cards["debruitage"].state == "add" and cards["etoiles"].state == "add"
     texts = [lb.text() for c in cards.values() for lb in c.findChildren(QLabel)]
-    assert any(t.lstrip("≈ ").startswith("+") for t in texts)                 # "+2 min", or "≈ +5 h 08" (an estimate)
+    # "+2 min", or "≈ +5 h 08" (an estimate), or "same duration" when the test project has these results already
+    assert any(t.lstrip("≈ ").startswith("+") or t == "same duration" for t in texts)
     assert hm(model.tool_cost(model.path.opts, "etoiles")) in " ".join(texts) or "same duration" in " ".join(texts)
     assert page.findChildren(QLabel, "h2")[0].text() == "Add step"
 
@@ -1161,7 +1162,7 @@ def test_nothing_slow_runs_in_the_gui_thread(qapp, monkeypatch):
     root.close()
 
 
-def test_autosave_writes_only_the_definition_and_flushes_on_close(qapp, tmp_path):
+def test_save_writes_only_the_definition_and_only_when_asked(qapp, tmp_path):
     root = tmp_path / "copy"
     root.mkdir()
     shutil.copy(F_PROJECT / "project.astroproj", root / "project.astroproj")
@@ -1170,14 +1171,23 @@ def test_autosave_writes_only_the_definition_and_flushes_on_close(qapp, tmp_path
     m = ProjectModel(p, w)
     assert w.wait(180)
     before = (root / "project.astroproj").read_bytes()
-    m.add_path("Autosaved", {"debruitage": True, "etoiles": "garder", "fond": "simple"})
-    assert (root / "project.astroproj").read_bytes() == before                  # debounced: not yet
+    seen = []
+    m.dirtyChanged.connect(seen.append)
+    assert not m.dirty
+    m.add_path("Saved", {"debruitage": True, "etoiles": "garder", "fond": "simple"})
     time.sleep(0.45)
     qapp.processEvents()
-    assert "Autosaved" in (root / "project.astroproj").read_text(encoding="utf-8")
+    assert (root / "project.astroproj").read_bytes() == before                  # issue #1: nothing until Save
+    assert m.dirty and seen == [True]
     m.rename(m.paths[-1].pid, "Last one")
-    m.flush()                                                                    # Save flushes at once
+    m.flush()                                                                    # Save
     assert [x.name for x in api.open_project(root).workflows][-1] == "Last one"
+    assert not m.dirty and seen == [True, False]
+    m.rename(m.paths[-1].pid, "Dropped")
+    m.close(save=False)                                                          # Don't save: the edit is lost
+    assert [x.name for x in api.open_project(root).workflows][-1] == "Last one"
+    m = ProjectModel(api.open_project(root), w)
+    assert w.wait(180)
     m.select(index=0)
     m.close()
     names = {f.name for f in root.iterdir()}

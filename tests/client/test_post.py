@@ -699,7 +699,7 @@ def test_the_layer_rules_normalize_and_the_composition_is_saved():
     f3 = new_filter_layer("curves", 9999)                                     # its layer is gone
     # a layer's own filters always sit just above it; a filter whose layer is gone applies to everything below
     names = [x["name"] for x in normalize([b, f1, a, f2, f3])]
-    assert names.index("Sharpen") == names.index("A") - 1 and names.index("SCNR (green removal)") == names.index("B") - 1
+    assert names.index("Sharpen") == names.index("A") - 1 and names.index("Green removal") == names.index("B") - 1
     assert f3["target"] is None
     layers = normalize([f1, f2, f3, b, a])
     a["mask"] = new_mask()
@@ -1104,7 +1104,10 @@ def test_the_first_layers_and_the_first_image(post):
     assert v.src.canvas == (688, 464) and shown(v).shape == (232, 344, 3) and shown(v).dtype == np.uint8
     assert np.array_equal(shown(v), reference(post).rgb)                    # the page shows what the engine path gives
     assert post.model.touched == 0                                          # opening Post writes nothing in the project
-    # a workflow that is rendered later gets its layer on top, hidden
+    # a workflow rendered later does not come by itself (issue #10); a block's output sent from the graph does
+    post.model.paths.append(WF(4, "Later", None))
+    post.model.pathsChanged.emit()
+    assert "Later" not in [lay["name"] for lay in v.layers]
     post.model.paths.append(WF(3, "Raw stack", "stacking"))
     post.model.pathsChanged.emit()
     assert [(lay["name"], lay["visible"]) for lay in v.layers][0] == ("Raw stack", False)
@@ -1338,7 +1341,8 @@ def test_a_stars_workflow_comes_as_its_stars_and_background_image(preps, qapp):
         assert np.array_equal(shown(v), reference(s).rgb)
         v.select(full["id"], "layer")
         names = [x.name.text() for x in widgets_of(v, ContSlider)]
-        assert names == ["Opacity", "Strength", "Star size", "Star color", "Sky", "Contrast", "Faint tones",
+        assert names == ["Opacity", "Strength", "Small stars", "Star size", "Star color", "Sky", "Contrast",
+                         "Faint tones",
                          "Saturation", "Colours", "H-alpha"]
         assert all(x.s.isEnabled() for x in widgets_of(v, ContSlider))
         combo = next(c for c in widgets_of(v, QComboBox) if c.currentData() == "Screen")
@@ -1356,6 +1360,50 @@ def test_a_stars_workflow_comes_as_its_stars_and_background_image(preps, qapp):
         c = src.layer(new_workflow_layer(1, "Full", True, part="combined"), 1, (0, 0, w, h))
         assert a.min() >= 0 and a.max() > 0.2
         assert np.allclose(c, 1 - (1 - a) * (1 - b), atol=1e-4)
+    finally:
+        s.close()
+
+
+def test_a_stars_and_background_layer_has_its_two_images_as_sub_layers_with_their_own_filters(preps, qapp):
+    """Issue #3: under a Stars and background layer, its stars alone and its starless image are sub-layers; a filter
+    added on one of them applies to that image only, before the two are put back together, and the eye of a
+    sub-layer leaves its image out."""
+    s = Setup(preps, qapp, stars=True)
+    try:
+        assert s.settle()
+        v = s.view
+        full = v.layers[1]
+        assert [(r.lay["kind"], r.lay.get("sub"), r.depth) for r in v.rows][1:] == [
+            ("workflow", None, 0), ("sub", "stars", 1), ("sub", "starless", 1)]
+        before = shown(v).copy()
+        v.select(full["id"], "stars")
+        lv = v.add_filter("levels")
+        lv["params"].update(black=0.0, white=0.5)
+        assert lv["target"] == full["id"] and lv["sub"] == "stars"
+        assert [(r.lay.get("sub"), r.depth) for r in v.rows][2:] == [("stars", 1), ("stars", 2), ("starless", 1)]
+        v.request(final_only=True)
+        assert s.settle()
+        # the stars alone brightened, the starless image untouched: the stars brighter, the sky as it was
+        src = LayerSource(lambda sid: s.folders.get(sid), LayerService(DEV))
+        w, h = src.canvas([("stars", 1)]).size(1)
+        a = src.layer(new_workflow_layer(1, "Full", True, part="stars"), 1, (0, 0, w, h))
+        b = src.layer(new_workflow_layer(1, "Full", True, part="starless"), 1, (0, 0, w, h))
+        a2 = postengine.FILTERS["levels"]["fn"](a, lv["params"], None)
+        want = postengine.Composer.blend("Screen", b, a2)
+        alone = reference(s, postengine.only_layer(v.layers, full["id"])).rgb
+        assert np.abs(alone.astype(np.float32) - want * 255).max() <= 2
+        assert not np.array_equal(shown(v), before)
+        # the stars sub-layer hidden: the starless image alone
+        v.set_shown(full["id"], "stars", False)
+        alone = reference(s, postengine.only_layer(v.layers, full["id"])).rgb
+        assert np.abs(alone.astype(np.float32) - np.clip(b, 0, 1) * 255).max() <= 2
+        # saved and loaded as it is
+        kept = postengine.load_layers(postengine.save_layers(v.layers), {1, 2})
+        assert next(x for x in kept if x.get("part") == "combined")["shown"] == {"stars": False, "starless": True}
+        assert next(x for x in kept if x["kind"] == "filter")["sub"] == "stars"
+        # taken out of the layer, a filter is no longer on one of its images
+        v.set_target(lv, None)
+        assert lv["target"] is None and lv["sub"] is None
     finally:
         s.close()
 
@@ -1441,28 +1489,28 @@ def test_dragging_a_row_nests_or_unnests_a_filter_with_clear_hints(post):
     for _i in range(3):
         post.qapp.processEvents()
     order = lambda: [(r.lay["name"], r.depth) for r in v.rows]                          # noqa: E731
-    assert order() == [("Classic", 0), ("Full", 0), ("Curves", 1), ("SCNR (green removal)", 1)]
+    assert order() == [("Classic", 0), ("Full", 0), ("Curves", 1), ("Green removal", 1)]
     row = lambda lid: next(r for r in v.rows if r.lay["id"] == lid)                     # noqa: E731
     # to the top, between rows: a row of its own, on everything below
     d, line, text, frames = _drag(v, row(f["id"]), row(classic["id"]), 0.1)
     assert d["parent"] is None and d["index"] == 0 and line and text == "Applies to everything below"
     assert not any(frames) and f["target"] is None
-    assert order() == [("SCNR (green removal)", 0), ("Classic", 0), ("Full", 0), ("Curves", 1)]
+    assert order() == [("Green removal", 0), ("Classic", 0), ("Full", 0), ("Curves", 1)]
     # onto the Classic row: nested in it, the row framed
     d, line, text, frames = _drag(v, row(f["id"]), row(classic["id"]), 0.5)
     assert d["parent"] == classic["id"] and not line and text == 'Applies to "Classic" only' and any(frames)
-    assert f["target"] == classic["id"] and order() == [("Classic", 0), ("SCNR (green removal)", 1), ("Full", 0),
+    assert f["target"] == classic["id"] and order() == [("Classic", 0), ("Green removal", 1), ("Full", 0),
                                                        ("Curves", 1)]
     # between Full's children (the indented line): it joins them, under Curves (applied before it)
     rows_now = v.rows
     d, line, text, _f = _drag(v, row(f["id"]), rows_now[-1], 0.9, x=200)
     assert d["parent"] == full["id"] and d["index"] == 1 and text == 'Applies to "Full" only'
     assert d["x0"] > v.rows[0].geometry().left() + 40                                     # the line is indented
-    assert order() == [("Classic", 0), ("Full", 0), ("Curves", 1), ("SCNR (green removal)", 1)]
-    assert [x["name"] for x in v.layers] == ["Classic", "Curves", "SCNR (green removal)", "Full"]
+    assert order() == [("Classic", 0), ("Full", 0), ("Curves", 1), ("Green removal", 1)]
+    assert [x["name"] for x in v.layers] == ["Classic", "Curves", "Green removal", "Full"]
     # a layer moves with its children; dropped among another layer's children it goes after that group
     _drag(v, row(full["id"]), row(classic["id"]), 0.1)
-    assert order() == [("Full", 0), ("Curves", 1), ("SCNR (green removal)", 1), ("Classic", 0)]
+    assert order() == [("Full", 0), ("Curves", 1), ("Green removal", 1), ("Classic", 0)]
     assert full["visible"] and classic["visible"]
     # one undo step per drop, nothing when it lands where it was
     n = len(v.undo)
@@ -1862,7 +1910,7 @@ def test_a_workflow_that_goes_takes_its_layer_and_the_filters_retarget(post):
     f = v.add_filter("scnr")
     post.model.paths = [w for w in post.model.paths if w.pid != 1]
     post.model.pathsChanged.emit()
-    assert [lay["name"] for lay in v.layers] == ["Classic", "SCNR (green removal)"]
+    assert [lay["name"] for lay in v.layers] == ["Classic", "Green removal"]
     assert f["target"] is None and named(v, "Classic")["visible"]                        # the bottom layer is shown again
 
 
@@ -1931,12 +1979,12 @@ def test_the_export_dialog_follows_the_spec_and_refuses_the_results_folder(expor
     d = ExportDialog(s.view)
     try:
         assert d.windowTitle() == "Export"
-        assert d.fmt.currentText() == "TIFF 16-bit" and [d.fmt.itemText(i) for i in range(d.fmt.count())] == [
+        assert d.fmt.currentText() == "JPEG" and [d.fmt.itemText(i) for i in range(d.fmt.count())] == [   # #15
             "TIFF 16-bit", "TIFF 32-bit float", "FITS 32-bit float", "PNG 16-bit", "JPEG"]      # XISF is ◇: Spec mode only
         assert [d.prof.itemText(i) for i in range(d.prof.count())] == ["sRGB"]
         assert [d.size_cb.itemText(i) for i in range(d.size_cb.count())] == [
             "Full resolution", "Web (2048 px)", "Web (4096 px)"]
-        assert d.dest.text() == (s.root / "export" / "HeartSoul" / "HeartSoul_16bit.tif").as_posix()
+        assert d.dest.text() == (s.root / "export" / "HeartSoul" / "HeartSoul.jpg").as_posix()
         assert not d.c_wcs.isChecked() and not d.c_wcs.isEnabled()                                    # only FITS has a header
         assert d.c_hist.isChecked() and not d.c_layers.isChecked() and not d.c_masks.isChecked()
         assert d.spec_boxes == [] and d.go.text() == "Export" and d.go.isEnabled()
@@ -2053,7 +2101,9 @@ def test_the_export_writes_only_into_the_folder_chosen_and_it_reads_back(exporti
     after = tree(s.out.parent)
     new = sorted(set(after) - set(before))
     assert all(p.startswith("chosen/") for p in new), new
-    assert {k: v for k, v in before.items()} == {k: after[k] for k in before}
+    # (but the settings: the export remembers its format, issue #15)
+    assert {k: v for k, v in before.items() if k != "settings.json"} == {k: after[k] for k in before
+                                                                         if k != "settings.json"}
     assert sorted(Path(p).name for p in new) == sorted(
         ["heart_16bit.tif", "heart_32bit_float.tif", "heart.png", "heart.jpg", "heart.fits", "heart_history.json"])
     assert not list((s.root / "export").glob("*")) if (s.root / "export").exists() else True
@@ -2077,6 +2127,7 @@ def test_the_export_reduced_matches_the_half_resolution_preview(exporting, preps
     d = ExportDialog(s.view)
     try:
         d.dest.setText((s.out / "r_16bit.tif").as_posix())
+        d.fmt.setCurrentIndex(d.fmt.findData("tiff16"))                                      # JPEG by default
         d.size_cb.addItem("Screen", 344)                                                     # the long side of the half image
         d.size_cb.setCurrentIndex(d.size_cb.count() - 1)
         run_dialog(s, d)
@@ -2112,6 +2163,7 @@ def test_each_layer_and_the_masks_go_into_subfolders_of_the_folder_chosen(export
     assert s.settle()
     d = ExportDialog(s.view)
     try:
+        d.fmt.setCurrentIndex(d.fmt.findData("tiff16"))
         d.dest.setText((s.out / "heart_16bit.tif").as_posix())
         d.c_layers.setChecked(True)
         d.c_masks.setChecked(True)

@@ -20,6 +20,8 @@ import numpy as np
 
 #: the soft rim of a spot, as a share of its radius
 FEATHER = 0.3
+#: the membrane of a spot is solved on a copy reduced to about this radius (pixels)
+MEMBRANE_PX = 24
 #: the candidate sources: distances in radii, and how many directions
 SOURCE_DISTANCES, SOURCE_DIRECTIONS = (2.2, 2.7, 3.2), 24
 
@@ -76,9 +78,22 @@ def heal_one(img: np.ndarray, x: float, y: float, r: float, dx: float, dy: float
     src = img[sy0:sy1, sx0:sx1].astype(np.float64)
     d = _disc(y1 - y0, x1 - x0, x - x0, y - y0, r)
     inside = d < R
-    # Poisson cloning: the source plus the membrane that takes the difference (spot - source) on the rim to the inside
-    diff = np.where(inside[..., None], 0.0, tgt - src)
-    healed = src + _laplace_fill(diff, inside)
+    # Poisson cloning: the source plus the membrane that takes the difference (spot - source) on the rim to the inside.
+    # The membrane is harmonic, so smooth: solved on a copy reduced to about MEMBRANE_PX of radius, then enlarged (a
+    # big spot costs what a small one does); the source's detail stays at full resolution
+    k = max(1.0, R / MEMBRANE_PX)
+    if k > 1.5:
+        import cv2
+        hh, ww = max(3, int(round((y1 - y0) / k))), max(3, int(round((x1 - x0) / k)))
+        small_in = cv2.resize(inside.astype(np.float32), (ww, hh), interpolation=cv2.INTER_AREA) > 0.999
+        small_diff = cv2.resize((tgt - src).astype(np.float32), (ww, hh), interpolation=cv2.INTER_AREA)
+        h = _laplace_fill(np.where(small_in[..., None], 0.0, small_diff).astype(np.float64), small_in)
+        h = np.where(small_in[..., None], h, small_diff)
+        h = cv2.resize(h.astype(np.float32), (x1 - x0, y1 - y0), interpolation=cv2.INTER_LINEAR)
+        healed = src + np.where(inside[..., None], h, tgt - src)
+    else:
+        diff = np.where(inside[..., None], 0.0, tgt - src)
+        healed = src + _laplace_fill(diff, inside)
     # the soft rim: fully healed within r, back to the image at r (1 + FEATHER)
     t = np.clip((R - d) / max(R - r, 1e-6), 0, 1)
     a = (t * t * (3 - 2 * t))[..., None]

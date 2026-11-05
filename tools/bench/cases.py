@@ -78,6 +78,14 @@ CASES: dict[str, dict] = {
         camera="ZWO Seestar S50 (FITS, IRCUT filter)", scope="Seestar S50 (250 mm, alt-azimuth)",
         centre_from="the frames' FITS header (RA, DEC)",
         note="no calibration frames exist for this set (the Seestar takes none)"),
+    # a dense star field for the star tools (the user, 5 November): his own 2024 folder holds only his render, so the
+    # AstroBackyard practice files (downloaded)
+    "northamerica": dict(
+        lights=f"{D}/canon_ra_rokinon135_northamerica/LIGHTS", darks=f"{D}/canon_ra_rokinon135_northamerica/DARKS",
+        ext=(".cr3",), target="NGC 7000", ra=314.75, dec=44.3, obj=(314.75, 44.37), focal=135.0, pixel=5.36,
+        camera="Canon EOS Ra (H-alpha modified), CR3", scope="Rokinon 135 mm f/2 lens",
+        centre_from="NGC 7000's catalogue position",
+        note="AstroBackyard practice files: 109 x 90 s ISO 1600, 14 darks, no flats"),
     # the user's own M31 (24 August 2023): his target to reach is his render traitement/m31_flat.jpg (read only)
     "m31": dict(
         lights="G:/Astro/2023-08-24_M31_top/signal", flats="G:/Astro/2023-08-24_M31_top/flat", ext=(".arw",),

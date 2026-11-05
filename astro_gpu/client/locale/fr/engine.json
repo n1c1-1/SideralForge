@@ -7,7 +7,6 @@
  "The samples placed on the image (stack pixels); empty: the automatic grid.": "Les échantillons placés sur l'image (pixels de l'empilement) ; vide : la grille automatique.",
  "Sample points": "Échantillons placés",
  "RBF: 0, the surface passes through every sample; higher, it passes near them, smoother.": "RBF : à 0, la surface passe par chaque échantillon ; plus haut, elle passe près d'eux, plus lisse.",
- "RBF smoothing": "Lissage RBF",
  "Automatic model: when not 0, the protection threshold is this many times the noise of the sky instead of a fraction of the image's range (a faint nebula is far below that fraction when bright stars set the range).": "Modèle automatique : si différent de 0, le seuil de protection vaut ce nombre de fois le bruit du ciel, au lieu d'une fraction de la plage de l'image (une nébuleuse faible est très en dessous de cette fraction quand des étoiles brillantes fixent la plage).",
  "Protection in sky noise": "Protection en bruit du ciel",
  "How the sky gradient is modelled. Polynomial: a smooth surface fitted on the sky between the objects. RBF: a surface through the samples, which follows a gradient of any shape. Automatic: a flexible surface fitted on every pixel that does not look like an object.": "Comment le gradient du ciel est modélisé. Polynôme : une surface lisse ajustée sur le ciel entre les objets. RBF : une surface qui passe par les échantillons et suit un gradient de n'importe quelle forme. Automatique : une surface souple ajustée sur tous les pixels qui ne ressemblent pas à un objet.",
@@ -456,5 +455,6 @@
  "'auto' uses NSNS (sharper) when it covers the field, otherwise the all-sky Finkbeiner map. 'none': no survey (the Gradient block then chooses its samples on the image alone).": "« auto » prend NSNS (plus net) quand il couvre le champ, sinon la carte de Finkbeiner (tout le ciel). « none » : pas de relevé (le bloc Gradient choisit alors ses échantillons sur l'image seule).",
  "Away from emission": "Loin de l'émission",
  "Samples chosen by the block (none placed) never sit where the professional H-alpha survey of the field sees nebulosity: the faint extensions of an emission nebula are not taken for sky. The survey only says where not to sample; the sky model never reads it. No survey for the field: no effect.": "Les échantillons que le bloc choisit (aucun placé) ne sont jamais là où le relevé H-alpha professionnel du champ voit de la nébulosité : les extensions faibles d'une nébuleuse en émission ne sont pas prises pour du ciel. Le relevé dit seulement où ne pas échantillonner ; le modèle du ciel ne le lit jamais. Sans relevé pour le champ : aucun effet.",
- "On by default; the samples placed by hand are always kept as placed.": "Actif par défaut ; les échantillons placés à la main sont toujours gardés tels quels."
+ "On by default; the samples placed by hand are always kept as placed.": "Actif par défaut ; les échantillons placés à la main sont toujours gardés tels quels.",
+ "Smoothing of the model": "Lissage du modèle"
 }
