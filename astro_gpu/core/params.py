@@ -29,9 +29,12 @@ ADVANCED = "advanced"
 
 def P(default: Any, *, label: str, help: str, tip: str = "", level: str = BASIC, unit: str = "",
       ge: float | None = None, le: float | None = None, gt: float | None = None, lt: float | None = None,
-      step: float | None = None, choices: list[str] | None = None) -> Any:
-    """Declare a stage parameter with its UI metadata."""
+      step: float | None = None, choices: list[str] | None = None, key_neutral: Any = None) -> Any:
+    """Declare a stage parameter with its UI metadata. ``key_neutral``: a value at which the parameter is left out of
+    the stage's key (a parameter added later: the results computed before it keep their keys)."""
     extra = {"level": level, "label": label, "help": help, "tip": tip, "unit": unit}
+    if key_neutral is not None:
+        extra["key_neutral"] = key_neutral
     if step is not None:
         extra["step"] = step
     if choices is not None:
@@ -129,5 +132,10 @@ def check_choice(name: str, value: str, choices) -> str:
 
 
 def params_hash(p: StageParams) -> str:
-    blob = json.dumps(p.model_dump(mode="json"), sort_keys=True, default=str)
+    d = p.model_dump(mode="json")
+    for name, f in type(p).model_fields.items():             # a parameter at its key-neutral value is left out
+        extra = f.json_schema_extra or {}
+        if isinstance(extra, dict) and "key_neutral" in extra and d.get(name) == extra["key_neutral"]:
+            d.pop(name, None)
+    blob = json.dumps(d, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]

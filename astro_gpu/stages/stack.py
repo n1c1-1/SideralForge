@@ -146,6 +146,13 @@ class StackParams(StageParams):
     pattern_frames: int = P(48, label="Frames for the pattern reference", level=ADVANCED, ge=8, le=400,
                             help="Number of frames, evenly spread over the session, whose median is the first estimate "
                                  "of the fixed pattern; the final estimate uses all frames around it.")
+    white_balance: bool = P(False, label="Camera white balance", key_neutral=False,
+                            help="The three colours of the stack multiplied by the camera's daylight white balance, "
+                                 "read from the raw files (as the camera and the raw converters do; DeepSkyStacker's "
+                                 "Use camera white balance): the stack no longer looks green. Colour calibration "
+                                 "measures the white on the stars and takes this factor back exactly; the steps "
+                                 "between work on each colour apart. FITS frames hold no such balance: unchanged.",
+                            tip="On in new workflows. Turning it on makes Stacking and what follows Outdated.")
     method: str = P("drizzle", label="Stacking method", level=ADVANCED, choices=list(METHODS),
                     help="Bayer drizzle: every raw red, green or blue pixel is dropped at its exact registered position, "
                          "with no debayering and no interpolation. Classic: each frame is debayered (RCD) and "
@@ -301,6 +308,7 @@ class Stack(Stage):
         Ho, Wo = int(round(H * S)), int(round(W * S))
 
         meta = ctx.load_json("inventory", "frames.json")["lights"]
+        wb = white_balance_of(ctx, p, meta)
         excl = excluded_mask([f["path"] for f in meta], p.exclude)
         if len(p.exclude) > int(excl.sum()):
             ctx.log(f"{len(p.exclude) - int(excl.sum())} frame(s) excluded by hand are not among the light frames",
@@ -416,7 +424,7 @@ class Stack(Stage):
             for c_, i in enumerate(used):           # the normalisation: frame_norm's backgrounds
                 frame_norm(i, load(i))
                 ctx.progress(0.05 * (c_ + 1) / len(used), "normalisation")
-            return stack_classic(ctx, p, load=load, coef=coef, used=used, weight=weight, norm=norm, transp=transp,
+            return stack_classic(ctx, p, wb=wb, load=load, coef=coef, used=used, weight=weight, norm=norm, transp=transp,
                                  meta=meta, sel=sel, ch_of_k=ch_of_k, H=H, W=W, satval=satval, dev=dev, t0=t0)
 
         def frame_model(i):
@@ -537,7 +545,7 @@ class Stack(Stage):
 
         def finish(a):
             img = (a[0] / a[1].clamp(min=1e-12)).view(3, Ho, Wo)
-            return torch.where(a[1].view(3, Ho, Wo) > 0, img, torch.zeros_like(img)).cpu().numpy()
+            return balanced(torch.where(a[1].view(3, Ho, Wo) > 0, img, torch.zeros_like(img)).cpu().numpy(), wb)
 
         full = [accA[0] + accB[0], accA[1] + accB[1]]
         drz = finish(full)
@@ -1016,7 +1024,31 @@ def classic_missing() -> list[str]:
     return [m for m in CLASSIC_MODULES if importlib.util.find_spec(f"..core.{m}", __package__) is None]
 
 
-def stack_classic(ctx: Context, p: StackParams, *, load, coef, used, weight, norm, transp, meta, sel, ch_of_k,
+def white_balance_of(ctx: Context, p: StackParams, meta: list[dict]) -> np.ndarray | None:
+    """The camera's daylight white balance (io.frames.daylight_balance) of the first light frame, when the setting
+    asks for it and the frames are raw; logged."""
+    if not p.white_balance or not meta:
+        return None
+    from ..io.frames import daylight_balance
+    try:
+        wb = daylight_balance(meta[0]["path"])
+    except Exception as e:  # noqa: BLE001 - a frame unreadable here was read by the calibration: no balance then
+        ctx.log(f"camera white balance not read ({e}): the stack keeps the camera's colours", "warning")
+        return None
+    if wb is None:
+        ctx.log("the frames hold no camera white balance (FITS): the stack keeps the camera's colours")
+        return None
+    ctx.log(f"camera white balance: red x {wb[0]:.3f}, blue x {wb[2]:.3f} (green 1)")
+    ctx.metric("camera_white_balance", [round(float(v), 4) for v in wb])
+    return wb
+
+
+def balanced(a: np.ndarray, wb: np.ndarray | None) -> np.ndarray:
+    """An image of the stack (3, H, W) through the camera's white balance (or as it is)."""
+    return a if wb is None else (a * wb.astype(a.dtype)[:, None, None])
+
+
+def stack_classic(ctx: Context, p: StackParams, *, wb=None, load, coef, used, weight, norm, transp, meta, sel, ch_of_k,
                   H: int, W: int, satval, dev, t0: float) -> None:
     """The hook of the Classic method (``method = classic``: RCD debayering, Lanczos-4
     registration with Siril's clamping, WBPP's rejection by frame count; core/stack_classic.py and the modules it
@@ -1034,7 +1066,7 @@ def stack_classic(ctx: Context, p: StackParams, *, load, coef, used, weight, nor
                            device=dev, used=used, ch_of_k=ch_of_k, H=H, W=W, sat_level=satval,
                            progress=lambda f, msg: ctx.progress(0.05 + 0.95 * f, msg))
     for name, a in res.arrays().items():
-        ctx.save(name, a)
+        ctx.save(name, balanced(a, wb) if name in ("drz_full.npy", "drz_A.npy", "drz_B.npy") else a)
     res.save_rejection(ctx.out(REJECTION))
     ctx.metric("grid", [W, H])
     ctx.metric("rejected_pct", round(float(res.rejected_pct), 3))
@@ -1056,7 +1088,7 @@ def stack_classic(ctx: Context, p: StackParams, *, load, coef, used, weight, nor
     ctx.save_json(DIAG, diag)
     ctx.log(f"Classic stack {W}x{H} from {len(used)} frames in {(time.time() - t0) / 60:.1f} min: "
             f"{res.choice.reason}; {res.rejected_pct:.2f} % pixels rejected")
-    ctx.preview("stack", asinh_preview(res.full))
+    ctx.preview("stack", asinh_preview(balanced(res.full, wb)))
 
 
 def classic_params(p: StackParams):

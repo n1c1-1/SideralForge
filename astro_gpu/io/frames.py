@@ -100,6 +100,22 @@ def read_cfa(path: str | Path) -> np.ndarray:
     raise ValueError(f"unsupported file type: {path.name}")
 
 
+def daylight_balance(path: str | Path) -> np.ndarray | None:
+    """The camera's daylight white balance of a raw file, as (red, 1, blue) multipliers of the green: the balance the
+    camera and the raw converters apply to a daylight scene (LibRaw's pre_mul, ``daylight_whitebalance``), the one
+    DeepSkyStacker's "Use camera white balance" applies to raw files; the balance the camera recorded when the
+    daylight one is missing. None for a FITS frame (no such balance) or when the file holds none."""
+    if frame_kind(Path(path)) != "raw":
+        return None
+    import rawpy
+    with rawpy.imread(str(path)) as r:
+        for m in (r.daylight_whitebalance, r.camera_whitebalance):
+            m = [float(v) for v in (m or [])][:3]
+            if len(m) == 3 and all(np.isfinite(m)) and min(m) > 0:
+                return np.array([m[0] / m[1], 1.0, m[2] / m[1]], np.float32)
+    return None
+
+
 def _raw_info(path: Path) -> FrameInfo:
     import rawpy
     with rawpy.imread(str(path)) as r:

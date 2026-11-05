@@ -1170,6 +1170,11 @@ class ProjectModel(QObject):
         params = copy.deepcopy(params or {})
         if not params and self.path is not None:
             params = {s: dict(v) for s, v in self.path.params.items() if s in TRUNK}
+        # the camera white balance in Stacking (issue #6): on in a new project; else as the project's workflows have
+        # it, so that they share their stack (a project computed before it stays without)
+        have = [w.params.get("stack", {}).get("white_balance", False) for w in self.p.workflows]
+        if (bool(have[0]) if have else True):
+            params.setdefault("stack", {})["white_balance"] = True
         with self._edit():
             w = api.add_workflow(self.p, name, wfl.check_options(to_engine(opts)), params)
         return self.view(w.id)
