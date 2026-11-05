@@ -312,14 +312,15 @@ class LayerRow(QFrame):
             h.addSpacing(TOGGLE_W // 2 - 1)
             h.addWidget(guide)
             h.addSpacing(INDENT - TOGGLE_W // 2 - 1)
-        elif kids:
+        if kids:                                        # issue #21: down expanded, right collapsed; none without
+            key = (lay["id"], lay["sub"]) if lay["kind"] == "sub" else lay["id"]
             self.toggle = QToolButton()
-            self.toggle.setText("▸" if collapsed else "▾")
+            self.toggle.setArrowType(Qt.RightArrow if collapsed else Qt.DownArrow)
             self.toggle.setAutoRaise(True)
-            self.toggle.setFixedWidth(TOGGLE_W)
-            self.toggle.setStyleSheet("QToolButton { border: none; color: #aab2bf; padding: 0; }")
-            self.toggle.setToolTip(_("Show / hide its filters"))
-            self.toggle.clicked.connect(lambda: panel.toggle_children(lay["id"]))
+            self.toggle.setFixedSize(TOGGLE_W, TOGGLE_W)
+            self.toggle.setStyleSheet("QToolButton { border: none; padding: 0; }")
+            self.toggle.setToolTip(_("Show / hide what is under it"))
+            self.toggle.clicked.connect(lambda: panel.toggle_children(key))
             h.addWidget(self.toggle)
         else:
             h.addSpacing(TOGGLE_W)
@@ -1216,14 +1217,20 @@ class PostView(QWidget):
     def rebuild(self):
         clear(self.lbox)
         self.rows = []
-        self._collapsed &= {lay["id"] for lay in self.layers}
-        if self.sel and (lay := self.layer(self.sel[0])) is not None and lay.get("target") in self._collapsed:
-            self._collapsed.discard(lay["target"])       # the selected filter is shown
+        ids = {lay["id"] for lay in self.layers}
+        self._collapsed = {c for c in self._collapsed if (c[0] if isinstance(c, tuple) else c) in ids}
+        if self.sel and (lay := self.layer(self.sel[0])) is not None and lay.get("target"):
+            self._collapsed -= {lay["target"], (lay["target"], lay.get("sub"))}     # the selected filter is shown
         for lay, depth in rows(self.layers, self._collapsed):
             sl = self.sel is not None and self.sel[0] == lay["id"]
             if lay["kind"] == "sub" or (sl and self.sel[1] in SUBS):      # a sub-layer is selected as (its layer, it)
                 sl = sl and self.sel[1] == lay.get("sub", "layer")
-                row = LayerRow(self, lay, self.thumb(lay), None, sl, False, depth)
+                if lay["kind"] == "sub":
+                    n = sum(1 for f in children(self.layers, lay["id"]) if f.get("sub") == lay["sub"])
+                    row = LayerRow(self, lay, self.thumb(lay), None, sl, False, depth, n,
+                                   (lay["id"], lay["sub"]) in self._collapsed)
+                else:
+                    row = LayerRow(self, lay, self.thumb(lay), None, sl, False, depth)
                 self.lbox.addWidget(row)
                 self.rows.append(row)
                 continue
@@ -1290,13 +1297,16 @@ class PostView(QWidget):
         self.rebuild()
         self.request()
 
-    def toggle_children(self, lid):
-        """▾ / ▸: show or hide a layer's filters in the panel (the image does not change). A hidden filter that was
-        selected leaves the selection to its layer."""
-        self._collapsed ^= {lid}
+    def toggle_children(self, key):
+        """The arrow: show or hide the rows under a layer (``key`` its id), or under one of a Stars and background
+        layer's two images (``key`` (its id, the image)); the image does not change. A hidden filter that was selected
+        leaves the selection to the row it is under."""
+        self._collapsed ^= {key}
         cur = self.layer(self.sel[0]) if self.sel else None
-        if lid in self._collapsed and cur is not None and cur.get("target") == lid:
-            self.sel, self.part_sel = (lid, "layer"), None
+        if key in self._collapsed and cur is not None and cur["kind"] == "filter":
+            lid, sub = key if isinstance(key, tuple) else (key, None)
+            if cur.get("target") == lid and (sub is None or cur.get("sub") == sub):
+                self.sel, self.part_sel = (lid, sub or "layer"), None
         self.rebuild()
 
     # ---- drag and drop (Affinity Photo's): onto a layer nests, between rows places; the line says at which depth

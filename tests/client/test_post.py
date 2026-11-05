@@ -33,7 +33,7 @@ if Path("C:/Windows/Fonts").is_dir():
 pytest.importorskip("PySide6")
 import torch  # noqa: E402
 from conftest import TEST_PROJECT, TEST_PROJECT_CLASSIC, needs_test_project  # noqa: E402
-from PySide6.QtCore import QObject, Signal  # noqa: E402
+from PySide6.QtCore import QObject, Qt, Signal  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from astro_gpu import api  # noqa: E402
@@ -1129,7 +1129,7 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     # the panel (Affinity Photo's): the filter is a child of its layer, indented under it
     assert [(r.lay["name"], r.depth) for r in v.rows] == [("Classic", 0), ("Full", 0), ("Saturation", 1)]
     assert rows[sat["id"]].sub.text() == "Normal · 100%" and rows[sat["id"]].toolTip() == 'Applies to "Full" only'
-    assert rows[full["id"]].toggle is not None and rows[full["id"]].toggle.text() == "▾"
+    assert rows[full["id"]].toggle is not None and rows[full["id"]].toggle.arrowType() == Qt.DownArrow
     assert rows[classic["id"]].toggle is None
     # another one, on everything below
     v.select(classic["id"], "layer")
@@ -1402,6 +1402,13 @@ def test_a_stars_and_background_layer_has_its_two_images_as_sub_layers_with_thei
         lv["params"].update(black=0.0, white=0.5)
         assert lv["target"] == full["id"] and lv["sub"] == "stars"
         assert [(r.lay.get("sub"), r.depth) for r in v.rows][2:] == [("stars", 1), ("stars", 2), ("starless", 1)]
+        # issue #21: an arrow on a row with rows under it only, down expanded, right collapsed
+        subs = {r.lay["sub"]: r for r in v.rows if r.lay["kind"] == "sub"}
+        assert subs["stars"].toggle.arrowType() == Qt.DownArrow and subs["starless"].toggle is None
+        v.toggle_children((full["id"], "stars"))
+        assert [(r.lay.get("sub"), r.depth) for r in v.rows][2:] == [("stars", 1), ("starless", 1)]
+        assert next(r for r in v.rows if r.lay.get("sub") == "stars").toggle.arrowType() == Qt.RightArrow
+        v.toggle_children((full["id"], "stars"))
         v.request(final_only=True)
         assert s.settle()
         # the stars alone brightened, the starless image untouched: the stars brighter, the sky as it was
@@ -1573,7 +1580,7 @@ def test_dragging_a_row_nests_or_unnests_a_filter_with_clear_hints(post):
     assert post.settle() and np.array_equal(shown(v), reference(post).rgb)
     # ▾ / ▸ hides a layer's children in the panel only
     v.toggle_children(full["id"])
-    assert [r.lay["name"] for r in v.rows] == ["Classic", "Full"] and row(full["id"]).toggle.text() == "▸"
+    assert [r.lay["name"] for r in v.rows] == ["Classic", "Full"] and row(full["id"]).toggle.arrowType() == Qt.RightArrow
     assert "2 filters" in row(full["id"]).sub.text()
     v.toggle_children(full["id"])
     assert len(v.rows) == 4

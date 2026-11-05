@@ -186,5 +186,6 @@
   "Source: set by hand (Alt+click)": "Source : choisie à la main (Alt+clic)",
   "Source: found around each stroke · Alt+click: set it by hand": "Source : trouvée autour de chaque coup de pinceau · Alt+clic : la choisir à la main",
   "The source found around each stroke again": "La source de nouveau trouvée autour de chaque coup de pinceau",
-  "Spot healing: click or paint over a defect, healed when released · [ ] size · Alt+click: the source by hand · Ctrl+Z: undo · middle button: move the image": "Tampon correcteur : cliquer ou peindre sur un défaut, corrigé au relâchement · [ ] taille · Alt+clic : la source à la main · Ctrl+Z : annuler · bouton du milieu : déplacer l'image"
+  "Spot healing: click or paint over a defect, healed when released · [ ] size · Alt+click: the source by hand · Ctrl+Z: undo · middle button: move the image": "Tampon correcteur : cliquer ou peindre sur un défaut, corrigé au relâchement · [ ] taille · Alt+clic : la source à la main · Ctrl+Z : annuler · bouton du milieu : déplacer l'image",
+  "Show / hide what is under it": "Afficher / masquer ce qui est en dessous"
 }

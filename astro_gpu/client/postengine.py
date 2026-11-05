@@ -579,7 +579,8 @@ def tree(layers: list[dict]) -> list[tuple[dict, list[dict]]]:
 def rows(layers: list[dict], collapsed=()) -> list[tuple[dict, int]]:
     """The rows of the panel, top first, with their depth: a pixel layer, then its children indented (unless it is
     collapsed), then the next top-level row. A Stars and background layer's own filters come first, then its two
-    images (``sub_row``), each with its filters one step further in."""
+    images (``sub_row``), each with its filters one step further in. ``collapsed``: the layer ids whose rows under
+    them are hidden, and (id, image) for one of a Stars and background layer's two images."""
     out = []
     for lay, kids in tree(layers):
         out.append((lay, 0))
@@ -589,7 +590,8 @@ def rows(layers: list[dict], collapsed=()) -> list[tuple[dict, int]]:
         if is_group(lay):
             for sub in SUBS:
                 out.append((sub_row(lay, sub), 1))
-                out += [(k, 2) for k in kids if k.get("sub") == sub]
+                if (lay["id"], sub) not in collapsed:
+                    out += [(k, 2) for k in kids if k.get("sub") == sub]
     return out
 
 
