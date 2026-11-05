@@ -38,6 +38,7 @@ from .chartview import (
 from .i18n import _, number
 
 KEEP, OUT, HAND = BLUE, RED, AMBER
+UNALIGNED = QColor("#8b93a1")                  # a frame that did not align: no transparency, shown at the bottom
 
 
 # ============================================================================================ Selection
@@ -89,12 +90,14 @@ class FramesChart(ChartView):
         self._series = {}
         for key, panel, vals in (("f", self.p_f, self.fwhm), ("t", self.p_t, self.tr)):
             for state, name, color in (("keep", _("kept"), KEEP), ("out", _("excluded"), OUT),
-                                       ("hand", _("excluded by hand"), HAND)):
+                                       ("hand", _("excluded by hand"), HAND), ("na", _("not aligned"), UNALIGNED)):
                 self._series[key, state] = self.add_scatter(name, x, vals, panel=panel, color=color, size=6.5,
                                                             readout=False, export=False)
         self.d_f = self.add_data("FWHM", x, self.fwhm, panel=self.p_f, unit="px", digits=2)
+        # issue #37: each frame says why it is left out (the readout's Reason), not only by its colour
+        reasons = [_(r.status) if r.status else (_("excluded by hand") if r.excluded else _("kept")) for r in self.rows]
         self.d_t = self.add_data(_("Transparency"), x, self.tr, panel=self.p_t, unit="%", digits=0,
-                                 extra={_("Frame"): self.names, _("Time"): self.times})
+                                 extra={_("Frame"): self.names, _("Time"): self.times, _("Reason"): reasons})
         f = self.fwhm[np.isfinite(self.fwhm)]
         t = self.tr[np.isfinite(self.tr) & self.aligned]
         f0, f1 = (min(f.min(), self.fmax), max(f.max(), self.fmax)) if f.size else (0.0, 1.0)
@@ -153,8 +156,12 @@ class FramesChart(ChartView):
             hand[i] = True
         x = self._xvals()
         for key, vals in (("f", self.fwhm), ("t", self.tr)):
-            for state, m in (("keep", ~ex), ("out", ex & ~hand), ("hand", hand)):
-                self._series[key, state].set_data(x[m], vals[m])
+            na = ~self.aligned
+            for state, m in (("keep", ~ex), ("out", ex & ~hand & ~na), ("hand", hand & ~na), ("na", na)):
+                y = vals[m]
+                if state == "na" and key == "t":            # no transparency without alignment: on the bottom line
+                    y = np.full(int(m.sum()), self.p_t.home_y[0] if self.p_t.home_y else 0.0)
+                self._series[key, state].set_data(x[m], y)
         self.update()
 
     def set_xmode(self, mode: str):
