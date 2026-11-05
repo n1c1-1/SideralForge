@@ -1935,12 +1935,12 @@ def test_the_export_dialog_follows_the_spec_and_refuses_the_results_folder(expor
     d = ExportDialog(s.view)
     try:
         assert d.windowTitle() == "Export"
-        assert d.fmt.currentText() == "TIFF 16-bit" and [d.fmt.itemText(i) for i in range(d.fmt.count())] == [
+        assert d.fmt.currentText() == "JPEG" and [d.fmt.itemText(i) for i in range(d.fmt.count())] == [   # #15
             "TIFF 16-bit", "TIFF 32-bit float", "FITS 32-bit float", "PNG 16-bit", "JPEG"]      # XISF is ◇: Spec mode only
         assert [d.prof.itemText(i) for i in range(d.prof.count())] == ["sRGB"]
         assert [d.size_cb.itemText(i) for i in range(d.size_cb.count())] == [
             "Full resolution", "Web (2048 px)", "Web (4096 px)"]
-        assert d.dest.text() == (s.root / "export" / "HeartSoul" / "HeartSoul_16bit.tif").as_posix()
+        assert d.dest.text() == (s.root / "export" / "HeartSoul" / "HeartSoul.jpg").as_posix()
         assert not d.c_wcs.isChecked() and not d.c_wcs.isEnabled()                                    # only FITS has a header
         assert d.c_hist.isChecked() and not d.c_layers.isChecked() and not d.c_masks.isChecked()
         assert d.spec_boxes == [] and d.go.text() == "Export" and d.go.isEnabled()
@@ -2116,6 +2116,7 @@ def test_each_layer_and_the_masks_go_into_subfolders_of_the_folder_chosen(export
     assert s.settle()
     d = ExportDialog(s.view)
     try:
+        d.fmt.setCurrentIndex(d.fmt.findData("tiff16"))
         d.dest.setText((s.out / "heart_16bit.tif").as_posix())
         d.c_layers.setChecked(True)
         d.c_masks.setChecked(True)

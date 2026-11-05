@@ -272,7 +272,8 @@ class LayerRow(QFrame):
                            f"QFrame#lrow[drop=\"true\"] {{ border: 2px solid {ACCENT}; background: #22314a; }} "
                            "QLabel { background: transparent; }")
         h = QHBoxLayout(self)
-        h.setContentsMargins(4, 3, 6, 3)
+        compact = lay["kind"] == "filter"               # issue #5: the filters, many, on one short line each
+        h.setContentsMargins(4, 1 if compact else 3, 6, 1 if compact else 3)
         h.setSpacing(6)
         eye = QCheckBox()
         eye.setChecked(lay["visible"])
@@ -299,8 +300,12 @@ class LayerRow(QFrame):
         else:
             h.addSpacing(TOGGLE_W)
         self.t = QLabel()
+        if compact:
+            thumb = thumb.scaled(TW * 2 // 3, TH * 2 // 3, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.t.setFixedSize(TW * 2 // 3 + 4, TH * 2 // 3 + 4)
+        else:
+            self.t.setFixedSize(TW + 4, TH + 4)
         self.t.setPixmap(thumb)
-        self.t.setFixedSize(TW + 4, TH + 4)
         self.t.setStyleSheet(f"border: 2px solid {ACCENT if sel_layer else 'transparent'};")
         self.t.setToolTip(_("Layer settings"))
         h.addWidget(self.t)
@@ -320,6 +325,9 @@ class LayerRow(QFrame):
         v.addWidget(self.n)
         self.sub = label(panel.sub_text(lay), "small")
         v.addWidget(self.sub)
+        # a filter at its usual blend (Normal, 100 %, no mask) says nothing more: one line
+        self.sub.setVisible(not (compact and lay.get("target") and lay["mode"] == "Normal" and lay["opacity"] >= 100
+                                 and mthumb is None))
         h.addLayout(v, 1)
         if depth:
             tgt = panel.layer(lay.get("target"))
@@ -333,6 +341,8 @@ class LayerRow(QFrame):
         if bool(self.property("drop")) == on and (not on or self.sub.text() == text):
             return
         self.setProperty("drop", on)
+        if on:
+            self.sub.setVisible(True)                   # a compact row says what the drop does too
         self.style().unpolish(self)
         self.style().polish(self)
         self.sub.setText(text if on else self.panel.sub_text(self.lay))
@@ -1482,6 +1492,9 @@ class PostView(QWidget):
             target = cur["id"] if is_pixel(cur) else cur.get("target")
         self.push()
         fl = new_filter_layer(key, target)
+        same = sum(1 for lay in self.layers if lay["kind"] == "filter" and lay.get("filter") == key)
+        if same:                                        # a second Curves is "Curves · 2" (issue #15: no twin names)
+            fl["name"] = f"{fl['name']} · {same + 1}"
         if target is not None:                          # on top of that layer's own filters
             group = [lay for lay in self.layers if lay.get("target") == target]
             self.sel = ((group[0] if group else self.layer(target))["id"], "layer")

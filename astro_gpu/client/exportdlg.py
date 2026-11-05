@@ -99,6 +99,9 @@ class ExportDialog(QDialog):
             if key is None:
                 self._disable(self.fmt, self.fmt.count() - 1)
         row(_("Format"), self.fmt)
+        # the last format used, else a JPEG (what a newcomer shares; issue #15, as photo editors remember it)
+        last = prefs.get("export_format") or "jpeg"
+        self.fmt.setCurrentIndex(max(0, self.fmt.findData(last)))
         self.prof = QComboBox()
         self.prof.setModel(QStandardItemModel(self.prof))
         for name, ok in PROFILES.items():
@@ -112,7 +115,7 @@ class ExportDialog(QDialog):
         for name, px in SIZES.items():
             self.size_cb.addItem(_(name), px)
         row(_("Size"), self.size_cb)
-        self.dest = QLineEdit(self.default_file("tiff16"))
+        self.dest = QLineEdit(self.default_file(self.format_key()))
         self.browse = QPushButton("…")
         self.browse.setFixedWidth(max(30, self.browse.sizeHint().width()))
         self.browse.setToolTip(_("Choose the folder"))
@@ -259,6 +262,7 @@ class ExportDialog(QDialog):
         if why:
             self._check_dest()
             return
+        prefs.set("export_format", self.format_key())
         self.running = True
         self.error, self.files = "", []
         self.status.setText("")
