@@ -1104,7 +1104,10 @@ def test_the_first_layers_and_the_first_image(post):
     assert v.src.canvas == (688, 464) and shown(v).shape == (232, 344, 3) and shown(v).dtype == np.uint8
     assert np.array_equal(shown(v), reference(post).rgb)                    # the page shows what the engine path gives
     assert post.model.touched == 0                                          # opening Post writes nothing in the project
-    # a workflow that is rendered later gets its layer on top, hidden
+    # a workflow rendered later does not come by itself (issue #10); a block's output sent from the graph does
+    post.model.paths.append(WF(4, "Later", None))
+    post.model.pathsChanged.emit()
+    assert "Later" not in [lay["name"] for lay in v.layers]
     post.model.paths.append(WF(3, "Raw stack", "stacking"))
     post.model.pathsChanged.emit()
     assert [(lay["name"], lay["visible"]) for lay in v.layers][0] == ("Raw stack", False)

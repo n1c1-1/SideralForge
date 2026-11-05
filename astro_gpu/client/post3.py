@@ -717,7 +717,10 @@ class PostView(QWidget):
         known = {lay["pid"] for lay in self.layers if lay["kind"] == "workflow"}
         fresh = not known
         for p in paths:
-            if p.rendered and p.pid not in known:          # with Stars: its Stars and background block
+            # an empty composition is filled; afterwards only a block's output sent from the graph (an exit) comes
+            # (issue #10: every computed workflow came back on top, hidden, even one the user had taken away)
+            sent = getattr(p, "end", None) is not None
+            if (fresh or sent) and p.rendered and p.pid not in known:   # with Stars: its Stars and background block
                 stars = p.opts.get("etoiles") == "retirer"
                 self.layers.insert(0, new_workflow_layer(
                     p.pid, p.name + (" · " + POST_PART_NAMES["combined"] if stars else ""),
