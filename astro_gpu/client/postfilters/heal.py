@@ -62,15 +62,15 @@ def _laplace_fill(boundary_vals: np.ndarray, inside: np.ndarray) -> np.ndarray:
 
 
 def heal_one(img: np.ndarray, x: float, y: float, r: float, dx: float, dy: float) -> None:
-    """One spot, in place, on ``img`` (h x w x 3 float), coordinates in its pixels; nothing when the spot or its
-    source leaves the image."""
+    """One spot, in place, on ``img`` (h x w x 3 float), coordinates in its pixels. A spot on the image's edge is
+    healed on its part inside the image (and inside the source's reach); nothing when that is empty."""
     H, W = img.shape[:2]
     R = r * (1 + FEATHER)
-    x0, y0, x1, y1 = int(math.floor(x - R - 2)), int(math.floor(y - R - 2)), int(math.ceil(x + R + 3)), \
-        int(math.ceil(y + R + 3))
-    sx0, sy0 = x0 + int(round(dx)), y0 + int(round(dy))
-    sx1, sy1 = x1 + int(round(dx)), y1 + int(round(dy))
-    if min(x0, y0, sx0, sy0) < 0 or max(x1, sx1) > W or max(y1, sy1) > H or r < 1:
+    ix, iy = int(round(dx)), int(round(dy))
+    x0, y0 = max(0, int(math.floor(x - R - 2)), -ix), max(0, int(math.floor(y - R - 2)), -iy)
+    x1, y1 = min(W, int(math.ceil(x + R + 3)), W - ix), min(H, int(math.ceil(y + R + 3)), H - iy)
+    sx0, sy0, sx1, sy1 = x0 + ix, y0 + iy, x1 + ix, y1 + iy
+    if r < 1 or x1 - x0 < 3 or y1 - y0 < 3:
         return
     tgt = img[y0:y1, x0:x1].astype(np.float64)
     src = img[sy0:sy1, sx0:sx1].astype(np.float64)
@@ -106,17 +106,18 @@ def find_source(img: np.ndarray, x: float, y: float, r: float) -> tuple[float, f
     """(dx, dy) of the best source for a spot at (x, y), radius r, on ``img`` (h x w x 3, any scale, the same as the
     coordinates): the candidate disc whose rim matches the spot's rim best (mean squared difference of the rims at
     r to 1.4 r), a candidate holding pixels much brighter than the spot's rim (a star) penalised. (0, 0) when no
-    candidate fits in the image."""
-    H, W = img.shape[:2]
-    a = img.astype(np.float32)
+    candidate fits in the image. On the image's edge, the part of the rims inside the image; the source itself must be
+    inside it."""
     ring_lo, ring_hi = r, r * 1.4
     S = int(math.ceil(ring_hi)) + 1
+    a = np.pad(img.astype(np.float32), ((S, S), (S, S), (0, 0)), constant_values=np.nan)    # off the image: NaN
+    H, W = a.shape[:2]
     yy, xx = np.mgrid[-S:S + 1, -S:S + 1]
     rad = np.hypot(xx, yy)
     ring, disc = (rad >= ring_lo) & (rad <= ring_hi), rad < r
 
     def patch(cx, cy):
-        ix, iy = int(round(cx)), int(round(cy))
+        ix, iy = int(round(cx)) + S, int(round(cy)) + S
         if ix - S < 0 or iy - S < 0 or ix + S + 1 > W or iy + S + 1 > H:
             return None
         return a[iy - S:iy + S + 1, ix - S:ix + S + 1]
@@ -124,17 +125,24 @@ def find_source(img: np.ndarray, x: float, y: float, r: float) -> tuple[float, f
     if t is None:
         return 0.0, 0.0
     t_ring = t[ring]
-    level = np.median(t_ring, axis=0)
-    spread = float(np.median(np.abs(t_ring - level))) * 1.4826 + 1e-6
+    seen = np.isfinite(t_ring).all(axis=1)                  # the spot's rim inside the image
+    if seen.sum() < 8:
+        return 0.0, 0.0
+    level = np.median(t_ring[seen], axis=0)
+    spread = float(np.median(np.abs(t_ring[seen] - level))) * 1.4826 + 1e-6
     best, best_d = None, (0.0, 0.0)
     for k in SOURCE_DISTANCES:
         for j in range(SOURCE_DIRECTIONS):
             ang = 2 * math.pi * j / SOURCE_DIRECTIONS
             dx, dy = k * r * math.cos(ang), k * r * math.sin(ang)
             c = patch(x + dx, y + dy)
-            if c is None:
+            if c is None or not np.isfinite(c[disc]).all():     # the source must be inside the image
                 continue
-            score = float(np.mean((c[ring] - t_ring) ** 2))
+            cr = c[ring]
+            both = seen & np.isfinite(cr).all(axis=1)
+            if both.sum() < 8:
+                continue
+            score = float(np.mean((cr[both] - t_ring[both]) ** 2))
             star = np.clip(c[disc] - level - 4 * spread, 0, None)
             score += float(np.mean(star ** 2)) * 4
             if best is None or score < best:

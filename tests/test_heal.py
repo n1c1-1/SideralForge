@@ -56,3 +56,15 @@ def test_spots_are_cleaned_and_a_big_spot_is_quick():
     t = time.time()
     heal(big, [[450, 450, 150, 330, 0]], 1.0, (0, 0))
     assert time.time() - t < 10
+
+
+def test_a_spot_on_the_edge_of_the_image_is_healed_too():
+    clean = sky(5)
+    img = clean.copy()
+    yy, xx = np.mgrid[0:H, 0:W]
+    blob = np.hypot(xx - 10, yy - 150) < 25                              # half off the left edge
+    img[blob] *= 0.4
+    dx, dy = find_source(img, 10, 150, 28)
+    assert np.hypot(dx, dy) > 40 and 10 + dx - 28 >= 0                  # a source inside the image
+    out = heal(img, [[10, 150, 28, dx, dy]], 1.0, (0, 0))
+    assert abs(float(np.median(out[blob])) - float(np.median(clean[blob]))) < 0.03
