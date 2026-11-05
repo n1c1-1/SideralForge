@@ -460,5 +460,9 @@
  "Camera white balance": "Balance des blancs de l'appareil",
  "The three colours of the stack multiplied by the camera's daylight white balance, read from the raw files (as the camera and the raw converters do; DeepSkyStacker's Use camera white balance): the stack no longer looks green. Colour calibration measures the white on the stars and takes this factor back exactly; the steps between work on each colour apart. FITS frames hold no such balance: unchanged.": "Les trois couleurs de l'empilement multipliées par la balance des blancs « lumière du jour » de l'appareil, lue dans les fichiers RAW (comme le font l'appareil et les dérawtiseurs ; l'option « Use camera white balance » de DeepSkyStacker) : l'empilement n'apparaît plus vert. La calibration des couleurs mesure le blanc sur les étoiles et reprend exactement ce facteur ; les étapes entre les deux travaillent sur chaque couleur à part. Les images FITS n'ont pas cette balance : inchangées.",
  "On in new workflows. Turning it on makes Stacking and what follows Outdated.": "Activée dans les nouveaux workflows. L'activer rend Empilement et la suite Périmés.",
- "Multipliers of red, green and blue from the camera's daylight white balance, applied to the stack.": "Multiplicateurs du rouge, du vert et du bleu tirés de la balance des blancs « lumière du jour » de l'appareil, appliqués à l'empilement."
+ "Multipliers of red, green and blue from the camera's daylight white balance, applied to the stack.": "Multiplicateurs du rouge, du vert et du bleu tirés de la balance des blancs « lumière du jour » de l'appareil, appliqués à l'empilement.",
+ "Colour mosaic pattern": "Motif de la mosaïque de couleurs",
+ "Peaks of the colour mosaic's periodic pattern taken off the output image.": "Pics du motif périodique de la mosaïque de couleurs retirés de l'image de sortie.",
+ "Network grid": "Grille du réseau",
+ "Peaks of the star-removal network's own grid taken off the starless image.": "Pics de la grille propre au réseau de retrait des étoiles retirés de l'image sans étoiles."
 }

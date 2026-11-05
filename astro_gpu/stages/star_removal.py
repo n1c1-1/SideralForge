@@ -52,7 +52,7 @@ class StarRemoval(Stage):
                    "they are.")
     deps = ("render_simple", "stack")
     Params = StarRemovalParams
-    version = f"1-{MODEL_ID}"
+    version = f"2-{MODEL_ID}"            # 2: the network's grid notched (core/periodic.py, issue #28)
 
     def run(self, ctx: Context, p: StarRemovalParams) -> None:
         from .denoise import norm_params
@@ -76,6 +76,13 @@ class StarRemoval(Stage):
         starless = apply(net, (lin - bk) / unit, dev, ctx) * unit + bk
         ctx.log(f"stars taken off in {time.time() - t0:.1f} s on {dev}")
         starless[:, ~valid] = lin[:, ~valid]
+        # the network's own grid (its checkerboard, at the multiples of 1/16 px^-1) notched where it stands out
+        from ..core.periodic import lattice_frequencies, remove_periodic
+        starless, taken = remove_periodic(starless, lattice_frequencies(16), valid)
+        ctx.metric("grid_peaks", len(taken))
+        if taken:
+            ctx.log(f"the network's grid: {len(taken)} peaks notched (strongest {max(t[3] for t in taken):.0f} x the "
+                    "spectrum around)")
         stars = lin - starless
         ctx.progress(0.9, "statistics")
         ctx.save("starless.npy", starless)
