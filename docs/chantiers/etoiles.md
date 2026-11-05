@@ -7,9 +7,9 @@ Ouvert le 4 novembre 2026. État de l'art (sources) : `etoiles_etat_de_lart.md`.
 
 1. **Deux sujets séparés.** La séparation en deux couches (sans étoiles, étoiles seules) et leur recombinaison dans
    le Post-traitement ; le retrait des étoiles lui-même.
-2. **Une qualité égale ou supérieure à StarNet, sans en dépendre.** StarNet reste une option (s'il est installé), jamais
+2. **Une qualité égale ou supérieure à l'outil de référence, sans en dépendre.** l'outil de référence reste une option (s'il est installé), jamais
    une dépendance.
-3. **La vitesse.** Aujourd'hui, environ 80 min de carte graphique pour Heart express (12 Mpx) ; StarNet : 20 s.
+3. **La vitesse.** Aujourd'hui, environ 80 min de carte graphique pour Heart express (12 Mpx) ; l'outil de référence: 20 s.
    Cible : **le bloc Étoiles en moins d'une minute sur la carte graphique, quelques minutes sur le processeur**, pour
    une image de cette taille.
 4. **Hors ligne.** Plus de téléchargement des étoiles faibles de Gaia pour le cas courant (la panne de M8, voir
@@ -31,8 +31,8 @@ l'ajustement étoile par étoile.
 ## Le plan
 
 **Étape 0 — Confirmer le diagnostic (ce soir, environ 18 h 30).** Les cinq épreuves et les planches sur Heart,
-Rosette, Iris et M51 (les nébuleuses, là où StarNet est réputé effacer la nébulosité faible). Si notre méthode actuelle
-y reste derrière StarNet comme sur Seestar, on passe à l'étape 2 ; sinon, on en reparle.
+Rosette, Iris et M51 (les nébuleuses, là où l'outil de référence est réputé effacer la nébulosité faible). Si notre méthode actuelle
+y reste derrière l'outil de référence comme sur Seestar, on passe à l'étape 2 ; sinon, on en reparle.
 
 **Étape 1 — Les deux couches et leur recombinaison (indépendante du retrait).**
 - Le moteur rend deux couches linéaires en nombres à virgule : sans étoiles S, étoiles = original − S, sans couper les
@@ -40,7 +40,7 @@ y reste derrière StarNet comme sur Seestar, on passe à l'étape 2 ; sinon, on 
 - Le Post-traitement les traite comme deux calques ordinaires : chacun son étirement, puis **Écran** par défaut,
   **Addition** en option ; l'intensité, l'étirement propre et la saturation se règlent sur le calque d'étoiles. Les
   curseurs « magiques » actuels partent.
-- La source de S est un choix : notre méthode, ou StarNet s'il est installé (sa ligne de commande, `--linear`).
+- La source de S est un choix : notre méthode, ou l'outil de référence s'il est installé (sa ligne de commande, `--linear`).
 - Vitesse : rien à gagner ici, c'est une soustraction.
 
 **Étape 2 — Notre retrait : masquer, puis combler avec un réseau pré-entraîné (la piste A).** Méthode publiée :
@@ -50,11 +50,11 @@ maskfill (2023), Madarász et al. (2025).
   C'est quelques secondes, au lieu des 29 min de l'étape Étoiles.
 - *Le remplissage* : un réseau qui comble les zones masquées à partir de leur entourage, pré-entraîné une fois sur nos
   empilements (le jeu de données du débruitage : 76 paires, quatre niveaux de bruit), en masquant au hasard des zones
-  sans étoiles. Aucune vérité ni StarNet n'est nécessaire. Appliqué en quelques secondes. Une courte adaptation à
+  sans étoiles. Aucune vérité ni l'outil de référence n'est nécessaire. Appliqué en quelques secondes. Une courte adaptation à
   l'image en option, comme pour le débruitage, si les mesures la justifient.
 - *Hors des masques, l'image n'est pas touchée* : rien n'est inventé ailleurs que là où il y avait une étoile.
 - *Mesures* : l'épreuve des faux masques (des zones sans étoiles masquées, comblées, comparées à ce qu'il y avait :
-  une vraie erreur, que personne ne publie pour StarNet), plus les cinq épreuves et les planches face à StarNet.
+  une vraie erreur, que personne ne publie pour l'outil de référence), plus les cinq épreuves et les planches face à l'outil de référence.
 - *Le pré-entraînement* : une nuit, sur les deux cartes graphiques.
 - *Si la piste A bute* (étoiles faibles ou champs très denses) : la piste B, un réseau qui retire directement des
   étoiles de synthèse posées sur nos empilements, au profil réel de chaque image et aux couleurs de Gaia.
@@ -78,7 +78,7 @@ Tous partent du même original : les deux demi-empilements de notre étape (Opti
 blancs appliquée. Couche d'étoiles = original − sans étoiles. Résultats : `F:\astro_essais\stars_compare\results.json`,
 planches `<cas>_sheet.jpg` (sans étoiles) et `<cas>_stars.jpg` (couches d'étoiles).
 
-| Cas | Hors étoiles, pente (1 = intact) : StarNet / notre modèle / notre réseau | Écart de fond hors étoiles (% du ciel) | Texture à la place des étoiles G < 14 (médiane ; 9 sur 10 sous) | Lumière restante, G 16–18,5 sur le ciel |
+| Cas | Hors étoiles, pente (1 = intact) : l'outil de référence/ notre modèle / notre réseau | Écart de fond hors étoiles (% du ciel) | Texture à la place des étoiles G < 14 (médiane ; 9 sur 10 sous) | Lumière restante, G 16–18,5 sur le ciel |
 |---|---|---|---|---|
 | Heart | 0,95 / 1,40 / 1,43 | 0,00 / −3,3 / −2,9 | 1,61 ; 2,2 / 1,35 ; 2,4 / 2,65 ; 28 | 0,5 % / 0,1 % / 0,4 % |
 | Rosette | 1,00 / 0,48 / 0,49 | 0,00 / −6,5 / −6,3 | 1,09 ; 1,4 / 1,30 ; 2,3 / 6,6 ; 66 | 4,1 % / 2,0 % / 0,3 % |
@@ -87,7 +87,7 @@ planches `<cas>_sheet.jpg` (sans étoiles) et `<cas>_stars.jpg` (couches d'étoi
 | Seestar | 1,00 / 1,00 / 1,00 | 0,00 / −0,09 / −0,08 | 0,88 ; 1,1 / 1,17 ; 2,0 / 1,36 ; 11 | 11,6 % / 13,2 % / 6,3 % |
 
 Les petites galaxies de M51 (NGC 5198, IC 4263, NGC 5169, NGC 5173) : gardées de la même façon par tous (la plus
-petite, NGC 5173, perd 25 à 35 % chez tous). Les deux couches de StarNet redonnent l'original à 0,1–0,5 σ près sauf
+petite, NGC 5173, perd 25 à 35 % chez tous). Les deux couches de l'outil de référence redonnent l'original à 0,1–0,5 σ près sauf
 Seestar (8,6 σ : sa couche d'étoiles est plafonnée) ; les nôtres exactement, par construction.
 
 Ce qu'on en tire :
@@ -98,9 +98,9 @@ Ce qu'on en tire :
 - **Notre modèle laisse de la structure à la place des étoiles brillantes** (texture 1,2 à 1,9, jusqu'à 6,8) ; notre
   réseau appris sur l'image bien davantage (jusqu'à 99 : des artefacts francs autour de certaines étoiles), même s'il
   laisse le moins de lumière d'étoiles faibles.
-- **StarNet** ne touche pas au fond hors des étoiles, laisse un peu plus d'étoiles faibles (jusqu'à 12 % de leur
+- **l'outil de référence** ne touche pas au fond hors des étoiles, laisse un peu plus d'étoiles faibles (jusqu'à 12 % de leur
   lumière), et lisse un peu les zones comblées (texture 0,7 à 0,9), sauf Heart (1,6).
-- Le diagnostic de Seestar tient : notre méthode actuelle est derrière StarNet. Les étapes 1 à 3 du plan s'appliquent.
+- Le diagnostic de Seestar tient : notre méthode actuelle est derrière l'outil de référence. Les étapes 1 à 3 du plan s'appliquent.
 
 ## Gaia : plus de blocage (4 novembre au soir)
 
@@ -119,9 +119,9 @@ Choix fait après la revue : un réseau qui retire directement les étoiles, ent
 couvre 78 % de Heart).
 
 - **Les paires** : 23 champs du jeu de données (sans le banc, sans le set 53 non relu), 56 images en tout (les niveaux
-  de profondeur d'un même champ), chacune avec son image sans étoiles : celle de StarNet, corrigée à la main sous
+  de profondeur d'un même champ), chacune avec son image sans étoiles : celle de l'outil de référence, corrigée à la main sous
   Photoshop par Nicolas (15 champs retouchés, de 0,01 % à 2,7 % de l'image). Les pixels retouchés reviennent dans les
-  données en défaisant l'étirement connu des TIFF ; les autres gardent la précision de StarNet.
+  données en défaisant l'étirement connu des TIFF ; les autres gardent la précision de l'outil de référence.
 - **Zones ignorées** (aucun apprentissage) : le halo d'Alnitak (impossible à effacer proprement), l'étoile de NGC 2023
   restée dans l'image sans étoiles, un nœud de M33 effacé (région H II ?) ; dans les autres niveaux d'un champ, les
   zones retouchées sur le niveau relu.
@@ -133,14 +133,14 @@ couvre 78 % de Heart).
   étirement asinh fixe et connu (défait exactement à la sortie).
 - **Deux entraînements cette nuit**, pour savoir ce qu'apportent les étoiles de synthèse : « mixed » (vraies paires et
   synthèse, carte 0, lots de 8, 9 h) et « real » (vraies paires seules, carte 1, lots de 4, 8 h 36). Validation pendant
-  l'entraînement : des étoiles de synthèse posées sur les images sans étoiles de StarNet du banc (une vérité exacte,
+  l'entraînement : des étoiles de synthèse posées sur les images sans étoiles de l'outil de référence du banc (une vérité exacte,
   sur des champs jamais vus). À la fin, chacun produit les images sans étoiles du banc
   (`stars_compare/<cas>/net_<nom>_starless.fits`) et les cinq épreuves sont refaites (`stars_compare.py`).
 
 ## Le résultat et l'intégration (5 novembre)
 
 - **« mixed » est retenu** (rapport : `docs/POINT_MATINEE_2026-11-05.md`) : moins d'étoiles faibles laissées que
-  StarNet sur les cinq champs du banc, aigrettes et halos des étoiles brillantes enlevés, fond inchangé ; « real »
+  l'outil de référence sur les cinq champs du banc, aigrettes et halos des étoiles brillantes enlevés, fond inchangé ; « real »
   laissait un trou sombre au cœur des étoiles saturées. Le réseau est livré dans `astro_gpu/resources/stars/`
   (`starless_nafnet.pt`, demi-précision, 58 Mo).
 - **Le bloc Étoiles** (`stages/star_removal.py`) remplace toute l'ancienne chaîne (modèle d'étoiles Gaia, PSF, réseau
@@ -165,6 +165,6 @@ couvre 78 % de Heart).
 | Quand | Quoi |
 |---|---|
 | Ce soir | Étape 0 (les mesures des nébuleuses) ; si le diagnostic tient, préparer les données de remplissage et lancer le pré-entraînement pour la nuit |
-| Demain matin | Mesurer le réseau de remplissage (faux masques, cinq épreuves, planches) face à StarNet et à notre méthode actuelle |
+| Demain matin | Mesurer le réseau de remplissage (faux masques, cinq épreuves, planches) face à l'outil de référence et à notre méthode actuelle |
 | Demain | Étape 1 (les deux couches dans le moteur et le Post-traitement), puis l'étape 2 dans le moteur et l'interface |
 | Ensuite | Étape 3 (vitesse du reste), étape 4 (finitions, tests) |

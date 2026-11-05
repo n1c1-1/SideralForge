@@ -40,7 +40,7 @@ bruit (flou gaussien), Réduction d'étoiles, Réduction des halos, Couleur des 
 | PI BackgroundNeutralization, ColorCalibration, PCC, SPCC, LinearFit ; Siril étalonnage des couleurs | | **non** : moteur (Couleur) |
 | PI DBE/ABE ; Siril Background extraction, GraXpert | | **non** : moteur (Gradient) |
 | PI Deconvolution ; Siril Deconvolution ; Siril Noise reduction (Anscombe) ; MureDenoise | | **non** : linéaire, moteur |
-| Siril StarNet, Unclip stars, Synthetic stars | séparation étoiles du moteur | **non** : linéaire, moteur |
+| l'outil de référence, Unclip stars, Synthetic stars | séparation étoiles du moteur | **non** : linéaire, moteur |
 | PI LRGBCombination, ChannelCombination, HDRComposition ; Siril RGB composition, HDR, PixelMath | | **non** : combinaison de piles, moteur (blocs) |
 
 ## 3. Courbes (le plus important)

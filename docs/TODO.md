@@ -8,10 +8,10 @@ obsolètes.
 Le débruitage est fait (4 novembre, `docs/chantiers/debruitage.md`) : un réseau pré-entraîné, adapté à l'image en
 option ; meilleur que notre ancien apprentissage sur chaque image, que GraXpert et que Topaz sur le banc.
 
-1. **Le retrait des étoiles** (état de l'art : `docs/chantiers/etoiles_etat_de_lart.md` ; échantillons StarNet et
+1. **Le retrait des étoiles** (état de l'art : `docs/chantiers/etoiles_etat_de_lart.md` ; échantillons l'outil de référence et
    notre méthode : `tools/bench/stars_samples.py`, `F:\astro_essais\stars_compare`). Deux sujets : la séparation en
    deux couches (sans étoiles, étoiles seules) et leur recombinaison dans le Post-traitement par les modes de fusion et
-   des filtres ordinaires, plus de curseurs « magiques » ; le retrait des étoiles lui-même. StarNet (installé par
+   des filtres ordinaires, plus de curseurs « magiques » ; le retrait des étoiles lui-même. l'outil de référence (installé par
    l'utilisateur) sert à comparer et pourra être une option, jamais une dépendance ; la resynthèse des étoiles devient
    le recours en cas de mise au point ou de suivi ratés.
 

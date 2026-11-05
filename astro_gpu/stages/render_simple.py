@@ -124,6 +124,18 @@ class RenderSimpleParams(StageParams):
         return v
 
 
+def mosaic_notch(ctx: Context, img: np.ndarray, scale: float, valid: np.ndarray, log: bool = True):
+    """The colour mosaic's periodic pattern taken off (core/periodic.py), said in the log and the metrics."""
+    from ..core.periodic import remove_mosaic_pattern
+    out, taken = remove_mosaic_pattern(img, scale, valid)
+    if log:
+        ctx.metric("mosaic_peaks", len(taken))
+        if taken:
+            ctx.log(f"colour mosaic pattern: {len(taken)} peaks notched (strongest {max(t[3] for t in taken):.0f} x "
+                    "the spectrum around)")
+    return out, taken
+
+
 class RenderSimple(Stage):
     name = "render_simple"
     title = "Simple output"
@@ -132,12 +144,13 @@ class RenderSimple(Stage):
                    "renders it with its sliders (sky, contrast, saturation, noise).")
     deps = ("stack",)
     Params = RenderSimpleParams
-    version = "6"          # 2: the emission anchor of the output preparation (the H-alpha of Classic was violet on
+    version = "7"          # 2: the emission anchor of the output preparation (the H-alpha of Classic was violet on
                            # heart_a7s);
                            # 3: the Raw stack exit's sky made grey (it had the green of the light pollution);
                            # 4: the colour of the places near saturation from their surroundings (repair_saturated);
                            # 5: the sky gradient removed before (the Gradient block): a level here;
                            # 6: that level is the Gradient block's; no emission anchor (the colour is a white balance)
+                           # 7: the colour mosaic's periodic pattern notched (core/periodic.py, issue #28)
 
     def run(self, ctx: Context, p: RenderSimpleParams) -> None:
         from ..render.simple import SimpleRenderEngine, SimpleSettings, image_stats
@@ -191,6 +204,9 @@ class RenderSimple(Stage):
             ctx.log("no colour calibration: camera colours, each channel's sky made grey and scaled to the same "
                     f"spread (gains {', '.join(f'{g:.3f}' for g in gains)})")
         lin[:, ~valid] = 0
+        ctx.progress(0.4, "the colour mosaic's pattern")
+        S = float(ctx.load_json("stack", "drz_meta.json").get("scale", 1.0))
+        lin, taken = mosaic_notch(ctx, lin, S, valid)
         ctx.progress(0.5, "statistics")
         stats = image_stats(lin, shown)
         ctx.save("lin.npy", lin.astype(np.float32))
@@ -207,6 +223,7 @@ class RenderSimple(Stage):
             raw -= sky
             raw *= gains.astype(np.float32)[:, None, None]
             raw[:, ~valid] = 0
+            raw, _t = mosaic_notch(ctx, raw, S, valid, log=False)
             prep["stats_raw"] = image_stats(raw, shown)
             ctx.save("lin_raw.npy", raw.astype(np.float32))
             del raw

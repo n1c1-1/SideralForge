@@ -12,7 +12,7 @@ import torch
 from astro_gpu.core import workflow as wfl
 from astro_gpu.render import sliders as S
 from astro_gpu.render.simple import SimpleRenderEngine, SimpleSettings, image_stats
-from astro_gpu.render.stars import BLENDS, StarSettings, StarsRenderEngine, blend, resize_stars
+from astro_gpu.render.stars import BLENDS, StarSettings, StarsRenderEngine, _morph, blend, resize_stars
 from astro_gpu.stages import star_removal as sr
 
 DEV = torch.device("cpu")
@@ -124,10 +124,23 @@ def test_smaller_stars_leave_the_grain_of_a_dense_field_as_it_is():
     y = (y + star).clamp(0, 1)
     out = resize_stars(y, -1.0)
     far = ((yy - 48) ** 2 + (xx - 48) ** 2) > 12 ** 2
-    moved = ((out - y).abs().amax(0) > 1e-3)[far].float().mean()
-    assert moved < 0.1, moved                                                  # the grain as it was (its 3-sigma peaks
-    #                                                                            aside); the erosion alone moves 78 %
+    moved = (out - y).abs()[:, far].mean() / (_morph(y, 1, False) - y).abs()[:, far].mean()
+    assert moved < 0.1, moved                                                  # the grain as it was: under a tenth of
+    #                                                                            what the erosion alone takes (#30: 6 %)
     assert out[:, 46:51, 46:51].sum() < 0.85 * y[:, 46:51, 46:51].sum()        # the star smaller
+
+
+def test_a_wider_star_shrinks_whole_without_a_ring():
+    """Issue #30: the sky of the star mask is measured with the stars clipped out, so a wider star's wings stand above
+    it as its core does: the star shrinks whole, its radial profile still falls outward (no ring)."""
+    yy, xx = torch.meshgrid(torch.arange(80.0), torch.arange(80.0), indexing="ij")
+    r2 = (yy - 40) ** 2 + (xx - 40) ** 2
+    y = (0.03 + 0.95 * torch.exp(-r2 / (2 * 3.0 ** 2))).clamp(0, 1).repeat(3, 1, 1)       # FWHM 7 px
+    out = resize_stars(y, -2.0)[0]
+    rr = r2.sqrt().round().long()
+    prof = torch.stack([out[rr == k].mean() for k in range(0, 20)])
+    assert torch.all(prof[1:] <= prof[:-1] + 1e-3), prof                       # falls outward: no ring
+    assert (out - 0.03).sum() < 0.85 * (y[0] - 0.03).sum()                      # and it is smaller
 
 
 def test_the_sliders_of_each_kind():

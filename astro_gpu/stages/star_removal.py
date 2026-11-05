@@ -1,11 +1,11 @@
 """The Stars block: a network takes the stars off the image, which gives two images, the starless image and the stars
 alone (docs/chantiers/etoiles.md).
 
-The network is NAFNet (Chen, Chu, Zhang, Sun 2022, arXiv:2204.04676), the image restoration network that Dark Star and
-SyQon use for star removal, trained once on our stacks: their starless images made by StarNet 2 and corrected by hand,
-plus stars drawn on top of them (a Moffat core, an r^-3 aureole, diffraction spikes, saturation), where the truth under
-each star is exact (tools/bench/stars_train.py, run "mixed"). On the bench it leaves less of the faint stars than StarNet
-and takes the spikes and halos of the bright stars off, the background unchanged (docs/POINT_MATINEE_2026-11-05.md).
+The network is NAFNet (Chen, Chu, Zhang, Sun 2022, arXiv:2204.04676), an image restoration network, trained once on
+our stacks: starless images corrected by hand, plus stars drawn on top of them (a Moffat core, an r^-3 aureole,
+diffraction spikes, saturation), where the truth under each star is exact (tools/bench/stars_train.py, run "mixed").
+On the bench it leaves less of the faint stars than the reference tool and takes the spikes and halos of the bright
+stars off, the background unchanged (docs/POINT_MATINEE_2026-11-05.md).
 
 It works on what it was trained on: the Output block's linear image (render_simple: the stack with its sky gradient
 removed, denoised, white balanced, its sky taken off), each channel minus its background, over one noise unit (the
@@ -52,7 +52,7 @@ class StarRemoval(Stage):
                    "they are.")
     deps = ("render_simple", "stack")
     Params = StarRemovalParams
-    version = f"1-{MODEL_ID}"
+    version = f"2-{MODEL_ID}"            # 2: the network's grid notched (core/periodic.py, issue #28)
 
     def run(self, ctx: Context, p: StarRemovalParams) -> None:
         from .denoise import norm_params
@@ -76,6 +76,13 @@ class StarRemoval(Stage):
         starless = apply(net, (lin - bk) / unit, dev, ctx) * unit + bk
         ctx.log(f"stars taken off in {time.time() - t0:.1f} s on {dev}")
         starless[:, ~valid] = lin[:, ~valid]
+        # the network's own grid (its checkerboard, at the multiples of 1/16 px^-1) notched where it stands out
+        from ..core.periodic import lattice_frequencies, remove_periodic
+        starless, taken = remove_periodic(starless, lattice_frequencies(16), valid)
+        ctx.metric("grid_peaks", len(taken))
+        if taken:
+            ctx.log(f"the network's grid: {len(taken)} peaks notched (strongest {max(t[3] for t in taken):.0f} x the "
+                    "spectrum around)")
         stars = lin - starless
         ctx.progress(0.9, "statistics")
         ctx.save("starless.npy", starless)

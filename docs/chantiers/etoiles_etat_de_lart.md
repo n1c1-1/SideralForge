@@ -3,7 +3,7 @@
 Recherche du 4 novembre 2026. Chaque affirmation est suivie de sa source. Les sources **informelles** (forums, blogs,
 critiques d'amateurs) sont marquées *(informel)*. Ce que je n'ai pas pu lire moi-même est signalé.
 
-**Ce qui n'a pas pu être ouvert :** les sous-pages du site officiel de StarNet (documentation, FAQ, référence de la
+**Ce qui n'a pas pu être ouvert :** les sous-pages du site officiel de l'outil de référence (documentation, FAQ, référence de la
 ligne de commande) renvoient toutes la page d'accueil ([starnetastro.com](https://www.starnetastro.com/)) ; les fils
 CloudyNights et Stargazers Lounge refusent la lecture automatique ; les forums AstroBin ne s'affichent pas sans
 navigateur (je n'en ai que les extraits du moteur de recherche) ; le fil de Russell Croman sur le « unscreen » (forum
@@ -16,7 +16,7 @@ le fond sous un masque (« inpainting »).
 
 ## 1. Le retrait des étoiles : les outils
 
-### StarNet (Nikita / Mikita Misiura)
+### l'outil de référence (Nikita / Mikita Misiura)
 
 - **Version 1 (2019), code ouvert.** Réseau convolutif « encodeur-décodeur à résidus », entraîné avec trois critères à
   la fois : écart pixel à pixel, un second réseau qui juge si le résultat a l'air vrai (« adversaire »), et une
@@ -54,7 +54,7 @@ le fond sous un masque (« inpainting »).
   ([Evan Tsai, notes de 2021](https://www.astroimagetw.com/en/tutorials/starless-tools-comparison/) *(informel)*).
 - **Ligne de commande : oui.** Le script Siril appelle `starnet2 -i entrée.tif -o sortie.tif [-s stride] [-u]
   [-m masque.tif] [-n etoiles_unscreen.tif] [-d]` (`-d` coupe la protection des hautes lumières, 2.5.3+) ; moteur ONNX
-  Runtime ([StarNet.py, siril-scripts](https://gitlab.com/free-astro/siril-scripts/-/blob/main/StarNetAstro/StarNet.py)).
+  Runtime ([l'outil de référence.py, siril-scripts](https://gitlab.com/free-astro/siril-scripts/-/blob/main/l'outil de référence Astro/l'outil de référence.py)).
 - **Vitesse :** 55 s en v2 contre 1 min 55 en v1 sur une même image (PixInsight, matériel inconnu)
   ([Stargazers Lounge](https://stargazerslounge.com/topic/390040-starnet-v2/) *(informel, lu via extrait)*) ;
   3 à 11 min pour 30 Mpx ([Formastro](https://formastro.com/en/blog/syqon-starless-retrait-etoiles-ia) *(informel)*).
@@ -122,16 +122,16 @@ le fond sous un masque (« inpainting »).
 
 ### Siril, PixInsight, GraXpert
 
-- **Siril** : depuis Siril 1.4, StarNet passe par un script Python ; l'ancienne interface intégrée est retirée
+- **Siril** : depuis Siril 1.4, l'outil de référence passe par un script Python ; l'ancienne interface intégrée est retirée
   ([doc Siril](https://siril.readthedocs.io/en/latest/processing/stars/starnet.html)). Le script étire avec l'étirement
-  automatique de Siril, canal par canal, puis applique l'inverse approché ; il fournit le masque de StarNet, l'unscreen
-  de StarNet, ou deux calques calculés par Siril : soustraction et « descreen »
-  ([StarNet.py](https://gitlab.com/free-astro/siril-scripts/-/blob/main/StarNetAstro/StarNet.py)). Siril pilote aussi
+  automatique de Siril, canal par canal, puis applique l'inverse approché ; il fournit le masque de l'outil de référence, l'unscreen
+  de l'outil de référence, ou deux calques calculés par Siril : soustraction et « descreen »
+  ([l'outil de référence.py](https://gitlab.com/free-astro/siril-scripts/-/blob/main/l'outil de référence Astro/l'outil de référence.py)). Siril pilote aussi
   StarXTerminator, SyQon et Dark Star par scripts (mêmes liens ci-dessus).
 - **Siril « Resynthèse complète »** (`synthstar`) : refait chaque étoile détectée en profil rond (Moffat ou gaussien)
   aux mêmes intensité, largeur, teinte et saturation ; le résultat est un calque d'étoiles **de synthèse** à recombiner
   avec une image sans étoiles ([doc Siril](https://siril.readthedocs.io/en/latest/processing/stars/resynthesis.html)).
-- **PixInsight** : StarNet (v1 portée en module natif, puis StarNet2), StarXTerminator, DeepStarRemoval
+- **PixInsight** : l'outil de référence (v1 portée en module natif, puis l'outil de référence), StarXTerminator, DeepStarRemoval
   ([Astronomy](https://www.astronomy.com/observing/how-to-remove-stars-from-images-with-ai-tools/)) ;
   **PhotometricGlowSubtraction** (DeepSkyColors) : mesure le profil des étoiles sur l'image, utilise les magnitudes et
   couleurs Gaia DR3 pour retirer le **halo** de chaque étoile ; image linéaire et astrométrée ; le cœur des étoiles est
@@ -168,15 +168,15 @@ le fond sous un masque (« inpainting »).
   ([Madarász et al. 2025, A&A 696 A37, arXiv:2502.18345](https://arxiv.org/abs/2502.18345)).
 - **Diffusion (au sens équation de la chaleur, pas réseau génératif).** Retire étoiles et bruit sur une seule image
   ([Cohen & Lu 2021, Astronomy and Computing 37](https://researchportal.hw.ac.uk/en/publications/a-diffusion-based-method-for-removing-background-stars-from-astro/)).
-- **Non trouvé :** aucun article évalué par des pairs sur les outils d'amateurs (StarNet, StarXTerminator) ni de
+- **Non trouvé :** aucun article évalué par des pairs sur les outils d'amateurs (l'outil de référence, StarXTerminator) ni de
   banc d'essai public.
 
 ### Tableau comparatif
 
 | Outil | Principe | Entrée | Sorties | Ligne de commande | Points faibles connus |
 |---|---|---|---|---|---|
-| StarNet v1 | réseau (pix2pix), code ouvert | étirée, TIFF 8 bits | sans étoiles + masque | oui (Python) | aigrettes, grosses étoiles, artefacts |
-| StarNet v2 | réseau, code fermé | étirée (linéaire = étirement provisoire) | sans étoiles, masque, unscreen | oui (`starnet2`) | artefacts près des étoiles brillantes *(informel)* |
+| l'outil de référence v1 | réseau (pix2pix), code ouvert | étirée, TIFF 8 bits | sans étoiles + masque | oui (Python) | aigrettes, grosses étoiles, artefacts |
+| l'outil de référence v2 | réseau, code fermé | étirée (linéaire = étirement provisoire) | sans étoiles, masque, unscreen | oui (`starnet2`) | artefacts près des étoiles brillantes *(informel)* |
 | StarXTerminator | réseau, commercial | linéaire ou étirée MTF ; pas GHS/arcsinh | sans étoiles + différence/unscreen | oui (`rc-astro sxt`) | aberrations, FWHM > 8 px, halos saturés |
 | Dark Star | réseau NAFNet | auto-étirée si médiane < 0,125 ; mono/couleur | sans étoiles + additif/unscreen | oui | non documentés |
 | SyQon Zenith | réseau NAFNet | étirement provisoire | sans étoiles + masque | via Siril | nébulosité faible *(informel)* |
@@ -192,7 +192,7 @@ le fond sous un masque (« inpainting »).
   ([notes d'usage](https://rc-astro.com/starxterminator-usage-notes)).
 - **En étiré : « unscreen ».** étoiles = (original − sans étoiles) / (1 − sans étoiles) : c'est l'inverse exact du
   mode Écran, si bien que sans étoiles « écran » étoiles redonne l'original
-  ([StarNet.py](https://gitlab.com/free-astro/siril-scripts/-/blob/main/StarNetAstro/StarNet.py),
+  ([l'outil de référence.py](https://gitlab.com/free-astro/siril-scripts/-/blob/main/l'outil de référence Astro/l'outil de référence.py),
   [darkstar_engine.py](https://github.com/setiastro/setiastrosuitepro/blob/main/src/setiastro/saspro/cosmicclarity_engines/darkstar_engine.py)) ;
   en PixelMath : `rescale(starry, starless, 1)` (forum, lu via extrait,
   [AstroBin](https://app.astrobin.com/forum/topic/178601/adding-stars-to-starless-image-causes-them-to-bloat-what-am-i-doing-wrong)
@@ -201,12 +201,12 @@ le fond sous un masque (« inpainting »).
   ([AstroBin](https://app.astrobin.com/forum/topic/64948/processing/which-formula-do-you-recommend-to-recombine-stars-with-starless-nebula-with-pixelmath)
   *(informel, de seconde main)*).
 - **Le piège de l'étirement.** Une courbe non linéaire ne se distribue pas sur une somme : étirer (fond + étoiles)
-  n'est pas étirer le fond plus étirer les étoiles. Le script StarNet de Siril le dit : on ne peut pas désétirer un
+  n'est pas étirer le fond plus étirer les étoiles. Le script l'outil de référence de Siril le dit : on ne peut pas désétirer un
   calque d'étoiles à part ; en mode linéaire, il désétire d'abord l'image sans étoiles, puis calcule le calque
-  d'étoiles sur l'original linéaire ([StarNet.py](https://gitlab.com/free-astro/siril-scripts/-/blob/main/StarNetAstro/StarNet.py),
+  d'étoiles sur l'original linéaire ([l'outil de référence.py](https://gitlab.com/free-astro/siril-scripts/-/blob/main/l'outil de référence Astro/l'outil de référence.py),
   lignes 1065-1087).
 - **Un détail de code qui compte.** Siril et Dark Star **coupent à 0** les valeurs négatives du calque d'étoiles
-  (`clip(original − sans étoiles, 0, 1)`) ([StarNet.py](https://gitlab.com/free-astro/siril-scripts/-/blob/main/StarNetAstro/StarNet.py),
+  (`clip(original − sans étoiles, 0, 1)`) ([l'outil de référence.py](https://gitlab.com/free-astro/siril-scripts/-/blob/main/l'outil de référence Astro/l'outil de référence.py),
   ligne 432). Là où le sans-étoiles est un peu au-dessus de l'original (le bruit), cette coupe ajoute une petite
   lumière positive : la somme ne redonne plus exactement l'original. *(Lecture du code, pas une source publiée.)*
 
@@ -264,7 +264,7 @@ le fond sous un masque (« inpainting »).
 
 Chez les amateurs, les comparaisons sont **visuelles** ([Evan Tsai](https://www.astroimagetw.com/en/tutorials/starless-tools-comparison/),
 [Astronomy](https://www.astronomy.com/observing/how-to-remove-stars-from-images-with-ai-tools/) *(informels)*) ; je
-n'ai trouvé **aucun banc d'essai chiffré** de StarNet ou StarXTerminator. Les méthodes chiffrées publiées :
+n'ai trouvé **aucun banc d'essai chiffré** de l'outil de référence ou StarXTerminator. Les méthodes chiffrées publiées :
 
 1. **Vérité connue, image de synthèse** : étoiles posées sur un fond connu, scores écart moyen, écart quadratique,
    PSNR, SSIM ([Cohen & Lu 2021](https://researchportal.hw.ac.uk/en/publications/a-diffusion-based-method-for-removing-background-stars-from-astro/)).
@@ -291,7 +291,7 @@ zones voisines ; (d) en linéaire, vérifier que sans étoiles + étoiles = orig
   PhotometricGlowSubtraction). Ses échecs connus sont précis : profil imparfait et **sur-soustraction sur fond de
   nébuleuse** (Ginsburg 2023), cœurs saturés à masquer puis remplir (J-PLUS, maskfill), profil faussé par la
   nébulosité autour de l'étoile de mesure (J-PLUS). C'est exactement ce que les épreuves (a) et (b) doivent viser.
-- **Tous les réseaux du marché travaillent sur une image étirée** (StarNet, StarXTerminator, Dark Star, SyQon) et
+- **Tous les réseaux du marché travaillent sur une image étirée** (l'outil de référence, StarXTerminator, Dark Star, SyQon) et
   ceux qui acceptent du linéaire l'étirent en interne puis le désétirent. Pour un moteur linéaire, le schéma établi est
   celui du script Siril : étirer, retirer, désétirer le sans-étoiles, **puis** calculer le calque d'étoiles par
   soustraction sur l'original linéaire.
@@ -301,7 +301,7 @@ zones voisines ; (d) en linéaire, vérifier que sans étoiles + étoiles = orig
   Astro, PixInsight) par défaut, **Addition** en option (VeraLux) ; « unscreen » seulement si les deux calques sont
   extraits d'images étirées par la même courbe. Le facteur d'intensité, l'étirement propre des étoiles et la saturation
   se règlent sur le calque d'étoiles.
-- **StarNet en option** : la ligne de commande `starnet2` (TIFF en entrée et sortie, `-s`, `-u`, `-m`, `-n`) suffit ;
+- **l'outil de référence en option** : la ligne de commande `starnet2` (TIFF en entrée et sortie, `-s`, `-u`, `-m`, `-n`) suffit ;
   StarXTerminator a aussi la sienne (`rc-astro sxt`). Aucun des deux n'est nécessaire au reste de la chaîne.
-- **Pour la comparaison** : aucun chiffre publié n'existe pour StarNet ; nos épreuves (a) à (e) seront les premières
+- **Pour la comparaison** : aucun chiffre publié n'existe pour l'outil de référence; nos épreuves (a) à (e) seront les premières
   mesures, à présenter comme telles.

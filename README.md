@@ -13,10 +13,10 @@ What makes it different from the usual stack → stretch → star removal → de
 * **Noise2Noise denoiser**: a network pretrained once on many pairs of half-stacks, applied as it is in seconds
   (on the processor too), or first adapted to the image on its own two half-stacks. It never sees a clean image:
   it learned to predict one half-stack from the other, so it cannot invent detail that is not in both halves.
-* **Star removal by a network trained on our own stacks**: NAFNet (Chen et al. 2022), trained on StarNet's starless
+* **Star removal by a network trained on our own stacks**: NAFNet (Chen et al. 2022), trained on the reference tool's starless
   images corrected by hand and on stars drawn on top of them (a Moffat core, an r^-3 aureole, diffraction spikes,
   saturation). It works on the linear image and gives two images, the starless image and the stars alone (they add
-  up to the image, to the pixel). On the bench it leaves less of the faint stars than StarNet and takes the spikes and
+  up to the image, to the pixel). On the bench it leaves less of the faint stars than the reference tool and takes the spikes and
   halos of the bright stars off, the background unchanged.
 * **Sky gradient removed right after stacking**, before the colour calibration: a polynomial, a surface through
   the sky samples (thin-plate splines) or an automatic fit; the samples and the excluded areas are edited on the
