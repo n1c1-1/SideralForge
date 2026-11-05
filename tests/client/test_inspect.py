@@ -828,6 +828,24 @@ def scratch(tmp_path):
     w.close()
 
 
+def test_a_setting_of_the_block_shown_keeps_its_picture_on_screen(scratch):
+    """Issue #24: Away from emission ticked in the Gradient block: the block is Outdated, its picture (the previous
+    result) is the same, so the viewer stays (built again, the image flickered); the header says it is Outdated."""
+    w = scratch
+    s = w.s
+    full = next(p for p in s.paths if p.name == "Full")
+    if s.state(full, "gradient") != "done":
+        pytest.skip("Gradient of the test project is not up to date")
+    inspect(w, "fond", index=s.index_of(full.pid))
+    t = w.tune
+    v0, img0 = t.view, t.view.image().identity()
+    t.grad_editor._set_avoid(not t.grad_editor.avoid)
+    settle(w)
+    assert s.state(full, "gradient") == "stale"
+    assert t.view is v0 and t.view.image().identity() == img0
+    assert "previous result" in texts_of(t)
+
+
 def test_an_outdated_block_shows_its_previous_result(scratch):
     w = scratch
     s = w.s

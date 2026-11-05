@@ -660,7 +660,13 @@ class TuneView(QWidget):
         self._remember()
         clear(self.head)
         self.grad_editor.detach()
-        self._clear_center()
+        # the same picture as shown (a setting changed, the block Outdated with its previous result): the viewer stays,
+        # only the header and the panel are built again (issue #24: rebuilt, the image flickered)
+        sig = self._center_signature(p, k=s.sel_step) if node is not None and p is not None else None
+        keep = sig is not None and sig == getattr(self, "_center_sig", None) and self.view is not None
+        if not keep:
+            self._clear_center()
+        self._center_sig = sig
         if node is None or p is None:
             return
         k = s.sel_step
@@ -711,10 +717,36 @@ class TuneView(QWidget):
             self.head.addWidget(tb)
         self.head.addStretch(1)
         self._cur = (p, k, vis[i])
-        self._fill()
+        if not keep:
+            self._fill()
         if k == "fond" and vis[i].key in ("result", "removed") and self.view is not None:
             self.grad_editor.attach(self.view, p)
         QTimer.singleShot(PREFETCH_DELAY_MS, lambda pp=p, kk=k: self._prefetch(pp, kk))
+
+    def _center_signature(self, p, k: str):
+        """What the centre shows when it is one picture: (workflow, block, tab, the picture's identity, the workflow
+        compared, the background chosen); None for anything else (it is always built again)."""
+        state = block_state(self.s, p, k)
+        if state in ("pending", "running", "failed", "interrupted", "skipped") or k in ("selection", "calibration"):
+            return None
+        if state == "stale" and not self._has_previous(p, k):
+            return None
+        vis = self.visuals(p, k)
+        if not vis:
+            return None
+        keys = [x.key for x in vis]
+        want = self.tab_of.get(k)
+        spec = vis[keys.index(want)] if want in keys and not vis[keys.index(want)].spec else vis[0]
+        if spec.kind not in ("array", "preview", "color", "gradient", "removed", "calibrated"):
+            return None
+        shown = self._background(p, k, spec) if spec.backgrounds else spec
+        if shown.kind == "render":
+            return None
+        try:
+            vi = self.steps.view_image(p, shown)
+        except Exception:  # noqa: BLE001 - built again: the tab says why
+            return None
+        return None if vi is None else (p.pid, k, spec.key, vi.identity(), self.cmp_pid, self.bg_of.get(k))
 
     def _prefetch(self, p, k: str):
         """The pictures of the other tabs of the block shown and of the next block, prepared ahead of time (low
