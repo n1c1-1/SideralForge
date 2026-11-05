@@ -60,8 +60,10 @@ def test_each_slider_is_monotonic(kind, bases):
             moved = False
             for name in sl.table:
                 v = [getattr(x, name) for x in vals]
-                assert all(b >= a - 1e-12 for a, b in zip(v, v[1:])), (kind, base, sl.key, name, v)
-                moved |= v[-1] > v[0]
+                up = all(b >= a - 1e-12 for a, b in zip(v, v[1:]))
+                down = all(b <= a + 1e-12 for a, b in zip(v, v[1:]))      # Small stars: left = fewer stars (#7)
+                assert up or down, (kind, base, sl.key, name, v)
+                moved |= v[-1] != v[0]
             assert moved, (kind, base, sl.key)              # never frozen, even on a base of 0 (saturation)
 
 
