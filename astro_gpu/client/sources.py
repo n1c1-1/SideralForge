@@ -165,7 +165,6 @@ class KindRow(QFrame):
         self.folder_b.setToolTip(_("Every frame of a folder"))
         self.folder_b.clicked.connect(self._pick_folder)
         self.clear_b = QPushButton("✕")
-        self.clear_b.setFixedWidth(28)
         self.clear_b.setToolTip(_("None of this kind"))
         self.clear_b.clicked.connect(lambda: self.changed.emit(self.key, []))
         for b in (self.files_b, self.folder_b, self.clear_b):

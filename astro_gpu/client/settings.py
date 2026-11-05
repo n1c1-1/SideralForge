@@ -206,6 +206,12 @@ CATALOG = {
             E("astrometry", "pixel_um", "expert", help="Pixel size of the sensor; empty = read from the files."),
             E("astrometry", "scale", "expert", help="Arcseconds per pixel; empty = computed."),
         ]),
+        ("H-alpha survey", [
+            E("surveys", "survey", help="The professional H-alpha map of the field: where the faint nebulosity is, so "
+                                        "that the Gradient block takes no sky sample there."),
+            E("surveys", "min_coverage", "expert", help="Below this share of the field covered by NSNS, Finkbeiner's "
+                                                        "all-sky map is used."),
+        ]),
         ("System", [E("catalogs", "cell_deg", "system", help="Size of the sky tiles requested from the Gaia "
                                                              "catalogue.")]),
     ],

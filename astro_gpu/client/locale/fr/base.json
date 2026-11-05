@@ -860,5 +860,7 @@
  "exposure differs from the lights ({exp})": "pose différente de celle des brutes ({exp})",
  "Choose the frames of each kind: by their files, a folder, or by dropping them here.": "Choisir les images de chaque type : par leurs fichiers, par un dossier, ou en les déposant ici.",
  "No light frames chosen.": "Aucune image brute choisie.",
- "the same frames as the lights": "les mêmes images que les brutes"
+ "the same frames as the lights": "les mêmes images que les brutes",
+ "The professional H-alpha map of the field: where the faint nebulosity is, so that the Gradient block takes no sky sample there.": "La carte H-alpha professionnelle du champ : où est la nébulosité faible, pour que le bloc Gradient n'y prenne aucun échantillon de ciel.",
+ "Below this share of the field covered by NSNS, Finkbeiner's all-sky map is used.": "En dessous de cette part du champ couverte par NSNS, la carte de Finkbeiner (tout le ciel) est utilisée."
 }
