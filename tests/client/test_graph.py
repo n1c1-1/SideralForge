@@ -1728,3 +1728,19 @@ def test_the_default_view_shows_the_whole_chain_from_frames_to_post_at_any_width
 def test_the_test_project_is_untouched():
     """Run last (pytest keeps the order of the file): nothing above wrote into the test project or its store."""
     assert _tree_snapshot(F_PROJECT) == PROJECT_BEFORE
+
+
+def test_a_rebuild_keeps_where_the_graph_was_scrolled(page, qapp):
+    """Issue #24: every change (and every stage event of a run) builds the graph again; it used to come back to its
+    left end. Built again at the same size, it stays where the user had scrolled."""
+    gv = page.graph
+    gv.parentWidget().resize(700, 600)                                          # narrower than the graph: it scrolls
+    qapp.processEvents()
+    gv.rebuild()
+    hb = gv.horizontalScrollBar()
+    if hb.maximum() == 0:
+        pytest.skip("the graph fits the window: nothing to scroll")
+    hb.setValue(hb.maximum() // 2)
+    kept = hb.value()
+    gv.rebuild()
+    assert hb.value() == kept

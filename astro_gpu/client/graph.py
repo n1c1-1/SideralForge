@@ -434,6 +434,9 @@ class GraphView(QGraphicsView):
 
     def rebuild(self):
         sc = self.scene()
+        # issue #24: a change (or a stage event of a run) builds the graph again; where the user had scrolled stays,
+        # when the graph keeps its size
+        was = (sc.sceneRect(), self.horizontalScrollBar().value(), self.verticalScrollBar().value())
         sc.clear()
         self.ghosts = []
         self._sel_item = None
@@ -547,6 +550,10 @@ class GraphView(QGraphicsView):
         sc.setSceneRect(r)
         self.show_wait()
         self.fit()
+        old, h0, v0 = was
+        if not old.isEmpty() and abs(old.width() - r.width()) < 1 and abs(old.height() - r.height()) < 1:
+            self.horizontalScrollBar().setValue(h0)
+            self.verticalScrollBar().setValue(v0)
 
     def show_wait(self):
         """The line over the graph while the worker reads the project (or says why it could not)."""

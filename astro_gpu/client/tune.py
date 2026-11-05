@@ -845,6 +845,7 @@ class TuneView(QWidget):
         """Build the content of the tab shown (again, when the worker brings its data)."""
         if self._cur is None:
             return
+        self._cur_needs = set()
         p, k, spec = self._cur
         self._clear_center()
         self._note_row = None
@@ -928,6 +929,7 @@ class TuneView(QWidget):
         """What the worker read for a block (None while it reads it: the tab is built again when it comes). An
         error comes back as ``_Failed``."""
         dk = (name, keys)
+        self._cur_needs = getattr(self, "_cur_needs", set()) | {name}       # what the tab shown waits for (#24)
         if dk in self._data:
             self._data.move_to_end(dk)
             return self._data[dk]
@@ -948,7 +950,9 @@ class TuneView(QWidget):
             self._add_sky(result)
         elif name in ("lights", "registration") and self._cur is None and self.s.sel_step == "selection":
             self._build_selection()
-        elif self.isVisible() and self.pages.currentIndex() == 0:
+        elif self.isVisible() and self.pages.currentIndex() == 0 and name in getattr(self, "_cur_needs", {name}):
+            # issue #24: only the tab that waits for it is built again (a late result of another tab used to rebuild
+            # the one shown, its viewer with it)
             self._remember()
             self._fill()
 
@@ -1467,7 +1471,9 @@ class TuneView(QWidget):
                                     kind=kind or "mask"))       # each master the automatic stretch of its kind
         v = self._new_view("calibration", spec)
         v.set_exclude_mode("off")
-        v.set_sequence(frames, 0)
+        # the master shown stays shown when the tab is built again (issue #24: it went back to the first)
+        v.set_sequence(frames, min(self._seq_index.get((spec.key, "masters"), 0), max(len(frames) - 1, 0)))
+        self._on(v, v.frameChanged, lambda i, kk=(spec.key, "masters"): self._seq_index.__setitem__(kk, i))
         self._notes()
         self.center.addWidget(v, 1)
 
