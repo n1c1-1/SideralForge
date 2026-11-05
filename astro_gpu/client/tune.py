@@ -663,7 +663,8 @@ class TuneView(QWidget):
         # the same picture as shown (a setting changed, the block Outdated with its previous result): the viewer stays,
         # only the header and the panel are built again (issue #24: rebuilt, the image flickered)
         sig = self._center_signature(p, k=s.sel_step) if node is not None and p is not None else None
-        keep = sig is not None and sig == getattr(self, "_center_sig", None) and self.view is not None
+        keep = sig is not None and sig == getattr(self, "_center_sig", None) and (
+            self.view is not None or (sig[0] == "selection" and self.chart is not None))
         if not keep:
             self._clear_center()
         self._center_sig = sig
@@ -686,7 +687,10 @@ class TuneView(QWidget):
             self._previous_tag(p, k)
         if k == "selection":
             self.head.addStretch(1)
-            self.selection_center(p)
+            if keep:                                      # the same frames: only the thresholds may have moved (#24)
+                self._selection_in_place()
+            else:
+                self.selection_center(p)
             return
         vis = self.visuals(p, k)
         if not vis:
@@ -725,7 +729,13 @@ class TuneView(QWidget):
 
     def _center_signature(self, p, k: str):
         """What the centre shows when it is one picture: (workflow, block, tab, the picture's identity, the workflow
-        compared, the background chosen); None for anything else (it is always built again)."""
+        compared, the background chosen); for Selection, the frames it charts (its thresholds are moved in place);
+        None for anything else (it is always built again)."""
+        if k == "selection":
+            if block_state(self.s, p, "selection") in ("pending", "running", "failed", "interrupted", "skipped"):
+                return None
+            return ("selection", p.pid, self._keys(p, "register", "inventory", "stack"), self._sources_sig(),
+                    bool(self.s.thresholds_active()))
         state = block_state(self.s, p, k)
         if state in ("pending", "running", "failed", "interrupted", "skipped") or k in ("selection", "calibration"):
             return None
@@ -2105,6 +2115,23 @@ class TuneView(QWidget):
         self._table_wid = p.pid
         self._table_got = None
         self._lights(p)
+
+    def _selection_in_place(self):
+        """The Selection chart kept (issue #24: dragging a threshold built it again, with a "Reading the results"
+        flash): its thresholds and colours follow the panel."""
+        ch = self.chart
+        try:
+            if not ch.thresholds:
+                ch._classify()
+                return
+            t, f = self._thresholds()
+            if abs(ch.tmin - t) > 1e-9 or abs(ch.fmax - f) > 1e-9:
+                ch.tmin, ch.fmax = t, f
+                ch.h_t.value, ch.h_f.value = t, f
+                ch._classify()
+        except RuntimeError:                                # the chart was deleted meanwhile: build it
+            self._center_sig = None
+            self.request_refresh()
 
     def _table_ready(self, wid: int, token: int, table):
         if self.pages.currentIndex() != 0 or self.s.sel_step != "selection" or wid != getattr(self, "_table_wid", None) \

@@ -557,6 +557,7 @@ def test_the_selection_chart_updates_the_kept_count_through_selection_preview(wi
         QTest.mouseMove(ch, QPoint(int(bot.left() + 30), int(dest.y())))
         QTest.mouseRelease(ch, Qt.LeftButton, Qt.NoModifier, QPoint(int(bot.left() + 30), int(dest.y())))
         settle(win)
+        assert t.chart is ch                              # issue #24: the chart moved in place, not built again
         assert abs(ch.tmin - goal) < 2, (ch.tmin, goal)
         want = api.selection_preview(win.s.p, 1, ch.tmin / 100, ch.fmax / win.s.fwhm_median()).kept
         assert want < N_LIGHTS and ch.kept() == want
