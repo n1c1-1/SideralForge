@@ -186,7 +186,7 @@ class ExportDialog(QDialog):
         return c
 
     def default_file(self, fmt: str) -> str:
-        base = self.root if self.root is not None else Path(prefs.get("workspace")) / slug(self.pname)
+        base = self.root if self.root is not None else Path(prefs.last_folder()) / slug(self.pname)
         name = slug(self.pname)
         return (base / "export" / name / (name + SUFFIX[fmt])).as_posix()
 
@@ -215,7 +215,8 @@ class ExportDialog(QDialog):
 
     def _browse(self):
         folder, name = split_file(self.dest.text())
-        d = QFileDialog.getExistingDirectory(self, _("Choose the folder"), folder or prefs.get("workspace"))
+        d = QFileDialog.getExistingDirectory(self, _("Choose the folder"), folder or prefs.last_folder())
+        prefs.remember_folder(d)
         if d:
             self.dest.setText(f"{Path(d).as_posix()}/{name or slug(self.pname)}{SUFFIX[self.format_key()]}")
 

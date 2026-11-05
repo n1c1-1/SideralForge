@@ -580,11 +580,15 @@ class NewProjectDialog(QDialog):
         row.addWidget(lb)
         self.folder_lb = ElidedLabel("", "small")
         row.addWidget(self.folder_lb, 1)
+        self.browse = QPushButton(_("Browse…"))
+        self.browse.setToolTip(_("The folder the project's own folder is made in"))
+        self.browse.clicked.connect(self._browse)
+        row.addWidget(self.browse)
         v.addLayout(row)
         width = max(80, *(r.sizeHint().width() + 8 for r in rows))
         for r in rows:
             r.setFixedWidth(width)
-        self.exists = label(_("A folder with this name already exists in the workspace."), "warn")
+        self.exists = label(_("A folder with this name already exists there."), "warn")
         self.exists.setContentsMargins(width + 6, 0, 0, 0)
         v.addWidget(self.exists)
         bb = QHBoxLayout()
@@ -605,6 +609,14 @@ class NewProjectDialog(QDialog):
 
     def folder(self) -> Path:
         return self.workspace / folder_name(self.name.text())
+
+    def _browse(self):
+        """The location chosen (issue #31: the project decides where it lives, not a workspace)."""
+        d = QFileDialog.getExistingDirectory(self, _("Location of the project"), self.workspace.as_posix())
+        if d:
+            self.workspace = Path(d)
+            prefs.remember_folder(d)
+            self._update()
 
     def _update(self):
         f = folder_name(self.name.text())
@@ -797,7 +809,7 @@ class HomeView(QWidget):
 
     def ask_new_project(self, name: str = "", target: str = "") -> tuple[str, str, str] | None:
         """The New project dialog: (folder, name, target), or None."""
-        d = NewProjectDialog(prefs.get("workspace"), name, target, self.window())
+        d = NewProjectDialog(prefs.last_folder(), name, target, self.window())
         if d.exec():
             return d.folder().as_posix(), d.name.text().strip(), d.target.text().strip()
         return None
@@ -808,8 +820,9 @@ class HomeView(QWidget):
             self.createProject.emit(*got)
 
     def open_other(self):
-        f, _x = QFileDialog.getOpenFileName(self, _("Open project"), prefs.get("workspace"),
+        f, _x = QFileDialog.getOpenFileName(self, _("Open project"), prefs.last_folder(),
                                             _("Projects (*.astroproj)") + ";;"
                                             + _("Projects made with an older version (project.json)"))
         if f:
+            prefs.remember_folder(Path(f).parent.parent)       # the folder the project's folder is in
             self.openProject.emit(Path(f).parent.as_posix())

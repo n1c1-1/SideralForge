@@ -328,7 +328,8 @@ class Main(QMainWindow):
     def import_folder_as_new(self):
         """Import folder as new project: the folder of the lights gives the name and the target, then its frames
         are read into the new project."""
-        folder = QFileDialog.getExistingDirectory(self, _("Import folder as new project…"), prefs.get("workspace"))
+        folder = QFileDialog.getExistingDirectory(self, _("Import folder as new project…"), prefs.last_folder())
+        prefs.remember_folder(folder)
         if not folder:
             return
         g = guess_names(folder)
@@ -809,7 +810,8 @@ class Main(QMainWindow):
             return
         if self.s is not None:
             self.s.flush()
-        d = QFileDialog.getExistingDirectory(self, _("Save as…"), prefs.get("workspace"))
+        d = QFileDialog.getExistingDirectory(self, _("Save as…"), prefs.last_folder())
+        prefs.remember_folder(d)
         if not d:
             return
         root = Path(d)

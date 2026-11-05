@@ -19,6 +19,8 @@ DEFAULTS = {
     "recent": [],                     # [{"path", "name", "target"}], most recent first
     # folders and disk
     "workspace": "F:/astro_projets",
+    # the folder the file dialogs open in: the last one used (issues #31, #32); the workspace the first time
+    "last_folder": "",
     # the sections of Home (Settings › Folders): each lists the projects of a folder and of its sub-folders. "label" and
     # "note" are English (translated where shown) or typed by the user; "open": shown open; "workspace": the row whose
     # folder is the workspace above (where New project creates), so it has no "folder" of its own
@@ -110,6 +112,25 @@ def save():
 def spec() -> bool:
     """Spec mode: shows what the engine still has to build (◇ marks), disabled."""
     return bool(get("spec_mode"))
+
+
+def last_folder() -> str:
+    """Where a file dialog opens: the last folder used in one (issues #31, #32: every dialog started from the
+    workspace, so the flats were looked for again from there after the lights), else the workspace, else home."""
+    for cand in (get("last_folder"), get("workspace"), str(Path.home())):
+        if cand and Path(cand).is_dir():
+            return str(cand)
+    return str(Path.home())
+
+
+def remember_folder(path) -> None:
+    """A file or folder chosen in a dialog: its folder is where the next dialog opens."""
+    if not path:
+        return
+    p = Path(path)
+    folder = p if p.is_dir() else p.parent
+    if str(folder) and folder.is_dir():
+        set("last_folder", folder.as_posix())
 
 
 def recent() -> list[dict]:

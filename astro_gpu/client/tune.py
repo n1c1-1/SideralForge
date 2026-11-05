@@ -1680,9 +1680,10 @@ class TuneView(QWidget):
         session when all have some): Calibration is then computed again."""
         if folder is None:
             folder = QFileDialog.getExistingDirectory(self.window(), _(ADD_FOLDER.get(kind, "Add a folder…")),
-                                                      prefs.get("workspace"))
+                                                      prefs.last_folder())
             if not folder:
                 return False
+            prefs.remember_folder(folder)
         P = self.s.p
         targets = [x.id for x in P.sessions if not getattr(x, kind)] or [x.id for x in P.sessions]
         done = [sid for sid in targets if self.s.add_calibration_folder(sid, kind, folder)]
