@@ -478,8 +478,7 @@ class Panel(QWidget):
                                        and self.renamed.emit(p.pid, ed.text().strip()))
             top.addWidget(ed, 1)
         else:
-            top.addWidget(label(block_title(p, k), "h1"))
-            top.addStretch(1)
+            top.addWidget(label(block_title(p, k), "h1", wrap=True), 1)     # a long name (#36) wraps, never cut
         st = self.graph_state(node)
         chip = QLabel(_(STATE_WORD[st]))
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
@@ -824,8 +823,7 @@ class Panel(QWidget):
         s.sel_layer = lid
         lay = s.post_layer(lid) or {}
         top = QHBoxLayout()
-        top.addWidget(label(block_title(p, "composition"), "h1"))
-        top.addStretch(1)
+        top.addWidget(label(block_title(p, "composition"), "h1", wrap=True), 1)
         st = block_state(s, p, "etoiles")
         chip = QLabel(_(STATE_WORD[st]))
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")

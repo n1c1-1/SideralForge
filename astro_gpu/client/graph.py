@@ -896,6 +896,7 @@ class ToolCard(QFrame):
         v.addWidget(t)
         v.addWidget(label(text, "small"))
         self.setToolTip(_(TOOLS[key]["what"]) + (("\n◇ " + _("Not in the engine yet.")) if new else ""))
+        t.setMinimumWidth(t.sizeHint().width())          # a long name (#36) is never cut by a narrow bar
         self.setMinimumWidth(140)
 
     def mousePressEvent(self, e):                                     # noqa: N802
@@ -942,6 +943,7 @@ class CombineCard(QFrame):
         v.addWidget(t)
         v.addWidget(label(_("a layer of Post") if on else _("after a split block"), "small"))
         self.setToolTip(_(BY_KEY["composition"]["what"]))
+        t.setMinimumWidth(t.sizeHint().width())
         self.setMinimumWidth(140)
         self.setEnabled(on)
 

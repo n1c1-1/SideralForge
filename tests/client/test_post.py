@@ -2359,7 +2359,7 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
             widgets_of(v, QLabel)
         v.select(named(v, "Classic")["id"], "layer")                                    # greyed sliders and their reasons
         sl = {x.name.text(): x for x in widgets_of(v, ContSlider)}
-        assert any("bloc Étoiles" in x.why.text() for x in sl.values())
+        assert any("bloc Split" in x.why.text() for x in sl.values())
         v.select(named(v, "Full")["id"], "layer")
         v.add_mask(named(v, "Full"))
         for src in postengine.MASK_SOURCES:
