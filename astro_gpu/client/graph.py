@@ -356,6 +356,7 @@ class GraphView(QGraphicsView):
     pauseToggled = Signal(object)          # Node: "Pause here for review" was chosen (set it, or take it off)
     reviewMarked = Signal(object)          # Node: "Mark as reviewed" was chosen
     partToPost = Signal(object, str)       # a Stars node's image (starless | stars) pulled onto Post
+    partOutOfPost = Signal(object, str)    # a Stars node's image sent as it is: taken out of Post (#29)
     newComposition = Signal(object)        # a Stars node's port pulled onto Composition: a new Stars and background block
     layerRemoved = Signal(int)             # a Stars and background block, or an image sent as it is: its Post layer
     openLayer = Signal(int)                # Open in Post (a Post layer's id)
@@ -781,7 +782,11 @@ class GraphView(QGraphicsView):
             return
         if node.key == "etoiles" and len(node.paths) == 1:
             for what, text in (("starless", "Send the starless image to Post"), ("stars", "Send the stars alone to Post")):
-                m.addAction(_(text)).triggered.connect(lambda _c=False, w=what: self.partToPost.emit(node, w))
+                if self.graph is not None and (node, what) in self.graph.direct:      # sent: it can be taken back (#29)
+                    out = "Take the starless image out of Post" if what == "starless" else "Take the stars alone out of Post"
+                    m.addAction(_(out)).triggered.connect(lambda _c=False, w=what: self.partOutOfPost.emit(node, w))
+                else:
+                    m.addAction(_(text)).triggered.connect(lambda _c=False, w=what: self.partToPost.emit(node, w))
             m.addAction(_("New Combine stars & background layers block")).triggered.connect(
                 lambda: self.newComposition.emit(node))
             m.addSeparator()
@@ -991,6 +996,7 @@ class GraphPage(QWidget):
         gv.pauseToggled.connect(self.toggle_pause)
         gv.reviewMarked.connect(self.mark_reviewed)
         gv.partToPost.connect(self.part_to_post)
+        gv.partOutOfPost.connect(self.part_out_of_post)
         gv.newComposition.connect(self.new_composition)
         gv.layerRemoved.connect(self.remove_layer)
         gv.openLayer.connect(self.openLayer.emit)
@@ -1218,6 +1224,15 @@ class GraphPage(QWidget):
         s.add_post_layer(p.pid, part, self)
         s.log('{image} of "{name}" sent to Post', image=dict(STAR_OUTPUTS)[part], name=p.name)
         self.toast(_('{image} of "{name}" sent to Post as a new layer').format(image=word, name=p.name))
+
+    def part_out_of_post(self, node, part):
+        """One of the split block's images sent as it is, taken out of Post (its layers, with their filters; #29)."""
+        s = self.s
+        p = s.path if s.path in node.paths else node.paths[0]
+        word = _(dict(STAR_OUTPUTS)[part])
+        if s.remove_post_part(p.pid, part, self):
+            s.log('{image} of "{name}" taken out of Post', image=dict(STAR_OUTPUTS)[part], name=p.name)
+            self.toast(_('{image} of "{name}" taken out of Post').format(image=word, name=p.name))
 
     def new_composition(self, node):
         """A Stars and background block for this Stars block: a layer of Post that recombines its two images."""

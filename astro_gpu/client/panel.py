@@ -767,10 +767,15 @@ class Panel(QWidget):
                 row.addWidget(lb, 1)
                 p = node.paths[0]
                 sent = any(x.get("pid") == p.pid and x.get("part") == what for x in self.s.post_layers())
-                b = QPushButton(_("To Post"))
-                b.setToolTip(_("This image as a layer of Post, as it is (no Combine stars & background layers block)"))
-                b.setEnabled(not sent)
-                b.clicked.connect(lambda _c=False, w=what, pp=p: self._part_to_post(pp, w))
+                if sent:                                     # issue #29: a link to Post can be taken back
+                    b = QPushButton(_("Out of Post"))
+                    b.setToolTip(_("Take this image out of Post (its layers and their filters)"))
+                    b.clicked.connect(lambda _c=False, w=what, pp=p: self._part_out_of_post(pp, w))
+                else:
+                    b = QPushButton(_("To Post"))
+                    b.setToolTip(_("This image as a layer of Post, as it is (no Combine stars & background layers "
+                                   "block)"))
+                    b.clicked.connect(lambda _c=False, w=what, pp=p: self._part_to_post(pp, w))
                 row.addWidget(b, 0, Qt.AlignTop)
                 self.bv.addLayout(row)
             else:
@@ -788,6 +793,13 @@ class Panel(QWidget):
         from .blocks import STAR_OUTPUTS
         self.s.add_post_layer(p.pid, part, self)
         self.s.log('{image} of "{name}" sent to Post', image=dict(STAR_OUTPUTS)[part], name=p.name)
+        self.s.select(index=self.s.paths.index(p), step="etoiles")
+
+    def _part_out_of_post(self, p, part):
+        """One of the split block's images sent as it is, taken out of Post (#29)."""
+        from .blocks import STAR_OUTPUTS
+        if self.s.remove_post_part(p.pid, part, self):
+            self.s.log('{image} of "{name}" taken out of Post', image=dict(STAR_OUTPUTS)[part], name=p.name)
         self.s.select(index=self.s.paths.index(p), step="etoiles")
 
     def _new_composition(self, p):
