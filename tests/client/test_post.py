@@ -1628,6 +1628,15 @@ def test_sliders_are_greyed_with_their_reason_and_double_click_resets(post):
     assert lay["sliders"]["sky"] == pytest.approx(3.0)
     sky.name.mouseDoubleClickEvent(None)
     assert "sky" not in lay["sliders"] and sky.val.text() == "0"
+    # issue #16: a double-click on the slider itself too (Lightroom's)
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    sky = sliders()["Sky"]
+    sky.done.emit(3.5)
+    assert lay["sliders"]["sky"] == pytest.approx(3.5)
+    sky = sliders()["Sky"]
+    QTest.mouseDClick(sky.s, Qt.LeftButton, Qt.NoModifier, QPoint(sky.s.width() // 2, sky.s.height() // 2))
+    assert "sky" not in lay["sliders"]
 
 
 def test_a_slider_drag_is_a_draft_then_the_screen_image(post):

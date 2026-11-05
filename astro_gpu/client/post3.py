@@ -39,7 +39,7 @@ import math
 import re
 
 import numpy as np
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -180,7 +180,7 @@ def fmt(v, step):
 # ======================================================================== a continuous slider
 class ContSlider(QWidget):
     """A slider that glides: `moved` while dragging (draft render), `done` when let go (full render). Double-click
-    on the name: back to the default."""
+    on the slider or on its name: back to the default (Lightroom's, issue #16)."""
     moved = Signal(float)
     done = Signal(float)
 
@@ -193,6 +193,7 @@ class ContSlider(QWidget):
         top = QHBoxLayout()
         self.name = QLabel(name)
         self.name.setToolTip(_("Double-click: default value"))
+        self.setToolTip(_("Double-click: default value"))
         self.val = label("", "small")
         top.addWidget(self.name)
         top.addStretch(1)
@@ -217,7 +218,22 @@ class ContSlider(QWidget):
         self.set_value(value)
         self.s.valueChanged.connect(self._changed)
         self.s.sliderReleased.connect(lambda: self.done.emit(self.value()))
-        self.name.mouseDoubleClickEvent = lambda e: (self.set_value(self.default), self.done.emit(self.default))
+        self.name.mouseDoubleClickEvent = lambda e: self.reset()
+        self.s.installEventFilter(self)
+
+    def reset(self):
+        """Back to the default value (a double-click)."""
+        if not self.s.isEnabled():
+            return
+        self.set_value(self.default)
+        self.moved.emit(self.default)
+        self.done.emit(self.default)
+
+    def eventFilter(self, obj, e):                                   # noqa: N802 - Qt's name
+        if obj is self.s and e.type() == QEvent.MouseButtonDblClick and e.button() == Qt.LeftButton:
+            self.reset()
+            return True
+        return super().eventFilter(obj, e)
 
     def value(self) -> float:
         x = self.lo + (self.hi - self.lo) * self.s.value() / 1000
