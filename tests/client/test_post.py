@@ -1364,6 +1364,50 @@ def test_a_stars_workflow_comes_as_its_stars_and_background_image(preps, qapp):
         s.close()
 
 
+def test_a_stars_and_background_layer_has_its_two_images_as_sub_layers_with_their_own_filters(preps, qapp):
+    """Issue #3: under a Stars and background layer, its stars alone and its starless image are sub-layers; a filter
+    added on one of them applies to that image only, before the two are put back together, and the eye of a
+    sub-layer leaves its image out."""
+    s = Setup(preps, qapp, stars=True)
+    try:
+        assert s.settle()
+        v = s.view
+        full = v.layers[1]
+        assert [(r.lay["kind"], r.lay.get("sub"), r.depth) for r in v.rows][1:] == [
+            ("workflow", None, 0), ("sub", "stars", 1), ("sub", "starless", 1)]
+        before = shown(v).copy()
+        v.select(full["id"], "stars")
+        lv = v.add_filter("levels")
+        lv["params"].update(black=0.0, white=0.5)
+        assert lv["target"] == full["id"] and lv["sub"] == "stars"
+        assert [(r.lay.get("sub"), r.depth) for r in v.rows][2:] == [("stars", 1), ("stars", 2), ("starless", 1)]
+        v.request(final_only=True)
+        assert s.settle()
+        # the stars alone brightened, the starless image untouched: the stars brighter, the sky as it was
+        src = LayerSource(lambda sid: s.folders.get(sid), LayerService(DEV))
+        w, h = src.canvas([("stars", 1)]).size(1)
+        a = src.layer(new_workflow_layer(1, "Full", True, part="stars"), 1, (0, 0, w, h))
+        b = src.layer(new_workflow_layer(1, "Full", True, part="starless"), 1, (0, 0, w, h))
+        a2 = postengine.FILTERS["levels"]["fn"](a, lv["params"], None)
+        want = postengine.Composer.blend("Screen", b, a2)
+        alone = reference(s, postengine.only_layer(v.layers, full["id"])).rgb
+        assert np.abs(alone.astype(np.float32) - want * 255).max() <= 2
+        assert not np.array_equal(shown(v), before)
+        # the stars sub-layer hidden: the starless image alone
+        v.set_shown(full["id"], "stars", False)
+        alone = reference(s, postengine.only_layer(v.layers, full["id"])).rgb
+        assert np.abs(alone.astype(np.float32) - np.clip(b, 0, 1) * 255).max() <= 2
+        # saved and loaded as it is
+        kept = postengine.load_layers(postengine.save_layers(v.layers), {1, 2})
+        assert next(x for x in kept if x.get("part") == "combined")["shown"] == {"stars": False, "starless": True}
+        assert next(x for x in kept if x["kind"] == "filter")["sub"] == "stars"
+        # taken out of the layer, a filter is no longer on one of its images
+        v.set_target(lv, None)
+        assert lv["target"] is None and lv["sub"] is None
+    finally:
+        s.close()
+
+
 def test_undo_and_redo_one_step_per_action(post):
     from astro_gpu.client.post3 import ContSlider
     v = post.view

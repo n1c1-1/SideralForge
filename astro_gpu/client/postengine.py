@@ -9,14 +9,16 @@ Layers (a list, top first, as in Photoshop; saved as it is in ``project.post["la
   an image of a workflow, rendered by the engine with its ``base`` (a named rendering of the project, or None for the
   suggestion) moved by its simplified ``sliders`` (positions 0-4, 2 = the base). ``part`` None: the Output block's
   image; else one of the Stars block's (``PARTS``): its starless image, its stars alone, or the two recombined (the
-  Stars and background block: ``blend`` says how its stars go back, render/stars.BLENDS);
+  Stars and background block: ``blend`` says how its stars go back, render/stars.BLENDS; ``shown`` which of its two
+  images are put together: issue #3, its two images are sub-layers of their own, each with its filters);
 * an image layer ``{id, kind: "image", key, name, visible, opacity, mode, sliders, linked, mask}``: the linear image of
   a stage result (a stack, a gradient-removed or a denoised image) sent from Inspect, stretched automatically and moved
   by the Sky, Contrast and Saturation sliders; ``key`` names the stage result (the pixels are never saved);
 * a filter layer ``{id, kind: "filter", filter, name, visible, opacity, mode, params, mask, target}``: one of the
   filters (``FILTERS``: each a published or documented method, named in its ``source``; postfilters/ holds the new
   ones), applied to the one pixel layer (workflow or image) ``target`` names, or to everything below (``target`` is
-  None).
+  None). In a Stars and background layer, ``sub`` names the one of its two images (``SUBS``) the filter applies to,
+  before they are put together; None: to the recombined image.
 
 The model is Affinity Photo's: a filter that applies to one layer is that layer's child; a filter that applies to
 everything below is a layer of its own. In the list a layer's children sit just above it, top child first; the panel
@@ -56,6 +58,8 @@ MODES = ["Normal", "Lighten", "Screen", "Linear dodge (add)", "Multiply", "Soft 
 #: the Stars block's images a workflow layer can show (render/stars.PARTS), and how the recombined one puts its stars
 #: back (render/stars.BLENDS)
 PARTS = ("starless", "stars", "combined")
+#: the sub-layers of a Stars and background layer, top first (the stars go over the starless image)
+SUBS = ("stars", "starless")
 BLENDS = ("Screen", "Linear dodge (add)", "Lighten")
 OPS = {"add": "Add", "sub": "Subtract", "inter": "Intersect"}
 ALIGN = 8                                  # the canvas starts and ends on a multiple of this (the deepest level)
@@ -472,7 +476,7 @@ def new_workflow_layer(pid: int, name: str, visible=False, part=None, base=None)
         raise ValueError(f"unknown layer part {part!r} (allowed: {PARTS})")
     return {"id": new_id(), "kind": "workflow", "pid": pid, "part": part, "name": name, "visible": visible,
             "opacity": 100.0, "mode": "Screen" if part == "stars" else "Normal", "base": base, "sliders": {},
-            "mask": None, **({"blend": BLENDS[0]} if part == "combined" else {})}
+            "mask": None, **({"blend": BLENDS[0], "shown": {k: True for k in SUBS}} if part == "combined" else {})}
 
 
 def new_image_layer(key: str, name: str, visible: bool = True) -> dict:
@@ -500,22 +504,42 @@ def source_id(lay: dict):
     return ("image", lay["key"])
 
 
-def new_filter_layer(key: str, target=None) -> dict:
+def new_filter_layer(key: str, target=None, sub=None) -> dict:
     """A filter layer. target: the id of the one layer it applies to (it sits just above it, as a Photoshop clipping
-    mask); None: it applies to everything below it."""
+    mask); None: it applies to everything below it. sub: in a Stars and background layer, the one of its two images it
+    applies to (``SUBS``)."""
     f = FILTERS[key]
     return {"id": new_id(), "kind": "filter", "filter": key, "name": f["name"], "visible": True, "opacity": 100.0,
             "mode": "Normal", "params": {q["key"]: copy.deepcopy(q["default"]) for q in f["params"]}, "mask": None,
-            "target": target}
+            "target": target, "sub": sub}
+
+
+#: the names of a Stars and background layer's two images (POST_PART_NAMES of the model)
+SUB_NAMES = {"starless": "Starless image", "stars": "Stars alone"}
+
+
+def is_group(lay: dict) -> bool:
+    """A Stars and background layer: its two images are sub-layers, each with its own filters."""
+    return lay.get("kind") == "workflow" and lay.get("part") == "combined"
+
+
+def sub_row(lay: dict, sub: str) -> dict:
+    """The row of one of a Stars and background layer's two images in the panel (not a layer of the list: its id is
+    its layer's)."""
+    return {"id": lay["id"], "kind": "sub", "sub": sub, "target": lay["id"], "name": SUB_NAMES[sub],
+            "visible": (lay.get("shown") or {}).get(sub, True), "mode": "Normal", "opacity": 100.0, "mask": None}
 
 
 def normalize(layers: list[dict]) -> list[dict]:
     """Each layer's own filters go just above it, in their order; a filter whose layer is gone applies to everything
     below. The list is top first."""
     ids = {lay["id"] for lay in layers if is_pixel(lay)}
+    groups = {lay["id"] for lay in layers if is_group(lay)}
     for lay in layers:
         if lay["kind"] == "filter" and lay.get("target") not in ids:
             lay["target"] = None
+        if lay["kind"] == "filter" and (lay.get("target") not in groups or lay.get("sub") not in SUBS):
+            lay["sub"] = None
     out = []
     for lay in layers:
         if lay["kind"] == "filter" and lay.get("target"):
@@ -539,12 +563,18 @@ def tree(layers: list[dict]) -> list[tuple[dict, list[dict]]]:
 
 def rows(layers: list[dict], collapsed=()) -> list[tuple[dict, int]]:
     """The rows of the panel, top first, with their depth: a pixel layer, then its children indented (unless it is
-    collapsed), then the next top-level row."""
+    collapsed), then the next top-level row. A Stars and background layer's own filters come first, then its two
+    images (``sub_row``), each with its filters one step further in."""
     out = []
     for lay, kids in tree(layers):
         out.append((lay, 0))
-        if lay["id"] not in collapsed:
-            out += [(k, 1) for k in kids]
+        if lay["id"] in collapsed:
+            continue
+        out += [(k, 1) for k in kids if not k.get("sub")]
+        if is_group(lay):
+            for sub in SUBS:
+                out.append((sub_row(lay, sub), 1))
+                out += [(k, 2) for k in kids if k.get("sub") == sub]
     return out
 
 
@@ -562,9 +592,11 @@ def move(layers: list[dict], lid: int, parent: int | None, index: int) -> list[d
     top = [(x, [k for k in kids if k["id"] not in gid]) for x, kids in tree(layers) if x["id"] not in gid]
     if parent is None:
         if lay["kind"] == "filter":
-            lay["target"] = None
+            lay["target"] = lay["sub"] = None
         top.insert(max(0, min(index, len(top))), (lay, group[1:]))
     else:
+        if lay.get("target") != parent:
+            lay["sub"] = None
         lay["target"] = parent
         kids = next(k for x, k in top if x["id"] == parent)
         kids.insert(max(0, min(index, len(kids))), lay)
@@ -581,6 +613,8 @@ def snapshot(layers: list[dict]) -> list[dict]:
         d = dict(lay)
         if "sliders" in d:
             d["sliders"] = dict(d["sliders"])
+        if "shown" in d:
+            d["shown"] = dict(d["shown"])
         if "params" in d:
             d["params"] = {k: copy.deepcopy(v) if isinstance(v, (dict, list)) else v for k, v in d["params"].items()}
         m = lay.get("mask")
@@ -646,13 +680,15 @@ def load_layers(raw, alive: set[int]) -> list[dict]:
                                      d.get("base"))
             if lay.get("part") == "combined":
                 lay["blend"] = d.get("blend") if d.get("blend") in BLENDS else BLENDS[0]
+                shown = d.get("shown") if isinstance(d.get("shown"), dict) else {}
+                lay["shown"] = {k: bool(shown.get(k, True)) for k in SUBS}
             lay["sliders"] = {k: _num(v, 2.0, 0, 4) for k, v in (d.get("sliders") or {}).items()}
         elif d.get("kind") == "image" and isinstance(d.get("key"), str) and d["key"]:
             lay = new_image_layer(d["key"], str(d.get("name") or "?"), bool(d.get("visible", True)))
             lay["sliders"] = {k: _num(v, 2.0, 0, 4) for k, v in (d.get("sliders") or {}).items()}
             lay["linked"] = bool(d.get("linked", True))
         elif d.get("kind") == "filter" and d.get("filter") in FILTERS:
-            lay = new_filter_layer(d["filter"], d.get("target"))
+            lay = new_filter_layer(d["filter"], d.get("target"), d.get("sub") if d.get("sub") in SUBS else None)
             name = str(d.get("name") or lay["name"])
             lay["name"] = OLD_NAMES.get(name, name)
             lay["visible"] = bool(d.get("visible", True))
@@ -696,8 +732,12 @@ def load_layers(raw, alive: set[int]) -> list[dict]:
 
 
 def save_layers(layers: list[dict]) -> list[dict]:
-    """The composition as JSON-able dicts."""
-    return json.loads(json.dumps(snapshot(layers), default=list))
+    """The composition as JSON-able dicts (a filter on no sub-layer saved as before them)."""
+    out = json.loads(json.dumps(snapshot(layers), default=list))
+    for d in out:
+        if d.get("kind") == "filter" and d.get("sub") is None:
+            d.pop("sub", None)
+    return out
 
 
 # ======================================================================== what the composition reads
@@ -1073,9 +1113,13 @@ class Composer:
             if is_pixel(lay):
                 if not self.provider.available(source_id(lay)):
                     continue
-                src = self.layer_rgb(lay, level, abox, canvas, cache, draft, check)
-                for fl in stack:                                          # this layer's own filters, bottom first
-                    if fl["kind"] != "filter" or fl.get("target") != lay["id"]:
+                own = [fl for fl in stack if fl["kind"] == "filter" and fl.get("target") == lay["id"]]
+                if is_group(lay) and (any(fl.get("sub") for fl in own) or not all(lay["shown"].values())):
+                    src = self.group_rgb(lay, own, level, abox, canvas, ctx, cache, draft, check, keep_mask)
+                else:
+                    src = self.layer_rgb(lay, level, abox, canvas, cache, draft, check)
+                for fl in own:                                            # this layer's own filters, bottom first
+                    if fl.get("sub"):
                         continue
                     checkpoint()
                     if not fl["visible"]:
@@ -1101,6 +1145,29 @@ class Composer:
         out.notes = set(self.provider.notes())
         out.drawn = self._drawn
         return out
+
+    def group_rgb(self, lay, own, level, abox, canvas, ctx, cache, draft, check, keep_mask) -> np.ndarray:
+        """A Stars and background layer whose sub-layers have filters (or one of them hidden): its two images, each
+        through its own filters (bottom first), put together as its ``blend`` says (render/stars.blend: the same three
+        modes as Post's)."""
+        got = []
+        for sub in reversed(SUBS):                                        # the starless image first, then the stars
+            if not lay["shown"].get(sub, True):
+                continue
+            x = self.layer_rgb(dict(lay, part=sub), level, abox, canvas, cache, draft, check)
+            for fl in own:
+                if fl.get("sub") != sub:
+                    continue
+                if check():
+                    raise Superseded()
+                if not fl["visible"]:
+                    continue
+                x, fm = self._apply(fl, x, level, abox, canvas, ctx)
+                keep_mask(fl, fm)
+            got.append(x)
+        if not got:
+            return np.zeros((abox[3] - abox[1], abox[2] - abox[0], 3), np.float32)
+        return got[0] if len(got) == 1 else self.blend(lay["blend"], got[0], got[1])
 
     def _apply(self, fl, under, level, abox, canvas, ctx):
         """A filter layer on an image (its own layer's, or everything below): the filtered image, through the layer's
