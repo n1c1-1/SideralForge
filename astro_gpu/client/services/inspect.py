@@ -2054,15 +2054,24 @@ class InspectService(QObject):
         self.images.submit("inspect.scan", self._scan_job, folder, token)
         return token
 
+    def scan_files(self, chosen: dict) -> int:
+        """Read the frames chosen kind by kind (api.scan_files); the same answers as ``scan``."""
+        token = self._token("inspect.scan")
+        self.requests += 1
+        self.images.submit("inspect.scan", self._scan_job, chosen, token)
+        return token
+
     def cancel_scan(self, token: int):
         self._scan_cancel.add(token)
 
-    def _scan_job(self, folder, token):
+    def _scan_job(self, what, token):
         def progress(f, text):
             if token in self._scan_cancel:
                 raise Cancelled()
             self.scanProgress.emit(token, float(f), text)
-        return token, api.scan_folder(folder, progress)
+        if isinstance(what, dict):
+            return token, api.scan_files(what, progress)
+        return token, api.scan_folder(what, progress)
 
 
 _services: WeakKeyDictionary = WeakKeyDictionary()

@@ -8,6 +8,10 @@ the denoised stack when there is one), the same from the raw stack (lin_raw.npy,
 * the raw stack mixed back into the denoised one, or the faint areas smoothed (noise smoothing);
 * a midtones transfer function from black = median - 2.8 MAD to white = the 99.995th percentile, the median sky at
   ``sky`` (linked channels: on the luminance; unlinked: each channel);
+* the faint tones raised or lowered (``faint``): a generalised hyperbolic stretch (Payne and Cranfield) of the range
+  above the sky, its black point and its symmetry point at the sky (the GHS users' placing: the symmetry point at the
+  background's peak), on the luminance with the colour ratios kept: the tones just above the sky, the faint
+  extensions, rise most, the sky stays where Sky puts it, the bright ones rise least;
 * an S-curve for the contrast, then the saturation around the luminance.
 
 Every statistic comes from prep_simple.json, measured once on the whole image at full resolution: a reduced preview,
@@ -16,6 +20,7 @@ the full image and a region of it share one curve, so a region is the crop of th
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,6 +67,14 @@ class SimpleSettings(StageParams):
                                  "image kept). 0.5 by default: on Rosette, Heart and M8 (bench, 5 November) the "
                                  "nebulae keep their colour and M8's core its structure, without the strong reds of "
                                  "1.")
+    faint: float = P(0.8, label="Faint tones", ge=-1.0, le=3.0, step=0.05,
+                     help="Raises (above 0) or lowers (below 0) the faint tones just above the sky, without moving "
+                          "the sky: a generalised hyperbolic stretch (D. Payne and M. Cranfield) of the range above the "
+                          "sky, its symmetry point at the sky. 0 = the automatic stretch as it is; 0.8 by "
+                          "default (checked on Heart, Iris, M8 and M31, 5 November: the faint extensions and outer "
+                          "arms come up, no core burnt).",
+                     tip="The faint extensions of a nebula, the outer arms of a galaxy. Sky sets the black, this the "
+                         "faint tones, as Blacks and Shadows are two controls in photo editors.")
     halpha: float = P(0.0, label="H-alpha", ge=-1.0, le=3.0, step=0.05,
                       help="The H-alpha emission, measured as the red above the continuum of the stars, added to the "
                            "red before the stretch (above 0) or taken out of it (below 0). 0 = the image as it is.")
@@ -69,6 +82,39 @@ class SimpleSettings(StageParams):
 
 #: the smoothing of the H-alpha emission map (px at full resolution): its noise, not its structures
 HALPHA_SIGMA = 1.5
+#: Faint tones: the local intensity b of its stretch (1: a broad lift, strongest just above the sky) and its ln(D + 1)
+#: per unit of the setting
+FAINT_B, FAINT_STRETCH = 1.0, 1.0
+
+
+def _interp(x: torch.Tensor, xs: torch.Tensor, ys: torch.Tensor) -> torch.Tensor:
+    """Piecewise-linear interpolation of x on the increasing table (xs, ys)."""
+    i = torch.searchsorted(xs, x.contiguous()).clamp(1, xs.numel() - 1)
+    x0, x1, y0, y1 = xs[i - 1], xs[i], ys[i - 1], ys[i]
+    return y0 + (y1 - y0) * ((x - x0) / (x1 - x0).clamp(min=1e-12))
+
+
+def faint_tones(y: torch.Tensor, sky: float, k: float) -> torch.Tensor:
+    """The display image (3, h, w) with its tones above ``sky`` through a generalised hyperbolic stretch (render/ghs,
+    black and symmetry points at the sky, local intensity FAINT_B, ln(D + 1) = |k| FAINT_STRETCH; k < 0 its inverse),
+    on the luminance with the colour ratios kept; the tones at or below the sky unchanged."""
+    if k == 0:
+        return y
+    from .ghs import ghs_unit
+    span = max(1.0 - sky, 1e-6)
+    spz = 0.0
+    D = math.expm1(abs(k) * FAINT_STRETCH)
+    L = ops.luminance(y)
+    z = ((L - sky) / span).clamp(0, 1)
+    if k > 0:
+        z2 = ghs_unit(z, D, FAINT_B, spz, 0.0, 1.0)
+    else:                                       # the inverse stretch, read back from its table
+        xs = torch.linspace(0, 1, 4097, dtype=torch.float64)
+        ys = ghs_unit(xs.clone(), D, FAINT_B, spz, 0.0, 1.0)
+        z2 = _interp(z.double(), ys.to(z.device), xs.to(z.device)).to(z.dtype)
+    L2 = torch.where(L > sky, sky + span * z2, L)
+    out = y * (L2 / L.clamp(min=1e-6))[None]
+    return (out / out.amax(0, keepdim=True).clamp(min=1.0)).clamp(0, 1)
 
 
 def continuum_ratio(stars: np.ndarray) -> float:
@@ -274,6 +320,8 @@ class SimpleRenderEngine:
             yk = xl * gain[None]
             m = yk.amax(0, keepdim=True).clamp(min=1.0)              # a channel over 1: the colour kept, scaled down
             y = (1 - k) * y + k * (yk / m)
+        if getattr(s, "faint", 0.0):
+            y = faint_tones(y, s.sky, float(s.faint))
         if s.contrast != 0:
             y = (y + s.contrast * (3 * y * y - 2 * y ** 3 - y)).clamp(0, 1)
         Ly = ops.luminance(y)[None]

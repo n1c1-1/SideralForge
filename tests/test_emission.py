@@ -40,9 +40,9 @@ def test_emission_adds_the_red_excess_only_where_there_is_one():
 def test_the_engine_renders_the_same_at_0_and_redder_above():
     a = field()
     eng = SimpleRenderEngine.from_array(a, "cpu")
-    base = eng.render(SimpleSettings(), 1.0).final.numpy()
-    same = eng.render(SimpleSettings(halpha=0.0), 1.0).final.numpy()
-    more = eng.render(SimpleSettings(halpha=2.0), 1.0).final.numpy()
+    base = eng.render(SimpleSettings(faint=0.0), 1.0).final.numpy()       # the line, not the faint tones lifted
+    same = eng.render(SimpleSettings(faint=0.0, halpha=0.0), 1.0).final.numpy()
+    more = eng.render(SimpleSettings(faint=0.0, halpha=2.0), 1.0).final.numpy()
     assert np.array_equal(base, same)
     patch = (slice(None), slice(90, 110), slice(170, 210))
     assert more[patch][0].mean() > base[patch][0].mean() + 0.02

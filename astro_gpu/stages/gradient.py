@@ -116,6 +116,13 @@ class GradientParams(StageParams):
                                                  "angle (degrees).")
     exclude_brush: list[list[float]] = P([], label="Excluded brush strokes", level=ADVANCED,
                                          help="Brush dabs x, y, radius, 1 to exclude / 0 to erase, in order.")
+    avoid_emission: bool = P(True, label="Away from emission",
+                             help="Samples chosen by the block (none placed) never sit where the professional H-alpha "
+                                  "survey of the field sees nebulosity: the faint extensions of an emission nebula are "
+                                  "not taken for sky. The survey only says where not to sample; the sky model never "
+                                  "reads it. No survey for the field: no effect.",
+                             tip="On by default; the samples placed by hand are always kept as placed.")
+
     @field_validator("method")
     @classmethod
     def _method(cls, v: str) -> str:
@@ -364,15 +371,18 @@ def grid_points(rgb: np.ndarray, valid: np.ndarray, samples: int, clip: float) -
 #: a sample of the generated grid sits on emission when the H-alpha survey under it is above this level (0 the
 #: survey's sky, 1 its bright emission: surveys.emission_level); on the Rosette, 2 % of that range is 3 % of the core
 EMISSION_FREE = 0.02
-#: the survey leaves no sample out when it would keep fewer than this share of them (a field without emission: the
-#: survey's noise then spans its whole range)
-EMISSION_MIN_KEPT = 0.25
+#: the survey leaves no sample out when it would keep fewer than this share of the field (the nebulosity fills it)
+EMISSION_MIN_KEPT = 0.05
 
 
 def away_from_emission(pts: np.ndarray, kept: np.ndarray, level: np.ndarray, box: int) -> tuple[np.ndarray, bool]:
     """The grid's samples of sky (``kept``) less the ones on emission: the median of the survey's ``level`` (on the
     grid of ``pts``) in each sample's box above ``EMISSION_FREE``. A careful user's rule (no sample on nebulosity),
-    the survey showing where the nebulosity is. Returns (kept, whether the survey was used)."""
+    the survey showing where the nebulosity is; a survey that shows only its noise (surveys.has_emission) leaves
+    every sample. Returns (kept, whether the survey was used)."""
+    from .surveys import has_emission
+    if not has_emission(level):
+        return kept, False
     H, W = level.shape
     h = max(1, box // 2)
     on = np.zeros(len(pts), bool)
@@ -382,7 +392,7 @@ def away_from_emission(pts: np.ndarray, kept: np.ndarray, level: np.ndarray, box
         v = cell[np.isfinite(cell)]
         on[i] = v.size > 0 and float(np.median(v)) > EMISSION_FREE
     out = kept & ~on
-    if out.sum() < EMISSION_MIN_KEPT * max(int(kept.sum()), 1):
+    if out.sum() < max(3, EMISSION_MIN_KEPT * len(kept)):
         return kept, False
     return out, True
 
@@ -404,14 +414,47 @@ def rbf_grid(pts: np.ndarray, vals: np.ndarray, xx: np.ndarray, yy: np.ndarray, 
     return out
 
 
-def sky_model_of(stack: np.ndarray, valid: np.ndarray, p: GradientParams, f: float = 1.0, progress=None) -> dict:
+def emission_mask(level: np.ndarray | None, valid: np.ndarray) -> np.ndarray | None:
+    """Where the H-alpha survey (its ``level``, surveys.emission_level, on the grid of ``valid``) sees nebulosity:
+    above ``EMISSION_FREE``. None when there is no survey, when it shows only its noise (surveys.has_emission), or
+    when it would leave less than ``EMISSION_MIN_KEPT`` of the covered field."""
+    from .surveys import has_emission
+    if level is None or not has_emission(level):
+        return None
+    # the level smoothed over a cell of a 32-per-side grid before the threshold, as the editor takes each sample's
+    # median: areas, not the survey's noise around the threshold (scattered free pixels leave no whole sky block)
+    k = max(3, int(min(level.shape) / 32) | 1)
+    on = cv2.blur(np.nan_to_num(level, nan=0.0).astype(np.float32), (k, k)) > EMISSION_FREE
+    n = int(valid.sum())
+    if n == 0 or int((valid & ~on).sum()) < EMISSION_MIN_KEPT * n:
+        return None
+    return on
+
+
+def sky_model_of(stack: np.ndarray, valid: np.ndarray, p: GradientParams, f: float = 1.0, progress=None,
+                 emission: np.ndarray | None = None, _ok: np.ndarray | None = None) -> dict:
     """The sky model of the stage's method on ``stack`` (3, H, W), which may be a copy reduced ``1 / f`` times (the
-    preview of the editor: the points and areas are in stack pixels). Returns {grid (3, h, w), info (how to read it
-    back), covered (the grid's covered cells), samples: {x, y, used, manual} in stack pixels or None, detail}."""
+    preview of the editor: the points and areas are in stack pixels). ``emission``: the survey's emission level on the
+    same grid (surveys.emission_level), or None; with ``avoid_emission``, the samples the block chooses (none placed)
+    leave it out. Returns {grid (3, h, w), info (how to read it back), covered (the grid's covered cells), samples: {x,
+    y, used, manual} in stack pixels or None, detail}."""
     H, W = stack.shape[1:]
     excl = exclusion_mask(p, H, W, f)
     ok = valid & ~excl if excl is not None else valid
+    if _ok is not None:                        # the pixels already chosen (away from the emission)
+        ok = _ok
     info = {"method": p.method}
+    if p.method != "automatic" and not p.sample_points and p.avoid_emission:
+        em = emission_mask(emission, ok)
+        if em is not None:
+            try:
+                m = sky_model_of(stack, valid, p.model_copy(update={"avoid_emission": False}), f, progress,
+                                 _ok=ok & ~em)
+                m["info"]["away_from_emission"] = True
+                return m
+            except StageError as e:            # too little sky left beside the nebulosity: the image's own samples
+                info["away_from_emission"] = False
+                info["away_note"] = f"too little sky away from the emission ({e}): samples chosen on the image alone"
     samples = None
     if p.method == "automatic":
         # a reduced copy (the editor's preview): at least halved again, the model's cost falls with the pixels
@@ -461,6 +504,17 @@ def sky_model_of(stack: np.ndarray, valid: np.ndarray, p: GradientParams, f: flo
 
 
 # ---------------------------------------------------------------------------------------------- the stage
+def survey_emission(ctx: Context, p: GradientParams) -> np.ndarray | None:
+    """The H-alpha survey's emission level on the stack (surveys.emission_level) when the samples are the block's own
+    and must avoid it, the chain has the survey and the survey covers the field; else None."""
+    if not p.avoid_emission or p.method == "automatic" or p.sample_points or not ctx.has("surveys"):
+        return None
+    if ctx.load_json("surveys", "survey.json").get("survey", "none") == "none":
+        return None
+    from .surveys import emission_level
+    return emission_level(ctx.load("surveys", "ref_ha.npy"))
+
+
 class Gradient(Stage):
     name = "gradient"
     title = "Sky gradient"
@@ -469,8 +523,8 @@ class Gradient(Stage):
                    "denoising, the star removal and the output see a flat sky. The sky's level stays.")
     deps = ("stack",)
     Params = GradientParams
-    version = "3"          # 2: the automatic method; the level kept is the model's median over the covered field;
-                           # 3: the RBF, the placed samples and the excluded areas
+    version = "5"          # 2: the automatic method; the level kept is the model's median over the covered field;
+                           # 3: the RBF, the placed samples and the excluded areas; 4-5: away from the survey's emission
 
     def run(self, ctx: Context, p: GradientParams) -> None:
         ctx.progress(0.05, "loading the stack")
@@ -479,7 +533,12 @@ class Gradient(Stage):
         valid = coverage(ctx)
         ctx.progress(0.2, f"{p.method} sky model")
         m = sky_model_of(stack, valid, p, progress=lambda c: ctx.progress(0.2 + 0.25 * c, f"automatic model, "
-                                                                                        f"{'RGB'[c]}"))
+                                                                                        f"{'RGB'[c]}"),
+                         emission=survey_emission(ctx, p))
+        if m["info"].get("away_from_emission"):
+            ctx.log("the samples leave out the nebulosity the H-alpha survey sees")
+        elif m["info"].get("away_note"):
+            ctx.log(m["info"]["away_note"], "warning")
         grid, vg, detail = m["grid"], m["covered"], m["detail"]
         info = {**m["info"], "width": W, "height": H, "space": "camera RGB, linear (before the colour calibration)"}
         if m["samples"] is not None:

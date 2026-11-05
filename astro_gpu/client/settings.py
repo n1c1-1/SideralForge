@@ -206,6 +206,12 @@ CATALOG = {
             E("astrometry", "pixel_um", "expert", help="Pixel size of the sensor; empty = read from the files."),
             E("astrometry", "scale", "expert", help="Arcseconds per pixel; empty = computed."),
         ]),
+        ("H-alpha survey", [
+            E("surveys", "survey", help="The professional H-alpha map of the field: where the faint nebulosity is, so "
+                                        "that the Gradient block takes no sky sample there."),
+            E("surveys", "min_coverage", "expert", help="Below this share of the field covered by NSNS, Finkbeiner's "
+                                                        "all-sky map is used."),
+        ]),
         ("System", [E("catalogs", "cell_deg", "system", help="Size of the sky tiles requested from the Gaia "
                                                              "catalogue.")]),
     ],
@@ -288,7 +294,8 @@ CATALOG = {
 # the engine's settings that no panel shows: the project or the options set them, or a block control owns them
 HIDDEN = {("stack", "exclude"), ("stack", "min_transparency"), ("stack", "max_fwhm_ratio"),
           ("render_simple", "stretch"), ("stack", "method"), ("gradient", "method"), ("denoise", "method"),
-          ("gradient", "sample_points"), ("gradient", "exclude_ellipses"), ("gradient", "exclude_brush")}
+          ("gradient", "sample_points"), ("gradient", "exclude_ellipses"), ("gradient", "exclude_brush"),
+          ("gradient", "avoid_emission")}                  # the editor's Away from emission, under Generate the grid
 #: the stacking method: chosen on the cards of the Stacking panel, never as a row
 STACK_METHOD = ("stack", "method")
 #: the stacking methods' names and what each does, by the engine's key (an engine method missing here shows its
