@@ -69,6 +69,10 @@ class StartCard(QFrame):
             w.accept()
 
 
+#: the template a new workflow starts from unless the user picks another (the one the defaults were checked with)
+RECOMMENDED = "Full"
+
+
 class NewWorkflowDialog(QDialog):
     def __init__(self, session, start=None, parent=None, templates: dict | None = None):
         super().__init__(parent)
@@ -97,10 +101,14 @@ class NewWorkflowDialog(QDialog):
         # duration is quoted with them; a copy, with all of its settings
         cur = getattr(session, "path", None)
         trunk = {k: v for k, v in (cur.params if cur is not None else {}).items() if k in TRUNK}
-        for key, opts in templates.items():
+        recommended = 0
+        for i, (key, opts) in enumerate(templates.items()):
             shown = TEMPLATE_NAME.get(key, key)
-            self._card(hv, _(shown), _(TEMPLATE_TEXT.get(shown, "")), f"≈ {hm(session.opts_seconds(opts, trunk))}",
-                       (_("New workflow") if shown == "Classic stack" else _(shown), opts, {}))
+            best = shown == RECOMMENDED                    # issue #11: the recommended one said, and chosen first
+            if best:
+                recommended = i
+            self._card(hv, _(shown) + ("  ·  " + _("Recommended") if best else ""), _(TEMPLATE_TEXT.get(shown, "")),
+                       f"≈ {hm(session.opts_seconds(opts, trunk))}", (_(shown), opts, {}))
         if session.paths:
             hv.addSpacing(4)
             hv.addWidget(label(_("Copy of a project workflow, with its settings"), "dim"))
@@ -125,7 +133,7 @@ class NewWorkflowDialog(QDialog):
         bb.addWidget(cancel)
         bb.addWidget(ok)
         v.addLayout(bb)
-        first = 0
+        first = recommended
         if start is not None:
             first = len(templates) + session.paths.index(start)
         self.pick(first)
