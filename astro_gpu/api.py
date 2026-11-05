@@ -795,19 +795,31 @@ def import_v1(old_root: str | Path, new_root: str | Path, path_map: dict[str, An
 def scan_folder(folder: str | Path, progress: Callable[[float, str], None] | None = None) -> ScanResult:
     """Read a folder of light frames and the calibration folders found next to it (darks, flats, bias, dark flats,
     by their usual names): every frame with its header. Slow on a big card: worker thread. ``progress(fraction,
-    text)`` may raise to stop."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    from .core.newproject import guess_calibration, guess_names
-    from .core.project import list_frames
-    from .io.frames import read_info
+    text)`` may raise to stop. What it finds is a suggestion: ``scan_files`` reads what the user chooses instead."""
+    from .core.newproject import guess_calibration
     folder = Path(folder)
     if not folder.is_dir():
         raise FileNotFoundError(f"not a folder: {folder}")
+    return scan_files({"lights": [str(folder)], **guess_calibration(str(folder))}, progress)
+
+
+def scan_files(chosen: dict[str, list[str | Path]], progress: Callable[[float, str], None] | None = None) -> ScanResult:
+    """Read the frames the user chose, kind by kind (``KINDS``: lights, darks, flats, bias, flat_darks), each a list of
+    folders (every frame in them) or of files: every frame with its header. The files that make up a whole folder are
+    kept as that folder (the project lists folders, as an import of folders makes). Worker thread; ``progress`` as
+    ``scan_folder``."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from .core.newproject import guess_names
+    from .core.project import list_frames
+    from .io.frames import read_info
     say = progress or (lambda f, m: None)
-    names = guess_names(str(folder))
-    res = ScanResult(str(folder), names["name"], names["target"])
-    res.folders = {"lights": [str(folder)], **guess_calibration(str(folder))}
+    entries = {k: [str(x) for x in (chosen.get(k) or [])] for k in KINDS}
+    first_light = next((Path(x) for x in entries["lights"]), None)
+    where = first_light if first_light is None or first_light.is_dir() else first_light.parent
+    names = guess_names(str(where)) if where is not None else {"name": "", "target": ""}
+    res = ScanResult(str(where or ""), names["name"], names["target"])
+    res.folders = {k: _whole_folders(v) for k, v in entries.items()}
     files = {k: list_frames(fs) for k, fs in res.folders.items()}
     total, done = max(sum(len(v) for v in files.values()), 1), 0
     with ThreadPoolExecutor(8) as ex:
@@ -835,6 +847,27 @@ def scan_folder(folder: str | Path, progress: Callable[[float, str], None] | Non
                 done += 1
                 say(done / total, f"reading headers {done}/{total}")
     return res
+
+
+def _whole_folders(entries: list[str]) -> list[str]:
+    """Files that make up every frame of their folder become that folder; the others stay files; folders stay."""
+    from .core.project import list_frames
+    out: list[str] = []
+    by_dir: dict[str, list[str]] = {}
+    for e in entries:
+        p = Path(e)
+        if p.is_file():
+            by_dir.setdefault(str(p.parent), []).append(str(p))
+        else:
+            _put(out, e)
+    for d, fl in by_dir.items():
+        every = {os.path.normcase(str(x)) for x in list_frames([d])}
+        if every and every == {os.path.normcase(x) for x in fl}:
+            _put(out, d)
+        else:
+            for x in sorted(fl):
+                _put(out, x)
+    return out
 
 
 def _when(info: Any) -> datetime | None:
@@ -911,12 +944,12 @@ def add_frames(p: Project2, scan: ScanResult, session: int | None = None) -> lis
     whole = len(groups) == 1
     for g in groups:
         s = add_session(p, name=g.night if g.night and g.night != "unknown" else g.name)
-        s.lights = [scan.folders["lights"][0]] if whole else list(g.paths)
+        s.lights = list(scan.folders["lights"]) if whole else list(g.paths)
         made.append(s)
     mids = [datetime.fromisoformat(g.start) if g.start else None for g in groups]
     for kind in KINDS[1:]:
         for f in scan.folders.get(kind, []):
-            fl = [i for i in scan.frames.get(kind, []) if _same(str(Path(i.path).parent), f)]
+            fl = [i for i in scan.frames.get(kind, []) if _same(str(Path(i.path).parent), f) or _same(str(i.path), f)]
             if not fl:
                 continue
             ts = sorted(t for t in map(_when, fl) if t)

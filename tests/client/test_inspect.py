@@ -882,6 +882,44 @@ def test_a_variant_is_shown_compared_with_its_original(scratch):
     assert any(n.startswith(full.name + "  ·  ") for n in names) and v.compare_mode() == "side"
 
 
+def test_the_frames_of_each_kind_are_chosen_by_their_files(env, monkeypatch, tmp_path):
+    """The import: the darks chosen by three of their files, the flats taken away; read again, then into the project
+    exactly so (the user's rule, 5 November: each kind chosen by selecting its files)."""
+    root = tmp_path / "ws" / "Chosen"
+    project2.create(root, "Chosen", Target(name="IC 1805"))
+    w = open_window(root, readonly=False)
+    try:
+        darks = sorted(str(p) for p in (DATA / "darks").iterdir())[:3]
+
+        def wait_scan(d):
+            end = time.monotonic() + 120
+            while (d.scan is None or not d.ok.isEnabled()) and time.monotonic() < end:
+                QApplication.processEvents()
+                time.sleep(0.01)
+            assert d.scan is not None
+
+        def fake_exec(self):
+            wait_scan(self)
+            assert "darks" in self.suggested and len(self.scan.frames["darks"]) == 15
+            self.rows["darks"].changed.emit("darks", darks)                # Choose files…: three of them
+            wait_scan(self)
+            self.rows["flats"].changed.emit("flats", [])                   # ✕: no flats
+            wait_scan(self)
+            assert len(self.scan.frames["darks"]) == 3 and not self.scan.frames["flats"]
+            assert "darks" not in self.suggested and "3 darks" in self.rows["darks"].detail.text()
+            assert self.rows["flats"].what.text() == "None"
+            self.accept()
+            return 1
+        monkeypatch.setattr(ImportDialog, "exec", fake_exec)
+        assert import_folder(w.s, w, str(DATA / "lights"), service=w.tune.service)
+        w.s.flush()
+        d = project2.load(root)
+        assert len(d.sessions) == 1 and sorted(d.sessions[0].darks) == darks and not d.sessions[0].flats
+    finally:
+        w.s.flush()
+        w.close()
+
+
 def test_importing_the_heart_folder_gives_the_counts_the_sessions_and_the_thumbnails(env, monkeypatch, tmp_path):
     root = tmp_path / "ws" / "New"
     project2.create(root, "New", Target(name="IC 1805"))

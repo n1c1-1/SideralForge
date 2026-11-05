@@ -1226,3 +1226,16 @@ def test_metric_texts_come_from_the_metric_catalogue():
     assert texts.metric_label("n_lights", "fr") == "Brutes"
     assert texts.metric_unit("exposure_s") == "s"
     assert texts.metric("my_new_metric") is None and texts.metric_label("my_new_metric") == "My new metric"
+
+
+def test_the_user_chooses_the_files_of_each_kind(tmp_path, card):
+    darks = sorted((card.parent / "dark").iterdir())
+    flats = sorted((card.parent / "flat").iterdir())
+    scan = api.scan_files({"lights": [card], "darks": [darks[0]], "flats": [str(f) for f in flats]})
+    assert [len(scan.frames[k]) for k in ("lights", "darks", "flats", "bias")] == [5, 1, 2, 0]
+    assert scan.folders["darks"] == [str(darks[0])]                     # one dark of two: the file itself
+    assert scan.folders["flats"] == [str(card.parent / "flat")]         # every flat of the folder: the folder
+    p = project2.create(tmp_path / "chosen", "chosen")
+    made = api.add_frames(p, scan)
+    assert sum(len(s.darks) for s in made) == 1 and any(str(darks[0]) in s.darks for s in made)
+    assert sum(len(s.lights) for s in made) >= 1
