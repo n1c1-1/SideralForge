@@ -78,6 +78,13 @@ CASES: dict[str, dict] = {
         camera="ZWO Seestar S50 (FITS, IRCUT filter)", scope="Seestar S50 (250 mm, alt-azimuth)",
         centre_from="the frames' FITS header (RA, DEC)",
         note="no calibration frames exist for this set (the Seestar takes none)"),
+    # the user's own M31 (24 August 2023): his target to reach is his render traitement/m31_flat.jpg (read only)
+    "m31": dict(
+        lights="G:/Astro/2023-08-24_M31_top/signal", flats="G:/Astro/2023-08-24_M31_top/flat", ext=(".arw",),
+        target="M 31", ra=10.6847, dec=41.269, obj=(10.6847, 41.2690), focal=893.0, pixel=8.4,
+        camera="Sony A7S (astro-modified), lossy ARW", scope="Newton 130/900 (~893 mm)",
+        centre_from="M 31's catalogue position", reference="G:/Astro/2023-08-24_M31_top/traitement/m31_flat.jpg",
+        note="24.08.23, 508 lights, 30 flats, no darks (as the user's project)"),
     # the darks of the 28.12.24 projects turned out to be sky frames (docs/pilot/DARKS_28_12_24.md): the user's fix is
     # B, the 48 real darks of the Iris night. The flats are the Iris flats (same Newton and camera), as in the user's
     # project. Variants A (no darks) and C (the sky frames as darks) were run once with the engine before the base

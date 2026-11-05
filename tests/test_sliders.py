@@ -81,7 +81,7 @@ def test_steps_and_ratios():
     # the Stars block's images have the star settings; the Output block's drop them
     assert isinstance(S.base_settings("combined"), StarSettings)
     assert S.base_settings("simple", StarSettings(sky=0.3, star_size=1.0)) == SimpleSettings(sky=0.3)
-    assert S.settings_at("combined", None, {"star_size": 3}).star_size == pytest.approx(1.0)
+    assert S.settings_at("combined", None, {"star_size": 3}).star_size == pytest.approx(0.0)
 
 
 def test_greyed_sliders_give_their_reasons():
@@ -103,7 +103,7 @@ def test_greyed_sliders_give_their_reasons():
     assert S.settings_at("simple", None, {"noise": 0}, has_denoise=False) == SimpleSettings()
     assert S.settings_at("simple", None, {"noise": 0}, has_denoise=True).noise_mix == pytest.approx(0.4)
     assert S.settings_at("stacking", None, {"star_size": 4, "sky": 3}) == SimpleSettings(sky=0.26)
-    assert S.settings_at("stars", None, {"sky": 0, "star_size": 4}) == StarSettings(star_size=2.0)
+    assert S.settings_at("stars", None, {"sky": 0, "star_size": 4}) == StarSettings(star_size=1.0)
 
 
 def test_rendered_sliders_move_the_image():

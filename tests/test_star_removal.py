@@ -93,7 +93,7 @@ def test_the_star_sliders_move_what_they_say(tmp_path):
         return eng.render(StarSettings(**kw), 1.0, part="stars").final.numpy()
     base = stars()
     assert stars(star_strength=0.5).sum() < base.sum() < stars(star_strength=2.0).sum()
-    assert stars(star_size=-1.0).sum() < base.sum() < stars(star_size=1.0).sum()
+    assert stars(star_size=-2.0).sum() < base.sum() < stars(star_size=0.0).sum()       # -1 by default
     grey = stars(star_saturation=0.0)
     assert np.abs(grey - grey.mean(0, keepdims=True)).max() < 1e-5          # no colour left
 
@@ -122,7 +122,7 @@ def test_the_sliders_of_each_kind():
     assert simple["star_strength"] == S.WHY_STARS and not simple["noise"]
     assert S.availability("stacking", False)["star_color"] == S.WHY_EXIT_STARS
     st = S.settings_at("combined", None, {"star_strength": 0, "star_size": 4})
-    assert isinstance(st, StarSettings) and st.star_strength == pytest.approx(0.35) and st.star_size == 2.0
+    assert isinstance(st, StarSettings) and st.star_strength == pytest.approx(0.25) and st.star_size == 1.0
     assert type(S.settings_at("simple", None, {"star_size": 0})) is SimpleSettings      # greyed: ignored
     with pytest.raises(ValueError):
         S.availability("engine", True)
