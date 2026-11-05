@@ -478,8 +478,7 @@ class Panel(QWidget):
                                        and self.renamed.emit(p.pid, ed.text().strip()))
             top.addWidget(ed, 1)
         else:
-            top.addWidget(label(block_title(p, k), "h1"))
-            top.addStretch(1)
+            top.addWidget(label(block_title(p, k), "h1", wrap=True), 1)     # a long name (#36) wraps, never cut
         st = self.graph_state(node)
         chip = QLabel(_(STATE_WORD[st]))
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
@@ -559,7 +558,7 @@ class Panel(QWidget):
             self.bv.addWidget(kv([(_("Output of"), block_title(p, p.end))]))
         if k == "etoiles":
             self.bv.addWidget(label(_("No setting here: the network is applied as it was trained. Its two images are "
-                                      "adjusted in a Stars and background block, or each as a layer of Post."),
+                                      "adjusted in a Combine stars & background layers block, or each as a layer of Post."),
                                     "small", wrap=True))
         else:
             self.settings(p, k, groups, extra)
@@ -767,16 +766,21 @@ class Panel(QWidget):
                 row.addWidget(lb, 1)
                 p = node.paths[0]
                 sent = any(x.get("pid") == p.pid and x.get("part") == what for x in self.s.post_layers())
-                b = QPushButton(_("To Post"))
-                b.setToolTip(_("This image as a layer of Post, as it is (no Stars and background block)"))
-                b.setEnabled(not sent)
-                b.clicked.connect(lambda _c=False, w=what, pp=p: self._part_to_post(pp, w))
+                if sent:                                     # issue #29: a link to Post can be taken back
+                    b = QPushButton(_("Out of Post"))
+                    b.setToolTip(_("Take this image out of Post (its layers and their filters)"))
+                    b.clicked.connect(lambda _c=False, w=what, pp=p: self._part_out_of_post(pp, w))
+                else:
+                    b = QPushButton(_("To Post"))
+                    b.setToolTip(_("This image as a layer of Post, as it is (no Combine stars & background layers "
+                                   "block)"))
+                    b.clicked.connect(lambda _c=False, w=what, pp=p: self._part_to_post(pp, w))
                 row.addWidget(b, 0, Qt.AlignTop)
                 self.bv.addLayout(row)
             else:
                 self.bv.addWidget(lb)
         if len(node.paths) == 1:
-            nb = QPushButton(_("New Stars and background block"))
+            nb = QPushButton(_("New Combine stars & background layers block"))
             nb.setToolTip(_("A layer of Post that puts the stars back on the starless image; each of the two keeps "
                             "its own settings"))
             nb.clicked.connect(lambda _c=False, pp=node.paths[0]: self._new_composition(pp))
@@ -790,10 +794,17 @@ class Panel(QWidget):
         self.s.log('{image} of "{name}" sent to Post', image=dict(STAR_OUTPUTS)[part], name=p.name)
         self.s.select(index=self.s.paths.index(p), step="etoiles")
 
+    def _part_out_of_post(self, p, part):
+        """One of the split block's images sent as it is, taken out of Post (#29)."""
+        from .blocks import STAR_OUTPUTS
+        if self.s.remove_post_part(p.pid, part, self):
+            self.s.log('{image} of "{name}" taken out of Post', image=dict(STAR_OUTPUTS)[part], name=p.name)
+        self.s.select(index=self.s.paths.index(p), step="etoiles")
+
     def _new_composition(self, p):
         """A Stars and background block for this workflow's Stars block (as dragging a dot onto Composition)."""
         lid = self.s.add_post_layer(p.pid, "combined", self)
-        self.s.log('Stars and background block for "{name}"', name=p.name)
+        self.s.log('Combine stars & background layers block for "{name}"', name=p.name)
         self.s.sel_layer = lid
         self.s.select(index=self.s.paths.index(p), step="composition")
         self.s.scope = [p.pid]
@@ -812,14 +823,13 @@ class Panel(QWidget):
         s.sel_layer = lid
         lay = s.post_layer(lid) or {}
         top = QHBoxLayout()
-        top.addWidget(label(block_title(p, "composition"), "h1"))
-        top.addStretch(1)
+        top.addWidget(label(block_title(p, "composition"), "h1", wrap=True), 1)
         st = block_state(s, p, "etoiles")
         chip = QLabel(_(STATE_WORD[st]))
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
         top.addWidget(chip)
         x = QPushButton(_("Delete block"))
-        x.setToolTip(_("Take this block out of Post (the Stars block's images stay computed)"))
+        x.setToolTip(_("Take this block out of Post (the split block's images stay computed)"))
         x.clicked.connect(self.removeTool.emit)
         top.addWidget(x)
         self.hv.addLayout(top)
@@ -827,7 +837,7 @@ class Panel(QWidget):
         from .blocks import BY_KEY
         self.bv.addWidget(label(_(BY_KEY["composition"]["what"]), "small", wrap=True))
         if st != "done":
-            self.bv.addWidget(label(_("The Stars block is not computed yet: run it to see the result in Post."),
+            self.bv.addWidget(label(_("The split block is not computed yet: run it to see the result in Post."),
                                     "warn", wrap=True))
         sliders = dict(lay.get("sliders") or {})
 

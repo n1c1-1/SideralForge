@@ -1737,3 +1737,17 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
     shots = sorted(p.name for p in B3.glob("*.png") if not p.name.startswith("fit_"))      # fit_*: test_graph's
     assert len(shots) == 17, shots
 
+
+
+def test_the_plan_lists_the_blocks_up_to_date_too_with_a_tick(toy, monkeypatch):
+    """Issue #27: Run project lists every block in the graph's order: the ones to compute with an orange circle and
+    their duration, the ones up to date with a green tick and "up to date" (it said "3 blocks" without which)."""
+    from astro_gpu.client import runs
+    jobs = toy.model.plan_all().jobs
+    monkeypatch.setattr(runs.Graph, "state", lambda self, node: "done")          # what the plan leaves out is done
+    rows = build_rows(toy.model, [j for j in jobs if j.stage not in ("inventory", "calibrate", "stack")], with_done=True)
+    assert [(r.title, r.uptodate) for r in rows][:2] == [("Calibration", True), ("Stacking", True)]
+    assert all(not r.uptodate and r.keys for r in rows[2:])
+    w = runs.RunRow(rows[0])
+    w.show_state(runs.DONE, 1.0, "up to date", "")
+    assert w.mark.state == runs.DONE and runs.STATE_COLOR[runs.WAITING] == runs.WARN

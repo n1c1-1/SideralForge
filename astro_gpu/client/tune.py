@@ -2045,6 +2045,9 @@ class TuneView(QWidget):
                 titles.append(t)
         rb.setToolTip(", ".join(titles))
         rb.setEnabled(s.sources_loaded and bool(plan.jobs))
+        if getattr(s, "run_active", False):              # issue #33: it would only open the run in progress
+            rb.setEnabled(False)
+            rb.setToolTip(_("A run is in progress: Run to here comes back when it ends"))
         rb.clicked.connect(self.runHere.emit)
         return rb
 

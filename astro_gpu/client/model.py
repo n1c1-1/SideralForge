@@ -48,7 +48,7 @@ from .services.worker import ApiWorker, norm_path
 BY_OUTPUT = ("render_simple",)
 #: the name a layer of the Stars block's images gets after its workflow's ("Full · Stars and background"); its words
 #: are translated where shown (post3.tr_name)
-POST_PART_NAMES = {"starless": "Starless image", "stars": "Stars alone", "combined": "Stars and background"}
+POST_PART_NAMES = {"starless": "Starless image", "stars": "Stars alone", "combined": "Combine stars & background layers"}
 
 # ---------------------------------------------------------------------------------------------- vocabulary
 #: the starting points of the New workflow dialog, by their keys (dialogs.TEMPLATE_NAME gives their names)
@@ -541,7 +541,44 @@ class ProjectModel(QObject):
         p = self.view(pid)
         name = p.name + ("" if part is None else " · " + POST_PART_NAMES[part])
         lay = new_workflow_layer(pid, name, True, part)
-        return self._post_edit(lambda layers: (layers.insert(0, lay), lay["id"])[1], source)
+
+        def change(layers):
+            self._filled(layers, pid if part == "combined" else None)
+            layers.insert(0, lay)
+            return lay["id"]
+        return self._post_edit(change, source)
+
+    def _filled(self, layers: list[dict], skip: int | None = None):
+        """A composition never filled (no workflow layer yet): the layers Post gives the workflows first (with the
+        split block, its Combine block; else its Output image: post3.sync_paths, the graph draws them before), so
+        that an image sent on top does not take their place (issue #29). ``skip``: a workflow whose Combine block is
+        the one being added."""
+        from .postengine import new_workflow_layer
+        if any(x.get("kind") == "workflow" for x in layers):
+            return
+        made = []
+        for q in self.paths:
+            stars = q.opts.get("etoiles") == "retirer"
+            if q.pid == skip and stars:
+                continue
+            made.append(new_workflow_layer(q.pid, q.name + (" · " + POST_PART_NAMES["combined"] if stars else ""),
+                                           False, "combined" if stars else None))
+        if made:
+            base = next((x for x in made if x["name"].startswith("Full")), made[-1])
+            base["visible"] = True
+            made.remove(base)
+            layers[:0] = made + [base]
+
+    def remove_post_part(self, pid: int, part: str | None, source=None) -> int:
+        """A workflow's image taken out of Post: every layer showing it as it is (its own filters go with them);
+        returns how many (issue #29: a link to Post the graph could not take away)."""
+        def change(layers):
+            gone = {x["id"] for x in layers if x.get("kind") == "workflow" and x.get("pid") == pid
+                    and x.get("part") == part}
+            layers[:] = [x for x in layers if x["id"] not in gone and not (x["kind"] == "filter"
+                                                                           and x.get("target") in gone)]
+            return len(gone)
+        return self._post_edit(change, source)
 
     def remove_post_layer(self, lid: int, source=None):
         """A layer taken out of Post (its own filters go with it)."""
@@ -1703,7 +1740,8 @@ class ProjectModel(QObject):
         sec, _todo, reused = self.cost_of(need, p.params)
         stars = need["etoiles"] != p.opts["etoiles"]
         dn = need["debruitage"] != p.opts["debruitage"]
-        what = _("Stars and Denoise") if stars and dn else _("Stars") if stars else _("Denoise") if dn else ""
+        what = (_("Split stars & background and Denoise") if stars and dn else _("Split stars & background") if stars
+                else _("Denoise") if dn else "")
         t = _("Add {what} to the workflow: +{t}").format(what=what, t=hm(sec))
         if [s for s in reused if s not in set(self.all_stages(p))]:
             t += _(", the rest is already computed by another workflow")

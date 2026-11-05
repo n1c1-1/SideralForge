@@ -389,6 +389,9 @@ class Main(QMainWindow):
         s.dirtyChanged.connect(lambda _d: self._title())
         self.run = RunController(s, window=self, console=lambda: getattr(self, "logp", None))
         self.run.runningChanged.connect(lambda _on: self.request_refresh())
+        # Inspect's Run to here greys while a run is in progress (issue #33)
+        self.run.runningChanged.connect(lambda _on: getattr(getattr(self, "tune", None), "request_refresh",
+                                                            lambda: None)())
         self.run.updated.connect(self._run_updated)
         self.run.finished.connect(self._run_finished)
         self.run.logRequested.connect(lambda: self.b_log.setChecked(True))

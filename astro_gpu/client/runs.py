@@ -50,7 +50,8 @@ from .services.run import (
 from .widgets import ACCENT, BAD, OK, WARN, Box, ElidedLabel, clear, label
 
 GREY = "#5d6470"
-STATE_COLOR = {WAITING: "#3a4150", RUNNING: ACCENT, DONE: OK, FAILED: BAD, INTERRUPTED: WARN, SKIPPED: GREY,
+#: waiting: to compute, an orange circle (issue #27)
+STATE_COLOR = {WAITING: WARN, RUNNING: ACCENT, DONE: OK, FAILED: BAD, INTERRUPTED: WARN, SKIPPED: GREY,
                NOT_STARTED: GREY}
 STATE_TIP = {WAITING: "Waiting", RUNNING: "Running", DONE: "Done", FAILED: "Failed", INTERRUPTED: "Stopped",
              SKIPPED: "Not run", NOT_STARTED: "Not run"}
@@ -69,6 +70,7 @@ class Row:
     block: str = ""                                          # the views' block key
     pids: set = field(default_factory=set)
     everyone: bool = False                                   # every workflow of the project shares it
+    uptodate: bool = False                                   # nothing to compute in it (issue #27: shown, ticked)
 
     def who_text(self) -> str:
         """The workflows sharing the block, as the panel's scope says them: "all 4 workflows", or their names."""
@@ -77,9 +79,10 @@ class Row:
         return ", ".join(self.who)
 
 
-def build_rows(model, jobs, names: dict[int, str] | None = None) -> list[Row]:
+def build_rows(model, jobs, names: dict[int, str] | None = None, with_done: bool = False) -> list[Row]:
     """One row per block of the graph that has something to run, in the graph's order. ``jobs``: runner2.Job or
-    JobState. The workflows named are those that share the result (``job.wf``)."""
+    JobState. The workflows named are those that share the result (``job.wf``). ``with_done``: the blocks already
+    up to date too, in their place (``uptodate``; issue #27: the dialog said "3 blocks" without saying which)."""
     names = names or {}
     g = Graph(model) if model.paths else None
     order = {id(n): i for i, n in enumerate(g.nodes)} if g is not None else {}
@@ -101,6 +104,15 @@ def build_rows(model, jobs, names: dict[int, str] | None = None) -> list[Row]:
         row = found[rid][1]
         row.keys.append(j.key)
         row.pids |= set(j.wf)
+    if with_done and g is not None:
+        for nd in g.nodes:
+            if id(nd) in found or nd.key in ("sources", "final", "composition") or not nd.paths:
+                continue
+            if g.state(nd) != "done":
+                continue
+            v = nd.paths[0]
+            title = _('Output "{name}"').format(name=v.name) if nd.key == "post" else block_title(v, nd.key)
+            found[id(nd)] = (order.get(id(nd), 0), Row(title, [], [], nd.key, {q.pid for q in nd.paths}, uptodate=True))
     out = []
     for _pos, row in sorted(found.values(), key=lambda t: t[0]):
         ids = [p.pid for p in model.paths if p.pid in row.pids]
@@ -257,7 +269,8 @@ class RunDialog(QDialog):
         self.warn = QVBoxLayout()
         self.warn.setSpacing(2)
         v.addLayout(self.warn)
-        self.rows_data = build_rows(self.s, self.plan.jobs, self.names) if self.plan is not None else []
+        self.rows_data = (build_rows(self.s, self.plan.jobs, self.names, with_done=self.show_done)
+                          if self.plan is not None else [])
         self.inner = QWidget()
         iv = QVBoxLayout(self.inner)
         iv.setContentsMargins(0, 0, 0, 0)
@@ -404,6 +417,9 @@ class RunDialog(QDialog):
         t = self.track
         for w in self.rows:
             r = w.row
+            if r.uptodate:                                   # nothing to compute: a green tick
+                w.show_state(DONE, 1.0, _("up to date"), _("Up to date: nothing to compute"))
+                continue
             jobs = [t.by_key[k] for k in r.keys if t is not None and k in t.by_key] if t is not None else []
             plan_jobs = {j.key: j for j in self.plan.jobs}
             est = sum(plan_jobs[k].est_s for k in r.keys if k in plan_jobs)
@@ -470,7 +486,7 @@ class RunDialog(QDialog):
             self.review_more.setText(more or _("Continue goes on with the run."))
             self.b_continue.setEnabled(self.c is not None and not self.c.running)
         # the notes under the rows
-        n_done = self._up_to_date() if ph == "plan" and self.show_done else 0
+        n_done = 0                                           # the up-to-date blocks are rows of their own (#27)
         self.done_note.setText(_("Already up to date: {n} blocks").format(n=n_done) if n_done else "")
         self.done_note.setVisible(bool(n_done))
         self.hint.setVisible(ph == "run")

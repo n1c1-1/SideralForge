@@ -892,6 +892,7 @@ class RunController(QObject):
         self.show_dialog()
 
     def _emit_state(self, running: bool):
+        self.model.run_active = running                  # the views grey their Run to here meanwhile (issue #33)
         self.runningChanged.emit(running)
         self.statusChanged.emit(self.status_text())
         self.updated.emit()

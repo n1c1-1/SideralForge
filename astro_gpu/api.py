@@ -1495,7 +1495,7 @@ _METHODS: dict[str, list[MethodInfo]] = {
     "stars": [
         MethodInfo("neural", "Neural star removal", "neural", "both", "star_removal", False,
                    "Takes the stars off the image (a network trained on many stacks): the starless image and the stars "
-                   "alone, recombined by a Stars and background block or each used as a layer of Post. Seconds on a "
+                   "alone, combined by a Combine stars & background layers block or each used as a layer of Post. Seconds on a "
                    "GPU, a few minutes on a processor."),
     ],
     "deconvolution": [

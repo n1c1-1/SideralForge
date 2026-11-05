@@ -1655,3 +1655,17 @@ def test_edits_wait_for_save_and_closing_asks(qapp, tmp_path, monkeypatch):
         assert project2.load(root).workflows[0].name == "Renamed"
     finally:
         w.close()
+
+
+def test_run_to_here_is_greyed_while_a_run_is_in_progress(win):
+    """Issue #33: during a run, Run to here would only open the run in progress: greyed, with its reason."""
+    s = win.s
+    t = win.tune
+    p = s.paths[0]
+    s.run_active = True
+    try:
+        rb = t._run_button(p, "fond")
+        assert not rb.isEnabled() and "run is in progress" in rb.toolTip()
+    finally:
+        s.run_active = False
+    assert "run is in progress" not in t._run_button(p, "fond").toolTip()

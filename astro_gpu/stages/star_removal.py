@@ -48,7 +48,7 @@ class StarRemoval(Stage):
     name = "star_removal"
     title = "Star removal"
     description = ("A network trained on our stacks takes the stars off the Output block's image: the starless image "
-                   "and the stars alone, two images that Post recombines (the Stars and background block) or takes as "
+                   "and the stars alone, two images that Post combines (the Combine stars & background layers block) or takes as "
                    "they are.")
     deps = ("render_simple", "stack")
     Params = StarRemovalParams

@@ -81,10 +81,13 @@ def test_a_stars_workflow_comes_as_its_stars_and_background_block_and_the_others
     assert [n.paths for n in g.compositions] == [[full]] and g.compositions[0].lid is None
     assert g.compositions[0].parent is g.node_of(full, "etoiles")
     assert g.to_post == {classic.pid} and g.direct == []
-    assert sorted(g.post_layers) == sorted([("Full · Stars and background", full.pid),
+    assert sorted(g.post_layers) == sorted([("Full · Combine stars & background layers", full.pid),
                                             ("Classic stack", classic.pid)])
     assert g.summary(g.final) == "2 layers"
-    assert g.summary(g.node_of(full, "post")) == "workflow"                # its image goes to the Stars block
+    # issue #17: no Output block of its own, its Stars block holds it (the workflow's name, its menu)
+    st = g.node_of(full, "etoiles")
+    assert g.node_of(full, "post") is st and st.handle and all(n.key != "post" or n.paths != [full] for n in g.nodes)
+    assert g.summary(st).startswith("Full · ") and g.leaves[full.pid] is st
     assert g.summary(g.node_of(classic, "post")) == "to Post"
     assert g.summary(g.compositions[0]) == "stars in Screen"
 
@@ -94,7 +97,8 @@ def test_the_default_layer_of_a_stars_workflow_puts_the_stars_back_in_screen():
     assert lay["part"] == "combined" and lay["blend"] == "Screen" and lay["mode"] == "Normal"
     out = new_workflow_layer(2, "Classic stack", True)
     assert out["part"] is None and "blend" not in out and out["mode"] == "Normal"
-    assert POST_PART_NAMES == {"starless": "Starless image", "stars": "Stars alone", "combined": "Stars and background"}
+    assert POST_PART_NAMES == {"starless": "Starless image", "stars": "Stars alone",
+                               "combined": "Combine stars & background layers"}
 
 
 # ---------------------------------------------------------------------------------------------- the model's edits
@@ -107,18 +111,21 @@ def test_the_model_adds_changes_and_removes_a_post_layer_and_says_who_did(model)
         lid = model.add_post_layer(full.pid, "stars", me)
         assert said == [me]
         layers = model.p.post["layers"]
-        assert [(x["pid"], x["part"], x["name"], x["mode"]) for x in layers] == [
-            (full.pid, "stars", "Full · Stars alone", "Screen")]
+        # on top of the layers Post gives the workflows (#29: the composition was never filled)
+        assert [(x["pid"], x["part"], x["name"], x["mode"]) for x in layers][0] == (
+            full.pid, "stars", "Full · Stars alone", "Screen")
+        defaults = [x["id"] for x in layers[1:]]
+        assert len(defaults) == 2
         assert layers[0]["id"] == lid and layers[0]["visible"] and model.post_layer(lid)["part"] == "stars"
         top = model.add_post_layer(full.pid, "combined")                    # a new one goes on top
-        assert said == [me, None] and [x["id"] for x in model.p.post["layers"]] == [top, lid]
+        assert said == [me, None] and [x["id"] for x in model.p.post["layers"]] == [top, lid] + defaults
         assert model.post_layer(top)["blend"] == "Screen"
         model.set_post_layer(top, me, blend="Linear dodge (add)", sliders={"star_strength": 3.0})
         assert said[-1] is me
         assert model.post_layer(top)["blend"] == "Linear dodge (add)"
         assert model.post_layer(top)["sliders"] == {"star_strength": 3.0}
         model.remove_post_layer(lid, me)
-        assert said[-1] is me and [x["id"] for x in model.p.post["layers"]] == [top]
+        assert said[-1] is me and [x["id"] for x in model.p.post["layers"]] == [top] + defaults
         assert model.post_layer(lid) is None
     finally:
         model.postChanged.disconnect(said.append)
@@ -131,7 +138,8 @@ def test_removing_a_layer_takes_its_own_filters_with_it(model):
     flt = postengine.new_filter_layer("saturation", lid)
     model.set_post_layers([flt] + model.post_layers())
     model.remove_post_layer(lid)
-    assert [x["id"] for x in model.p.post["layers"]] == [keep]
+    assert [x["id"] for x in model.p.post["layers"]][0] == keep and lid not in [x["id"] for x in model.p.post["layers"]]
+    assert flt["id"] not in [x["id"] for x in model.p.post["layers"]]
 
 
 # ---------------------------------------------------------------------------------------------- the graph
@@ -150,7 +158,7 @@ def test_the_graph_has_a_block_per_stars_and_background_layer_and_sends_the_othe
     assert g.direct == [(stars, "stars"), (stars, "starless")]               # Post's order, top first
     # Classic has no layer yet: Post will give it its Output image
     assert g.to_post == {classic.pid}
-    assert g.summary(g.node_of(full, "post")) == "workflow"                 # Full's Output image is in no layer
+    assert g.node_of(full, "post") is stars                                  # Full's Output image is in no layer (#17)
     assert g.summary(g.node_of(full, "composition", b)) == "stars in Lighten"
     assert g.summary(g.node_of(full, "composition", a)) == "stars in Screen"
     assert g.summary(g.final) == "6 layers" and len(g.post_layers) == 6
@@ -212,7 +220,34 @@ def test_the_stars_panel_sends_each_image_to_post_and_makes_a_stars_and_backgrou
     stars = Graph(model).node_of(full, "etoiles")
     panel.outputs(stars)
     buttons = {b.text(): b for b in panel.findChildren(QPushButton)}
-    assert "To Post" in buttons and "New Stars and background block" in buttons
+    assert "To Post" in buttons and "New Combine stars & background layers block" in buttons
     panel._part_to_post(full, "starless")
     panel._new_composition(full)
     assert [x.get("part") for x in model.post_layers()][:2] == ["combined", "starless"]
+
+
+def test_sending_the_stars_alone_keeps_the_combine_block_and_the_link_can_be_taken_back(model):
+    """Issue #29: on a composition never filled, sending the stars alone first puts the layers Post gives the
+    workflows (Full's Combine block), so that block does not vanish; the link of the stars alone to Post is taken
+    back from the graph (the split block's menu, its panel's Out of Post), with its layer's filters."""
+    from PySide6.QtWidgets import QPushButton
+
+    from astro_gpu.client.panel import Panel
+    full, classic = _full(model), _classic(model)
+    model.add_post_layer(full.pid, "stars")
+    layers = model.post_layers()
+    assert [(x["pid"], x.get("part")) for x in layers] == [(full.pid, "stars"), (classic.pid, None), (full.pid, "combined")]
+    g = Graph(model)
+    stars = g.node_of(full, "etoiles")
+    assert (stars, "stars") in g.direct and [n.parent for n in g.compositions] == [stars]
+    panel = Panel(model)
+    panel.outputs(stars)
+    assert "Out of Post" in [b.text() for b in panel.findChildren(QPushButton)]
+    lid = layers[0]["id"]
+    model.set_post_layers(save_layers(postengine.normalize(load_layers(layers, {full.pid, classic.pid})
+                                                + [postengine.new_filter_layer("saturation", lid)])))
+    assert model.remove_post_part(full.pid, "stars") == 1
+    left = model.post_layers()
+    assert all(x.get("part") != "stars" and x.get("target") != lid for x in left)
+    g = Graph(model)
+    assert g.direct == [] and len(g.compositions) == 1

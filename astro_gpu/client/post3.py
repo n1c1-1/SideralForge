@@ -298,7 +298,7 @@ class LayerRow(QFrame):
         eye.setChecked(lay["visible"])
         eye.setToolTip(_("Show / hide layer"))
         if lay["kind"] == "sub":
-            eye.setToolTip(_("Show / hide this image in its Stars and background layer"))
+            eye.setToolTip(_("Show / hide this image in its Combine stars & background layers layer"))
             eye.toggled.connect(lambda v: panel.set_shown(lay["id"], lay["sub"], v))
         else:
             eye.toggled.connect(lambda v: panel.set_visible(lay["id"], v))
