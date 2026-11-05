@@ -545,7 +545,7 @@ def test_the_frames_chart_has_a_time_axis_and_exports_its_frames():
     assert np.allclose(ch.d_f.x, ch.secs)
     ch.set_xmode("frame")
     csv = ch.csv_text().strip().split("\r\n")
-    assert csv[0] == "Frame number,Frame,Time,FWHM (px),Transparency (%)" and len(csv) == 31
+    assert csv[0] == "Frame number,Frame,Time,Reason,FWHM (px),Transparency (%)" and len(csv) == 31
     assert csv[1].split(",")[:3] == ["1", "DSC2000.ARW", "2026-08-17T21:30:00"]
     rows = frame_rows(10)                                                         # no times: no time axis
     rows[4].time = None
@@ -769,3 +769,15 @@ def test_a_chart_is_a_plain_widget_that_takes_the_mouse_itself():
     assert v._canvas.testAttribute(Qt.WA_TransparentForMouseEvents) and v.hasMouseTracking()
     assert v.childAt(at(v, 0.5, 0.5)) in (None, v)
     assert v.sizeHint().width() > 300 and v.minimumSize().height() >= 200
+
+
+def test_a_frame_that_did_not_align_is_shown_with_its_reason():
+    """Issue #37: a frame that did not align has its own colour and legend entry in both panels (on the bottom line of
+    the transparency panel: it has none), and the readout and the CSV give its reason."""
+    ch = frames_chart()
+    f_na, t_na = ch._series["f", "na"], ch._series["t", "na"]
+    assert list(f_na.x) == [12.0] and list(t_na.x) == [12.0]                    # frame 12 (index 11)
+    assert t_na.y[0] == ch.p_t.home_y[0] and f_na.name == "not aligned"
+    assert 12.0 not in list(ch._series["f", "out"].x)
+    row = [r for r in ch.csv_text().strip().split("\r\n") if r.startswith("12,")][0]
+    assert ",not aligned," in row

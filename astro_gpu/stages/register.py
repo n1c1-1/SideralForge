@@ -69,8 +69,11 @@ class Register(Stage):
         todo = [i for i in range(n) if cats[i] is None or psf[i] is None]
         if todo:
             init = (info["path"], n, H, W, p.detect_sigma, p.max_stars, info["cfa"])
+            # said at once, and one frame per task: a dense field takes 10 s and more per frame, so that a batch of 4
+            # per worker kept the progress at 0 % for minutes (North America: first result after 141 s, issue #34)
+            ctx.progress(0.0, f"detecting the stars of {len(todo)} frames ({p.workers} processes)")
             with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
-                for c, res in enumerate(pool.imap_unordered(_catalog_moffat, todo, chunksize=4)):
+                for c, res in enumerate(pool.imap_unordered(_catalog_moffat, todo, chunksize=1)):
                     idx, cat, fw, rb, rd, nz, psf[idx] = res
                     cats[idx], fwhm[idx], rmsb[idx], rnd[idx], noise[idx] = cat, fw, rb, rd, nz
                     if (c + 1) % 50 == 0 or c + 1 == len(todo):
@@ -89,13 +92,24 @@ class Register(Stage):
         coef = np.zeros((n, 2, 10))
         nmatch, rms, transp = np.zeros(n, int), np.full(n, np.inf), np.zeros(n)
         failed = []
+        recovered = 0
         for i in range(n):
             r = fit_frame(cats[i], refcat, tree, W, H)
+            if r is None and cats[i] is not None and len(cats[i]) >= 30:
+                # no clear vote of the stars (a dense field: the brightest detections change from frame to frame):
+                # the shift from the images themselves (phase correlation), then the same fit (issue #37)
+                sh = phase_shift(mm, i, ref, H, W)
+                if sh is not None:
+                    r = _fit_from(cats[i], refcat, tree, W, H, cats[i][:, :2] - sh, 8.0)
+                    recovered += r is not None
             if r is None:
                 failed.append(meta[i]["path"])
             else:
                 coef[i], nmatch[i], rms[i], transp[i] = r
             ctx.progress(0.9 + 0.1 * (i + 1) / n, f"aligning frame {i + 1}/{n}")
+        if recovered:
+            ctx.log(f"{recovered} frame(s) aligned from the shift the images' phase correlation gives (no clear vote "
+                    "of their stars)")
         fin = np.isfinite(rms)
         if fin.sum() >= 3:
             # a wrong match (6.5 px on the Stellina), not a softer frame (M33: 35 stacked frames at 1.0-1.9 px)
@@ -164,24 +178,64 @@ def apply_poly(coef, x, y, W, H):
     return T @ coef[0], T @ coef[1]
 
 
+#: the Poisson sigmas a vote's peak stands above the mean count of a bin (the chance pairs)
+VOTE_SIGMAS = 8.0
+
+
 def initial_shift(a, b, W, H):
     """Coarse translation by voting on pair differences (b - a), refined on nearest neighbours.
 
-    Votes first within +-400 px (2 px bins, the usual drift); if no clear peak, within half the frame.
+    Votes first within +-400 px (2 px bins, the usual drift), on the 150 brightest stars, then on more (400, 1000):
+    on a dense field the brightest detections change from frame to frame (the saturated stars masked, crowded stars
+    merged or split), so that two lists of 150 share too few stars (North America, 5 frames of 109 lost, issue #37).
+    A peak counts when it stands clear of the chance pairs (VOTE_SIGMAS Poisson sigmas over the mean count of a bin:
+    more stars, more chance pairs). Only then within half the frame.
     """
-    d = (b[:150, None, :2] - a[None, :150, :2]).reshape(-1, 2)
     s = np.zeros(2)
-    for span, bins in ((400.0, 400), (max(W, H) / 2.0, 1000)):
+    found = False
+    for span, bins, nst in ((400.0, 400, 150), (400.0, 400, 400), (400.0, 400, 1000), (max(W, H) / 2.0, 1000, 150)):
+        d = (b[:nst, None, :2] - a[None, :nst, :2]).reshape(-1, 2)
         hh, xe, ye = np.histogram2d(d[:, 0], d[:, 1], bins=bins, range=[[-span, span], [-span, span]])
         i, j = np.unravel_index(hh.argmax(), hh.shape)
         s = np.array([(xe[i] + xe[i + 1]) / 2, (ye[j] + ye[j + 1]) / 2])
-        if hh.max() >= 8:
+        mean = hh.sum() / hh.size
+        if hh.max() >= max(8.0, mean + VOTE_SIGMAS * np.sqrt(mean) + 5.0):
+            found = True
             break
+    if not found:                                    # no clear peak anywhere: the brightest pairs' best guess
+        d = (b[:150, None, :2] - a[None, :150, :2]).reshape(-1, 2)
+        span = max(W, H) / 2.0
+        hh, xe, ye = np.histogram2d(d[:, 0], d[:, 1], bins=1000, range=[[-span, span], [-span, span]])
+        i, j = np.unravel_index(hh.argmax(), hh.shape)
+        s = np.array([(xe[i] + xe[i + 1]) / 2, (ye[j] + ye[j + 1]) / 2])
     dd, jj = cKDTree(a[:, :2]).query(b[:, :2] - s, distance_upper_bound=6.0)
     m = np.isfinite(dd)
     if m.sum() > 10:
         s = s + np.median((b[m, :2] - s) - a[jj[m], :2], axis=0)
     return s
+
+
+#: the phase correlation's reduction (sensor pixels per pixel of the images it compares) and the least peak it trusts
+PHASE_BIN, PHASE_MIN = 4, 0.1
+
+
+def phase_shift(mm, i: int, ref: int, H: int, W: int) -> np.ndarray | None:
+    """The shift (frame minus reference, sensor pixels) of two calibrated frames by phase correlation (C. D. Kuglin,
+    D. C. Hines, "The phase correlation image alignment method", IEEE Conf. on Cybernetics and Society, 1975), on
+    their images reduced PHASE_BIN times, the sky taken off and the brightest stars clipped, under a Hanning window;
+    None when its peak is under PHASE_MIN."""
+    import cv2
+
+    def small(k):
+        a = np.nan_to_num(np.asarray(mm[k], np.float32))
+        a = a[: H - H % PHASE_BIN, : W - W % PHASE_BIN]
+        a = a.reshape(a.shape[0] // PHASE_BIN, PHASE_BIN, a.shape[1] // PHASE_BIN, PHASE_BIN).mean((1, 3))
+        a = a - cv2.GaussianBlur(a, (0, 0), 10)
+        return np.clip(a, 0, np.percentile(a, 99.9)).astype(np.float32)
+    s_ref, s_i = small(ref), small(i)
+    win = cv2.createHanningWindow(s_ref.shape[::-1], cv2.CV_32F)
+    (dx, dy), peak = cv2.phaseCorrelate(s_ref, s_i, win)
+    return None if peak < PHASE_MIN else np.array([dx, dy]) * PHASE_BIN
 
 
 def _rotate(xy, ang_deg, W, H):
