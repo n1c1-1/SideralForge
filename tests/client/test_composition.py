@@ -84,7 +84,7 @@ def test_a_stars_workflow_comes_as_its_stars_and_background_block_and_the_others
     assert sorted(g.post_layers) == sorted([("Full · Stars and background", full.pid),
                                             ("Classic stack", classic.pid)])
     assert g.summary(g.final) == "2 layers"
-    assert g.summary(g.node_of(full, "post")) == "to Stars"                # its image goes to the Stars block
+    assert g.summary(g.node_of(full, "post")) == "workflow"                # its image goes to the Stars block
     assert g.summary(g.node_of(classic, "post")) == "to Post"
     assert g.summary(g.compositions[0]) == "stars in Screen"
 
@@ -150,7 +150,7 @@ def test_the_graph_has_a_block_per_stars_and_background_layer_and_sends_the_othe
     assert g.direct == [(stars, "stars"), (stars, "starless")]               # Post's order, top first
     # Classic has no layer yet: Post will give it its Output image
     assert g.to_post == {classic.pid}
-    assert g.summary(g.node_of(full, "post")) == "to Stars"                 # Full's Output image is in no layer
+    assert g.summary(g.node_of(full, "post")) == "workflow"                 # Full's Output image is in no layer
     assert g.summary(g.node_of(full, "composition", b)) == "stars in Lighten"
     assert g.summary(g.node_of(full, "composition", a)) == "stars in Screen"
     assert g.summary(g.final) == "6 layers" and len(g.post_layers) == 6
@@ -201,3 +201,18 @@ def test_linear_dodge_adds_the_layers():
     assert np.allclose(got, np.clip(a + b, 0, 1), atol=1e-6) and got.max() == 1.0
     assert np.allclose(Composer.blend("Screen", a, b), 1 - (1 - a) * (1 - b), atol=1e-6)
     assert BLENDS == ("Screen", "Linear dodge (add)", "Lighten") and set(BLENDS) <= set(MODES)
+
+
+def test_the_stars_panel_sends_each_image_to_post_and_makes_a_stars_and_background_block(model):
+    from PySide6.QtWidgets import QPushButton
+
+    from astro_gpu.client.panel import Panel
+    full = _full(model)
+    panel = Panel(model)
+    stars = Graph(model).node_of(full, "etoiles")
+    panel.outputs(stars)
+    buttons = {b.text(): b for b in panel.findChildren(QPushButton)}
+    assert "To Post" in buttons and "New Stars and background block" in buttons
+    panel._part_to_post(full, "starless")
+    panel._new_composition(full)
+    assert [x.get("part") for x in model.post_layers()][:2] == ["combined", "starless"]

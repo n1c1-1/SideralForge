@@ -319,7 +319,8 @@ class Graph:
             if p.end:
                 return _("from {block}").format(block=block_title(p, p.end))
             # with Stars, the image goes to the Stars block (and to Post only when a layer shows it as it is)
-            return _("to Post") if p.pid in self.to_post or self.node_of(p, "etoiles") is None else _("to Stars")
+            # with Stars its images go to Post from the Stars block: this block is only the workflow (issue #8)
+            return _("to Post") if p.pid in self.to_post or self.node_of(p, "etoiles") is None else _("workflow")
         if k == "composition":
             lay = self.s.post_layer(node.lid) if node.lid is not None and hasattr(self.s, "post_layer") else None
             return _("stars in {mode}").format(mode=_((lay or {}).get("blend") or "Screen"))
