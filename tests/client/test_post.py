@@ -1140,10 +1140,10 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     assert next(r for r in v.rows if r.lay["id"] == sh["id"]).sub.text() == "on everything below · Normal · 100%"
     assert [(r.lay["name"], r.depth) for r in v.rows] == [("Sharpen", 0), ("Classic", 0), ("Full", 0),
                                                          ("Saturation", 1)]
-    # the properties of a filter: where it applies, its settings
+    # the properties of a filter: its settings; where it applies is its place in the layers (issue #26)
     v.select(sat["id"], "layer")
     texts = [b.text() for b in widgets_of(v, QPushButton)]
-    assert '"Full" only' in texts and "Everything below" in texts
+    assert '"Full" only' not in texts and "Everything below" not in texts
     assert [lb.text() for lb in widgets_of(v, QLabel)][0] == "Saturation"
     assert post.settle()
     img = shown(v).copy()
@@ -1159,7 +1159,7 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     # the + Filter menu: the filters by family (the first Post's arcsinh stretch is no longer offered)
     fam = {a.text(): [x.text() for x in a.menu().actions()] for a in v.filter_menu.actions()}
     assert list(fam) == ["Stretch", "Contrast", "Color", "Detail", "Noise", "Combine"]
-    assert sum(len(x) for x in fam.values()) == len([f for f in FILTERS.values() if not f.get("hidden")]) == 18
+    assert sum(len(x) for x in fam.values()) == len([f for f in FILTERS.values() if not f.get("hidden")]) == 19  # Dehaze, #22
     # Curves and Levels are stretches (2 November: where the user looked for them first)
     assert fam["Stretch"] == ["Generalised hyperbolic stretch", "Arcsinh stretch", "Histogram transformation", "Curves",
                               "Levels"]

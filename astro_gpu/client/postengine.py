@@ -50,6 +50,7 @@ import numpy as np
 
 from .postfilters import colour as pf_colour
 from .postfilters import curves as pf_curves
+from .postfilters import dehaze as pf_dehaze
 from .postfilters import detail as pf_detail
 from .postfilters import heal as pf_heal
 from .postfilters import tone as pf_tone
@@ -269,6 +270,10 @@ def f_faint_smooth(x, p, ctx):
     return pf_detail.faint_smoothing(x, p["amount"], p["threshold"], p["radius"], ctx.level)
 
 
+def f_dehaze(x, p, ctx):
+    return pf_dehaze.dehaze(x, p["amount"], p["scale"] / ctx.f)
+
+
 def f_heal(x, p, ctx):
     return pf_heal.heal(x, p["spots"], 1.0 / ctx.f, (ctx.abox[0], ctx.abox[1]))
 
@@ -367,6 +372,12 @@ FILTERS = {
                            source="A large-radius unsharp mask",
                            params=[P("strength", "Strength", 0, 1.5, 0, step=0.01),
                                    P("scale", "Scale", 5, 120, 40, "px", 1)]),
+    "dehaze": dict(name="Dehaze", family="Contrast", fn=f_dehaze, margin=lambda p: 2 * p["scale"],
+                   source="The veil (residual sky glow, haze) measured as the background of SExtractor (Bertin and "
+                          "Arnouts 1996: meshes, 3-sigma clipping, mode, bicubic map) and taken off with He's haze "
+                          "model (He, Sun, Tang 2009), the white kept",
+                   params=[P("amount", "Amount", 0, pf_dehaze.AMOUNT_MAX, 0, step=0.01),
+                           P("scale", "Scale", 32, 512, 128, "px", 1)]),
     "clahe": dict(name="Local histogram equalization", family="Contrast", fn=f_clahe,
                   source="CLAHE (Zuiderveld 1994): the contrast equalised tile by tile, with a limit, on the "
                          "lightness",

@@ -196,6 +196,8 @@ _METRIC_ROWS: list[tuple] = [
     ("grid", "Stack size", "px", "d", "Width and height of the stacked image.", " × "),
     ("fixed_pattern", "Fixed pattern", "", "", "What was measured of the sensor's fixed pattern."),
     ("rejected_pct", "Rejected pixels", "%", ".3f", "Share of pixels rejected as outliers (satellites, cosmic rays)."),
+    ("camera_white_balance", "Camera white balance", "", ".3f",
+     "Multipliers of red, green and blue from the camera's daylight white balance, applied to the stack."),
     ("drizzle_excluded_pct", "Drops left out", "%", ".3f",
      "Share of the drizzle's drops left out where the frames' integration rejected the pixel."),
     ("channel_offsets", "Color offsets", "", "",

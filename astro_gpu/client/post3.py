@@ -1729,20 +1729,7 @@ class PostView(QWidget):
         self.pbox.addWidget(op)
         if lay["kind"] == "filter":
             f = FILTERS[lay["filter"]]
-            self._group(_("Applies to"))
-            r = QVBoxLayout()
-            r.setSpacing(3)
-            for txt, val in self.scope_choices(lay):
-                b = QPushButton(txt)
-                b.setObjectName("scope")
-                b.setCheckable(True)
-                b.setChecked(self.scope_of(lay) == val)
-                b.setStyleSheet("QPushButton#scope { padding: 4px 10px; text-align: left; }"
-                                f"QPushButton#scope:checked {{ background: #2b3446; border-color: {ACCENT}; "
-                                "color: #ffffff; font-weight: 600; }")
-                b.clicked.connect(lambda _=False, t=val: self.set_target(lay, t) if self.scope_of(lay) != t else None)
-                r.addWidget(b)
-            self.pbox.addLayout(r)
+            # what it applies to is its place in the layers (issue #26): moved there, or with its right-click menu
             self._group(_(f["name"]))
             self.pbox.addWidget(caption(_(f["source"])))
             refresh = lambda: None                                          # noqa: E731
