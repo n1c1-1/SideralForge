@@ -1,4 +1,5 @@
-"""Post's viewer (``Viewer``): zoom, pan, 100 %, before / after curtain, overlays, rectangle and brush tools.
+"""Post's viewer (``Viewer``): zoom, pan, 100 %, before / after curtain, overlays, rectangle, brush and spot healing
+tools.
 
 It only asks its source for the pixels of the visible region, at full or half resolution (post3.PostSource);
 ``StaticSource`` is a fixed image. The other views show their pictures in ``imageview.ImageView``.
@@ -39,6 +40,9 @@ class Viewer(QWidget):
     rectDone = Signal(float, float, float, float)        # image coordinates (full resolution of the source)
     stroke = Signal(float, float, bool)                  # x, y, first point of a stroke
     strokeEnd = Signal()
+    toolPress = Signal(float, float, int, bool)          # spot healing: x, y, the button (Qt.MouseButton), Alt held
+    toolMove = Signal(float, float)
+    toolRelease = Signal()
     viewChanged = Signal()
     hovered = Signal(float, float)
 
@@ -51,7 +55,7 @@ class Viewer(QWidget):
         self.curtain = 0.5
         self.scale = 1.0
         self.cx = self.cy = 0.0
-        self.mode = "pan"                                 # pan | rect | brush
+        self.mode = "pan"                                 # pan | rect | brush | heal
         self.brush_r = 30.0
         self.overlays = []                                # callables (painter, viewer)
         self.dim_outside = None                           # (x0, y0, x1, y1): darken outside (test zone)
@@ -181,7 +185,7 @@ class Viewer(QWidget):
             p.setPen(QPen(QColor("#e6a23c"), 1.5, Qt.DashLine))
             p.setBrush(QColor(230, 162, 60, 40))
             p.drawRect(QRectF(self.img_to_w(*a), self.img_to_w(*b)).normalized())
-        if self.mode == "brush" and self._mouse is not None:
+        if self.mode in ("brush", "heal") and self._mouse is not None:
             p.setBrush(Qt.NoBrush)
             p.setPen(QPen(QColor(255, 255, 255, 200), 1.2))
             p.drawEllipse(self._mouse, self.brush_r * self.scale, self.brush_r * self.scale)
@@ -240,6 +244,9 @@ class Viewer(QWidget):
         elif e.button() == Qt.LeftButton and self.mode == "brush":
             self._drag = ("brush",)
             self.stroke.emit(ix, iy, True)
+        elif e.button() in (Qt.LeftButton, Qt.RightButton) and self.mode == "heal":
+            self._drag = ("heal",)
+            self.toolPress.emit(ix, iy, int(e.button().value), bool(e.modifiers() & Qt.AltModifier))
         else:
             self._drag = ("pan", pos, self.cx, self.cy)
         self.update()
@@ -253,13 +260,15 @@ class Viewer(QWidget):
         if d is None:
             self.setCursor(Qt.SplitHCursor if self._near_curtain(pos.x()) else
                            (Qt.CrossCursor if self.mode in ("rect",) else
-                            (Qt.BlankCursor if self.mode == "brush" else Qt.OpenHandCursor)))
+                            (Qt.BlankCursor if self.mode in ("brush", "heal") else Qt.OpenHandCursor)))
         elif d[0] == "curtain":
             self.curtain = float(np.clip(pos.x() / max(self.width(), 1), 0.02, 0.98))
         elif d[0] == "rect":
             self._rect[1] = (ix, iy)
         elif d[0] == "brush":
             self.stroke.emit(ix, iy, False)
+        elif d[0] == "heal":
+            self.toolMove.emit(ix, iy)
         elif d[0] == "pan":
             self.cx = d[2] - (pos.x() - d[1].x()) / self.scale
             self.cy = d[3] - (pos.y() - d[1].y()) / self.scale
@@ -277,6 +286,8 @@ class Viewer(QWidget):
                 self.rectDone.emit(min(ax, bx), min(ay, by), max(ax, bx), max(ay, by))
         elif d and d[0] == "brush":
             self.strokeEnd.emit()
+        elif d and d[0] == "heal":
+            self.toolRelease.emit()
         self.update()
 
     def leaveEvent(self, e):

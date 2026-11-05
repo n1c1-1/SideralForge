@@ -49,6 +49,7 @@ import numpy as np
 from .postfilters import colour as pf_colour
 from .postfilters import curves as pf_curves
 from .postfilters import detail as pf_detail
+from .postfilters import heal as pf_heal
 from .postfilters import tone as pf_tone
 
 MODES = ["Normal", "Lighten", "Screen", "Linear dodge (add)", "Multiply", "Soft light"]   # plain English: _() where shown
@@ -167,6 +168,23 @@ def CURVE(key):
     return dict(key=key, label="Curves", type="curve", default={})
 
 
+def SPOTS(key):
+    """The spots of Spot healing: [[x, y, r, dx, dy], ...] in full-resolution canvas pixels (postfilters.heal)."""
+    return dict(key=key, label="Spots", type="spots", default=[])
+
+
+def clean_spots(v) -> list[list[float]]:
+    out = []
+    for s in v if isinstance(v, (list, tuple)) else []:
+        try:
+            x, y, r, dx, dy = (float(t) for t in s)
+        except (TypeError, ValueError):
+            continue
+        if all(math.isfinite(t) for t in (x, y, r, dx, dy)) and 1 <= r <= 2000:
+            out.append([round(x, 1), round(y, 1), round(r, 1), round(dx, 1), round(dy, 1)])
+    return out
+
+
 def f_stretch(x, p, ctx):
     """An arcsinh stretch around the symmetry point (the transcendental on all cores, through torch)."""
     d, sp = p["strength"], p["symmetry"]
@@ -245,6 +263,10 @@ def f_highlights(x, p, ctx):
 
 def f_faint_smooth(x, p, ctx):
     return pf_detail.faint_smoothing(x, p["amount"], p["threshold"], p["radius"], ctx.level)
+
+
+def f_heal(x, p, ctx):
+    return pf_heal.heal(x, p["spots"], 1.0 / ctx.f, (ctx.abox[0], ctx.abox[1]))
 
 
 ML_KEYS = ("l1", "l2", "l3", "l4", "l5")
@@ -396,6 +418,12 @@ FILTERS = {
                                  P("threshold", "Below", 0.05, 0.8, 0.3, step=0.01),
                                  P("radius", "Radius", 2, 64, 24, "px", 1)]),
     # ---- combine
+    # ---- retouch
+    "heal": dict(name="Spot healing", family="Detail", fn=f_heal, editor="spots",
+                 margin=lambda p: pf_heal.margin(p["spots"]),
+                 source="A spot replaced by a patch of its neighbourhood, seamlessly (Poisson image editing, Perez et "
+                        "al. 2003, as the healing brush of photo editors); the source found automatically, movable",
+                 params=[SPOTS("spots")]),
     "halpha_red": dict(name="H-alpha to red", family="Combine", fn=f_halpha, needs="halpha",
                        source="The engine's H-alpha map added to the red channel",
                        params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
@@ -644,6 +672,8 @@ def load_layers(raw, alive: set[int]) -> list[dict]:
                     v = bool(v)
                 elif q["type"] == "curve":
                     v = pf_curves.clean_curves(v)
+                elif q["type"] == "spots":
+                    v = clean_spots(v)
                 else:
                     v = _num(v, q["default"], q["lo"], q["hi"])
                 lay["params"][q["key"]] = v
@@ -978,6 +1008,18 @@ class Composer:
         return out
 
     # ------------------------------------------------------------ the whole image
+    @staticmethod
+    def margin_of(layers: list[dict]) -> int:
+        """Full-resolution pixels around a region: REGION_MARGIN, or more when a visible filter reads farther (a spot
+        of Spot healing and its source)."""
+        need = REGION_MARGIN
+        for lay in layers:
+            if lay["kind"] == "filter" and lay["visible"] and lay["filter"] in FILTERS:
+                fn = FILTERS[lay["filter"]].get("margin")
+                if fn is not None:
+                    need = max(need, int(math.ceil(fn(lay["params"]))) + 8)
+        return need
+
     def compose(self, layers: list[dict], level: int, box=None, *, want=(), thumbs: bool = False, stop=None,
                 cache: bool = True, draft: bool = False, hists=()) -> Composite | None:
         """The composite (float 0..1) at a resolution, for a box of the canvas at that level (default: all of it).
@@ -995,7 +1037,7 @@ class Composer:
         x0, y0, x1, y1 = box
         if not (0 <= x0 < x1 <= W and 0 <= y0 < y1 <= H):
             raise ValueError(f"box {box} outside the {W} x {H} canvas at level {level}")
-        pad = REGION_MARGIN if level == 0 and box != (0, 0, W, H) else 0
+        pad = self.margin_of(layers) if level == 0 and box != (0, 0, W, H) else 0
         abox = (max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad))
         ax0, ay0, ax1, ay1 = abox
         comp = np.zeros((ay1 - ay0, ax1 - ax0, 3), np.float32)

@@ -1156,12 +1156,13 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     # the + Filter menu: the filters by family (the first Post's arcsinh stretch is no longer offered)
     fam = {a.text(): [x.text() for x in a.menu().actions()] for a in v.filter_menu.actions()}
     assert list(fam) == ["Stretch", "Contrast", "Color", "Detail", "Noise", "Combine"]
-    assert sum(len(x) for x in fam.values()) == len([f for f in FILTERS.values() if not f.get("hidden")]) == 17
+    assert sum(len(x) for x in fam.values()) == len([f for f in FILTERS.values() if not f.get("hidden")]) == 18
     # Curves and Levels are stretches (2 November: where the user looked for them first)
     assert fam["Stretch"] == ["Generalised hyperbolic stretch", "Arcsinh stretch", "Histogram transformation", "Curves",
                               "Levels"]
     assert "Curves" not in fam["Contrast"] and fam["Combine"] == ["H-alpha to red"]
     assert "Highlight compression" in fam["Contrast"] and "Faint area smoothing" in fam["Noise"]
+    assert "Spot healing" in fam["Detail"]
     assert all(x.isEnabled() for a in v.filter_menu.actions() for x in a.menu().actions())
 
 
@@ -1289,6 +1290,34 @@ def test_the_brush_paints_erases_and_is_one_undo_step(post):
     part = named(v, "Full")["mask"]["parts"][0]                                          # Undo brings back other dicts
     v._part_set(part, "strokes", [])                                                     # Clear all
     assert post.settle() and v.mask1.max() == 0
+
+
+def test_spot_healing_heals_a_click_moves_removes_and_undoes(post):
+    from PySide6.QtCore import Qt
+    v = post.view
+    f = v.add_filter("heal")
+    v.select(f["id"], "layer")
+    assert v.viewer.mode == "heal" and v._heal_layer() is f
+    assert post.settle()
+    before = shown(v).copy()
+    n0 = len(v.undo)
+    v._heal_press(200.0, 150.0, int(Qt.LeftButton.value), False)                       # a click: a spot, its source
+    spots = f["params"]["spots"]
+    assert len(spots) == 1 and len(v.undo) == n0 + 1 and spots[0][2] == pytest.approx(v.heal_size / 2)
+    assert np.hypot(spots[0][3], spots[0][4]) > spots[0][2]                            # the source beside the spot
+    assert post.settle() and not np.array_equal(shown(v), before)
+    x, y, r, dx, dy = spots[0]
+    v._heal_press(x + dx, y + dy, int(Qt.LeftButton.value), False)                     # drag its source
+    v._heal_move(x + dx + 30, y + dy)
+    v._heal_release()
+    assert f["params"]["spots"][0][3] == pytest.approx(dx + 30) and len(v.undo) == n0 + 2
+    v._heal_press(x, y, int(Qt.LeftButton.value), True)                                 # Alt+click: source here
+    assert f["params"]["spots"][0][3:] == [0.0, 0.0]
+    v._heal_press(x, y, int(Qt.RightButton.value), False)                               # right click: removed
+    assert f["params"]["spots"] == []
+    v.do_undo()
+    assert len(v._heal_layer()["params"]["spots"]) == 1
+    assert post.settle()
 
 
 def test_a_stars_workflow_comes_as_its_stars_and_background_image(preps, qapp):

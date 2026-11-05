@@ -40,7 +40,7 @@ import re
 
 import numpy as np
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -461,6 +461,9 @@ class PostView(QWidget):
         self.layers: list[dict] = []
         self.sel = None                                 # (layer id, "layer" | "mask")
         self.part_sel = None                            # the mask part being edited (its id)
+        self.heal_size = 80.0                           # Spot healing: the next spot's diameter (px)
+        self._heal_sel = None                           # the spot selected (its index)
+        self._heal_drag = None                          # (index, spot | source, x, y, spot, before)
         self.show_mask = False
         self.mask1 = None                               # the selected layer's mask at half resolution (float)
         self.undo, self.redo = [], []
@@ -557,6 +560,7 @@ class PostView(QWidget):
         self.viewer = Viewer()
         self.viewer.overlays.append(self._overlay)
         self.viewer.overlays.append(self._ann_overlay)
+        self.viewer.overlays.append(self._heal_overlay)
         self.viewer.banner = _("Rendering…")
         mv.addWidget(self.viewer, 1)
         self.hint = label("", "small")
@@ -650,6 +654,9 @@ class PostView(QWidget):
         self.viewer.viewChanged.connect(self._view_changed)
         self.viewer.stroke.connect(self._stroke)
         self.viewer.strokeEnd.connect(self._stroke_end)
+        self.viewer.toolPress.connect(self._heal_press)
+        self.viewer.toolMove.connect(self._heal_move)
+        self.viewer.toolRelease.connect(self._heal_release)
         # Ctrl+Z / Ctrl+Y are the window's Edit > Undo / Redo, which come here while Post is shown (two shortcuts on
         # one key would cancel each other)
         for seq, fn in (("C", self.b_cmp.toggle), ("M", self.b_mask.toggle), ("F", self.viewer.fit),
@@ -1620,6 +1627,8 @@ class PostView(QWidget):
             self._group(_(f["name"]))
             self.pbox.addWidget(caption(_(f["source"])))
             refresh = lambda: None                                          # noqa: E731
+            if f.get("editor") == "spots":
+                self.heal_props(lay)
             if f.get("editor") == "curves":
                 self.curves_editor = ed = CurvesEditor(lay["params"]["curves"], self._hists.get(lay["id"]),
                                                        channel=self._curve_channel.get(lay["id"], "RGB/K"))
@@ -1632,7 +1641,7 @@ class PostView(QWidget):
                 self.pbox.addWidget(g)
                 refresh = g.update
             for q in f["params"]:
-                if q["type"] == "curve":
+                if q["type"] in ("curve", "spots"):
                     continue
                 if q["type"] == "bool":
                     cb = QCheckBox(_(q["label"]))
@@ -1946,6 +1955,16 @@ class PostView(QWidget):
             self._brush_mode(part, not part["paint"])
 
     def brush_size(self, k):
+        if self.viewer.mode == "heal":
+            self.heal_size = float(np.clip(self.heal_size * k, 6, 1200))
+            self.viewer.brush_r = self.heal_size / 2
+            lay = self._heal_layer()
+            if lay is not None and self._heal_sel is not None and self._heal_sel < len(lay["params"]["spots"]):
+                self.push()                                     # the selected spot follows, as in photo editors
+                lay["params"]["spots"][self._heal_sel][2] = round(self.heal_size / 2, 1)
+                self.request(final_only=True)
+            self.build_props()
+            return
         lay = self.layer(self.sel[0]) if self.sel else None
         part = next((p for p in (lay["mask"]["parts"] if lay and lay["mask"] else [])
                      if p["id"] == self.part_sel and p["src"] == "brush"), None)
@@ -2002,6 +2021,127 @@ class PostView(QWidget):
             self._stroke_before = None
         self.request(final_only=True)
 
+    # ------------------------------------------------------------ spot healing
+    def heal_props(self, lay):
+        """The Spot healing filter's panel: the size of the next spot, the spots, and the tool on the image."""
+        self.viewer.mode = "heal"
+        self.viewer.brush_r = self.heal_size / 2
+        sz = ContSlider(_("Size"), 6, 1200, self.heal_size, 80, unit="px", step=1)
+        sz.moved.connect(lambda v: (setattr(self, "heal_size", float(v)), setattr(self.viewer, "brush_r", v / 2)))
+        sz.done.connect(lambda v: (setattr(self, "heal_size", float(v)), setattr(self.viewer, "brush_r", v / 2)))
+        self.pbox.addWidget(sz)
+        r = QHBoxLayout()
+        n = len(lay["params"]["spots"])
+        r.addWidget(label(_("{n} spots healed").format(n=n) if n != 1 else _("1 spot healed"), "small"))
+        r.addStretch(1)
+        cl = QPushButton(_("Remove all"))
+        cl.setEnabled(n > 0)
+        cl.clicked.connect(lambda: self._heal_set(lay, []))
+        r.addWidget(cl)
+        self.pbox.addLayout(r)
+
+    def _heal_layer(self):
+        lay = self.layer(self.sel[0]) if self.sel and self.sel[1] == "layer" else None
+        return lay if lay is not None and lay["kind"] == "filter" and lay["filter"] == "heal" else None
+
+    def _heal_set(self, lay, spots):
+        self.push()
+        lay["params"]["spots"] = spots
+        self._heal_sel = None
+        self.request(final_only=True)
+        self.build_props()
+
+    def _heal_hit(self, lay, x, y):
+        """(index, 'spot' | 'source') of the circle under (x, y), the last made first; None."""
+        spots = lay["params"]["spots"]
+        for i in reversed(range(len(spots))):
+            sx, sy, r, dx, dy = spots[i]
+            if math.hypot(x - sx - dx, y - sy - dy) <= r:
+                return i, "source"
+            if math.hypot(x - sx, y - sy) <= r:
+                return i, "spot"
+        return None
+
+    def _heal_source(self, x, y, r):
+        """The source of a new spot: the best match around it on the image shown (its half resolution), as the spot
+        removal of photo editors; beside the spot when the image is not there yet."""
+        from .postfilters.heal import find_source
+        W, H = self.src.size()
+        R = int(math.ceil(r * 4.8)) + 4
+        x0, y0 = max(0, int(x - R) // 2), max(0, int(y - R) // 2)
+        x1, y1 = min(W // 2, int(x + R) // 2 + 1), min(H // 2, int(y + R) // 2 + 1)
+        a = self.src.region(1, x0, y0, x1, y1) if x1 > x0 and y1 > y0 else None
+        if a is not None and a.size and a.max() > 0:
+            dx, dy = find_source(a.astype(np.float32) / 255.0, x / 2 - x0, y / 2 - y0, r / 2)
+            if dx or dy:
+                return 2 * dx, 2 * dy
+        return 2.5 * r, 0.0
+
+    def _heal_press(self, x, y, button, alt):
+        lay = self._heal_layer()
+        if lay is None:
+            return
+        spots = lay["params"]["spots"]
+        hit = self._heal_hit(lay, x, y)
+        if button == int(Qt.RightButton.value):
+            if hit is not None:
+                self._heal_set(lay, [s for i, s in enumerate(spots) if i != hit[0]])
+            return
+        before = snapshot(self.layers)
+        if alt and self._heal_sel is not None and self._heal_sel < len(spots):
+            sx, sy = spots[self._heal_sel][:2]                  # Alt+click: the selected spot's source taken there
+            self.push(before)
+            spots[self._heal_sel][3:] = [round(x - sx, 1), round(y - sy, 1)]
+            self.request(final_only=True)
+        elif hit is not None:
+            self._heal_sel = hit[0]
+            self._heal_drag = (hit[0], hit[1], x, y, list(spots[hit[0]]), before)
+        else:
+            r = self.heal_size / 2
+            dx, dy = self._heal_source(x, y, r)
+            self.push(before)
+            spots.append([round(x, 1), round(y, 1), round(r, 1), round(dx, 1), round(dy, 1)])
+            self._heal_sel = len(spots) - 1
+            self.request(final_only=True)
+            self.build_props()
+        self.viewer.update()
+
+    def _heal_move(self, x, y):
+        lay = self._heal_layer()
+        if lay is None or self._heal_drag is None:
+            return
+        i, what, x0, y0, s0, _before = self._heal_drag
+        s = lay["params"]["spots"][i]
+        if what == "spot":                                      # the spot moves, its source with it
+            s[0], s[1] = round(s0[0] + x - x0, 1), round(s0[1] + y - y0, 1)
+        else:                                                   # the source moves
+            s[3], s[4] = round(s0[3] + x - x0, 1), round(s0[4] + y - y0, 1)
+        self.viewer.update()
+
+    def _heal_release(self):
+        lay = self._heal_layer()
+        d, self._heal_drag = self._heal_drag, None
+        if lay is not None and d is not None and lay["params"]["spots"][d[0]] != d[4]:
+            self.push(d[5])
+            self.request(final_only=True)
+        self.viewer.update()
+
+    def _heal_overlay(self, p: QPainter, v: Viewer):
+        lay = self._heal_layer()
+        if lay is None or self.b_cmp.isChecked():
+            return
+        for i, (sx, sy, r, dx, dy) in enumerate(lay["params"]["spots"]):
+            on = i == self._heal_sel
+            a, b = v.img_to_w(sx, sy), v.img_to_w(sx + dx, sy + dy)
+            rr = r * v.scale
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor(255, 255, 255, 160), 1))
+            p.drawLine(a, b)
+            p.setPen(QPen(QColor(ACCENT if on else "#ffffff"), 2 if on else 1.3))
+            p.drawEllipse(a, rr, rr)
+            p.setPen(QPen(QColor(ACCENT if on else "#ffffff"), 1.3, Qt.DashLine))
+            p.drawEllipse(b, rr, rr)
+
     # ------------------------------------------------------------ view toggles
     def _compare(self, on):
         self.viewer.compare = self.before if on else None
@@ -2019,6 +2159,9 @@ class PostView(QWidget):
     def _hint(self):
         if self.viewer.mode == "brush":
             t = _("Brush: drag to paint · X paint / erase · [ ] size · M show mask")
+        elif self.viewer.mode == "heal":
+            t = _("Spot healing: click a spot to heal it · drag a circle to move it · Alt+click: the selected spot's "
+                  "source there · right click: remove · [ ] size · middle button: move the image")
         elif self.sel and self.sel[1] == "mask":
             t = _("Red: where the layer shows · M: mask in gray")
         elif self.b_cmp.isChecked():
