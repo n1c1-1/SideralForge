@@ -81,8 +81,11 @@ Les planches sont dans `F:\astro_essais\stars_compare\` (`<champ>_sheet.jpg` pou
 | mixed (56 700 pas, 9 h) | 0,0010 | 0,0006 | 0,0008 | 0,0006 | 0,0070 |
 | real (86 600 pas, 8 h 36) | 0,0016 | 0,0013 | 0,0013 | 0,0021 | 0,0019 |
 
-M8 n'a pas servi au contrôle : il manque à son projet du banc l'un des deux demi-empilements que lit le
-débruitage. StarNet y est mesuré seul.
+M8 n'a pas servi au contrôle pendant l'entraînement. Il manquait d'abord aussi aux mesures, à cause d'un défaut de
+mon outil, corrigé à 8 h 15. **Sur M8, StarNet fait un peu mieux** : 0,7 % de lumière restante sur les étoiles
+faibles contre 1,1 % (« mixed ») et 1,0 % (« real »), et un peu moins de trous. L'original de M8 n'est pas tiré de
+la même étape que les autres champs : il a déjà été débruité par l'ancienne méthode, donc il est moins bruité que ce
+que le réseau a vu à l'entraînement.
 
 ## 2. Ta relecture des images sans étoiles
 
