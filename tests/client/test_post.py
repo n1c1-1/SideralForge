@@ -1408,6 +1408,36 @@ def test_a_stars_and_background_layer_has_its_two_images_as_sub_layers_with_thei
         s.close()
 
 
+def test_a_starless_slider_leaves_the_stars_as_they_are(preps, qapp):
+    """Issue #19: a Stars and background layer's two images are rendered and kept apart, each keyed on its own sliders:
+    moving a slider of the starless image renders the starless image only, the stars stay (no blink); the two put
+    together are the engine's recombined image."""
+    s = Setup(preps, qapp, stars=True)
+    try:
+        assert s.settle()
+        v = s.view
+        full = v.layers[1]
+        src = LayerSource(lambda sid: s.folders.get(sid), LayerService(DEV))
+        w, h = src.canvas([("stars", 1)]).size(1)
+        whole = src.layer(new_workflow_layer(1, "Full", True, part="combined"), 1, (0, 0, w, h))
+        alone = reference(s, postengine.only_layer(v.layers, full["id"])).rgb
+        assert np.abs(alone.astype(np.float32) - np.clip(whole, 0, 1) * 255).max() <= 1
+        asked = []
+        real = s.worker.renderer.source.layer
+        s.worker.renderer.source.layer = lambda lay, *a, **k: (asked.append(lay.get("part")), real(lay, *a, **k))[1]
+        full["sliders"]["contrast"] = 3.0
+        v.request(final_only=True)
+        assert s.settle()
+        assert asked and "stars" not in asked and "starless" in asked
+        asked.clear()
+        full["sliders"]["star_strength"] = 3.0
+        v.request(final_only=True)
+        assert s.settle()
+        assert "stars" in asked and "starless" not in asked
+    finally:
+        s.close()
+
+
 def test_undo_and_redo_one_step_per_action(post):
     from astro_gpu.client.post3 import ContSlider
     v = post.view

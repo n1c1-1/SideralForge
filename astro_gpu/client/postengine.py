@@ -526,6 +526,18 @@ def is_group(lay: dict) -> bool:
     return lay.get("kind") == "workflow" and lay.get("part") == "combined"
 
 
+def part_sliders(sliders: dict | None, part: str | None) -> dict:
+    """The sliders an image of a workflow layer depends on: the stars alone, on the star sliders and the Sky (their
+    stretch takes the whole image's sky, render/stars.star_tone); the starless image, on all but the star sliders
+    (issue #19: a starless slider leaves the stars as they are)."""
+    sliders = sliders or {}
+    if part == "stars":
+        return {k: v for k, v in sliders.items() if k.startswith("star_") or k == "sky"}
+    if part == "starless":
+        return {k: v for k, v in sliders.items() if not k.startswith("star_")}
+    return dict(sliders)
+
+
 def sub_row(lay: dict, sub: str) -> dict:
     """The row of one of a Stars and background layer's two images in the panel (not a layer of the list: its id is
     its layer's)."""
@@ -797,8 +809,8 @@ class ByteLRU:
         self.cap = cap
         self.items: OrderedDict = OrderedDict()
         self.bytes = 0
-        self._held: dict = {}                     # (layer id, level) -> key
-        self._holders: dict = {}                  # key -> {(layer id, level)}
+        self._held: dict = {}                     # (layer id, its part, level) -> key
+        self._holders: dict = {}                  # key -> {(layer id, its part, level)}
 
     def get(self, key):
         a = self.items.get(key)
@@ -919,18 +931,41 @@ class Composer:
         """What an image of a pixel layer depends on: the same for a copy of the layer. The canvas is part of it: it
         changes when another workflow's result comes in. A draft (a quick look) is kept apart from the exact image."""
         sid = source_id(lay)
-        return (sid, lay.get("part"), lay.get("blend"), json.dumps(lay.get("sliders") or {}, sort_keys=True),
+        part = lay.get("part")
+        return (sid, part, lay.get("blend") if part == "combined" else None,
+                json.dumps(part_sliders(lay.get("sliders"), part), sort_keys=True),
                 json.dumps(lay.get("base"), sort_keys=True, default=str), lay.get("linked"), self.provider.version(sid),
                 level, None if level > 0 else abox, (canvas.W, canvas.H, canvas.origin)) + (("draft",) if draft else ())
 
     def cached(self, lay: dict, level: int, canvas: Canvas) -> np.ndarray | None:
-        """The image of a pixel layer over the whole canvas at a level if it is in the cache (level > 0)."""
+        """The image of a pixel layer over the whole canvas at a level if it is in the cache (level > 0); a Stars and
+        background layer's from its two images."""
+        if is_group(lay):
+            got = [self.images.get(self._key(dict(lay, part=sub), level, None, canvas)) for sub in self._shown(lay)]
+            return None if any(a is None for a in got) else self._together(lay, got, canvas.size(level)[::-1])
         return self.images.get(self._key(lay, level, None, canvas))
+
+    @staticmethod
+    def _shown(lay: dict) -> list[str]:
+        """A Stars and background layer's images put together, the starless image first."""
+        return [sub for sub in reversed(SUBS) if (lay.get("shown") or {}).get(sub, True)]
+
+    def _together(self, lay: dict, got: list, hw) -> np.ndarray:
+        """A Stars and background layer's images put together as its ``blend`` says (render/stars.blend: the same
+        three modes as Post's)."""
+        if not got:
+            return np.zeros((*hw, 3), np.float32)
+        return got[0] if len(got) == 1 else self.blend(lay["blend"], got[0], got[1])
 
     def layer_rgb(self, lay: dict, level: int, abox, canvas: Canvas, cache: bool = True, draft: bool = False,
                   stop=None) -> np.ndarray:
         """The image of a pixel layer over the box at the level; cached by content (a copy of a layer shares it). A
-        draft takes the exact image when it is cached, else a quick look."""
+        draft takes the exact image when it is cached, else a quick look. A Stars and background layer's two images
+        are rendered and cached apart, then put together (issue #19)."""
+        if is_group(lay):
+            got = [self.layer_rgb(dict(lay, part=sub), level, abox, canvas, cache, draft, stop)
+                   for sub in self._shown(lay)]
+            return self._together(lay, got, (abox[3] - abox[1], abox[2] - abox[0]))
         W, H = canvas.size(level)
         whole = (0, 0, W, H)
         want = whole if level > 0 else abox
@@ -943,9 +978,9 @@ class Composer:
             a = self.provider.layer(lay, level, want, draft=draft and level > 0, stop=stop)
             self._drawn += 1
             if cache:
-                self.images.put(key, a, (lay["id"], level))
+                self.images.put(key, a, (lay["id"], lay.get("part"), level))
         elif cache:
-            self.images.hold(key, (lay["id"], level))
+            self.images.hold(key, (lay["id"], lay.get("part"), level))
         if level > 0 and abox != whole:
             x0, y0, x1, y1 = abox
             a = a[y0:y1, x0:x1]
@@ -1117,7 +1152,7 @@ class Composer:
                 if not self.provider.available(source_id(lay)):
                     continue
                 own = [fl for fl in stack if fl["kind"] == "filter" and fl.get("target") == lay["id"]]
-                if is_group(lay) and (any(fl.get("sub") for fl in own) or not all(lay["shown"].values())):
+                if is_group(lay):
                     src = self.group_rgb(lay, own, level, abox, canvas, ctx, cache, draft, check, keep_mask)
                 else:
                     src = self.layer_rgb(lay, level, abox, canvas, cache, draft, check)
@@ -1154,9 +1189,7 @@ class Composer:
         through its own filters (bottom first), put together as its ``blend`` says (render/stars.blend: the same three
         modes as Post's)."""
         got = []
-        for sub in reversed(SUBS):                                        # the starless image first, then the stars
-            if not lay["shown"].get(sub, True):
-                continue
+        for sub in self._shown(lay):                                      # the starless image first, then the stars
             x = self.layer_rgb(dict(lay, part=sub), level, abox, canvas, cache, draft, check)
             for fl in own:
                 if fl.get("sub") != sub:
@@ -1168,9 +1201,7 @@ class Composer:
                 x, fm = self._apply(fl, x, level, abox, canvas, ctx)
                 keep_mask(fl, fm)
             got.append(x)
-        if not got:
-            return np.zeros((abox[3] - abox[1], abox[2] - abox[0], 3), np.float32)
-        return got[0] if len(got) == 1 else self.blend(lay["blend"], got[0], got[1])
+        return self._together(lay, got, (abox[3] - abox[1], abox[2] - abox[0]))
 
     def _apply(self, fl, under, level, abox, canvas, ctx):
         """A filter layer on an image (its own layer's, or everything below): the filtered image, through the layer's
