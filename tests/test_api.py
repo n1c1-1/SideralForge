@@ -1170,13 +1170,13 @@ def simple_prep(d: Path, H: int = 120, W: int = 160, denoised: bool = True) -> P
 def test_sliders_render_layer_masks_and_export_of_a_simple_workflow(real, tmp_path):
     p = real
     sl = {s.key: s for s in api.sliders_of(p, 1)}
-    assert len(sl) == 9 and sl["sky"].available and sl["noise"].reason == "noise smoothing needs the Denoise block"
+    assert len(sl) == 10 and sl["sky"].available and sl["noise"].reason == "noise smoothing needs the Denoise block"
     assert not sl["star_strength"].available and sl["star_strength"].reason
     stars = {"star_strength", "star_size", "star_color"}
     assert {s.key for s in api.sliders_of(p, 3) if not s.available} == stars       # Full's Output image: no stars
     assert {s.key for s in api.sliders_of(p, 3, "combined") if not s.available} == {"noise"}
     assert {s.key for s in api.sliders_of(p, 3, "stars") if not s.available} == {"sky", "contrast", "saturation",
-                                                                                     "colours", "halpha", "noise"}
+                                                                                     "colours", "halpha", "faint", "noise"}
     assert {s.key for s in api.sliders_of(p, 2) if not s.available} == stars
     x = api.add_exit(p, 3, "stacking", "Raw stack")
     assert not {s.key: s for s in api.sliders_of(p, x.id)}["noise"].available

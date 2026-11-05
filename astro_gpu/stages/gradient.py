@@ -371,15 +371,18 @@ def grid_points(rgb: np.ndarray, valid: np.ndarray, samples: int, clip: float) -
 #: a sample of the generated grid sits on emission when the H-alpha survey under it is above this level (0 the
 #: survey's sky, 1 its bright emission: surveys.emission_level); on the Rosette, 2 % of that range is 3 % of the core
 EMISSION_FREE = 0.02
-#: the survey leaves no sample out when it would keep fewer than this share of them (a field without emission: the
-#: survey's noise then spans its whole range)
-EMISSION_MIN_KEPT = 0.25
+#: the survey leaves no sample out when it would keep fewer than this share of the field (the nebulosity fills it)
+EMISSION_MIN_KEPT = 0.05
 
 
 def away_from_emission(pts: np.ndarray, kept: np.ndarray, level: np.ndarray, box: int) -> tuple[np.ndarray, bool]:
     """The grid's samples of sky (``kept``) less the ones on emission: the median of the survey's ``level`` (on the
     grid of ``pts``) in each sample's box above ``EMISSION_FREE``. A careful user's rule (no sample on nebulosity),
-    the survey showing where the nebulosity is. Returns (kept, whether the survey was used)."""
+    the survey showing where the nebulosity is; a survey that shows only its noise (surveys.has_emission) leaves
+    every sample. Returns (kept, whether the survey was used)."""
+    from .surveys import has_emission
+    if not has_emission(level):
+        return kept, False
     H, W = level.shape
     h = max(1, box // 2)
     on = np.zeros(len(pts), bool)
@@ -389,7 +392,7 @@ def away_from_emission(pts: np.ndarray, kept: np.ndarray, level: np.ndarray, box
         v = cell[np.isfinite(cell)]
         on[i] = v.size > 0 and float(np.median(v)) > EMISSION_FREE
     out = kept & ~on
-    if out.sum() < EMISSION_MIN_KEPT * max(int(kept.sum()), 1):
+    if out.sum() < max(3, EMISSION_MIN_KEPT * len(kept)):
         return kept, False
     return out, True
 
@@ -413,9 +416,10 @@ def rbf_grid(pts: np.ndarray, vals: np.ndarray, xx: np.ndarray, yy: np.ndarray, 
 
 def emission_mask(level: np.ndarray | None, valid: np.ndarray) -> np.ndarray | None:
     """Where the H-alpha survey (its ``level``, surveys.emission_level, on the grid of ``valid``) sees nebulosity:
-    above ``EMISSION_FREE``. None when there is no survey, or when it would leave less than ``EMISSION_MIN_KEPT`` of
-    the covered field (a field without emission: the survey's noise spans its whole range)."""
-    if level is None:
+    above ``EMISSION_FREE``. None when there is no survey, when it shows only its noise (surveys.has_emission), or
+    when it would leave less than ``EMISSION_MIN_KEPT`` of the covered field."""
+    from .surveys import has_emission
+    if level is None or not has_emission(level):
         return None
     # the level smoothed over a cell of a 32-per-side grid before the threshold, as the editor takes each sample's
     # median: areas, not the survey's noise around the threshold (scattered free pixels leave no whole sky block)
@@ -519,8 +523,8 @@ class Gradient(Stage):
                    "denoising, the star removal and the output see a flat sky. The sky's level stays.")
     deps = ("stack",)
     Params = GradientParams
-    version = "4"          # 2: the automatic method; the level kept is the model's median over the covered field;
-                           # 3: the RBF, the placed samples and the excluded areas; 4: away from the survey's emission
+    version = "5"          # 2: the automatic method; the level kept is the model's median over the covered field;
+                           # 3: the RBF, the placed samples and the excluded areas; 4-5: away from the survey's emission
 
     def run(self, ctx: Context, p: GradientParams) -> None:
         ctx.progress(0.05, "loading the stack")

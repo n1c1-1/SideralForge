@@ -18,9 +18,9 @@ STAR_BASES = [None, {"sky": 0.3, "star_strength": 1.4, "blend": "Lighten"}, Star
 POSITIONS = [i / 4 for i in range(17)]
 
 
-def test_the_nine_sliders_of_post():
-    assert S.KEYS == ("sky", "contrast", "saturation", "colours", "halpha", "noise", "star_strength", "star_size",
-                      "star_color")
+def test_the_ten_sliders_of_post():
+    assert S.KEYS == ("sky", "contrast", "faint", "saturation", "colours", "halpha", "noise", "star_strength",
+                      "star_size", "star_color")
     # position 2 of every table is the suggested rendering (the defaults)
     s = StarSettings()
     for sl in S.SLIDERS:

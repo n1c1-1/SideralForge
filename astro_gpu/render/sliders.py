@@ -23,7 +23,8 @@ from .stars import StarSettings
 KINDS = ("simple", "stacking", "starless", "stars", "combined")
 STAR_KINDS = ("starless", "stars", "combined")
 #: settings moved by a step (the others by a ratio)
-ADDITIVE = frozenset({"sky", "contrast", "noise_mix", "smooth_px", "star_size", "halpha", "keep_colours"})
+ADDITIVE = frozenset({"sky", "contrast", "noise_mix", "smooth_px", "star_size", "halpha", "keep_colours",
+                      "faint"})
 SUGGESTED = 2.0
 LO, HI = 0.0, 4.0
 
@@ -52,6 +53,8 @@ NEBULA, STARS = "Nebula and background", "Stars"
 SLIDERS: tuple[Slider, ...] = (
     Slider("sky", "Sky", NEBULA, ("darker", "brighter"), {"sky": (0.10, 0.15, 0.20, 0.26, 0.32)}),
     Slider("contrast", "Contrast", NEBULA, ("softer", "stronger"), {"contrast": (-0.35, -0.18, 0.0, 0.25, 0.5)}),
+    # the faint tones above the sky (render/simple.faint_tones): lowered below 2, raised above
+    Slider("faint", "Faint tones", NEBULA, ("darker", "brighter"), {"faint": (-0.8, -0.4, 0.0, 0.8, 1.6)}),
     Slider("saturation", "Saturation", NEBULA, ("paler", "more vivid"), {"saturation": (0.6, 0.9, 1.2, 1.5, 1.85)}),
     # how much of the stretch keeps the colours (render/simple.SimpleRenderEngine.tone)
     Slider("colours", "Colours", NEBULA, ("faded", "true"), {"keep_colours": (0.0, 0.25, 0.5, 0.75, 1.0)}),

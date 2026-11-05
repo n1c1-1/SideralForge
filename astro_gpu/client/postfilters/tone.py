@@ -32,46 +32,7 @@ HT_CHANNELS = ["RGB/K", "R", "G", "B"]
 
 
 # ---------------------------------------------------------------------------------------------- GHS
-def _q(y: torch.Tensor, D: float, b: float) -> torch.Tensor:
-    """The right branch of the GHS for y = x - SP >= 0: q(0) = 0, q'(0) = D (expm1 / log1p forms: no cancellation)."""
-    if b == -1.0:
-        return torch.log1p(y * D)
-    if b < 0:
-        B = -b
-        return torch.expm1(torch.log1p(y * (B * D)) * ((B - 1) / B)) / (B - 1)
-    if b == 0:
-        return -torch.expm1(y * -D)
-    return -torch.expm1(torch.log1p(y * (b * D)) * (-1.0 / b))
-
-
-def _dq(y: float, D: float, b: float) -> float:
-    """q'(y), y >= 0 (a number)."""
-    if b < 0:
-        return D * (1 + -b * D * y) ** (1.0 / b)
-    if b == 0:
-        return D * math.exp(-D * y)
-    return D * (1 + b * D * y) ** (-(1 + b) / b)
-
-
-def _t(x: torch.Tensor, D, b, SP, LP, HP) -> torch.Tensor:
-    """The GHS before normalisation."""
-    out = torch.where(x >= SP, _q((x - SP).clamp_(min=0), D, b), -_q((SP - x).clamp_(min=0), D, b))
-    if LP < SP:
-        tl = -float(_q(torch.tensor([SP - LP], dtype=torch.float64), D, b)[0])
-        out = torch.where(x < LP, (x - LP) * _dq(SP - LP, D, b) + tl, out)
-    if HP > SP:
-        th = float(_q(torch.tensor([HP - SP], dtype=torch.float64), D, b)[0])
-        out = torch.where(x > HP, (x - HP) * _dq(HP - SP, D, b) + th, out)
-    return out
-
-
-def ghs_params(p: dict) -> tuple[float, float, float, float, float, float]:
-    """(D, b, SP, LP, HP, BP) from the filter's settings (stretch as ln(D + 1); LP <= SP <= HP enforced)."""
-    D = math.expm1(float(p.get("stretch", 0.0)))
-    sp = float(p.get("symmetry", 0.0))
-    lp = min(float(p.get("shadows", 0.0)), sp)
-    hp = max(float(p.get("highlights", 1.0)), sp)
-    return D, float(p.get("local", 0.0)), sp, lp, hp, float(p.get("black", 0.0))
+from ...render.ghs import _dq, _q, _t, ghs_params, ghs_unit  # noqa: E402,F401  (the engine's, shared)
 
 
 def ghs_map(t: torch.Tensor, p: dict) -> torch.Tensor:
@@ -79,12 +40,7 @@ def ghs_map(t: torch.Tensor, p: dict) -> torch.Tensor:
     D, b, SP, LP, HP, BP = ghs_params(p)
     if BP > 0:
         t = ((t - BP) / max(1e-6, 1 - BP)).clamp_(0, 1)
-    if D <= 1e-9:
-        return t
-    t = t.clamp(0, 1)
-    ends = _t(torch.tensor([0.0, 1.0], dtype=torch.float64), D, b, SP, LP, HP)
-    t0, t1 = float(ends[0]), float(ends[1])
-    return (_t(t, D, b, SP, LP, HP) - t0).mul_(1.0 / max(t1 - t0, 1e-30)).clamp_(0, 1)
+    return ghs_unit(t, D, b, SP, LP, HP)
 
 
 def is_ghs_identity(p: dict) -> bool:

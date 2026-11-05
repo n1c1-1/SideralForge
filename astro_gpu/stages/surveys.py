@@ -108,6 +108,29 @@ def emission_level(img: np.ndarray) -> np.ndarray:
     return ((img - lo) / max(float(hi - lo), 1e-9)).astype(np.float32)
 
 
+#: a survey sees nebulosity when its range (1st to 99.5th percentile) is this many times its noise (a field without
+#: nebulosity: the survey's noise alone, about 5 times)
+EMISSION_CONTRAST = 12.0
+
+
+def has_emission(img: np.ndarray) -> bool:
+    """Whether the survey (any scale: raw or emission_level) shows nebulosity rather than its own noise. The noise is
+    measured between pixels a few apart (the survey is smooth at its own resolution, so neighbours would understate
+    it): the robust spread of the differences, over the square root of 2."""
+    a = np.asarray(img, np.float32)
+    v = a[np.isfinite(a)]
+    if v.size < 100:
+        return False
+    s = max(2, min(a.shape) // 128)
+    d = (a[:, s:] - a[:, :-s]).ravel()
+    d = d[np.isfinite(d)]
+    if d.size < 100:
+        return False
+    noise = 1.4826 * float(np.median(np.abs(d - np.median(d)))) / np.sqrt(2)
+    lo, hi = np.percentile(v, LEVEL_PERCENTILES)
+    return float(hi - lo) > EMISSION_CONTRAST * max(noise, 1e-12)
+
+
 def fetch_survey(name: str, wd, W: int, H: int, scale: float, log=print) -> np.ndarray:
     """The survey on the stack's grid: from the CDS cut-out service, else from the survey's own HiPS server. Both are
     cached under ASTRO_GPU_HOME (the cut-out by its exact grid, the tiles one by one): a re-run works offline."""
