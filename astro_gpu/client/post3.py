@@ -462,6 +462,7 @@ class PostView(QWidget):
         self.sel = None                                 # (layer id, "layer" | "mask")
         self.part_sel = None                            # the mask part being edited (its id)
         self.heal_size = 80.0                           # Spot healing: the next spot's diameter (px)
+        self.heal_marks = True                          # its circles drawn (while the mouse is on the image)
         self._heal_sel = None                           # the spot selected (its index)
         self._heal_drag = None                          # (index, spot | source, x, y, spot, before)
         self.show_mask = False
@@ -2039,6 +2040,12 @@ class PostView(QWidget):
         cl.clicked.connect(lambda: self._heal_set(lay, []))
         r.addWidget(cl)
         self.pbox.addLayout(r)
+        mk = QCheckBox(_("Show the spots"))
+        mk.setToolTip(_("The circles of the spots and their sources, while the mouse is on the image (as photo "
+                        "editors): untick to see the image alone"))
+        mk.setChecked(self.heal_marks)
+        mk.toggled.connect(lambda on: (setattr(self, "heal_marks", bool(on)), self.viewer.update()))
+        self.pbox.addWidget(mk)
 
     def _heal_layer(self):
         lay = self.layer(self.sel[0]) if self.sel and self.sel[1] == "layer" else None
@@ -2128,7 +2135,9 @@ class PostView(QWidget):
 
     def _heal_overlay(self, p: QPainter, v: Viewer):
         lay = self._heal_layer()
-        if lay is None or self.b_cmp.isChecked():
+        if lay is None or self.b_cmp.isChecked() or not self.heal_marks:
+            return
+        if v._mouse is None and self._heal_drag is None:          # the mouse off the image: the image alone
             return
         for i, (sx, sy, r, dx, dy) in enumerate(lay["params"]["spots"]):
             on = i == self._heal_sel

@@ -25,9 +25,9 @@ CASES = {"rosette": ("rosette/ours_full", "Full", (0.78, 0.30)),
          "m31": ("m31/ours_base", "Full", (0.25, 0.75)),
          "northamerica": ("northamerica/ours_full", "Full", (0.5, 0.5))}
 SETS = (("défauts", {}),
-        ("petites étoiles 3", {"star_small": 3}),
-        ("petites étoiles 4", {"star_small": 4}),
-        ("petites étoiles 4, taille 1", {"star_small": 4, "star_size": 1}))
+        ("petites étoiles 1", {"star_small": 1}),
+        ("petites étoiles 0", {"star_small": 0}),
+        ("petites étoiles 0, taille 1", {"star_small": 0, "star_size": 1}))
 CROP = (900, 600)
 
 

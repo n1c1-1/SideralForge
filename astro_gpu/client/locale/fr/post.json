@@ -169,10 +169,12 @@
  "Faint area smoothing": "Lissage des zones faibles",
  "Smooths the areas fainter than a level, the brighter ones untouched: the faint extensions can then be raised without their grain": "Lisse les zones plus faibles qu'un niveau, sans toucher aux plus brillantes : on peut ensuite remonter les extensions faibles sans leur grain",
  "Below": "En dessous de",
- "Spot healing": "Correcteur",
+ "Spot healing": "Tampon correcteur",
  "A spot replaced by a patch of its neighbourhood, seamlessly (Poisson image editing, Perez et al. 2003, as the healing brush of photo editors); the source found automatically, movable": "Une tache remplacée par un morceau de son voisinage, sans raccord visible (édition de Poisson, Pérez et al. 2003, comme le pinceau correcteur des logiciels photo) ; la source est trouvée automatiquement et se déplace",
  "Spots": "Taches",
  "{n} spots healed": "{n} taches corrigées",
  "1 spot healed": "1 tache corrigée",
- "Spot healing: click a spot to heal it · drag a circle to move it · Alt+click: the selected spot's source there · right click: remove · [ ] size · middle button: move the image": "Correcteur : cliquer sur une tache pour la corriger · glisser un cercle pour le déplacer · Alt+clic : la source de la tache sélectionnée à cet endroit · clic droit : retirer · [ ] taille · bouton du milieu : déplacer l'image"
+ "Spot healing: click a spot to heal it · drag a circle to move it · Alt+click: the selected spot's source there · right click: remove · [ ] size · middle button: move the image": "Correcteur : cliquer sur une tache pour la corriger · glisser un cercle pour le déplacer · Alt+clic : la source de la tache sélectionnée à cet endroit · clic droit : retirer · [ ] taille · bouton du milieu : déplacer l'image",
+ "Show the spots": "Afficher les taches",
+ "The circles of the spots and their sources, while the mouse is on the image (as photo editors): untick to see the image alone": "Les cercles des taches et de leurs sources, quand la souris est sur l'image (comme dans les logiciels photo) : décocher pour voir l'image seule"
 }
