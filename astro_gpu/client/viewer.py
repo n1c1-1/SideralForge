@@ -244,7 +244,7 @@ class Viewer(QWidget):
         elif e.button() == Qt.LeftButton and self.mode == "brush":
             self._drag = ("brush",)
             self.stroke.emit(ix, iy, True)
-        elif e.button() in (Qt.LeftButton, Qt.RightButton) and self.mode == "heal":
+        elif e.button() == Qt.LeftButton and self.mode == "heal":
             self._drag = ("heal",)
             self.toolPress.emit(ix, iy, int(e.button().value), bool(e.modifiers() & Qt.AltModifier))
         else:

@@ -39,7 +39,7 @@ import math
 import re
 
 import numpy as np
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -180,7 +180,7 @@ def fmt(v, step):
 # ======================================================================== a continuous slider
 class ContSlider(QWidget):
     """A slider that glides: `moved` while dragging (draft render), `done` when let go (full render). Double-click
-    on the name: back to the default."""
+    on the slider or on its name: back to the default (Lightroom's, issue #16)."""
     moved = Signal(float)
     done = Signal(float)
 
@@ -193,6 +193,7 @@ class ContSlider(QWidget):
         top = QHBoxLayout()
         self.name = QLabel(name)
         self.name.setToolTip(_("Double-click: default value"))
+        self.setToolTip(_("Double-click: default value"))
         self.val = label("", "small")
         top.addWidget(self.name)
         top.addStretch(1)
@@ -217,7 +218,22 @@ class ContSlider(QWidget):
         self.set_value(value)
         self.s.valueChanged.connect(self._changed)
         self.s.sliderReleased.connect(lambda: self.done.emit(self.value()))
-        self.name.mouseDoubleClickEvent = lambda e: (self.set_value(self.default), self.done.emit(self.default))
+        self.name.mouseDoubleClickEvent = lambda e: self.reset()
+        self.s.installEventFilter(self)
+
+    def reset(self):
+        """Back to the default value (a double-click)."""
+        if not self.s.isEnabled():
+            return
+        self.set_value(self.default)
+        self.moved.emit(self.default)
+        self.done.emit(self.default)
+
+    def eventFilter(self, obj, e):                                   # noqa: N802 - Qt's name
+        if obj is self.s and e.type() == QEvent.MouseButtonDblClick and e.button() == Qt.LeftButton:
+            self.reset()
+            return True
+        return super().eventFilter(obj, e)
 
     def value(self) -> float:
         x = self.lo + (self.hi - self.lo) * self.s.value() / 1000
@@ -296,14 +312,15 @@ class LayerRow(QFrame):
             h.addSpacing(TOGGLE_W // 2 - 1)
             h.addWidget(guide)
             h.addSpacing(INDENT - TOGGLE_W // 2 - 1)
-        elif kids:
+        if kids:                                        # issue #21: down expanded, right collapsed; none without
+            key = (lay["id"], lay["sub"]) if lay["kind"] == "sub" else lay["id"]
             self.toggle = QToolButton()
-            self.toggle.setText("▸" if collapsed else "▾")
+            self.toggle.setArrowType(Qt.RightArrow if collapsed else Qt.DownArrow)
             self.toggle.setAutoRaise(True)
-            self.toggle.setFixedWidth(TOGGLE_W)
-            self.toggle.setStyleSheet("QToolButton { border: none; color: #aab2bf; padding: 0; }")
-            self.toggle.setToolTip(_("Show / hide its filters"))
-            self.toggle.clicked.connect(lambda: panel.toggle_children(lay["id"]))
+            self.toggle.setFixedSize(TOGGLE_W, TOGGLE_W)
+            self.toggle.setStyleSheet("QToolButton { border: none; padding: 0; }")
+            self.toggle.setToolTip(_("Show / hide what is under it"))
+            self.toggle.clicked.connect(lambda: panel.toggle_children(key))
             h.addWidget(self.toggle)
         else:
             h.addSpacing(TOGGLE_W)
@@ -488,9 +505,9 @@ class PostView(QWidget):
         self.sel = None                                 # (layer id, "layer" | "mask")
         self.part_sel = None                            # the mask part being edited (its id)
         self.heal_size = 80.0                           # Spot healing: the next spot's diameter (px)
-        self.heal_marks = True                          # its circles drawn (while the mouse is on the image)
-        self._heal_sel = None                           # the spot selected (its index)
-        self._heal_drag = None                          # (index, spot | source, x, y, spot, before)
+        self._heal_stroke = None                        # the stroke being painted: (its points, the layers before)
+        self._heal_src = None                           # Alt+click: the source set by hand (x, y), then its offset
+        self._heal_off = None                           # (dx, dy) of the strokes since, as Photoshop's Aligned
         self.show_mask = False
         self.mask1 = None                               # the selected layer's mask at half resolution (float)
         self.undo, self.redo = [], []
@@ -1200,14 +1217,20 @@ class PostView(QWidget):
     def rebuild(self):
         clear(self.lbox)
         self.rows = []
-        self._collapsed &= {lay["id"] for lay in self.layers}
-        if self.sel and (lay := self.layer(self.sel[0])) is not None and lay.get("target") in self._collapsed:
-            self._collapsed.discard(lay["target"])       # the selected filter is shown
+        ids = {lay["id"] for lay in self.layers}
+        self._collapsed = {c for c in self._collapsed if (c[0] if isinstance(c, tuple) else c) in ids}
+        if self.sel and (lay := self.layer(self.sel[0])) is not None and lay.get("target"):
+            self._collapsed -= {lay["target"], (lay["target"], lay.get("sub"))}     # the selected filter is shown
         for lay, depth in rows(self.layers, self._collapsed):
             sl = self.sel is not None and self.sel[0] == lay["id"]
             if lay["kind"] == "sub" or (sl and self.sel[1] in SUBS):      # a sub-layer is selected as (its layer, it)
                 sl = sl and self.sel[1] == lay.get("sub", "layer")
-                row = LayerRow(self, lay, self.thumb(lay), None, sl, False, depth)
+                if lay["kind"] == "sub":
+                    n = sum(1 for f in children(self.layers, lay["id"]) if f.get("sub") == lay["sub"])
+                    row = LayerRow(self, lay, self.thumb(lay), None, sl, False, depth, n,
+                                   (lay["id"], lay["sub"]) in self._collapsed)
+                else:
+                    row = LayerRow(self, lay, self.thumb(lay), None, sl, False, depth)
                 self.lbox.addWidget(row)
                 self.rows.append(row)
                 continue
@@ -1274,13 +1297,16 @@ class PostView(QWidget):
         self.rebuild()
         self.request()
 
-    def toggle_children(self, lid):
-        """▾ / ▸: show or hide a layer's filters in the panel (the image does not change). A hidden filter that was
-        selected leaves the selection to its layer."""
-        self._collapsed ^= {lid}
+    def toggle_children(self, key):
+        """The arrow: show or hide the rows under a layer (``key`` its id), or under one of a Stars and background
+        layer's two images (``key`` (its id, the image)); the image does not change. A hidden filter that was selected
+        leaves the selection to the row it is under."""
+        self._collapsed ^= {key}
         cur = self.layer(self.sel[0]) if self.sel else None
-        if lid in self._collapsed and cur is not None and cur.get("target") == lid:
-            self.sel, self.part_sel = (lid, "layer"), None
+        if key in self._collapsed and cur is not None and cur["kind"] == "filter":
+            lid, sub = key if isinstance(key, tuple) else (key, None)
+            if cur.get("target") == lid and (sub is None or cur.get("sub") == sub):
+                self.sel, self.part_sel = (lid, sub or "layer"), None
         self.rebuild()
 
     # ---- drag and drop (Affinity Photo's): onto a layer nests, between rows places; the line says at which depth
@@ -2051,11 +2077,6 @@ class PostView(QWidget):
         if self.viewer.mode == "heal":
             self.heal_size = float(np.clip(self.heal_size * k, 6, 1200))
             self.viewer.brush_r = self.heal_size / 2
-            lay = self._heal_layer()
-            if lay is not None and self._heal_sel is not None and self._heal_sel < len(lay["params"]["spots"]):
-                self.push()                                     # the selected spot follows, as in photo editors
-                lay["params"]["spots"][self._heal_sel][2] = round(self.heal_size / 2, 1)
-                self.request(final_only=True)
             self.build_props()
             return
         lay = self.layer(self.sel[0]) if self.sel else None
@@ -2116,7 +2137,8 @@ class PostView(QWidget):
 
     # ------------------------------------------------------------ spot healing
     def heal_props(self, lay):
-        """The Spot healing filter's panel: the size of the next spot, the spots, and the tool on the image."""
+        """The Spot healing filter's panel (Photoshop's Spot Healing Brush, issue #20): the brush size, what is
+        healed, and the source set by hand (Alt+click) when there is one."""
         self.viewer.mode = "heal"
         self.viewer.brush_r = self.heal_size / 2
         sz = ContSlider(_("Size"), 6, 1200, self.heal_size, 80, unit="px", step=1)
@@ -2132,12 +2154,17 @@ class PostView(QWidget):
         cl.clicked.connect(lambda: self._heal_set(lay, []))
         r.addWidget(cl)
         self.pbox.addLayout(r)
-        mk = QCheckBox(_("Show the spots"))
-        mk.setToolTip(_("The circles of the spots and their sources, while the mouse is on the image (as photo "
-                        "editors): untick to see the image alone"))
-        mk.setChecked(self.heal_marks)
-        mk.toggled.connect(lambda on: (setattr(self, "heal_marks", bool(on)), self.viewer.update()))
-        self.pbox.addWidget(mk)
+        src = QHBoxLayout()
+        manual = self._heal_src is not None or self._heal_off is not None
+        src.addWidget(label(_("Source: set by hand (Alt+click)") if manual else
+                            _("Source: found around each stroke · Alt+click: set it by hand"), "small", wrap=True), 1)
+        if manual:
+            au = QPushButton(_("Automatic"))
+            au.setToolTip(_("The source found around each stroke again"))
+            au.clicked.connect(lambda: (setattr(self, "_heal_src", None), setattr(self, "_heal_off", None),
+                                        self.build_props()))
+            src.addWidget(au)
+        self.pbox.addLayout(src)
 
     def _heal_layer(self):
         lay = self.layer(self.sel[0]) if self.sel and self.sel[1] == "layer" else None
@@ -2146,24 +2173,13 @@ class PostView(QWidget):
     def _heal_set(self, lay, spots):
         self.push()
         lay["params"]["spots"] = spots
-        self._heal_sel = None
         self.request(final_only=True)
         self.build_props()
 
-    def _heal_hit(self, lay, x, y):
-        """(index, 'spot' | 'source') of the circle under (x, y), the last made first; None."""
-        spots = lay["params"]["spots"]
-        for i in reversed(range(len(spots))):
-            sx, sy, r, dx, dy = spots[i]
-            if math.hypot(x - sx - dx, y - sy - dy) <= r:
-                return i, "source"
-            if math.hypot(x - sx, y - sy) <= r:
-                return i, "spot"
-        return None
-
-    def _heal_source(self, x, y, r):
-        """The source of a new spot: the best match around it on the image shown (its half resolution), as the spot
-        removal of photo editors; beside the spot when the image is not there yet."""
+    def _heal_source(self, x, y, r, avoid=()):
+        """The source of a spot: the best match around it on the image shown (its half resolution), as Photoshop's
+        Spot Healing Brush; ``avoid``: the stroke's other spots (x, y, r), no source on them (a trail is not healed
+        from itself); beside the spot when the image is not there yet."""
         from .postfilters.heal import find_source
         W, H = self.src.size()
         R = int(math.ceil(r * 4.8)) + 4
@@ -2171,77 +2187,83 @@ class PostView(QWidget):
         x1, y1 = min(W // 2, int(x + R) // 2 + 1), min(H // 2, int(y + R) // 2 + 1)
         a = self.src.region(1, x0, y0, x1, y1) if x1 > x0 and y1 > y0 else None
         if a is not None and a.size and a.max() > 0:
-            dx, dy = find_source(a.astype(np.float32) / 255.0, x / 2 - x0, y / 2 - y0, r / 2)
+            dx, dy = find_source(a.astype(np.float32) / 255.0, x / 2 - x0, y / 2 - y0, r / 2,
+                                 avoid=[(ax / 2 - x0, ay / 2 - y0, ar / 2) for ax, ay, ar in avoid])
             if dx or dy:
                 return 2 * dx, 2 * dy
         return 2.5 * r, 0.0
 
     def _heal_press(self, x, y, button, alt):
+        """Photoshop's Spot Healing Brush: a press starts a stroke (healed when the button is let go); Alt+click
+        sets the source by hand (Photoshop's Healing Brush) for the strokes that follow."""
         lay = self._heal_layer()
-        if lay is None:
+        if lay is None or button != int(Qt.LeftButton.value):
             return
-        spots = lay["params"]["spots"]
-        hit = self._heal_hit(lay, x, y)
-        if button == int(Qt.RightButton.value):
-            if hit is not None:
-                self._heal_set(lay, [s for i, s in enumerate(spots) if i != hit[0]])
-            return
-        before = snapshot(self.layers)
-        if alt and self._heal_sel is not None and self._heal_sel < len(spots):
-            sx, sy = spots[self._heal_sel][:2]                  # Alt+click: the selected spot's source taken there
-            self.push(before)
-            spots[self._heal_sel][3:] = [round(x - sx, 1), round(y - sy, 1)]
-            self.request(final_only=True)
-        elif hit is not None:
-            self._heal_sel = hit[0]
-            self._heal_drag = (hit[0], hit[1], x, y, list(spots[hit[0]]), before)
-        else:
-            r = self.heal_size / 2
-            dx, dy = self._heal_source(x, y, r)
-            self.push(before)
-            spots.append([round(x, 1), round(y, 1), round(r, 1), round(dx, 1), round(dy, 1)])
-            self._heal_sel = len(spots) - 1
-            self.request(final_only=True)
+        if alt:
+            self._heal_src, self._heal_off = (x, y), None
             self.build_props()
+            self.viewer.update()
+            return
+        if self._heal_src is not None:                          # the first stroke after Alt+click fixes the offset
+            self._heal_off = (self._heal_src[0] - x, self._heal_src[1] - y)
+            self._heal_src = None
+        self._heal_stroke = ([(x, y)], snapshot(self.layers))
         self.viewer.update()
 
     def _heal_move(self, x, y):
-        lay = self._heal_layer()
-        if lay is None or self._heal_drag is None:
+        if self._heal_layer() is None or self._heal_stroke is None:
             return
-        i, what, x0, y0, s0, _before = self._heal_drag
-        s = lay["params"]["spots"][i]
-        if what == "spot":                                      # the spot moves, its source with it
-            s[0], s[1] = round(s0[0] + x - x0, 1), round(s0[1] + y - y0, 1)
-        else:                                                   # the source moves
-            s[3], s[4] = round(s0[3] + x - x0, 1), round(s0[4] + y - y0, 1)
+        pts = self._heal_stroke[0]
+        step = max(1.0, self.heal_size / 2 * 0.5)              # a spot every half radius along the stroke
+        lx, ly = pts[-1]
+        d = math.hypot(x - lx, y - ly)
+        for k in range(1, int(d // step) + 1):
+            pts.append((lx + (x - lx) * k * step / d, ly + (y - ly) * k * step / d))
         self.viewer.update()
 
     def _heal_release(self):
+        """The stroke healed: a spot every half radius along it, each from a source found around it (not on the
+        stroke) or from the source set by hand."""
         lay = self._heal_layer()
-        d, self._heal_drag = self._heal_drag, None
-        if lay is not None and d is not None and lay["params"]["spots"][d[0]] != d[4]:
-            self.push(d[5])
-            self.request(final_only=True)
+        st, self._heal_stroke = self._heal_stroke, None
+        if lay is None or st is None:
+            self.viewer.update()
+            return
+        pts, before = st
+        r = self.heal_size / 2
+        avoid = [(px, py, r) for px, py in pts]
+        new = []
+        for x, y in pts:
+            dx, dy = self._heal_off if self._heal_off is not None else self._heal_source(x, y, r, avoid)
+            new.append([round(x, 1), round(y, 1), round(r, 1), round(dx, 1), round(dy, 1)])
+        self.push(before)
+        lay["params"]["spots"] = lay["params"]["spots"] + new
+        self.request(final_only=True)
+        self.build_props()
         self.viewer.update()
 
     def _heal_overlay(self, p: QPainter, v: Viewer):
+        """While painting, the stroke in light grey (as Photoshop's), and the source set by hand as a small cross;
+        nothing is left on the image afterwards."""
         lay = self._heal_layer()
-        if lay is None or self.b_cmp.isChecked() or not self.heal_marks:
+        if lay is None or self.b_cmp.isChecked():
             return
-        if v._mouse is None and self._heal_drag is None:          # the mouse off the image: the image alone
-            return
-        for i, (sx, sy, r, dx, dy) in enumerate(lay["params"]["spots"]):
-            on = i == self._heal_sel
-            a, b = v.img_to_w(sx, sy), v.img_to_w(sx + dx, sy + dy)
-            rr = r * v.scale
-            p.setBrush(Qt.NoBrush)
-            p.setPen(QPen(QColor(255, 255, 255, 160), 1))
-            p.drawLine(a, b)
-            p.setPen(QPen(QColor(ACCENT if on else "#ffffff"), 2 if on else 1.3))
-            p.drawEllipse(a, rr, rr)
-            p.setPen(QPen(QColor(ACCENT if on else "#ffffff"), 1.3, Qt.DashLine))
-            p.drawEllipse(b, rr, rr)
+        if self._heal_stroke is not None:
+            rr = self.heal_size / 2 * v.scale
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 70))
+            for x, y in self._heal_stroke[0]:
+                p.drawEllipse(v.img_to_w(x, y), rr, rr)
+        cross = None
+        if self._heal_src is not None:
+            cross = v.img_to_w(*self._heal_src)
+        elif self._heal_off is not None and self._heal_stroke is not None:
+            x, y = self._heal_stroke[0][-1]
+            cross = v.img_to_w(x + self._heal_off[0], y + self._heal_off[1])
+        if cross is not None:
+            p.setPen(QPen(QColor("#ffffff"), 1.5))
+            p.drawLine(QPointF(cross.x() - 7, cross.y()), QPointF(cross.x() + 7, cross.y()))
+            p.drawLine(QPointF(cross.x(), cross.y() - 7), QPointF(cross.x(), cross.y() + 7))
 
     # ------------------------------------------------------------ view toggles
     def _compare(self, on):
@@ -2261,8 +2283,8 @@ class PostView(QWidget):
         if self.viewer.mode == "brush":
             t = _("Brush: drag to paint · X paint / erase · [ ] size · M show mask")
         elif self.viewer.mode == "heal":
-            t = _("Spot healing: click a spot to heal it · drag a circle to move it · Alt+click: the selected spot's "
-                  "source there · right click: remove · [ ] size · middle button: move the image")
+            t = _("Spot healing: click or paint over a defect, healed when released · [ ] size · Alt+click: the "
+                  "source by hand · Ctrl+Z: undo · middle button: move the image")
         elif self.sel and self.sel[1] == "mask":
             t = _("Red: where the layer shows · M: mask in gray")
         elif self.b_cmp.isChecked():

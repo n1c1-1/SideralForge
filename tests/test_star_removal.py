@@ -108,9 +108,26 @@ def test_blends_and_the_size_change():
     assert torch.equal(blend(a, b, "Screen")[:, 0, 0], a[:, 0, 0])            # black stars change nothing
     y = torch.zeros((3, 9, 9))
     y[:, 4, 4] = 1.0
-    assert resize_stars(y, 1.0).sum() == 15 and resize_stars(y, -1.0).sum() == 0    # a cross: round, not a square
+    assert resize_stars(y, 1.0).sum() == 15 and resize_stars(y, -1.0).sum() < 0.01  # a cross: round, not a square
     assert resize_stars(y, 2.0)[0].bool().sum() == 21                                    # then a square: an octagon
     assert 3 < resize_stars(y, 0.5).sum() < 15                                 # half a pixel: half way
+
+
+def test_smaller_stars_leave_the_grain_of_a_dense_field_as_it_is():
+    """Issue #18: the stars shrink through a star mask (Photoshop's Minimum through a selection of the stars,
+    PixInsight's MorphologicalTransformation through a star mask): the faint grain between the stars of a dense
+    field, above STAR_LEVEL but within its noise, is not eroded into a web of filaments."""
+    g = torch.Generator().manual_seed(3)
+    y = (0.04 + 0.03 * torch.randn((1, 96, 96), generator=g)).clamp(0, 1).repeat(3, 1, 1)
+    yy, xx = torch.meshgrid(torch.arange(96.0), torch.arange(96.0), indexing="ij")
+    star = 0.9 * torch.exp(-((yy - 48) ** 2 + (xx - 48) ** 2) / (2 * 2.0 ** 2))
+    y = (y + star).clamp(0, 1)
+    out = resize_stars(y, -1.0)
+    far = ((yy - 48) ** 2 + (xx - 48) ** 2) > 12 ** 2
+    moved = ((out - y).abs().amax(0) > 1e-3)[far].float().mean()
+    assert moved < 0.1, moved                                                  # the grain as it was (its 3-sigma peaks
+    #                                                                            aside); the erosion alone moves 78 %
+    assert out[:, 46:51, 46:51].sum() < 0.85 * y[:, 46:51, 46:51].sum()        # the star smaller
 
 
 def test_the_sliders_of_each_kind():

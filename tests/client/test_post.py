@@ -33,7 +33,7 @@ if Path("C:/Windows/Fonts").is_dir():
 pytest.importorskip("PySide6")
 import torch  # noqa: E402
 from conftest import TEST_PROJECT, TEST_PROJECT_CLASSIC, needs_test_project  # noqa: E402
-from PySide6.QtCore import QObject, Signal  # noqa: E402
+from PySide6.QtCore import QObject, Qt, Signal  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from astro_gpu import api  # noqa: E402
@@ -1129,7 +1129,7 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     # the panel (Affinity Photo's): the filter is a child of its layer, indented under it
     assert [(r.lay["name"], r.depth) for r in v.rows] == [("Classic", 0), ("Full", 0), ("Saturation", 1)]
     assert rows[sat["id"]].sub.text() == "Normal · 100%" and rows[sat["id"]].toolTip() == 'Applies to "Full" only'
-    assert rows[full["id"]].toggle is not None and rows[full["id"]].toggle.text() == "▾"
+    assert rows[full["id"]].toggle is not None and rows[full["id"]].toggle.arrowType() == Qt.DownArrow
     assert rows[classic["id"]].toggle is None
     # another one, on everything below
     v.select(classic["id"], "layer")
@@ -1295,8 +1295,12 @@ def test_the_brush_paints_erases_and_is_one_undo_step(post):
     assert post.settle() and v.mask1.max() == 0
 
 
-def test_spot_healing_heals_a_click_moves_removes_and_undoes(post):
+def test_spot_healing_is_a_brush_healed_on_release_with_nothing_left_on_the_image(post):
+    """Issue #20, Photoshop's Spot Healing Brush: a click or a stroke heals when let go (one Undo step); a stroke is
+    spots every half radius, none healed from the stroke itself; Alt+click sets the source by hand for the strokes
+    that follow (Photoshop's Healing Brush); nothing is drawn on the image afterwards."""
     from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QPainter
     v = post.view
     f = v.add_filter("heal")
     v.select(f["id"], "layer")
@@ -1304,22 +1308,39 @@ def test_spot_healing_heals_a_click_moves_removes_and_undoes(post):
     assert post.settle()
     before = shown(v).copy()
     n0 = len(v.undo)
-    v._heal_press(200.0, 150.0, int(Qt.LeftButton.value), False)                       # a click: a spot, its source
+    left = int(Qt.LeftButton.value)
+    v._heal_press(200.0, 150.0, left, False)
+    assert f["params"]["spots"] == [] and len(v.undo) == n0                            # healed when let go
+    v._heal_release()
     spots = f["params"]["spots"]
     assert len(spots) == 1 and len(v.undo) == n0 + 1 and spots[0][2] == pytest.approx(v.heal_size / 2)
     assert np.hypot(spots[0][3], spots[0][4]) > spots[0][2]                            # the source beside the spot
     assert post.settle() and not np.array_equal(shown(v), before)
-    x, y, r, dx, dy = spots[0]
-    v._heal_press(x + dx, y + dy, int(Qt.LeftButton.value), False)                     # drag its source
-    v._heal_move(x + dx + 30, y + dy)
+    # a stroke along a trail: spots every half radius, their sources off the stroke, one Undo step
+    r = v.heal_size / 2
+    v._heal_press(100.0, 300.0, left, False)
+    v._heal_move(100.0 + 4 * r, 300.0)
     v._heal_release()
-    assert f["params"]["spots"][0][3] == pytest.approx(dx + 30) and len(v.undo) == n0 + 2
-    v._heal_press(x, y, int(Qt.LeftButton.value), True)                                 # Alt+click: source here
-    assert f["params"]["spots"][0][3:] == [0.0, 0.0]
-    v._heal_press(x, y, int(Qt.RightButton.value), False)                               # right click: removed
-    assert f["params"]["spots"] == []
+    trail = f["params"]["spots"][1:]
+    assert len(trail) == 9 and len(v.undo) == n0 + 2
+    assert all(abs(y + dy - 300.0) >= 2 * r - 1 or not (100.0 - r <= x + dx <= 100.0 + 5 * r)
+               for x, y, _r, dx, dy in trail)
+    # Alt+click: the source by hand; the next stroke keeps the offset (Photoshop's Aligned)
+    v._heal_press(400.0, 100.0, left, True)
+    assert len(f["params"]["spots"]) == 10                                              # sets the source only
+    v._heal_press(300.0, 100.0, left, False)
+    v._heal_release()
+    assert f["params"]["spots"][-1][3:] == [100.0, 0.0]
     v.do_undo()
-    assert len(v._heal_layer()["params"]["spots"]) == 1
+    assert len(v._heal_layer()["params"]["spots"]) == 10
+    # nothing on the image when no stroke is painted
+    img = QImage(64, 64, QImage.Format_ARGB32)
+    img.fill(0)
+    qp = QPainter(img)
+    v._heal_src = v._heal_off = None
+    v._heal_overlay(qp, v.viewer)
+    qp.end()
+    assert img.constBits().tobytes() == bytes(64 * 64 * 4)
     assert post.settle()
 
 
@@ -1381,6 +1402,13 @@ def test_a_stars_and_background_layer_has_its_two_images_as_sub_layers_with_thei
         lv["params"].update(black=0.0, white=0.5)
         assert lv["target"] == full["id"] and lv["sub"] == "stars"
         assert [(r.lay.get("sub"), r.depth) for r in v.rows][2:] == [("stars", 1), ("stars", 2), ("starless", 1)]
+        # issue #21: an arrow on a row with rows under it only, down expanded, right collapsed
+        subs = {r.lay["sub"]: r for r in v.rows if r.lay["kind"] == "sub"}
+        assert subs["stars"].toggle.arrowType() == Qt.DownArrow and subs["starless"].toggle is None
+        v.toggle_children((full["id"], "stars"))
+        assert [(r.lay.get("sub"), r.depth) for r in v.rows][2:] == [("stars", 1), ("starless", 1)]
+        assert next(r for r in v.rows if r.lay.get("sub") == "stars").toggle.arrowType() == Qt.RightArrow
+        v.toggle_children((full["id"], "stars"))
         v.request(final_only=True)
         assert s.settle()
         # the stars alone brightened, the starless image untouched: the stars brighter, the sky as it was
@@ -1404,6 +1432,36 @@ def test_a_stars_and_background_layer_has_its_two_images_as_sub_layers_with_thei
         # taken out of the layer, a filter is no longer on one of its images
         v.set_target(lv, None)
         assert lv["target"] is None and lv["sub"] is None
+    finally:
+        s.close()
+
+
+def test_a_starless_slider_leaves_the_stars_as_they_are(preps, qapp):
+    """Issue #19: a Stars and background layer's two images are rendered and kept apart, each keyed on its own sliders:
+    moving a slider of the starless image renders the starless image only, the stars stay (no blink); the two put
+    together are the engine's recombined image."""
+    s = Setup(preps, qapp, stars=True)
+    try:
+        assert s.settle()
+        v = s.view
+        full = v.layers[1]
+        src = LayerSource(lambda sid: s.folders.get(sid), LayerService(DEV))
+        w, h = src.canvas([("stars", 1)]).size(1)
+        whole = src.layer(new_workflow_layer(1, "Full", True, part="combined"), 1, (0, 0, w, h))
+        alone = reference(s, postengine.only_layer(v.layers, full["id"])).rgb
+        assert np.abs(alone.astype(np.float32) - np.clip(whole, 0, 1) * 255).max() <= 1
+        asked = []
+        real = s.worker.renderer.source.layer
+        s.worker.renderer.source.layer = lambda lay, *a, **k: (asked.append(lay.get("part")), real(lay, *a, **k))[1]
+        full["sliders"]["contrast"] = 3.17                                        # values no other test uses (a cache)
+        v.request(final_only=True)
+        assert s.settle()
+        assert asked and "stars" not in asked and "starless" in asked
+        asked.clear()
+        full["sliders"]["star_strength"] = 3.31
+        v.request(final_only=True)
+        assert s.settle()
+        assert "stars" in asked and "starless" not in asked
     finally:
         s.close()
 
@@ -1522,7 +1580,7 @@ def test_dragging_a_row_nests_or_unnests_a_filter_with_clear_hints(post):
     assert post.settle() and np.array_equal(shown(v), reference(post).rgb)
     # ▾ / ▸ hides a layer's children in the panel only
     v.toggle_children(full["id"])
-    assert [r.lay["name"] for r in v.rows] == ["Classic", "Full"] and row(full["id"]).toggle.text() == "▸"
+    assert [r.lay["name"] for r in v.rows] == ["Classic", "Full"] and row(full["id"]).toggle.arrowType() == Qt.RightArrow
     assert "2 filters" in row(full["id"]).sub.text()
     v.toggle_children(full["id"])
     assert len(v.rows) == 4
@@ -1598,6 +1656,15 @@ def test_sliders_are_greyed_with_their_reason_and_double_click_resets(post):
     assert lay["sliders"]["sky"] == pytest.approx(3.0)
     sky.name.mouseDoubleClickEvent(None)
     assert "sky" not in lay["sliders"] and sky.val.text() == "0"
+    # issue #16: a double-click on the slider itself too (Lightroom's)
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    sky = sliders()["Sky"]
+    sky.done.emit(3.5)
+    assert lay["sliders"]["sky"] == pytest.approx(3.5)
+    sky = sliders()["Sky"]
+    QTest.mouseDClick(sky.s, Qt.LeftButton, Qt.NoModifier, QPoint(sky.s.width() // 2, sky.s.height() // 2))
+    assert "sky" not in lay["sliders"]
 
 
 def test_a_slider_drag_is_a_draft_then_the_screen_image(post):
@@ -1979,12 +2046,12 @@ def test_the_export_dialog_follows_the_spec_and_refuses_the_results_folder(expor
     d = ExportDialog(s.view)
     try:
         assert d.windowTitle() == "Export"
-        assert d.fmt.currentText() == "JPEG" and [d.fmt.itemText(i) for i in range(d.fmt.count())] == [   # #15
+        assert d.fmt.currentText() == "TIFF 16-bit" and [d.fmt.itemText(i) for i in range(d.fmt.count())] == [
             "TIFF 16-bit", "TIFF 32-bit float", "FITS 32-bit float", "PNG 16-bit", "JPEG"]      # XISF is ◇: Spec mode only
         assert [d.prof.itemText(i) for i in range(d.prof.count())] == ["sRGB"]
         assert [d.size_cb.itemText(i) for i in range(d.size_cb.count())] == [
             "Full resolution", "Web (2048 px)", "Web (4096 px)"]
-        assert d.dest.text() == (s.root / "export" / "HeartSoul" / "HeartSoul.jpg").as_posix()
+        assert d.dest.text() == (s.root / "export" / "HeartSoul" / "HeartSoul_16bit.tif").as_posix()
         assert not d.c_wcs.isChecked() and not d.c_wcs.isEnabled()                                    # only FITS has a header
         assert d.c_hist.isChecked() and not d.c_layers.isChecked() and not d.c_masks.isChecked()
         assert d.spec_boxes == [] and d.go.text() == "Export" and d.go.isEnabled()
@@ -2101,9 +2168,7 @@ def test_the_export_writes_only_into_the_folder_chosen_and_it_reads_back(exporti
     after = tree(s.out.parent)
     new = sorted(set(after) - set(before))
     assert all(p.startswith("chosen/") for p in new), new
-    # (but the settings: the export remembers its format, issue #15)
-    assert {k: v for k, v in before.items() if k != "settings.json"} == {k: after[k] for k in before
-                                                                         if k != "settings.json"}
+    assert {k: v for k, v in before.items()} == {k: after[k] for k in before}
     assert sorted(Path(p).name for p in new) == sorted(
         ["heart_16bit.tif", "heart_32bit_float.tif", "heart.png", "heart.jpg", "heart.fits", "heart_history.json"])
     assert not list((s.root / "export").glob("*")) if (s.root / "export").exists() else True
@@ -2127,7 +2192,6 @@ def test_the_export_reduced_matches_the_half_resolution_preview(exporting, preps
     d = ExportDialog(s.view)
     try:
         d.dest.setText((s.out / "r_16bit.tif").as_posix())
-        d.fmt.setCurrentIndex(d.fmt.findData("tiff16"))                                      # JPEG by default
         d.size_cb.addItem("Screen", 344)                                                     # the long side of the half image
         d.size_cb.setCurrentIndex(d.size_cb.count() - 1)
         run_dialog(s, d)
