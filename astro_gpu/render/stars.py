@@ -268,19 +268,31 @@ def resize_stars(y: torch.Tensor, r: float) -> torch.Tensor:
 
 #: a star of the mask stands this many local noise units above its local background (the usual detection threshold)
 MASK_SIGMAS = 3.0
-#: the scale of the local background and noise (pixels of the grid rendered)
-MASK_SCALE = 6.0
+#: the scale of the local background and noise (pixels of the grid rendered): wider than the stars, so that a star's
+#: own light does not raise the background it is measured against (issue #30: its wings left the mask, a ring)
+MASK_SCALE = 24.0
+#: the clipping passes that take the stars out of that background (2 noise units, as the background estimators do)
+MASK_PASSES, MASK_CLIP = 3, 2.0
+#: the softened edge of the mask (pixels of the grid rendered)
+MASK_FEATHER = 1.5
 
 
 def star_mask(y: torch.Tensor, r: int) -> torch.Tensor:
-    """Where the stars are (1, h, w in 0..1): the luminance above STAR_LEVEL and MASK_SIGMAS local noise units above
-    its local background (on a dense field the faint grain between the stars stands above STAR_LEVEL: it is not a
-    star), grown by r pixels (round) to hold the wings the reduction takes, its edge softened by a pixel."""
+    """Where the stars are (1, h, w in 0..1): the luminance above STAR_LEVEL and MASK_SIGMAS noise units above the
+    local sky, the sky and its noise measured at MASK_SCALE with the stars clipped out (the iterative clipping of the
+    astronomical background estimators, Bertin and Arnouts 1996), so that a star's wings stand above it as its core
+    does (issue #30); on a dense field the faint grain between the stars stays under it (issue #18). Grown by r pixels
+    (round) to hold the wings the reduction takes, its edge softened over MASK_FEATHER pixels."""
     L = ops.luminance(y)[None]
     bg = ops.gaussian_blur(L, MASK_SCALE)
     noise = 1.2533 * ops.gaussian_blur((L - bg).abs(), MASK_SCALE)          # the mean deviation, as a sigma
+    for _ in range(MASK_PASSES):                                            # the stars out of the sky and its noise
+        lo = torch.minimum(L, bg + MASK_CLIP * noise)
+        bg = ops.gaussian_blur(lo, MASK_SCALE)
+        noise = 1.2533 * ops.gaussian_blur((lo - bg).abs(), MASK_SCALE)
     sup = ((L > STAR_LEVEL) & (L > bg + MASK_SIGMAS * noise)).float()
-    return ops.gaussian_blur(_morph(sup, r, True), 0.7)[0].clamp(0, 1)
+    grown = _morph(sup, r, True)
+    return torch.maximum(ops.gaussian_blur(grown, MASK_FEATHER), grown)[0].clamp(0, 1)     # whole on the stars
 
 
 def blend(a: torch.Tensor, b: torch.Tensor, mode: str) -> torch.Tensor:
