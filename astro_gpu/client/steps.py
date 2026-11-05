@@ -74,8 +74,8 @@ OUTPUT_RAW_NOTE = ("Final image: the stack in the camera's colours, the sky of e
 STARLESS_NOTE = ("The image without its stars, compared with the image with them (the same stretch: drag the divider). "
                  "The Stars block's two images go to Post: recombined by a Stars and background block, or as they "
                  "are.")
-STARS_NOTE = ("The stars alone: the image minus its starless image. In Post they go back on top in Screen mode, "
-              "stretched on their own.")
+STARS_NOTE = ("The stars alone: the image minus its starless image, stretched on their own. They go back on the "
+              "starless image with the blend mode of their Stars and background block, or as a layer of Post.")
 
 
 def output_note(stage: str, stages: set) -> str:
@@ -89,7 +89,7 @@ def output_note(stage: str, stages: set) -> str:
     return OUTPUT_SIMPLE_DENOISED_NOTE if "denoise" in stages else OUTPUT_SIMPLE_NOTE
 
 
-CALFRAMES_NOTE = "Every frame of this kind, raw, as the master is made from them."
+CALFRAMES_NOTE = "The raw frames this master is made from."
 CALIBRATED_NOTE = ("Each light after calibration: the master dark subtracted, divided by the master flat, the "
                    "defective pixels left empty.")
 REFERENCE_NOTE = "The frame every other frame is aligned on, calibrated."
@@ -217,7 +217,7 @@ class Steps(QObject):
             return [V("reference", "Reference frame", "regref", "register", note=REFERENCE_NOTE),
                     V("quality", "Quality", "regchart", "register", "quality"),
                     V("drift", "Drift", "regchart", "register", "drift"),
-                    V("track", "Tracking x / y (Lissajous)", "regchart", "register", "track"),
+                    V("track", "Drift path (x / y)", "regchart", "register", "track"),
                     V("distribution", "Distribution", "regchart", "register", "distribution"),
                     V("table", "Frames", "regtable", "register")]
         if k == "empilement":

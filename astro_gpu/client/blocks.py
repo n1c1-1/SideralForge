@@ -59,7 +59,7 @@ SIDE_INPUTS = {
 TRUNK = ["inventory", "calibrate", "register", "stack"]
 
 # every state a block can be in: up to date, pending, outdated, and what a run adds
-STATE_WORD = {"done": "Up to date", "pending": "Pending", "stale": "Outdated", "running": "Running",
+STATE_WORD = {"done": "Up to date", "pending": "Not computed yet", "stale": "Outdated", "running": "Running",
               "failed": "Failed", "interrupted": "Interrupted", "skipped": "Skipped"}
 # worst first: a block is as bad as its worst stage in any of its workflows
 STATE_ORDER = ["running", "failed", "interrupted", "stale", "skipped", "pending", "done"]

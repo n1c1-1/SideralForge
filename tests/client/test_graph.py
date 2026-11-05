@@ -759,7 +759,7 @@ def test_clicking_selects_and_sets_the_scope(world, model, page):
     page.select_node(page.graph.graph.final)
     assert model.sel_step == "final" and model.scope is None
     settle(world["w"], page)
-    assert "Layers" in texts_of(page.panel) and "Pending" in " ".join(texts_of(page.panel))
+    assert "Layers" in texts_of(page.panel) and "Not computed yet" in " ".join(texts_of(page.panel))
     opened = []
     page.openBlock.connect(lambda: opened.append(1))
     page.graph.blockOpened.emit(n)
@@ -1098,7 +1098,7 @@ def test_the_french_switch_translates_everything_visible(world, model, page):
     g = page.graph.graph
     tip = " ".join(it.toolTip() for it in page.graph.scene().items() if isinstance(it, BlockItem))
     assert "Empilement" in tip and "À jour" in tip
-    assert i18n._(STATE_WORD["pending"]) == "À calculer"                  # (the test project may have none pending)
+    assert i18n._(STATE_WORD["pending"]) == "Pas encore calculé"                  # (the test project may have none pending)
     assert i18n._("Gradient") == "Gradient"
     assert g.summary(next(n for n in g.nodes if n.key == "alignement")) == "sur l'image la plus nette"
     assert "Ajouter une étape" in " ".join(t)

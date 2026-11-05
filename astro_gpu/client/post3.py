@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..render.sliders import STARS as STARS_GROUP
+from ..render.sliders import group_title
 from . import prefs
 from .curveseditor import CurvesEditor, FunctionGraph, caption
 from .i18n import _, language, maybe, plural
@@ -143,6 +144,12 @@ def _pieces(n: str, fn) -> str:
 def dec(s: str) -> str:
     """A decimal comma in French."""
     return s.replace(".", ",") if language() == "fr" else s
+
+
+def offset_text(x: float) -> str:
+    """A rendering slider's value, as Lightroom shows it: its offset from the suggested setting (position 2), 0 there,
+    with a true minus sign."""
+    return "0" if abs(x - 2) < 0.02 else dec(f"{x - 2:+.1f}").replace("-", "−")
 
 
 def with_unit(v: str, unit: str) -> str:
@@ -529,7 +536,7 @@ class PostView(QWidget):
         self._canvas = None                              # the last result's canvas (size and origin on the grid)
         self.b_grid = QPushButton(_("Sky grid"))
         self.b_grid.setToolTip(_("The RA / Dec grid of the astrometric solution"))
-        self.b_names = QPushButton(_("Name the objects"))
+        self.b_names = QPushButton(_("Object names"))
         self.b_names.setToolTip(_("The known deep-sky objects of the field (Messier, NGC, IC, Sharpless and their "
                                   "common names), outlined at their size. Export… can burn them into the picture."))
         for b in (self.b_grid, self.b_names):
@@ -609,7 +616,7 @@ class PostView(QWidget):
         self.b_filter.setMenu(self.filter_menu)
         self.b_dup = QPushButton(_("Duplicate"))
         self.b_dup.setToolTip("Ctrl+J")
-        self.b_maskadd = QPushButton(_("Mask"))
+        self.b_maskadd = QPushButton(_("+ Mask"))
         self.b_del = QPushButton(_("Delete"))
         for b in (self.b_filter, self.b_dup, self.b_maskadd, self.b_del):
             btns.addWidget(b)
@@ -738,9 +745,13 @@ class PostView(QWidget):
             return
         self.undo.append(snapshot(self.layers))
         self.redo.clear()
+        old = {lay["id"] for lay in self.layers}
         self.layers = load_layers(post.get("layers"), {p.pid for p in self.s.paths})
         self._saved = json.dumps(save_layers(self.layers), sort_keys=True)
-        if self.sel and not self.layer(self.sel[0]):
+        added = [lay["id"] for lay in self.layers if lay["id"] not in old]
+        if added:                                   # a layer sent from the graph: selected, as a pasted layer is
+            self.sel = (added[0], "layer")
+        elif self.sel and not self.layer(self.sel[0]):
             self.sel = (self.layers[0]["id"], "layer") if self.layers else None
         self.rebuild()
         self.request(final_only=True)
@@ -1186,7 +1197,7 @@ class PostView(QWidget):
         self.b_dup.setEnabled(lay is not None)
         self.b_del.setEnabled(lay is not None and (not is_pixel(lay) or sum(map(is_pixel, self.layers)) > 1))
         self.b_maskadd.setEnabled(lay is not None)
-        self.b_maskadd.setText(_("Mask") if lay is None or lay["mask"] is None else _("Mask") + " ✓")
+        self.b_maskadd.setText(_("+ Mask") if lay is None or lay["mask"] is None else _("Mask") + " ✓")
         self.b_maskadd.setToolTip(_("Add a mask to the selected layer") if lay is None or lay["mask"] is None else
                                   _("Edit the mask of the selected layer"))
         self._undo_buttons()
@@ -1671,10 +1682,10 @@ class PostView(QWidget):
         for sd in infos:
             if sd.group != group:
                 group = sd.group
-                self._group(_(group))
+                self._group(_(group_title(group, part)))
                 if group == STARS_GROUP and part == "combined":
                     r = QHBoxLayout()
-                    r.addWidget(label(_("Stars blend"), "dim"))
+                    r.addWidget(label(_("Star blend mode"), "dim"))
                     c = QComboBox()
                     for b in BLENDS:
                         c.addItem(_(b), b)
@@ -1686,7 +1697,7 @@ class PostView(QWidget):
                     self.pbox.addLayout(r)
             pos = lay["sliders"].get(sd.key, 2.0)
             sl = ContSlider(_(sd.name), 0, 4, pos, 2, ends=[_(e) for e in sd.ends] if sd.ends else None,
-                            show=lambda x: _("suggested") if abs(x - 2) < 0.02 else dec(f"{x - 2:+.1f}"))
+                            show=offset_text)
             ok, why, _need = self.s.slider_state(p, sd.key, part)   # the model answers in the language of the screen
             sl.set_available(ok, why)
             self._wire(sl, lambda v, k=sd.key: self._slider(lay, k, v))
@@ -1712,7 +1723,7 @@ class PostView(QWidget):
         for key, name, ends in IMAGE_SLIDERS:
             pos = lay["sliders"].get(key, 2.0)
             sl = ContSlider(_(name), 0, 4, pos, 2, ends=[_(e) for e in ends],
-                            show=lambda x: _("suggested") if abs(x - 2) < 0.02 else dec(f"{x - 2:+.1f}"))
+                            show=offset_text)
             self._wire(sl, lambda v, k=key: self._slider(lay, k, v))
             self.pbox.addWidget(sl)
 

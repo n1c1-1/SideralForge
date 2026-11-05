@@ -39,6 +39,6 @@
   "y offset": "décalage en y",
   "y offset ({unit})": "décalage en y ({unit})",
   "The chart's data as a CSV file, for a spreadsheet (right click: PNG too)": "Les données du graphique en fichier CSV, pour un tableur (clic droit : PNG aussi)",
-  "Tracking x / y (Lissajous)": "Suivi x / y (Lissajous)",
+  "Drift path (x / y)": "Trajectoire de dérive (x / y)",
   "The x / y tracking appears once the offsets of the frames are known (Registration).": "Le suivi x / y apparaît quand les décalages des images sont connus (Alignement)."
 }

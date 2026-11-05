@@ -197,10 +197,18 @@ class ExportDialog(QDialog):
         key = self.format_key()
         folder, name = split_file(self.dest.text())
         self.dest.setText(f"{folder}/{name}{SUFFIX[key]}" if folder else name + SUFFIX[key])
-        self.c_wcs.setEnabled(key == "fits32f")
-        self.c_wcs.setToolTip("" if key == "fits32f" else _("Only the FITS file has a header."))
+        # an option the format does not take shows unticked (greyed), and comes back as the user left it
+        fits = key == "fits32f"
+        for c, on in ((self.c_wcs, fits), (self.c_grid, not fits), (self.c_names, not fits)):
+            if c.isEnabled() and not on:
+                c.setProperty("wish", c.isChecked())
+            if on and not c.isEnabled():
+                c.setChecked(bool(c.property("wish")) if c.property("wish") is not None else c.isChecked())
+            elif not on:
+                c.setChecked(False)
+            c.setEnabled(on)
+        self.c_wcs.setToolTip("" if fits else _("Only the FITS file has a header."))
         for c in (self.c_grid, self.c_names):
-            c.setEnabled(key != "fits32f")
             c.setToolTip(_("A FITS file stays clean: its header holds the astrometric solution.") if key == "fits32f"
                          else _("Drawn into the picture, as Post shows them."))
         self._check_dest()

@@ -272,7 +272,7 @@ class FramesView(QWidget):
         rows = self._rows()
         self.sv.addWidget(label(_("Sessions"), "h2"))
         cols = [_("Session"), _("Night"), _("Lights"), _("Exposure"), _("ISO / gain"), _("Temp."), _("Filter"),
-                _("Flats"), _("Darks"), _("Bias"), "FWHM", _("Kept")]
+                _("Flats"), _("Darks"), _("Bias"), "FWHM", _("Kept frames")]
         sess = s.sessions
         t = QTableWidget(len(sess), len(cols))
         t.setHorizontalHeaderLabels(cols)

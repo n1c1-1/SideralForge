@@ -427,7 +427,7 @@ def test_the_astrometry_block_opens_on_the_users_image_with_its_solution(win):
     assert "Sky grid" in shown and "Catalogue stars" in shown
     sky = next(d for (name, _k), d in t._data.items() if name == "sky")
     assert isinstance(sky, si.SkyData) and {ln.kind for ln in sky.lines} == {"ra", "dec"}
-    assert "Name the objects" in shown and (any(o.name == "IC 1805" for o in sky.objects) or sky.why)
+    assert "Object names" in shown and (any(o.name == "IC 1805" for o in sky.objects) or sky.why)
     assert 4 <= len(sky.lines) <= 20 and sky.stars is not None and 100 < len(sky.stars) <= si.CATALOGUE_MAX
     assert sky.stars[:, 2].max() < si.CATALOGUE_G_MAX and (np.diff(sky.stars[:, 2]) >= 0).all()
     assert any(isinstance(o, SkyOverlay) for o in v.canvas.overlays)
@@ -707,11 +707,11 @@ def test_frames_shows_the_sessions_the_health_checks_and_the_counts(win):
     t = f.pages.widget(0).findChildren(QTableWidget)[0]
     hdr = [t.horizontalHeaderItem(i).text() for i in range(t.columnCount())]
     assert hdr == ["Session", "Night", "Lights", "Exposure", "ISO / gain", "Temp.", "Filter", "Flats", "Darks", "Bias",
-                   "FWHM", "Kept"]
+                   "FWHM", "Kept frames"]
     row = {h: t.item(0, i).text() for i, h in enumerate(hdr)}
     assert row["Lights"] == "40" and row["Flats"] == "15" and row["Darks"] == "15" and row["Bias"] == "none"
     assert row["Exposure"] == "15 s" and row["ISO / gain"] == "5000" and row["Night"] == "16 → 17 Aug 2026"
-    assert row["FWHM"] == "4.0 px" and row["Kept"] == "40 / 40" and row["Temp."] == "–"
+    assert row["FWHM"] == "4.0 px" and row["Kept frames"] == "40 / 40" and row["Temp."] == "–"
     lines = check_lines(f.data)
     assert ("ok", "Nothing to worry about") in lines
     assert any(lv == "info" and tx.startswith("No bias: flats are calibrated with the camera black level (512 ADU)")
@@ -1115,7 +1115,7 @@ def test_the_drift_tab_shows_the_path_of_the_session_and_no_tab_hides(win):
     tr = track[0]
     assert np.isfinite(tr.d.dx).sum() > 10 and tr.colorbar is not None and tr.colorbar[0] == "Time"
     bar = next(b for b in t.findChildren(QTabBar) if b.isVisibleTo(t) and b.count() == 6)
-    assert not bar.usesScrollButtons() and bar.tabToolTip(3) == "Tracking x / y (Lissajous)"
+    assert not bar.usesScrollButtons() and bar.tabToolTip(3) == "Drift path (x / y)"
     win.tune.tab_of["alignement"] = "track"
     inspect(win, "alignement")
     assert [c for c in t.findChildren(TrackChart) if c.isVisibleTo(t)]

@@ -803,7 +803,7 @@ def test_sequence_keys_box_strip_band_and_exclude(qapp, loader):
     assert v.seq.isVisible() and v.index() == 0 and v.total_l.text() == "/ 6"
     assert v.band.name_l.full_text() == "L_000.fits" and v.band.cells["exposure"][1].text() == "15 s"
     assert v.band.cells["fwhm"][1].text() == "3.00 px" and v.band.cells["transparency"][1].text() == "100 %"
-    assert v.band.cells["temperature"][1].text() == "12.5 °C" and v.band.state.text() == "Included"
+    assert v.band.cells["temperature"][1].text() == "12.5 °C" and v.band.state.text() == "Kept"
     first = v.stretch()
     assert first.auto and not v.lock_c.isChecked()                       # by default each frame its own stretch
     loader.wait(30)
@@ -1224,7 +1224,7 @@ def test_french_view_has_no_missing_text_and_decimal_commas(qapp, loader, tmp_pa
         v.set_sequence(frames_for_test(2), 0)
         assert v.wait(30)
         assert "," in v.pixel_text(10.5, 10.5).split("R ")[1][:8]
-        assert v.fit_b.text() == "Ajuster" and v.split_b.text() == "Rideau" and v.panel.neutral_c.text() == "Ciel neutre"
+        assert v.fit_b.text() == "Adapter" and v.split_b.text() == "Rideau" and v.panel.neutral_c.text() == "Ciel neutre"
         assert v.band.cells["fwhm"][1].text().startswith("3,00") and v.band.cells["exposure"][1].text() == "15 s"
         assert "," in v.panel.fields["black"].text()
         dlg = v.export_dialog()

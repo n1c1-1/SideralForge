@@ -358,11 +358,14 @@ def rejection_rate_text(d) -> str:
     text = f"<span style='color:{colour}'>{html.escape(out, quote=False)}</span>   ·   {html.escape(guide, quote=False)}"
     if rej.get("classic"):
         how = texts.choice_label(str(rej["classic"]), language())
-        rt = rej.get("reason_template") or {}
-        why = texts.format_reason(str(rt.get("template") or ""), rt.get("args"), language()) if rt.get("template") \
-            else ""
-        text += "<br>" + html.escape(_("Rejection: {how}").format(how=how), quote=False) + (
-            f" ({html.escape(why, quote=False)})" if why else "")
+        a = (rej.get("reason_template") or {}).get("args") or {}
+        if all(x in a for x in ("n", "low", "high")):      # the method once, its thresholds, why it was chosen
+            g = (lambda v: f"{float(v):g}".replace(".", ",")) if language() == "fr" else (lambda v: f"{float(v):g}")
+            line = _("Rejection: {how} ({low} / {high} σ), chosen for {n} frames").format(
+                how=how, low=g(a["low"]), high=g(a["high"]), n=a["n"])
+        else:
+            line = _("Rejection: {how}").format(how=how)
+        text += "<br>" + html.escape(line, quote=False)
     return text
 
 
@@ -1153,7 +1156,7 @@ class TuneView(QWidget):
                                ("stars", _("Catalogue stars"),
                                 _("Gaia stars brighter than magnitude {g}, where the solution puts them")
                                 .format(g=number(CATALOGUE_G_MAX, 0))),
-                               ("objects", _("Name the objects"),
+                               ("objects", _("Object names"),
                                 _("The known deep-sky objects of the field (Messier, NGC, IC, Sharpless and their "
                                   "common names), outlined at their size. Export… can burn them into a picture."))):
             b = QCheckBox(text)
@@ -1530,23 +1533,23 @@ class TuneView(QWidget):
         self.sel_frames = frames
         n_out = sum(1 for x in items if x.excluded)
         n_bad = sum(1 for x in flagged if self._flag_level(x) == "bad")
-        line = _("{n} frames, {x} left out by hand. Exclude (X) leaves the frame shown out of the master: Calibration "
-                 "is then computed again.").format(n=len(items), x=n_out)
+        line = _("{n} frames, {x} excluded by hand. Exclude (X) takes the frame shown out of the master, and "
+                 "Calibration runs again.").format(n=len(items), x=n_out)
         if self._report_state == "wait":
-            line += "  " + _("Measuring every frame for its quality flag…")
+            line += " " + _("Measuring every frame for its quality flag…")
         elif self._report_state == "ok":
             if not flagged:
-                line += "  " + _("No frame stands out from the others.")
+                line += " " + _("No frame stands out from the others.")
             elif n_bad:
-                line += "  " + plural(len(flagged), "{n} suspicious frame: red, not a frame of this kind at all; "
+                line += " " + plural(len(flagged), "{n} suspicious frame: red, not a frame of this kind at all; "
                                                     "amber, unlike the others.",
                                       "{n} suspicious frames: red, not frames of this kind at all; amber, unlike the "
                                       "others.")
             else:
-                line += "  " + plural(len(flagged), "{n} suspicious frame (amber): unlike the others of its kind.",
+                line += " " + plural(len(flagged), "{n} suspicious frame (amber): unlike the others of its kind.",
                                       "{n} suspicious frames (amber): unlike the others of their kind.")
         else:
-            line += "  " + _("Quality flags: {why}").format(why=si.not_yet("calibrate"))
+            line += " " + _("Quality flags: {why}").format(why=si.not_yet("calibrate"))
         self.center.addWidget(label(line, "small", wrap=True))
         if flagged:
             self.center.addLayout(self._flag_row(spec, items, flagged, mode))
@@ -1909,13 +1912,13 @@ class TuneView(QWidget):
         self.center.addWidget(v, 1)
 
     def _coverage(self, p, spec: VisualSpec, b: si.StackBundle):
-        """How evenly the frames cover the stack, colour by colour (the drizzle's red and blue first: one pixel in four
-        of the sensor), with the variation of each colour against DrizzlePac's 20 %; a classic stack, one map."""
+        """How evenly the frames cover the stack, colour by colour in the usual order (red first: with blue, one pixel in
+        four of the sensor), with the variation of each colour against DrizzlePac's 20 %; a classic stack, one map."""
         import dataclasses
         d = b.diag
         method = (getattr(d, "switches", None) or {}).get("method") or "drizzle"
         drizzle = method == "drizzle"
-        chans = ((0, "Red"), (2, "Blue"), (1, "Green")) if drizzle else ((1, "Coverage"),)
+        chans = ((0, "Red"), (1, "Green"), (2, "Blue")) if drizzle else ((1, "Coverage"),)   # red shown first
         imgs = []
         for c, cap in chans:                      # the picture's name is translated where it is shown
             vi = self.steps.view_image(p, dataclasses.replace(spec, kind="array", channel=c, shown=cap))
@@ -2157,7 +2160,7 @@ class TuneView(QWidget):
         bl = QVBoxLayout(box)
         bl.setContentsMargins(0, 0, 0, 0)
         bl.setSpacing(0)
-        bl.addWidget(label(_("Tracking x / y (Lissajous)"), "h2"))
+        bl.addWidget(label(_("Drift path (x / y)"), "h2"))
         bl.addWidget(ch, 1)
         return box
 

@@ -1451,11 +1451,11 @@ def add_exit(p: Project2, wf: int, block: str, name: str) -> Workflow:
 _METHODS: dict[str, list[MethodInfo]] = {
     "denoise": [
         MethodInfo("pretrained", "Pretrained network", "pretrained", "both", "denoise", False,
-                   "A Noise2Noise network pretrained on many pairs of half-stacks, applied as it is: seconds, also on "
-                   "a processor. Nothing is invented: it learned to predict one half-stack from the other."),
+                   "A network trained on many pairs of half-stacks (Noise2Noise), applied as it is. Nothing is "
+                   "invented: it learned to predict one half-stack from the other."),
         MethodInfo("adapted", "Pretrained + adapted to the image", "adapted", "both", "denoise", False,
-                   "The same network first learns this image's noise on its half-stacks: about 40 s on a GPU (5 min "
-                   "for a session without dithering). The best denoising."),
+                   "The same network first learns this image's own noise on its half-stacks: longer, fitted to this "
+                   "image (a session without dithering most of all)."),
     ],
     "gradient": [
         MethodInfo("polynomial", "Polynomial", "polynomial", "cpu", "gradient", False,

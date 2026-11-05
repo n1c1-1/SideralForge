@@ -68,13 +68,12 @@
   "Send the stars alone to Post": "Envoyer les étoiles seules à Post-traitement",
   "{image}: to Post as a layer": "{image} : vers Post-traitement, comme calque",
   "{image} of \"{name}\" sent to Post": "{image} de « {name} » envoyé à Post-traitement",
-  "{image} of \"{name}\": a layer of Post": "{image} de « {name} » : un calque de Post-traitement",
   "Stars and background block for \"{name}\"": "Bloc Étoiles et fond pour « {name} »",
   "Stars and background block removed": "Bloc Étoiles et fond retiré",
   "● top: the starless image; ● bottom: the stars alone. Drag one onto Post to make it a layer, or onto Composition for a Stars and background block": "● en haut : l'image sans étoiles ; ● en bas : les étoiles seules. Glissez-en une sur Post-traitement pour en faire un calque, ou sur Composition pour un bloc Étoiles et fond",
-  "Recombines the Stars block's two images: the starless image and the stars, each stretched, the stars put back on top (Screen, Linear dodge or Lighten). Its settings are those of its layer in Post.": "Recombine les deux images du bloc Étoiles : l'image sans étoiles et les étoiles, chacune étirée, les étoiles remises par-dessus (Écran, Densité linéaire ou Éclaircir). Ses réglages sont ceux de son calque dans Post-traitement.",
+  "Recombines the Stars block's two images: the starless image and the stars, each stretched, the stars put back on top (Screen, Linear dodge or Lighten). Its settings are those of its layer in Post.": "Recombine les deux images du bloc Étoiles : l'image sans étoiles et les étoiles, chacune étirée, les étoiles remises par-dessus (Écran, Densité linéaire − (ajout) ou Éclaircir). Ses réglages sont ceux de son calque dans le Post-traitement.",
   "Takes the stars off the image with a trained network: the starless image and the stars alone, two images for Post (recombined by a Stars and background block, or as they are).": "Retire les étoiles de l'image avec un réseau entraîné : l'image sans étoiles et les étoiles seules, deux images pour Post-traitement (recombinées par un bloc Étoiles et fond, ou telles quelles).",
-  "How the stars go back on the starless image: Screen (the usual way), Linear dodge (add) or Lighten": "Comment les étoiles reviennent sur l'image sans étoiles : Écran (le plus courant), Densité linéaire (ajout) ou Éclaircir",
+  "How the stars go back on the starless image: Screen (the usual way), Linear dodge (add) or Lighten": "Comment les étoiles reviennent sur l'image sans étoiles : Écran (le plus courant), Densité linéaire − (ajout) ou Éclaircir",
   "Take this block out of Post (the Stars block's images stay computed)": "Retirer ce bloc de Post-traitement (les images du bloc Étoiles restent calculées)",
   "The Stars block is not computed yet: run it to see the result in Post.": "Le bloc Étoiles n'est pas encore calculé : lancez-le pour voir le résultat dans Post-traitement.",
   "Post, with this block's layer selected: the image, the same settings, masks and filters": "Post-traitement, avec le calque de ce bloc sélectionné : l'image, les mêmes réglages, les masques et les filtres",
@@ -88,5 +87,7 @@
   "not used: drag its dot onto Post or onto Composition": "pas utilisée : glissez son point sur Post-traitement ou sur Composition",
   "No setting here: the network is applied as it was trained. Its two images are adjusted in a Stars and background block, or each as a layer of Post.": "Aucun réglage ici : le réseau s'applique tel qu'il a été entraîné. Ses deux images se règlent dans un bloc Étoiles et fond, ou chacune comme calque de Post-traitement.",
   "Takes the stars off the image (a network trained on many stacks): the starless image and the stars alone, recombined by a Stars and background block or each used as a layer of Post. Seconds on a GPU, a few minutes on a processor.": "Retire les étoiles de l'image (un réseau entraîné sur de nombreux empilements) : l'image sans étoiles et les étoiles seules, recombinées par un bloc Étoiles et fond ou utilisées chacune comme calque de Post-traitement. Quelques secondes sur carte graphique, quelques minutes sur processeur.",
-  "Stars blend": "Fusion des étoiles"
+  "{image} of \"{name}\" is already a layer of Post": "{image} de « {name} » : déjà un calque du Post-traitement",
+  "{image} of \"{name}\" sent to Post as a new layer": "Nouveau calque du Post-traitement : {image} de « {name} »",
+  "Star blend mode": "Mode de fusion des étoiles"
 }

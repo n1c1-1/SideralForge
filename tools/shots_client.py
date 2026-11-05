@@ -15,7 +15,7 @@ workflows of today's two methods (default PI-own and CL, the bench's workflows w
   and browser), the stack's histogram (the stretch), side-by-side compares (Gradient, Colour, Astrometry);
 - Post: the Curves editor (a manual point, each channel, a Photoshop preset, an astro preset, a user preset saved in
   the scratch settings folder), every new filter added as a layer with its sliders moved off their defaults, the filter
-  menu (its 7 groups);
+  menu (its 6 groups);
 - Export: FITS, TIFF, PNG and JPEG written into a scratch folder.
 
 Nothing is written into the project: the model is read-only (no definition, no state.json), the Post composition stays
@@ -381,7 +381,7 @@ def part_post():
     menu = view.filter_menu
     groups = [a.text() for a in menu.actions() if a.menu() is not None]
     print("  filter groups:", groups, flush=True)
-    if len(groups) != 7:
+    if len(groups) != 6:
         walk.problem(f"the filter menu has {len(groups)} groups")
     menu.popup(view.b_filter.mapToGlobal(QPoint(0, view.b_filter.height())))
     walk.pump(0.4)

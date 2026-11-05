@@ -1,6 +1,6 @@
 {
  "Drizzle": "Drizzle",
- "Each raw pixel is dropped at its exact place on the output grid: no debayering, no interpolation. Best with many dithered frames.": "Chaque pixel brut est déposé à sa place exacte sur la grille de sortie : ni dématriçage, ni interpolation. Le meilleur choix avec beaucoup d'images décalées (dithering).",
+ "Each raw pixel is dropped at its exact place on the output grid: no debayering, no interpolation. Best with many dithered frames.": "Chaque pixel brut est déposé à sa place exacte sur la grille de sortie : ni dématriçage, ni interpolation. Le meilleur choix avec beaucoup d'images décalées entre les poses.",
  "Each frame is resampled onto the reference (Lanczos-4), colour frames debayered first (RCD), then combined with a rejection chosen by the number of frames. Best with few or barely dithered frames.": "Chaque image est recalée sur la référence (Lanczos-4), après dématriçage (RCD) pour une image couleur, puis les images sont combinées avec un rejet choisi selon leur nombre. Le meilleur choix avec peu d'images ou des images peu décalées.",
  "Recommended": "Conseillé",
  "classic stack · {how}": "empilement classique · {how}",
@@ -22,6 +22,7 @@
  "below it: few outliers were found": "en dessous : peu de valeurs aberrantes trouvées",
  "above it: many pixels were rejected": "au-dessus : beaucoup de pixels rejetés",
  "Rejection: {how}": "Rejet : {how}",
+ "Rejection: {how} ({low} / {high} σ), chosen for {n} frames": "Rejet : {how} ({low} / {high} σ), choisi pour {n} images",
  "red": "rouge",
  "green": "vert",
  "blue": "bleu",

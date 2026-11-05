@@ -305,15 +305,15 @@ class GradientEditor(QObject):
         elif pts:
             bits.append(_("{n} samples placed").format(n=len(pts)))
         elif s is not None and not s.get("manual"):
-            bits.append(_("No sample placed: the block chooses its own at each run ({n} of sky the last time)").format(
-                n=int(np.sum(s["used"]))))
+            bits.append(_("No sample placed: they are chosen automatically at each run ({n} of sky the last time)")
+                        .format(n=int(np.sum(s["used"]))))
         else:
-            bits.append(_("No sample placed: the block chooses its own at each run"))
+            bits.append(_("No sample placed: they are chosen automatically at each run"))
         n = len(self.work["exclude_ellipses"]) + (1 if any(d[3] for d in self.work["exclude_brush"]) else 0)
         if n:
             bits.append(_("{n} excluded areas").format(n=n) if n > 1 else _("1 excluded area"))
         if not self.done:
-            bits.append(_("saved: the block is to compute again"))
+            bits.append(_("saved: Gradient will be computed again"))
         return " · ".join(bits)
 
     def _hint(self):

@@ -569,7 +569,7 @@ class TrackChart(_Offsets):
 
     def __init__(self, d: RegistrationData, parent=None, left_out: dict | None = None):
         """``left_out``: in Selection, the frames the stack leaves out (name -> reason), circled in red on the path."""
-        super().__init__(_("Tracking x / y (Lissajous)"), parent, zoom="xy", readout="xy", snap=18.0,
+        super().__init__(_("Drift path (x / y)"), parent, zoom="xy", readout="xy", snap=18.0,
                          export_name="drift_path")
         self.setMinimumHeight(300)
         self.d = d
@@ -686,6 +686,6 @@ def registration_tabs(d: RegistrationData) -> list[tuple[str, ChartView]]:
     sensor size is unknown."""
     tabs = [(_("Quality"), QualityChart(d))]
     if np.isfinite(d.dx).any():
-        tabs += [(_("Drift"), DriftChart(d)), (_("Tracking x / y (Lissajous)"), TrackChart(d))]
+        tabs += [(_("Drift"), DriftChart(d)), (_("Drift path (x / y)"), TrackChart(d))]
     tabs.append((_("Distribution"), DistributionChart(d)))
     return tabs

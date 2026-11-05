@@ -32,7 +32,6 @@ from PySide6.QtGui import (
     QFontMetrics,
     QFontMetricsF,
     QKeySequence,
-    QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
@@ -86,8 +85,7 @@ MARGIN = 8                  # around the graph, left and right
 MIN_SCALE = 0.6             # the smallest the default view goes to show the whole chain; below, the text cannot be read:
 #                             the view keeps this scale, shows the left end (Frames) and scrolls right. Show all goes lower
 TITLE_PAD = 22              # a block's title, its state stripe and its padding
-OUT_MAX = BW + 30           # the widest Output column: a longer workflow name fades out (whole in the tooltip)
-FADE = 18                   # the width over which a name too long for its block fades out
+OUT_MAX = BW + 30           # the widest Output column: a longer workflow name loses its middle (whole in the tooltip)
 STATE_COL = {"done": OK, "pending": "#5d6470", "stale": WARN, "running": ACCENT, "failed": BAD,
              "interrupted": WARN, "skipped": "#5d6470"}
 # the blocks whose output can go straight to the post: only where it gives an image no workflow already gives
@@ -211,21 +209,11 @@ class BlockItem(QGraphicsItem):
         p.setFont(f)
         p.setPen(QColor("#e8ebf0"))
         tw = w - 18 - (18 if self.removable and self.hover else 0)
-        if self.node.key == "post" and QFontMetricsF(f).horizontalAdvance(self.title) > tw:
-            # a workflow's name: it fades out at the edge of its block (the whole name is in the tooltip); "…" is
-            # kept for the engine's words, whose end matters less
-            p.save()
-            p.setClipRect(QRectF(11, 6, tw, 20))
-            p.drawText(QRectF(11, 6, tw + 400, 20), Qt.AlignLeft | Qt.AlignVCenter, self.title)
-            p.restore()
-            grad = QLinearGradient(11 + tw - FADE, 0, 11 + tw, 0)
-            c0 = QColor(fill)
-            c0.setAlpha(0)
-            grad.setColorAt(0.0, c0)
-            grad.setColorAt(1.0, QColor(fill))
-            p.fillRect(QRectF(11 + tw - FADE, 6, FADE, 20), QBrush(grad))
-        else:
-            p.drawText(QRectF(11, 6, tw, 20), Qt.AlignLeft | Qt.AlignVCenter, elide(self.title, f, tw))
+        # a workflow's name loses its middle (two variants differ at their end; the whole name is in the tooltip), the
+        # engine's words their end
+        mode = Qt.ElideMiddle if self.node.key == "post" else Qt.ElideRight
+        p.drawText(QRectF(11, 6, tw, 20), Qt.AlignLeft | Qt.AlignVCenter,
+                   QFontMetrics(f).elidedText(self.title, mode, int(tw)))
         f2 = QFont("Segoe UI", 8.5)
         p.setFont(f2)
         p.setPen(QColor("#8b93a1"))
@@ -239,13 +227,14 @@ class BlockItem(QGraphicsItem):
             for what, y in PORTS["etoiles"]:
                 p.setPen(QPen(QColor(IMAGE_COL[what]), 1.5))
                 p.setBrush(QColor(IMAGE_COL[what]))
-                p.drawEllipse(QPointF(0, y), 3.5, 3.5)
+                p.drawEllipse(QPointF(0, y), 4.5, 4.5)
         for what, y in self.ports:
             big = self.hover or self.selected or self._wire
             col = IMAGE_COL.get(what, ACCENT)
             p.setPen(QPen(QColor(col if big or what else "#4a5263"), 1.5))
             p.setBrush(QColor(col if big or what else "#15171c"))
-            p.drawEllipse(QPointF(w, y), 5.5 if big else 3.5, 5.5 if big else 3.5)
+            r = 6.5 if big else 4.5
+            p.drawEllipse(QPointF(w, y), r, r)
         if self.bp is not None:
             self.paint_review(p)
 
@@ -415,7 +404,7 @@ class GraphView(QGraphicsView):
     def column_width(key: str, names=()) -> float:
         """A column is as wide as a block, or wider when its title needs it in the language shown ("Post-traitement").
         The outputs carry the workflows' names: their column widens to the longest name, up to OUT_MAX; a longer name
-        fades out at the edge of its block and is whole in the tooltip."""
+        loses its middle ("Classic stack…adapted") and is whole in the tooltip."""
         f = QFont("Segoe UI", 10)
         f.setBold(True)
         fm = QFontMetricsF(f)
@@ -654,7 +643,7 @@ class GraphView(QGraphicsView):
         if not strong:
             col.setAlpha(110)
         it = self.scene().addPath(path, QPen(col, 2.0 if strong else 1.5, Qt.DashLine if direct else Qt.SolidLine))
-        it.setZValue(6 if direct else 2)                  # an image sent to Post as it is: seen over the blocks
+        it.setZValue(4 if direct else 2)                  # behind the blocks (their text stays readable)
         it.setToolTip(_("{image}: to Post as a layer").format(image=word) if direct else word)
 
     def _post_sources(self, g: Graph) -> list[Node]:
@@ -776,7 +765,7 @@ class GraphView(QGraphicsView):
         elif node.key == "composition":
             m.addAction(_("Open in Post")).triggered.connect(lambda: self.openLayer.emit(node.lid))
             m.addSeparator()
-            m.addAction(_("Remove")).triggered.connect(lambda: self.remove_block(node, None))
+            m.addAction(_("Delete block")).triggered.connect(lambda: self.remove_block(node, None))
             m.exec(pos)
             return
         if node.key == "etoiles" and len(node.paths) == 1:
@@ -792,7 +781,7 @@ class GraphView(QGraphicsView):
                     m.addAction(_('Remove from "{name}" only').format(name=p.name)).triggered.connect(
                         lambda _x=False, q=p: self.remove_block(node, [q.pid]))
             else:
-                m.addAction(_("Remove")).triggered.connect(lambda: self.remove_block(node, None))
+                m.addAction(_("Delete block")).triggered.connect(lambda: self.remove_block(node, None))
         if node.key not in ("sources", "final"):
             if not m.isEmpty():
                 m.addSeparator()
@@ -1175,10 +1164,13 @@ class GraphPage(QWidget):
         """One of the Stars block's images sent to Post as it is: a layer of its own (the stars in Screen mode)."""
         s = self.s
         p = s.path if s.path in node.paths else node.paths[0]
-        s.add_post_layer(p.pid, part, self)
         word = _(dict(STAR_OUTPUTS)[part])
+        if any(x.get("pid") == p.pid and x.get("part") == part for x in s.post_layers()):
+            self.toast(_('{image} of "{name}" is already a layer of Post').format(image=word, name=p.name))
+            return
+        s.add_post_layer(p.pid, part, self)
         s.log('{image} of "{name}" sent to Post', image=dict(STAR_OUTPUTS)[part], name=p.name)
-        self.toast(_('{image} of "{name}": a layer of Post').format(image=word, name=p.name))
+        self.toast(_('{image} of "{name}" sent to Post as a new layer').format(image=word, name=p.name))
 
     def new_composition(self, node):
         """A Stars and background block for this Stars block: a layer of Post that recombines its two images."""

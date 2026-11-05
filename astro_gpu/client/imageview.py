@@ -1802,7 +1802,7 @@ class StretchPanel(QFrame):
         self.auto_b.toggled.connect(self._auto)
         row.addWidget(self.auto_b)
         self.mode_cb = QComboBox()
-        for key, text in (("linear", _("Linear")), ("mtf", _("Midtones (MTF)")), ("asinh", _("Asinh")),
+        for key, text in (("linear", _("Linear")), ("mtf", _("Midtones")), ("asinh", _("Asinh")),
                           ("histogram", _("Histogram equalisation"))):
             self.mode_cb.addItem(text, key)
         self.mode_cb.currentIndexChanged.connect(self._mode)
@@ -2228,7 +2228,7 @@ class InfoBand(QFrame):
             self.state.setToolTip(reason)
             self.state.setStyleSheet(f"color: {BAD}; border: 1px solid {BAD}; border-radius: 9px; padding: 2px 10px;")
         else:
-            self.state.setText(_("Included"))
+            self.state.setText(_("Kept"))
             self.state.setToolTip("")
             self.state.setStyleSheet(f"color: {OK}; border: 1px solid {OK}; border-radius: 9px; padding: 2px 10px;")
         flag = info.get("flag")                  # a quality flag of the engine: red (bad) or amber, the reason below

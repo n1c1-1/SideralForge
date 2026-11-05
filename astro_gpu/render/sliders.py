@@ -65,6 +65,13 @@ SLIDERS: tuple[Slider, ...] = (
 )
 BY_KEY = {s.key: s for s in SLIDERS}
 KEYS = tuple(BY_KEY)
+#: a group's title on a layer of the Stars block: named after the image it acts on, as the block's outputs are
+PART_GROUPS = {NEBULA: "Starless image", STARS: "Stars alone"}
+
+
+def group_title(group: str, part: str | None) -> str:
+    """The title of a group of sliders on a layer (``part``: one of the Stars block's images, or None)."""
+    return PART_GROUPS.get(group, group) if part else group
 
 
 def _check_kind(kind: str) -> str:

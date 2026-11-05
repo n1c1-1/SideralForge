@@ -22,7 +22,6 @@ from PySide6.QtCore import QLocale, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
-    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFrame,
@@ -174,7 +173,8 @@ def durations_text(times, here: str, estimated: bool = False) -> str:
         if dev not in times:
             continue
         sec, measured = times[dev]
-        t = html.escape(f"{dev.upper()} {'' if measured and not estimated else '≈ '}{hm(sec)}")
+        d = hm(sec)
+        t = html.escape(f"{dev.upper()} {'' if (measured and not estimated) or d.startswith('≤') else '≈ '}{d}")
         parts.append(f"<b style='color:#e6edf7'>{t}</b>" if dev == here else t)
     return " · ".join(parts)
 
@@ -411,7 +411,7 @@ class Panel(QWidget):
                     rows.append((html.escape(tr_name(name, True)), _("image")))
                     continue
                 src = _("from {block}").format(block=block_title(q, q.end)) if q.end else ""
-                st = _("Up to date") if q.rendered and q.computed else (_("Outdated") if q.rendered else _("Pending"))
+                st = _("Up to date") if q.rendered and q.computed else (_("Outdated") if q.rendered else _("Not computed yet"))
                 rows.append((html.escape(tr_name(name)), " · ".join(x for x in (st, src) if x)))
             if rows:
                 self.bv.addWidget(self.group_title(_("Layers")))
@@ -485,12 +485,12 @@ class Panel(QWidget):
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
         top.addWidget(chip)
         if k in OPTIONAL_BLOCKS:
-            x = QPushButton(_("Remove"))
+            x = QPushButton(_("Delete block"))
             x.clicked.connect(self.removeTool.emit)
             top.addWidget(x)
         self.hv.addLayout(top)
-        # which workflows a change goes to
-        if node.shared:
+        # which workflows a change goes to (the Stars block has no setting: nothing to apply)
+        if node.shared and k != "etoiles":
             self.hv.addWidget(label(_("Changes apply to:"), "dim"))
             box = QVBoxLayout()
             box.setSpacing(2)
@@ -528,6 +528,8 @@ class Panel(QWidget):
                 self.bv.addWidget(self.group_title(_("Measurements")))
                 self.bv.addWidget(kv(facts, pad=10))
                 self.bv.addSpacing(6)
+        if k == "etoiles":                  # what the block gives first: its two images, and where they go
+            self.outputs(node)
         if k in ("fond", "debruitage", "etoiles", "deconv"):
             self.methods(p, k)
         if k == "fond" and self.tune and getattr(self, "grad_editor", None) is not None:
@@ -548,8 +550,7 @@ class Panel(QWidget):
             self.stack_methods(p)
         if k == "post" and p.end:
             self.bv.addWidget(kv([(_("Output of"), block_title(p, p.end))]))
-        if k == "etoiles":                  # no setting: its two images, and where they go
-            self.outputs(node)
+        if k == "etoiles":
             self.bv.addWidget(label(_("No setting here: the network is applied as it was trained. Its two images are "
                                       "adjusted in a Stars and background block, or each as a layer of Post."),
                                     "small", wrap=True))
@@ -749,9 +750,9 @@ class Panel(QWidget):
                   for n in mine]
             if any(src._bk == node._bk and part == what for src, part in g.direct):
                 to.append(_("Post (as a layer)"))
-            dest = ", ".join(to) if to else _("not used: drag its dot onto Post or onto Composition")
+            to = to or [_("not used: drag its dot onto Post or onto Composition")]
             lb = QLabel(f"<span style='color:{IMAGE_COL[what]}'>●</span> <b>{html.escape(names[what])}</b>"
-                        f" → {html.escape(dest)}")
+                        + "".join(f"<br>&nbsp;&nbsp;&nbsp;→ {html.escape(t)}" for t in to))
             lb.setTextFormat(Qt.RichText)
             lb.setWordWrap(True)
             self.bv.addWidget(lb)
@@ -762,7 +763,8 @@ class Panel(QWidget):
         back and the sliders, the same as in Post; Open in Post. A workflow whose Post was never opened gets its layer
         here (the one Post would give it)."""
         from ..render.sliders import STARS as STARS_GROUP
-        from .post3 import BLENDS, ContSlider, dec
+        from ..render.sliders import group_title
+        from .post3 import BLENDS, ContSlider, offset_text
         s = self.s
         p = node.paths[0]
         lid = node.lid if node.lid is not None else s.add_post_layer(p.pid, "combined", self)
@@ -776,7 +778,7 @@ class Panel(QWidget):
         chip = QLabel(_(STATE_WORD[st]))
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
         top.addWidget(chip)
-        x = QPushButton(_("Remove"))
+        x = QPushButton(_("Delete block"))
         x.setToolTip(_("Take this block out of Post (the Stars block's images stay computed)"))
         x.clicked.connect(self.removeTool.emit)
         top.addWidget(x)
@@ -800,10 +802,10 @@ class Panel(QWidget):
         for sd in sorted(infos, key=lambda x: x.group != STARS_GROUP):
             if sd.group != group:
                 group = sd.group
-                self.bv.addWidget(self.group_title(_(group)))
+                self.bv.addWidget(self.group_title(_(group_title(group, "combined"))))
                 if group == STARS_GROUP:
                     row = QHBoxLayout()
-                    row.addWidget(label(_("Stars blend"), "dim"))
+                    row.addWidget(label(_("Star blend mode"), "dim"))
                     cb = QComboBox()
                     for b in BLENDS:
                         cb.addItem(_(b), b)
@@ -814,7 +816,7 @@ class Panel(QWidget):
                     row.addWidget(cb, 1)
                     self.bv.addLayout(row)
             sl = ContSlider(_(sd.name), 0, 4, sliders.get(sd.key, 2.0), 2, ends=[_(e) for e in sd.ends],
-                            show=lambda v: _("suggested") if abs(v - 2) < 0.02 else dec(f"{v - 2:+.1f}"))
+                            show=offset_text)
             ok, why, _need = s.slider_state(p, sd.key, "combined")
             sl.set_available(ok, why)
             sl.done.connect(lambda v, k=sd.key: commit(k, v))
@@ -950,10 +952,16 @@ class Panel(QWidget):
                 self.add_row(r)
         if hidden:
             self.bv.addSpacing(8)
-            ex = QCheckBox(_("Advanced settings ({n})").format(n=hidden))
-            ex.setChecked(self.expert)
-            ex.toggled.connect(self._expert)
-            self.bv.addWidget(ex)
+            # a disclosure, as Lightroom's panels have: ▸ shows the advanced rows in their groups, ▾ hides them
+            ex = QPushButton(("▾ " if self.expert else "▸ ") + _("Advanced settings ({n})").format(n=hidden))
+            ex.setObjectName("disclosure")
+            ex.setFlat(True)
+            ex.setCursor(Qt.PointingHandCursor)
+            ex.setStyleSheet("QPushButton#disclosure { text-align: left; border: none; padding: 2px 0; color: #b9c2cf; }"
+                             f"QPushButton#disclosure:hover {{ color: {ACCENT}; }}")
+            ex.setToolTip(_("Hide the advanced settings") if self.expert else _("Show the advanced settings"))
+            ex.clicked.connect(lambda: self._expert(not self.expert))
+            self.bv.addWidget(ex, 0, Qt.AlignLeft)
 
     def add_row(self, r):
         row = CompactRow(r, self._unit_w)

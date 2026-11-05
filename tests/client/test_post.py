@@ -1225,7 +1225,7 @@ def test_masks_with_parts_show_on_the_image_and_in_the_thumbnails(post):
     v = post.view
     full = named(v, "Full")
     v.select(full["id"], "layer")
-    assert v.b_maskadd.text() == "Mask"
+    assert v.b_maskadd.text() == "+ Mask"
     v.mask_button()
     assert full["mask"] is not None and v.sel == (full["id"], "mask") and v.b_maskadd.text() == "Mask ✓"
     assert post.settle() and v.mask1 is not None and np.allclose(v.mask1, 1.0)         # empty: the layer shows everywhere
@@ -1256,7 +1256,7 @@ def test_masks_with_parts_show_on_the_image_and_in_the_thumbnails(post):
     v.remove_part(full, full["mask"]["parts"][0])
     assert full["mask"]["parts"][0]["src"] == "luminance"
     v.remove_mask(full)
-    assert full["mask"] is None and v.b_maskadd.text() == "Mask"
+    assert full["mask"] is None and v.b_maskadd.text() == "+ Mask"
 
 
 def test_the_brush_paints_erases_and_is_one_undo_step(post):
@@ -1497,7 +1497,7 @@ def test_sliders_are_greyed_with_their_reason_and_double_click_resets(post):
         assert sl[k].s.isEnabled(), k
     for k in ("Strength", "Star size", "Star color"):
         assert not sl[k].s.isEnabled(), k
-    assert sl["Sky"].val.text() == "suggested" and sl["Sky"].lo == 0 and sl["Sky"].hi == 4
+    assert sl["Sky"].val.text() == "0" and sl["Sky"].lo == 0 and sl["Sky"].hi == 4
     sl["Sky"].set_value(3.4)
     assert sl["Sky"].val.text() == "+1.4"
     v.select(named(v, "Classic")["id"], "layer")
@@ -1518,7 +1518,7 @@ def test_sliders_are_greyed_with_their_reason_and_double_click_resets(post):
     sky.done.emit(3.0)
     assert lay["sliders"]["sky"] == pytest.approx(3.0)
     sky.name.mouseDoubleClickEvent(None)
-    assert "sky" not in lay["sliders"] and sky.val.text() == "suggested"
+    assert "sky" not in lay["sliders"] and sky.val.text() == "0"
 
 
 def test_a_slider_drag_is_a_draft_then_the_screen_image(post):
@@ -1906,11 +1906,12 @@ def test_the_export_dialog_follows_the_spec_and_refuses_the_results_folder(expor
         assert [d.size_cb.itemText(i) for i in range(d.size_cb.count())] == [
             "Full resolution", "Web (2048 px)", "Web (4096 px)"]
         assert d.dest.text() == (s.root / "export" / "HeartSoul" / "HeartSoul_16bit.tif").as_posix()
-        assert d.c_wcs.isChecked() and not d.c_wcs.isEnabled()                                    # only FITS has a header
+        assert not d.c_wcs.isChecked() and not d.c_wcs.isEnabled()                                    # only FITS has a header
         assert d.c_hist.isChecked() and not d.c_layers.isChecked() and not d.c_masks.isChecked()
         assert d.spec_boxes == [] and d.go.text() == "Export" and d.go.isEnabled()
         d.fmt.setCurrentIndex(d.fmt.findData("fits32f"))
-        assert d.dest.text().endswith("/HeartSoul/HeartSoul.fits") and d.c_wcs.isEnabled()
+        assert d.dest.text().endswith("/HeartSoul/HeartSoul.fits") and d.c_wcs.isEnabled() and d.c_wcs.isChecked()
+        assert not d.c_grid.isEnabled() and not d.c_grid.isChecked()            # drawn into a picture, not a FITS
         d.fmt.setCurrentIndex(d.fmt.findData("jpeg"))
         assert d.dest.text().endswith("HeartSoul.jpg")
         # the results of the project are not a place to write
@@ -2202,7 +2203,7 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
     try:
         assert s.settle()
         v = s.view
-        assert v.b_filter.text() == "+ Filtre" and v.b_cmp.text() == "Avant / après" and v.b_maskadd.text() == "Masque"
+        assert v.b_filter.text() == "+ Filtre" and v.b_cmp.text() == "Avant / après" and v.b_maskadd.text() == "+ Masque"
         assert [lb.text() for lb in v.findChildren(QLabel)][:1] != []
         for k in FILTERS:                                                               # every filter's panel
             v.select(named(v, "Full")["id"], "layer")

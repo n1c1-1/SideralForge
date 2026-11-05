@@ -603,7 +603,7 @@ def test_the_registration_data_come_from_the_stage_outputs(project_data):
 def test_the_registration_charts_and_their_unit_and_time_choices(project_data):
     _p, d = project_data
     tabs = charts.registration_tabs(d)
-    assert [t for t, _w in tabs] == ["Quality", "Drift", "Tracking x / y (Lissajous)", "Distribution"]
+    assert [t for t, _w in tabs] == ["Quality", "Drift", "Drift path (x / y)", "Distribution"]
     quality, drift, track, dist = (show(w, (900, 520)) for _t, w in tabs)
     # quality: FWHM, roundness, stars, transparency, time by default, frames on request
     assert [p.title for p in quality.panels] == ["Star size (FWHM, px)", "Roundness (1 = round)", "Stars per frame",
