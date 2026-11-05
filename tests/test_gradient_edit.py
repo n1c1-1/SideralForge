@@ -68,3 +68,66 @@ def test_a_turned_ellipse_is_excluded_along_its_axes():
     assert _inside(e, 200, 160) and not _inside(e, 270, 100)
     u, v = _local(e, *_world(e, 30.0, -7.0))
     assert abs(u - 30) < 1e-9 and abs(v + 7) < 1e-9
+
+
+def test_the_grid_leaves_the_survey_emission_out():
+    from astro_gpu.stages.gradient import EMISSION_FREE, away_from_emission, grid_points
+    from astro_gpu.stages.surveys import emission_level
+    img, _sky = scene()
+    yy, xx = np.mgrid[0:H, 0:W]
+    survey = 20 + 900 * np.exp(-((xx - 200) ** 2 + (yy - 150) ** 2) / (2 * 35.0 ** 2))   # a nebula seen by the survey
+    level = emission_level(survey.astype(np.float32))
+    assert abs(float(np.percentile(level, 1))) < 1e-6 and abs(float(np.percentile(level, 99.5)) - 1) < 1e-6
+    pts, kept, box = grid_points(img, np.ones((H, W), bool), 8, 2.5)
+    out, used = away_from_emission(pts, kept, level, box)
+    assert used and 0 < out.sum() < kept.sum()
+    for (x, y), k in zip(pts, out):
+        if k:                                               # every sample kept sits on the survey's sky
+            assert level[int(y), int(x)] <= EMISSION_FREE * 1.5
+    assert not out[np.argmin(np.hypot(pts[:, 0] - 200, pts[:, 1] - 150))]     # none on the nebula
+
+
+def test_a_survey_without_emission_leaves_no_sample_out():
+    from astro_gpu.stages.gradient import away_from_emission, grid_points
+    from astro_gpu.stages.surveys import emission_level
+    img, _sky = scene()
+    noise = np.random.default_rng(1).normal(100, 1, (H, W)).astype(np.float32)   # a galaxy field: noise only
+    pts, kept, box = grid_points(img, np.ones((H, W), bool), 8, 2.5)
+    out, used = away_from_emission(pts, kept, emission_level(noise), box)
+    assert not used and (out == kept).all()
+
+
+def test_survey_on_grid_falls_back_and_says_when_none_covers(monkeypatch):
+    import pytest
+
+    from astro_gpu.core.stage import StageError
+    from astro_gpu.stages import surveys
+    seen = []
+
+    def fake(name, wd, w, h, scale, log=print):
+        seen.append(name)
+        a = np.ones((h, w), np.float32)
+        if name == "nsns":
+            a[:, : w // 2] = np.nan                         # NSNS covers half the field
+        return a
+    monkeypatch.setattr(surveys, "fetch_survey", fake)
+    img, used = surveys.survey_on_grid(None, 40, 20, 10.0, log=lambda *a: None)
+    assert used == "finkbeiner" and seen == ["nsns", "finkbeiner"] and np.isfinite(img).all()
+    monkeypatch.setattr(surveys, "fetch_survey", lambda *a, **k: np.full((20, 40), np.nan, np.float32))
+    with pytest.raises(StageError):
+        surveys.survey_on_grid(None, 40, 20, 10.0, log=lambda *a: None)
+
+
+def test_every_text_of_the_editor_has_its_french():
+    import ast
+    import json
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "astro_gpu/client"
+    cat: dict[str, str] = {}
+    for f in sorted((root / "locale/fr").glob("*.json")):
+        cat.update(json.loads(f.read_text(encoding="utf-8")))
+    texts = [n.args[0].value for n in ast.walk(ast.parse((root / "gradientedit.py").read_text(encoding="utf-8")))
+             if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_" and n.args
+             and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)]
+    missing = sorted({t for t in texts if t not in cat})
+    assert not missing, missing

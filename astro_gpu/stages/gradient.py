@@ -361,6 +361,32 @@ def grid_points(rgb: np.ndarray, valid: np.ndarray, samples: int, clip: float) -
     return pts, kept, box
 
 
+#: a sample of the generated grid sits on emission when the H-alpha survey under it is above this level (0 the
+#: survey's sky, 1 its bright emission: surveys.emission_level); on the Rosette, 2 % of that range is 3 % of the core
+EMISSION_FREE = 0.02
+#: the survey leaves no sample out when it would keep fewer than this share of them (a field without emission: the
+#: survey's noise then spans its whole range)
+EMISSION_MIN_KEPT = 0.25
+
+
+def away_from_emission(pts: np.ndarray, kept: np.ndarray, level: np.ndarray, box: int) -> tuple[np.ndarray, bool]:
+    """The grid's samples of sky (``kept``) less the ones on emission: the median of the survey's ``level`` (on the
+    grid of ``pts``) in each sample's box above ``EMISSION_FREE``. A careful user's rule (no sample on nebulosity),
+    the survey showing where the nebulosity is. Returns (kept, whether the survey was used)."""
+    H, W = level.shape
+    h = max(1, box // 2)
+    on = np.zeros(len(pts), bool)
+    for i, (x, y) in enumerate(pts):
+        x0, y0 = int(max(0, x - h)), int(max(0, y - h))
+        cell = level[y0:int(min(H, y + h + 1)), x0:int(min(W, x + h + 1))]
+        v = cell[np.isfinite(cell)]
+        on[i] = v.size > 0 and float(np.median(v)) > EMISSION_FREE
+    out = kept & ~on
+    if out.sum() < EMISSION_MIN_KEPT * max(int(kept.sum()), 1):
+        return kept, False
+    return out, True
+
+
 def rbf_grid(pts: np.ndarray, vals: np.ndarray, xx: np.ndarray, yy: np.ndarray, H: int, W: int,
              smooth: float) -> np.ndarray:
     """Thin-plate splines through the samples, evaluated at (xx, yy). The coordinates are in units of the image's

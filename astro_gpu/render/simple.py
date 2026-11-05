@@ -55,6 +55,44 @@ class SimpleSettings(StageParams):
     smooth_px: float = P(0.0, label="Faint area smoothing", level=ADVANCED, ge=0.0, le=8.0, step=0.1, unit="px",
                          help="Smoothing of the faint areas (Gaussian radius); the bright areas keep full "
                               "resolution.")
+    keep_colours: float = P(0.5, label="Keep the colours", ge=0.0, le=1.0, step=0.05,
+                            help="How much of the stretch keeps the colours: 0 = each channel through the same curve "
+                                 "(the faint colours turn grey, the bright cores white), 1 = the luminance stretched "
+                                 "and the three channels scaled with it (Lupton et al. 2004: the colours of the linear "
+                                 "image kept). 0.5 by default: on Rosette, Heart and M8 (bench, 5 November) the "
+                                 "nebulae keep their colour and M8's core its structure, without the strong reds of "
+                                 "1.")
+    halpha: float = P(0.0, label="H-alpha", ge=-1.0, le=3.0, step=0.05,
+                      help="The H-alpha emission, measured as the red above the continuum of the stars, added to the "
+                           "red before the stretch (above 0) or taken out of it (below 0). 0 = the image as it is.")
+
+
+#: the smoothing of the H-alpha emission map (px at full resolution): its noise, not its structures
+HALPHA_SIGMA = 1.5
+
+
+def continuum_ratio(stars: np.ndarray) -> float:
+    """The red-to-green ratio of the continuum, from the stars of the image (the continuum subtraction of narrow-band
+    work, James et al. 2004, A&A 414, 23, with the stars as the continuum's colour): the sums of red and of green over
+    the brightest star pixels of ``stars`` (3, H, W): an image of stars alone, or a high-pass of an image where stars
+    outshine the nebula at their scale."""
+    g = stars[1]
+    thr = np.quantile(g[::4, ::4], 0.999)
+    m = g > thr
+    if m.sum() < 50 or float(g[m].sum()) <= 0:
+        return 1.0
+    return float(stars[0][m].sum() / g[m].sum())
+
+
+def emission(x: torch.Tensor, alpha: float, k: float, f: int) -> torch.Tensor:
+    """The linear image with its H-alpha emission (red above alpha times the green, smoothed, never negative) times k
+    added to its red (k < 0: taken out, -1 leaves the continuum's red)."""
+    if k == 0:
+        return x
+    e = ops.gaussian_blur((x[0] - alpha * x[1]).clamp(min=0), HALPHA_SIGMA / f)
+    out = x.clone()
+    out[0] = x[0] + k * e
+    return out
 
 
 def mtf(x, m: float):
@@ -140,6 +178,16 @@ class SimpleRenderEngine:
         eng.last_fit = None
         return eng
 
+    def continuum(self) -> float:
+        """The continuum's red-to-green ratio of this image (``continuum_ratio``), measured once: on its high-pass (the
+        image minus a 4 px blur), where the stars outshine the nebula."""
+        if getattr(self, "_alpha", None) is None:
+            import cv2
+            a = self._host["lin"].numpy().astype(np.float32)
+            hp = np.stack([a[c] - cv2.GaussianBlur(a[c], (0, 0), 4) for c in range(3)])
+            self._alpha = continuum_ratio(np.maximum(hp, 0))
+        return self._alpha
+
     @property
     def nbytes(self) -> int:
         return sum(t.numel() * t.element_size() for t in self._host.values()) + self.valid_host.numel()
@@ -214,6 +262,18 @@ class SimpleRenderEngine:
             y = SimpleRenderEngine._stretch(x, st["lum"], s.sky)
         else:
             y = torch.stack([SimpleRenderEngine._stretch(x[c], st["channels"][c], s.sky) for c in range(3)])
+        k = float(getattr(s, "keep_colours", 0.0))
+        if k > 0:
+            # the luminance stretched and the channels scaled by its gain (Lupton et al. 2004, PASP 116, 133): the
+            # ratios of the linear image kept; the black point first, as the stretch has it
+            lum = st["lum"]
+            c0 = lum["median"] - 2.8 * lum["mad"]
+            xl = (x - c0).clamp(min=0)
+            L = ops.luminance(xl)
+            gain = SimpleRenderEngine._stretch(L + c0, lum, s.sky) / L.clamp(min=1e-6)
+            yk = xl * gain[None]
+            m = yk.amax(0, keepdim=True).clamp(min=1.0)              # a channel over 1: the colour kept, scaled down
+            y = (1 - k) * y + k * (yk / m)
         if s.contrast != 0:
             y = (y + s.contrast * (3 * y * y - 2 * y ** 3 - y)).clamp(0, 1)
         Ly = ops.luminance(y)[None]
@@ -235,6 +295,8 @@ class SimpleRenderEngine:
         raw = self.prep.get("stats_raw")
         mixed = {"lum": _mix_stats(st["lum"], raw and raw["lum"], mix),
                  "channels": [_mix_stats(st["channels"][c], raw and raw["channels"][c], mix) for c in range(3)]}
+        if s.halpha:
+            x = emission(x, self.continuum(), float(s.halpha), f)
         y = self.tone(x, mixed, s, linked)
         return self._finish(y, f, reg, box, region, {"stretch": "auto", "linked": linked, "noise_mix": mix})
 

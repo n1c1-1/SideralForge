@@ -2614,6 +2614,13 @@ class ImageView(QWidget):
         h.addSpacing(6)
         self.auto_b = tool(_("Auto-stretch"), _("Display only: the data stay linear (A)"), self._auto_toggled, True)
         self.hist_b = tool(_("Histogram"), _("The stretch and the histogram (H)"), self.show_histogram, True)
+        # the toggles of a tool on the image (Inspect's Gradient: the survey, the marks), after the viewer's own
+        self.tool_box = QWidget()
+        th = QHBoxLayout(self.tool_box)
+        th.setContentsMargins(6, 0, 0, 0)
+        th.setSpacing(6)
+        h.addWidget(self.tool_box)
+        self.tool_box.hide()
         h.addStretch(1)
         # what leaves the viewer, in one menu (a file, the clipboard, Post): one button, whatever the language
         self.out_b = QPushButton(_("Export") + "  ▾")
@@ -3476,6 +3483,18 @@ class ImageView(QWidget):
     def add_overlay(self, fn):
         self.canvas.overlays.append(fn)
         self.canvas.update()
+
+    def set_tool_widgets(self, widgets):
+        """The toggles of the tool on the image, in the bar after Histogram (what it draws over the image, as Post's
+        Mask view sits in its bar); [] takes them away."""
+        lay = self.tool_box.layout()
+        while lay.count():
+            w = lay.takeAt(0).widget()
+            if w is not None:
+                w.setParent(None)
+        for w in widgets:
+            lay.addWidget(w)
+        self.tool_box.setVisible(bool(widgets))
 
     #: the annotations the overlays draw, for Export… ((sky, show), or None): a callable the caller sets
     annotation_source = None

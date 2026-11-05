@@ -13,7 +13,7 @@ workflows of today's two methods (default PI-own and CL, the bench's workflows w
   the Selection block's rule sentence;
 - Inspect: every tab of every block of the drizzle workflow, the stacking tabs of the classic one, the frames (sessions
   and browser), the stack's histogram (the stretch), side-by-side compares (Gradient, Colour, Astrometry);
-- Post: the Curves editor (a manual point, each channel, a Photoshop preset, an astro preset, a user preset saved in
+- Post: the Curves editor (a manual point, each channel, a classic tone preset, an astro preset, a user preset saved in
   the scratch settings folder), every new filter added as a layer with its sliders moved off their defaults, the filter
   menu (its 6 groups);
 - Export: FITS, TIFF, PNG and JPEG written into a scratch folder.
@@ -429,12 +429,13 @@ def part_post():
         walk.shot("post_curves_channel_S")
         ed = view.curves_editor
         ed.set_channel("RGB/K")
-        ed.apply_preset(next(k for k in ed._presets if ed._presets[k]["source"] == "Photoshop"))
+        from astro_gpu.client.postfilters.curves import PS
+        ed.apply_preset(next(k for k in ed._presets if ed._presets[k]["source"] == PS))
         post_render()
         props(view)
-        walk.shot("post_curves_photoshop_preset")
+        walk.shot("post_curves_classic_preset")
         ed = view.curves_editor
-        astro = [k for k in ed._presets if ed._presets[k]["source"] not in ("Photoshop",) and k != "Linear"]
+        astro = [k for k in ed._presets if ed._presets[k]["source"] != PS and k != "Linear"]
         ed.apply_preset(astro[0])
         post_render()
         props(view)
@@ -728,12 +729,27 @@ def part_gradedit():
     walk.until(lambda: not ed.busy and ed.small is not None, 120, "the reduced stack")
     walk.settle()
     walk.shot("gradedit_samples")                 # none placed: the ones the last run chose
+    ed._set_avoid(False)                          # the plain grid first (Away from emission comes after)
     ed.generate()
     walk.until(lambda: not ed.busy and ed.work["sample_points"], 60, "the generated grid")
     idle("the grid's preview")
     walk.shot("gradedit_grid")
     if not ed.s.param_value(ed.p, "gradient", "sample_points"):
         walk.problem("the generated grid is not in the settings")
+    # the H-alpha survey under the samples (H), then the grid again away from its emission
+    n_all = len(ed.work["sample_points"])
+    ed._set_survey_shown(True)
+    walk.until(lambda: not ed.busy and ed.survey is not None, 180, "the H-alpha survey")
+    walk.settle()
+    walk.shot("gradedit_survey")
+    if "level" in (ed.survey or {}):
+        ed._set_avoid(True)
+        ed.generate()
+        walk.until(lambda: not ed.busy and len(ed.work["sample_points"]) != n_all, 60, "the grid away from emission")
+        idle("the grid's preview")
+        walk.shot("gradedit_grid_away")
+    else:
+        walk.shot("gradedit_survey_none")
     W, H = ed.small["W"], ed.small["H"]
     ed.set_mode("ellipse")
 

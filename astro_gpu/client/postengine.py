@@ -239,6 +239,14 @@ def f_clahe(x, p, ctx):
                            getattr(ctx, "canvas_wh", None))
 
 
+def f_highlights(x, p, ctx):
+    return pf_detail.highlights(x, p["strength"], p["knee"], p["detail"], p["radius"], ctx.level)
+
+
+def f_faint_smooth(x, p, ctx):
+    return pf_detail.faint_smoothing(x, p["amount"], p["threshold"], p["radius"], ctx.level)
+
+
 ML_KEYS = ("l1", "l2", "l3", "l4", "l5")
 ML_LABELS = ("1 px", "2 px", "4 px", "8 px", "16 px")
 
@@ -339,6 +347,13 @@ FILTERS = {
                   params=[P("amount", "Amount", 0, 1, 0, step=0.01),
                           P("clip", "Contrast limit", 1, 8, 2, step=0.1),
                           P("radius", "Kernel radius", 16, 512, 64, "px", 1)]),
+    "highlights": dict(name="Highlight compression", family="Contrast", fn=f_highlights,
+                       source="Brings the bright areas down above a start level and keeps their detail (a base and "
+                              "its detail by the guided filter, He et al. 2013)",
+                       params=[P("strength", "Strength", 0, 1, 0, step=0.01),
+                               P("knee", "Start", 0.2, 0.9, 0.5, step=0.01),
+                               P("detail", "Detail kept", 0, 1, 0.3, step=0.01),
+                               P("radius", "Scale", 8, 120, 40, "px", 1)]),
     # ---- colour
     "saturation": dict(name="Saturation", family="Color", fn=f_saturation,
                        source="Saturation around the luminance, by hue range",
@@ -374,6 +389,12 @@ FILTERS = {
                        params=[P(k, lb, 0, 10, 0, "σ", 0.1) for k, lb in zip(ML_KEYS[:4], ML_LABELS[:4])] +
                        [P("amount", "Amount", 0, 1, 1, step=0.01),
                         C("target", "Applies to", pf_detail.NR_TARGETS, pf_detail.NR_TARGETS[0])]),
+    "faint_smooth": dict(name="Faint area smoothing", family="Noise", fn=f_faint_smooth,
+                         source="Smooths the areas fainter than a level, the brighter ones untouched: the faint "
+                                "extensions can then be raised without their grain",
+                         params=[P("amount", "Amount", 0, 1, 0, step=0.01),
+                                 P("threshold", "Below", 0.05, 0.8, 0.3, step=0.01),
+                                 P("radius", "Radius", 2, 64, 24, "px", 1)]),
     # ---- combine
     "halpha_red": dict(name="H-alpha to red", family="Combine", fn=f_halpha, needs="halpha",
                        source="The engine's H-alpha map added to the red channel",
