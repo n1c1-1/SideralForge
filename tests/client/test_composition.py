@@ -84,7 +84,10 @@ def test_a_stars_workflow_comes_as_its_stars_and_background_block_and_the_others
     assert sorted(g.post_layers) == sorted([("Full · Stars and background", full.pid),
                                             ("Classic stack", classic.pid)])
     assert g.summary(g.final) == "2 layers"
-    assert g.summary(g.node_of(full, "post")) == "workflow"                # its image goes to the Stars block
+    # issue #17: no Output block of its own, its Stars block holds it (the workflow's name, its menu)
+    st = g.node_of(full, "etoiles")
+    assert g.node_of(full, "post") is st and st.handle and all(n.key != "post" or n.paths != [full] for n in g.nodes)
+    assert g.summary(st).startswith("Full · ") and g.leaves[full.pid] is st
     assert g.summary(g.node_of(classic, "post")) == "to Post"
     assert g.summary(g.compositions[0]) == "stars in Screen"
 
@@ -150,7 +153,7 @@ def test_the_graph_has_a_block_per_stars_and_background_layer_and_sends_the_othe
     assert g.direct == [(stars, "stars"), (stars, "starless")]               # Post's order, top first
     # Classic has no layer yet: Post will give it its Output image
     assert g.to_post == {classic.pid}
-    assert g.summary(g.node_of(full, "post")) == "workflow"                 # Full's Output image is in no layer
+    assert g.node_of(full, "post") is stars                                  # Full's Output image is in no layer (#17)
     assert g.summary(g.node_of(full, "composition", b)) == "stars in Lighten"
     assert g.summary(g.node_of(full, "composition", a)) == "stars in Screen"
     assert g.summary(g.final) == "6 layers" and len(g.post_layers) == 6

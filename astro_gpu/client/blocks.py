@@ -33,7 +33,7 @@ from .i18n import _, hm, language, number, plural
 # the columns of the graph, left to right; optional columns only appear when a workflow uses them
 COLUMNS = ["sources", "calibration", "alignement", "selection", "empilement", "astrometrie", "fond", "couleur",
            "deconv", "debruitage", "etoiles", "post", "composition", "final"]
-OPTIONAL = {"debruitage", "deconv", "etoiles", "composition"}
+OPTIONAL = {"debruitage", "deconv", "etoiles", "post", "composition"}
 PHASES = [("Pre-processing", "calibration", "empilement"), ("Linear processing", "astrometrie", "etoiles"),
           ("Composition", "composition", "composition")]
 TOOL_COLUMN = {"debruitage": "debruitage", "etoiles": "etoiles", "deconv": "deconv",
@@ -187,6 +187,7 @@ class Node:
     y: float = 0.0
     w: float = 0.0                             # its width in the graph (the column's)
     lid: int | None = None                     # a Stars and background block: its layer in Post
+    handle: bool = False                       # the Stars block of a workflow whose Output block it holds (#17)
     _bk: object = None
 
     @property
@@ -260,7 +261,25 @@ class Graph:
                 self.compositions.append(n)
             elif (src, part) not in self.direct:
                 self.direct.append((src, part))
+        self._fold_outputs(project)
         self.nodes.append(self.final)
+
+    def _fold_outputs(self, project):
+        """Issue #17: a workflow with the Stars block has no Output block of its own in the graph (it sat between the
+        Stars block and what follows it, its arrows around it): the Stars block holds it (the workflow's handle: its
+        name, its menu; ``node_of(p, "post")`` answers it). Kept when the Stars block is shared by other workflows, or
+        when the Output image itself is a layer of Post."""
+        for p in project.paths:
+            st, po = self.by_path[p.pid].get("etoiles"), self.by_path[p.pid].get("post")
+            if st is None or po is None or po.parent is not st or po.children or len(st.paths) != 1 or \
+                    p.pid in self.to_post:
+                continue
+            st.children.remove(po)
+            self.nodes.remove(po)
+            self.by_path[p.pid]["post"] = st
+            if self.leaves.get(p.pid) is po:
+                self.leaves[p.pid] = st
+            st.handle = True
 
     def node_of(self, p, key: str, lid: int | None = None) -> Node | None:
         """The node of a block of a workflow; a Stars and background block by its Post layer (``lid``; else the
@@ -305,6 +324,11 @@ class Graph:
         return block_seconds(self.s, node.paths[0], node.key)
 
     def summary(self, node: Node) -> str:
+        """Under a block's title; the Stars block that holds its workflow's Output says the workflow's name first."""
+        text = self._summary(node)
+        return f"{node.paths[0].name} · {text}" if node.handle and node.paths else text
+
+    def _summary(self, node: Node) -> str:
         s = self.s
         if node.key == "sources":
             if not s.sources_loaded:

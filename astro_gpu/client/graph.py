@@ -521,7 +521,8 @@ class GraphView(QGraphicsView):
         # the next workflow
         y = TOP + len(s.paths) * LANE - BH / 2 if s.paths else mid - BH / 2
         x0 = cx["calibration"]
-        x1 = cx["post"] + cw["post"]
+        last = next(k for k in ("post", "etoiles", "debruitage", "couleur") if k in cx)   # the outputs' column
+        x1 = cx[last] + cw[last]
         gh = GhostItem(QRectF(x0, y, x1 - x0, BH), "+  " + _("New workflow"), self.newWorkflow.emit)
         sc.addItem(gh)
         # where the dragged tool can go
@@ -636,9 +637,13 @@ class GraphView(QGraphicsView):
         above = what == "starless"
         x1, y1 = a.col + a.w, a.y - BH / 2 + ya
         x2, y2 = b.col, b.y - BH / 2 + yb
-        bend = (min(y1, y2) - BH / 2 - 8) if above else (max(y1, y2) + BH / 2 + 8)
         path = QPainterPath(QPointF(x1, y1))
-        path.cubicTo(QPointF(x1 + 40, bend), QPointF(x2 - 40, bend), QPointF(x2, y2))
+        if x2 - x1 < 80:                                   # the next block (#17: no Output block between): straight
+            mid = (x1 + x2) / 2
+            path.cubicTo(QPointF(mid, y1), QPointF(mid, y2), QPointF(x2, y2))
+        else:
+            bend = (min(y1, y2) - BH / 2 - 8) if above else (max(y1, y2) + BH / 2 + 8)
+            path.cubicTo(QPointF(x1 + 40, bend), QPointF(x2 - 40, bend), QPointF(x2, y2))
         col = QColor(IMAGE_COL[what])
         if not strong:
             col.setAlpha(110)
@@ -756,12 +761,14 @@ class GraphView(QGraphicsView):
     # ------------------------------------------------------------ menus
     def block_menu(self, node: Node, pos):
         m = QMenu(self)
-        if node.key == "post":
+        if node.key == "post" or node.handle:                # the workflow's handle (#17: its Stars block)
             p = node.paths[0]
             m.addAction(_("Rename")).triggered.connect(lambda: self.workflowMenu.emit("rename", p.pid))
             m.addAction(_("Duplicate")).triggered.connect(lambda: self.workflowMenu.emit("duplicate", p.pid))
             m.addSeparator()
             m.addAction(_("Delete workflow")).triggered.connect(lambda: self.workflowMenu.emit("delete", p.pid))
+            if node.handle:
+                m.addSeparator()
         elif node.key == "composition":
             m.addAction(_("Open in Post")).triggered.connect(lambda: self.openLayer.emit(node.lid))
             m.addSeparator()
