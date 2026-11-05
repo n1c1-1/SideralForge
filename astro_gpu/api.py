@@ -1856,6 +1856,28 @@ def stage_array(p: Project2, wf: int | Workflow, stage: str, name: str, scale: f
 _WCS: dict[str, tuple[float, Any]] = {}
 
 
+def spectral_response(p: Project2, wf: int | Workflow, which: str = "current"):
+    """The sensor's spectral response with its uncertainty (``core.spectral.SpectralResponse``), reconstructed from
+    what the Color result measured on its colour stars and the Gaia XP spectra of the very Catalogs result it read:
+    a diagnostic computed here in about a second, nothing stored. Raises ``NotDone`` without a Color result."""
+    import numpy as np
+
+    from .core import spectral
+    d = _need(p, wf, "color", which)
+    man = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+    cat = d.parent.parent / "catalogs" / str((man.get("inputs") or {}).get("catalogs") or "")
+    if not (cat / "gaia_xp.npz").is_file() or not (d / "color_stars.npz").is_file():
+        raise NotDone(f"the colour stars of workflow {_wid(wf)} are not stored ({which})")
+    with np.load(d / "color_stars.npz", allow_pickle=True) as z, np.load(cat / "gaia_xp.npz") as x:
+        if not np.array_equal(z["source"], x["source"]):
+            raise NotDone("the colour stars do not match the catalogue's")
+        used = np.asarray(z["used"], bool) & np.isfinite(z["flux"]).all(1)
+        if used.sum() < spectral.MIN_STARS:
+            raise NotDone(f"{int(used.sum())} colour stars: too few to reconstruct the curves")
+        return spectral.response(np.asarray(x["flux"], float)[used], np.asarray(x["lam"], float),
+                                 np.asarray(z["flux"], float)[used])
+
+
 def pixel_to_sky(p: Project2, wf: int | Workflow, x: float, y: float, which: str = "current") -> tuple[float, float]:
     """(RA, Dec) in degrees of a pixel of the stack grid (0-based), from the astrometric solution."""
     f = _need(p, wf, "astrometry", which) / "wcs.fits"

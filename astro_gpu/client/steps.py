@@ -90,6 +90,13 @@ def output_note(stage: str, stages: set) -> str:
 
 
 CALFRAMES_NOTE = "The raw frames this master is made from."
+#: the Color block's diagnostics of the camera (core/spectral.py): they change no colour
+SPECTRAL_NOTE = ("An approximation of the sensor's response in red, green and blue, rebuilt from the Gaia spectra of the "
+                 "field's stars and what the camera measured of them. Star spectra are broad: the curves are only "
+                 "approximate, at a narrow line such as H-alpha in particular. A diagnostic of the camera: the colours "
+                 "of the image come from the white balance, not from these curves. Export: the chart's menu (CSV, PNG).")
+LINES_NOTE = ("The colour the camera gives to each wavelength, from the approximate curves: each channel's share of the "
+              "signal of a pure line. The emission lines of the nebulae are marked.")
 CALIBRATED_NOTE = ("Each light after calibration: the master dark subtracted, divided by the master flat, the "
                    "defective pixels left empty.")
 REFERENCE_NOTE = "The frame every other frame is aligned on, calibrated."
@@ -238,6 +245,8 @@ class Steps(QObject):
             return [V("colors", "Before / after", "color", "color", "", True, True, camera=False,
                       base=("stack", "drz_full"), compare=("stack",), open_compare=True, note=COLOR_NOTE,
                       shown="After: colour-calibrated", compare_names=("Before: stack output, camera colours",)),
+                    V("spectral", "Approximate spectral response", "chart", "color", "0", note=SPECTRAL_NOTE),
+                    V("lines", "Colour of the lines", "chart", "color", "1", note=LINES_NOTE),
                     V("fit", "Star colours", "colorfit", "color")]
         if k == "debruitage":
             return [V("denoised", "Denoised stack", "array", "denoise", "n2n_full", True, True, camera=True,

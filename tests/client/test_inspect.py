@@ -320,7 +320,7 @@ def test_each_block_shows_its_real_picture(win):
     want = {"calibration": ["masters", "darks", "flats", "calibrated"],
             "alignement": ["reference", "quality", "drift", "track", "distribution", "table"],
             "empilement": ["stack", "rejection", "coverage", "weights"], "astrometrie": ["solution"],
-            "couleur": ["colors", "fit"], "debruitage": ["denoised"],
+            "couleur": ["colors", "spectral", "lines", "fit"], "debruitage": ["denoised"],
             "etoiles": ["starless", "stars"],
             "fond": ["result", "removed"],
             "post": ["output"]}

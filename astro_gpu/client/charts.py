@@ -2,6 +2,8 @@
 
 * ``FramesChart``: Selection. Star size and transparency of every frame, the thresholds dragged, the frames clicked
   (``api.frame_table``). Shift + drag draws a rectangle of frames to exclude or keep.
+* ``SpectralChart``, ``ColorLinesChart``: Color. An approximation of the sensor's curves rebuilt from the field's
+  stars (``api.spectral_response``), and the colour the camera gives to each wavelength.
 * Registration (``registration_data`` reads the stage's results, ``registration_tabs`` builds the charts):
   ``QualityChart`` (star size, roundness, stars, transparency of each frame), ``DriftChart`` (the offset of each
   frame from the reference, in pixels or arcseconds), ``TrackChart`` (x against y, coloured by time),
@@ -272,6 +274,56 @@ class FramesChart(ChartView):
         """Where frame ``i`` with value ``v`` is in the plot ``r``, whose vertical range is ``lo`` to ``hi``."""
         panel = self.p_t if abs(r.top() - self.p_t.plot.top()) < 0.5 else self.p_f
         return QPointF(float(panel.fx(self._xvals()[i])), r.bottom() - (v - lo) / (hi - lo) * r.height())
+
+
+# ============================================================================================ Color
+CHANNELS = ((QColor("#ff6b6b"), "Red"), (QColor("#5fd38d"), "Green"), (QColor("#5ea1ff"), "Blue"))
+LINES = ((486.1, "Hβ"), (500.7, "[OIII]"), (656.3, "Hα"))           # the emission lines drawn (nm)
+
+
+class SpectralChart(ChartView):
+    """An approximation of the sensor's response, rebuilt from the Gaia spectra of the field's stars
+    (``core.spectral``): the three channels' curves relative to the strongest, and the emission lines of the nebulae.
+    Approximate: star spectra are broad, a narrow feature (the H-alpha line) can be well off."""
+
+    def __init__(self, r, parent=None):
+        super().__init__(_("Approximate sensor response, rebuilt from {n} stars of the field").format(n=r.stars),
+                         parent, zoom="xy", readout="x", export_name="spectral_response")
+        self.setMinimumHeight(260)
+        self.r = r
+        self.x_pad = 0.0                                          # the curves are known from lam[0] to lam[-1]
+        self.add_panel(_("Relative response"), "", digits=None)
+        self.set_x(_("Wavelength (nm)"), kind="num", digits=0)
+        for c, (col, en) in enumerate(CHANNELS):
+            self.add_line(_(en), r.lam, np.maximum(r.S[c], 0.0), color=col, width=2.2, interp=True, digits=2)
+        for lam0, name in LINES:
+            self.add_vline(lam0, name)
+        self.set_home(0, y=(0.0, 1.08))
+
+
+class ColorLinesChart(ChartView):
+    """The colour the camera gives to each wavelength, from the approximate curves: the share of each channel in the
+    signal of a pure line. The emission lines of the nebulae (Hβ, [OIII], Hα) sit where their colour is read."""
+
+    def __init__(self, r, parent=None):
+        super().__init__(_("Colour the camera gives to each wavelength"), parent, zoom="xy", readout="x",
+                         export_name="line_colours")
+        self.setMinimumHeight(260)
+        self.r = r
+        share = r.shares()
+        self.x_pad = 0.0
+        self.add_panel(_("Share of the signal (%)"), "%", digits=0)
+        self.set_x(_("Wavelength (nm)"), kind="num", digits=0)
+        for c, (col, en) in enumerate(CHANNELS):
+            self.add_line(_(en), r.lam, share[c], color=col, width=2.2, interp=False, digits=0, unit="%")
+        for lam0, name in LINES:
+            self.add_vline(lam0, name)
+        self.set_home(0, y=(0.0, 100.0))
+
+
+def color_tabs(r) -> list[tuple[str, ChartView]]:
+    """The charts of the Color block as (tab title, widget). ``r``: ``api.spectral_response``. No I/O."""
+    return [(_("Approximate spectral response"), SpectralChart(r)), (_("Colour of the lines"), ColorLinesChart(r))]
 
 
 # ============================================================================================ Registration

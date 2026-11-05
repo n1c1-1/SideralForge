@@ -114,3 +114,16 @@ Ce qu'on en tire :
   seules.
 - **PCC s'écarte de 3 à 15 %** selon les cas (jusqu'à −15 % / +13 % sur M51, avec 163 étoiles) ; son journal le
   signale lui-même (« solution imprécise », de grands écarts).
+
+## 6. La réponse spectrale approchée, remise comme diagnostic (5 novembre)
+
+L'onglet « Approximation de la réponse spectrale » d'Inspect > Couleur est revenu, avec l'onglet « Couleur des raies »
+et leur export (CSV, PNG). Les courbes sont recalculées à l'ouverture, en une seconde environ, à partir de ce que les
+blocs Catalogues et Couleur ont déjà enregistré. Rien n'est recalculé dans la chaîne, et les couleurs de l'image n'en
+dépendent pas (stro_gpu/core/spectral.py).
+
+Pourquoi « approximation », sans marge d'erreur : sur des étoiles synthétiques aux courbes connues, les formes
+reviennent à 0,02 près en médiane sur le visible, mais la réponse à H-alpha sort à 0,76 pour 0,59 en vrai. Les deux
+marges essayées, rééchantillonner les étoiles et faire varier le lissage, ne contenaient pas la vérité : elles auraient
+affiché une fausse précision. Une marge honnête (les bornes de toutes les courbes que les étoiles autorisent) et une
+vérification sur les deux appareils aux courbes connues (M8, Seestar) restent possibles plus tard.

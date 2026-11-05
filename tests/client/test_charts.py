@@ -553,6 +553,38 @@ def test_the_frames_chart_has_a_time_axis_and_exports_its_frames():
     assert not plain.has_time and not plain.controls
 
 
+# ---------------------------------------------------------------------------------------------- Color
+def response():
+    """A response as api.spectral_response gives it, made up (no fit)."""
+    from astro_gpu.core.spectral import SpectralResponse
+    lam = np.arange(400, 801, 10.0)
+
+    def g(c, w):
+        return np.exp(-0.5 * ((lam - c) / w) ** 2)
+    S = np.stack([g(600, 25) + 0.6 * g(670, 12), g(560, 30), 0.4 * g(480, 40)])
+    return SpectralResponse(lam, S / S.max(), 1234, (0.05, 0.04, 0.04))
+
+
+def test_the_spectral_chart_says_approximate_and_reads_the_curves_between_the_samples():
+    r = response()
+    tabs = charts.color_tabs(r)
+    assert [t for t, _w in tabs] == ["Approximate spectral response", "Colour of the lines"]
+    ch = show(tabs[0][1], (900, 420))
+    assert ch.title.startswith("Approximate sensor response, rebuilt from 1234 stars")
+    assert [t.name for t in ch.traces] == ["Red", "Green", "Blue"] and len(ch.vlines) == 3
+    assert max(t.y.max() for t in ch.traces) == 1.0                                # relative to the strongest
+    pn = ch.panels[0]
+    h = ch._probe(QPointF(float(pn.fx(605.0)), pn.plot.center().y()))
+    assert abs(h.items[0][2] - 0.5 * (ch.traces[0].y[20] + ch.traces[0].y[21])) < 1e-9
+    assert (pn.x0, pn.x1) == (400.0, 800.0) and pn.y1 > 1.0
+    csv = ch.csv_text().strip().split("\r\n")
+    assert len(csv) == len(r.lam) + 1 and "Red" in csv[0]                         # the export: one row a wavelength
+    lines = show(tabs[1][1], (900, 420))
+    share = np.nansum([t.y for t in lines.traces], axis=0)
+    assert np.allclose(share[~np.isnan(lines.traces[0].y)], 100.0)               # the three shares make the whole signal
+    assert np.isnan(lines.traces[0].y[-1])                                        # where the sensor sees nothing: no share
+
+
 # ---------------------------------------------------------------------------------------------- Registration
 @needs_project
 def test_the_registration_data_come_from_the_stage_outputs(project_data):
@@ -669,9 +701,12 @@ def readable(w: cv.ChartView):
 
 def every_chart(pd):
     out = [("frames", frames_chart(by_hand=(3,)))]
+    r = response()
     if pd is not None:
-        _p, d = pd
+        p, d = pd
         out += [(n, w) for n, (_t, w) in zip(("quality", "drift", "path", "distribution"), charts.registration_tabs(d))]
+        r = api.spectral_response(p, next(w.id for w in p.workflows if api.stage_outputs(p, w.id, "color")))
+    out += [(n, w) for n, (_t, w) in zip(("spectral", "lines"), charts.color_tabs(r))]
     return out
 
 
@@ -683,7 +718,7 @@ def test_every_chart_in_both_languages_has_its_french_readable_axes_and_a_screen
         pd = (p, charts.registration_data(p, 1))
     i18n.set_language(lang)
     made = every_chart(pd)
-    assert len(made) == (5 if pd else 1)
+    assert len(made) == (7 if pd else 3)
     for name, w in made:
         show(w, (900, 520))
         pn = w.panels[0]

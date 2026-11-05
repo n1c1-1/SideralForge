@@ -76,6 +76,7 @@ from .charts import (
     FramesChart,
     QualityChart,
     TrackChart,
+    color_tabs,
 )
 from .chartview import ChartView
 from .i18n import _, hours_text, language, number, plural
@@ -1954,6 +1955,16 @@ class TuneView(QWidget):
     # ------------------------------------------------------------ Color
     def _color_tab(self, p, spec: VisualSpec):
         which = self.steps.which_for(p, "color")
+        if spec.kind == "chart":                      # the camera's curves (a diagnostic, fitted in the worker)
+            b = self._need("color", self._keys(p, "color", "catalogs"), si.color_bundle, p.pid, which)
+            if b is None:
+                self._loading()
+                return
+            if isinstance(b, _Failed):
+                self._message(_("The curves cannot be rebuilt: {why}").format(why=b.why), warn=True)
+                return
+            self.center.addWidget(color_tabs(b.curves)[int(spec.name or 0)][1], 1)
+            return
         if si.diag("color_fit") is None:
             self._message(si.not_yet("color"))
             return

@@ -163,6 +163,7 @@ class ShownImage:
     wcs: Any = None
     hist: dict[str, np.ndarray] = field(default_factory=dict)     # "stretched" / "linear" -> (3, 256) counts
     stretch: dict[str, list[float]] = field(default_factory=dict)  # black, white, balance per channel
+    curves: Any = None                         # core.spectral.SpectralResponse, for a chart of the Color block
     nbytes: int = 0
 
 
@@ -463,6 +464,8 @@ def load_visual(p, wid: int, spec: VisualSpec, which: str = "current") -> ShownI
     if out is None:
         raise api.NotDone(f"the {spec.stage} result of workflow {wid} is not computed ({which})")
     key = (spec.stage, out.key, spec.name, which)
+    if spec.kind == "chart":
+        return ShownImage(key, spec, curves=api.spectral_response(p, wid, which))
     if spec.kind == "preview":
         f = out.previews.get(spec.name)
         if f is None:
@@ -1575,6 +1578,15 @@ def stack_bundle(p, wid: int) -> StackBundle:
     b.ref_name = Path(b.ref_path).name if b.ref_path else ""
     return b
 
+
+@dataclass
+class ColorBundle:
+    curves: Any = None                   # core.spectral.SpectralResponse
+
+
+def color_bundle(p, wid: int, which: str = "current") -> ColorBundle:
+    """The sensor's curves with their uncertainty (worker thread: about a second of fitting)."""
+    return ColorBundle(curves=api.spectral_response(p, wid, which))
 
 
 def color_fit_of(p, wid: int, which: str = "current"):
