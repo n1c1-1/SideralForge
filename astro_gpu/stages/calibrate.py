@@ -294,21 +294,41 @@ def _plane(a: np.ndarray, k: int) -> np.ndarray:
 
 
 def _median_stack(paths: list[str], ctx: Context, label: str) -> np.ndarray:
-    stack = []
+    """The pixel-wise median of the frames. They are read into one array (no list then stack), and the median is taken
+    in bands of rows, in place: the memory is the frames once, not three times (28 darks of 12 Mpx: 1.3 GB, not 4)."""
+    stack = None
     for i, p in enumerate(paths):
-        stack.append(read_cfa(p))
+        a = read_cfa(p)
+        if stack is None:
+            stack = np.empty((len(paths), *a.shape), np.float32)
+        stack[i] = a
         ctx.progress(0.0, f"reading {label} {i + 1}/{len(paths)}", force=(i == 0))
-    return np.median(np.stack(stack), axis=0).astype(np.float32)
+    out = np.empty(stack.shape[1:], np.float32)
+    for r in range(0, out.shape[0], BAND):
+        out[r:r + BAND] = np.median(stack[:, r:r + BAND], axis=0, overwrite_input=True)
+    return out
+
+
+#: the rows a pixel-wise statistic of a stack of frames is taken on at a time (its temporary arrays stay small)
+BAND = 256
 
 
 def _master_flat(paths: list[str], fdark: np.ndarray, ctx: Context) -> np.ndarray:
+    """The flats, each over its central level, averaged without the values over 3 MAD from the pixel's median. Read
+    into one array and reduced in bands of rows: the memory is the frames once (46 flats of 12 Mpx: 2 GB, not 10)."""
     H, W = fdark.shape
-    fl = np.stack([read_cfa(p) - fdark for p in paths])
+    fl = np.empty((len(paths), H, W), np.float32)
+    for i, p in enumerate(paths):
+        fl[i] = read_cfa(p) - fdark
     fl /= np.median(fl[:, H // 2 - 200:H // 2 + 200, W // 2 - 200:W // 2 + 200], axis=(1, 2), keepdims=True)
-    med = np.median(fl, axis=0)
-    mad = 1.4826 * np.median(np.abs(fl - med), axis=0) + 1e-6
-    keep = np.abs(fl - med) < 3 * mad
-    return (np.where(keep, fl, 0).sum(0) / np.maximum(keep.sum(0), 1)).astype(np.float32)
+    out = np.empty((H, W), np.float32)
+    for r in range(0, H, BAND):
+        b = fl[:, r:r + BAND]
+        med = np.median(b, axis=0)
+        dev = np.abs(b - med)
+        keep = dev < 3 * (1.4826 * np.median(dev, axis=0) + 1e-6)
+        out[r:r + BAND] = np.where(keep, b, 0).sum(0) / np.maximum(keep.sum(0), 1)
+    return out
 
 
 #: a pixel whose four nearest neighbours (the other colours) all stay within this many sigmas of their sky is a lone
@@ -332,7 +352,13 @@ def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0) -> str:
     (dx, dy), _ = cv2.phaseCorrelate(hp[0], hp[1])
     drift = 4.0 * float(np.hypot(dx, dy))                     # sensor pixels (colour plane at half resolution)
     moved = drift >= 12.0
-    q = np.percentile(np.stack([(read_cfa(x) - dark) / flat for x in sub]), 25, axis=0)
+    st = np.empty((len(sub), *dark.shape), np.float32)          # one array, the quartile in bands: the frames once
+    for i, x in enumerate(sub):
+        st[i] = (read_cfa(x) - dark) / flat
+    q = np.empty(dark.shape, np.float32)
+    for r in range(0, q.shape[0], BAND):
+        q[r:r + BAND] = np.percentile(st[:, r:r + BAND], 25, axis=0, overwrite_input=True)
+    del st
     lone = None
     if not moved:
         # each pixel's rise above its local sky, in sigmas of its plane; the four nearest are the other colours

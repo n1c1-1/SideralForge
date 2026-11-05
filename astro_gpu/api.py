@@ -284,14 +284,6 @@ class StageOutputs:
 
 
 @dataclass
-class SpectralCurves:
-    lam: Any                             # wavelengths (nm)
-    S: Any                               # (3, N) response of R, G, B
-    cam_hii: Any = None
-    cam_oiii: Any = None
-
-
-@dataclass
 class ParamInfo:
     """A setting of a stage for the panel. ``value`` is the effective one; ``origin`` default | auto | user;
     ``suggested`` the value without the user's (``suggestion_known`` False: the stage cannot compute it yet, the
@@ -1875,14 +1867,6 @@ def pixel_to_sky(p: Project2, wf: int | Workflow, x: float, y: float, which: str
         hit = _WCS[str(f)] = (mt, WCS(fits.getheader(f)))
     ra, dec = hit[1].pixel_to_world_values(x, y)
     return float(ra), float(dec)
-
-
-def spectral_response(p: Project2, wf: int | Workflow, which: str = "current") -> SpectralCurves:
-    """The camera's R, G, B response curves the Color stage fitted (for the Color chart)."""
-    import numpy as np
-    z = np.load(_need(p, wf, "color", which) / "specresp.npz")
-    return SpectralCurves(z["lam"], z["S"], z["cam_hii"] if "cam_hii" in z else None,
-                          z["cam_oiii"] if "cam_oiii" in z else None)
 
 
 def sky_objects(p: Project2, wf: int | Workflow, which: str = "current") -> list[SkyObject]:

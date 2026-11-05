@@ -1,7 +1,8 @@
 """Settings › Catalogs & astrometry: the "Offline Gaia extracts" section, offscreen.
 
-Folder, state of each extract, the two downloads run off the GUI thread, progress, cancel. The download itself is replaced by a function that
-reports progress (its real behaviour: tests/test_gaia_extracts.py); nothing is written outside a scratch folder.
+Folder, state of each extract, the two downloads run off the GUI thread, progress, cancel. The download itself is
+replaced by a function that reports progress (its real behaviour: tests/test_gaia_extracts.py); nothing is written
+outside a scratch folder.
 """
 from __future__ import annotations
 

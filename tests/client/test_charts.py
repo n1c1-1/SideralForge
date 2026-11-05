@@ -553,50 +553,22 @@ def test_the_frames_chart_has_a_time_axis_and_exports_its_frames():
     assert not plain.has_time and not plain.controls
 
 
-# ---------------------------------------------------------------------------------------------- Color
-def curves():
-    lam = np.arange(400, 801, 10.0)
-
-    def g(c, w):
-        return np.exp(-0.5 * ((lam - c) / w) ** 2)
-    return lam, np.stack([5e17 * g(600, 25) + 3e17 * g(670, 12), 4e17 * g(560, 30), 2e17 * g(480, 40)])
-
-
-def test_the_spectral_chart_draws_the_curves_and_reads_them_between_the_samples():
-    lam, S = curves()
-    ch = show(charts.SpectralChart(lam, S), (900, 420))
-    assert np.array_equal(ch.lam, lam) and np.array_equal(ch.S, S)
-    assert [t.name for t in ch.traces] == ["Red", "Green", "Blue"] and len(ch.vlines) == 3
-    assert max(t.y.max() for t in ch.traces) == 1.0                                # relative to the strongest
-    pn = ch.panels[0]
-    h = ch._probe(QPointF(float(pn.fx(605.0)), pn.plot.center().y()))
-    assert abs(h.items[0][2] - 0.5 * (ch.traces[0].y[20] + ch.traces[0].y[21])) < 1e-9
-    assert (pn.x0, pn.x1) == (400.0, 800.0) and pn.y1 > 1.0
-    img = ch.grab().toImage()
-    assert len({img.pixelColor(x, y).name() for x in range(60, 880, 7) for y in range(40, 360, 5)}) > 8
-    tabs = charts.color_tabs(lam, S)
-    assert [t for t, _w in tabs] == ["Spectral response", "Colour of the lines"]
-    lines = show(tabs[1][1], (900, 420))
-    share = np.nansum([t.y for t in lines.traces], axis=0)
-    assert np.allclose(share[~np.isnan(lines.traces[0].y)], 100.0)               # the three shares make the whole signal
-    assert np.isnan(lines.traces[0].y[-1])                                        # where the sensor sees nothing: no share
-
-
 # ---------------------------------------------------------------------------------------------- Registration
 @needs_project
 def test_the_registration_data_come_from_the_stage_outputs(project_data):
     p, d = project_data
-    assert d.n == 40 and d.has_time and d.ref == 20 and abs(d.scale - 6.3686) < 1e-4
+    assert d.n == len(d.names) > 10 and d.has_time and 0 <= d.ref < d.n and d.scale > 0
     with np.load(Path(api.stage_outputs(p, 1, "register").dir) / "reg.npz") as z:
         coef, nmatch, nstars = z["coef"], z["nmatch"], z["nstars"]
     cache = json.loads((Path(api.stage_outputs(p, 1, "calibrate").dir) / "cache.json").read_text())
     assert np.allclose(d.dx, cache["width"] / 2 - coef[:, 0, 0]) and np.allclose(d.dy, cache["height"] / 2 - coef[:, 1, 0])
     assert abs(d.dx[d.ref]) < 1.5 and abs(d.dy[d.ref]) < 1.5                      # the reference is where it is
     assert np.array_equal(d.nmatch, nmatch) and np.array_equal(d.nstars, nstars)
-    assert d.roundness is not None and d.roundness.shape == (40,)                 # the stage measures it
+    assert d.roundness is not None and d.roundness.shape == (d.n,)                 # the stage measures it
     assert np.all((d.roundness > 0) & (d.roundness <= 1))
     assert np.nanpercentile(d.transp, 90) == pytest.approx(100.0)
-    assert d.dates == "2026-08-17" and d.iso[0] == "2026-08-17T00:25:13" and np.all(np.diff(d.secs) > 0)
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d", d.dates) and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", d.iso[0])
+    assert np.all(np.diff(d.secs) > 0)
 
 
 @needs_project
@@ -611,7 +583,7 @@ def test_the_registration_charts_and_their_unit_and_time_choices(project_data):
     assert quality.xmode == "time" and quality.x_kind == "time"
     assert [b.text() for b in quality.controls] == ["Frame number", "Time"]
     quality.set_xmode("frame")
-    assert quality.x_kind == "int" and np.array_equal(quality.traces[0].x, np.arange(40) + 1.0)
+    assert quality.x_kind == "int" and np.array_equal(quality.traces[0].x, np.arange(d.n) + 1.0)
     move(quality, at(quality, 0.3, 0.3))
     head, lines = quality.readout_lines(quality._hover)
     assert head.startswith("Frame ") and ".ARW" in head and lines[0][1] == "FWHM"
@@ -630,10 +602,10 @@ def test_the_registration_charts_and_their_unit_and_time_choices(project_data):
     drift.set_unit("arcsec")
     assert drift.unit == "arcsec" and np.allclose(tx.y, d.dx * d.scale)
     csv = drift.csv_text().strip().split("\r\n")
-    assert csv[0].split(",")[0] == "Time" and "x offset (arcsec)" in csv[0] and len(csv) == 41
+    assert csv[0].split(",")[0] == "Time" and "x offset (arcsec)" in csv[0] and len(csv) == d.n + 1
     # path: x against y with a pixel the same on both axes, time as colour, the reference frame marked
     p0 = track.panels[0]
-    assert track.colorbar is not None and track.colorbar[0] == "Time" and len(track.t_pts.qt) == 24
+    assert track.colorbar is not None and track.colorbar[0] == "Time" and 0 < len(track.t_pts.qt) <= d.n
     for size in ((900, 520), (640, 560), (1000, 400)):
         track.resize(*size)
         pump()
@@ -651,9 +623,9 @@ def test_the_registration_charts_and_their_unit_and_time_choices(project_data):
     assert np.allclose(track.t_pts.x, d.dx) and "px" in p0.title and track.x_unit == "px"
     assert not track.is_zoomed()
     # distribution: the bars count the frames
-    assert dist.what == "fwhm" and dist.traces[0].y.sum() == 40
+    assert dist.what == "fwhm" and dist.traces[0].y.sum() == d.n
     dist.show_what("transp")
-    assert dist.traces[0].y.sum() == 40 and dist.what == "transp" and len(dist.vlines) == 1
+    assert dist.traces[0].y.sum() == d.n and dist.what == "transp" and len(dist.vlines) == 1
     move(dist, at(dist, 0.3, 0.3))
     head, lines = dist.readout_lines(dist._hover)
     assert "–" in head and lines[0][1] == "Frames" and lines[0][2].isdigit()
@@ -696,14 +668,10 @@ def readable(w: cv.ChartView):
 
 
 def every_chart(pd):
-    lam, S = curves()
     out = [("frames", frames_chart(by_hand=(3,)))]
     if pd is not None:
-        p, d = pd
+        _p, d = pd
         out += [(n, w) for n, (_t, w) in zip(("quality", "drift", "path", "distribution"), charts.registration_tabs(d))]
-        sp = api.spectral_response(p, 1)
-        lam, S = sp.lam, sp.S
-    out += [(n, w) for n, (_t, w) in zip(("spectral", "lines"), charts.color_tabs(lam, S))]
     return out
 
 
@@ -715,7 +683,7 @@ def test_every_chart_in_both_languages_has_its_french_readable_axes_and_a_screen
         pd = (p, charts.registration_data(p, 1))
     i18n.set_language(lang)
     made = every_chart(pd)
-    assert len(made) == (7 if pd else 3)
+    assert len(made) == (5 if pd else 1)
     for name, w in made:
         show(w, (900, 520))
         pn = w.panels[0]

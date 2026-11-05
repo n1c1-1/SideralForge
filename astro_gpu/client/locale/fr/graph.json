@@ -1,7 +1,5 @@
 {
   "Sharpens the image with the point spread function measured on the stars.": "Accentue l'image avec la fonction d'étalement du point mesurée sur les étoiles.",
-  "Polynomial: a smooth surface fitted on the dark areas. H-alpha survey: separates the true sky background from instrument defects using a professional survey.": "Polynomial : une surface lisse ajustée sur les zones sombres. Relevé H-alpha : sépare le vrai fond de ciel des défauts de l'instrument à l'aide d'un relevé professionnel.",
-  "Starts from a network trained on earlier projects and fine-tunes it on the half-stacks.": "Part d'un réseau entraîné sur des projets antérieurs et l'affine sur les demi-empilements.",
   "G": "G",
   "°": "°",
   "e⁻/ADU": "e⁻/ADU",
@@ -18,7 +16,6 @@
   "{block} output": "Sortie de {block}",
   "not in the engine yet": "pas encore dans le moteur",
   "Set by the options of the workflow.": "Fixé par les options du workflow.",
-  "Gradient before Color, from the stack and the catalogue: in a later version.": "Gradient avant Couleur, à partir de l'empilement et du catalogue : dans une version ultérieure.",
   "The count appears once registration is computed.": "Le décompte apparaît une fois l'alignement calculé.",
   "Selection: transparency ≥ {t} %, FWHM ≤ {f} {unit}": "Sélection : transparence ≥ {t} %, FWHM ≤ {f} {unit}",
   "selection {t} % / {f} {unit}": "sélection {t} % / {f} {unit}",
@@ -89,5 +86,6 @@
   "Takes the stars off the image (a network trained on many stacks): the starless image and the stars alone, recombined by a Stars and background block or each used as a layer of Post. Seconds on a GPU, a few minutes on a processor.": "Retire les étoiles de l'image (un réseau entraîné sur de nombreux empilements) : l'image sans étoiles et les étoiles seules, recombinées par un bloc Étoiles et fond ou utilisées chacune comme calque de Post-traitement. Quelques secondes sur carte graphique, quelques minutes sur processeur.",
   "{image} of \"{name}\" is already a layer of Post": "{image} de « {name} » : déjà un calque du Post-traitement",
   "{image} of \"{name}\" sent to Post as a new layer": "Nouveau calque du Post-traitement : {image} de « {name} »",
-  "Star blend mode": "Mode de fusion des étoiles"
+  "Star blend mode": "Mode de fusion des étoiles",
+  "A network trained on our stacks takes the stars off the image: two images, the starless image and the stars alone, sent to Post as they are or recombined by a Stars and background block.": "Un réseau entraîné sur nos empilements retire les étoiles de l'image : deux images, l'image sans étoiles et les étoiles seules, envoyées telles quelles au Post-traitement ou recombinées par un bloc Étoiles et fond."
 }

@@ -60,6 +60,10 @@ target-version = "py311"
 select = ["E", "F", "W", "I", "B", "UP"]
 ignore = ["E741", "B905", "B023"]
 
+[tool.ruff.lint.per-file-ignores]
+# pytest fixtures imported from test_post.py: a test's argument of the same name is how pytest uses them
+"tests/client/test_post_tools.py" = ["F811"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # the default run is level 2, the fast suite (tests/README.md); tools/t.py 3 / 4 give -m of their own. Keep this -m

@@ -450,7 +450,8 @@ from conftest import TEST_PROJECT as HEART  # noqa: E402  (the maintained test p
 
 
 @pytest.mark.level3                                       # real data (tests/README.md)
-@pytest.mark.skipif(not (HEART / "project.astroproj").is_file(), reason="the test project is not here: run tools/make_test_project.py")
+@pytest.mark.skipif(not (HEART / "project.astroproj").is_file(),
+                    reason="the test project is not here: run tools/make_test_project.py")
 def test_real_heart_field_names_the_heart_nebula(tmp_path, monkeypatch):
     monkeypatch.setenv("ASTRO_GPU_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("ASTRO_GPU_OFFLINE", "1")                      # no network: the shipped catalogue

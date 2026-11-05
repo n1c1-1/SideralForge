@@ -218,7 +218,6 @@ def part_stack():
     from PySide6.QtWidgets import QLabel
     print("Stacking settings", flush=True)
     open_it()
-    s = w.s
     drz, cla = pid_of(DRIZZLE), pid_of(CLASSIC)
     from astro_gpu.client.panel import StackMethodCard
     w.set_mode(0)
@@ -360,7 +359,6 @@ def props(view, where="top"):
 def part_post():
     print("Post", flush=True)
     open_it()
-    s = w.s
     w.set_mode(2)
     post_render()
     view = w.post.view

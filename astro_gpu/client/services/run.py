@@ -81,7 +81,6 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
         (r"^Gaia (.+): cell (\d+)/(\d+)$", "Gaia {0}: cell {1}/{2}", ()),
         (r"^XP spectra (\d+)/(\d+)$", "XP spectra {0}/{1}", ()),
         (r"^refining star positions \(pass (\d+)\)$", "refining star positions (pass {0})", ()),
-        (r"^fitting the spectral response on (\d+) stars$", "fitting the spectral response on {0} stars", ()),
         (r"^searching the field at ([\d.]+)\"/px( \(shifted centres\))?$", "searching the field at {0}\"/px{1}", ()),
         (r"^realigning colours of (.+)$", "realigning colours of {0}", ()),
         (r"^PSF channel ([RGB]): (.*)$", "PSF channel {0}: {1}", ()),
@@ -121,8 +120,6 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
         (r"^solved: centre RA ([\d.]+) Dec ([+-]?[\d.]+), ([\d.]+)\"/px, field ([\d.]+) x ([\d.]+) deg, "
          r"residual ([\d.]+) px on (\d+) stars$",
          "solved: centre RA {0} Dec {1}, {2}\"/px, field {3} x {4} deg, residual {5} px on {6} stars", ()),
-        (r"^spectral response from (\d+) Gaia XP stars, chromaticity residual ([\d.]+)$",
-         "spectral response from {0} Gaia XP stars, chromaticity residual {1}", ()),
         (r"^(\d+) Gaia stars G < ([\d.]+) in the field$", "{0} Gaia stars G < {1} in the field", ()),
         (r"^background noise divided by ([\d.]+)$", "background noise divided by {0}", ()),
         (r"^resuming the training at step (\d+)/(\d+)$", "resuming the training at step {0}/{1}", ()),

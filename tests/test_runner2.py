@@ -889,6 +889,7 @@ def iris_check(history: dict) -> tuple[float, float, dict]:
     from astro_gpu.core import workflow as wfl
     chain = wfl.chain(w.options, w.end, reference=bool(v2.reference_image))
     measured = est.v1_durations(IRIS)
+    chain = [s for s in chain if s in measured]          # the v1 run had no Gradient, no Output, no Stars network
     f = est.v1_facts(IRIS)
     e = {s: est.estimate(s, f, True, history).seconds for s in chain}
     return sum(e.values()), sum(measured[s] for s in chain), {s: round(e[s] / max(measured[s], 1), 2) for s in chain}

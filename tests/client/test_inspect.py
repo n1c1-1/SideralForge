@@ -23,7 +23,7 @@ if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")      # the offscreen platform has no fonts else
 
 pytest.importorskip("PySide6")
-from conftest import TEST_DATA, TEST_PROJECT, needs_test_project, scratch_project  # noqa: E402
+from conftest import TEST_DATA, TEST_PROJECT, full_only, needs_test_project, scratch_project  # noqa: E402
 from PySide6.QtCore import QEvent, QPoint, Qt  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractButton,
@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 from astro_gpu import api, texts  # noqa: E402
 from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import i18n, prefs  # noqa: E402
-from astro_gpu.client.charts import FramesChart, SpectralChart  # noqa: E402
+from astro_gpu.client.charts import FramesChart  # noqa: E402
 from astro_gpu.client.frames import FramesView, GroupingDialog, check_lines, night_text  # noqa: E402
 from astro_gpu.client.imageview import ImageView, default_loader  # noqa: E402
 from astro_gpu.client.model import ProjectModel  # noqa: E402
@@ -80,6 +80,21 @@ def _snapshot(folder: Path):
                   for p in folder.rglob("*") if p.is_file() and (p.suffix in (".json", ".astroproj", ".jpg")))
 
 
+def _test_facts():
+    """What the test project holds, read from it (the bench may make it again with other frames): its numbers of
+    lights, darks and flats, and the size of its stack."""
+    if not (F_PROJECT / "project.astroproj").is_file():
+        return 0, 0, 0, (0, 0)
+    p = api.open_project(F_PROJECT)
+
+    def count(kind):
+        return sum(1 for s in p.sessions for d in getattr(s, kind) for f in Path(d).iterdir() if f.is_file())
+    out = api.stage_outputs(p, p.workflows[0].id, "stack")
+    return count("lights"), count("darks"), count("flats"), tuple(out.metrics["grid"]) if out is not None else (0, 0)
+
+
+#: the test project's lights (all kept), darks, flats, its stack's width and height
+N_LIGHTS, N_DARKS, N_FLATS, GRID = _test_facts()
 USER_SETTINGS = _user_settings()
 USER_BEFORE = _fingerprint(USER_SETTINGS)
 PROJECT_BEFORE = _snapshot(F_PROJECT) if F_PROJECT.is_dir() else None
@@ -140,6 +155,11 @@ class Harness(appmod.Main):
     def __init__(self, readonly=True, **kw):
         self.readonly = readonly
         super().__init__(**kw)
+
+    def make_model(self):
+        if len(self.project.definition.workflows) > 1:
+            full_only(self.project.definition, fresh_ids=True)                 # Full, whatever the bench added
+        super().make_model()
 
     def graph_page(self):
         if self.s is None or self.s.p is not self.project.definition:           # a change of language keeps the model
@@ -248,7 +268,7 @@ def test_the_real_stack_shows_with_auto_stretch_histogram_and_catalogue_metrics(
     v = t.view
     assert isinstance(v, ImageView) and v.prepared() is not None
     prep = v.prepared()
-    assert prep.size() == (6384, 4272) and prep.channels == 3 and prep.data.shape == (3, 4272, 6384)
+    assert prep.size() == GRID and prep.channels == 3 and prep.data.shape == (3, GRID[1], GRID[0])
     tb = t.findChildren(QTabBar)[0]
     assert [tb.tabText(i) for i in range(tb.count())] == ["Stack", "Rejection map", "Coverage", "Weights"]
     # the automatic stretch: the sky at about a quarter, the stars white; the toggle changes the display, never the data
@@ -264,8 +284,8 @@ def test_the_real_stack_shows_with_auto_stretch_histogram_and_catalogue_metrics(
     names = [v.cmp_cb.itemText(i) for i in range(v.cmp_cb.count())]
     assert "Half-stack A" in names and "Half-stack B" in names and any(n.endswith(", calibrated") for n in names)
     rows = dict(win.steps.facts(win.s.path, "empilement"))
-    assert texts.metric_label("frames_used") in rows and rows[texts.metric_label("frames_used")] == "40"
-    assert rows[texts.metric_label("grid")] == "6384 × 4272 px"
+    assert texts.metric_label("frames_used") in rows and rows[texts.metric_label("frames_used")] == str(N_LIGHTS)
+    assert rows[texts.metric_label("grid")] == f"{GRID[0]} × {GRID[1]} px"
     panel_text = texts_of(t.panel)
     assert "Measurements" in panel_text and any(texts.metric_label("frames_used") in x for x in panel_text)
     shot(win, "inspect_stack")
@@ -299,10 +319,10 @@ def test_each_block_shows_its_real_picture(win):
     read in the viewer's threads), a chart, a table or a sequence of frames."""
     want = {"calibration": ["masters", "darks", "flats", "calibrated"],
             "alignement": ["reference", "quality", "drift", "track", "distribution", "table"],
-            "empilement": ["stack", "rejection", "coverage", "weights"], "astrometrie": ["solution", "survey"],
-            "couleur": ["colors", "spectral", "lines", "fit"], "debruitage": ["denoised"],
+            "empilement": ["stack", "rejection", "coverage", "weights"], "astrometrie": ["solution"],
+            "couleur": ["colors", "fit"], "debruitage": ["denoised"],
             "etoiles": ["starless", "stars"],
-            "fond": ["result", "starless_bg", "removed", "sky", "star_flat"],
+            "fond": ["result", "removed"],
             "post": ["output"]}
     from astro_gpu.client.chartview import ChartView
     for step, tabs in want.items():
@@ -322,7 +342,7 @@ def test_each_block_shows_its_real_picture(win):
             elif kind in ("regchart", "chart", "colorfit", "weights"):
                 assert t.findChildren(ChartView), (step, key)
             elif kind == "regtable":
-                assert [x for x in t.findChildren(Table) if x.isVisible()][0].rowCount() == 40
+                assert [x for x in t.findChildren(Table) if x.isVisible()][0].rowCount() == N_LIGHTS
             elif kind == "rejection":                                  # an older result: said plainly
                 assert t.view is not None or any("Rejection maps" in x for x in texts_of(t))
             elif kind == "coverage":                                   # the drizzle's red, blue, green maps
@@ -347,8 +367,8 @@ def test_the_output_block_shows_the_final_image_the_render_worker_makes(win):
     v = t.view
     vi = v.image()
     assert vi is not None and vi.stretched and v.prepared() is not None
-    # one line on what it is: the engine's rendering of Full, not the Gradient removed picture
-    assert any("Post's own rendering, not the Gradient removed picture" in x for x in texts_of(t))
+    # one line on what it is: Gradient removed (of the denoised stack) with Post's stretch
+    assert any(x.startswith("Final image = Gradient removed (of the denoised stack)") for x in texts_of(t))
     rw = win.render_worker()
     assert win.tune.service._rw is rw                                  # shared with Post: engines and images kept once
     got = []
@@ -408,20 +428,17 @@ def test_two_final_images_come_one_after_the_other_and_a_missing_result_fails_cl
 
 
 def test_the_astrometry_block_opens_on_the_users_image_with_its_solution(win):
-    """First the stack with the RA / Dec grid and the catalogue stars over it (an overlay of the common viewer); the
-    survey comes after, with a line on its role; the named objects have their place (SkyData.objects)."""
+    """The stack with the RA / Dec grid and the catalogue stars over it (an overlay of the common viewer); the named
+    objects have their place (SkyData.objects)."""
     from PySide6.QtGui import QImage
     inspect(win, "astrometrie")
     settle(win)
     t = win.tune
     vis = t.visuals(win.s.path, "astrometrie")
-    assert [v.key for v in vis] == ["solution", "survey"] and vis[0].kind == "array" and vis[0].sky
-    assert "Not your data" in vis[1].note and "H-alpha" in vis[1].note and not vis[1].sky
-    tb = t.findChildren(QTabBar)[0]
-    assert [tb.tabText(i) for i in range(tb.count())] == ["Stack and solution", "Reference H-alpha survey"]
+    assert [v.key for v in vis] == ["solution"] and vis[0].kind == "array" and vis[0].sky
     v = t.view
     prep = v.prepared()
-    assert prep.size() == (6384, 4272) and prep.wcs is not None
+    assert prep.size() == GRID and prep.wcs is not None
     shown = texts_of(t)
     assert any(x.startswith("Your image with the sky grid") for x in shown)
     assert "Sky grid" in shown and "Catalogue stars" in shown
@@ -476,12 +493,6 @@ def test_the_astrometry_block_opens_on_the_users_image_with_its_solution(win):
     finally:
         sky.objects[:] = found
     shot(win, "inspect_astrometry")
-    tb.setCurrentIndex(1)
-    settle(win)
-    assert t._cur[2].key == "survey" and not t.view.canvas.overlays and t.view.image().stretched
-    shown = texts_of(t)
-    assert any(x.startswith("Not your data: a professional H-alpha map") for x in shown) and "Sky grid" not in shown
-    shot(win, "inspect_survey")
     t.tab_of.pop("astrometrie", None)
 
 
@@ -495,18 +506,10 @@ def test_the_labels_of_the_sky_grid_are_the_round_values_of_the_solution():
     assert si._step(30.0 * 240, si._RA_STEPS) == 1800 and si._step(1e9, si._RA_STEPS) == 3600
 
 
-def test_the_color_chart_draws_the_fitted_curves(win):
-    win.tune.tab_of["couleur"] = "spectral"
+def test_the_colour_block_says_its_stars_and_its_white_balance(win):
+    win.tune.tab_of["couleur"] = "fit"
     try:
         inspect(win, "couleur")
-        ch = win.tune.findChildren(SpectralChart)[0]
-        assert ch.S.shape[0] == 3 and len(ch.lam) == ch.S.shape[1]
-        sp = api.spectral_response(win.s.p, 1, win.steps.which_for(win.s.path, "color"))
-        assert np.allclose(ch.S, sp.S) and np.allclose(ch.lam, sp.lam)
-        ch.resize(900, 400)
-        img = ch.grab().toImage()
-        colors = {img.pixelColor(x, y).name() for x in range(60, 880, 7) for y in range(40, 360, 5)}
-        assert len(colors) > 8                                     # the three curves and the grid, not a blank widget
         rows = dict(win.steps.facts(win.s.path, "couleur"))
         # the stars of the result shown (its manifest's, not a number of one run); a colour stage of version 4 adds the
         # white balance (red, green, blue multipliers and the stars behind them), shown whenever the result has it
@@ -534,12 +537,12 @@ def test_the_selection_chart_updates_the_kept_count_through_selection_preview(wi
         inspect(win, "selection")
         t = win.tune
         ch = t.chart
-        assert isinstance(ch, FramesChart) and ch.n == 40 and t.table.total == 40
+        assert isinstance(ch, FramesChart) and ch.n == N_LIGHTS and t.table.total == N_LIGHTS
         assert abs(ch.tmin - 60.0) < 1e-6 and abs(ch.fmax - win.s.thresholds_now()[1]) < 1e-6
-        assert ch.kept() == 40
+        assert ch.kept() == N_LIGHTS
         # the frames below the chart: the common viewer, one frame per point, with the numbers of the frame table
         v = t.view
-        assert isinstance(v, ImageView) and len(v.frames()) == 40
+        assert isinstance(v, ImageView) and len(v.frames()) == N_LIGHTS
         assert v.frames()[0].name == t.table.rows[0].name and v.frames()[0].info["fwhm"] == t.table.rows[0].fwhm
         if win.s.state(win.s.path, "register") != "done":
             pytest.skip("Registration of the test project is Outdated: selection_preview needs it current")
@@ -556,8 +559,8 @@ def test_the_selection_chart_updates_the_kept_count_through_selection_preview(wi
         settle(win)
         assert abs(ch.tmin - goal) < 2, (ch.tmin, goal)
         want = api.selection_preview(win.s.p, 1, ch.tmin / 100, ch.fmax / win.s.fwhm_median()).kept
-        assert want < 40 and ch.kept() == want
-        assert t.kept_label.text().startswith(f"{want} of 40 frames kept")
+        assert want < N_LIGHTS and ch.kept() == want
+        assert t.kept_label.text().startswith(f"{want} of {N_LIGHTS} frames kept")
         assert win.s.pending_change is not None and win.s.pending_change["step"] == "selection"
         assert any(b.text().startswith("Try as variant") for b in t.panel.findChildren(QPushButton))
         win.s.pending_change = None
@@ -601,6 +604,7 @@ def test_a_frame_is_picked_on_the_chart_and_excluded_by_hand_for_the_whole_proje
 def test_a_block_not_computed_says_so_and_offers_run_to_here(win):
     s = win.s
     q = s.add_path("Classic stack", {"debruitage": False, "etoiles": "garder", "fond": "simple"})
+    s.set_param(q, "gradient", "degree", 3)                               # a Gradient the store does not have
     try:
         settle(win)
         s.select(index=s.index_of(q.pid), step="fond")
@@ -709,9 +713,11 @@ def test_frames_shows_the_sessions_the_health_checks_and_the_counts(win):
     assert hdr == ["Session", "Night", "Lights", "Exposure", "ISO / gain", "Temp.", "Filter", "Flats", "Darks", "Bias",
                    "FWHM", "Kept frames"]
     row = {h: t.item(0, i).text() for i, h in enumerate(hdr)}
-    assert row["Lights"] == "40" and row["Flats"] == "15" and row["Darks"] == "15" and row["Bias"] == "none"
-    assert row["Exposure"] == "15 s" and row["ISO / gain"] == "5000" and row["Night"] == "16 → 17 Aug 2026"
-    assert row["FWHM"] == "4.0 px" and row["Kept frames"] == "40 / 40" and row["Temp."] == "–"
+    assert row["Lights"] == str(N_LIGHTS) and row["Flats"] == str(N_FLATS) and row["Darks"] == str(N_DARKS)
+    assert row["Bias"] == "none" and row["Exposure"] == "15 s" and row["ISO / gain"] == "5000"
+    assert re.fullmatch(r"\d+ → \d+ \w+ \d{4}", row["Night"]), row["Night"]
+    assert re.fullmatch(r"\d\.\d px", row["FWHM"]) and row["Kept frames"] == f"{N_LIGHTS} / {N_LIGHTS}"
+    assert row["Temp."] == "–"
     lines = check_lines(f.data)
     assert ("ok", "Nothing to worry about") in lines
     assert any(lv == "info" and tx.startswith("No bias: flats are calibrated with the camera black level (512 ADU)")
@@ -835,10 +841,10 @@ def test_an_outdated_block_shows_its_previous_result(scratch):
     t = w.tune
     vi = t.view.image()
     assert vi is not None and ("stack", s.previous_key(full, "stack")) in vi.identity()[-1]
-    assert t.view.wait(120) and t.view.prepared().size() == (6384, 4272)
+    assert t.view.wait(120) and t.view.prepared().size() == GRID
     texts_ = texts_of(t)
     assert "previous result" in texts_ and any(x.startswith("Run to here") for x in texts_)
-    assert dict(w.steps.facts(full, "empilement"))[texts.metric_label("frames_used")] == "40"
+    assert dict(w.steps.facts(full, "empilement"))[texts.metric_label("frames_used")] == str(N_LIGHTS)
     shot(w, "inspect_previous")
     run = [b for b in t.findChildren(QPushButton) if b.text().startswith("Run to here")][0]
     got = []
@@ -847,8 +853,11 @@ def test_an_outdated_block_shows_its_previous_result(scratch):
     assert got == [1]
     inspect(w, "debruitage", index=0)
     assert w.tune.view.image() is not None and "previous result" in texts_of(w.tune)
-    inspect(w, "fond", index=1)                                            # never computed: no previous result
+    q = s.add_path("Classic stack", {"debruitage": False, "etoiles": "garder", "fond": "simple"})
+    s.set_param(q, "gradient", "degree", 3)                               # never computed: no previous result
+    inspect(w, "fond", index=s.index_of(q.pid))
     assert "Not computed yet" in texts_of(w.tune)
+    s.remove_path(s.index_of(q.pid))
     s.set_param(full, "stack", "kappa", None)
     settle(w)
     assert s.state(full, "stack") == "done"
@@ -946,10 +955,10 @@ def test_the_frame_chart_and_the_browser_keep_and_exclude_frames(win):
     settle(win)
     b = win.browser
     s = win.s
-    assert b.group == "lights" and len(b.items) == 40
+    assert b.group == "lights" and len(b.items) == N_LIGHTS
     # the viewer: the frames as its sequence, with what the header and the engine say
     v = b.viewer
-    assert isinstance(v, ImageView) and len(v.frames()) == 40 and b.mode == 1
+    assert isinstance(v, ImageView) and len(v.frames()) == N_LIGHTS and b.mode == 1
     info = v.frames()[0].info
     assert info["exposure"] == 15.0 and info["iso"] == 5000.0 and info["fwhm"] and info["transparency"]
     assert v.wait(60) and v.prepared() is not None and v.prepared().cfa == "RGGB"
@@ -980,7 +989,7 @@ def test_the_frame_chart_and_the_browser_keep_and_exclude_frames(win):
     settle(win)
     time.sleep(1.5)
     settle(win)
-    assert b.group == "darks" and len(b.items) == 15 and len(v.frames()) == 15
+    assert b.group == "darks" and len(b.items) == N_DARKS and len(v.frames()) == N_DARKS
     assert any(win.tune.service.stats.get(it.path) for it in b.items)
     assert v.band.mode == "on" and v.band.toggle.isEnabled()      # a calibration frame leaves its master
     b.select_group("lights")
@@ -1339,8 +1348,8 @@ def test_french_translates_every_screen_with_decimal_commas(module_win, env):
         # numbers: the readout, the thresholds, the measurements, the table
         joined = " ".join(seen)
         assert "06,6s" in joined or "RA 02h" in joined
-        assert len(set(re.findall(r"\d,\d px", joined))) >= 2 and "10 min" in joined    # star sizes, thresholds
-        assert "16 → 17 août 2026" in joined and "aucun" in joined
+        assert len(set(re.findall(r"\d,\d px", joined))) >= 2 and re.search(r"\d+ min", joined)   # star sizes, time
+        assert re.search(r"\d+ → \d+ \S+ \d{4}", joined) and "aucun" in joined
     finally:
         prefs.set("spec_mode", False)
         w.change_language("en")

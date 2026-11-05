@@ -194,8 +194,6 @@ def _shown_texts() -> dict[str, list[str]]:
     found.setdefault("H-alpha survey", []).append("SIDE_INPUTS")
     for t in settings.TIPS.values():
         found.setdefault(t, []).append("TIPS")
-    for t in modelmod.DN_SUMMARY.values():
-        found.setdefault(t, []).append("DN_SUMMARY")
     for block in ("denoise", "gradient", "stars", "deconvolution"):
         for m in api.methods(block):
             for t in (m.name, m.short, m.what):

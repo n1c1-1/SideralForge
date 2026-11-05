@@ -2,8 +2,6 @@
 
 * ``FramesChart``: Selection. Star size and transparency of every frame, the thresholds dragged, the frames clicked
   (``api.frame_table``). Shift + drag draws a rectangle of frames to exclude or keep.
-* ``SpectralChart``, ``ColorLinesChart``: Color. The sensor's curves the stage fitted (``api.spectral_response``), and
-  the colour the camera gives to each wavelength.
 * Registration (``registration_data`` reads the stage's results, ``registration_tabs`` builds the charts):
   ``QualityChart`` (star size, roundness, stars, transparency of each frame), ``DriftChart`` (the offset of each
   frame from the reference, in pixels or arcseconds), ``TrackChart`` (x against y, coloured by time),
@@ -274,64 +272,6 @@ class FramesChart(ChartView):
         """Where frame ``i`` with value ``v`` is in the plot ``r``, whose vertical range is ``lo`` to ``hi``."""
         panel = self.p_t if abs(r.top() - self.p_t.plot.top()) < 0.5 else self.p_f
         return QPointF(float(panel.fx(self._xvals()[i])), r.bottom() - (v - lo) / (hi - lo) * r.height())
-
-
-# ============================================================================================ Color
-CHANNELS = ((QColor("#ff6b6b"), "Red"), (QColor("#5fd38d"), "Green"), (QColor("#5ea1ff"), "Blue"))
-LINES = [(486.1, "Hβ"), (500.7, "OIII"), (656.3, "Hα")]
-
-
-class SpectralChart(ChartView):
-    """Spectral response of the sensor, reconstructed from the Gaia spectra of the field's stars: the three channels'
-    curves, relative to the strongest, and the emission lines of the nebulae. The readout interpolates the curves."""
-
-    LINES = LINES
-
-    def __init__(self, lam, S, parent=None):
-        super().__init__(_("Sensor response, rebuilt from the Gaia spectra of the field stars"), parent, zoom="xy",
-                         readout="x", export_name="spectral_response")
-        self.setMinimumHeight(260)
-        self.lam, self.S = np.array(lam), np.array(S)
-        top = float(self.S.max()) or 1.0
-        self.x_pad = 0.0                                          # the curves are known from lam[0] to lam[-1]
-        self.add_panel(_("Relative response"), "", digits=None)
-        self.set_x(_("Wavelength (nm)"), kind="num", digits=0)
-        names = {"Red": _("Red"), "Green": _("Green"), "Blue": _("Blue")}
-        for c, (col, en) in enumerate(CHANNELS[: len(self.S)]):
-            self.add_line(names[en], self.lam, np.maximum(self.S[c], 0.0) / top, color=col, width=2.2, interp=True,
-                          digits=2)
-        for lam0, name in self.LINES:
-            self.add_vline(lam0, name)
-        self.set_home(0, y=(0.0, 1.08))
-
-
-class ColorLinesChart(ChartView):
-    """The colour the camera gives to each wavelength: the share of each channel in the signal of a pure line. The
-    emission lines of the nebulae (Hβ, [OIII], Hα) sit where the fit decides their colour."""
-
-    def __init__(self, lam, S, parent=None):
-        super().__init__(_("Colour the camera gives to each wavelength"), parent, zoom="xy", readout="x",
-                         export_name="line_colours")
-        self.setMinimumHeight(260)
-        self.lam, self.S = np.array(lam), np.array(S)
-        tot = np.maximum(self.S, 0.0).sum(0)
-        keep = tot > 0.03 * float(tot.max() or 1.0)                 # where the sensor sees nothing, a share means nothing
-        share = 100 * np.maximum(self.S, 0.0) / np.where(tot > 0, tot, 1.0)
-        self.x_pad = 0.0
-        self.add_panel(_("Share of the signal (%)"), "%", digits=0)
-        self.set_x(_("Wavelength (nm)"), kind="num", digits=0)
-        names = {"Red": _("Red"), "Green": _("Green"), "Blue": _("Blue")}
-        for c, (col, en) in enumerate(CHANNELS[: len(self.S)]):
-            y = np.where(keep, share[c], np.nan)
-            self.add_line(names[en], self.lam, y, color=col, width=2.2, interp=False, digits=0, unit="%")
-        for lam0, name in LINES:
-            self.add_vline(lam0, name)
-        self.set_home(0, y=(0.0, 100.0))
-
-
-def color_tabs(lam, S) -> list[tuple[str, ChartView]]:
-    """The charts of the Color block as (tab title, widget). ``lam``, ``S``: ``api.spectral_response``. No I/O."""
-    return [(_("Spectral response"), SpectralChart(lam, S)), (_("Colour of the lines"), ColorLinesChart(lam, S))]
 
 
 # ============================================================================================ Registration

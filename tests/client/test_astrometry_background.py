@@ -2,7 +2,7 @@
 
 The choices (the stack, the colour-calibrated stack, the gradient removed, the final image...) are only the images the
 workflow has computed and up to date; no Compare with list on that tab. The list is checked on a model of stages (no
-project); the tab on a computed bench project, opened read-only, when this machine has one.
+project); the tab on the test project (tests/conftest.py), opened read-only, when this machine has it.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")
 
 pytest.importorskip("PySide6")
+from conftest import TEST_PROJECT  # noqa: E402
 from PySide6.QtWidgets import QApplication, QComboBox  # noqa: E402
 
 from astro_gpu.client import app as appmod  # noqa: E402
@@ -26,7 +27,7 @@ from astro_gpu.client import prefs  # noqa: E402
 from astro_gpu.client.steps import Steps  # noqa: E402
 from astro_gpu.client.widgets import QSS  # noqa: E402
 
-BENCH = Path("F:/astro_essais/bench/iris/v2x_express")
+BENCH = TEST_PROJECT
 
 
 class FakeModel:
@@ -63,8 +64,8 @@ def test_the_backgrounds_are_the_computed_images_in_the_order_of_the_workflow():
     assert keys(BASE) == ["stack"]
     assert keys({**BASE, "color": "done", "gradient": "done", "render_simple": "done"}) == \
         ["stack", "color", "result", "output"]
-    full = {**BASE, "color": "done", "denoise": "done", "background": "done", "starless": "done", "optics": "done",
-            "render_prep": "done"}
+    full = {**BASE, "gradient": "done", "color": "done", "denoise": "done", "render_simple": "done",
+            "star_removal": "done"}
     assert keys(full) == ["stack", "color", "denoised", "color_denoised", "result", "output"]
     captions = [b.caption for b in steps_of(full).backgrounds(P)]
     assert captions == ["Stack", "Colour-calibrated stack", "Denoised stack", "Colour-calibrated denoised stack",
@@ -72,10 +73,15 @@ def test_the_backgrounds_are_the_computed_images_in_the_order_of_the_workflow():
 
 
 def test_an_image_not_computed_is_not_listed_an_outdated_one_is_with_its_previous_result():
-    assert keys({**BASE, "color": "pending", "gradient": "done", "render_simple": "done"}) == ["stack", "output"]
+    # Gradient comes before Color: the gradient removed picture does not wait for the colours
+    assert keys({**BASE, "color": "pending", "gradient": "done", "render_simple": "done"}) == ["stack", "result",
+                                                                                             "output"]
+    assert keys({**BASE, "color": "done", "gradient": "pending", "render_simple": "done"}) == ["stack", "color",
+                                                                                             "output"]
     # an Outdated result is listed (its previous one, marked), as the rest of Inspect shows it (M31, 2 November: every
     # stage Outdated after an engine update left the list empty)
-    assert keys({**BASE, "color": "stale", "gradient": "done", "render_simple": "done"}) ==         ["stack", "color", "result", "output"]
+    assert keys({**BASE, "color": "stale", "gradient": "done", "render_simple": "done"}) == \
+        ["stack", "color", "result", "output"]
     bgs = steps_of({**BASE, "stack": "stale"}).backgrounds(P)
     assert [b.key for b in bgs] == ["stack"] and bgs[0].previous
 
@@ -83,9 +89,9 @@ def test_an_image_not_computed_is_not_listed_an_outdated_one_is_with_its_previou
 def test_the_solution_tab_has_a_background_choice_and_nothing_to_compare_with():
     steps = steps_of({**BASE, "color": "done"})
     vis = steps.visuals(P, "astrometrie")
-    sol, survey = vis[0], vis[1]
+    sol = vis[0]
     assert sol.key == "solution" and sol.sky and sol.backgrounds and sol.compare == ()
-    assert survey.key == "survey" and survey.compare == ("stack",) and not survey.backgrounds
+    assert [v.key for v in vis if not v.spec] == ["solution"]                       # one picture, its solution over it
     assert "compare" not in sol.note.lower()
     assert steps.visuals(P, "empilement")[0].compare and not steps.visuals(P, "empilement")[0].backgrounds
 
@@ -99,7 +105,7 @@ def _fingerprint(root: Path):
 @pytest.fixture(scope="module")
 def window():
     if not (BENCH / "project.astroproj").is_file():
-        pytest.skip("the iris bench project is not on this machine")
+        pytest.skip(f"the test project {BENCH.as_posix()} is not on this machine")
     import tempfile
     before = _fingerprint(BENCH)
     tmp = Path(tempfile.mkdtemp(prefix="astro_bg_"))
@@ -143,7 +149,7 @@ def settle(w, timeout=240.0):
 
 def test_real_astrometry_tab_lists_the_images_and_remembers_the_choice(window):
     w = window
-    pid = next(q.pid for q in w.s.paths if q.name == "PI-own")
+    pid = next(q.pid for q in w.s.paths if q.name == "Classic stack")      # computed, no Denoise
     t = w.tune
     p = w.s.view(pid)
     w.select(index=w.s.index_of(pid), step="astrometrie")

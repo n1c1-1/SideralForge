@@ -228,9 +228,8 @@ class Steps(QObject):
                       units="", note=COVERAGE_NOTE),
                     V("weights", "Weights", "weights", "stack")]
         if k == "astrometrie":
-            # first the user's own image with its solution, over the image of the workflow the user chooses (no compare:
-            # the solution is drawn over one picture); the survey is another picture, with its role said, compared
-            # with the stack on the same sky (it is reprojected on the stack grid)
+            # the user's own image with its solution, over the image of the workflow the user chooses (no compare: the
+            # solution is drawn over one picture); the identified objects in Spec mode
             out = [V("solution", "Stack and solution", "array", "stack", "drz_full", True, True, sky=True,
                      note=SOLUTION_NOTE, camera=True, backgrounds=True)]
             out.append(V("objects", "Identified objects", "preview", "astrometry", "", spec=True))

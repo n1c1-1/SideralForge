@@ -1593,6 +1593,8 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
     proj = env["tmp"] / "heart"                                             # a scratch project: the definition of the copy
     proj.mkdir()
     shutil.copy(F_COPY / "project.astroproj", proj / "project.astroproj")
+    from conftest import full_only
+    api.save(full_only(api.open_project(proj)))                             # Full only, whatever the bench added
     before = _fingerprint(F_COPY / "project.astroproj")
     w = appmod.Main()
     w.resize(1600, 950)

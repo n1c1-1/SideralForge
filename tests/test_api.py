@@ -917,7 +917,7 @@ def test_stage_outputs_and_arrays_are_read_whole(toy):
     assert api.stage_outputs(p, 1, "inventory").metrics["n_lights"] == 3
 
 
-def test_pixel_to_sky_and_the_spectral_response_come_from_the_results(real):
+def test_pixel_to_sky_comes_from_the_results(real):
     from astropy.io import fits
     from astropy.wcs import WCS
     p = real
@@ -931,14 +931,6 @@ def test_pixel_to_sky_and_the_spectral_response_come_from_the_results(real):
     ra, dec = api.pixel_to_sky(p, 1, 99.0, 49.0)                         # 0-based: the reference pixel
     assert (ra, dec) == pytest.approx((322.0, 47.2), abs=1e-6)
     assert api.pixel_to_sky(p, 3, 99.0, 49.0) == (ra, dec)                # Full shares the astrometry of Classic
-    with pytest.raises(api.NotDone):
-        api.spectral_response(p, 1)                                         # Color is not done
-    lam = np.linspace(400, 700, 7)
-    S = np.vstack([lam, lam[::-1], lam * 0 + 1])
-    c = fake_done(p, 1, "color")
-    np.savez(c / "specresp.npz", lam=lam, S=S, cam_hii=np.ones(7), cam_oiii=np.zeros(7))
-    sr = api.spectral_response(p, 1)
-    assert np.array_equal(sr.lam, lam) and sr.S.shape == (3, 7) and sr.cam_hii.sum() == 7
 
 
 # ---------------------------------------------------------------------------------------------- frame table

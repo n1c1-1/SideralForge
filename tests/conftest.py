@@ -401,10 +401,10 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:
 
 # ------------------------------------------------------------------------------------------------ the test project
 
-#: the computed project the client tests read: a case of the bench (Heart, express session), computed up to the
-#: output of its two workflows, Classic stack (polynomial gradient) and its copy with the automatic gradient
-#: (tools/bench/gradient_projects.py); ASTRO_TEST_PROJECT names another one. Tests only read it: a test that changes a
-#: project works on a copy (``scratch_project`` below, or its own copy in tmp_path).
+#: the computed project the client tests read: a case of the bench (Heart, express session), its workflows computed
+#: (tools/bench/gradient_projects.py; the bench adds workflows to it, so a test that needs a known set takes it down
+#: with ``full_only``, and reads its numbers from it); ASTRO_TEST_PROJECT names another one. Tests only read it: a test
+#: that changes a project works on a copy (``scratch_project`` below, or its own copy in tmp_path).
 TEST_PROJECT = Path(os.environ.get("ASTRO_TEST_PROJECT") or "F:/astro_essais/bench/heart/ours_express")
 #: a workflow whose results are in the test project's store (name, template, settings), for the tests that add it in
 #: memory and need it computed
@@ -435,6 +435,23 @@ def scratch_project(folder: Path, source: Path = TEST_PROJECT) -> Path:
             if r.returncode:
                 pytest.skip(f"no directory junction here: {r.stderr.strip()}")
     return folder
+
+
+def full_only(p, fresh_ids: bool = False):
+    """The test project's definition as the graph tests start from it, whatever workflows the bench added since: one
+    workflow, "Full" (id 1: the Full template, computed in the store), and no layer in Post. In memory only.
+    ``fresh_ids``: the workflows added next get ids the project never had (with ids 2, 3... they would find the
+    states the bench's workflows of those ids left)."""
+    import dataclasses
+
+    from astro_gpu.core.workflow import TEMPLATES
+    full = next((w for w in p.workflows if w.options == TEMPLATES["Full"]), None)
+    if full is None:
+        pytest.skip("the test project has no workflow with the Full template")
+    p.workflows[:] = [dataclasses.replace(full, id=1, name="Full", end=None, variant_of=None, breakpoints=[])]
+    p.next_workflow_id, p.current = (max(p.next_workflow_id, 2) if fresh_ids else 2), 1
+    p.post = {**(p.post or {}), "layers": []}
+    return p
 
 
 @pytest.fixture(scope="session")
