@@ -1,11 +1,11 @@
 """The Stars block: a network takes the stars off the image, which gives two images, the starless image and the stars
 alone (docs/chantiers/etoiles.md).
 
-The network is NAFNet (Chen, Chu, Zhang, Sun 2022, arXiv:2204.04676), the image restoration network that Dark Star and
-SyQon use for star removal, trained once on our stacks: their starless images made by StarNet 2 and corrected by hand,
-plus stars drawn on top of them (a Moffat core, an r^-3 aureole, diffraction spikes, saturation), where the truth under
-each star is exact (tools/bench/stars_train.py, run "mixed"). On the bench it leaves less of the faint stars than StarNet
-and takes the spikes and halos of the bright stars off, the background unchanged (docs/POINT_MATINEE_2026-11-05.md).
+The network is NAFNet (Chen, Chu, Zhang, Sun 2022, arXiv:2204.04676), an image restoration network, trained once on
+our stacks: starless images corrected by hand, plus stars drawn on top of them (a Moffat core, an r^-3 aureole,
+diffraction spikes, saturation), where the truth under each star is exact (tools/bench/stars_train.py, run "mixed").
+On the bench it leaves less of the faint stars than the reference tool and takes the spikes and halos of the bright
+stars off, the background unchanged (docs/POINT_MATINEE_2026-11-05.md).
 
 It works on what it was trained on: the Output block's linear image (render_simple: the stack with its sky gradient
 removed, denoised, white balanced, its sky taken off), each channel minus its background, over one noise unit (the

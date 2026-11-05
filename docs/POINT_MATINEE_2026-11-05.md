@@ -1,6 +1,6 @@
 # Point de la matinée, jeudi 5 novembre
 
-## 1. Le retrait des étoiles : nos deux réseaux face à StarNet
+## 1. Le retrait des étoiles : nos deux réseaux face à l'outil de référence
 
 Deux entraînements ont tourné cette nuit, de 22 h 48 à 7 h 50, chacun sur une carte. Le réseau est le même (NAFNet,
 l'architecture publiée qu'utilisent Dark Star et SyQon). Il apprend sur tes 23 champs retouchés à la main (56
@@ -11,14 +11,14 @@ images, le set 53 laissé de côté) :
   halos, aigrettes, cœurs saturés).
 
 Les cinq champs du banc ne sont jamais vus par l'entraînement. Les deux réseaux y ont produit leurs images sans
-étoiles, mesurées et mises en planches face à StarNet, comme la dernière fois.
+étoiles, mesurées et mises en planches face à l'outil de référence, comme la dernière fois.
 
 ### Les mesures
 
 **La lumière d'étoile qui reste** (étoiles faibles du catalogue, magnitude 16 à 18,5, sur fond de ciel ; plus c'est
 bas, mieux c'est) :
 
-| Champ | StarNet | mixed | real |
+| Champ | l'outil de référence| mixed | real |
 |---|---|---|---|
 | Seestar (M31) | 11,6 % | 9,2 % | 8,6 % |
 | Rosette | 4,1 % | 3,1 % | 2,3 % |
@@ -34,7 +34,7 @@ n'éclaircit la nébuleuse.
 
 **Le grain dans l'empreinte des étoiles brillantes** (1 = le même grain qu'autour) :
 
-| Champ | StarNet | mixed | real |
+| Champ | l'outil de référence| mixed | real |
 |---|---|---|---|
 | Seestar | 0,88 | 1,05 | 1,18 |
 | Rosette | 1,09 | 1,37 | 1,42 |
@@ -42,18 +42,18 @@ n'éclaircit la nébuleuse.
 | M51 | 0,77 | 1,29 | 1,22 |
 | Heart | 1,61 | 1,53 | 1,61 |
 
-StarNet est sous 1 : il lisse là où il a enlevé une étoile. Nos réseaux sont au-dessus : il reste un peu de
+l'outil de référence est sous 1 : il lisse là où il a enlevé une étoile. Nos réseaux sont au-dessus : il reste un peu de
 structure dans l'empreinte. La raison est visible sur les planches : ils enlèvent les grands halos et les aigrettes,
-que StarNet laisse en partie.
+que l'outil de référence laisse en partie.
 
 ### Ce que montrent les planches
 
 Les planches sont dans `F:\astro_essais\stars_compare\` (`<champ>_sheet.jpg` pour les images sans étoiles,
 `<champ>_stars.jpg` pour les couches d'étoiles).
 
-- **Les aigrettes et les halos des étoiles brillantes** : c'est là que l'écart est le plus net. Sur M51, StarNet
+- **Les aigrettes et les halos des étoiles brillantes** : c'est là que l'écart est le plus net. Sur M51, l'outil de référence
   laisse quatre taches floues aux aigrettes de la grosse étoile ; « mixed » ne laisse qu'une ombre légère. Sur
-  Rosette et Iris, nos réseaux enlèvent tout le halo bleu des étoiles brillantes, StarNet en laisse la moitié.
+  Rosette et Iris, nos réseaux enlèvent tout le halo bleu des étoiles brillantes, l'outil de référence en laisse la moitié.
   C'est ton travail de retouche qui paie.
 - **Le défaut de « real »** : au cœur des étoiles saturées, il laisse un petit trou sombre bordé de vert (la grosse
   étoile de M51, celle d'Iris). **« mixed » n'a pas ce défaut** : les cœurs saturés des étoiles de synthèse le lui
@@ -64,10 +64,10 @@ Les planches sont dans `F:\astro_essais\stars_compare\` (`<champ>_sheet.jpg` pou
 
 - **« mixed » est le meilleur des deux** : presque aussi bon que « real » sur les étoiles faibles, et sans le trou au
   cœur des étoiles saturées ni l'excès de soustraction.
-- **Face à StarNet, il gagne** sur les étoiles faibles (sur les cinq champs), sur les aigrettes et les halos des
+- **Face à l'outil de référence, il gagne** sur les étoiles faibles (sur les cinq champs), sur les aigrettes et les halos des
   étoiles brillantes ; il fait jeu égal sur le fond et la nébuleuse.
-- **Il reste derrière StarNet** sur un point : un peu de structure dans l'empreinte des étoiles brillantes, là où
-  StarNet lisse. À regarder à l'œil sur tes images : c'est parfois du halo bien enlevé, parfois un reste.
+- **Il reste derrière l'outil de référence** sur un point : un peu de structure dans l'empreinte des étoiles brillantes, là où
+  l'outil de référence lisse. À regarder à l'œil sur tes images : c'est parfois du halo bien enlevé, parfois un reste.
 - **Un point à surveiller** : pendant l'entraînement, le contrôle de « mixed » sur Seestar sautait d'un contrôle à
   l'autre, alors que les quatre autres champs étaient stables. La version finale est bonne sur Seestar, mais c'est
   le champ où « mixed » est le moins sûr.
@@ -82,7 +82,7 @@ Les planches sont dans `F:\astro_essais\stars_compare\` (`<champ>_sheet.jpg` pou
 | real (86 600 pas, 8 h 36) | 0,0016 | 0,0013 | 0,0013 | 0,0021 | 0,0019 |
 
 M8 n'a pas servi au contrôle pendant l'entraînement. Il manquait d'abord aussi aux mesures, à cause d'un défaut de
-mon outil, corrigé à 8 h 15. **Sur M8, StarNet fait un peu mieux** : 0,7 % de lumière restante sur les étoiles
+mon outil, corrigé à 8 h 15. **Sur M8, l'outil de référence fait un peu mieux** : 0,7 % de lumière restante sur les étoiles
 faibles contre 1,1 % (« mixed ») et 1,0 % (« real »), et un peu moins de trous. L'original de M8 n'est pas tiré de
 la même étape que les autres champs : il a déjà été débruité par l'ancienne méthode, donc il est moins bruité que ce
 que le réseau a vu à l'entraînement.

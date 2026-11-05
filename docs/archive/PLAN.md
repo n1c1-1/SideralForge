@@ -11,7 +11,7 @@ that works for any instrument (no rule written for one telescope or one camera).
 Two references to beat:
 
 - **Refractor** (TS61EDPH + astro-modified Sony A7S), Heart & Soul nebulae: `F:\photos\heart_nebula\full.png`
-  (processed by hand with Siril, StarNet2, Topaz and Photoshop).
+  (processed by hand with Siril, the reference tool, Topaz and Photoshop).
 - **Newton 130/900** (same camera), Iris nebula: the user's manual image,
   `C:\Users\Nicolas\astro_gpu_scratch\projects\Iris\reference\iris_user_manual.webp`.
 
@@ -33,7 +33,7 @@ If it works, the project will be published on GitHub (not sold); its licence is 
 
 ## 3. Principles
 
-1. **Free tools only**: open-source code, or free tools whose trained network is closed (e.g. StarNet2). Nothing paid.
+1. **Free tools only**: open-source code, or free tools whose trained network is closed (e.g. the reference tool). Nothing paid.
    Paid tools (RC Astro, Topaz) are mentioned only for comparison.
 2. **Reuse, and modify what we reuse.** Existing libraries can be changed (camera colour pattern, our image alignment,
    our noise model, our measured star shapes...).
@@ -90,11 +90,11 @@ How a method is judged:
 
 | # | Step | What is compared | Success criterion (written before testing) | Status |
 |---|---|---|---|---|
-| 1 | Test bench | our chain, StarNet2, nox | the bench reproduces known numbers; table "who wins what" | done |
+| 1 | Test bench | our chain, the reference tool, nox | the bench reproduces known numbers; table "who wins what" | done |
 | 2 | Star-shape measurement | one shape for the whole image, per place, per frame, per colour | predicts stars kept aside | done |
 | 3 | Sharpening (deconvolution) | on the stack (classic filter, existing tools, our network with the measured blur); from all frames together | sharper on fake objects, closer to the truth, nothing invented, faint signal kept | in use: the sharpening network with the measured blur, a render setting (0 Faithful, 1 Artistic); per-frame deconvolution before stacking tried twice (11.9), no better; per-tile deconvolution of the stack proposed, not started |
 | 4 | Noise reduction | our network, GraXpert, others | less noise, no loss of detail or faint signal, no over-brightening | in use: Noise2Noise network on the half-stacks, multi-scale Wiener step on the starless image |
-| 5 | Stars | our model of each star, StarNet2, nox, mixed | no ring and no hole around bright stars; faint nebula kept | in use: star model subtracted, or the learned removal (own network), chosen at rendering (11.7-11.10); open: glare of the brightest stars |
+| 5 | Stars | our model of each star, the reference tool, nox, mixed | no ring and no hole around bright stars; faint nebula kept | in use: star model subtracted, or the learned removal (own network), chosen at rendering (11.7-11.10); open: glare of the brightest stars |
 | 6 | Sky background | our physical model, separation by motion, GraXpert | faint nebula kept, even background | in use: star flat (optional) and sky anchored on the H-alpha survey and the unresolved starlight; open: a smooth object filling the frame (M31) |
 | 7 | Colour | our camera response from Gaia spectra, Siril colour calibration | Gaia star colours recovered | in use: camera response from Gaia XP spectra with a physical check, matrix anchored on the measured emission colour |
 | 8 | Final image | best chain from steps 2-7 | 100 % crops of all bright stars and fixed zones; comparison with full.png and the Iris reference | in use: Faithful and Artistic renders of each project, judged blind; open defects in 11.14 |
@@ -102,10 +102,10 @@ How a method is judged:
 ## 7. What we have measured so far
 
 **Test bench and star removal (step 1).** On the bright fake stars, our star model leaves far smaller rings than
-StarNet2 and nox (typical / worst ring, in times the noise: Heart 0.2 / 0.9 for us, 0.6 / 3.4 StarNet2, 3 to 8 nox;
-Iris 0.2 / 0.6 for us, 1.1 / 14 StarNet2, 2 to 21 nox). On faint filaments and patches, the existing tools keep more
-(Heart filaments: 66 % for us, 53 % StarNet2, 83-94 % nox). Far from any object our chain fluctuates 15 times more than
-StarNet2 (a "pepper" grain), probably because star brightnesses are refitted over the whole image.
+the reference tool and nox (typical / worst ring, in times the noise: Heart 0.2 / 0.9 for us, 0.6 / 3.4 the reference tool, 3 to 8 nox;
+Iris 0.2 / 0.6 for us, 1.1 / 14 the reference tool, 2 to 21 nox). On faint filaments and patches, the existing tools keep more
+(Heart filaments: 66 % for us, 53 % the reference tool, 83-94 % nox). Far from any object our chain fluctuates 15 times more than
+the reference tool (a "pepper" grain), probably because star brightnesses are refitted over the whole image.
 
 **Star shape (step 2).** Measured from Gaia stars with an error of 4-5 %. It varies mostly across the field, little
 from frame to frame (Heart 3.8-4.3 px, Iris 4.3-5.0 px over the night), and with colour only on the refractor.
@@ -521,12 +521,12 @@ independent agent on aligned 100 % crops):
 | Lead | Branch / place | Idea | Status |
 |---|---|---|---|
 | 1b real stars | real-stars | stars brighter than G 12: spikes (and saturated cores, rays) shown as photographed = image minus the nebula under them, the nebula interpolated across the spikes; fainter star cores drawn as now | in test |
-| 2 StarNet2 / nox | D:/astro_gpu_diag/starnet_test | off-the-shelf learned star removers on the problem stars | agent running |
+| 2 the reference tool / nox | D:/astro_gpu_diag/starnet_test | off-the-shelf learned star removers on the problem stars | agent running |
 | 3 own network | star-net (fb150ed), D:/astro_gpu_diag/own_starnet (REPORT.md) | a star remover trained on the project's own data (its real bright stars injected on clean nebula) | promising, not ready |
 | 1c | real-stars (342f578) | 1b with spikes only where they stand 5 x the noise above the light beside them | tested |
 | 1d / 1e | real-stars-drawn (54f0d78, 408c3d2) | under a spike strip only the spike comes from the image (core model of every star subtracted, star cores left out), the stars along the strips drawn; 1d at 5 x noise, 1e at 2 x | 1e retained for QC |
-| 2b | starnet-hybrid (9543916, 86441cd) | StarNet2's starless image (minus our far halo and sky) under the footprints and strips | rejected |
-| 2c | starnet-texture (e0f1d94) | 1d plus StarNet2's texture below 8 px under footprints and strips, the level ours | rejected |
+| 2b | starnet-hybrid (9543916, 86441cd) | the reference tool's starless image (minus our far halo and sky) under the footprints and strips | rejected |
+| 2c | starnet-texture (e0f1d94) | 1d plus the reference tool's texture below 8 px under footprints and strips, the level ours | rejected |
 
 Lead 1b, first findings on the Iris (G 6.9 star):
 * all stars G < 12 shown by their own light (discs + spikes): the medium stars came out large and soft (their
@@ -541,7 +541,7 @@ Lead 1b, first findings on the Iris (G 6.9 star):
   twice the noise (Iris: 4 % -> 14 % of the field). G 6.9 clean, the Iris core unchanged - but on the Rosette and the
   Flaming Star the footprints grew to 33-34 % of the field, interpolated (the ring's 90th percentile of the star light
   stays above twice the noise wherever star residues fill a nebula): reverted to the ring median. The secondary rays
-  are left to the learned star removal (lead 2: StarNet2 leaves only a faint fine-ray texture).
+  are left to the learned star removal (lead 2: the reference tool leaves only a faint fine-ray texture).
 
 Results 2026-10-14 23:00-23:50 (Rosette, Flaming Star, Horsehead, Iris; sheets D:/astro_gpu_diag/qc/leads):
 * 1b (spikes of every star G < 12 from twice the noise, measured against zero): the strips ran 400 px through the
@@ -551,13 +551,13 @@ Results 2026-10-14 23:00-23:50 (Rosette, Flaming Star, Horsehead, Iris; sheets D
   is the raw image minus the nebula, so the neighbours whose centre falls in a strip are shown by their raw light
   (wider than drawn stars), those beside it twice (raw part + drawn), with the image noise.
 * 1c (5 x noise): fewer, shorter strips (Rosette 2034 -> 1856 spikes) - the blobs remain (same cause).
-* 2b (StarNet2 starless as is under the footprints): dark discs around every saturated star, dark bands along the
-  strips: StarNet2 removes part of the halo with the star, the far halo model removes it again.
+* 2b (the reference tool starless as is under the footprints): dark discs around every saturated star, dark bands along the
+  strips: the reference tool removes part of the halo with the star, the far halo model removes it again.
 * 1d (only the spike from the image under the strips, every star there drawn): the medium stars as compact as now.
   A first version left the cores of the neighbours (core model never close enough: a G 11 core came back at full
   brightness over the drawn one) - the star cores (starless fill mask, dilated 2 px) are left out. At 5 x noise
   the Iris G 6.9 spike got its dark blobs and beads back (the strip stopped before them).
-* 2c (1d + StarNet2 texture below 8 px): coloured noise along every strip (StarNet2 works on the noisy stack, our
+* 2c (1d + the reference tool texture below 8 px): coloured noise along every strip (the reference tool works on the noisy stack, our
   nebula is denoised).
 * 1e (1d at 2 x noise): Iris G 6.9 spike clean (no blob, no bead), medium stars compact. Known defect: faint
   coloured noise in the strips in dark sky (the star light under a strip is the raw image, only faded below 1.5-3.5

@@ -30,7 +30,7 @@
 
 ## 2. Les textes du GUI
 
-- Plus aucun nom de logiciel dans l'interface : « type GraXpert », « type BlurXTerminator », « type StarNet »,
+- Plus aucun nom de logiciel dans l'interface : « type GraXpert », « type BlurXTerminator », « type l'outil de référence»,
   « (DrizzlePac) », « comme dans Photoshop » sont remplacés par ce que fait la méthode.
 - L'import des projets de l'ancien programme dit « une ancienne version » au lieu de « la version précédente ».
 - En français : « FWHM (px) » était traduit par « Étoiles (px) » ; « retrait appris » devient « retrait neuronal »
@@ -91,7 +91,7 @@ rendus livrés de M31 (`D:\astro_gpu_m31`).
    - le projet `F:\astro_projets\test`, créé le 1er novembre à 18 h, peut-être par toi ;
    - `experiments\star_cleaner` dans le dossier du code : les images de référence posées le 1er au soir. Un programme
      le bloquait cette nuit, il est à sortir du dépôt ;
-   - `C:\Users\Nicolas\astro_gpu_scratch\tools`, où StarNet2 et NoX sont installés pour les comparaisons.
+   - `C:\Users\Nicolas\astro_gpu_scratch\tools`, où l'outil de référence et NoX sont installés pour les comparaisons.
 4. **Vider les `_trash`** quand tu auras vérifié : environ 630 Go.
 5. **Une pause de l'interface pendant un calcul.** Pendant un vrai calcul, l'interface se fige parfois environ 0,2 s, à
    la limite de ce que le test tolère (une fois sur deux au-dessus). J'ai vérifié que ce n'est pas notre code Python

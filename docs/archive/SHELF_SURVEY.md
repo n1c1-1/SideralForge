@@ -4,7 +4,7 @@ Survey of free, existing software for each processing step (stacking, stars, noi
 with a verdict per tool: test it as-is against our own code, reuse its code or ideas, or skip it.
 
 **Bottom line.** Test as-is first: Siril 1.4.4 run from scripts (stacking, sharpening, background, noise, SPCC colour
-with a custom A7S-mod sensor file); StarNet2 2.6.2 `--linear` and nox (stars); GraXpert 3.1.0rc2 (background, noise,
+with a custom A7S-mod sensor file); the reference tool `--linear` and nox (stars); GraXpert 3.1.0rc2 (background, noise,
 sharpening); SASpro MFDeconv (sharpening from many frames, the closest free tool to our goal); photutils (star shapes);
 STScI drizzle (check of our stacking); maskfill (masked pixels). Build on: deepinv, the main toolbox for our own
 sharpening and noise reduction, with ideas from ImageMM, STARRED, ASTERIS, Piff, elderflower and Gnuastro. There is no
@@ -94,7 +94,7 @@ may be drizzled to larger sizes (up to about 24 MP); two half-stacks are availab
 5. **ASTERIS code and trained networks are public** (code MIT, weights CC-BY-4.0 on Zenodo, a public research data
    archive). The pretrained networks are for JWST and Subaru data and do not transfer to ours. ASTERIS is the
    many-frame generalisation of our half-stack Noise2Noise. **[changes PLAN.md]**
-6. **StarNet2 2.6 (2026-09) adds `--linear`** (works on unstretched data); our local install is 2.5.4. Its licence
+6. **the reference tool (2026-09) adds `--linear`** (works on unstretched data); our local install is 2.5.4. Its licence
    forbids using its outputs to train networks for commercial software, and sharing full-resolution input images that
    demonstrate its performance.
 7. **GraXpert**: deconvolution exists only in the 3.1.0 release candidates (test versions); its trained networks are
@@ -370,22 +370,22 @@ Notes.
 
 | Candidate | Licence (code / weights) | Activity (checked) | GitHub stars | Runs on | Inputs | Verdict |
 |---|---|---|---|---|---|---|
-| **StarNet2 CLI 2.6.2** (installed: 2.5.4) | closed, free; licence restricts use (see notes) | 2.6.2 package 2026-09-19 (2.6.0 2026-09-04) | - | ONNX Runtime: DirectML included, CUDA by swapping a DLL; Windows/Linux/macOS | 8/16-bit TIFF/PNG or FITS in [0, 1]; **`--linear` since 2.6.0**; RGB recommended; minimum 512 x 512 | **Test as-is**; in our chain only to clean leftovers, and only where a known star is |
+| **the reference tool CLI 2.6.2** (installed: 2.5.4) | closed, free; licence restricts use (see notes) | 2.6.2 package 2026-09-19 (2.6.0 2026-09-04) | - | ONNX Runtime: DirectML included, CUDA by swapping a DLL; Windows/Linux/macOS | 8/16-bit TIFF/PNG or FITS in [0, 1]; **`--linear` since 2.6.0**; RGB recommended; minimum 512 x 512 | **Test as-is**; in our chain only to clean leftovers, and only where a known star is |
 | **nox** (charvey2718) | **MIT code and MIT weights** | `nox.exe` v1.1.0 2025-12-25 | 8 | TensorFlow/Keras; exe; GPU on Windows untested by the author | TIFF 8/16/32-bit float (no FITS); `-l` = temporary stretch for linear data | **Test as-is + template for our own** (trained on synthetic stars) |
 | **compact-source-removal** (Madarasz et al. 2025, A&A 696 A37) | MIT | last commit 2025-11-21 | 2 | PyTorch, partial-convolution U-Net | linear FITS (Herschel), masks supplied | **Reuse** (network design + training recipe; retrain) |
 | SyQon Zenith (Siril script) / SyQon Studio CLI | script by Siril/SyQon; weights proprietary, licence PDF unreachable (unverified) | 2026 | - | PyTorch NAFNet, DirectML | temporary auto-stretch (in intensity-hue-saturation space) for linear data | test only |
 | Cosmic Clarity Dark Star | proprietary networks, SASpro only | 2026 | - | PyTorch | auto-stretch | **Skip** (licence); optional manual comparison |
-| StarNet v1 (nekitmm/starnet) | MIT code / CC BY-NC-SA weights | 2022-09-12 | 313 | TensorFlow 1/2 | stretched 8-bit | **Skip** (superseded) |
+| the reference tool v1 (nekitmm/starnet) | MIT code / CC BY-NC-SA weights | 2022-09-12 | 313 | TensorFlow 1/2 | stretched 8-bit | **Skip** (superseded) |
 | starrem2k13 | MIT | v7.0 2025-06-16 | 11 | ONNX, CPU | 8-bit | **Skip** (trained on 3 images) |
 | MRF (AstroJacobLi/mrf), elderflower | MIT | 2021 / 2025-06-25 | - / 6 | numpy, GalSim | high-resolution reference image / bright stars | **Reuse ideas** (subtracting bright-star halos and wings, section 7) |
 | GraXpert | - | - | - | - | - | no star removal (checked: its CLI commands are only background-extraction, denoising, deconv-obj, deconv-stellar) |
 
 Notes.
 
-- **StarNet2** (https://starnetastro.com/cli-tools/starnet/, command-line reference
+- **the reference tool** (https://starnetastro.com/cli-tools/starnet/, command-line reference
   https://starnetastro.com/documentation/starnet/command-line-tool/).
   - Local install `F:\photos\heart_nebula\tools\starnet2_2.5.4\...` (2.5.4, ONNX Runtime engine, no `--linear`). Its
-    network file `StarNet2_weights.onnx` (inspected read-only): a U-Net in pix2pix style (a classic image-to-image
+    network file `the reference tool_weights.onnx` (inspected read-only): a U-Net in pix2pix style (a classic image-to-image
     design), about 32.9 million parameters; input 512 x 512 RGB tiles, single-precision values in [0, 1]; output
     clipped to [0, 1].
   - Version 2.6.x adds `--linear` (checked on the official page): per-channel midtones (MTF) stretch, network, inverse
@@ -402,7 +402,7 @@ Notes.
     known Gaia stars (the area covered by their measured star shape). Effort 0.5-1 day.
 - **nox** (https://github.com/charvey2718/nox; LICENSE and README checked: "My code and trained weights ... are made
   available under the MIT License"; GitHub's licence detector shows NOASSERTION because of a preamble). Same network
-  design as StarNet v1, trained on a **fully synthetic** dataset (`GenerateStars.py`: Moffat/Gaussian stars with random
+  design as the reference tool v1, trained on a **fully synthetic** dataset (`GenerateStars.py`: Moffat/Gaussian stars with random
   FWHM, Poisson noise, gain, MTF stretch, spikes, colour fringing, asymmetry, on photo-denoising backgrounds). The author
   says generalisation "remains to be proved". Use: test `nox.exe -l`. Its real value is as a template to train our own
   PyTorch star remover for linear data, with our measured star shapes (spikes, coma), our noise model and real starless
@@ -413,8 +413,8 @@ Notes.
   noise and its texture (power spectrum) are preserved. Filling acts only inside the masks, so the background outside
   the stars is untouched by design. Use: retrain with Gaia star masks on our star-subtracted backgrounds. Effort about
   1 week.
-- **Siril integration**: since 1.4, Siril calls StarNet through the Python script `StarNetAstro/StarNet.py`
-  (`pyscript StarNet.py --linear --masks descreen`, supports CLI 2.5.0-2.6.2); the old built-in `starnet` command
+- **Siril integration**: since 1.4, Siril calls the reference tool through the Python script `the reference tool Astro/the reference tool.py`
+  (`pyscript the reference tool.py --linear --masks descreen`, supports CLI 2.5.0-2.6.2); the old built-in `starnet` command
   remains for old versions.
 
 ---
@@ -626,7 +626,7 @@ estimates (wrapper + a run on the 100-frame quick test + scoring), not counting 
 | # | Item | Step(s) | What exactly | Effort |
 |---|---|---|---|---|
 | 1 | **Siril 1.4.4 run from scripts** | Step 1: test bench (stacking); Step 3: sharpening (deconvolution); Step 4: noise reduction; Step 6: sky background; Step 7: colour | `siril-cli -s` scripts: calibrate; register `-disto master -drizzle` (Bayer drizzle, scale 1 / pixfrac 1, then 1.5 / 0.7); stack with rejection; `rl` with our PSF (`makepsf load`) and with `makepsf stars`; `subsky -rbf`; `denoise -vst`; `spcc -catalog=localgaia` with a custom A7S-mod sensor JSON | 2-3 days (one set of scripts); about 100 GB of intermediate files on C: or E: |
-| 2 | **StarNet2 2.6.2 `--linear`** (upgrade from 2.5.4) + **nox.exe `-l`** | Step 5: stars | on the linear stack scaled to [0, 1], with and without `-u`; score inside and outside the footprints of known Gaia stars | 1 day |
+| 2 | **the reference tool `--linear`** (upgrade from 2.5.4) + **nox.exe `-l`** | Step 5: stars | on the linear stack scaled to [0, 1], with and without `-u`; score inside and outside the footprints of known Gaia stars | 1 day |
 | 3 | **GraXpert 3.1.0rc2 CLI** | Step 6: sky background; Step 4: noise reduction; Step 3: sharpening (deconvolution) | `background-extraction`, `denoising`, `deconv-obj` then `deconv-stellar` (psfsize within its valid range) | 1 day |
 | 4 | **SASpro MFDeconv** | Step 3: sharpening (deconvolution), many frames | wrapper to run it without the interface; 20-40 registered sub-stacks of the batch; star shape measured per frame; lightness and per channel | 1-2 days |
 | 5 | **photutils 3.0 GriddedPSFModel + forced PSFPhotometry** | Step 2: star-shape measurement; Step 5: stars (photometry) | per tile and per Bayer channel on a subset of frames; saturated pixels masked; reference for our star-shape map | 1 day |
@@ -649,7 +649,7 @@ estimates (wrapper + a run on the 100-frame quick test + scoring), not counting 
 | # | Item | Why / when | Effort |
 |---|---|---|---|
 | 14 | **ASTERIS retrained** on our sub-stacks (per Bayer colour plane) | state of the art for many-frame noise reduction without clean examples; compare with half-stack Noise2Noise; borrow its training loss and bright/faint split even without retraining | 1-2 weeks |
-| 15 | **Our own star remover for linear data** (nox MIT template, or compact-source-removal partial-convolution U-Net) trained with our measured star shapes and noise | only if Gaia star subtraction + StarNet2 limited to known stars fails Step 5: stars | 1-2 weeks |
+| 15 | **Our own star remover for linear data** (nox MIT template, or compact-source-removal partial-convolution U-Net) trained with our measured star shapes and noise | only if Gaia star subtraction + the reference tool limited to known stars fails Step 5: stars | 1-2 weeks |
 | 16 | **Piff 1.6 in WSL2** | independent colour-dependent star-shape reference | 2-3 days |
 | 17 | **STARRED / AstroPhot tests on crops** | independent joint-fit references on 64-256 px crops | 1-2 days each |
 | 18 | **AI tools with closed weights**: Cosmic Clarity AI4 (inside SASpro only), SyQon Zenith / Prism mini / Parallax Nano, DeepSNR, Aberration Remover (Iris) | complete the comparison of free tools; scoring only, never reused | 0.5 day each |
@@ -663,7 +663,7 @@ estimates (wrapper + a run on the 100-frame quick test + scoring), not counting 
 - AstroClearNet, ImageMM as code, Firedec, PI-AstroDeconv, Noise2Astro, AstroSURE, Poisson2Gaussian: no code.
 - torchmfbd as a dependency: blind only, inconsistent licence.
 - Handheld MFSR and burst super-resolution networks: made for daylight bursts, do not conserve flux.
-- StarNet v1, starrem2k13, Cosmic Clarity Dark Star as a reusable part: superseded, toy, or licence.
+- the reference tool v1, starrem2k13, Cosmic Clarity Dark Star as a reusable part: superseded, toy, or licence.
 - PSFEx, psfr, psfmachine.
 - LaMa, astroDDPM, biharmonic filling, `interpolate_replace_nans`.
 - Siril PCC, ASTAP, NoiseChisel.
@@ -679,8 +679,8 @@ estimates (wrapper + a run on the 100-frame quick test + scoring), not counting 
   project GPL-3 (acceptable according to PLAN.md; to be decided once).
 - GraXpert and Aberration Remover weights are CC BY-NC-SA 4.0: non-commercial, and any derived model must keep the same
   licence.
-- StarNet2 licence: outputs may not be used to train networks for commercial software; full-resolution inputs that
-  demonstrate its performance may not be shared. Keep StarNet2 outputs out of any training set we publish, and publish
+- the reference tool licence: outputs may not be used to train networks for commercial software; full-resolution inputs that
+  demonstrate its performance may not be shared. Keep the reference tool outputs out of any training set we publish, and publish
   test comparisons as crops and scores only.
 - Cosmic Clarity AI4: SASpro only; no extraction, distillation or retraining. Test scoring only.
 - SyQon and DeepSNR terms: unverified (SyQon licence PDF unreachable on 2026-10-10).
