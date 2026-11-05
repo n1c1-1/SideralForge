@@ -13,7 +13,9 @@ TIFFs). Two kinds of examples, mixed in each batch:
 
 The network: NAFNet (Chen et al. 2022, arXiv:2204.04676), the image restoration network that Dark Star and SyQon use
 for star removal (etoiles_etat_de_lart.md), trained with an L1 loss on a fixed asinh stretch of the data (the star
-removal tools all work on a stretched image: the stretch here is known and undone exactly).
+removal tools all work on a stretched image: the stretch here is known and undone exactly). The network, its stretch
+and its tiled application are the Stars block's (stages/star_removal.py), which ships the run chosen
+(resources/stars/starless_nafnet.pt: run "mixed", 5 November 2026).
 
 Left out: the bench's fields (denoise_dataset.HELD_OUT), set 53 (not reviewed), the levels of a reviewed field on
 another pixel grid than the reviewed one. Ignored zones (no loss): what the review could not settle (Alnitak's halo, the
@@ -45,6 +47,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tools" / "bench"))
 
+from astro_gpu.stages.star_removal import NAFNet, apply, fwd  # noqa: E402
+
 DS = Path("F:/astro_essais/stars_dataset_v2")
 REVIEW = Path("F:/astro_essais/stars_dataset/_revue")
 TRAIN = Path("F:/astro_essais/stars_train")
@@ -56,8 +60,6 @@ NOT_REVIEWED = ("set_53_",)
 IGNORED = [("user_Horsehead", 2568, 1136, 520),            # Alnitak: its halo and spikes cannot be taken off cleanly
            ("user_Horsehead", 3132, 2056, 60),             # the star of NGC 2023, left in the starless image
            ("set_36_osc_refractor_asi294mc_star71_m33", 3346, 2424, 45)]   # a knot of M33 taken off: H II region?
-STRETCH = 3.0          # sigmas: the network sees asinh(v / STRETCH) / SCALE
-SCALE = 10.0
 PATCH, MARGIN = 256, 128
 
 
@@ -70,17 +72,6 @@ def field_of(name: str) -> str:
         if name.endswith(lv):
             return name[:-len(lv)]
     return name
-
-
-def fwd(v):
-    """The network's stretch (numpy or torch)."""
-    mod = np if isinstance(v, np.ndarray) else __import__("torch")
-    return mod.asinh(v / STRETCH) / SCALE
-
-
-def inv(y):
-    mod = np if isinstance(y, np.ndarray) else __import__("torch")
-    return mod.sinh(y * SCALE) * STRETCH
 
 
 # ---------------------------------------------------------------------------------------------- fixes
@@ -144,87 +135,6 @@ def fixes() -> int:
         log(f"{fld}: {fields[fld]}")
     (DS / "fields.json").write_text(json.dumps(fields, indent=1))
     return 0
-
-
-# ---------------------------------------------------------------------------------------------- the network
-def nafnet(width=32, enc=(2, 2, 4, 8), mid=12, dec=(2, 2, 2, 2), recompute=False):
-    """NAFNet (Chen, Chu, Zhang, Sun 2022, arXiv:2204.04676), as published (github.com/megvii-research/NAFNet).
-    ``recompute``: in training, the blocks' activations are recomputed on the way back instead of kept (less memory,
-    about a third slower)."""
-    import torch
-    from torch import nn
-    from torch.utils.checkpoint import checkpoint
-
-    class LayerNorm2d(nn.Module):
-        def __init__(self, c):
-            super().__init__()
-            self.w, self.b = nn.Parameter(torch.ones(c)), nn.Parameter(torch.zeros(c))
-
-        def forward(self, x):
-            mu = x.mean(1, keepdim=True)
-            var = (x - mu).pow(2).mean(1, keepdim=True)
-            return (x - mu) / (var + 1e-6).sqrt() * self.w[:, None, None] + self.b[:, None, None]
-
-    class NAFBlock(nn.Module):
-        def __init__(self, c):
-            super().__init__()
-            self.n1, self.n2 = LayerNorm2d(c), LayerNorm2d(c)
-            self.c1 = nn.Conv2d(c, 2 * c, 1)
-            self.c2 = nn.Conv2d(2 * c, 2 * c, 3, padding=1, groups=2 * c)
-            self.sca = nn.Sequential(nn.AdaptiveAvgPool2d(1), nn.Conv2d(c, c, 1))
-            self.c3 = nn.Conv2d(c, c, 1)
-            self.c4 = nn.Conv2d(c, 2 * c, 1)
-            self.c5 = nn.Conv2d(c, c, 1)
-            self.beta = nn.Parameter(torch.zeros(1, c, 1, 1))
-            self.gamma = nn.Parameter(torch.zeros(1, c, 1, 1))
-
-        def forward(self, inp):
-            x = self.c2(self.c1(self.n1(inp)))
-            a, b = x.chunk(2, 1)
-            x = a * b
-            x = self.c3(x * self.sca(x))
-            y = inp + x * self.beta
-            a, b = self.c4(self.n2(y)).chunk(2, 1)
-            return y + self.c5(a * b) * self.gamma
-
-    class NAFNet(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.intro = nn.Conv2d(3, width, 3, padding=1)
-            self.ending = nn.Conv2d(width, 3, 3, padding=1)
-            self.encs, self.downs, self.ups, self.decs = (nn.ModuleList() for _ in range(4))
-            c = width
-            for n in enc:
-                self.encs.append(nn.Sequential(*[NAFBlock(c) for _ in range(n)]))
-                self.downs.append(nn.Conv2d(c, 2 * c, 2, 2))
-                c *= 2
-            self.mid = nn.Sequential(*[NAFBlock(c) for _ in range(mid)])
-            for n in dec:
-                self.ups.append(nn.Sequential(nn.Conv2d(c, 2 * c, 1, bias=False), nn.PixelShuffle(2)))
-                c //= 2
-                self.decs.append(nn.Sequential(*[NAFBlock(c) for _ in range(n)]))
-            self.pad = 2 ** len(enc)
-
-        def forward(self, inp):
-            H, W = inp.shape[2:]
-            ph, pw = (-H) % self.pad, (-W) % self.pad
-            x = nn.functional.pad(inp, (0, pw, 0, ph))
-            x0 = x
-            x = self.intro(x)
-
-            def run(m, v):
-                return checkpoint(m, v, use_reentrant=False) if recompute and self.training else m(v)
-            skips = []
-            for e, dn in zip(self.encs, self.downs):
-                x = run(e, x)
-                skips.append(x)
-                x = dn(x)
-            x = run(self.mid, x)
-            for d, up, sk in zip(self.decs, self.ups, reversed(skips)):
-                x = run(d, up(x) + sk)
-            return (self.ending(x) + x0)[:, :, :H, :W]
-
-    return NAFNet()
 
 
 # ---------------------------------------------------------------------------------------------- synthetic stars
@@ -390,33 +300,6 @@ def bench_case(case: str):
     return to(O), (to(S) if S is not None else None), (bk, unit, meta["scale"], nm)
 
 
-def apply(net, img: np.ndarray, dev, tile: int = PATCH, overlap: int = 64) -> np.ndarray:
-    """The network over a whole image, in tiles of the training size (its channel attention averages over the tile),
-    blended with a cosine window."""
-    import torch
-    C, H, W = img.shape
-    step = tile - overlap
-    out = np.zeros_like(img, np.float32)
-    wsum = np.zeros((H, W), np.float32)
-    win1 = np.sin(np.linspace(0, np.pi, tile + 2)[1:-1]) ** 2 + 1e-3
-    win = np.outer(win1, win1).astype(np.float32)
-    ys = list(range(0, max(H - tile, 0) + 1, step)) + ([H - tile] if (H - tile) % step else [])
-    xs = list(range(0, max(W - tile, 0) + 1, step)) + ([W - tile] if (W - tile) % step else [])
-    net.eval()
-    with torch.no_grad():
-        for y in ys:
-            batch = [img[:, y:y + tile, x:x + tile] for x in xs]
-            for j in range(0, len(batch), 16):
-                b = torch.from_numpy(np.stack(batch[j:j + 16])).to(dev)
-                with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
-                    r = net(fwd(b)).float()
-                r = inv(r).cpu().numpy()
-                for k, x in enumerate(xs[j:j + 16]):
-                    out[:, y:y + tile, x:x + tile] += r[k] * win
-                    wsum[y:y + tile, x:x + tile] += win
-    return out / wsum
-
-
 # ---------------------------------------------------------------------------------------------- train
 def train(tag: str, hours: float, device: str, synthetic: float, batch: int, lr: float, recompute: bool) -> int:
     import torch
@@ -454,7 +337,7 @@ def train(tag: str, hours: float, device: str, synthetic: float, batch: int, lr:
     log(f"validation tiles: {sum(len(v[1]) for v in vset)}")
 
     torch.manual_seed(0)
-    net = nafnet(recompute=recompute).to(dev)
+    net = NAFNet(recompute=recompute).to(dev)
     log(f"NAFNet: {sum(p.numel() for p in net.parameters()) / 1e6:.1f} M parameters, batch {batch}")
     opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4, betas=(0.9, 0.9))
 
@@ -527,7 +410,7 @@ def bench(tag: str, device: str, which: str = "best") -> int:
     import torch
     from astropy.io import fits
     dev = torch.device(device)
-    net = nafnet().to(dev)
+    net = NAFNet().to(dev)
     net.load_state_dict(torch.load(TRAIN / tag / f"{which}.pt", map_location=dev, weights_only=False)["net"])
     for case in ("heart", "iris", "m51", "m8", "rosette", "seestar"):
         try:

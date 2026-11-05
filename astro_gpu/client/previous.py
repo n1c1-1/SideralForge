@@ -32,9 +32,8 @@ from .widgets import ElidedLabel, label
 #: the stages as the views name them (the blocks they belong to)
 STAGE_BLOCK = {"inventory": "Calibration", "calibrate": "Calibration", "register": "Registration", "stack": "Stacking",
                "astrometry": "Astrometry", "reference": "Astrometry", "catalogs": "Astrometry",
-               "surveys": "Astrometry", "color": "Color", "denoise": "Denoise", "optics": "Stars", "stars": "Stars",
-               "star_net": "Stars", "starless": "Stars", "background": "Stars", "gradient": "Gradient",
-               "render_prep": "Output", "render_prep_learned": "Output", "render_simple": "Output"}
+               "surveys": "Astrometry", "color": "Color", "denoise": "Denoise", "gradient": "Gradient",
+               "render_simple": "Output", "star_removal": "Stars"}
 #: the engine's reasons for computing a stage again, as templates the client translates
 REASONS = [(re.compile(r"^algorithm updated \((\w+) -> (\w+)\)$"), "algorithm updated ({0} → {1})"),
            (re.compile(r"^no result in the old project$"), "no result in the old project"),

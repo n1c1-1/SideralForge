@@ -1,7 +1,7 @@
 """The graph, the panel and the model, offscreen, on the test project with four workflows.
 
 The test project (tests/conftest.py, TEST_PROJECT) has Full computed; the tests add Classic stack, Classic + denoise and
-Full + neural stars in memory. The model is read-only (nothing is saved into the project), except the autosave test,
+Full twin in memory. The model is read-only (nothing is saved into the project), except the autosave test,
 which works on a copy of the definition in a temporary folder. ASTRO_GPU_SETTINGS points to a temporary file in every
 test; the user's settings file is checked untouched. ASTRO_GPU_SHOTS names the folder of the screenshots (default: a
 temporary folder).
@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 from astro_gpu import api  # noqa: E402
 from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import i18n, prefs  # noqa: E402
-from astro_gpu.client.blocks import COLUMNS, Graph, block_state  # noqa: E402
+from astro_gpu.client.blocks import COLUMNS, STATE_WORD, Graph, block_state  # noqa: E402
 from astro_gpu.client.graph import BH, BW, MIN_SCALE, BlockItem, GraphPage  # noqa: E402
 from astro_gpu.client.i18n import hm  # noqa: E402
 from astro_gpu.client.model import ProjectModel  # noqa: E402
@@ -62,7 +62,7 @@ F_PROJECT = TEST_PROJECT
 pytestmark = needs_test_project
 FOUR = (("Classic stack", "Classic stack", None),
         ("Classic + denoise", "Classic + denoise", {"denoise": {"iterations": 6000}}),
-        ("Full + neural stars", "Full + neural stars", {"denoise": {"iterations": 6000}}))
+        ("Full twin", "Full", None))
 
 
 def _user_settings() -> Path:
@@ -201,7 +201,7 @@ def texts_of(root: QWidget) -> list[str]:
     return [t.strip() for t in out if t and t.strip()]
 
 
-NAMES = {"Full", "Classic stack", "Classic + denoise", "Full + neural stars", "Raw stack"}
+NAMES = {"Full", "Classic stack", "Classic + denoise", "Full twin", "Raw stack"}
 
 
 def untranslated(texts) -> list[str]:
@@ -287,7 +287,7 @@ def test_the_model_does_not_wait_for_the_disk(qapp):
     t0 = time.perf_counter()
     m = ProjectModel(p, w, readonly=True)
     assert time.perf_counter() - t0 < 1.0 and not m.ready
-    assert [v.name for v in m.paths] == ["Full", "Classic stack", "Classic + denoise", "Full + neural stars"]
+    assert [v.name for v in m.paths] == ["Full", "Classic stack", "Classic + denoise", "Full twin"]
     assert m.all_stages() == [] and m.total_seconds() == 0.0 and m.state(None, "stack") == "pending"
     got = []
     m.readyChanged.connect(lambda: got.append(m.ready))
@@ -308,10 +308,10 @@ def test_the_tree_shares_blocks_as_the_engine_does(world, model, page):
     for key in ("calibration", "alignement", "selection", "empilement", "astrometrie", "fond", "couleur"):
         assert len(by_key[key]) == 1 and len(by_key[key][0].paths) == 4, key
     den = by_key["debruitage"]
-    assert len(den) == 1 and {q.name for q in den[0].paths} == {"Full", "Classic + denoise", "Full + neural stars"}
+    assert len(den) == 1 and {q.name for q in den[0].paths} == {"Full", "Classic + denoise", "Full twin"}
     stars = by_key["etoiles"]
     assert len(stars) == 2 and all(len(n.paths) == 1 for n in stars)           # the methods differ
-    assert {q.name for n in stars for q in n.paths} == {"Full", "Full + neural stars"}
+    assert {q.name for n in stars for q in n.paths} == {"Full", "Full twin"}
     assert len(by_key["post"]) == 4 and all(len(n.paths) == 1 for n in by_key["post"])
     assert g.final.paths and len(g.final.paths) == 4
     # the leaves go to Post, one per workflow
@@ -346,7 +346,7 @@ def test_states_come_from_the_api(world, model, page):
     states = {(n.key, n.paths[0].name): g.state(n) for n in g.nodes if n.paths and n.key not in ("sources", "final")}
     assert states[("empilement", "Full")] == "done"
     assert states[("fond", "Classic stack")] == "pending" and states[("post", "Classic stack")] == "pending"
-    assert states[("etoiles", "Full + neural stars")] == "pending" and states[("etoiles", "Full")] == "done"
+    assert states[("etoiles", "Full twin")] == "pending" and states[("etoiles", "Full")] == "done"
     assert g.state(g.final) == "pending"                                       # not every layer is rendered
     # a block is as bad as its worst stage in any of its workflows
     model._states[(2, "gradient")] = api.StageState("failed", "boom", "k")
@@ -362,10 +362,10 @@ def test_a_shared_stage_is_one_key(world, model):
     full, classic, cd, neural = model.paths
     assert [q.name for q in model.sharing(full, "stack")] == [q.name for q in model.paths]
     assert model.owner(neural, "stack") is full
-    assert {q.name for q in model.sharing(full, "denoise")} == {"Full", "Classic + denoise", "Full + neural stars"}
+    assert {q.name for q in model.sharing(full, "denoise")} == {"Full", "Classic + denoise", "Full twin"}
     assert model.stage_key(full, "stack") == api.stage_key(model.p, full.pid, "stack")
     assert model.upstream(full, "color") >= {"inventory", "calibrate", "register", "stack", "astrometry"}
-    assert "render_prep" in model.downstream(full, "stars")
+    assert "star_removal" in model.downstream(full, "render_simple")
     assert [x for _p, x in model.pending_upto(classic, ["render_simple"])] == ["gradient", "render_simple"]
     assert model.pending(full) == []
     assert model.seconds("stack", full) > 0 and model.seconds("denoise_cl") == 300.0
@@ -378,19 +378,18 @@ def test_adding_and_removing_blocks_follows_the_rules_with_toasts(world, model, 
     page.toasted.connect(toasts.append)
     page.add_tool("etoiles", classic.pid)                                      # Stars needs Denoise
     settle(world["w"], page)
-    assert classic.opts["etoiles"] == "mesurer" and classic.opts["debruitage"]
+    assert classic.opts["etoiles"] == "retirer" and classic.opts["debruitage"]
     assert any("Denoise added" in t for t in toasts)
     assert model.sel_step == "etoiles" and model.path is classic
     # Denoise cannot go while Stars is there
     toasts.clear()
     page.remove_tool(node(page, "debruitage", classic.pid), [classic.pid])
     assert classic.opts["debruitage"] and toasts and "remove Stars first" in toasts[0]
-    # removing Stars turns the H-alpha gradient into the polynomial one, and the neural removal goes too
-    model.set_opts(classic, {**classic.opts, "fond": "halpha", "appris": True})
+    # removing Stars keeps Denoise and the gradient: nothing else goes with it
     toasts.clear()
     page.remove_tool(node(page, "etoiles", classic.pid), [classic.pid])
-    assert classic.opts["etoiles"] == "garder" and classic.opts["fond"] == "simple" and not classic.opts["appris"]
-    assert len(toasts) == 1 and toasts[0].count(" · ") == 1
+    assert classic.opts["etoiles"] == "garder" and classic.opts["debruitage"] and classic.opts["fond"] == "simple"
+    assert not toasts
     # Gradient cannot be removed, and the card after the output says so
     new, why = model.without_tool(classic.opts, "simple")
     assert new is None and why
@@ -461,7 +460,7 @@ def test_a_change_on_a_shared_done_block_offers_replace_or_variant(world, model,
     button(page.panel, "Replace").click()
     settle(world["w"], page)
     assert all(q.params["stack"]["kappa"] == 4.0 for q in model.paths)
-    assert model.state(model.paths[0], "stack") == "stale" and model.state(model.paths[0], "render_prep") == "stale"
+    assert model.state(model.paths[0], "stack") == "stale" and model.state(model.paths[0], "render_simple") == "stale"
     assert model.state(model.paths[0], "register") == "done"
     assert model.paths[0].computed is False and model.paths[0].rendered                       # a previous result stays
     g = Graph(model)
@@ -526,7 +525,7 @@ def test_a_method_card_asks_the_same_question(world, model, page):
     var.click()
     settle(world["w"], page)
     q = model.paths[-1]
-    assert q.opts["fond"] == "simple" and q.opts["etoiles"] == "mesurer" and q.variant_of == 1
+    assert q.opts["fond"] == "simple" and q.opts["etoiles"] == "retirer" and q.variant_of == 1
     assert q.name == "Full · polynomial"
 
 
@@ -624,7 +623,7 @@ def test_the_durations_of_the_cards_are_read_by_the_worker_and_the_panel_follows
 
 def test_undo_and_redo_restore_the_workflows(world, model, page):
     n0 = len(model.paths)
-    p = model.add_path("Extra", {"debruitage": False, "etoiles": "garder", "appris": False, "fond": "simple"})
+    p = model.add_path("Extra", {"debruitage": False, "etoiles": "garder", "fond": "simple"})
     assert len(model.paths) == n0 + 1 and model.can_undo()
     model.rename(p.pid, "Renamed")
     model.set_param(model.view(1), "stack", "kappa", 4.0)
@@ -682,9 +681,9 @@ def test_outputs_pulled_to_post_make_a_raw_stack_workflow(world, model, page):
     from astro_gpu.client.graph import ToolCard
     assert all(c.state == "in" for c in page.findChildren(ToolCard))
     assert [c.text() for c in page.findChildren(QLabel) if c.text() == "after the output"]
-    ok, why, need = model.slider_state(q, "stars_number")
+    ok, why, need = model.slider_state(q, "star_strength")
     assert ok is False and "before the Stars block" in why and need is None             # nothing to add after the exit
-    assert model.slider_state(model.view(1), "stars_number")[0] is True
+    assert model.slider_state(model.view(1), "star_strength", "combined")[0] is True
 
 
 def test_the_mouse_over_and_on_every_block_works(world, model, page):
@@ -695,13 +694,14 @@ def test_the_mouse_over_and_on_every_block_works(world, model, page):
     items = [it for it in page.graph.scene().items() if isinstance(it, BlockItem)]
     assert items
     for it in items:
-        for pos in (QPointF(it.w / 2, BH / 2), QPointF(it.w, BH / 2)):           # the body, then the port's place
+        # the body, then each port (the exit of Stacking, the two images of Stars): a hand that can grab the wire
+        for pos, grab in [(QPointF(it.w / 2, BH / 2), False)] + [(QPointF(it.w, y), True) for _w, y in it.ports]:
             ev = QGraphicsSceneHoverEvent(QEvent.GraphicsSceneHoverMove)
             ev.setPos(pos)
             it.hoverMoveEvent(ev)
-            assert it.cursor().shape() == (Qt.CrossCursor if it.port and pos.x() == it.w else Qt.PointingHandCursor)
+            assert it.cursor().shape() == (Qt.OpenHandCursor if grab else Qt.PointingHandCursor)
         assert isinstance(it._x_rect(), QRectF)
-    stacking = next(it for it in items if it.port)
+    stacking = next(it for it in items if it.node.key == "empilement")
     press = QGraphicsSceneMouseEvent(QEvent.GraphicsSceneMousePress)
     press.setButton(Qt.LeftButton)
     press.setPos(QPointF(stacking.w, BH / 2))
@@ -1097,7 +1097,8 @@ def test_the_french_switch_translates_everything_visible(world, model, page):
     # block names, states, summaries and the toolbar in French
     g = page.graph.graph
     tip = " ".join(it.toolTip() for it in page.graph.scene().items() if isinstance(it, BlockItem))
-    assert "Empilement" in tip and "À jour" in tip and "À calculer" in tip
+    assert "Empilement" in tip and "À jour" in tip
+    assert i18n._(STATE_WORD["pending"]) == "À calculer"                  # (the test project may have none pending)
     assert i18n._("Gradient") == "Gradient"
     assert g.summary(next(n for n in g.nodes if n.key == "alignement")) == "sur l'image la plus nette"
     assert "Ajouter une étape" in " ".join(t)
@@ -1155,7 +1156,7 @@ def test_nothing_slow_runs_in_the_gui_thread(qapp, monkeypatch):
     settle(w, pg)
     _edit_kappa(pg, 4.0)
     button(pg.panel, "Try as variant").click()
-    m.add_path("X", {"debruitage": True, "etoiles": "mesurer", "appris": True, "fond": "halpha"})
+    m.add_path("X", {"debruitage": True, "etoiles": "retirer", "fond": "simple"})
     m.undo()
     m.cost()
     m.all_pending()
@@ -1178,7 +1179,7 @@ def test_autosave_writes_only_the_definition_and_flushes_on_close(qapp, tmp_path
     m = ProjectModel(p, w)
     assert w.wait(180)
     before = (root / "project.astroproj").read_bytes()
-    m.add_path("Autosaved", {"debruitage": True, "etoiles": "garder", "appris": False, "fond": "simple"})
+    m.add_path("Autosaved", {"debruitage": True, "etoiles": "garder", "fond": "simple"})
     assert (root / "project.astroproj").read_bytes() == before                  # debounced: not yet
     time.sleep(0.45)
     qapp.processEvents()
@@ -1305,7 +1306,7 @@ def test_dropping_a_tool_on_a_lane_adds_it_where_the_rules_say(world, model, pag
     page.toasted.connect(toasts.append)
     graph.toolDropped.emit("etoiles", 3)                         # on Classic + denoise
     settle(world["w"], page)
-    assert model.view(3).opts["etoiles"] == "mesurer" and model.sel_step == "etoiles" and model.path.pid == 3
+    assert model.view(3).opts["etoiles"] == "retirer" and model.sel_step == "etoiles" and model.path.pid == 3
     assert model.scope == [1, 3]                                 # its Stars are the same as Full's: one block, two workflows
     assert not toasts or "Denoise added" not in toasts[0]        # it had Denoise
     graph.toolDropped.emit("etoiles", 2)                         # on Classic stack: Denoise comes with it

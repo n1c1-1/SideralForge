@@ -3,8 +3,8 @@
 The views (tune.py, frames.py, sources.py) never touch a file. They ask an ``InspectService``; it runs the job in a
 worker thread and answers with a signal in the GUI thread:
 
-* images: the array of a block (stack, denoised, starless...) or the engine's preview, with the automatic display stretch,
-  the histograms and the astrometric solution (``ShownImage``); the last images are kept (least recently used);
+* images: the array of a block (stack, denoised, the starless image...) or the engine's preview, with the automatic
+  display stretch, the histograms and the astrometric solution (``ShownImage``); the last images are kept (least recently used);
 * the metrics of a done result (``api.stage_outputs``), the frame table of Selection, the sessions with their headers
   and health checks, the frames of a group, their thumbnails and statistics;
 * the scan of a folder to import, with its progress.

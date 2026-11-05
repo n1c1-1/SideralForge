@@ -1468,12 +1468,10 @@ _METHODS: dict[str, list[MethodInfo]] = {
                    "gradients, may take part of the faintest wide structures."),
     ],
     "stars": [
-        MethodInfo("psf", "PSF model (Gaia)", "PSF model", "both", "stars", False,
-                   "Each star measured with the optics' real PSF, positioned by Gaia, then subtracted: star sliders "
-                   "in Post."),
-        MethodInfo("psf_neural", "PSF model + neural removal", "PSF + neural", "gpu", "star_net", False,
-                   "Adds a star-removal network trained on this stack: a second starless image, "
-                   "cleaner around bright stars."),
+        MethodInfo("neural", "Neural star removal", "neural", "both", "star_removal", False,
+                   "Takes the stars off the image (a network trained on many stacks): the starless image and the stars "
+                   "alone, recombined by a Stars and background block or each used as a layer of Post. Seconds on a "
+                   "GPU, a few minutes on a processor."),
     ],
     "deconvolution": [
         MethodInfo("rl", "Measured PSF (Richardson-Lucy)", "Richardson-Lucy", "both", "deconv", True,
@@ -1486,8 +1484,7 @@ _METHODS: dict[str, list[MethodInfo]] = {
 
 def methods(block: str) -> list[MethodInfo]:
     """The methods of a block (denoise, gradient, stars, deconvolution). ``new`` marks the ones that are not in the
-    engine yet; ``key`` is the workflow option value that selects it; ``stage`` the stage that implements it (with
-    Stars, the polynomial gradient is the ``background`` stage with the survey off)."""
+    engine yet; ``key`` is the workflow option value that selects it; ``stage`` the stage that implements it."""
     if block not in _METHODS:
         raise ValueError(f"block {block!r} has no methods (known: {list(_METHODS)})")
     return copy.deepcopy(_METHODS[block])
@@ -1559,11 +1556,9 @@ def states(p: Project2, update: bool = True) -> dict[tuple[int, str], StageState
             live = {j["key"] for j in json.loads(Path(run.plan_file).read_text(encoding="utf-8")).get("jobs") or []}
         except (OSError, ValueError):
             pass
-    planner = r2.Planner(proj, keys=keys, store=store, history={})
     out: dict[tuple[int, str], StageState] = {}
     for w in proj.workflows:
         chain_ = keys.chain(w)
-        blocked = planner.blocked(w)
         bad: set[str] = set()
         prev_keys = last_keys.get(str(w.id)) or {}
         for s in chain_:
@@ -1589,8 +1584,6 @@ def states(p: Project2, update: bool = True) -> dict[tuple[int, str], StageState
                 bad.add(s)
             elif status in ("interrupted", "running"):
                 out[(w.id, s)] = StageState("interrupted", REASON_INTERRUPTED, k, prev)
-            elif blocked:
-                out[(w.id, s)] = StageState("skipped", blocked, k, prev)
             elif any(a in bad for a in keys.ancestors(w, s)):
                 out[(w.id, s)] = StageState("skipped", REASON_UPSTREAM_FAILED, k, prev)
                 bad.add(s)
@@ -2483,11 +2476,12 @@ def describe(p: Project2, wf: int | Workflow, stage: str) -> list[ParamInfo]:
 
 # ---------------------------------------------------------------------------------------------- rendering and export
 
-def sliders_of(p: Project2, wf: int | Workflow) -> list[SliderInfo]:
-    """The nine Post sliders of a workflow's layer and which ones it offers (the reason when it does not)."""
+def sliders_of(p: Project2, wf: int | Workflow, part: str | None = None) -> list[SliderInfo]:
+    """The Post sliders of a workflow's layer and which ones it offers (the reason when it does not). ``part``: None
+    for the Output block's image, else one of the Stars block's: 'starless', 'stars', 'combined'."""
     from .render.sliders import SLIDERS, availability
     w = _keys(p).project.workflow(wf)
-    kind = "stacking" if w.end == "stacking" else ("engine" if w.options.get("stars") else "simple")
+    kind = part or ("stacking" if w.end == "stacking" else "simple")
     why = availability(kind, bool(w.options.get("denoise")))
     return [SliderInfo(s.key, s.name, s.group, s.ends, not why[s.key], why[s.key]) for s in SLIDERS]
 
@@ -2504,12 +2498,14 @@ def layer_service(device: str = "cpu") -> Any:
     return _SERVICES[device]
 
 
-def _output(p: Project2, wf: int | Workflow) -> tuple[str, Path]:
+def _output(p: Project2, wf: int | Workflow, part: str | None = None) -> tuple[str, Path]:
+    """(stage, folder) of a layer's images: the Output block's, or the Stars block's for its parts."""
     keys = _keys(p)
     w = keys.project.workflow(wf)
-    outs = [s for s in keys.chain(w) if keys.rules.chains.block_of(s) == "output"]
+    block = "output" if part is None else "stars"
+    outs = [s for s in keys.chain(w) if keys.rules.chains.block_of(s) == block]
     if not outs:
-        raise NotDone(f"workflow {w.name!r} has no output stage")
+        raise NotDone(f"workflow {w.name!r} has no {'Output' if part is None else 'Stars'} block")
     return outs[-1], _need(p, w, outs[-1])
 
 
@@ -2519,18 +2515,19 @@ def _base_of(p: Project2, base: Any) -> Any:
 
 def render_layer(p: Project2, wf: int | Workflow, base: Any = None, sliders: dict[str, float] | None = None,
                  scale: float = 0.25, region: tuple[int, int, int, int] | None = None, part: str | None = None,
-                 *, service: Any = None, device: str = "cpu") -> LayerImage:
+                 blend: str | None = None, *, service: Any = None, device: str = "cpu") -> LayerImage:
     """A workflow's layer on the whole stack grid (or the region (x0, x1, y0, y1) of it at full resolution), uncropped,
-    with the useful frame in ``crop``. ``base``: a name of ``render_bases``, a preset, settings or None (the
-    suggestion); ``sliders``: positions 0-4 (2 = the base); ``part``: None, 'stars' or 'starless'. ``NotDone`` when the
-    output stage is not computed."""
-    _, d = _output(p, wf)
-    return (service or layer_service(device)).render(d, _base_of(p, base), sliders, scale, region, part)
+    with the useful frame in ``crop``. ``base``: a name of ``render_bases``, settings or None (the suggestion);
+    ``sliders``: positions 0-4 (2 = the base); ``part``: None (the Output block's image), or the Stars block's
+    'starless', 'stars' or 'combined' (``blend``: how the stars go back, render/stars.BLENDS). ``NotDone`` when the
+    stage is not computed."""
+    _, d = _output(p, wf, part)
+    return (service or layer_service(device)).render(d, _base_of(p, base), sliders, scale, region, part, blend)
 
 
 def post_masks(p: Project2, wf: int | Workflow, scale: float = 0.25, region: tuple[int, int, int, int] | None = None,
                *, service: Any = None, device: str = "cpu") -> dict[str, Any]:
-    """Post's data masks of a layer: ``stars`` (None for a layer without Stars) and ``halpha``, float32 in [0, 1]."""
+    """Post's data masks of a layer: ``halpha``, float32 in [0, 1]."""
     _, d = _output(p, wf)
     return (service or layer_service(device)).masks(d, scale, region)
 

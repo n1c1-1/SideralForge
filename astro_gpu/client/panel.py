@@ -3,7 +3,9 @@
 One line per setting. What there is to know about a setting (its suggestion and why, its range, its use, a tip)
 shows under the list when the setting is clicked or changed. When the block is shared by several workflows, the panel
 says which ones a change goes to; a change that would throw away computed results offers Replace or Try as variant.
-Blocks with several methods show them as cards: what each does, where it runs, how long on this machine.
+Blocks with several methods show them as cards: what each does, where it runs, how long on this machine. A Stars and
+background block shows its layer's settings in Post (how the stars go back, the sliders): a change here is a change
+there, and the other way round (``ProjectModel.set_post_layer``, ``postChanged``).
 
 The settings come from the model's cache of the engine's ``describe`` (the worker fills it): the panel shows what it has
 and builds itself again when the rest arrives. The ◇ methods and settings (not in the engine yet) show in Spec mode
@@ -316,6 +318,7 @@ class Panel(QWidget):
     addSources = Signal()
     addSession = Signal()
     renamed = Signal(int, str)
+    openLayer = Signal(int)             # Open in Post (a Post layer's id)
     removeTool = Signal()
     variantMade = Signal(int, int)      # new workflow, the one it is a variant of
     toast = Signal(str)                 # a word to say (what came with a change, why it was refused)
@@ -354,6 +357,8 @@ class Panel(QWidget):
         self._later.setInterval(0)
         self._later.timeout.connect(self._rebuild)
         project.paramsChanged.connect(self._params_arrived)
+        if hasattr(project, "postChanged"):
+            project.postChanged.connect(self._post_changed)
         for sig in (project.selectionChanged, project.readyChanged):
             sig.connect(self._again)
 
@@ -362,10 +367,16 @@ class Panel(QWidget):
         if self.node is not None:
             self._later.start()
 
+    def _post_changed(self, source):
+        """Post changed the composition: a Stars and background block shown here shows it (not while one of its
+        sliders is held, nor for a change made here)."""
+        if source is not self and self.node is not None and self.node.key == "composition":
+            self._later.start()
+
     def _params_arrived(self, wid: int, stage: str):
         """Settings arrived: only the panel that shows them builds itself again."""
         node = self.node
-        if node is None or node.key in ("sources", "final") or not node.paths:
+        if node is None or node.key in ("sources", "final", "composition") or not node.paths:
             return
         if any(q.pid == wid for q in node.paths) and stage in needed_stages(self.s, node.paths[0], node.key):
             self._later.start()
@@ -391,11 +402,17 @@ class Panel(QWidget):
             self.sources()
         elif k == "final":
             self.hv.addWidget(label(_("Post"), "h1"))
+            from .blocks import Graph
+            from .post3 import tr_name
             rows = []
-            for q in self.s.paths:
+            for name, pid in Graph(self.s).post_layers:
+                q = self.s.view(pid) if pid is not None else None
+                if q is None:
+                    rows.append((html.escape(tr_name(name, True)), _("image")))
+                    continue
                 src = _("from {block}").format(block=block_title(q, q.end)) if q.end else ""
                 st = _("Up to date") if q.rendered and q.computed else (_("Outdated") if q.rendered else _("Pending"))
-                rows.append((html.escape(q.name), " · ".join(x for x in (st, src) if x)))
+                rows.append((html.escape(tr_name(name)), " · ".join(x for x in (st, src) if x)))
             if rows:
                 self.bv.addWidget(self.group_title(_("Layers")))
                 self.bv.addWidget(kv(rows, pad=10))
@@ -406,6 +423,8 @@ class Panel(QWidget):
                 b.clicked.connect(self.openPost.emit)
                 self.bv.addWidget(b, 0, Qt.AlignLeft)
             self.bv.addStretch(1)
+        elif k == "composition":
+            self.composition(node)
         else:
             self.block(node)
 
@@ -529,7 +548,13 @@ class Panel(QWidget):
             self.stack_methods(p)
         if k == "post" and p.end:
             self.bv.addWidget(kv([(_("Output of"), block_title(p, p.end))]))
-        self.settings(p, k, groups, extra)
+        if k == "etoiles":                  # no setting: its two images, and where they go
+            self.outputs(node)
+            self.bv.addWidget(label(_("No setting here: the network is applied as it was trained. Its two images are "
+                                      "adjusted in a Stars and background block, or each as a layer of Post."),
+                                    "small", wrap=True))
+        else:
+            self.settings(p, k, groups, extra)
         self.bv.addStretch(1)
 
     def stack_sessions(self):
@@ -710,6 +735,98 @@ class Panel(QWidget):
         self.s.pending_change = None
         self.changed.emit()
 
+    def outputs(self, node):
+        """The Stars block's two images, in the colours of its ports, and where each goes (its Stars and background
+        blocks, Post as it is), or how to send it."""
+        from .blocks import STAR_OUTPUTS, Graph
+        from .graph import IMAGE_COL
+        g = Graph(self.s)
+        mine = [n for n in g.compositions if n.parent is not None and n.parent._bk == node._bk]
+        self.bv.addWidget(self.group_title(_("Outputs")))
+        names = {"starless": _("Starless image"), "stars": _("Stars alone")}
+        for what, _word in STAR_OUTPUTS:
+            to = [block_title(n.paths[0], "composition") + (f" ({n.paths[0].name})" if len(node.paths) > 1 else "")
+                  for n in mine]
+            if any(src._bk == node._bk and part == what for src, part in g.direct):
+                to.append(_("Post (as a layer)"))
+            dest = ", ".join(to) if to else _("not used: drag its dot onto Post or onto Composition")
+            lb = QLabel(f"<span style='color:{IMAGE_COL[what]}'>●</span> <b>{html.escape(names[what])}</b>"
+                        f" → {html.escape(dest)}")
+            lb.setTextFormat(Qt.RichText)
+            lb.setWordWrap(True)
+            self.bv.addWidget(lb)
+        self.bv.addSpacing(6)
+
+    def composition(self, node):
+        """A Stars and background block: its layer of Post, recombining the Stars block's two images. How the stars go
+        back and the sliders, the same as in Post; Open in Post. A workflow whose Post was never opened gets its layer
+        here (the one Post would give it)."""
+        from ..render.sliders import STARS as STARS_GROUP
+        from .post3 import BLENDS, ContSlider, dec
+        s = self.s
+        p = node.paths[0]
+        lid = node.lid if node.lid is not None else s.add_post_layer(p.pid, "combined", self)
+        node.lid = lid
+        s.sel_layer = lid
+        lay = s.post_layer(lid) or {}
+        top = QHBoxLayout()
+        top.addWidget(label(block_title(p, "composition"), "h1"))
+        top.addStretch(1)
+        st = block_state(s, p, "etoiles")
+        chip = QLabel(_(STATE_WORD[st]))
+        chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
+        top.addWidget(chip)
+        x = QPushButton(_("Remove"))
+        x.setToolTip(_("Take this block out of Post (the Stars block's images stay computed)"))
+        x.clicked.connect(self.removeTool.emit)
+        top.addWidget(x)
+        self.hv.addLayout(top)
+        self.hv.addWidget(label(p.name, "small"))
+        from .blocks import BY_KEY
+        self.bv.addWidget(label(_(BY_KEY["composition"]["what"]), "small", wrap=True))
+        if st != "done":
+            self.bv.addWidget(label(_("The Stars block is not computed yet: run it to see the result in Post."),
+                                    "warn", wrap=True))
+        sliders = dict(lay.get("sliders") or {})
+
+        def commit(key, v):
+            if abs(v - 2) < 0.02:
+                sliders.pop(key, None)
+            else:
+                sliders[key] = v
+            s.set_post_layer(lid, self, sliders=dict(sliders))
+        group = None
+        infos = [x for x in s.slider_infos(p, "combined") if x.available]     # the stars first: what the block is for
+        for sd in sorted(infos, key=lambda x: x.group != STARS_GROUP):
+            if sd.group != group:
+                group = sd.group
+                self.bv.addWidget(self.group_title(_(group)))
+                if group == STARS_GROUP:
+                    row = QHBoxLayout()
+                    row.addWidget(label(_("Stars blend"), "dim"))
+                    cb = QComboBox()
+                    for b in BLENDS:
+                        cb.addItem(_(b), b)
+                    cb.setToolTip(_("How the stars go back on the starless image: Screen (the usual way), Linear "
+                                    "dodge (add) or Lighten"))
+                    cb.setCurrentIndex(max(0, BLENDS.index(lay.get("blend") or BLENDS[0])))
+                    cb.currentIndexChanged.connect(lambda i, cb=cb: s.set_post_layer(lid, self, blend=cb.itemData(i)))
+                    row.addWidget(cb, 1)
+                    self.bv.addLayout(row)
+            sl = ContSlider(_(sd.name), 0, 4, sliders.get(sd.key, 2.0), 2, ends=[_(e) for e in sd.ends],
+                            show=lambda v: _("suggested") if abs(v - 2) < 0.02 else dec(f"{v - 2:+.1f}"))
+            ok, why, _need = s.slider_state(p, sd.key, "combined")
+            sl.set_available(ok, why)
+            sl.done.connect(lambda v, k=sd.key: commit(k, v))
+            self.bv.addWidget(sl)
+        self.bv.addSpacing(8)
+        b = QPushButton(_("Open in Post"))
+        b.setObjectName("primary")
+        b.setToolTip(_("Post, with this block's layer selected: the image, the same settings, masks and filters"))
+        b.clicked.connect(lambda: self.openLayer.emit(lid))
+        self.bv.addWidget(b, 0, Qt.AlignLeft)
+        self.bv.addStretch(1)
+
     def graph_state(self, node):
         states = {block_state(self.s, q, node.key) for q in node.paths}
         from .blocks import STATE_ORDER
@@ -800,17 +917,12 @@ class Panel(QWidget):
             _("selection {t} % / {f} {unit}").format(t=f"{tmin:.0f}", f=number(fmax), unit=unit))
 
     def _groups(self, p, k) -> list:
-        """[(group title, [resolved settings])] of the block, with the half-stacks, the neural removal and the
-        starless image where they belong."""
+        """[(group title, [resolved settings])] of the block, with the half-stacks where they belong."""
         s = self.s
         groups = list(step_settings(s, p, k))
         if k == "empilement" and p.opts["debruitage"]:
             groups += [(_("Half-stacks") if g == _("Half-stacks") else _("Half-stacks") + f" · {g}", rs)
                        for g, rs in step_settings(s, p, "demi_piles")]
-        if k == "etoiles":
-            if p.opts.get("appris"):
-                groups += [(_("Neural removal") + f" · {g}", rs) for g, rs in step_settings(s, p, "appris")]
-            groups += [(_("Starless image") + f" · {g}", rs) for g, rs in step_settings(s, p, "sans_etoiles")]
         return groups
 
     def settings(self, p, k, groups=None, extra_hidden=0):

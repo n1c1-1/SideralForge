@@ -17,7 +17,6 @@ AUTO_FIELDS: dict[str, frozenset[str]] = {
     "astrometry": frozenset({"ra", "dec", "target", "pixel_um", "focal_mm"}),
     "color": frozenset({"aperture"}),
     "denoise": frozenset({"adaptation"}),                # long when the half-stacks' noise is not dithered
-    "starless": frozenset({"learned_stars"}),
 }
 #: settings whose default changed after results had been keyed under the previous one: {stage: {field: the previous
 #: default}}. The key holds such a field's effective value unless it is the previous default (core/store.py), so a
@@ -33,6 +32,8 @@ RETIRED: dict[str, frozenset[str]] = {
     "background": frozenset({"sky_order", "large_scale_px"}),
     # the network trained from scratch on each image, replaced by the pretrained one (stages/denoise.py)
     "denoise": frozenset({"iterations", "patch", "batch", "learning_rate", "reuse_model"}),
+    # the deep catalogue and the faint stars of the star model (the Stars block before its network)
+    "catalogs": frozenset({"deep_stars", "g_deep", "g_faint", "max_faint"}),
 }
 #: removed settings whose last value stays in every key, so that the results computed with it keep their keys:
 #: {stage: {field: value}} (the Moffat star measure and the drizzle coverage rule are now the only behaviour)
@@ -40,24 +41,20 @@ KEY_CONSTANTS: dict[str, dict[str, object]] = {
     "stack": {"scale_rule": "coverage"},
     "register": {"fwhm_method": "moffat"},
 }
-#: fields naming a file: keyed by the file (name, size, modification time), not by the path string
-PATH_FIELDS: dict[str, frozenset[str]] = {
-    "starless": frozenset({"learned_stars"}),
-}
 #: fields without effect on the results (left out of the keys)
 NON_KEY: dict[str, frozenset[str]] = {
     "calibrate": frozenset({"workers"}),
     "register": frozenset({"workers"}),
-    "star_net": frozenset({"device"}),
 }
 #: the stages only v2 workflows have
-NEW_STAGES = ("gradient", "render_simple")
+NEW_STAGES = ("gradient", "render_simple", "star_removal")
 
 
 def new_stages() -> list[Stage]:
     from .gradient import Gradient
     from .render_simple import RenderSimple
-    return [Gradient(), RenderSimple()]
+    from .star_removal import StarRemoval
+    return [Gradient(), RenderSimple(), StarRemoval()]
 
 
 def V2_STAGES() -> list[Stage]:            # noqa: N802 (a table, built on first use: it imports every stage)

@@ -46,12 +46,15 @@ from astro_gpu.client import i18n, prefs  # noqa: E402
 from astro_gpu.client.charts import FramesChart, SpectralChart  # noqa: E402
 from astro_gpu.client.frames import FramesView, GroupingDialog, check_lines, night_text  # noqa: E402
 from astro_gpu.client.imageview import ImageView, default_loader  # noqa: E402
-from astro_gpu.client.tune import Table  # noqa: E402
 from astro_gpu.client.model import ProjectModel  # noqa: E402
 from astro_gpu.client.services import inspect as si  # noqa: E402
 from astro_gpu.client.sources import ImportDialog, SourcesView, import_folder  # noqa: E402
 from astro_gpu.client.steps import SkyOverlay, Steps  # noqa: E402
-from astro_gpu.client.tune import TuneView, sky_text  # noqa: E402
+from astro_gpu.client.tune import (  # noqa: E402
+    Table,  # noqa: E402
+    TuneView,
+    sky_text,
+)
 from astro_gpu.client.widgets import QSS  # noqa: E402
 from astro_gpu.core import project2  # noqa: E402
 from astro_gpu.core.project import Target  # noqa: E402
@@ -298,7 +301,7 @@ def test_each_block_shows_its_real_picture(win):
             "alignement": ["reference", "quality", "drift", "track", "distribution", "table"],
             "empilement": ["stack", "rejection", "coverage", "weights"], "astrometrie": ["solution", "survey"],
             "couleur": ["colors", "spectral", "lines", "fit"], "debruitage": ["denoised"],
-            "etoiles": ["starless", "star_model", "psf"],
+            "etoiles": ["starless", "stars"],
             "fond": ["result", "starless_bg", "removed", "sky", "star_flat"],
             "post": ["output"]}
     from astro_gpu.client.chartview import ChartView
@@ -597,7 +600,7 @@ def test_a_frame_is_picked_on_the_chart_and_excluded_by_hand_for_the_whole_proje
 
 def test_a_block_not_computed_says_so_and_offers_run_to_here(win):
     s = win.s
-    q = s.add_path("Classic stack", {"debruitage": False, "etoiles": "garder", "appris": False, "fond": "simple"})
+    q = s.add_path("Classic stack", {"debruitage": False, "etoiles": "garder", "fond": "simple"})
     try:
         settle(win)
         s.select(index=s.index_of(q.pid), step="fond")
@@ -811,7 +814,7 @@ def scratch(tmp_path):
     folder = scratch_project(tmp_path / "heart")
     p = api.open_project(folder)
     api.add_workflow(p, "Classic stack", "Classic stack", None)
-    api.add_workflow(p, "Full + neural stars", "Full + neural stars", {"denoise": {"iterations": 6000}})
+    api.add_workflow(p, "Full", "Full", None)
     api.save(p)
     w = open_window(folder, readonly=False)
     yield w
@@ -1167,18 +1170,17 @@ def test_the_pictures_are_placed_on_the_reference_frame_of_their_registration(tm
 
 
 def test_the_output_says_what_the_final_image_is():
-    """One line under Output says what the final image is and which steps it holds: the simple output is the Gradient
-    removed picture with Post's stretch, the engine's rendering is another preparation."""
+    """One line under Output says what the final image is and which steps it holds: the Gradient removed picture with
+    Post's stretch; the Stars block shows its two images against the image with its stars."""
     from astro_gpu.client import steps as st
     base = {"stack", "color", "gradient", "render_simple"}
     assert st.output_note("render_simple", base) == st.OUTPUT_SIMPLE_NOTE
     assert st.output_note("render_simple", base | {"denoise"}) == st.OUTPUT_SIMPLE_DENOISED_NOTE
     assert st.output_note("render_simple", {"stack", "color", "render_simple"}) == st.OUTPUT_COLOR_NOTE
     assert st.output_note("render_simple", {"stack", "render_simple"}) == st.OUTPUT_RAW_NOTE
-    assert st.output_note("render_prep", base) == st.OUTPUT_ENGINE_NOTE
-    assert st.output_note("render_prep_learned", base) == st.OUTPUT_LEARNED_NOTE
+    assert st.output_note("anything else", base) == st.OUTPUT_NOTE
     assert "Final image = Gradient removed, then the steps of Post" in st.OUTPUT_SIMPLE_NOTE
-    assert "not the Gradient removed picture" in st.OUTPUT_ENGINE_NOTE
+    assert not hasattr(st, "OUTPUT_ENGINE_NOTE") and not hasattr(st, "OUTPUT_LEARNED_NOTE")
 
 
 def test_the_tables_and_the_charts_of_the_blocks(qapp):
@@ -1271,7 +1273,7 @@ def cut_texts(root: QWidget) -> list[str]:
     return out
 
 
-NAMES = {"Full", "Classic stack", "Classic + denoise", "Full + neural stars", "Raw stack", "Session 1", "heart_a7s",
+NAMES = {"Full", "Classic stack", "Classic + denoise", "Raw stack", "Session 1", "heart_a7s",
          "heart_small", "IC 1805", "OSC", "ILCE-7S", "Heart", "FWHM"}
 
 

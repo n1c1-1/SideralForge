@@ -6,7 +6,6 @@ A stage's cost grows with its *units*:
     calibrate, register    light frames x sensor Mpx
     stack                  light frames x sensor Mpx x drizzle scale²
     denoise                adaptation steps + DENOISE_MPX_UNITS x stack grid Mpx (applying the network)
-    star_net               training steps
     any other stage        stack grid Mpx
 
 With a history of this machine's runs (``STATE/timings2.json``: the last 20 [seconds, units, "gpu" | "cpu"] per
@@ -38,21 +37,20 @@ LOCK_WAIT = 5.0                                # seconds a writer of the history
 LOCK_STALE = 30.0                              # a lock file older than this was left by a process that died
 
 #: the reference project, Heart: (seconds, GB in the stage folder) per stage, from its manifests; gradient and
-#: render_simple are guesses at Heart size (60 s and 30 s)
+#: render_simple are guesses at Heart size (60 s and 30 s), star_removal from the bench (8 s for 12 Mpx on the RTX
+#: 4060 Ti, 5 November 2026, plus the reading and writing of its images)
 HEART: dict[str, tuple[float, float]] = {
     "inventory": (5.0, 0.0), "calibrate": (310.8, 0.11), "register": (121.4, 0.0), "stack": (2064.0, 1.31),
     "astrometry": (124.1, 0.0), "reference": (89.8, 0.0), "catalogs": (178.3, 0.07), "surveys": (42.5, 0.11),
-    "color": (2.9, 0.0), "denoise": (20.4, 0.68), "optics": (179.9, 0.98), "stars": (1929.2, 1.07),
-    "star_net": (2453.3, 0.37), "starless": (622.5, 2.01), "background": (44.7, 0.98), "render_prep": (116.8, 1.44),
-    "render_prep_learned": (99.6, 1.6), "gradient": (60.0, 0.01), "render_simple": (30.0, 0.7),
+    "color": (2.9, 0.0), "denoise": (20.4, 0.68), "gradient": (60.0, 0.01), "render_simple": (30.0, 0.7),
+    "star_removal": (30.0, 0.66),
 }
 #: a stage the table does not know (tests' toy stages): one minute at Heart size
 OTHER = (60.0, 0.0)
 #: without a GPU, each stage takes this many times longer (guesses, not measured)
 CPU_FACTOR: dict[str, float] = {
     "inventory": 1, "calibrate": 1.3, "register": 1.5, "stack": 5, "astrometry": 1, "catalogs": 1, "surveys": 1,
-    "color": 1.5, "denoise": 45, "optics": 3, "stars": 8, "star_net": 60, "starless": 4, "background": 2,
-    "render_prep": 10, "render_prep_learned": 10, "gradient": 1, "render_simple": 2,
+    "color": 1.5, "denoise": 45, "gradient": 1, "render_simple": 2, "star_removal": 40,
 }
 DEFAULT_CPU_FACTOR = 2.0
 #: Denoise (stages/denoise.py): applying the pretrained network costs this many adaptation steps per Mpx of the stack
@@ -75,7 +73,6 @@ class Facts:
     scale: float = 1.5               # drizzle
     grid_mpx: float = 6384 * 4272 / 1e6
     iterations: int = 0              # denoise: adaptation steps (0: the pretrained network as it is)
-    steps: int = 11000               # star_net
 
 
 HEART_FACTS = Facts()
@@ -97,8 +94,6 @@ def units(stage: str, f: Facts) -> float:
         return f.lights * f.mpx * f.scale ** 2
     if stage == "denoise":
         return float(f.iterations) + DENOISE_MPX_UNITS * f.grid_mpx
-    if stage == "star_net":
-        return float(f.steps)
     return f.grid_mpx
 
 
@@ -257,8 +252,8 @@ def denoise_steps(method: str | None, adaptation: str | None) -> int:
 
 
 def facts(keys: Any, wf: Any, store: Any = None) -> Facts:
-    """The facts of a v2 workflow: from its done results (inventory, stack, denoise, star_net manifests) when there
-    are some, else from its settings and its frame files; the reference project's values for what is unknown.
+    """The facts of a v2 workflow: from its done results (inventory, stack, denoise manifests) when there are some,
+    else from its settings and its frame files; the reference project's values for what is unknown.
     ``keys``: a core.store.Keys; ``store``: a core.store.Store (None: results are not read)."""
     f = Facts()
     try:
@@ -316,8 +311,6 @@ def facts(keys: Any, wf: Any, store: Any = None) -> Facts:
     dn = {**given("denoise"), **(done("denoise").get("params") or {})}
     f.iterations = denoise_steps(dn.get("method") or (getattr(wf, "options", None) or {}).get("denoise"),
                                  dn.get("adaptation"))
-    st = (done("star_net").get("params") or {}).get("steps") or given("star_net").get("steps")
-    f.steps = int(st or f.steps)
     return f
 
 
@@ -346,13 +339,11 @@ def v1_facts(root: str | Path) -> Facts:
     grid = (stack.get("metrics") or {}).get("grid")
     f.grid_mpx = grid[0] * grid[1] / 1e6 if grid else f.mpx * f.scale ** 2
     f.iterations = 0                 # v1 trained its network from scratch: no adaptation steps to count
-    f.steps = int((man("star_net").get("params") or {}).get("steps") or f.steps)
     return f
 
 
 def v1_durations(root: str | Path) -> dict[str, float]:
-    """{stage: seconds} of the done stages of a v1 project (a stage that was off, such as star_net disabled,
-    counts 0)."""
+    """{stage: seconds} of the done stages of a v1 project (a stage that was off counts 0)."""
     out = {}
     work = Path(root) / "work"
     if not work.is_dir():
@@ -369,6 +360,6 @@ def v1_durations(root: str | Path) -> dict[str, float]:
 
 def learn_from_v1(root: str | Path, gpu: bool = True) -> list[tuple[str, float, float, str]]:
     """History entries (stage, seconds, units, kind) from the done stages of a v1 project, read only. Stages that
-    did nothing (star_net disabled: under a second) are left out. v1 runs used the GPU: ``gpu`` True."""
+    did nothing (a stage that was off: under a second) are left out. v1 runs used the GPU: ``gpu`` True."""
     f = v1_facts(root)
     return [(s, sec, units(s, f), _kind(gpu)) for s, sec in v1_durations(root).items() if sec >= 1.0]

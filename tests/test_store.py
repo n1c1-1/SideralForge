@@ -2,8 +2,8 @@
 folders and the shim that runs unchanged stage code through v1's runner.
 
 Toy stages: inventory → stack → b (optional) → c → e, where c declares b as optional and e reads b through an EXTRA
-edge (the starless / star_net pattern). stack has a field with an auto rule (scale), one without (kappa), a field
-left out of the key (workers) and the injected exclusions; b has a path field (model).
+edge. stack has a field with an auto rule (scale), one without (kappa), a field left out of the key (workers) and the
+injected exclusions.
 """
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ class E(Stage):
         ctx.save_json("e.json", ctx.load_json("c", "c.json"))
 
 
-def toy_rule(options, end, reference, learned_layer):
+def toy_rule(options, end, reference):
     return ["inventory", "stack"] + (["b"] if options.get("denoise") else []) + ["c", "e"]
 
 
@@ -128,7 +128,7 @@ def toy_chains() -> Chains:
 
 def toy_rules(auto_fields=None, **kw) -> KeyRules:
     return KeyRules(toy_chains(), auto_fields={"stack": ("scale",)} if auto_fields is None else auto_fields,
-                    path_fields={"b": ("model",)}, non_key={"stack": ("workers",)}, implied=toy_implied, **kw)
+                    non_key={"stack": ("workers",)}, implied=toy_implied, **kw)
 
 
 def K(p) -> Keys:
@@ -187,7 +187,7 @@ def test_field_without_auto_rule_at_default_is_the_same_key(proj):
     assert K(proj).key(CLASSIC, "stack") != base
     # with no AUTO_FIELDS declared every field counts as automatic: nothing is dropped (the safe side)
     proj.workflow(CLASSIC).params["stack"] = {"kappa": 5.0}
-    safe = Keys(proj, KeyRules(toy_chains(), None, {}, {}, toy_implied))
+    safe = Keys(proj, KeyRules(toy_chains(), None, {}, toy_implied))
     assert safe.key_params(CLASSIC, "stack") == {"kappa": 5.0}
 
 
@@ -212,36 +212,10 @@ def test_values_are_validated_before_hashing(proj):
         K(proj).key(CLASSIC, "c")                            # raised for a downstream key too
 
 
-def test_path_field_is_keyed_by_its_file(proj, tmp_path):
-    f = proj.root / "models" / "m.pt"
-    f.parent.mkdir()
+def test_file_id(tmp_path):
+    f = tmp_path / "m.pt"
     f.write_bytes(b"x" * 50)
-    w = proj.workflow(DENOISE)
-    none = K(proj).key(DENOISE, "b")
-    forms = ["models/m.pt", "models\\m.pt", "./models/../models/m.pt", str(f), f.as_posix(),
-             str(f).replace("/", "\\"), "models/m.pt (run 1a2b3c4d)"]
-    keys = set()
-    for v in forms:
-        w.params["b"] = {"model": v}
-        keys.add(K(proj).key(DENOISE, "b"))
-    assert len(keys) == 1 and none not in keys
-    one = keys.pop()
-    absolute = Path(os.path.abspath(f)).as_posix()
-    w.params["b"] = {"model": "models\\m.pt"}
-    assert K(proj).overrides(DENOISE, "b") == {"model": absolute}
-    w.params["b"] = {"model": "models/m.pt (run 1a2b3c4d)"}
-    assert K(proj).overrides(DENOISE, "b") == {"model": absolute + " (run 1a2b3c4d)"}
-    # the same name, size and mtime elsewhere keeps the key
-    other = tmp_path / "elsewhere" / "m.pt"
-    other.parent.mkdir()
-    shutil.copy2(f, other)
-    w.params["b"] = {"model": str(other)}
-    assert K(proj).key(DENOISE, "b") == one
-    # a newer mtime changes it
-    st = f.stat()
-    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
-    w.params["b"] = {"model": "models/m.pt"}
-    assert K(proj).key(DENOISE, "b") != one
+    assert file_id(f)[:2] == ["m.pt", 50]
     assert file_id(tmp_path / "missing.pt") == ["missing.pt", None, None]
 
 
@@ -544,34 +518,34 @@ def test_default_rules_read_stages_v2(monkeypatch):
     from astro_gpu.stages import v2
     monkeypatch.setattr(store, "_RULES", [])
     r = store.key_rules()
-    assert r.auto_fields("stack") == v2.AUTO_FIELDS["stack"] and r.auto_fields("optics") == frozenset()
-    assert r.path_fields("starless") == {"learned_stars"} and not r.path_fields("denoise")     # reuse_model retired
-    assert r.non_key("calibrate") == {"workers"} and r.non_key("star_net") == {"device"}
+    assert r.auto_fields("stack") == v2.AUTO_FIELDS["stack"] and r.auto_fields("star_removal") == frozenset()
+    assert r.non_key("calibrate") == {"workers"} and r.non_key("star_removal") == frozenset()
     assert r.retired("stack") == v2.RETIRED["stack"] and r.constants("register") == {"fwhm_method": "moffat"}
+    assert {"deep_stars", "g_deep", "g_faint", "max_faint"} <= r.retired("catalogs")      # the earlier Stars block's
 
 
 def test_real_stage_graph_shares_as_designed(tmp_path, raws):
     p = project2.create(tmp_path / "real", "real")
     p.sessions.append(Session(1, "night 1", lights=[str(raws)]))
     ids = {name: p.add_workflow(name, TEMPLATES[name]).id for name in TEMPLATES}
-    classic, cdn, full, neural = (ids[n] for n in ("Classic stack", "Classic + denoise", "Full",
-                                                   "Full + neural stars"))
+    classic, cdn, full = (ids[n] for n in ("Classic stack", "Classic + denoise", "Full"))
     k = Keys(p)
-    for s in ("inventory", "calibrate", "register", "stack", "astrometry"):
-        assert len({k.key(i, s) for i in ids.values()}) == 1, s
-    # the catalogue is deep only with the Stars block (deep_stars, implied): two catalogues, and two colours after them
-    for s in ("catalogs", "color"):
-        assert k.key(classic, s) == k.key(cdn, s) != k.key(full, s) == k.key(neural, s), s
-    assert k.sharing(classic, "color") == sorted([classic, cdn])
-    assert k.key(cdn, "denoise") == k.key(full, "denoise") == k.key(neural, "denoise")
-    assert k.key(full, "stars") == k.key(neural, "stars")
-    assert k.key(full, "starless") != k.key(neural, "starless")          # star_net is read (EXTRA)
+    for s in ("inventory", "calibrate", "register", "stack", "astrometry", "catalogs", "color"):
+        assert len({k.key(i, s) for i in ids.values()}) == 1, s          # the same catalogue with or without Stars
+    assert k.sharing(classic, "color") == sorted(ids.values())
+    assert k.key(cdn, "denoise") == k.key(full, "denoise")
+    assert k.key(cdn, "render_simple") == k.key(full, "render_simple") != k.key(classic, "render_simple")
+    assert k.sharing(full, "star_removal") == [full]
     assert k.block_key(classic, "calibration") == (k.key(classic, "inventory"), k.key(classic, "calibrate"))
     assert k.block_key(full, "astrometry") == (k.key(full, "astrometry"), k.key(full, "catalogs"))  # no surveys
     assert k.block_key(full, "output")[-1] == f"workflow {full}"
-    # the implied star_net.enabled wins over a stored value; worker counts are not in the key
-    p.workflow(neural).params["star_net"] = {"enabled": False, "device": "aux"}
+    assert k.block_key(full, "stars") == (k.key(full, "star_removal"),)
+    # the implied method wins over a stored value; worker counts and the settings of the earlier Stars block (a
+    # stored deep catalogue, the star stages) are not in the key
+    p.workflow(full).params["denoise"] = {"method": "adapted"}
     p.workflow(full).params["calibrate"] = {"workers": 2}
+    p.workflow(full).params["catalogs"] = {"deep_stars": True, "g_deep": 17.0}
+    p.workflow(full).params["star_net"] = {"enabled": False}
     k2 = Keys(p)
-    assert k2.keys(neural) == k.keys(neural) and k2.keys(full) == k.keys(full)
-    assert k2.overrides(neural, "star_net") == {"enabled": True, "device": "aux"}
+    assert k2.keys(full) == k.keys(full)
+    assert k2.overrides(full, "denoise") == {"method": "pretrained"}

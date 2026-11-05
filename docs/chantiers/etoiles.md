@@ -137,6 +137,29 @@ couvre 78 % de Heart).
   sur des champs jamais vus). À la fin, chacun produit les images sans étoiles du banc
   (`stars_compare/<cas>/net_<nom>_starless.fits`) et les cinq épreuves sont refaites (`stars_compare.py`).
 
+## Le résultat et l'intégration (5 novembre)
+
+- **« mixed » est retenu** (rapport : `docs/POINT_MATINEE_2026-11-05.md`) : moins d'étoiles faibles laissées que
+  StarNet sur les cinq champs du banc, aigrettes et halos des étoiles brillantes enlevés, fond inchangé ; « real »
+  laissait un trou sombre au cœur des étoiles saturées. Le réseau est livré dans `astro_gpu/resources/stars/`
+  (`starless_nafnet.pt`, demi-précision, 58 Mo).
+- **Le bloc Étoiles** (`stages/star_removal.py`) remplace toute l'ancienne chaîne (modèle d'étoiles Gaia, PSF, réseau
+  appris projet par projet, image sans étoiles par soustraction, fond de ciel, préparation du rendu, étoiles redessinées
+  dans le Post) : il lit l'image de la Sortie (débruitée, sans gradient, équilibrée en couleur, ciel retiré : ce que le
+  réseau a vu à l'entraînement) et donne deux images, le fond sans étoiles et les étoiles seules (leur somme est
+  l'image, au pixel près). 14 s sur Heart (dont 7 s de réseau) sur la 4060 Ti. L'ancien code est retiré, outils et tests
+  compris ; les options enregistrées « psf » et « psf_neural » se lisent comme la nouvelle.
+- **Dans le graphe** : le bloc Étoiles a deux sorties (le fond en haut, les étoiles en bas) ; une troisième section,
+  **Composition**, reçoit les blocs **Étoiles et fond** qui les recombinent. Une sortie tirée sur le Post en fait un
+  calque tel quel. Un bloc Étoiles et fond est un calque du Post (partie « combined ») : ses réglages sont les mêmes dans
+  le panneau du graphe et dans le Post, synchronisés dans les deux sens.
+- **Le rendu des deux images** (`render/stars.py`), selon l'état de l'art (outil de recombinaison de Siril, notes de
+  RC Astro sur StarXTerminator, calque en Écran sous Photoshop) : chaque image étirée à part, les étoiles remises en
+  Écran (ou Densité linéaire, ou Éclaircir). Par défaut, les deux suivent la courbe de l'image entière : « Étoiles et
+  fond » au réglage suggéré ressemble à la Sortie. Curseurs : ciel, contraste, saturation pour le fond ; Étoiles
+  (l'étirement des étoiles, la réduction qu'apporte la séparation), Taille (filtres Minimum / Maximum de Photoshop),
+  Couleur.
+
 ## Le calendrier proposé
 
 | Quand | Quoi |

@@ -825,7 +825,51 @@ def part_denoise():
     w.set_mode(0)
 
 
-PART_FN = {"gradedit": part_gradedit, "denoise": part_denoise,
+def part_stars(name="Full · denoise"):
+    """The Stars block and the Composition section: the graph (the block's two ports, the Stars and background block),
+    its panel, Inspect on the Stars block (the starless image against the image, the stars alone), Post on the block's
+    layer, a star slider moved from the graph's panel, the starless image sent to Post as it is."""
+    print("Stars", flush=True)
+    open_it()
+    s = w.s
+    try:
+        pid = pid_of(name)
+    except KeyError:
+        walk.problem(f"no workflow {name!r}")
+        return
+    w.set_mode(0)
+    walk.select("etoiles", pid)
+    walk.settle()
+    walk.shot("stars_graph")
+    g = w.graph.graph.graph
+    comp = g.node_of(s.view(pid), "composition")
+    if comp is None:
+        walk.problem("no Stars and background block in the graph")
+        return
+    w.graph.select_node(comp)
+    walk.settle()
+    walk.shot("stars_composition_panel")
+    lid = s.sel_layer
+    walk.show_tab("etoiles", "starless", "stars_inspect_starless", pid)
+    walk.show_tab("etoiles", "stars", "stars_inspect_stars", pid)
+    w.open_layer(lid)
+    walk.settle()
+    walk.pump(1.0)
+    walk.settle()
+    walk.shot("stars_post")
+    s.set_post_layer(lid, None, sliders={"star_strength": 1.0, "star_size": 1.0})
+    walk.settle()
+    walk.pump(1.0)
+    walk.settle()
+    walk.shot("stars_post_fainter")
+    w.set_mode(0)
+    stars = w.graph.graph.graph.node_of(s.view(pid), "etoiles")
+    w.graph.part_to_post(stars, "starless")
+    walk.settle()
+    walk.shot("stars_graph_starless_sent")
+
+
+PART_FN = {"gradedit": part_gradedit, "denoise": part_denoise, "stars": part_stars,
            "home": part_home, "evening": part_evening, "graph": part_graph, "stack": part_stack, "inspect": part_inspect,
            "post": part_post, "export": part_export, "naming": part_naming}
 

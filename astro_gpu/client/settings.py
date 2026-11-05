@@ -247,73 +247,6 @@ CATALOG = {
               hi=0.05, step=0.001, level="expert"),
         ]),
     ],
-    "etoiles": [
-        ("Which stars", [
-            E("catalogs", "g_deep", label="Limiting magnitude (G)",
-              help="The larger the magnitude, the more stars are measured one by one, and the longer it takes.",
-              unit="G"),
-            E("stars", "faint_model"),
-            E("catalogs", "g_faint", "expert", help="Stars fainter than the limit of the measured stars, down to "
-                                                    "this one, are modelled from the catalogue.", unit="G"),
-            E("catalogs", "max_faint", "expert", help="At most this number of modelled stars."),
-        ]),
-        ("Star shape", [
-            E("stars", "local_psf"), E("stars", "angular_shape"), E("stars", "far_halo"), E("optics", "lateral"),
-            E("stars", "halo_bound", "expert", help="The far halo cannot exceed what the data show."),
-            E("optics", "lateral_grid", "expert", help="Resolution of the map of the color fringes."),
-            E("optics", "psf_iterations", "expert", help="Iterations of the star shape fit."),
-            E("optics", "psf_stars_per_cell", "expert", help="Stars used per area to measure the shape."),
-        ]),
-        ("Fit", [
-            E("stars", "color_prior", "expert", help="How closely the color of each star must follow Gaia."),
-            E("stars", "refine_passes", "expert", help="Refinement passes of the star positions."),
-            E("stars", "solver_passes", "expert", help="Round trips between the background estimate and the star "
-                                                       "flux estimate."),
-            E("stars", "cg_iterations", "expert", help="Solver iterations at each pass."),
-        ]),
-        ("Sky level", [
-            E("background", "star_flat"),
-            E("background", "bin_px", "expert", help="Size of the cells where the sky level is measured."),
-            E("background", "object_clip", "expert", help="Areas brighter than this threshold are not used to "
-                                                          "measure the sky level."),
-        ]),
-    ],
-    "appris": [
-        ("Training", [
-            E("star_net", "steps"),
-            E("star_net", "glow", help="Keeps the nebula around a star instead of taking it for the star's light."),
-        ]),
-        ("System", [E("star_net", "device", "system", help="Which GPU trains the network."),
-                    E("star_net", "batch", "system"), E("star_net", "seed", "system")]),
-    ],
-    "sans_etoiles": [
-        ("Denoise", [
-            E("starless", "wiener_k"),
-            E("starless", "chroma_min_scale", "expert", help="The color is not denoised below this scale."),
-        ]),
-        ("Star residuals", [
-            E("starless", "residual_k", help="Strength of the removal of what is left of the stars after "
-                                             "subtraction."),
-            E("starless", "residual_scales", "expert", help="Number of scales where the residuals are searched."),
-            E("starless", "mask_k", "expert", help="Above this threshold, a star core is judged unreliable and "
-                                                   "rebuilt."),
-            E("starless", "halo_gmax", "expert", help="Stars brighter than this magnitude have their optical halo "
-                                                      "removed."),
-            E("starless", "lift_gmax", "expert", help="The dips left under stars brighter than this magnitude are "
-                                                      "repaired."),
-        ]),
-        ("Nebula", [
-            E("starless", "nebula_gate", help="Protects the nebula from the corrections made around the stars; 1 = "
-                                              "maximum protection."),
-        ]),
-        ("Sharpening", [
-            E("starless", "sharpen"),
-            E("starless", "sharpen_steps", "expert", help="Training steps of the sharpening network."),
-        ]),
-        ("Earlier star layer", [
-            E("starless", "learned_stars", "expert"),
-        ]),
-    ],
     "fond:simple": [
         ("Sky gradient", [
             E("gradient", "degree", help="1: a tilted plane; 2 or 3: a more flexible surface, for wide fields."),
@@ -344,40 +277,17 @@ CATALOG = {
     ],
     "post": [
         ("Stretch", [
-            N("@render", "stretch", "Stretch", "choice", "Engine (statistical)", "How the linear output is "
+            N("render_simple", "stretch", "Stretch", "choice", "Engine (statistical)", "How the linear output is "
               "made non-linear for Post. Post's sliders and the Stretch filter act after it.",
               choices=["Engine (statistical)", "GHS", "Arcsinh", "Histogram (STF)", "None: linear output"]),
             E("render_simple", "linked", label="Linked channels", help="The same stretch for the three channels: "
                                                                        "the colours stay as calibrated."),
         ]),
-        ("Stars in the render", [
-            E("@render", "star_guard", label="Protect against star artifacts",
-              help="Finds the redrawn stars that do not match the image and corrects them."),
-            E("@render", "guard_sigma", "expert", label="Guard tolerance"),
-            E("@render", "real_g", "expert", label="Spikes measured down to magnitude", unit="G"),
-            E("@render", "spike_snr", "expert", label="Spikes kept from a signal-to-noise of"),
-        ]),
-        ("Image edges", [
-            E("@render", "cover_min", "expert", label="Minimum edge coverage",
-              help="Edges covered by less than this share of the frames are cropped."),
-            E("@render", "edge_frac", "expert", label="Edge cleanliness"),
-            E("@render", "min_exposure", "expert", label="Minimum effective exposure"),
-        ]),
-        ("Detail and color", [
-            E("@render", "fine_sigma", "expert", label="Fine detail scale", unit="px"),
-            E("@render", "cont_smooth", "expert", label="Background smoothing under the star light", unit="px"),
-            E("@render", "resid_smooth", "expert", label="Residual color smoothing", unit="px"),
-            E("@render", "n2n_base", "expert", label="Learned denoising in the base"),
-            E("@render", "n2n_scale", "expert", label="Learned denoising up to the scale", unit="px"),
-            E("@render", "diffuse_scale", "expert", label="Diffuse glow scale"),
-            E("@render", "oiii_scale", "expert", label="OIII map base smoothing", unit="px"),
-        ]),
     ],
 }
 # the engine's settings that no panel shows: the project or the options set them, or a block control owns them
-HIDDEN = {("stack", "exclude"), ("stack", "min_transparency"), ("stack", "max_fwhm_ratio"), ("star_net", "enabled"),
+HIDDEN = {("stack", "exclude"), ("stack", "min_transparency"), ("stack", "max_fwhm_ratio"),
           ("render_simple", "stretch"), ("stack", "method"), ("gradient", "method"), ("denoise", "method"),
-          ("catalogs", "deep_stars"),
           ("gradient", "sample_points"), ("gradient", "exclude_ellipses"), ("gradient", "exclude_brush")}
 #: the stacking method: chosen on the cards of the Stacking panel, never as a row
 STACK_METHOD = ("stack", "method")
@@ -390,7 +300,7 @@ METHOD_TEXTS = {
                                  "first (RCD), then combined with a rejection chosen by the number of frames. Best "
                                  "with few or barely dithered frames."),
 }
-OUTPUT_STAGES = ("render_prep", "render_prep_learned", "render_simple")
+OUTPUT_STAGES = ("render_simple",)
 # the usage tips of the settings, by (stage, setting) (the engine's own tip wins when it has one)
 TIPS = {
     ("astrometry", "target"): "Not needed when the center is given or when the FITS files hold the pointing.",
@@ -409,8 +319,6 @@ TIPS = {
     ("calibrate", "saturation"): "Keep the default, unless the star cores look clipped or rings appear around the "
                                  "bright stars.",
     ("calibrate", "workers"): "By default, the number of CPU cores minus two (12 at most).",
-    ("catalogs", "g_faint"): "Equal to the limit of the measured stars, it turns off the modelling of the faint "
-                             "stars.",
     ("color", "aperture"): "About twice the star size; larger, it is safer in poor seeing, but noisier.",
     ("color", "white_temp"): "This is the physical calibration; the render can still warm or cool the image without "
                              "touching it.",
@@ -426,16 +334,6 @@ TIPS = {
     ("stack", "pattern_removal"): "Off by default: on the Rosette, the estimate also held the traces of the faint "
                                   "stars, and subtracting it drew the streaks it was meant to remove. Neutral on "
                                   "Heart.",
-    ("star_net", "steps"): "11,000 steps take about 32 minutes on an RTX 4060 Ti. Far fewer leaves faint halos.",
-    ("star_net", "glow"): "On, the core of NGC 2023 is kept (off, the network took it for the light of its star). "
-                          "Also keeps a round glow of about 40 px around the central star of the Iris.",
-    ("starless", "wiener_k"): "1 is the statistically neutral value. Higher = smoother, lower = more grain.",
-    ("stars", "color_prior"): "Small, the colors follow Gaia closely and avoid failed fits (green dots, black holes); "
-                              "large, the measurement is trusted more.",
-    ("stars", "local_psf"): "Needed when the star shape changes quickly across the field (Newtonian coma, field "
-                            "curvature): otherwise each star leaves a ring in the starless image.",
-    ("stars", "angular_shape"): "The spikes then leave the nebula with the stars and are redrawn with them.",
-    ("stars", "far_halo"): "The glow then leaves the nebula with the stars; the redrawn stars do not carry it.",
 }
 UNITS = {"x median": "× median", "frames": "frames", "deg": "°", "sigma": "σ", "x": "×", "G mag": "G",
          "arcsec/px": "″/px", "e-/ADU": "e⁻/ADU", "um": "µm", "x field": "× field", "x noise": "× noise",
@@ -443,9 +341,8 @@ UNITS = {"x median": "× median", "frames": "frames", "deg": "°", "sigma": "σ"
 # where each stage is computed, as the chain names it
 STAGE_STEP = {"inventory": "Calibration", "calibrate": "Calibration", "register": "Registration",
               "stack": "Stacking", "astrometry": "Astrometry", "catalogs": "Astrometry", "surveys": "Astrometry",
-              "reference": "Astrometry", "color": "Color", "denoise": "Denoise", "optics": "Stars",
-              "stars": "Stars", "star_net": "Neural star removal", "starless": "Starless image",
-              "background": "Stars", "gradient": "Gradient"}
+              "reference": "Astrometry", "color": "Color", "denoise": "Denoise", "gradient": "Gradient",
+              "render_simple": "Output", "star_removal": "Stars"}
 ENGINE_LEVEL = {"basic": "normal", "advanced": "expert", "expert": "expert", "system": "system"}
 TYPES = {"int": "int", "float": "float", "bool": "bool", "str": "str", "float | None": "optfloat"}
 
@@ -459,28 +356,15 @@ def catalog_key(p, step: str) -> str:
     return step
 
 
-def render_stage(s, p) -> str | None:
-    """The stage that makes the workflow's layer (render_prep, render_prep_learned or render_simple)."""
-    return next((x for x in s.all_stages(p) if x in OUTPUT_STAGES), None)
-
-
 def _stage_of(s, p, it: dict) -> str | None:
-    stage = it["stage"]
-    if stage == "@render":
-        stage = render_stage(s, p)
-    return stage if stage is not None and stage in s.all_stages(p) else None
+    """The stage of a catalogue item, when the workflow has it."""
+    return it["stage"] if it["stage"] in s.all_stages(p) else None
 
 
 def _covered() -> set[tuple[str, str]]:
-    """The engine settings the catalogue places (the "@render" ones on every output stage)."""
-    out = set()
-    for groups in CATALOG.values():
-        for _t, items in groups:
-            for it in items:
-                if it["kind"] == "engine":
-                    for st in (OUTPUT_STAGES if it["stage"] == "@render" else (it["stage"],)):
-                        out.add((st, it["name"]))
-    return out
+    """The engine settings the catalogue places."""
+    return {(it["stage"], it["name"]) for groups in CATALOG.values() for _t, items in groups for it in items
+            if it["kind"] == "engine"}
 
 
 COVERED = _covered()
@@ -535,12 +419,11 @@ def resolve(s, p, step: str, it: dict, stage: str | None = None) -> dict | None:
 def _home_step(stage: str):
     """The key of the block that computes this stage (compared by key, so that it holds in every language)."""
     from .blocks import BY_KEY
-    return next((k for k, b in BY_KEY.items() if stage in b.get("stages", []) and k not in ("appris",)), None)
+    return next((k for k, b in BY_KEY.items() if stage in b.get("stages", [])), None)
 
 
 def _stages_of_step(s, p, step: str) -> list[str]:
-    """The engine stages whose settings a block's panel lists (the half-stacks and the neural removal are the
-    block's own)."""
+    """The engine stages whose settings a block's panel lists (the half-stacks are the block's own)."""
     from .blocks import BY_KEY
     if step not in BY_KEY:
         return []
@@ -643,7 +526,7 @@ def step_settings(s, p, step: str):
             out.append((_(title), rs))
     # the engine's settings the catalogue does not place: in "Other settings", by level
     rows = []
-    for st in ([] if step in ("appris", "sans_etoiles", "demi_piles") else _stages_of_step(s, p, step)):
+    for st in ([] if step == "demi_piles" else _stages_of_step(s, p, step)):
         for info in s.params(p, st) or []:
             if (st, info.name) in COVERED or (st, info.name) in HIDDEN or info.level == "internal":
                 continue

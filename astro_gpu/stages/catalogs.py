@@ -1,10 +1,8 @@
-"""Gaia DR3 catalogues of the field: the stars of the field, faint stars (model), XP spectra (colour).
+"""Gaia DR3 catalogues of the field: its bright stars and their XP spectra (colour).
 
-Two depths. Without the Stars block (``deep_stars`` off, the workflow decides: core/workflow.implied), only the bright
-stars are needed (the colour calibration's XP stars, G 7.5 to 14, and their neighbours): they come from the offline
-Gaia extract when it is installed (core/sirilcat; no network at all), else from the sky cache's G < 16 layer, the
-astrometry's. With the Stars block, every star down to G 18.5 (measured) and 20.5 (modelled) is needed, from the sky
-tiles (cached, else downloaded): only that block can wait on the Gaia services."""
+Only the bright stars are needed (the colour calibration's XP stars, G 7.5 to 14, and their neighbours): they come from
+the offline Gaia extract when it is installed (core/sirilcat; no network at all), else from the sky cache's G < 16
+layer, the astrometry's."""
 from __future__ import annotations
 
 import hashlib
@@ -26,15 +24,6 @@ def _cache() -> Path:
 
 
 class CatalogsParams(StageParams):
-    g_deep: float = P(18.5, label="Measured stars limit", level=ADVANCED, ge=12, le=21, step=0.5, unit="G mag",
-                      help="Stars brighter than this Gaia magnitude are measured individually (forced photometry) "
-                           "and removed from the nebula layer.")
-    g_faint: float = P(20.5, label="Modelled stars limit", level=ADVANCED, ge=0, le=21, step=0.5, unit="G mag",
-                       help="Fainter stars down to this magnitude are not measured but modelled from their Gaia "
-                            "magnitude; they form the grain of the Milky Way and are moved to the star layer.",
-                       tip="Set it equal to the measured-stars limit to disable faint-star modelling.")
-    max_faint: int = P(4_000_000, label="Maximum modelled stars", level=ADVANCED, ge=0,
-                       help="Upper bound on the number of faint stars (very wide Milky Way fields).")
     xp_gmin: float = P(7.5, label="Colour stars: brightest", level=ADVANCED, ge=3, le=15, step=0.5, unit="G mag",
                        help="Brightest Gaia stars whose XP spectrum is used for the colour calibration.")
     xp_gmax: float = P(14.0, label="Colour stars: faintest", level=ADVANCED, ge=8, le=17.5, step=0.5, unit="G mag",
@@ -43,22 +32,18 @@ class CatalogsParams(StageParams):
                     help="Maximum number of XP spectra downloaded (they are cached and reused).")
     cell_deg: float = P(1.0, label="Query cell size", level=ADVANCED, ge=0.1, le=5, unit="deg",
                         help="Size of the cones in which the Gaia archive is queried.")
-    deep_stars: bool = P(False, label="Deep star catalogue", level=ADVANCED,
-                         help="Every Gaia star down to the measured and modelled limits, for the Stars block (set by "
-                              "the workflow). Off, only the bright stars the colour calibration needs, from the "
-                              "offline Gaia extract: no download.")
 
 
 class Catalogs(Stage):
     name = "catalogs"
     title = "Gaia catalogues"
-    description = ("Downloads from the Gaia DR3 archive every star of the field: positions (propagated to the date of "
-                   "the images), magnitudes and colours, plus the low-resolution XP spectra of a few thousand "
-                   "isolated stars used to calibrate the colour of the sensor. Results are cached and shared "
-                   "between projects.")
+    description = ("The bright Gaia DR3 stars of the field: positions (propagated to the date of the images), "
+                   "magnitudes and colours, plus the low-resolution XP spectra of a few thousand isolated stars used "
+                   "to calibrate the colour of the sensor. Results are cached and shared between projects.")
     deps = ("inventory", "astrometry", "stack")
     Params = CatalogsParams
-    version = "3"          # 2: the bright stars missing from Gaia are added from Hipparcos; 3: two depths (deep_stars)
+    version = "3"          # 2: the bright stars missing from Gaia are added from Hipparcos; 3: the bright stars only
+                           # (offline), the deep catalogue for the earlier Stars block left out
     network = True
 
     def run(self, ctx: Context, p: CatalogsParams) -> None:
@@ -73,11 +58,9 @@ class Catalogs(Stage):
         fine = _cells(w, W, H, scale, p.cell_deg / 4)
         ctx.log(f"{len(centres)} sky cells of {p.cell_deg} deg, epoch {epoch:.2f}")
 
-        # ---------------- the stars of the field: every one to g_deep (Stars block), else the bright ones
+        # ---------------- the bright stars of the field
         cols = ["Source", "RA_ICRS", "DE_ICRS", "Gmag", "BPmag", "RPmag", "pmRA", "pmDE", "XPsamp"]
-        g_lim = p.g_deep if p.deep_stars else BRIGHT_G
-        c = (_query_cells(ctx, centres, radius, cols, f"<{g_lim}", "deep", 0.0, 0.5, fine) if p.deep_stars
-             else _bright_stars(ctx, centres, radius, cols, fine))
+        c = _bright_stars(ctx, centres, radius, cols, fine)
         dt = epoch - 2016.0
         dec_e = c["DE_ICRS"] + np.nan_to_num(c["pmDE"]) / 3.6e6 * dt
         ra_e = c["RA_ICRS"] + np.nan_to_num(c["pmRA"]) / 3.6e6 * dt / np.cos(np.radians(c["DE_ICRS"]))
@@ -92,27 +75,9 @@ class Catalogs(Stage):
             pos16 = np.r_[pos16, np.full((len(add["ra"]), 2), np.nan)]
         np.savez(ctx.out("gaia_deep.npz"), **deep)
         ctx.metric("stars_deep", int(inside.sum()))
-        ctx.log(f"{inside.sum()} Gaia stars G < {g_lim} in the field")
+        ctx.log(f"{inside.sum()} Gaia stars G < {BRIGHT_G} in the field")
         if inside.sum() < 100:
             raise StageError("almost no Gaia star in the field: the astrometric solution is probably wrong")
-
-        # ---------------- faint catalogue (modelled stars: the Stars block only)
-        if p.deep_stars and p.g_faint > p.g_deep:
-            f = _query_cells(ctx, centres, radius, ["RA_ICRS", "DE_ICRS", "Gmag"], f"{p.g_deep}..{p.g_faint}",
-                             "faint", 0.5, 0.85, fine)
-            fx, fy = safe_world2pix(w, f["RA_ICRS"], f["DE_ICRS"], W, H)
-            fin = (fx > -30) & (fx < W + 30) & (fy > -30) & (fy < H + 30) & np.isfinite(f["Gmag"])
-            fx, fy, fg = fx[fin], fy[fin], f["Gmag"][fin]
-            if len(fg) > p.max_faint:
-                o = np.argsort(fg)[: p.max_faint]
-                ctx.log(f"{len(fg)} faint stars: keeping the {p.max_faint} brightest (G < {fg[o[-1]]:.2f})", "warning")
-                fx, fy, fg = fx[o], fy[o], fg[o]
-        else:
-            fx = fy = fg = np.zeros(0)
-        np.savez(ctx.out("gaia_faint.npz"), x=fx.astype(np.float32), y=fy.astype(np.float32), g=fg.astype(np.float32))
-        ctx.metric("stars_faint", int(len(fg)))
-        if p.deep_stars:
-            ctx.log(f"{len(fg)} faint Gaia stars {p.g_deep} < G < {p.g_faint} modelled")
 
         # ---------------- XP spectra of isolated stars (colour calibration)
         # read once: indexing an npz file reads its array from the archive again at every access (in _isolated_xp's
@@ -136,7 +101,7 @@ class Catalogs(Stage):
         ctx.metric("xp_spectra", int(len(keep)))
 
 
-#: the magnitude limit of the stars without the Stars block: the colour stars (to xp_gmax) and their neighbours
+#: the magnitude limit of the stars: the colour stars (to xp_gmax) and their neighbours
 BRIGHT_G = 16.0
 
 

@@ -1,8 +1,8 @@
 """Import of v1 projects (DESIGN §1.6, P6): the write guard, the adoption checks, the copy, the dry run.
 
-Toy stages inventory → calibrate → stack → starless, run by v1's Pipeline into a v1 project in a temporary folder,
+Toy stages inventory → calibrate → stack → finish, run by v1's Pipeline into a v1 project in a temporary folder,
 then imported. calibrate has a field without effect on results (workers, with an auto rule) and a frame cache in its
-scratch folder; stack an auto field (scale) and a frame list; starless an earlier learned star layer.
+scratch folder; stack an auto field (scale) and a frame list.
 The real projects and F:/astro_essais/projets/heart_a7s are only read, under the guard, and snapshotted.
 """
 from __future__ import annotations
@@ -101,31 +101,29 @@ class Stack(Stage):
         ctx.metric("grid", [W, H])
 
 
-class SlParams(StageParams):
-    learned_stars: str = P("", label="layer", help="")
+class FinishParams(StageParams):
     amount: float = P(1.0, label="amount", help="")
 
 
-class Starless(Stage):
-    name = "starless"
-    title = "Starless"
+class Finish(Stage):
+    name = "finish"
+    title = "Finish"
     deps = ("stack",)
-    Params = SlParams
+    Params = FinishParams
     version = "24"
 
     def run(self, ctx, p):
-        ctx.save_json("sl.json", {"layer": p.learned_stars, "amount": p.amount})
+        ctx.save_json("finish.json", {"amount": p.amount})
 
 
-STAGES = [Inv(), Cal(), Stack(), Starless()]
+STAGES = [Inv(), Cal(), Stack(), Finish()]
 CHAIN = [s.name for s in STAGES]
 
 
 def toy_rules() -> KeyRules:
-    chains = Chains(STAGES, rule=lambda options, end, reference, learned: CHAIN)
-    return KeyRules(chains, auto_fields={"calibrate": ("workers",), "stack": ("scale",), "starless": ("learned_stars",)},
-                    path_fields={"starless": ("learned_stars",)}, non_key={"calibrate": ("workers",)},
-                    implied=lambda options, stage: {})
+    chains = Chains(STAGES, rule=lambda options, end, reference: CHAIN)
+    return KeyRules(chains, auto_fields={"calibrate": ("workers",), "stack": ("scale",)},
+                    non_key={"calibrate": ("workers",)}, implied=lambda options, stage: {})
 
 
 RULES = toy_rules()
@@ -295,15 +293,15 @@ def test_a_changed_old_parameter_stops_adoption_there(tmp_path, monkeypatch):
     rep = run_import(old, tmp_path / "v2", dry_run=True)
     assert rep.adopted(1) == ["inventory", "calibrate"]
     assert rep.recomputed(1) == [("stack", "settings changed: kappa 5.0 -> 7.0"),
-                                 ("starless", "'stack' is recomputed")]
+                                 ("finish", "'stack' is recomputed")]
     set_old_param(old, "stack", "kappa", 5.0)     # typed back to the value it ran with
     assert run_import(old, tmp_path / "v2", dry_run=True).adopted(1) == CHAIN
     set_old_param(old, "stack", "scale", 1.5)     # the static default, over an automatic 2.0: another result
     assert run_import(old, tmp_path / "v2", dry_run=True).adopted(1) == ["inventory", "calibrate"]
     set_old_param(old, "stack", "scale", 2.0)     # the automatic value it ran with, now stored
     assert run_import(old, tmp_path / "v2", dry_run=True).adopted(1) == CHAIN
-    monkeypatch.setattr(Starless, "version", "25")
-    assert run_import(old, tmp_path / "v2", dry_run=True).recomputed(1) == [("starless",
+    monkeypatch.setattr(Finish, "version", "25")
+    assert run_import(old, tmp_path / "v2", dry_run=True).recomputed(1) == [("finish",
                                                                              "algorithm updated (24 -> 25)")]
 
 
@@ -418,49 +416,6 @@ def test_an_interrupted_import_resumes(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------------------------------------- inputs/
 
-def make_layer(path: Path, shape=(3, H, W)) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, np.zeros(shape, np.float32))
-    return path
-
-
-def test_an_earlier_star_layer_is_tied_to_its_stack(tmp_path):
-    layer = make_layer(tmp_path / "diag" / "runE" / "star_layer_net.npy")
-    old = make_v1(tmp_path, {"starless": {"learned_stars": layer.as_posix()}, "star_net": {"enabled": False}})
-    new = tmp_path / "v2"
-    rep = run_import(old, new)
-    assert rep.adopted(1) == CHAIN and rep.workflows == {1: "Full + earlier neural layer"}
-    p = project2.load(new)
-    w = p.workflow(1)
-    assert w.params["starless"]["learned_stars"] == "inputs/star_layer_net.npy"
-    assert (new / "inputs" / "star_layer_net.npy").stat().st_mtime_ns == layer.stat().st_mtime_ns
-    keys = Keys(p, RULES)
-    rec = json.loads((new / "inputs" / "star_layer_net.json").read_text())
-    assert rec[runner2.LAYER_STACK_KEY] == keys.key(1, "stack") == rep.layers[layer.as_posix()]
-    assert runner2.layer_record(new / "inputs" / "star_layer_net.npy") == new / "inputs" / "star_layer_net.json"
-    assert keys.keys(1) == {r.stage: r.key for r in rep.of(1)}         # moving the layer kept every key
-    assert runner2.Planner(p, keys=keys, store=Store(new), history={}).blocked(1) is None
-    # another stack (a frame excluded): the layer is refused
-    p.excluded = [(1, "f2.ARW")]
-    keys = Keys(p, RULES)
-    assert keys.key(1, "stack") != rec[runner2.LAYER_STACK_KEY]
-    assert runner2.Planner(p, keys=keys, store=Store(new), history={}).blocked(1) == runner2.LAYER_OTHER_STACK
-
-
-def test_a_layer_not_in_the_stack_grid_is_refused(tmp_path):
-    layer = make_layer(tmp_path / "diag" / "star_layer_net.npy", shape=(3, H + 1, W))
-    old = make_v1(tmp_path, {"starless": {"learned_stars": layer.as_posix()}, "star_net": {"enabled": False}})
-    new = tmp_path / "v2"
-    rep = run_import(old, new)
-    assert rep.recomputed(1) == [("starless", "the earlier layer belongs to another stack")]
-    assert any("cannot be used" in n for n in rep.notes)
-    rec = json.loads((new / "inputs" / "star_layer_net.json").read_text())
-    assert rec[runner2.LAYER_STACK_KEY].startswith(iv.LAYER_FROM_V1)
-    p = project2.load(new)
-    assert runner2.Planner(p, keys=Keys(p, RULES), store=Store(new), history={}).blocked(1) == \
-        runner2.LAYER_OTHER_STACK
-
-
 def test_the_reference_image_goes_to_inputs_or_is_dropped(tmp_path):
     ref = tmp_path / "pics" / "full.png"
     ref.parent.mkdir()
@@ -479,8 +434,8 @@ def test_the_reference_image_goes_to_inputs_or_is_dropped(tmp_path):
 # ---------------------------------------------------------------------------------------------- heart_a7s (a copy)
 
 HEART = Path("F:/astro_essais/projets/heart_a7s")
-FULL_CHAIN = ["inventory", "calibrate", "register", "stack", "astrometry", "catalogs", "surveys", "color", "denoise",
-              "optics", "stars", "starless", "background", "render_prep"]
+FULL_CHAIN = ["inventory", "calibrate", "register", "stack", "astrometry", "catalogs", "gradient", "color", "denoise",
+              "render_simple", "star_removal"]
 
 
 def _up_to_date(root: Path, chain: list[str], logs: Path) -> list[str]:
@@ -576,10 +531,10 @@ def test_heart_a7s_import(tmp_path):
 
 G28 = "G:/Astro/2024-12-28_divers_astro"
 DARKS28 = {"F:/backup_pc/photos/28.12.24/957MSDCF": f"{G28}/957MSDCF"}
-PREFIX = ["inventory", "calibrate", "register", "stack", "astrometry", "reference", "catalogs", "surveys", "color",
-          "denoise", "optics"]
+PREFIX = ["inventory", "calibrate", "register", "stack", "astrometry", "reference", "catalogs", "gradient", "color",
+          "denoise"]
 NO_REF = [s for s in PREFIX if s != "reference"]
-#: (folder, where its raws are now when they moved, its chain up to optics)
+#: (folder, where its raws are now when they moved, its chain up to denoise)
 REAL = [
     ("F:/photos/heart_nebula/astro_gpu", {}, PREFIX),
     ("F:/photos/NGC7822/astro_gpu", {}, PREFIX),

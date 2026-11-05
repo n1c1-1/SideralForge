@@ -1,13 +1,13 @@
-"""StarNet against our star removal on the bench cases: five measures and side-by-side sheets
-(docs/chantiers/etoiles_etat_de_lart.md §3; the samples: tools/bench/stars_samples.py).
+"""StarNet against our star removal networks on the bench cases: five measures and side-by-side sheets
+(docs/chantiers/etoiles_etat_de_lart.md §3).
 
     python tools/bench/stars_compare.py [--cases heart,iris,...]
 
-Every method starts from the same linear image O (``stars_samples.py export``: the denoised stack minus its gradient,
-times the white balance) and gives a starless image S in the same units; the star layer is O - S (linear, not
-clipped). The methods: ``starnet`` (StarNet 2, ``--linear``), ``ours_model`` (our Gaia star model subtracted, then
-denoised: the starless stage's ``n2n_final``), ``ours_neural`` (our per-image star removal network's layer subtracted:
-``n2n_final_learned``), each times the same white balance and scale as O.
+Every method starts from the same linear image O (input.fits of each case: the denoised stack minus its gradient,
+times the white balance, made once with StarNet's results on 4 November 2026 by a tool since removed: see the git
+history of tools/bench/stars_samples.py) and gives a starless image S in the same units; the star layer is O - S
+(linear, not clipped). The methods: ``starnet`` (StarNet 2, ``--linear``) and the networks ``stars_train.py`` trained
+(``net_<run>``: net_mixed is the one the Stars block ships).
 
 The measures (the published tests of the state of the art, transposed to images whose truth is unknown):
 1. **Star light left** (the injection test of Madarász et al. 2025, done on the real stars: our method only removes
@@ -21,7 +21,7 @@ The measures (the published tests of the state of the art, transposed to images 
    brighter than G 14, the fine-scale spread of S inside the star's disc over the one in a ring around it (1: the
    filled area looks like its surroundings; below 1: a smooth blotch; above: residual structure).
 4. **The two layers give back the original** (exactness): for StarNet, its own star layer (unscreen U: O = S +
-   U (1 - S)) recombined against O, the 99.9th percentile of the error in noise units; our engine's layers are O - S
+   U (1 - S)) recombined against O, the 99.9th percentile of the error in noise units; our networks' layers are O - S
    by construction (0).
 5. **Compact objects stay** (maskfill / photutils practice): the named galaxies and planetary nebulae smaller than 3'
    in the field (offline catalogue), their flux in S over their flux in O (1: kept; 0: taken as a star).
@@ -49,11 +49,8 @@ BENCH = Path("F:/astro_essais/bench")
 OUT = Path("F:/astro_essais/stars_compare")
 CASES = ("heart", "iris", "m51", "m8", "rosette", "seestar")
 SOURCE = "Classic stack · denoise"
-OURS = {"ours_model": ("Full · denoise", "n2n_final.npy"),
-        "ours_neural": ("Full + neural stars · denoise", "n2n_final_learned.npy")}
 BINS = [(-5, 10), (10, 12), (12, 14), (14, 16), (16, 18.5)]
-LABELS = {"original": "original", "starnet": "StarNet", "ours_model": "ours: Gaia model", "ours_neural": "ours: neural",
-          "a_telea": "A: mask + fill"}
+LABELS = {"original": "original", "starnet": "StarNet"}
 
 
 def log(msg: str) -> None:
@@ -84,19 +81,10 @@ def load_case(api, case: str):
     S = {}
     if (d / "starnet_starless.fits").exists():
         S["starnet"] = read_fits(d / "starnet_starless.fits")
-    if (d / "a_telea_starless.fits").exists():                     # path A without its network (stars_mask_fill.py)
-        S["a_telea"] = read_fits(d / "a_telea_starless.fits")
     for f in sorted(d.glob("net_*_starless.fits")):                # the trained star removal networks (stars_train.py)
         S[f.name[:-len("_starless.fits")]] = read_fits(f)
     p = api.open_project(BENCH / case / "ours_express")
     src = next(w for w in p.workflows if w.name == SOURCE)
-    col = api.stage_outputs(p, src.id, "color")
-    M = np.load(Path(col.dir) / "M.npy") if col is not None else np.eye(3)
-    for key, (wname, fname) in OURS.items():
-        w = next((x for x in p.workflows if x.name == wname), None)
-        o = api.stage_outputs(p, w.id, "starless") if w is not None else None
-        if o is not None and (Path(o.dir) / fname).exists():
-            S[key] = np.einsum("ij,jhw->ihw", M, np.load(Path(o.dir) / fname).astype(np.float32)) / meta["scale"]
     cat = api.stage_outputs(p, src.id, "catalogs")
     stars = None
     if cat is not None:

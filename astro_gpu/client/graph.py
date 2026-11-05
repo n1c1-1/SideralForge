@@ -5,6 +5,11 @@ several workflows is drawn once, and the branch splits where they start to diffe
 dragging a card of the toolbar onto a workflow: while one is dragged, the places where it can go appear. The output of
 Stacking has a port that is pulled onto Post.
 
+The Stars block has two ports, its two images: the starless image (top) and the stars alone (bottom). A port pulled
+onto Post makes that image a layer of Post; pulled onto the Composition section, a new Stars and background block,
+which recombines the two (its settings are those of its layer in Post, also in the panel here). Their wires carry the
+image's name; a Stars and background block, or an image sent as it is, is taken out of Post by its menu or its ×.
+
 ``GraphPage`` is what the window mounts: the toolbar of optional blocks, the ``GraphView`` and the block ``Panel``, over
 the ``ProjectModel``. It makes the edits (add or remove a block, new workflow, rename, duplicate, delete, an output sent
 to Post) and tells the window, by signals, what it must do (open Inspect or Post, import frames).
@@ -57,6 +62,7 @@ from .blocks import (
     PAUSE_COL,
     PHASES,
     REVIEWED_COL,
+    STAR_OUTPUTS,
     STATE_WORD,
     STEPS,
     TOOL_COLUMN,
@@ -88,6 +94,11 @@ STATE_COL = {"done": OK, "pending": "#5d6470", "stale": WARN, "running": ACCENT,
 # (before the background step, an output still carries the sky gradient; astrometry does not change the image)
 EXITS = {"empilement"}
 OPTIONAL_BLOCKS = ("debruitage", "etoiles", "deconv")
+#: the ports of a block: (what it sends, its height on the block's right edge); None is a workflow's image (an exit)
+PORTS = {"empilement": ((None, BH / 2),), "etoiles": (("starless", BH * 0.32), ("stars", BH * 0.68))}
+#: the colours of the Stars block's two images: their ports and their wires
+IMAGE_COL = {"starless": "#7aa2d6", "stars": "#e0c45c"}
+NO_PORT = "-"
 
 
 def elide(text, font, width):
@@ -116,12 +127,16 @@ class BlockItem(QGraphicsItem):
         self.hover = False
         self.target = False                    # the Post block, while an output is pulled over it
         self._wire = False
-        self.port = node.key in EXITS
+        self.ports = PORTS.get(node.key, ())
+        self.port = bool(self.ports)
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.PointingHandCursor)
         tip = f"{title}\n{summary}\n" + (_(STATE_WORD[state]) if node.key not in ("sources", "final") else "")
-        if self.port:
+        if node.key in EXITS:
             tip += "\n" + _("Output ●: drag it onto Post to make a layer")
+        elif node.key == "etoiles":
+            tip += "\n" + _("● top: the starless image; ● bottom: the stars alone. Drag one onto Post to make it a "
+                            "layer, or onto Composition for a Stars and background block")
         if bp is not None:
             tip += "\n" + review_tip(bp)
         self.setToolTip(tip.strip())
@@ -134,7 +149,11 @@ class BlockItem(QGraphicsItem):
         return QRectF(self.w - 20, 4, 16, 16)
 
     def _on_port(self, pos):
-        return self.port and (pos - QPointF(self.w, BH / 2)).manhattanLength() < 14
+        """The port under ``pos`` (what it sends: None for an exit), or NO_PORT."""
+        for what, y in self.ports:
+            if (pos - QPointF(self.w, y)).manhattanLength() < (10 if len(self.ports) > 1 else 14):
+                return what
+        return NO_PORT
 
     def paint_review(self, p: QPainter):
         """The review point, on the block's top-left corner like a debugger's dot: red while the run will stop here,
@@ -216,11 +235,17 @@ class BlockItem(QGraphicsItem):
             xr = self._x_rect().adjusted(4, 4, -4, -4)
             p.drawLine(xr.topLeft(), xr.bottomRight())
             p.drawLine(xr.topRight(), xr.bottomLeft())
-        if self.port:
+        if self.node.key == "composition":                 # its two inputs, in the colours of the Stars block's outputs
+            for what, y in PORTS["etoiles"]:
+                p.setPen(QPen(QColor(IMAGE_COL[what]), 1.5))
+                p.setBrush(QColor(IMAGE_COL[what]))
+                p.drawEllipse(QPointF(0, y), 3.5, 3.5)
+        for what, y in self.ports:
             big = self.hover or self.selected or self._wire
-            p.setPen(QPen(QColor(ACCENT if big else "#4a5263"), 1.5))
-            p.setBrush(QColor("#15171c" if not big else ACCENT))
-            p.drawEllipse(QPointF(w, BH / 2), 5.5 if big else 3.5, 5.5 if big else 3.5)
+            col = IMAGE_COL.get(what, ACCENT)
+            p.setPen(QPen(QColor(col if big or what else "#4a5263"), 1.5))
+            p.setBrush(QColor(col if big or what else "#15171c"))
+            p.drawEllipse(QPointF(w, y), 5.5 if big else 3.5, 5.5 if big else 3.5)
         if self.bp is not None:
             self.paint_review(p)
 
@@ -229,7 +254,7 @@ class BlockItem(QGraphicsItem):
         self.update()
 
     def hoverMoveEvent(self, e):                                      # noqa: N802
-        self.setCursor(Qt.CrossCursor if self._on_port(e.pos()) else Qt.PointingHandCursor)
+        self.setCursor(Qt.OpenHandCursor if self._on_port(e.pos()) != NO_PORT else Qt.PointingHandCursor)
 
     def hoverLeaveEvent(self, e):                                     # noqa: N802
         self.hover = False
@@ -237,9 +262,10 @@ class BlockItem(QGraphicsItem):
 
     def mousePressEvent(self, e):                                     # noqa: N802
         if e.button() == Qt.LeftButton:
-            if self._on_port(e.pos()):
+            port = self._on_port(e.pos())
+            if port != NO_PORT:
                 self._wire = True
-                self.view.start_wire(self)
+                self.view.start_wire(self, port)
             elif self.removable and self._x_rect().contains(e.pos()):
                 self.view.remove_block(self.node, None)
             else:
@@ -257,7 +283,10 @@ class BlockItem(QGraphicsItem):
         e.accept()
 
     def mouseDoubleClickEvent(self, e):                               # noqa: N802
-        self.view.blockOpened.emit(self.node)
+        if self.node.key == "composition":
+            self.view.openLayer.emit(self.node.lid)
+        else:
+            self.view.blockOpened.emit(self.node)
         e.accept()
 
     def contextMenuEvent(self, e):                                    # noqa: N802
@@ -335,6 +364,10 @@ class GraphView(QGraphicsView):
     sendToPost = Signal(object)            # Node whose output was pulled to the Post block
     pauseToggled = Signal(object)          # Node: "Pause here for review" was chosen (set it, or take it off)
     reviewMarked = Signal(object)          # Node: "Mark as reviewed" was chosen
+    partToPost = Signal(object, str)       # a Stars node's image (starless | stars) pulled onto Post
+    newComposition = Signal(object)        # a Stars node's port pulled onto Composition: a new Stars and background block
+    layerRemoved = Signal(int)             # a Stars and background block, or an image sent as it is: its Post layer
+    openLayer = Signal(int)                # Open in Post (a Post layer's id)
 
     def __init__(self, project, parent=None):
         super().__init__(parent)
@@ -374,6 +407,8 @@ class GraphView(QGraphicsView):
         used = {n.key for n in g.nodes}
         if self.drag_tool:
             used.add(TOOL_COLUMN[self.drag_tool])
+        if "etoiles" in used:                       # the Composition section, where the Stars block's images go
+            used.add("composition")
         return [c for c in COLUMNS if c not in OPTIONAL or c in used]
 
     @staticmethod
@@ -433,10 +468,18 @@ class GraphView(QGraphicsView):
                 n.y = (min(ys) + max(ys)) / 2
             n.col = cx[n.key]
             n.w = cw[n.key]
+        seen: dict[int, int] = {}
+        for n in g.compositions:                   # two blocks of one workflow: one a little below the other
+            k = seen.get(n.paths[0].pid, 0)
+            seen[n.paths[0].pid] = k + 1
+            n.y += k * (BH + 6)
+        self._lanes, self._cx, self._cw = lanes, cx, cw
         bottom = TOP + n_lanes * LANE + LANE
         # phase bands
         for title, a, b in PHASES:
             span = [c for c in COLUMNS[COLUMNS.index(a): COLUMNS.index(b) + 1] if c in cx]
+            if not span:
+                continue
             pad = GAP / 2 - 1                                         # two bands never touch
             x0, x1 = cx[span[0]] - pad, cx[span[-1]] + cw[span[-1]] + pad
             sc.addItem(BandItem(QRectF(x0, 0, x1 - x0, bottom), _(title)))
@@ -445,12 +488,23 @@ class GraphView(QGraphicsView):
             g.root if s.sel_step == "sources" else g.final)
         # wires along the chains
         for n in g.nodes:
-            if n.key == "sources" or n is g.final:
+            if n.key in ("sources", "composition") or n is g.final:
                 continue
             par = n.parent if n.parent is not None else g.root
             self._wire(par, n, cur is not None and cur in n.paths)
-        for p in s.paths:
-            self._wire(g.leaves[p.pid], g.final, cur is not None and p is cur)
+        for p in s.paths:                          # a workflow's Output image, when it is a layer of Post
+            if p.pid in g.to_post:
+                self._wire(g.leaves[p.pid], g.final, cur is not None and p is cur)
+        # the Stars block's images: into its Stars and background blocks, or straight to Post
+        for n in g.compositions:
+            strong = cur is not None and cur in n.paths
+            for i, (what, word) in enumerate(STAR_OUTPUTS):
+                self._image_wire(n.parent, PORTS["etoiles"][i][1], n, BH * (0.32 + 0.36 * i), what, _(word), strong)
+            self._wire(n, g.final, strong)
+        for src, what in g.direct:
+            i = [w for w, _y in PORTS["etoiles"]].index(what)
+            self._image_wire(src, PORTS["etoiles"][i][1], g.final, BH * (0.4 + 0.2 * i), what,
+                             _(dict(STAR_OUTPUTS)[what]), cur is not None and cur in src.paths, True)
         # the images sent to Post (from Inspect, or a block's output): an arrow from their block to Post
         for n in self._post_sources(g):
             self._post_wire(n, g.final)
@@ -463,9 +517,11 @@ class GraphView(QGraphicsView):
             if n.key not in ("sources", "final") and not n.paths:
                 continue
             title = block_title(n.paths[0] if n.paths else None, n.key)
-            removable = n.key in OPTIONAL_BLOCKS
+            removable = n.key in OPTIONAL_BLOCKS or n.key == "composition"
             dim = cur is not None and n.key not in ("sources", "final") and cur not in n.paths
-            it = BlockItem(self, n, title, g.summary(n), g.state(n), n is sel, dim, removable, n.w, g.breakpoint(n))
+            it = BlockItem(self, n, title, g.summary(n), g.state(n), n is sel or (sel is not None and n.key ==
+                           "composition" and sel.key == "composition" and n.lid == sel.lid), dim, removable, n.w,
+                           g.breakpoint(n))
             it.setPos(n.col, n.y - BH / 2)
             it.setZValue(5)
             sc.addItem(it)
@@ -510,17 +566,32 @@ class GraphView(QGraphicsView):
         self.wait.raise_()
 
     # ------------------------------------------------------------ pulling an output to the post
-    def start_wire(self, item):
+    def start_wire(self, item, port=None):
+        """A port is pulled: its wire follows the mouse; a Stars block's port shows where a Stars and background block
+        can go (the Composition section, on its workflow's lane)."""
         self._pull = item
+        self._pull_port = port
         self._pull_path = self.scene().addPath(QPainterPath(), QPen(QColor(ACCENT), 2, Qt.DashLine))
         self._pull_path.setZValue(9)
+        self._comp_ghost = None
+        if item.node.key == "etoiles" and "composition" in getattr(self, "_cx", {}):
+            x, w = self._cx["composition"], self._cw["composition"]
+            y = item.node.y - BH / 2
+            self._comp_ghost = GhostItem(QRectF(x + 4, y + 4, w - 8, BH - 8), "+  " + _("Stars and background"))
+            self._comp_ghost.setZValue(8)
+            self.scene().addItem(self._comp_ghost)
 
     def _on_post(self, pos):
         fi = self.final_item
         return fi is not None and fi.sceneBoundingRect().adjusted(-16, -16, 16, 16).contains(pos)
 
+    def _on_composition(self, pos):
+        g = self._comp_ghost
+        return g is not None and g.rect.adjusted(-12, -12, 12, 12).contains(pos)
+
     def move_wire(self, pos):
-        a = self._pull.mapToScene(QPointF(self._pull.w, BH / 2))
+        y = next((py for what, py in self._pull.ports if what == self._pull_port), BH / 2)
+        a = self._pull.mapToScene(QPointF(self._pull.w, y))
         path = QPainterPath(a)
         dx = max(30.0, (pos.x() - a.x()) * 0.5)
         path.cubicTo(QPointF(a.x() + dx, a.y()), QPointF(pos.x() - dx, pos.y()), pos)
@@ -529,17 +600,29 @@ class GraphView(QGraphicsView):
         if self.final_item.target != hot:
             self.final_item.target = hot
             self.final_item.update()
+        if self._comp_ghost is not None and self._comp_ghost.hot != self._on_composition(pos):
+            self._comp_ghost.hot = not self._comp_ghost.hot
+            self._comp_ghost.update()
         x, y = self.mapFromScene(pos).x(), self.mapFromScene(pos).y()
         if x > self.viewport().width() - 20 or y > self.viewport().height() - 20:
             self.ensureVisible(QRectF(pos, pos), 20, 20)
 
     def end_wire(self, pos):
-        node = self._pull.node
+        node, port = self._pull.node, self._pull_port
         self.scene().removeItem(self._pull_path)
         self.final_item.target = False
         self.final_item.update()
+        comp = self._on_composition(pos)
+        if self._comp_ghost is not None:
+            self.scene().removeItem(self._comp_ghost)
+            self._comp_ghost = None
         if self._on_post(pos):
-            QTimer.singleShot(0, lambda: self.sendToPost.emit(node))
+            if port is None:
+                QTimer.singleShot(0, lambda: self.sendToPost.emit(node))
+            else:
+                QTimer.singleShot(0, lambda: self.partToPost.emit(node, port))
+        elif comp:
+            QTimer.singleShot(0, lambda: self.newComposition.emit(node))
 
     def _wire(self, a: Node, b: Node, strong: bool):
         """A wire from a block to the next block of its workflows. A branch bends in the gap right after the block it
@@ -555,6 +638,24 @@ class GraphView(QGraphicsView):
             path.lineTo(QPointF(x2, y2))
         it = self.scene().addPath(path, QPen(QColor("#9aa3b2" if strong else "#3d4452"), 2.2 if strong else 1.6))
         it.setZValue(1)
+
+    def _image_wire(self, a: Node, ya: float, b: Node, yb: float, what: str, word: str, strong: bool,
+                    direct: bool = False):
+        """A wire of one of the Stars block's images, from its port to a Stars and background block or straight to
+        Post (dashed), in the image's colour: it arcs over (the starless image) or under (the stars) the blocks on its
+        way; its name in its tooltip."""
+        above = what == "starless"
+        x1, y1 = a.col + a.w, a.y - BH / 2 + ya
+        x2, y2 = b.col, b.y - BH / 2 + yb
+        bend = (min(y1, y2) - BH / 2 - 8) if above else (max(y1, y2) + BH / 2 + 8)
+        path = QPainterPath(QPointF(x1, y1))
+        path.cubicTo(QPointF(x1 + 40, bend), QPointF(x2 - 40, bend), QPointF(x2, y2))
+        col = QColor(IMAGE_COL[what])
+        if not strong:
+            col.setAlpha(110)
+        it = self.scene().addPath(path, QPen(col, 2.0 if strong else 1.5, Qt.DashLine if direct else Qt.SolidLine))
+        it.setZValue(6 if direct else 2)                  # an image sent to Post as it is: seen over the blocks
+        it.setToolTip(_("{image}: to Post as a layer").format(image=word) if direct else word)
 
     def _post_sources(self, g: Graph) -> list[Node]:
         """The blocks whose image is a layer of Post (``project.post["layers"]``, image layers: the key Inspect gave,
@@ -672,7 +773,18 @@ class GraphView(QGraphicsView):
             m.addAction(_("Duplicate")).triggered.connect(lambda: self.workflowMenu.emit("duplicate", p.pid))
             m.addSeparator()
             m.addAction(_("Delete workflow")).triggered.connect(lambda: self.workflowMenu.emit("delete", p.pid))
-        elif node.key in OPTIONAL_BLOCKS:
+        elif node.key == "composition":
+            m.addAction(_("Open in Post")).triggered.connect(lambda: self.openLayer.emit(node.lid))
+            m.addSeparator()
+            m.addAction(_("Remove")).triggered.connect(lambda: self.remove_block(node, None))
+            m.exec(pos)
+            return
+        if node.key == "etoiles" and len(node.paths) == 1:
+            for what, text in (("starless", "Send the starless image to Post"), ("stars", "Send the stars alone to Post")):
+                m.addAction(_(text)).triggered.connect(lambda _c=False, w=what: self.partToPost.emit(node, w))
+            m.addAction(_("New Stars and background block")).triggered.connect(lambda: self.newComposition.emit(node))
+            m.addSeparator()
+        if node.key in OPTIONAL_BLOCKS:
             if node.shared:
                 m.addAction(_("Remove from the {n} workflows").format(n=len(node.paths))).triggered.connect(
                     lambda: self.remove_block(node, None))
@@ -700,6 +812,9 @@ class GraphView(QGraphicsView):
             m.exec(pos)
 
     def remove_block(self, node: Node, pids):
+        if node.key == "composition":
+            self.layerRemoved.emit(node.lid)
+            return
         self.removeTool.emit(node, pids)
 
     # ------------------------------------------------------------ drag and drop of tools
@@ -803,6 +918,7 @@ class GraphPage(QWidget):
     """Graph mode: the toolbar of optional blocks, the graph and the panel of the selected block."""
     openBlock = Signal()                   # double-click or Enter on a block: Inspect (Post when sel_step is "final")
     openPost = Signal()                    # "Open Post" of the Post block
+    openLayer = Signal(int)                # Open in Post: Post, with this layer selected
     addSources = Signal()                  # "Import folder…" of the Frames block
     addSession = Signal()
     variantMade = Signal(int, int)         # a variant (id) was made from this workflow (id): Inspect compares them
@@ -843,6 +959,10 @@ class GraphPage(QWidget):
         gv.sendToPost.connect(self.send_to_post)
         gv.pauseToggled.connect(self.toggle_pause)
         gv.reviewMarked.connect(self.mark_reviewed)
+        gv.partToPost.connect(self.part_to_post)
+        gv.newComposition.connect(self.new_composition)
+        gv.layerRemoved.connect(self.remove_layer)
+        gv.openLayer.connect(self.openLayer.emit)
         pn = self.panel
         pn.changed.connect(self.request_refresh)
         pn.openTune.connect(self.openBlock.emit)
@@ -853,9 +973,12 @@ class GraphPage(QWidget):
         pn.renamed.connect(self.rename)
         pn.toast.connect(self.toast)
         pn.removeTool.connect(lambda: self.remove_tool(self.current_node(), None))
+        pn.openLayer.connect(self.openLayer.emit)
         for sig in (project.pathsChanged, project.currentChanged, project.costChanged, project.sourcesChanged,
                     project.readyChanged):
             sig.connect(self.request_refresh)
+        if hasattr(project, "postChanged"):
+            project.postChanged.connect(self._post_changed)
         for key in ("Return", "Enter"):
             ret = QShortcut(QKeySequence(key), self.graph)
             ret.setContext(Qt.WidgetWithChildrenShortcut)
@@ -863,6 +986,12 @@ class GraphPage(QWidget):
         self.refresh()
 
     # ------------------------------------------------------------ refresh
+    def _post_changed(self, source):
+        """Post's composition changed: the Composition section and the wires to Post follow (not for a slider of the
+        panel here: the panel stays under the mouse)."""
+        if source is not self.panel:
+            self.request_refresh()
+
     def request_refresh(self, *_a):
         if not self._pending:
             self._pending = True
@@ -895,6 +1024,8 @@ class GraphPage(QWidget):
             return g.root
         if k == "final":
             return g.final
+        if k == "composition":
+            return g.node_of(self.s.path, k, getattr(self.s, "sel_layer", None))
         return g.node_of(self.s.path, k)
 
     def build_tools(self):
@@ -939,6 +1070,8 @@ class GraphPage(QWidget):
             s.scope = [q.pid for q in node.paths]
         else:
             s.scope = None
+        if node.key == "composition":
+            s.sel_layer = node.lid
         s.select(step=node.key)
 
     def select(self, index=None, step=None):
@@ -988,6 +1121,9 @@ class GraphPage(QWidget):
         s = self.s
         if node is None:
             return
+        if node.key == "composition":
+            self.remove_layer(node.lid)
+            return
         key = node.key
         with s.batch():
             for p in [q for q in node.paths if pids is None or q.pid in pids]:
@@ -1034,6 +1170,33 @@ class GraphPage(QWidget):
         self.select(index=s.paths.index(q), step="post")
         self.toast(_('Layer "{name}": output of {block}, sent to Post').format(
             name=q.name, block=block_title(p, node.key)))
+
+    def part_to_post(self, node, part):
+        """One of the Stars block's images sent to Post as it is: a layer of its own (the stars in Screen mode)."""
+        s = self.s
+        p = s.path if s.path in node.paths else node.paths[0]
+        s.add_post_layer(p.pid, part, self)
+        word = _(dict(STAR_OUTPUTS)[part])
+        s.log('{image} of "{name}" sent to Post', image=dict(STAR_OUTPUTS)[part], name=p.name)
+        self.toast(_('{image} of "{name}": a layer of Post').format(image=word, name=p.name))
+
+    def new_composition(self, node):
+        """A Stars and background block for this Stars block: a layer of Post that recombines its two images."""
+        s = self.s
+        p = s.path if s.path in node.paths else node.paths[0]
+        lid = s.add_post_layer(p.pid, "combined", self)
+        s.log('Stars and background block for "{name}"', name=p.name)
+        s.sel_layer = lid
+        s.select(index=s.paths.index(p), step="composition")
+        s.scope = [p.pid]
+
+    def remove_layer(self, lid):
+        """A Stars and background block taken out of Post (its layer, with its settings)."""
+        s = self.s
+        s.remove_post_layer(lid, self)
+        s.log("Stars and background block removed")
+        if s.sel_step == "composition" and getattr(s, "sel_layer", None) == lid:
+            s.select(step="etoiles")
 
     def toggle_pause(self, node):
         """Pause here for review: set on every workflow going through the block, or taken off when they all have it."""

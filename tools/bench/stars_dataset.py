@@ -10,8 +10,8 @@ denoised.
 
 ``prepare``: the white balance of each field (the pairs of one set at several noise levels share their stars and
 their colours). The dataset's projects (F:/astro_essais/dataset_projets) are run by the engine up to the Color block on
-their whole stack (the target named as the dataset's catalogue names it), with the Gaia stars limited to G 15 so
-that the offline Gaia extract is enough (run offline: ASTRO_GPU_OFFLINE=1); the user's projects
+their whole stack (the target named as the dataset's catalogue names it), on the bright Gaia stars the offline
+extract holds (run offline: ASTRO_GPU_OFFLINE=1); the user's projects
 (F:/astro_projets, read only: nothing is written there) get the Color stage's white balance computed here from their
 own stack, plate solution and Gaia XP stars. Result: F:/astro_essais/stars_dataset_v2/colour.json.
 
@@ -61,8 +61,6 @@ LEVELS = ("", "_half", "_quarter", "_eighth")
 #: trail), set 15 (faint target, coloured blotches of uncorrected hot pixels), set 18 (0.5 s frames, most of them not
 #: aligned: too few measurable stars for any white balance)
 EXCLUDED = ("set_14_", "set_15_", "set_18_")
-#: the Gaia stars of the Color block limited to what the offline extract holds (no download)
-G_LIMIT = 15.0
 
 
 def log(msg: str) -> None:
@@ -211,8 +209,6 @@ def prepare(device: str) -> int:
                 if tgt and p.target.name != tgt:                # the night named it after its folder
                     p.target.name = tgt
                 w = next(x for x in p.workflows if x.name == "Stack")
-                for k in ("g_deep", "g_faint"):
-                    api.set_param(p, [w.id], "catalogs", k, G_LIMIT)
                 api.save(p)
                 mtp.run(api, p, api.plan_to_block(p, w.id, "color", device), device)
                 o = api.stage_outputs(p, w.id, "color")

@@ -6,26 +6,23 @@ folder, its scratch folder and its input files, and the import fails if a write 
 
 1. **The definition**: ``project2.from_v1`` (one session from the inputs, one workflow from main and one per
    variant), its input paths moved through ``path_map`` (an old folder or file → its new place or places). A
-   reference image that no longer exists is dropped, with a note; so is the note of a missing earlier star layer.
+   reference image that no longer exists is dropped, with a note.
 2. **Adoption.** Each workflow's chain is walked in order; a stage keeps its old result only if
    - its old manifest, read first, is done with the current stage version;
    - every stage it reads in the chain is adopted, and the old manifest's inputs name their old run ids;
    - its old settings equal a fresh resolve: v1's ``effective_params`` on a read-only view of the old results. The
      stage's own folder is a temporary one (``Context`` creates it), the stages it does not read are absent, the
-     settings without effect on results (NON_KEY) are ignored, and path settings are compared by file;
+     settings without effect on results (NON_KEY) are ignored;
    - inventory: the old frame list (its frames.json has no file size) and the new files agree on name, order,
      count, and each frame's EXIF capture time and exposure;
-   - reference: the image is not newer than the old result;
-   - starless with an earlier learned star layer: the layer was made on this stack (below).
+   - reference: the image is not newer than the old result.
 3. **Copy**, never a link: each adopted result under its key, through ``store/<stage>/<key>.tmp`` renamed when
    complete. Only what later stages read is copied: outputs, previews and the manifest; never ``_ckpt``, temporary
    files or the calibrated frame cache (it lives in the scratch folder; calibrate's cache.json is pointed at the new
    scratch folder, so calibrate rebuilds the cache if register or stack must run again). frames.json paths are moved
    to the new raws, and the manifest gets ``key``, ``key_parts``, ``adopted_from`` and ``run_id = key``. The free
    space (the bytes to copy + 10 %) is checked before anything is written.
-   The reference image and the earlier star layers go to ``inputs/``. A layer belongs to the stack it was made on
-   (it is in that stack's grid): ``inputs/<layer>.json`` holds that stack's key (``runner2.LAYER_STACK_KEY``), or a
-   ``v1:<run id>`` marker when that stack is not adopted, so the workflow using the layer runs only on that stack.
+   The reference image goes to ``inputs/``.
 4. **Report** (``ImportReport``): per workflow and stage, adopted (key) or recomputed (reason); the bytes to copy and
    the free space; notes; and the stage durations ``estimate.learn_from_v1`` reads in the old manifests (the import
    itself never writes a timing history).
@@ -36,7 +33,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -51,21 +47,17 @@ import numpy as np
 
 from . import estimate as est
 from . import project2
-from . import workflow as wfl
 from .files import write_json
 from .journal import Journal
 from .params import params_hash
 from .project import Project, list_frames
 from .project2 import KINDS, Project2, Workflow
 from .runner import Pipeline, _same_params
-from .runner2 import LAYER_STACK_KEY
 from .store import InputScan, KeyRules, Keys, Store, StoreProject, file_id
 
 REPORT_FILE = "import_v1.json"           # <new project>/logs/: the report of the import that made the project
 SPACE_MARGIN = 0.10                      # the free space must exceed the bytes to copy by this share
 SKIP_DIRS = frozenset({"_ckpt"})         # never copied: checkpoints of an interrupted run
-LAYER_FROM_V1 = "v1:"                    # a layer's stack key when its stack has no v2 key (it is not adopted)
-_RUN_TAG = re.compile(r"^(.*?)( \(run [0-9a-fA-F]*\))$")
 
 PathMap = Mapping[str, "str | list[str]"]
 Progress = Callable[[str], None]
@@ -244,30 +236,14 @@ def map_path(path: str, path_map: PathMap | None) -> list[str]:
     return [(found or cands)[0].as_posix()]
 
 
-def _split_tag(value: str) -> tuple[str, str]:
-    """('<path>', ' (run <id>)') of a path setting; the tag is '' when there is none."""
-    v = str(value).strip()
-    m = _RUN_TAG.match(v)
-    return (m.group(1), m.group(2)) if m else (v, "")
-
-
 def _old_abs(old_root: Path, path: str) -> str:
     p = Path(path)
     return str(p if p.is_absolute() else old_root / p)
 
 
-def _same_file(a: Any, b: Any) -> bool:
-    """Two path settings naming the same file (name, size, mtime) with the same run tag."""
-    if not (isinstance(a, str) and isinstance(b, str)):
-        return False
-    (pa, ta), (pb, tb) = _split_tag(a), _split_tag(b)
-    fa, fb = file_id(pa), file_id(pb)
-    return ta == tb and fa[1] is not None and fa == fb
-
-
 def folders_of(old_root: str | Path) -> list[str]:
     """The folders and files of a v1 project the import only reads: the project folder, its scratch folder, its
-    inputs, its reference image and its earlier star layers (the write guard protects them)."""
+    inputs and its reference image (the write guard protects them)."""
     root = Path(os.path.abspath(old_root))
     d = json.loads((root / project2.V1_FILE).read_text(encoding="utf-8"))
     out = [str(root)]
@@ -277,10 +253,6 @@ def folders_of(old_root: str | Path) -> list[str]:
         out += [_old_abs(root, f) for f in (d.get("inputs") or {}).get(kind) or []]
     if d.get("reference_image"):
         out.append(_old_abs(root, d["reference_image"]))
-    for params in [d.get("params") or {}] + [(v or {}).get("params") or {} for v in (d.get("variants") or {}).values()]:
-        v = (params.get("starless") or {}).get("learned_stars")
-        if wfl.names_file(v):
-            out.append(_old_abs(root, _split_tag(v)[0]))
     return list(dict.fromkeys(out))
 
 
@@ -310,17 +282,6 @@ def result_files(folder: str | Path) -> list[tuple[Path, int]]:
             f = Path(dp) / n
             out.append((f.relative_to(folder), f.stat().st_size))
     return out
-
-
-def _npy_shape(path: str | Path) -> tuple[int, ...] | None:
-    """The array shape in a .npy header (the data is not read)."""
-    try:
-        with open(path, "rb") as f:
-            major, _ = np.lib.format.read_magic(f)
-            read = np.lib.format.read_array_header_1_0 if major == 1 else np.lib.format.read_array_header_2_0
-            return tuple(read(f)[0])
-    except (OSError, ValueError):
-        return None
 
 
 def _read_json(path: Path) -> dict:
@@ -357,7 +318,6 @@ class ImportReport:
     workflows: dict[int, str] = field(default_factory=dict)
     stages: list[StageReport] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
-    layers: dict[str, str] = field(default_factory=dict)       # earlier star layer → the key of its stack
     copy_bytes: int = 0                                         # each adopted key once, plus inputs/
     free_bytes: int | None = None
     timings: list[list] = field(default_factory=list)          # [stage, seconds, units, kind] (estimate.learn_from_v1)
@@ -384,7 +344,7 @@ class ImportReport:
     def to_dict(self) -> dict[str, Any]:
         return {"old_root": self.old_root, "new_root": self.new_root, "name": self.name, "dry_run": self.dry_run,
                 "written": self.written, "workflows": {str(k): v for k, v in self.workflows.items()},
-                "stages": [asdict(r) for r in self.stages], "notes": list(self.notes), "layers": dict(self.layers),
+                "stages": [asdict(r) for r in self.stages], "notes": list(self.notes),
                 "copy_bytes": self.copy_bytes, "free_bytes": self.free_bytes, "timings": list(self.timings),
                 "created": datetime.now().isoformat(timespec="seconds")}
 
@@ -406,8 +366,6 @@ class ImportReport:
         if self.free_bytes is not None:
             space += f", {_gb(self.free_bytes)} free" + ("" if self.enough_space else " - NOT ENOUGH")
         lines.append(f"  {space}")
-        for k, v in self.layers.items():
-            lines.append(f"  earlier star layer {k}: stack {v}")
         lines += [f"  note: {n}" for n in self.notes]
         return "\n".join(lines)
 
@@ -483,8 +441,6 @@ class _Import:
         self.adopt: dict[str, tuple[str, Path, Workflow]] = {}   # key → (stage, old folder, a workflow with it)
         self.keyset: dict[int, dict[str, str]] = {}
         self.frame_map: dict[str, str] = {}                      # old frame path (normalised) → new frame path
-        self.layer_keys: dict[str, tuple[str, str]] = {}         # layer file (normalised) → (stack key, its path)
-        self.old_ids: dict[str, str] = {}                        # old run id → new key (adopted results)
 
     # ------------------------------------------------------------------ the definition
     def _definition(self) -> Project2:
@@ -504,26 +460,15 @@ class _Import:
             else:
                 self.notes.append(f"the reference image {p.reference_image} no longer exists: dropped")
                 p.reference_image = ""
-        for w in p.workflows:
-            st = w.params.get("starless") or {}
-            v = st.get("learned_stars")
-            if wfl.names_file(v):
-                path, tag = _split_tag(v)
-                lay = map_path(_old_abs(self.old, path), self.path_map)[0]
-                st["learned_stars"] = Path(lay).as_posix() + tag
-                if not Path(lay).is_file():
-                    self.notes.append(f"workflow '{w.name}': the earlier star layer {path} no longer exists")
         p.root = self.new
         return p
 
     def sources(self) -> list[str]:
-        """The files the new definition reads (new raw places, reference, layers): read only during the import."""
+        """The files the new definition reads (new raw places, reference): read only during the import."""
         p = self.defn
         out = [f for s in p.sessions for kind in KINDS for f in getattr(s, kind)]
         if p.reference_image:
             out.append(p.reference_image)
-        out += [_split_tag(w.params["starless"]["learned_stars"])[0] for w in p.workflows
-                if wfl.has_learned_layer(w.params)]
         return [f for f in out if not _under(_norm(f) or "", _norm(self.new))]
 
     def _variant(self, w: Workflow) -> str:
@@ -559,20 +504,14 @@ class _Import:
                     self.decisions[memo] = self._decide(w, s, chain, dirs, adopted)
                 why = self.decisions[memo]
                 adopted[s] = not why
-                if s == "stack" and wfl.has_learned_layer(w.params):
-                    self._layer_key(w, dirs, adopted["stack"])
                 size = 0
                 if not why:
                     if k not in sizes:
                         sizes[k] = sum(n for _, n in result_files(dirs[s]))
                     size = sizes[k]
                     self.adopt.setdefault(k, (s, dirs[s], w))
-                    rid = self._manifest(dirs[s]).get("run_id")
-                    if rid:
-                        self.old_ids[str(rid)] = k
                 rep.stages.append(StageReport(w.id, s, k, not why, why, "" if why else str(dirs[s]), size))
         rep.copy_bytes = sum(sizes.values()) + sum(Path(f).stat().st_size for f in self._inputs_to_copy())
-        rep.layers = {path: k for k, path in self.layer_keys.values()}
         rep.notes = self.notes + rep.notes
         rep.project = p
         return rep
@@ -604,10 +543,6 @@ class _Import:
             return self._frames(m, dirs[s])
         if s == "reference":
             return self._reference(m)
-        if s == "starless" and wfl.has_learned_layer(w.params):
-            made_on = self._layer_key(w, dirs, adopted.get("stack", False))
-            if made_on != self.keyset[w.id]["stack"]:
-                return "the earlier layer belongs to another stack"
         return ""
 
     def _params(self, w: Workflow, s: str, m: dict, dirs: dict[str, Path]) -> str:
@@ -627,9 +562,6 @@ class _Import:
         stored = dict(m.get("params") or {})
         for k in self.keys.rules.non_key(s):
             if k in cur:
-                stored[k] = cur[k]
-        for k in self.keys.rules.path_fields(s):
-            if k in cur and k in stored and _same_file(stored[k], cur[k]):
                 stored[k] = cur[k]
         if params_hash(p) == m.get("params_hash") or _same_params(stage, p, stored):
             return ""
@@ -681,37 +613,10 @@ class _Import:
             return "the date of the old result or of the image is unknown"
         return "the reference image is newer than the old result" if changed > started + 2.0 else ""
 
-    def _layer_key(self, w: Workflow, dirs: dict[str, Path], stack_adopted: bool) -> str:
-        """The key of the stack an earlier learned star layer was made on: the adopted old stack, when the layer is
-        in its grid; else a marker that matches no stack key (the layer is refused)."""
-        path = _split_tag(w.params["starless"]["learned_stars"])[0]
-        n = _norm(path) or path
-        if n not in self.layer_keys:
-            sm = self._manifest(dirs["stack"])
-            grid = (sm.get("metrics") or {}).get("grid") or []
-            shape = _npy_shape(path)
-            if stack_adopted and shape and len(grid) == 2 and tuple(shape[-2:]) == (grid[1], grid[0]):
-                k = self.keyset[w.id]["stack"]
-            else:
-                k = LAYER_FROM_V1 + str(sm.get("run_id") or "unknown")
-                why = ("its old stack is recomputed" if not stack_adopted else
-                       f"its grid {shape} is not the stack's {grid}")
-                self.notes.append(f"workflow '{w.name}': the earlier star layer {Path(path).name} cannot be used: "
-                                  f"{why}")
-            self.layer_keys[n] = (k, path)
-        return self.layer_keys[n][0]
-
     def _inputs_to_copy(self) -> list[str]:
-        """The files that go to inputs/: the reference image and the earlier star layers (each once)."""
+        """The files that go to inputs/: the reference image."""
         p = self.defn
-        out = [p.reference_image] if p.reference_image else []
-        out += [_split_tag(w.params["starless"]["learned_stars"])[0] for w in p.workflows
-                if wfl.has_learned_layer(w.params)]
-        out = [f for f in out if Path(f).is_file()]
-        seen: dict[str, str] = {}
-        for f in out:
-            seen.setdefault(_norm(f) or f, f)
-        return list(seen.values())
+        return [p.reference_image] if p.reference_image and Path(p.reference_image).is_file() else []
 
     # ------------------------------------------------------------------ the copy
     def write(self, rep: ImportReport) -> None:
@@ -725,7 +630,6 @@ class _Import:
                 raise RuntimeError(f"workflow '{w.name}': the keys changed when the inputs moved to inputs/")
         project2.save(self.defn, root)
         store = Store(root)
-        dir_map = {_key(src): store.dir(s, k) for k, (s, src, _) in self.adopt.items()}
         for i, (k, (s, src, w)) in enumerate(self.adopt.items()):
             if store.done(s, k):
                 continue                                         # copied by an earlier, interrupted import
@@ -737,15 +641,15 @@ class _Import:
                 dst = tmp / rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src / rel, dst)
-            self._rewrite(s, k, w, src, tmp, dir_map)
+            self._rewrite(s, k, w, src, tmp)
             os.replace(tmp, store.dir(s, k))
         rep.written = True
         rep.project = self.defn
         write_json(root / "logs" / REPORT_FILE, {**rep.to_dict(), "status": "done"})
 
     def _move_inputs(self) -> None:
-        """Copy the reference image and the earlier star layers into inputs/ (same name and date, so the same keys),
-        point the definition at them, and record each layer's stack."""
+        """Copy the reference image into inputs/ (same name and date, so the same keys) and point the definition at
+        it."""
         p = self.defn
         p.inputs_dir.mkdir(parents=True, exist_ok=True)
         placed: dict[str, str] = {}                              # source (normalised) → path in the project
@@ -760,27 +664,13 @@ class _Import:
             placed[_norm(f) or f] = rel.as_posix()
         if p.reference_image:
             p.reference_image = placed.get(_norm(p.reference_image) or "", p.reference_image)
-        for w in p.workflows:
-            if wfl.has_learned_layer(w.params):
-                st = w.params["starless"]
-                path, tag = _split_tag(st["learned_stars"])
-                rel = placed.get(_norm(path) or "")
-                if rel is None:
-                    continue
-                st["learned_stars"] = rel + tag
-                k, src = self.layer_keys.get(_norm(path) or "", (None, path))
-                if k is not None:
-                    write_json((p.root / rel).with_suffix(".json"),
-                               {LAYER_STACK_KEY: k, "source": str(src), "project": str(self.old),
-                                "workflow": w.name, "imported": datetime.now().isoformat(timespec="seconds")})
 
-    def _rewrite(self, s: str, k: str, w: Workflow, src: Path, tmp: Path, dir_map: dict[str, Path]) -> None:
+    def _rewrite(self, s: str, k: str, w: Workflow, src: Path, tmp: Path) -> None:
         """The adopted copy as a v2 result: its manifest with the key fields, frames.json on the new raws,
         calibrate's cache.json on the new scratch folder."""
         m = self._manifest(src)
         keys = self.keyset[w.id]
         m["inputs"] = {d: keys[d] for d in (m.get("inputs") or {}) if d in keys}
-        m["params"] = {n: self._relocated(v, dir_map) for n, v in (m.get("params") or {}).items()}
         m.update(run_id=k, key=k, key_parts=self.keys.key_parts(w, s), run=None,
                  adopted_from={"project": str(self.old), "folder": str(src), "run_id": m.get("run_id"),
                                "finished": m.get("finished"), "imported": datetime.now().isoformat(timespec="seconds")})
@@ -793,26 +683,6 @@ class _Import:
                 c["path"] = str(Path(os.path.abspath(self.defn.scratch)) / k / s / Path(str(c["path"])).name)
                 write_json(cache, c)
         write_json(tmp / "manifest.json", m)
-
-    def _relocated(self, v: Any, dir_map: dict[str, Path]) -> Any:
-        """A setting that names a file of an adopted old result, moved to its new folder (with its run tag)."""
-        if not isinstance(v, str):
-            return v
-        path, tag = _split_tag(v)
-        k = _key(path)
-        for old, new in dir_map.items():
-            if _under(k, old):
-                path = str(new / os.path.normpath(path)[len(old):].lstrip("\\/"))
-                break
-        else:
-            return v
-        m = re.match(r"^ \(run ([0-9a-fA-F]*)\)$", tag)
-        if m:
-            new_id = next((key for rid, key in self.old_ids.items() if m.group(1) and rid.startswith(m.group(1))),
-                          None)
-            if new_id:
-                tag = f" (run {new_id[:8]})"
-        return path + tag
 
 
 def _relocate_frames(obj: Any, frame_map: dict[str, str]) -> Any:

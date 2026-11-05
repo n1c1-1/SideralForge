@@ -19,18 +19,8 @@ level3 = [
     # ---- engine -------------------------------------------------------------------------------------------------
     "tests/test_api.py::test_a_detached_run_is_followed_through_events_and_cancelled",             # worker, 9 s
     "tests/test_api.py::test_cli2_creates_plans_runs_follows_and_stops_a_toy_project",             # worker, 11 s
-    "tests/test_integration_v2.py::test_toy_v2_run_equals_v1_bit_for_bit",                         # worker, 8 s
     "tests/test_runner2.py::test_after_a_gpu_fault_a_fresh_worker_retries_the_job_once_and_the_lock_is_held_throughout",  # workers, 8-11 s
-    "tests/test_layers.py::test_v1_render_is_unchanged_bit_for_bit",                               # heavy: renders the old engine from git, 8 s
-    "tests/test_layers.py::test_region_with_the_quarter_fit_equals_the_full_render",               # heavy: 720x1080, 9-11 s each
-    "tests/test_layers.py::test_region_fit_reuse_scales_and_errors",                               # heavy: 720x1080, 4.6 s
-    "tests/test_layers.py::test_layer_service_renders_engine_and_simple_layers",                   # heavy: 720x1080, 6 s
-    "tests/test_layers.py::test_masks",                                                            # heavy: 720x1080, 5 s
-    "tests/test_star_net.py::test_stage_end_to_end_on_a_synthetic_project",                        # heavy: trains a network, 7 s
     "tests/test_stacking.py::test_selection_at_k_sigma_with_reasons",                              # heavy: 2 stacks, 5 s
-    "tests/test_qc_v2.py::test_a_large_render_is_reduced_first_so_that_all_are_sampled_alike",     # heavy: 4 s
-    "tests/test_qc_v2.py::test_pair_sheets_find_candidates_by_name_and_say_what_cannot_be_compared",  # heavy: 3.4 s
-    "tests/test_qc_v2.py::test_two_old_images_paired_with_one_workflow_get_two_renders",           # heavy: 2.6 s
     # ---- client -------------------------------------------------------------------------------------------------
     "tests/client/test_walkthrough.py",                                                            # screenshots + real data + worker, 64 s
     # test_inspect.py: the test project, screenshots
@@ -63,7 +53,6 @@ level3 = [
     "tests/client/test_post.py::test_zooming_in_renders_the_visible_region_at_full_resolution",
     "tests/client/test_post.py::test_with_no_cuda_device_post_still_renders",
     "tests/client/test_post.py::test_a_slider_drag_is_a_draft_then_the_screen_image",
-    "tests/client/test_post.py::test_split_stars_and_starless",
     "tests/client/test_post.py::test_the_composition_is_kept_in_the_project",
     "tests/client/test_post.py::test_the_release_render_is_the_engines_bit_for_bit",
     "tests/client/test_post.py::test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show",
@@ -72,7 +61,6 @@ level3 = [
     "tests/client/test_post.py::test_masks_with_parts_show_on_the_image_and_in_the_thumbnails",
     "tests/client/test_post.py::test_the_engine_note_is_said_in_the_hint",
     "tests/client/test_post.py::test_the_export_reduced_matches_the_half_resolution_preview",
-    "tests/client/test_post.py::test_a_draft_is_a_quick_look_the_release_stays_the_engines_and_a_newer_request_stops_it",  # heavy: 4-8 s
     # test_shell.py, test_graph.py
     "tests/client/test_shell.py::test_python_m_starts_the_client",
     "tests/client/test_shell.py::test_shots",

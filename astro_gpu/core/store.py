@@ -9,7 +9,7 @@ the result, and nothing else::
 
 ``key_params`` are the values the workflow stored, with those its options imply and the excluded frames on top,
 validated through the stage's Params (2, 2.0 and "2" hash the same; an invalid value is a ValueError naming the
-setting), and path settings replaced by their file (name, size, mtime). The rule on defaults:
+setting). The rule on defaults:
 
 - a field with an automatic rule (``AUTO_FIELDS``) is never dropped: a stored value equal to the static default
   overrides the automatic value, so it may be another result;
@@ -28,11 +28,11 @@ rule at that default, never enters the key of a definition that leaves it at its
 computed before it existed stays the same (tests/test_stacking.py).
 
 Automatic values are not in the key: they follow from the upstream results, which the upstream keys stand for.
-Settings that never change a result (worker counts, the training GPU) are left out. The key is the same in every
-process (canonical JSON, no set or hash order).
+Settings that never change a result (worker counts) are left out. The key is the same in every process (canonical
+JSON, no set or hash order).
 
-The project parts read the disk (each session's frame files, the reference image, path settings): ``InputScan``
-caches them. A scan stats every frame: keep it out of the client's interface thread.
+The project parts read the disk (each session's frame files, the reference image): ``InputScan`` caches them. A scan
+stats every frame: keep it out of the client's interface thread.
 
 ``StoreProject`` lets the stage code, and v1's ``Pipeline._run_stage``, run one job: its own stage writes into
 ``<key>.tmp`` (the runner renames it on success), every ancestor reads its done key folder, and any other stage
@@ -65,8 +65,6 @@ ABSENT = "_absent"           # where the stages a chain does not have resolve; n
 KEY_LEN = 16
 _KEY = re.compile(r"^[0-9a-f]{16}$")
 
-#: a 'Learned star layer' value may carry the star_net run that made it: '<path> (run <id>)' (star_net.layer_file)
-_RUN_TAG = re.compile(r"^(.*?) \(run [0-9a-fA-F]*\)$")
 
 
 def canonical_json(obj: Any) -> str:
@@ -100,23 +98,15 @@ def _absolute(project: Project2, path: str | Path) -> str:
     return Path(os.path.abspath(project.abspath(path))).as_posix()
 
 
-def _split_tag(value: str) -> tuple[str, str]:
-    """('<path>', ' (run <id>)') of a path setting; the tag is '' when there is none."""
-    v = value.strip()
-    m = _RUN_TAG.match(v)
-    return (m.group(1), v[len(m.group(1)):]) if m else (v, "")
-
-
 # ---------------------------------------------------------------------------------------------- rules
 
 class KeyRules:
     """What the key needs to know of the stages: their graph (``Chains``), the fields an ``auto()`` can set, the
-    path fields, the fields that never change a result (left out of the key; a job still gets them), the values
-    workflow options imply, and the tables of changed defaults, removed settings and key constants.
+    fields that never change a result (left out of the key; a job still gets them), the values workflow options imply,
+    and the tables of changed defaults, removed settings and key constants.
     ``auto_fields`` None counts every field as automatic: nothing is ever dropped (the safe side)."""
 
     def __init__(self, chains: Chains, auto_fields: Mapping[str, Iterable[str]] | None = None,
-                 path_fields: Mapping[str, Iterable[str]] | None = None,
                  non_key: Mapping[str, Iterable[str]] | None = None,
                  implied: Callable[[dict[str, Any], str], dict[str, Any]] = wfl.implied,
                  baseline: Mapping[str, Mapping[str, Any]] | None = None,
@@ -127,7 +117,6 @@ class KeyRules:
         self._baseline = {s: dict(d) for s, d in (baseline or {}).items()}
         self._retired = {s: frozenset(f) for s, f in (retired or {}).items()}
         self._constants = {s: dict(d) for s, d in (constants or {}).items()}
-        self._paths = {s: frozenset(f) for s, f in (path_fields or {}).items()}
         self._non_key = {s: frozenset(f) for s, f in (non_key or {}).items()}
         self.implied = implied
         self._defaults: dict[str, dict[str, Any]] = {}
@@ -163,9 +152,6 @@ class KeyRules:
         """{field: value} of the removed settings whose last value stays in every key (stages/v2.KEY_CONSTANTS)."""
         return self._constants.get(stage, {})
 
-    def path_fields(self, stage: str) -> frozenset[str]:
-        return self._paths.get(stage, frozenset())
-
     def non_key(self, stage: str) -> frozenset[str]:
         return self._non_key.get(stage, frozenset())
 
@@ -187,7 +173,7 @@ def key_rules() -> KeyRules:
     """The rules of the v2 stages: ``workflow.chains()`` with the tables of stages/v2.py."""
     if not _RULES:
         from ..stages import v2
-        _RULES.append(KeyRules(wfl.chains(), v2.AUTO_FIELDS, v2.PATH_FIELDS, v2.NON_KEY, baseline=v2.KEY_BASELINE,
+        _RULES.append(KeyRules(wfl.chains(), v2.AUTO_FIELDS, v2.NON_KEY, baseline=v2.KEY_BASELINE,
                                retired=v2.RETIRED, constants=v2.KEY_CONSTANTS))
     return _RULES[0]
 
@@ -196,7 +182,7 @@ def key_rules() -> KeyRules:
 
 class InputScan:
     """The parts of the keys that read the disk, cached: each session's frame files (by its folder and file lists)
-    and file ids (the reference image, path settings). Call ``forget`` when files may have changed."""
+    and file ids (the reference image). Call ``forget`` when files may have changed."""
 
     def __init__(self) -> None:
         self._sessions: dict[tuple, dict[str, list[tuple[Path, int]]]] = {}
@@ -274,8 +260,7 @@ class Keys:
         """The stages of a workflow, in order."""
         w = self._wf(wf)
         if id(w) not in self._chains:
-            self._chains[id(w)] = self.rules.chains.chain(w.options, w.end, reference=bool(self.project.reference_image),
-                                                          learned_layer=wfl.has_learned_layer(w.params))
+            self._chains[id(w)] = self.rules.chains.chain(w.options, w.end, reference=bool(self.project.reference_image))
         return self._chains[id(w)]
 
     def deps(self, wf: int | Workflow, stage: str) -> tuple[str, ...]:
@@ -317,9 +302,6 @@ class Keys:
         v = {k: x for k, x in v.items() if k not in r.non_key(stage)}
         m = self._validated(w, stage, v)
         p = {k: m[k] for k in v}
-        for k in r.path_fields(stage) & p.keys():
-            if isinstance(p[k], str) and wfl.names_file(p[k]):
-                p[k] = self.scan.file_id(_absolute(self.project, _split_tag(p[k])[0]))
         auto, default = r.auto_fields(stage), r.defaults(stage)
         p = {k: x for k, x in p.items() if k in auto or x != default.get(k)}
         for k, before in r.baseline(stage).items():      # a changed default: the effective value against the previous
@@ -380,18 +362,13 @@ class Keys:
     # ------------------------------------------------------------------ what a job gets
     def overrides(self, wf: int | Workflow, stage: str) -> dict[str, Any]:
         """The values a job of the stage runs with over the automatic ones: stored, implied and injected (the
-        excluded frames' files), validated, paths absolute. Settings left out of the key are kept: they change how
-        the job runs, not its result."""
+        excluded frames' files), validated. Settings left out of the key are kept: they change how the job runs, not
+        its result."""
         w = self._wf(wf)
         excl = self.scan.excluded_paths(self.project) if self.rules.injects_exclude(stage) else None
         v = self._given(w, stage, excl)
         m = self._validated(w, stage, v)
-        out = {k: m[k] for k in v}
-        for k in self.rules.path_fields(stage) & out.keys():
-            if isinstance(out[k], str) and wfl.names_file(out[k]):
-                path, tag = _split_tag(out[k])
-                out[k] = _absolute(self.project, path) + tag
-        return out
+        return {k: m[k] for k in v}
 
 
 def stage_key(project: Project2, wf: int | Workflow, stage: str, scan: InputScan | None = None) -> str:

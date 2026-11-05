@@ -44,12 +44,8 @@ FACTS = {
                 ("color", "chromaticity_residual")],
     "debruitage": [("denoise", "noise_before"), ("denoise", "noise_after"), ("denoise", "noise_reduction"),
                    ("denoise", "noise_correlation"), ("denoise", "adaptation_steps")],
-    "etoiles": [("stars", "modelled_stars"), ("stars", "faint_stars"), ("stars", "prediction_scatter_pct"),
-                ("stars", "local_psf_grid"), ("optics", "psf_residual_pct"), ("optics", "lateral_shift_max_px"),
-                ("starless", "filled_pct"), ("star_net", "training_steps"), ("star_net", "final_loss")],
     "fond": [("gradient", "gradient_pct"), ("gradient", "samples_used")],
-    "post": [("render_prep", "crop"), ("render_prep", "vignetted_pct"), ("render_prep", "star_depth_snr10"),
-             ("render_simple", "crop"), ("render_simple", "sky_source")],
+    "post": [("render_simple", "crop"), ("render_simple", "sky_source")],
 }
 
 
@@ -60,9 +56,8 @@ SOLUTION_NOTE = ("Your image with the sky grid (RA / Dec) of its astrometric sol
 #: the pictures that can be behind the solution, in the order of the workflow (``Steps.picture`` makes each)
 BACKGROUNDS = ("stack", "color", "denoised", "color_denoised", "result", "output")
 OUTPUT_NOTE = "The workflow's result at the suggested render settings, as Post shows its layer. Adjust it in Post."
-#: what the final image is, by the output of the workflow (``output_note``): the simple output is the Gradient removed
-#: picture stretched by Post (the same data, its sky stretched to another level, so its noise shows more or less); the
-#: engine's rendering is another preparation (the starless image and the stars drawn back)
+#: what the final image is, by the output of the workflow (``output_note``): the Gradient removed picture stretched by
+#: Post (the same data, its sky stretched to another level, so its noise shows more or less)
 OUTPUT_SIMPLE_NOTE = ("Final image = Gradient removed, then the steps of Post: its stretch (the suggested settings) and the "
                       "filters you add there. These steps are in Post, not in the graph. The stretch is already applied "
                       "(values 0 to 255), so Same stretch is not possible against Gradient removed: compare them by eye. "
@@ -76,20 +71,15 @@ OUTPUT_COLOR_NOTE = ("Final image: the colour-calibrated stack with Post's sugge
                      "area, at half size. Adjust it in Post.")
 OUTPUT_RAW_NOTE = ("Final image: the stack in the camera's colours, the sky of each channel levelled, with Post's "
                    "suggested stretch. Cropped to the covered area, at half size. Adjust it in Post.")
-OUTPUT_ENGINE_NOTE = ("Final image: Post's own rendering, not the Gradient removed picture: the starless image (denoised, "
-                      "its gradient removed) with the stars drawn back from their model, at the suggested settings. "
-                      "Cropped to the covered area, at half size. Adjust it in Post.")
-OUTPUT_LEARNED_NOTE = ("Final image: Post's own rendering, not the Gradient removed picture: the starless image of the "
-                       "neural star removal (denoised, its gradient removed) with the stars put back, at the suggested "
-                       "settings. Cropped to the covered area, at half size. Adjust it in Post.")
+STARLESS_NOTE = ("The image without its stars, compared with the image with them (the same stretch: drag the divider). "
+                 "The Stars block's two images go to Post: recombined by a Stars and background block, or as they "
+                 "are.")
+STARS_NOTE = ("The stars alone: the image minus its starless image. In Post they go back on top in Screen mode, "
+              "stretched on their own.")
 
 
 def output_note(stage: str, stages: set) -> str:
     """One line on what the final image of a workflow is and which steps it holds (the Output block's note)."""
-    if stage == "render_prep_learned":
-        return OUTPUT_LEARNED_NOTE
-    if stage == "render_prep":
-        return OUTPUT_ENGINE_NOTE
     if stage != "render_simple":
         return OUTPUT_NOTE
     if "color" not in stages:
@@ -211,7 +201,6 @@ class Steps(QObject):
     def visuals(self, p, k: str) -> list[VisualSpec]:
         """The tabs of a block of a workflow, in their order: pictures (shown in the common viewer), charts, tables,
         sequences of frames. The ◇ ones (not in the engine yet) are marked."""
-        stages = set(self.s.all_stages(p))
         V = VisualSpec
         if k == "calibration":
             out = [V("masters", "Masters", "masters", "calibrate")]
@@ -256,14 +245,11 @@ class Steps(QObject):
                       neutral=True, compare=("result", "stack", "half_a"), open_compare=True, same_stretch=True,
                       note=DENOISE_NOTE)]
         if k == "etoiles":
-            out = [V("starless", "Starless image", "array", "starless", "sl_final", True, True, camera=True,
-                     compare=("denoised", "stack")),
-                   V("star_model", "Star model", "array", "stars", "stars_model", True, True, camera=True,
-                     compare=("stack",)),
-                   V("psf", "Measured shape of a star", "preview", "optics", "psf", camera=False)]
-            if "star_net" in stages:
-                out.append(V("removal", "Neural star removal", "preview", "star_net", "star_removal", camera=False))
-            return out
+            return [V("starless", "Starless image", "array", "star_removal", "starless", True, True, camera=False,
+                      compare=("whole",), open_compare=True, same_stretch=True, note=STARLESS_NOTE,
+                      compare_names=("With its stars",)),
+                    V("stars", "Stars alone", "array", "star_removal", "stars", True, True, camera=False,
+                      compare=("whole",), same_stretch=True, note=STARS_NOTE, compare_names=("With its stars",))]
         if k == "fond":
             # the block's own input and output, in the camera's colours: it works before the colour calibration
             return [V("result", "Gradient removed", "gradient", "gradient", "", True, True, camera=True, neutral=True,
@@ -275,9 +261,8 @@ class Steps(QObject):
         return []
 
     def render_stage(self, p) -> str:
-        """The stage whose result is the final image of the workflow."""
-        stages = set(self.s.all_stages(p))
-        return next((x for x in ("render_prep_learned", "render_prep", "render_simple") if x in stages), "render_prep")
+        """The stage whose result is the final image of the workflow (the Output block's)."""
+        return "render_simple"
 
     def picture(self, p, key: str) -> VisualSpec | None:
         """A picture of the workflow another one is compared with (the previous steps), or None when the workflow
@@ -291,11 +276,8 @@ class Steps(QObject):
                      "drz_A" if key == "half_a" else "drz_B", True, True, camera=True)
         if key == "denoised" and "denoise" in stages:
             return V("denoised", "Denoised stack", "array", "denoise", "n2n_full", True, True, camera=True)
-        if key == "starless" and "starless" in stages:
-            return V("starless", "Starless image", "array", "starless", "sl_final", True, True, camera=True)
-        if key == "starless_calibrated" and "starless" in stages and "color" in stages:
-            return V("starless_calibrated", "Starless image, before the gradient removal", "calibrated", "starless", "",
-                     True, True, camera=False, base=("starless", "sl_final"))
+        if key == "whole" and "render_simple" in stages:
+            return V("whole", "Image with its stars", "array", "render_simple", "lin", True, True, camera=False)
         if key == "color" and "color" in stages:
             return V("color", "Colour-calibrated stack", "color", "color", "", True, True, camera=False,
                      base=("stack", "drz_full"))

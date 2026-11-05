@@ -148,9 +148,8 @@ class Pipeline:
                 if res != "done":
                     status = res
                     break
-                # a stage's data-driven parameters may read an optional output of an earlier stage (the star removal
-                # takes the layer of the learned star removal network when there is one): what is left is planned
-                # again after each stage. A stage never runs twice in one run.
+                # a stage's data-driven parameters may read an optional output of an earlier stage: what is left is
+                # planned again after each stage. A stage never runs twice in one run.
                 later = self.plan(until, tuple(f for f in force if f not in ran))
                 todo = sorted((set(todo[1:]) | set(later)) - ran, key=order.index)
         finally:

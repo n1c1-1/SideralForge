@@ -13,13 +13,14 @@ What the GUI thread may do, and what it may not:
   cache and asks the worker for what it lacks; ``paramsChanged`` says when it arrives.
 
 Vocabulary. The views use the client's own keys (French words): a workflow's ``opts`` are ``debruitage`` / ``dn``,
-``etoiles`` / ``appris``, ``fond`` and ``deconv``; its blocks are ``calibration``, ``alignement``, ``selection``,
-``empilement``, ``astrometrie``, ``couleur``, ``deconv``, ``debruitage``, ``etoiles``, ``fond``, ``post`` (blocks.py).
+``etoiles`` (``garder``: the stars kept, ``retirer``: taken off), ``fond`` and ``deconv``; its blocks are
+``calibration``, ``alignement``, ``selection``, ``empilement``, ``astrometrie``, ``couleur``, ``deconv``,
+``debruitage``, ``etoiles``, ``fond``, ``post`` (blocks.py).
 Stage names, settings and the stored ``params`` are the engine's. The model translates at the API's door
 (``to_engine`` / ``from_engine``).
 
 A change is a dict: ``{"kind": "param", "stage", "name", "value", "suggested"}`` (value None: back to the suggestion),
-``{"kind": "opt", "key", "value"}`` (a method: ``dn``, ``appris``, ``fond``) or ``{"kind": "params", "items": [...]}``
+``{"kind": "opt", "key", "value"}`` (a method: ``dn``, ``fond``) or ``{"kind": "params", "items": [...]}``
 (the Selection thresholds: two settings at once).
 """
 from __future__ import annotations
@@ -44,15 +45,18 @@ from .i18n import _, hm
 from .services.worker import ApiWorker, norm_path
 
 SAVE_DELAY_MS = 300
-#: the output stages (the last one of a chain is the workflow's layer)
-BY_OUTPUT = ("render_prep", "render_prep_learned", "render_simple")
+#: the stage of the Output block: a workflow has a layer in Post once it is computed
+BY_OUTPUT = ("render_simple",)
+#: the name a layer of the Stars block's images gets after its workflow's ("Full · Stars and background"); its words
+#: are translated where shown (post3.tr_name)
+POST_PART_NAMES = {"starless": "Starless image", "stars": "Stars alone", "combined": "Stars and background"}
 
 # ---------------------------------------------------------------------------------------------- vocabulary
 #: the starting points of the New workflow dialog, by their keys (dialogs.TEMPLATE_NAME gives their names)
 TEMPLATES = {
-    "Vierge": dict(debruitage=False, etoiles="garder", appris=False, fond="simple"),
-    "Classique + débruitage": dict(debruitage=True, etoiles="garder", appris=False, fond="simple"),
-    "Complet": dict(debruitage=True, etoiles="mesurer", appris=False, fond="simple"),
+    "Vierge": dict(debruitage=False, etoiles="garder", fond="simple"),
+    "Classique + débruitage": dict(debruitage=True, etoiles="garder", fond="simple"),
+    "Complet": dict(debruitage=True, etoiles="retirer", fond="simple"),
 }
 #: the Denoise methods: the views' keys and the engine's
 DN_ENGINE = {"generique": "pretrained", "affine": "adapted"}
@@ -63,22 +67,22 @@ EXTRA_SECONDS = {"deconv": 150.0}
 NOT_IN_ENGINE = "Not in the engine yet."
 #: the block of the views → the engine's block of ``api.methods``, and the option each method sets
 METHOD_BLOCK = {"debruitage": "denoise", "fond": "gradient", "etoiles": "stars", "deconv": "deconvolution"}
-METHOD_OPT = {"debruitage": "dn", "fond": "fond", "etoiles": "appris", "deconv": "deconv_m"}
+METHOD_OPT = {"debruitage": "dn", "fond": "fond", "etoiles": "etoiles", "deconv": "deconv_m"}
 #: the engine's method keys → the views'
 METHOD_KEY = {"debruitage": {"pretrained": "generique", "adapted": "affine"},
               "fond": {"polynomial": "simple", "rbf": "rbf", "automatic": "auto"},
-              "etoiles": {"psf": "psf", "psf_neural": "psf_neural"},
+              "etoiles": {"neural": "neural"},
               "deconv": {"rl": "psf", "neural": "neural"}}
 #: the Gradient methods: the views' keys and the engine's
 GRADIENT_ENGINE = {"simple": "polynomial", "rbf": "rbf", "auto": "automatic"}
 GRADIENT_VIEW = {v: k for k, v in GRADIENT_ENGINE.items()}
 #: the toolbox: key of a tool → (engine option, value that adds it, value that removes it)
-TOOL_OPTION = {"debruitage": ("denoise", "pretrained", None), "etoiles": ("stars", "psf", None),
-               "appris": ("stars", "psf_neural", "psf"), "auto": ("gradient", "automatic", "polynomial"),
+TOOL_OPTION = {"debruitage": ("denoise", "pretrained", None), "etoiles": ("stars", "neural", None),
+               "auto": ("gradient", "automatic", "polynomial"),
                "rbf": ("gradient", "rbf", "polynomial"),
                "simple": ("gradient", "polynomial", None)}
 #: the stages whose settings the summaries of the blocks quote: asked of the worker for each workflow
-PREFETCH = ("stack", "denoise", "star_net")
+PREFETCH = ("stack", "denoise")
 
 
 class NotInEngine(ValueError):
@@ -87,17 +91,15 @@ class NotInEngine(ValueError):
 
 def to_engine(o: dict) -> dict:
     """The views' options of a workflow as the engine's (core/workflow)."""
-    stars = None
-    if o.get("etoiles") == "mesurer":
-        stars = "psf_neural" if o.get("appris") else "psf"
+    stars = "neural" if o.get("etoiles") == "retirer" else None
     return {"denoise": DN_ENGINE.get(o.get("dn"), "pretrained") if o.get("debruitage") else None, "stars": stars,
             "gradient": GRADIENT_ENGINE.get(o.get("fond"), "polynomial"), "deconvolution": None}
 
 
 def from_engine(o: dict) -> dict:
     """The engine's options as the views'."""
-    return {"debruitage": bool(o.get("denoise")), "dn": DN_VIEW.get(o.get("denoise"), "generique"), "etoiles": "mesurer" if o.get("stars") else "garder",
-            "appris": o.get("stars") == "psf_neural", "fond": GRADIENT_VIEW.get(o.get("gradient"), "simple"),
+    return {"debruitage": bool(o.get("denoise")), "dn": DN_VIEW.get(o.get("denoise"), "generique"),
+            "etoiles": "retirer" if o.get("stars") else "garder", "fond": GRADIENT_VIEW.get(o.get("gradient"), "simple"),
             "deconv": bool(o.get("deconvolution"))}
 
 
@@ -112,7 +114,7 @@ def method_of(p: WorkflowView, block: str) -> str:
     if block == "fond":
         return p.opts["fond"]
     if block == "etoiles":
-        return "psf_neural" if p.opts.get("appris") else "psf"
+        return "neural"
     if block == "deconv":
         return p.opts.get("deconv_m", "psf")
     return p.opts.get("dn", "generique")
@@ -121,7 +123,7 @@ def method_of(p: WorkflowView, block: str) -> str:
 def method_value(block: str, key: str):
     """The option value that selects a method."""
     if block == "etoiles":
-        return key == "psf_neural"
+        return "retirer"
     return key
 
 
@@ -239,6 +241,7 @@ class ProjectModel(QObject):
     paramsChanged = Signal(int, str)       # the settings of this stage of this workflow arrived (workflow id, stage)
     factsChanged = Signal()                # the facts of the done results (info) changed
     selectionChanged = Signal()            # the count of kept frames changed
+    postChanged = Signal(object)           # the Post composition changed (the object that changed it, or None)
 
     def __init__(self, project, worker: ApiWorker | None = None, *, readonly: bool = False,
                  history: list | None = None, gpu: bool = True, device: str | None = None):
@@ -253,6 +256,7 @@ class ProjectModel(QObject):
         self.paths: list[WorkflowView] = []
         self.current = 0
         self.sel_step = "sources"
+        self.sel_layer: int | None = None                  # the Post layer of the selected Stars and background block
         self.scope: list[int] | None = None
         self.pending_change: dict | None = None
         self.gpu = gpu
@@ -493,6 +497,64 @@ class ProjectModel(QObject):
         if not self.readonly:
             self._save_timer.start()
 
+    # ------------------------------------------------------------ the Post composition
+    # Post's layers are the project's (``project.post["layers"]``, postengine.save_layers). Post edits them, and so
+    # does the graph: the Stars block's images sent to Post, the Stars and background blocks of the Composition
+    # section (layers of part "combined") and their settings in the graph's panel. Every change goes through
+    # ``set_post_layers``, which says it with ``postChanged``: Post and the graph show the same composition.
+    #: Post's layers as it shows them, when Post is open (``post3.PostView`` sets it): they hold the layers it gave
+    #: the workflows, which are only saved with an edit
+    post_shown = None
+
+    def post_layers(self) -> list[dict]:
+        """The composition: Post's as it shows it when it is open, else as saved (a copy: postengine.load_layers makes
+        it safe to use)."""
+        import copy as _copy
+        if self.post_shown is not None:
+            return self.post_shown()
+        return _copy.deepcopy(list(((getattr(self.p, "post", None) or {}).get("layers")) or []))
+
+    def set_post_layers(self, layers: list[dict], source=None):
+        """The composition replaced (saved layers, postengine.save_layers); ``source``: who changed it (Post itself
+        does not reload what it wrote)."""
+        self.p.post = {**(getattr(self.p, "post", None) or {}), "layers": layers}
+        self.edited()
+        self.postChanged.emit(source)
+
+    def _post_edit(self, change, source=None):
+        from .postengine import load_layers, normalize, save_layers
+        layers = load_layers(self.post_layers(), {q.pid for q in self.paths})
+        out = change(layers)
+        self.set_post_layers(save_layers(normalize(layers)), source)
+        return out
+
+    def add_post_layer(self, pid: int, part: str | None, source=None) -> int:
+        """A layer of a workflow's image at the top of Post, shown: its Output block's image (``part`` None) or one of
+        its Stars block's (the starless image, the stars alone, or a new Stars and background block). Returns its
+        id."""
+        from .postengine import new_workflow_layer
+        p = self.view(pid)
+        name = p.name + ("" if part is None else " · " + POST_PART_NAMES[part])
+        lay = new_workflow_layer(pid, name, True, part)
+        return self._post_edit(lambda layers: (layers.insert(0, lay), lay["id"])[1], source)
+
+    def remove_post_layer(self, lid: int, source=None):
+        """A layer taken out of Post (its own filters go with it)."""
+        def change(layers):
+            layers[:] = [x for x in layers if x["id"] != lid and not (x["kind"] == "filter" and x.get("target") == lid)]
+        self._post_edit(change, source)
+
+    def set_post_layer(self, lid: int, source=None, **values):
+        """Settings of a Post layer changed (``sliders``, ``blend``, ``visible``...)."""
+        def change(layers):
+            for x in layers:
+                if x["id"] == lid:
+                    x.update(values)
+        self._post_edit(change, source)
+
+    def post_layer(self, lid: int) -> dict | None:
+        return next((x for x in self.post_layers() if x.get("id") == lid), None)
+
     # ------------------------------------------------------------ the sync: states, chains, blocks
     def _sync(self, prefetch: bool = True):
         """The views, states, chains and block keys read again (GUI thread: caches and manifests only)."""
@@ -645,10 +707,8 @@ class ProjectModel(QObject):
         names = {"inventory": "Inventory", "calibrate": "Calibration", "register": "Registration",
                  "stack": "Stacking", "astrometry": "Astrometry", "reference": "Reference image",
                  "catalogs": "Gaia catalogues", "surveys": "H-alpha survey", "color": "Color", "denoise": "Denoise",
-                 "optics": "Optics", "stars": "Star measurement", "star_net": "Neural star removal",
-                 "starless": "Starless image", "background": "Sky level", "gradient": "Sky gradient",
-                 "render_prep": "Output prep", "render_prep_learned": "Output prep (neural removal)",
-                 "render_simple": "Output prep (simple)", "deconv": "Deconvolution"}
+                 "gradient": "Sky gradient", "render_simple": "Output prep", "star_removal": "Star removal",
+                 "deconv": "Deconvolution"}
         return _(names.get(stage, stage))
 
     def state(self, p: WorkflowView | None, stage: str) -> str:
@@ -781,7 +841,7 @@ class ProjectModel(QObject):
     def _method_key(self, p: WorkflowView, block: str, method: str, device: str | None):
         """(the cache key, the options the method needs) of a method's duration, or None when the engine refuses them.
         ``device``: "gpu", "cpu", or None for the machine's."""
-        tool = {"fond": {"auto": "auto", "rbf": "rbf", "simple": "simple"}, "etoiles": {"psf": "etoiles", "psf_neural": "appris"},
+        tool = {"fond": {"auto": "auto", "rbf": "rbf", "simple": "simple"}, "etoiles": {"neural": "etoiles"},
                 "debruitage": {"generique": "debruitage", "affine": "debruitage"}}.get(block, {}).get(method)
         try:
             opts = self.with_tool(p.opts, tool)[0] if tool else dict(p.opts)      # the options the method needs
@@ -1051,8 +1111,8 @@ class ProjectModel(QObject):
     # ------------------------------------------------------------ the toolbox: options and their rules
     @staticmethod
     def has_tool(o: dict, key: str) -> bool:
-        return {"debruitage": bool(o.get("debruitage")), "etoiles": o.get("etoiles") == "mesurer",
-                "appris": bool(o.get("appris")), "auto": o.get("fond") == "auto", "rbf": o.get("fond") == "rbf",
+        return {"debruitage": bool(o.get("debruitage")), "etoiles": o.get("etoiles") == "retirer",
+                "auto": o.get("fond") == "auto", "rbf": o.get("fond") == "rbf",
                 "simple": o.get("fond") == "simple", "deconv": bool(o.get("deconv"))}[key]
 
     @staticmethod
@@ -1160,14 +1220,12 @@ class ProjectModel(QObject):
             if v not in DN_ENGINE:
                 raise NotInEngine(NOT_IN_ENGINE)
             return [{"kind": "opt", "key": "denoise", "value": DN_ENGINE[v]}]
-        if key == "appris":
-            return [{"kind": "opt", "key": "stars", "value": "psf_neural" if v else "psf"}]
         if key == "fond":
             return [{"kind": "opt", "key": "gradient", "value": GRADIENT_ENGINE.get(v, "polynomial")}]
         if key == "debruitage":
             return [{"kind": "opt", "key": "denoise", "value": "pretrained" if v else None}]
         if key == "etoiles":
-            return [{"kind": "opt", "key": "stars", "value": "psf" if v == "mesurer" else None}]
+            return [{"kind": "opt", "key": "stars", "value": "neural" if v == "retirer" else None}]
         raise NotInEngine(NOT_IN_ENGINE)
 
     def _changed(self, p: WorkflowView, ch: dict) -> Workflow:
@@ -1591,18 +1649,19 @@ class ProjectModel(QObject):
         return max(1e-4, (zx1 - zx0) * (zy1 - zy0))
 
     # ------------------------------------------------------------ what a workflow gives in Post
-    def slider_infos(self, p: WorkflowView) -> list:
-        """The Post sliders of a workflow's layer (api.SliderInfo list: key, name, group, ends, available, reason)."""
-        return api.sliders_of(self.p, p.pid)
+    def slider_infos(self, p: WorkflowView, part: str | None = None) -> list:
+        """The Post sliders of a workflow's layer (api.SliderInfo list: key, name, group, ends, available, reason).
+        ``part``: None for its Output block's image, else one of its Stars block's ('starless', 'stars', 'combined')."""
+        return api.sliders_of(self.p, p.pid, part)
 
-    def slider_state(self, p: WorkflowView, key: str):
+    def slider_state(self, p: WorkflowView, key: str, part: str | None = None):
         """(available, reason why not, options that would unlock it: None when no change of the options would)."""
-        info = next((x for x in self.slider_infos(p) if x.key == key), None)
+        info = next((x for x in self.slider_infos(p, part) if x.key == key), None)
         if info is None or info.available:
             return True, "", None
         need = None
-        if p.end is None:
-            for tool in ("etoiles", "debruitage"):
+        if p.end is None and part is None:
+            for tool in ("debruitage",):
                 cand = self.with_tool(p.opts, tool)[0]
                 if key in self.available_sliders(cand):
                     need = cand

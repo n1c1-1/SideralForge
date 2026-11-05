@@ -127,7 +127,7 @@ def env(tmp_path, monkeypatch, qapp):
         monkeypatch.setattr(QMessageBox, kind, lambda *a, _k=kind, **k: shown.append((_k, a[1:3])))
     monkeypatch.setattr(QMessageBox, "exec", lambda self: shown.append(("box", self.text())))
     _project(ws, "Heart", "HeartSoul", "IC 1805 · Heart nebula", 1,
-             ["Classic stack", "Full", "Full + neural stars"],
+             ["Classic stack", "Classic + denoise", "Full"],
              run={"integration_h": 3.0, "last_time": "2026-08-17T05:15:59"}, thumb=True)
     _project(ws, "NGC7822", "NGC 7822", "Cepheus · emission nebula", 3, ["Full"])
     _project(ws, "Iris", "Iris", "NGC 7023 · reflection nebula", 1, ["Classic stack"],
@@ -232,8 +232,7 @@ class FakeModel:
         return out
 
 
-TEMPLATES = {"Classic stack": {"d": 0}, "Classic + denoise": {"d": 1}, "Full": {"d": 2},
-             "Full + neural stars": {"d": 3}}
+TEMPLATES = {"Classic stack": {"d": 0}, "Classic + denoise": {"d": 1}, "Full": {"d": 2}}
 
 
 # ---------------------------------------------------------------------------------------------- tests
@@ -484,10 +483,10 @@ def test_log_shows_the_history_newest_first_and_exports(env, tmp_path):
 
 def test_new_workflow_dialog_on_the_model(qapp):
     d = NewWorkflowDialog(FakeModel(), templates=TEMPLATES)
-    assert len(d.cards) == 6 and d.name.text() == "New workflow"
+    assert len(d.cards) == 5 and d.name.text() == "New workflow"
     d.pick(2)
     assert d.name.text() == "Full 2" and d.opts == {"d": 2}
-    d.pick(5)
+    d.pick(4)
     assert d.name.text() == "Full (copy)"
 
 
@@ -602,7 +601,7 @@ def test_shots(env, qapp, tmp_path):
         for dlg, name in ((NewProjectDialog(env["ws"].as_posix(), "Rosette", "NGC 2237"), "new_project"),
                           (NewProjectDialog(env["ws"].as_posix(), "Iris"), "new_project_taken"),
                           (NewWorkflowDialog(FakeModel(), templates=TEMPLATES), "new_workflow"),
-                          (name_dialog(w, "Rename", "Full + neural stars")[0], "rename"),
+                          (name_dialog(w, "Rename", "Classic + denoise")[0], "rename"),
                           (w.about_dialog(), "about"), (w.import_box(env["ws"] / "OldM31"), "previous_version")):
             shot(dlg, f"dialog_{name}_{lang}")
             dlg.close()

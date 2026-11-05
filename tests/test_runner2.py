@@ -2,7 +2,7 @@
 changes (stack.exclude, the cache-only calibrate, run_id, atomic timings).
 
 Toy stages: inventory → stack → b (with the 'denoise' option, checkpointed) → c → e; c reads b when the chain has
-it and e reads b through an EXTRA edge (the starless / star_net pattern). Workflows: Classic (no b) and Denoise.
+it and e reads b through an EXTRA edge. Workflows: Classic (no b) and Denoise.
 """
 from __future__ import annotations
 
@@ -174,7 +174,7 @@ class E(Stage):
         ctx.save_json("e.json", ctx.load_json("c", "c.json"))
 
 
-def toy_rule(options, end, reference, learned_layer):
+def toy_rule(options, end, reference):
     return ["inventory", "stack"] + (["b"] if options.get("denoise") else []) + ["c", "e"]
 
 
@@ -183,7 +183,7 @@ def toy_rules() -> KeyRules:
     chains = Chains([Inv(), ToyStack(), B(), C(), E()], extra={"e": ("b",)}, optional={"c": ("b",), "e": ("b",)},
                     blocks={"calibration": ("inventory",), "stacking": ("stack",), "denoise": ("b",),
                             "color": ("c",), "output": ("e",)}, rule=toy_rule)
-    return KeyRules(chains, auto_fields={"stack": ("scale",)}, path_fields={}, non_key={"stack": ("workers",)},
+    return KeyRules(chains, auto_fields={"stack": ("scale",)}, non_key={"stack": ("workers",)},
                     implied=lambda options, stage: {})
 
 
@@ -413,24 +413,9 @@ def test_launch_removes_stop_and_rotates_large_events(proj, monkeypatch):
     assert info2.offset == 0 and len(list(logs.glob("events_*.jsonl"))) == 1
 
 
-def test_a_workflow_whose_earlier_layer_belongs_to_another_stack_is_skipped(proj):
-    w = proj.workflow(DENOISE)
-    w.params["starless"] = {"learned_stars": "inputs/layer.npy"}
-    (proj.root / "inputs").mkdir()
-    (proj.root / "inputs" / "layer.npy").write_bytes(b"x")
-    rec = proj.root / "inputs" / "layer.json"
-    rec.write_text(json.dumps({runner2.LAYER_STACK_KEY: "0123456789abcdef"}))
-    plan = plan_all(proj)
-    assert plan.skipped == {DENOISE: runner2.LAYER_OTHER_STACK} and all(j.wf == [CLASSIC] or CLASSIC in j.wf
-                                                                         for j in plan.jobs)
-    assert [j.stage for j in plan.jobs] == ["inventory", "stack", "c", "e"]
-    rec.write_text(json.dumps({runner2.LAYER_STACK_KEY: K(proj).key(DENOISE, "stack")}))
-    assert not plan_all(proj).skipped and len(plan_all(proj)) == 7
-
-
 def test_real_stage_graph_plans_each_key_once_and_cheap_workflows_first(proj):
-    """The four templates and a Raw stack exit on the v2 stages: one job per distinct key, in dependency order,
-    the cheap workflows' outputs before the long trainings (planning only)."""
+    """The three templates and a Raw stack exit on the v2 stages: one job per distinct key, in dependency order,
+    the cheap workflows' outputs first (planning only)."""
     p = project2.create(proj.root.parent / "real", "real")
     p.sessions = [Session(1, "night", lights=proj.sessions[0].lights)]
     ids = {n: p.add_workflow(n, TEMPLATES[n]).id for n in TEMPLATES}
@@ -438,7 +423,7 @@ def test_real_stage_graph_plans_each_key_once_and_cheap_workflows_first(proj):
     plan = runner2.plan_all(p, history={})
     k = Keys(p)
     distinct = {k.key(w.id, s) for w in p.workflows for s in k.chain(w.id)}
-    assert sorted(plan.keys) == sorted(distinct) and len(plan) == 23
+    assert sorted(plan.keys) == sorted(distinct) and len(plan) == 13
     pos = {(j.stage, tuple(j.wf)): i for i, j in enumerate(plan.jobs)}
     for i, j in enumerate(plan.jobs):
         assert all(plan.keys.index(d) < i for d in j.deps.values())
@@ -446,15 +431,17 @@ def test_real_stage_graph_plans_each_key_once_and_cheap_workflows_first(proj):
     for j in plan.jobs:
         by_stage.setdefault(j.stage, []).append(j)
     assert [j.wf for j in by_stage["stack"]] == [sorted([*ids.values(), raw])]
-    assert [j.wf for j in by_stage["denoise"]] == [sorted(ids[n] for n in ("Classic + denoise", "Full",
-                                                                           "Full + neural stars"))]
+    assert [j.wf for j in by_stage["denoise"]] == [sorted(ids[n] for n in ("Classic + denoise", "Full"))]
+    assert [j.wf for j in by_stage["render_simple"] if ids["Full"] in j.wf] == [sorted(ids[n] for n in (
+        "Classic + denoise", "Full"))]                                  # the Output's image: shared, the block is not
     assert plan.keys.index(k.key(raw, "render_simple")) == plan.keys.index(k.key(raw, "stack")) + 1
     classic_out = plan.keys.index(k.key(ids["Classic stack"], "render_simple"))
     assert classic_out < plan.keys.index(k.key(ids["Full"], "denoise")) < plan.keys.index(
-        k.key(ids["Full + neural stars"], "star_net"))
-    assert pos[("star_net", (ids["Full + neural stars"],))] > pos[("render_prep", (ids["Full"],))]
+        k.key(ids["Full"], "star_removal"))
+    assert pos[("star_removal", (ids["Full"],))] > pos[("render_simple", tuple(sorted((ids["Full"],
+                                                                                       ids["Classic + denoise"]))))]
     assert all(j.block == wf_block for j in plan.jobs for wf_block in [k.rules.chains.block_of(j.stage)])
-    assert plan.seconds > 3600 and not plan.measured
+    assert plan.seconds > 300 and not plan.measured
 
 
 # ---------------------------------------------------------------------------------------------- the lock
@@ -783,7 +770,7 @@ def test_the_cuda_check(monkeypatch):
 # ---------------------------------------------------------------------------------------------- estimates
 
 def test_estimates_follow_units_history_and_the_cpu():
-    f = est.Facts(frames=100, lights=80, mpx=24.0, scale=1.0, grid_mpx=24.0, iterations=500, steps=11000)
+    f = est.Facts(frames=100, lights=80, mpx=24.0, scale=1.0, grid_mpx=24.0, iterations=500)
     heart = est.HEART_FACTS
     e = est.estimate("stack", f, history={})
     assert not e.measured and e.seconds == pytest.approx(2064.0 * 80 * 24.0 / (721 * heart.mpx * 2.25))
@@ -900,8 +887,7 @@ def iris_check(history: dict) -> tuple[float, float, dict]:
     v2 = project2.from_v1(IRIS)
     w = v2.workflows[0]
     from astro_gpu.core import workflow as wfl
-    chain = wfl.chain(w.options, w.end, reference=bool(v2.reference_image),
-                      learned_layer=wfl.has_learned_layer(w.params))
+    chain = wfl.chain(w.options, w.end, reference=bool(v2.reference_image))
     measured = est.v1_durations(IRIS)
     f = est.v1_facts(IRIS)
     e = {s: est.estimate(s, f, True, history).seconds for s in chain}

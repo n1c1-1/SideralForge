@@ -254,13 +254,9 @@ def test_manifest_keeps_the_english_text():
 #: f-string keys the stages write, and what they stand for
 EXPANSIONS = {
     "n_{}": ["n_darks", "n_flats", "n_bias", "n_flat_darks"],
-    "replaced_{}": ["replaced_G", "replaced_B"],
-    "collapsed_{}": ["collapsed_green", "collapsed_blue"],
-    "excess_{}": ["excess_green", "excess_blue"],
 }
 #: the functions that build the dictionaries of metrics the stages pass on (``ctx.metric(k, v)`` in a loop)
-HELPERS = {"stars.py": ["forced_photometry", "star_qc", "local_psf_correction"], "far_halo.py": ["far_halo"],
-           "star_shape.py": ["measure"]}
+HELPERS: dict[str, list[str]] = {}
 
 
 def _key(node):
@@ -280,7 +276,7 @@ def _expand(key):
 
 def written_metric_keys() -> dict[str, str]:
     """Every metric key the stages write: {key: where}, read in the source (``ctx.metric("key", ...)`` and the
-    dictionaries of metrics that ``stars`` builds)."""
+    dictionaries of metrics a helper builds, listed in HELPERS)."""
     out: dict[str, str] = {}
     for path in sorted(STAGES.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -307,7 +303,7 @@ def written_metric_keys() -> dict[str, str]:
 
 def test_every_metric_the_stages_write_has_a_catalogue_entry():
     written = written_metric_keys()
-    assert len(written) > 100
+    assert len(written) > 60
     missing = sorted(k for k in written if k not in texts.METRICS)
     assert not missing, f"metrics with no catalogue entry (astro_gpu/texts.py): {missing}"
     # and no entry for a key nobody writes (a typo)
@@ -320,10 +316,12 @@ def test_every_metric_of_the_real_manifests_has_a_catalogue_entry():
     if not manifests:
         pytest.skip("the test projects of F:/astro_essais are not here")
     keys = set()
+    stages = set(texts.stage_names())
     for f in manifests:
-        keys |= set(json.loads(f.read_text(encoding="utf-8")).get("metrics") or {})
-    assert len(keys) > 100
-    assert not sorted(k for k in keys if k not in texts.METRICS)
+        if f.parent.name in stages:                                  # the stages removed since leave old manifests
+            keys |= set(json.loads(f.read_text(encoding="utf-8")).get("metrics") or {})
+    assert len(keys) > 60
+    assert not sorted(k for k in keys if k not in texts.METRICS and k not in texts.RETIRED_METRICS)
 
 
 def test_metric_entries_are_complete_and_in_french():
@@ -352,9 +350,7 @@ def test_format_metric():
     assert f("focal_mm", None, "fr") == "–"
     assert f("coverage", 1.0, "en") == "100.0 %" and f("coverage", 0.955, "fr") == "95,5 %"
     assert f("crop", [1, 3731, 2, 2544], "fr") == "1, 3731, 2, 2544 px"
-    assert f("local_psf_stars_per_cell", [24, 59], "fr") == "24–59"
     assert f("noise_reduction", 13.84, "fr") == "13,84 ×"
-    assert f("far_halo_profile", {"78": 3.0, "107": 2.2}, "fr") == "2 valeurs"
     assert f("matrix", [[2.1, -0.8, 0.38], [0.5, 0.3, 0.2]], "fr") == "2,100 / -0,800 / 0,380 ; 0,500 / 0,300 / 0,200"
     assert f("no_such_metric", 2.5, "en") == "2.5" and f("no_such_metric", 2.5, "fr") == "2,5"
     assert texts.metric_label("no_such_metric") == "No such metric"
@@ -364,17 +360,8 @@ def test_format_metric():
 def test_fixed_words_of_the_metrics():
     f = texts.format_metric
     assert f("survey", "nsns", "en") == "NSNS" and f("survey", "none", "fr") == "aucun"
-    assert f("star_flat_photometry", "aperture", "fr") == "grandes ouvertures"
     assert f("response_source", "fit", "fr") == "ajustées sur ce champ"
     assert f("response_source", "camera profile (heart_a7s)", "fr") == "profil de l'appareil (heart_a7s)"
-    assert f("star_profile", "focused, FWHM 2.50 px (the measured stars are defocused rings)", "fr").startswith(
-        "nette, FWHM 2,50 px")
-    assert f("angular_shape", "too few stars", "fr") == "trop peu d'étoiles"
-    assert f("far_halo", "fewer than 3 bright stars", "fr") == "moins de 3 étoiles brillantes"
-    assert f("ha_fit", "fitted", "en") == "fitted"
-    kept = ("camera HII signature imposed (the survey correlates with other structures in this field); the rejection on "
-            "all channels left 5 % of the H-alpha amplitude of the whole field: objects rejected on green and blue only")
-    assert "le rejet sur tous les canaux a laissé 5 %" in f("ha_fit", kept, "fr")
     assert f("camera", "ZWO ASI2600MC Pro", "fr") == "ZWO ASI2600MC Pro"           # a name is never translated
     for v in texts.VALUE_TEXTS.values():
         assert texts.has_translation(v, "fr"), v
@@ -400,7 +387,7 @@ def test_every_help_text_has_a_french_and_is_not_the_english():
                 assert t_fr != t, f"{stage}.{name}: tip"
                 n_tip += 1
             assert texts.param_label(stage, name, "fr"), f"{stage}.{name}: label"
-    assert n_help > 100 and n_tip > 30
+    assert n_help > 60 and n_tip > 20
 
 
 def test_parameter_texts_read_well():

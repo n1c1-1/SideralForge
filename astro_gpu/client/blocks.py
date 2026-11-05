@@ -1,8 +1,12 @@
 """The blocks of the graph and how the workflows share them.
 
 A workflow is a chain of blocks, named as in the standard tools (Calibration, Registration, Selection, Stacking,
-Astrometry, Color, Denoise, Stars, Gradient, Output). The engine's internal steps (the half-stacks, the starless image)
-are not blocks: they are shown inside the block that makes them and as a wire to the block that uses them.
+Astrometry, Color, Denoise, Stars, Gradient, Output). The engine's internal steps (the half-stacks) are not blocks:
+they are shown inside the block that makes them and as a wire to the block that uses them.
+
+The Stars block gives two images, the starless image and the stars alone: two wires that go to Post as layers, or into
+a Stars and background block of the Composition section (between the outputs and Post), which recombines them. Those
+blocks are Post's layers of part "combined" (``Graph.compositions``): the graph and Post show the same composition.
 
 The order is the engine's real one: Gradient comes right after Astrometry, before Color: it works on the stack, and
 every later block reads the stack with the gradient removed. Two
@@ -11,7 +15,8 @@ workflows share a block as long as they compute it, and everything before it, th
 leaf (the output) per workflow, all leaves going to Post.
 
 The views use their own block keys (calibration, alignement, selection, empilement, astrometrie, couleur,
-deconv, debruitage, etoiles, fond, post): ``ENGINE_BLOCK`` maps the engine's names to them. The stage names are the
+deconv, debruitage, etoiles, fond, post; composition for the Stars and background blocks): ``ENGINE_BLOCK`` maps the
+engine's names to them. The stage names are the
 engine's (``gradient``, ``render_simple``...).
 
 This module also holds the block table (``STEPS``, ``BY_KEY``) that the Inspect strip and the panel share, and the
@@ -27,18 +32,20 @@ from .i18n import _, hm, language, number, plural
 
 # the columns of the graph, left to right; optional columns only appear when a workflow uses them
 COLUMNS = ["sources", "calibration", "alignement", "selection", "empilement", "astrometrie", "fond", "couleur",
-           "deconv", "debruitage", "etoiles", "post", "final"]
-OPTIONAL = {"debruitage", "deconv", "etoiles"}
-PHASES = [("Pre-processing", "calibration", "empilement"), ("Linear processing", "astrometrie", "etoiles")]
-TOOL_COLUMN = {"debruitage": "debruitage", "etoiles": "etoiles", "appris": "etoiles", "deconv": "deconv",
+           "deconv", "debruitage", "etoiles", "post", "composition", "final"]
+OPTIONAL = {"debruitage", "deconv", "etoiles", "composition"}
+PHASES = [("Pre-processing", "calibration", "empilement"), ("Linear processing", "astrometrie", "etoiles"),
+          ("Composition", "composition", "composition")]
+TOOL_COLUMN = {"debruitage": "debruitage", "etoiles": "etoiles", "deconv": "deconv",
                "auto": "fond", "rbf": "fond", "simple": "fond"}
 TITLES = {"sources": "Frames", "final": "Post", "calibration": "Calibration", "alignement": "Registration",
           "selection": "Selection", "empilement": "Stacking", "astrometrie": "Astrometry", "fond": "Gradient",
           "couleur": "Color", "debruitage": "Denoise", "deconv": "Deconvolution", "etoiles": "Stars",
-          "appris": "Stars", "post": "Output", "demi_piles": "Half-stacks", "sans_etoiles": "Starless image"}
+          "post": "Output", "demi_piles": "Half-stacks", "composition": "Stars and background"}
 # the optional blocks, in the toolbar's order
 TOOLBOX = ["debruitage", "deconv", "etoiles"]
-HIDDEN_BLOCKS = {"appris"}                      # the neural removal is a method of the Stars block
+#: the two images of the Stars block (the parts of Post's layers) and their words on the wires
+STAR_OUTPUTS = (("starless", "Starless image"), ("stars", "Stars alone"))
 # the engine's block names (core/workflow.BLOCKS) and the views' keys
 ENGINE_BLOCK = {"calibration": "calibration", "registration": "alignement", "selection": "selection",
                 "stacking": "empilement", "astrometry": "astrometrie", "color": "couleur", "denoise": "debruitage",
@@ -47,7 +54,6 @@ KEY_ENGINE_BLOCK = {v: k for k, v in ENGINE_BLOCK.items()}
 # the wires that are not the chain: what a block takes from a block further back, shown when it is selected
 SIDE_INPUTS = {
     "debruitage": [("empilement", "half-stacks")],
-    "etoiles": [("astrometrie", "Gaia stars")],
     "couleur": [("astrometrie", "Gaia spectra")],
 }
 TRUNK = ["inventory", "calibrate", "register", "stack"]
@@ -91,23 +97,18 @@ STEPS = [
     dict(key="debruitage", phase=4, title="Denoise", kind="tool", tool="debruitage", stages=["denoise"],
          what="A network learns on the two half-stacks to predict one from the other: it removes the noise without "
               "inventing anything."),
-    dict(key="etoiles", phase=4, title="Stars", kind="tool", tool="etoiles",
-         stages=["optics", "stars", "star_net", "starless", "background"],
-         what="Each star measured on Gaia with the real PSF of the optics, subtracted, then redrawn at output: this "
-              "gives the star sliders in Post."),
-    dict(key="appris", phase=4, title="Neural star removal", kind="tool", tool="appris", stages=["star_net"],
-         what="In addition to the star measurement: a star-removal network trained on this stack. Gives a second "
-              "starless image."),
-    dict(key="sans_etoiles", phase=4, title="Starless image", kind="auto", stages=["starless"],
-         what="Subtracts the star model (the nebula under the stars is kept), then denoises the starless image. "
-              "Comes with Stars."),
+    dict(key="etoiles", phase=4, title="Stars", kind="tool", tool="etoiles", stages=["star_removal"],
+         what="A network trained on our stacks takes the stars off the image: two images, the starless image and the "
+              "stars alone, sent to Post as they are or recombined by a Stars and background block."),
     dict(key="fond", phase=4, title="Gradient", kind="slot", stages=["gradient"],
          what="Models the sky gradient (light pollution, the Moon, vignetting) on the stack and removes it from what "
               "every later block reads. Polynomial: a smooth surface fitted on the sky between the objects. "
               "Automatic: a more flexible surface that follows complex gradients."),
-    dict(key="post", phase=5, title="Output", kind="fixed",
-         stages=["render_prep", "render_prep_learned", "render_simple"],
+    dict(key="post", phase=5, title="Output", kind="fixed", stages=["render_simple"],
          what="Prepares the render: what this workflow gives in Post, its image and its sliders."),
+    dict(key="composition", phase=6, title="Stars and background", kind="slot", stages=[],
+         what="Recombines the Stars block's two images: the starless image and the stars, each stretched, the stars "
+              "put back on top (Screen, Linear dodge or Lighten). Its settings are those of its layer in Post."),
 ]
 BY_KEY = {b["key"]: b for b in STEPS}
 # what the optional blocks say they do (the toolbar cards' tooltips)
@@ -116,11 +117,8 @@ TOOLS = {
                        what="Removes the noise without inventing anything: a network learns on the two half-stacks "
                             "to predict one from the other."),
     "etoiles": dict(title="Stars", phase=4,
-                    what="Measures each star on Gaia with the real PSF of the optics, removes it, then redraws it at "
-                         "output: gives the star sliders in Post."),
-    "appris": dict(title="Neural star removal", phase=4,
-                   what="A star-removal network trained on this stack, in addition to the star measurement: a "
-                        "second starless image."),
+                    what="Takes the stars off the image with a trained network: the starless image and the stars "
+                         "alone, two images for Post (recombined by a Stars and background block, or as they are)."),
     "deconv": dict(title="Deconvolution", phase=4,
                    what="Sharpens the image with the point spread function measured on the stars."),
 }
@@ -139,9 +137,9 @@ def review_title(key: str) -> str:
 
 
 def chain(p) -> list[str]:
-    """The block keys of a workflow, in order (frames and post excluded); a workflow pulled to the post from a block
-    stops there, then has its output."""
-    return [k for k in p.model.block_keys(p) if k not in HIDDEN_BLOCKS]
+    """The block keys of a workflow, in order (the frames excluded, its Output last); a workflow pulled to the post
+    from a block stops there, then has its output."""
+    return list(p.model.block_keys(p))
 
 
 # ------------------------------------------------------------------ block-level answers over a model
@@ -188,6 +186,7 @@ class Node:
     col: int = 0
     y: float = 0.0
     w: float = 0.0                             # its width in the graph (the column's)
+    lid: int | None = None                     # a Stars and background block: its layer in Post
     _bk: object = None
 
     @property
@@ -196,7 +195,13 @@ class Node:
 
 
 class Graph:
-    """The tree of blocks for the current state of the project. A second argument (tests pass None) is not read."""
+    """The tree of blocks for the current state of the project. A second argument (tests pass None) is not read.
+
+    Beside the tree, what goes to Post (``Post``'s layers, ``project.post_layers``; a workflow that has none yet
+    counts with the one Post will give it: its Stars and background block with Stars, else its Output): the Stars and
+    background blocks (``compositions``: their nodes, after the outputs), the Stars block's images sent to Post as
+    they are (``direct``: the Stars node and the part), and the workflows whose Output image is a layer (``to_post``).
+    """
 
     def __init__(self, project, _unused=None):
         self.s = project
@@ -220,15 +225,55 @@ class Graph:
                 self.by_path[p.pid][k] = nxt
                 cur = nxt
             self.leaves[p.pid] = cur
+        self.compositions: list[Node] = []
+        self.direct: list[tuple[Node, str]] = []
+        self.to_post: set[int] = set()
+        #: the layers of Post, top first: (name, workflow id or None for an image sent from Inspect)
+        self.post_layers: list[tuple[str, int | None]] = []
+        layers = project.post_layers() if hasattr(project, "post_layers") else []
+        have = {lay.get("pid") for lay in layers if lay.get("kind") == "workflow"}
+        for p in project.paths:                       # the layer Post gives a workflow it does not have yet
+            if p.pid not in have:
+                stars = p.opts.get("etoiles") == "retirer" and self.node_of(p, "etoiles") is not None
+                layers.insert(0, {"kind": "workflow", "pid": p.pid, "part": "combined" if stars else None, "id": None,
+                                  "name": p.name + (" · Stars and background" if stars else "")})
+        for lay in layers:
+            if lay.get("kind") == "image":
+                self.post_layers.append((str(lay.get("name") or "?"), None))
+            if lay.get("kind") != "workflow":
+                continue
+            p = next((q for q in project.paths if q.pid == lay.get("pid")), None)
+            if p is None:
+                continue
+            self.post_layers.append((str(lay.get("name") or p.name), p.pid))
+            part = lay.get("part")
+            if part is None:
+                self.to_post.add(p.pid)
+                continue
+            src = self.node_of(p, "etoiles")
+            if src is None:
+                continue
+            if part == "combined":
+                n = Node("composition", [p], src, lid=lay.get("id"))
+                n._bk = ("composition", lay.get("id"), p.pid)
+                self.nodes.append(n)
+                self.compositions.append(n)
+            elif (src, part) not in self.direct:
+                self.direct.append((src, part))
         self.nodes.append(self.final)
 
-    def node_of(self, p, key: str) -> Node | None:
+    def node_of(self, p, key: str, lid: int | None = None) -> Node | None:
+        """The node of a block of a workflow; a Stars and background block by its Post layer (``lid``; else the
+        workflow's first one)."""
         if key == "sources":
             return self.root
         if key == "final":
             return self.final
         if p is None:
             return None
+        if key == "composition":
+            mine = [n for n in getattr(self, "compositions", []) if p in n.paths]
+            return next((n for n in mine if n.lid == lid), mine[0] if mine else None)
         return self.by_path.get(p.pid, {}).get(key)
 
     # ------------------------------------------------------------ state of a block
@@ -238,6 +283,8 @@ class Graph:
             return "done" if self.s.sources_loaded else "pending"
         if node.key == "final":
             return "done" if self.s.paths and all(p.rendered for p in self.s.paths) else "pending"
+        if node.key == "composition":                 # computed in Post from the Stars block's images
+            return block_state(self.s, node.paths[0], "etoiles")
         states = {block_state(self.s, p, node.key) for p in node.paths}
         return next((w for w in STATE_ORDER if w in states), "pending")
 
@@ -245,7 +292,7 @@ class Graph:
         """The review point of a block: (state, how many of its workflows have it, how many go through it), the state
         being the most urgent of theirs (paused, pending, reviewed); None when no workflow pauses after it."""
         review = getattr(self.s, "review_state", None)
-        if review is None or node.key in ("sources", "final") or not node.paths:
+        if review is None or node.key in ("sources", "final", "composition") or not node.paths:
             return None
         have = [st for st in (review(p, node.key) for p in node.paths) if st]
         if not have:
@@ -253,7 +300,7 @@ class Graph:
         return next(w for w in REVIEW_ORDER if w in have), len(have), len(node.paths)
 
     def seconds(self, node: Node) -> float:
-        if node.key in ("sources", "final") or not node.paths:
+        if node.key in ("sources", "final", "composition") or not node.paths:
             return 0.0
         return block_seconds(self.s, node.paths[0], node.key)
 
@@ -265,11 +312,17 @@ class Graph:
             return plural(len(s.sessions), "{n} session · {lights} lights", "{n} sessions · {lights} lights",
                           lights=fmt_int(s.n_lights()))
         if node.key == "final":
-            return plural(len(s.paths), "{n} layer", "{n} layers")
+            return plural(len(self.post_layers), "{n} layer", "{n} layers")
         p = node.paths[0]
         k = node.key
         if k == "post":
-            return _("from {block}").format(block=block_title(p, p.end)) if p.end else _("to Post")
+            if p.end:
+                return _("from {block}").format(block=block_title(p, p.end))
+            # with Stars, the image goes to the Stars block (and to Post only when a layer shows it as it is)
+            return _("to Post") if p.pid in self.to_post or self.node_of(p, "etoiles") is None else _("to Stars")
+        if k == "composition":
+            lay = self.s.post_layer(node.lid) if node.lid is not None and hasattr(self.s, "post_layer") else None
+            return _("stars in {mode}").format(mode=_((lay or {}).get("blend") or "Screen"))
         if k == "calibration":
             inv = s.info()
             return (_("{darks} darks, {flats} flats, no bias") if not inv.get("n_bias") else

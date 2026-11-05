@@ -17,8 +17,7 @@ from astro_gpu.core import workflow as wfl
 from astro_gpu.core.project import Target
 from astro_gpu.core.project2 import LegacyProject, Project2, Session
 
-CLASSIC, CLASSIC_DN, FULL, NEURAL = (wfl.TEMPLATES[k] for k in ("Classic stack", "Classic + denoise", "Full",
-                                                                 "Full + neural stars"))
+CLASSIC, CLASSIC_DN, FULL = (wfl.TEMPLATES[k] for k in ("Classic stack", "Classic + denoise", "Full"))
 
 
 def _project(root: Path) -> Project2:
@@ -98,10 +97,10 @@ def test_sessions_take_file_lists(tmp_path):
 def test_workflow_ids_are_never_reused(tmp_path):
     root = tmp_path / "p"
     p = _project(root)
-    third = p.add_workflow("Full + neural stars", NEURAL)
+    third = p.add_workflow("Full 2", FULL)
     assert third.id == 3
     p.remove_workflow(3)
-    assert p.add_workflow("Full + neural stars", NEURAL).id == 4
+    assert p.add_workflow("Full 2", FULL).id == 4
     p.remove_workflow(1)
     assert p.current == 2
     p2.save(p)
@@ -113,9 +112,7 @@ def test_workflow_ids_are_never_reused(tmp_path):
 def test_workflow_chain_follows_the_project(tmp_path):
     p = _project(tmp_path / "p")
     assert p.chain(1) == wfl.chain(FULL, reference=True)
-    w = p.add_workflow("Full + earlier neural layer", NEURAL,
-                       {"starless": {"learned_stars": "inputs/star_layer_net.npy"}})
-    assert "star_net" not in p.chain(w) and p.chain(w)[-1] == "render_prep_learned"
+    assert p.chain(1)[-2:] == ["render_simple", "star_removal"]
     exit_ = p.add_workflow("Raw stack", FULL, end="stacking", variant_of=1)
     assert p.chain(exit_) == ["inventory", "calibrate", "register", "stack", "render_simple"]
     p.reference_image = ""
@@ -123,7 +120,7 @@ def test_workflow_chain_follows_the_project(tmp_path):
 
 
 @pytest.mark.parametrize("change", [
-    lambda p: p.workflows[0].options.update(stars="psf_neural", denoise=None),
+    lambda p: p.workflows[0].options.update(stars="neural", denoise=None),
     lambda p: setattr(p.workflows[0], "end", "astrometry"),
     lambda p: setattr(p.workflows[1], "id", 1),
     lambda p: setattr(p.workflows[1], "variant_of", 7),
@@ -306,18 +303,14 @@ def test_v1_folder_is_never_written(tmp_path):
     assert p2.load(tmp_path / "v2") == p
 
 
-@pytest.mark.parametrize("params,options,name", [
-    ({}, NEURAL, "Full + neural stars"),
-    ({"star_net": {"enabled": True}}, NEURAL, "Full + neural stars"),
-    ({"star_net": {"enabled": False}}, FULL, "Full"),
-    ({"star_net": {"enabled": False}, "starless": {"learned_stars": "D:/l/star_layer_net.npy"}}, NEURAL,
-     "Full + earlier neural layer"),
-    ({"star_net": {"enabled": False}, "starless": {"learned_stars": "none"}}, FULL, "Full"),
-    ({"surveys": {"survey": "none"}}, {**NEURAL, "gradient": "polynomial"}, "Full + neural stars"),
-    ({"surveys": {"survey": "nsns"}, "star_net": {"enabled": False}}, FULL, "Full"),
+@pytest.mark.parametrize("params", [
+    {}, {"star_net": {"enabled": True}}, {"star_net": {"enabled": False}},
+    {"star_net": {"enabled": False}, "starless": {"learned_stars": "D:/l/star_layer_net.npy"}},
+    {"surveys": {"survey": "none"}},
 ])
-def test_v1_options(params, options, name):
-    assert p2.v1_options(params) == (options, name)
+def test_v1_options(params):
+    """Every v1 project had its stars taken off: whatever its star settings, a v2 "Full" workflow."""
+    assert p2.v1_options(params) == (FULL, "Full")
 
 
 def test_from_v1_with_variants(tmp_path):
@@ -338,14 +331,14 @@ def test_from_v1_with_variants(tmp_path):
     got = [(w.id, w.name, w.options, w.params, w.variant_of) for w in p.workflows]
     assert got == [
         (1, "Full", FULL, {"star_net": {"enabled": False}, "stack": {"scale": 1.5}}, None),
-        (2, "neural", NEURAL, {"stack": {"scale": 1.5}}, 1),
-        (3, "old layer", NEURAL, {"star_net": {"enabled": False}, "stack": {"scale": 1.5},
-                                  "starless": {"learned_stars": "D:/l/star_layer_net.npy"}}, 1),
+        (2, "neural", FULL, {"stack": {"scale": 1.5}}, 1),
+        (3, "old layer", FULL, {"star_net": {"enabled": False}, "stack": {"scale": 1.5},
+                                "starless": {"learned_stars": "D:/l/star_layer_net.npy"}}, 1),
         (4, "poly", FULL | {"gradient": "polynomial"},
          {"star_net": {"enabled": False}, "stack": {"scale": 2.0}, "surveys": {"survey": "none"}}, 1),
     ]
     assert p.current == 3 and p.next_workflow_id == 5
-    assert "star_net" not in p.chain(3)
+    assert p.chain(3)[-1] == "star_removal"                  # the old star settings stay stored, unread
 
 
 def test_from_v1_without_variant_keys(tmp_path):
@@ -353,21 +346,21 @@ def test_from_v1_without_variant_keys(tmp_path):
     root = tmp_path / "v1"
     _write_v1(root, {})
     p = p2.from_v1(root)
-    assert [(w.id, w.name) for w in p.workflows] == [(1, "Full + neural stars")] and p.current == 1
+    assert [(w.id, w.name) for w in p.workflows] == [(1, "Full")] and p.current == 1
 
 
 # ---------------------------------------------------------------------------------------------- the real projects
 
 REAL = [   # (folder, project name, workflow name from main): DESIGN §1.5 on the project.json read 2026-10-31
-    ("F:/photos/heart_nebula/astro_gpu", "HeartSoul", "Full + neural stars"),
-    ("F:/photos/NGC7822/astro_gpu", "NGC7822", "Full + neural stars"),
-    ("E:/astro_gpu/projects/FlamingStar", "Flaming Star", "Full + earlier neural layer"),
-    ("E:/astro_gpu/projects/Horsehead", "Horsehead", "Full + earlier neural layer"),
-    ("E:/astro_gpu/projects/Rosette", "Rosette", "Full + earlier neural layer"),
-    ("E:/astro_gpu/projects/Wizard", "NGC 7380 - Wizard Nebula", "Full + neural stars"),
-    ("E:/astro_gpu/projects/M31", "M31", "Full + neural stars"),
-    ("C:/Users/Nicolas/astro_gpu_scratch/projects/Iris", "Iris", "Full + earlier neural layer"),
-    ("C:/Users/Nicolas/astro_gpu_scratch/projects/M33", "M33", "Full + neural stars"),
+    ("F:/photos/heart_nebula/astro_gpu", "HeartSoul", "Full"),
+    ("F:/photos/NGC7822/astro_gpu", "NGC7822", "Full"),
+    ("E:/astro_gpu/projects/FlamingStar", "Flaming Star", "Full"),
+    ("E:/astro_gpu/projects/Horsehead", "Horsehead", "Full"),
+    ("E:/astro_gpu/projects/Rosette", "Rosette", "Full"),
+    ("E:/astro_gpu/projects/Wizard", "NGC 7380 - Wizard Nebula", "Full"),
+    ("E:/astro_gpu/projects/M31", "M31", "Full"),
+    ("C:/Users/Nicolas/astro_gpu_scratch/projects/Iris", "Iris", "Full"),
+    ("C:/Users/Nicolas/astro_gpu_scratch/projects/M33", "M33", "Full"),
 ]
 
 _GUARDED: list[str] = []              # folders no write may touch while the guard is on
@@ -418,11 +411,11 @@ def test_from_v1_on_the_real_projects(folder, name, wf_name):
     assert p.name == name and p.root is None and p.scratch_dir == ""
     assert [(w.id, w.name, w.end, w.variant_of) for w in p.workflows] == [(1, wf_name, None, None)]
     w = p.workflows[0]
-    assert w.options == {"denoise": "pretrained", "stars": "psf_neural", "gradient": "polynomial", "deconvolution": None}
+    assert w.options == {"denoise": "pretrained", "stars": "neural", "gradient": "polynomial", "deconvolution": None}
     assert w.params == {st: kv for st, kv in (old.get("params") or {}).items() if kv}
     assert [getattr(p.sessions[0], k) for k in p2.KINDS] == [old["inputs"].get(k, []) for k in p2.KINDS]
     c = p.chain(w)
-    assert ("star_net" in c) == (wf_name == "Full + neural stars") and c[-1] == "render_prep_learned"
+    assert c[-2:] == ["render_simple", "star_removal"]
     assert ("reference" in c) == bool(old.get("reference_image"))
 
 

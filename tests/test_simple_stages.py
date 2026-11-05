@@ -286,7 +286,7 @@ def test_simple_render_2000x1500_under_2_s(tmp_path):
         lay = eng.render(s, 1.0)
         img = lay.final.cpu()
         dt = time.perf_counter() - t
-        assert img.shape == (3, 1500, 2000) and lay.stars is None and lay.scale == 1.0
+        assert img.shape == (3, 1500, 2000) and lay.scale == 1.0
         assert dt < 2.0, f"{dev}: {dt:.2f} s"
 
 
@@ -321,7 +321,7 @@ def test_simple_render_settings_and_regions(tmp_path):
 def test_v2_stages_and_chains():
     from astro_gpu.core import workflow
     from astro_gpu.stages import all_stages
-    from astro_gpu.stages.v2 import AUTO_FIELDS, NEW_STAGES, PATH_FIELDS, V2_STAGES
+    from astro_gpu.stages.v2 import AUTO_FIELDS, NEW_STAGES, V2_STAGES
     names = [s.name for s in V2_STAGES()]
     assert names == [s.name for s in all_stages()] + list(NEW_STAGES)
     assert "gradient" not in [s.name for s in all_stages()]                      # v1's Pipeline never runs them
@@ -334,9 +334,11 @@ def test_v2_stages_and_chains():
     raw_exit = ch.chain(workflow.TEMPLATES["Classic stack"], "stacking")
     assert ch.deps_in_chain(raw_exit, "render_simple") == ("stack",)
     assert ch.deps_in_chain(ch.chain(workflow.TEMPLATES["Classic stack"]), "gradient") == ("stack",)
-    assert PATH_FIELDS["starless"] == {"learned_stars"} and "denoise" not in PATH_FIELDS     # reuse_model retired
+    full = ch.chain(workflow.TEMPLATES["Full"])
+    assert full[-2:] == ["render_simple", "star_removal"]
+    assert ch.deps_in_chain(full, "star_removal") == ("render_simple", "stack", "gradient")
     stages = {s.name: s for s in V2_STAGES()}
-    for st, fields in {**AUTO_FIELDS, **PATH_FIELDS}.items():
+    for st, fields in AUTO_FIELDS.items():
         assert fields <= set(stages[st].Params.model_fields), st
 
 

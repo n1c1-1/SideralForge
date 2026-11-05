@@ -1,7 +1,7 @@
 """The Run part of the client (plan dialog, run service, progress on the graph, the console, the recap), offscreen.
 
 Most tests run toy stages (inventory → stack → denoise (the 'denoise' option: steps, checkpoints) → color →
-render_prep) in a real detached worker on the CPU: the worker builds the same toy graph from the spec
+render_simple) in a real detached worker on the CPU: the worker builds the same toy graph from the spec
 'test_run:toy_rules' (this module, put on its PYTHONPATH). The slow tests run the real stages on a copy of the
 test project (tests/conftest.py) on the CPU, and take the screenshots (ASTRO_GPU_SHOTS names the folder; default
 %TEMP%/run_shots).
@@ -158,7 +158,7 @@ class C(Stage):
 
 
 class E(Stage):
-    name = "render_prep"
+    name = "render_simple"
     title = "E"
     deps = ("color",)
     Params = CParams
@@ -167,17 +167,17 @@ class E(Stage):
         ctx.save_json("e.json", ctx.load_json("color", "c.json"))
 
 
-def toy_rule(options, end, reference, learned_layer):
-    return ["inventory", "stack"] + (["denoise"] if options.get("denoise") else []) + ["color", "render_prep"]
+def toy_rule(options, end, reference):
+    return ["inventory", "stack"] + (["denoise"] if options.get("denoise") else []) + ["color", "render_simple"]
 
 
 def toy_rules() -> KeyRules:
     """Also built by the detached worker (plan.rules = 'test_run:toy_rules')."""
-    chains = Chains([Inv(), ToyStack(), B(), C(), E()], extra={"render_prep": ("denoise",)},
-                    optional={"color": ("denoise",), "render_prep": ("denoise",)},
+    chains = Chains([Inv(), ToyStack(), B(), C(), E()], extra={"render_simple": ("denoise",)},
+                    optional={"color": ("denoise",), "render_simple": ("denoise",)},
                     blocks={"calibration": ("inventory",), "stacking": ("stack",), "denoise": ("denoise",),
-                            "color": ("color",), "output": ("render_prep",)}, rule=toy_rule)
-    return KeyRules(chains, auto_fields={}, path_fields={}, non_key={"stack": ("workers",)},
+                            "color": ("color",), "output": ("render_simple",)}, rule=toy_rule)
+    return KeyRules(chains, auto_fields={}, non_key={"stack": ("workers",)},
                     implied=lambda options, stage: {})
 
 
@@ -355,7 +355,7 @@ def texts_of(root: QWidget) -> list[str]:
     return [t.strip() for t in out if t and t.strip()]
 
 
-NAMES = {"Classic stack", "Classic + denoise", "Full", "Full + neural stars", "Plain", "Trained"}
+NAMES = {"Classic stack", "Classic + denoise", "Full", "Plain", "Trained"}
 
 
 def untranslated(texts) -> list[str]:
@@ -641,8 +641,8 @@ def test_a_breakpoint_stops_the_run_after_its_block_and_continue_goes_on(toy, mo
     d.b_continue.click()
     assert ctl.pause is None and ctl.running and ctl.dialog is not d and m.is_reviewed(plain, "calibration")
     finish(toy)
-    assert sorted(j.stage for j in toy.track.jobs) == sorted(["stack", "color", "render_prep", "denoise", "color",
-                                                               "render_prep"])
+    assert sorted(j.stage for j in toy.track.jobs) == sorted(["stack", "color", "render_simple", "denoise", "color",
+                                                               "render_simple"])
     assert all(s == "done" for s in states_of(toy).values())
     d2 = ctl.dialog
     assert not d2.paused() and not d2.review.isVisibleTo(d2) and d2.summary.text().startswith("Done in ")
@@ -675,7 +675,7 @@ def test_each_continue_runs_on_to_the_next_pause_and_the_plan_counts_them(toy, m
     d2.b_continue.click()                                      # to the third (the Output of Plain)
     finish(toy)
     d3 = ctl.dialog
-    assert [j.stage for j in toy.track.jobs] == ["color", "render_prep"] and d3.paused()
+    assert [j.stage for j in toy.track.jobs] == ["color", "render_simple"] and d3.paused()
     assert d3.review_text.text() == "Paused for your review at Output: check it in Inspect, then Continue."
     assert d3.review_more.text() == "Workflow: Plain"
     d3.b_continue.click()                                      # nothing is left but the other workflow
@@ -986,8 +986,8 @@ def test_failed_job_skips_its_downstream_blocks_and_says_so_in_plain_words(env):
         t = w.track
         assert t.status == "failed"
         by = {(j.stage, tuple(j.wf)): j.state for j in t.jobs}
-        assert by[("denoise", (2,))] == FAILED and by[("color", (2,))] == SKIPPED and by[("render_prep", (2,))] == SKIPPED
-        assert by[("color", (1,))] == DONE and by[("render_prep", (1,))] == DONE     # the other workflow still completes
+        assert by[("denoise", (2,))] == FAILED and by[("color", (2,))] == SKIPPED and by[("render_simple", (2,))] == SKIPPED
+        assert by[("color", (1,))] == DONE and by[("render_simple", (1,))] == DONE     # the other workflow still completes
         recap = texts_of(d.recap)
         assert "Denoise failed: b failed on purpose" in recap, recap
         assert 'Not run because Denoise failed: Color, Output "Trained".' in recap
@@ -996,7 +996,7 @@ def test_failed_job_skips_its_downstream_blocks_and_says_so_in_plain_words(env):
         assert d.summary.text() == "Failed" and d.b_log.isVisible()
         # the engine's own states, and the graph's stripes, say it too
         v = w.model.view(2)
-        assert [w.model.state(v, s) for s in ("denoise", "color", "render_prep")] == ["failed", "skipped", "skipped"]
+        assert [w.model.state(v, s) for s in ("denoise", "color", "render_simple")] == ["failed", "skipped", "skipped"]
         g = Graph(w.model, None)
         assert [g.state(g.node_of(v, k)) for k in ("debruitage", "couleur", "post")] == ["failed", "skipped", "skipped"]
         assert g.state(g.node_of(w.model.view(1), "post")) == "done"
@@ -1376,7 +1376,7 @@ def _real_world(root: Path) -> World:
     p = api.open_project(root)
     for name, template, params in (("Classic stack", "Classic stack", None),
                                    ("Classic + denoise", "Classic + denoise", {"denoise": {"iterations": 6000}}),
-                                   ("Full + neural stars", "Full + neural stars", {"denoise": {"iterations": 6000}})):
+                                   ("Full", "Full", None)):
         assert template in wfl.TEMPLATES
         api.add_workflow(p, name, template, params)
     p.devices["main"] = "cpu"
@@ -1509,7 +1509,7 @@ def test_screenshots_of_the_failed_run_and_the_stopped_run_on_the_real_plan(env)
         jobs = plan.jobs
         assert len(jobs) >= 3
         now = time.time() - 3000
-        stars = [j for j in jobs if j.stage == "stars"] or jobs[1:2]
+        stars = [j for j in jobs if j.stage == "star_removal"] or jobs[1:2]
         bad = stars[0]
         up = {bad.key} | {j.key for j in jobs if bad.key in j.deps.values()}
         for kind in ("failed", "stopped"):
@@ -1634,7 +1634,7 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
         assert w.open_project(proj)
         s = w.s
         w.set_device("cpu")
-        s.add_path("Classic stack", {"debruitage": False, "etoiles": "garder", "appris": False, "fond": "simple"})
+        s.add_path("Classic stack", {"debruitage": False, "etoiles": "garder", "fond": "simple"})
         w.set_mode(0)
         settle()
         assert s.ready and len(s.paths) == 2 and not w.run.running

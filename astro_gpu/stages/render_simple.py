@@ -1,6 +1,7 @@
-"""Simple output preparation: the linear image a simple rendering stretches (render/simple.py).
+"""Output preparation: the linear image a simple rendering stretches (render/simple.py).
 
-The output of the workflows without Stars (Classic stack, Classic + denoise) and of the Raw stack exit:
+The output of every workflow and of the Raw stack exit; the Stars block takes its stars off it
+(stages/star_removal.py):
 
 * lin.npy = M x stack - sky, in display RGB: the denoised stack when the workflow has Denoise, else the stack with the
   sky gradient removed (stages/gradient.py); the sky is then a level: the one the Gradient block measured between
@@ -22,9 +23,29 @@ from pydantic import field_validator
 from ..core.params import P, StageParams
 from ..core.stage import Context, Stage, StageError
 from .gradient import LUM, GradientParams, coverage, fit_poly_sky, poly_sky, stack_image
-from .render_prep import crop_box
 
 STRETCHES = ["auto"]                       # the other stretches of the spec (GHS, arcsinh, STF, none) are not in the engine
+
+
+def crop_box(good: np.ndarray, edge_frac: float):
+    """Trim the least covered border until the four borders are well covered."""
+    H, W = good.shape
+    y0, y1, x0, x1 = 0, H, 0, W
+    while y1 - y0 > 10 and x1 - x0 > 10:
+        sub = good[y0:y1, x0:x1]
+        e = {"t": sub[0].mean(), "b": sub[-1].mean(), "l": sub[:, 0].mean(), "r": sub[:, -1].mean()}
+        k_, v_ = min(e.items(), key=lambda kv: kv[1])
+        if v_ >= edge_frac:
+            break
+        if k_ == "t":
+            y0 += 1
+        elif k_ == "b":
+            y1 -= 1
+        elif k_ == "l":
+            x0 += 1
+        else:
+            x1 -= 1
+    return y0, y1, x0, x1
 
 
 def sky_spread(v: np.ndarray) -> float:
@@ -106,12 +127,13 @@ class RenderSimpleParams(StageParams):
 class RenderSimple(Stage):
     name = "render_simple"
     title = "Simple output"
-    description = ("Prepares the output of a workflow without the Stars block, or pulled from Stacking: the stack (or "
-                   "the denoised stack) in screen colours, with its sky removed, and the statistics of an automatic "
-                   "stretch. Post renders it with its sliders (sky, contrast, saturation, noise).")
+    description = ("Prepares the output of a workflow, or of one pulled from Stacking: the stack (or the denoised "
+                   "stack) in screen colours, with its sky removed, and the statistics of an automatic stretch. Post "
+                   "renders it with its sliders (sky, contrast, saturation, noise).")
     deps = ("stack",)
     Params = RenderSimpleParams
-    version = "6"          # 2: the emission anchor of render_prep (the H-alpha of Classic was violet on heart_a7s);
+    version = "6"          # 2: the emission anchor of the output preparation (the H-alpha of Classic was violet on
+                           # heart_a7s);
                            # 3: the Raw stack exit's sky made grey (it had the green of the light pollution);
                            # 4: the colour of the places near saturation from their surroundings (repair_saturated);
                            # 5: the sky gradient removed before (the Gradient block): a level here;

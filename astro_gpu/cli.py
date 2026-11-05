@@ -1,5 +1,5 @@
 """Command line of v1 projects (project.json): create a project, run / resume the pipeline, inspect and set
-parameters, manage variants, export renders (``astro-gpu``; v2 projects have ``cli2.py``)."""
+parameters, manage variants (``astro-gpu``; v2 projects have ``cli2.py``)."""
 from __future__ import annotations
 
 import argparse
@@ -94,34 +94,6 @@ def cmd_set(a):
     print("ok")
 
 
-def cmd_render(a):
-    from .render.engine import StarRemovalEngines
-    from .render.export import ExportSettings, export
-    from .render.settings import PRESETS, RenderSettings
-    p = _project(a.project, a.variant)
-    vals = {}
-    if a.preset:
-        key = next((k for k in PRESETS if k.lower() == a.preset.lower()), None)
-        if key is None:
-            raise SystemExit(f"unknown preset '{a.preset}'; available: {', '.join(PRESETS)}")
-        vals = dict(PRESETS[key])
-        if a.name is None:
-            a.name = key.lower().replace(" ", "_").replace(",", "").replace("&", "and")
-    a.name = a.name or "render"
-    if a.use_saved:
-        vals.update(RenderSettings.from_saved(p.config.render.get("settings", {})).model_dump(exclude_defaults=True))
-    for item in a.set or []:
-        k, v = item.split("=", 1)
-        vals[k] = _parse_value(v)
-    s = RenderSettings(**vals)
-    col = json.loads((p.stage_dir("color") / "manifest.json").read_text())["params"]
-    eng = StarRemovalEngines(p.stage_dir("render_prep"), device=p.config.devices.get("main", "cuda:0"),
-                       calibrated_white=col.get("white_temp", 5778.0))
-    e = ExportSettings(name=a.name, orientation=a.orientation)
-    meta = export(p, eng, s, e, lambda f, m: print(f"  {100 * f:5.1f} %  {m}", flush=True))
-    print(json.dumps(meta["qa"], indent=1))
-
-
 def cmd_variant(a):
     """list | create NAME stage.key=value ... | activate NAME | delete NAME | promote NAME [--keep NAME]"""
     from .core.project import Project
@@ -195,15 +167,6 @@ def main(argv=None):
     se.add_argument("assignments", nargs="+")
     se.add_argument("--variant", help="set them in this variant ('main' for the project's own processing)")
     se.set_defaults(fn=cmd_set)
-    re_ = sub.add_parser("render", help="render and export")
-    re_.add_argument("project")
-    re_.add_argument("--preset")
-    re_.add_argument("--set", nargs="+")
-    re_.add_argument("--use-saved", action="store_true")
-    re_.add_argument("--name", help="result name (default: the preset name, or 'render')")
-    re_.add_argument("--orientation", default="as captured")
-    re_.add_argument("--variant", help="render this variant ('main' for the project's own processing)")
-    re_.set_defaults(fn=cmd_render)
     va = sub.add_parser("variant", help="variants: the same data processed another way, side by side")
     va.add_argument("project")
     va.add_argument("action", choices=["list", "create", "activate", "delete", "promote"])

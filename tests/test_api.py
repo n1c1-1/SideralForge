@@ -138,7 +138,7 @@ class E(Stage):
         ctx.save_json("e.json", ctx.load_json("c", "c.json"))
 
 
-def toy_rule(options, end, reference, learned_layer):
+def toy_rule(options, end, reference):
     return ["inventory", "stack"] + (["b"] if options.get("denoise") else []) + ["c", "e"]
 
 
@@ -147,7 +147,7 @@ def toy_rules() -> KeyRules:
     chains = Chains([Inv(), ToyStack(), B(), C(), E()], extra={"e": ("b",)}, optional={"c": ("b",), "e": ("b",)},
                     blocks={"calibration": ("inventory",), "stacking": ("stack",), "denoise": ("b",),
                             "color": ("c",), "output": ("e",)}, rule=toy_rule)
-    return KeyRules(chains, auto_fields={"stack": ("scale",)}, path_fields={}, non_key={"stack": ("workers",)},
+    return KeyRules(chains, auto_fields={"stack": ("scale",)}, non_key={"stack": ("workers",)},
                     implied=lambda options, stage: {})
 
 
@@ -196,12 +196,13 @@ def run_inproc(p, plan) -> tuple[str, runner2.RunInfo]:
 
 @pytest.fixture
 def real(tmp_path, state):
-    """A project on the real stage graph, planned and read only: Classic stack, Classic + denoise, Full, Full +
-    neural stars (ids 1-4), three fake raws."""
+    """A project on the real stage graph, planned and read only: Classic stack, Classic + denoise, Full, and Full with
+    the adapted denoising (ids 1-4), three fake raws."""
     p = api.create_project(tmp_path / "real", "real", "IC 1805")
     api.add_session(p, lights=[raw_folder(tmp_path / "rraw" / "lights")])
     for n in api.TEMPLATES:
         api.add_workflow(p, n, n)
+    api.add_workflow(p, "Full · adapted", {**api.TEMPLATES["Full"], "denoise": "adapted"})
     p.devices["main"] = "cuda:0"
     api.save(p)
     return p
@@ -349,7 +350,7 @@ def test_import_v1_previews_then_imports_a_toy_project_and_never_writes_into_the
     assert (new / "project.astroproj").is_file() and not (new / "project.json").exists()
     p = api.open_project(new)
     api.use_rules(p, SPEC)
-    assert [w.name for w in p.workflows] == ["Full + neural stars"]
+    assert [w.name for w in p.workflows] == ["Full"]
     # the results are the project's: nothing to run, every stage done, with the keys the report gave
     assert not api.plan_all(p, device="cpu") and api.cost(p).jobs == 0
     st = api.states(p, update=False)
@@ -549,8 +550,8 @@ def test_set_option_notes_refusals_and_all_or_nothing(tmp_path):
     p = api.create_project(tmp_path / "p", "p")
     api.add_workflow(p, "Classic", "Classic stack")
     api.add_workflow(p, "Full", "Full")
-    notes = api.set_option(p, 1, "stars", "psf")
-    assert notes and p.workflow(1).options["stars"] == "psf" and p.workflow(1).options["denoise"] == "pretrained"
+    notes = api.set_option(p, 1, "stars", "neural")
+    assert notes and p.workflow(1).options["stars"] == "neural" and p.workflow(1).options["denoise"] == "pretrained"
     assert any("Denoise" in n for n in notes)
     with pytest.raises(api.OptionRefused):
         api.set_option(p, [2, 1], "denoise", None)                            # both have Stars
@@ -579,8 +580,8 @@ def test_variants_make_keep_discard_and_exits(real):
     assert [w.id for w in p.workflows] == [2, 3, 4, v.id]                                # the original is retired
     with pytest.raises(ValueError):
         api.keep_variant(p, 2)                                                          # not a variant
-    w = api.make_variant(p, 3, {"kind": "opt", "key": "stars", "value": "psf_neural"}, "Full · neural")
-    assert w.options["stars"] == "psf_neural" and w.variant_of == 3
+    w = api.make_variant(p, 3, {"kind": "opt", "key": "gradient", "value": "automatic"}, "Full · automatic")
+    assert w.options["gradient"] == "automatic" and w.variant_of == 3
     child = api.make_variant(p, w.id, {"kind": "param", "stage": "stack", "name": "kappa", "value": 7}, "child")
     api.discard_variant(p, w.id)
     assert w.id not in [x.id for x in p.workflows] and p.current == 3
@@ -606,7 +607,8 @@ def test_methods_table_marks_what_is_not_in_the_engine():
     assert list(dn) == ["pretrained", "adapted"]
     assert not dn["pretrained"].new and not dn["adapted"].new and dn["pretrained"].runs_on == "both"
     assert [(m.key, m.new) for m in api.methods("gradient")] == [("polynomial", False), ("rbf", False), ("automatic", False)]
-    assert api.methods("stars")[1].stage == "star_net" and api.methods("deconvolution")[0].new
+    assert [(m.key, m.stage) for m in api.methods("stars")] == [("neural", "star_removal")]
+    assert api.methods("deconvolution")[0].new
     from astro_gpu.core import workflow
     for block, opt in (("denoise", "denoise"), ("gradient", "gradient"), ("stars", "stars")):
         allowed = set(workflow.OPTION_VALUES[opt])
@@ -621,18 +623,18 @@ def test_chain_deps_blocks_and_sharing_on_the_real_graph(real):
     p = real
     assert api.chain(p, 1) == ["inventory", "calibrate", "register", "stack", "astrometry", "catalogs", "gradient",
                                "color", "render_simple"]
-    assert "star_net" in api.chain(p, 4) and "star_net" not in api.chain(p, 3)
+    assert api.chain(p, 3)[-2:] == ["render_simple", "star_removal"] and "star_removal" not in api.chain(p, 2)
     assert api.deps(p, 1, "render_simple") == ("stack", "color", "gradient")
-    assert "star_net" in api.deps(p, 4, "starless")
+    assert api.deps(p, 3, "star_removal") == ("render_simple", "stack", "gradient")
     b = {x.block: x for x in api.blocks(p, 3)}
     assert list(b) == ["calibration", "registration", "selection", "stacking", "astrometry", "gradient", "color",
                        "denoise", "stars", "output"]
     assert b["astrometry"].stages == ("astrometry", "catalogs") and len(b["astrometry"].key) == 2
     assert b["selection"].stages == () and b["output"].key[-1] == "workflow 3"
     assert api.blocks(p, 1)[-1].key[-1] == "workflow 1" and api.blocks(p, 1)[-1].key != b["output"].key
-    assert api.sharing(p, 1, "stack") == [1, 2, 3, 4] and api.sharing(p, 3, "denoise") == [2, 3, 4]
-    assert api.sharing(p, 3, "stars") == [3, 4] and api.sharing(p, 3, "optics") == [3, 4]
-    assert api.sharing(p, 4, "star_net") == [4] and api.sharing(p, 1, "render_simple") == [1]
+    assert api.sharing(p, 1, "stack") == [1, 2, 3, 4] and api.sharing(p, 3, "denoise") == [2, 3]
+    assert api.sharing(p, 3, "render_simple") == [2, 3] and api.sharing(p, 3, "star_removal") == [3]
+    assert api.sharing(p, 4, "star_removal") == [4] and api.sharing(p, 1, "render_simple") == [1]
     # the Astrometry block's key does not depend on the survey, which follows the Gradient method
     k3, k4 = ({x.block: x for x in api.blocks(p, i)}["astrometry"].key for i in (3, 4))
     assert k3 == k4
@@ -645,13 +647,13 @@ def test_chain_deps_blocks_and_sharing_on_the_real_graph(real):
 def test_the_toy_scenario_cost_equals_the_plan_after_each_change(real):
     p = real
     plan0 = cost_equals_plan(p)
-    # 22: the workflows with Stars have their own deep Gaia catalogue, and so their own colour calibration
-    assert len(plan0) == 22 and plan0.seconds > 3600 and not plan0.measured
+    # 15: everything up to Color shared; Denoise and what follows by denoising
+    assert len(plan0) == 15 and plan0.seconds > 300 and not plan0.measured
     # a setting on two workflows: the others still share the stack
     api.set_param(p, [3, 4], "stack", "kappa", 6)
     plan1 = cost_equals_plan(p)
     assert api.sharing(p, 3, "stack") == [3, 4] and api.sharing(p, 1, "stack") == [1, 2]
-    assert len(plan1) == 26 and len(set(plan1.keys) & set(plan0.keys)) < len(plan0)
+    assert len(plan1) == 22 and len(set(plan1.keys) & set(plan0.keys)) < len(plan0)
     # the what-if of a change equals the plan once the change is made
     change = {"kind": "param", "stage": "gradient", "name": "degree", "value": 3}
     ask = api.cost(p, [api.with_change(p, 1, change)])
@@ -728,7 +730,7 @@ def test_warm_fills_the_disk_caches_so_that_keys_states_and_plans_do_not_scan(re
     monkeypatch.setattr("astro_gpu.io.frames.read_info", no_scan)
     key = api.stage_key(p, 3, "stack")
     assert api.states(p, update=False)[(3, "stack")].key == key
-    assert api.cost(p).jobs == len(api.plan_all(p)) == 22 and api.blocks(p, 3) and api.sharing(p, 1, "stack")
+    assert api.cost(p).jobs == len(api.plan_all(p)) == 15 and api.blocks(p, 3) and api.sharing(p, 1, "stack")
     api.set_param(p, 3, "stack", "kappa", 6)                       # an edit changes the keys, not the disk parts
     assert api.stage_key(p, 3, "stack") != key and api.cost(p).jobs > 20
     api.add_session(p, lights=["elsewhere"])                       # a new session: its files are not cached yet
@@ -890,21 +892,6 @@ def test_states_follow_runs_changes_failures_and_the_previous_result(toy):
     assert api.states(p)[(2, "b")].state == "running" and api.states(p)[(2, "c")].state == "stale"
     with pytest.raises(api.RunInProgress):
         api.start_run(p, api.plan_all(p))
-
-
-def test_a_workflow_whose_earlier_layer_belongs_to_another_stack_is_skipped(real):
-    p = real
-    layer = p.root / "inputs" / "layer.npy"
-    layer.parent.mkdir()
-    np.save(layer, np.zeros((3, 4, 4), np.float32))
-    (p.root / "inputs" / "layer.json").write_text(json.dumps({"stack_key": "0123456789abcdef"}))
-    w = api.add_workflow(p, "Full + earlier neural layer", "Full + neural stars",
-                         {"starless": {"learned_stars": "inputs/layer.npy"}})
-    assert "star_net" not in api.chain(p, w.id)
-    st = api.states(p, update=False)
-    assert {st[(w.id, s)].state for s in api.chain(p, w.id)} == {"skipped"}
-    assert st[(w.id, "starless")].reason == "the earlier layer belongs to another stack"
-    assert w.id in api.plan_all(p).skipped and st[(1, "stack")].state == "pending"
 
 
 # ---------------------------------------------------------------------------------------------- outputs
@@ -1128,7 +1115,7 @@ def test_cli2_creates_plans_runs_follows_and_stops_a_toy_project(tmp_path, state
     assert code == 0 and "workflow 2 added" in out
     code, out = cli("add-workflow", proj, "Custom", "--option", "denoise=n2n", "--copy-of", 1)
     assert code == 0 and project2.load(proj).workflow(3).options["denoise"] == "pretrained"
-    code, out = cli("set", proj, "--wf", 2, "b.steps=12", "stack.kappa=6", "--option", "denoise=n2n")
+    code, out = cli("set", proj, "--wf", 2, "b.steps=12", "stack.kappa=6", "--option", "denoise=pretrained")
     assert code == 0 and project2.load(proj).workflow(2).params == {"b": {"steps": 12}, "stack": {"kappa": 6.0}}
     code, out = cli("set", proj, "--wf", 2, "stack.kappa=auto")
     assert code == 0 and project2.load(proj).workflow(2).params == {"b": {"steps": 12}}
@@ -1191,11 +1178,14 @@ def simple_prep(d: Path, H: int = 120, W: int = 160, denoised: bool = True) -> P
 def test_sliders_render_layer_masks_and_export_of_a_simple_workflow(real, tmp_path):
     p = real
     sl = {s.key: s for s in api.sliders_of(p, 1)}
-    assert len(sl) == 9 and sl["sky"].available and sl["noise"].reason == "noise smoothing needs the Denoise block"
-    assert not sl["stars_number"].available and sl["stars_number"].reason
-    assert all(s.available for s in api.sliders_of(p, 3))                       # Full: every slider
-    off = {s.key for s in api.sliders_of(p, 2) if not s.available}              # Classic + denoise: no Stars
-    assert off == {"detail", "stars_number", "star_size", "star_color", "star_halo"}
+    assert len(sl) == 7 and sl["sky"].available and sl["noise"].reason == "noise smoothing needs the Denoise block"
+    assert not sl["star_strength"].available and sl["star_strength"].reason
+    stars = {"star_strength", "star_size", "star_color"}
+    assert {s.key for s in api.sliders_of(p, 3) if not s.available} == stars       # Full's Output image: no stars
+    assert {s.key for s in api.sliders_of(p, 3, "combined") if not s.available} == {"noise"}
+    assert {s.key for s in api.sliders_of(p, 3, "stars") if not s.available} == {"sky", "contrast", "saturation",
+                                                                                     "noise"}
+    assert {s.key for s in api.sliders_of(p, 2) if not s.available} == stars
     x = api.add_exit(p, 3, "stacking", "Raw stack")
     assert not {s.key: s for s in api.sliders_of(p, x.id)}["noise"].available
     with pytest.raises(api.NotDone):
@@ -1211,7 +1201,7 @@ def test_sliders_render_layer_masks_and_export_of_a_simple_workflow(real, tmp_pa
     region = api.render_layer(p, 2, None, None, 1.0, region=(20, 100, 10, 60))
     assert region.rgb.shape == (3, 50, 80)
     m = api.post_masks(p, 2, 0.5)
-    assert m["stars"] is None and m["halpha"].shape == (60, 80) and 0 <= m["halpha"].min() <= m["halpha"].max() <= 1
+    assert set(m) == {"halpha"} and m["halpha"].shape == (60, 80) and 0 <= m["halpha"].min() <= m["halpha"].max() <= 1
     # export: files re-open with the right dtype and size; the history sidecar and the folder export/<name>/
     files = api.export_workflow(p, 2, None, {"sky": 2.5}, {"formats": ["tiff16", "png16", "jpeg", "fits32f"],
                                                             "name": "classic"})

@@ -521,6 +521,7 @@ class Main(QMainWindow):
         page = GraphPage(self.s, self.steps)
         page.openBlock.connect(lambda: self.set_mode(2 if self.s.sel_step == "final" else 1))
         page.openPost.connect(lambda: self.set_mode(2))
+        page.openLayer.connect(self.open_layer)
         page.addSources.connect(self.add_sources)
         page.addSession.connect(self.add_session)
         page.variantMade.connect(self._variant_made)
@@ -589,6 +590,12 @@ class Main(QMainWindow):
         self.post.add_image_layer(name, source, key)
         self.set_mode(2)
 
+    def open_layer(self, lid: int):
+        """Post, with this layer selected (a Stars and background block's Open in Post)."""
+        self.set_mode(2)
+        if self.post is not None:
+            self.post.view.select_layer(lid)
+
     def _post_shown(self) -> bool:
         return self.s is not None and self.mode == 2 and self.post_holder is not None and \
             self.post_holder.page is not None
@@ -608,9 +615,13 @@ class Main(QMainWindow):
         if self.screens.currentWidget() is not self.proj_screen:
             self.screens.setCurrentWidget(self.proj_screen)
         was_post = self.mode == 2 and s is not None and s.sel_step == "final"
+        if s is not None and i == 1 and s.sel_step == "composition":
+            # a Stars and background block is a layer of Post: Inspect shows it there
+            self.open_layer(s.sel_layer) if s.sel_layer is not None else self.set_mode(2)
+            return
         if s is not None:
             if i == 2:
-                if s.sel_step != "final":
+                if s.sel_step not in ("final", "composition"):
                     self._last_step = s.sel_step
                 s.scope = None
                 s.pending_change = None

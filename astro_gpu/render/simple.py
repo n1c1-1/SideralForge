@@ -1,9 +1,9 @@
-"""Simple rendering: the output of the workflows without Stars, and of the Raw stack exit.
+"""Simple rendering: the output of every workflow (the Output block), and of the Raw stack exit.
 
 Works from the outputs of the ``render_simple`` stage: the linear image in display RGB with its sky removed (lin.npy,
 the denoised stack when there is one), the same from the raw stack (lin_raw.npy, with denoise), the covered pixels
 (valid.npy) and the statistics of the whole image (prep_simple.json). ``render(settings, scale, region)`` returns the
-``Layers`` of the engine (no star layer): a usual automatic stretch:
+``Layers`` (the image, its scale, notes): a usual automatic stretch:
 
 * the raw stack mixed back into the denoised one, or the faint areas smoothed (noise smoothing);
 * a midtones transfer function from black = median - 2.8 MAD to white = the 99.995th percentile, the median sky at
@@ -16,6 +16,7 @@ the full image and a region of it share one curve, so a region is the crop of th
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -24,10 +25,17 @@ import torch.nn.functional as F
 
 from ..core.params import ADVANCED, P, StageParams
 from . import ops
-from .engine import Layers
 
 #: margin rendered around a region, in units of the smoothing radius (plus a few pixels)
 REGION_PAD_SIGMAS = 4
+
+
+@dataclass
+class Layers:
+    """A rendering: the image (3, h, w) in display sRGB, 0..1; the scale it is at (1/f); notes on how it was made."""
+    final: torch.Tensor
+    scale: float
+    info: dict
 
 
 class SimpleSettings(StageParams):
@@ -166,7 +174,9 @@ class SimpleRenderEngine:
         with deterministic():
             return self._render(s, scale, region)
 
-    def _render(self, s: SimpleSettings, scale: float, region) -> Layers:
+    def _geometry(self, scale: float, region):
+        """(f, the region (x0, x1, y0, y1) on multiples of f, the box rendered around it with a margin for the
+        smoothings)."""
         f = max(1, int(round(1 / scale)))
         Hf, Wf = self.H // f * f, self.W // f * f
         if region is None:
@@ -184,6 +194,33 @@ class SimpleRenderEngine:
             box = (max(0, x0 - pad), min(Wf, x1 + pad), max(0, y0 - pad), min(Hf, y1 + pad))
         if box == (0, Wf, 0, Hf) and f == 1:
             box = (0, self.W, 0, self.H)
+        return f, (x0, x1, y0, y1), box
+
+    def _finish(self, y: torch.Tensor, f: int, reg, box, region, info: dict) -> Layers:
+        """The rendering of the box, outside the covered pixels black, cut to the region."""
+        x0, x1, y0, y1 = reg
+        y[:, ~self._layer("valid", f, box)] = 0
+        bx0, _, by0, _ = box
+        y = y[:, (y0 - by0) // f:(y1 - by0) // f, (x0 - bx0) // f:(x1 - bx0) // f]
+        if region is not None:
+            info["region"] = [x0, x1, y0, y1]
+        return Layers(y, 1.0 / f, info)
+
+    @staticmethod
+    def tone(x: torch.Tensor, st: dict, s: SimpleSettings, linked: bool) -> torch.Tensor:
+        """The automatic stretch of a linear image (linked: on the luminance's statistics; else each channel on its
+        own), then the contrast and the saturation."""
+        if linked:
+            y = SimpleRenderEngine._stretch(x, st["lum"], s.sky)
+        else:
+            y = torch.stack([SimpleRenderEngine._stretch(x[c], st["channels"][c], s.sky) for c in range(3)])
+        if s.contrast != 0:
+            y = (y + s.contrast * (3 * y * y - 2 * y ** 3 - y)).clamp(0, 1)
+        Ly = ops.luminance(y)[None]
+        return (Ly + s.saturation * (y - Ly)).clamp(0, 1)
+
+    def _render(self, s: SimpleSettings, scale: float, region) -> Layers:
+        f, reg, box = self._geometry(scale, region)
         st = self.prep["stats"]
         x = self._layer("lin", f, box)
         linked = bool(self.prep.get("linked", True))
@@ -196,23 +233,10 @@ class SimpleRenderEngine:
             w = _smoothstep(ops.luminance(self._layer("lin", f, box)), st["lum_p40"], st["lum_p85"])[None]
             x = w * x + (1 - w) * ops.gaussian_blur(x, s.smooth_px / f)
         raw = self.prep.get("stats_raw")
-        if linked:
-            lum = _mix_stats(st["lum"], raw and raw["lum"], mix)
-            y = self._stretch(x, lum, s.sky)
-        else:
-            y = torch.stack([self._stretch(x[c], _mix_stats(st["channels"][c], raw and raw["channels"][c], mix), s.sky)
-                             for c in range(3)])
-        if s.contrast != 0:
-            y = (y + s.contrast * (3 * y * y - 2 * y ** 3 - y)).clamp(0, 1)
-        Ly = ops.luminance(y)[None]
-        y = (Ly + s.saturation * (y - Ly)).clamp(0, 1)
-        y[:, ~self._layer("valid", f, box)] = 0
-        bx0, _, by0, _ = box
-        y = y[:, (y0 - by0) // f:(y1 - by0) // f, (x0 - bx0) // f:(x1 - bx0) // f]
-        info = {"stretch": "auto", "linked": linked, "noise_mix": mix}
-        if region is not None:
-            info["region"] = [x0, x1, y0, y1]
-        return Layers(y, y, None, 1.0 / f, info)
+        mixed = {"lum": _mix_stats(st["lum"], raw and raw["lum"], mix),
+                 "channels": [_mix_stats(st["channels"][c], raw and raw["channels"][c], mix) for c in range(3)]}
+        y = self.tone(x, mixed, s, linked)
+        return self._finish(y, f, reg, box, region, {"stretch": "auto", "linked": linked, "noise_mix": mix})
 
     @staticmethod
     def _stretch(x: torch.Tensor, st: dict, target: float) -> torch.Tensor:

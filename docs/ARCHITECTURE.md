@@ -21,10 +21,10 @@ api.py ──► core/ (projects, workflows, store, runner) ──► stages/ (o
 | `core/store.py` | Stage results in `store/<stage>/<key>/`. The key hashes everything that decides a result, so a shared block is computed once and a change recomputes only what follows it. Rules in `stages/v2.py`. |
 | `core/runner2.py` | Plans the stage jobs of a run and executes them in a detached worker process (progress, stop, resume). |
 | `core/params.py` | How a setting is declared (`P`: default, bounds, label, help, level) and how automatic values (`Auto`, with their reason) are resolved. |
-| `stages/` | The processing steps, in order: inventory, calibrate, register, stack, astrometry, catalogs, surveys, color, denoise, optics, stars, star_shape, far_halo, star_net, starless, background / background_poly, render_prep / render_simple. Each is a `Stage` with its `Params`, `auto()` and `run()`. |
-| `core/` (methods) | The algorithms the stages call: `debayer`, `resample`, `rejection_classic`, `stack_classic` (Classic stacking), `coverage` (drizzle scale rule), `frame_weights` (frame selection), `psf_moffat` (star size), `blindsolve`, `sharpen`. Each names its published source. |
+| `stages/` | The processing steps, in order: inventory, calibrate, register, stack, astrometry, catalogs, surveys, gradient, color, denoise, render_simple (the Output), star_removal (the Stars block: a trained network, `resources/stars/`). Each is a `Stage` with its `Params`, `auto()` and `run()`. |
+| `core/` (methods) | The algorithms the stages call: `debayer`, `resample`, `rejection_classic`, `stack_classic` (Classic stacking), `coverage` (drizzle scale rule), `frame_weights` (frame selection), `psf_moffat` (star size), `blindsolve`. Each names its published source. |
 | `core/` (data) | Sky catalogues and objects (`gaia_archive`, `gaia_extracts`, `sirilcat`, `skycache`, `skyobjects`, `online`), the time estimates (`estimate`), the diagnostics Inspect shows (`diagnostics`). |
-| `render/` | Post's engine: the layers of a workflow (`layers`), the simplified sliders (`sliders`), the GPU rendering (`engine`, `ops`), export and quality checks (`export`). |
+| `render/` | Post's engine: the layers of a workflow and the export (`layers`), the simplified sliders (`sliders`), the stretch of the Output image (`simple`) and of the Stars block's two images, recombined or not (`stars`), GPU primitives (`ops`). |
 | `texts.py` | The engine's display texts (labels, reasons, metrics); French in `client/locale/fr/engine.json`. |
 | `core/project.py`, `core/runner.py`, `cli.py`, `core/import_v1.py` | The older project format (`project.json`, one chain per project), still used by the command line; the client opens such a project by importing it (`import_v1`). |
 
@@ -34,7 +34,7 @@ api.py ──► core/ (projects, workflows, store, runner) ──► stages/ (o
 |---|---|
 | `app.py`, `home.py` | The main window and the Home page. |
 | `model.py` | `ProjectModel`: the one adapter between the views and `api.py`. |
-| `graph.py`, `blocks.py`, `panel.py`, `settings.py` | Graph mode: the workflows as blocks, the settings of the selected block. |
+| `graph.py`, `blocks.py`, `panel.py`, `settings.py` | Graph mode: the workflows as blocks, the settings of the selected block; the Composition section (the Stars and background blocks: Post's layers of part "combined", their settings shared with Post through `ProjectModel.set_post_layer`). |
 | `tune.py`, `steps.py`, `charts.py`, `chartview.py` | Inspect: one block, its images and measurements, interactive charts. |
 | `frames.py`, `sources.py` | The sessions, the health check of the data, the frame browser. |
 | `imageview.py`, `stretch.py` | The image viewer used everywhere (compare, blink, display stretch). |

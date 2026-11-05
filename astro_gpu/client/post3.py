@@ -1,11 +1,12 @@
 """The Post of the client: the image at the centre; on the right the layers, as in Affinity Photo, and the properties of
 the selected layer or of its mask.
 
-The layers panel follows Affinity Photo's model. A pixel layer (a workflow's output, or a stage's image sent from
-Inspect) shows its own filters as children, indented under it: they apply to it alone and move with it. A filter that
-applies to everything below is a row of its own, like a layer, above what it affects. Drag a filter onto a layer to nest
-it, between two rows to make it apply to everything below (an indented line: it joins that layer's children); the line,
-the frame and a short label say where it goes. Read from the bottom up, the panel is the order of the composition.
+The layers panel follows Affinity Photo's model. A pixel layer (a workflow's output, one of its Stars block's images,
+or a stage's image sent from Inspect) shows its own filters as children, indented under it: they apply to it alone and
+move with it. A filter that applies to everything below is a row of its own, like a layer, above what it affects. Drag a
+filter onto a layer to nest it, between two rows to make it apply to everything below (an indented line: it joins that
+layer's children); the line, the frame and a short label say where it goes. Read from the bottom up, the panel is the
+order of the composition.
 
 A row: eye, the ▾ of a layer's children, thumbnail, mask thumbnail, name, blend mode and opacity. A click on the
 thumbnail shows the layer's settings; a click on the mask thumbnail shows its mask, made of parts as in Lightroom, with a
@@ -14,7 +15,13 @@ red overlay on the image.
 Nothing here renders. Every image comes from the render worker (services/render.py): a draft while a slider or the
 brush moves (an eighth of the image on the CPU, a quarter on a GPU), on release the exact quarter first on the CPU then
 the half resolution (the screen), and the visible region at full resolution when zoomed in. A newer request replaces an
-older one. The layers are saved in the project (``project.post["layers"]``).
+older one. The layers are saved in the project (``project.post["layers"]``) through the model, which the graph edits
+too (the Stars block's images sent to Post, the Stars and background blocks and their settings): a change made there
+comes back here (``postChanged``).
+
+A workflow with the Stars block comes in as a Stars and background layer (its starless image and its stars, each
+stretched, the stars put back in Screen: render/stars.py), with the star sliders; the others as their Output block's
+image.
 
     page = PostPage3(model)              # model: the ProjectModel
     page.goWorkflow                      # "Go to graph →"
@@ -52,10 +59,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..render.sliders import STARS as STARS_GROUP
 from . import prefs
 from .curveseditor import CurvesEditor, FunctionGraph, caption
 from .i18n import _, language, maybe, plural
+from .model import POST_PART_NAMES
 from .postengine import (
+    BLENDS,
     DIRECTIONS,
     FAMILIES,
     FILTERS,
@@ -90,10 +100,14 @@ from .widgets import ACCENT, WARN, ElidedLabel, clear, hline, label
 NL = "\n"                                                   # a line break in a tooltip
 
 FAMILY_COL = {"Stretch": "#c9a35e", "Contrast": "#d98a4e", "Color": "#c46fa8", "Detail": "#5ea1ff",
-              "Noise": "#62c2b1", "Stars": "#e6d36a", "Combine": "#e06c6c"}
+              "Noise": "#62c2b1", "Combine": "#e06c6c"}
 TW, TH = THUMB                                           # thumbnail size
-COPY, STARLESS, STARS = " (copy)", "starless", "stars"   # pieces of the layer names, translated where shown
-NEEDS_STARS = "Needs a layer with the Stars block"
+COPY = " (copy)"                                         # a piece of the layer names, translated where shown
+#: what the Stars block's images are, under their name in the properties
+PART_NOTES = {"starless": "The Stars block's starless image, stretched like the whole image.",
+              "stars": "The Stars block's stars alone, on black: in Screen mode above the background.",
+              "combined": "The starless image and the stars, recombined. The same settings as its block in the "
+                          "graph."}
 REGION_MAX = 12_000_000                                  # pixels of the region rendered at full resolution
 REGION_WAIT_MS = 150                                     # after the view stops moving
 INDENT = 24                                              # a child row's indent (px)
@@ -102,8 +116,8 @@ TOGGLE_W = 16                                            # the ▾ / ▸ of a la
 
 
 def tr_name(n: str, image: bool = False) -> str:
-    """A layer's name as shown: the pieces the program built it from (a filter's name, "stars", "starless", "(copy)")
-    translated; the name of a workflow, or a name typed by the user, as it is (the graph shows it so). ``image``: an
+    """A layer's name as shown: the pieces the program built it from (a filter's name, the Stars block's images,
+    "(copy)") translated; the name of a workflow, or a name typed by the user, as it is (the graph shows it so). ``image``: an
     image layer, named by Inspect in English (``tune.TuneView._send``): every piece the catalogue has is translated
     (a file name stays as it is)."""
     k = 0
@@ -111,7 +125,7 @@ def tr_name(n: str, image: bool = False) -> str:
         n, k = n[:-len(COPY)], k + 1
     if image:
         return _pieces(n, maybe) + _(COPY) * k
-    known = {f["name"] for f in FILTERS.values()} | set(OLD_NAMES) | {STARS, STARLESS}
+    known = {f["name"] for f in FILTERS.values()} | set(OLD_NAMES) | set(POST_PART_NAMES.values())
     return " · ".join(_(b) if b in known else b for b in n.split(" · ")) + _(COPY) * k
 
 
@@ -656,6 +670,10 @@ class PostView(QWidget):
         if self.worker.device:                           # the worker may have said it before we listened
             self._on_device(self.worker.device)
         self.s.pathsChanged.connect(self.sync_paths)
+        if hasattr(self.s, "postChanged"):
+            self.s.postChanged.connect(self._post_changed)
+            self.s.post_shown = lambda: save_layers(self.layers)
+            self.destroyed.connect(lambda *_a, s=self.s: setattr(s, "post_shown", None))
         self.destroyed.connect(self.worker.stop if own_worker else (lambda *_a: None))
 
     # ------------------------------------------------------------ the model
@@ -684,8 +702,11 @@ class PostView(QWidget):
         known = {lay["pid"] for lay in self.layers if lay["kind"] == "workflow"}
         fresh = not known
         for p in paths:
-            if p.rendered and p.pid not in known:
-                self.layers.insert(0, new_workflow_layer(p.pid, p.name))
+            if p.rendered and p.pid not in known:          # with Stars: its Stars and background block
+                stars = p.opts.get("etoiles") == "retirer"
+                self.layers.insert(0, new_workflow_layer(
+                    p.pid, p.name + (" · " + POST_PART_NAMES["combined"] if stars else ""),
+                    part="combined" if stars else None))
         self.layers = [lay for lay in self.layers if lay["kind"] != "workflow" or lay["pid"] in alive]
         self.layers = normalize(self.layers)
         wl = [lay for lay in self.layers if lay["kind"] == "workflow"]
@@ -706,6 +727,29 @@ class PostView(QWidget):
             self.request(final_only=True)                  # (nothing is saved here: the layers a workflow brings are
                                                            # worked out again from the workflows, only edits are kept)
 
+    def _post_changed(self, source):
+        """The graph changed the composition (a layer sent to Post, a Stars and background block, its settings):
+        taken in as one undo step."""
+        if source is self:
+            return
+        post = getattr(getattr(self.s, "p", None), "post", None) or {}
+        text = json.dumps(post.get("layers") or [], sort_keys=True)
+        if text == self._saved:
+            return
+        self.undo.append(snapshot(self.layers))
+        self.redo.clear()
+        self.layers = load_layers(post.get("layers"), {p.pid for p in self.s.paths})
+        self._saved = json.dumps(save_layers(self.layers), sort_keys=True)
+        if self.sel and not self.layer(self.sel[0]):
+            self.sel = (self.layers[0]["id"], "layer") if self.layers else None
+        self.rebuild()
+        self.request(final_only=True)
+
+    def select_layer(self, lid):
+        """Show this layer's settings (the graph's Open in Post)."""
+        if self.layer(lid) is not None:
+            self.select(lid, "layer")
+
     def layer(self, lid):
         return next((lay for lay in self.layers if lay["id"] == lid), None)
 
@@ -722,6 +766,9 @@ class PostView(QWidget):
         if text == self._saved:
             return
         self._saved = text
+        if hasattr(self.s, "set_post_layers"):
+            self.s.set_post_layers(data, self)
+            return
         p.post = {**(p.post or {}), "layers": data}
         edited = getattr(self.s, "edited", None)
         if edited is not None:
@@ -1091,9 +1138,8 @@ class PostView(QWidget):
                 row.t.setPixmap(self._lthumbs[row.lay["id"]][1])
 
     def build_filter_menu(self):
-        """+ Filter: a menu by family; the filters that need stars or the H-alpha map are off without them."""
+        """+ Filter: a menu by family."""
         self.filter_menu.clear()
-        has_stars = self.has_stars()
         for fam in FAMILIES:
             sub = self.filter_menu.addMenu(_(fam))
             sub.setToolTipsVisible(True)
@@ -1102,18 +1148,6 @@ class PostView(QWidget):
                     a = sub.addAction(_(f["name"]))
                     a.setToolTip(_(f["source"]))
                     a.triggered.connect(lambda _c=False, kk=k: self.add_filter(kk))
-                    if f.get("needs") == "stars" and not has_stars:
-                        a.setEnabled(False)
-                        a.setToolTip(_(NEEDS_STARS))
-
-    def has_stars(self) -> bool:
-        """Whether a layer with the Stars block is in the composition (the star mask and the star filters need it)."""
-        for lay in self.layers:
-            if lay["kind"] == "workflow":
-                p = self.path(lay["pid"])
-                if p is not None and self.s.slider_state(p, "stars_number")[0]:
-                    return True
-        return False
 
     def rebuild(self):
         clear(self.lbox)
@@ -1345,10 +1379,7 @@ class PostView(QWidget):
                 a.setChecked(lay.get("target") == val)
                 a.triggered.connect(lambda _c=False, t=val: self.set_target(lay, t) if lay.get("target") != t else None)
             m.addSeparator()
-        if lay["kind"] == "workflow" and lay["part"] is None:
-            p = self.path(lay["pid"])
-            if p is not None and self.s.slider_state(p, "stars_number")[0]:
-                m.addAction(_("Split stars and starless")).triggered.connect(lambda: self.split_stars(lay))
+        if lay["kind"] == "workflow":
             m.addSeparator()
             m.addAction(_("Show workflow  →")).triggered.connect(lambda: self.goResults.emit(lay["pid"]))
         m.addAction(_("Rename")).triggered.connect(lambda: self.rename(lay))
@@ -1524,26 +1555,6 @@ class PostView(QWidget):
         self.rebuild()
         self.request(final_only=True)
 
-    def split_stars(self, lay):
-        """The layer becomes two: its background without stars, and its stars alone, in Screen mode, above."""
-        self.push()
-        i = self.index(lay["id"])
-        base = snapshot([lay])[0]
-        fond = dict(base, id=new_id(), part="starless", name=f"{lay['name']} · {STARLESS}")
-        stars = dict(snapshot([lay])[0], id=new_id(), part="stars", name=f"{lay['name']} · {STARS}", mode="Screen",
-                     mask=None)
-        if fond["mask"]:
-            for part in fond["mask"]["parts"]:
-                part["id"] = new_id()
-        self.layers[i:i + 1] = [stars, fond]
-        for f in self.layers:                           # its own filters stay on the background
-            if f.get("target") == lay["id"]:
-                f["target"] = fond["id"]
-        self.layers = normalize(self.layers)
-        self.sel = (stars["id"], "layer")
-        self.rebuild()
-        self.request(final_only=True)
-
     # ------------------------------------------------------------ properties of the selection
     def build_props(self):
         clear(self.pbox)
@@ -1638,9 +1649,9 @@ class PostView(QWidget):
             self.image_props(lay)
             return
         p = self.path(lay["pid"])
-        if lay["part"]:
-            self.pbox.addWidget(label(_("Stars only, in Screen mode above the starless image.")
-                                      if lay["part"] == "stars" else _("Starless image."), "small"))
+        part = lay.get("part")
+        if part:
+            self.pbox.addWidget(label(_(PART_NOTES[part]), "small", wrap=True))
         bases = self.bases_of(p)
         if bases:
             r = QHBoxLayout()
@@ -1654,14 +1665,29 @@ class PostView(QWidget):
             r.addWidget(c, 1)
             self.pbox.addLayout(r)
         group = None
-        for sd in self.s.slider_infos(p) if p is not None else []:
+        infos = self.s.slider_infos(p, part) if p is not None else []
+        if part:            # the Stars block's images: the sliders they have, the stars first (what they are for)
+            infos = sorted((x for x in infos if x.available), key=lambda x: x.group != STARS_GROUP)
+        for sd in infos:
             if sd.group != group:
                 group = sd.group
                 self._group(_(group))
+                if group == STARS_GROUP and part == "combined":
+                    r = QHBoxLayout()
+                    r.addWidget(label(_("Stars blend"), "dim"))
+                    c = QComboBox()
+                    for b in BLENDS:
+                        c.addItem(_(b), b)
+                    c.setToolTip(_("How the stars go back on the starless image: Screen (the usual way), Linear "
+                                   "dodge (add) or Lighten"))
+                    c.setCurrentIndex(max(0, BLENDS.index(lay.get("blend") or BLENDS[0])))
+                    c.currentIndexChanged.connect(lambda i, c=c: self._set(lay, "blend", c.itemData(i)))
+                    r.addWidget(c, 1)
+                    self.pbox.addLayout(r)
             pos = lay["sliders"].get(sd.key, 2.0)
             sl = ContSlider(_(sd.name), 0, 4, pos, 2, ends=[_(e) for e in sd.ends] if sd.ends else None,
                             show=lambda x: _("suggested") if abs(x - 2) < 0.02 else dec(f"{x - 2:+.1f}"))
-            ok, why, _need = self.s.slider_state(p, sd.key)         # the model answers in the language of the screen
+            ok, why, _need = self.s.slider_state(p, sd.key, part)   # the model answers in the language of the screen
             sl.set_available(ok, why)
             self._wire(sl, lambda v, k=sd.key: self._slider(lay, k, v))
             self.pbox.addWidget(sl)
@@ -1798,9 +1824,6 @@ class PostView(QWidget):
         for src, name in MASK_SOURCES.items():
             a = am.addAction(_(name))
             a.triggered.connect(lambda _c=False, s=src: self.add_part(lay, s))
-            if src == "stars" and not self.has_stars():
-                a.setEnabled(False)
-                a.setToolTip(_(NEEDS_STARS))
         add.setMenu(am)
         self.pbox.addWidget(add, 0, Qt.AlignLeft)
         self._group(_("Whole mask"))

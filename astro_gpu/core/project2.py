@@ -196,11 +196,9 @@ class Project2:
         return w
 
     def chain(self, wid: int | Workflow) -> list[str]:
-        """The stages of a workflow, in order (core/workflow.chain on this project's reference image and the
-        workflow's stored learned star layer)."""
+        """The stages of a workflow, in order (core/workflow.chain on this project's reference image)."""
         w = self.workflow(wid)
-        return wfl.chain(w.options, w.end, reference=bool(self.reference_image),
-                         learned_layer=wfl.has_learned_layer(w.params))
+        return wfl.chain(w.options, w.end, reference=bool(self.reference_image))
 
     # ------------------------------------------------------------------ checks and JSON
     def validate(self) -> None:
@@ -393,18 +391,11 @@ def write_state(root: str | Path, state: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------------------------- v1 projects
 
 def v1_options(params: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], str]:
-    """The options and the name of the workflow a v1 parameter set gives: denoise pretrained; gradient
-    polynomial (the only method of the Gradient block, which v1 did not have); stars psf_neural without star_net when
-    starless.learned_stars names a file ("Full + earlier neural layer"), psf_neural when star_net.enabled (default
-    true, "Full + neural stars"), else psf ("Full")."""
-    if wfl.has_learned_layer(params):
-        stars, name = "psf_neural", "Full + earlier neural layer"
-    elif (params.get("star_net") or {}).get("enabled", True):
-        stars, name = "psf_neural", "Full + neural stars"
-    else:
-        stars, name = "psf", "Full"
-    return wfl.check_options({"denoise": "pretrained", "stars": stars, "gradient": "polynomial",
-                              "deconvolution": None}), name
+    """The options and the name of the workflow a v1 parameter set gives: denoise pretrained, gradient polynomial
+    (the only method of the Gradient block, which v1 did not have), the Stars block ("Full"). ``params`` is not read:
+    every v1 project had the stars taken off."""
+    return wfl.check_options({"denoise": "pretrained", "stars": "neural", "gradient": "polynomial",
+                              "deconvolution": None}), "Full"
 
 
 def _merge_variant(main: dict[str, dict[str, Any]], changes: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:

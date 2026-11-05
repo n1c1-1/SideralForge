@@ -12,12 +12,9 @@ BASE = ["inventory", "calibrate", "register", "stack"]
 TABLE = {      # §2.1: the stages after stack, without the reference image
     "Classic stack": ["astrometry", "catalogs", "gradient", "color", "render_simple"],
     "Classic + denoise": ["astrometry", "catalogs", "gradient", "color", "denoise", "render_simple"],
-    "Full": ["astrometry", "catalogs", "gradient", "color", "denoise", "optics", "stars", "starless", "background",
-             "render_prep"],
-    "Full + neural stars": ["astrometry", "catalogs", "gradient", "color", "denoise", "optics", "stars", "star_net",
-                            "starless", "background", "render_prep_learned"],
+    "Full": ["astrometry", "catalogs", "gradient", "color", "denoise", "render_simple", "star_removal"],
 }
-CLASSIC, CLASSIC_DN, FULL, NEURAL = (TEMPLATES[k] for k in TABLE)
+CLASSIC, CLASSIC_DN, FULL = (TEMPLATES[k] for k in TABLE)
 
 
 # ---------------------------------------------------------------------------------------------- the chains
@@ -37,13 +34,11 @@ def test_raw_stack_exit(name):
     assert chain(TEMPLATES[name], "stacking", reference=True) == BASE + ["render_simple"]
 
 
-def test_earlier_neural_layer_omits_star_net():
-    c = chain(NEURAL, learned_layer=True)
-    assert "star_net" not in c and c[-1] == "render_prep_learned"
-    assert c == [s for s in BASE + TABLE["Full + neural stars"] if s != "star_net"]
-    assert chain(FULL, learned_layer=True) == BASE + TABLE["Full"]          # psf: the layer changes nothing here
-    assert chains().deps_in_chain(c, "starless") == ("stars", "optics", "denoise", "stack", "color", "catalogs",
-                                                     "gradient")
+def test_the_earlier_star_methods_read_as_the_network():
+    """A stored stars "psf" or "psf_neural" (the star model, then redrawn) is read as the network that replaced them."""
+    for old in ("psf", "psf_neural"):
+        assert wfl.check_options({**FULL, "stars": old}) == FULL
+        assert chain({**FULL, "stars": old}) == BASE + TABLE["Full"]
 
 
 def test_gradient_method():
@@ -55,27 +50,22 @@ def test_gradient_method():
     assert wfl.check_options({**FULL, "gradient": "halpha"}) == FULL
 
 
-def test_implied_star_net():
-    assert wfl.implied(NEURAL, "star_net") == {"enabled": True}
-    assert wfl.implied(FULL, "star_net") == {}
-    assert wfl.implied(NEURAL, "stack") == {}
-
-
-def test_implied_catalogue_depth():
-    """The deep Gaia catalogue (downloaded) only with the Stars block; otherwise the bright stars, offline."""
-    assert wfl.implied(FULL, "catalogs") == {"deep_stars": True}
-    assert wfl.implied(NEURAL, "catalogs") == {"deep_stars": True}
-    assert wfl.implied(CLASSIC, "catalogs") == {"deep_stars": False}
-    assert wfl.implied(CLASSIC_DN, "catalogs") == {"deep_stars": False}
+def test_implied_values():
+    """The options impose the method of the Gradient and Denoise blocks, nothing else (the catalogue is the same with
+    or without Stars)."""
+    assert wfl.implied(FULL, "stack") == {}
+    assert wfl.implied(FULL, "star_removal") == {}
+    assert wfl.implied(FULL, "catalogs") == wfl.implied(CLASSIC, "catalogs") == {}
+    assert wfl.implied(FULL, "denoise") == {"method": "pretrained"}
 
 
 @pytest.mark.parametrize("options,end", [
     ({"denoise": "nlbayes"}, None),                                   # ◇ methods
-    ({"denoise": "pretrained", "stars": "psf", "gradient": "polynomial", "deconvolution": "rl"}, None),
+    ({"denoise": "pretrained", "stars": "neural", "gradient": "polynomial", "deconvolution": "rl"}, None),
     ({"stars": "learned"}, None),
     ({"gradient": None}, None),
     ({"gradient": "mars"}, None),
-    ({"stars": "psf", "gradient": "polynomial"}, None),               # Stars needs Denoise
+    ({"stars": "neural", "gradient": "polynomial"}, None),            # Stars needs Denoise
     ({"denoise": "pretrained", "colour": True}, None),                       # unknown option
     (CLASSIC, "astrometry"),                                          # not an exit
 ])
@@ -96,18 +86,12 @@ def test_missing_options_take_the_classic_defaults():
 # the mockup's with_tool / without_tool (model.py:279-332), in the v2 options
 TOOL_CASES = [
     # with Stars: Denoise comes with it
-    (CLASSIC, "stars", "psf", {**CLASSIC, "denoise": "pretrained", "stars": "psf"}, [wfl.NOTE_DENOISE_ADDED]),
-    # with the neural removal: Stars, then Denoise, come with it
-    (CLASSIC, "stars", "psf_neural", {**CLASSIC, "denoise": "pretrained", "stars": "psf_neural"},
-     [wfl.NOTE_STARS_ADDED_NEURAL, wfl.NOTE_DENOISE_ADDED]),
-    (FULL, "stars", "psf_neural", NEURAL, []),
+    (CLASSIC, "stars", "neural", {**CLASSIC, "denoise": "pretrained", "stars": "neural"}, [wfl.NOTE_DENOISE_ADDED]),
+    (CLASSIC_DN, "stars", "neural", FULL, []),
     # with Denoise
     (CLASSIC, "denoise", "pretrained", CLASSIC_DN, []),
-    # without Stars: the neural removal goes
-    (NEURAL, "stars", None, CLASSIC_DN, [wfl.NOTE_NEURAL_REMOVED]),
+    # without Stars
     (FULL, "stars", None, CLASSIC_DN, []),
-    # without the neural removal
-    (NEURAL, "stars", "psf", FULL, []),
     # without Denoise (no Stars)
     (CLASSIC_DN, "denoise", None, CLASSIC, []),
     # no change, no note
@@ -125,7 +109,6 @@ def test_option_rules(before, key, value, after, notes):
 
 @pytest.mark.parametrize("before,key,value,why", [
     (FULL, "denoise", None, wfl.REFUSE_DENOISE),           # Denoise cannot go while Stars is there
-    (NEURAL, "denoise", None, wfl.REFUSE_DENOISE),
     (FULL, "gradient", None, wfl.REFUSE_GRADIENT),         # the Gradient cannot be removed, only its method changes
     (CLASSIC, "gradient", None, wfl.REFUSE_GRADIENT),
 ])
@@ -140,37 +123,37 @@ def test_no_block_after_an_early_output():
 
 
 def test_set_option_rejects_invalid_values():
-    for key, value in (("denoise", "nlbayes"), ("stars", "starnet"), ("deconvolution", "rl"), ("colour", 1)):
+    for key, value in (("denoise", "nlbayes"), ("stars", "starnet"), ("stars", "psf"), ("deconvolution", "rl"),
+                       ("colour", 1)):
         with pytest.raises(ValueError) as e:
             set_option(FULL, key, value)
         assert not isinstance(e.value, OptionRefused)
 
 
 def test_set_option_does_not_change_its_input():
-    before = dict(NEURAL)
-    set_option(NEURAL, "stars", None)
-    assert NEURAL == before
+    before = dict(FULL)
+    set_option(FULL, "stars", None)
+    assert FULL == before
 
 
 # ---------------------------------------------------------------------------------------------- dependencies
 
 def test_optional_and_extra_dependencies():
     ch = chains()
-    full, neural = chain(FULL), chain(NEURAL)
-    assert "star_net" not in ch.deps_in_chain(full, "starless")
-    assert "star_net" in ch.deps_in_chain(neural, "starless")                 # the EXTRA edge, when present
+    full = chain(FULL)
+    assert ch.deps_in_chain(full, "star_removal") == ("render_simple", "stack", "gradient")
     assert set(ch.deps_in_chain(chain(CLASSIC), "color")) == {"stack", "catalogs", "register", "gradient"}
     assert ch.deps_in_chain(chain(CLASSIC_DN), "denoise") == ("stack", "gradient")
     assert ch.deps_in_chain(chain(CLASSIC_DN), "render_simple") == ("stack", "color", "denoise", "gradient")
     assert ch.deps_in_chain(chain(CLASSIC, "stacking"), "render_simple") == ("stack",)
     assert ch.ancestors(chain(CLASSIC, "stacking"), "render_simple") == BASE
-    assert ch.downstream(full, "denoise") == ["optics", "stars", "starless", "background", "render_prep"]
+    assert ch.downstream(full, "denoise") == ["render_simple", "star_removal"]
 
 
 def test_missing_required_dependency_names_the_block():
     ch = chains()
-    stages = [s for s in chain(FULL) if s != "denoise"]
-    with pytest.raises(ValueError, match="Denoise block"):
+    stages = [s for s in chain(FULL) if s != "render_simple"]
+    with pytest.raises(ValueError, match="Output block"):
         ch.ordered(stages)
     with pytest.raises(ValueError, match="Astrometry block"):
         ch.deps_in_chain(BASE + ["color"], "color")
@@ -180,7 +163,8 @@ def test_v2_stage_graph():
     ch = chains()
     assert ch.order == wfl.ORDER and set(ch.stages) == set(wfl.ORDER)
     new_stages = {"gradient": ("stack",),                                  # the dependencies of the new stages
-                  "render_simple": ("stack", "color", "denoise", "gradient")}
+                  "render_simple": ("stack", "color", "denoise", "gradient"),
+                  "star_removal": ("render_simple", "stack", "gradient")}
     for name, deps in new_stages.items():
         assert set(deps) <= set(ch.deps2[name])
     for name in wfl.ORDER:                                     # every stage sits in exactly one block
@@ -189,16 +173,16 @@ def test_v2_stage_graph():
 
 def test_blocks():
     ch = chains()
-    c = chain(NEURAL, reference=True)
+    c = chain(FULL, reference=True)
     blocks = ch.blocks_in(c)
     assert [b for b, _ in blocks] == ["calibration", "registration", "selection", "stacking", "astrometry",
                                       "gradient", "color", "denoise", "stars", "output"]
-    assert dict(blocks)["stars"] == ("optics", "stars", "star_net", "starless", "background")
+    assert dict(blocks)["stars"] == ("star_removal",)
     assert ch.run_to("selection", c) == ["register"]
     assert ch.run_to("gradient", c) == ["gradient"]
-    assert ch.run_to("stars", c) == ["optics", "stars", "star_net", "starless", "background"]
+    assert ch.run_to("stars", c) == ["star_removal"]
     assert ch.key_stages("astrometry", c) == ["astrometry", "reference", "catalogs"]   # the survey follows Gradient
-    assert ch.block_of("star_net") == "stars" and ch.block_of("register") == "registration"
+    assert ch.block_of("star_removal") == "stars" and ch.block_of("register") == "registration"
     assert [b for b, _ in ch.blocks_in(chain(CLASSIC, "stacking"))] == ["calibration", "registration", "selection",
                                                                         "stacking", "output"]
 
@@ -222,7 +206,7 @@ def test_toy_chains():
         ch.ordered(["B", "C"])
     with pytest.raises(TypeError):
         ch.chain({})
-    toy = Chains([_Toy("A"), _Toy("B", ["A"])], rule=lambda o, end, reference, learned: o["stages"])
+    toy = Chains([_Toy("A"), _Toy("B", ["A"])], rule=lambda o, end, reference: o["stages"])
     assert toy.chain({"stages": ["B", "A"]}) == ["A", "B"]
 
 

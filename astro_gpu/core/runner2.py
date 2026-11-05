@@ -71,10 +71,6 @@ STOP = "STOP"
 EVENTS = "events.jsonl"
 EVENTS_LIMIT = 64 * 1024 * 1024            # events.jsonl is rotated past this size when a run starts
 RUNS = "runs"
-#: an earlier learned star layer ``inputs/<layer>.npy`` may come with ``inputs/<layer>.json`` holding the key of the
-#: stack it was made on under this name (written by the import); a workflow using it runs only on that stack
-LAYER_STACK_KEY = "stack_key"
-LAYER_OTHER_STACK = "the earlier layer belongs to another stack"
 
 # Windows process creation flags of the detached worker
 DETACHED_PROCESS = 0x00000008
@@ -169,16 +165,6 @@ class Plan:
                    {int(k): v for k, v in (d.get("skipped") or {}).items()}, d.get("rules"), d.get("gpu_check"))
 
 
-def layer_record(layer: str | Path) -> Path | None:
-    """The file recording the stack an earlier learned star layer belongs to (``<layer>.json`` beside it, or
-    ``<layer file>.json``); None when there is none."""
-    p = Path(layer)
-    for f in (p.with_suffix(".json"), p.with_name(p.name + ".json")):
-        if f.is_file():
-            return f
-    return None
-
-
 class Planner:
     """Plans jobs over one state of a project definition (build a new one after an edit; pass the same InputScan
     to keep the disk parts). ``gpu``: estimates for a machine with a GPU; ``history``: the timing history to use
@@ -205,21 +191,6 @@ class Planner:
 
     def usable(self, stage: str, key: str) -> bool:
         return self.store is not None and self.store.usable_as_input(stage, key)
-
-    def blocked(self, wf: int | Workflow) -> str | None:
-        """Why a workflow cannot run now (None when it can): its earlier star layer was made on another stack."""
-        w = self.project.workflow(wf)
-        v = (w.params.get("starless") or {}).get("learned_stars")
-        if not wfl.names_file(v) or "stack" not in self.keys.chain(w):
-            return None
-        rec = layer_record(self.project.abspath(re.sub(r" \(run [0-9a-fA-F]*\)$", "", str(v).strip())))
-        if rec is None:
-            return None
-        try:
-            made_on = json.loads(rec.read_text(encoding="utf-8")).get(LAYER_STACK_KEY)
-        except (OSError, ValueError, AttributeError):
-            return None
-        return LAYER_OTHER_STACK if made_on and made_on != self.keys.key(w, "stack") else None
 
     def _facts_of(self, w: Workflow) -> est.Facts:
         if id(w) not in self._facts:
@@ -261,7 +232,7 @@ class Planner:
         asked: list[tuple[int, str]] = []
         for wf, stage in targets:
             w = self.project.workflow(wf)
-            why = self.skipped.get(w.id) or self.blocked(w)
+            why = self.skipped.get(w.id)
             if why:
                 self.skipped[w.id] = why
                 continue

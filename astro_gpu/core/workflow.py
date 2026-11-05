@@ -8,15 +8,17 @@ stored. The options give its chain: the stages it runs, in the global order. Two
 when the stage key is the same (core/store.py); this module only says which stages a workflow has and which of them
 each stage reads.
 
-    options   {"denoise": None | "pretrained" | "adapted", "stars": None | "psf" | "psf_neural", "gradient": "polynomial" | "automatic",
-               "deconvolution": None}
+    options   {"denoise": None | "pretrained" | "adapted", "stars": None | "neural", "gradient": "polynomial" | "rbf" |
+               "automatic", "deconvolution": None}
     end       None, or "stacking" for the Raw stack exit (inventory → stack, then render_simple)
 
 The Gradient block comes right after stacking: its method models the sky gradient, which every later stage reads
-removed (stages/gradient.py). Rules: Stars needs Denoise; psf_neural with a stored ``starless.learned_stars`` file
-omits star_net (an earlier neural layer). Other option values are not in the engine and raise. A stored gradient
-"halpha" (the background anchored on the H-alpha survey, which worked on the starless image) is read as the method
-that replaces it, a stored denoise "n2n" (a network trained from scratch on each image) as the pretrained network.
+removed (stages/gradient.py). The Stars block takes the stars off the Output block's image (stages/star_removal.py):
+it comes after it. Rule: Stars needs Denoise (the network was trained on denoised images). Other option values are not
+in the engine and raise. A stored gradient "halpha" (the background anchored on the H-alpha survey, which worked on the
+starless image) is read as the method that replaces it, a stored denoise "n2n" (a network trained from scratch on each
+image) as the pretrained network, a stored stars "psf" or "psf_neural" (the star model subtracted, then redrawn) as the
+network that replaced them.
 
 The stage list comes from ``stages/v2.py`` (``V2_STAGES``, loaded lazily); tests build toy ``Chains``.
 """
@@ -30,7 +32,7 @@ from typing import Any
 #: the allowed values of each option
 OPTION_VALUES: dict[str, tuple[Any, ...]] = {
     "denoise": (None, "pretrained", "adapted"),
-    "stars": (None, "psf", "psf_neural"),
+    "stars": (None, "neural"),
     "gradient": ("polynomial", "rbf", "automatic"),
     "deconvolution": (None,),
 }
@@ -43,18 +45,16 @@ EXITS = ("stacking",)
 TEMPLATES: dict[str, dict[str, Any]] = {
     "Classic stack": {"denoise": None, "stars": None, "gradient": "polynomial", "deconvolution": None},
     "Classic + denoise": {"denoise": "pretrained", "stars": None, "gradient": "polynomial", "deconvolution": None},
-    "Full": {"denoise": "pretrained", "stars": "psf", "gradient": "polynomial", "deconvolution": None},
-    "Full + neural stars": {"denoise": "pretrained", "stars": "psf_neural", "gradient": "polynomial", "deconvolution": None},
+    "Full": {"denoise": "pretrained", "stars": "neural", "gradient": "polynomial", "deconvolution": None},
 }
 
 # the notes of the option rules (shown in the client, translated by its catalogues)
-NOTE_DENOISE_ADDED = "Denoise added: the star measurement needs it"
-NOTE_STARS_ADDED_NEURAL = "Stars added: neural star removal starts from the star model"
-NOTE_NEURAL_REMOVED = "Neural star removal removed too: it starts from the star model"
-REFUSE_DENOISE = "the star measurement needs it: remove Stars first"
+NOTE_DENOISE_ADDED = "Denoise added: the star removal needs it"
+REFUSE_DENOISE = "the star removal needs it: remove Stars first"
 REFUSE_GRADIENT = "the sky gradient is always removed: choose another method instead"
 #: stored option values of earlier versions, read as the current ones
-OPTION_ALIASES: dict[str, dict[Any, Any]] = {"gradient": {"halpha": "polynomial"}, "denoise": {"n2n": "pretrained"}}
+OPTION_ALIASES: dict[str, dict[Any, Any]] = {"gradient": {"halpha": "polynomial"}, "denoise": {"n2n": "pretrained"},
+                                              "stars": {"psf": "neural", "psf_neural": "neural"}}
 REFUSE_AFTER_EXIT = "No block can be added after an early output"
 
 
@@ -76,7 +76,7 @@ def check_options(options: dict[str, Any]) -> dict[str, Any]:
         if o[k] not in allowed:
             raise ValueError(f"workflow option {k}={o[k]!r} is not in the engine (allowed: {list(allowed)})")
     if o["stars"] and not o["denoise"]:
-        raise ValueError(f"workflow option stars={o['stars']!r} needs denoise: the star measurement works on the "
+        raise ValueError(f"workflow option stars={o['stars']!r} needs denoise: the star removal works on the "
                          "denoised stack")
     return o
 
@@ -105,12 +105,6 @@ def set_option(options: dict[str, Any], key: str, value: Any, end: str | None = 
     if key == "denoise":
         if value is None and o["stars"]:
             raise OptionRefused(REFUSE_DENOISE)
-    elif key == "stars":
-        if value is None:
-            if o["stars"] == "psf_neural":
-                notes.append(NOTE_NEURAL_REMOVED)
-        elif value == "psf_neural" and o["stars"] is None:
-            notes.append(NOTE_STARS_ADDED_NEURAL)
     o[key] = value
     if o["stars"] and not o["denoise"]:
         o["denoise"] = "pretrained"
@@ -119,8 +113,8 @@ def set_option(options: dict[str, Any], key: str, value: Any, end: str | None = 
 
 
 def method_of(options: dict[str, Any], block: str) -> str | None:
-    """The method of a block: denoise 'pretrained' / 'adapted', stars 'psf' / 'psf_neural', gradient 'polynomial' / 'automatic'; None when the
-    workflow does not have the block."""
+    """The method of a block: denoise 'pretrained' / 'adapted', stars 'neural', gradient 'polynomial' / 'rbf' /
+    'automatic'; None when the workflow does not have the block."""
     o = check_options(options)
     if block in ("gradient", "denoise", "stars", "deconvolution"):
         return o[block]
@@ -128,47 +122,30 @@ def method_of(options: dict[str, Any], block: str) -> str | None:
 
 
 def implied(options: dict[str, Any], stage: str) -> dict[str, Any]:
-    """The parameter values the options impose on a stage (they win over the stored ones): star_net enabled with
-    psf_neural; the method of the Gradient and Denoise blocks; the deep Gaia catalogue with the Stars block."""
+    """The parameter values the options impose on a stage (they win over the stored ones): the method of the
+    Gradient and Denoise blocks."""
     o = check_options(options)
-    if stage == "star_net" and o["stars"] == "psf_neural":
-        return {"enabled": True}
     if stage == "gradient":
         return {"method": o["gradient"]}
     if stage == "denoise" and o["denoise"]:
         return {"method": o["denoise"]}
-    if stage == "catalogs":                    # the deep catalogue only for the Stars block (stages/catalogs.py)
-        return {"deep_stars": bool(o["stars"])}
     return {}
-
-
-def names_file(value: Any) -> bool:
-    """Whether a 'Learned star layer' value names a file ('', 'none' and 'off' mean no layer; star_net.layer_file)."""
-    v = str(value or "").strip()
-    return bool(v) and v.lower() not in ("none", "off")
-
-
-def has_learned_layer(params: dict[str, dict[str, Any]]) -> bool:
-    """Whether a workflow's stored settings name an earlier learned star layer (``starless.learned_stars``)."""
-    return names_file((params.get("starless") or {}).get("learned_stars"))
 
 
 # ---------------------------------------------------------------------------------------------- the chain table
 
 #: the global order of the v2 stages (each stage only reads stages before it)
 ORDER = ["inventory", "calibrate", "register", "stack", "astrometry", "reference", "catalogs", "surveys", "gradient",
-         "color", "denoise", "optics", "stars", "star_net", "starless", "background", "render_prep",
-         "render_prep_learned", "render_simple"]
-#: dependencies a stage has beyond its declared ``deps`` (an implicit read through starless' auto value)
-EXTRA: dict[str, tuple[str, ...]] = {"starless": ("star_net",)}
+         "color", "denoise", "render_simple", "star_removal"]
+#: dependencies a stage has beyond its declared ``deps``
+EXTRA: dict[str, tuple[str, ...]] = {}
 #: dependencies that may be absent from a chain (the stage then runs without them); the stages that read the stack
 #: read it with the sky gradient removed when the chain has the Gradient block (gradient.stack_image)
 OPTIONAL: dict[str, tuple[str, ...]] = {
     "color": ("gradient",),
     "denoise": ("gradient",),
-    "optics": ("gradient",),
-    "starless": ("star_net", "gradient"),
     "render_simple": ("color", "denoise", "gradient"),
+    "star_removal": ("gradient",),
 }
 #: the blocks of the graph and their stages; Selection has no stage of its own (it follows register)
 BLOCKS: dict[str, tuple[str, ...]] = {
@@ -180,8 +157,8 @@ BLOCKS: dict[str, tuple[str, ...]] = {
     "gradient": ("gradient",),
     "color": ("color",),
     "denoise": ("denoise",),
-    "stars": ("optics", "stars", "star_net", "starless", "background"),
-    "output": ("render_prep", "render_prep_learned", "render_simple"),
+    "stars": ("star_removal",),                     # drawn before the Output, which every workflow ends with
+    "output": ("render_simple",),
 }
 BLOCK_TITLES = {"calibration": "Calibration", "registration": "Registration", "selection": "Selection",
                 "stacking": "Stacking", "astrometry": "Astrometry", "color": "Color", "denoise": "Denoise",
@@ -192,11 +169,9 @@ RUN_TO: dict[str, tuple[str, ...]] = {"selection": ("register",)}
 KEY_LEAVES_OUT: dict[str, tuple[str, ...]] = {"astrometry": ("surveys",)}
 
 
-def chain_stages(options: dict[str, Any], end: str | None = None, reference: bool = False,
-                 learned_layer: bool = False) -> list[str]:
-    """The stages of a workflow, in the global order. ``reference``: the project has a reference
-    image (the stage sits in the Astrometry block); ``learned_layer``: the workflow stores an earlier learned star
-    layer, so psf_neural runs without star_net."""
+def chain_stages(options: dict[str, Any], end: str | None = None, reference: bool = False) -> list[str]:
+    """The stages of a workflow, in the global order. ``reference``: the project has a reference image (the stage sits
+    in the Astrometry block)."""
     o = check_options(options)
     out = ["inventory", "calibrate", "register", "stack"]
     if check_end(end) == "stacking":
@@ -204,22 +179,18 @@ def chain_stages(options: dict[str, Any], end: str | None = None, reference: boo
     out += ["astrometry"] + (["reference"] if reference else []) + ["catalogs", "gradient", "color"]
     if o["denoise"]:
         out.append("denoise")
+    out.append("render_simple")
     if o["stars"]:
-        out += ["optics", "stars"]
-        if o["stars"] == "psf_neural" and not learned_layer:
-            out.append("star_net")
-        out += ["starless", "background", "render_prep_learned" if o["stars"] == "psf_neural" else "render_prep"]
-    else:
-        out.append("render_simple")
+        out.append("star_removal")
     return [s for s in ORDER if s in out]
 
 
-Rule = Callable[[dict, "str | None", bool, bool], Iterable[str]]
+Rule = Callable[[dict, "str | None", bool], Iterable[str]]
 
 
 class Chains:
     """The stage graph of v2 workflows: the stages, their order and dependencies (declared ∪ extra ∪ optional),
-    the blocks, and the chain of a workflow (``rule``: options, end, reference, learned_layer → stage names)."""
+    the blocks, and the chain of a workflow (``rule``: options, end, reference → stage names)."""
 
     def __init__(self, stages: Sequence[Any], order: Sequence[str] | None = None,
                  extra: dict[str, tuple[str, ...]] | None = None, optional: dict[str, tuple[str, ...]] | None = None,
@@ -246,12 +217,11 @@ class Chains:
         self._block_of = {s: b for b, ss in reversed(list(self.blocks.items())) for s in ss}
 
     # ------------------------------------------------------------------ chains
-    def chain(self, options: dict[str, Any], end: str | None = None, *, reference: bool = False,
-              learned_layer: bool = False) -> list[str]:
+    def chain(self, options: dict[str, Any], end: str | None = None, *, reference: bool = False) -> list[str]:
         """The stages of a workflow, ordered and checked."""
         if self.rule is None:
             raise TypeError("these Chains have no rule: use ordered() with the stage names")
-        return self.ordered(self.rule(options, end, reference, learned_layer))
+        return self.ordered(self.rule(options, end, reference))
 
     def ordered(self, names: Iterable[str]) -> list[str]:
         """Stage names as a chain: in the global order, every required dependency present (ValueError otherwise)."""
@@ -337,7 +307,6 @@ def chains() -> Chains:
     return _CHAINS[0]
 
 
-def chain(options: dict[str, Any], end: str | None = None, *, reference: bool = False,
-          learned_layer: bool = False) -> list[str]:
+def chain(options: dict[str, Any], end: str | None = None, *, reference: bool = False) -> list[str]:
     """The checked chain of a workflow on the v2 stages."""
-    return chains().chain(options, end, reference=reference, learned_layer=learned_layer)
+    return chains().chain(options, end, reference=reference)

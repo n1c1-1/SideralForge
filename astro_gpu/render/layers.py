@@ -1,16 +1,16 @@
 """Workflow layers for Post: render a workflow's output folder with a base and slider positions, its masks, and export
 the composed image.
 
-* ``LayerService.render(folder, base, sliders, scale, region, part)`` -> ``LayerImage(rgb, crop, info)``: the layer
-  on the whole stack grid (or the asked region), uncropped, with the useful frame (``crop``). The folder is an output
-  stage's result: render_prep / render_prep_learned (``RenderEngine``) or render_simple (``SimpleRenderEngine``).
-  A full-resolution region uses the tone fit of the 1/4 rendering (``RenderEngine.render(region=...)``).
+* ``LayerService.render(folder, base, sliders, scale, region, part, blend)`` -> ``LayerImage(rgb, crop, info)``: the
+  layer on the whole stack grid (or the asked region), uncropped, with the useful frame (``crop``). The folder is the
+  Output block's result (render_simple: ``SimpleRenderEngine``) or, for the Stars block's images (``part`` starless,
+  stars or combined), its result (star_removal: ``StarsRenderEngine``).
 * The service keeps the engines it opened and drops the least recently used one when host memory runs short (or a
   byte budget is reached). A GPU out-of-memory error renders again on the CPU, with a note.
-* ``masks(folder, scale, region)``: the star mask and the H-alpha map of Post's mask parts.
+* ``masks(folder, scale, region)``: the H-alpha map of Post's mask parts.
 * ``export_rgb(rgb, out_dir, options, wcs, origin, history)``: TIFF 16 / 32f, PNG 16, JPEG, FITS 32f with the WCS and
   the history in its header (ROWORDER TOP-DOWN: Siril shows it the right way up), in sRGB, at full size or reduced, in
-  an orientation of render/export.py (rot90 / flip), with a history file.
+  a quarter turn or a mirror (never resampled), with a history file.
 """
 from __future__ import annotations
 
@@ -28,13 +28,11 @@ import torch.nn.functional as F
 
 from ..core.params import P, StageParams
 from . import ops
-from .engine import RenderEngine
-from .settings import RenderSettings
 from .simple import SimpleRenderEngine
 from .sliders import availability, settings_at
+from .stars import PARTS, StarsRenderEngine, is_stars_folder
 
 NOTE_CPU = "GPU memory full: rendered on the CPU"
-PARTS = (None, "stars", "starless")
 
 
 @dataclass
@@ -44,30 +42,32 @@ class LayerImage:
     info: dict = field(default_factory=dict)
 
 
-def layer_kind(folder: str | Path) -> str:
-    """engine (render_prep, render_prep_learned), simple (render_simple) or stacking (render_simple pulled from
-    Stacking: no Color)."""
+def layer_kind(folder: str | Path, part: str | None = None) -> str:
+    """The slider kind of a layer (render/sliders.KINDS): its part for the Stars block's images, else simple
+    (render_simple) or stacking (render_simple pulled from Stacking: no Color)."""
     d = Path(folder)
+    if part is not None:
+        if part not in PARTS:
+            raise ValueError(f"unknown layer part {part!r} (allowed: {PARTS})")
+        return part
     if (d / "prep_simple.json").exists():
         prep = json.loads((d / "prep_simple.json").read_text(encoding="utf-8"))
         return "stacking" if prep.get("exit") == "stacking" else "simple"
-    if (d / "prep.json").exists():
-        return "engine"
-    raise FileNotFoundError(f"{d} holds no rendering preparation (prep.json or prep_simple.json)")
+    raise FileNotFoundError(f"{d} holds no rendering preparation (prep_simple.json)")
 
 
 def has_denoise(folder: str | Path) -> bool:
-    """Whether the layer's workflow has Denoise (the noise slider): always for engine layers (Stars needs it)."""
+    """Whether the layer's workflow has Denoise (the noise slider)."""
     d = Path(folder)
     if (d / "prep_simple.json").exists():
         return bool(json.loads((d / "prep_simple.json").read_text(encoding="utf-8")).get("denoised"))
     return True
 
 
-def open_engine(folder: str | Path, device: str = "cpu") -> RenderEngine | SimpleRenderEngine:
+def open_engine(folder: str | Path, device: str = "cpu") -> SimpleRenderEngine:
     d = Path(folder)
-    if layer_kind(d) == "engine":
-        return RenderEngine(d, device=device)
+    if is_stars_folder(d):
+        return StarsRenderEngine(d, device=device)
     return SimpleRenderEngine(d, device=device)
 
 
@@ -91,7 +91,7 @@ class LayerService:
         self.device = device
         self.budget = budget_bytes
         self.reserve = reserve_bytes
-        self._eng: OrderedDict[str, RenderEngine | SimpleRenderEngine] = OrderedDict()
+        self._eng: OrderedDict[str, SimpleRenderEngine] = OrderedDict()
         self._size: dict[str, int] = {}
         self._on_cpu: set[str] = set()                     # folders that fell back to the CPU
 
@@ -104,7 +104,7 @@ class LayerService:
         """The folders of the engines kept, least recently used first."""
         return list(self._eng)
 
-    def engine(self, folder) -> RenderEngine | SimpleRenderEngine:
+    def engine(self, folder) -> SimpleRenderEngine:
         k = self._key(folder)
         if k in self._eng:
             self._eng.move_to_end(k)
@@ -135,112 +135,81 @@ class LayerService:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def kind(self, folder) -> str:
-        return layer_kind(folder)
+    def kind(self, folder, part: str | None = None) -> str:
+        return layer_kind(folder, part)
 
-    def sliders_of(self, folder) -> dict[str, str]:
+    def sliders_of(self, folder, part: str | None = None) -> dict[str, str]:
         """Per slider, '' when the layer offers it, else the reason it is greyed."""
-        return availability(layer_kind(folder), has_denoise(folder))
+        return availability(layer_kind(folder, part), has_denoise(folder))
 
     # ------------------------------------------------------------------ rendering
-    def _render(self, folder, s, scale, region=None, fit=None, **kw):
+    def _render(self, folder, s, scale, region=None, **kw):
         """(Layers, note): rendered on the service's device; on a GPU out-of-memory error, again on the CPU."""
         eng = self.engine(folder)
         try:
-            return eng.render(s, scale, region, fit, **kw), ""
+            return eng.render(s, scale, region, **kw), ""
         except torch.OutOfMemoryError:
             if eng.dev.type != "cuda":
                 raise
         k = self._key(folder)
         self.evict(k)
         self._on_cpu.add(k)
-        return self.engine(k).render(s, scale, region, fit, **kw), NOTE_CPU
+        return self.engine(k).render(s, scale, region, **kw), NOTE_CPU
 
-    def settings(self, folder, base: Any = None, sliders: dict[str, float] | None = None):
-        """The render settings of a layer: its base moved by its slider positions."""
-        return settings_at(layer_kind(folder), base, sliders, has_denoise(folder))
+    def settings(self, folder, base: Any = None, sliders: dict[str, float] | None = None, part: str | None = None,
+                 blend: str | None = None):
+        """The render settings of a layer: its base moved by its slider positions (and, recombined, the stars'
+        blend)."""
+        s = settings_at(layer_kind(folder, part), base, sliders, has_denoise(folder))
+        if blend and "blend" in type(s).model_fields:
+            s = s.model_copy(update={"blend": type(s)(blend=blend).blend})
+        return s
 
     def render(self, folder, base: Any = None, sliders: dict[str, float] | None = None, scale: float = 0.25,
-               region=None, part: str | None = None, fit: dict | None = None, *, draft: bool = False,
-               stop=None) -> LayerImage:
+               region=None, part: str | None = None, blend: str | None = None, **_kw) -> LayerImage:
         """A workflow layer at a scale (1, 1/2, 1/4...), or a region (x0, x1, y0, y1) of the full-resolution grid.
-        ``part``: None, 'stars' (the layer minus its starless image, clipped at 0) or 'starless' (engine layers).
-        ``draft``: a quick look while a slider moves (engine layers draw their stars on a reduced grid); ``stop()``:
-        True abandons the rendering between two of its stages (``engine.Cancelled``)."""
-        if part not in PARTS:
-            raise ValueError(f"unknown layer part {part!r} (allowed: {PARTS})")
-        kind = layer_kind(folder)
-        if part is not None and kind != "engine":
-            raise ValueError("only a layer with a star model splits into stars and starless")
-        s = self.settings(folder, base, sliders)
+        ``part``: None (the Output block's image), or one of the Stars block's (from its folder): 'starless', 'stars',
+        'combined'; ``blend``: how a combined layer puts its stars back (render/stars.BLENDS)."""
+        kind = layer_kind(folder, part)
+        if (part is None) == is_stars_folder(folder):
+            raise ValueError("the Stars block's images come from its folder, the others from the Output block's")
+        s = self.settings(folder, base, sliders, part, blend)
         t0 = time.perf_counter()
-        lay, note = self._render(folder, s, scale, region, fit, draft=draft and region is None and scale < 1, stop=stop)
-        if part == "starless":
-            img = lay.starless
-        elif part == "stars":
-            img = (lay.final - lay.starless).clamp(0, 1)
-        else:
-            img = lay.final
-        rgb = img.float().cpu().numpy()
+        kw = {"part": part} if part is not None else {}
+        lay, note = self._render(folder, s, scale, region, **kw)
+        rgb = lay.final.float().cpu().numpy()
         eng = self.engine(folder)
-        info = {"kind": kind, "scale": lay.scale, "region": lay.info.get("region"), "part": part, "draft": draft,
+        info = {"kind": kind, "scale": lay.scale, "region": lay.info.get("region"), "part": part,
                 "grid": [int(eng.W), int(eng.H)], "drizzle_scale": float(eng.SC), "device": str(eng.dev),
                 "render_ms": round(1000 * (time.perf_counter() - t0), 1), "note": note,
                 "settings": s.model_dump(mode="json")}
-        if kind == "engine" and getattr(eng, "last_fit", None) is not None and region is None:
-            info["fit"] = eng.last_fit
         return LayerImage(rgb, tuple(int(v) for v in eng.crop), info)
 
     # ------------------------------------------------------------------ masks
     def masks(self, folder, scale: float = 0.25, region=None) -> dict[str, np.ndarray | None]:
-        """Post's data masks, float32 in [0, 1] on the grid at the scale (or the region): 'stars', every drawn star
-        with its glow (engine layers; None for simple ones), and 'halpha', the H-alpha emission (0 at its median, 1 at
-        its 97th percentile, smoothed)."""
+        """Post's data masks, float32 in [0, 1] on the grid at the scale (or the region): 'halpha', the H-alpha
+        emission (0 at its median, 1 at its 97th percentile, smoothed)."""
         eng = self.engine(folder)
         f = max(1, int(round(1 / scale)))
-        out: dict[str, np.ndarray | None] = {"stars": None, "halpha": None}
         with torch.no_grad():
-            if isinstance(eng, RenderEngine):
-                # the star layer alone (not the nebula), in caches of its own: the images shown stay cached
-                try:
-                    stars = eng.stars_only(RenderSettings(), scale, region)
-                except torch.OutOfMemoryError:
-                    if eng.dev.type != "cuda":
-                        raise
-                    k = self._key(folder)
-                    self.evict(k)
-                    self._on_cpu.add(k)
-                    eng = self.engine(k)
-                    stars = eng.stars_only(RenderSettings(), scale, region)
-                st = _smoothstep(ops.luminance(stars.float()), 0.03, 0.15)
-                st = F.max_pool2d(st[None, None], 3, 1, 1)[0, 0]
-                out["stars"] = ops.gaussian_blur(st, 1.0).clamp(0, 1).cpu().numpy()
-            out["halpha"] = self._halpha(eng, f, region)
-        return out
+            return {"halpha": self._halpha(eng, f, region)}
 
     @staticmethod
     def _emission(eng, f: int, box) -> torch.Tensor:
-        """The emission map on a box (x0, x1, y0, y1) of the grid, reduced by f: the engine's emission layer, the
-        H-alpha excess of a preparation without that layer, the red excess of a simple one."""
+        """The emission map on a box (x0, x1, y0, y1) of the grid, reduced by f: the red excess of the image (of the
+        starless image for the Stars block's)."""
         x0, x1, y0, y1 = box
-        if isinstance(eng, SimpleRenderEngine):
-            lin = eng._host["lin"][:, y0:y1, x0:x1].to(eng.dev).float()
-            E = lin[0] - lin[1]
-        elif "Eg0" in eng._host:
-            E = eng._host["Eg0"][y0:y1, x0:x1].to(eng.dev).float()
-        else:
-            a = eng._host[next(iter(eng._host))][:, y0:y1, x0:x1].to(eng.dev).float()
-            E = a[0] - float(eng.prep.get("alpha", 1.0)) * a[1]
+        a = eng._host["starless" if isinstance(eng, StarsRenderEngine) else "lin"][:, y0:y1, x0:x1].to(eng.dev).float()
+        E = a[0] - a[1]
         if f > 1:
             h, w = E.shape[0] // f * f, E.shape[1] // f * f
             E = F.avg_pool2d(E[None, None, :h, :w], f)[0, 0]
         return ops.gaussian_blur(E, 6 / f)
 
     def _halpha(self, eng, f: int, region) -> np.ndarray:
-        valid_host = eng.valid_host if isinstance(eng, SimpleRenderEngine) else eng.valid.cpu()
         # the thresholds come from the whole field at 1/4, so that a region is the crop of the whole map
         E4 = self._emission(eng, 4, (0, eng.W, 0, eng.H))
-        v4 = F.avg_pool2d(valid_host[None, None, :E4.shape[0] * 4, :E4.shape[1] * 4].float(), 4)[0, 0] > 0.99
+        v4 = F.avg_pool2d(eng.valid_host[None, None, :E4.shape[0] * 4, :E4.shape[1] * 4].float(), 4)[0, 0] > 0.99
         q0, q1 = ops.percentile(E4, [50, 97], v4.to(E4.device))
         if region is None:
             E = self._emission(eng, f, (0, eng.W // f * f, 0, eng.H // f * f))
@@ -328,7 +297,6 @@ def export_rgb(rgb: np.ndarray, out_dir: str | Path, options: ExportOptions | di
     import tifffile
     from PIL import Image
 
-    from .export import _orient
     o = options if isinstance(options, ExportOptions) else ExportOptions(**(options or {}))
     bad = [f for f in o.formats if f not in FORMATS]
     if bad:
@@ -339,7 +307,9 @@ def export_rgb(rgb: np.ndarray, out_dir: str | Path, options: ExportOptions | di
     if img.ndim != 3 or img.shape[0] != 3:
         raise ValueError(f"expected a (3, H, W) image, got {img.shape}")
     H, W = img.shape[1:]
-    img = _orient(img, (0, W, 0, H), o.rot90, o.flip)
+    if o.flip:
+        img = img[:, ::-1]
+    img = np.ascontiguousarray(np.rot90(img, o.rot90, axes=(1, 2)))
     zoom = 1.0
     if o.size and max(img.shape[1:]) > o.size:
         zoom = o.size / max(img.shape[1:])

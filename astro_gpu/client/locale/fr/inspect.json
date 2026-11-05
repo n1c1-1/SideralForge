@@ -73,7 +73,6 @@
   "Weights": "Poids",
   "Star colours": "Couleurs des étoiles",
   "Gradient removed": "Gradient retiré",
-  "Star flat": "Flat des étoiles",
   "Colour-calibrated stack": "Empilement calibré en couleur",
   "Colour-calibrated denoised stack": "Empilement débruité calibré en couleur",
   "Post sliders": "Curseurs de Post-traitement",
@@ -187,7 +186,6 @@
   "Your image with the gradient removed, stars included, in calibrated colours: the starless image without its gradient (the next tab) with what the Stars block took away put back (the stars, and the noise its filter removed): the stack itself, not denoised. Compare it with the earlier steps.": "Votre image sans son gradient, étoiles comprises, en couleurs calibrées : l'image sans étoiles sans son gradient (l'onglet suivant) avec ce que le bloc Étoiles avait retiré remis (les étoiles, et le bruit que son filtre avait enlevé) : l'empilement lui-même, non débruité. Comparez-la avec les étapes précédentes.",
   "Starless, gradient removed": "Sans étoiles, gradient retiré",
   "The starless image without its gradient, in calibrated colours: what the block works on. The stars are put back in the first tab.": "L'image sans étoiles privée de son gradient, en couleurs calibrées : ce sur quoi le bloc travaille. Les étoiles sont remises dans le premier onglet.",
-  "Starless image, before the gradient removal": "Image sans étoiles, avant le retrait du gradient",
   "What the block removed from the starless image (its input minus its result), in the camera's colours.": "Ce que le bloc a retiré de l'image sans étoiles (son entrée moins son résultat), dans les couleurs de l'appareil.",
   "The smooth surface of light pollution the block fitted, channel by channel, in the camera's colours.": "La surface lisse de pollution lumineuse que le bloc a ajustée, canal par canal, dans les couleurs de l'appareil.",
   "Name the objects": "Nommer les objets",
@@ -270,10 +268,13 @@
   "Final image = Gradient removed (of the denoised stack), then the steps of Post: its stretch (the suggested settings) and the filters you add there. These steps are in Post, not in the graph. The stretch is already applied (values 0 to 255), so Same stretch is not possible against Gradient removed: compare them by eye. Cropped to the area every frame covers, at half size.": "Image finale = Gradient retiré (de l'empilement débruité), puis les étapes du Post-traitement : son étirement (les réglages suggérés) et les filtres que vous y ajoutez. Ces étapes sont dans le Post-traitement, pas dans le graphe. L'étirement est déjà appliqué (valeurs de 0 à 255) : « Même étirement » n'est donc pas possible face à Gradient retiré, comparez-les à l'œil. Recadrée sur la zone couverte par toutes les images, à mi-taille.",
   "Final image: the colour-calibrated stack with Post's suggested stretch. Cropped to the covered area, at half size. Adjust it in Post.": "Image finale : l'empilement calibré en couleurs, avec l'étirement suggéré du Post-traitement. Recadrée sur la zone couverte, à mi-taille. Pour l'ajuster, ouvrez le Post-traitement.",
   "Final image: the stack in the camera's colours, the sky of each channel levelled, with Post's suggested stretch. Cropped to the covered area, at half size. Adjust it in Post.": "Image finale : l'empilement dans les couleurs de la caméra, le ciel de chaque canal nivelé, avec l'étirement suggéré du Post-traitement. Recadrée sur la zone couverte, à mi-taille. Pour l'ajuster, ouvrez le Post-traitement.",
-  "Final image: Post's own rendering, not the Gradient removed picture: the starless image (denoised, its gradient removed) with the stars drawn back from their model, at the suggested settings. Cropped to the covered area, at half size. Adjust it in Post.": "Image finale : le rendu propre du Post-traitement, pas l'image Gradient retiré : l'image sans étoiles (débruitée, gradient retiré) avec les étoiles redessinées d'après leur modèle, aux réglages suggérés. Recadrée sur la zone couverte, à mi-taille. Pour l'ajuster, ouvrez le Post-traitement.",
-  "Final image: Post's own rendering, not the Gradient removed picture: the starless image of the neural star removal (denoised, its gradient removed) with the stars put back, at the suggested settings. Cropped to the covered area, at half size. Adjust it in Post.": "Image finale : le rendu propre du Post-traitement, pas l'image Gradient retiré : l'image sans étoiles du retrait neuronal des étoiles (débruitée, gradient retiré) avec les étoiles remises, aux réglages suggérés. Recadrée sur la zone couverte, à mi-taille. Pour l'ajuster, ouvrez le Post-traitement.",
   "The offsets of the frames cannot be computed: the size of the sensor is not known (no inventory, calibration or stack result gives it). Recompute Registration.": "Les décalages des images ne peuvent pas être calculés : la taille du capteur n'est pas connue (aucun résultat d'inventaire, de calibration ou d'empilement ne la donne). Recalculez Alignement.",
   "OpenNGC": "OpenNGC",
   "Sharpless, VizieR VII/20": "Sharpless, VizieR VII/20",
-  "Steinicke's Revised NGC/IC": "NGC/IC révisé de Steinicke"
+  "Steinicke's Revised NGC/IC": "NGC/IC révisé de Steinicke",
+  "Stars alone": "Étoiles seules",
+  "Image with its stars": "Image avec ses étoiles",
+  "With its stars": "Avec ses étoiles",
+  "The image without its stars, compared with the image with them (the same stretch: drag the divider). The Stars block's two images go to Post: recombined by a Stars and background block, or as they are.": "L'image sans ses étoiles, comparée à l'image avec (même étirement : faites glisser la séparation). Les deux images du bloc Étoiles vont à Post-traitement : recombinées par un bloc Étoiles et fond, ou telles quelles.",
+  "The stars alone: the image minus its starless image. In Post they go back on top in Screen mode, stretched on their own.": "Les étoiles seules : l'image moins son image sans étoiles. Dans Post-traitement, elles reviennent par-dessus en mode Écran, étirées à part."
 }

@@ -1,37 +1,11 @@
-"""Data-driven safeguards that make the processing independent of the instrument: sky level under extended objects,
-fixed pattern of the sensor."""
+"""Data-driven safeguards that make the processing independent of the instrument: fixed pattern of the sensor, sky
+survey tiles."""
 from __future__ import annotations
 
 import numpy as np
 import torch
 
-from astro_gpu.stages.background import fit_sky
 from astro_gpu.stages.stack import fixed_pattern
-
-
-def _scene():
-    hb, wb = 40, 60
-    yb, xb = (np.mgrid[0:hb, 0:wb] + 0.5) * 32 - 0.5
-    W, H = wb * 32, hb * 32
-    rng = np.random.default_rng(1)
-    level = np.array([50.0, 60.0, 40.0])
-    gal = 40 * np.exp(-0.5 * (((xb - W / 2) / 300) ** 2 + ((yb - H / 2) / 200) ** 2))
-    dens = np.exp(rng.normal(0, 0.4, (hb, wb)))                 # unresolved starlight follows the star density
-    U = np.stack([dens * c for c in (0.9, 1.0, 0.8)])
-    u = np.array([2.0, 3.0, 1.5])
-    Y = (level[:, None, None] + u[:, None, None] * U + np.stack([c * gal for c in (0.9, 1.0, 0.8)])
-         + rng.normal(0, 0.05, (3, hb, wb)))
-    return Y, U, u, level
-
-
-def test_sky_level_passes_under_extended_object():
-    Y, U, u, level = _scene()
-    good = np.ones(Y.shape[1:], bool)
-    sol, used = fit_sky(Y, U, good, 2.5)
-    assert used.mean() < 0.9                                   # the galaxy core is left out of the sky fit
-    for c in range(3):
-        assert abs(sol[c][1] - level[c]) < 0.5                 # the level, not raised by the galaxy
-        assert abs(sol[c][0] - u[c]) < 0.2 * u[c]              # the unresolved starlight
 
 
 def test_fixed_pattern_recovered_from_drifting_frames():
@@ -56,28 +30,6 @@ def test_fixed_pattern_recovered_from_drifting_frames():
     # no drift: not applied
     coef[:, 0, 0], coef[:, 1, 0] = W / 2, H / 2
     assert fixed_pattern(frames, np.arange(n), coef, torch.device("cpu"), H, W, 24)[0] is None
-
-
-def test_generic_star_guard_any_colour():
-    from astro_gpu.stages.render_prep import guard_generic
-    rng = np.random.default_rng(4)
-    H, W = 160, 160
-    blue = np.array([0.6, 1.0, 1.6], np.float32)                         # a reflection nebula: no H-alpha at all
-    astro = (20 * blue[:, None, None] + rng.normal(0, 0.3, (3, H, W))).astype(np.float32)
-    astro[:, 70:80, 70:80] -= 15                                        # star over-subtracted: a black hole
-    astro[0, 30:36, 30:36] += 25                                        # star residual: a red dot
-    foot = np.zeros((H, W), np.float32)
-    foot[66:84, 66:84] = 1
-    foot[26:40, 26:40] = 1
-    lum = np.array([0.2126, 0.7152, 0.0722], np.float32)
-    w_cam = np.ones(3, np.float32)
-    Y = np.tensordot(lum, astro, 1).astype(np.float32)
-    out = guard_generic(astro, Y, foot, lum, w_cam, 1.0)
-    level = np.tensordot(lum, astro[:, 120:, 120:], 1).mean()
-    assert np.tensordot(lum, out[:, 72:78, 72:78], 1).mean() > level - 1.0      # no hole left
-    col = out[:, 31:35, 31:35].mean((1, 2))
-    assert abs(col[0] / col[1] - 0.6) < 0.1                                     # the red dot takes the nebula colour
-    assert np.abs(out[:, 110:, 110:] - astro[:, 110:, 110:]).max() == 0         # untouched off the footprints
 
 
 def test_nested_healpix_index_splits_into_tile_coordinates():

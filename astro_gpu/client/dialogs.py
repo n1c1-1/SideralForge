@@ -28,8 +28,8 @@ TEMPLATE_TEXT = {
     "Classic stack": "The fixed steps only: calibration, registration, stacking, astrometry, color, simple background. "
                      "A classic stack.",
     "Classic + denoise": "The same, plus denoise on two half-stacks.",
-    "Full": "Denoise, star measurement, starless image, background anchored on H-alpha.",
-    "Full + neural stars": "The same as Full, plus the neural star removal.",
+    "Full": "The same as Classic + denoise, plus the stars taken off: the starless image and the stars, recombined in "
+            "Post.",
 }
 
 

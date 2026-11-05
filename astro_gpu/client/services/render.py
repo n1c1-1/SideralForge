@@ -1,6 +1,7 @@
 """The render worker of Post: the engine's layers, the composition and the export, off the GUI thread.
 
-* ``LayerSource`` is the ``postengine.Provider`` on the engine: a workflow's output folder rendered by a ``LayerService``
+* ``LayerSource`` is the ``postengine.Provider`` on the engine: a workflow's Output block folder (or its Stars block
+  folder, for the starless image, the stars alone and the two recombined) rendered by a ``LayerService``
   (render/layers.py) with a base and slider positions, on the canvas every layer covers. The release render, the 100 %
   region and the export are the engine's own renderings; nothing here changes a pixel of them. It also renders the
   image layers: a stage result's linear image (an array, a file, or a function giving one, registered under its key;
@@ -42,16 +43,17 @@ from ..postengine import (
     thumb_of,
 )
 
-#: the output stages (the last one of a chain is the workflow's layer)
-OUTPUT_STAGES = ("render_prep", "render_prep_learned", "render_simple")
+#: the stage of a workflow's layer: its Output block's image, and its Stars block's images (``postengine.source_id``:
+#: the workflow's id, or ("stars", id))
+OUTPUT_STAGE, STARS_STAGE = "render_simple", "star_removal"
 #: the time budgets of a request, in seconds
 BUDGET = {"draft": 0.15, "half": 1.0, "region": 2.0}
 DRAFT_LEVEL, HALF_LEVEL = 2, 1
 #: the draft's level on the CPU: an eighth of the image (the nebula of a 6000-pixel image in about 0.3 s)
 CPU_DRAFT_LEVEL = 3
 #: the main arrays of the stage results an image layer's key can name without its file (``store_image_resolver``)
-STAGE_IMAGES = {"stack": "drz_full", "background": "astro", "denoise": "n2n_full", "starless": "sl_final",
-                "render_simple": "lin", "render_prep": "N", "color": None}
+STAGE_IMAGES = {"stack": "drz_full", "denoise": "n2n_full", "render_simple": "lin", "star_removal": "starless",
+                "color": None}
 NOTE_CPU_TEXT = "GPU memory full: rendered on the CPU"
 
 
@@ -110,26 +112,30 @@ class Grid:
 
 
 def read_grid(folder: Path) -> Grid:
-    """The grid and the useful frame of an output folder, from its small files (the arrays are not loaded)."""
+    """The grid and the useful frame of an Output or Stars block folder, from its small files (the arrays are not
+    loaded)."""
     from ...render.layers import layer_kind
-    kind = layer_kind(folder)
-    pj = json.loads((folder / ("prep.json" if kind == "engine" else "prep_simple.json")).read_text(encoding="utf-8"))
+    from ...render.stars import is_stars_folder
+    stars = is_stars_folder(folder)
+    kind = "stars" if stars else layer_kind(folder)
+    pj = json.loads((folder / ("prep_stars.json" if stars else "prep_simple.json")).read_text(encoding="utf-8"))
     with open(folder / "valid.npy", "rb") as fh:
         v = np.lib.format.read_magic(fh)
         shape = (np.lib.format.read_array_header_1_0 if v == (1, 0) else np.lib.format.read_array_header_2_0)(fh)[0]
     return Grid(int(shape[1]), int(shape[0]), tuple(int(c) for c in pj["crop"]), kind)
 
 
-def api_resolver(project) -> Callable[[int], Folder | None]:
-    """pid -> the folder of the workflow's output: the current result, else the one an Outdated output had."""
+def api_resolver(project) -> Callable[[Any], Folder | None]:
+    """A workflow's id -> the folder of its Output block; ("stars", id) -> the folder of its Stars block: the current
+    result, else the one an Outdated stage had."""
     from ... import api
 
-    def resolve(pid: int) -> Folder | None:
+    def resolve(sid) -> Folder | None:
+        pid, stage = (sid[1], STARS_STAGE) if isinstance(sid, tuple) else (sid, OUTPUT_STAGE)
         try:
-            outs = [s for s in api.chain(project, pid) if s in OUTPUT_STAGES]
-            if not outs:
+            if stage not in api.chain(project, pid):
                 return None
-            so = api.stage_outputs(project, pid, outs[-1]) or api.stage_outputs(project, pid, outs[-1], "previous")
+            so = api.stage_outputs(project, pid, stage) or api.stage_outputs(project, pid, stage, "previous")
         except (OSError, ValueError, KeyError):
             return None
         if so is None:
@@ -202,13 +208,13 @@ def bases_of(project) -> Callable[[Any], Any]:
 class LayerSource(Provider):
     """The layers of the workflows as the composition reads them. Used in one thread (the worker's)."""
 
-    def __init__(self, resolver: Callable[[int], Folder | None], service, bases: Callable[[Any], Any] | None = None):
+    def __init__(self, resolver: Callable[[Any], Folder | None], service, bases: Callable[[Any], Any] | None = None):
         self.resolver = resolver
         self.service = service
         self.bases = bases or (lambda b: b)
-        self._folders: dict[int, Folder | None] = {}
+        self._folders: dict[Any, Folder | None] = {}          # by source id: a workflow's, or ("stars", its id)
         self._grids: dict[str, Grid] = {}
-        self._epoch: dict[int, int] = {}
+        self._epoch: dict[Any, int] = {}
         self._notes: set[str] = set()
         self._masks: dict[tuple, dict] = {}
         self._cv: Canvas | None = None
@@ -222,14 +228,15 @@ class LayerSource(Provider):
         self._img_epoch: dict[str, int] = {}
 
     # ------------------------------------------------------------ the results on disk
-    def folder(self, pid: int) -> Folder | None:
-        if pid not in self._folders:
-            self._folders[pid] = self.resolver(pid)
-        return self._folders[pid]
+    def folder(self, sid) -> Folder | None:
+        """The folder of a workflow's Output block (``sid`` its id) or Stars block (``sid`` ("stars", its id))."""
+        if sid not in self._folders:
+            self._folders[sid] = self.resolver(sid)
+        return self._folders[sid]
 
-    def refresh(self) -> set[int]:
-        """The results may have changed: look again. The pids whose result changed (a new folder, or the same folder
-        written again) lose their engine and their cached images."""
+    def refresh(self) -> set:
+        """The results may have changed: look again. The source ids whose result changed (a new folder, or the same
+        folder written again) lose their engine and their cached images."""
         changed = set()
         for pid in list(self._folders):
             old, new = self._folders[pid], self.resolver(pid)
@@ -253,6 +260,9 @@ class LayerSource(Provider):
     @staticmethod
     def _is_image(sid) -> bool:
         return isinstance(sid, tuple) and len(sid) == 2 and sid[0] == "image"
+
+    def _is_workflow(self, sid) -> bool:
+        return not self._is_image(sid)
 
     def set_image(self, key: str, source) -> None:
         """The source of an image layer (an array, a file, a function); a new source for a key replaces its image."""
@@ -362,33 +372,20 @@ class LayerSource(Provider):
     def layer(self, lay: dict, level: int, box, draft: bool = False, stop=None) -> np.ndarray:
         if lay["kind"] == "image":
             return self._image_layer(lay, level, box)
-        pid = lay["pid"]
-        f = self.folder(pid)
+        sid = source_id(lay)
+        f = self.folder(sid)
         cv = self._cv
         whole = cv.size(level)
-        fi, region, size = self._window(pid, level, box)
+        fi, region, size = self._window(sid, level, box)
         base = self.bases(lay.get("base"))
-        part = lay.get("part")
-        full = tuple(box) == (0, 0, *whole)
-        from ...render.engine import Cancelled
-        try:
-            if level == 0 and not full:
-                li = self.service.render(f.path, base, lay.get("sliders"), 1.0,
-                                         region=tuple(int(round(v)) for v in region), part=part, stop=stop)
-                arr = self._cut(li.rgb, 1, region, size, False)
-            else:                                           # the whole grid at 1/fi, cut to the canvas
-                li = self.service.render(f.path, base, lay.get("sliders"), 1.0 / fi, part=part, draft=draft,
-                                         stop=stop)
-                arr = self._cut(li.rgb, fi, region, size, True)
-        except Cancelled:
-            raise Superseded() from None
-        except ValueError:                                  # a part of a layer that has no star model any more
-            if part is None:
-                raise
-            if part == "stars":
-                return np.zeros((size[1], size[0], 3), np.float32)
-            li = self.service.render(f.path, base, lay.get("sliders"), 1.0 / fi)
-            arr = self._cut(li.rgb, fi, region, size, level > 0 or full)
+        kw = {"part": lay.get("part"), "blend": lay.get("blend")}
+        if level == 0 and tuple(box) != (0, 0, *whole):
+            li = self.service.render(f.path, base, lay.get("sliders"), 1.0, region=tuple(int(round(v)) for v in region),
+                                     **kw)
+            arr = self._cut(li.rgb, 1, region, size, False)
+        else:                                               # the whole grid at 1/fi, cut to the canvas
+            li = self.service.render(f.path, base, lay.get("sliders"), 1.0 / fi, **kw)
+            arr = self._cut(li.rgb, fi, region, size, True)
         if li.info.get("note"):
             self._notes.add(li.info["note"])
         self.engine_ms += float(li.info.get("render_ms") or 0.0)
@@ -413,14 +410,11 @@ class LayerSource(Provider):
         return np.ascontiguousarray(np.moveaxis(arr, 0, -1), np.float32)
 
     def has(self, name: str) -> bool:
-        wf = [p for p in self._pids if not self._is_image(p)]
-        if name == "stars":
-            return any(self.kind(p) == "engine" for p in wf if self.available(p))
-        return any(self.available(p) for p in wf)
+        return any(self.available(p) for p in self._pids if self._is_workflow(p))
 
-    def _mask_pid(self, name: str) -> int | None:
+    def _mask_pid(self, name: str):
         for p in self._pids:                                  # bottom first (the workflows: the images have no map)
-            if not self._is_image(p) and self.available(p) and (name != "stars" or self.kind(p) == "engine"):
+            if self._is_workflow(p) and self.available(p):
                 return p
         return None
 
@@ -553,8 +547,8 @@ class Renderer:
         res.hists = comp.hists
         if req.overlay and req.want and req.want[0] in comp.masks:
             res.overlay = red_overlay(comp.masks[req.want[0]])
-        res.previews = {lay["pid"] for lay in layers if lay["kind"] == "workflow" and self.source.available(lay["pid"])
-                        and self.source.previous(lay["pid"])}
+        res.previews = {lay["pid"] for lay in layers if lay["kind"] == "workflow" and
+                        self.source.available(source_id(lay)) and self.source.previous(source_id(lay))}
         res.missing = tuple(sorted({lay["key"] for lay in layers if lay["kind"] == "image"
                                     and not self.source.available(source_id(lay))}))
         if req.kind in ("half", "refine") and req.box is None:        # thumbnails of what was just drawn, for free
@@ -639,9 +633,9 @@ def history_of(job: ExportJob, renderer: Renderer, canvas: Canvas | None) -> dic
     return {"project": job.project_name, "created": datetime.now().isoformat(timespec="seconds"),
             "layers": job.layers, "format": job.format, "size": job.size, "device": renderer.device,
             "canvas": None if canvas is None else {"width": canvas.W, "height": canvas.H, "origin": list(canvas.origin)},
-            "workflows": {str(lay["pid"]): {"folder": str(src.folder(lay["pid"]).path),
-                                            "outdated": src.previous(lay["pid"])}
-                          for lay in job.layers if lay["kind"] == "workflow" and src.available(lay["pid"])},
+            "workflows": {str(lay["pid"]) + (f" {lay['part']}" if lay.get("part") else ""):
+                          {"folder": str(src.folder(source_id(lay)).path), "outdated": src.previous(source_id(lay))}
+                          for lay in job.layers if lay["kind"] == "workflow" and src.available(source_id(lay))},
             "images": {lay["key"]: lay["name"] for lay in job.layers if lay["kind"] == "image"}}
 
 
@@ -716,11 +710,14 @@ def run_export(renderer: Renderer, job: ExportJob, progress, stop=None,
     files: list[Path] = []
     # the solution of the bottom layer's grid (the canvas is in its pixels): a workflow's astrometry; an image layer of
     # the stack grid has none of its own, the first workflow's then (the same grid when the drizzle scales agree)
-    pids = [lay["pid"] for lay in reversed(layers) if lay["kind"] == "workflow" and renderer.source.available(lay["pid"])]
+    pids = [lay["pid"] for lay in reversed(layers) if lay["kind"] == "workflow"
+            and renderer.source.available(source_id(lay))]
     bottom = next((lay for lay in reversed(layers) if is_pixel(lay) and renderer.source.available(source_id(lay))), None)
     ref_pid = pids[0] if pids else None
     if bottom is not None and bottom["kind"] == "image" and ref_pid is not None:
-        ga, gb = renderer.source.grid(ref_pid), renderer.source.grid(source_id(bottom))
+        ga = renderer.source.grid(next(source_id(x) for x in reversed(layers) if x["kind"] == "workflow"
+                                       and x["pid"] == ref_pid))
+        gb = renderer.source.grid(source_id(bottom))
         if (ga.W, ga.H) != (gb.W, gb.H):
             ref_pid = None
     sol = renderer.wcs_of(ref_pid) if ref_pid is not None and getattr(renderer, "wcs_of", None) else None
@@ -892,7 +889,7 @@ class RenderWorker(QThread):
         self.deviceChanged.emit(dev)
 
     def _write(self, rgb, out_dir, opts, meta):
-        """The export through the engine API (render/export), into the folder chosen and nowhere else."""
+        """The export through the engine API (api.export_image), into the folder chosen and nowhere else."""
         from ... import api
         m = {"origin": meta.get("origin"), "history": meta.get("history"), "out_dir": str(out_dir)}
         if meta.get("wcs") is not None:              # the solution's header as run_export read it (export_header)

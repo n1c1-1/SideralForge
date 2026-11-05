@@ -1,37 +1,37 @@
-"""The simplified sliders of Post: 9 continuous sliders from 0 to 4, position 2 = the layer's base.
+"""The simplified sliders of Post: continuous sliders from 0 to 4, position 2 = the layer's base.
 
-A workflow layer is rendered with settings derived from its base (a named rendering, a preset, the suggestion) and
-its slider positions:
+A workflow layer is rendered with settings derived from its base (a named rendering, the suggestion) and its slider
+positions: tables on the rendering's settings (``SimpleSettings``, and ``StarSettings`` for the Stars block's images),
+whose position 2 is the default. For another base the table's *step* from position 2 is added (sky, contrast, noise
+smoothing, star size) or its *ratio* to position 2 multiplies the base (the others). Between integer positions the
+value is linear. Values stay inside the settings' bounds.
 
-* engine layers (render_prep, render_prep_learned): each slider moves engine settings. The table gives their values
-  at positions 0-4 for the default rendering; for another base the table's *step* from position 2 is added (sky_level,
-  dark_level, faint_smooth, g_lim, d10, d7) or its *ratio* to position 2 multiplies the base (lc_*, chroma, neb_sharp,
-  fine_k, star_sat, star_glow). Between integer positions the value is linear. Values stay inside the settings' bounds;
-* simple layers (render_simple): tables on the simple rendering's settings, with the same rule (the defaults of
-  ``SimpleSettings`` are those tables' position 2).
-
-A slider the layer cannot offer is greyed with its reason (``availability``); its position is then ignored.
+The kinds of workflow layers: the Output block's image (simple), one pulled from Stacking (stacking), and the Stars
+block's images: the starless image (starless), the stars alone (stars), the two recombined (combined, the Stars and
+background block). A slider the layer cannot offer is greyed with its reason (``availability``); its position is then
+ignored.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
-from .settings import RenderSettings
 from .simple import SimpleSettings
+from .stars import StarSettings
 
-#: the kinds of workflow layers: engine (with Stars), simple (without Stars), stacking (pulled from Stacking)
-KINDS = ("engine", "simple", "stacking")
+#: the kinds of workflow layers
+KINDS = ("simple", "stacking", "starless", "stars", "combined")
+STAR_KINDS = ("starless", "stars", "combined")
 #: settings moved by a step (the others by a ratio)
-ADDITIVE = frozenset({"sky_level", "dark_level", "faint_smooth", "g_lim", "d10", "d7", "sky", "contrast", "noise_mix",
-                      "smooth_px"})
+ADDITIVE = frozenset({"sky", "contrast", "noise_mix", "smooth_px", "star_size"})
 SUGGESTED = 2.0
 LO, HI = 0.0, 4.0
 
 # the reasons of the greyed sliders (translated by the client's catalogues)
-WHY_STARS = "the star sliders need the Stars block"
-WHY_DETAIL = "sharpening needs the starless image (Stars block)"
+WHY_STARS = "the star sliders work on the stars of the Stars block"
+WHY_STARS_ONLY = "this layer holds the stars only"
 WHY_DENOISE = "noise smoothing needs the Denoise block"
+WHY_WHOLE = "noise smoothing works on the whole image (the Output layer)"
 WHY_EXIT_STARS = "this layer leaves the graph before the Stars block"
 WHY_EXIT_DENOISE = "this layer leaves the graph before the Denoise block"
 
@@ -42,44 +42,26 @@ class Slider:
     name: str
     group: str
     ends: tuple[str, str]
-    #: engine setting -> its values at positions 0, 1, 2 (the default rendering), 3, 4
-    engine: dict[str, tuple[float, ...]]
-    #: simple rendering setting -> its values at positions 0-4 (empty: the slider needs Stars)
-    simple: dict[str, tuple[float, ...]] = field(default_factory=dict)
-    #: what the workflow needs for this slider: "" | "stars" | "denoise"
+    #: setting -> its values at positions 0, 1, 2 (the default rendering), 3, 4
+    table: dict[str, tuple[float, ...]]
+    #: what the layer needs for this slider: "" | "stars" | "denoise"
     needs: str = ""
 
 
 NEBULA, STARS = "Nebula and background", "Stars"
 SLIDERS: tuple[Slider, ...] = (
-    # the background has two levels in the engine's tone curve, the dark clouds and the typical sky, and the curve keeps
-    # the dark level first: where the sky lies close above the darkest areas (a field filled with nebula) the sky level
-    # cannot be reached and has no effect (heart_a7s: no change below 34.6 /255, the faithful rendering asks 24). The
-    # slider moves both in proportion, so it always moves a level the curve holds
-    Slider("sky", "Sky", NEBULA, ("darker", "brighter"),
-           {"sky_level": (12, 18, 24, 30, 36), "dark_level": (5, 7.5, 10, 12.5, 15)},
-           {"sky": (0.10, 0.15, 0.20, 0.26, 0.32)}),
-    Slider("contrast", "Contrast", NEBULA, ("softer", "stronger"),
-           {"lc_fine": (0.95, 1.0, 1.05, 1.15, 1.3), "lc_medium": (1.0, 1.15, 1.3, 1.55, 1.85),
-            "lc_large": (1.0, 1.12, 1.25, 1.5, 1.8)},
-           {"contrast": (-0.35, -0.18, 0.0, 0.25, 0.5)}),
-    Slider("saturation", "Saturation", NEBULA, ("paler", "more vivid"),
-           {"chroma": (0.45, 0.68, 0.88, 1.08, 1.3)},
-           {"saturation": (0.6, 0.9, 1.2, 1.5, 1.85)}),
-    Slider("detail", "Detail", NEBULA, ("smoother", "sharper"),
-           {"neb_sharp": (0.2, 0.55, 0.9, 1.4, 2.0), "fine_k": (0.6, 0.8, 1.0, 1.3, 1.6)}, needs="stars"),
+    Slider("sky", "Sky", NEBULA, ("darker", "brighter"), {"sky": (0.10, 0.15, 0.20, 0.26, 0.32)}),
+    Slider("contrast", "Contrast", NEBULA, ("softer", "stronger"), {"contrast": (-0.35, -0.18, 0.0, 0.25, 0.5)}),
+    Slider("saturation", "Saturation", NEBULA, ("paler", "more vivid"), {"saturation": (0.6, 0.9, 1.2, 1.5, 1.85)}),
+    # the denoised layer: the raw stack mixed back below 2, faint areas smoothed above
     Slider("noise", "Noise smoothing", NEBULA, ("less", "more"),
-           {"faint_smooth": (0, 16, 32, 52, 80)},
-           # the denoised classic layer: the raw stack mixed back below 2, faint areas smoothed above
            {"noise_mix": (0.4, 0.7, 1.0, 1.0, 1.0), "smooth_px": (0.0, 0.0, 0.0, 0.8, 1.6)}, needs="denoise"),
-    Slider("stars_number", "Number of stars", STARS, ("fewer", "more"),
-           {"g_lim": (11, 13, 15, 16.5, 18)}, needs="stars"),
-    Slider("star_size", "Star size", STARS, ("smaller", "larger"),
-           {"d10": (2.6, 3.5, 4.4, 5.5, 6.8), "d7": (5.4, 7.2, 9.0, 11.2, 14.0)}, needs="stars"),
+    Slider("star_strength", "Strength", STARS, ("subtler", "bolder"),
+           {"star_strength": (0.35, 0.6, 1.0, 1.6, 2.6)}, needs="stars"),
+    Slider("star_size", "Star size", STARS, ("smaller", "larger"), {"star_size": (-2.0, -1.0, 0.0, 1.0, 2.0)},
+           needs="stars"),
     Slider("star_color", "Star color", STARS, ("whiter", "more colorful"),
-           {"star_sat": (0.15, 0.4, 0.7, 1.0, 1.4)}, needs="stars"),
-    Slider("star_halo", "Bright star halo", STARS, ("none", "wider"),
-           {"star_glow": (0.0, 0.15, 0.3, 0.5, 0.8)}, needs="stars"),
+           {"star_saturation": (0.4, 0.8, 1.2, 1.7, 2.3)}, needs="stars"),
 )
 BY_KEY = {s.key: s for s in SLIDERS}
 KEYS = tuple(BY_KEY)
@@ -92,16 +74,24 @@ def _check_kind(kind: str) -> str:
 
 
 def availability(kind: str, has_denoise: bool) -> dict[str, str]:
-    """Per slider, '' when the layer offers it, else the reason it is greyed. ``kind``: engine, simple or stacking
-    (a layer pulled from Stacking leaves the graph before Denoise and Stars)."""
+    """Per slider, '' when the layer offers it, else the reason it is greyed. ``kind``: one of ``KINDS`` (a layer
+    pulled from Stacking leaves the graph before Denoise and Stars)."""
     _check_kind(kind)
     out = {}
     for s in SLIDERS:
         why = ""
-        if s.needs == "stars" and kind != "engine":
-            why = WHY_EXIT_STARS if kind == "stacking" else (WHY_DETAIL if s.key == "detail" else WHY_STARS)
-        elif s.needs == "denoise" and (kind == "stacking" or not has_denoise):
-            why = WHY_EXIT_DENOISE if kind == "stacking" else WHY_DENOISE
+        if s.needs == "stars":
+            if kind not in ("stars", "combined"):
+                why = WHY_EXIT_STARS if kind == "stacking" else WHY_STARS
+        elif kind == "stars":
+            why = WHY_STARS_ONLY
+        elif s.needs == "denoise":
+            if kind == "stacking":
+                why = WHY_EXIT_DENOISE
+            elif kind in STAR_KINDS:
+                why = WHY_WHOLE
+            elif not has_denoise:
+                why = WHY_DENOISE
         out[s.key] = why
     return out
 
@@ -135,7 +125,7 @@ def value_at(name: str, table: tuple[float, ...], base: float, pos: float) -> fl
 
 
 def settings_at(kind: str, base: Any = None, positions: dict[str, float] | None = None,
-                has_denoise: bool = True) -> RenderSettings | SimpleSettings:
+                has_denoise: bool = True) -> SimpleSettings:
     """The settings of a workflow layer: its base (``base_settings``) moved by the slider positions. Positions of
     unknown or greyed sliders are ignored."""
     b = base_settings(kind, base)
@@ -146,31 +136,21 @@ def settings_at(kind: str, base: Any = None, positions: dict[str, float] | None 
         sl = BY_KEY.get(key)
         if sl is None or ok[key] or abs(float(pos) - SUGGESTED) < 1e-9:
             continue
-        for name, table in (sl.engine if kind == "engine" else sl.simple).items():
+        for name, table in sl.table.items():
             lo, hi = _bounds(model, name)
             v = value_at(name, table, float(getattr(b, name)), pos)
             vals[name] = min(max(v, lo), hi)
     return model(**vals)
 
 
-def base_settings(kind: str, base: Any = None) -> RenderSettings | SimpleSettings:
-    """A layer's base: None (the suggestion), a preset name (engine layers), a dict of settings (a named rendering of
-    the project; unknown settings ignored) or settings."""
-    if _check_kind(kind) == "engine":
-        if base is None:
-            return RenderSettings()
-        if isinstance(base, RenderSettings):
-            return base
-        if isinstance(base, str):
-            from .settings import PRESETS
-            if base not in PRESETS:
-                raise ValueError(f"unknown rendering preset {base!r} (known: {sorted(PRESETS)})")
-            return RenderSettings(**PRESETS[base])
-        return RenderSettings.from_saved(dict(base))
+def base_settings(kind: str, base: Any = None) -> SimpleSettings:
+    """A layer's base: None (the suggestion), a dict of settings (a named rendering of the project; unknown settings
+    ignored) or settings. The Stars block's images have the star settings too (``StarSettings``)."""
+    model = StarSettings if _check_kind(kind) in STAR_KINDS else SimpleSettings
     if base is None or base == "suggested":
-        return SimpleSettings()
+        return model()
     if isinstance(base, SimpleSettings):
-        return base
+        return model(**{k: v for k, v in base.model_dump().items() if k in model.model_fields})
     if isinstance(base, str):
-        raise ValueError(f"a simple layer has no preset {base!r}")
-    return SimpleSettings(**{k: v for k, v in dict(base).items() if k in SimpleSettings.model_fields})
+        raise ValueError(f"a layer has no preset {base!r}")
+    return model(**{k: v for k, v in dict(base).items() if k in model.model_fields})

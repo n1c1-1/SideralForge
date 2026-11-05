@@ -110,7 +110,7 @@ def test_the_workflow_view_has_the_fields_of_pathdef():
     # what the views import from the model module: TRUNK, PathDef, Session, hm (steps, sources, tune), TOOLS (the
     # window), TEMPLATES (dialogs); no DATA (info() and the API serve the project's facts)
     assert modelmod.TRUNK == ["inventory", "calibrate", "register", "stack"]
-    assert {"debruitage", "etoiles", "appris", "deconv"} <= set(modelmod.TOOLS)
+    assert {"debruitage", "etoiles", "deconv"} <= set(modelmod.TOOLS) and "appris" not in modelmod.TOOLS
     assert not hasattr(modelmod, "DATA")
 
 
@@ -133,24 +133,21 @@ def test_options_speak_the_views_vocabulary():
         back = modelmod.from_engine(eng)
         assert modelmod.to_engine(back) == eng, key
         assert back["debruitage"] == opts["debruitage"] and back["fond"] == opts["fond"]
-    assert modelmod.to_engine({**modelmod.TEMPLATES["Complet"], "appris": True})["stars"] == "psf_neural"
+    assert modelmod.to_engine(modelmod.TEMPLATES["Complet"])["stars"] == "neural"
+    assert modelmod.from_engine({"denoise": "pretrained", "stars": "psf_neural"})["etoiles"] == "retirer"   # an old value
     # the with / without cases hold, through the engine's rules
     full = modelmod.from_engine(modelmod.to_engine(modelmod.TEMPLATES["Complet"]))
     classic = modelmod.from_engine(modelmod.to_engine(modelmod.TEMPLATES["Vierge"]))
     new, notes = ProjectModel.with_tool(classic, "etoiles")
-    assert new["etoiles"] == "mesurer" and new["debruitage"] and any("Denoise added" in n for n in notes)
+    assert new["etoiles"] == "retirer" and new["debruitage"] and any("Denoise added" in n for n in notes)
     new, notes = ProjectModel.with_tool(classic, "auto")
     assert new["fond"] == "auto" and new["etoiles"] == "garder" and not notes
-    new, notes = ProjectModel.with_tool(classic, "appris")
-    assert new["appris"] and new["etoiles"] == "mesurer"
     no, why = ProjectModel.without_tool(full, "debruitage")
     assert no is None and "remove Stars first" in why[0]
-    new, notes = ProjectModel.without_tool({**full, "appris": True}, "etoiles")
-    assert new["etoiles"] == "garder" and not new["appris"] and new["fond"] == "simple" and len(notes) == 1
+    new, notes = ProjectModel.without_tool(full, "etoiles")
+    assert new["etoiles"] == "garder" and new["debruitage"] and new["fond"] == "simple" and not notes
     no, why = ProjectModel.without_tool(full, "simple")
     assert no is None
-    new, notes = ProjectModel.without_tool({**full, "appris": True}, "appris")
-    assert new["etoiles"] == "mesurer" and not new["appris"]
     new, _n = ProjectModel.without_tool(classic, "debruitage")
     assert new is not None and not new["debruitage"]
     assert ProjectModel.has_tool(full, "simple") and not ProjectModel.has_tool(full, "auto")

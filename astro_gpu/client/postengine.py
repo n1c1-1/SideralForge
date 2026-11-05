@@ -5,10 +5,11 @@ runs in the render worker, never in the GUI thread.
 
 Layers (a list, top first, as in Photoshop; saved as it is in ``project.post["layers"]``):
 
-* a workflow layer ``{id, kind: "workflow", pid, part, name, visible, opacity, mode, base, sliders, mask}``: the image of
-  a workflow's output, rendered by the engine with its ``base`` (a named rendering of the project, a preset, or None
-  for the suggestion) moved by its simplified ``sliders`` (positions 0-4, 2 = the base); ``part`` is None, "stars" or
-  "starless";
+* a workflow layer ``{id, kind: "workflow", pid, part, blend, name, visible, opacity, mode, base, sliders, mask}``:
+  an image of a workflow, rendered by the engine with its ``base`` (a named rendering of the project, or None for the
+  suggestion) moved by its simplified ``sliders`` (positions 0-4, 2 = the base). ``part`` None: the Output block's
+  image; else one of the Stars block's (``PARTS``): its starless image, its stars alone, or the two recombined (the
+  Stars and background block: ``blend`` says how its stars go back, render/stars.BLENDS);
 * an image layer ``{id, kind: "image", key, name, visible, opacity, mode, sliders, linked, mask}``: the linear image of
   a stage result (a stack, a gradient-removed or a denoised image) sent from Inspect, stretched automatically and moved
   by the Sky, Contrast and Saturation sliders; ``key`` names the stage result (the pixels are never saved);
@@ -22,7 +23,7 @@ everything below is a layer of its own. In the list a layer's children sit just 
 shows each pixel layer with its children indented under it (``rows``), and reading the panel from the bottom up is the
 order of the composition: a pixel layer, then its children from the lowest to the highest, then the next row up.
 
-Every layer may have a ``mask = {parts, feather, density, invert}`` of parts (stars, H-alpha, luminance, color, gradient,
+Every layer may have a ``mask = {parts, feather, density, invert}`` of parts (H-alpha, luminance, color, gradient,
 brush), each added, subtracted or intersected. Pixel sizes are full-resolution pixels: at a reduced resolution they are
 divided by the reduction factor, so the draft looks like the full image.
 
@@ -50,7 +51,11 @@ from .postfilters import curves as pf_curves
 from .postfilters import detail as pf_detail
 from .postfilters import tone as pf_tone
 
-MODES = ["Normal", "Lighten", "Screen", "Multiply", "Soft light"]       # plain English: _() where shown
+MODES = ["Normal", "Lighten", "Screen", "Linear dodge (add)", "Multiply", "Soft light"]   # plain English: _() where shown
+#: the Stars block's images a workflow layer can show (render/stars.PARTS), and how the recombined one puts its stars
+#: back (render/stars.BLENDS)
+PARTS = ("starless", "stars", "combined")
+BLENDS = ("Screen", "Linear dodge (add)", "Lighten")
 OPS = {"add": "Add", "sub": "Subtract", "inter": "Intersect"}
 ALIGN = 8                                  # the canvas starts and ends on a multiple of this (the deepest level)
 MAX_LEVEL = 3
@@ -138,19 +143,6 @@ def gauss(x: np.ndarray, sigma: float) -> np.ndarray:
     else:
         out = cv2.GaussianBlur(a, (0, 0), sigma, borderType=cv2.BORDER_REFLECT)
     return out[..., None] if one else out
-
-
-def _box(size: int) -> np.ndarray:
-    return np.ones((int(size), int(size)), np.uint8)
-
-
-def erode(x: np.ndarray, size: int) -> np.ndarray:
-    """A grey erosion with a flat square (each channel apart)."""
-    return cv2.erode(_f32(x), _box(size), borderType=cv2.BORDER_REPLICATE)
-
-
-def dilate(x: np.ndarray, size: int) -> np.ndarray:
-    return cv2.dilate(_f32(x), _box(size), borderType=cv2.BORDER_REPLICATE)
 
 
 # ======================================================================== filters
@@ -291,35 +283,6 @@ def f_denoise(x, p, ctx):
     return cv2.add(_gray3(Y2), C2)
 
 
-def f_star_reduce(x, p, ctx):
-    if p["strength"] == 0:                             # the default: the stars as they are
-        return x
-    m = ctx.stars()[..., None]
-    size = max(2, int(round(5 / ctx.f)))
-    er = erode(x, size)
-    return x + p["strength"] * m * (er - x)
-
-
-def f_halos(x, p, ctx):
-    if p["strength"] == 0:                             # the default: the halos as they are
-        return x
-    m = ctx.stars()
-    r = max(1, int(round(p["radius"] / ctx.f)))
-    ring = np.clip(dilate(m, 2 * r + 1) - m, 0, 1)
-    ring = gauss(ring, r / 3)[..., None]
-    bg = gauss(erode(x, 2 * r + 1), r / 2)
-    return x + p["strength"] * ring * (np.minimum(x, bg) - x)
-
-
-def f_star_color(x, p, ctx):
-    if p["strength"] == 0:                             # the default: the star colours as they are
-        return x
-    m = ctx.stars()
-    w = _gray3(_f32(m) * float(p["strength"]))                         # k * m, in each channel
-    L3 = _gray3(lum(x))
-    return cv2.add(L3, cv2.multiply(cv2.subtract(_f32(x), L3), cv2.add(w, 1.0)))
-
-
 def f_halpha(x, p, ctx):
     if p["strength"] == 0:                             # the default: no red added
         return x
@@ -411,34 +374,23 @@ FILTERS = {
                        params=[P(k, lb, 0, 10, 0, "σ", 0.1) for k, lb in zip(ML_KEYS[:4], ML_LABELS[:4])] +
                        [P("amount", "Amount", 0, 1, 1, step=0.01),
                         C("target", "Applies to", pf_detail.NR_TARGETS, pf_detail.NR_TARGETS[0])]),
-    # ---- stars
-    "star_reduce": dict(name="Star reduction", family="Stars", fn=f_star_reduce, needs="stars",
-                        source="A morphological erosion through the star mask",
-                        params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
-    "halos": dict(name="Halo reduction", family="Stars", fn=f_halos, needs="stars",
-                  source="The ring around the star mask pulled to the eroded background",
-                  params=[P("strength", "Strength", 0, 1, 0, step=0.01), P("radius", "Radius", 4, 40, 14, "px", 1)]),
-    "star_color": dict(name="Star color", family="Stars", fn=f_star_color, needs="stars",
-                       source="Saturation through the star mask",
-                       params=[P("strength", "Strength", 0, 2, 0, step=0.01)]),
     # ---- combine
     "halpha_red": dict(name="H-alpha to red", family="Combine", fn=f_halpha, needs="halpha",
                        source="The engine's H-alpha map added to the red channel",
                        params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
 }
-FAMILIES = ["Stretch", "Contrast", "Color", "Detail", "Noise", "Stars", "Combine"]
+FAMILIES = ["Stretch", "Contrast", "Color", "Detail", "Noise", "Combine"]
 #: a filter name older saved compositions hold (a layer keeps its name) -> the filter's name today
 OLD_NAMES = {"Stretch (GHS)": "Arcsinh stretch (symmetry point)"}
 
 # ======================================================================== masks
 MASK_SOURCES = {
-    "stars": "Catalog stars", "halpha": "H-alpha", "luminance": "Luminance range", "color": "Color range",
-    "gradient": "Linear gradient", "brush": "Brush",
+    "halpha": "H-alpha", "luminance": "Luminance range", "color": "Color range", "gradient": "Linear gradient",
+    "brush": "Brush",
 }
 DIRECTIONS = ["Top → bottom", "Bottom → top", "Left → right", "Right → left"]
 #: the settings of a mask part: key → (label, lo, hi, unit); the defaults are those of ``new_part``
 PART_SETTINGS = {
-    "stars": [("grow", "Size around stars", 0, 24, "px")],
     "luminance": [("lo", "From", 0, 100, "%"), ("hi", "To", 0, 100, "%")],
     "color": [("hue", "Hue", 0, 359, "°"), ("width", "Width", 10, 120, "°")],
     "gradient": [("position", "Position", 0, 100, "%"), ("softness", "Softness", 1, 100, "%")],
@@ -447,9 +399,7 @@ PART_SETTINGS = {
 
 def new_part(src: str) -> dict:
     p = {"id": new_id(), "src": src, "op": "add"}
-    if src == "stars":
-        p.update(grow=4.0)
-    elif src == "luminance":
+    if src == "luminance":
         p.update(lo=40.0, hi=100.0)
     elif src == "color":
         p.update(hue=0.0, width=40.0)
@@ -467,8 +417,13 @@ def new_mask() -> dict:
 
 
 def new_workflow_layer(pid: int, name: str, visible=False, part=None, base=None) -> dict:
+    """A workflow's layer: its Output block's image (``part`` None) or one of its Stars block's images (``PARTS``). The
+    stars alone go in Screen mode (they are black around the stars); the recombined image puts them back in Screen."""
+    if part is not None and part not in PARTS:
+        raise ValueError(f"unknown layer part {part!r} (allowed: {PARTS})")
     return {"id": new_id(), "kind": "workflow", "pid": pid, "part": part, "name": name, "visible": visible,
-            "opacity": 100.0, "mode": "Normal", "base": base, "sliders": {}, "mask": None}
+            "opacity": 100.0, "mode": "Screen" if part == "stars" else "Normal", "base": base, "sliders": {},
+            "mask": None, **({"blend": BLENDS[0]} if part == "combined" else {})}
 
 
 def new_image_layer(key: str, name: str, visible: bool = True) -> dict:
@@ -489,8 +444,11 @@ def is_pixel(lay: dict) -> bool:
 
 
 def source_id(lay: dict):
-    """What the composition asks the provider for: a workflow's id, or ("image", key)."""
-    return lay["pid"] if lay["kind"] == "workflow" else ("image", lay["key"])
+    """What the composition asks the provider for: a workflow's id (its Output block's image), ("stars", id) for its
+    Stars block's images, or ("image", key)."""
+    if lay["kind"] == "workflow":
+        return ("stars", lay["pid"]) if lay.get("part") else lay["pid"]
+    return ("image", lay["key"])
 
 
 def new_filter_layer(key: str, target=None) -> dict:
@@ -633,10 +591,12 @@ def load_layers(raw, alive: set[int]) -> list[dict]:
         if not isinstance(d, dict):
             continue
         if d.get("kind") == "workflow":
-            if int(d.get("pid", -1)) not in alive or d.get("part") not in (None, "stars", "starless"):
+            if int(d.get("pid", -1)) not in alive or d.get("part") not in (None, *PARTS):
                 continue
             lay = new_workflow_layer(int(d["pid"]), str(d.get("name") or "?"), bool(d.get("visible")), d.get("part"),
                                      d.get("base"))
+            if lay.get("part") == "combined":
+                lay["blend"] = d.get("blend") if d.get("blend") in BLENDS else BLENDS[0]
             lay["sliders"] = {k: _num(v, 2.0, 0, 4) for k, v in (d.get("sliders") or {}).items()}
         elif d.get("kind") == "image" and isinstance(d.get("key"), str) and d["key"]:
             lay = new_image_layer(d["key"], str(d.get("name") or "?"), bool(d.get("visible", True)))
@@ -724,11 +684,11 @@ class Provider:
         raise NotImplementedError
 
     def data_mask(self, name: str, level: int, box) -> np.ndarray | None:
-        """The 'stars' or 'halpha' map over the box, (h, w) float32 in [0, 1], or None when the layers have none."""
+        """The 'halpha' map over the box, (h, w) float32 in [0, 1], or None when the layers have none."""
         return None
 
     def has(self, name: str) -> bool:
-        """Whether a data mask exists ('stars': a layer with the Stars block; 'halpha')."""
+        """Whether a data mask exists ('halpha')."""
         return False
 
     def notes(self) -> set[str]:
@@ -823,9 +783,6 @@ class Ctx:
                                 else np.ascontiguousarray(m, np.float32))
         return self._memo[name]
 
-    def stars(self) -> np.ndarray:
-        return self._data("stars")
-
     def halpha(self) -> np.ndarray:
         return self._data("halpha")
 
@@ -868,7 +825,7 @@ class Composer:
         """What an image of a pixel layer depends on: the same for a copy of the layer. The canvas is part of it: it
         changes when another workflow's result comes in. A draft (a quick look) is kept apart from the exact image."""
         sid = source_id(lay)
-        return (sid, lay.get("part"), json.dumps(lay.get("sliders") or {}, sort_keys=True),
+        return (sid, lay.get("part"), lay.get("blend"), json.dumps(lay.get("sliders") or {}, sort_keys=True),
                 json.dumps(lay.get("base"), sort_keys=True, default=str), lay.get("linked"), self.provider.version(sid),
                 level, None if level > 0 else abox, (canvas.W, canvas.H, canvas.origin)) + (("draft",) if draft else ())
 
@@ -902,15 +859,7 @@ class Composer:
 
     # ------------------------------------------------------------ masks
     def part_raster(self, part, level, abox, below, canvas: Canvas, ctx: Ctx) -> np.ndarray:
-        f = ctx.f
         src = part["src"]
-        if src == "stars":
-            m = ctx.stars()
-            r = int(round(part["grow"] / f))
-            if r > 0:
-                m = dilate(m, 2 * r + 1)
-                m = gauss(m, r / 2)
-            return np.clip(m * 1.5, 0, 1)
         if src == "halpha":
             return ctx.halpha()
         if src == "luminance":
@@ -1114,6 +1063,8 @@ class Composer:
             t *= 1.0 - a                                     # (1 - a)(1 - b)
             np.subtract(1.0, t, out=t)
             return t
+        if mode == "Linear dodge (add)":
+            return np.minimum(a + b, 1.0)
         if mode == "Multiply":
             return a * b
         if mode == "Soft light":

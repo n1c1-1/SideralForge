@@ -13,20 +13,19 @@ What makes it different from the usual stack → stretch → star removal → de
 * **Noise2Noise denoiser**: a network pretrained once on many pairs of half-stacks, applied as it is in seconds
   (on the processor too), or first adapted to the image on its own two half-stacks. It never sees a clean image:
   it learned to predict one half-stack from the other, so it cannot invent detail that is not in both halves.
-* **Stars are measured, not erased**: empirical variable chromatic PSF, forced photometry of every Gaia star with a
-  colour prior, faint-star model. The starless image is obtained by subtracting that model, so faint nebulosity under
-  the stars is preserved, and stars are redrawn with the real profile of your optics. A second starless image can come
-  from a star-removal network trained on the project's own stack; both are kept and chosen at rendering.
+* **Star removal by a network trained on our own stacks**: NAFNet (Chen et al. 2022), trained on StarNet's starless
+  images corrected by hand and on stars drawn on top of them (a Moffat core, an r^-3 aureole, diffraction spikes,
+  saturation). It works on the linear image and gives two images, the starless image and the stars alone (they add
+  up to the image, to the pixel). On the bench it leaves less of the faint stars than StarNet and takes the spikes and
+  halos of the bright stars off, the background unchanged.
 * **Sky gradient removed right after stacking**, before the colour calibration: a polynomial, a surface through
   the sky samples (thin-plate splines) or an automatic fit; the samples and the excluded areas are edited on the
   image, each edit a setting with its undo.
-* **Physical sky background**: star flat (flat-field errors measured on the stars), sky gradient separated from the
-  emission with a professional H-alpha survey (NSNS / Finkbeiner) and from the unresolved starlight predicted by Gaia.
-* **Interactive rendering on the GPU**: tone curve with soft toe, edge-preserving HDR, logarithmic highlight shoulder
-  (no burnt cores), OKLab colour handling, star size / density / colour controls, separate layers, automatic
-  quality checks (clipping, burnt highlights, dark dips at stars). Detail in faint areas, Noise2Noise fine detail,
-  fine colour confirmed by both half-stacks and blue-green / reflection tones are live sliders too: the nebula is
-  mixed on the fly from layers prepared once.
+* **Post with layers, as in the image editors**: each workflow's image, the stage results sent from Inspect, filters
+  (stretches, curves, local contrast, multiscale sharpening and noise reduction, colour), masks and blend modes. The
+  Stars block's two images come as a Stars and background layer (each stretched, the stars put back in Screen, with
+  their own sliders: strength, size, colour), or each as a layer of its own; the graph shows these wires and the
+  Stars and background blocks of its Composition section, with the same settings as in Post.
 * **Resumable**: every stage stores a manifest; an interrupted run continues where it stopped, a parameter change
   only recomputes what depends on it.
 * **Every parameter is documented** in the interface, with a basic and an advanced mode, and data-driven automatic
@@ -62,14 +61,7 @@ uv run astro-gpu run D:/astro/NGC7822          # run / resume
 uv run astro-gpu status D:/astro/NGC7822
 uv run astro-gpu params D:/astro/NGC7822 stack # effective parameters, with the reason of every automatic value
 uv run astro-gpu set D:/astro/NGC7822 stack.scale=2.0
-uv run astro-gpu render D:/astro/NGC7822 --preset "H-alpha emphasised" --name ha
-uv run astro-gpu render D:/astro/NGC7822 --preset faithful     # -> results/faithful/ (only what the data prove)
-uv run astro-gpu render D:/astro/NGC7822 --preset artistic     # -> results/artistic/ (sharpening, stronger stretch)
 ```
-
-Every project is meant to end with these two renders: **Faithful** (measured colours, no display sharpening, detail
-as measured) and **Artistic** (non-blind sharpening with the star shape measured on the stack, stronger stretch and
-local contrast). Both are presets of the final adjustment tab.
 
 ## Pipeline
 
@@ -81,17 +73,13 @@ local contrast). Both are presets of the final adjustment tab.
 | stack | weighted Bayer drizzle on the GPU, frame selection, rejection, half-stacks A/B |
 | astrometry | plate solve on Gaia DR3 (TAN-SIP) |
 | reference | optional: aligns a previous processing of the data for comparison and framing |
-| catalogs | Gaia stars of the field (positions at the date of the images) and XP spectra |
+| catalogs | the bright Gaia stars of the field (positions at the date of the images) and XP spectra |
 | surveys | H-alpha reference survey reprojected on the stack |
 | gradient | sky gradient model (polynomial, thin-plate splines or automatic) removed from the stack and its halves |
 | color | sensor spectral response from Gaia XP, camera → sRGB matrix |
 | denoise | pretrained Noise2Noise network, optionally adapted to the image on its half-stacks |
-| optics | lateral colour correction, saturation magnitude of the setup, empirical PSF |
-| stars | forced PSF photometry of every Gaia star, position refinement, faint-star model |
-| star_net | optional: star-removal network trained on the project's own stack; its star layer feeds the learned starless image (default at rendering when it exists) |
-| starless | star subtraction, cleaning, multi-scale Wiener denoising driven by the half-stacks |
-| background | star flat, sky model anchored on H-alpha and unresolved starlight |
-| render_prep | layers and star tables for the interactive rendering |
+| render_simple | the Output block: the linear image in screen colours, its sky removed, and the statistics of its stretch |
+| star_removal | the Stars block: the trained network takes the stars off the Output block's image (the starless image and the stars alone) |
 
 ## Validation
 
@@ -116,8 +104,8 @@ previous version and, when there is one, the user's own finished image:
 | M31 (2026-09-12) | Newton 150/750, 6000 x 4000 14-bit colour camera (FITS), 30 x 60 s | strongly defocused stars (rings) |
 
 Typical durations on an RTX 4060 Ti: about 1 h 15 for 600 frames of 12 Mpx when the denoiser was trained on each
-image (35 min of it); the pretrained denoiser now takes under a minute;
-interactive rendering: 0.15-0.35 s per adjustment in preview, 2 s at full resolution.
+image (35 min of it); the pretrained denoiser now takes under a minute, the star removal about 10 s for 12 Mpx;
+Post: a fraction of a second per adjustment in preview.
 
 ## Status
 

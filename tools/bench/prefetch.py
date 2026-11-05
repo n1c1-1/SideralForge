@@ -38,8 +38,11 @@ C.utf8_console()
 from astropy.io import fits  # noqa: E402
 from astropy.wcs import WCS  # noqa: E402
 
-DEEP_COLS = ["Source", "RA_ICRS", "DE_ICRS", "Gmag", "BPmag", "RPmag", "pmRA", "pmDE", "XPsamp"]
-FAINT_COLS = ["RA_ICRS", "DE_ICRS", "Gmag"]
+from astro_gpu.stages.catalogs import BRIGHT_G  # noqa: E402
+
+#: the columns of the field's stars (stages/catalogs.py: the bright stars, G < BRIGHT_G, when the offline Gaia extract
+#: is not there)
+COLS = ["Source", "RA_ICRS", "DE_ICRS", "Gmag", "BPmag", "RPmag", "pmRA", "pmDE", "XPsamp"]
 HIP_COLS = ["HIP", "RAICRS", "DEICRS", "Vmag", "B-V", "pmRA", "pmDE"]
 
 
@@ -117,13 +120,10 @@ def pool_cones(case: str, dst: str) -> int:
     bench) pooled, and the target project's cones written from it where the pool covers them."""
     cache = C.AG_HOME / "cache"
     fd = field(case, dst)
-    p = fd["p"]
     centre = fd["wcs"].pixel_to_world(fd["W"] / 2, fd["H"] / 2)
     reach = 0.5 * np.hypot(fd["W"], fd["H"]) * float(np.abs(np.linalg.det(fd["wcs"].pixel_scale_matrix)) ** 0.5) + 1.5
     report = {}
-    for label, cols, gf in (("deep", DEEP_COLS, f"<{p.g_deep}"), ("faint", FAINT_COLS, f"{p.g_deep}..{p.g_faint}")):
-        if label == "faint" and not p.g_faint > p.g_deep:
-            continue
+    for label, cols, gf in (("bright", COLS, f"<{BRIGHT_G:g}"),):
         parts, cones = [], []
         for f in (cache / "gaia").glob("*.npz"):
             try:
@@ -132,8 +132,6 @@ def pool_cones(case: str, dst: str) -> int:
                 continue
             if set(z) != set(cols) or not len(z["Gmag"]):
                 continue
-            if label == "faint" and float(np.nanmin(z["Gmag"])) < p.g_deep - 0.05:
-                continue                                   # a bright-limited cone (astrometry), not the faint list
             c = _cone_of(z["RA_ICRS"], z["DE_ICRS"])
             if _sep(c[0], c[1], centre.ra.deg, centre.dec.deg) > reach + c[2]:
                 continue
@@ -178,11 +176,8 @@ def main() -> int:
         return pool_cones(a.case, a.dst)
     cache = C.AG_HOME / "cache"
     fs, fd = field(a.case, a.src), field(a.case, a.dst)
-    p = fs["p"]
     report = {}
-    for label, cols, gf in (("deep", DEEP_COLS, f"<{p.g_deep}"), ("faint", FAINT_COLS, f"{p.g_deep}..{p.g_faint}")):
-        if label == "faint" and not p.g_faint > p.g_deep:
-            continue
+    for label, cols, gf in (("bright", COLS, f"<{BRIGHT_G:g}"),):
         parts = []
         for c in fs["centres"]:
             f = cache / "gaia" / f"{gaia_key(cols, gf, c, fs['radius'])}.npz"

@@ -64,11 +64,9 @@ from astro_gpu.client.services.render import (  # noqa: E402
     choose_device,
 )
 from astro_gpu.client.widgets import QSS  # noqa: E402
-from astro_gpu.render.engine import RenderEngine  # noqa: E402
 from astro_gpu.render.layers import NOTE_CPU, LayerService  # noqa: E402
-from astro_gpu.render.settings import RenderSettings  # noqa: E402
 from astro_gpu.render.simple import image_stats  # noqa: E402
-from astro_gpu.render.sliders import KEYS, SLIDERS, availability  # noqa: E402
+from astro_gpu.render.sliders import KEYS, KINDS, SLIDERS, availability  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 CLIENT = ROOT / "astro_gpu" / "client"
@@ -94,38 +92,38 @@ USER_BEFORE = _fingerprint(USER_SETTINGS)
 
 
 # ---------------------------------------------------------------------------------------------- synthetic preparations
-def engine_prep(d: Path, H: int, W: int, seed: int = 3, crop=None, scale: float = 1.5) -> Path:
-    """A render_prep folder: a nebula, stars, the optional layers of a layered preparation, an uncovered border."""
+def stars_prep(d: Path, H: int, W: int, seed: int = 3, crop=None, scale: float = 1.5) -> tuple[Path, Path]:
+    """A Stars workflow's two folders: its Output block's (render_simple: a nebula and its stars, an uncovered border)
+    and its Stars block's (star_removal: the starless image and the stars alone, the same grid)."""
     rng = np.random.default_rng(seed)
-    d.mkdir(parents=True, exist_ok=True)
+    out, st = d / "output", d / "stars"
+    out.mkdir(parents=True, exist_ok=True)
+    st.mkdir(parents=True, exist_ok=True)
     neb = cv2.GaussianBlur(rng.random((H, W)).astype(np.float32), (0, 0), max(H, W) / 30)
     neb = (neb - neb.min()) / (neb.max() - neb.min()) * 120
-    astro = np.stack([neb + 5, neb * .45 + 5, neb * .25 + 5]) + rng.normal(0, .8, (3, H, W)).astype(np.float32)
+    starless = np.stack([neb, neb * .45, neb * .25]) + rng.normal(0, .8, (3, H, W)).astype(np.float32)
+    stars = np.zeros((H, W), np.float32)
+    yy, xx = np.mgrid[:H, :W]
+    for x, y, a in zip(rng.uniform(0, W, 60), rng.uniform(0, H, 60), rng.uniform(50, 3000, 60)):
+        stars += a * np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * 1.5 ** 2))
+    stars = np.stack([stars * .9, stars, stars * .8]).astype(np.float32)
+    lin = (starless + stars).astype(np.float32)
     valid = np.ones((H, W), bool)
     valid[:, :20] = False
-    np.save(d / "valid.npy", valid)
-    lum = np.array([0.2126, 0.7152, 0.0722])
-    pj = {"crop": list(crop or [24, W - 4, 4, H - 4]), "alpha": 0.87, "vh": [1.0, 0.45, 0.25], "M": np.eye(3).tolist(),
-          "drizzle_scale": scale}
-    np.save(d / "N.npy", astro.astype(np.float32))
-    np.save(d / "Eg0.npy", cv2.GaussianBlur(np.tensordot(lum, astro, 1), (0, 0), 8).astype(np.float32))
-    np.save(d / "dY.npy", rng.normal(0, .8, (H, W)).astype(np.float16))
-    np.save(d / "R.npy", (0.2 * astro - 0.2 * astro.mean((1, 2), keepdims=True)).astype(np.float32))
-    O = np.zeros((H, W), np.float32)
-    O[H // 4:H // 2, W // 4:W // 2] = 5
-    np.save(d / "O.npy", O + rng.normal(0, .05, (H, W)).astype(np.float32))
-    np.save(d / "chroma_fine.npy", rng.normal(0, .5, (3, H, W)).astype(np.float16))
-    pj.update({"w_cam": [1, 1, 1], "o": [0, 1, .75], "o_display": [0, 1, .75], "oiii_sigma": 1.0, "oiii_scale": 4.0})
-    n = int(H * W / 300)
-    g = rng.uniform(6, 19, n)
-    f = 10 ** (-0.4 * (g - 10)) * 2e4
-    flux = np.stack([f * .9, f, f * .8]).astype(np.float32)
-    np.savez(d / "stars.npz", x=rng.uniform(-30, W + 30, n), y=rng.uniform(-30, H + 30, n), g=g, flux=flux,
-             pred=flux, glow_flux=flux)
-    r = np.arange(0, 61, 0.25)
-    np.savez(d / "profile.npz", r=r, prof=np.exp(-0.5 * (r / 1.1) ** 2) + 1e-4 * np.exp(-r / 8))
-    (d / "prep.json").write_text(json.dumps(pj))
-    return d
+    lin[:, ~valid] = 0
+    crop = list(crop or [24, W - 4, 4, H - 4])
+    stats = image_stats(lin, valid)
+    np.save(out / "lin.npy", lin)
+    np.save(out / "valid.npy", valid)
+    (out / "prep_simple.json").write_text(json.dumps({"M": np.eye(3).tolist(), "crop": crop, "stats": stats,
+                                                      "linked": True, "stretch": "auto", "denoised": False,
+                                                      "color": True, "exit": None, "drizzle_scale": scale}))
+    np.save(st / "starless.npy", starless.astype(np.float32))
+    np.save(st / "stars.npy", stars)
+    np.save(st / "valid.npy", valid)
+    (st / "prep_stars.json").write_text(json.dumps({"crop": crop, "M": np.eye(3).tolist(), "drizzle_scale": scale,
+                                                    "unit": 1.0, "background": [0, 0, 0], "stats_full": stats}))
+    return out, st
 
 
 def simple_prep(d: Path, H: int, W: int, exit_: str | None = None, denoised: bool = True, crop=None,
@@ -151,7 +149,8 @@ def simple_prep(d: Path, H: int, W: int, exit_: str | None = None, denoised: boo
 @pytest.fixture(scope="module")
 def preps(tmp_path_factory):
     t = tmp_path_factory.mktemp("post_preps")
-    return {"full": engine_prep(t / "full", 480, 720), "classic": simple_prep(t / "classic", 480, 720),
+    full, full_stars = stars_prep(t / "full", 480, 720)
+    return {"full": full, "full_stars": full_stars, "classic": simple_prep(t / "classic", 480, 720),
             "raw": simple_prep(t / "raw", 480, 720, "stacking", False),
             "other": simple_prep(t / "other", 640, 960, crop=[16, 940, 8, 630], scale=2.0)}
 
@@ -178,11 +177,12 @@ def _settings(tmp_path, monkeypatch):
 class WF:
     """What the views read of a workflow (the model's WorkflowView)."""
 
-    def __init__(self, pid, name, kind, rendered=True, denoise=True):
+    def __init__(self, pid, name, kind, rendered=True, denoise=True, stars=False):
         self.pid, self.name, self.kind, self.denoise = pid, name, kind, denoise
         self.rendered = self.computed = rendered
         self.provisional = False
         self.end = "empilement" if kind == "stacking" else None
+        self.opts = {"etoiles": "retirer" if stars else "garder"}
 
 
 class ToyModel(QObject):
@@ -200,12 +200,12 @@ class ToyModel(QObject):
     def view(self, pid):
         return next((w for w in self.paths if w.pid == pid), None)
 
-    def slider_infos(self, p):
-        why = availability(p.kind, p.denoise)
+    def slider_infos(self, p, part=None):
+        why = availability(part or p.kind, p.denoise)
         return [api.SliderInfo(s.key, s.name, s.group, s.ends, not why[s.key], why[s.key]) for s in SLIDERS]
 
-    def slider_state(self, p, key):
-        info = next(x for x in self.slider_infos(p) if x.key == key)
+    def slider_state(self, p, key, part=None):
+        info = next(x for x in self.slider_infos(p, part) if x.key == key)
         return info.available, i18n._(info.reason), None                      # as the real model: translated
 
     def edited(self):
@@ -213,13 +213,18 @@ class ToyModel(QObject):
 
 
 class Setup:
-    """A Post page on synthetic preparations: workflow 1 'Full' (stars), 2 'Classic' (simple), 3 'Raw stack'."""
+    """A Post page on synthetic preparations: workflow 1 'Full', 2 'Classic' (simple), 3 'Raw stack'. The folders by
+    source id: a workflow's id for its Output block, ("stars", id) for its Stars block (workflow 1's). ``stars``: Full
+    has the Stars block, so its layer is its Stars and background block (else its Output image)."""
 
-    def __init__(self, preps, qapp, which=(1, 2), root=None, resolver=None, rendered=True):
+    def __init__(self, preps, qapp, which=(1, 2), root=None, resolver=None, rendered=True, stars=False):
         self.qapp = qapp
-        kinds = {1: ("Full", "engine", "full"), 2: ("Classic", "simple", "classic"), 3: ("Raw stack", "stacking", "raw")}
+        kinds = {1: ("Full", "simple", "full"), 2: ("Classic", "simple", "classic"), 3: ("Raw stack", "stacking", "raw")}
         self.folders = {pid: Folder(preps[kinds[pid][2]]) for pid in kinds if kinds[pid][2] in preps}
-        self.model = ToyModel([WF(pid, kinds[pid][0], kinds[pid][1], rendered) for pid in which], root=root)
+        if "full_stars" in preps:
+            self.folders[("stars", 1)] = Folder(preps["full_stars"])
+        self.model = ToyModel([WF(pid, kinds[pid][0], kinds[pid][1], rendered, stars=stars and pid == 1)
+                               for pid in which], root=root)
         self.worker = RenderWorker(None, resolver=resolver or (lambda pid: self.folders.get(pid)), device=DEV)
         self.page = PostPage3(self.model, worker=self.worker)
         self.page.resize(1500, 900)
@@ -253,7 +258,8 @@ def post(preps, qapp):
 def wide(tmp_path_factory, qapp):
     """A page on a wide image (2400 x 1500): zoomed out the image is under half size, as Heart's is on a laptop."""
     t = tmp_path_factory.mktemp("post_wide")
-    p = {"full": engine_prep(t / "full", 1500, 2400), "classic": simple_prep(t / "classic", 1500, 2400)}
+    full, full_stars = stars_prep(t / "full", 1500, 2400)
+    p = {"full": full, "full_stars": full_stars, "classic": simple_prep(t / "classic", 1500, 2400)}
     s = Setup(p, qapp, which=(1,))
     assert s.settle(180)
     yield s
@@ -297,7 +303,6 @@ class RefCtx:
 
 
 def _reference(key, x, p, ctx):
-    from scipy import ndimage
     f = ctx.f
     if key == "stretch":
         d, sp = p["strength"], p["symmetry"]
@@ -335,20 +340,6 @@ def _reference(key, x, p, ctx):
         Y = _lum(x)[..., None]
         C_ = x - Y
         return Y + p["luminance"] * (_gauss(Y, 1.6 / f) - Y) + C_ + p["color"] * (_gauss(C_, 4 / f) - C_)
-    if key == "star_reduce":
-        m = ctx.stars()[..., None]
-        er = ndimage.grey_erosion(x, size=(max(2, int(round(5 / f))),) * 2 + (1,))
-        return x + p["strength"] * m * (er - x)
-    if key == "halos":
-        m = ctx.stars()
-        r = max(1, int(round(p["radius"] / f)))
-        ring = _gauss(np.clip(ndimage.grey_dilation(m, size=(2 * r + 1, 2 * r + 1)) - m, 0, 1), r / 3)[..., None]
-        bg = _gauss(ndimage.grey_erosion(x, size=(2 * r + 1, 2 * r + 1, 1)), r / 2)
-        return x + p["strength"] * ring * (np.minimum(x, bg) - x)
-    if key == "star_color":
-        m = ctx.stars()[..., None]
-        L = _lum(x)[..., None]
-        return L + (x - L) * (1 + p["strength"] * m)
     if key == "halpha_red":
         y = x.copy()
         y[..., 0] = x[..., 0] + p["strength"] * 0.35 * ctx.halpha() * (1 - x[..., 0])
@@ -357,8 +348,10 @@ def _reference(key, x, p, ctx):
 
 
 #: the original filters of Post; the settings some have since, at the values that keep the original behaviour
-FIRST = {"stretch", "levels", "saturation", "scnr", "balance", "local_contrast", "sharpen", "denoise", "star_reduce",
-         "halos", "star_color", "halpha_red"}
+FIRST = {"stretch", "levels", "saturation", "scnr", "balance", "local_contrast", "sharpen", "denoise", "halpha_red"}
+#: the filters that acted through the catalogue's star mask, gone with the star model (the Stars block's stars are a
+#: layer of their own now)
+GONE = {"star_reduce", "halos", "star_color"}
 AS_FIRST = {"scnr": {"method": "Average neutral", "lightness": False}}
 
 
@@ -366,7 +359,7 @@ def test_the_original_filters_match_their_reference_formulas():
     """Each filter of the first Post, on a random image, at several settings and resolutions: the port (and its fast
     paths) gives what the reference formulas give, to a fraction of an 8-bit level; its three-slider Curves opens as the
     same curve in the Curves tool (tests/client/test_post_tools.py tests the new filters)."""
-    assert FIRST < set(FILTERS) and "curves" in FILTERS
+    assert FIRST < set(FILTERS) and "curves" in FILTERS and not GONE & set(FILTERS)
     rng = np.random.default_rng(1)
     x = np.clip(cv2.GaussianBlur(rng.random((150, 230, 3)).astype(np.float32), (0, 0), 3) * 1.6 - 0.3, 0, 1)
     stars = np.clip(rng.random((150, 230)).astype(np.float32) * 1.4 - 0.4, 0, 1)
@@ -410,7 +403,7 @@ def test_the_original_filters_match_their_reference_formulas():
     assert d["stretch"] == {"strength": 0, "symmetry": 0.08} and d["saturation"] == {"strength": 0, "hues": "All"}
     assert d["scnr"] == {"strength": 0, "method": "Average neutral", "lightness": True}
     assert d["local_contrast"] == {"strength": 0, "scale": 40}
-    assert d["halos"] == {"strength": 0, "radius": 14} and d["halpha_red"] == {"strength": 0}
+    assert d["halpha_red"] == {"strength": 0}
 
 
 def test_a_filter_added_with_its_defaults_leaves_the_image_unchanged():
@@ -458,7 +451,7 @@ def test_blend_modes_are_the_specs():
 
 # ---------------------------------------------------------------------------------------------- the composition
 class ToyProvider(Provider):
-    """Workflow 1: a smooth gradient image with a bright disc; 2: its inverse. Data masks: a few star blobs, a ramp."""
+    """Workflow 1: a smooth gradient image with a bright disc; 2: its inverse. The H-alpha data mask: a few blobs."""
 
     def __init__(self, W=320, H=200):
         self.W, self.H = W, H
@@ -466,10 +459,10 @@ class ToyProvider(Provider):
         a = np.stack([xx / W, yy / H, 0.3 + 0.4 * np.sin(xx / 40) * np.cos(yy / 30)], -1) * 0.8 + 0.1
         a[(xx - 100) ** 2 + (yy - 80) ** 2 < 30 ** 2] = 0.9
         self.img = {1: np.clip(a, 0, 1).astype(np.float32), 2: np.clip(1 - a, 0, 1).astype(np.float32)}
-        self.stars = np.zeros((H, W), np.float32)
+        self.blobs = np.zeros((H, W), np.float32)
         for x, y in ((50, 40), (200, 120), (260, 50)):
-            self.stars += np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / 20).astype(np.float32)
-        self.stars = np.clip(self.stars, 0, 1)
+            self.blobs += np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / 20).astype(np.float32)
+        self.blobs = np.clip(self.blobs, 0, 1)
         self.ramp = (xx / W).astype(np.float32)
         self.calls = []
         self.epoch = 0
@@ -500,7 +493,7 @@ class ToyProvider(Provider):
         return self._at(a, level, box)
 
     def data_mask(self, name, level, box):
-        return self._at(self.stars if name == "stars" else self.ramp, level, box)
+        return self._at(self.blobs if name == "halpha" else self.ramp, level, box)
 
     def has(self, name):
         return True
@@ -558,15 +551,15 @@ def test_masks_parts_combine_and_are_processed():
     lay["mask"]["parts"] = [g]
     ramp = np.clip((pr.ramp - (0.5 - 0.1)) / 0.2, 0, 1)
     assert np.allclose(m(), ramp, atol=1e-5)
-    s = new_part("stars")
-    s["grow"] = 0.0
+    s = new_part("halpha")
     lay["mask"]["parts"] = [s]
-    assert np.allclose(m(), np.clip(pr.stars * 1.5, 0, 1), atol=1e-5)
+    assert np.allclose(m(), pr.blobs, atol=1e-5)
+    with pytest.raises(ValueError):
+        new_part("stars")                                              # the catalogue's star mask is gone
     # add: max; subtract: result * (1 - part); intersect: result * part; the first part decides the start
-    a, b = new_part("stars"), new_part("gradient")
-    a["grow"] = 0.0
+    a, b = new_part("halpha"), new_part("gradient")
     b.update(direction="Left → right", position=50.0, softness=20.0)
-    star, rmp = np.clip(pr.stars * 1.5, 0, 1), ramp
+    star, rmp = pr.blobs, ramp
     for op, want in (("add", np.maximum(star, rmp)), ("sub", star * (1 - rmp)), ("inter", star * rmp)):
         b["op"] = op
         lay["mask"]["parts"] = [a, b]
@@ -595,7 +588,7 @@ def test_masks_parts_combine_and_are_processed():
     assert 0 <= m().min() and m().max() <= 1
     hp = new_part("halpha")
     lay["mask"]["parts"] = [hp]
-    assert np.allclose(m(), pr.ramp, atol=1e-6)
+    assert np.allclose(m(), pr.blobs, atol=1e-6)
 
 
 def test_a_mask_acts_on_a_layer_and_on_a_filter():
@@ -623,10 +616,11 @@ def test_a_region_is_the_crop_of_the_whole_and_the_levels_agree():
     base = new_workflow_layer(1, "A", True)
     sat = new_filter_layer("saturation", base["id"])
     lc = new_filter_layer("local_contrast", None)
-    sh = new_filter_layer("star_reduce", None)
+    sh = new_filter_layer("denoise", None)
+    sh["params"].update(luminance=0.6, color=0.4)
     lay = [lc, sh, sat, base]
     base["mask"] = new_mask()
-    base["mask"]["parts"] = [new_part("stars")]
+    base["mask"]["parts"] = [new_part("halpha")]
     full = cp.compose(lay, 0).rgb
     box = (200, 120, 460, 300)
     reg = cp.compose(lay, 0, box).rgb
@@ -825,32 +819,38 @@ def test_the_canvas_is_what_every_layer_covers_on_multiples_of_eight(preps):
 
 def test_the_release_render_is_the_engines_bit_for_bit(preps):
     """The layer the composition gets at the half resolution and at full resolution is the engine's own rendering, cut
-    to the canvas: the draft, the region and the preview add nothing (DESIGN §6.3, the v1/v2 check)."""
+    to the canvas: the Output block's image by the simple rendering, the Stars block's images by theirs."""
+    from astro_gpu.render.simple import SimpleRenderEngine, SimpleSettings
+    from astro_gpu.render.stars import StarSettings, StarsRenderEngine
     svc = LayerService(DEV)
-    src = LayerSource(lambda pid: {1: Folder(preps["full"]), 2: Folder(preps["classic"])}.get(pid), svc,
-                      lambda b: {"faithful": {"sky_level": 24.0}}.get(b, b) if isinstance(b, str) else b)
+    folders = {1: Folder(preps["full"]), ("stars", 1): Folder(preps["full_stars"]), 2: Folder(preps["classic"])}
+    src = LayerSource(folders.get, svc, lambda b: {"faithful": {"sky": 0.24}}.get(b, b) if isinstance(b, str) else b)
     cv = src.canvas([1, 2])
     ox, oy = cv.origin
-    eng = RenderEngine(preps["full"], device=DEV)
-    faithful = RenderSettings.from_saved({"sky_level": 24.0})
+    out, stars = SimpleRenderEngine(preps["full"], device=DEV), StarsRenderEngine(preps["full_stars"], device=DEV)
     lay = new_workflow_layer(1, "Full", True, base="faithful")
     lay["sliders"] = {k: 2 for k in KEYS}                                    # every slider at the suggestion
     for level in (1, 2, 0):
         f = 2 ** level
-        want = eng.render(faithful, 1.0 / f).final.numpy()
+        want = out.render(SimpleSettings(sky=0.24), 1.0 / f).final.numpy()
         w, h = cv.size(level)
         got = src.layer(lay, level, (0, 0, w, h))
         ref = np.moveaxis(want[:, oy // f: oy // f + h, ox // f: ox // f + w], 0, -1)
         assert np.array_equal(got, ref), level
-    # a slider away from 2 moves the settings the table says, nothing else (the sky slider moves the dark level too)
+    # a slider away from 2 moves the settings the table says, nothing else
     lay["sliders"] = {"sky": 3}
     moved = src.layer(lay, 1, (0, 0, *cv.size(1)))
-    s30 = RenderSettings.from_saved({"sky_level": 30.0, "dark_level": 12.5})
-    ref = eng.render(s30, 0.5).final.numpy()[:, oy // 2: oy // 2 + cv.size(1)[1], ox // 2: ox // 2 + cv.size(1)[0]]
+    ref = out.render(SimpleSettings(sky=0.30), 0.5).final.numpy()
+    ref = ref[:, oy // 2: oy // 2 + cv.size(1)[1], ox // 2: ox // 2 + cv.size(1)[0]]
     assert np.array_equal(moved, np.moveaxis(ref, 0, -1))
-    # the parts: stars alone is the layer minus its starless image
-    lay["sliders"], lay["part"] = {}, "stars"
-    st = src.layer(lay, 1, (0, 0, *cv.size(1)))
+    # the Stars block's images: from its folder, each part its own rendering
+    w, h = cv.size(1)
+    for part in ("starless", "stars", "combined"):
+        pl = new_workflow_layer(1, "Full", True, part=part)
+        got = src.layer(pl, 1, (0, 0, w, h))
+        ref = stars.render(StarSettings(), 0.5, part=part).final.numpy()[:, oy // 2: oy // 2 + h, ox // 2: ox // 2 + w]
+        assert np.array_equal(got, np.moveaxis(ref, 0, -1)), part
+    st = src.layer(new_workflow_layer(1, "Full", True, part="stars"), 1, (0, 0, w, h))
     assert st.max() > 0.2 and st.min() >= 0
 
 
@@ -872,62 +872,19 @@ def test_a_region_at_full_resolution_is_the_engines_region(preps):
     assert float(np.percentile(d[64:-64, 64:-64], 99.9)) <= 2.0
 
 
-def test_a_draft_is_a_quick_look_the_release_stays_the_engines_and_a_newer_request_stops_it(tmp_path):
-    """The draft of an engine layer draws its stars on a reduced grid (the nebula is the exact one at its scale); the
-    release is RenderEngine.render as before, bit for bit, whatever was cached by the drafts; the caches are kept per
-    resolution (a quarter after a half is not computed again); stop() abandons a rendering between two stages and what
-    was finished is reused."""
-    from astro_gpu.render.engine import Cancelled
-    preps = {"full": engine_prep(tmp_path / "small", 240, 360)}               # small: six engines render it
-    s = RenderSettings.from_saved({"sky_level": 26.0, "d10": 5.0})
-    eng = RenderEngine(preps["full"], device=DEV)
-    d = eng.render(s, 0.125, draft=True)
-    e8 = eng.render(s, 0.125)
-    assert torch.equal(d.starless, e8.starless) and not torch.equal(d.stars, e8.stars)
-    corr = float(np.corrcoef(d.stars.mean(0).flatten().numpy(), e8.stars.mean(0).flatten().numpy())[0, 1])
-    assert corr > 0.7 and float(d.stars.max()) > 0.2, corr                                # the same stars, roughly
-    fresh = RenderEngine(preps["full"], device=DEV)
-    for sc in (0.5, 0.25, 0.5):
-        assert torch.equal(eng.render(s, sc).final, fresh.render(s, sc).final), sc
-    t0 = time.perf_counter()
-    again = eng.render(s, 0.25)                                         # kept per resolution: no work
-    assert time.perf_counter() - t0 < 0.2 and torch.equal(again.final, fresh.render(s, 0.25).final)
-    # a slider moved: the stages before it are reused, the image is the fresh engine's
-    s2 = RenderSettings.from_saved({"sky_level": 30.0, "d10": 5.0})
-    assert torch.equal(eng.render(s2, 0.5).final, RenderEngine(preps["full"], device=DEV).render(s2, 0.5).final)
-    # stopped after its first stage, then rendered: the same image
-    n = {"k": 0}
-
-    def stop():
-        n["k"] += 1
-        return n["k"] > 1
-    s3 = RenderSettings.from_saved({"sky_level": 18.0, "chroma": 1.1})
-    with pytest.raises(Cancelled):
-        eng.render(s3, 0.5, stop=stop)
-    assert torch.equal(eng.render(s3, 0.5).final, RenderEngine(preps["full"], device=DEV).render(s3, 0.5).final)
-    # through the layer source: a draft is cached apart and a stopped request says Superseded
-    src = LayerSource(lambda pid: {1: Folder(preps["full"])}.get(pid), LayerService(DEV))
-    cv = src.canvas([1])
-    lay = new_workflow_layer(1, "Full", True)
-    w, h = cv.size(3)
-    a = src.layer(lay, 3, (0, 0, w, h), draft=True)
-    assert a.shape == (h, w, 3) and a.dtype == np.float32
-    with pytest.raises(Superseded):
-        src.layer(dict(lay, sliders={"sky": 3.3}), 1, (0, 0, *cv.size(1)), stop=lambda: True)
-
-
-def test_masks_come_from_the_layer_with_stars(preps):
-    src = LayerSource(lambda pid: {1: Folder(preps["full"]), 2: Folder(preps["classic"])}.get(pid), LayerService(DEV))
-    cv = src.canvas([2, 1])                                                    # the bottom one is the simple layer
+def test_the_halpha_mask_comes_from_a_workflow_layer(preps):
+    """The H-alpha map of the masks: from the bottom workflow layer, its Output block's image or its starless image;
+    an image layer has none."""
+    folders = {1: Folder(preps["full"]), ("stars", 1): Folder(preps["full_stars"]), 2: Folder(preps["classic"])}
+    src = LayerSource(folders.get, LayerService(DEV))
+    cv = src.canvas([2, 1])                                                    # the bottom one is Classic
     w, h = cv.size(1)
-    st = src.data_mask("stars", 1, (0, 0, w, h))
     ha = src.data_mask("halpha", 1, (0, 0, w, h))
-    assert st.shape == ha.shape == (h, w) and st.max() > 0.5 and ha.max() > 0.5       # the stars come from layer 1
-    assert src.has("stars") and src.has("halpha")
-    only = LayerSource(lambda pid: {2: Folder(preps["classic"])}.get(pid), LayerService(DEV))
-    only.canvas([2])
-    assert not only.has("stars") and only.data_mask("stars", 1, (0, 0, 8, 8)) is None
-    assert only.has("halpha")
+    assert ha.shape == (h, w) and ha.max() > 0.5 and src.has("halpha")
+    st = LayerSource(folders.get, LayerService(DEV))
+    st.canvas([("stars", 1)])                                                  # the Stars block's images alone
+    m = st.data_mask("halpha", 1, (0, 0, w, h))
+    assert m is not None and m.max() > 0.5
 
 
 # ---------------------------------------------------------------------------------------------- the worker
@@ -1198,8 +1155,8 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     assert post.settle() and np.array_equal(shown(v), reference(post).rgb)
     # the + Filter menu: the filters by family (the first Post's arcsinh stretch is no longer offered)
     fam = {a.text(): [x.text() for x in a.menu().actions()] for a in v.filter_menu.actions()}
-    assert list(fam) == ["Stretch", "Contrast", "Color", "Detail", "Noise", "Stars", "Combine"]
-    assert sum(len(x) for x in fam.values()) == len([f for f in FILTERS.values() if not f.get("hidden")]) == 18
+    assert list(fam) == ["Stretch", "Contrast", "Color", "Detail", "Noise", "Combine"]
+    assert sum(len(x) for x in fam.values()) == len([f for f in FILTERS.values() if not f.get("hidden")]) == 15
     # Curves and Levels are stretches (2 November: where the user looked for them first)
     assert fam["Stretch"] == ["Generalised hyperbolic stretch", "Arcsinh stretch", "Histogram transformation", "Curves",
                               "Levels"]
@@ -1246,19 +1203,20 @@ def test_a_filter_added_in_the_page_does_not_move_the_image_until_a_slider_does(
             i18n.set_language("en")
 
 
-def test_star_filters_and_the_star_mask_need_a_layer_with_stars(preps, qapp):
+def test_every_filter_and_every_mask_source_is_offered_without_the_stars_block(preps, qapp):
+    """No filter and no mask part needs the Stars block any more (its stars are a layer of their own): on a page
+    without it, the + Filter menu has no Stars family and the mask offers its five sources, all enabled."""
     s = Setup(preps, qapp, which=(2,))
     try:
         assert s.settle()
         v = s.view
-        assert not v.has_stars()
-        stars_menu = next(a for a in v.filter_menu.actions() if a.text() == "Stars").menu()
-        assert [a.isEnabled() for a in stars_menu.actions()] == [False, False, False]
-        assert stars_menu.actions()[0].toolTip() == "Needs a layer with the Stars block"
+        assert "Stars" not in [a.text() for a in v.filter_menu.actions()]
+        assert all(x.isEnabled() for a in v.filter_menu.actions() for x in a.menu().actions())
         v.add_mask(v.layers[0])
         add = next(b for b in widgets_of(v, QPushButton) if b.text() == "+ Add to mask")
         acts = {a.text(): a.isEnabled() for a in add.menu().actions()}
-        assert acts["Catalog stars"] is False and acts["H-alpha"] is True and len(acts) == 6
+        assert acts == {"H-alpha": True, "Luminance range": True, "Color range": True, "Linear gradient": True,
+                        "Brush": True}
     finally:
         s.close()
 
@@ -1272,11 +1230,11 @@ def test_masks_with_parts_show_on_the_image_and_in_the_thumbnails(post):
     assert full["mask"] is not None and v.sel == (full["id"], "mask") and v.b_maskadd.text() == "Mask ✓"
     assert post.settle() and v.mask1 is not None and np.allclose(v.mask1, 1.0)         # empty: the layer shows everywhere
     assert "Empty: the layer shows everywhere." in [lb.text() for lb in widgets_of(v, QLabel)]
-    for src in ("stars", "halpha", "luminance", "color", "gradient", "brush"):
+    for src in ("halpha", "luminance", "color", "gradient", "brush"):
         v.add_part(full, src)
-    assert [p["src"] for p in full["mask"]["parts"]] == ["stars", "halpha", "luminance", "color", "gradient", "brush"]
-    assert len([f for f in widgets_of(v, type(v.pbox.parentWidget())) if f.objectName() == "part"]) == 6
-    v._part_set(full["mask"]["parts"][1], "op", "inter")                              # H-alpha intersected
+    assert [p["src"] for p in full["mask"]["parts"]] == ["halpha", "luminance", "color", "gradient", "brush"]
+    assert len([f for f in widgets_of(v, type(v.pbox.parentWidget())) if f.objectName() == "part"]) == 5
+    v._part_set(full["mask"]["parts"][1], "op", "inter")                              # the luminance intersected
     v._part_set(full["mask"]["parts"][2], "op", "sub")
     assert post.settle()
     m = v.mask1
@@ -1296,7 +1254,7 @@ def test_masks_with_parts_show_on_the_image_and_in_the_thumbnails(post):
     assert g.shape == (232, 344, 3) and np.array_equal(g[..., 0], g[..., 1]) and g.max() > 0
     v.b_mask.setChecked(False)
     v.remove_part(full, full["mask"]["parts"][0])
-    assert full["mask"]["parts"][0]["src"] == "halpha"
+    assert full["mask"]["parts"][0]["src"] == "luminance"
     v.remove_mask(full)
     assert full["mask"] is None and v.b_maskadd.text() == "Mask"
 
@@ -1332,35 +1290,43 @@ def test_the_brush_paints_erases_and_is_one_undo_step(post):
     assert post.settle() and v.mask1.max() == 0
 
 
-def test_split_stars_and_starless(post):
-    v = post.view
-    full = named(v, "Full")
-    v.select(full["id"], "layer")
-    flt = v.add_filter("curves")
-    v.select(full["id"], "layer")
-    v.split_stars(full)
-    assert [(lay["name"], lay.get("part"), lay["mode"]) for lay in v.layers] == [
-        ("Classic", None, "Normal"), ("Full · stars", "stars", "Screen"), ("Curves", None, "Normal"),
-        ("Full · starless", "starless", "Normal")]
-    stars, fond = v.layers[1], v.layers[3]
-    assert stars["mask"] is None and flt["target"] == fond["id"]                # its filters stay on the starless one
-    assert post.settle()
-    img = shown(v).astype(int)
-    assert np.array_equal(img, reference(post).rgb.astype(int))
-    stars["sliders"]["stars_number"] = 0.0                                               # each half has its own sliders
-    v.request(final_only=True)
-    assert post.settle() and shown(v).astype(int).mean() < img.mean()                    # fewer stars: less light
-    # the stars alone is the layer minus its starless image (clipped), the starless one has no star
-    src = LayerSource(lambda pid: post.folders.get(pid), LayerService(DEV))
-    cv = src.canvas([1])
-    both = new_workflow_layer(1, "Full", True)
-    w, h = cv.size(1)
-    a = src.layer(dict(both, part="stars"), 1, (0, 0, w, h))
-    b = src.layer(dict(both, part="starless"), 1, (0, 0, w, h))
-    c = src.layer(both, 1, (0, 0, w, h))
-    assert a.min() >= 0 and np.allclose(a, np.clip(c - b, 0, 1)) and a.max() > 0.2
-    v.do_undo()                                                                          # one step for the split
-    assert [lay["name"] for lay in v.layers] == ["Classic", "Curves", "Full"]
+def test_a_stars_workflow_comes_as_its_stars_and_background_image(preps, qapp):
+    """A workflow with the Stars block: its layer is its Stars block's recombined image, the stars put back in Screen;
+    it shows only the sliders it has, the stars first, and the Stars blend under their title. Its starless image and
+    its stars alone are layers of the same folder: the stars over the starless image in Screen are the combined one."""
+    from PySide6.QtWidgets import QComboBox
+
+    from astro_gpu.client.post3 import ContSlider
+    s = Setup(preps, qapp, stars=True)
+    try:
+        assert s.settle()
+        v = s.view
+        assert [(lay["name"], lay.get("part")) for lay in v.layers] == [
+            ("Classic", None), ("Full · Stars and background", "combined")]
+        full = v.layers[1]
+        assert full["blend"] == "Screen" and full["mode"] == "Normal" and full["visible"]
+        assert np.array_equal(shown(v), reference(s).rgb)
+        v.select(full["id"], "layer")
+        names = [x.name.text() for x in widgets_of(v, ContSlider)]
+        assert names == ["Opacity", "Strength", "Star size", "Star color", "Sky", "Contrast", "Saturation"]
+        assert all(x.s.isEnabled() for x in widgets_of(v, ContSlider))
+        combo = next(c for c in widgets_of(v, QComboBox) if c.currentData() == "Screen")
+        before = shown(v).copy()
+        combo.setCurrentIndex(combo.findData("Linear dodge (add)"))
+        assert full["blend"] == "Linear dodge (add)"
+        v.request(final_only=True)
+        assert s.settle() and np.array_equal(shown(v), reference(s).rgb) and not np.array_equal(shown(v), before)
+        # the Stars block's three images, from its folder
+        src = LayerSource(lambda sid: s.folders.get(sid), LayerService(DEV))
+        cv = src.canvas([("stars", 1)])
+        w, h = cv.size(1)
+        a = src.layer(new_workflow_layer(1, "Full", True, part="stars"), 1, (0, 0, w, h))
+        b = src.layer(new_workflow_layer(1, "Full", True, part="starless"), 1, (0, 0, w, h))
+        c = src.layer(new_workflow_layer(1, "Full", True, part="combined"), 1, (0, 0, w, h))
+        assert a.min() >= 0 and a.max() > 0.2
+        assert np.allclose(c, 1 - (1 - a) * (1 - b), atol=1e-4)
+    finally:
+        s.close()
 
 
 def test_undo_and_redo_one_step_per_action(post):
@@ -1527,19 +1493,19 @@ def test_sliders_are_greyed_with_their_reason_and_double_click_resets(post):
 
     v.select(named(v, "Full")["id"], "layer")
     sl = sliders()
-    for k in ("Sky", "Contrast", "Saturation", "Detail", "Noise smoothing", "Number of stars", "Star size", "Star color",
-              "Bright star halo"):
+    for k in ("Sky", "Contrast", "Saturation", "Noise smoothing"):                    # the Output block's image
         assert sl[k].s.isEnabled(), k
+    for k in ("Strength", "Star size", "Star color"):
+        assert not sl[k].s.isEnabled(), k
     assert sl["Sky"].val.text() == "suggested" and sl["Sky"].lo == 0 and sl["Sky"].hi == 4
     sl["Sky"].set_value(3.4)
     assert sl["Sky"].val.text() == "+1.4"
     v.select(named(v, "Classic")["id"], "layer")
     sl = sliders()
     assert sl["Sky"].s.isEnabled() and sl["Noise smoothing"].s.isEnabled()
-    for k in ("Detail", "Number of stars", "Star size", "Star color", "Bright star halo"):
+    for k in ("Strength", "Star size", "Star color"):
         assert not sl[k].s.isEnabled() and not sl[k].why.isHidden()
-    assert sl["Detail"].why.text() == "sharpening needs the starless image (Stars block)"
-    assert sl["Star size"].why.text() == "the star sliders need the Stars block"
+    assert sl["Star size"].why.text() == "the star sliders work on the stars of the Stars block"
     post.model.paths.append(WF(3, "Raw stack", "stacking"))                              # pulled from Stacking
     post.model.pathsChanged.emit()
     v.select(named(v, "Raw stack")["id"], "layer")
@@ -1634,7 +1600,7 @@ def test_before_and_after(post):
 
 def _stage_image(preps):
     """A stage's linear image on the grid of the Full layer (3, 480, 720): its calibrated nebula, as a stack is."""
-    return np.load(preps["full"] / "N.npy")
+    return np.load(preps["full"] / "lin.npy")
 
 
 def test_an_image_sent_from_a_stage_is_a_normal_layer(post, preps, tmp_path):
@@ -2061,8 +2027,10 @@ def test_the_export_writes_only_into_the_folder_chosen_and_it_reads_back(exporti
     assert not list((s.root / "export").glob("*")) if (s.root / "export").exists() else True
 
 
-def test_the_export_reduced_matches_the_half_resolution_preview(exporting):
+def test_the_export_reduced_matches_the_half_resolution_preview(exporting, preps):
     import tifffile
+
+    from astro_gpu.render.simple import SimpleRenderEngine, SimpleSettings
     s = exporting
     v = s.view
     full = named(v, "Full")
@@ -2087,9 +2055,15 @@ def test_the_export_reduced_matches_the_half_resolution_preview(exporting):
         d.deleteLater()
     assert a.shape == preview.shape
     diff = np.abs(a.astype(np.float64) / 65535 * 255 - preview.astype(np.float64))
-    # the engine's own half rendering differs from its reduced full rendering by 2.4 levels at p99.9 on this noisy
-    # preparation (stars drawn at full resolution, then reduced); the filters of Post add less than a level
-    assert float(np.percentile(diff, 99.9)) <= 3.0 and diff.mean() < 1.0, float(np.percentile(diff, 99.9))
+    # the engine's own half rendering differs from its reduced full rendering on the stars (a point star reduced
+    # then stretched is not a stretched star reduced: about 15 levels at p99.9 on this preparation); Post adds
+    # nothing beyond that
+    e = SimpleRenderEngine(preps["full"], device=DEV)
+    half = e.render(SimpleSettings(), 0.5).final.numpy()
+    red = cv2.resize(np.moveaxis(e.render(SimpleSettings(), 1.0).final.numpy(), 0, -1), (half.shape[2], half.shape[1]),
+                     interpolation=cv2.INTER_AREA)
+    own = float(np.percentile(np.abs(np.moveaxis(half, 0, -1) - red) * 255, 99.9))
+    assert float(np.percentile(diff, 99.9)) <= own + 1.0 and diff.mean() < 1.0, (float(np.percentile(diff, 99.9)), own)
 
 
 def test_each_layer_and_the_masks_go_into_subfolders_of_the_folder_chosen(exporting):
@@ -2188,7 +2162,8 @@ def _texts_of_the_code() -> dict[str, list[str]]:
             postengine.DIRECTIONS + [it[1] for items in postengine.PART_SETTINGS.values() for it in items] + \
             list(ed.FORMATS) + list(ed.PROFILES) + list(ed.SIZES):
         found.setdefault(t, []).append("tables")
-    for t in ("Paint", "Erase", "Needs a layer with the Stars block", rsv.NOTE_CPU_TEXT, "stars", "starless", " (copy)"):
+    from astro_gpu.client.model import POST_PART_NAMES
+    for t in ("Paint", "Erase", rsv.NOTE_CPU_TEXT, " (copy)") + tuple(POST_PART_NAMES.values()) + postengine.BLENDS:
         found.setdefault(t, []).append("constants")
     for t in list(pc.CHANNEL_TIPS.values()) + pc.INTERPS + ["Photoshop", "Astrophotography"] + \
             [x for p in pc.builtin_presets() for x in (p["name"], p["source"])] + list(postengine.OLD_NAMES):
@@ -2206,7 +2181,7 @@ def test_every_text_of_post_has_its_french():
     for s in SLIDERS:
         for t in (s.name, s.group, *s.ends):
             assert t in cat, t
-    for why in {w for kind in ("engine", "simple", "stacking") for w in availability(kind, False).values() if w}:
+    for why in {w for kind in KINDS for w in availability(kind, False).values() if w}:
         assert why in cat, why
 
 
@@ -2254,7 +2229,7 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
             v.thumb(lay)
         v.build_filter_menu()
         assert [a.text() for a in v.filter_menu.actions()] == ["Étirement", "Contraste", "Couleur", "Détail",
-                                                               "Bruit", "Étoiles", "Combinaison"]
+                                                               "Bruit", "Combinaison"]
         d = ExportDialog(v)
         try:
             d.dest.setText((root / "store" / "x.tif").as_posix())
@@ -2346,7 +2321,7 @@ def take_shots(s, lang: str, out: Path, exporting_root: Path):
     # a mask with parts, on the layer "Full"
     v.select(full["id"], "layer")
     v.add_mask(full)
-    v.add_part(full, "stars")
+    v.add_part(full, "halpha")
     p2 = v.add_part(full, "luminance")
     p2["op"], p2["lo"], p2["hi"] = "sub", 70.0, 100.0
     p3 = v.add_part(full, "brush")
@@ -2459,12 +2434,13 @@ def real(qapp):
 
 @needs_real
 @pytest.mark.slow
-def test_real_the_layers_render_filters_masks_split_and_undo(real):
+def test_real_the_layers_render_filters_masks_and_undo(real):
     s = real
     v = s.view
-    assert [(lay["name"], lay["visible"]) for lay in v.layers] == [("Classic", False), ("Full", True)]
+    # Full's layer: its Output block's image, or its Stars and background image when it has the Stars block
+    assert [(lay["name"].split(" · ")[0], lay["visible"]) for lay in v.layers] == [("Classic", False), ("Full", True)]
     assert v.src.canvas == (6216, 4224) and shown(v).shape == (2112, 3108, 3)
-    full, classic = named(v, "Full"), named(v, "Classic")
+    full, classic = v.layers[1], named(v, "Classic")
     v.select(full["id"], "layer")
     sat = v.add_filter("saturation")
     sat["params"]["strength"] = 60.0
@@ -2473,49 +2449,41 @@ def test_real_the_layers_render_filters_masks_split_and_undo(real):
     sh = v.add_filter("sharpen")
     v.set_target(sh, None)
     assert s.settle(600)
-    # the masks: stars (the engine's star map), H-alpha, luminance, brush
+    # the masks: H-alpha, luminance, brush
     v.select(full["id"], "layer")
     v.add_mask(full)
-    for src in ("stars", "halpha", "luminance", "brush"):
+    for src in ("halpha", "luminance", "brush"):
         v.add_part(full, src)
     brush = full["mask"]["parts"][-1]
     for k in range(10):
         brush["strokes"].append((3000.0 + 40 * k, 2000.0, 60.0, 50.0, True))
-    full["mask"]["parts"][2]["op"] = "sub"
+    full["mask"]["parts"][1]["op"] = "sub"
     v.request(final_only=True)
     assert s.settle(600)
     m = v.mask1
     assert m.shape == (2112, 3108) and 0 <= m.min() <= m.max() <= 1 and m.max() > 0.9 and 0.01 < m.mean() < 0.99
-    stars = s.worker.renderer.source.data_mask("stars", 1, (0, 0, 3108, 2112))
     ha = s.worker.renderer.source.data_mask("halpha", 1, (0, 0, 3108, 2112))
-    assert stars.max() > 0.9 and stars.mean() < 0.2 and ha.max() > 0.9 and 0.02 < ha.mean() < 0.5
+    assert ha.max() > 0.9 and 0.02 < ha.mean() < 0.5
     v.remove_mask(full)
-    # split stars and starless, and back
-    v.select(full["id"], "layer")
-    v.split_stars(full)
-    assert [lay["name"] for lay in v.layers if lay["kind"] == "workflow"] == [
-        "Full · stars", "Classic", "Full · starless"] or "Full · stars" in [lay["name"] for lay in v.layers]
-    assert s.settle(600)
-    after = shown(v).copy()
-    v.do_undo()
-    assert s.settle(600)
-    assert not np.array_equal(shown(v), after) or True
-    assert [lay["name"] for lay in v.layers if lay["kind"] == "workflow"] == ["Classic", "Full"]
+    assert full["mask"] is None
+    v.do_undo()                                                                          # the mask comes back
+    assert v.layer(full["id"])["mask"] is not None
 
 
 @needs_real
 @pytest.mark.slow
 def test_real_the_release_render_is_the_engines_bit_for_bit(qapp):
-    """api.render_layer with the 'faithful' rendering and every slider at 2 is RenderEngine.render(faithful), and the
-    layers of Post are those renderings (the DESIGN §6.3 v1/v2 check)."""
+    """api.render_layer with the 'faithful' rendering and every slider at 2 is the simple rendering of the Output block
+    (SimpleRenderEngine.render(faithful)), and the layers of Post are those renderings."""
+    from astro_gpu.render.simple import SimpleRenderEngine, SimpleSettings
     p = real_project()
-    p.render_bases = {"faithful": {"sky_level": 24.0}}
+    p.render_bases = {"faithful": {"sky": 0.24}}
     dev = "cpu" if REAL_DEVICE == "cpu" else rsv.choose_device("auto")
     svc = LayerService(dev)
     lay = api.render_layer(p, 1, "faithful", {k: 2 for k in KEYS}, 0.25, service=svc)
-    folder = Path(api.stage_outputs(p, 1, "render_prep").dir)
-    eng = RenderEngine(folder, device=dev)
-    want = eng.render(RenderSettings.from_saved({"sky_level": 24.0}), 0.25)
+    folder = Path(api.stage_outputs(p, 1, rsv.OUTPUT_STAGE).dir)
+    eng = SimpleRenderEngine(folder, device=dev)
+    want = eng.render(SimpleSettings(sky=0.24), 0.25)
     assert torch.equal(torch.from_numpy(lay.rgb), want.final.cpu()), "render_layer(faithful, 2) is not the engine's render"
     # the page's layer, cut to the canvas, is the same image
     src = LayerSource(rsv.api_resolver(p), svc, rsv.bases_of(p))
