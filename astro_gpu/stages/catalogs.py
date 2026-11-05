@@ -42,8 +42,9 @@ class Catalogs(Stage):
                    "to calibrate the colour of the sensor. Results are cached and shared between projects.")
     deps = ("inventory", "astrometry", "stack")
     Params = CatalogsParams
-    version = "3"          # 2: the bright stars missing from Gaia are added from Hipparcos; 3: the bright stars only
-                           # (offline), the deep catalogue for the earlier Stars block left out
+    version = "4"          # 2: the bright stars missing from Gaia are added from Hipparcos; 3: the bright stars only
+                           # (offline), the deep catalogue for the earlier Stars block left out; 4: the colour stars
+                           # spread over the magnitudes (issue #12)
     network = True
 
     def run(self, ctx: Context, p: CatalogsParams) -> None:
@@ -280,7 +281,12 @@ def _isolated_xp(d, p, W, H, scale):
         if all(j == i or g[j] >= g[i] + 3 for j in nb):
             keep.append(i)
     keep = np.array(keep, int)
-    return keep[np.argsort(g[keep])][: p.xp_max]
+    keep = keep[np.argsort(g[keep])]
+    if len(keep) <= p.xp_max:
+        return keep
+    # spread over the whole magnitude range, not the brightest only (issue #12): on a wide field taken with a camera
+    # lens the brightest thousands are all saturated; evenly spaced in magnitude order, the unsaturated ones are there
+    return keep[np.linspace(0, len(keep) - 1, p.xp_max).round().astype(int)]
 
 
 def _xp_spectra(ctx, sources, p0, p1, pos16=None, gmag=None):
