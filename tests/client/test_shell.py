@@ -483,7 +483,7 @@ def test_log_shows_the_history_newest_first_and_exports(env, tmp_path):
 
 def test_new_workflow_dialog_on_the_model(qapp):
     d = NewWorkflowDialog(FakeModel(), templates=TEMPLATES)
-    assert len(d.cards) == 5 and d.name.text() == "New workflow"
+    assert len(d.cards) == 5 and d.name.text() == "Full 2"                    # the recommended one first (#11)
     d.pick(2)
     assert d.name.text() == "Full 2" and d.opts == {"d": 2}
     d.pick(4)
