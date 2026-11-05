@@ -1338,7 +1338,8 @@ def test_a_stars_workflow_comes_as_its_stars_and_background_image(preps, qapp):
         assert np.array_equal(shown(v), reference(s).rgb)
         v.select(full["id"], "layer")
         names = [x.name.text() for x in widgets_of(v, ContSlider)]
-        assert names == ["Opacity", "Strength", "Star size", "Star color", "Sky", "Contrast", "Faint tones",
+        assert names == ["Opacity", "Strength", "Small stars", "Star size", "Star color", "Sky", "Contrast",
+                         "Faint tones",
                          "Saturation", "Colours", "H-alpha"]
         assert all(x.s.isEnabled() for x in widgets_of(v, ContSlider))
         combo = next(c for c in widgets_of(v, QComboBox) if c.currentData() == "Screen")

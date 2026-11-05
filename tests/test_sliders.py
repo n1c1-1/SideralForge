@@ -18,9 +18,9 @@ STAR_BASES = [None, {"sky": 0.3, "star_strength": 1.4, "blend": "Lighten"}, Star
 POSITIONS = [i / 4 for i in range(17)]
 
 
-def test_the_ten_sliders_of_post():
+def test_the_eleven_sliders_of_post():
     assert S.KEYS == ("sky", "contrast", "faint", "saturation", "colours", "halpha", "noise", "star_strength",
-                      "star_size", "star_color")
+                      "star_small", "star_size", "star_color")
     # position 2 of every table is the suggested rendering (the defaults)
     s = StarSettings()
     for sl in S.SLIDERS:
@@ -85,7 +85,7 @@ def test_steps_and_ratios():
 
 
 def test_greyed_sliders_give_their_reasons():
-    stars = ("star_strength", "star_size", "star_color")
+    stars = ("star_strength", "star_small", "star_size", "star_color")
     simple = S.availability("simple", False)
     assert simple["sky"] == simple["contrast"] == simple["saturation"] == ""
     assert simple["noise"] == S.WHY_DENOISE and all(simple[k] == S.WHY_STARS for k in stars)

@@ -866,5 +866,7 @@
  "Change frames…": "Modifier les images…",
  "Choose again the lights, darks, flats and bias of the selected session (or double-click its row)": "Choisir de nouveau les brutes, darks, flats et offsets de la session sélectionnée (ou double-cliquer sur sa ligne)",
  "Frames of the session {name}": "Images de la session {name}",
- "Frames of the session \"{name}\" changed": "Images de la session « {name} » modifiées"
+ "Frames of the session \"{name}\" changed": "Images de la session « {name} » modifiées",
+ "Small stars": "Petites étoiles",
+ "removed": "retirées"
 }
