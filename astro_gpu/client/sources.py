@@ -240,17 +240,20 @@ class ImportDialog(QDialog):
     next to it by their names: a suggestion, said as such), then each kind chosen by its files or its folder, and read
     again; what is found and the sessions it makes. The reading is the worker's; Cancel stops it."""
 
-    def __init__(self, model, folder: str, new_session: bool = False, parent=None, service=None):
+    def __init__(self, model, folder: str, new_session: bool = False, parent=None, service=None,
+                 chosen: dict | None = None, title: str | None = None):
         super().__init__(parent)
         self.s, self.folder, self.new_session = model, folder, new_session
         self.service = service or service_of(model)
         self.scan = None
-        self.chosen: dict[str, list[str]] | None = None             # kind -> folders or files (after the first read)
+        # kind -> folders or files: after the first read of the folder, or a session's frames given at once
+        self.chosen: dict[str, list[str]] | None = {k: list(v) for k, v in chosen.items()} if chosen else None
         self.suggested: set[str] = set()                              # the kinds still as the folder names gave them
-        self.setWindowTitle(_("Add session") if new_session else _("Add folder"))
+        title = title or (_("Add session") if new_session else _("Add folder"))
+        self.setWindowTitle(title)
         self.setMinimumWidth(760)
         v = QVBoxLayout(self)
-        v.addWidget(label(_("Add session") if new_session else _("Add folder"), "h1"))
+        v.addWidget(label(title, "h1"))
         v.addWidget(label(_("Choose the frames of each kind: by their files, a folder, or by dropping them here."),
                           "dim", wrap=True))
         self.rows: dict[str, KindRow] = {}
@@ -288,7 +291,7 @@ class ImportDialog(QDialog):
         sv.scanDone.connect(self._done)
         sv.scanFailed.connect(self._failed)
         self._show_rows(reading=True)
-        self.token = sv.scan(folder)
+        self.token = sv.scan_files(dict(self.chosen)) if self.chosen is not None else sv.scan(folder)
 
     def _show_rows(self, reading: bool = False):
         sc = self.scan
@@ -363,6 +366,30 @@ class ImportDialog(QDialog):
     def finish_now(self):
         """Wait for the scan (tests and scripted walkthroughs)."""
         self.service.wait(120)
+
+
+def edit_session_frames(model, session: int, parent=None, service=None) -> bool:
+    """Change the frames of a session (Frames > Sessions: Change frames…, or a double click on its row): the import
+    dialog opened on what the session holds; on OK the session holds what is chosen, Calibration and what follows to
+    compute again."""
+    svc = service or service_of(model)
+    try:
+        ses = model.p.session(session)
+    except (KeyError, ValueError):
+        return False
+    chosen = {k: [model.p.abspath(x) for x in getattr(ses, k)] for k, _t, _s in GROUPS}
+    first = next(iter(chosen["lights"]), "")
+    d = ImportDialog(model, first, True, parent, svc, chosen=chosen,
+                     title=_("Frames of the session {name}").format(name=ses.name))
+    ok = d.exec()
+    scan, picked = d.scan, d.chosen
+    d.deleteLater()
+    if not ok or scan is None or picked is None:
+        return False
+    if not model.set_session_frames(session, picked):
+        return False
+    model.log('Frames of the session "{name}" changed', name=ses.name)
+    return True
 
 
 def import_folder(model, parent=None, folder: str | None = None, new_session: bool = False, service=None) -> bool:

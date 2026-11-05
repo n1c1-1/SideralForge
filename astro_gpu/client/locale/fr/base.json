@@ -862,5 +862,9 @@
  "No light frames chosen.": "Aucune image brute choisie.",
  "the same frames as the lights": "les mêmes images que les brutes",
  "The professional H-alpha map of the field: where the faint nebulosity is, so that the Gradient block takes no sky sample there.": "La carte H-alpha professionnelle du champ : où est la nébulosité faible, pour que le bloc Gradient n'y prenne aucun échantillon de ciel.",
- "Below this share of the field covered by NSNS, Finkbeiner's all-sky map is used.": "En dessous de cette part du champ couverte par NSNS, la carte de Finkbeiner (tout le ciel) est utilisée."
+ "Below this share of the field covered by NSNS, Finkbeiner's all-sky map is used.": "En dessous de cette part du champ couverte par NSNS, la carte de Finkbeiner (tout le ciel) est utilisée.",
+ "Change frames…": "Modifier les images…",
+ "Choose again the lights, darks, flats and bias of the selected session (or double-click its row)": "Choisir de nouveau les brutes, darks, flats et offsets de la session sélectionnée (ou double-cliquer sur sa ligne)",
+ "Frames of the session {name}": "Images de la session {name}",
+ "Frames of the session \"{name}\" changed": "Images de la session « {name} » modifiées"
 }
