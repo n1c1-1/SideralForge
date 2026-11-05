@@ -920,6 +920,42 @@ def test_the_frames_of_each_kind_are_chosen_by_their_files(env, monkeypatch, tmp
         w.close()
 
 
+def test_change_frames_replaces_the_darks_of_a_session(env, monkeypatch, tmp_path):
+    """Frames > Sessions: Change frames… opens the import on the session's frames; two darks chosen, the session holds
+    them (and only them)."""
+    from astro_gpu.client.sources import edit_session_frames
+    root = tmp_path / "ws" / "Edit"
+    p = project2.create(root, "Edit", Target(name="IC 1805"))
+    api.add_session(p, lights=[DATA / "lights"], darks=[DATA / "darks"], flats=[DATA / "flats"], name="night")
+    api.save(p)
+    w = open_window(root, readonly=False)
+    try:
+        darks = sorted(str(x) for x in (DATA / "darks").iterdir())[:2]
+
+        def wait_scan(d):
+            end = time.monotonic() + 120
+            while (d.scan is None or not d.ok.isEnabled()) and time.monotonic() < end:
+                QApplication.processEvents()
+                time.sleep(0.01)
+            assert d.scan is not None
+
+        def fake_exec(self):
+            wait_scan(self)
+            assert len(self.scan.frames["darks"]) == 15 and not self.suggested     # the session's own, no guess
+            self.rows["darks"].changed.emit("darks", darks)
+            wait_scan(self)
+            self.accept()
+            return 1
+        monkeypatch.setattr(ImportDialog, "exec", fake_exec)
+        assert edit_session_frames(w.s, w.s.p.sessions[0].id, w, service=w.tune.service)
+        w.s.flush()
+        d = project2.load(root)
+        assert sorted(d.sessions[0].darks) == [Path(x).as_posix() for x in darks] and d.sessions[0].flats
+    finally:
+        w.s.flush()
+        w.close()
+
+
 def test_importing_the_heart_folder_gives_the_counts_the_sessions_and_the_thumbnails(env, monkeypatch, tmp_path):
     root = tmp_path / "ws" / "New"
     project2.create(root, "New", Target(name="IC 1805"))

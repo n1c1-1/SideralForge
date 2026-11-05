@@ -1549,6 +1549,24 @@ class ProjectModel(QObject):
         self.reload_sources()
         return {"done": done, "emptied": emptied}
 
+    def set_session_frames(self, session: int, chosen: dict) -> bool:
+        """The frames of a session, kind by kind (folders or files, as the import dialog chose them): saved, the frames
+        read again, what follows Outdated. False when the session is not known or nothing changes."""
+        try:
+            s = self.p.session(session)
+        except (KeyError, ValueError):
+            return False
+        new = {k: [Path(x).as_posix() for x in chosen.get(k, [])] for k in ("lights",) + tuple(CALIBRATION_KINDS)}
+        old = {k: [Path(self.p.abspath(x)).as_posix() for x in getattr(s, k)] for k in new}
+        if new == old or not new["lights"]:
+            return False
+        with self._edit():
+            for k, v in new.items():
+                setattr(s, k, v)
+            self.p.validate()
+        self.reload_sources()
+        return True
+
     def add_calibration_folder(self, session: int, kind: str, folder: str) -> bool:
         """A folder of calibration frames (darks, flats, bias, flat darks) added to a session: saved, the frames read
         again, Calibration and what follows Outdated. False when the session is not known or lists it already."""

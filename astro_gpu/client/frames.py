@@ -191,9 +191,14 @@ class FramesView(QWidget):
         self.b_import.clicked.connect(self.import_folder)
         self.b_add = QPushButton(_("Add session…"))
         self.b_add.clicked.connect(self.add_session)
+        self.b_edit = QPushButton(_("Change frames…"))
+        self.b_edit.setToolTip(_("Choose again the lights, darks, flats and bias of the selected session (or "
+                                 "double-click its row)"))
+        self.b_edit.clicked.connect(lambda: self.edit_session())
         self.b_group = QPushButton(_("Grouping…"))
         self.b_group.clicked.connect(self.grouping)
-        for b in (self.b_import, self.b_add, self.b_group):
+        self.table = None
+        for b in (self.b_import, self.b_add, self.b_edit, self.b_group):
             h.addWidget(b)
         v.addWidget(bar)
         self.pages = QStackedWidget()
@@ -216,6 +221,18 @@ class FramesView(QWidget):
     def add_session(self):
         from .sources import import_folder
         if import_folder(self.s, self.window(), new_session=True, service=self.service):
+            self.imported.emit()
+
+    def edit_session(self, row: int | None = None):
+        """Change frames…: the import dialog on the selected session's frames (the first when none is selected)."""
+        from .sources import edit_session_frames
+        sess = self.s.p.sessions
+        if not sess:
+            return
+        if row is None:
+            sel = self.table.selectionModel().selectedRows() if self.table is not None else []
+            row = sel[0].row() if sel else 0
+        if edit_session_frames(self.s, sess[row].id, self.window(), service=self.service):
             self.imported.emit()
 
     def grouping(self):
@@ -260,6 +277,7 @@ class FramesView(QWidget):
         clear(self.sv)
         s = self.s
         self.b_add.setEnabled(s.sources_loaded)
+        self.b_edit.setEnabled(s.sources_loaded and bool(s.p.sessions))
         if not s.sources_loaded:
             self.sv.addStretch(1)
             self.sv.addWidget(label(_("No frames yet"), "h1"), 0, Qt.AlignHCenter)
@@ -297,6 +315,8 @@ class FramesView(QWidget):
         t.setFixedHeight(t.horizontalHeader().height() + sum(t.rowHeight(r) for r in range(len(sess))) + 6)
         t.setFrameShape(QFrame.NoFrame)
         t.setFixedWidth(sum(t.columnWidth(c) for c in range(len(cols))))
+        t.cellDoubleClicked.connect(lambda r, _c: self.edit_session(r))
+        self.table = t
         self.sv.addWidget(t, 0, Qt.AlignLeft)
         self.sv.addWidget(label(grouping_sentence(self.service.criteria), "small"))
         self.sv.addSpacing(6)
