@@ -107,7 +107,6 @@ class GradientEditor(QObject):
         self.shown = True                      # what is drawn over the image (M, Marks)
         self.work: dict[str, list] = {f: [] for f in FIELDS}
         self.done = False                      # the block is computed with these settings
-        self.density = None                    # points of the generated grid along the shorter side (None: the setting)
         self.gesture = False
         self.gen = 0
         self.small = None                      # {"pid", "arr", "valid", "f", "W", "H"}
@@ -151,7 +150,7 @@ class GradientEditor(QObject):
             if self.p is not None:
                 self.set_mode(None)
             self.p = p
-            self.result, self.samples, self._sel, self.density, self._veil = None, None, None, None, None
+            self.result, self.samples, self._sel, self._veil = None, None, None, None
             if self.small is not None and self.small["pid"] != p.pid:
                 self.small = None
             if self.survey is not None and self.survey["pid"] != p.pid:
@@ -326,7 +325,8 @@ class GradientEditor(QObject):
             row.addWidget(pv)
         row.addStretch(1)
         v.addLayout(row)
-        if not self.done and self.s.state(p, "gradient") != "running":
+        # the block's Run button, unless its header has it already (Outdated, its previous result shown)
+        if not self.done and self.s.state(p, "gradient") != "running" and not self.tv._has_previous(p, "fond"):
             run = self.tv._run_button(p, "fond")     # the edits are saved; computing them is the block's run
             v.addWidget(run, 0, Qt.AlignLeft)
         st = label("", "small", wrap=True)
@@ -426,13 +426,24 @@ class GradientEditor(QObject):
         self._sync()
 
     def _density(self) -> int:
-        return int(self.density or self.s.param_value(self.p, "gradient", "samples") or 16)
+        """The grid's points along the shorter side: the block's setting (issue #15: one density, set here only)."""
+        return int(self.s.param_value(self.p, "gradient", "samples") or 16)
 
     def _set_density(self, n: int):
-        """The grid's points along the shorter side, then a new grid (an edit: Undo brings the one before back)."""
-        if n != self._density():
-            self.density = int(n)
-            self.generate()
+        """The grid's points along the shorter side (the block's setting, as Away from emission), then a new grid
+        (an edit: Undo brings the one before back)."""
+        if n == self._density():
+            return
+        paths = self.s.scope_paths()
+        if self.p.pid not in [q.pid for q in paths]:
+            paths = [self.p]
+        from .model import NotInEngine
+        try:
+            self.s.apply_change(paths, {"kind": "params", "items": [("gradient", "samples", int(n))]})
+        except (ValueError, NotInEngine) as e:
+            self.tv.toasted.emit(_(str(e)))
+            return
+        self.generate()
 
     def _set_paint(self, on: bool):
         self.paint = on

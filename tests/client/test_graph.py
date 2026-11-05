@@ -407,7 +407,8 @@ def test_the_toolbar_cards_say_what_each_block_costs(world, model, page):
     cards = {c.key: c for c in page.findChildren(ToolCard)}
     assert cards["debruitage"].state == "add" and cards["etoiles"].state == "add"
     texts = [lb.text() for c in cards.values() for lb in c.findChildren(QLabel)]
-    assert any(t.lstrip("≈ ").startswith("+") for t in texts)                 # "+2 min", or "≈ +5 h 08" (an estimate)
+    # "+2 min", or "≈ +5 h 08" (an estimate), or "same duration" when the test project has these results already
+    assert any(t.lstrip("≈ ").startswith("+") or t == "same duration" for t in texts)
     assert hm(model.tool_cost(model.path.opts, "etoiles")) in " ".join(texts) or "same duration" in " ".join(texts)
     assert page.findChildren(QLabel, "h2")[0].text() == "Add step"
 

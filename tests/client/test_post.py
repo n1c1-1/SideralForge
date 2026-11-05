@@ -699,7 +699,7 @@ def test_the_layer_rules_normalize_and_the_composition_is_saved():
     f3 = new_filter_layer("curves", 9999)                                     # its layer is gone
     # a layer's own filters always sit just above it; a filter whose layer is gone applies to everything below
     names = [x["name"] for x in normalize([b, f1, a, f2, f3])]
-    assert names.index("Sharpen") == names.index("A") - 1 and names.index("SCNR (green removal)") == names.index("B") - 1
+    assert names.index("Sharpen") == names.index("A") - 1 and names.index("Green removal") == names.index("B") - 1
     assert f3["target"] is None
     layers = normalize([f1, f2, f3, b, a])
     a["mask"] = new_mask()
@@ -1489,28 +1489,28 @@ def test_dragging_a_row_nests_or_unnests_a_filter_with_clear_hints(post):
     for _i in range(3):
         post.qapp.processEvents()
     order = lambda: [(r.lay["name"], r.depth) for r in v.rows]                          # noqa: E731
-    assert order() == [("Classic", 0), ("Full", 0), ("Curves", 1), ("SCNR (green removal)", 1)]
+    assert order() == [("Classic", 0), ("Full", 0), ("Curves", 1), ("Green removal", 1)]
     row = lambda lid: next(r for r in v.rows if r.lay["id"] == lid)                     # noqa: E731
     # to the top, between rows: a row of its own, on everything below
     d, line, text, frames = _drag(v, row(f["id"]), row(classic["id"]), 0.1)
     assert d["parent"] is None and d["index"] == 0 and line and text == "Applies to everything below"
     assert not any(frames) and f["target"] is None
-    assert order() == [("SCNR (green removal)", 0), ("Classic", 0), ("Full", 0), ("Curves", 1)]
+    assert order() == [("Green removal", 0), ("Classic", 0), ("Full", 0), ("Curves", 1)]
     # onto the Classic row: nested in it, the row framed
     d, line, text, frames = _drag(v, row(f["id"]), row(classic["id"]), 0.5)
     assert d["parent"] == classic["id"] and not line and text == 'Applies to "Classic" only' and any(frames)
-    assert f["target"] == classic["id"] and order() == [("Classic", 0), ("SCNR (green removal)", 1), ("Full", 0),
+    assert f["target"] == classic["id"] and order() == [("Classic", 0), ("Green removal", 1), ("Full", 0),
                                                        ("Curves", 1)]
     # between Full's children (the indented line): it joins them, under Curves (applied before it)
     rows_now = v.rows
     d, line, text, _f = _drag(v, row(f["id"]), rows_now[-1], 0.9, x=200)
     assert d["parent"] == full["id"] and d["index"] == 1 and text == 'Applies to "Full" only'
     assert d["x0"] > v.rows[0].geometry().left() + 40                                     # the line is indented
-    assert order() == [("Classic", 0), ("Full", 0), ("Curves", 1), ("SCNR (green removal)", 1)]
-    assert [x["name"] for x in v.layers] == ["Classic", "Curves", "SCNR (green removal)", "Full"]
+    assert order() == [("Classic", 0), ("Full", 0), ("Curves", 1), ("Green removal", 1)]
+    assert [x["name"] for x in v.layers] == ["Classic", "Curves", "Green removal", "Full"]
     # a layer moves with its children; dropped among another layer's children it goes after that group
     _drag(v, row(full["id"]), row(classic["id"]), 0.1)
-    assert order() == [("Full", 0), ("Curves", 1), ("SCNR (green removal)", 1), ("Classic", 0)]
+    assert order() == [("Full", 0), ("Curves", 1), ("Green removal", 1), ("Classic", 0)]
     assert full["visible"] and classic["visible"]
     # one undo step per drop, nothing when it lands where it was
     n = len(v.undo)
@@ -1910,7 +1910,7 @@ def test_a_workflow_that_goes_takes_its_layer_and_the_filters_retarget(post):
     f = v.add_filter("scnr")
     post.model.paths = [w for w in post.model.paths if w.pid != 1]
     post.model.pathsChanged.emit()
-    assert [lay["name"] for lay in v.layers] == ["Classic", "SCNR (green removal)"]
+    assert [lay["name"] for lay in v.layers] == ["Classic", "Green removal"]
     assert f["target"] is None and named(v, "Classic")["visible"]                        # the bottom layer is shown again
 
 
@@ -2101,7 +2101,9 @@ def test_the_export_writes_only_into_the_folder_chosen_and_it_reads_back(exporti
     after = tree(s.out.parent)
     new = sorted(set(after) - set(before))
     assert all(p.startswith("chosen/") for p in new), new
-    assert {k: v for k, v in before.items()} == {k: after[k] for k in before}
+    # (but the settings: the export remembers its format, issue #15)
+    assert {k: v for k, v in before.items() if k != "settings.json"} == {k: after[k] for k in before
+                                                                         if k != "settings.json"}
     assert sorted(Path(p).name for p in new) == sorted(
         ["heart_16bit.tif", "heart_32bit_float.tif", "heart.png", "heart.jpg", "heart.fits", "heart_history.json"])
     assert not list((s.root / "export").glob("*")) if (s.root / "export").exists() else True
@@ -2125,6 +2127,7 @@ def test_the_export_reduced_matches_the_half_resolution_preview(exporting, preps
     d = ExportDialog(s.view)
     try:
         d.dest.setText((s.out / "r_16bit.tif").as_posix())
+        d.fmt.setCurrentIndex(d.fmt.findData("tiff16"))                                      # JPEG by default
         d.size_cb.addItem("Screen", 344)                                                     # the long side of the half image
         d.size_cb.setCurrentIndex(d.size_cb.count() - 1)
         run_dialog(s, d)

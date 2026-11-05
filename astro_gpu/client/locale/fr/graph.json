@@ -91,5 +91,7 @@
   "workflow": "workflow",
   "To Post": "Vers le Post",
   "This image as a layer of Post, as it is (no Stars and background block)": "Cette image comme calque du Post, telle quelle (sans bloc Étoiles et fond)",
-  "A layer of Post that puts the stars back on the starless image; each of the two keeps its own settings": "Un calque du Post qui remet les étoiles sur l'image sans étoiles ; chacune des deux garde ses propres réglages"
+  "A layer of Post that puts the stars back on the starless image; each of the two keeps its own settings": "Un calque du Post qui remet les étoiles sur l'image sans étoiles ; chacune des deux garde ses propres réglages",
+  "Edit the samples on the image…": "Modifier les échantillons sur l'image…",
+  "Opens the block in Inspect: place, move or remove the samples and the excluded areas on the image": "Ouvre le bloc dans Inspect : placer, déplacer ou retirer les échantillons et les zones exclues sur l'image"
 }

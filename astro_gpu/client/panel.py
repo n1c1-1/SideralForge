@@ -535,6 +535,13 @@ class Panel(QWidget):
         if k == "fond" and self.tune and getattr(self, "grad_editor", None) is not None:
             self.bv.addWidget(self.group_title(_("Samples and excluded areas")))
             self.bv.addWidget(self.grad_editor.controls(p))
+        elif k == "fond" and not self.tune:            # issue #15: the samples are edited on the image, in Inspect
+            b = QPushButton(_("Edit the samples on the image…"))
+            b.setToolTip(_("Opens the block in Inspect: place, move or remove the samples and the excluded areas on "
+                           "the image"))
+            b.clicked.connect(self.openTune.emit)
+            self.bv.addWidget(b, 0, Qt.AlignLeft)
+            self.bv.addSpacing(6)
         groups = self._groups(p, k)
         units = [r.get("unit") for _t, rs in groups for r in rs]          # hidden rows too: the column stays put
         if k == "selection":

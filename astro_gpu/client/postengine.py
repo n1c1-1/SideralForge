@@ -333,9 +333,9 @@ FILTERS = {
                 source=GHS,
                 params=[P("stretch", "Stretch factor ln(D+1)", 0, 10, 0, step=0.01),
                         P("local", "Local intensity (b)", -5, 15, 0, step=0.1),
-                        P("symmetry", "Symmetry point (SP)", 0, 1, 0, step=0.001),
-                        P("shadows", "Shadow protection (LP)", 0, 1, 0, step=0.001),
-                        P("highlights", "Highlight protection (HP)", 0, 1, 1, step=0.001),
+                        P("symmetry", "Symmetry point", 0, 1, 0, step=0.001),
+                        P("shadows", "Shadow protection", 0, 1, 0, step=0.001),
+                        P("highlights", "Highlight protection", 0, 1, 1, step=0.001),
                         P("black", "Black point (BP)", 0, 0.5, 0, step=0.001),
                         C("model", "Color model", pf_tone.COLOUR_MODES, pf_tone.COLOUR_MODES[0])]),
     "asinh": dict(name="Arcsinh stretch", family="Stretch", fn=f_asinh, graph=pf_tone.asinh_curve, hist=True,
@@ -367,7 +367,7 @@ FILTERS = {
                            source="A large-radius unsharp mask",
                            params=[P("strength", "Strength", 0, 1.5, 0, step=0.01),
                                    P("scale", "Scale", 5, 120, 40, "px", 1)]),
-    "clahe": dict(name="Local histogram equalization (CLAHE)", family="Contrast", fn=f_clahe,
+    "clahe": dict(name="Local histogram equalization", family="Contrast", fn=f_clahe,
                   source="CLAHE (Zuiderveld 1994): the contrast equalised tile by tile, with a limit, on the "
                          "lightness",
                   params=[P("amount", "Amount", 0, 1, 0, step=0.01),
@@ -385,7 +385,7 @@ FILTERS = {
                        source="Saturation around the luminance, by hue range",
                        params=[P("strength", "Strength", -100, 150, 0, "%", 1),
                                C("hues", "Hues", [h for h, _ in HUES], "All")]),
-    "scnr": dict(name="SCNR (green removal)", family="Color", fn=f_scnr,
+    "scnr": dict(name="Green removal", family="Color", fn=f_scnr,
                  source="Removes a green cast: the green held under a neutral made of red and blue",
                  params=[P("strength", "Amount", 0, 1, 0, step=0.01),
                          C("method", "Protection", pf_colour.SCNR_METHODS, pf_colour.SCNR_METHODS[0]),
@@ -434,7 +434,10 @@ FILTERS = {
 }
 FAMILIES = ["Stretch", "Contrast", "Color", "Detail", "Noise", "Combine"]
 #: a filter name older saved compositions hold (a layer keeps its name) -> the filter's name today
-OLD_NAMES = {"Stretch (GHS)": "Arcsinh stretch (symmetry point)"}
+OLD_NAMES = {"Stretch (GHS)": "Arcsinh stretch (symmetry point)",
+             # issue #15: no acronyms in the names (their sources still cite the methods)
+             "Local histogram equalization (CLAHE)": "Local histogram equalization",
+             "SCNR (green removal)": "Green removal"}
 
 # ======================================================================== masks
 MASK_SOURCES = {
