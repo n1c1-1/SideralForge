@@ -27,7 +27,7 @@ from pydantic import field_validator
 
 from ..core.params import P, check_choice
 from . import ops
-from .simple import Layers, SimpleRenderEngine, SimpleSettings, mtf, mtf_midtone
+from .simple import Layers, SimpleRenderEngine, SimpleSettings, continuum_ratio, emission, mtf, mtf_midtone
 
 #: how the stars go back on the starless image (the names of Photoshop's modes)
 BLENDS = ("Screen", "Linear dodge (add)", "Lighten")
@@ -93,11 +93,20 @@ class StarsRenderEngine(SimpleRenderEngine):
             linked = bool(self.prep.get("linked", True))
             a = b = None
             if part in ("starless", "combined"):
-                a = self.tone(self._layer("starless", f, box), self.prep["stats_full"], s, linked)
+                x = self._layer("starless", f, box)
+                if s.halpha:
+                    x = emission(x, self.continuum(), float(s.halpha), f)
+                a = self.tone(x, self.prep["stats_full"], s, linked)
             if part in ("stars", "combined"):
                 b = self.star_tone(self._layer("stars", f, box), s, f)
             y = a if b is None else b if a is None else blend(a, b, s.blend)
             return self._finish(y, f, reg, box, region, {"stretch": "auto", "linked": linked, "part": part})
+
+    def continuum(self) -> float:
+        """The continuum's red-to-green ratio (``continuum_ratio``), measured once on the stars alone."""
+        if getattr(self, "_alpha", None) is None:
+            self._alpha = continuum_ratio(np.maximum(self._host["stars"].numpy(), 0))
+        return self._alpha
 
     def star_tone(self, x: torch.Tensor, s: StarSettings, f: int) -> torch.Tensor:
         """The stars alone stretched: black at 0, the white and the midtone of the whole image (its sky at the
