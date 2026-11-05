@@ -471,6 +471,10 @@ class ColorFitChart(ChartView):
 
 
 # ---------------------------------------------------------------------------------------------- the view
+#: the tabs drawn as charts or tables (kept, not built again, while the results they show do not change; issue #24)
+CHART_KINDS = ("regref", "regchart", "regtable", "rejection", "weights", "coverage", "chart", "colorfit")
+
+
 class TuneView(QWidget):
     back = Signal()
     pick = Signal(str)                    # a block of the strip was chosen
@@ -664,7 +668,8 @@ class TuneView(QWidget):
         # only the header and the panel are built again (issue #24: rebuilt, the image flickered)
         sig = self._center_signature(p, k=s.sel_step) if node is not None and p is not None else None
         keep = sig is not None and sig == getattr(self, "_center_sig", None) and (
-            self.view is not None or (sig[0] == "selection" and self.chart is not None))
+            self.view is not None or (sig[0] == "selection" and self.chart is not None)
+            or (sig[0] == "tab" and self.center.count() > 0))
         if not keep:
             self._clear_center()
         self._center_sig = sig
@@ -727,7 +732,7 @@ class TuneView(QWidget):
             self.grad_editor.attach(self.view, p)
         QTimer.singleShot(PREFETCH_DELAY_MS, lambda pp=p, kk=k: self._prefetch(pp, kk))
 
-    def _center_signature(self, p, k: str):
+    def _center_signature(self, p, k: str):  # noqa: C901 - one case per kind of centre
         """What the centre shows when it is one picture: (workflow, block, tab, the picture's identity, the workflow
         compared, the background chosen); for Selection, the frames it charts (its thresholds are moved in place);
         None for anything else (it is always built again)."""
@@ -747,6 +752,8 @@ class TuneView(QWidget):
         keys = [x.key for x in vis]
         want = self.tab_of.get(k)
         spec = vis[keys.index(want)] if want in keys and not vis[keys.index(want)].spec else vis[0]
+        if spec.kind in CHART_KINDS:                      # a chart or a table: the results it is drawn from (#24)
+            return ("tab", p.pid, k, spec.key, self._keys(p, *stages_of(self.s, p, k)), self.cmp_pid)
         if spec.kind not in ("array", "preview", "color", "gradient", "removed", "calibrated"):
             return None
         shown = self._background(p, k, spec) if spec.backgrounds else spec
