@@ -69,8 +69,11 @@ class Register(Stage):
         todo = [i for i in range(n) if cats[i] is None or psf[i] is None]
         if todo:
             init = (info["path"], n, H, W, p.detect_sigma, p.max_stars, info["cfa"])
+            # said at once, and one frame per task: a dense field takes 10 s and more per frame, so that a batch of 4
+            # per worker kept the progress at 0 % for minutes (North America: first result after 141 s, issue #34)
+            ctx.progress(0.0, f"detecting the stars of {len(todo)} frames ({p.workers} processes)")
             with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
-                for c, res in enumerate(pool.imap_unordered(_catalog_moffat, todo, chunksize=4)):
+                for c, res in enumerate(pool.imap_unordered(_catalog_moffat, todo, chunksize=1)):
                     idx, cat, fw, rb, rd, nz, psf[idx] = res
                     cats[idx], fwhm[idx], rmsb[idx], rnd[idx], noise[idx] = cat, fw, rb, rd, nz
                     if (c + 1) % 50 == 0 or c + 1 == len(todo):
