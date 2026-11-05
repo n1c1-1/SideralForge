@@ -131,3 +131,60 @@ def test_every_text_of_the_editor_has_its_french():
              and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)]
     missing = sorted({t for t in texts if t not in cat})
     assert not missing, missing
+
+
+def test_the_block_samples_avoid_the_survey_emission_and_keep_a_faint_nebula():
+    from astro_gpu.stages.surveys import emission_level
+    img, sky = scene(nebula=4.0)                            # a faint wide nebula the sky rejection does not catch
+    yy, xx = np.mgrid[0:H, 0:W] / np.array([H, W], np.float32)[:, None, None]
+    survey = 20 + 900 * np.exp(-((xx - 0.45) ** 2 + (yy - 0.5) ** 2) / 0.03)              # the survey sees it
+    level = emission_level(survey.astype(np.float32))
+    centre = (slice(130, 170), slice(180, 230))
+    err = {}
+    for avoid in (False, True):
+        m = sky_model_of(img, np.ones((H, W), bool), GradientParams(method="polynomial", avoid_emission=avoid),
+                         emission=level)
+        g = read_grid(m["grid"], m["info"], H, W)[0]
+        err[avoid] = float(np.median(g[centre] - sky[centre]))     # what the model takes of the nebula as sky
+        assert bool(m["info"].get("away_from_emission")) == avoid
+    assert err[True] < 0.5 * err[False], err
+    placed = GradientParams(method="polynomial", degree=1, sample_points=[[40.0, 40.0], [400.0, 40.0], [40.0, 260.0],
+                                                                          [400.0, 260.0], [220.0, 150.0]])
+    assert not sky_model_of(img, np.ones((H, W), bool), placed, emission=level)["info"].get("away_from_emission")
+
+
+def test_without_a_survey_the_run_goes_on(monkeypatch, tmp_path):
+    from astro_gpu.core.stage import StageError
+    from astro_gpu.stages import surveys
+    saved, logs = {}, []
+
+    class Ctx:                                               # what the Surveys stage reads and writes
+        def input(self, stage, name):
+            return tmp_path / "wcs.fits"
+
+        def load_json(self, stage, name):
+            return {"width": 40, "height": 20}
+
+        def metric_of(self, stage, key):
+            return 2.0
+
+        def save_json(self, name, d):
+            saved[name] = d
+
+        def metric(self, k, v):
+            saved[k] = v
+
+        def log(self, msg, level="info"):
+            logs.append((level, msg))
+
+        def progress(self, *a):
+            pass
+    monkeypatch.setattr("astropy.io.fits.getheader", lambda p: None)
+    monkeypatch.setattr("astropy.wcs.WCS", lambda h: None)
+
+    def none_covers(*a, **k):
+        raise StageError("no H-alpha survey covers this field")
+    monkeypatch.setattr(surveys, "survey_on_grid", none_covers)
+    surveys.Surveys().run(Ctx(), surveys.SurveysParams())
+    assert saved["survey.json"]["survey"] == "none" and "covers" in saved["survey.json"]["why"]
+    assert any(level == "warning" for level, _m in logs)

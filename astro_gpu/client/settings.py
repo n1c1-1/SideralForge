@@ -288,7 +288,8 @@ CATALOG = {
 # the engine's settings that no panel shows: the project or the options set them, or a block control owns them
 HIDDEN = {("stack", "exclude"), ("stack", "min_transparency"), ("stack", "max_fwhm_ratio"),
           ("render_simple", "stretch"), ("stack", "method"), ("gradient", "method"), ("denoise", "method"),
-          ("gradient", "sample_points"), ("gradient", "exclude_ellipses"), ("gradient", "exclude_brush")}
+          ("gradient", "sample_points"), ("gradient", "exclude_ellipses"), ("gradient", "exclude_brush"),
+          ("gradient", "avoid_emission")}                  # the editor's Away from emission, under Generate the grid
 #: the stacking method: chosen on the cards of the Stacking panel, never as a row
 STACK_METHOD = ("stack", "method")
 #: the stacking methods' names and what each does, by the engine's key (an engine method missing here shows its

@@ -10,9 +10,9 @@ from astro_gpu.core.workflow import TEMPLATES, Chains, OptionRefused, chain, cha
 
 BASE = ["inventory", "calibrate", "register", "stack"]
 TABLE = {      # §2.1: the stages after stack, without the reference image
-    "Classic stack": ["astrometry", "catalogs", "gradient", "color", "render_simple"],
-    "Classic + denoise": ["astrometry", "catalogs", "gradient", "color", "denoise", "render_simple"],
-    "Full": ["astrometry", "catalogs", "gradient", "color", "denoise", "render_simple", "star_removal"],
+    "Classic stack": ["astrometry", "catalogs", "surveys", "gradient", "color", "render_simple"],
+    "Classic + denoise": ["astrometry", "catalogs", "surveys", "gradient", "color", "denoise", "render_simple"],
+    "Full": ["astrometry", "catalogs", "surveys", "gradient", "color", "denoise", "render_simple", "star_removal"],
 }
 CLASSIC, CLASSIC_DN, FULL = (TEMPLATES[k] for k in TABLE)
 
@@ -45,7 +45,7 @@ def test_gradient_method():
     for o in (CLASSIC, FULL):
         assert wfl.method_of(o, "gradient") == "polynomial"
         assert wfl.implied(o, "gradient") == {"method": "polynomial"}
-        assert "surveys" not in chain(o)
+        assert "surveys" in chain(o)                     # a guide for the samples, read if there
     # the H-alpha anchored background of earlier versions is read as the method that replaces it
     assert wfl.check_options({**FULL, "gradient": "halpha"}) == FULL
 

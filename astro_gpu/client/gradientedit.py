@@ -17,10 +17,12 @@ after the last edit, the last edit only (the ones in between are skipped); the a
 request. No sample placed: the block chooses its own at each run (the polynomial: small blocks of sky all over the
 field, the RBF: the generated grid), drawn as the last run used them; Generate the grid places editable ones.
 
-The H-alpha survey (R, or its toggle in the image's bar): the professional H-alpha map of the field (NSNS, else Finkbeiner), fetched on
-request from the solved field (cached on disk) and drawn under the samples in amber, the way Lightroom shows a mask: it
-shows where the faint nebulosity is, which no sample should sit on (the rule of DBE's users), and Generate the grid
-then leaves those cells out (Away from emission; the survey fetched first when it is not yet). It is a guide only: the sky model never reads it.
+The H-alpha survey (R, or its toggle in the image's bar): the professional H-alpha map of the field (NSNS, else
+Finkbeiner), the chain's Surveys stage when it ran, else fetched from the solved field (cached on disk), drawn under the
+samples in amber, the way Lightroom shows a mask: it shows where the faint nebulosity is, which no sample should sit on
+(the rule of DBE's users). Away from emission (the block's ``avoid_emission``, on by default) leaves those cells out of
+Generate the grid and of the samples the block chooses, in the preview as in the run. A guide only: the sky model
+never reads the survey.
 """
 from __future__ import annotations
 
@@ -125,7 +127,6 @@ class GradientEditor(QObject):
         self._veil = None                      # (key, QImage)
         self.survey = None                     # {"pid", "level" (h, w) on the reduced copy, "title"} or {"pid", "error"}
         self.survey_shown = False              # the survey drawn under the samples (H)
-        self.avoid = True                      # Generate the grid leaves the survey's emission out
         self._survey_wanted = False            # asked while a computation ran
         self._grid_after_survey = False        # Generate waits for the survey (Away from emission)
         self._survey_img = None                # (key, QImage)
@@ -390,7 +391,7 @@ class GradientEditor(QObject):
                     self._ui[k].setEnabled(self.mode == "brush")
             if "size" in self._ui:
                 self._ui["size"].setEnabled(self.mode == "brush")
-            for k, on in (("marks", self.shown), ("survey", self.survey_shown)):
+            for k, on in (("marks", self.shown), ("survey", self.survey_shown), ("avoid", self.avoid)):
                 if k in self._ui:
                     b = self._ui[k]
                     b.blockSignals(True)
@@ -452,8 +453,28 @@ class GradientEditor(QObject):
         if self.view is not None:
             self.view.canvas.update()
 
+    @property
+    def avoid(self) -> bool:
+        """Away from emission: the block's setting (the samples it chooses, and Generate the grid's)."""
+        v = self.s.param_value(self.p, "gradient", "avoid_emission") if self.p is not None else None
+        return True if v is None else bool(v)
+
     def _set_avoid(self, on: bool):
-        self.avoid = bool(on)
+        """Away from emission is a setting of the block (one step of Undo, the block Outdated), as the samples are."""
+        if bool(on) == self.avoid:
+            return
+        paths = self.s.scope_paths()
+        if self.p.pid not in [q.pid for q in paths]:
+            paths = [self.p]
+        from .model import NotInEngine
+        try:
+            self.s.apply_change(paths, {"kind": "params", "items": [("gradient", "avoid_emission", bool(on))]})
+        except (ValueError, NotInEngine) as e:
+            self.tv.toasted.emit(_(str(e)))
+        self.done = self.s.state(self.p, "gradient") == "done"
+        if self._method() != "automatic":
+            self._timer.start()
+        self._sync()
 
     def wants(self, e) -> bool:
         """Whether the image takes this key before the shortcuts (the canvas asks, ShortcutOverride)."""
@@ -869,6 +890,9 @@ class GradientEditor(QObject):
         small = self.small if self.small and self.small["pid"] == pid else None
         sv = self.survey if self.avoid and self.survey and self.survey["pid"] == pid else None
         level = sv.get("level") if sv else None
+        # the block's own samples avoid the survey's emission: the preview too (the survey fetched with it)
+        fetch = (what == "preview" and self.avoid and params.method != "automatic" and not params.sample_points
+                 and (self.survey is None or self.survey["pid"] != pid))
         project = self.s.p
         self.busy = True
         if self.view is not None:
@@ -888,7 +912,13 @@ class GradientEditor(QObject):
                         kept, out["avoided"] = away_from_emission(pts, kept, level, box)
                     out["grid"] = [[float(x) / sm["f"], float(y) / sm["f"]] for x, y in pts[kept]]
                 elif what == "preview":
-                    out.update(_preview(sm, params))
+                    if fetch:
+                        try:
+                            out["survey"] = {"pid": pid, **_survey_small(project, pid, sm)}
+                        except Exception as e:  # noqa: BLE001 - no survey: the preview without it
+                            out["survey"] = {"pid": pid, "error": _survey_why(e)}
+                    lv = level if level is not None else (out.get("survey") or {}).get("level")
+                    out.update(_preview(sm, params, lv))
                 elif what == "survey":
                     try:
                         out["survey"] = {"pid": pid, **_survey_small(project, pid, sm)}
@@ -903,15 +933,15 @@ class GradientEditor(QObject):
         self.busy = False
         if out.get("small") is not None:
             self.small = out["small"]
-        if "error" in out:
-            self.tv.toasted.emit(out["error"])
-        elif "survey" in out:
+        if "survey" in out:                    # asked for itself, or fetched with a preview
             self.survey, self._survey_img = out["survey"], None
-            if "error" in out["survey"]:
+            if "error" in out["survey"] and out.get("what") == "survey":
                 self.tv.toasted.emit(_("H-alpha survey: {why}").format(why=out["survey"]["error"]))
             if self._grid_after_survey:        # Generate asked for it: the grid now, with or without the survey
                 self._grid_after_survey = False
                 self._pending = "grid"
+        if "error" in out:
+            self.tv.toasted.emit(out["error"])
         elif "grid" in out:
             self.work["sample_points"] = out["grid"] + ([self._extra] if self._extra else [])
             self._extra = None
@@ -978,18 +1008,25 @@ def _reduced_stack(project, pid: int) -> dict:
 def _survey_small(project, pid: int, sm: dict) -> dict:
     """The H-alpha survey of the workflow's solved field on the reduced copy's grid, as its emission level
     (surveys.emission_level: 0 its sky, 1 its bright emission), and its name."""
+    import json
+
     from astropy.io import fits
     from astropy.wcs import WCS
     from astropy.wcs.utils import proj_plane_pixel_scales
 
     from ..api import stage_outputs
     from ..stages.surveys import SURVEYS, emission_level, survey_on_grid
-    out = stage_outputs(project, pid, "astrometry")
-    if out is None:
-        raise ValueError(_("the field is not solved yet (Astrometry)"))
-    wd = WCS(fits.getheader(f"{out.dir}/wcs.fits"))
-    scale = float(np.mean(proj_plane_pixel_scales(wd.celestial))) * 3600.0
-    img, name = survey_on_grid(wd, sm["W"], sm["H"], scale, log=lambda *a: None)
+    done = stage_outputs(project, pid, "surveys")          # the chain's survey, when it ran
+    js = json.loads(open(f"{done.dir}/survey.json", encoding="utf-8").read()) if done is not None else None
+    if js is not None and js.get("survey", "none") != "none":
+        img, name = np.load(f"{done.dir}/ref_ha.npy", mmap_mode="r"), js["survey"]
+    else:
+        out = stage_outputs(project, pid, "astrometry")
+        if out is None:
+            raise ValueError(_("the field is not solved yet (Astrometry)"))
+        wd = WCS(fits.getheader(f"{out.dir}/wcs.fits"))
+        scale = float(np.mean(proj_plane_pixel_scales(wd.celestial))) * 3600.0
+        img, name = survey_on_grid(wd, sm["W"], sm["H"], scale, log=lambda *a: None)
     k = int(round(1 / sm["f"]))
     h, w = sm["arr"].shape[1:]
     with np.errstate(all="ignore"):
@@ -1012,10 +1049,11 @@ def _survey_why(e: Exception) -> str:
     return _("not available ({why})").format(why=str(e)[:120])
 
 
-def _preview(sm: dict, params) -> dict:
-    """The stack with the model's gradient removed (its level kept), on the reduced copy, and its samples."""
+def _preview(sm: dict, params, emission=None) -> dict:
+    """The stack with the model's gradient removed (its level kept), on the reduced copy, and its samples (``emission``:
+    the survey's level on the copy, which the block's own samples avoid, as the run's)."""
     from ..stages.gradient import read_grid, sky_model_of
-    m = sky_model_of(sm["arr"], sm["valid"], params, f=sm["f"])
+    m = sky_model_of(sm["arr"], sm["valid"], params, f=sm["f"], emission=emission)
     h, w = sm["arr"].shape[1:]
     g = read_grid(m["grid"], m["info"], h, w)
     lvl = np.array([np.median(g[c][sm["valid"]]) for c in range(3)], np.float32)[:, None, None]

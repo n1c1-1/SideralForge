@@ -423,7 +423,7 @@ def test_real_stage_graph_plans_each_key_once_and_cheap_workflows_first(proj):
     plan = runner2.plan_all(p, history={})
     k = Keys(p)
     distinct = {k.key(w.id, s) for w in p.workflows for s in k.chain(w.id)}
-    assert sorted(plan.keys) == sorted(distinct) and len(plan) == 13
+    assert sorted(plan.keys) == sorted(distinct) and len(plan) == 14
     pos = {(j.stage, tuple(j.wf)): i for i, j in enumerate(plan.jobs)}
     for i, j in enumerate(plan.jobs):
         assert all(plan.keys.index(d) < i for d in j.deps.values())

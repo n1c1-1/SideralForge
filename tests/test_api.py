@@ -621,15 +621,15 @@ def test_methods_table_marks_what_is_not_in_the_engine():
 
 def test_chain_deps_blocks_and_sharing_on_the_real_graph(real):
     p = real
-    assert api.chain(p, 1) == ["inventory", "calibrate", "register", "stack", "astrometry", "catalogs", "gradient",
-                               "color", "render_simple"]
+    assert api.chain(p, 1) == ["inventory", "calibrate", "register", "stack", "astrometry", "catalogs", "surveys",
+                               "gradient", "color", "render_simple"]
     assert api.chain(p, 3)[-2:] == ["render_simple", "star_removal"] and "star_removal" not in api.chain(p, 2)
     assert api.deps(p, 1, "render_simple") == ("stack", "color", "gradient")
     assert api.deps(p, 3, "star_removal") == ("render_simple", "stack", "gradient")
     b = {x.block: x for x in api.blocks(p, 3)}
     assert list(b) == ["calibration", "registration", "selection", "stacking", "astrometry", "gradient", "color",
                        "denoise", "stars", "output"]
-    assert b["astrometry"].stages == ("astrometry", "catalogs") and len(b["astrometry"].key) == 2
+    assert b["astrometry"].stages == ("astrometry", "catalogs", "surveys") and len(b["astrometry"].key) == 2
     assert b["selection"].stages == () and b["output"].key[-1] == "workflow 3"
     assert api.blocks(p, 1)[-1].key[-1] == "workflow 1" and api.blocks(p, 1)[-1].key != b["output"].key
     assert api.sharing(p, 1, "stack") == [1, 2, 3, 4] and api.sharing(p, 3, "denoise") == [2, 3]
@@ -647,17 +647,17 @@ def test_chain_deps_blocks_and_sharing_on_the_real_graph(real):
 def test_the_toy_scenario_cost_equals_the_plan_after_each_change(real):
     p = real
     plan0 = cost_equals_plan(p)
-    # 15: everything up to Color shared; Denoise and what follows by denoising
-    assert len(plan0) == 15 and plan0.seconds > 300 and not plan0.measured
+    # 16: everything up to Color shared; Denoise and what follows by denoising
+    assert len(plan0) == 16 and plan0.seconds > 300 and not plan0.measured
     # a setting on two workflows: the others still share the stack
     api.set_param(p, [3, 4], "stack", "kappa", 6)
     plan1 = cost_equals_plan(p)
     assert api.sharing(p, 3, "stack") == [3, 4] and api.sharing(p, 1, "stack") == [1, 2]
-    assert len(plan1) == 22 and len(set(plan1.keys) & set(plan0.keys)) < len(plan0)
+    assert len(plan1) == 24 and len(set(plan1.keys) & set(plan0.keys)) < len(plan0)
     # the what-if of a change equals the plan once the change is made
     change = {"kind": "param", "stage": "gradient", "name": "degree", "value": 3}
     ask = api.cost(p, [api.with_change(p, 1, change)])
-    assert ask.jobs == 9 and ask.seconds < plan1.seconds                                # the whole chain, from nothing
+    assert ask.jobs == 10 and ask.seconds < plan1.seconds                               # the whole chain, from nothing
     v = api.make_variant(p, 1, change, "Classic · degree 3")
     plan2 = cost_equals_plan(p)
     assert set(plan2.keys) - set(plan1.keys) == {api.stage_key(p, v.id, s) for s in ("gradient", "color",
@@ -700,7 +700,7 @@ def test_the_toy_scenario_cost_equals_the_plan_after_each_change(real):
     done = cost_equals_plan(p)
     assert len(done) == len(plan3) - 4 and done.seconds < plan3.seconds
     one = api.plan_to_block(p, classic, "color")
-    assert [j.stage for j in one.jobs] == ["astrometry", "catalogs", "gradient", "color"]
+    assert [j.stage for j in one.jobs] == ["astrometry", "catalogs", "surveys", "gradient", "color"]
     sel = api.plan_to_block(p, 2, "selection")                                 # Selection runs Registration
     assert not sel                                                             # it is done
     assert api.estimate(p, 1, "stack").seconds > 0 and not api.estimate(p, 1, "stack").measured
@@ -730,7 +730,7 @@ def test_warm_fills_the_disk_caches_so_that_keys_states_and_plans_do_not_scan(re
     monkeypatch.setattr("astro_gpu.io.frames.read_info", no_scan)
     key = api.stage_key(p, 3, "stack")
     assert api.states(p, update=False)[(3, "stack")].key == key
-    assert api.cost(p).jobs == len(api.plan_all(p)) == 15 and api.blocks(p, 3) and api.sharing(p, 1, "stack")
+    assert api.cost(p).jobs == len(api.plan_all(p)) == 16 and api.blocks(p, 3) and api.sharing(p, 1, "stack")
     api.set_param(p, 3, "stack", "kappa", 6)                       # an edit changes the keys, not the disk parts
     assert api.stage_key(p, 3, "stack") != key and api.cost(p).jobs > 20
     api.add_session(p, lights=["elsewhere"])                       # a new session: its files are not cached yet

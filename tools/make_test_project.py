@@ -1,21 +1,23 @@
 """Build the test project of the client tests, from scratch, with the current engine.
 
-    python tools/make_test_project.py [--out FOLDER] [--data FOLDER] [--device cuda:0] [--force] [--dry-run]
+    python tools/make_test_project.py [--out FOLDER] [--data FOLDER] [--device cuda:0] [--force | --update] [--dry-run]
 
 What it makes (default ``F:/astro_essais/tests/heart_small``, the folder ``tests/conftest.py`` names in
 ``TEST_PROJECT``): a v2 project on the heart_a7s raw frames (``F:/astro_essais/donnees/heart_a7s``: 40 lights, 15
 darks, 15 flats, Sony A7S at 272 mm, one night), created, scanned, planned and run through ``astro_gpu.api`` as the
 client does:
 
-- one workflow in the definition, ``Full`` (id 1), every stage computed; Denoise at 6000 training iterations, the
-  setting the tests give the workflows they add in memory, so that the plans share it. The workflows the tests add
+- one workflow in the definition, ``Full`` (id 1), every stage computed (Denoise: the pretrained network, its
+  default). The workflows the tests add
   (Classic stack, Classic + denoise, Full + neural stars) are not computed beyond what they share with Full;
 - the results of ``Classic`` too: a Classic stack whose background setting differs from the default
   (``CLASSIC_PARAMS``, the same in tests/conftest.py ``TEST_PROJECT_CLASSIC``), run, then taken out of the definition
   (the next workflow id is 2 again): the Post tests add it in memory and find its final image computed.
 
 Run it again after an engine change that makes the results outdated (the client tests then show stale blocks):
-``--force`` deletes the old folder first (only inside ``F:/astro_essais/tests``). One GPU (``--device``). With the
+``--force`` deletes the old folder first (only inside ``F:/astro_essais/tests``); ``--update`` keeps it and computes
+only what the engine change made outdated (Full, and Classic added back for its run then taken out again). One GPU
+(``--device``). With the
 Gaia tiles already in ``<out>/../_state/cache`` it takes about 50 minutes (the Stars stage alone about 30); the first
 build also downloads about 160 Gaia tiles (an hour when VizieR does not answer). The engine's state (timings, recent
 projects, download cache) goes to ``<out>/../_state``, never the user's ``~/.astro_gpu`` (its camera profiles are
@@ -38,7 +40,6 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = Path("F:/astro_essais/tests/heart_small")
 DATA = Path("F:/astro_essais/donnees/heart_a7s")
 ALLOWED = Path("F:/astro_essais/tests")
-DENOISE_ITERATIONS = 6000
 #: the Heart (IC 1805) and the instrument's focal length: the astrometry starts at the right scale instead of a blind
 #: search over every scale (which downloads hundreds of Gaia tiles and takes most of an hour)
 TARGET = {"name": "IC 1805", "ra": 38.173, "dec": 61.4569, "focal_mm": 272.0}
@@ -126,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--data", type=Path, default=DATA, help=f"raw frames: lights/, darks/, flats/ (default {DATA})")
     ap.add_argument("--device", default="cuda:0", help="device of the run (default cuda:0)")
     ap.add_argument("--force", action="store_true", help="delete an existing project folder first")
+    ap.add_argument("--update", action="store_true", help="keep the existing project, compute what is outdated")
     ap.add_argument("--dry-run", action="store_true", help="create and plan, print the plan, run nothing")
     a = ap.parse_args(argv)
     out = a.out.resolve()
@@ -135,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     if not (a.data / "lights").is_dir():
         print(f"no raw frames in {a.data}")
         return 2
-    if (out / "project.astroproj").exists():
+    if (out / "project.astroproj").exists() and not a.update:
         if not a.force:
             print(f"{out} exists: --force rebuilds it")
             return 2
@@ -157,6 +159,22 @@ def main(argv: list[str] | None = None) -> int:
     from astro_gpu import api
 
     t0 = time.time()
+    if a.update:
+        p = api.open_project(out)
+        full = next(w for w in p.workflows if w.name == "Full")
+        classic = add_classic(api, p)
+        api.save(p)
+        plan = api.plan_all(p, a.device)
+        if a.dry_run:
+            log(f"plan: {len(plan.jobs)} jobs: {', '.join(j.stage for j in plan.jobs)}")
+            finish(api, p, full.id, classic.id)
+            return 0
+        ok = run(api, p, plan, a.device)
+        finish(api, p, full.id, classic.id)
+        info = json.loads((out / INFO).read_text(encoding="utf-8")) if (out / INFO).exists() else {}
+        write_info(out, a.data, info.get("frames", {}), a.device, (time.time() - t0) / 60)
+        log(f"updated in {(time.time() - t0) / 60:.1f} min: {out}")
+        return 0 if ok else 1
     p = api.create_project(out, "heart_small", TARGET)
     scan = api.scan_folder(a.data / "lights")
     counts = {k: len(v) for k, v in scan.frames.items()}
@@ -165,7 +183,6 @@ def main(argv: list[str] | None = None) -> int:
     p.description = "Test project of the client tests (tools/make_test_project.py)"
     p.devices["main"] = a.device
     full = api.add_workflow(p, "Full", "Full")
-    api.set_param(p, [full.id], "denoise", "iterations", DENOISE_ITERATIONS)
     classic = add_classic(api, p)
     api.save(p)
     plan = api.plan_all(p, a.device)

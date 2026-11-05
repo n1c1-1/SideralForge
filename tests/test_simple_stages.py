@@ -333,7 +333,7 @@ def test_v2_stages_and_chains():
     assert ch.deps_in_chain(classic, "render_simple") == ("stack", "color", "denoise", "gradient")
     raw_exit = ch.chain(workflow.TEMPLATES["Classic stack"], "stacking")
     assert ch.deps_in_chain(raw_exit, "render_simple") == ("stack",)
-    assert ch.deps_in_chain(ch.chain(workflow.TEMPLATES["Classic stack"]), "gradient") == ("stack",)
+    assert ch.deps_in_chain(ch.chain(workflow.TEMPLATES["Classic stack"]), "gradient") == ("stack", "surveys")
     full = ch.chain(workflow.TEMPLATES["Full"])
     assert full[-2:] == ["render_simple", "star_removal"]
     assert ch.deps_in_chain(full, "star_removal") == ("render_simple", "stack", "gradient")

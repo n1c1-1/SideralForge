@@ -142,6 +142,7 @@ EXTRA: dict[str, tuple[str, ...]] = {}
 #: dependencies that may be absent from a chain (the stage then runs without them); the stages that read the stack
 #: read it with the sky gradient removed when the chain has the Gradient block (gradient.stack_image)
 OPTIONAL: dict[str, tuple[str, ...]] = {
+    "gradient": ("surveys",),                       # where the H-alpha survey sees nebulosity: no sky sample there
     "color": ("gradient",),
     "denoise": ("gradient",),
     "render_simple": ("color", "denoise", "gradient"),
@@ -176,7 +177,7 @@ def chain_stages(options: dict[str, Any], end: str | None = None, reference: boo
     out = ["inventory", "calibrate", "register", "stack"]
     if check_end(end) == "stacking":
         return out + ["render_simple"]
-    out += ["astrometry"] + (["reference"] if reference else []) + ["catalogs", "gradient", "color"]
+    out += ["astrometry"] + (["reference"] if reference else []) + ["catalogs", "surveys", "gradient", "color"]
     if o["denoise"]:
         out.append("denoise")
     out.append("render_simple")
