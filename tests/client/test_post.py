@@ -2166,7 +2166,7 @@ def _texts_of_the_code() -> dict[str, list[str]]:
     from astro_gpu.client.model import POST_PART_NAMES
     for t in ("Paint", "Erase", rsv.NOTE_CPU_TEXT, " (copy)") + tuple(POST_PART_NAMES.values()) + postengine.BLENDS:
         found.setdefault(t, []).append("constants")
-    for t in list(pc.CHANNEL_TIPS.values()) + pc.INTERPS + ["Photoshop", "Astrophotography"] + \
+    for t in list(pc.CHANNEL_TIPS.values()) + pc.INTERPS + ["Classic tone curves", "Astrophotography"] + \
             [x for p in pc.builtin_presets() for x in (p["name"], p["source"])] + list(postengine.OLD_NAMES):
         found.setdefault(t, []).append("curves")
     return found

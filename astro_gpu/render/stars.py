@@ -44,8 +44,8 @@ class StarSettings(SimpleSettings):
                                   "makes them fainter and smaller (the star reduction the separation allows), more "
                                   "brighter.")
     star_size: float = P(0.0, label="Star size", ge=-3.0, le=3.0, step=0.1, unit="px",
-                         help="Below 0 the stars are shrunk by this radius (a grey erosion, Photoshop's Minimum "
-                              "filter), above 0 grown (its Maximum filter).")
+                         help="Below 0 the stars are shrunk by this radius (a grey erosion: each pixel takes the "
+                              "darkest of its neighbours), above 0 grown (a grey dilation: the brightest).")
     star_saturation: float = P(1.2, label="Star color", ge=0.0, le=3.0, step=0.05,
                                help="Colour saturation of the stars around their luminance, after their stretch.")
     blend: str = P("Screen", label="Blend", choices=list(BLENDS),

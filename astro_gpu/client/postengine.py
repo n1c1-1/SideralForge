@@ -322,10 +322,10 @@ FILTERS = {
                             P("symmetry", "Symmetry point", 0, 0.6, 0.08, step=0.01)]),
     # ---- contrast and curves
     "curves": dict(name="Curves", family="Stretch", fn=f_curves, editor="curves", hist=True,
-                   source="A curve per channel through control points, as Photoshop's Curves",
+                   source="A curve per channel through control points",
                    params=[CURVE("curves")]),
     "levels": dict(name="Levels", family="Stretch", fn=f_levels,
-                   source="Photoshop's Levels: black point, white point, gamma",
+                   source="Black point, white point, gamma",
                    params=[P("black", "Black point", 0, 0.3, 0, step=0.005),
                            P("white", "White point", 0.7, 1, 1, step=0.005),
                            P("gamma", "Gamma", 0.5, 2, 1, step=0.01)]),

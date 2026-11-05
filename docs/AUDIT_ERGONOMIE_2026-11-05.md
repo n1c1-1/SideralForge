@@ -39,6 +39,16 @@ Post-traitement et Export. Les écrans ont été relus dans les deux langues. Le
   - À l'export, une option que le format ne prend pas apparaît décochée.
   - « Processeur seul (pas de carte graphique) » est écrit en clair.
 
+## Décisions du 5 novembre
+
+- 1 : on garde « workflow », en français aussi.
+- 3 : fait. La barre d'Inspect a un seul bouton « Exporter ▾ » (Fichier…, Copier l'image, Envoyer au
+  Post-traitement), et elle tient en entier en français.
+- 8 : règle majeure, aucun nom de logiciel externe dans l'interface, sauf un logiciel réellement utilisé. Les
+  Courbes, les Niveaux, les préréglages « Courbes de tons classiques », les fichiers .acv et l'aide de la taille des
+  étoiles ne nomment plus aucun logiciel. Les crédits des catalogues Gaia de Siril restent, car ces données sont
+  réellement utilisées.
+
 ## À décider
 
 1. **« workflow » ou « chaîne » en français.** Trois relecteurs le signalent : « les 6 workflows », « + Nouveau

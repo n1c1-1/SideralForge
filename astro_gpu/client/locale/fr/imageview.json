@@ -131,5 +131,7 @@
  "⇄ Aligned for display by the astrometric solutions: “{name}” resampled onto this image ({what})": "⇄ Alignée pour l'affichage par les solutions astrométriques : « {name} » rééchantillonnée sur cette image ({what})",
  "⇄ Aligned for display by the geometry of the results (drizzle scale, crop, size): “{name}” resampled onto this image ({what})": "⇄ Alignée pour l'affichage par la géométrie des résultats (échelle du drizzle, recadrage, taille) : « {name} » rééchantillonnée sur cette image ({what})",
  "their distortions followed, up to {d} px": "leurs distorsions suivies, jusqu'à {d} px",
- "RGB": "RVB"
+ "RGB": "RVB",
+ "File…": "Fichier…",
+ "Export the image: to a file, to the clipboard or to Post": "Exporter l'image : dans un fichier, dans le presse-papiers ou vers le Post-traitement"
 }

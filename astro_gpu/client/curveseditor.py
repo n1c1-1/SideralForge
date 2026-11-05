@@ -58,7 +58,7 @@ PLOT_H = 290
 BAR = 9                                              # the gradient bars under and left of the plot
 PICK = 9                                             # px: how near a point the mouse must be to take it
 OUT = 26                                             # px out of the plot: a dragged point is deleted when let go
-GROUPS = (("Photoshop", "Photoshop"), ("Astrophotography", None))
+GROUPS = (("Classic tone curves", "classic"), ("Astrophotography", None))
 
 
 def _hue_gradient(g: QLinearGradient):
@@ -548,7 +548,7 @@ class CurvesEditor(QWidget):
         for head, src in GROUPS:
             self._header(_(head))
             for p in built[1:]:
-                if (p["source"] == "Photoshop") == (src == "Photoshop"):
+                if (p["source"] == pc.PS) == (src == "classic"):
                     self.preset.addItem("   " + _(p["name"]), p["name"])
                     self.preset.setItemData(self.preset.count() - 1, _(p["source"]), Qt.ToolTipRole)
                     self._presets[p["name"]] = p
@@ -638,7 +638,7 @@ class CurvesEditor(QWidget):
     def export_file(self, path: str | None = None) -> bool:
         if path is None:
             path, _f = QFileDialog.getSaveFileName(self.window(), _("Export these curves"), "curves.acv",
-                                                   _("Photoshop curves (*.acv);;Curves of this program (*.json)"))
+                                                   _("Curves files (*.acv);;Curves of this program (*.json)"))
         if not path:
             return False
         try:

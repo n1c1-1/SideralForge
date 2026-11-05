@@ -2615,15 +2615,28 @@ class ImageView(QWidget):
         self.auto_b = tool(_("Auto-stretch"), _("Display only: the data stay linear (A)"), self._auto_toggled, True)
         self.hist_b = tool(_("Histogram"), _("The stretch and the histogram (H)"), self.show_histogram, True)
         h.addStretch(1)
-        self.export_b = tool(_("Export…"), _("Write the image to a file: FITS, TIFF, PNG or JPEG (Ctrl+E)"),
-                             self.export_dialog)
-        self.export_b.setVisible(export)
-        self.post_b = tool(_("Send to Post"), _("Use this image in Post"), self._send_post)
-        self.post_b.setVisible(post)
-        self.copy_b = tool(_("Copy image"), _("Copies the picture as it is shown here (its zoom, stretch and overlays) "
+        # what leaves the viewer, in one menu (a file, the clipboard, Post): one button, whatever the language
+        self.out_b = QPushButton(_("Export") + "  ▾")
+        self.out_b.setObjectName("ivtool")
+        self.out_b.setToolTip(_("Export the image: to a file, to the clipboard or to Post"))
+        menu = QMenu(self.out_b)
+        menu.setToolTipsVisible(True)
+
+        def item(text, tip, slot, shown):
+            a = menu.addAction(text)
+            a.setToolTip(tip)
+            a.triggered.connect(lambda _c=False: slot())
+            a.setVisible(shown)
+            return a
+        self.export_b = item(_("File…"), _("Write the image to a file: FITS, TIFF, PNG or JPEG (Ctrl+E)"),
+                             self.export_dialog, export)
+        self.copy_b = item(_("Copy image"), _("Copies the picture as it is shown here (its zoom, stretch and overlays) "
                                               "to the clipboard, to paste it into a message or another program "
-                                              "(Ctrl+C)"), self.copy_view)
-        self.copy_b.setVisible(copy)
+                                              "(Ctrl+C)"), self.copy_view, copy)
+        self.post_b = item(_("Send to Post"), _("Use this image in Post"), self._send_post, post)
+        self.out_b.setMenu(menu)
+        self.out_b.setVisible(export or copy or post)
+        h.addWidget(self.out_b)
         return bar
 
     def _readout_bar(self) -> QFrame:
@@ -2850,7 +2863,7 @@ class ImageView(QWidget):
 
     def _update_actions(self):
         has = self._prep is not None
-        for b in (self.export_b, self.post_b, self.copy_b, self.fit_b, self.one_b, self.zoom_b, self.auto_b):
+        for b in (self.export_b, self.post_b, self.copy_b, self.out_b, self.fit_b, self.one_b, self.zoom_b, self.auto_b):
             b.setEnabled(has)
         if not self._post_ok:
             self.post_b.setEnabled(False)

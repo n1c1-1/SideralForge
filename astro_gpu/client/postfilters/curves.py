@@ -267,7 +267,8 @@ def _ghs(p):
     return lambda x: float(ghs_curve(p, np.array([x]))[0])
 
 
-PS = "Photoshop"
+#: the source of the nine classic tone curves (the points of the .acv presets of the usual photo editor)
+PS = "Classic tone curves"
 _GRID = [0, 0.04, 0.12, 0.25, 0.45, 0.7, 1]
 
 
@@ -375,16 +376,16 @@ ACV_CHANNELS = ["RGB/K", "R", "G", "B"]
 def read_acv(data: bytes) -> dict:
     """A Photoshop .acv file: its RGB, R, G and B curves (the points 0-255; drawn with the natural cubic spline)."""
     if len(data) < 4:
-        raise ValueError("not a Photoshop curves file")
+        raise ValueError("not a curves file (.acv)")
     _version, n = struct.unpack(">hh", data[:4])
     o, out = 4, {}
     for k in range(n):
         if o + 2 > len(data):
-            raise ValueError("a truncated Photoshop curves file")
+            raise ValueError("a truncated curves file (.acv)")
         cnt, = struct.unpack(">h", data[o:o + 2])
         o += 2
         if cnt < 2 or o + 4 * cnt > len(data):
-            raise ValueError("a damaged Photoshop curves file")
+            raise ValueError("a damaged curves file (.acv)")
         pts = [struct.unpack(">hh", data[o + 4 * j:o + 4 * j + 4]) for j in range(cnt)]
         o += 4 * cnt
         if k < len(ACV_CHANNELS):
@@ -402,7 +403,7 @@ def write_acv(curves: dict) -> bytes:
         c = curves.get(ch) if ch else None
         pts = c["pts"] if c else [[0.0, 0.0], [1.0, 1.0]]
         if len(pts) > 19:
-            raise ValueError("a Photoshop curve holds 19 points at most")
+            raise ValueError("an .acv curve holds 19 points at most")
         q = sorted({(int(x * 255 + 0.5), int(y * 255 + 0.5)) for x, y in pts})
         blobs.append(struct.pack(">h", len(q)) + b"".join(struct.pack(">hh", o, i) for i, o in q))
     return b"".join(blobs)

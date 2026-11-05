@@ -1079,10 +1079,10 @@ def test_send_to_post_and_copy_view(qapp, loader):
     show(v, iv.ViewImage(sky(), "S", key=("stack", "k1")))
     sent = []
     v.sendToPost.connect(sent.append)
-    v.post_b.click()
+    v.post_b.trigger()
     assert sent == [("stack", "k1")]
     QGuiApplication.clipboard().clear()
-    v.copy_b.click()
+    v.copy_b.trigger()
     im = QGuiApplication.clipboard().image()
     assert not im.isNull() and im.width() == v.area.width()
 
