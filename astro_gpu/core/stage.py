@@ -57,7 +57,8 @@ class Context:
         self.project = project
         self.stage = stage
         self.journal = journal
-        self.dir = project.stage_dir(stage.name)
+        own = getattr(project, "own_dir", None)
+        self.dir = own() if own is not None else project.stage_dir(stage.name)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.device_name = device
         self._t0 = time.time()

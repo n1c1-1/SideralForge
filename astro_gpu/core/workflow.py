@@ -208,7 +208,12 @@ def implied(options: dict[str, Any], stage: str) -> dict[str, Any]:
 
 #: the global order of the v2 stages (each stage only reads stages before it)
 ORDER = ["fusion", "image", "inventory", "calibrate", "sessions", "register", "stack", "astrometry", "reference", "catalogs",
-         "surveys", "gradient", "color", "denoise", "render_simple", "star_removal"]
+         "surveys", "gradient", "denoise", "color", "render_simple", "star_removal"]
+#: the stages that read the image the blocks before them made (issue #47), and which of those blocks they apply: all
+#: of them, or only the sky gradients (Color measures its stars on the stack, its sky removed; the star removal takes
+#: its noise from the half-stacks so)
+READERS: dict[str, str] = {"gradient": "all", "denoise": "all", "render_simple": "all", "color": "skies",
+                           "star_removal": "skies"}
 #: stages that stand for others in a chain (issue #43): the sessions' join for each session's frames and calibration,
 #: the image of an image source for the stack
 PROVIDES: dict[str, tuple[str, ...]] = {"sessions": ("inventory", "calibrate"), "image": ("stack", "render_simple"),
@@ -237,15 +242,15 @@ BLOCKS: dict[str, tuple[str, ...]] = {
     "stacking": ("stack",),
     "astrometry": ("astrometry", "reference", "catalogs", "surveys"),
     "gradient": ("gradient",),
+    "denoise": ("denoise",),                        # Color applies its matrix after Denoise: the engine's order
     "color": ("color",),
-    "denoise": ("denoise",),
     "stars": ("star_removal",),                     # drawn before the Output, which every workflow ends with
     "output": ("render_simple",),
 }
 BLOCK_TITLES = {"fusion": "Fusion", "image": "Image", "calibration": "Calibration", "registration": "Registration",
                 "selection": "Selection",
                 "stacking": "Stacking", "astrometry": "Astrometry", "color": "Color", "denoise": "Denoise",
-                "stars": "Stars", "gradient": "Gradient", "output": "Output"}
+                "stars": "Split stars & background", "gradient": "Gradient", "output": "Output"}
 #: what Run to here runs for a block without stages of its own
 RUN_TO: dict[str, tuple[str, ...]] = {"selection": ("register",)}
 #: stages a block's key leaves out: the survey follows the Gradient method, not the Astrometry block
@@ -253,8 +258,9 @@ KEY_LEAVES_OUT: dict[str, tuple[str, ...]] = {"astrometry": ("surveys",)}
 
 
 def base(name: str) -> str:
-    """The stage of a chain entry: "calibrate" for the instance "calibrate@2"."""
-    return name.split("@", 1)[0]
+    """The stage of a chain entry: "calibrate" for the instance "calibrate@2", "denoise" for the second Denoise of a
+    graph, "denoise~2"."""
+    return name.split("@", 1)[0].split("~", 1)[0]
 
 
 def session_of(name: str) -> str | None:
@@ -349,6 +355,16 @@ class Chains:
                                           fusion=fusion, stretched=stretched))
         return self.ordered(self.rule(options, end, reference))
 
+    def sequence(self, names: Iterable[str]) -> list[str]:
+        """Stage names as a chain in the order given (a graph's, issue #47), every required dependency present."""
+        out = list(dict.fromkeys(names))
+        unknown = [n for n in out if base(n) not in self.stages]
+        if unknown:
+            raise ValueError(f"unknown stage(s): {sorted(unknown)}")
+        for n in out:
+            self.deps_in_chain(out, n)
+        return out
+
     def ordered(self, names: Iterable[str]) -> list[str]:
         """Stage names as a chain: in the global order (the instances of a stage in the order given), every required
         dependency present (ValueError otherwise)."""
@@ -381,7 +397,17 @@ class Chains:
         if b == "sessions":
             return tuple(x for x in chain if session_of(x) is not None)
         out: list[str] = []
+        prior: list[str] = []
+        reads = b in READERS and b in self.stages and "stack" in self.stages
+        if reads:
+            # issue #47: the image blocks before it in the graph, in order (an image block placed after it is not
+            # read; a chain in the global order has them where they always were)
+            ops = IMAGE_OPS if READERS[b] == "all" else ("gradient",)
+            prior = [x for x in chain[:list(chain).index(stage)] if base(x) in ops]
         for d in self.deps2[b]:
+            if reads and d in IMAGE_OPS:                 # where it was declared: the graph's blocks of that stage
+                out += [x for x in prior if base(x) == d and x not in out]
+                continue
             r = self.resolve(chain, stage, d)
             if r is not None:
                 if r not in out:
@@ -389,6 +415,7 @@ class Chains:
             elif d not in self.optional.get(b, ()):
                 raise ValueError(f"stage '{stage}' needs the {self.block_title(self.block_of(d))} block "
                                  f"(stage '{d}')")
+        out += [x for x in prior if x not in out]
         return tuple(out)
 
     def ancestors(self, chain: Sequence[str], stage: str) -> list[str]:
@@ -409,9 +436,11 @@ class Chains:
     # ------------------------------------------------------------------ blocks
     def block_of(self, stage: str) -> str:
         """The block a stage belongs to (the stage name itself when no block lists it); an instance's block is the
-        block of its session: "calibration@2"."""
+        block of its session: "calibration@2"; a graph's later node of a block, that node: "denoise~2" (issue #47)."""
         b = self._block_of.get(base(stage), base(stage))
         sid = session_of(stage)
+        if "~" in stage.split("@", 1)[0]:
+            return f"{b}~{stage.split('@', 1)[0].split('~', 1)[1]}"
         return f"{b}@{sid}" if sid is not None else b
 
     @staticmethod
@@ -421,12 +450,13 @@ class Chains:
     def blocks_in(self, chain: Sequence[str]) -> list[tuple[str, tuple[str, ...]]]:
         """(block, its stages in the chain) for the blocks of a chain, in graph order; Selection comes with
         register. The instances of a session make the block of that session ("calibration@2"), in session order."""
-        inside = set(chain)
+        inside = {s for s in chain if "~" not in s}
         out = []
         for b, ss in self.blocks.items():
             mine = tuple(s for s in ss if s in inside)
             if mine or (b in RUN_TO and all(s in inside for s in RUN_TO[b])):
                 out.append((b, mine))
+            out += [(self.block_of(s), (s,)) for s in chain if "~" in s and base(s) in ss]     # a graph's later nodes
             sids = list(dict.fromkeys(session_of(s) for s in chain if session_of(s) is not None and base(s) in ss))
             out += [(f"{b}@{sid}", tuple(s for s in chain if base(s) in ss and session_of(s) == sid)) for sid in sids]
         return out
@@ -436,14 +466,446 @@ class Chains:
         b, sid = base(block), session_of(block)
         if b not in self.blocks:
             raise ValueError(f"unknown block {block!r}")
+        if "~" in block:
+            return [s for s in chain if self.block_of(s) == block]
         ss = RUN_TO.get(b) or self.blocks[b]
-        return [s for s in chain if base(s) in ss and session_of(s) == sid]
+        return [s for s in chain if base(s) in ss and session_of(s) == sid and "~" not in s]
 
     def key_stages(self, block: str, chain: Sequence[str]) -> list[str]:
         """The stages whose keys make a block's key (Output adds the workflow id: never shared)."""
         b, sid = base(block), session_of(block)
-        return [s for s in chain if base(s) in self.blocks.get(b, ()) and session_of(s) == sid
+        if "~" in block:
+            return [s for s in chain if self.block_of(s) == block]
+        return [s for s in chain if base(s) in self.blocks.get(b, ()) and session_of(s) == sid and "~" not in s
                 and base(s) not in KEY_LEAVES_OUT.get(b, ())]
+
+
+# ---------------------------------------------------------------------------------------------- free graphs (#47)
+#
+# A workflow is a graph the user builds from a palette (issue #47): its source (the sessions' frames, an image file, a
+# stretched image, or a fusion of other workflows) then a sequence of blocks, ``blocks``: [{"block", "name", "method",
+# "off"}]. Each block takes and gives a kind of data (``IO``); a block is placed only where its input is what the block
+# before it gives, and where the blocks it needs from further up are (``NEEDS``). The image blocks that change the image
+# (``IMAGE_OPS``) can be placed in any order and more than once: every later block reads the image they make, in the
+# graph's order (stages/gradient.image_in). An image block's entry in the chain is its node's ``name``: the block's
+# stage for the first one, "<stage>~<n>" for the others (stable: a node keeps its name, its settings with it).
+#
+# The workflows made before keep their options (``blocks`` None); ``from_options`` gives their graph, whose chain and
+# keys are the same (Gradient, Denoise, Color: the order the engine always ran them in).
+
+FRAMES, IMAGE, PAIR = "frames", "image", "pair"
+#: what each block takes and gives
+IO: dict[str, tuple[str, str]] = {
+    "calibration": (FRAMES, FRAMES), "registration": (FRAMES, FRAMES), "selection": (FRAMES, FRAMES),
+    "stacking": (FRAMES, IMAGE),
+    "astrometry": (IMAGE, IMAGE), "gradient": (IMAGE, IMAGE), "color": (IMAGE, IMAGE), "denoise": (IMAGE, IMAGE),
+    "output": (IMAGE, IMAGE), "stars": (IMAGE, PAIR)}
+#: the palette's blocks after the sources, in their usual order
+PALETTE = ("calibration", "registration", "selection", "stacking", "astrometry", "gradient", "denoise", "color",
+           "output", "stars")
+#: the frame blocks keep this order among themselves (a calibration after the registration means nothing)
+FRAME_BLOCKS = ("calibration", "registration", "selection", "stacking")
+#: the image blocks that change the image: any order, any number
+IMAGE_OPS = ("gradient", "color", "denoise")
+#: the blocks with a method, and their methods
+METHODS: dict[str, tuple[str, ...]] = {"gradient": OPTION_VALUES["gradient"], "denoise": ("pretrained", "adapted"),
+                                       "stars": ("neural",)}
+DEFAULT_METHOD = {"gradient": "polynomial", "denoise": "pretrained", "stars": "neural"}
+#: the sources of a workflow
+SOURCES = ("frames", "image", "stretched", "fusion")
+#: what a source gives
+SOURCE_GIVES = {"frames": FRAMES, "image": IMAGE, "stretched": IMAGE, "fusion": IMAGE}
+
+#: why a block cannot be placed (the client translates them)
+WHY_INPUT = "it takes {takes}, and {before} gives {gives}"
+WHY_ONCE = "a workflow has one {block} block"
+WHY_FRAME_ORDER = "{block} comes {where} {other}"
+WHY_NEEDS = "it needs the {need} block before it"
+WHY_HALVES = "it needs the half-stacks of a stack (a workflow from frames)"
+WHY_SOURCE = "a workflow from {source} has no {block} block"
+WHY_AFTER_OUTPUT = "only Split stars & background comes after the Output block"
+WHY_OUTPUT_LAST = "the Output block ends the image blocks"
+WHY_REMOVE_NEEDED = "{other} needs it: remove {other} first"
+WHY_REMOVE_BRIDGE = "the blocks after it take {takes}: {block} makes it"
+WHY_OFF_KIND = "it turns {takes} into {gives}: switched off, the next block would get the wrong data"
+KIND_WORDS = {FRAMES: "a series of frames", IMAGE: "an image", PAIR: "a starless image and its stars"}
+SOURCE_WORDS = {"frames": "frames", "image": "an image file", "stretched": "a stretched image", "fusion": "a fusion"}
+
+
+class BlockRefused(ValueError):
+    """A block that cannot be placed, removed or switched off there: the message says why (translated by the
+    client, its fields filled)."""
+
+    def __init__(self, template: str, **args: str):
+        self.template, self.fields = template, args
+        super().__init__(template.format(**args))
+
+
+def _title(b: str) -> str:
+    return BLOCK_TITLES.get(b, b)
+
+
+def node(block: str, method: str | None = None, off: bool = False, name: str | None = None) -> dict[str, Any]:
+    """A node of a workflow's graph."""
+    if block not in IO:
+        raise ValueError(f"unknown block {block!r} (allowed: {list(IO)})")
+    m = method if method is not None else DEFAULT_METHOD.get(block)
+    if block in METHODS and m not in METHODS[block]:
+        raise ValueError(f"block {block!r}: method {m!r} is not in the engine (allowed: {list(METHODS[block])})")
+    return {"block": block, "name": name or block, "method": m if block in METHODS else None, "off": bool(off)}
+
+
+def new_name(blocks: Sequence[dict], block: str) -> str:
+    """The name of a new node of ``block``: its stage's name, or "<stage>~<n>" when the graph has one (never reused
+    while the graph has it)."""
+    used = {n["name"] for n in blocks}
+    if block not in used:
+        return block
+    k = 2
+    while f"{block}~{k}" in used:
+        k += 1
+    return f"{block}~{k}"
+
+
+def check_blocks(blocks: Any, source: str = "frames") -> list[dict[str, Any]]:
+    """A graph's blocks as they are stored: nodes checked one by one, then the graph (``graph_problem``). Raises
+    ValueError (BlockRefused for a rule of the graph)."""
+    if source not in SOURCES:
+        raise ValueError(f"unknown source {source!r}")
+    if not isinstance(blocks, (list, tuple)):
+        raise ValueError(f"a workflow's blocks are a list, not {blocks!r}")
+    out = []
+    for n in blocks:
+        if not isinstance(n, dict) or "block" not in n:
+            raise ValueError(f"a block is {{'block', 'name', 'method', 'off'}}, not {n!r}")
+        nn = node(n["block"], n.get("method"), n.get("off", False), n.get("name"))
+        if nn["block"] not in IMAGE_OPS and nn["name"] != nn["block"] or \
+                nn["block"] in IMAGE_OPS and base(nn["name"]) != nn["block"]:
+            raise ValueError(f"block {nn['block']!r} cannot be named {nn['name']!r}")
+        out.append(nn)
+    names = [n["name"] for n in out]
+    if len(set(names)) != len(names):
+        raise ValueError(f"two blocks of a workflow share a name: {names}")
+    graph_problem(out, source, raise_it=True)
+    return out
+
+
+def _active(blocks: Sequence[dict]) -> list[dict]:
+    return [n for n in blocks if not n.get("off")]
+
+
+def graph_problem(blocks: Sequence[dict], source: str, raise_it: bool = False) -> BlockRefused | None:
+    """The first rule a graph breaks (its switched-off blocks count as absent), or None."""
+    cur = [""]
+
+    def bad(template: str, **a: str):
+        e = BlockRefused(template, **a)
+        e.block = cur[0]                              # the block whose rule fails
+        if raise_it:
+            raise e
+        return e
+    act = _active(blocks)
+    seen: set[str] = set()
+    kind = SOURCE_GIVES[source]
+    before = "the source"
+    after_output = False
+    frame_rank = -1
+    for n in act:
+        b = n["block"]
+        cur[0] = b
+        takes, gives = IO[b]
+        if b not in IMAGE_OPS and b in seen:
+            return bad(WHY_ONCE, block=_title(b))
+        if source in ("image", "stretched", "fusion") and b in FRAME_BLOCKS:
+            return bad(WHY_SOURCE, source=SOURCE_WORDS[source], block=_title(b))
+        if source == "stretched" and b != "stars":
+            return bad(WHY_SOURCE, source=SOURCE_WORDS[source], block=_title(b))
+        if source == "fusion" and b not in ("output", "stars"):
+            return bad(WHY_SOURCE, source=SOURCE_WORDS[source], block=_title(b))
+        if after_output and b != "stars":
+            return bad(WHY_AFTER_OUTPUT)
+        if takes != kind:
+            return bad(WHY_INPUT, takes=KIND_WORDS[takes], before=before, gives=KIND_WORDS[kind])
+        if b in FRAME_BLOCKS:
+            r = FRAME_BLOCKS.index(b)
+            if r < frame_rank:
+                other = next(x for x in FRAME_BLOCKS[r + 1:] if x in seen)
+                return bad(WHY_FRAME_ORDER, block=_title(b), where="before", other=_title(other))
+            frame_rank = r
+        if b == "color" and "astrometry" not in seen:
+            return bad(WHY_NEEDS, need=_title("astrometry"))
+        if b == "denoise" and (source != "frames" or "stacking" not in seen):
+            return bad(WHY_HALVES)
+        if b == "stars" and source in ("frames", "image") and "denoise" not in seen:      # trained on denoised images
+            return bad(WHY_NEEDS, need=_title("denoise"))
+        if b == "stars" and source not in ("stretched",) and "output" not in seen:
+            return bad(WHY_NEEDS, need=_title("output"))
+        seen.add(b)
+        kind, before = gives, _title(b)
+        if b == "output":
+            after_output = True
+    return None
+
+
+def place_problem(blocks: Sequence[dict], source: str, block: str, index: int) -> BlockRefused | None:
+    """Why ``block`` cannot be inserted at ``index`` of the graph (None: it can)."""
+    trial = list(blocks[:index]) + [node(block, name=new_name(blocks, block))] + list(blocks[index:])
+    return graph_problem(trial, source)
+
+
+def places(blocks: Sequence[dict], source: str, block: str) -> list[int]:
+    """The indices where ``block`` can be inserted."""
+    return [i for i in range(len(blocks) + 1) if place_problem(blocks, source, block, i) is None]
+
+
+def palette_problem(blocks: Sequence[dict], source: str, block: str) -> BlockRefused | None:
+    """Why ``block`` cannot be placed anywhere in the graph (the palette greys it and says this), None when it can.
+    Among the reasons at each place, the one of the place where the block would go by default."""
+    if places(blocks, source, block):
+        return None
+    return place_problem(blocks, source, block, default_place(blocks, block))
+
+
+def default_place(blocks: Sequence[dict], block: str) -> int:
+    """Where a double-clicked block goes: after the last block that comes before it in the palette's usual order, or
+    at the first valid place."""
+    order = PALETTE
+    r = order.index(block)
+    idx = 0
+    for i, n in enumerate(blocks):
+        if order.index(n["block"]) <= r:
+            idx = i + 1
+    return idx
+
+
+def insert_place(blocks: Sequence[dict], source: str, block: str) -> int | None:
+    """The place a double-click inserts ``block`` at: the default one when valid, else the nearest valid place; None
+    when there is none."""
+    ok = places(blocks, source, block)
+    if not ok:
+        return None
+    d = default_place(blocks, block)
+    return min(ok, key=lambda i: (abs(i - d), -i))
+
+
+def remove_problem(blocks: Sequence[dict], source: str, index: int) -> BlockRefused | None:
+    """Why the block at ``index`` cannot be removed (None: it can)."""
+    trial = list(blocks[:index]) + list(blocks[index + 1:])
+    e = graph_problem(trial, source)
+    if e is None:
+        return None
+    return _explain_removal(blocks, trial, source, index, e)
+
+
+def _explain_removal(blocks, trial, source, index, e):
+    b = blocks[index]["block"]
+    if e.template in (WHY_NEEDS, WHY_HALVES) and getattr(e, "block", ""):
+        return BlockRefused(WHY_REMOVE_NEEDED, other=_title(e.block))
+    if e.template in (WHY_INPUT, WHY_HALVES) or b == "stacking":
+        takes, gives = IO[b]
+        if takes != gives:
+            return BlockRefused(WHY_REMOVE_BRIDGE, takes=KIND_WORDS[gives], block=_title(b))
+        return BlockRefused(WHY_REMOVE_NEEDED, other=_title(next(n["block"] for n in _active(trial[index:]))))
+    return e
+
+
+def off_problem(blocks: Sequence[dict], source: str, index: int) -> BlockRefused | None:
+    """Why the block at ``index`` cannot be switched off (None: it can; switching on is always checked too)."""
+    n = blocks[index]
+    takes, gives = IO[n["block"]]
+    if n["block"] in ("output", "stacking", "stars") or takes != gives:
+        return BlockRefused(WHY_OFF_KIND, takes=KIND_WORDS[takes], gives=KIND_WORDS[gives])
+    trial = [dict(x, off=True) if i == index else x for i, x in enumerate(blocks)]
+    e = graph_problem(trial, source)
+    return None if e is None else _explain_removal(blocks, [x for i, x in enumerate(blocks) if i != index], source,
+                                                   index, e)
+
+
+def from_options(options: dict[str, Any], end: str | None = None, source: str = "frames") -> list[dict[str, Any]]:
+    """The graph of a workflow made before issue #47 (its options): the same chain, the same keys. Its cut blocks
+    (Calibration, Registration: run as pass-through) are switched off; Astrometry, Gradient and Color, cut, are
+    absent."""
+    o = check_options(options)
+    cut = set(cuts(o))
+    out: list[dict] = []
+    if source == "stretched":
+        return [node("stars")] if o["stars"] else []
+    if source == "fusion":
+        return [node("output")] + ([node("stars")] if o["stars"] else [])
+    if source == "frames":
+        out += [node("calibration", off="calibration" in cut), node("registration", off="registration" in cut),
+                node("selection"), node("stacking")]
+        if check_end(end) == "stacking":
+            return out + [node("output")]
+    if "astrometry" not in cut:
+        out.append(node("astrometry"))
+    if "gradient" not in cut:
+        out.append(node("gradient", o["gradient"]))
+    if o["denoise"] and source == "frames":
+        out.append(node("denoise", o["denoise"]))
+    if "color" not in cut and "astrometry" not in cut:
+        out.append(node("color"))
+    out.append(node("output"))
+    if o["stars"] and (source == "frames" and o["denoise"]):
+        out.append(node("stars"))
+    return out
+
+
+def options_of(blocks: Sequence[dict], source: str = "frames") -> dict[str, Any]:
+    """The options a graph stands for (what the code that reads options sees): each block's first active node's
+    method, the absent or switched-off blocks cut."""
+    act = _active(blocks)
+    first = {}
+    for n in act:
+        first.setdefault(n["block"], n)
+    o: dict[str, Any] = {"denoise": first["denoise"]["method"] if "denoise" in first else None,
+                         "stars": "neural" if "stars" in first else None,
+                         "gradient": first["gradient"]["method"] if "gradient" in first else "polynomial",
+                         "deconvolution": None}
+    if o["stars"] and not o["denoise"]:
+        o["denoise"] = "pretrained"              # a stretched image or a fusion: their Split block needs no Denoise
+    cut = []
+    if source == "frames":
+        cut += [b for b in ("calibration", "registration") if b not in first]
+    cut += [b for b in ("astrometry", "gradient", "color") if b not in first]
+    if cut:
+        o["cut"] = cut
+    return check_options(o)
+
+
+def sequence_chain(blocks: Sequence[dict], source: str = "frames", *, reference: bool = False,
+                   sessions: Sequence[int] = ()) -> list[str]:
+    """The chain of a graph, in the graph's order: the source's stages, then each active node's (an image block's
+    entry is its node's name). Calibration and Registration absent or switched off still run, as a pass-through."""
+    act = _active(blocks)
+    has = {n["block"] for n in act}
+    out: list[str] = []
+    if source == "fusion":
+        out.append("fusion")
+    elif source in ("image", "stretched"):
+        out.append("image")
+    else:
+        # a graph being built stops where its blocks do: the frames are aligned when a block from Registration on is
+        # placed (without Registration, as a pass-through), stacked when Stacking is
+        later = {"registration", "selection", "stacking"} | {n["block"] for n in act if IO[n["block"]][0] == IMAGE}
+        aligned = bool(has & later)
+        if len(sessions) >= 2:
+            out += [f"{s}@{sid}" for s in ("inventory", "calibrate") for sid in sessions]
+            out += ["sessions", "register"] if aligned else ["sessions"]
+        else:
+            out += ["inventory", "calibrate"] + (["register"] if aligned else [])
+        if "stacking" in has:
+            out.append("stack")
+    for n in act:
+        b = n["block"]
+        if b in FRAME_BLOCKS:
+            continue                                  # in the source's stages above
+        if b == "astrometry":
+            out += ["astrometry"] + (["reference"] if reference else []) + (["catalogs"] if "color" in has else []) \
+                + ["surveys"]
+        elif b in IMAGE_OPS:
+            out.append(n["name"])
+        elif b == "output":
+            out.append("render_simple")
+        elif b == "stars":
+            out.append("star_removal")
+    return out
+
+
+def node_of(blocks: Sequence[dict], entry: str) -> dict | None:
+    """The node a chain entry belongs to (None for the source's stages)."""
+    b = base(entry)
+    for n in blocks:
+        if n["name"] == entry or (n["block"] not in IMAGE_OPS and BLOCKS.get(n["block"]) and b in BLOCKS[n["block"]]):
+            return n
+    return None
+
+
+def node_implied(blocks: Sequence[dict], entry: str, source: str = "frames") -> dict[str, Any]:
+    """The parameter values a graph imposes on one of its chain's entries: the methods of its node, the
+    pass-through of an absent or switched-off Calibration or Registration, and a Denoise that keeps its denoised
+    half-stacks for a later Denoise."""
+    b = base(entry)
+    act = _active(blocks)
+    has = {n["block"] for n in act}
+    if b == "calibrate" and "calibration" not in has:
+        return {"apply_masters": False}
+    if b == "register" and "registration" not in has:
+        return {"align": False}
+    n = next((x for x in act if x["name"] == entry), None) if b in IMAGE_OPS else None
+    if b == "gradient" and n is not None:
+        return {"method": n["method"]}
+    if b == "denoise" and n is not None:
+        out = {"method": n["method"]}
+        i = act.index(n)
+        if any(x["block"] == "denoise" for x in act[i + 1:]):
+            out["keep_halves"] = True
+        return out
+    return {}
+
+
+def sync_blocks(blocks: Sequence[dict], source: str, options: dict[str, Any]) -> list[dict[str, Any]]:
+    """A graph brought in line with options set by code that speaks options (a method chosen, Denoise or Stars added
+    or taken off, a block cut or restored): the first node of each block takes the method; a block the options add
+    goes to its usual place; one they take off goes (Calibration and Registration: switched off)."""
+    o = check_options(options)
+    g = [dict(n) for n in blocks]
+    if options_of(g, source) == o:
+        return g
+    cut = set(cuts(o))
+
+    def first(b):
+        return next((n for n in g if n["block"] == b and not n["off"]), None)
+
+    def add(b, method=None):
+        i = insert_place(g, source, b)
+        if i is not None:
+            g.insert(i, node(b, method, name=new_name(g, b)))
+
+    def drop(b):
+        g[:] = [n for n in g if n["block"] != b]
+    if not o["stars"]:
+        drop("stars")
+    if o["denoise"] is None:
+        drop("denoise")
+    for b in ("calibration", "registration"):
+        if source == "frames":
+            for n in g:
+                if n["block"] == b:
+                    n["off"] = b in cut
+    for b in ("color", "gradient", "astrometry"):
+        if b in cut:
+            drop(b)
+    for b in ("astrometry", "gradient", "color"):
+        if b not in cut and first(b) is None and source in ("frames", "image") and any(n["block"] == "output"
+                                                                                      for n in g):
+            add(b, o["gradient"] if b == "gradient" else None)
+    if o["denoise"] and first("denoise") is None and source == "frames":
+        add("denoise", o["denoise"])
+    if o["stars"] and first("stars") is None:
+        add("stars")
+    for b in ("gradient", "denoise"):
+        n = first(b)
+        if n is not None and o.get(b):
+            n["method"] = o[b]
+    return g
+
+
+def source_of(w: Any) -> str:
+    """A workflow's source kind."""
+    src = getattr(w, "source", None)
+    if not src:
+        return "frames"
+    if "fusion" in src:
+        return "fusion"
+    return "stretched" if src.get("stretched") else "image"
+
+
+def graph_of(w: Any) -> list[dict[str, Any]]:
+    """A workflow's graph: its blocks, or the graph of its options (a workflow made before issue #47)."""
+    if getattr(w, "blocks", None) is not None:
+        return [dict(n) for n in w.blocks]
+    return from_options(w.options, w.end, source_of(w))
 
 
 _CHAINS: list[Chains] = []

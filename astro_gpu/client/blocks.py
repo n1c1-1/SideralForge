@@ -68,6 +68,10 @@ SIDE_INPUTS = {
     "couleur": [("astrometrie", "Gaia spectra")],
 }
 TRUNK = ["inventory", "calibrate", "register", "stack"]
+#: the image blocks: placed in any order and more than once (issue #47), drawn in columns by their rank
+IMAGE_KEYS = {"astrometrie", "fond", "couleur", "debruitage", "deconv"}
+#: the frame blocks, in their columns
+FRAME_KEYS = ["calibration", "alignement", "selection", "empilement"]
 
 # every state a block can be in: up to date, pending, outdated, and what a run adds
 STATE_WORD = {"done": "Up to date", "pending": "Not computed yet", "stale": "Outdated", "running": "Running",
@@ -142,12 +146,26 @@ TOOLS = {
 }
 
 
+def kbase(key: str) -> str:
+    """A view's block key without its session or its number: "calibration@2" → "calibration", "debruitage~2" →
+    "debruitage"."""
+    return key.partition("@")[0].partition("~")[0]
+
+
+def knum(key: str) -> str:
+    """The number of a graph's later node of a block ("2" for "debruitage~2", issue #47), "" otherwise."""
+    return key.partition("@")[0].partition("~")[2]
+
+
 def block_title(p, key: str) -> str:
-    """The name of a block, translated. The output of a workflow carries the workflow's name."""
+    """The name of a block, translated. The output of a workflow carries the workflow's name; a block placed twice
+    in a graph, its number ("Denoise 2")."""
     if key == "post" and p is not None:
         return p.name
-    key = key.partition("@")[0]                       # a session's block: its block's name
-    return _(TITLES.get(key) or BY_KEY[key]["title"])
+    n = knum(key)
+    key = kbase(key)                                  # a session's block: its block's name
+    t = _(TITLES.get(key) or BY_KEY[key]["title"])
+    return f"{t} {n}" if n else t
 
 
 def session_summary(s, sid: int) -> str:
@@ -164,6 +182,11 @@ def node_title(s, n) -> str:
     block named after its one session (or "All nights")."""
     if n.key == "session":
         return s.session(n.sid).name or _("Session {n}").format(n=n.sid)
+    if n.paths and "~" in n.key or (n.paths and n.key in ("fond", "couleur", "debruitage")):
+        keys = chain(n.paths[0])                          # issue #47: a block placed twice, numbered left to right
+        same = [k for k in keys if kbase(k) == kbase(n.key)]
+        if len(same) > 1 and n.key in same:
+            return f"{block_title(None, kbase(n.key))} {same.index(n.key) + 1}"
     if n.key == "sources" and hasattr(s, "session") and s.sessions:
         if len(s.sessions) == 1:
             return s.sessions[0]["name"] or _("Session")
@@ -190,12 +213,14 @@ def stages_of(s, p, key: str) -> list[str]:
     instances (issue #43)."""
     allst = s.all_stages(p)
     k, _at, sid = key.partition("@")
-    return [x for x in (f"{st}@{sid}" if sid else st for st in BY_KEY[k]["stages"]) if x in allst]
+    k, _t, num = k.partition("~")                     # a graph's later node (issue #47): its own stage
+    return [x for x in (f"{st}@{sid}" if sid else f"{st}~{num}" if num else st for st in BY_KEY[k]["stages"])
+            if x in allst]
 
 
 def run_stages(s, p, key: str) -> list[str]:
     """What Run to here runs for this block (Selection: Registration)."""
-    return BY_KEY[key.partition("@")[0]].get("run") or stages_of(s, p, key)
+    return BY_KEY[kbase(key)].get("run") or stages_of(s, p, key)
 
 
 def block_state(s, p, key: str) -> str:
@@ -235,6 +260,7 @@ class Node:
     sid: int | None = None                     # a Session block, or a session's Calibration block: its session
     cut: bool = False                          # cut by the user in its workflows (issue #43)
     grey: str = ""                             # why it cannot run (a cut before it), translated; "" when it can
+    slot: int = -1                             # an image block: its rank among its workflow's image blocks (#47)
     _bk: object = None
 
     @property
@@ -280,6 +306,7 @@ class Graph:
             for sn, cn in self.sessions:
                 if p in sn.paths:
                     self.by_path[p.pid][sn.ref], self.by_path[p.pid][cn.ref] = sn, cn
+            rank = 0
             for k in chain(p):
                 cut = bool(getattr(model, "is_cut", None)) and model.is_cut(p, k)
                 grey = model.greyed_reason(p, k) if hasattr(model, "greyed_reason") else ""
@@ -295,6 +322,9 @@ class Graph:
                     self.nodes.append(nxt)
                 nxt.paths.append(p)
                 self.by_path[p.pid][k] = nxt
+                if kbase(k) in IMAGE_KEYS:              # issue #47: its column, by its rank in the workflow
+                    nxt.slot = rank
+                    rank += 1
                 cur = nxt
             self.leaves[p.pid] = cur
         # issue #43: a fusion's block holds its workflow (its Output: no block of its own); its inputs, the outputs of
@@ -446,14 +476,15 @@ class Graph:
         if node.grey:
             return node.grey
         if node.cut and node.key not in ("calibration", "alignement"):
-            return _("cut: the image passes through")
+            return _("switched off: the image passes through")
         if node.key == "session":
             return session_summary(s, node.sid)
         if node.sid is not None:
             ses = next((x for x in s.sessions if x["id"] == node.sid), {})
             return _("{darks} darks, {flats} flats").format(darks=ses.get("darks", 0), flats=ses.get("flats", 0))
         if node.cut:
-            return _("cut: frames taken as they are") if node.key == "calibration" else _("cut: frames taken as aligned")
+            return _("switched off: frames taken as they are") if node.key == "calibration" else \
+                _("switched off: frames taken as aligned")
         if node.key == "image":
             src = node.paths[0].source or {}
             return Path(str(src.get("path") or "")).name + ("  · " + _("stretched") if src.get("stretched") else "")
@@ -475,7 +506,7 @@ class Graph:
         if node.key == "final":
             return plural(len(self.post_layers), "{n} layer", "{n} layers")
         p = node.paths[0]
-        k = node.key
+        k = kbase(node.key)
         if k == "post":
             if p.end:
                 return _("from {block}").format(block=block_title(p, p.end))
@@ -531,7 +562,7 @@ class Graph:
         if not node.paths or node.key in ("sources", "final"):
             return []
         p = node.paths[0]
-        pairs = list(SIDE_INPUTS.get(node.key, []))
+        pairs = list(SIDE_INPUTS.get(kbase(node.key), []))
         out = []
         for k, lab in pairs:
             src = self.node_of(p, k)
@@ -543,4 +574,5 @@ class Graph:
 __all__ = ["session_summary", "node_title", "COLUMNS", "OPTIONAL", "PHASES", "TOOL_COLUMN", "TITLES", "TOOLBOX", "STEPS",
            "BY_KEY", "TOOLS",
            "STATE_WORD", "STATE_ORDER", "ENGINE_BLOCK", "Graph", "Node", "block_title", "chain", "stages_of",
-           "run_stages", "block_state", "block_seconds", "hm", "BREAK_COL", "PAUSE_COL", "REVIEWED_COL", "review_title"]
+           "run_stages", "block_state", "block_seconds", "hm", "BREAK_COL", "PAUSE_COL", "REVIEWED_COL", "review_title",
+           "IMAGE_KEYS", "FRAME_KEYS", "kbase", "knum"]

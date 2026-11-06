@@ -34,6 +34,8 @@ samples.npz for the polynomial (the samples, those used); a preview of the stack
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import cv2
 import numpy as np
 from pydantic import field_validator
@@ -271,13 +273,14 @@ def read_grid(grid: np.ndarray, info: dict, H: int, W: int) -> np.ndarray:
     return upsample(grid, H, W, int(info["factor"]))
 
 
-def sky_variation(ctx: Context, H: int, W: int) -> np.ndarray:
-    """The sky gradient the Gradient block found, (3, H, W): its variation, of median 0 over the covered field."""
-    info = ctx.load_json("gradient", INFO_FILE)
+def sky_variation(ctx: Context, H: int, W: int, entry: str = "gradient") -> np.ndarray:
+    """The sky gradient a Gradient block found (``entry``: its node in the graph), (3, H, W): its variation, of median
+    0 over the covered field."""
+    info = ctx.load_json(entry, INFO_FILE)
     if (info["width"], info["height"]) != (W, H):
         raise StageError(f"the sky gradient was modelled on a {info['width']} x {info['height']} stack, this one is "
                          f"{W} x {H}: run the Gradient block again")
-    return read_grid(ctx.load("gradient", SKY_FILE), info, H, W)
+    return read_grid(ctx.load(entry, SKY_FILE), info, H, W)
 
 
 def enlarge_mask(valid: np.ndarray, shape: tuple[int, int], f: int) -> np.ndarray:
@@ -306,12 +309,65 @@ def automatic_grid(stack: np.ndarray, valid: np.ndarray, p: GradientParams, prog
 
 
 def stack_image(ctx: Context, name: str = "drz_full.npy") -> np.ndarray:
-    """A stack image (drz_full.npy, drz_A.npy or drz_B.npy) as float32, its sky gradient removed when the workflow has
-    the Gradient block (the half-stacks share the full stack's sky)."""
-    a = ctx.load("stack", name).astype(np.float32)
-    if ctx.has("gradient"):
-        a -= sky_variation(ctx, *a.shape[1:])
-    return a
+    """A stack image (drz_full.npy, drz_A.npy or drz_B.npy) as float32, the sky gradients of the Gradient blocks
+    before this stage removed (the half-stacks share the full stack's sky)."""
+    return image_in(ctx, HALF_OF[name], ops=image_ops(ctx, "skies")).img
+
+
+#: a stack's files, and a Denoise's, for the full stack and its two halves
+HALF_OF = {"drz_full.npy": "full", "drz_A.npy": "A", "drz_B.npy": "B"}
+STACK_FILE = {"full": "drz_full.npy", "A": "drz_A.npy", "B": "drz_B.npy"}
+DENOISE_FILE = {"full": "n2n_full.npy", "A": "n2n_A.npy", "B": "n2n_B.npy"}
+
+
+@dataclass
+class ImageIn:
+    """The image a stage reads (issue #47): the stack, then the image blocks before it in the graph."""
+    img: np.ndarray                     # (3, H, W) float32
+    M: np.ndarray                       # the colour matrices applied, one (3, 3)
+    level: np.ndarray | None            # the last Gradient block's sky level, in the image's colours
+    ops: list[str]                      # the blocks applied, in order
+
+
+def image_ops(ctx: Context, which: str | None = None) -> list[str]:
+    """The image blocks a stage reads, in the graph's order: those before it (all of them, or the Gradient blocks
+    only, ``which`` "skies"; by default the stage's rule, workflow.READERS). A project without keys (the v1 runner,
+    the tests' toy projects) has them in the engine's order, read by name."""
+    from ..core.workflow import IMAGE_OPS, ORDER, READERS, base
+    own = getattr(ctx.project, "stage", None) or ctx.stage.name
+    rule = which or READERS.get(base(own), "all")
+    kinds = IMAGE_OPS if rule == "all" else ("gradient",)
+    keys = getattr(ctx.project, "keys", None)
+    if keys is not None and getattr(ctx.project, "workflow", None) is not None:
+        chain = list(ctx.project.chain)
+        mine = set(keys.deps(ctx.project.workflow, own)) if own in chain else set()
+        return [x for x in chain if x in mine and base(x) in kinds]
+    me = ORDER.index(base(own)) if base(own) in ORDER else len(ORDER)
+    return [s for s in ("gradient", "denoise", "color") if s in kinds and ORDER.index(s) < me and ctx.has(s)]
+
+
+def image_in(ctx: Context, half: str = "full", ops: list[str] | None = None, skip_denoise: bool = False) -> ImageIn:
+    """The image a stage reads (issue #47): the stack (``half``: "full", "A" or "B"), then each image block before
+    the stage, in the graph's order: a Gradient takes its sky variation off, a Color applies its matrix, a Denoise
+    gives its denoised image (``skip_denoise``: not, the stack's own noise kept)."""
+    from ..core.workflow import base
+    ops = image_ops(ctx) if ops is None else ops
+    a = ctx.load("stack", STACK_FILE[half]).astype(np.float32)
+    M = np.eye(3)
+    level = None
+    for e in ops:
+        b = base(e)
+        if b == "gradient":
+            a -= sky_variation(ctx, *a.shape[1:], entry=e)
+            level = np.asarray(ctx.load_json(e, INFO_FILE)["level"], np.float64)
+        elif b == "color":
+            Mc = ctx.load(e, "M.npy").astype(np.float64)
+            a = np.tensordot(Mc.astype(np.float32), a, 1)
+            M = Mc @ M
+            level = Mc @ level if level is not None else None
+        elif b == "denoise" and not skip_denoise:
+            a = ctx.load(e, DENOISE_FILE[half]).astype(np.float32)
+    return ImageIn(a, M, level, list(ops))
 
 
 # ---------------------------------------------------------------------------------------------- samples and areas
@@ -528,7 +584,7 @@ class Gradient(Stage):
 
     def run(self, ctx: Context, p: GradientParams) -> None:
         ctx.progress(0.05, "loading the stack")
-        stack = ctx.load("stack", "drz_full.npy").astype(np.float32)
+        stack = image_in(ctx).img                    # the stack, or the image the blocks before it made (issue #47)
         H, W = stack.shape[1:]
         valid = coverage(ctx)
         ctx.progress(0.2, f"{p.method} sky model")

@@ -22,7 +22,7 @@ from pydantic import field_validator
 
 from ..core.params import P, StageParams
 from ..core.stage import Context, Stage, StageError
-from .gradient import LUM, GradientParams, coverage, fit_poly_sky, poly_sky, stack_image
+from .gradient import LUM, GradientParams, coverage, fit_poly_sky, image_in, poly_sky
 
 STRETCHES = ["auto"]                       # the other stretches of the spec (GHS, arcsinh, STF, none) are not in the engine
 
@@ -56,12 +56,13 @@ def sky_spread(v: np.ndarray) -> float:
     return 1.4826 * float(np.median(below)) if below.size else 0.0
 
 
-def stack_source(ctx: Context) -> tuple[np.ndarray, str]:
-    """The stack the rendering works on: the denoised one when the workflow has Denoise, else the stack (its sky
-    gradient removed when the workflow has the Gradient block)."""
-    if ctx.has("denoise"):
-        return ctx.load("denoise", "n2n_full.npy").astype(np.float32), "denoise/n2n_full"
-    return stack_image(ctx), "stack/drz_full"
+def stack_source(ctx: Context):
+    """The image the rendering works on (issue #47): the stack, then the image blocks before the Output in the
+    graph's order (the sky gradients taken off, the colour matrices applied, the denoised image)."""
+    from ..core.workflow import base
+    r = image_in(ctx)
+    den = [e for e in r.ops if base(e) == "denoise"]
+    return r, (f"{den[-1]}/n2n_full" if den else "stack/drz_full")
 
 
 def raw_exit_sky(ctx: Context, cam: np.ndarray, valid: np.ndarray) -> tuple[np.ndarray, str]:
@@ -161,23 +162,26 @@ class RenderSimple(Stage):
     def run(self, ctx: Context, p: RenderSimpleParams) -> None:
         from ..render.simple import SimpleRenderEngine, SimpleSettings, image_stats
         ctx.progress(0.05, "loading the stack")
-        color, denoised = ctx.has("color"), ctx.has("denoise")
-        src, name = stack_source(ctx)
+        from ..core.workflow import base
+        r, name = stack_source(ctx)
+        kinds = {base(e) for e in r.ops}
+        color, denoised = "color" in kinds, "denoise" in kinds
+        src = r.img
         H, W = src.shape[1:]
         valid = coverage(ctx)
         y0, y1, x0, x1 = crop_box(valid, 0.995)
         shown = np.zeros_like(valid)
         shown[y0:y1, x0:x1] = True
         shown &= valid
-        M = ctx.load("color", "M.npy").astype(np.float64) if color else np.eye(3)
-        lin = np.tensordot(M.astype(np.float32), src, 1)
+        M = r.M                                     # the colour matrices of the graph, applied by image_in
+        lin = src
         ctx.progress(0.2, "sky")
         sky_name = "channel medians"
         meta = ctx.load_json("stack", "drz_meta.json")
         # issue #43: a fusion of channels keeps its palette's balance (no gains), and a monochrome or uncalibrated
         # workflow with the Gradient block takes that block's sky level
         fused = meta.get("source") == "fusion"
-        graded = not color and ctx.has("gradient")
+        graded = not color and "gradient" in kinds
         if fused or graded:
             color_like = True
         else:
@@ -188,9 +192,8 @@ class RenderSimple(Stage):
             spread = np.array([sky_spread(lin[c][shown]) for c in range(3)])
         if not color_like:                          # the Raw stack exit: a grey sky (below)
             sky, sky_name = raw_exit_sky(ctx, lin, valid)
-        elif ctx.has("gradient"):                   # the level the Gradient block measured between the objects
-            level = np.asarray(ctx.load_json("gradient", "gradient.json")["level"], np.float64)
-            sky = (M @ level).astype(np.float32)[:, None, None]
+        elif r.level is not None:                   # the level the Gradient block measured between the objects
+            sky = r.level.astype(np.float32)[:, None, None]       # in the image's colours (image_in)
             sky_name = "sky level of the Gradient block"
         else:
             sky = np.array([np.median(lin[c][shown]) for c in range(3)], np.float32)[:, None, None]
@@ -234,7 +237,7 @@ class RenderSimple(Stage):
         del lin
         if denoised:
             ctx.progress(0.65, "raw stack")
-            raw = np.tensordot(M.astype(np.float32), stack_image(ctx), 1)
+            raw = image_in(ctx, skip_denoise=True).img          # the same blocks, the stack's own noise
             raw -= sky
             raw *= gains.astype(np.float32)[:, None, None]
             raw[:, ~valid] = 0

@@ -269,6 +269,10 @@ class Keys:
     def chain(self, wf: int | Workflow) -> list[str]:
         """The stages of a workflow, in order."""
         w = self._wf(wf)
+        if id(w) not in self._chains and getattr(w, "blocks", None) is not None:      # a graph (issue #47)
+            self._chains[id(w)] = self.rules.chains.sequence(wfl.sequence_chain(
+                w.blocks, wfl.source_of(w), reference=bool(self.project.reference_image),
+                sessions=self.project.separate_sessions(w)))
         if id(w) not in self._chains:
             from .project2 import is_fusion, is_image, is_stretched
             src = getattr(w, "source", None)
@@ -295,7 +299,11 @@ class Keys:
         b = base(stage)
         gone = self.rules.retired(b)
         stored = {**w.stored(b), **(w.stored(stage) if stage != b else {})}
-        v = {**{k: x for k, x in stored.items() if k not in gone}, **self.rules.implied(w.options, b)}
+        if "~" in stage:                                 # a later node of a graph's block: its own settings only
+            stored = w.stored(stage)
+        imp = wfl.node_implied(w.blocks, stage, wfl.source_of(w)) if getattr(w, "blocks", None) is not None \
+            else self.rules.implied(w.options, b)
+        v = {**{k: x for k, x in stored.items() if k not in gone}, **imp}
         if self.rules.injects_exclude(stage):
             v.pop("exclude", None)
             if exclude:
@@ -595,6 +603,10 @@ class StoreProject:
         for a in self.dirs:
             for d in wfl.PROVIDES.get(base(a), ()):
                 self.alias.setdefault(d, a)
+
+    def own_dir(self) -> Path:
+        """The job's own folder (a graph's later node, "denoise~2", reads the first one as "denoise", issue #47)."""
+        return self.dirs[self.stage]
 
     def stage_dir(self, stage: str) -> Path:
         d = self.dirs.get(stage)

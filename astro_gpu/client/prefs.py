@@ -20,6 +20,8 @@ DEFAULTS = {
     # folders and disk. No workspace (issue #31): a project lives where the user puts it
     # the folder the file dialogs open in: the last one used (issues #31, #32)
     "last_folder": "",
+    # the user's own templates (issue #47): {key, tab, name, text, source, blocks}, made with Save as template…
+    "templates": [],
     # the sections of Home (Settings › Folders), under the recent projects: each lists the projects of a folder and of
     # its sub-folders. "label" and "note" are English (translated where shown) or typed by the user; "open": shown open
     "home_sections": [

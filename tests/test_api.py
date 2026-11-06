@@ -627,8 +627,8 @@ def test_chain_deps_blocks_and_sharing_on_the_real_graph(real):
     assert api.deps(p, 1, "render_simple") == ("stack", "color", "gradient")
     assert api.deps(p, 3, "star_removal") == ("render_simple", "stack", "gradient")
     b = {x.block: x for x in api.blocks(p, 3)}
-    assert list(b) == ["calibration", "registration", "selection", "stacking", "astrometry", "gradient", "color",
-                       "denoise", "stars", "output"]
+    assert list(b) == ["calibration", "registration", "selection", "stacking", "astrometry", "gradient", "denoise",
+                       "color", "stars", "output"]
     assert b["astrometry"].stages == ("astrometry", "catalogs", "surveys") and len(b["astrometry"].key) == 2
     assert b["selection"].stages == () and b["output"].key[-1] == "workflow 3"
     assert api.blocks(p, 1)[-1].key[-1] == "workflow 1" and api.blocks(p, 1)[-1].key != b["output"].key

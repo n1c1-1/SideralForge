@@ -441,11 +441,13 @@ def _stages_of_step(s, p, step: str) -> list[str]:
     """The engine stages whose settings a block's panel lists (the half-stacks are the block's own)."""
     from .blocks import BY_KEY
     step, sid = _split(step)
+    step, _t, num = step.partition("~")               # a graph's later node (issue #47): its own stage
     if step not in BY_KEY:
         return []
     if step == "post":
         return [x for x in s.all_stages(p) if x in OUTPUT_STAGES]
-    return [x for x in (f"{st}@{sid}" if sid else st for st in BY_KEY[step]["stages"]) if x in s.all_stages(p)]
+    return [x for x in (f"{st}@{sid}" if sid else f"{st}~{num}" if num else st for st in BY_KEY[step]["stages"])
+            if x in s.all_stages(p)]
 
 
 def needed_stages(s, p, step: str) -> set[str]:

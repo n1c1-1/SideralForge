@@ -11,8 +11,8 @@ from astro_gpu.core.workflow import TEMPLATES, Chains, OptionRefused, chain, cha
 BASE = ["inventory", "calibrate", "register", "stack"]
 TABLE = {      # §2.1: the stages after stack, without the reference image
     "Classic stack": ["astrometry", "catalogs", "surveys", "gradient", "color", "render_simple"],
-    "Classic + denoise": ["astrometry", "catalogs", "surveys", "gradient", "color", "denoise", "render_simple"],
-    "Full": ["astrometry", "catalogs", "surveys", "gradient", "color", "denoise", "render_simple", "star_removal"],
+    "Classic + denoise": ["astrometry", "catalogs", "surveys", "gradient", "denoise", "color", "render_simple"],
+    "Full": ["astrometry", "catalogs", "surveys", "gradient", "denoise", "color", "render_simple", "star_removal"],
 }
 CLASSIC, CLASSIC_DN, FULL = (TEMPLATES[k] for k in TABLE)
 
@@ -176,7 +176,7 @@ def test_blocks():
     c = chain(FULL, reference=True)
     blocks = ch.blocks_in(c)
     assert [b for b, _ in blocks] == ["calibration", "registration", "selection", "stacking", "astrometry",
-                                      "gradient", "color", "denoise", "stars", "output"]
+                                      "gradient", "denoise", "color", "stars", "output"]
     assert dict(blocks)["stars"] == ("star_removal",)
     assert ch.run_to("selection", c) == ["register"]
     assert ch.run_to("gradient", c) == ["gradient"]

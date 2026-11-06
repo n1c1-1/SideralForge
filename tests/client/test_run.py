@@ -527,13 +527,14 @@ def test_the_plan_dialog_lists_the_blocks_the_sharing_workflows_the_durations_an
     assert isinstance(d, RunDialog) and d.phase() == "plan" and d.isVisible() and not d.isModal()
     rows = [(r.row.title, r.row.who) for r in d.rows]
     # the graph's order: the first workflow's blocks, then what the second one adds
+    # (issue #47: Color comes after Denoise and does not read it: one Color for both)
     assert rows == [("Calibration", ["Plain", "Trained"]), ("Stacking", ["Plain", "Trained"]),
-                    ("Color", ["Plain"]), ('Output "Plain"', []), ("Denoise", ["Trained"]),
-                    ("Color", ["Trained"]), ('Output "Trained"', [])]
+                    ("Color", ["Plain", "Trained"]), ('Output "Plain"', []), ("Denoise", ["Trained"]),
+                    ('Output "Trained"', [])]
     # a block every workflow shares says so, as the panel's scope does; else the workflows by name
-    assert [r.who.full_text() for r in d.rows[:3]] == ["both workflows", "both workflows", "Plain"]
+    assert [r.who.full_text() for r in d.rows[:3]] == ["both workflows", "both workflows", "both workflows"]
     plan = toy.model.plan_all()
-    assert len(plan) == 7 and [j.stage for j in plan.jobs].count("stack") == 1       # a shared block is planned once
+    assert len(plan) == 6 and [j.stage for j in plan.jobs].count("stack") == 1       # a shared block is planned once
     assert d.summary.text() == f"Duration: ≈ {i18n.hm(plan.seconds)} · disk: {size_text(plan.disk_gb)} GB"
     assert not plan.measured and all(r.dur.text().startswith("≈") or r.dur.text() == "≤ 1 min" for r in d.rows)
     assert d.b_run.isEnabled() and d.b_run.isVisible() and d.b_cancel.text() == "Cancel" and not d.b_stop.isVisible()
@@ -641,7 +642,7 @@ def test_a_breakpoint_stops_the_run_after_its_block_and_continue_goes_on(toy, mo
     d.b_continue.click()
     assert ctl.pause is None and ctl.running and ctl.dialog is not d and m.is_reviewed(plain, "calibration")
     finish(toy)
-    assert sorted(j.stage for j in toy.track.jobs) == sorted(["stack", "color", "render_simple", "denoise", "color",
+    assert sorted(j.stage for j in toy.track.jobs) == sorted(["stack", "color", "render_simple", "denoise",
                                                                "render_simple"])
     assert all(s == "done" for s in states_of(toy).values())
     d2 = ctl.dialog
@@ -943,7 +944,7 @@ def test_run_all_follows_a_detached_worker_without_blocking_the_gui(toy, monkeyp
     assert threads and all(t is not threading.main_thread() for t in threads), "events were read in the GUI thread"
     assert toy.beat.max < toy.beat.limit, f"the GUI thread stalled for {toy.beat.max * 1000:.0f} ms"
     t = toy.track
-    assert t.status == "done" and [j.state for j in t.jobs] == [DONE] * 7 and t.counts[DONE] == 7
+    assert t.status == "done" and [j.state for j in t.jobs] == [DONE] * 6 and t.counts[DONE] == 6   # one Color
     assert any(s.startswith("Starting the run") or s.startswith("Running") for s in seen_running)
     # the engine says the same: every stage of every workflow is done, and the worker is gone
     assert api.running(toy.p) is None and not (Path(toy.p.root) / "logs" / "run.lock").exists()
@@ -952,13 +953,13 @@ def test_run_all_follows_a_detached_worker_without_blocking_the_gui(toy, monkeyp
     # the dialog became the recap: every row green, the sentence, Close
     assert d.phase() == "end" and all(r.mark.state == DONE for r in d.rows) and d.b_done.isVisible()
     recap = texts_of(d.recap)
-    assert recap == ["7 stages computed in " + i18n.hm(t.elapsed()) + "."] or recap[0].startswith("7 stages computed in")
+    assert recap == ["6 stages computed in " + i18n.hm(t.elapsed()) + "."] or recap[0].startswith("6 stages computed in")
     assert d.summary.text().startswith("Done in ")
     # the history line and the console
-    assert toy.model.history[-1][1:] == ("Run: {n} stages · {t}", {"n": 7, "t": i18n.hm(t.elapsed())})
+    assert toy.model.history[-1][1:] == ("Run: {n} stages · {t}", {"n": 6, "t": i18n.hm(t.elapsed())})
     text = toy.console()
-    assert "Starting the run: 7 stages" in text and "Run started: 7 stages" in text
-    assert "Run finished: 7 stages in" in text and "Stacking · done in" in text and text.count("Stacking · started") == 1
+    assert "Starting the run: 6 stages" in text and "Run started: 6 stages" in text
+    assert "Run finished: 6 stages in" in text and "Stacking · done in" in text and text.count("Stacking · started") == 1
     # nothing left to run
     assert len(toy.model.plan_all()) == 0
     d2 = toy.ctl.launch()
@@ -986,23 +987,24 @@ def test_failed_job_skips_its_downstream_blocks_and_says_so_in_plain_words(env):
         t = w.track
         assert t.status == "failed"
         by = {(j.stage, tuple(j.wf)): j.state for j in t.jobs}
-        assert by[("denoise", (2,))] == FAILED and by[("color", (2,))] == SKIPPED and by[("render_simple", (2,))] == SKIPPED
-        assert by[("color", (1,))] == DONE and by[("render_simple", (1,))] == DONE     # the other workflow still completes
+        assert by[("denoise", (2,))] == FAILED and by[("render_simple", (2,))] == SKIPPED
+        # Color does not read Denoise (issue #47: it comes after it, measured on the stack): one, done for both
+        assert by[("color", (1, 2))] == DONE and by[("render_simple", (1,))] == DONE   # the other workflow completes
         recap = texts_of(d.recap)
         assert "Denoise failed: b failed on purpose" in recap, recap
-        assert 'Not run because Denoise failed: Color, Output "Trained".' in recap
+        assert 'Not run because Denoise failed: Output "Trained".' in recap
         assert "The blocks that did not depend on it were computed." in recap
-        assert [r.mark.state for r in d.rows] == [DONE, DONE, DONE, DONE, FAILED, SKIPPED, SKIPPED]
+        assert [r.mark.state for r in d.rows] == [DONE, DONE, DONE, DONE, FAILED, SKIPPED]
         assert d.summary.text() == "Failed" and d.b_log.isVisible()
         # the engine's own states, and the graph's stripes, say it too
         v = w.model.view(2)
-        assert [w.model.state(v, s) for s in ("denoise", "color", "render_simple")] == ["failed", "skipped", "skipped"]
+        assert [w.model.state(v, s) for s in ("denoise", "color", "render_simple")] == ["failed", "done", "skipped"]
         g = Graph(w.model, None)
-        assert [g.state(g.node_of(v, k)) for k in ("debruitage", "couleur", "post")] == ["failed", "skipped", "skipped"]
+        assert [g.state(g.node_of(v, k)) for k in ("debruitage", "couleur", "post")] == ["failed", "done", "skipped"]
         assert g.state(g.node_of(w.model.view(1), "post")) == "done"
         text = w.console()
-        assert "Denoise · failed: b failed on purpose" in text and "Color · not run, Denoise failed" in text
-        assert "Run failed: 1 failed, 2 not run" in text
+        assert "Denoise · failed: b failed on purpose" in text and "Output prep · not run, Denoise failed" in text
+        assert "Run failed: 1 failed, 1 not run" in text
         assert w.model.history[-1][1] == "Run failed: {failed} failed, {skipped} not run"
         logged = []
         w.ctl.logRequested.connect(lambda: logged.append(1))
@@ -1236,14 +1238,14 @@ def test_the_console_survives_a_rebuilt_panel_and_a_change_of_language(toy):
     toy.run_all()
     english = toy.console()
     assert toy.track.status == "done", english                  # the whole console when a stage failed
-    assert "Run finished: 7 stages in" in english
+    assert "Run finished: 6 stages in" in english
     # the Log panel is built again with the project screen (a change of language): the console is filled again
     appmod.apply_language("fr")
     toy.logp = LogPanel(toy.model)
     assert toy.console() == ""
     toy.ctl.retranslate()
     french = toy.console()
-    assert "Exécution terminée : 7 étapes en" in french and "Empilement · terminé en" in french
+    assert "Exécution terminée : 6 étapes en" in french and "Empilement · terminé en" in french
     assert "Run finished" not in french and "Starting" not in french
     assert untranslated([x.split("  ", 1)[1] for x in french.splitlines()]) == []
     # the export of the log writes the console after the history
@@ -1747,7 +1749,9 @@ def test_the_plan_lists_the_blocks_up_to_date_too_with_a_tick(toy, monkeypatch):
     monkeypatch.setattr(runs.Graph, "state", lambda self, node: "done")          # what the plan leaves out is done
     rows = build_rows(toy.model, [j for j in jobs if j.stage not in ("inventory", "calibrate", "stack")], with_done=True)
     assert [(r.title, r.uptodate) for r in rows][:2] == [("Calibration", True), ("Stacking", True)]
-    assert all(not r.uptodate and r.keys for r in rows[2:])
+    # the second workflow's Color (after its Denoise, issue #47) is the first one's: computed once, listed done
+    assert [r.title for r in rows if r.uptodate] == ["Calibration", "Stacking", "Color"]
+    assert all(r.keys for r in rows if not r.uptodate)
     w = runs.RunRow(rows[0])
     w.show_state(runs.DONE, 1.0, "up to date", "")
     assert w.mark.state == runs.DONE and runs.STATE_COLOR[runs.WAITING] == runs.WARN

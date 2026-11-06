@@ -84,6 +84,30 @@ TOOL_OPTION = {"debruitage": ("denoise", "pretrained", None), "etoiles": ("stars
 PREFETCH = ("stack", "denoise")
 
 
+def view_key(name: str) -> str:
+    """The views' key of an engine block, or of a graph node's name (issue #47: "denoise~2" → "debruitage~2")."""
+    b, sep, n = name.partition("~")
+    return ENGINE_KEY.get(b, b) + (f"~{n}" if sep else "")
+
+
+def engine_name(key: str) -> str:
+    """The engine's name of a view's key ("debruitage~2" → "denoise~2", "alignement" → "registration")."""
+    b, sep, n = key.partition("~")
+    return KEY_ENGINE_BLOCK.get(b, b) + (f"~{n}" if sep else "")
+
+
+def node_key(n: dict) -> str:
+    """The views' key of a graph node: its name for an image block (repeated ones are numbered), its block else."""
+    return view_key(n["name"] if n["block"] in wfl.IMAGE_OPS else n["block"])
+
+
+def refused_text(e: Exception) -> str:
+    """Why a block cannot be placed, removed or switched off, translated (its fields too)."""
+    if isinstance(e, wfl.BlockRefused):
+        return _(e.template).format(**{k: _(v) for k, v in e.fields.items()})
+    return _(str(e))
+
+
 class NotInEngine(ValueError):
     """What was asked is ◇: the engine does not have it yet."""
 
@@ -699,6 +723,7 @@ class ProjectModel(QObject):
         finally:
             self._depth -= 1
             if top:
+                self._sync_graphs()
                 self._prune_breakpoints()
                 if self._snapshot() != before:
                     self._undo.append(before)
@@ -764,14 +789,31 @@ class ProjectModel(QObject):
     def block_keys(self, p: WorkflowView) -> list[str]:
         """The views' block keys of a workflow, in order (the frames and Post excluded; Output last). The blocks of
         each session (issue #43: "calibration@2") are not in it: the graph draws them before the chain."""
-        return [ENGINE_KEY[b.block] for b in self._blocks.get(p.pid, []) if b.block in ENGINE_KEY]
+        return [view_key(b.block) for b in self._blocks.get(p.pid, []) if wfl.base(b.block) in ENGINE_KEY
+                and "@" not in b.block]
 
     # ------------------------------------------------------------ issue #43: cut and greyed blocks, sessions
     def display_keys(self, p: WorkflowView) -> list[str]:
-        """The blocks the graph draws for a workflow, in order: its blocks, with those the user cut and those greyed
-        by a cut (they are not in the engine's chain, or run as a pass-through) at their place."""
+        """The blocks the graph draws for a workflow, in order (issue #47): the nodes of its graph, those switched off
+        included (drawn so); a block the graph does not have is not drawn. Each session's Calibration is drawn
+        before the chain when the sessions are calibrated each on its own."""
         if is_fusion_view(p):                              # a fusion: one block, in the Composition section
             return ["fusion"]
+        try:
+            w = self.p.workflow(p.pid)
+            g = wfl.graph_of(w) if w.blocks is not None else None      # a workflow made before: as it was drawn
+        except (KeyError, ValueError):
+            g = None
+        if g is not None and p.pid in self._chains:      # once the worker has read the project
+            keys = ["image"] if p.source is not None else []
+            sep = bool(self.separate_sessions()) and p.source is None
+            keys += [node_key(n) for n in g if not (sep and n["block"] == "calibration")]
+            if "etoiles" in keys and "post" in keys:     # drawn as always: the split block holds the Output (#17)
+                keys.remove("post")
+                keys.insert(keys.index("etoiles") + 1, "post")
+            if is_stretched_view(p) and "post" not in keys:
+                keys.append("post")
+            return keys
         keys = self.block_keys(p)
         if is_stretched_view(p) and "post" not in keys:  # its Output: the image itself (no stage of its own)
             keys = keys + ["post"]
@@ -796,16 +838,124 @@ class ProjectModel(QObject):
         return out
 
     def cut_blocks(self, p: WorkflowView) -> list[str]:
-        """The engine's names of the blocks the user cut in this workflow."""
-        return list(p.opts.get("cut") or [])
+        """The engine's names of the blocks the user switched off in this workflow (issue #47)."""
+        return [n["block"] for n in self.graph(p) if n["off"]]
 
     def greyed(self, p: WorkflowView) -> dict[str, str]:
-        """{engine block: why it cannot run} (English, translated where shown) for this workflow."""
+        """Issue #47: none. A block that cannot run where it is cannot be placed there (the palette says why)."""
+        return {}
+
+    # ------------------------------------------------------------ issue #47: the graph of a workflow
+    def graph(self, p: WorkflowView) -> list[dict]:
+        """The nodes of a workflow's graph (a copy)."""
         try:
-            return wfl.greyed(to_engine(p.opts), image=p.source is not None, mono=self.is_mono(p),
-                              stretched=is_stretched_view(p))
-        except ValueError:
-            return {}
+            return wfl.graph_of(self.p.workflow(p.pid))
+        except (KeyError, ValueError):
+            return []
+
+    def source_kind(self, p: WorkflowView) -> str:
+        return wfl.source_of(self.p.workflow(p.pid))
+
+    def node_index(self, p: WorkflowView, key: str) -> int | None:
+        """The index in the graph of the node a view's key names."""
+        return next((i for i, n in enumerate(self.graph(p)) if node_key(n) == key), None)
+
+    def palette_reason(self, p: WorkflowView | None, block: str) -> str:
+        """Why the palette greys a block for this workflow (translated), "" when it can be placed."""
+        if p is None:
+            return _("choose a workflow first")
+        e = wfl.palette_problem(self.graph(p), self.source_kind(p), block)
+        return refused_text(e) if e is not None else ""
+
+    def place_indices(self, p: WorkflowView, block: str) -> list[int]:
+        """Where a block can be inserted in a workflow's graph."""
+        return wfl.places(self.graph(p), self.source_kind(p), block)
+
+    def insert_block(self, p: WorkflowView, block: str, index: int | None = None, method: str | None = None) -> str:
+        """Place a block in a workflow's graph (``index``: where; None: its usual place). Returns the new node's
+        view key; raises ValueError (translated) when it cannot go there."""
+        g, src = self.graph(p), self.source_kind(p)
+        if index is None:
+            index = wfl.insert_place(g, src, block)
+            if index is None:
+                raise ValueError(self.palette_reason(p, block))
+        e = wfl.place_problem(g, src, block, index)
+        if e is not None:
+            raise ValueError(refused_text(e))
+        n = wfl.node(block, method, name=wfl.new_name(g, block))
+        g.insert(index, n)
+        with self._edit():
+            self.p.set_blocks(p.pid, g)
+        return node_key(n)
+
+    def remove_node(self, p: WorkflowView, key: str) -> None:
+        """Take a block out of a workflow's graph; ValueError (translated) when the blocks after it need it."""
+        g, src = self.graph(p), self.source_kind(p)
+        i = self.node_index(p, key)
+        if i is None:
+            raise ValueError(_("this block is not in the workflow"))
+        e = wfl.remove_problem(g, src, i)
+        if e is not None:
+            raise ValueError(refused_text(e))
+        del g[i]
+        with self._edit():
+            self.p.set_blocks(p.pid, g)
+
+    def can_switch_off(self, p: WorkflowView, key: str) -> str:
+        """Why a block cannot be switched off (translated), "" when it can."""
+        i = self.node_index(p, key)
+        if i is None:
+            return _("this block is not in the workflow")
+        e = wfl.off_problem(self.graph(p), self.source_kind(p), i)
+        return refused_text(e) if e is not None else ""
+
+    def set_graph(self, p: WorkflowView, blocks: list[dict]) -> None:
+        """Give a workflow a whole graph (a template's)."""
+        with self._edit():
+            self.p.set_blocks(p.pid, blocks)
+
+    def add_graph_workflow(self, name: str, blocks: list[dict], source: dict | None = None,
+                           sessions: list[int] | None = None) -> WorkflowView:
+        """A new workflow from a graph (issue #47): a template's, or an empty one that the palette builds."""
+        with self._edit():
+            q = self.add_path(self.unique_name(name), {"debruitage": False, "etoiles": "garder", "fond": "simple"})
+            w = self.p.workflow(q.pid)
+            w.source = source
+            w.sessions = sessions
+            self.p.set_blocks(w, blocks)
+            self.p.validate()
+        return self._view_of(q.pid)
+
+    def ensure_frames_workflow(self) -> WorkflowView | None:
+        """A project with sessions and no workflow from the frames gets an empty one (issue #47: a Session placed on a
+        blank page starts a workflow, built from the palette)."""
+        if not self.p.sessions or any(q.source is None for q in self.paths):
+            return None
+        return self.add_graph_workflow(_("Workflow"), [])
+
+    def add_filter_session(self, flt: str) -> int:
+        """An empty Session block for a filter (a template's, before its frames are known, issue #47)."""
+        with self._edit():
+            sid = max((s.id for s in self.p.sessions), default=0) + 1
+            from ..core.project2 import Session
+            self.p.sessions.append(Session(sid, flt or _("Session {n}").format(n=sid), filter=flt))
+            if len(self.p.sessions) >= 2 and self.p.stack_mode == "together":
+                self.p.stack_mode = "per_session"
+            self.p.validate()
+        return sid
+
+    def _sync_graphs(self):
+        """The graphs follow options set by code that speaks options (a method chosen in the panel...)."""
+        for w in self.p.workflows:
+            if w.blocks is None:
+                continue
+            src = wfl.source_of(w)
+            try:
+                o = wfl.check_options(w.options)
+                if wfl.options_of(w.blocks, src) != o:
+                    self.p.set_blocks(w, wfl.sync_blocks(w.blocks, src, o))
+            except ValueError:
+                continue
 
     def is_mono(self, p: WorkflowView) -> bool:
         """A workflow of monochrome frames: each of its sessions names a filter."""
@@ -916,7 +1066,8 @@ class ProjectModel(QObject):
         return True
 
     def is_cut(self, p: WorkflowView, key: str) -> bool:
-        return engine_block(key) in self.cut_blocks(p)
+        """Whether the user switched this block off (issue #47)."""
+        return any(n["off"] for n in self.graph(p) if node_key(n) == key)
 
     def greyed_reason(self, p: WorkflowView, key: str) -> str:
         """Why this block of the workflow cannot run (translated), or ""."""
@@ -924,20 +1075,25 @@ class ProjectModel(QObject):
         return _(why) if why else ""
 
     def set_cut(self, paths, key: str, on: bool) -> bool:
-        """Cut a block (``on``) in these workflows, or restore it (issue #43): one change, for Undo. Its settings and
-        results are kept. False when nothing changes."""
-        block = engine_block(key)
-        if block not in wfl.CUTTABLE:
-            raise ValueError(f"this block cannot be cut: {key!r}")
-        paths = [q for q in paths if (block in self.cut_blocks(q)) != on]
+        """Switch a block off (``on``) in these workflows, or on again (issue #47): one change, for Undo. Its settings
+        and results are kept; switched off, the data passes through it. False when nothing changes; ValueError
+        (translated) when it cannot be switched off."""
+        paths = [q for q in paths if self.is_cut(q, key) != on]
         if not paths:
             return False
+        for q in paths:
+            why = self.can_switch_off(q, key) if on else ""
+            if why:
+                raise ValueError(why)
         with self._edit():
-            ws = api.workflows(self.p)
             for q in paths:
-                w = next(x for x in ws if x.id == q.pid)
-                w.options = wfl.set_cut(w.options, block, on)
-            api.set_workflows(self.p, ws, self.p.current)
+                g = self.graph(q)
+                i = self.node_index(q, key)
+                g[i] = dict(g[i], off=on)
+                e = wfl.graph_problem(g, self.source_kind(q))
+                if e is not None:
+                    raise ValueError(refused_text(e))
+                self.p.set_blocks(q.pid, g)
         return True
 
     def separate_sessions(self) -> list[int]:
@@ -1071,7 +1227,7 @@ class ProjectModel(QObject):
             st = p.params.get("stack") or {}
             return ("selection", st.get("min_transparency"), st.get("max_fwhm_ratio"),
                     st.get("selection", "min_weight"), st.get("selection_transparency", "on"))
-        ref = next((b for b in self._blocks.get(p.pid, []) if ENGINE_KEY.get(b.block) == key), None)
+        ref = next((b for b in self._blocks.get(p.pid, []) if view_key(b.block) == key), None)
         return (key, ref.key if ref is not None else ())
 
     def title(self, stage: str) -> str:

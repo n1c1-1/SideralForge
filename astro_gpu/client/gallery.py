@@ -19,6 +19,7 @@ Texts are English and go through _() where shown.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
@@ -38,8 +39,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core import workflow as wfl
 from . import prefs
-from .blocks import TITLES, TRUNK
+from .blocks import KEY_ENGINE_BLOCK, TITLES, TRUNK
 from .i18n import _, hm
 from .widgets import ACCENT, label
 
@@ -48,12 +50,19 @@ CLASSIC_DN = dict(debruitage=True, etoiles="garder", fond="simple")
 CLASSIC = dict(debruitage=False, etoiles="garder", fond="simple")
 
 #: the tabs, in order: key and title
-TABS = (("frames", "From frames"), ("mono", "Filters"), ("image", "From an image"), ("copy", "Copy of a workflow"))
+TABS = (("frames", "From frames"), ("mono", "Filters"), ("image", "From an image"), ("mine", "My templates"),
+        ("copy", "Copy of a workflow"))
+#: a user's template file (Export / Import)
+TEMPLATE_SUFFIX = ".sftemplate"
 
 #: the templates: key, tab, name, what it is for, the workflow's options (the views'), the blocks it cuts (the
 #: engine's names), and: end (its output leaves from Stacking), sessions (drawn with two nights calibrated each on its
 #: own: the project calibrates its sessions separately), source ("image"), planned (not offered yet), recommended
 GALLERY: list[dict] = [
+    dict(key="blank", tab="frames", name="Blank", opts=CLASSIC, blank=True,
+         text="An empty page: build the workflow yourself from the palette above the graph. Start with a Session (a "
+              "night of frames) or an Image; each block then goes where it can, and the blocks that cannot go yet say "
+              "why."),
     dict(key="full", tab="frames", name="Full", opts=FULL, recommended=True,
          text="Calibration, registration and stacking, then astrometry, the sky gradient taken off, the colours from "
               "the Gaia stars, denoise on the two half-stacks and the stars taken off: the starless image and the stars "
@@ -68,12 +77,12 @@ GALLERY: list[dict] = [
          text="Each night is a Session block with its own lights, darks and flats, calibrated on its own; all the "
               "nights are then registered and stacked together. Add the other nights with Add a session…, then "
               "choose their calibration frames in their blocks."),
-    dict(key="calibrated", tab="frames", name="Frames already calibrated", opts=FULL, cut=["calibration"],
-         text="For frames another program has already calibrated (darks and flats applied): the Calibration block is "
-              "cut, the frames are taken as they are. Everything else is the Full workflow."),
-    dict(key="aligned", tab="frames", name="Frames already aligned", opts=FULL, cut=["registration"],
-         text="For frames already aligned on each other: the Registration block is cut, each frame stays where it is; "
-              "the stars are still measured to weigh and select the frames."),
+    dict(key="calibrated", tab="frames", name="Frames already calibrated", opts=FULL, drop=["calibration"],
+         text="For frames another program has already calibrated (darks and flats applied): no Calibration block, "
+              "the frames are taken as they are. Everything else is the Full workflow."),
+    dict(key="aligned", tab="frames", name="Frames already aligned", opts=FULL, drop=["registration"],
+         text="For frames already aligned on each other: no Registration block, each frame stays where it is; the "
+              "stars are still measured to weigh and select the frames."),
     dict(key="raw", tab="frames", name="Raw stack", opts=CLASSIC, end="empilement",
          text="Calibration, registration and stacking only: the stack goes straight to Post, its sky gradient and its "
               "colours as they are. To check a night quickly, or to finish the image in another program."),
@@ -82,11 +91,11 @@ GALLERY: list[dict] = [
               "the sky gradient and the colours from the Gaia stars, then Post. Denoise needs the two half-stacks of a "
               "stack: it is not offered here."),
     dict(key="image_colours", tab="image", name="Stacked image, its colours kept", opts=CLASSIC, source="image",
-         cut=["color"],
-         text="The same, the Color block cut: the image keeps its own colours (it was colour calibrated already). "
+         drop=["color"],
+         text="The same without the Color block: the image keeps its own colours (it was colour calibrated already). "
               "Astrometry stays for the sky gradient's survey."),
     dict(key="image_plain", tab="image", name="Stacked image, gradient only", opts=CLASSIC, source="image",
-         cut=["astrometry", "color"],
+         drop=["astrometry", "color"],
          text="Only the sky gradient is taken off, then Post: no astrometry, no colour calibration. For a field with "
               "too few stars to be solved, or without the network."),
     dict(key="image_stretched", tab="image", name="Already stretched image", opts=CLASSIC, source="image",
@@ -135,9 +144,45 @@ _SHORT = {"calibration": "Calib.", "alignement": "Regist.", "selection": "Select
           "etoiles": "Stars", "post": "Output", "image": "Image", "session": "Session", "combine": "Combine"}
 
 
+def template_source(t: dict) -> str:
+    """The source of a template's workflow: frames, an image, a stretched image."""
+    if t.get("source") in wfl.SOURCES:
+        return t["source"]
+    return "stretched" if t.get("stretched") else ("image" if t.get("source") == "image" else "frames")
+
+
+def template_blocks(t: dict, mono: bool = False) -> list[dict]:
+    """The graph a template makes (issue #47): only the blocks it uses (no block cut or greyed); a monochrome
+    workflow has no Color block. A user's template keeps its own graph."""
+    if t.get("blocks") is not None:
+        return [dict(n) for n in t["blocks"]]
+    if t.get("blank"):
+        return []
+    from .model import to_engine
+    o = dict(t.get("opts") or {})
+    end = KEY_ENGINE_BLOCK.get(t.get("end"), t.get("end")) if t.get("end") else None
+    g = wfl.from_options(to_engine(o), end, template_source(t))
+    drop = set(t.get("drop") or ())
+    if mono or t.get("kind") in ("filters", "fusion"):
+        drop.add("color")
+    g = [n for n in g if n["block"] not in drop and not n["off"]]
+    if t.get("kind") in ("fusion", "dualband") and not any(n["block"] == "stars" for n in g):
+        g.append(wfl.node("stars"))               # option A: each channel's stars taken off
+    return g
+
+
 def chain_of(t: dict) -> list[tuple[str, str]]:
-    """The blocks a template's graph shows, in order: (views' key, "" | "cut" | "grey")."""
+    """The blocks a template's graph shows, in order: (views' key, "")."""
     o = t.get("opts") or {}
+    if t.get("blocks") is not None or not t.get("kind"):
+        from .model import node_key
+        keys = [node_key(n) for n in template_blocks(t) if n["block"] != "calibration"]
+        if "etoiles" in keys and "post" in keys:
+            keys.remove("post")
+            keys.insert(keys.index("etoiles") + 1, "post")
+        if t.get("stretched") and "post" not in keys:
+            keys.append("post")
+        return [(k, "") for k in keys]
     cut = {_CUT_KEY[b] for b in t.get("cut") or ()}
     if t.get("kind") in ("filters", "fusion", "dualband"):     # each filter's own workflow (draw_filters)
         keys = ["calibration", "empilement", "astrometrie", "fond"]
@@ -172,6 +217,15 @@ def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     pm.fill(QColor("#15171c"))
     p = QPainter(pm)
     p.setRenderHint(QPainter.Antialiasing)
+    if t.get("blank"):                                   # an empty page: a dashed place to start from
+        r = QRectF(w * 0.3, h * 0.3, w * 0.4, h * 0.4)
+        p.setPen(QPen(QColor("#4a5263"), 1.4, Qt.DashLine))
+        p.drawRoundedRect(r, 6, 6)
+        p.setPen(QColor("#8b93a1"))
+        p.setFont(QFont("Segoe UI", max(8, int(h * 0.12))))
+        p.drawText(r, Qt.AlignCenter, "+")
+        p.end()
+        return pm
     chain = chain_of(t)
     image = t.get("source") == "image"
     nights = 1 if image else int(t.get("sessions") or 1)
@@ -246,10 +300,14 @@ def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
         pitch = bh + max(4.0, h * 0.06)
         ys = [mid + (i - (rows - 1) / 2) * pitch for i in range(rows)]
         ends = []
+        calib = t.get("kind") or any(n["block"] == "calibration" for n in template_blocks(t))
         for i, y in enumerate(ys):
-            block(x, y, mono[i] if mono else "session")
+            r = block(x, y, mono[i] if mono else "session")
+            if not calib:                                 # no Calibration block (frames calibrated elsewhere)
+                ends.append((r.right(), y))
+                continue
             wire(x + bw, y, x + bw + gap, y)
-            r = block(x + bw + gap, y, "calibration", "cut" if "calibration" in (t.get("cut") or ()) else "")
+            r = block(x + bw + gap, y, "calibration")
             if mono:                                      # each filter registered and stacked on its own
                 wire(r.right(), y, r.right() + gap, y)
                 r = block(r.right() + gap, y, "empilement")
@@ -399,12 +457,20 @@ class TemplateGallery(QDialog):
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(10)
         root.addWidget(label(_("New workflow"), "h1"))
-        root.addWidget(label(_("Choose how the workflow starts: every block can be changed, added, removed or cut "
-                               "afterwards."), "small", wrap=True))
+        root.addWidget(label(_("Choose how the workflow starts: every block can then be changed, added from the "
+                               "palette, removed or switched off."), "small", wrap=True))
         self.tabs = QTabBar()
+        self.tabs.setStyleSheet(f"QTabBar::tab {{ color: #c9cfd8; background: #232831; border: 1px solid #353b47; "
+                                f"padding: 6px 14px; margin-right: 2px; border-top-left-radius: 6px; "
+                                f"border-top-right-radius: 6px; }} QTabBar::tab:selected {{ color: #ffffff; "
+                                f"background: #2b3446; border-color: {ACCENT}; font-weight: 600; }} "
+                                f"QTabBar::tab:hover {{ color: #ffffff; }}")
         self.tab_keys = []
+        self.templates += user_templates()
         for key, title in TABS:
             if key == "copy" and not getattr(session, "paths", None):
+                continue
+            if key == "mine" and not any(t["tab"] == "mine" for t in self.templates):
                 continue
             self.tabs.addTab(_(title))
             self.tab_keys.append(key)
@@ -456,6 +522,17 @@ class TemplateGallery(QDialog):
         nr.addWidget(self.name, 1)
         sv.addLayout(nr)
         bb = QHBoxLayout()
+        imp = QPushButton(_("Import…"))
+        imp.setToolTip(_("A template saved as a file (Export… of a template of yours)"))
+        imp.clicked.connect(self._import)
+        bb.addWidget(imp)
+        self.export_b = QPushButton(_("Export…"))
+        self.export_b.setToolTip(_("Save this template of yours as a file, to share it"))
+        self.export_b.clicked.connect(self._export)
+        bb.addWidget(self.export_b)
+        self.delete_b = QPushButton(_("Delete"))
+        self.delete_b.clicked.connect(self._delete)
+        bb.addWidget(self.delete_b)
         bb.addStretch(1)
         cancel = QPushButton(_("Cancel"))
         cancel.clicked.connect(self.reject)
@@ -492,13 +569,16 @@ class TemplateGallery(QDialog):
                 w.deleteLater()
         self.cards = []
         items = self._copies() if key == "copy" else [t for t in self.templates if t["tab"] == key]
+        if key not in ("copy", "frames", "mine"):          # the blank page, in every tab of templates (issue #47)
+            items = [t for t in self.templates if t.get("blank")] + items
         for n, t in enumerate(items):
             c = TemplateCard(t)
             c.clicked.connect(self.pick)
             c.chosen.connect(lambda t: (self.pick(t), self._create()))
             self.grid.addWidget(c, n // 2, n % 2)
             self.cards.append(c)
-        first = next((c.t for c in self.cards if c.t.get("key") == RECOMMENDED), self.cards[0].t if self.cards else None)
+        first = next((c.t for c in self.cards if c.t.get("key") == RECOMMENDED),
+                     next((c.t for c in self.cards if not c.t.get("blank")), self.cards[0].t if self.cards else None))
         if first is not None:
             self.pick(first)
 
@@ -509,7 +589,10 @@ class TemplateGallery(QDialog):
         self.preview.setPixmap(draw_graph(t, 492, 190, names=True))
         self.title.setText(_(t["name"]) if not t.get("copy") else t["name"])
         self.text.setText(_(t["text"]) if not t.get("copy") else t["text"])
-        self.file_row.setVisible(t.get("source") == "image" and not t.get("copy"))
+        self.file_row.setVisible(template_source(t) in ("image", "stretched") and not t.get("copy"))
+        mine = bool(t.get("user"))
+        self.export_b.setVisible(mine)
+        self.delete_b.setVisible(mine)
         dur = ""
         if t.get("planned"):
             dur = _("Not in this version yet: planned.")
@@ -540,23 +623,36 @@ class TemplateGallery(QDialog):
         have = self.s.filters() if hasattr(self.s, "filters") else {}
         if kind == "filters":
             return (sorted(have), [] if have else [_("a session with a filter (its Session block's Filter)")])
-        if kind == "fusion":
-            return ([f for f in t["filters"] if f in have], [f for f in t["filters"] if f not in have])
+        if kind == "fusion":                              # a missing filter gets an empty Session block (#47)
+            return ([f for f in t["filters"] if f in have], [])
         if kind == "dualband":
             colour = [s for s in getattr(getattr(self.s, "p", None), "sessions", []) if not s.filter]
-            return ([_("colour sessions")] if colour else [], [] if colour else [_("a colour session")])
+            return ([_("colour sessions")] if colour else [], [])
         return [], []
+
+    def to_create(self, t: dict) -> list[str]:
+        """The Session blocks a template makes, empty, for the filters the project does not have yet."""
+        have = self.s.filters() if hasattr(self.s, "filters") else {}
+        if t.get("kind") == "fusion":
+            return [f for f in t["filters"] if f not in have]
+        if t.get("kind") == "dualband":
+            colour = [s for s in getattr(getattr(self.s, "p", None), "sessions", []) if not s.filter]
+            return [] if colour else [_("colour")]
+        return []
 
     def _update(self):
         t = self.choice or {}
         ok = bool(t) and not t.get("planned")
         if t.get("kind"):
             used, missing = self.needs(t)
+            new = self.to_create(t)
             ok = ok and not missing
             self.duration.setText((_("Uses: {what}").format(what=", ".join(used)) if used else "") +
                                   ("\n" + _("Missing: {what}. Add a session with that filter (its Session block), then "
-                                             "come back.").format(what=", ".join(missing)) if missing else ""))
-        if t.get("source") == "image" and not t.get("copy"):
+                                             "come back.").format(what=", ".join(missing)) if missing else "") +
+                                  ("\n" + _("Empty Session blocks are made for {what}: add their frames there.").format(
+                                      what=", ".join(new)) if new else ""))
+        if template_source(t) in ("image", "stretched") and not t.get("copy") and not t.get("blank"):
             ok = ok and Path(self.file.text().strip()).is_file()
         self.ok.setEnabled(ok)
 
@@ -566,10 +662,98 @@ class TemplateGallery(QDialog):
         self.image = self.file.text().strip()
         self.accept()
 
+    # ------------------------------------------------------------ the user's templates (issue #47)
+    def _reload(self):
+        self.templates = [t for t in self.templates if not t.get("user")] + user_templates()
+
+    def _import(self):
+        f, _x = QFileDialog.getOpenFileName(self, _("Import a template"), prefs.last_folder(),
+                                            _("Templates (*{suffix})").format(suffix=TEMPLATE_SUFFIX))
+        if not f:
+            return
+        prefs.remember_folder(f)
+        try:
+            t = import_template(f)
+        except (OSError, ValueError) as e:
+            self.duration.setText(_("This file is not a template: {why}").format(why=e))
+            return
+        self._reload()
+        self._show_tab("mine")
+        self.pick(next(c.t for c in self.cards if c.t.get("key") == t["key"]))
+
+    def _export(self):
+        t = self.choice or {}
+        if not t.get("user"):
+            return
+        f, _x = QFileDialog.getSaveFileName(self, _("Export the template"),
+                                            str(Path(prefs.last_folder()) / (t["name"] + TEMPLATE_SUFFIX)),
+                                            _("Templates (*{suffix})").format(suffix=TEMPLATE_SUFFIX))
+        if f:
+            prefs.remember_folder(f)
+            export_template(t, f)
+
+    def _delete(self):
+        t = self.choice or {}
+        if t.get("user"):
+            delete_user_template(t["key"])
+            self._reload()
+            self._show_tab(t["tab"] if any(x["tab"] == t["tab"] for x in self.templates) else "frames")
+
+    def _show_tab(self, key: str):
+        if key not in self.tab_keys:                      # a tab that had no template yet
+            i = [k for k, _t in TABS if k in self.tab_keys or k == key].index(key)
+            self.tabs.insertTab(i, _(dict(TABS)[key]))
+            self.tab_keys.insert(i, key)
+        self.tabs.setCurrentIndex(self.tab_keys.index(key))
+        self._tab(self.tab_keys.index(key))
+
     # ------------------------------------------------------------ what the page reads
     @property
     def opts(self) -> dict:
         return _view_opts(self.choice or {})
+
+
+def user_templates() -> list[dict]:
+    """The user's own templates (issue #47), from the preferences."""
+    out = []
+    for t in prefs.get("templates") or []:
+        if isinstance(t, dict) and t.get("key") and isinstance(t.get("blocks"), list):
+            out.append({**t, "user": True, "tab": t.get("tab") or "mine", "opts": CLASSIC})
+    return out
+
+
+def make_template(name: str, tab: str, text: str, source: str, blocks: list[dict]) -> dict:
+    """A user's template of a workflow's graph (checked)."""
+    blocks = wfl.check_blocks(blocks, source)
+    key = "user:" + "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_")
+    return {"key": key, "tab": tab if tab in dict(TABS) and tab != "copy" else "mine", "name": name.strip(),
+            "text": text.strip(), "source": source, "blocks": blocks}
+
+
+def save_user_template(t: dict) -> dict:
+    """Keep a template in the preferences (one of the same name is replaced)."""
+    keep = [x for x in prefs.get("templates") or [] if isinstance(x, dict) and x.get("key") != t["key"]]
+    prefs.set("templates", keep + [{k: t[k] for k in ("key", "tab", "name", "text", "source", "blocks")}])
+    return t
+
+
+def delete_user_template(key: str) -> None:
+    prefs.set("templates", [x for x in prefs.get("templates") or [] if isinstance(x, dict) and x.get("key") != key])
+
+
+def export_template(t: dict, path: str) -> None:
+    Path(path).write_text(json.dumps({"format": "sideralforge-template", "version": 1,
+                                      **{k: t[k] for k in ("tab", "name", "text", "source", "blocks")}},
+                                     indent=1, ensure_ascii=False), encoding="utf-8")
+
+
+def import_template(path: str) -> dict:
+    d = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(d, dict) or d.get("format") != "sideralforge-template":
+        raise ValueError(_("not a template file"))
+    return save_user_template(make_template(str(d.get("name") or Path(path).stem), str(d.get("tab") or "mine"),
+                                            str(d.get("text") or ""), str(d.get("source") or "frames"),
+                                            list(d.get("blocks") or [])))
 
 
 def _view_opts(t: dict) -> dict:

@@ -105,24 +105,24 @@ def test_the_session_block_edits_its_frames_and_its_filter(world):
     assert m.dirty and not m.can_undo()            # saved by Save, as the frames are; Undo is for the workflows
 
 
-def test_cutting_a_block_draws_it_cut_greys_what_needs_it_and_undoes(world):
+def test_switching_a_block_off_draws_it_so_refuses_what_cannot_and_undoes(world):
+    """Issue #47: a block whose output is its input's kind can be switched off (drawn hatched, the data passes
+    through); one the blocks after it need cannot, and the toast says why; Undo takes it back."""
     m, page = world["m"], world["page"]
-    assert cuttable("astrometrie") and cuttable("alignement") and not cuttable("empilement")
-    n = Graph(m).node_of(m.path, "astrometrie")
-    page.toggle_cut(n, None)
+    toasts = []
+    page.toasted.connect(toasts.append)
+    page.toggle_cut(Graph(m).node_of(m.path, "fond"), None)
     settle(world)
-    assert m.path.opts["cut"] == ["astrometry"] and "astrometry" not in m.all_stages(m.path)
-    g = Graph(m)
-    a, c = g.node_of(m.path, "astrometrie"), g.node_of(m.path, "couleur")
-    assert a.cut and not a.grey and c.grey == "needs Astrometry" and not c.cut
-    assert g.summary(c) == "needs Astrometry" and g.state(c) == "skipped"
-    page.select(step="couleur")
-    page.refresh()                                                            # the reason, and the way to its cause
-    assert any(b.text() == "Go to Astrometry" for b in page.panel.findChildren(QPushButton))
+    assert m.is_cut(m.path, "fond") and "gradient" not in m.all_stages(m.path)
+    assert Graph(m).node_of(m.path, "fond").cut and m.p.workflow(1).blocks is not None
+    page.toggle_cut(Graph(m).node_of(m.path, "astrometrie"), None)          # Color needs it
+    settle(world)
+    assert not m.is_cut(m.path, "astrometrie") and "Color needs it" in toasts[-1]
+    page.toggle_cut(Graph(m).node_of(m.path, "empilement"), None)           # it turns frames into an image
+    assert not m.is_cut(m.path, "empilement") and toasts[-1].startswith("it turns a series of frames")
     m.undo()
-    assert not from_engine(m.p.workflow(1).options)["cut"]
-    page.toggle_cut(Graph(m).node_of(m.path, "empilement"), None)              # Stacking cannot be cut: nothing changes
-    assert not m.path.opts.get("cut")
+    settle(world)
+    assert not m.is_cut(m.path, "fond")
 
 
 def test_a_workflow_from_an_image_starts_on_its_own_lane(world):
@@ -151,7 +151,7 @@ def test_filters_make_one_workflow_each_and_a_fusion_in_the_composition_section(
     d = page.new_workflow()
     d.tabs.setCurrentIndex(d.tab_keys.index("mono"))
     d.pick(next(c.t for c in d.cards if c.t["key"] == "sho"))
-    assert not d.ok.isEnabled() and "SII" in d.duration.text()               # no S II session
+    assert d.ok.isEnabled() and "Empty Session blocks are made for SII" in d.duration.text()   # #47: made empty
     d.pick(next(c.t for c in d.cards if c.t["key"] == "hoo"))
     assert d.ok.isEnabled() and "Ha" in d.duration.text()
     d.ok.click()
@@ -160,8 +160,8 @@ def test_filters_make_one_workflow_each_and_a_fusion_in_the_composition_section(
     assert names[-3:] == ["Ha", "OIII", "HOO"]
     ha, oiii, hoo = m.paths[-3:]
     assert ha.sessions == [1] and oiii.sessions == [2] and m.is_mono(ha) and not m.is_mono(hoo)
-    assert m.display_keys(hoo) == ["fusion"] and "couleur" in m.display_keys(ha)          # Color greyed
-    assert m.greyed_reason(ha, "couleur").startswith("a monochrome image")
+    assert m.display_keys(hoo) == ["fusion"] and "couleur" not in m.display_keys(ha)      # #47: no Color in mono
+    assert "etoiles" in m.display_keys(ha)                                   # option A: its stars taken off
     g = Graph(m)
     fn = g.node_of(hoo, "fusion")
     assert fn.handle and g.node_of(hoo, "post") is fn

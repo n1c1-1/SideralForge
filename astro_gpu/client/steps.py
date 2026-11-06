@@ -185,9 +185,13 @@ class Steps(QObject):
     def _instance(self, p, stage: str) -> tuple[str, str]:
         """(the stage Inspect reads, its session) for the block shown: a session's block ("calibration@2") reads that
         session's instance of the stage (issue #43); any other block, the stage."""
-        sid = str(getattr(self.s, "sel_step", "") or "").partition("@")[2]
+        sel = str(getattr(self.s, "sel_step", "") or "")
+        sid = sel.partition("@")[2]
         if sid and f"{stage}@{sid}" in self.s.all_stages(p):
             return f"{stage}@{sid}", sid
+        num = sel.partition("@")[0].partition("~")[2]     # a graph's later node (issue #47): its own stage
+        if num and f"{stage}~{num}" in self.s.all_stages(p):
+            return f"{stage}~{num}", ""
         return stage, ""
 
     def which_for(self, p, stage: str) -> str:
@@ -196,11 +200,14 @@ class Steps(QObject):
         inst, sid = self._instance(p, stage)
         st = self.s.state_info(p, inst)
         which = "previous" if st is not None and st.state != "done" and st.previous_key else "current"
+        if "~" in inst:                                   # a graph's later node (issue #47): "current~2"
+            return f"{which}~{inst.partition('~')[2]}"
         return f"{which}@{sid}" if sid else which
 
     def key_of(self, p, stage: str, which: str = "current") -> str | None:
+        which, _t, num = which.partition("~")
         which, _at, sid = which.partition("@")
-        st = self.s.state_info(p, f"{stage}@{sid}" if sid else stage)
+        st = self.s.state_info(p, f"{stage}@{sid}" if sid else f"{stage}~{num}" if num else stage)
         if st is None:
             return None
         return st.previous_key if which == "previous" else (st.key if st.state == "done" else None)

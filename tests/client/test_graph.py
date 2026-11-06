@@ -49,8 +49,8 @@ from PySide6.QtWidgets import (  # noqa: E402
 from astro_gpu import api  # noqa: E402
 from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import i18n, prefs  # noqa: E402
-from astro_gpu.client.blocks import COLUMNS, STATE_WORD, Graph, block_state  # noqa: E402
-from astro_gpu.client.graph import BH, BW, MIN_SCALE, BlockItem, GraphPage  # noqa: E402
+from astro_gpu.client.blocks import STATE_WORD, Graph, block_state  # noqa: E402
+from astro_gpu.client.graph import BH, BW, MIN_SCALE, PALETTE_W, BlockItem, GraphPage  # noqa: E402
 from astro_gpu.client.i18n import hm  # noqa: E402
 from astro_gpu.client.model import ProjectModel  # noqa: E402
 from astro_gpu.client.panel import CompactRow, MethodCard  # noqa: E402
@@ -173,7 +173,7 @@ def page(world, model, qapp):
     v.setContentsMargins(0, 0, 0, 0)
     pg = GraphPage(model)
     v.addWidget(pg)
-    root.resize(1680, 934)
+    root.resize(1680 + PALETTE_W, 934)                     # the graph as wide as before the palette (#47)
     root.show()
     settle(world["w"], pg)
     pg.root = root
@@ -308,8 +308,10 @@ def test_the_tree_shares_blocks_as_the_engine_does(world, model, page):
     for n in g.nodes:
         by_key.setdefault(n.key, []).append(n)
     ids = {v.name: v.pid for v in model.paths}
-    for key in ("calibration", "alignement", "selection", "empilement", "astrometrie", "fond", "couleur"):
+    for key in ("calibration", "alignement", "selection", "empilement", "astrometrie", "fond"):
         assert len(by_key[key]) == 1 and len(by_key[key][0].paths) == 4, key
+    # Color comes after Denoise (the engine's order, issue #47): one block after the Denoise, one without it
+    assert sorted(len(n.paths) for n in by_key["couleur"]) == [1, 3]
     den = by_key["debruitage"]
     assert len(den) == 1 and {q.name for q in den[0].paths} == {"Full", "Classic + denoise", "Full twin"}
     stars = by_key["etoiles"]
@@ -322,16 +324,15 @@ def test_the_tree_shares_blocks_as_the_engine_does(world, model, page):
 
 
 def test_the_graph_shows_the_real_engine_order(world, model, page):
-    """Frames, Calibration, Registration, Selection, Stacking, Astrometry, Gradient, Color, Denoise, Stars, Output,
-    Composition, Post (the engine's order); the phase bands; Deconvolution only when something uses it."""
-    assert COLUMNS == ["sources", "calibration", "alignement", "selection", "empilement", "astrometrie", "fond",
-                       "couleur", "deconv", "debruitage", "etoiles", "post", "fusion", "composition",
-                       "final"]
+    """Frames, Calibration, Registration, Selection, Stacking, then the image blocks in columns by their rank in
+    their workflow (issue #47: Astrometry, Gradient, Denoise, Color here), Stars, Output, Composition, Post; the phase
+    bands; a block no workflow has has no column."""
     assert model.block_keys(model.paths[0]) == ["calibration", "alignement", "selection", "empilement", "astrometrie",
-                                                "fond", "couleur", "debruitage", "etoiles", "post"]
+                                                "fond", "debruitage", "couleur", "etoiles", "post"]
+    cols = page.graph.columns(page.graph.graph)
+    assert cols[:5] == ["sources", "calibration", "alignement", "selection", "empilement"]
+    assert cols[5:9] == ["i0", "i1", "i2", "i3"] and cols[-4:] == ["etoiles", "post", "composition", "final"]
     items = {it.node.key + str(id(it.node)): it for it in page.graph.scene().items() if isinstance(it, BlockItem)}
-    xs = sorted({it.pos().x() for it in items.values()})
-    assert len(xs) == 13                                                        # no Deconvolution column
     gradient = [it for it in items.values() if it.node.key == "fond"]
     color = [it for it in items.values() if it.node.key == "couleur"]
     assert max(g.pos().x() for g in gradient) < min(c.pos().x() for c in color)  # Gradient before Color
@@ -377,42 +378,58 @@ def test_a_shared_stage_is_one_key(world, model):
 
 # ---------------------------------------------------------------------------------------------- option rules
 def test_adding_and_removing_blocks_follows_the_rules_with_toasts(world, model, page):
+    """Issue #47: a block goes only where its rules allow it, else a toast says why; a block that the blocks after
+    it need cannot be removed; any other can."""
     classic = model.view(2)
     toasts = []
     page.toasted.connect(toasts.append)
-    page.add_tool("etoiles", classic.pid)                                      # Stars needs Denoise
+    page.place_block("stars", classic.pid)                                     # Split stars needs Denoise before it
     settle(world["w"], page)
-    assert classic.opts["etoiles"] == "retirer" and classic.opts["debruitage"]
-    assert any("Denoise added" in t for t in toasts)
-    assert model.sel_step == "etoiles" and model.path is classic
-    # Denoise cannot go while Stars is there
+    assert model.view(2).opts["etoiles"] == "garder" and toasts and "Denoise" in toasts[-1]
+    page.place_block("denoise", classic.pid)
+    settle(world["w"], page)
+    page.place_block("stars", classic.pid)
+    settle(world["w"], page)
+    classic = model.view(2)
+    assert classic.opts["debruitage"] and classic.opts["etoiles"] == "retirer"
+    assert model.sel_step == "etoiles" and model.path.pid == classic.pid and model.p.workflow(2).blocks is not None
+    # Denoise cannot go while Split stars is there
     toasts.clear()
     page.remove_tool(node(page, "debruitage", classic.pid), [classic.pid])
-    assert classic.opts["debruitage"] and toasts and "remove Stars first" in toasts[0]
-    # removing Stars keeps Denoise and the gradient: nothing else goes with it
+    assert model.view(2).opts["debruitage"] and toasts and "Split stars & background needs it" in toasts[0]
+    # removing Split stars keeps Denoise: nothing else goes with it
     toasts.clear()
     page.remove_tool(node(page, "etoiles", classic.pid), [classic.pid])
-    assert classic.opts["etoiles"] == "garder" and classic.opts["debruitage"] and classic.opts["fond"] == "simple"
-    assert not toasts
-    # Gradient cannot be removed, and the card after the output says so
-    new, why = model.without_tool(classic.opts, "simple")
-    assert new is None and why
+    settle(world["w"], page)
+    classic = model.view(2)
+    refused = lambda: [t for t in toasts if "to run" not in t]                   # noqa: E731 (the cost's toast)
+    assert classic.opts["etoiles"] == "garder" and classic.opts["debruitage"] and not refused()
+    # the Gradient can go too: a graph holds the blocks it uses
+    page.remove_tool(node(page, "fond", classic.pid), [classic.pid])
+    settle(world["w"], page)
+    assert "fond" not in model.display_keys(model.view(2)) and not refused()
+    assert model.undo() and "fond" in model.display_keys(model.view(2))
 
 
-def test_the_toolbar_cards_say_what_each_block_costs(world, model, page):
-    from astro_gpu.client.graph import ToolCard
-    cards = {c.key: c for c in page.findChildren(ToolCard)}
-    assert set(cards) == {"debruitage", "etoiles"}                             # Deconvolution is ◇: Spec mode only
-    assert all(c.state == "in" for c in cards.values())                        # Full has both
+def test_the_palette_offers_every_block_and_says_why_one_cannot_go(world, model, page):
+    """Issue #47: the palette has every block; one that cannot go in the current workflow is greyed, and hovered it
+    says why."""
+    from astro_gpu.client.graph import PaletteCard
+    cards = {c.block: c for c in page.findChildren(PaletteCard)}
+    assert set(cards) >= {"session", "image", "calibration", "registration", "selection", "stacking", "astrometry",
+                          "gradient", "denoise", "color", "output", "stars", "fusion", "composition"}
+    # Full (the current one) has every block: the image blocks can go again, the others are there once
+    assert not cards["denoise"].reason and not cards["gradient"].reason and not cards["session"].reason
+    assert cards["stacking"].reason == "a workflow has one Stacking block"
     model.select(index=1)                                                      # Classic stack
     page.refresh()
-    cards = {c.key: c for c in page.findChildren(ToolCard)}
-    assert cards["debruitage"].state == "add" and cards["etoiles"].state == "add"
-    texts = [lb.text() for c in cards.values() for lb in c.findChildren(QLabel)]
-    # "+2 min", or "≈ +5 h 08" (an estimate), or "same duration" when the test project has these results already
-    assert any(t.lstrip("≈ ").startswith("+") or t == "same duration" for t in texts)
-    assert hm(model.tool_cost(model.path.opts, "etoiles")) in " ".join(texts) or "same duration" in " ".join(texts)
-    assert page.findChildren(QLabel, "h2")[0].text() == "Add step"
+    cards = {c.block: c for c in page.findChildren(PaletteCard)}
+    assert cards["stars"].reason == "it needs the Denoise block before it"
+    page.show_hint(cards["stars"], cards["stars"].reason)
+    assert page.hint.isVisibleTo(page) and page.hint.text() == "It needs the Denoise block before it"
+    page.hide_hint()
+    assert not page.hint.isVisibleTo(page)
+    assert page.findChildren(QLabel, "h2")[0].text() == "Blocks"
 
 
 # ---------------------------------------------------------------------------------------------- replace / variant
@@ -678,10 +695,10 @@ def test_outputs_pulled_to_post_make_a_raw_stack_workflow(world, model, page):
     assert g.summary(g.node_of(q, "post")) == "from Stacking"
     assert g.node_of(q, "empilement") is g.node_of(model.view(1), "empilement")      # shares everything up to Stacking
     assert any("Raw stack" in t for t in texts_of(page.graph))
-    # no block can be added after an early output
-    from astro_gpu.client.graph import ToolCard
-    assert all(c.state == "in" for c in page.findChildren(ToolCard))
-    assert [c.text() for c in page.findChildren(QLabel) if c.text() == "after the output"]
+    # issue #47: its graph can grow (an image block before its Output); no Split stars without Denoise
+    from astro_gpu.client.graph import PaletteCard
+    cards = {c.block: c for c in page.findChildren(PaletteCard)}
+    assert not cards["gradient"].reason and cards["stars"].reason
     ok, why, need = model.slider_state(q, "star_strength")
     assert ok is False and "before the split block" in why and need is None             # nothing to add after the exit
     assert model.slider_state(model.view(1), "star_strength", "combined")[0] is True
@@ -725,12 +742,12 @@ def test_new_workflow_duplicate_rename_delete(world, model, page, monkeypatch):
     settle(world["w"], page)
     assert len(model.paths) == n0 + 1 and model.path.name == "Mine" and model.sel_step == "post"
     assert not model.path.opts["debruitage"] and model.path.opts["etoiles"] == "garder"
-    # a template that cuts a block: the workflow has it cut
+    # a template without a block (issue #47): the workflow does not have it
     d = page.new_workflow()
     d.pick(next(c.t for c in d.cards if c.t["key"] == "calibrated"))
     d.ok.click()
     settle(world["w"], page)
-    assert model.path.opts["cut"] == ["calibration"] and model.is_cut(model.path, "calibration")
+    assert model.path.opts["cut"] == ["calibration"] and "calibration" not in model.display_keys(model.path)
     model.remove_path(model.paths.index(model.path))
     settle(world["w"], page)
     # Duplicate keeps the options, the settings and the exit (the gallery opens on the copy)
@@ -1036,7 +1053,6 @@ def test_selection_thresholds_come_from_the_stack_settings(world, model, page):
 
 # ---------------------------------------------------------------------------------------------- Spec mode
 def test_spec_mode_shows_what_the_engine_does_not_have_disabled(world, model, page):
-    from astro_gpu.client.graph import ToolCard
     page.select_node(node(page, "debruitage"))
     settle(world["w"], page)
     plain = texts_of(page.panel)
@@ -1058,9 +1074,9 @@ def test_spec_mode_shows_what_the_engine_does_not_have_disabled(world, model, pa
         editors = r.findChildren(QComboBox) + r.findChildren(QCheckBox) + r.findChildren(QDoubleSpinBox) + \
             r.findChildren(QSpinBox)
         assert editors and not any(e.isEnabled() for e in editors), r.r["key"]
-    tc = {c.key: c for c in page.findChildren(ToolCard)}
-    assert "deconv" in tc and not tc["deconv"].isEnabled() and tc["deconv"].state == "off"
-    assert "◇" in " ".join(lb.text() for lb in tc["deconv"].findChildren(QLabel))
+    from astro_gpu.client.graph import PaletteCard
+    tc = {c.block: c for c in page.findChildren(PaletteCard)}
+    assert "deconv" in tc and tc["deconv"].reason and "◇" in tc["deconv"].title
     # a ◇ value is never stored and never changes a key
     keys_before = {s: model.stage_key(model.paths[0], s) for s in model.all_stages(model.paths[0])}
     page.panel.set_setting(next(r for r in new_rows).r, 1)
@@ -1101,12 +1117,12 @@ def test_the_french_switch_translates_everything_visible(world, model, page):
     assert i18n._(STATE_WORD["pending"]) == "Pas encore calculé"                  # (the test project may have none pending)
     assert i18n._("Gradient") == "Gradient"
     assert g.summary(next(n for n in g.nodes if n.key == "alignement")) == "sur l'image la plus nette"
-    assert "Ajouter une étape" in " ".join(t)
+    assert "Blocs" in t and "SUR LES POSES" in t
     # back to English at runtime: the page is built again, in English
     appmod.apply_language("en")
     page.refresh()
     settle(world["w"], page)
-    assert "Add step" in texts_of(page.root)
+    assert "Blocks" in texts_of(page.root)
 
 
 def test_decimal_commas_in_french_reasons(world, model, page):
@@ -1304,26 +1320,24 @@ def test_the_page_says_it_is_reading_while_the_worker_works(qapp):
     root.close()
 
 
-def test_dropping_a_tool_on_a_lane_adds_it_where_the_rules_say(world, model, page):
+def test_dropping_a_block_on_a_lane_puts_it_where_the_rules_say(world, model, page):
+    """Issue #47: while a palette block is dragged, its valid places light up in each workflow; dropped on one, it
+    goes there."""
     graph = page.graph
-    graph.drag_tool = "etoiles"                                  # a card of the toolbar is being dragged
+    graph.drag_block = "stars"                                   # a palette block is being dragged
     graph.rebuild()
-    assert {g.pid for g in graph.ghosts} == {2, 3}               # the lanes that do not have Stars yet
-    graph.drag_tool = None
+    assert {g.pid for g in graph.ghosts} == {3}                  # Classic + denoise only: Classic has no Denoise,
+    idx = next(g.idx for g in graph.ghosts if g.pid == 3)        # the others have Split stars already
+    graph.drag_block = "gradient"
     graph.rebuild()
-    toasts = []
-    page.toasted.connect(toasts.append)
-    graph.toolDropped.emit("etoiles", 3)                         # on Classic + denoise
+    assert {g.pid for g in graph.ghosts} == {1, 2, 3, 4} and len([g for g in graph.ghosts if g.pid == 2]) >= 3
+    graph.drag_block = None
+    graph.rebuild()
+    assert not graph.ghosts
+    graph.blockDropped.emit("stars", 3, idx)
     settle(world["w"], page)
     assert model.view(3).opts["etoiles"] == "retirer" and model.sel_step == "etoiles" and model.path.pid == 3
-    assert model.scope == [1, 3, 4]                              # its Stars are the same as Full's and Full twin's
-    assert not toasts or "Denoise added" not in toasts[0]        # it had Denoise
-    graph.toolDropped.emit("etoiles", 2)                         # on Classic stack: Denoise comes with it
-    settle(world["w"], page)
-    assert model.view(2).opts["debruitage"] and any("Denoise added" in t for t in toasts)
-    graph.toolDropped.emit("deconv", 2)                          # ◇: nothing happens, and it says so
-    assert any(t.startswith("◇") for t in toasts)
-    assert model.undo() and model.undo()
+    assert model.undo() and model.view(3).opts["etoiles"] == "garder"
 
 
 def test_a_project_without_workflows_has_a_graph_and_an_import_button(qapp, tmp_path):
@@ -1340,15 +1354,15 @@ def test_a_project_without_workflows_has_a_graph_and_an_import_button(qapp, tmp_
     root.show()
     settle(w, pg)
     items = [it for it in pg.graph.scene().items() if isinstance(it, BlockItem)]
-    assert [it.node.key for it in items] == ["sources", "final"] or {it.node.key for it in items} == {"sources", "final"}
-    assert "+  New workflow" in [getattr(g, "text", "") for g in pg.graph.scene().items()]
+    assert not items                                          # issue #47: a blank page is empty
+    assert any(getattr(g, "text", "").startswith("+  New workflow") for g in pg.graph.scene().items())
     got = []
     pg.addSources.connect(lambda: got.append(1))
     pg.select_node(pg.graph.graph.root)
     settle(w, pg)
     button(pg.panel, "Import folder").click()
     assert got
-    assert [lb.text() for lb in pg.findChildren(QLabel) if lb.text() == "Add step"]
+    assert [lb.text() for lb in pg.findChildren(QLabel) if lb.text() == "Blocks"]
     assert m.total_seconds() == 0 and m.all_pending() == []
     w.stop()
     root.close()

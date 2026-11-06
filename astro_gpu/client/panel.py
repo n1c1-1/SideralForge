@@ -43,7 +43,7 @@ from ..core import workflow as wfl
 from . import prefs
 from .blocks import STATE_WORD, block_state, block_title
 from .i18n import _, all_workflows, hm, language, number, plural
-from .model import NotInEngine, cuttable, method_of, method_value, methods_of
+from .model import NotInEngine, method_of, method_value, methods_of
 from .settings import RangeBar, SettingRow, fmt, needed_stages, selection_rule_text, step_settings
 from .settings import loading as settings_loading
 from .widgets import ACCENT, BAD, NEW, WARN, clear, hline, label
@@ -325,6 +325,7 @@ class Panel(QWidget):
     renamed = Signal(int, str)
     openLayer = Signal(int)             # Open in Post (a Post layer's id)
     removeTool = Signal()
+    saveTemplate = Signal(int)              # issue #47: Save as template… of a workflow
     variantMade = Signal(int, int)      # new workflow, the one it is a variant of
     toast = Signal(str)                 # a word to say (what came with a change, why it was refused)
     cutToggled = Signal()               # the block's switch: cut it, or restore it (issue #43)
@@ -746,9 +747,9 @@ class Panel(QWidget):
         self.hv.addLayout(top)
         self.hv.addWidget(label(p.name if len(node.paths) == 1 else all_workflows(len(node.paths)), "small"))
         if node.cut:
-            self.bv.addWidget(label(_("Cut: this block does not change the image, which passes through to the next "
-                                      "block. Its settings are kept."), None, wrap=True))
-            b = QPushButton(_("Restore this block") + "  (D)")
+            self.bv.addWidget(label(_("Switched off: this block does not change the data, which passes through to "
+                                      "the next block. Its settings are kept."), None, wrap=True))
+            b = QPushButton(_("Switch this block on") + "  (D)")
             b.setObjectName("primary")
             b.clicked.connect(self.cutToggled.emit)
             self.bv.addSpacing(6)
@@ -784,7 +785,8 @@ class Panel(QWidget):
                                        and self.renamed.emit(p.pid, ed.text().strip()))
             top.addWidget(ed, 1)
         else:
-            title = block_title(p, k)
+            from .blocks import node_title
+            title = node_title(s, node) if node.paths else block_title(p, k)   # a block placed twice: its number
             if node.sid is not None:
                 title += " · " + s.session(node.sid).name
             top.addWidget(label(title, "h1", wrap=True), 1)     # a long name (#36) wraps, never cut
@@ -792,16 +794,30 @@ class Panel(QWidget):
         chip = QLabel(_(STATE_WORD[st]))
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
         top.addWidget(chip)
-        if k in OPTIONAL_BLOCKS:
+        kb = k.partition("~")[0]
+        graph_block = kb not in ("sources", "final", "session", "composition", "fusion", "image", "post") and \
+            node.sid is None and not self.tune
+        acts = QHBoxLayout()                             # the block's actions, under its name (issue #47)
+        acts.setSpacing(6)
+        if graph_block:                                  # any block can go when what follows allows it
             x = QPushButton(_("Delete block"))
+            x.setToolTip(_("Take this block out of the workflow (Del)"))
             x.clicked.connect(self.removeTool.emit)
-            top.addWidget(x)
-        if cuttable(k) and node.sid is None and not self.tune:
-            cut = QPushButton(_("Cut"))
-            cut.setToolTip(_("Cut this block (D): the image passes through it; its settings are kept"))
+            acts.addWidget(x)
+        if graph_block and (node.cut or not s.can_switch_off(p, k)):
+            cut = QPushButton(_("Switch on") if node.cut else _("Switch off"))
+            cut.setToolTip(_("Switch this block off (D): the data passes through it; its settings are kept"))
             cut.clicked.connect(self.cutToggled.emit)
-            top.addWidget(cut)
+            acts.addWidget(cut)
+        if k == "post" and not self.tune:                # the workflow as a template of the gallery
+            tpl = QPushButton(_("Save as template…"))
+            tpl.setToolTip(_("Keep this workflow's graph as a template of the gallery"))
+            tpl.clicked.connect(lambda: self.saveTemplate.emit(p.pid))
+            acts.addWidget(tpl)
         self.hv.addLayout(top)
+        if acts.count():
+            acts.addStretch(1)
+            self.hv.addLayout(acts)
         # which workflows a change goes to (the Stars block has no setting: nothing to apply)
         if node.shared and k != "etoiles":
             self.hv.addWidget(label(_("Changes apply to:"), "dim"))

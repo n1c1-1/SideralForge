@@ -1318,7 +1318,10 @@ def set_option(p: Project2, wf_ids: int | Iterable[int], key: str, value: Any) -
         new[wid], n = wfl.set_option(w.options, key, value, w.end)
         notes += [x for x in n if x not in notes]
     for wid, o in new.items():
-        p.workflow(wid).options = o
+        w = p.workflow(wid)
+        w.options = o
+        if w.blocks is not None:                     # a graph (issue #47) follows
+            p.set_blocks(w, wfl.sync_blocks(w.blocks, wfl.source_of(w), o))
     return notes
 
 

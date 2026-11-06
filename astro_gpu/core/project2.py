@@ -88,6 +88,9 @@ class Workflow:
     #: issue #43: the ids of the sessions this workflow stacks (one filter of a monochrome camera: its sessions);
     #: None: every session of the project
     sessions: list[int] | None = None
+    #: issue #47: the graph the user built, [{"block", "name", "method", "off"}] after the source (core/workflow.py);
+    #: None: a workflow made before, its graph given by its options (workflow.from_options)
+    blocks: list[dict[str, Any]] | None = None
 
     def stored(self, stage: str) -> dict[str, Any]:
         """The values stored for a stage (a copy)."""
@@ -232,11 +235,23 @@ class Project2:
         return w
 
     def chain(self, wid: int | Workflow) -> list[str]:
-        """The stages of a workflow, in order (core/workflow.chain on this project's reference image)."""
+        """The stages of a workflow, in order (core/workflow.chain on this project's reference image; a graph's in
+        its own order, issue #47)."""
         w = self.workflow(wid)
+        if w.blocks is not None:
+            return wfl.chains().sequence(wfl.sequence_chain(w.blocks, wfl.source_of(w),
+                                                            reference=bool(self.reference_image),
+                                                            sessions=self.separate_sessions(w)))
         return wfl.chain(w.options, w.end, reference=bool(self.reference_image), sessions=self.separate_sessions(w),
                          image=is_image(w), mono=self.is_mono(w) and w.source is None, fusion=is_fusion(w),
                          stretched=is_stretched(w))
+
+    def set_blocks(self, wid: int | Workflow, blocks: list[dict[str, Any]]) -> None:
+        """Give a workflow its graph (checked, issue #47); its options follow (what the code reading them sees)."""
+        w = self.workflow(wid)
+        w.blocks = wfl.check_blocks(blocks, wfl.source_of(w))
+        w.options = wfl.options_of(w.blocks, wfl.source_of(w))
+        w.end = None
 
     # ------------------------------------------------------------------ checks and JSON
     def validate(self) -> None:
@@ -278,6 +293,11 @@ class Project2:
                 raise ValueError(f"workflow {w.id}: params must be {{stage: {{param: value}}}}")
             check_breakpoints(w.breakpoints, f"workflow {w.id}")
             check_source(w.source, f"workflow {w.id}")
+            if w.blocks is not None:
+                try:
+                    wfl.check_blocks(w.blocks, wfl.source_of(w))
+                except ValueError as e:
+                    raise ValueError(f"workflow {w.id}: {e}") from None
             if is_fusion(w) and any(i["pid"] not in wids or i["pid"] == w.id for i in w.source["fusion"]["inputs"]):
                 raise ValueError(f"workflow {w.id}: its fusion reads workflows the project does not have")
             st = (w.source or {}).get("fusion", {}).get("stars") if is_fusion(w) else None
@@ -314,7 +334,8 @@ class Project2:
                               variant_of=w.get("variant_of"),
                               breakpoints=_breakpoints(w.get("breakpoints")),      # absent in older projects: none
                               source=copy.deepcopy(w.get("source")),
-                              sessions=list(w["sessions"]) if w.get("sessions") is not None else None)
+                              sessions=list(w["sessions"]) if w.get("sessions") is not None else None,
+                              blocks=copy.deepcopy(w["blocks"]) if w.get("blocks") is not None else None)
                      for w in d.get("workflows") or []]
         nxt = d.get("next_workflow_id") or (max((w.id for w in workflows), default=0) + 1)
         p = cls(name=d.get("name", ""), description=d.get("description", ""), created=d.get("created", ""),

@@ -329,7 +329,7 @@ def test_v2_stages_and_chains():
     ch = workflow.chains()
     assert type(ch.stages["render_simple"]).__name__ == "RenderSimple"           # the real stages, no stand-ins
     classic = ch.chain(workflow.TEMPLATES["Classic + denoise"])
-    assert classic[-4:] == ["gradient", "color", "denoise", "render_simple"]
+    assert classic[-4:] == ["gradient", "denoise", "color", "render_simple"]
     assert ch.deps_in_chain(classic, "render_simple") == ("stack", "color", "denoise", "gradient")
     raw_exit = ch.chain(workflow.TEMPLATES["Classic stack"], "stacking")
     assert ch.deps_in_chain(raw_exit, "render_simple") == ("stack",)

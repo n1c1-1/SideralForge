@@ -511,5 +511,7 @@
  "Each channel's weight in the palette, after the balance (1: as balanced).": "Le poids de chaque canal dans la palette, après l'équilibre (1 : tel qu'équilibré).",
  "Where the stars put back on the starless fusion come from.": "D'où viennent les étoiles remises sur la fusion sans étoiles.",
  "Star source": "Source des étoiles",
- "Where the stars put back on the starless fusion came from (palette, channel or workflow).": "D'où viennent les étoiles remises sur la fusion sans étoiles (palette, canal ou workflow)."
+ "Where the stars put back on the starless fusion came from (palette, channel or workflow).": "D'où viennent les étoiles remises sur la fusion sans étoiles (palette, canal ou workflow).",
+ "Keep the half-stacks": "Garder les demi-empilements",
+ "Saves the denoised half-stacks too, for a Denoise block placed after this one.": "Enregistre aussi les demi-empilements débruités, pour un bloc Débruitage placé après celui-ci."
 }

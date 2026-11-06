@@ -26,7 +26,7 @@ from pydantic import field_validator
 from ..core.imgutil import asinh_preview
 from ..core.params import ADVANCED, Auto, P, StageParams, check_choice
 from ..core.stage import Context, Stage
-from .gradient import stack_image
+from .gradient import image_in
 
 METHODS = ("pretrained", "adapted")
 #: the adaptation lengths: (steps, peak learning rate), as measured on the bench (docs/chantiers/debruitage.md §5)
@@ -51,6 +51,9 @@ class DenoiseParams(StageParams):
                             "about 4 s.")
     seed: int = P(0, label="Random seed", level=ADVANCED, ge=0,
                   help="Seed of the random tile selection of the adaptation (for reproducible runs).")
+    #: set by the graph (issue #47): a later Denoise reads this one's denoised half-stacks
+    keep_halves: bool = P(False, label="Keep the half-stacks", level="internal",
+                          help="Saves the denoised half-stacks too, for a Denoise block placed after this one.")
 
     @field_validator("method")
     @classmethod
@@ -87,8 +90,8 @@ class Denoise(Stage):
 
     def run(self, ctx: Context, p: DenoiseParams) -> None:
         dev = ctx.device
-        A = stack_image(ctx, "drz_A.npy")
-        B = stack_image(ctx, "drz_B.npy")
+        A = image_in(ctx, "A").img                   # the half-stacks as the blocks before it made them (#47)
+        B = image_in(ctx, "B").img
         Wt = ctx.load("stack", "drz_weight.npy").astype(np.float32)
         bk, sg, nm = norm_params(A, Wt)
         corr = noise_correlation(ctx.load("stack", "drz_A.npy", mmap=True), ctx.load("stack", "drz_B.npy", mmap=True))
@@ -110,7 +113,7 @@ class Denoise(Stage):
         dA = apply_net(net, A, nm, bk, sg, dev)
         dB = apply_net(net, B, nm, bk, sg, dev)
         ctx.progress(0.96, "denoising the full stack")
-        full = stack_image(ctx)
+        full = image_in(ctx).img
         # a monochrome stack (its three channels one, core/cfa.MONO): the network, trained on colour, moves them a
         # little apart; their mean, in the three, keeps it grey (issue #43)
         mono = bool(np.array_equal(full[0, ::97, ::97], full[1, ::97, ::97])
@@ -120,6 +123,9 @@ class Denoise(Stage):
         ctx.save("n2n_avg.npy", 0.5 * (dA + dB))
         dF = grey(apply_net(net, full, (nm / np.sqrt(2)).astype(np.float32), bk, sg, dev))
         ctx.save("n2n_full.npy", dF)
+        if p.keep_halves:                            # for a later Denoise block (issue #47)
+            ctx.save("n2n_A.npy", dA)
+            ctx.save("n2n_B.npy", dB)
         g0 = _noise(full[1])
         g1 = _noise(dF[1])
         ctx.metric("noise_before", round(g0, 3))
