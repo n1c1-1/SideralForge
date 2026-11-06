@@ -37,14 +37,16 @@ def lattice_frequencies(period: float) -> list[tuple[float, float]]:
     return [(fx, fy) for fx, fy in itertools.product(ks, ks) if (fx, fy) != (0.0, 0.0)]
 
 
-def mosaic_frequencies(scale: float) -> list[tuple[float, float]]:
-    """The frequencies of a 2 x 2 colour mosaic's lattice in a drizzle at ``scale``: every 2 scale output pixels."""
-    return lattice_frequencies(2.0 * scale)
+def mosaic_frequencies(scale: float, period: int = 2) -> list[tuple[float, float]]:
+    """The frequencies of a colour mosaic's lattice in a drizzle at ``scale``: every ``period`` x scale output pixels
+    (period 2: a Bayer mosaic; 6: an X-Trans one)."""
+    return lattice_frequencies(float(period) * scale)
 
 
-def remove_mosaic_pattern(img: np.ndarray, scale: float, valid: np.ndarray | None = None) -> tuple[np.ndarray, list]:
+def remove_mosaic_pattern(img: np.ndarray, scale: float, valid: np.ndarray | None = None,
+                          period: int = 2) -> tuple[np.ndarray, list]:
     """The colour mosaic's pattern of a drizzle at ``scale`` notched (``remove_periodic``)."""
-    return remove_periodic(img, mosaic_frequencies(scale), valid)
+    return remove_periodic(img, mosaic_frequencies(scale, period), valid)
 
 
 def remove_periodic(img: np.ndarray, freqs: list[tuple[float, float]], valid: np.ndarray | None = None

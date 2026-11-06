@@ -72,6 +72,7 @@
  "Data units: 0 to 1": "Unités des données : 0 à 1",
  "mono": "mono",
  "Bayer {cfa}": "Bayer {cfa}",
+ "X-Trans": "X-Trans",
  "{n}-bit float": "{n} bits flottant",
  "{n}-bit": "{n} bits",
  "Image": "Image",

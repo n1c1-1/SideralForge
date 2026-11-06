@@ -296,7 +296,7 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
         badm = torch.isnan(fr)
         if bad_t is not None:
             badm = badm | bad_t
-        fr, filled = db.fill_bad(fr, badm)
+        fr, filled = db.fill_bad(fr, badm, ch_of_k=ch_of_k)
         bal = db.cfa_balance(fr, ch_of_k) if p.cfa_balance and p.debayer == "rcd" else None
         rgb = db.debayer(fr, ch_of_k, p.debayer, balance=bal)
         del fr

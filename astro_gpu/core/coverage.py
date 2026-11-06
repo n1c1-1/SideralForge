@@ -191,11 +191,15 @@ def is_mono(cfa) -> bool:
 
 
 def _channels_of(cfa) -> np.ndarray:
-    """The channel of each 2 x 2 position k = 2 row + column: the Bayer pattern's, or the middle one for a
-    monochrome sensor (its one plane)."""
+    """The channel of each position k = P row + column of the pattern (P: 2, or 6 for X-Trans): the pattern's, or
+    the middle one for a monochrome sensor (its one plane, P 2)."""
     if is_mono(cfa):
         return np.ones(4, int)
     return np.array([CHANNELS.index(c) for c in str(cfa).upper()])
+
+
+def _period(cfa) -> int:
+    return 6 if not is_mono(cfa) and len(str(cfa).strip()) == 36 else 2
 
 
 def rule_channels(cfa) -> str:
@@ -238,8 +242,9 @@ def weight_map(coef, W: int, H: int, cfa: str, scale: float, pixfrac: float, wei
     Ho, Wo = int(round(H * scale)), int(round(W * scale))
     out = np.zeros((3, Ho, Wo))
     ch_of_k = _channels_of(cfa)
+    P = _period(cfa)
     yy, xx = np.mgrid[0:H, 0:W]
-    ch = ch_of_k[2 * (yy % 2) + (xx % 2)].ravel()
+    ch = ch_of_k[P * (yy % P) + (xx % P)].ravel()
     xx, yy = xx.ravel().astype(float), yy.ravel().astype(float)
     h = pixfrac * scale / 2.0
     for i in range(n):
@@ -307,7 +312,8 @@ class _Patches:
         cxs = Wo * (0.1 + 0.8 * (np.arange(gx) + 0.5) / gx)
         cys = Ho * (0.1 + 0.8 * (np.arange(gy) + 0.5) / gy)
         ch_of_k = _channels_of(cfa)
-        offsets = [(c, k // 2, k % 2) for c in self.channels for k in range(4) if ch_of_k[k] == c]
+        P = _period(cfa)
+        offsets = [(c, k // P, k % P) for c in self.channels for k in range(P * P) if ch_of_k[k] == c]
         use = w > 0
         coef, w = coef[use], w[use]
         self.frames = np.zeros(grid, int)
@@ -321,10 +327,10 @@ class _Patches:
                 Xc = (ox + (patch - 1) / 2 + 0.5) / scale - 0.5               # the patch centre, reference px
                 Yc = (oy + (patch - 1) / 2 + 0.5) / scale - 0.5
                 xc, yc = invert(coef, [Xc], [Yc], W, H)
-                # each frame's polynomial linearised about the 2x2 cell of the CFA nearest to the patch centre: over
+                # each frame's polynomial linearised about the cell of the CFA nearest to the patch centre: over
                 # a block of a few tens of pixels a registration cubic departs from its tangent by 0.002 px at most
-                x0 = 2 * np.floor(xc[:, 0] / 2)
-                y0 = 2 * np.floor(yc[:, 0] / 2)
+                x0 = P * np.floor(xc[:, 0] / P)
+                y0 = P * np.floor(yc[:, 0] / P)
                 X0, Y0 = poly_eval(coef, x0[:, None], y0[:, None], W, H)
                 Xu, Xv, Yu, Yv = _poly_jacobian(coef, x0[:, None], y0[:, None], W, H)
                 det = Xu * Yv - Xv * Yu
@@ -337,11 +343,11 @@ class _Patches:
                     continue
                 rbx = int(np.ceil(np.max(sx[good]) * half)) + 2
                 rby = int(np.ceil(np.max(sy[good]) * half)) + 2
-                ax = 2 * np.arange(-(rbx // 2) - 1, rbx // 2 + 2)                 # the lattice of a colour, x0 + ax + kx
-                ay = 2 * np.arange(-(rby // 2) - 1, rby // 2 + 2)
+                ax = P * np.arange(-(rbx // P) - 1, rbx // P + 2)                 # the lattice of a colour, x0 + ax + kx
+                ay = P * np.arange(-(rby // P) - 1, rby // P + 2)
                 with np.errstate(invalid="ignore"):
-                    cov = (x0 + ax[0] >= 0) & (x0 + ax[-1] + 1 <= W - 1) & (y0 + ay[0] >= 0) & \
-                        (y0 + ay[-1] + 1 <= H - 1) & good[:, 0]
+                    cov = (x0 + ax[0] >= 0) & (x0 + ax[-1] + P - 1 <= W - 1) & (y0 + ay[0] >= 0) & \
+                        (y0 + ay[-1] + P - 1 <= H - 1) & good[:, 0]
                 self.frames[py, px] = int(cov.sum())
                 if cov.sum() < max(1, MIN_PATCH_FRAMES * len(coef)):
                     continue

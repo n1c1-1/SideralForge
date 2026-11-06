@@ -157,6 +157,8 @@ def find_stars(plane, *, cfa: str | None = None, k: float = 8.0, max_stars: int 
     import sep
     a = np.asarray(plane, np.float32)
     if cfa:
+        from .cfa import equalised
+        a = equalised(a, cfa)                        # X-Trans: its colours levelled before the 2 x 2 cells
         H, W = a.shape
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)           # a super-pixel of bad pixels only: NaN
@@ -200,8 +202,10 @@ def _measure(plane, xy, cfa, ci, saturation, R, max_stars, isolation, name) -> P
     V = np.asarray(plane[YY, XX], np.float64)
     valid = np.isfinite(V)
     if cfa:
-        ch_of_k = np.array([CHANNELS.index(c) for c in cfa.upper()])
-        valid &= ch_of_k[2 * (YY % 2) + (XX % 2)] == ci
+        from .cfa import channels
+        g = channels(cfa)
+        P = g.shape[0]
+        valid &= g[YY % P, XX % P] == ci
     if saturation is not None:
         if np.ndim(saturation) == 0:
             sat = valid & (np.nan_to_num(V, nan=-np.inf) >= float(saturation))

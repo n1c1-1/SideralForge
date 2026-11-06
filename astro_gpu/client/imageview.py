@@ -2862,7 +2862,7 @@ class ImageView(QWidget):
 
     def _size_text(self, prep: Prepared) -> str:
         d = prep.data
-        kind = (_("Bayer {cfa}").format(cfa=prep.cfa) if prep.cfa else
+        kind = (_("X-Trans") if len(prep.cfa or "") == 36 else _("Bayer {cfa}").format(cfa=prep.cfa) if prep.cfa else
                 _("mono") if prep.channels == 1 else _("RGB"))
         depth = (_("{n}-bit float").format(n=d.dtype.itemsize * 8) if np.issubdtype(d.dtype, np.floating)
                  else _("{n}-bit").format(n=d.dtype.itemsize * 8))
@@ -3625,9 +3625,10 @@ def export_image(path: str | os.PathLike, prep: Prepared, st: sm.Stretch | None 
     path.parent.mkdir(parents=True, exist_ok=True)
     vi = vi or prep.vi
     x0, y0, x1, y1 = area if area is not None else (0, 0, prep.width, prep.height)
-    if prep.cfa:                                    # a mosaic is cut on whole 2 x 2 cells: the pattern stays
-        x0, y0 = x0 // 2 * 2, y0 // 2 * 2
-        x1, y1 = min(prep.width, -(-x1 // 2) * 2), min(prep.height, -(-y1 // 2) * 2)
+    if prep.cfa:                                    # a mosaic is cut on whole cells (2 x 2, 6 x 6): the pattern stays
+        P = 6 if len(prep.cfa) == 36 else 2
+        x0, y0 = x0 // P * P, y0 // P * P
+        x1, y1 = min(prep.width, -(-x1 // P) * P), min(prep.height, -(-y1 // P) * P)
     x0, y0 = max(0, int(x0)), max(0, int(y0))
     x1, y1 = min(prep.width, int(x1)), min(prep.height, int(y1))
     if x1 <= x0 or y1 <= y0:
@@ -3703,7 +3704,7 @@ def _write_fits(path: Path, img: np.ndarray, prep: Prepared, origin, with_wcs: b
         hdr["OBJECT"] = (vi.name[:68], f"the image's name in {APP_NAME}")
     hdr["BUNIT"] = ("ADU" if vi.units == "adu" else "", "data units")
     if prep.cfa:
-        hdr["BAYERPAT"] = (prep.cfa, "Bayer pattern of the mosaic")
+        hdr["BAYERPAT"] = (prep.cfa, "colour pattern of the mosaic (36 letters: X-Trans)")
         hdr["XBAYROFF"] = 0
         hdr["YBAYROFF"] = 0
     if origin != (0, 0):

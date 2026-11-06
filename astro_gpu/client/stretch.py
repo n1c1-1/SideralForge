@@ -552,8 +552,12 @@ CHANNEL = {"R": 0, "G": 1, "B": 2}
 
 
 def superpixel(mosaic: np.ndarray, cfa: str) -> np.ndarray:
-    """A Bayer mosaic (H, W) -> (3, H // 2, W // 2) float32: each 2 x 2 cell one pixel, its two greens averaged."""
+    """A Bayer mosaic (H, W) -> (3, H // 2, W // 2) float32: each 2 x 2 cell one pixel, its two greens averaged. An
+    X-Trans mosaic (36 letters): the same size, each colour from its samples around (core/cfa.superpixel)."""
     a = np.asarray(mosaic)
+    if len(cfa) == 36:
+        from ..core.cfa import superpixel as sp
+        return np.ascontiguousarray(np.moveaxis(sp(a, cfa.upper()), -1, 0))
     h, w = a.shape[0] // 2 * 2, a.shape[1] // 2 * 2
     out = np.zeros((3, h // 2, w // 2), np.float32)
     n = np.zeros(3, np.float32)
@@ -566,10 +570,11 @@ def superpixel(mosaic: np.ndarray, cfa: str) -> np.ndarray:
 
 
 def cfa_letter(cfa: str, x: int, y: int) -> str:
-    """The colour of the photosite (x, y) of a mosaic: "R", "G" or "B"."""
+    """The colour of the photosite (x, y) of a mosaic: "R", "G" or "B" (a 2 x 2 Bayer or a 6 x 6 X-Trans pattern)."""
     if len(cfa) < 4:
         return ""
-    return cfa.upper()[(y % 2) * 2 + (x % 2)]
+    P = 6 if len(cfa) == 36 else 2
+    return cfa.upper()[(y % P) * P + (x % P)]
 
 
 __all__ = ["Q", "MODES", "Stats", "Stretch", "quantize", "level_values", "compute_stats", "mtf", "asinh_beta",

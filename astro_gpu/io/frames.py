@@ -1,7 +1,7 @@
-"""Reading raw colour (Bayer) frames from camera RAW files and astro-camera FITS files.
+"""Reading raw colour (Bayer and X-Trans) frames from camera RAW files and astro-camera FITS files.
 
-Everything downstream works on the undebayered mosaic in ADU, top row first, with a 2x2 colour pattern string
-such as ``"RGGB"`` describing the top-left 2x2 block.
+Everything downstream works on the undebayered mosaic in ADU, top row first, with a colour pattern string describing
+its top-left block: ``"RGGB"`` (2 x 2 Bayer), or 36 letters for a 6 x 6 X-Trans sensor (core/cfa.py).
 """
 from __future__ import annotations
 
@@ -25,6 +25,9 @@ PIXEL_PITCH_UM = {
     "ZWO ASI071MC Pro": 4.78, "ZWO ASI183MC Pro": 2.40, "ZWO ASI585MC": 2.90, "ZWO ASI2400MC Pro": 5.94,
     "QHY268C": 3.76, "QHY600C": 3.76, "Canon EOS 40D": 5.70, "Canon EOS 5D Mark II": 6.41, "Canon EOS 700D": 4.30,
     "PENTAX 645Z": 5.32, "GFX 50R": 5.31, "GFX 50S": 5.31, "GFX100S": 3.76, "ILCE-7RM2": 4.51,
+    "X-T2": 3.91, "X-T3": 3.76, "X-T4": 3.76, "X-T5": 3.04, "X-T20": 3.91, "X-T30": 3.76, "X-T30 II": 3.76,
+    "X-H1": 3.91, "X-H2": 3.04, "X-H2S": 3.76, "X-S10": 3.76, "X-E3": 3.91, "X-E4": 3.76, "X-Pro2": 3.91,
+    "X-Pro3": 3.76,
 }
 
 
@@ -34,7 +37,7 @@ class FrameInfo:
     kind: str                       # "raw" | "fits"
     width: int
     height: int
-    cfa: str                        # e.g. "RGGB"; "" for non-Bayer data (not supported)
+    cfa: str                        # e.g. "RGGB", 36 letters for X-Trans (core/cfa.py); "" for monochrome data
     black: float                    # black level (ADU) - from the file, refined later by darks/bias
     white: float                    # saturation level (ADU)
     exposure: float | None = None   # seconds
@@ -53,10 +56,17 @@ class FrameInfo:
 
 
 def _cfa_from_rawpy(r) -> str:
-    desc = r.color_desc.decode()
+    """The pattern of the visible image's top-left block: 2 x 2 (Bayer) or 6 x 6 (X-Trans, issue #35); "" for any
+    other. Read from the colour LibRaw gives each visible pixel (``raw_colors_visible``), which starts where the
+    image read by ``read_cfa`` starts (``raw_pattern`` is anchored on the full sensor, margins included: taken for
+    the visible image's, it shifts the colours when a margin is not a multiple of the period)."""
     pat = r.raw_pattern
-    s = "".join(desc[int(pat[i, j])] for i in range(2) for j in range(2))
-    return s.replace("g", "G")
+    if pat is None or pat.shape not in ((2, 2), (6, 6)):
+        return ""
+    P = pat.shape[0]
+    desc = r.color_desc.decode()
+    cols = r.raw_colors_visible[:P, :P]
+    return "".join(desc[int(cols[i, j])] for i in range(P) for j in range(P)).replace("g", "G").upper()
 
 
 def read_info(path: str | Path, like: FrameInfo | None = None) -> FrameInfo:
@@ -120,7 +130,7 @@ def _raw_info(path: Path) -> FrameInfo:
     import rawpy
     with rawpy.imread(str(path)) as r:
         h, w = r.raw_image_visible.shape
-        cfa = _cfa_from_rawpy(r) if r.raw_pattern is not None and r.raw_pattern.shape == (2, 2) else ""
+        cfa = _cfa_from_rawpy(r)
         black = float(np.mean(r.black_level_per_channel))
         white = float(r.white_level)
     info = FrameInfo(str(path), "raw", w, h, cfa, black, white)
@@ -249,5 +259,5 @@ def _num(v) -> float | None:
 
 
 def cfa_channel_map(cfa: str) -> list[int]:
-    """Output channel (0=R, 1=G, 2=B) of each 2x2 position k = 2*row + col."""
+    """Output channel (0=R, 1=G, 2=B) of each position k = P row + col of the pattern (P: 2, or 6 for X-Trans)."""
     return ["RGB".index(c) for c in cfa]

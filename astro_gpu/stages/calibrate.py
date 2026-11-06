@@ -14,6 +14,7 @@ import numpy as np
 from ..core.imgutil import robust_sigma
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage
+from ..core import cfa as cfa_mod
 from ..io.frames import read_cfa
 
 SAT_MARK = 65000.0      # value written for saturated pixels in the cache
@@ -84,7 +85,8 @@ class Calibrate(Stage):
         dark, dark_noise = master_dark([f["path"] for f in frames["darks"]], bias, H, W, black, ctx)
         kept: dict = {}
         flat = master_flat([f["path"] for f in frames["flats"]], [f["path"] for f in frames["flat_darks"]], bias,
-                           float(np.median(dark)), H, W, p.flat_scale_px, ctx, keep=kept)
+                           float(np.median(dark)), H, W, p.flat_scale_px, ctx, keep=kept,
+                           cfa=ctx.metric_of("inventory", "cfa") or "RGGB")
         if "flat_dark" in kept:
             ctx.save("master_flat_dark.npy", kept.pop("flat_dark"))
         calibrate_lights(ctx, p, frames["lights"], dark, flat, bool(frames["darks"]), dark_noise,
@@ -111,9 +113,11 @@ def master_dark(paths: list[str], bias: np.ndarray | None, H: int, W: int, black
 
 
 def master_flat(paths: list[str], flat_dark_paths: list[str], bias: np.ndarray | None, dark_level: float, H: int,
-                W: int, flat_scale_px: float, ctx: Context, keep: dict | None = None) -> np.ndarray:
-    """Master flat normalised to 1 at the centre of each Bayer plane (all ones without flats). ``keep``: receives
-    the master flat dark under "flat_dark" when there are flat darks."""
+                W: int, flat_scale_px: float, ctx: Context, keep: dict | None = None, cfa: str = "RGGB") -> np.ndarray:
+    """Master flat normalised to 1 at the centre of each position of the colour pattern (``cfa``: its 4 Bayer
+    positions, its 36 X-Trans ones), all ones without flats. ``keep``: receives the master flat dark under
+    "flat_dark" when there are flat darks."""
+    P = cfa_mod.period(cfa)
     if paths:
         if flat_dark_paths:
             fdark = _median_stack(flat_dark_paths, ctx, "flat darks")
@@ -126,17 +130,18 @@ def master_flat(paths: list[str], flat_dark_paths: list[str], bias: np.ndarray |
         flat = _master_flat(paths, fdark, ctx)
         if flat_scale_px > 0:
             # borrowed flat: vignetting only (each colour plane smoothed; its dust is not this night's dust)
-            for k in range(4):
-                i, j = divmod(k, 2)
-                flat[i::2, j::2] = cv2.GaussianBlur(flat[i::2, j::2], (0, 0), flat_scale_px / 2.0)
+            for k in range(P * P):
+                v = _plane(flat, k, P)
+                v[...] = cv2.GaussianBlur(np.ascontiguousarray(v), (0, 0), flat_scale_px / P)
             ctx.log(f"master flat kept above {flat_scale_px:.0f} px only (vignetting, not dust)")
     else:
         flat = np.ones((H, W), np.float32)
         ctx.log("no flat frames: vignetting and dust will not be corrected (the sky model will absorb part of "
                 "the vignetting)", "warning")
-    for k in range(4):
-        v = _plane(flat, k)
-        c = v[v.shape[0] // 2 - 100:v.shape[0] // 2 + 100, v.shape[1] // 2 - 100:v.shape[1] // 2 + 100]
+    r = 200 // P                                        # the centre's 400 x 400 sensor pixels, in plane pixels
+    for k in range(P * P):
+        v = _plane(flat, k, P)
+        c = v[v.shape[0] // 2 - r:v.shape[0] // 2 + r, v.shape[1] // 2 - r:v.shape[1] // 2 + r]
         v /= np.median(c)
     return flat
 
@@ -156,19 +161,20 @@ def calibrate_lights(ctx: Context, p: CalibrateParams, lights: list[dict], dark:
     ctx.metric("vignetting_min", round(float(flat.min()), 3))
 
     # ---------------- bad pixels: hot (dark), cold / dust (flat)
-    sky_noise = _sky_noise(lights[len(lights) // 2]["path"], dark, flat)
+    P = cfa_mod.period(cfa)
+    sky_noise = _sky_noise(lights[len(lights) // 2]["path"], dark, flat, P)
     bad = np.zeros((H, W), bool)
     if have_darks:
         bad |= (dark - level) > p.hot_sigma * sky_noise
     from scipy.ndimage import median_filter
-    for k in range(4):
-        v = _plane(flat, k)
+    for k in range(P * P):
+        v = _plane(flat, k, P)
         loc = median_filter(v, size=9)
-        _plane(bad, k)[...] |= (v < (1 - p.flat_defect) * loc) | (v > (1 + p.flat_defect) * loc)
+        _plane(bad, k, P)[...] |= (v < (1 - p.flat_defect) * loc) | (v > (1 + p.flat_defect) * loc)
     moved = True
     if p.hot_from_lights and len(lights) >= 15:
         n0 = int(bad.sum())
-        msg, moved = _hot_from_lights([f["path"] for f in lights], dark, flat, bad, median_filter)
+        msg, moved = _hot_from_lights([f["path"] for f in lights], dark, flat, bad, median_filter, cfa=cfa)
         ctx.metric("hot_pixels_from_lights", int(bad.sum()) - n0)
         ctx.log(msg)
     # the sky did not move: a pixel left out would be a hole in the stack, it is filled from its neighbours instead
@@ -263,7 +269,7 @@ def _calibrated_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark
     np.save(paths_dir / "bad.npy", bad)
     todo = [(i, lights[i]["path"]) for i in range(n) if not done[i]]
     sat_raw = p.saturation * white
-    init = (str(cache), n, H, W, str(paths_dir), sat_raw, scale, fill)
+    init = (str(cache), n, H, W, str(paths_dir), sat_raw, scale, fill, cfa)
     with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
         for c, (idx, st) in enumerate(pool.imap_unordered(_calib_one, todo, chunksize=2)):
             stats[idx] = st
@@ -288,9 +294,9 @@ def _calibrated_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark
     ctx.preview("calibrated_frame", _superpixel_rgb(np.where(fr > VALID_MAX, 0, fr), cfa))
 
 
-def _plane(a: np.ndarray, k: int) -> np.ndarray:
-    i, j = divmod(k, 2)
-    return a[..., i::2, j::2]
+def _plane(a: np.ndarray, k: int, P: int = 2) -> np.ndarray:
+    """The samples of position k of the colour pattern of period P (core/cfa.plane)."""
+    return cfa_mod.plane(a, k, P)
 
 
 def _median_stack(paths: list[str], ctx: Context, label: str) -> np.ndarray:
@@ -337,20 +343,23 @@ def _master_flat(paths: list[str], fdark: np.ndarray, ctx: Context) -> np.ndarra
 LONE_SIGMA = 3.0
 
 
-def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0) -> str:
+def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0, cfa: str = "RGGB") -> str:
     """Flag in ``bad`` the pixels that stand out from their same-colour neighbours in the lower quartile of ``n``
     light frames spread over the session, in sensor coordinates: a defect is bright in every frame. When the sky
     drifted by three star widths or more between the first and the last frame, a star covers a given pixel in a
     small part of the frames only, so that is enough. When it did not, the stars stand still too: a defect is then
     also a lone pixel: its four nearest neighbours (the other colours) within LONE_SIGMA of their sky, where a star
-    or a nebula lights them too. Returns (message, whether the sky moved)."""
+    or a nebula lights them too. Returns (message, whether the sky moved). Each position of the pattern (``cfa``)
+    is a plane of its own: its neighbours in the plane are of its colour."""
+    P = cfa_mod.period(cfa)
     sub = [paths[i] for i in np.linspace(0, len(paths) - 1, min(n, len(paths))).astype(int)]
     a, b = ((read_cfa(q) - dark) / flat for q in (sub[0], sub[-1]))
-    ga, gb = (cv2.resize(_plane(x, 1), None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA).astype(np.float32)
-              for x in (a, b))
+    g0 = cfa_mod.green_position(cfa)
+    ga, gb = (cv2.resize(np.ascontiguousarray(_plane(x, g0, P)), None, fx=0.5, fy=0.5,
+                         interpolation=cv2.INTER_AREA).astype(np.float32) for x in (a, b))
     hp = [g - cv2.GaussianBlur(g, (0, 0), 8) for g in (ga, gb)]
     (dx, dy), _ = cv2.phaseCorrelate(hp[0], hp[1])
-    drift = 4.0 * float(np.hypot(dx, dy))                     # sensor pixels (colour plane at half resolution)
+    drift = 2.0 * P * float(np.hypot(dx, dy))                 # sensor pixels (a green plane at half its resolution)
     moved = drift >= 12.0
     st = np.empty((len(sub), *dark.shape), np.float32)          # one array, the quartile in bands: the frames once
     for i, x in enumerate(sub):
@@ -363,21 +372,21 @@ def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0) -> str:
     if not moved:
         # each pixel's rise above its local sky, in sigmas of its plane; the four nearest are the other colours
         z = np.zeros_like(q)
-        for c in range(4):
-            v = _plane(q, c)
+        for c in range(P * P):
+            v = _plane(q, c, P)
             r = v - cv2.blur(median_filter(v, size=9), (15, 15))
-            _plane(z, c)[...] = r / max(robust_sigma(r[::2, ::2])[1], 1e-6)
+            _plane(z, c, P)[...] = r / max(robust_sigma(r[::2, ::2])[1], 1e-6)
         nb = np.stack([np.roll(z, sh, axis=ax) for ax in (0, 1) for sh in (1, -1)])
         lone = np.max(nb, axis=0) < LONE_SIGMA
     n_new = 0
-    for c in range(4):
-        v = _plane(q, c)
+    for c in range(P * P):
+        v = _plane(q, c, P)
         h = v - median_filter(v, size=5)
         s = robust_sigma(h[::2, ::2])[1]
-        hot = (h > k * s) & ~_plane(bad, c)
+        hot = (h > k * s) & ~_plane(bad, c, P)
         if lone is not None:
-            hot &= _plane(lone, c)
-        _plane(bad, c)[...] |= hot
+            hot &= _plane(lone, c, P)
+        _plane(bad, c, P)[...] |= hot
         n_new += int(hot.sum())
     how = (f"the sky moved by {drift:.0f} px on the sensor" if moved else
            f"the sky moved by {drift:.0f} px only: lone pixels, not stars")
@@ -385,19 +394,15 @@ def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0) -> str:
             moved)
 
 
-def _sky_noise(path: str, dark: np.ndarray, flat: np.ndarray) -> float:
+def _sky_noise(path: str, dark: np.ndarray, flat: np.ndarray, P: int = 2) -> float:
     x = (read_cfa(path) - dark) / flat
-    return float(np.median([robust_sigma(_plane(x, k)[::4, ::4])[1] for k in range(4)]))
+    step = max(1, 4 * 2 // P)                         # about the same samples per plane as on a Bayer sensor
+    return float(np.median([robust_sigma(_plane(x, k, P)[::step, ::step])[1] for k in range(P * P)]))
 
 
 def _flat_view(flat: np.ndarray, cfa: str) -> np.ndarray:
     """Flat field shown as a colour image normalised to its maximum (vignetting and dust)."""
-    h, w = flat.shape
-    planes = {c: [] for c in "RGB"}
-    for k, c in enumerate(cfa):
-        i, j = divmod(k, 2)
-        planes[c].append(flat[i:h - h % 2:2, j:w - w % 2:2])
-    rgb = np.stack([np.mean(planes[c], axis=0) for c in "RGB"])
+    rgb = np.moveaxis(cfa_mod.superpixel(flat, cfa), -1, 0)
     return np.clip(rgb / np.percentile(rgb, 99.9), 0, 1)
 
 
@@ -405,21 +410,36 @@ def _flat_view(flat: np.ndarray, cfa: str) -> np.ndarray:
 _G: dict = {}
 
 
-def _init(cache, n, H, W, paths_dir, sat_raw, scale, fill=False):
+def _init(cache, n, H, W, paths_dir, sat_raw, scale, fill=False, cfa="RGGB"):
     d = Path(paths_dir)
     bad = np.load(d / "bad.npy")
     _G.update(dark=np.load(d / "dark.npy"), flat=np.load(d / "flat.npy"), bad=bad,
               mm=np.memmap(cache, dtype=np.float16, mode="r+", shape=(n, H, W)), sat=sat_raw, scale=scale,
-              fill=_neighbours(bad) if fill else None)
+              fill=_neighbours(bad, cfa) if fill else None, cfa=cfa)
 
 
-def _neighbours(bad: np.ndarray):
-    """(rows, columns) of the bad pixels and of their 8 same-colour neighbours (2 px away; clipped at the edges)."""
+def _neighbours(bad: np.ndarray, cfa: str = "RGGB"):
+    """(rows, columns) of the bad pixels and of their 8 same-colour neighbours (2 px away; clipped at the edges). On
+    an X-Trans sensor, whose same-colour neighbours are not on a lattice of step 2: the 8 nearest of its colour within
+    2 px (each 3 x 3 window holds every colour, so a 5 x 5 one holds 2 red and 2 blue at least, besides the centre)."""
     H, W = bad.shape
     ys, xs = np.nonzero(bad)
-    off = [(dy, dx) for dy in (-2, 0, 2) for dx in (-2, 0, 2) if dy or dx]
-    ny = np.stack([ys + dy for dy, _ in off], 1)
-    nx = np.stack([xs + dx for _, dx in off], 1)
+    if cfa_mod.is_xtrans(cfa):
+        g = cfa_mod.channels(cfa)
+        near = sorted(((dy, dx) for dy in range(-2, 3) for dx in range(-2, 3) if dy or dx),
+                      key=lambda o: (o[0] ** 2 + o[1] ** 2, o))
+        table = np.zeros((6, 6, 8, 2), int)
+        for i in range(6):
+            for j in range(6):
+                same = [o for o in near if g[(i + o[0]) % 6, (j + o[1]) % 6] == g[i, j]][:8]
+                same += [same[-1]] * (8 - len(same))           # the nearest repeated: a median of the same samples
+                table[i, j] = same
+        off = table[ys % 6, xs % 6]                            # (n, 8, 2)
+        ny, nx = ys[:, None] + off[..., 0], xs[:, None] + off[..., 1]
+    else:
+        off = [(dy, dx) for dy in (-2, 0, 2) for dx in (-2, 0, 2) if dy or dx]
+        ny = np.stack([ys + dy for dy, _ in off], 1)
+        nx = np.stack([xs + dx for _, dx in off], 1)
     ny = np.where((ny < 0) | (ny >= H), ys[:, None], ny)
     nx = np.where((nx < 0) | (nx >= W), xs[:, None], nx)
     return ys, xs, ny, nx
@@ -443,11 +463,22 @@ def _calib_one(args):
             x[ys, xs] = np.nanmedian(nb, axis=1)          # NaN again when every neighbour is bad
     _G["mm"][idx] = x.astype(np.float16)
     stats = []
-    for k in range(4):
-        v = _plane(x, k)[::4, ::4]
+    for v in _stat_samples(x, _G.get("cfa") or "RGGB"):
         v = v[np.isfinite(v) & (v < VALID_MAX)]
         stats.append(robust_sigma(v))
     return idx, stats
+
+
+def _stat_samples(x: np.ndarray, cfa: str) -> list[np.ndarray]:
+    """The four sets of samples frame_stats measures (level, noise): the four Bayer positions (one in four of their
+    samples each way); on an X-Trans sensor its red, green (twice: the same four entries as a Bayer sensor's, so that
+    their mean weighs the colours alike) and blue samples, about as many."""
+    if not cfa_mod.is_xtrans(cfa):
+        return [_plane(x, k)[::4, ::4] for k in range(4)]
+    sub = x[::5, ::5]                                  # a step prime to 6: every position of the pattern
+    col = cfa_mod.colour_map(cfa, *x.shape)[::5, ::5]
+    r, g, b = (sub[col == c] for c in range(3))
+    return [r, g, g, b]
 
 
 def open_cache(ctx: Context, mode: str = "r"):

@@ -9,6 +9,7 @@ import numpy as np
 from ..core.params import ADVANCED, P, StageParams
 from ..core.project import frame_kind, list_frames
 from ..core.stage import Context, Stage, StageError
+from ..core import cfa as cfa_mod
 from ..io.frames import fits_header, read_cfa, read_info
 
 
@@ -57,10 +58,10 @@ class Inventory(Stage):
         cfas = Counter(f["cfa"] for f in lights)
         cfa = cfas.most_common(1)[0][0]
         if not cfa:
-            raise StageError("these light frames are not raw colour (Bayer) frames. Monochrome cameras and already "
-                             "debayered images are not supported in this version.")
-        if cfa not in ("RGGB", "BGGR", "GRBG", "GBRG"):
-            raise StageError(f"unsupported colour pattern {cfa!r} (X-Trans sensors are not supported)")
+            raise StageError("these light frames are not raw colour (Bayer or X-Trans) frames. Monochrome cameras and "
+                             "already debayered images are not supported in this version.")
+        if not cfa_mod.is_supported(cfa):
+            raise StageError(f"unsupported colour pattern {cfa!r}")
         for k in ("darks", "flats", "bias", "flat_darks"):
             bad = [f["path"] for f in out[k] if (f["width"], f["height"]) != (w, h)]
             if bad:
@@ -99,7 +100,8 @@ class Inventory(Stage):
         objs = Counter(f["object"] for f in lights if f.get("object"))
         if objs:
             ctx.metric("object", objs.most_common(1)[0][0])
-        ctx.log(f"{len(lights)} lights of {texp} s ({ctx.metrics['integration_h']} h), {w}x{h} {cfa}, "
+        pattern = "X-Trans" if cfa_mod.is_xtrans(cfa) else cfa
+        ctx.log(f"{len(lights)} lights of {texp} s ({ctx.metrics['integration_h']} h), {w}x{h} {pattern}, "
                 f"{len(out['darks'])} darks, {len(out['flats'])} flats, {len(out['bias'])} bias, "
                 f"camera {first['camera'] or 'unknown'}")
         # quick look at the middle frame (2x2 super-pixels, no calibration)
@@ -109,13 +111,7 @@ class Inventory(Stage):
 
 def _superpixel_rgb(cfa_img: np.ndarray, pattern: str) -> np.ndarray:
     from ..core.imgutil import asinh_preview
-    h, w = cfa_img.shape
-    planes = {c: [] for c in "RGB"}
-    for k, c in enumerate(pattern):
-        i, j = divmod(k, 2)
-        planes[c].append(cfa_img[i:h - h % 2:2, j:w - w % 2:2])
-    rgb = np.stack([np.mean(planes[c], axis=0) for c in "RGB"])
-    return asinh_preview(rgb, k=30)
+    return asinh_preview(np.moveaxis(cfa_mod.superpixel(cfa_img, pattern), -1, 0), k=30)
 
 
 def _clip_level(ctx, lights, white: float) -> float:
