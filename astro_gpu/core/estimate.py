@@ -288,7 +288,7 @@ def facts(keys: Any, wf: Any, store: Any = None) -> Facts:
         except (OSError, ValueError):
             frames = []
         if frames:
-            lights = [n for kind, n, _ in frames if kind == "lights"]
+            lights = [f[1] for f in frames if f[0] == "lights"]          # [kind, name, size(, filter)]
             ml = int(given("inventory").get("max_lights") or 0)
             f.lights = min(len(lights), ml) if ml else len(lights)
             f.frames = len(frames) - len(lights) + f.lights

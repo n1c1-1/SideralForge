@@ -173,7 +173,7 @@ def session_summary(s, sid: int) -> str:
     ses = next((x for x in s.sessions if x["id"] == sid), {})
     if not int(ses.get("lights") or 0):                # issue #48: a Session placed empty says what it needs
         flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
-        return _("empty: add its lights") + (f" · {flt}" if flt else "")
+        return _("lights to add") + (f" · {flt}" if flt else "")
     text = plural(int(ses.get("lights") or 0), "{n} light", "{n} lights")
     text += " · " + _("{darks} darks, {flats} flats").format(darks=ses.get("darks", 0), flats=ses.get("flats", 0))
     flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
@@ -356,7 +356,8 @@ class Graph:
         have = {lay.get("pid") for lay in layers if lay.get("kind") == "workflow"}
         from .model import POST_PART_NAMES
         feeds = getattr(project, "feeds_fusion", None)
-        fresh = not have                              # as Post fills them (post3.sync_paths): an empty composition,
+        model_p = getattr(getattr(project, "model", None) or project, "p", None)
+        fresh = not have and not (getattr(model_p, "post", None) or {}).get("edited")   # as Post fills them (post3):
         for p in project.paths:                       # or an output sent from a block; else the user's layers only
             if p.pid not in have and (fresh or p.end) and not (feeds is not None and feeds(p)) and \
                     getattr(project, "gives_post", lambda q: True)(p):   # #49: no image yet, no link to Post

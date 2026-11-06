@@ -354,5 +354,8 @@
   "a branch cannot start there": "une branche ne peut pas partir d'ici",
   "A new branch: what comes before {block} is shared, computed once · Ctrl+Z undoes it": "Une nouvelle branche : ce qui précède {block} est partagé, calculé une fois · Ctrl+Z l'annule",
   "Flow": "Flux",
-  "new branch": "nouvelle branche"
+  "new branch": "nouvelle branche",
+  "“{name}” no longer goes to Post: send it again from its block's menu": "« {name} » ne va plus au Post : renvoyez-le depuis le menu de son bloc",
+  "lights to add": "brutes à ajouter",
+  "Send its image to Post": "Envoyer son image au Post"
 }

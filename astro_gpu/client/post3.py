@@ -758,7 +758,7 @@ class PostView(QWidget):
             self.layers = load_layers(post.get("layers"), alive)
             self._saved = json.dumps(save_layers(self.layers), sort_keys=True)
         known = {lay["pid"] for lay in self.layers if lay["kind"] == "workflow"}
-        fresh = not known
+        fresh = not known and not (getattr(getattr(self.s, "p", None), "post", None) or {}).get("edited")
         for p in paths:
             # an empty composition is filled; afterwards only a block's output sent from the graph (an exit) comes
             # (issue #10: every computed workflow came back on top, hidden, even one the user had taken away)

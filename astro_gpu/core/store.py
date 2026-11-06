@@ -226,10 +226,14 @@ class InputScan:
         sessions = (sessions if sessions is not None else project.sessions) if sid is None else [project.session(sid)]
         for kind in KINDS:
             sizes: dict[Path, int] = {}
+            flt: dict[Path, str] = {}
             for s in sessions:
                 for f, n in self.session_frames(project, s)[kind]:
                     sizes.setdefault(f, n)
-            out += [[kind, f.name, sizes[f]] for f in sorted(sizes)]
+                    flt.setdefault(f, getattr(s, "filter", "") or "")
+            # a session's filter, when it has one (#47): two filters' folders often hold frames of the same names and
+            # sizes ("Light_001.fits"); a colour camera's sessions (no filter) keep their keys
+            out += [[kind, f.name, sizes[f]] + ([flt[f]] if flt[f] else []) for f in sorted(sizes)]
         return out
 
     def excluded_paths(self, project: Project2) -> list[str]:

@@ -928,6 +928,9 @@ class Main(QMainWindow):
     def launch(self):
         """Run all (F5, the Run button): the run starts at once, its window following it (issue #51); without
         frames, the window says why nothing runs."""
+        if self.s is not None and not self.s.sources_loaded:
+            self.flash(_("No frames yet: add the lights in the Session blocks"))
+            return
         if self.run is not None:
             self.run.launch(start=True)
 

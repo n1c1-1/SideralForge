@@ -155,3 +155,23 @@ def test_repeated_and_reordered_image_blocks_get_their_own_entries_and_keys(tmp_
     g4 = [dict(n, off=n["block"] == "calibration") for n in g]
     p.set_blocks(w.id, g4)
     assert Keys(p).key_params(w.id, "calibrate").get("apply_masters") is False
+
+
+def test_two_filters_with_frames_of_the_same_names_and_sizes_have_their_own_keys(tmp_path):
+    """Capture programs often name each filter's frames alike ("Light_001.fits", same size): the session's filter is
+    in the key, so H-alpha and O III are not taken for the same frames; a colour camera's sessions keep their keys."""
+    raw = tmp_path / "raw"
+    ha, oiii = (frames(raw / f, {"Light_001.fits": 2880, "Light_002.fits": 2880}) for f in ("ha", "oiii"))
+    p = project2.create(tmp_path / "p", "P", Target(name="NGC 7293"))
+    p.stack_mode = "per_session"
+    p.sessions += [Session(1, "Ha", lights=[str(ha)], filter="Ha"), Session(2, "OIII", lights=[str(oiii)],
+                                                                            filter="OIII")]
+    a = p.add_workflow("Ha", TEMPLATES["Classic stack"])
+    a.sessions = [1]
+    b = p.add_workflow("OIII", TEMPLATES["Classic stack"])
+    b.sessions = [2]
+    k = Keys(p)
+    assert k.key(a.id, "stack") != k.key(b.id, "stack")
+    p.sessions[0].filter = p.sessions[1].filter = ""
+    k = Keys(p)
+    assert k.key(a.id, "stack") == k.key(b.id, "stack")          # no filter: names and sizes, as before

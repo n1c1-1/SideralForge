@@ -577,6 +577,8 @@ class ProjectModel(QObject):
         """The composition replaced (saved layers, postengine.save_layers); ``source``: who changed it (Post itself
         does not reload what it wrote)."""
         self.p.post = {**(getattr(self.p, "post", None) or {}), "layers": layers}
+        if any(x.get("kind") == "workflow" for x in layers):
+            self.p.post["edited"] = True                  # the user's composition: Post gives no layer by itself
         self.edited()
         self.postChanged.emit(source)
 
@@ -608,7 +610,7 @@ class ProjectModel(QObject):
         that an image sent on top does not take their place (issue #29). ``skip``: a workflow whose Combine block is
         the one being added."""
         from .postengine import new_workflow_layer
-        if any(x.get("kind") == "workflow" for x in layers):
+        if any(x.get("kind") == "workflow" for x in layers) or (getattr(self.p, "post", None) or {}).get("edited"):
             return
         made = []
         for q in self.paths:
@@ -628,6 +630,7 @@ class ProjectModel(QObject):
         returns how many (issue #29: a link to Post the graph could not take away)."""
         def change(layers):
             self._filled(layers)                          # the layers Post gives by default, made real first (#52)
+            self.p.post = {**(getattr(self.p, "post", None) or {}), "edited": True}     # and no longer given
             gone = {x["id"] for x in layers if x.get("kind") == "workflow" and x.get("pid") == pid
                     and x.get("part") == part}
             layers[:] = [x for x in layers if x["id"] not in gone and not (x["kind"] == "filter"
@@ -1001,7 +1004,12 @@ class ProjectModel(QObject):
         if i is None or not self.can_branch(p, key, block):
             raise ValueError(self.palette_reason(p, block) or _("a branch cannot start there"))
         head = [dict(n) for n in g[:i + 1]]
-        n = wfl.node(block, name=wfl.new_name(head, block))
+        method = None
+        nxt = g[i + 1] if i + 1 < len(g) else None
+        if nxt is not None and nxt["block"] == block and block in wfl.METHODS:
+            # the same block with the same method would be the same result, drawn once: the branch tries another one
+            method = next((m for m in wfl.METHODS[block] if m != nxt["method"]), None)
+        n = wfl.node(block, method, name=wfl.new_name(head, block))
         head.append(n)
         from .blocks import block_title
         with self._edit():

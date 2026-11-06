@@ -340,7 +340,7 @@ class WireItem(QGraphicsPathItem):
 
     def shape(self):                                                  # noqa: D102 - a wide band to hit
         st = QPainterPathStroker()
-        st.setWidth(10)
+        st.setWidth(16)
         return st.createStroke(self.path())
 
     def _look(self, hot: bool):
@@ -554,6 +554,7 @@ class GraphView(QGraphicsView):
         was = (sc.sceneRect(), self.horizontalScrollBar().value(), self.verticalScrollBar().value())
         sc.clear()
         self.ghosts = []
+        self.sel_wire = None                              # issue #52: a wire selected before is gone with the scene
         self._sel_item = None
         self.final_item = None
         self.b_all.setText(_("Show all"))
@@ -565,7 +566,7 @@ class GraphView(QGraphicsView):
         cols = self.columns(g)
         # issue #47: while a palette block is dragged, a column opens before each block it can go in front of (and
         # after the last one): its places, shown as the block itself, the blocks after them moved aside
-        targets = self._drop_targets(g, cols) if self.drag_block else []
+        targets = self._drop_targets(g, cols) if self.drag_block in wfl.IO else []
         if targets:
             gaps = {c for _pid, _idx, c in targets}
             cols = [x for c in cols for x in ((("g:" + c), c) if c in gaps else (c,))]
@@ -704,7 +705,7 @@ class GraphView(QGraphicsView):
                 self._sel_item = it
         # the next workflow
         y = TOP + len(s.paths) * LANE - BH / 2 if s.paths else mid - BH / 2
-        inner = [c for c in cols if c not in ("sources", "final", "fusion", "composition")]
+        inner = [c for c in cols if c not in ("sources", "final", "fusion", "composition")] or []
         if inner:
             x0, x1 = cx[inner[0]], cx[inner[-1]] + cw[inner[-1]]
         else:                                          # a blank page (issue #47): the palette's blocks start it
@@ -713,6 +714,8 @@ class GraphView(QGraphicsView):
             y = mid + BH
         text = "+  " + _("New flow: drop a Session or an Image here, or click for a template") if s.paths \
             or s.p.sessions else "+  " + _("New workflow: a template, or a Session or an Image placed from the palette")
+        need = QFontMetricsF(QFont("Segoe UI", 9)).horizontalAdvance(text) + 40
+        x1 = max(x1, x0 + need)                          # its text whole, however short the chain
         gh = GhostItem(QRectF(x0, y, x1 - x0, BH), text, self.newWorkflow.emit)
         gh.new_flow = True                               # issue #47: a parallel flow starts here
         gh.hot = self.drag_block in ("session", "image")
@@ -1068,6 +1071,9 @@ class GraphView(QGraphicsView):
             m.addAction(_("Rename")).triggered.connect(lambda: self.workflowMenu.emit("rename", p.pid))
             m.addAction(_("Duplicate")).triggered.connect(lambda: self.workflowMenu.emit("duplicate", p.pid))
             m.addAction(_("Save as template…")).triggered.connect(lambda: self.workflowMenu.emit("template", p.pid))
+            if self.graph is not None and p.pid not in self.graph.to_post and self.s.gives_post(p):
+                m.addAction(_("Send its image to Post")).triggered.connect(
+                    lambda: self.workflowMenu.emit("to_post", p.pid))
             m.addSeparator()
             m.addAction(_("Delete workflow")).triggered.connect(lambda: self.workflowMenu.emit("delete", p.pid))
             if node.handle:
@@ -1547,7 +1553,8 @@ class GraphPage(QWidget):
         if s.ready:
             sec = s.total_seconds()
             last = self._last
-            if last is not None and s.paths and len(s.paths) == last[1] and sec - last[0] >= 30:
+            if last is not None and s.paths and len(s.paths) == last[1] and sec - last[0] >= 30 and \
+                    s.sources_loaded:                    # no estimate without frames
                 self.toast(_("+ {t} to run").format(t=("" if s.cost().measured else "≈ ") + hm(sec - last[0])))
             self._last = (sec, len(s.paths))
         self.changed.emit()
@@ -1707,6 +1714,7 @@ class GraphPage(QWidget):
             return
         s.log('Branch "{name}" made', name=q.name)
         self.select(index=s.paths.index(q), step=new_key)
+        s.scope = [q.pid]                                 # its settings change it alone
         self.toast(_("A new branch: what comes before {block} is shared, computed once · Ctrl+Z undoes it").format(
             block=block_title(None, key)))
 
@@ -1722,8 +1730,8 @@ class GraphPage(QWidget):
             s.log('Workflow "{name}" deleted', name=p.name)
         else:
             s.remove_post_part(pid, None, self)
-        self.toast(_("“{name}” no longer goes to Post · Ctrl+Z undoes it").format(name=p.name) if not p.end else
-                   _("“{name}” deleted · Ctrl+Z undoes it").format(name=p.name))
+        self.toast(_("“{name}” no longer goes to Post: send it again from its block's menu").format(name=p.name)
+                   if not p.end else _("“{name}” deleted · Ctrl+Z undoes it").format(name=p.name))
         self.request_refresh()
 
     def _delete_selected(self):
@@ -1928,6 +1936,10 @@ class GraphPage(QWidget):
             self.new_workflow(p)
         elif action == "template":
             self.save_as_template(p)
+        elif action == "to_post":                          # issue #52: a wire taken away, given back
+            s.add_post_layer(pid, None, self)
+            s.log('"{name}" sent to Post', name=p.name)
+            self.request_refresh()
         elif action == "delete":
             if QMessageBox.question(self, _("Delete"), _('Delete the workflow "{name}"?').format(name=p.name)) \
                     == QMessageBox.Yes:

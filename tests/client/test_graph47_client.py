@@ -288,3 +288,32 @@ def test_a_stage_phase_moves_the_bar_from_its_first_file():
     ctx.phase(0.4, 1.0)
     ctx.progress(0.5, "lights", force=True)
     assert sent == [0.2, 0.7]
+
+
+def test_the_second_play_test_stays_fixed(qapp, tmp_path, monkeypatch):
+    """Dragging Combine does not break the page; a wire taken away stays away (Post gives no layer by itself any
+    more); a branch beside the same block tries another method; a rebuilt graph forgets its selected wire."""
+    from astro_gpu.client.graph import WireItem
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        page.graph.drag_block = "composition"
+        page.graph.rebuild()                                       # its places: after the split block, no error
+        assert any(getattr(gh, "node", None) is not None for gh in page.graph.ghosts)
+        page.graph.drag_block = None
+        page.graph.rebuild()
+        full = m.paths[0]
+        q, key = m.add_branch(full, "astrometrie", "gradient")    # Full: Astrometry then a polynomial Gradient
+        assert m.graph(q)[-1]["method"] != "polynomial"           # the branch tries another one
+        settle(w, page)
+        wires = [it for it in page.graph.scene().items() if isinstance(it, WireItem)]
+        page.graph.select_wire(wires[0])
+        page.graph.rebuild()
+        assert page.graph.sel_wire is None                        # forgotten with the scene
+        n_before = len(Graph(m).post_layers)
+        page.remove_post_link(q.pid)
+        settle(w, page)
+        assert len(Graph(m).post_layers) == n_before - 1 and q.pid not in Graph(m).to_post   # it stays away
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
