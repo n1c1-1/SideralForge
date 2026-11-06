@@ -272,7 +272,8 @@ def phase_shift(mm, i: int, ref: int, H: int, W: int, cfa: str = "") -> np.ndarr
     from ..core.cfa import equalised
 
     def small(k):
-        a = np.nan_to_num(equalised(np.asarray(mm[k], np.float32), cfa, VALID_MAX))
+        # bad pixels and the float16 cache's overflows (a star brighter than 65504: inf) count as empty sky
+        a = np.nan_to_num(equalised(np.asarray(mm[k], np.float32), cfa, VALID_MAX), nan=0.0, posinf=0.0, neginf=0.0)
         a = a[: H - H % PHASE_BIN, : W - W % PHASE_BIN]
         a = a.reshape(a.shape[0] // PHASE_BIN, PHASE_BIN, a.shape[1] // PHASE_BIN, PHASE_BIN).mean((1, 3))
         a = a - cv2.GaussianBlur(a, (0, 0), 10)
@@ -280,7 +281,7 @@ def phase_shift(mm, i: int, ref: int, H: int, W: int, cfa: str = "") -> np.ndarr
     s_ref, s_i = small(ref), small(i)
     win = cv2.createHanningWindow(s_ref.shape[::-1], cv2.CV_32F)
     (dx, dy), peak = cv2.phaseCorrelate(s_ref, s_i, win)
-    return None if peak < PHASE_MIN else np.array([dx, dy]) * PHASE_BIN
+    return None if not peak >= PHASE_MIN or not np.isfinite([dx, dy]).all() else np.array([dx, dy]) * PHASE_BIN
 
 
 def _rotate(xy, ang_deg, W, H):
@@ -443,7 +444,8 @@ def _catalog(idx):
     x = s - bkg.back()
     rms = bkg.globalrms
     sep.set_extract_pixstack(3000000)
-    o = sep.extract(x, _G["k"], err=rms, minarea=4, mask=mask, deblend_cont=0.005)
+    from ..core.imgutil import sep_extract
+    o = sep_extract(x, _G["k"], err=rms, minarea=4, mask=mask, deblend_cont=0.005)
     o = o[(o["flag"] == 0) & (o["npix"] < 200)]
     o = np.sort(o, order="flux")[::-1][: _G["nmax"]]
     # the noise of the frame: adjacent super-pixels differ by their noise only (the sky and the objects larger than
@@ -456,9 +458,17 @@ def _catalog(idx):
     xw, yw, _ = sep.winpos(x, o["x"], o["y"], np.full(len(o), 0.9))
     hfr, _ = sep.flux_radius(x, xw, yw, np.full(len(o), 5.0), 0.5, subpix=5)
     aps = []
+    good = (~mask).astype(np.float32)
     for r in APERTURES:
-        f, _, fl = sep.sum_circle(x, xw, yw, r, mask=mask, bkgann=(r + 2.0, r + 6.0))
-        aps.append(np.where(fl == 0, f, np.nan))
+        # a star whose background annulus is wholly masked (beside a saturated or bad area) has no measure: sep raises
+        # for the whole call on it, so it is left out first
+        seen, _, _ = sep.sum_circann(good, xw, yw, r + 2.0, r + 6.0)
+        ok = seen > 1.0
+        f = np.full(len(xw), np.nan)
+        if ok.any():
+            fo, _, fl = sep.sum_circle(x, xw[ok], yw[ok], r, mask=mask, bkgann=(r + 2.0, r + 6.0))
+            f[ok] = np.where(fl == 0, fo, np.nan)
+        aps.append(f)
     cat = np.c_[2 * xw + 0.5, 2 * yw + 0.5, o["flux"], hfr, *aps]   # sensor coordinates
     fin = np.isfinite(cat[:, :4]).all(1)
     cat = cat[fin]

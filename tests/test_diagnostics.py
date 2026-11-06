@@ -308,6 +308,33 @@ def test_registration_measures_the_roundness_of_the_stars(tmp_path, sx, sy, lo, 
     assert idx == 0 and len(cat) >= 30 and lo < rnd < hi
 
 
+
+def test_a_star_whose_background_ring_is_all_bad_pixels_is_left_out(tmp_path):
+    """A star in a small island of good pixels, a wide ring of bad (NaN) pixels around it: its background annulus has
+    no valid pixel; the frame is still catalogued, that star without its aperture fluxes."""
+    from astro_gpu.stages import register as reg
+    rng = np.random.default_rng(7)
+    H = W = 512
+    yy, xx = np.mgrid[0:H, 0:W]
+    img = 1000 + rng.normal(0, 10, (H, W))
+    for x, y in rng.uniform(30, W - 30, (30, 2)):
+        img += 6000 * np.exp(-0.5 * (((xx - x) / 3.0) ** 2 + ((yy - y) / 3.0) ** 2))
+    img += 20000 * np.exp(-0.5 * (((xx - 256) / 3.0) ** 2 + ((yy - 256) / 3.0) ** 2))
+    d = np.hypot(xx - 256, yy - 256)
+    img[(d > 14) & (d < 90)] = np.nan
+    f = tmp_path / "lights.f16"
+    mm = np.memmap(f, dtype=np.float16, mode="w+", shape=(1, H, W))
+    mm[0] = img
+    mm.flush()
+    del mm
+    reg._init(str(f), 1, H, W, 8.0, 2500, "RGGB")
+    idx, cat, fwhm, rms, rnd, _ = reg._catalog(0)
+    reg._G.clear()
+    assert idx == 0 and len(cat) >= 15 and np.isfinite(fwhm)
+    lone = np.hypot(cat[:, 0] - 256, cat[:, 1] - 256) < 4
+    assert lone.any() and np.isfinite(cat[lone, 4]).all() and np.isnan(cat[lone, 6:]).all()   # ring: only the small
+
+
 # ---------------------------------------------------------------------------------------------- stacking
 
 def stack_project(root: Path, n: int = 8, H: int = 192, W: int = 256):
@@ -611,3 +638,58 @@ def colour_scene(rng):
     return img.astype(np.float32), xp, deep
 
 
+
+
+def test_a_crowded_object_that_sep_cannot_deblend_is_extracted_with_a_higher_threshold(monkeypatch):
+    """sep's "deblending overflow" (a bright star in nebulosity, as near Alnitak): the threshold is doubled until sep
+    extracts the frame; any other error is raised; a frame extracted at once is unchanged."""
+    import sep
+
+    from astro_gpu.core.imgutil import sep_extract
+    calls = []
+
+    def fake(data, thresh, **kw):
+        calls.append((thresh, kw.get("deblend_nthresh")))
+        if thresh < 40 and kw.get("deblend_nthresh") != 1:
+            raise Exception("object deblending overflow: limit of sub-objects reached while deblending.")
+        return "objects"
+
+    monkeypatch.setattr(sep, "extract", fake)
+    assert sep_extract(np.zeros((4, 4), np.float32), 10.0, minarea=4) == "objects"
+    assert [c[0] for c in calls] == [10.0, 20.0, 40.0]
+    calls.clear()
+    assert sep_extract(np.zeros((4, 4), np.float32), 0.1) == "objects"           # never enough: not deblended at last
+    assert calls[-1] == (1.6, 1)
+
+    def broken(data, thresh, **kw):
+        raise Exception("internal pixel buffer full")
+
+    monkeypatch.setattr(sep, "extract", broken)
+    with pytest.raises(Exception, match="pixel buffer"):
+        sep_extract(np.zeros((4, 4), np.float32), 10.0)
+
+
+def test_an_unlit_flat_edge_does_not_make_a_still_sky_look_moved(monkeypatch):
+    """A sensor's overscan (a band the flat's light never reached, ~0): the band is a bad pixel, and the sky's drift is
+    measured without it; a still sky stays still, so its stars are not taken for hot pixels (a set of 20 s frames on
+    one field read as moved by 1000 px had 70 000 star pixels flagged)."""
+    from scipy.ndimage import median_filter
+
+    from astro_gpu.stages import calibrate as cal
+    rng = np.random.default_rng(3)
+    H, W = 256, 320
+    yy, xx = np.mgrid[0:H, 0:W]
+    sky = np.zeros((H, W), np.float32)
+    stars = rng.uniform(20, [H - 20, W - 60], (40, 2))
+    for y, x in stars:
+        sky += 3000 * np.exp(-0.5 * (((xx - x) / 1.5) ** 2 + ((yy - y) / 1.5) ** 2))
+    frames = {f"f{i}": 100 + sky + rng.normal(0, 5, (H, W)).astype(np.float32) for i in range(16)}
+    monkeypatch.setattr(cal, "read_cfa", lambda p: frames[p].copy())
+    flat = np.ones((H, W), np.float32)
+    flat[:, -30:] = 1e-5                                                     # the unlit overscan band
+    dark = np.full((H, W), 100, np.float32)
+    bad = flat < cal.FLAT_UNLIT * float(np.median(flat))                     # as the calibration flags it
+    msg, moved = cal._hot_from_lights(list(frames), dark, flat, bad, median_filter, cfa="GGGG")
+    assert not moved and "lone pixels" in msg
+    cores = [(int(round(y)), int(round(x))) for y, x in stars]
+    assert not any(bad[y, x] for y, x in cores)                              # no star taken for a hot pixel

@@ -216,6 +216,9 @@ def calibrate_lights(ctx: Context, p: CalibrateParams, lights: list[dict], dark:
         v = _plane(flat, k, P)
         loc = median_filter(v, size=9)
         _plane(bad, k, P)[...] |= (v < (1 - p.flat_defect) * loc) | (v > (1 + p.flat_defect) * loc)
+    # a pixel the flat's light hardly reached (a sensor's overscan, a dead column: a band the local test above cannot
+    # see) would be multiplied by ten or more
+    bad |= flat < FLAT_UNLIT * float(np.median(flat))
     moved = True
     if p.hot_from_lights and len(lights) >= 15:
         n0 = int(bad.sum())
@@ -364,6 +367,8 @@ def _median_stack(paths: list[str], ctx: Context, label: str) -> np.ndarray:
 
 #: the rows a pixel-wise statistic of a stack of frames is taken on at a time (its temporary arrays stay small)
 BAND = 256
+#: a flat pixel under this share of the flat's median received no light: a bad pixel
+FLAT_UNLIT = 0.1
 
 
 def _master_flat(paths: list[str], fdark: np.ndarray, ctx: Context) -> np.ndarray:
@@ -400,7 +405,10 @@ def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0, cfa: st
     is a plane of its own: its neighbours in the plane are of its colour."""
     P = cfa_mod.period(cfa)
     sub = [paths[i] for i in np.linspace(0, len(paths) - 1, min(n, len(paths))).astype(int)]
-    a, b = ((read_cfa(q) - dark) / flat for q in (sub[0], sub[-1]))
+    # the pixels already flagged (an unlit edge of the flat, nearly 0: values of 1e8 once divided) make the
+    # correlation's peak fall anywhere (a still sky read as moved by 1000 px, its stars then flagged as hot pixels)
+    a, b = (np.where(bad, 0.0, np.nan_to_num((read_cfa(q) - dark) / flat, nan=0.0, posinf=0.0, neginf=0.0))
+            for q in (sub[0], sub[-1]))
     g0 = cfa_mod.green_position(cfa)
     ga, gb = (cv2.resize(np.ascontiguousarray(_plane(x, g0, P)), None, fx=0.5, fy=0.5,
                          interpolation=cv2.INTER_AREA).astype(np.float32) for x in (a, b))

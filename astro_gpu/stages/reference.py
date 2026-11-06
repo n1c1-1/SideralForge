@@ -57,7 +57,8 @@ def _stars(gray, n, k=10.0):
     hp = np.ascontiguousarray(x - cv2.GaussianBlur(x, (0, 0), 6))
     s = 1.4826 * np.median(np.abs(hp - np.median(hp)))
     sep.set_extract_pixstack(3000000)
-    o = sep.extract(hp, k * s, minarea=4, deblend_nthresh=8)
+    from ..core.imgutil import sep_extract
+    o = sep_extract(hp, k * s, minarea=4, deblend_nthresh=8)
     o = np.sort(o[o["flag"] == 0], order="flux")[::-1][:n]
     return np.c_[o["x"], o["y"]]
 

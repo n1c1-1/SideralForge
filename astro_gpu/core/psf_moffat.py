@@ -171,7 +171,8 @@ def find_stars(plane, *, cfa: str | None = None, k: float = 8.0, max_stars: int 
     bkg = sep.Background(a, mask=mask, bw=64, bh=64)
     x = a - bkg.back()
     sep.set_extract_pixstack(3_000_000)
-    o = sep.extract(x, k, err=bkg.globalrms, minarea=4, mask=mask, deblend_cont=0.005)
+    from .imgutil import sep_extract
+    o = sep_extract(x, k, err=bkg.globalrms, minarea=4, mask=mask, deblend_cont=0.005)
     o = np.sort(o[o["flag"] == 0], order="flux")[::-1][:max_stars]
     xy = np.c_[o["x"], o["y"]].astype(float)
     return 2.0 * xy + 0.5 if cfa else xy

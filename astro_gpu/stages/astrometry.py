@@ -264,13 +264,15 @@ def detect(g: np.ndarray, tile_above: int = 20_000_000) -> np.ndarray:
     from concurrent.futures import ThreadPoolExecutor
 
     import sep
+
+    from ..core.imgutil import sep_extract
     sep.set_extract_pixstack(3000000)
     bk = sep.Background(g, bw=64, bh=64)
     sub = g - bk.back()
     rms = bk.globalrms
     H, W = sub.shape
     if H * W < tile_above:
-        return sep.extract(sub, 15, err=rms, minarea=6)
+        return sep_extract(sub, 15, err=rms, minarea=6)
     n, ov = 4, 128
     ys = np.linspace(0, H, n + 1).astype(int)
     xs = np.linspace(0, W, n + 1).astype(int)
@@ -278,7 +280,7 @@ def detect(g: np.ndarray, tile_above: int = 20_000_000) -> np.ndarray:
     def one(ij):
         i, j = ij
         y0, y1, x0, x1 = max(0, ys[i] - ov), min(H, ys[i + 1] + ov), max(0, xs[j] - ov), min(W, xs[j + 1] + ov)
-        o = sep.extract(np.ascontiguousarray(sub[y0:y1, x0:x1]), 15, err=rms, minarea=6)
+        o = sep_extract(np.ascontiguousarray(sub[y0:y1, x0:x1]), 15, err=rms, minarea=6)
         o = o.copy()
         for k, off in (("x", x0), ("xmin", x0), ("xmax", x0), ("xpeak", x0), ("xcpeak", x0),
                        ("y", y0), ("ymin", y0), ("ymax", y0), ("ypeak", y0), ("ycpeak", y0)):

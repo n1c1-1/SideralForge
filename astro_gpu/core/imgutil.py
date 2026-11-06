@@ -5,6 +5,23 @@ import cv2
 import numpy as np
 
 
+def sep_extract(data: np.ndarray, thresh: float, **kw) -> np.ndarray:
+    """sep.extract that does not fail on a crowded object: a bright star in nebulosity can make one object of more
+    pieces than sep can deblend ("deblending overflow"); its limit is raised, then the threshold doubled (sep's own
+    advice) up to three times, and at last the object is not deblended. A frame that sep extracts at once gives the
+    same result as before."""
+    import sep
+    sep.set_sub_object_limit(8192)
+    for _ in range(4):
+        try:
+            return sep.extract(data, thresh, **kw)
+        except Exception as e:  # noqa: BLE001 - sep raises a bare Exception
+            if "deblending overflow" not in str(e):
+                raise
+            thresh *= 2.0
+    return sep.extract(data, thresh, **{**kw, "deblend_nthresh": 1})
+
+
 def robust_sigma(x: np.ndarray) -> tuple[float, float]:
     """Median and MAD-based sigma of the finite values of x."""
     x = np.asarray(x)
