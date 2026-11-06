@@ -389,7 +389,7 @@ def _catalog(idx):
     import sep
     H, W = _G["H"], _G["W"]
     from ..core.cfa import equalised
-    # an X-Trans frame's colours levelled first (its 2 x 2 cells hold 1 to 3 greens: a pattern otherwise)
+    # an X-Trans frame's colours levelled first (its 2 x 2 cells hold 1 to 3 greens: a pattern of the sky otherwise)
     a = equalised(np.asarray(_G["mm"][idx], np.float32), _G["cfa"], VALID_MAX)
     a = a[: H - H % 2, : W - W % 2].reshape(H // 2, 2, W // 2, 2)
     sat = (a > VALID_MAX).any(axis=(1, 3))
