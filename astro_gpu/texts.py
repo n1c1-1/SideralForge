@@ -187,6 +187,8 @@ _METRIC_ROWS: list[tuple] = [
     # the channels' fusion (issue #43)
     ("palette", "Palette", "", "", "How the filters became red, green and blue (SHO, HSO, HOO, RGB, LRGB)."),
     ("channels", "Channels", "", "", "The filters combined.", ", "),
+    ("star_source", "Star source", "", "", "Where the stars put back on the starless fusion came from (palette, channel "
+                                           "or workflow)."),
     # register
     ("reference_frame", "Reference frame", "", "", "The frame all the others are aligned on."),
     ("aligned", "Aligned frames", "", "d", "Frames that could be aligned."),

@@ -138,6 +138,8 @@ class BlockItem(QGraphicsItem):
         self.target = False                    # the Post block, while an output is pulled over it
         self._wire = False
         self.ports = PORTS.get(node.key, ())
+        if node.key == "fusion" and node.paths and ((node.paths[0].source or {}).get("fusion") or {}).get("stars"):
+            self.ports = PORTS["etoiles"]                 # a starless fusion: its two images, as the Split block's
         self.port = bool(self.ports)
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.PointingHandCursor)
@@ -519,7 +521,7 @@ class GraphView(QGraphicsView):
             else:
                 ys = [lanes[p.pid] for p in n.paths]
                 n.y = (min(ys) + max(ys)) / 2
-            col = "sources" if n.key in ("session", "image") else ("composition" if n.key == "fusion" else n.key)
+            col = "sources" if n.key in ("session", "image") else n.key
             n.col = cx[col]
             n.w = cw[col]
         seen: dict[int, int] = {}
@@ -1314,8 +1316,10 @@ class GraphPage(QWidget):
                 colour = next((q for q in s.paths if q.source is None and not s.is_mono(q) and not q.end), None)
                 if colour is None:
                     colour = s.add_path(s.unique_name(_("Dual band")), opts)
+                # option A: the starless channels, the stars of the colour image itself (their own colours)
                 return s.add_fusion(name, t["palette"], [{"pid": colour.pid, "role": "Ha", "channel": "R"},
-                                                         {"pid": colour.pid, "role": "OIII", "channel": "GB"}])
+                                                         {"pid": colour.pid, "role": "OIII", "channel": "GB"}],
+                                    stars={"mode": "workflow", "pid": colour.pid})
             filters = sorted(s.filters()) if t["kind"] == "filters" else list(t["filters"])
             made = [(f, s.filter_workflow(f, opts)) for f in filters]
             made = [(f, q) for f, q in made if q is not None]
@@ -1324,7 +1328,12 @@ class GraphPage(QWidget):
                 return None
             if t["kind"] == "filters":
                 return made[0][1]
-            return s.add_fusion(name, t["palette"], [{"pid": q.pid, "role": f, "channel": "L"} for f, q in made])
+            # option A: each channel's stars taken off, the starless palette; the stars: of the channels (RGB, LRGB:
+            # their own colours), else of H-alpha, neutral (narrowband stars in a palette come out magenta)
+            roles = [f for f, _q in made]
+            stars = {"mode": "palette"} if t["palette"] in ("RGB", "LRGB") or "Ha" not in roles else                 {"mode": "channel", "role": "Ha"}
+            return s.add_fusion(name, t["palette"], [{"pid": q.pid, "role": f, "channel": "L"} for f, q in made],
+                                stars=stars)
 
     def toggle_cut(self, node, pids):
         """Cut a block, or restore it (issue #43): in ``pids`` only, else in every workflow going through it. Its

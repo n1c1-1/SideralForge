@@ -270,8 +270,9 @@ def chain_stages(options: dict[str, Any], end: str | None = None, reference: boo
     sessions are one frame list, as before issue #43). ``image``: the workflow starts from an image file."""
     o = check_options(options)
     cut = set(cuts(o))
-    if fusion:                      # other workflows' outputs combined (stages/fusion.py): then its Output block
-        return _ordered(["fusion", "render_simple"])
+    if fusion:                      # other workflows' outputs combined (stages/fusion.py): then its Output block,
+        # and with stars (option A: the channels' starless images fused) the Split block that gives the star layer back
+        return _ordered(["fusion", "render_simple"] + (["star_removal"] if o["stars"] else []))
     if stretched:                   # an image already stretched: its stars taken off, or Post at once
         return _ordered(["image"] + (["star_removal"] if o["stars"] else []))
     if image:

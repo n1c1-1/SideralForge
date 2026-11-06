@@ -249,5 +249,12 @@
   "RGB with a luminance filter: the colour from R, G and B, the detail and the depth from L (each pixel's luminance is L's).": "RVB avec un filtre de luminance : la couleur vient de R, V et B, le détail et la profondeur de L (la luminance de chaque pixel est celle de L).",
   "Dual band (colour camera)": "Bi-bande (capteur couleur)",
   "A colour camera behind a dual-band filter (H-alpha and O III): one workflow stacks it, then a Fusion block takes its red as H-alpha and its green and blue as O III, combined as HOO.": "Un capteur couleur derrière un filtre bi-bande (H-alpha et O III) : un workflow l'empile, puis un bloc Fusion prend son rouge comme H-alpha et son vert et son bleu comme O III, combinés en HOO.",
-  "Filters": "Filtres"
+  "Filters": "Filtres",
+  "With the channels (no separation)": "Avec les canaux (sans séparation)",
+  "The channels' stars, same palette": "Les étoiles des canaux, même palette",
+  "The stars of {channel} (neutral)": "Les étoiles de {channel} (neutres)",
+  "The stars of “{workflow}” (their colours)": "Les étoiles de « {workflow} » (leurs couleurs)",
+  "The palette is made on the channels' starless images; these stars are put back by the Combine stars & background block. Each channel's workflow gets Split stars & background.": "La palette est faite sur les images sans étoiles des canaux ; ces étoiles sont remises par le bloc Combiner les calques étoiles et fond. Le workflow de chaque canal reçoit un Split étoiles et fond.",
+  "The stars are taken off in each channel first: stars of different sizes from one filter to another leave no coloured rings.": "Les étoiles sont d'abord retirées dans chaque canal : des étoiles de tailles différentes d'un filtre à l'autre ne laissent pas d'anneaux colorés.",
+  "The channel's weight in the palette, after the balance (1: as balanced). Lower a channel too faint, whose noise the balance raised.": "Le poids du canal dans la palette, après l'équilibre (1 : tel qu'équilibré). Baissez un canal trop faible, dont l'équilibre a remonté le bruit."
 }

@@ -672,6 +672,7 @@ class Panel(QWidget):
             b = QPushButton(pal)
             b.setCheckable(True)
             b.setObjectName("face")
+            b.setMinimumWidth(48)                          # the five fit the panel: they shrink below the style's 80 px
             b.setChecked(pal == f.get("palette"))
             ok = set(need) <= set(roles)
             b.setEnabled(ok)
@@ -683,18 +684,58 @@ class Panel(QWidget):
         self.bv.addWidget(self.group_title(_("Channels")))
         words = {"L": _("its grey"), "R": _("its red"), "G": _("its green"), "B": _("its blue"),
                  "GB": _("its green and blue")}
-        rows = []
+        weights = f.get("weights") or {}
         for i in f.get("inputs") or []:
             q = s.view(i["pid"])
-            rows.append((html.escape(i["role"]), _("{workflow}, {channel}").format(
-                workflow=html.escape(q.name if q is not None else "?"), channel=words.get(i.get("channel", "L"), ""))))
-        self.bv.addWidget(kv(rows, pad=10))
+            row = QHBoxLayout()
+            row.addWidget(label(f"<b>{html.escape(i['role'])}</b>", None), 0)
+            row.addWidget(label(_("{workflow}, {channel}").format(
+                workflow=html.escape(q.name if q is not None else "?"),
+                channel=words.get(i.get("channel", "L"), "")), "small"), 1)
+            sp = QDoubleSpinBox()
+            sp.setRange(0.0, 5.0)
+            sp.setSingleStep(0.05)
+            sp.setDecimals(2)
+            sp.setValue(float(weights.get(i["role"], 1.0)))
+            sp.setToolTip(_("The channel's weight in the palette, after the balance (1: as balanced). Lower a "
+                            "channel too faint, whose noise the balance raised."))
+            sp.editingFinished.connect(lambda r=i["role"], b=sp: s.set_fusion_weight(p, r, b.value()))
+            row.addWidget(sp)
+            self.bv.addLayout(row)
+        self.fusion_stars(p, f, roles)
         self.bv.addSpacing(6)
         self.bv.addWidget(label(_("Each channel is its workflow's output, aligned on the first channel through the "
                                   "plate solutions (each channel's workflow needs its Astrometry) and brought to the "
                                   "same scale; the palette makes the colours. Its output is a layer of Post."),
                                 "small", wrap=True))
         self.bv.addStretch(1)
+
+    def fusion_stars(self, p, f: dict, roles: list[str]):
+        """Option A: the palette on the channels' starless images, then the stars from a source, put back by the
+        Combine stars & background block."""
+        s = self.s
+        cur = f.get("stars") or {}
+        self.bv.addWidget(self.group_title(_("Stars")))
+        others = [q for q in s.paths if q.pid != p.pid and q.source is None and not s.is_mono(q)]
+        choices = [(_("With the channels (no separation)"), None),
+                   (_("The channels' stars, same palette"), {"mode": "palette"})]
+        choices += [(_("The stars of {channel} (neutral)").format(channel=r), {"mode": "channel", "role": r})
+                    for r in roles]
+        choices += [(_("The stars of “{workflow}” (their colours)").format(workflow=q.name),
+                     {"mode": "workflow", "pid": q.pid}) for q in others]
+        cb = QComboBox()
+        cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)     # a long workflow name: elided,
+        cb.setMinimumContentsLength(20)                                              # never wider than the panel
+        for text, val in choices:
+            cb.addItem(text, val)
+        cb.setCurrentIndex(next((i for i, (_t, v) in enumerate(choices) if (v or {}) == cur), 0))
+        cb.setToolTip(_("The palette is made on the channels' starless images; these stars are put back by the "
+                        "Combine stars & background block. Each channel's workflow gets Split stars & background."))
+        cb.activated.connect(lambda i: s.set_fusion_stars(p, cb.itemData(i)))
+        self.bv.addWidget(cb)
+        if cur:
+            self.bv.addWidget(label(_("The stars are taken off in each channel first: stars of different sizes from "
+                                      "one filter to another leave no coloured rings."), "small", wrap=True))
 
     def cut_panel(self, node):
         """A block the user cut, or greyed by a cut: what it means, and the way back."""

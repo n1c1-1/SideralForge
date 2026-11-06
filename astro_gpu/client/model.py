@@ -843,16 +843,65 @@ class ProjectModel(QObject):
             self.p.validate()
         return self._view_of(w.id)
 
-    def add_fusion(self, name: str, palette: str, inputs: list[dict]) -> WorkflowView:
+    def add_fusion(self, name: str, palette: str, inputs: list[dict], stars: dict | None = None) -> WorkflowView:
         """A fusion workflow (issue #43): the outputs of ``inputs`` [{"pid", "role", "channel"}] combined with a
-        palette, in the Composition section; its Output is a layer of Post."""
+        palette, in the Composition section; its Output is a layer of Post. ``stars`` (option A): the channels'
+        starless images fused, and the star layer's source ({"mode": "palette" | "channel" + "role" | "workflow" +
+        "pid"}); the channels' workflows get Split stars & background."""
         with self._edit():
-            w = api.add_workflow(self.p, self.unique_name(name), wfl.check_options(to_engine(
-                {"debruitage": False, "etoiles": "garder", "fond": "simple"})), {})
-            self.p.workflow(w.id).source = {"fusion": {"palette": palette, "inputs": [
-                {"pid": int(i["pid"]), "role": str(i["role"]), "channel": str(i.get("channel", "L"))} for i in inputs]}}
+            o = {"debruitage": bool(stars), "etoiles": "retirer" if stars else "garder", "fond": "simple"}
+            w = api.add_workflow(self.p, self.unique_name(name), wfl.check_options(to_engine(o)), {})
+            f = {"palette": palette, "inputs": [
+                {"pid": int(i["pid"]), "role": str(i["role"]), "channel": str(i.get("channel", "L"))} for i in inputs]}
+            if stars:
+                f["stars"] = dict(stars)
+                self._with_stars([i["pid"] for i in inputs] + ([stars["pid"]] if stars.get("pid") else []))
+            self.p.workflow(w.id).source = {"fusion": f}
             self.p.validate()
         return self._view_of(w.id)
+
+    def _with_stars(self, pids):
+        """These workflows get Split stars & background (and Denoise, which it needs)."""
+        for pid in dict.fromkeys(pids):
+            w = self.p.workflow(int(pid))
+            if not w.options.get("stars"):
+                w.options = wfl.check_options({**w.options, "denoise": w.options.get("denoise") or "pretrained",
+                                               "stars": "neural"})
+
+    def set_fusion_weight(self, p: WorkflowView, role: str, weight: float) -> bool:
+        """A channel's weight in a fusion (1: as balanced)."""
+        w = self.p.workflow(p.pid)
+        cur = dict(w.source["fusion"].get("weights") or {})
+        weight = round(float(weight), 3)
+        if cur.get(role, 1.0) == weight:
+            return False
+        with self._edit():
+            ws = api.workflows(self.p)
+            x = next(v for v in ws if v.id == p.pid)
+            cur[role] = weight
+            x.source = {"fusion": {**x.source["fusion"], "weights": {k: v for k, v in cur.items() if v != 1.0}}}
+            api.set_workflows(self.p, ws, self.p.current)
+        return True
+
+    def set_fusion_stars(self, p: WorkflowView, stars: dict | None) -> bool:
+        """The star source of a fusion (option A), or None: the channels combined with their stars."""
+        w = self.p.workflow(p.pid)
+        if not is_fusion_view(p) or (w.source["fusion"].get("stars") or None) == (stars or None):
+            return False
+        with self._edit():
+            ws = api.workflows(self.p)
+            x = next(v for v in ws if v.id == p.pid)
+            f = {k: v for k, v in x.source["fusion"].items() if k != "stars"}
+            if stars:
+                f["stars"] = dict(stars)
+            x.source = {"fusion": f}
+            x.options = wfl.check_options({**x.options, "denoise": "pretrained" if stars else None,
+                                           "stars": "neural" if stars else None})
+            api.set_workflows(self.p, ws, self.p.current)
+            if stars:
+                self._with_stars([i["pid"] for i in f["inputs"]] + ([stars["pid"]] if stars.get("pid") else []))
+                self.p.validate()
+        return True
 
     def set_fusion_palette(self, p: WorkflowView, palette: str) -> bool:
         """Another palette for a fusion (its channels kept when the new one reads the same roles)."""

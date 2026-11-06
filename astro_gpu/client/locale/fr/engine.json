@@ -506,5 +506,10 @@
  "HSO": "HSO",
  "HOO": "HOO",
  "RGB": "RVB",
- "LRGB": "LRVB"
+ "LRGB": "LRVB",
+ "Channel weights": "Poids des canaux",
+ "Each channel's weight in the palette, after the balance (1: as balanced).": "Le poids de chaque canal dans la palette, après l'équilibre (1 : tel qu'équilibré).",
+ "Where the stars put back on the starless fusion come from.": "D'où viennent les étoiles remises sur la fusion sans étoiles.",
+ "Star source": "Source des étoiles",
+ "Where the stars put back on the starless fusion came from (palette, channel or workflow).": "D'où viennent les étoiles remises sur la fusion sans étoiles (palette, canal ou workflow)."
 }

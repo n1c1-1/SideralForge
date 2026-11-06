@@ -46,7 +46,7 @@ NON_KEY: dict[str, frozenset[str]] = {
     "calibrate": frozenset({"workers"}),
     "register": frozenset({"workers"}),
     "image": frozenset({"path"}),                    # the file is keyed by its name, size and date (core/store.py)
-    "fusion": frozenset({"inputs"}),                 # the inputs' folders: their workflows' keys stand for them
+    "fusion": frozenset({"inputs", "stars", "weights"}),        # the inputs' folders: their workflows' keys stand for them
 }
 #: the stages only v2 workflows have (issue #43: the sessions' join and the image source)
 NEW_STAGES = ("gradient", "render_simple", "star_removal", "sessions", "image", "fusion")

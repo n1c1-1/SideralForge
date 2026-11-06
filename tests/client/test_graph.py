@@ -325,7 +325,8 @@ def test_the_graph_shows_the_real_engine_order(world, model, page):
     """Frames, Calibration, Registration, Selection, Stacking, Astrometry, Gradient, Color, Denoise, Stars, Output,
     Composition, Post (the engine's order); the phase bands; Deconvolution only when something uses it."""
     assert COLUMNS == ["sources", "calibration", "alignement", "selection", "empilement", "astrometrie", "fond",
-                       "couleur", "deconv", "debruitage", "etoiles", "post", "composition", "final"]
+                       "couleur", "deconv", "debruitage", "etoiles", "post", "fusion", "composition",
+                       "final"]
     assert model.block_keys(model.paths[0]) == ["calibration", "alignement", "selection", "empilement", "astrometrie",
                                                 "fond", "couleur", "debruitage", "etoiles", "post"]
     items = {it.node.key + str(id(it.node)): it for it in page.graph.scene().items() if isinstance(it, BlockItem)}

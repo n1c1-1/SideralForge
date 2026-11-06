@@ -40,10 +40,10 @@ from .i18n import _, hm, language, number, plural
 
 # the columns of the graph, left to right; optional columns only appear when a workflow uses them
 COLUMNS = ["sources", "calibration", "alignement", "selection", "empilement", "astrometrie", "fond", "couleur",
-           "deconv", "debruitage", "etoiles", "post", "composition", "final"]
-OPTIONAL = {"debruitage", "deconv", "etoiles", "post", "composition"}
+           "deconv", "debruitage", "etoiles", "post", "fusion", "composition", "final"]
+OPTIONAL = {"debruitage", "deconv", "etoiles", "post", "fusion", "composition"}
 PHASES = [("Pre-processing", "calibration", "empilement"), ("Linear processing", "astrometrie", "etoiles"),
-          ("Composition", "composition", "composition")]
+          ("Composition", "fusion", "composition")]
 TOOL_COLUMN = {"debruitage": "debruitage", "etoiles": "etoiles", "deconv": "deconv",
                "auto": "fond", "rbf": "fond", "simple": "fond"}
 TITLES = {"sources": "Frames", "final": "Post", "image": "Image", "session": "Session", "fusion": "Fusion",
@@ -307,8 +307,8 @@ class Graph:
                 if n is not None:
                     n.handle = True
                     self.by_path[p.pid]["post"] = n
-                    self.fusion_inputs[id(n)] = [self.leaves[i["pid"]] for i in src["fusion"]["inputs"]
-                                                 if i["pid"] in self.leaves and self.leaves[i["pid"]] is not n]
+                    if src["fusion"].get("stars"):       # option A: its starless image and its star layer
+                        self.by_path[p.pid]["etoiles"] = n
         self.compositions: list[Node] = []
         self.direct: list[tuple[Node, str]] = []
         self.to_post: set[int] = set()
@@ -346,6 +346,13 @@ class Graph:
             elif (src, part) not in self.direct:
                 self.direct.append((src, part))
         self._fold_outputs(project)
+        for p in project.paths:                       # a fusion's inputs: its channels' last blocks (after the fold)
+            src = getattr(p, "source", None)
+            n = self.by_path[p.pid].get("fusion") if isinstance(src, dict) and "fusion" in src else None
+            if n is not None:
+                self.fusion_inputs[id(n)] = list({id(self.leaves[i["pid"]]): self.leaves[i["pid"]]
+                                                  for i in src["fusion"]["inputs"]
+                                                  if i["pid"] in self.leaves and self.leaves[i["pid"]] is not n}.values())
         self.nodes.append(self.final)
 
     def _fold_outputs(self, project):

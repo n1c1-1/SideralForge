@@ -364,9 +364,18 @@ class Keys:
             fid = self.scan.file_id(_absolute(self.project, src["path"]))
             return fid + ["stretched"] if src.get("stretched") else fid
         if stage == "fusion" and src:
-            return {"palette": src["fusion"]["palette"], "inputs": [
+            f = src["fusion"]
+            stars = f.get("stars")
+            part = {"palette": f["palette"], "weights": dict(f.get("weights") or {}), "inputs": [
                 {"role": i["role"], "channel": i.get("channel", "L"), "out": self._input_key(i["pid"], "render_simple"),
-                 "wcs": self._input_key(i["pid"], "astrometry")} for i in src["fusion"]["inputs"]]}
+                 "wcs": self._input_key(i["pid"], "astrometry")}
+                | ({"stars": self._input_key(i["pid"], "star_removal")} if stars else {})
+                for i in f["inputs"]]}
+            if stars:                                # option A: the starless channels, the star source
+                part["star_source"] = dict(stars) | (
+                    {"stars": self._input_key(stars["pid"], "star_removal"),
+                     "wcs": self._input_key(stars["pid"], "astrometry")} if stars["mode"] == "workflow" else {})
+            return part
         return None
 
     def _input_key(self, pid: int, stage: str) -> str | None:
@@ -379,11 +388,18 @@ class Keys:
     def fusion_inputs(self, wf: int | Workflow) -> list[tuple[int, str]]:
         """(workflow id, stage) of what a fusion reads: each input's Output and, when it has one, its Astrometry."""
         w = self._wf(wf)
+        f = w.source["fusion"]
+        want = ("render_simple", "astrometry") + (("star_removal",) if f.get("stars") else ())
         out = []
-        for i in w.source["fusion"]["inputs"]:
-            for st in ("render_simple", "astrometry"):
+        for i in f["inputs"]:
+            for st in want:
                 if st in self.chain(i["pid"]) and (i["pid"], st) not in out:
                     out.append((i["pid"], st))
+        stars = f.get("stars") or {}
+        if stars.get("mode") == "workflow":
+            for st in ("star_removal", "astrometry"):
+                if st in self.chain(stars["pid"]) and (stars["pid"], st) not in out:
+                    out.append((stars["pid"], st))
         return out
 
     def key_parts(self, wf: int | Workflow, stage: str) -> dict[str, Any]:
@@ -436,12 +452,20 @@ class Keys:
             store = Store(self.project.root) if self.project.root is not None else None
             v["palette"] = w.source["fusion"]["palette"]
             ins = []
+
+            def folder(pid, st, file=""):
+                k = self._input_key(pid, st)
+                return str(store.dir(st, k) / file) if store and k else ""
             for i in w.source["fusion"]["inputs"]:
-                out, wcs = self._input_key(i["pid"], "render_simple"), self._input_key(i["pid"], "astrometry")
                 ins.append({"role": i["role"], "channel": i.get("channel", "L"), "pid": i["pid"],
-                            "dir": str(store.dir("render_simple", out)) if store and out else "",
-                            "wcs": str(store.dir("astrometry", wcs) / "wcs.fits") if store and wcs else ""})
+                            "dir": folder(i["pid"], "render_simple"), "stars_dir": folder(i["pid"], "star_removal"),
+                            "wcs": folder(i["pid"], "astrometry", "wcs.fits")})
             v["inputs"] = ins
+            stars = dict(w.source["fusion"].get("stars") or {})
+            if stars.get("mode") == "workflow":
+                stars.update(dir=folder(stars["pid"], "star_removal"), wcs=folder(stars["pid"], "astrometry", "wcs.fits"))
+            v["stars"] = stars
+            v["weights"] = dict(w.source["fusion"].get("weights") or {})
         m = self._validated(w, stage, v)
         return {k: m[k] for k in v}
 

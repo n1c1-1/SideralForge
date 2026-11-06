@@ -101,9 +101,10 @@ GALLERY: list[dict] = [
               "of Post. Colour calibration is not offered: the colours come from combining the filters."),
     dict(key="sho", tab="mono", name="SHO (Hubble palette)", opts=CLASSIC_DN, kind="fusion", palette="SHO",
          filters=("SII", "Ha", "OIII"),
-         text="Narrowband: one workflow per filter, then a Fusion block combines their outputs: S II red, H-alpha "
-              "green, O III blue. The channels are aligned through their plate solutions and brought to the same "
-              "scale."),
+         text="Narrowband: one workflow per filter, its stars taken off; a Fusion block combines the starless images: "
+              "S II red, H-alpha green, O III blue (aligned through their plate solutions, brought to the same scale). "
+              "The stars come back from the channels' stars, by the Combine block; the Fusion's panel offers other "
+              "star sources (one channel's, a colour session's)."),
     dict(key="hso", tab="mono", name="HSO", opts=CLASSIC_DN, kind="fusion", palette="HSO",
          filters=("Ha", "SII", "OIII"),
          text="Narrowband with H-alpha red, S II green, O III blue: the red nebulae stay red."),
@@ -119,8 +120,9 @@ GALLERY: list[dict] = [
               "luminance is L's)."),
     dict(key="dualband", tab="mono", name="Dual band (colour camera)", opts=CLASSIC_DN, kind="dualband",
          palette="HOO",
-         text="A colour camera behind a dual-band filter (H-alpha and O III): one workflow stacks it, then a Fusion "
-              "block takes its red as H-alpha and its green and blue as O III, combined as HOO."),
+         text="A colour camera behind a dual-band filter (H-alpha and O III): one workflow stacks it and takes its "
+              "stars off, then a Fusion block takes its starless red as H-alpha and its green and blue as O III, "
+              "combined as HOO; its own stars, in their colours, come back by the Combine block."),
 ]
 
 #: the template chosen first in the frames' tab
@@ -141,6 +143,7 @@ def chain_of(t: dict) -> list[tuple[str, str]]:
         keys = ["calibration", "empilement", "astrometrie", "fond"]
         keys += ["couleur"] if t["kind"] == "dualband" else []
         keys += ["debruitage"] if o.get("debruitage") else []
+        keys += ["etoiles"] if t["kind"] in ("fusion", "dualband") else []    # option A: the stars off in each
         return [(k, "") for k in keys + ["post"]]
     if t.get("stretched"):
         return [("post", "")]
@@ -287,7 +290,7 @@ def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     kind = t["kind"]
     rows = (["Colour"] if kind == "dualband" else (["Ha", "OIII"] if kind == "filters" else list(t["filters"])))
     fusion = kind in ("fusion", "dualband")
-    n = 1 + len(chain) + (1 if fusion else 0)
+    n = 1 + len(chain) + (2 if fusion else 0)
     gap = max(4.0, w * 0.012)
     bw = (w - 2 * gap - (n - 1) * gap - (gap * 2 if fusion else 0)) / n
     pitch_max = (h - 8) / max(len(rows), 1)
@@ -334,6 +337,8 @@ def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     if fusion:
         x = ends[0][0] + 3 * gap
         r = block(x, h / 2, _("Fusion") + " " + t.get("palette", ""), "#c9a227")
+        r2 = block(r.right() + gap, h / 2, _("Combine"), "#c9a227")       # the stars put back (option A)
+        wire(r.right(), h / 2, r2.left(), h / 2)
         if kind == "dualband":                          # one colour image, two channels
             for _lab, dy in (("Ha", -bh * 0.25), ("OIII", bh * 0.25)):
                 wire(ends[0][0], ends[0][1], r.left(), h / 2 + dy)

@@ -420,3 +420,70 @@ def test_an_already_stretched_image_goes_to_post_as_it_is(tmp_path, nights):
     q = project2.load(p.root)
     q.workflow(w.id).source = {"path": str(png), "stretched": False}
     assert Keys(q).key(w.id, "image") != before                             # linear or stretched: two results
+
+
+# ---------------------------------------------------------------------------------------------- option A: stars
+
+def _split(folder: Path, starless: np.ndarray, stars: np.ndarray):
+    folder.mkdir(parents=True)
+    np.save(folder / "starless.npy", starless.astype(np.float32))
+    np.save(folder / "stars.npy", stars.astype(np.float32))
+    np.save(folder / "valid.npy", np.ones(starless.shape[1:], bool))
+
+
+def test_option_a_fuses_the_starless_channels_and_makes_a_star_layer(tmp_path):
+    from astro_gpu.stages.fusion import STARS_FILE, Fusion, FusionParams, star_support
+    H, W = 40, 50
+    rng = np.random.default_rng(0)
+    neb = np.repeat((3 * _star(H, W, 25, 20) * 20)[None], 3, 0)
+    star = np.repeat((8 * _star(H, W, 10, 10))[None], 3, 0)
+    noise = lambda: rng.normal(0, 0.01, (3, H, W))                       # noqa: E731
+    for role, k in (("Ha", 1.0), ("OIII", 0.5)):
+        _output(tmp_path / f"{role}_out", neb * k + star)
+        _split(tmp_path / f"{role}_split", neb * k + 0.001, star * k + noise())
+    ins = [{"role": r, "channel": "L", "pid": i, "dir": str(tmp_path / f"{r}_out"),
+            "stars_dir": str(tmp_path / f"{r}_split"), "wcs": ""} for i, r in ((1, "Ha"), (2, "OIII"))]
+    for mode, extra in (("palette", {}), ("channel", {"role": "Ha"})):
+        out = tmp_path / f"out_{mode}"
+        pr = _Project(tmp_path, {"fusion": out}, ["fusion"])
+        st = Fusion()
+        ctx = Context(pr, st, Journal(pr.logs), "cpu")
+        ins2 = [dict(i, pid=1) for i in ins]                               # one grid: no plate solution needed
+        st.run(ctx, FusionParams(palette="HOO", inputs=ins2, stars={"mode": mode, **extra}))
+        starless = np.load(out / "drz_full.npy")
+        stars = np.load(out / STARS_FILE)
+        assert starless[:, 10, 10].max() < 0.05 * starless.max()          # no star in the starless fusion
+        assert stars[:, 10, 10].min() > 0 and stars[:, 30, 45].max() == 0  # the star kept, the noise left out
+        assert json.loads((out / "drz_meta.json").read_text())["starless"]
+        if mode == "channel":
+            assert np.allclose(stars[0], stars[1])                        # neutral stars
+    s = np.zeros((20, 20), np.float32) + np.random.default_rng(1).normal(0, 1, (20, 20)).astype(np.float32)
+    s[10, 10] = 50
+    kept = star_support(s)
+    assert kept[10, 10] > 40 and np.count_nonzero(kept) < 40
+
+
+def test_a_starless_fusion_chain_ends_with_its_split_block(tmp_path, nights):
+    p = project(tmp_path / "p", nights, "per_session")
+    p.sessions[0].filter, p.sessions[1].filter = "Ha", "OIII"
+    p.workflow(1).sessions = [1]
+    o = p.add_workflow("OIII", FULL)
+    o.sessions = [2]
+    f = p.add_workflow("HOO", FULL)
+    f.source = {"fusion": {"palette": "HOO", "stars": {"mode": "channel", "role": "Ha"}, "weights": {"OIII": 0.5},
+                           "inputs": [{"pid": 1, "role": "Ha", "channel": "L"},
+                                      {"pid": o.id, "role": "OIII", "channel": "L"}]}}
+    project2.save(p)
+    q = project2.load(p.root)
+    k = Keys(q)
+    assert k.chain(f.id) == ["fusion", "render_simple", "star_removal"]
+    assert (1, "star_removal") in k.fusion_inputs(f.id)
+    ov = k.overrides(f.id, "fusion")
+    assert ov["stars"] == {"mode": "channel", "role": "Ha"} and ov["weights"] == {"OIII": 0.5}
+    assert ov["inputs"][0]["stars_dir"].endswith(k.key(1, "star_removal"))
+    before = k.key(f.id, "fusion")
+    q.workflow(f.id).source["fusion"]["weights"] = {"OIII": 0.6}
+    assert Keys(q).key(f.id, "fusion") != before
+    q.workflow(f.id).source["fusion"]["stars"] = {"mode": "workflow"}                   # no pid
+    with pytest.raises(ValueError):
+        q.validate()

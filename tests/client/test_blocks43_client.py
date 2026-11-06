@@ -167,7 +167,7 @@ def test_filters_make_one_workflow_each_and_a_fusion_in_the_composition_section(
     assert fn.handle and g.node_of(hoo, "post") is fn
     assert {id(n) for n in g.fusion_inputs[id(fn)]} == {id(g.leaves[ha.pid]), id(g.leaves[oiii.pid])}
     page.graph.rebuild()
-    assert page.graph.graph.node_of(hoo, "fusion").col == page.graph._cx["composition"]
+    assert page.graph.graph.node_of(hoo, "fusion").col == page.graph._cx["fusion"]          # before Combine
     page.select(index=m.paths.index(hoo), step="fusion")
     page.refresh()
     assert any(b.text() == "HOO" and b.isChecked() for b in page.panel.findChildren(QPushButton))
@@ -192,3 +192,38 @@ def test_an_already_stretched_image_workflow_goes_to_post(world):
     assert m.display_keys(v) == ["image", "etoiles"] or m.display_keys(v) == ["image", "etoiles", "post"]
     g = Graph(m)
     assert g.summary(g.node_of(v, "image")).endswith("stretched")
+
+
+def test_a_fusion_takes_its_stars_from_a_source_and_its_channels_split_them(world):
+    from PySide6.QtWidgets import QComboBox, QDoubleSpinBox
+    m, page = world["m"], world["page"]
+    m.set_session_filter(1, "Ha")
+    m.set_session_filter(2, "OIII")
+    d = page.new_workflow()
+    d.tabs.setCurrentIndex(d.tab_keys.index("mono"))
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "hoo"))
+    d.ok.click()
+    settle(world)
+    ha, oiii, hoo = m.paths[-3:]
+    assert hoo.source["fusion"]["stars"] == {"mode": "channel", "role": "Ha"}           # Ha: neutral stars
+    assert all(m.p.workflow(q.pid).options.get("stars") for q in (ha, oiii, hoo))      # each channel splits its stars
+    assert m.all_stages(hoo)[-1] == "star_removal"
+    g = Graph(m)
+    fn = g.node_of(hoo, "fusion")
+    assert g.node_of(hoo, "etoiles") is fn                                              # the starless and the stars
+    page.graph.rebuild()
+    page.select(index=m.paths.index(hoo), step="fusion")
+    page.refresh()
+    cb = next(c for c in page.panel.findChildren(QComboBox) if c.itemData(1) == {"mode": "palette"})
+    assert cb.itemData(cb.currentIndex()) == {"mode": "channel", "role": "Ha"}
+    cb.activated.emit(1)
+    settle(world)
+    assert m.view(hoo.pid).source["fusion"]["stars"] == {"mode": "palette"}
+    assert m.set_fusion_weight(m.view(hoo.pid), "OIII", 0.5) is True
+    assert m.view(hoo.pid).source["fusion"]["weights"] == {"OIII": 0.5}
+    assert m.set_fusion_weight(m.view(hoo.pid), "OIII", 1.0) is True                    # 1: as balanced, not stored
+    assert m.view(hoo.pid).source["fusion"]["weights"] == {}
+    page.refresh()
+    assert len([s for s in page.panel.findChildren(QDoubleSpinBox) if s.maximum() == 5.0]) >= 2
+    assert m.set_fusion_stars(m.view(hoo.pid), None) is True                            # with the channels again
+    assert "star_removal" not in m.all_stages(m.view(hoo.pid))

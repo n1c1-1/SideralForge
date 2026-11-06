@@ -280,6 +280,9 @@ class Project2:
             check_source(w.source, f"workflow {w.id}")
             if is_fusion(w) and any(i["pid"] not in wids or i["pid"] == w.id for i in w.source["fusion"]["inputs"]):
                 raise ValueError(f"workflow {w.id}: its fusion reads workflows the project does not have")
+            st = (w.source or {}).get("fusion", {}).get("stars") if is_fusion(w) else None
+            if st and st.get("mode") == "workflow" and (st["pid"] not in wids or st["pid"] == w.id):
+                raise ValueError(f"workflow {w.id}: its fusion's stars come from a workflow the project does not have")
             if w.sessions is not None and (not w.sessions or any(x not in sids for x in w.sessions)):
                 raise ValueError(f"workflow {w.id}: its sessions {w.sessions} are not sessions of the project")
         if self.current is not None and self.current not in wids:
@@ -347,6 +350,16 @@ def check_source(source: Any, where: str = "source") -> dict[str, Any] | None:
         if set(source) != {"fusion"} or not isinstance(f, dict) or f.get("palette") not in PALETTES:
             raise ValueError(f"{where}: a fusion is {{'fusion': {{'palette': one of {list(PALETTES)}, 'inputs': "
                              f"[...]}}}}, not {source!r}")
+        wg = f.get("weights")
+        if wg is not None and (not isinstance(wg, dict) or not all(
+                isinstance(k, str) and isinstance(v, (int, float)) and 0 <= v <= 5 for k, v in wg.items())):
+            raise ValueError(f"{where}: a fusion's weights are {{role: 0 to 5}}, not {wg!r}")
+        st = f.get("stars")
+        if st is not None and (not isinstance(st, dict) or st.get("mode") not in ("palette", "channel", "workflow")
+                               or (st["mode"] == "workflow" and not isinstance(st.get("pid"), int))
+                               or (st["mode"] == "channel" and not isinstance(st.get("role"), str))):
+            raise ValueError(f"{where}: a fusion's stars are {{'mode': 'palette' | 'channel' (with 'role') | 'workflow' "
+                             f"(with 'pid')}}, not {st!r}")
         ins = f.get("inputs")
         if not isinstance(ins, list) or not ins or not all(
                 isinstance(i, dict) and isinstance(i.get("pid"), int) and isinstance(i.get("role"), str)
