@@ -89,5 +89,12 @@
  "the old result is {0}": "l'ancien résultat est {0}",
  "the earlier layer belongs to another stack": "la couche antérieure appartient à un autre empilement",
  "TB": "To",
- "both workflows": "les 2 workflows"
+ "both workflows": "les 2 workflows",
+ "H-alpha survey offline": "Relevé H-alpha hors ligne",
+ "The survey is read tile by tile and each tile is kept: a field already seen works offline. Download fetches the tiles of the recent projects' solved fields now.": "Le relevé est lu tuile par tuile et chaque tuile est gardée : un champ déjà vu fonctionne hors ligne. Télécharger récupère maintenant les tuiles des champs résolus des projets récents.",
+ "Download for offline use": "Télécharger pour l'usage hors ligne",
+ "Not downloaded: {why}": "Non téléchargé : {why}",
+ "{fields} fields, {tiles} tiles in the cache": "{fields} champs, {tiles} tuiles dans le cache",
+ "not read: {why}": "non lus : {why}",
+ "Downloading the tiles of {n} projects…": "Téléchargement des tuiles de {n} projets…"
 }

@@ -368,6 +368,55 @@ class SettingsDialog(QDialog):
                                                    ("astrometry.net (local)", "astrometry.net", True)],
                                                   prefs.get("solver"), "solver"))
         self.path_row(v, _("Survey cache (H-alpha)"), "survey_cache", new=True)
+        self.survey_offline(v)
+
+    def survey_offline(self, v):
+        """Issue #39: the H-alpha survey's tiles of the recent projects' fields fetched ahead, so that their Surveys
+        stage (and any new stack of the same fields) works offline. Off the GUI thread; said when done."""
+        v.addWidget(label(_("H-alpha survey offline"), "h2"))
+        v.addWidget(label(_("The survey is read tile by tile and each tile is kept: a field already seen works "
+                            "offline. Download fetches the tiles of the recent projects' solved fields now."),
+                          "small", wrap=True))
+        r = QHBoxLayout()
+        b = QPushButton(_("Download for offline use"))
+        st = label("", "small", wrap=True)
+        r.addWidget(b)
+        r.addWidget(st, 1)
+        v.addLayout(r)
+        state = {}
+
+        def done():
+            if "result" not in state:
+                return
+            t.stop()
+            b.setEnabled(True)
+            res = state["result"]
+            if isinstance(res, Exception):
+                st.setText(_("Not downloaded: {why}").format(why=str(res)[:200]))
+                return
+            st.setText(_("{fields} fields, {tiles} tiles in the cache").format(fields=res["fields"], tiles=res["tiles"])
+                       + (("; " + _("not read: {why}").format(why="; ".join(res["failed"][:3]))) if res["failed"]
+                          else ""))
+
+        def go():
+            import threading
+
+            from ..stages.surveys import prefetch_field
+            roots = [r["path"] for r in prefs.recent()]
+            b.setEnabled(False)
+            st.setText(_("Downloading the tiles of {n} projects…").format(n=len(roots)))
+            state.clear()
+
+            def work():
+                try:
+                    state["result"] = prefetch_field(roots)
+                except Exception as e:  # noqa: BLE001 - said in the dialog
+                    state["result"] = e
+            threading.Thread(target=work, daemon=True).start()
+            t.start(500)
+        t = QTimer(b)
+        t.timeout.connect(done)
+        b.clicked.connect(go)
 
     def offline_extracts(self, v):
         """The Gaia DR3 extracts the engine reads offline: their folder, what is installed, the two downloads (run
