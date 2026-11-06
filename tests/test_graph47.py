@@ -3,6 +3,7 @@ the placement rules (what each block takes and gives, the blocks a block needs f
 image blocks get their own entries and keys."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -157,21 +158,29 @@ def test_repeated_and_reordered_image_blocks_get_their_own_entries_and_keys(tmp_
     assert Keys(p).key_params(w.id, "calibrate").get("apply_masters") is False
 
 
-def test_two_filters_with_frames_of_the_same_names_and_sizes_have_their_own_keys(tmp_path):
-    """Capture programs often name each filter's frames alike ("Light_001.fits", same size): the session's filter is
-    in the key, so H-alpha and O III are not taken for the same frames; a colour camera's sessions keep their keys."""
+def test_two_nights_with_frames_of_the_same_names_sizes_and_dates_have_their_own_keys(tmp_path):
+    """Issue #56: capture programs number every night's frames alike ("Light_001.fits", the same size; a camera whose
+    clock was reset gives them the same dates too). A frame of a session after the first carries its session's id:
+    the two nights are not taken for the same frames. The first night keeps its key: a project of one session is
+    unchanged, and adding a night does not make the first one Outdated."""
     raw = tmp_path / "raw"
-    ha, oiii = (frames(raw / f, {"Light_001.fits": 2880, "Light_002.fits": 2880}) for f in ("ha", "oiii"))
-    p = project2.create(tmp_path / "p", "P", Target(name="NGC 7293"))
+    n1, n2 = (frames(raw / f / "lights", {"Light_001.fits": 2880, "Light_002.fits": 2880}) for f in ("n1", "n2"))
+    for f in list(n1.iterdir()) + list(n2.iterdir()):
+        os.utime(f, (1388534400, 1388534400))                    # 1 January 2014, as a dead clock writes it
+    alone = project2.create(tmp_path / "a", "A", Target(name="M 31"))
+    alone.sessions.append(Session(1, "night 1", lights=[str(n1)]))
+    alone.add_workflow("W", TEMPLATES["Classic stack"])
+    before = Keys(alone).key(1, "stack")
+    p = project2.create(tmp_path / "p", "P", Target(name="M 31"))
     p.stack_mode = "per_session"
-    p.sessions += [Session(1, "Ha", lights=[str(ha)], filter="Ha"), Session(2, "OIII", lights=[str(oiii)],
-                                                                            filter="OIII")]
-    a = p.add_workflow("Ha", TEMPLATES["Classic stack"])
+    p.sessions += [Session(1, "night 1", lights=[str(n1)]), Session(2, "night 2", lights=[str(n2)])]
+    a = p.add_workflow("Night 1", TEMPLATES["Classic stack"])
     a.sessions = [1]
-    b = p.add_workflow("OIII", TEMPLATES["Classic stack"])
+    b = p.add_workflow("Night 2", TEMPLATES["Classic stack"])
     b.sessions = [2]
     k = Keys(p)
-    assert k.key(a.id, "stack") != k.key(b.id, "stack")
-    p.sessions[0].filter = p.sessions[1].filter = ""
-    k = Keys(p)
-    assert k.key(a.id, "stack") == k.key(b.id, "stack")          # no filter: names and sizes, as before
+    assert k.key(a.id, "stack") != k.key(b.id, "stack")          # two nights, two stacks
+    assert k.key(a.id, "stack") == before                         # the first night keeps its key
+    both = p.add_workflow("Both", TEMPLATES["Classic stack"])       # the two nights together, calibrated each alone
+    assert Keys(p).key(both.id, "calibrate@1") == Keys(alone).key(1, "calibrate")
+    assert Keys(p).key(both.id, "calibrate@2") != Keys(p).key(both.id, "calibrate@1")

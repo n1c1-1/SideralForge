@@ -221,19 +221,23 @@ class InputScan:
     def frames(self, project: Project2, sid: int | None = None, sessions: list | None = None) -> list[list]:
         """inventory's project part: [kind, file name, size] of each frame of the union of the sessions (``sid``: of
         that session only), per kind, in the order the inventory reads them (list_frames: by full path). Names and
-        sizes only, so copied raws keep the key; ordered, because the half-stack blocks follow the order."""
+        sizes, so copied raws keep the key; ordered, because the half-stack blocks follow the order.
+
+        A frame of a session after the project's first carries that session's id (issue #56): capture programs
+        number every night's frames alike ("Light_001.fits", the same size, even the same dates on a camera whose
+        clock was reset), so that two nights' frames would be taken for the same ones. The first session's frames
+        carry none: a project of one session, and the first night of several, keep their keys."""
         out: list[list] = []
+        first = min((s.id for s in project.sessions), default=None)
         sessions = (sessions if sessions is not None else project.sessions) if sid is None else [project.session(sid)]
         for kind in KINDS:
             sizes: dict[Path, int] = {}
-            flt: dict[Path, str] = {}
+            tag: dict[Path, int | None] = {}
             for s in sessions:
                 for f, n in self.session_frames(project, s)[kind]:
                     sizes.setdefault(f, n)
-                    flt.setdefault(f, getattr(s, "filter", "") or "")
-            # a session's filter, when it has one (#47): two filters' folders often hold frames of the same names and
-            # sizes ("Light_001.fits"); a colour camera's sessions (no filter) keep their keys
-            out += [[kind, f.name, sizes[f]] + ([flt[f]] if flt[f] else []) for f in sorted(sizes)]
+                    tag.setdefault(f, None if s.id == first else s.id)
+            out += [[kind, f.name, sizes[f]] + ([tag[f]] if tag[f] is not None else []) for f in sorted(sizes)]
         return out
 
     def excluded_paths(self, project: Project2) -> list[str]:
