@@ -64,6 +64,7 @@ class Target:
     ra: float | None = None          # degrees, optional hint for astrometry
     dec: float | None = None
     focal_mm: float | None = None    # effective focal length, optional (makes the astrometry immediate)
+    pixel_um: float | None = None    # the camera's pixel size, optional (with the focal length: the image scale)
 
 
 @dataclass

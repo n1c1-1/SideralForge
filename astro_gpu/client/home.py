@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 from ..core import project2
 from . import prefs
 from .i18n import _, hours_text, maybe, plural
-from .widgets import ACCENT, ElidedLabel, label
+from .widgets import ACCENT, WARN, ElidedLabel, label
 
 TW, TH = 260, 150
 CARD_W, GAP = TW + 20, 16
@@ -602,13 +602,65 @@ class NewProjectDialog(QDialog):
         bb.addWidget(c)
         bb.addWidget(self.ok)
         v.addLayout(bb)
+        # issue #38: the target checked against the catalogues as it is entered (offline: nothing waits on the
+        # network), and the capture data, all optional
+        self.found = label("", "small", wrap=True)
+        self.found.setContentsMargins(width + 6, 0, 0, 0)
+        v.insertWidget(v.indexOf(self.exists), self.found)
+        self._radec = None
+        cap = QHBoxLayout()
+        lb = label(_("Capture"), "dim")
+        lb.setFixedWidth(width)
+        cap.addWidget(lb)
+        self.focal = QLineEdit()
+        self.focal.setPlaceholderText(_("focal length, mm (optional)"))
+        self.pixel = QLineEdit()
+        self.pixel.setPlaceholderText(_("pixel size, µm (optional)"))
+        for e in (self.focal, self.pixel):
+            cap.addWidget(e, 1)
+        v.insertLayout(v.indexOf(self.exists), cap)
+        self.target.editingFinished.connect(self._check_target)
         self.name.textChanged.connect(self._update)
         self.name.setText(name)
         self.target.setText(target)
         self._update()
+        if target:
+            self._check_target()
 
     def folder(self) -> Path:
         return self.workspace / folder_name(self.name.text())
+
+    def _check_target(self):
+        """The target looked up in the catalogues shipped with the application and the names found before: what it
+        is found as, or that it is unknown here (then the network is asked when the field is solved, else the stars
+        alone solve it)."""
+        from ..stages.astrometry import find_offline
+        t = self.target.text().strip()
+        self._radec = find_offline(t) if t else None
+        if not t:
+            self.found.setText("")
+        elif self._radec is not None:
+            ra, dec = self._radec
+            self.found.setText(_("Found: RA {ra}°, Dec {dec}°").format(ra=f"{ra:.3f}", dec=f"{dec:+.3f}"))
+            self.found.setStyleSheet("color: #5fbf7f;")
+        else:
+            self.found.setText(_("Not in the catalogues here: it will be looked up online, else the field is solved "
+                                 "from its stars alone"))
+            self.found.setStyleSheet(f"color: {WARN};")
+
+    def details(self) -> dict:
+        """What New project gives the project's target: its coordinates when found, the capture data entered."""
+        def num(e):
+            try:
+                v = float(e.text().replace(",", ".").strip())
+                return v if v > 0 else None
+            except ValueError:
+                return None
+        self._check_target()
+        out = {"focal_mm": num(self.focal), "pixel_um": num(self.pixel)}
+        if self._radec is not None:
+            out["ra"], out["dec"] = self._radec
+        return {k: v for k, v in out.items() if v is not None}
 
     def _browse(self):
         """The location chosen (issue #31: the project decides where it lives, not a workspace)."""
@@ -630,7 +682,7 @@ class NewProjectDialog(QDialog):
 
 class HomeView(QWidget):
     openProject = Signal(str)                        # project folder
-    createProject = Signal(str, str, str)            # folder, name, target
+    createProject = Signal(str, str, str, object)    # folder, name, target, its details (#38: ra, dec, focal...)
     importFolder = Signal()
 
     def __init__(self, worker, can_import: bool = False, last=None, parent=None):
@@ -807,11 +859,11 @@ class HomeView(QWidget):
             prefs.set("workspace", d)
             self.rescan()
 
-    def ask_new_project(self, name: str = "", target: str = "") -> tuple[str, str, str] | None:
-        """The New project dialog: (folder, name, target), or None."""
+    def ask_new_project(self, name: str = "", target: str = "") -> tuple[str, str, str, dict] | None:
+        """The New project dialog: (folder, name, target, details: ra, dec, focal_mm, pixel_um when known), or None."""
         d = NewProjectDialog(prefs.last_folder(), name, target, self.window())
         if d.exec():
-            return d.folder().as_posix(), d.name.text().strip(), d.target.text().strip()
+            return d.folder().as_posix(), d.name.text().strip(), d.target.text().strip(), d.details()
         return None
 
     def new_project(self):

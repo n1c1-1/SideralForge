@@ -49,3 +49,24 @@ def test_new_project_chooses_its_location(env, monkeypatch):
     d._browse()
     assert d.folder() == elsewhere / "NGC_7000" or d.folder().parent == elsewhere
     assert prefs.last_folder() == elsewhere.as_posix()
+
+
+def test_new_project_checks_its_target_and_takes_the_capture_data(env):
+    """Issue #38: the target is looked up offline as it is entered (found: its coordinates go with the project), the
+    capture data are optional; the astrometry never takes the project's name for a target."""
+    QApplication.instance() or QApplication([])
+    from astro_gpu.client.home import NewProjectDialog
+    d = NewProjectDialog(prefs.last_folder(), "test", "NGC 7000")
+    assert d.found.text().startswith("Found: RA 314.8")
+    d.focal.setText("135")
+    d.pixel.setText("5,36")
+    det = d.details()
+    assert abs(det["ra"] - 314.82) < 0.05 and det["focal_mm"] == 135.0 and det["pixel_um"] == 5.36
+    d.target.setText("test")
+    d._check_target()
+    assert d.found.text().startswith("Not in the catalogues here") and "ra" not in d.details()
+    import inspect as _inspect
+
+    from astro_gpu.stages import astrometry
+    src = _inspect.getsource(astrometry.Astrometry.auto) if hasattr(astrometry, "Astrometry") else ""
+    assert "config.name" not in src

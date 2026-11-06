@@ -66,10 +66,14 @@ class Astrometry(Stage):
         elif ctx.metric_of("inventory", "pointing_ra") is not None:
             a["ra"] = Auto(ctx.metric_of("inventory", "pointing_ra"), "telescope pointing in the FITS headers")
             a["dec"] = Auto(ctx.metric_of("inventory", "pointing_dec"), "telescope pointing in the FITS headers")
-        name = tgt.name or ctx.metric_of("inventory", "object") or ctx.project.config.name
+        # the target entered, else the object the FITS headers name; never the project's name (issue #38: a
+        # project named "test" was looked up in the catalogues and on the network)
+        name = tgt.name or ctx.metric_of("inventory", "object")
         if name:
             a["target"] = Auto(name, "project / FITS object name")
         pix, foc = ctx.metric_of("inventory", "pixel_um"), ctx.metric_of("inventory", "focal_mm")
+        if getattr(tgt, "pixel_um", None) and not pix:
+            a["pixel_um"] = Auto(tgt.pixel_um, "entered when the project was created")
         if pix:
             a["pixel_um"] = Auto(pix, "camera {camera}", {"camera": ctx.metric_of('inventory', 'camera')})
         if foc:
@@ -461,6 +465,28 @@ def _local_names() -> dict[str, tuple[float, float]]:
     for n, (ra, dec, _d) in index.items():
         out.setdefault(_norm(n), (ra, dec))
     return out
+
+
+def find_offline(name: str) -> tuple[float, float] | None:
+    """(ra, dec) of a named object without the network: the names resolved before (the cache) and the catalogues
+    shipped with the package; None when neither knows it (New project checks a target with it, issue #38)."""
+    from ..core import skycache
+    if not name or not name.strip():
+        return None
+    p = skycache.find("names.json")
+    if p is not None:
+        try:
+            known = json.loads(p.read_text(encoding="utf-8"))
+            if _norm(name) in known:
+                return tuple(float(v) for v in known[_norm(name)][:2])
+        except (OSError, ValueError):
+            pass
+    local = _local_names()
+    for c in dict.fromkeys([name, name.replace("_", " ")]):
+        if _norm(c) in local:
+            ra, dec = local[_norm(c)]
+            return float(ra), float(dec)
+    return None
 
 
 def resolve_name(name: str, log=None) -> tuple[float, float]:

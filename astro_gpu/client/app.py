@@ -312,10 +312,13 @@ class Main(QMainWindow):
         self.show_home()
         self.home.open_other()
 
-    def create_project(self, root: str, name: str, target: str) -> bool:
-        """A new v2 project in ``root``, opened. Its calibrated frames go to <cache folder>/<project folder>."""
+    def create_project(self, root: str, name: str, target: str, details: dict | None = None) -> bool:
+        """A new v2 project in ``root``, opened. Its calibrated frames go to <cache folder>/<project folder>.
+        ``details``: the target's coordinates and the capture data New project gives (issue #38)."""
         try:
-            p = project2.create(root, name, Target(name=target))
+            d = details or {}
+            p = project2.create(root, name, Target(name=target, ra=d.get("ra"), dec=d.get("dec"),
+                                                   focal_mm=d.get("focal_mm"), pixel_um=d.get("pixel_um")))
             cache = prefs.get("cache_dir")
             if cache:
                 p.scratch_dir = (Path(cache) / Path(root).name).as_posix()
