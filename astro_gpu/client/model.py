@@ -613,7 +613,7 @@ class ProjectModel(QObject):
         made = []
         for q in self.paths:
             stars = q.opts.get("etoiles") == "retirer"
-            if q.pid == skip and stars:
+            if q.pid == skip and stars or self.feeds_fusion(q):     # a fusion's channel: the fusion is the layer
                 continue
             made.append(new_workflow_layer(q.pid, q.name + (" · " + POST_PART_NAMES["combined"] if stars else ""),
                                            False, "combined" if stars else None))
@@ -861,20 +861,37 @@ class ProjectModel(QObject):
         return next((i for i, n in enumerate(self.graph(p)) if node_key(n) == key), None)
 
     def palette_reason(self, p: WorkflowView | None, block: str) -> str:
-        """Why the palette greys a block for this workflow (translated), "" when it can be placed."""
+        """Why the palette greys a block for this workflow (translated), "" when it can be placed. Without a
+        workflow, a project with sessions starts one from the frames (the block is checked on an empty graph)."""
         if p is None:
-            return _("choose a workflow first")
+            if not self.p.sessions:
+                return _("place a Session or an Image first")
+            e = wfl.palette_problem([], "frames", block)
+            return refused_text(e) if e is not None else ""
+        if block == "color" and self.is_mono(p):
+            return _(wfl.MONO_NO_COLOUR)
+        if block == "calibration" and p.source is None and self.separate_sessions() and \
+                any(n["block"] == "calibration" for n in self.graph(p)):
+            return _("each session has its own Calibration, beside its Session block")
         e = wfl.palette_problem(self.graph(p), self.source_kind(p), block)
         return refused_text(e) if e is not None else ""
 
+    def feeds_fusion(self, p) -> bool:
+        """Whether a workflow is a channel of a fusion (issue #47: its output is not a layer of Post by itself)."""
+        return any(is_fusion_view(q) and p.pid in [i["pid"] for i in q.source["fusion"]["inputs"]] for q in self.paths)
+
     def place_indices(self, p: WorkflowView, block: str) -> list[int]:
         """Where a block can be inserted in a workflow's graph."""
+        if block == "color" and self.is_mono(p):
+            return []
         return wfl.places(self.graph(p), self.source_kind(p), block)
 
     def insert_block(self, p: WorkflowView, block: str, index: int | None = None, method: str | None = None) -> str:
         """Place a block in a workflow's graph (``index``: where; None: its usual place). Returns the new node's
         view key; raises ValueError (translated) when it cannot go there."""
         g, src = self.graph(p), self.source_kind(p)
+        if block == "color" and self.is_mono(p):
+            raise ValueError(_(wfl.MONO_NO_COLOUR))
         if index is None:
             index = wfl.insert_place(g, src, block)
             if index is None:

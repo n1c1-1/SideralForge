@@ -982,8 +982,15 @@ class GraphView(QGraphicsView):
             m.addAction(_("Add a session…")).triggered.connect(lambda: self.newSession.emit())
             m.exec(pos)
             return
+        why_off = self.s.can_switch_off(node.paths[0], node.key) if node.paths and node.sid is None and \
+            node.key not in ("sources", "final", "composition", "fusion", "image", "session") else ""
+        if why_off and not node.cut:                      # issue #47: said, not hidden
+            if not m.isEmpty():
+                m.addSeparator()
+            a = m.addAction(_("Switch off") + "  —  " + why_off)
+            a.setEnabled(False)
         if node.sid is None and node.paths and node.key not in ("sources", "final", "composition", "fusion", "image") \
-                and (node.cut or not self.s.can_switch_off(node.paths[0], node.key)):
+                and (node.cut or not why_off):
             if not m.isEmpty():
                 m.addSeparator()
             word = _("Switch on") if node.cut else _("Switch off")
@@ -1430,6 +1437,8 @@ class GraphPage(QWidget):
         s = self.s
         if not s.ready:
             return _("the project is being read")
+        if p is None and s.p.sessions and block not in ("session", "image", "fusion", "composition"):
+            return s.palette_reason(None, block)          # sessions without a workflow: the block starts one
         if block in ("session", "image"):
             return ""
         if block == "fusion":
@@ -1480,6 +1489,8 @@ class GraphPage(QWidget):
         """Place a block in a workflow (issue #47): at ``index`` of its graph, or at its usual place."""
         s = self.s
         p = s.view(pid) if pid is not None else s.path
+        if p is None and s.p.sessions:                    # sessions, no workflow yet: the block starts one
+            p = s.ensure_frames_workflow() or next((q for q in s.paths if q.source is None), None)
         if p is None:
             self.toast(_("Place a Session or an Image first"))
             return
@@ -1490,6 +1501,8 @@ class GraphPage(QWidget):
             return
         s.log('{block} added to "{name}"', block=block_title(p, key), name=p.name)
         q = s.view(p.pid)
+        if key == "calibration" and q.source is None and s.separate_sessions():
+            key = f"calibration@{s.separate_sessions()[0]}"      # drawn beside each session
         s.select(index=s.paths.index(q), step=key)
         node = Graph(s).node_of(q, key)
         s.scope = [x.pid for x in node.paths] if node is not None else [p.pid]
@@ -1544,6 +1557,11 @@ class GraphPage(QWidget):
             self.toast(_("Place a Session or an Image from the palette to start"))
             return
         from .gallery import template_blocks, template_source
+        empty = [q for q in s.paths if q.source is None and s.p.workflow(q.pid).blocks == []]
+        if empty and not t.get("copy"):                    # an empty workflow (#47): the template takes its place
+            with s.batch():
+                for q in empty:
+                    s.remove_path(s.paths.index(q))
         if t.get("copy") is not None:                      # a copy keeps its options, settings and exit
             p = s.duplicate(t["copy"], name)
         elif t.get("kind") in ("filters", "fusion", "dualband"):
@@ -1657,6 +1675,7 @@ class GraphPage(QWidget):
             self.toast(_("Delete the workflow to take this block out"))
             return
         key = node.key
+        gone = False
         with s.batch():
             for p in [q for q in node.paths if pids is None or q.pid in pids]:
                 try:
@@ -1665,8 +1684,10 @@ class GraphPage(QWidget):
                     self.toast(_('{block} cannot be removed from "{name}": {why}').format(
                         block=block_title(p, key), name=p.name, why=str(e)))
                     continue
+                gone = True
                 s.log('{block} removed from "{name}"', block=block_title(p, key), name=p.name)
-        s.select(step=node.parent.key if node.parent is not None else "sources")
+        if gone:                                          # refused: the block stays selected
+            s.select(step=node.parent.key if node.parent is not None else "sources")
 
     def rename(self, pid, name):
         self.s.rename(pid, name)
@@ -1694,24 +1715,17 @@ class GraphPage(QWidget):
     def save_as_template(self, p):
         """Save as template… (issue #47): the workflow's graph, under a name, in a tab of the gallery, kept in the
         preferences (Export… in the gallery shares it as a file)."""
-        from PySide6.QtWidgets import QInputDialog
-
-        from .gallery import TABS, make_template, save_user_template
+        from .gallery import TABS, make_template, save_user_template, template_dialog
         s = self.s
         src = s.source_kind(p)
         if src == "fusion":
             self.toast(_("A fusion combines the project's own workflows: it cannot be a template"))
             return
-        name = ask_name(self, _("Save as template"), p.name)
-        if not name:
+        got = template_dialog(self, p.name)
+        if got is None:
             return
-        tabs = [(k, _(t)) for k, t in TABS if k != "copy"]
-        mine = [t for k, t in tabs].index(_(dict(TABS)["mine"]))
-        what, ok = QInputDialog.getItem(self, _("Save as template"), _("Gallery tab"), [t for _k, t in tabs], mine,
-                                        False)
-        if not ok:
-            return
-        tab = next(k for k, t in tabs if t == what)
+        name, tab = got
+        what = _(dict(TABS)[tab])
         t = save_user_template(make_template(name, tab, _("Made from the workflow “{name}”.").format(name=p.name),
                                              src, s.graph(p)))
         s.log('Template "{name}" saved', name=t["name"])

@@ -182,6 +182,8 @@ def node_title(s, n) -> str:
     block named after its one session (or "All nights")."""
     if n.key == "session":
         return s.session(n.sid).name or _("Session {n}").format(n=n.sid)
+    if n.key == "post" and not n.handle:              # issue #47: the block's name; the workflow's under it
+        return _("Output")
     if n.paths and "~" in n.key or (n.paths and n.key in ("fond", "couleur", "debruitage")):
         keys = chain(n.paths[0])                          # issue #47: a block placed twice, numbered left to right
         same = [k for k in keys if kbase(k) == kbase(n.key)]
@@ -347,8 +349,9 @@ class Graph:
         layers = project.post_layers() if hasattr(project, "post_layers") else []
         have = {lay.get("pid") for lay in layers if lay.get("kind") == "workflow"}
         from .model import POST_PART_NAMES
+        feeds = getattr(project, "feeds_fusion", None)
         for p in project.paths:                       # the layer Post gives a workflow it does not have yet
-            if p.pid not in have:
+            if p.pid not in have and not (feeds is not None and feeds(p)):     # a fusion's channel: not by itself
                 stars = p.opts.get("etoiles") == "retirer" and self.node_of(p, "etoiles") is not None
                 layers.insert(0, {"kind": "workflow", "pid": p.pid, "part": "combined" if stars else None, "id": None,
                                   "name": p.name + (" · " + POST_PART_NAMES["combined"] if stars else "")})
@@ -512,7 +515,8 @@ class Graph:
                 return _("from {block}").format(block=block_title(p, p.end))
             # with Stars, the image goes to the Stars block (and to Post only when a layer shows it as it is)
             # with Stars its images go to Post from the Stars block: this block is only the workflow (issue #8)
-            return _("to Post") if p.pid in self.to_post or self.node_of(p, "etoiles") is None else _("workflow")
+            return p.name + " · " + (_("to Post") if p.pid in self.to_post or self.node_of(p, "etoiles") is None
+                                     else _("workflow"))
         if k == "composition":
             lay = self.s.post_layer(node.lid) if node.lid is not None and hasattr(self.s, "post_layer") else None
             return _("stars in {mode}").format(mode=_((lay or {}).get("blend") or "Screen"))

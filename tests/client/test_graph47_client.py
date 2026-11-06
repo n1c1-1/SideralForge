@@ -97,7 +97,8 @@ def test_a_blank_page_starts_from_a_session_and_builds_block_by_block(qapp, tmp_
     try:
         assert not m.paths
         cards = {c.block: c for c in page.findChildren(PaletteCard)}
-        assert not cards["session"].reason and cards["calibration"].reason        # place a Session first
+        assert not cards["session"].reason and not cards["calibration"].reason   # sessions: a block starts one
+        assert cards["gradient"].reason                                           # no stack yet
         page.addSession.connect(lambda: None)                      # the app's dialog: the session is there already
         page.palette_action("session")
         settle(w, page)
@@ -163,6 +164,61 @@ def test_a_filters_template_on_a_new_project_makes_its_empty_sessions(qapp, tmp_
         assert sorted(s.filter for s in m.p.sessions if s.filter) == ["Ha", "OIII"]
         assert [q.name for q in m.paths][-1] == "HOO" and all("couleur" not in m.display_keys(q)
                                                                for q in m.paths if m.is_mono(q))
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_what_the_play_test_found_stays_fixed(qapp, tmp_path, monkeypatch):
+    """The play-test of issue #47: an empty workflow from sessions, a template that takes its place, no Color in
+    monochrome, a refused delete keeps the selection, a fusion's channels are not Post layers by themselves, no
+    duration for the blank page."""
+    w, m, page = open_page(tmp_path, monkeypatch, workflows=())
+    try:
+        page.place_block("calibration")                            # sessions, no workflow: the block starts one
+        settle(w, page)
+        assert len(m.paths) == 1 and [n["block"] for n in m.p.workflows[0].blocks] == ["calibration"]
+        d = page.new_workflow()
+        assert d.choice["key"] == "full"
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "blank"))
+        assert d.duration.text() == ""                             # no duration for an empty page
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "classic"))
+        page.make_workflow(d)                                     # an empty-ish workflow is kept: it has a block
+        settle(w, page)
+        assert len(m.paths) == 2
+        # a refused delete keeps the block selected
+        q = m.paths[-1]
+        page.select(index=m.paths.index(q), step="empilement")
+        toasts = []
+        page.toasted.connect(toasts.append)
+        page.remove_tool(Graph(m).node_of(q, "empilement"), None)
+        assert toasts and m.sel_step == "empilement"
+        # no Color on monochrome frames
+        m.set_session_filter(1, "Ha")
+        settle(w, page)
+        ha = m.paths[0]
+        assert m.palette_reason(ha, "color").startswith("a monochrome image") and m.place_indices(ha, "color") == []
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_template_takes_the_place_of_an_empty_workflow_and_channels_are_not_post_layers(qapp, tmp_path, monkeypatch):
+    w, m, page = open_page(tmp_path, monkeypatch, workflows=())
+    try:
+        assert m.ensure_frames_workflow() is not None and m.p.workflows[0].blocks == []
+        d = page.new_workflow(tab="mono")
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "hoo"))
+        page.make_workflow(d)
+        settle(w, page)
+        assert not any(x.blocks == [] for x in m.p.workflows)     # the empty workflow made room
+        hoo = m.paths[-1]
+        g = Graph(m)
+        assert [p.pid for p in m.paths if m.feeds_fusion(p)] and not any(
+            pid for _n, pid in g.post_layers if pid is not None and m.feeds_fusion(m.view(pid)))
+        assert any(pid == hoo.pid for _n, pid in g.post_layers)
     finally:
         page.close()
         m.close(save=False)

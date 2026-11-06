@@ -330,5 +330,15 @@
   "Switch this block off (D): the data passes through it; its settings are kept": "Désactiver ce bloc (D) : les données le traversent ; ses réglages sont gardés",
   "Keep this workflow's graph as a template of the gallery": "Garder le graphe de ce workflow comme modèle de la galerie",
   "Switched off: this block does not change the data, which passes through to the next block. Its settings are kept.": "Désactivé : ce bloc ne change pas les données, qui passent au bloc suivant. Ses réglages sont gardés.",
-  "Switch this block on": "Réactiver ce bloc"
+  "Switch this block on": "Réactiver ce bloc",
+  "each session has its own Calibration, beside its Session block": "chaque session a sa propre Calibration, à côté de son bloc Session",
+  "{block} turns {takes} into {gives}: switched off, the next block would get the wrong data": "{block} transforme {takes} en {gives} : désactivé, le bloc suivant recevrait de mauvaises données",
+  "An empty page: build the workflow yourself from the palette on the left of the graph. Start with a Session (a night of frames) or an Image; each block then goes where it can, and the blocks that cannot go yet say why.": "Une page vierge : construisez le workflow vous-même depuis la palette à gauche du graphe. Commencez par une Session (une nuit de poses) ou une Image ; chaque bloc se pose ensuite là où il peut, et les blocs qui ne peuvent pas encore se poser disent pourquoi.",
+  "Delete the template “{name}”? It cannot be undone.": "Supprimer le modèle « {name} » ? Cela ne peut pas être annulé.",
+  "Save": "Enregistrer",
+  "Cancel": "Annuler",
+  "Name": "Nom",
+  "No frames yet: add the lights in the Session blocks": "Pas encore de poses : ajoutez les brutes dans les blocs Session",
+  "no frames yet: add the lights in the Session blocks": "pas encore de poses : ajoutez les brutes dans les blocs Session",
+  "Output": "Sortie"
 }

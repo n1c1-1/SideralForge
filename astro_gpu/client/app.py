@@ -751,9 +751,11 @@ class Main(QMainWindow):
             self.bt_run.setEnabled(True)
             self.bt_run.setToolTip(_("Show the run"))
         else:
-            self.bt_run.setText(_("Run") + (f"  ·  {duration_text(cost.seconds, cost.measured)}" if todo else ""))
+            self.bt_run.setText(_("Run") + (f"  ·  {duration_text(cost.seconds, cost.measured)}"
+                                            if todo and frames else ""))
             self.bt_run.setEnabled(frames and todo)
-            self.bt_run.setToolTip("" if todo else (_("No frames yet") if not frames else
+            self.bt_run.setToolTip(_("No frames yet: add the lights in the Session blocks") if not frames else
+                                   "" if todo else (_("No frames yet") if not frames else
                                                     _("Nothing to compute: all up to date.") if cost is not None
                                                     else ""))
         self.a_run.setEnabled(frames and (todo or running))
@@ -765,6 +767,8 @@ class Main(QMainWindow):
                 line += "  ·  " + _("cannot be read")
             elif not s.ready:
                 line += "  ·  " + _("reading the project…")
+            elif not frames:                              # no estimate without frames (issue #47)
+                line += "  ·  " + _("no frames yet: add the lights in the Session blocks")
             elif todo:
                 line += "  ·  " + _("to run: {t}").format(t=duration_text(cost.seconds, cost.measured))
             elif cost is not None:

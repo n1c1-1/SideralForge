@@ -88,7 +88,7 @@ def test_a_stars_workflow_comes_as_its_stars_and_background_block_and_the_others
     st = g.node_of(full, "etoiles")
     assert g.node_of(full, "post") is st and st.handle and all(n.key != "post" or n.paths != [full] for n in g.nodes)
     assert g.summary(st).startswith("Full · ") and g.leaves[full.pid] is st
-    assert g.summary(g.node_of(classic, "post")) == "to Post"
+    assert g.summary(g.node_of(classic, "post")) == "Classic stack · to Post"          # #47: titled Output
     assert g.summary(g.compositions[0]) == "stars in Screen"
 
 
@@ -165,7 +165,7 @@ def test_the_graph_has_a_block_per_stars_and_background_layer_and_sends_the_othe
     assert g.state(g.compositions[0]) == g.state(stars)                  # computed in Post from the Stars block's images
     model.add_post_layer(full.pid, None)                                    # its Output image as a layer
     g = Graph(model)
-    assert full.pid in g.to_post and g.summary(g.node_of(full, "post")) == "to Post"
+    assert full.pid in g.to_post and g.summary(g.node_of(full, "post")) == "Full · to Post"
 
 
 def test_an_image_layer_counts_in_the_post_block_without_a_workflow(model):

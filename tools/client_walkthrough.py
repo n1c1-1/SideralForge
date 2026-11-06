@@ -439,7 +439,9 @@ class Walk:
         g = getattr(w.graph, "_gallery", None)            # a new project opens on the template gallery (#43)
         if g is not None and g.isVisible():
             self.shot("gallery_new_project", g)
-            g.reject()
+            # issue #47: the template is chosen before the frames (an import no longer makes a workflow of its own)
+            g.pick(next(c.t for c in g.cards if c.t["key"] == "full"))
+            g.ok.click()
             self.settle()
         self.shot("graph_new_project")
         from astro_gpu.client.services.inspect import service_of

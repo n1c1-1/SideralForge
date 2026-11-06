@@ -527,7 +527,7 @@ WHY_AFTER_OUTPUT = "only Split stars & background comes after the Output block"
 WHY_OUTPUT_LAST = "the Output block ends the image blocks"
 WHY_REMOVE_NEEDED = "{other} needs it: remove {other} first"
 WHY_REMOVE_BRIDGE = "the blocks after it take {takes}: {block} makes it"
-WHY_OFF_KIND = "it turns {takes} into {gives}: switched off, the next block would get the wrong data"
+WHY_OFF_KIND = "{block} turns {takes} into {gives}: switched off, the next block would get the wrong data"
 KIND_WORDS = {FRAMES: "a series of frames", IMAGE: "an image", PAIR: "a starless image and its stars"}
 SOURCE_WORDS = {"frames": "frames", "image": "an image file", "stretched": "a stretched image", "fusion": "a fusion"}
 
@@ -714,7 +714,7 @@ def off_problem(blocks: Sequence[dict], source: str, index: int) -> BlockRefused
     n = blocks[index]
     takes, gives = IO[n["block"]]
     if n["block"] in ("output", "stacking", "stars") or takes != gives:
-        return BlockRefused(WHY_OFF_KIND, takes=KIND_WORDS[takes], gives=KIND_WORDS[gives])
+        return BlockRefused(WHY_OFF_KIND, block=_title(n["block"]), takes=KIND_WORDS[takes], gives=KIND_WORDS[gives])
     trial = [dict(x, off=True) if i == index else x for i, x in enumerate(blocks)]
     e = graph_problem(trial, source)
     return None if e is None else _explain_removal(blocks, [x for i, x in enumerate(blocks) if i != index], source,

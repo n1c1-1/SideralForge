@@ -60,9 +60,9 @@ TEMPLATE_SUFFIX = ".sftemplate"
 #: own: the project calibrates its sessions separately), source ("image"), planned (not offered yet), recommended
 GALLERY: list[dict] = [
     dict(key="blank", tab="frames", name="Blank", opts=CLASSIC, blank=True,
-         text="An empty page: build the workflow yourself from the palette above the graph. Start with a Session (a "
-              "night of frames) or an Image; each block then goes where it can, and the blocks that cannot go yet say "
-              "why."),
+         text="An empty page: build the workflow yourself from the palette on the left of the graph. Start with a "
+              "Session (a night of frames) or an Image; each block then goes where it can, and the blocks that cannot "
+              "go yet say why."),
     dict(key="full", tab="frames", name="Full", opts=FULL, recommended=True,
          text="Calibration, registration and stacking, then astrometry, the sky gradient taken off, the colours from "
               "the Gaia stars, denoise on the two half-stacks and the stars taken off: the starless image and the stars "
@@ -269,7 +269,8 @@ def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
         p.drawRect(QRectF(x, y - bh / 2 + 2, 3, bh - 4))
         if names:
             p.setPen(QColor("#e8ebf0" if how != "cut" else "#8b93a1"))
-            text = key if key in mono else _(_SHORT.get(key, TITLES.get(key, key)))
+            kb, _t, num = key.partition("~")                # a block placed twice (issue #47): its number
+            text = key if key in mono else _(_SHORT.get(kb, TITLES.get(kb, kb))) + (f" {num}" if num else "")
             f = QFont(font)
             while f.pointSize() > 6 and QFontMetrics(f).horizontalAdvance(text) > bw - 7:
                 f.setPointSize(f.pointSize() - 1)          # the name whole, in a smaller letter if need be
@@ -501,7 +502,7 @@ class TemplateGallery(QDialog):
         sv.addWidget(self.title)
         self.text = label("", None, wrap=True)
         sv.addWidget(self.text)
-        self.duration = label("", "small")
+        self.duration = label("", "small", wrap=True)
         sv.addWidget(self.duration)
         sv.addStretch(1)
         self.file_row = QWidget()
@@ -596,7 +597,8 @@ class TemplateGallery(QDialog):
         dur = ""
         if t.get("planned"):
             dur = _("Not in this version yet: planned.")
-        elif t.get("source") != "image" and not t.get("kind") and hasattr(self.s, "opts_seconds"):
+        elif t.get("source") != "image" and not t.get("kind") and not t.get("blank") and not t.get("user") \
+                and hasattr(self.s, "opts_seconds"):
             trunk = {k: v for k, v in (getattr(self.s.path, "params", {}) or {}).items() if k in TRUNK} \
                 if getattr(self.s, "path", None) is not None else {}
             try:
@@ -694,7 +696,10 @@ class TemplateGallery(QDialog):
 
     def _delete(self):
         t = self.choice or {}
-        if t.get("user"):
+        from PySide6.QtWidgets import QMessageBox
+        if t.get("user") and QMessageBox.question(
+                self, _("Delete"), _("Delete the template “{name}”? It cannot be undone.").format(name=t["name"])) \
+                == QMessageBox.Yes:
             delete_user_template(t["key"])
             self._reload()
             self._show_tab(t["tab"] if any(x["tab"] == t["tab"] for x in self.templates) else "frames")
@@ -711,6 +716,32 @@ class TemplateGallery(QDialog):
     @property
     def opts(self) -> dict:
         return _view_opts(self.choice or {})
+
+
+def template_dialog(parent, name: str) -> tuple[str, str] | None:
+    """Save as template: its name and its gallery tab, in one dialog (issue #47). None when cancelled."""
+    from PySide6.QtWidgets import QComboBox, QDialogButtonBox, QFormLayout
+    d = QDialog(parent)
+    d.setWindowTitle(_("Save as template"))
+    f = QFormLayout(d)
+    ed = QLineEdit(name)
+    ed.selectAll()
+    f.addRow(_("Name"), ed)
+    cb = QComboBox()
+    for k, t in TABS:
+        if k != "copy":
+            cb.addItem(_(t), k)
+    cb.setCurrentIndex(cb.findData("mine"))
+    f.addRow(_("Gallery tab"), cb)
+    bb = QDialogButtonBox()
+    bb.addButton(_("Save"), QDialogButtonBox.AcceptRole)
+    bb.addButton(_("Cancel"), QDialogButtonBox.RejectRole)
+    bb.accepted.connect(d.accept)
+    bb.rejected.connect(d.reject)
+    f.addRow(bb)
+    if d.exec() != QDialog.Accepted or not ed.text().strip():
+        return None
+    return ed.text().strip(), cb.currentData()
 
 
 def user_templates() -> list[dict]:
