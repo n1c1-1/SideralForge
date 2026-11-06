@@ -36,6 +36,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import time
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -1070,7 +1071,8 @@ def stack_classic(ctx: Context, p: StackParams, *, wb=None, load, coef, used, we
     nm = sc.Norm.from_drizzle(norm, transp)
     res = sc.stack_classic(load, coef, bad=None, norm=nm, weights=weight, params=classic_params(p),
                            device=dev, used=used, ch_of_k=ch_of_k, H=H, W=W, sat_level=satval,
-                           progress=lambda f, msg: ctx.progress(0.05 + 0.95 * f, msg))
+                           progress=lambda f, msg: ctx.progress(0.05 + 0.95 * f, msg),
+                           raw_template=raw_template(meta, used, ch_of_k))
     for name, a in res.arrays().items():
         ctx.save(name, balanced(a, wb) if name in ("drz_full.npy", "drz_A.npy", "drz_B.npy") else a)
     res.save_rejection(ctx.out(REJECTION))
@@ -1118,12 +1120,23 @@ def integration_rejection(ctx: Context, p: StackParams, load, coef, used, weight
     does the same with the ``rej`` it is given. Returns core/stack_classic's ``ClassicResult`` (its rate, choice,
     frames and ``masks``; its images are not used)."""
     from ..core import stack_classic as sc
+    meta = ctx.load_json("inventory", "frames.json")["lights"]
     res = sc.stack_classic(load, coef, bad=None, norm=sc.Norm.from_drizzle(norm, transp), weights=weight,
                            params=classic_params(p), device=dev, used=used, ch_of_k=ch_of_k, H=H, W=W,
-                           sat_level=satval, masks=True,
+                           sat_level=satval, masks=True, raw_template=raw_template(meta, used, ch_of_k),
                            progress=lambda f, msg: ctx.progress(0.3 + 0.4 * f, f"integration's rejection: {msg}"))
     res.full = res.A = res.B = res.weight = None            # only the rejection is used: free the images
     return res
+
+
+def raw_template(meta: list[dict], used, ch_of_k) -> str | None:
+    """A raw file of the session, through which the Classic method demosaics X-Trans frames (core/debayer.
+    markesteijn): the first used light frame, when the pattern is X-Trans and it is a camera raw file; else None."""
+    if len(ch_of_k) != 36 or not len(used):
+        return None
+    from ..core.project import frame_kind
+    path = Path(meta[int(used[0])]["path"])
+    return str(path) if path.is_file() and frame_kind(path) == "raw" else None
 
 
 def _given(ctx, stage: str) -> dict:

@@ -121,3 +121,22 @@ def test_the_viewer_shows_an_x_trans_mosaic_and_names_its_photosites():
     assert sp.shape == (3, 18, 24) and np.allclose(sp[:, 5, 7], [100.0, 300.0, 50.0], atol=1e-3)
     assert sm.cfa_letter(XT, 0, 0) == "R" and sm.cfa_letter(XT, 1, 0) == "B" and sm.cfa_letter(XT, 6, 7) == "G"
     assert sm.cfa_letter("RGGB", 1, 1) == "B"
+
+
+@pytest.mark.skipif(not RAF.is_file(), reason="the bench's X-Trans frames are not on this machine")
+def test_markesteijn_demosaics_through_the_raw_file_a_flat_field_exactly():
+    H, W = 4032, 6032
+    for levels in ((100.0, 300.0, 50.0), (2000.0, 1500.0, 900.0)):     # two frames through the same raw file
+        a = torch.from_numpy(_mosaic(XT, H, W, levels))
+        a[0, 0] = 0.0                                                    # a span from 0
+        rgb = db.debayer(a, XT, template=str(RAF))
+        inner = rgb[:, 20:-20, 20:-20]
+        assert torch.allclose(inner, torch.tensor(levels)[:, None, None], rtol=1e-3)
+    rng = np.random.default_rng(3)
+    a = torch.from_numpy(rng.uniform(0, 1000, (H, W)).astype(np.float32))
+    rgb = db.debayer(a, XT, template=str(RAF))
+    col = torch.from_numpy(cfa.colour_map(XT, H, W).astype(np.int64))
+    for c in range(3):
+        assert torch.equal(rgb[c][col == c], a[col == c])               # its own samples kept as they were
+    with pytest.raises(ValueError):
+        db.debayer(a[:100, :100], XT, template=str(RAF))
