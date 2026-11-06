@@ -200,7 +200,7 @@ class BlockItem(QGraphicsItem):
 
     def paint(self, p: QPainter, opt, widget=None):
         p.setRenderHint(QPainter.Antialiasing)
-        p.setOpacity(0.55 if self.dim else 1.0)
+        p.setOpacity(0.55 if self.dim or self.node.cut else 1.0)
         w = self.w
         r = QRectF(0, 0, w, BH)
         ghost = self.node.key == "sources" and self.state == "pending"
@@ -553,6 +553,13 @@ class GraphView(QGraphicsView):
             self._wire(sn, cn, True)
         if g.sessions:
             self._join([cn for _sn, cn in g.sessions], firsts, cur)
+        # issue #43: "+ Session" under the sessions (or under the one Session block), where a session goes
+        if s.sources_loaded and g.root.paths:
+            last = g.sessions[-1][0] if g.sessions else g.root
+            gh = GhostItem(QRectF(cx["sources"], last.y + BH / 2 + 8, cw["sources"], BH * 0.6), "+  " + _("Session"),
+                           self.newSession.emit)
+            gh.setToolTip(_("Add a session: a night of lights, with its own calibration frames"))
+            sc.addItem(gh)
         for p in s.paths:                          # a workflow's Output image, when it is a layer of Post
             if p.pid in g.to_post:
                 self._wire(g.leaves[p.pid], g.final, cur is not None and p is cur)
@@ -1133,6 +1140,8 @@ class GraphPage(QWidget):
         pn.renamed.connect(self.rename)
         if hasattr(pn, "selectBlock"):
             pn.selectBlock.connect(lambda key: self.select(step=key))
+        if hasattr(pn, "restoreBlock"):
+            pn.restoreBlock.connect(lambda key: self.toggle_cut(Graph(self.s).node_of(self.s.path, key), None))
         pn.toast.connect(self.toast)
         pn.removeTool.connect(lambda: self.remove_tool(self.current_node(), None))
         pn.openLayer.connect(self.openLayer.emit)
@@ -1214,6 +1223,8 @@ class GraphPage(QWidget):
                 state, text = "off", ""
             elif new:
                 state, text = "off", _("not in the engine yet")
+            elif getattr(p, "source", None) is not None:     # an image has no half-stacks (issue #43)
+                state, text = "off", _("needs the half-stacks of a stack")
             elif p.end and COLUMNS.index(TOOL_COLUMN[k]) > COLUMNS.index(p.end):
                 state, text = "in", _("after the output")
             elif s.has_tool(p.opts, k):
@@ -1223,7 +1234,7 @@ class GraphPage(QWidget):
                 sure = s.opts_measured(s.with_tool(p.opts, k)[0]) if hasattr(s, "opts_measured") else True
                 state, text = "add", ((f"+{hm(dt)}" if sure else f"≈ +{hm(dt)}") if dt >= 30 else _("same duration"))
             card = ToolCard(self, k, state, text, new)
-            card.setEnabled(p is not None and not new)
+            card.setEnabled(p is not None and not new and not (state == "off" and getattr(p, "source", None)))
             self.tl.addWidget(card)
         # issue #36: the Combine block is added here too, not only from the split block's menu or its dots
         g = getattr(self.graph, "graph", None)
@@ -1300,7 +1311,8 @@ class GraphPage(QWidget):
             name = block_title(None, node.key)
             where = paths[0].name if len(paths) == 1 else plural(len(paths), "{n} workflow", "{n} workflows")
             self.toast((_("{block} cut in {where}: the image passes through") if on else
-                        _("{block} restored in {where}")).format(block=name, where=where))
+                        _("{block} restored in {where}")).format(block=name, where=where) + " · " +
+                       _("Ctrl+Z undoes it"))
             s.log("Block {block} cut" if on else "Block {block} restored", block=node.key)
 
     def session_action(self, action: str, sid: int):

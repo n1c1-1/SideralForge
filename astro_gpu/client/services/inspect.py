@@ -712,9 +712,11 @@ class FrameItem:
     reason: str = ""
 
 
-def browse_group(p, wid: int | None, kind: str, headers: dict | None = None) -> list[FrameItem]:
+def browse_group(p, wid: int | None, kind: str, headers: dict | None = None, session: int | None = None
+                 ) -> list[FrameItem]:
     """The frames of a group, in name order, with what is known of each (worker thread). Lights come with their star
-    size, transparency and weight once Registration is done."""
+    size, transparency and weight once Registration is done. ``session``: that session's frames only (issue #43: a
+    session's Calibration block)."""
     import datetime as dt
 
     from ...io.frames import read_info
@@ -738,6 +740,8 @@ def browse_group(p, wid: int | None, kind: str, headers: dict | None = None) -> 
     excluded = {(a, b) for a, b in p.excluded}
     listed = []
     for s in p.sessions:
+        if session is not None and s.id != session:
+            continue
         for f in _files(p, getattr(s, kind)):
             listed.append((s.id, f, False))
     if kind != "lights":                           # a calibration frame left out: still shown, to take it back
@@ -1366,8 +1370,9 @@ def calibration_data(p, wid: int, which: str = "current", headers: dict | None =
             out.cache = c.is_file() and c.stat().st_size == int(info["n"]) * int(info["height"]) * int(info["width"]) * 2
         except (OSError, ValueError, KeyError):
             out.cache = False
+    sid = str(which).partition("@")[2] if isinstance(which, str) else ""
     for kind in ("darks", "flats", "bias", "flat_darks"):
-        out.groups[kind] = browse_group(p, wid, kind, headers)
+        out.groups[kind] = browse_group(p, wid, kind, headers, int(sid) if sid else None)
     return out
 
 

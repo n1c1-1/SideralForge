@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -85,6 +85,10 @@ GALLERY: list[dict] = [
          cut=["astrometry", "color"],
          text="Only the sky gradient is taken off, then Post: no astrometry, no colour calibration. For a field with "
               "too few stars to be solved, or without the network."),
+    dict(key="image_stretched", tab="image", name="Already stretched image", opts=FULL, source="image",
+         planned=True, stretched=True,
+         text="Planned: an image already stretched (not linear) enters before Split stars & background: its stars "
+              "are taken off and the two images come to Post as layers."),
     dict(key="lrgb", tab="mono", name="LRGB", opts=FULL, planned=True, filters=("L", "R", "G", "B"),
          text="Planned: monochrome sessions with the L, R, G and B filters, each filter stacked, the stacks aligned "
               "and combined into one colour image (the luminance from L)."),
@@ -102,7 +106,7 @@ _CUT_KEY = {"calibration": "calibration", "registration": "alignement", "astrome
             "gradient": "fond", "color": "couleur"}
 _SHORT = {"calibration": "Calib.", "alignement": "Regist.", "selection": "Select.", "empilement": "Stack",
           "astrometrie": "Astrom.", "fond": "Gradient", "couleur": "Color", "debruitage": "Denoise",
-          "etoiles": "Stars", "post": "Output", "image": "Image", "session": "Night", "combine": "Combine"}
+          "etoiles": "Stars", "post": "Output", "image": "Image", "session": "Session", "combine": "Combine"}
 
 
 def chain_of(t: dict) -> list[tuple[str, str]]:
@@ -113,6 +117,8 @@ def chain_of(t: dict) -> list[tuple[str, str]]:
         keys = ["combine", "astrometrie", "fond"] + (["couleur"] if "L" in t["filters"] else [])
         keys += ["debruitage", "etoiles", "post"]
         return [(k, "") for k in keys]
+    if t.get("stretched"):
+        return [("etoiles", ""), ("post", "")]
     if t.get("source") == "image":
         keys = ["astrometrie", "fond", "couleur"]
     else:
@@ -180,8 +186,13 @@ def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
         if names:
             p.setPen(QColor("#e8ebf0" if how != "cut" else "#8b93a1"))
             text = key if key in mono else _(_SHORT.get(key, TITLES.get(key, key)))
-            p.drawText(r.adjusted(5, 0, -2, 0), Qt.AlignVCenter | Qt.AlignLeft,
-                       p.fontMetrics().elidedText(text, Qt.ElideRight, int(bw - 7)))
+            f = QFont(font)
+            while f.pointSize() > 6 and QFontMetrics(f).horizontalAdvance(text) > bw - 7:
+                f.setPointSize(f.pointSize() - 1)          # the name whole, in a smaller letter if need be
+            p.setFont(f)
+            p.drawText(r.adjusted(4, 0, -1, 0), Qt.AlignVCenter | Qt.AlignLeft,
+                       QFontMetrics(f).elidedText(text, Qt.ElideRight, int(bw - 5)))
+            p.setFont(font)
         return r
 
     def wire(x1, y1, x2, y2):
@@ -401,7 +412,8 @@ class TemplateGallery(QDialog):
         self.file_row.setVisible(t.get("source") == "image" and not t.get("copy"))
         dur = ""
         if t.get("planned"):
-            dur = _("Not in this version yet: monochrome cameras are planned.")
+            dur = _("Not in this version yet: monochrome cameras are planned.") if t.get("filters") else \
+                _("Not in this version yet: planned.")
         elif t.get("source") != "image" and hasattr(self.s, "opts_seconds"):
             trunk = {k: v for k, v in (getattr(self.s.path, "params", {}) or {}).items() if k in TRUNK} \
                 if getattr(self.s, "path", None) is not None else {}

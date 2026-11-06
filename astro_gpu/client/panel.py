@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -328,6 +329,7 @@ class Panel(QWidget):
     toast = Signal(str)                 # a word to say (what came with a change, why it was refused)
     cutToggled = Signal()               # the block's switch: cut it, or restore it (issue #43)
     selectBlock = Signal(str)           # a greyed block's reason: select the block that was cut
+    restoreBlock = Signal(str)          # a greyed block's panel: restore the block that was cut
 
     def __init__(self, project, steps=None, tune=False, parent=None):
         super().__init__(parent)
@@ -561,21 +563,18 @@ class Panel(QWidget):
                 r.addWidget(x)
                 self.bv.addLayout(r)
             add = QHBoxLayout()
-            b = QPushButton(_("Add folder…"))
-            b.clicked.connect(lambda _c=False, k=kind: self._add_entries(sid, k, folder=True))
-            add.addWidget(b)
-            b2 = QPushButton(_("Add files…"))
-            b2.clicked.connect(lambda _c=False, k=kind: self._add_entries(sid, k, folder=False))
-            add.addWidget(b2)
+            b = QPushButton(_("Add") + " ▾")                # one menu per kind: folder, files, another session's
+            menu = QMenu(b)
+            menu.addAction(_("Add folder…"), lambda k=kind: self._add_entries(sid, k, folder=True))
+            menu.addAction(_("Add files…"), lambda k=kind: self._add_entries(sid, k, folder=False))
             others = [o for o in s.p.sessions if o.id != sid and getattr(o, kind)] if kind != "lights" else []
             if others:
-                ub = QComboBox()
-                ub.addItem(_("Use from another session…"), None)
+                menu.addSeparator()
                 for o in others:
-                    ub.addItem(o.name, o.id)
-                ub.activated.connect(lambda i, k=kind, box=ub: box.itemData(i) is not None
-                                     and s.use_from_session(box.itemData(i), sid, k))
-                add.addWidget(ub)
+                    menu.addAction(_("Use the frames of “{name}”").format(name=o.name),
+                                   lambda k=kind, oid=o.id: s.use_from_session(oid, sid, k))
+            b.setMenu(menu)
+            add.addWidget(b)
             add.addStretch(1)
             self.bv.addLayout(add)
         self.bv.addSpacing(8)
@@ -585,9 +584,6 @@ class Panel(QWidget):
             b.setToolTip(_("Opens the frames in Inspect: leave out a frame with X"))
             b.clicked.connect(self.openTune.emit)
             row.addWidget(b)
-        a = QPushButton(_("Add a session…"))
-        a.clicked.connect(self.addSession.emit)
-        row.addWidget(a)
         row.addStretch(1)
         self.bv.addLayout(row)
         self.bv.addStretch(1)
@@ -667,9 +663,14 @@ class Panel(QWidget):
                 why=node.grey), "warn", wrap=True))
             cause = {_("needs Astrometry"): "astrometrie", _("needs Denoise"): "debruitage"}.get(node.grey)
             if cause and cause in s.display_keys(p):
+                self.bv.addSpacing(6)
+                if s.is_cut(p, cause):
+                    r = QPushButton(_("Restore {block}").format(block=block_title(None, cause)))
+                    r.setObjectName("primary")
+                    r.clicked.connect(lambda: self.restoreBlock.emit(cause))
+                    self.bv.addWidget(r, 0, Qt.AlignLeft)
                 b = QPushButton(_("Go to {block}").format(block=block_title(None, cause)))
                 b.clicked.connect(lambda: self.selectBlock.emit(cause))
-                self.bv.addSpacing(6)
                 self.bv.addWidget(b, 0, Qt.AlignLeft)
         self.bv.addStretch(1)
 

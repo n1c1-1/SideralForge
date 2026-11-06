@@ -130,8 +130,8 @@
   "Remove from the project": "Retirer du projet",
   "Cannot run: {why}. The image passes through.": "Ne peut pas tourner : {why}. L'image passe.",
   "Add a session…": "Ajouter une session…",
-  "{block} cut in {where}: the image passes through": "{block} coupé dans {where} : l'image passe",
-  "{block} restored in {where}": "{block} rétabli dans {where}",
+  "{block} cut in {where}: the image passes through": "Bloc {block} coupé dans {where} : l'image passe",
+  "{block} restored in {where}": "Bloc {block} rétabli dans {where}",
   "{action} this block": "{action} ce bloc",
   "Take the session “{name}” out of the project? Its files are not touched.": "Retirer la session « {name} » du projet ? Ses fichiers ne sont pas touchés.",
   "{action} in the {n} workflows": "{action} dans les {n} workflows",
@@ -210,5 +210,13 @@
   "Session “{name}” added: choose its darks and flats in its block": "Session « {name} » ajoutée : choisissez ses darks et ses flats dans son bloc",
   "Block {block} cut": "Bloc {block} coupé",
   "Block {block} restored": "Bloc {block} rétabli",
-  "Flat darks": "Darks de flats"
+  "Flat darks": "Darks de flats",
+  "Add": "Ajouter",
+  "Use the frames of “{name}”": "Prendre celles de « {name} »",
+  "Restore {block}": "Rétablir {block}",
+  "Ctrl+Z undoes it": "Ctrl+Z l'annule",
+  "Add a session: a night of lights, with its own calibration frames": "Ajouter une session : une nuit de brutes, avec ses propres images de calibration",
+  "Already stretched image": "Image déjà étirée",
+  "Planned: an image already stretched (not linear) enters before Split stars & background: its stars are taken off and the two images come to Post as layers.": "Prévu : une image déjà étirée (non linéaire) entre avant Split étoiles et fond : ses étoiles sont retirées et les deux images arrivent dans le Post en calques.",
+  "Not in this version yet: planned.": "Pas encore dans cette version : prévu."
 }

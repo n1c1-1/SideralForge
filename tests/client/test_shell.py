@@ -494,7 +494,7 @@ def test_the_template_gallery_on_the_model(qapp, tmp_path):
     d.pick(calibrated)
     assert d.opts["cut"] == ["calibration"] and d.text.text().startswith("For frames another program")
     d.tabs.setCurrentIndex(1)                                                 # from an image: a file first
-    assert {c.t["key"] for c in d.cards} == {"image", "image_colours", "image_plain"}
+    assert {c.t["key"] for c in d.cards} == {"image", "image_colours", "image_plain", "image_stretched"}
     assert not d.ok.isEnabled() and d.file_row.isVisibleTo(d)
     img = tmp_path / "m42.fits"
     img.write_bytes(bytes(2880))

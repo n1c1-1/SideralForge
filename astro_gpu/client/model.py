@@ -338,7 +338,7 @@ class ProjectModel(QObject):
             out.append(dict(id=s.id, name=s.name, night=s.name, lights=lights, kept=max(lights - ex, 0),
                             flats=c.get("flats", 0), darks=c.get("darks", 0), bias=c.get("bias", 0),
                             dark_flats=c.get("flat_darks", 0), exposure=self._facts.inventory.get("exposure_s"),
-                            iso=self._facts.inventory.get("iso_gain"), temp=None, filter="OSC", rotation=0.0,
+                            iso=self._facts.inventory.get("iso_gain"), temp=None, filter=s.filter or "OSC", rotation=0.0,
                             fwhm=self._facts.register.get("fwhm_px"), flat_note=""))
         return out
 
