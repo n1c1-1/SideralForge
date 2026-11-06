@@ -175,18 +175,20 @@ class KindRow(QFrame):
         if self.entries:
             p = Path(self.entries[0])
             return str(p if p.is_dir() else p.parent)
-        return prefs.get("workspace") or ""
+        return prefs.last_folder()                   # issue #32: where the last kind was chosen, not the workspace
 
     def _pick_files(self):
         fs, _f = QFileDialog.getOpenFileNames(self, _("Choose the {kind}").format(kind=_(KIND_WORD[self.key])),
                                               self._start(), frame_filter())
         if fs:
+            prefs.remember_folder(fs[0])
             self.changed.emit(self.key, fs)
 
     def _pick_folder(self):
         d = QFileDialog.getExistingDirectory(self, _("Choose the {kind}").format(kind=_(KIND_WORD[self.key])),
                                              self._start())
         if d:
+            prefs.remember_folder(d)
             self.changed.emit(self.key, [d])
 
     def dragEnterEvent(self, e):                                     # noqa: N802 - Qt's name
@@ -398,9 +400,10 @@ def import_folder(model, parent=None, folder: str | None = None, new_session: bo
     svc = service or service_of(model)
     if folder is None:
         folder = QFileDialog.getExistingDirectory(parent, _("Add session") if new_session else _("Add folder"),
-                                                  prefs.get("workspace"))
+                                                  prefs.last_folder())
         if not folder:
             return False
+        prefs.remember_folder(folder)
     norm = norm_path(folder)
     for ses in model.p.sessions:
         if any(norm_path(model.p.abspath(x)) == norm for x in ses.lights):

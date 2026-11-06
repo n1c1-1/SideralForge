@@ -1728,3 +1728,43 @@ def test_the_default_view_shows_the_whole_chain_from_frames_to_post_at_any_width
 def test_the_test_project_is_untouched():
     """Run last (pytest keeps the order of the file): nothing above wrote into the test project or its store."""
     assert _tree_snapshot(F_PROJECT) == PROJECT_BEFORE
+
+
+def test_a_rebuild_keeps_where_the_graph_was_scrolled(page, qapp):
+    """Issue #24: every change (and every stage event of a run) builds the graph again; it used to come back to its
+    left end. Built again at the same size, it stays where the user had scrolled."""
+    gv = page.graph
+    gv.parentWidget().resize(700, 600)                                          # narrower than the graph: it scrolls
+    qapp.processEvents()
+    gv.rebuild()
+    hb = gv.horizontalScrollBar()
+    if hb.maximum() == 0:
+        pytest.skip("the graph fits the window: nothing to scroll")
+    hb.setValue(hb.maximum() // 2)
+    kept = hb.value()
+    gv.rebuild()
+    assert hb.value() == kept
+
+
+def test_the_panel_built_again_keeps_the_setting_being_edited_focused(page, qapp):
+    """Issue #24: the panel is built again at each change; the setting being edited keeps the focus (it was lost after
+    Enter or Tab in a number field)."""
+    from astro_gpu.client.panel import CompactRow
+    pn = page.panel
+    node = page.graph.graph.node_of(page.s.path, "empilement")
+    pn.refresh(node)
+    qapp.processEvents()
+    rows = [r for r in pn.findChildren(CompactRow) if getattr(r, "editor", None) is not None and r.editor.isEnabled()]
+    if not rows:
+        pytest.skip("no editable setting shown")
+    row = rows[0]
+    pn.focus_key = row.r["key"]
+    row.editor.setFocus()
+    qapp.processEvents()
+    pn.refresh(node)
+    for _i in range(5):
+        qapp.processEvents()
+    fw = QApplication.focusWidget()
+    shown = [pn.bv.itemAt(i).widget() for i in range(pn.bv.count())]
+    new = next(r for r in shown if isinstance(r, CompactRow) and r.r.get("key") == row.r["key"])
+    assert fw is new.editor

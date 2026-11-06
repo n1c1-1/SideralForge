@@ -471,6 +471,10 @@ class ColorFitChart(ChartView):
 
 
 # ---------------------------------------------------------------------------------------------- the view
+#: the tabs drawn as charts or tables (kept, not built again, while the results they show do not change; issue #24)
+CHART_KINDS = ("regref", "regchart", "regtable", "rejection", "weights", "coverage", "chart", "colorfit")
+
+
 class TuneView(QWidget):
     back = Signal()
     pick = Signal(str)                    # a block of the strip was chosen
@@ -663,7 +667,9 @@ class TuneView(QWidget):
         # the same picture as shown (a setting changed, the block Outdated with its previous result): the viewer stays,
         # only the header and the panel are built again (issue #24: rebuilt, the image flickered)
         sig = self._center_signature(p, k=s.sel_step) if node is not None and p is not None else None
-        keep = sig is not None and sig == getattr(self, "_center_sig", None) and self.view is not None
+        keep = sig is not None and sig == getattr(self, "_center_sig", None) and (
+            self.view is not None or (sig[0] == "selection" and self.chart is not None)
+            or (sig[0] == "tab" and self.center.count() > 0))
         if not keep:
             self._clear_center()
         self._center_sig = sig
@@ -686,7 +692,10 @@ class TuneView(QWidget):
             self._previous_tag(p, k)
         if k == "selection":
             self.head.addStretch(1)
-            self.selection_center(p)
+            if keep:                                      # the same frames: only the thresholds may have moved (#24)
+                self._selection_in_place()
+            else:
+                self.selection_center(p)
             return
         vis = self.visuals(p, k)
         if not vis:
@@ -723,9 +732,15 @@ class TuneView(QWidget):
             self.grad_editor.attach(self.view, p)
         QTimer.singleShot(PREFETCH_DELAY_MS, lambda pp=p, kk=k: self._prefetch(pp, kk))
 
-    def _center_signature(self, p, k: str):
+    def _center_signature(self, p, k: str):  # noqa: C901 - one case per kind of centre
         """What the centre shows when it is one picture: (workflow, block, tab, the picture's identity, the workflow
-        compared, the background chosen); None for anything else (it is always built again)."""
+        compared, the background chosen); for Selection, the frames it charts (its thresholds are moved in place);
+        None for anything else (it is always built again)."""
+        if k == "selection":
+            if block_state(self.s, p, "selection") in ("pending", "running", "failed", "interrupted", "skipped"):
+                return None
+            return ("selection", p.pid, self._keys(p, "register", "inventory", "stack"), self._sources_sig(),
+                    bool(self.s.thresholds_active()))
         state = block_state(self.s, p, k)
         if state in ("pending", "running", "failed", "interrupted", "skipped") or k in ("selection", "calibration"):
             return None
@@ -737,6 +752,8 @@ class TuneView(QWidget):
         keys = [x.key for x in vis]
         want = self.tab_of.get(k)
         spec = vis[keys.index(want)] if want in keys and not vis[keys.index(want)].spec else vis[0]
+        if spec.kind in CHART_KINDS:                      # a chart or a table: the results it is drawn from (#24)
+            return ("tab", p.pid, k, spec.key, self._keys(p, *stages_of(self.s, p, k)), self.cmp_pid)
         if spec.kind not in ("array", "preview", "color", "gradient", "removed", "calibrated"):
             return None
         shown = self._background(p, k, spec) if spec.backgrounds else spec
@@ -845,6 +862,7 @@ class TuneView(QWidget):
         """Build the content of the tab shown (again, when the worker brings its data)."""
         if self._cur is None:
             return
+        self._cur_needs = set()
         p, k, spec = self._cur
         self._clear_center()
         self._note_row = None
@@ -928,6 +946,7 @@ class TuneView(QWidget):
         """What the worker read for a block (None while it reads it: the tab is built again when it comes). An
         error comes back as ``_Failed``."""
         dk = (name, keys)
+        self._cur_needs = getattr(self, "_cur_needs", set()) | {name}       # what the tab shown waits for (#24)
         if dk in self._data:
             self._data.move_to_end(dk)
             return self._data[dk]
@@ -948,7 +967,9 @@ class TuneView(QWidget):
             self._add_sky(result)
         elif name in ("lights", "registration") and self._cur is None and self.s.sel_step == "selection":
             self._build_selection()
-        elif self.isVisible() and self.pages.currentIndex() == 0:
+        elif self.isVisible() and self.pages.currentIndex() == 0 and name in getattr(self, "_cur_needs", {name}):
+            # issue #24: only the tab that waits for it is built again (a late result of another tab used to rebuild
+            # the one shown, its viewer with it)
             self._remember()
             self._fill()
 
@@ -1467,7 +1488,9 @@ class TuneView(QWidget):
                                     kind=kind or "mask"))       # each master the automatic stretch of its kind
         v = self._new_view("calibration", spec)
         v.set_exclude_mode("off")
-        v.set_sequence(frames, 0)
+        # the master shown stays shown when the tab is built again (issue #24: it went back to the first)
+        v.set_sequence(frames, min(self._seq_index.get((spec.key, "masters"), 0), max(len(frames) - 1, 0)))
+        self._on(v, v.frameChanged, lambda i, kk=(spec.key, "masters"): self._seq_index.__setitem__(kk, i))
         self._notes()
         self.center.addWidget(v, 1)
 
@@ -1657,9 +1680,10 @@ class TuneView(QWidget):
         session when all have some): Calibration is then computed again."""
         if folder is None:
             folder = QFileDialog.getExistingDirectory(self.window(), _(ADD_FOLDER.get(kind, "Add a folder…")),
-                                                      prefs.get("workspace"))
+                                                      prefs.last_folder())
             if not folder:
                 return False
+            prefs.remember_folder(folder)
         P = self.s.p
         targets = [x.id for x in P.sessions if not getattr(x, kind)] or [x.id for x in P.sessions]
         done = [sid for sid in targets if self.s.add_calibration_folder(sid, kind, folder)]
@@ -2099,6 +2123,23 @@ class TuneView(QWidget):
         self._table_wid = p.pid
         self._table_got = None
         self._lights(p)
+
+    def _selection_in_place(self):
+        """The Selection chart kept (issue #24: dragging a threshold built it again, with a "Reading the results"
+        flash): its thresholds and colours follow the panel."""
+        ch = self.chart
+        try:
+            if not ch.thresholds:
+                ch._classify()
+                return
+            t, f = self._thresholds()
+            if abs(ch.tmin - t) > 1e-9 or abs(ch.fmax - f) > 1e-9:
+                ch.tmin, ch.fmax = t, f
+                ch.h_t.value, ch.h_f.value = t, f
+                ch._classify()
+        except RuntimeError:                                # the chart was deleted meanwhile: build it
+            self._center_sig = None
+            self.request_refresh()
 
     def _table_ready(self, wid: int, token: int, table):
         if self.pages.currentIndex() != 0 or self.s.sel_step != "selection" or wid != getattr(self, "_table_wid", None) \

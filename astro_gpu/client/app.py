@@ -312,10 +312,13 @@ class Main(QMainWindow):
         self.show_home()
         self.home.open_other()
 
-    def create_project(self, root: str, name: str, target: str) -> bool:
-        """A new v2 project in ``root``, opened. Its calibrated frames go to <cache folder>/<project folder>."""
+    def create_project(self, root: str, name: str, target: str, details: dict | None = None) -> bool:
+        """A new v2 project in ``root``, opened. Its calibrated frames go to <cache folder>/<project folder>.
+        ``details``: the target's coordinates and the capture data New project gives (issue #38)."""
         try:
-            p = project2.create(root, name, Target(name=target))
+            d = details or {}
+            p = project2.create(root, name, Target(name=target, ra=d.get("ra"), dec=d.get("dec"),
+                                                   focal_mm=d.get("focal_mm"), pixel_um=d.get("pixel_um")))
             cache = prefs.get("cache_dir")
             if cache:
                 p.scratch_dir = (Path(cache) / Path(root).name).as_posix()
@@ -328,7 +331,8 @@ class Main(QMainWindow):
     def import_folder_as_new(self):
         """Import folder as new project: the folder of the lights gives the name and the target, then its frames
         are read into the new project."""
-        folder = QFileDialog.getExistingDirectory(self, _("Import folder as new project…"), prefs.get("workspace"))
+        folder = QFileDialog.getExistingDirectory(self, _("Import folder as new project…"), prefs.last_folder())
+        prefs.remember_folder(folder)
         if not folder:
             return
         g = guess_names(folder)
@@ -809,7 +813,8 @@ class Main(QMainWindow):
             return
         if self.s is not None:
             self.s.flush()
-        d = QFileDialog.getExistingDirectory(self, _("Save as…"), prefs.get("workspace"))
+        d = QFileDialog.getExistingDirectory(self, _("Save as…"), prefs.last_folder())
+        prefs.remember_folder(d)
         if not d:
             return
         root = Path(d)

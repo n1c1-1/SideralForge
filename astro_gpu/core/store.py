@@ -58,6 +58,9 @@ from .project import Inputs, ProjectConfig, list_frames
 from .project2 import KINDS, Project2, Workflow
 from .workflow import Chains
 
+#: the target's fields added after the first keys were made: left out of the astrometry's key while unset (#38)
+LATER_TARGET_FIELDS = ("pixel_um",)
+
 STORE = "store"
 TMP = ".tmp"                 # store/<stage>/<key>.tmp/: a job in progress, never done
 TRASH = "_trash"             # done folders replaced by a re-run
@@ -315,6 +318,7 @@ class Keys:
             p["exclude"] = [list(t) for t in pairs]    # (session, name): the same after the raws move
         return p, m
 
+
     def project_part(self, stage: str) -> Any:
         """The project's part of a stage's key: the frame list for inventory, the target for astrometry, the image's
         file id for reference; None for the others."""
@@ -322,8 +326,10 @@ class Keys:
         if stage == "inventory":
             return self.scan.frames(p)
         if stage == "astrometry":
+            # a field added later (pixel_um, issue #38) counts only when it is set: the keys of the projects made
+            # before it stay as they were
             return {k: float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else x
-                    for k, x in asdict(p.target).items()}
+                    for k, x in asdict(p.target).items() if not (k in LATER_TARGET_FIELDS and x is None)}
         if stage == "reference":
             return self.scan.file_id(_absolute(p, p.reference_image)) if p.reference_image else None
         return None
