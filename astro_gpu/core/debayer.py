@@ -89,22 +89,30 @@ TILES_PER_BATCH = 96
 
 
 def channel_map(cfa) -> list[int]:
-    """The colour (0 R, 1 G, 2 B) of each 2 x 2 position k = 2 * row + column, from a pattern ("RGGB") or the list
-    itself (io.frames.cfa_channel_map's)."""
+    """The colour (0 R, 1 G, 2 B) of each position k = P row + column of the pattern (P 2 for a Bayer pattern, 6 for
+    an X-Trans one: 36 positions), from a pattern ("RGGB") or the list itself (io.frames.cfa_channel_map's)."""
     if isinstance(cfa, str):
         return ["RGB".index(c) for c in cfa.upper()]
     ch = [int(c) for c in cfa]
+    if len(ch) == 36 and sorted(set(ch)) == [0, 1, 2]:
+        return ch
     if len(ch) != 4 or sorted(ch) != [0, 1, 1, 2]:
         raise ValueError(f"not a Bayer pattern: {cfa!r} (two greens, one red, one blue)")
     return ch
 
 
+def is_xtrans(ch_of_k) -> bool:
+    """Whether the pattern is a 6 x 6 X-Trans one (core/cfa.py)."""
+    return len(channel_map(ch_of_k)) == 36
+
+
 def colour_of(ch_of_k, H: int, W: int, device="cpu") -> torch.Tensor:
     """(H, W) long: the colour of every sensor pixel."""
     k = torch.tensor(channel_map(ch_of_k), device=device)
-    yy = torch.arange(H, device=device)[:, None] % 2
-    xx = torch.arange(W, device=device)[None, :] % 2
-    return k[2 * yy + xx]
+    P = 6 if len(k) == 36 else 2
+    yy = torch.arange(H, device=device)[:, None] % P
+    xx = torch.arange(W, device=device)[None, :] % P
+    return k[P * yy + xx]
 
 
 def _shifter(a: torch.Tensor, pad: int = 4):
@@ -118,17 +126,22 @@ def _shifter(a: torch.Tensor, pad: int = 4):
 
 
 # ------------------------------------------------------------------------------------------------ bad samples
-def fill_bad(cfa: torch.Tensor, bad: torch.Tensor | None = None, rounds: int = 3) -> tuple[torch.Tensor, torch.Tensor]:
+def fill_bad(cfa: torch.Tensor, bad: torch.Tensor | None = None, rounds: int = 3,
+             ch_of_k=None) -> tuple[torch.Tensor, torch.Tensor]:
     """The CFA frame with its bad samples (NaN, or ``bad``) filled as Siril's cosmetic correction fills a hot pixel
     (getAverage3x3, CFA step 2): the mean of the valid samples of the same colour among the 8 nearest (2 pixels
     away); those with none take the mean of the next ring (4 pixels away), up to ``rounds`` times, then the median of
-    their colour. Returns (filled frame, the mask of the samples filled)."""
+    their colour. Returns (filled frame, the mask of the samples filled). ``ch_of_k`` an X-Trans pattern (its
+    same-colour samples are not 2 pixels apart): the mean of the valid samples of the colour in the 5 x 5
+    neighbourhood, then 9 x 9..., then the colour's median."""
     x = cfa.float()
     miss = torch.isnan(x)
     if bad is not None:
         miss = miss | bad.to(x.device, torch.bool)
     if not bool(miss.any()):
         return x, miss
+    if ch_of_k is not None and is_xtrans(ch_of_k):
+        return _fill_bad_xtrans(x, miss, rounds, ch_of_k), miss
     out = torch.where(miss, torch.zeros_like(x), x)
     todo = miss.clone()
     k = torch.ones(1, 1, 3, 3, device=x.device, dtype=x.dtype)
@@ -152,6 +165,29 @@ def fill_bad(cfa: torch.Tensor, bad: torch.Tensor | None = None, rounds: int = 3
             med = x[good].median() if bool(good.any()) else torch.zeros((), device=x.device)
             out = torch.where(todo & sel, med, out)
     return out, miss
+
+
+def _fill_bad_xtrans(x: torch.Tensor, miss: torch.Tensor, rounds: int, ch_of_k) -> torch.Tensor:
+    col = colour_of(ch_of_k, *x.shape, x.device)
+    out = torch.where(miss, torch.zeros_like(x), x)
+    todo = miss.clone()
+    for r in range(rounds):
+        n = 5 + 4 * r
+        k = torch.ones(1, 1, n, n, device=x.device, dtype=x.dtype)
+        for c in range(3):
+            ok = ((col == c) & ~todo).to(x.dtype)
+            num = F.conv2d((out * ok)[None, None], k, padding=n // 2)[0, 0]
+            den = F.conv2d(ok[None, None], k, padding=n // 2)[0, 0]
+            got = todo & (col == c) & (den > 0)
+            out = torch.where(got, num / den.clamp(min=1e-12), out)
+            todo = todo & ~got
+        if not bool(todo.any()):
+            return out
+    for c in range(3):
+        good = (col == c) & ~miss
+        med = x[good].median() if bool(good.any()) else torch.zeros((), device=x.device)
+        out = torch.where(todo & (col == c), med, out)
+    return out
 
 
 # ------------------------------------------------------------------------------------------------ bilinear
@@ -380,6 +416,10 @@ def rcd(cfa: torch.Tensor, ch_of_k, *, siril_range: bool = True, balance=None,
 
 
 def debayer(cfa: torch.Tensor, ch_of_k, method: str = "rcd", balance="auto") -> torch.Tensor:
+    if is_xtrans(ch_of_k):
+        # RCD is made for the Bayer lattice; an X-Trans frame: the bilinear (each 3 x 3 window holds the three
+        # colours). The published X-Trans demosaicing (Markesteijn's) is still to come: the Drizzle method needs none
+        return bilinear(cfa, ch_of_k)
     """(3, H, W) float32 from a CFA frame (H, W) without NaN: ``method`` one of METHODS. ``balance`` (RCD): "auto"
     the frame's own white balance (``cfa_balance``) before demosaicing, None none (as Siril), or the multipliers
     (R, G, B)."""

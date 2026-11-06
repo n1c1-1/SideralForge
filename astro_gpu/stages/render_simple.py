@@ -127,7 +127,11 @@ class RenderSimpleParams(StageParams):
 def mosaic_notch(ctx: Context, img: np.ndarray, scale: float, valid: np.ndarray, log: bool = True):
     """The colour mosaic's periodic pattern taken off (core/periodic.py), said in the log and the metrics."""
     from ..core.periodic import remove_mosaic_pattern
-    out, taken = remove_mosaic_pattern(img, scale, valid)
+    try:
+        cfa = str(ctx.metric_of("inventory", "cfa") or "")
+    except Exception:  # noqa: BLE001 - no inventory to read (a stack given as a file): a Bayer lattice
+        cfa = ""
+    out, taken = remove_mosaic_pattern(img, scale, valid, period=6 if len(cfa) == 36 else 2)
     if log:
         ctx.metric("mosaic_peaks", len(taken))
         if taken:

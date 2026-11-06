@@ -98,7 +98,7 @@ class Register(Stage):
             if r is None and cats[i] is not None and len(cats[i]) >= 30:
                 # no clear vote of the stars (a dense field: the brightest detections change from frame to frame):
                 # the shift from the images themselves (phase correlation), then the same fit (issue #37)
-                sh = phase_shift(mm, i, ref, H, W)
+                sh = phase_shift(mm, i, ref, H, W, info["cfa"])
                 if sh is not None:
                     r = _fit_from(cats[i], refcat, tree, W, H, cats[i][:, :2] - sh, 8.0)
                     recovered += r is not None
@@ -219,15 +219,18 @@ def initial_shift(a, b, W, H):
 PHASE_BIN, PHASE_MIN = 4, 0.1
 
 
-def phase_shift(mm, i: int, ref: int, H: int, W: int) -> np.ndarray | None:
+def phase_shift(mm, i: int, ref: int, H: int, W: int, cfa: str = "") -> np.ndarray | None:
     """The shift (frame minus reference, sensor pixels) of two calibrated frames by phase correlation (C. D. Kuglin,
     D. C. Hines, "The phase correlation image alignment method", IEEE Conf. on Cybernetics and Society, 1975), on
     their images reduced PHASE_BIN times, the sky taken off and the brightest stars clipped, under a Hanning window;
-    None when its peak is under PHASE_MIN."""
+    None when its peak is under PHASE_MIN. An X-Trans frame (``cfa``) has its colours levelled first: its blocks
+    hold unequal mixes of colours, a pattern that stays still and would be found as the shift."""
     import cv2
 
+    from ..core.cfa import equalised
+
     def small(k):
-        a = np.nan_to_num(np.asarray(mm[k], np.float32))
+        a = np.nan_to_num(equalised(np.asarray(mm[k], np.float32), cfa, VALID_MAX))
         a = a[: H - H % PHASE_BIN, : W - W % PHASE_BIN]
         a = a.reshape(a.shape[0] // PHASE_BIN, PHASE_BIN, a.shape[1] // PHASE_BIN, PHASE_BIN).mean((1, 3))
         a = a - cv2.GaussianBlur(a, (0, 0), 10)
@@ -385,7 +388,10 @@ def _catalog_moffat(idx):
 def _catalog(idx):
     import sep
     H, W = _G["H"], _G["W"]
-    a = np.asarray(_G["mm"][idx], np.float32)[: H - H % 2, : W - W % 2].reshape(H // 2, 2, W // 2, 2)
+    from ..core.cfa import equalised
+    # an X-Trans frame's colours levelled first (its 2 x 2 cells hold 1 to 3 greens: a pattern otherwise)
+    a = equalised(np.asarray(_G["mm"][idx], np.float32), _G["cfa"], VALID_MAX)
+    a = a[: H - H % 2, : W - W % 2].reshape(H // 2, 2, W // 2, 2)
     sat = (a > VALID_MAX).any(axis=(1, 3))
     s = np.nanmean(a, axis=(1, 3)) * 4.0
     s[sat] = np.nan

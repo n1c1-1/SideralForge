@@ -117,6 +117,15 @@ class Strip(QFrame):
         self.h.setSpacing(4)
 
     def build(self, s, g: Graph):
+        # issue #24: built again only when what it shows changes (a refresh closed its open dropdown)
+        p0 = s.path
+        keys0 = ["sources"] + (chain(p0) if p0 is not None else [])
+        sig = (s.sel_step, s.current, tuple((q.pid, q.name) for q in s.paths), tuple(keys0),
+               tuple(g.state(nd) if (nd := g.node_of(p0, k)) is not None else "pending" for k in keys0),
+               _("Graph"))
+        if sig == getattr(self, "_sig", None) and self.h.count():
+            return
+        self._sig = sig
         clear(self.h)
         bk = QPushButton("◂  " + _("Graph"))
         bk.setToolTip(_("Back to the graph (Esc)"))
@@ -667,7 +676,12 @@ class TuneView(QWidget):
         # the same picture as shown (a setting changed, the block Outdated with its previous result): the viewer stays,
         # only the header and the panel are built again (issue #24: rebuilt, the image flickered)
         sig = self._center_signature(p, k=s.sel_step) if node is not None and p is not None else None
-        keep = sig is not None and sig == getattr(self, "_center_sig", None) and (
+        prev = getattr(self, "_center_sig", None)
+        if sig is None and node is not None and p is not None:
+            held, against = self._exclusion_hold(p, s.sel_step)
+            if held is not None:
+                sig, prev = held, against
+        keep = sig is not None and sig == prev and (
             self.view is not None or (sig[0] == "selection" and self.chart is not None)
             or (sig[0] == "tab" and self.center.count() > 0))
         if not keep:
@@ -732,6 +746,26 @@ class TuneView(QWidget):
             self.grad_editor.attach(self.view, p)
         QTimer.singleShot(PREFETCH_DELAY_MS, lambda pp=p, kk=k: self._prefetch(pp, kk))
 
+    def _exclusion_hold(self, p, k: str):
+        """(signature, the one to compare it with) when the viewer shown has just left a frame out or taken it back
+        (X): it shows it already, and the scan of the sources that follows must not build it again (issue #24, case
+        2: the viewer went back to its first frame). Kept while the block, its tab, its state and its quality
+        report stay; (None, None) otherwise."""
+        if self.view is None:
+            return None, None
+        now = ("excluded", p.pid, k, self.tab_of.get(k), block_state(self.s, p, k), self._report_state)
+        if getattr(self, "_excl_mark", None) == now[1:4]:
+            self._excl_mark = None
+            return now, now
+        prev = getattr(self, "_center_sig", None)
+        return (now, prev) if prev is not None and prev[0] == "excluded" else (None, None)
+
+    def _mark_exclusion(self):
+        """The viewer shown left a frame out or took it back: the refresh that follows keeps it (``_exclusion_hold``)."""
+        if self._cur is not None:
+            p, k, _spec = self._cur
+            self._excl_mark = (p.pid, k, self.tab_of.get(k))
+
     def _center_signature(self, p, k: str):  # noqa: C901 - one case per kind of centre
         """What the centre shows when it is one picture: (workflow, block, tab, the picture's identity, the workflow
         compared, the background chosen); for Selection, the frames it charts (its thresholds are moved in place);
@@ -754,11 +788,14 @@ class TuneView(QWidget):
         spec = vis[keys.index(want)] if want in keys and not vis[keys.index(want)].spec else vis[0]
         if spec.kind in CHART_KINDS:                      # a chart or a table: the results it is drawn from (#24)
             return ("tab", p.pid, k, spec.key, self._keys(p, *stages_of(self.s, p, k)), self.cmp_pid)
-        if spec.kind not in ("array", "preview", "color", "gradient", "removed", "calibrated"):
+        if spec.kind not in ("array", "preview", "color", "gradient", "removed", "calibrated", "render"):
             return None
         shown = self._background(p, k, spec) if spec.backgrounds else spec
-        if shown.kind == "render":
-            return None
+        if shown.kind == "render":                        # the final image: the render it shows (#24, case 3)
+            which = self.steps.which_for(p, shown.stage)
+            key = self.steps.key_of(p, shown.stage, which)
+            return None if not key else (p.pid, k, spec.key, ("render", shown.stage, key, shown.name, which),
+                                         self.cmp_pid, self.bg_of.get(k))
         try:
             vi = self.steps.view_image(p, shown)
         except Exception:  # noqa: BLE001 - built again: the tab says why
@@ -1605,7 +1642,9 @@ class TuneView(QWidget):
                                       "{n} suspicious frames (amber): unlike the others of their kind.")
         else:
             line += " " + _("Quality flags: {why}").format(why=si.not_yet("calibrate"))
-        self.center.addWidget(label(line, "small", wrap=True))
+        lb = label(line, "small", wrap=True)
+        self._count_line = (lb, len(items), n_out)
+        self.center.addWidget(lb)
         if flagged:
             self.center.addLayout(self._flag_row(spec, items, flagged, mode))
         self.center.addWidget(v, 1)
@@ -1698,11 +1737,15 @@ class TuneView(QWidget):
 
     def _cal_exclude(self, items, i: int, excluded: bool, group=None):
         it = items[i]
+        self._mark_exclusion()
         if not si.set_calibration_excluded(self.s, it, excluded, group if group is not None else items):
+            self._excl_mark = None
             if self.view is not None:
                 self.view.set_excluded(i, not excluded)
             self.toasted.emit(_("The last frame of a folder cannot be left out."))
             return
+        it.excluded = excluded
+        self._count_line_update(group if group is not None else items)
         self.toasted.emit((_("{file} left out of the master: Calibration is to compute again.") if excluded else
                            _("{file} taken back into the master.")).format(file=it.name))
 
@@ -1777,10 +1820,25 @@ class TuneView(QWidget):
         cur = v._cmp_i
         v.set_compare_targets([raw], cur)
 
+    def _count_line_update(self, items):
+        """The count of frames left out by hand, said again in place (the tab is kept, ``_exclusion_hold``)."""
+        lb, n, x = getattr(self, "_count_line", (None, 0, 0))
+        if lb is None:
+            return
+        head = "{n} frames, {x} excluded by hand. Exclude (X) takes the frame shown out of the master, and "                "Calibration runs again."
+        x2 = sum(1 for it in items if it.excluded)
+        try:
+            lb.setText(lb.text().replace(_(head).format(n=n, x=x), _(head).format(n=n, x=x2)))
+        except RuntimeError:                              # the label is gone with its tab
+            self._count_line = (None, 0, 0)
+            return
+        self._count_line = (lb, n, x2)
+
     def _light_exclude(self, items, i: int, excluded: bool):
         it = items[i]
         if it.session is None:
             return
+        self._mark_exclusion()
         it.excluded = excluded
         self.s.set_excluded([(it.session, it.name)], excluded)       # saved by the model, as any edit
 

@@ -46,6 +46,7 @@ from ..core.imgutil import asinh_preview
 from ..core.params import ADVANCED, Auto, P, StageParams, check_choice
 from ..core.stack_classic import HIGH_SHIFT
 from ..core.stage import Context, Stage, StageError
+from ..core import cfa as cfa_mod
 from ..io.frames import cfa_channel_map
 from .calibrate import VALID_MAX, open_cache
 
@@ -297,6 +298,9 @@ class Stack(Stage):
         mm, info = open_cache(ctx)
         H, W = info["height"], info["width"]
         ch_of_k = cfa_channel_map(info["cfa"])
+        P = cfa_mod.period(info["cfa"])                # the pattern's period: 2 (Bayer), 6 (X-Trans)
+        NP = P * P
+        BS = 64 // P                                    # sky blocks of 64 sensor pixels
         reg = np.load(ctx.input("register", "reg.npz"))
         coef, transp, fwhm, ref = reg["coef"], reg["transp"].astype(float), reg["fwhm"], int(reg["ref"])
         stats = ctx.load("calibrate", "frame_stats.npy")
@@ -328,20 +332,22 @@ class Stack(Stage):
         if p.pattern_removal:
             ctx.progress(0.0, "measuring the fixed pattern of the sensor")
             fpn, finfo = fixed_pattern(mm, used, coef, dev, H, W, p.pattern_frames,
-                                       lambda f: ctx.progress(0.1 * f, "measuring the fixed pattern of the sensor"))
+                                       lambda f: ctx.progress(0.1 * f, "measuring the fixed pattern of the sensor"),
+                                       period=P)
             ctx.metric("fixed_pattern", finfo)
             ctx.log(finfo["msg"])
             if fpn is not None:
-                g = fpn[0::2, 1::2].cpu().numpy()                                # one green plane
+                g0 = cfa_mod.green_position(info["cfa"])
+                g = fpn[g0 // P::P, g0 % P::P].cpu().numpy()                    # one green plane
                 sg = 1.4826 * float(np.median(np.abs(g - np.median(g)))) + 1e-9
                 ctx.preview("fixed_pattern", np.clip(0.5 + g / (8 * sg), 0, 1))
 
         yy, xx = torch.meshgrid(torch.arange(H, device=dev, dtype=torch.float32),
                                 torch.arange(W, device=dev, dtype=torch.float32), indexing="ij")
-        kmap = 2 * (yy.long() % 2) + (xx.long() % 2)
+        kmap = P * (yy.long() % P) + (xx.long() % P)
         chmap = torch.tensor(ch_of_k, device=dev)[kmap]
         h = PIX * S / 2.0
-        nby, nbx = (H // 2) // 32, (W // 2) // 32
+        nby, nbx = (H // P) // BS, (W // P) // BS
 
         def poly_eval(c, x, y):
             u = x / (W / 2) - 1.0
@@ -357,19 +363,19 @@ class Stack(Stage):
 
         def block_bkg(frame):
             out, cx, cy = [], [], []
-            for k in range(4):
-                ky, kx = divmod(k, 2)
-                pl = frame[ky::2, kx::2][: nby * 32, : nbx * 32]
-                b = pl.reshape(nby, 32, nbx, 32).permute(0, 2, 1, 3).reshape(nby, nbx, 1024)
+            for k in range(NP):
+                ky, kx = divmod(k, P)
+                pl = frame[ky::P, kx::P][: nby * BS, : nbx * BS]
+                b = pl.reshape(nby, BS, nbx, BS).permute(0, 2, 1, 3).reshape(nby, nbx, BS * BS)
                 b = torch.where(b > VALID_MAX, torch.nan, b)
                 out.append(torch.nanmedian(b, dim=-1).values)
-            jj = (torch.arange(nbx, device=dev) + 0.5) * 32 - 0.5
-            ii = (torch.arange(nby, device=dev) + 0.5) * 32 - 0.5
+            jj = (torch.arange(nbx, device=dev) + 0.5) * BS - 0.5
+            ii = (torch.arange(nby, device=dev) + 0.5) * BS - 0.5
             gy, gx = torch.meshgrid(ii, jj, indexing="ij")
-            for k in range(4):
-                ky, kx = divmod(k, 2)
-                cx.append(2 * gx + kx)
-                cy.append(2 * gy + ky)
+            for k in range(NP):
+                ky, kx = divmod(k, P)
+                cx.append(P * gx + kx)
+                cy.append(P * gy + ky)
             return torch.stack(out), torch.stack(cx), torch.stack(cy)
 
         fr = torch.from_numpy(np.asarray(mm[ref], np.float32)).to(dev)
@@ -379,9 +385,9 @@ class Stack(Stage):
         from scipy.ndimage import map_coordinates
 
         def ref_bkg_at(k, u, v):
-            ky, kx = divmod(k, 2)
-            pj = ((u - kx) / 2 + 0.5) / 32 - 0.5
-            pi = ((v - ky) / 2 + 0.5) / 32 - 0.5
+            ky, kx = divmod(k, P)
+            pj = ((u - kx) / P + 0.5) / BS - 0.5
+            pi = ((v - ky) / P + 0.5) / BS - 0.5
             return map_coordinates(Bref_np[k], [pi.ravel(), pj.ravel()], order=1, mode="nearest").reshape(pi.shape)
 
         norm: dict[int, tuple[np.ndarray, np.ndarray]] = {}       # frame -> (gradient Q (3, 6), sky level (3,))
@@ -395,7 +401,7 @@ class Stack(Stage):
             Q = np.zeros((3, 6))
             bkg_level = np.zeros(3)
             for c in range(3):
-                ks = [k for k in range(4) if ch_of_k[k] == c]
+                ks = [k for k in range(NP) if ch_of_k[k] == c]
                 rows, tg = [], []
                 for k in ks:
                     u, v = poly_eval(coef[i], cx[k], cy[k])
@@ -1320,8 +1326,9 @@ def coverage_record(wmap: torch.Tensor, f: int, coef_used, W: int, H: int, cfa: 
     return rec
 
 
-def fixed_pattern(mm, used, coef, dev, H, W, nframes, progress=lambda f: None):
-    """Sensor fixed pattern, per Bayer plane, in sensor coordinates.
+def fixed_pattern(mm, used, coef, dev, H, W, nframes, progress=lambda f: None, period: int = 2):
+    """Sensor fixed pattern, per position of the colour pattern (``period``: 2 for Bayer, 6 for X-Trans), in sensor
+    coordinates.
 
     The sky drifts across the sensor while the pattern stays: stars and sky structures smaller than the drift fall
     on a pixel in a few frames only. Pass 1: median over ``nframes`` frames spread over the session (frames minus
@@ -1337,15 +1344,18 @@ def fixed_pattern(mm, used, coef, dev, H, W, nframes, progress=lambda f: None):
         return None, {"applied": False, "drift_px": round(drift, 1), "frames": int(len(used)),
                       "msg": f"fixed pattern not measured: the sky drifted by {drift:.0f} px only over the session "
                              f"(too little to tell the pattern from the sky)"}
-    Hh, Wh = H // 2, W // 2
+    P = int(period)
+    NP = P * P
+    Hh, Wh = H // P, W // P
 
     def residuals(i):
-        """(4, Hh, Wh) frame minus its smooth sky per Bayer plane (NaN where saturated / bad), noise per plane."""
+        """(NP, Hh, Wh) frame minus its smooth sky per pattern position (NaN where saturated / bad), noise per
+        plane."""
         fr = torch.from_numpy(np.asarray(mm[i], np.float32)).to(dev)
         out, sg = [], []
-        for k in range(4):
-            ky, kx = divmod(k, 2)
-            pl = fr[ky::2, kx::2][:Hh, :Wh]
+        for k in range(NP):
+            ky, kx = divmod(k, P)
+            pl = fr[ky::P, kx::P][:Hh, :Wh]
             pl = torch.where(pl > VALID_MAX, torch.nan, pl)
             sky = _plane_sky(pl)
             r = pl - sky
@@ -1354,17 +1364,17 @@ def fixed_pattern(mm, used, coef, dev, H, W, nframes, progress=lambda f: None):
             out.append(r)
         return torch.stack(out), torch.stack(sg)
 
-    planes = np.zeros((len(sel), 4, Hh, Wh), np.float16)
+    planes = np.zeros((len(sel), NP, Hh, Wh), np.float16)
     for j, i in enumerate(sel):
         planes[j] = residuals(i)[0].cpu().numpy().astype(np.float16)
         progress(0.3 * (j + 1) / len(sel))
-    med = torch.zeros(4, Hh, Wh, device=dev)
+    med = torch.zeros(NP, Hh, Wh, device=dev)
     for y0 in range(0, Hh, 128):
         blk = torch.from_numpy(planes[:, :, y0:y0 + 128].astype(np.float32)).to(dev)
         med[:, y0:y0 + 128] = torch.nanmedian(blk, dim=0).values.nan_to_num(0.0)
     del planes
-    acc = torch.zeros(4, Hh, Wh, device=dev)
-    cnt = torch.zeros(4, Hh, Wh, device=dev)
+    acc = torch.zeros(NP, Hh, Wh, device=dev)
+    cnt = torch.zeros(NP, Hh, Wh, device=dev)
     for j, i in enumerate(used):
         r, sg = residuals(i)
         keep = ((r - med).abs() < 3 * sg[:, None, None]) & torch.isfinite(r)
@@ -1372,16 +1382,16 @@ def fixed_pattern(mm, used, coef, dev, H, W, nframes, progress=lambda f: None):
         cnt += keep.float()
         progress(0.3 + 0.7 * (j + 1) / len(used))
     pat = torch.where(cnt > 0, acc / cnt.clamp(min=1), med)
-    sig = float(np.clip(drift / 2 / 4, 2.0, 16.0))
+    sig = float(np.clip(drift / P / 4, 2.0, 16.0))                   # a quarter of the drift, in plane pixels
     out = torch.zeros(H, W, device=dev)
     amp = []
-    for k in range(4):
-        ky, kx = divmod(k, 2)
+    for k in range(NP):
+        ky, kx = divmod(k, P)
         hp = pat[k] - _gauss(pat[k], sig)
         sub = hp[::3, ::3]
         amp.append(float(1.4826 * torch.median((sub - torch.median(sub)).abs())))
-        out[ky::2, kx::2][:Hh, :Wh] = hp
-    info = {"applied": True, "drift_px": round(drift, 1), "frames": int(len(used)), "scale_px": round(2 * sig, 1),
+        out[ky::P, kx::P][:Hh, :Wh] = hp
+    info = {"applied": True, "drift_px": round(drift, 1), "frames": int(len(used)), "scale_px": round(P * sig, 1),
             "amplitude_adu": [round(a, 3) for a in amp],
             "msg": f"fixed pattern measured on {len(used)} frames (sky drift {drift:.0f} px): amplitude "
                    f"{np.mean(amp):.2f} ADU per pixel, removed from every frame"}
