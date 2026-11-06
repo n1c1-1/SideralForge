@@ -11,10 +11,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from ..core import cfa as cfa_mod
 from ..core.imgutil import robust_sigma
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage
-from ..core import cfa as cfa_mod
 from ..io.frames import read_cfa
 
 SAT_MARK = 65000.0      # value written for saturated pixels in the cache
