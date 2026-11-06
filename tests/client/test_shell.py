@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (  # noqa: E402
 from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import i18n, prefs  # noqa: E402
 from astro_gpu.client.dialogs import NewWorkflowDialog, name_dialog  # noqa: E402
-from astro_gpu.client.home import NewProjectDialog, card_line, project_info, scan_workspace, state_text  # noqa: E402
+from astro_gpu.client.home import NewProjectDialog, card_line, project_info, scan_home, section_rows, state_text  # noqa: E402
 from astro_gpu.client.services.worker import ApiWorker, Gpu, Machine  # noqa: E402
 from astro_gpu.client.settingsdlg import SettingsDialog  # noqa: E402
 from astro_gpu.client.widgets import QSS, ElidedLabel  # noqa: E402
@@ -112,13 +112,15 @@ def _project(ws: Path, folder: str, name: str, target: str, nights: int, workflo
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch, qapp):
-    """A scratch workspace and settings file, English, a fixed machine; message boxes recorded, not shown."""
+    """A scratch folder of projects, a Home section on it, a settings file, English, a fixed machine; message boxes
+    recorded, not shown."""
     monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
     monkeypatch.setenv("ASTRO_GPU_HOME", str(tmp_path / "home"))
     prefs.load()
     ws = tmp_path / "ws"
     ws.mkdir()
-    prefs.set("workspace", ws.as_posix())
+    prefs.set("home_sections", [{"label": "Mine", "folder": ws.as_posix(), "note": "", "open": True}])
+    prefs.set("last_folder", ws.as_posix())                                 # where the file dialogs open
     prefs.set("cache_dir", (tmp_path / "scratch").as_posix())
     appmod.apply_language("en")
     monkeypatch.setattr(appmod, "machine_info", lambda: MACHINE)
@@ -237,14 +239,13 @@ TEMPLATES = {"Classic stack": {"d": 0}, "Classic + denoise": {"d": 1}, "Full": {
 
 # ---------------------------------------------------------------------------------------------- tests
 
-def test_home_lists_the_workspace_and_skips_underscore(env):
+def test_home_lists_a_section_and_skips_underscore(env):
     w = _main(env)
-    names = [c.info.name for c in w.home.cards]
+    names = [c.info.name for s in w.home.sections for c in s.cards]
     assert sorted(names) == ["HeartSoul", "Iris", "NGC 7822"]
-    assert w.home.count.text() == "3 projects in the workspace"
     assert w.windowTitle() == "SideralForge · Home"
-    infos, n = scan_workspace(env["ws"].as_posix(), [])
-    assert n == 3 and "QC sheets" not in [i.name for i in infos]
+    infos = scan_home(section_rows(), []).sections[0].infos
+    assert len(infos) == 3 and "QC sheets" not in [i.name for i in infos]
 
 
 def test_card_shows_nights_integration_date_and_state(env):
@@ -295,8 +296,8 @@ def test_a_computed_project_shows_its_state_without_a_write(env):
 
 def test_recent_projects_come_first(env):
     prefs.add_recent((env["ws"] / "Iris").as_posix(), "Iris", "")
-    infos, _n = scan_workspace(env["ws"].as_posix(), [r["path"] for r in prefs.recent()])
-    assert infos[0].name == "Iris"
+    scan = scan_home(section_rows(), [r["path"] for r in prefs.recent()])
+    assert scan.sections[0].infos[0].name == "Iris" and [i.name for i, _w in scan.recent] == ["Iris"]
 
 
 def test_new_project_writes_a_v2_folder(env):
@@ -334,7 +335,7 @@ def test_open_a_v1_folder_offers_its_import_and_writes_nothing(env, monkeypatch)
     before = _snapshot(old)
     assert not w.open_project(old)
     assert _snapshot(old) == before
-    assert offered == [("OldM31", True, env["ws"])]           # into the workspace, after its check
+    assert offered == [("OldM31", True, env["ws"])]           # into the last folder used, after its check
     assert not (env["ws"] / "OldM31 2").exists()               # nothing written before Import
     assert w.project is None
 
@@ -376,7 +377,7 @@ def test_french_and_back_rebuild_the_menus(env, qapp):
     assert titles() == ["Fichier", "Édition", "Affichage", "Exécuter", "Aide"]
     assert d.windowTitle() == "Paramètres" and d.nav.item(0).text() == "Général"
     assert w.windowTitle() == "SideralForge · Accueil" and w.screens.currentWidget() is w.home
-    assert w.home.count.text() == "3 projets dans le répertoire de travail"
+    assert w.home.sections[0].count.text() == "3 projets"
     assert [m.text() for m in w.mode_btns] == ["Graphe", "Inspection", "Post-traitement"]
     assert prefs.get("language") == "fr"
     saved = json.loads(Path(os.environ["ASTRO_GPU_SETTINGS"]).read_text(encoding="utf-8"))
@@ -574,13 +575,15 @@ def test_shots(env, qapp, tmp_path):
         w.show_home()
         w.worker.wait()
         shot(w, f"home_{lang}")
-        prefs.set("workspace", (env["tmp"] / "empty").as_posix())        # a workspace not created yet
+        rows = prefs.get("home_sections")
+        prefs.set("home_sections", [])                                   # nothing to show yet
         prefs.set("recent", [])
         w.show_home()
         w.worker.wait()
         shot(w, f"home_empty_{lang}")
-        assert not w.home.cards and w.home.count.text() == i18n._("No project in the workspace")
-        prefs.set("workspace", env["ws"].as_posix())
+        assert w.home.sections[0].empty.text() == i18n._(
+            "No project opened yet: create one, or open one with Open project…")
+        prefs.set("home_sections", rows)
         menu = w.menuBar().actions()[0].menu()
         menu.adjustSize()
         shot(menu, f"menu_file_{lang}")

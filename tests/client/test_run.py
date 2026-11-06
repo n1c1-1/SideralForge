@@ -1586,7 +1586,7 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
     B3.mkdir(parents=True, exist_ok=True)
     ws = env["tmp"] / "ws"
     ws.mkdir()
-    prefs.set("workspace", ws.as_posix())                                    # never the user's own workspace
+    prefs.set("last_folder", ws.as_posix())                                  # never the user's own folders
     prefs.set("cache_dir", (env["tmp"] / "scratch").as_posix())
     prefs.set("device", "cpu")
     monkeypatch.setattr(appmod, "machine_info", lambda: Machine([Gpu("cuda:0", "NVIDIA RTX 4060 Ti", 16.0)], 16, 64.0))

@@ -1,6 +1,7 @@
 """A project made with an older version (v1): the dialog that imports it, so that it opens here.
 
-The import (``api.import_v1``) makes a new project in the workspace: the definition of the old project, and the results
+The import (``api.import_v1``) makes a new project, in a folder the user chooses as for New project (issue #31: the
+last folder used at first, "Browse…" to change it): the definition of the old project, and the results
 that are still valid, copied under their new keys. The old folder is never written. First a dry run in the worker says
 what is kept and what will be computed again, with the size to copy and the free space; then Import copies, with a
 progress line, and the new project opens. The dialog is ``PreviousVersionDialog``.
@@ -75,8 +76,8 @@ def blocks_of(stages: list[str]) -> list[str]:
 
 
 def destination(old_root: Path) -> Path:
-    """Where the imported project goes: <workspace>/<old folder name> (a free name)."""
-    ws = Path(prefs.get("workspace"))
+    """Where the imported project goes at first: <the last folder used>/<old folder name> (a free name)."""
+    ws = Path(prefs.last_folder())
     base = folder_name(old_root.name) or "project"
     d, n = ws / base, 2
     while d.exists():
@@ -118,7 +119,7 @@ class PreviousVersionDialog(QDialog):
         v.setSpacing(10)
         v.addWidget(label(_("A project made with an older version"), "h1"))
         intro = label(_("“{name}” was made with an older version. Its workflows and the results that are still "
-                        "valid are copied into a new project of the workspace; its own folder is never "
+                        "valid are copied into a new project, in the folder shown below; its own folder is never "
                         "changed.").format(name=self.old.name), "dim", wrap=True)
         v.addWidget(intro)
         g = QGridLayout()
@@ -132,7 +133,8 @@ class PreviousVersionDialog(QDialog):
             val = ElidedLabel("") if key in ("from", "to") else label("", None, wrap=True)
             g.addWidget(val, i, 1)
             self.rows[key] = val
-        self.b_to = QPushButton(_("Change…"))
+        self.b_to = QPushButton(_("Browse…"))
+        self.b_to.setToolTip(_("The folder the project's own folder is made in"))
         self.b_to.clicked.connect(self._change)
         g.addWidget(self.b_to, 1, 2)
         g.setColumnStretch(1, 1)
@@ -173,8 +175,9 @@ class PreviousVersionDialog(QDialog):
         self.worker.submit(self._ch + ":check", _dry_run, str(self.old), str(self.new))
 
     def _change(self):
-        d = QFileDialog.getExistingDirectory(self, _("New project"), prefs.get("workspace"))
+        d = QFileDialog.getExistingDirectory(self, _("Location of the project"), self.new.parent.as_posix())
         if d:
+            prefs.remember_folder(d)
             target = Path(d)
             if target.exists() and any(target.iterdir()):
                 target = target / folder_name(self.old.name)
