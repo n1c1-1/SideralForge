@@ -87,7 +87,7 @@ from PySide6.QtGui import QPainter  # noqa: E402
 
 from astro_gpu.client.i18n import _  # noqa: E402
 
-# Home: the default sections (My projects = the scratch workspace, the bench, the test copies)
+# Home: the recent projects and the default sections (the bench, the test copies)
 T0 = time.time()
 LOG = []
 

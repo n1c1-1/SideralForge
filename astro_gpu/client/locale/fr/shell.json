@@ -1,6 +1,4 @@
 {
- "1 project in the workspace": "1 projet dans le répertoire de travail",
- "A folder with this name already exists in the workspace.": "Un dossier de ce nom existe déjà dans le répertoire de travail.",
  "About": "À propos",
  "Before": "Avant",
  "After": "Après",
@@ -11,7 +9,6 @@
  "GB of {t} GB": "Go sur {t} Go",
  "In the project folder": "Dans le dossier du projet",
  "No project in this folder: {folder}": "Aucun projet dans ce dossier : {folder}",
- "No projects in this workspace yet.": "Pas encore de projet dans ce répertoire de travail.",
  "No run yet": "Aucune exécution pour l'instant",
  "Not found": "Introuvable",
  "Project created": "Projet créé",
@@ -26,8 +23,6 @@
  "The project cannot be saved: {why}": "Impossible d'enregistrer le projet : {why}",
  "This folder already holds a project.": "Ce dossier contient déjà un projet.",
  "This project cannot be opened: {why}": "Impossible d'ouvrir ce projet : {why}",
- "“{name}” was made with an older version. Import it into the workspace to open it here; its folder is never changed.": "« {name} » a été créé avec une ancienne version. L'importer dans le répertoire de travail pour l'ouvrir ici ; son dossier n'est jamais modifié.",
- "No project in the workspace": "Aucun projet dans le répertoire de travail",
  "{n} workflow": "{n} workflow",
  "{n} workflows": "{n} workflows",
  "{n} night · {h} · {d}": "{n} nuit · {h} · {d}",
@@ -64,7 +59,6 @@
  "{size} freed in {n} projects": "{size} libérés dans {n} projets",
  "Import a project": "Importer un projet",
  "A project made with an older version": "Un projet d'une ancienne version",
- "“{name}” was made with an older version. Its workflows and the results that are still valid are copied into a new project of the workspace; its own folder is never changed.": "« {name} » a été créé avec une ancienne version. Ses workflows et les résultats encore valables sont copiés dans un nouveau projet du répertoire de travail ; son propre dossier n'est jamais modifié.",
  "Previous project": "Projet d'origine",
  "Workflows": "Workflows",
  "Results kept": "Résultats conservés",
@@ -96,5 +90,8 @@
  "Not downloaded: {why}": "Non téléchargé : {why}",
  "{fields} fields, {tiles} tiles in the cache": "{fields} champs, {tiles} tuiles dans le cache",
  "not read: {why}": "non lus : {why}",
- "Downloading the tiles of {n} projects…": "Téléchargement des tuiles de {n} projets…"
+ "Downloading the tiles of {n} projects…": "Téléchargement des tuiles de {n} projets…",
+ "No project opened yet: create one, or open one with Open project…": "Aucun projet ouvert pour l'instant : créez-en un, ou ouvrez-en un avec Ouvrir un projet…",
+ "“{name}” was made with an older version. Import it as a new project to open it here; its folder is never changed.": "« {name} » a été créé avec une ancienne version. L'importer comme nouveau projet pour l'ouvrir ici ; son dossier n'est jamais modifié.",
+ "“{name}” was made with an older version. Its workflows and the results that are still valid are copied into a new project, in the folder shown below; its own folder is never changed.": "« {name} » a été créé avec une ancienne version. Ses workflows et les résultats encore valables sont copiés dans un nouveau projet, dans le dossier indiqué ci-dessous ; son propre dossier n'est jamais modifié."
 }

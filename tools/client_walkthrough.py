@@ -1,6 +1,6 @@
 """A scripted tour of the client, offscreen, in English then in French, with a screenshot of every screen and dialog.
 
-    python tools/client_walkthrough.py [--short] [--out FOLDER] [--workspace FOLDER]
+    python tools/client_walkthrough.py [--short] [--out FOLDER] [--folder FOLDER]
 
 The tour (the real application, ``astro_gpu.client.app.Main``, on the real engine, on the CPU):
 1. Home;
@@ -40,7 +40,7 @@ Nothing is computed (a Continue that would start a run is not clicked); the copy
 export folder, the reviews), so make a fresh copy for each tour.
 
 Rules: CPU only (CUDA_VISIBLE_DEVICES=-1); the settings file and the engine's state folder are temporary; nothing is
-deleted outside the walkthrough's workspace (default F:/astro_essais/tests/walkthrough) and temporary folders; never
+deleted outside the walkthrough's folder (default F:/astro_essais/tests/walkthrough) and temporary folders; never
 F:/astro_projets.
 """
 from __future__ import annotations
@@ -157,13 +157,13 @@ def cut_texts(root) -> list[str]:
 
 # ---------------------------------------------------------------------------------------------- the tour
 class Walk:
-    def __init__(self, out: Path, workspace: Path, short: bool, tmp: Path):
+    def __init__(self, out: Path, folder: Path, short: bool, tmp: Path):
         from PySide6.QtCore import QTimer, qInstallMessageHandler
         from PySide6.QtWidgets import QApplication
 
         from astro_gpu.client import app as appmod
         from astro_gpu.client import prefs
-        self.out, self.ws, self.short, self.tmp = out, workspace, short, tmp
+        self.out, self.ws, self.short, self.tmp = out, folder, short, tmp
         self.n = 0
         self.problems: list[str] = []
         self.messages: list[str] = []
@@ -181,7 +181,8 @@ class Walk:
         logging.basicConfig(level=logging.WARNING)
         logging.getLogger().addHandler(_Collect(self.messages))
         prefs.load()
-        prefs.set("workspace", workspace.as_posix())
+        prefs.set("home_sections", [{"label": "Walkthrough", "folder": folder.as_posix(), "open": True}])
+        prefs.set("last_folder", folder.as_posix())                       # where New project offers to go
         prefs.set("cache_dir", (tmp / "scratch").as_posix())
         prefs.set("language", "en")
         prefs.set("device", "auto")
@@ -316,7 +317,7 @@ class Walk:
         if rep is not None and getattr(rep, "workflows", None):
             names |= set(rep.workflows.values())
         if w.home is not None:
-            names |= {c.info.name for c in w.home.cards}
+            names |= {c.info.name for c in w.home.all_cards()}
         return names
 
     def modal(self, trigger, act, what: str):
@@ -640,7 +641,7 @@ class Walk:
         w = self.w
         w.close_project()
         self.settle()
-        self.until(lambda: any(c.info.root == root.as_posix() for c in w.home.cards), 60, "the card of the project")
+        self.until(lambda: any(c.info.root == root.as_posix() for c in w.home.all_cards()), 60, "the card of the project")
         self.settle(60)
         self.shot("home_after_close")
         w.open_project(root)
@@ -1122,11 +1123,11 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--short", action="store_true", help="no run, no export, no import (the test)")
     ap.add_argument("--out", default=str(Path(os.environ.get("TEMP", tempfile.gettempdir())) / "client_walk"))
-    ap.add_argument("--workspace", default=str(ESSAIS / "tests" / "walkthrough"))
+    ap.add_argument("--folder", default=str(ESSAIS / "tests" / "walkthrough"))
     ap.add_argument("--name", default="Heart")
     ap.add_argument("--project", default="", help="the features tour, on this computed test copy (see above)")
     a = ap.parse_args(argv)
-    ws = Path(a.workspace)
+    ws = Path(a.folder)
     project = Path(a.project) if a.project else None
     for folder in (ws, project):
         if folder is not None and FORBIDDEN.as_posix().lower() in folder.resolve().as_posix().lower():

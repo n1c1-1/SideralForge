@@ -6,7 +6,7 @@ version. No run, no export, no import copy (the full tour does those).
 
 Each screenshot is checked by the tour itself: no text cut short, no English left in French; and the tour fails on any
 Qt warning, Python warning or exception. It runs in its own process (offscreen, CPU only, its own settings file and
-engine state folder), in a temporary workspace.
+engine state folder), in a temporary folder.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def test_the_short_walkthrough_shows_every_screen_in_both_languages_without_a_pr
     out = tmp_path / "shots"
     env = dict(os.environ, CUDA_VISIBLE_DEVICES="-1", PYTHONIOENCODING="utf-8")
     env.pop("ASTRO_GPU_SETTINGS", None)                      # the tour makes its own
-    r = subprocess.run([sys.executable, str(TOOL), "--short", "--workspace", str(tmp_path / "ws"), "--out", str(out)],
+    r = subprocess.run([sys.executable, str(TOOL), "--short", "--folder", str(tmp_path / "ws"), "--out", str(out)],
                        cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
                        timeout=900)
     tail = (r.stdout[-6000:] + "\n" + r.stderr[-3000:])

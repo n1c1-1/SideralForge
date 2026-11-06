@@ -660,11 +660,11 @@ def is_warm(p: Project2) -> bool:
 
 # ---------------------------------------------------------------------------------------------- projects
 
-def list_projects(workspace: str | Path, deep: bool = False) -> list[ProjectSummary]:
-    """The projects of a workspace folder, most recent first (Home cards). Skips ``_*`` folders and folders without
+def list_projects(folder: str | Path, deep: bool = False) -> list[ProjectSummary]:
+    """The projects of a folder, most recent first. Skips ``_*`` folders and folders without
     ``project.astroproj``; a definition that cannot be read gives a summary with ``error``. A cheap scan: the state is
     read from state.json and the store (never the raws); ``deep=True`` computes the true states (worker thread)."""
-    ws = Path(workspace)
+    ws = Path(folder)
     out: list[ProjectSummary] = []
     if not ws.is_dir():
         return out
@@ -673,6 +673,11 @@ def list_projects(workspace: str | Path, deep: bool = False) -> list[ProjectSumm
             out.append(_summary(d, deep))
     out.sort(key=lambda s: s.last, reverse=True)
     return out
+
+
+def project_summary(root: str | Path, deep: bool = False) -> ProjectSummary:
+    """The summary of one project folder (as ``list_projects`` gives each)."""
+    return _summary(Path(root), deep)
 
 
 def _mtime(*paths: Path) -> float:

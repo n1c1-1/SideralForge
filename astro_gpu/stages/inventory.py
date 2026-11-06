@@ -6,10 +6,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+from ..core import cfa as cfa_mod
 from ..core.params import ADVANCED, P, StageParams
 from ..core.project import frame_kind, list_frames
 from ..core.stage import Context, Stage, StageError
-from ..core import cfa as cfa_mod
 from ..io.frames import fits_header, read_cfa, read_info
 
 

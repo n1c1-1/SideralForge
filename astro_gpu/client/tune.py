@@ -1825,7 +1825,8 @@ class TuneView(QWidget):
         lb, n, x = getattr(self, "_count_line", (None, 0, 0))
         if lb is None:
             return
-        head = "{n} frames, {x} excluded by hand. Exclude (X) takes the frame shown out of the master, and "                "Calibration runs again."
+        head = ("{n} frames, {x} excluded by hand. Exclude (X) takes the frame shown out of the master, and "
+                "Calibration runs again.")
         x2 = sum(1 for it in items if it.excluded)
         try:
             lb.setText(lb.text().replace(_(head).format(n=n, x=x), _(head).format(n=n, x=x2)))

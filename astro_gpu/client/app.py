@@ -1,6 +1,6 @@
 """The main window of the client.
 
-Home: the workspace and its projects. A project has three modes over the same blocks:
+Home: the recent projects and the sections of folders. A project has three modes over the same blocks:
 * Graph: the workflows as a graph of blocks, the tools on top, the selected block's settings on the right;
 * Inspect: the image of one block, large, the workflow as a strip, the same settings with the measurements;
 * Post: the workflows' layers, masks and filter layers (Post is the Inspect view of the Post block).
@@ -301,7 +301,7 @@ class Main(QMainWindow):
         self._flash = ""
         self._flash_timer.stop()
         self.setWindowTitle(f"{APP_NAME} · " + _("Home"))
-        self.status.setText(prefs.get("workspace"))
+        self.status.setText("")
         self.update_spec_note()
 
     def new_project(self):
@@ -837,8 +837,8 @@ class Main(QMainWindow):
         self.open_project(root)
 
     def offer_import(self, root: Path):
-        """A project made with an older version: it opens once imported into the workspace; its folder is never
-        written."""
+        """A project made with an older version: it opens once imported as a new project, in a folder the user
+        chooses; its own folder is never written."""
         d = self.import_dialog(root)
         ok = d.exec()
         new = d.result_root
@@ -856,7 +856,7 @@ class Main(QMainWindow):
     def import_box(self, root: Path) -> QMessageBox:
         """A note that the folder holds a project of an older version (tests check its text)."""
         return QMessageBox(QMessageBox.Information, _("Open project"), _(
-            "“{name}” was made with an older version. Import it into the workspace to open it here; its folder "
+            "“{name}” was made with an older version. Import it as a new project to open it here; its folder "
             "is never changed.").format(name=Path(root).name), QMessageBox.Ok, self)
 
     # ------------------------------------------------------------ frames, runs, export, undo
@@ -926,10 +926,12 @@ class Main(QMainWindow):
             self.flash(_("Redone"))
 
     def clear_cache(self):
-        """Clear the unused results of the closed projects of the workspace, after a confirmation (read in the
-        worker: it walks the stores)."""
+        """Clear the unused results of the closed projects Home knows (the recent ones and those of its sections),
+        after a confirmation (read in the worker: it walks the stores)."""
+        from .home import section_rows
         open_root = self.project.root if self.project is not None else None
-        self.worker.submit("cache.usage", _closed_usage, prefs.get("workspace"), open_root)
+        self.worker.submit("cache.usage", _closed_usage, section_rows(), [r["path"] for r in prefs.recent()],
+                           open_root)
 
     def _confirm_clear(self, found):
         total = sum(b for _r, b in found)
@@ -950,7 +952,6 @@ class Main(QMainWindow):
         d.languageChanged.connect(self.change_language)
         d.deviceChanged.connect(self.set_device)
         d.specChanged.connect(self.set_spec)
-        d.workspaceChanged.connect(lambda _w: self.home.rescan() if self.home is not None else None)
         d.homeChanged.connect(lambda: self.home.rescan() if self.home is not None else None)
         d.clearCache.connect(self.clear_cache)
         d.exec()
@@ -1015,7 +1016,7 @@ class Main(QMainWindow):
                 self.screens.currentWidget() is self.proj_screen:
             self.status.setText(getattr(self, "_line", ""))
         else:
-            self.status.setText(prefs.get("workspace"))
+            self.status.setText("")
 
     def about(self):
         d = self.about_dialog()
@@ -1076,11 +1077,13 @@ def _write_thumb(path: Path, rgb) -> None:
     tmp.replace(path)
 
 
-def _closed_usage(workspace: str, open_root) -> list[tuple[str, int]]:
-    """(project folder, unused bytes) of the projects of the workspace, the open one aside (worker thread)."""
+def _closed_usage(rows: list[dict], recent: list[str], open_root) -> list[tuple[str, int]]:
+    """(project folder, unused bytes) of the projects Home knows (the recent ones, those of the sections: issue #31,
+    no workspace), the open one aside (worker thread)."""
+    from .home import known_projects
     out = []
-    for info in api.list_projects(workspace):
-        root = Path(info.root)
+    for root in known_projects(rows, recent):
+        info = api.project_summary(root)
         if open_root is not None and root.resolve() == Path(open_root).resolve():
             continue
         if info.running or info.error:

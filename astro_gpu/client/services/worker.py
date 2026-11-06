@@ -1,6 +1,6 @@
 """ApiWorker: the thread that does what touches the disk or takes time, so that the GUI never blocks.
 
-Workspace scans, the file parts of the keys, describe, outputs, arrays, thumbnails, imports: each request carries a
+Home scans, the file parts of the keys, describe, outputs, arrays, thumbnails, imports: each request carries a
 channel; a new request on a channel replaces the one still waiting there, and only the result of the newest request
 of a channel is delivered. Results come back in the GUI thread as signals.
 

@@ -167,7 +167,7 @@ def _settings(tmp_path, monkeypatch):
     """Nothing here writes the user's settings: a temporary file stands in, English."""
     monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
     prefs.load()
-    prefs.set("workspace", (tmp_path / "ws").as_posix())
+    prefs.set("last_folder", tmp_path.as_posix())
     i18n.set_language("en")
     yield
     i18n.set_language("en")

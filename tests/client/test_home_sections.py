@@ -1,7 +1,8 @@
-"""Home in sections (the workspace and the folders the user adds), and Settings › Folders, offscreen.
+"""Home: the recent projects, then the sections (the folders the user adds), and Settings › Folders, offscreen.
 
-"My projects" (the workspace, projects up to two levels down), "Test copies" (closed until its header is clicked);
-hidden folders; Settings › Folders edits the sections; every text has its French; no disk access in the GUI thread.
+No workspace (issue #31): every recent project shown, a section of the user's (projects up to two levels down), "Test
+copies" (closed until its header is clicked); the "My projects" row of older settings left out; hidden folders;
+Settings › Folders edits the sections; every text has its French; no disk access in the GUI thread.
 
 Everything is built in a scratch folder: the user's F:/astro_projets and F:/astro_essais are never read here.
 """
@@ -50,7 +51,7 @@ def _project(folder: Path, name: str, target: str = "", description: str = "") -
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch, qapp):
-    """A scratch workspace and test copies; the sections point at them; English; a fixed machine."""
+    """A scratch folder of projects and test copies; the sections point at them; English; a fixed machine."""
     monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
     monkeypatch.setenv("ASTRO_GPU_HOME", str(tmp_path / "home"))
     prefs.load()
@@ -64,11 +65,10 @@ def env(tmp_path, monkeypatch, qapp):
     _project(ws / "Old" / "Wizard", "Wizard", "NGC 7380")                 # a project one level down
     for n in ("heart_a7s", "heart_a7s_copy"):
         _project(copies / n, "heart_a7s", "IC 1805", "The reference Heart")
-    prefs.set("workspace", ws.as_posix())
     prefs.set("cache_dir", (tmp_path / "scratch").as_posix())
     rows = home.section_rows()
-    rows[1]["folder"] = copies.as_posix()
-    home.save_rows(rows)
+    rows[0]["folder"] = copies.as_posix()
+    home.save_rows([{"label": "Mine", "folder": ws.as_posix(), "note": "", "open": True}] + rows)
     appmod.apply_language("en")
     monkeypatch.setattr(appmod, "machine_info", lambda: MACHINE)
     windows = []
@@ -111,35 +111,44 @@ def test_the_default_sections(tmp_path, monkeypatch):
     monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
     prefs.load()
     rows = home.section_rows()
-    assert [(r["label"], r["folder"], r["open"], r["workspace"]) for r in rows] == [
-        ("My projects", "F:/astro_projets", True, True), ("Test copies", "F:/astro_essais/v2", False, False)]
-    assert all(r["note"] for r in rows)
+    assert [(r["label"], r["folder"], r["open"]) for r in rows] == [("Test copies", "F:/astro_essais/v2", False)]
+    assert all(r["note"] for r in rows) and "workspace" not in prefs.DEFAULTS
     rows[0]["label"] = "changed"                                           # a copy: the defaults stay
-    assert prefs.DEFAULTS["home_sections"][0]["label"] == "My projects"
-    prefs.set("workspace", "D:/elsewhere")                                 # the old key still names "My projects"
-    assert home.section_rows()[0]["folder"] == "D:/elsewhere"
+    assert prefs.DEFAULTS["home_sections"][0]["label"] == "Test copies"
+    # the settings of an older version: their "My projects" row (the workspace, no folder of its own) is left out
+    (tmp_path / "settings.json").write_text(json.dumps({"workspace": "D:/elsewhere", "home_sections": [
+        {"label": "My projects", "workspace": True, "open": True, "note": "Your own projects."},
+        {"label": "Copies", "folder": "D:/copies", "open": False}]}), encoding="utf-8")
+    prefs.load()
+    assert [(r["label"], r["folder"]) for r in home.section_rows()] == [("Copies", "D:/copies")]
     home.save_rows(home.section_rows())
     saved = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
-    assert "folder" not in saved["home_sections"][0] and saved["workspace"] == "D:/elsewhere"
+    assert saved["home_sections"] == [{"label": "Copies", "folder": "D:/copies", "note": "", "open": False}]
 
 
 def test_the_scan_finds_projects_two_levels_down_and_skips_hidden_ones(env):
     scan = home.scan_home(home.section_rows(), [])
     mine, copies = scan.sections
-    assert sorted(i.name for i in mine.infos) == ["HeartSoul", "Iris", "Wizard"] and scan.n_ws == 3
+    assert sorted(i.name for i in mine.infos) == ["HeartSoul", "Iris", "Wizard"]
     assert sorted(i.title for i in copies.infos) == ["heart_a7s", "heart_a7s_copy"]      # same name: the folders
     assert all(not i.title for i in mine.infos)
     missing = home.scan_home([{"label": "Gone", "folder": (env["tmp"] / "nowhere").as_posix()}], [])
     assert not missing.sections[0].found and not missing.sections[0].infos
-    # the old one-folder scan keeps its rules
-    infos, n = home.scan_workspace(env["ws"].as_posix(), [(env["ws"] / "Iris").as_posix()])
-    assert n == 3 and infos[0].name == "Iris" and not [i for i in infos if i.name.startswith("hidden")]
+    # every project Home knows (the cache of the closed projects is cleared over them): the recent ones, then the
+    # sections', each once, the hidden ones and the folders that are no project left out
+    other = _project(env["tmp"] / "elsewhere" / "Pelican", "Pelican")
+    recent = [other.as_posix(), (env["ws"] / "Iris").as_posix(), (env["tmp"] / "gone").as_posix()]
+    known = home.known_projects(home.section_rows(), recent)
+    assert [d.name for d in known[:2]] == ["Pelican", "Iris"]
+    assert sorted(d.name for d in known[2:]) == ["Heart", "Wizard", "heart_a7s", "heart_a7s_copy"]
 
 
 # ---------------------------------------------------------------------------------------------- the view
 
 def test_home_shows_the_sections_and_opens_test_copies_on_a_click(env, qapp):
     from astro_gpu.client.services.inspect import GuiDiskWatch
+    for k in range(5):                                                       # every recent project is shown, not 4
+        prefs.add_recent(_project(env["tmp"] / "elsewhere" / f"P{k}", f"P{k}").as_posix(), f"P{k}")
     prefs.add_recent((env["copies"] / "heart_a7s").as_posix(), "heart_a7s", "IC 1805")
     with GuiDiskWatch([env["ws"], env["copies"]]) as watch:
         next(f for f in (env["copies"] / "heart_a7s").iterdir() if f.is_file()).read_bytes()   # the watch sees it
@@ -147,11 +156,12 @@ def test_home_shows_the_sections_and_opens_test_copies_on_a_click(env, qapp):
         watch.hits.clear()
         watch.where.clear()
         w = _main(env)
-        assert [s.title.text() for s in w.home.sections] == ["Recent projects", "My projects", "Test copies"]
-        assert sorted(c.info.name for c in w.home.cards) == ["HeartSoul", "Iris", "Wizard"]
-        assert w.home.count.text() == "3 projects in the workspace"
+        assert [s.title.text() for s in w.home.sections] == ["Recent projects", "Mine", "Test copies"]
+        assert sorted(c.info.name for c in _section(w, "Mine").cards) == ["HeartSoul", "Iris", "Wizard"]
+        assert [c.info.name for c in w.home.recent_cards] == ["heart_a7s", "P4", "P3", "P2", "P1", "P0"]
         recent = w.home.recent_cards[0]
         assert _card_texts(recent)[0] == "Test copies"                        # the section it comes from
+        assert not [b for b in w.home.findChildren(QPushButton) if b.text() == "Change…"]     # no workspace
         copies = _section(w, "Test copies")
         assert not copies.is_open and copies.body.isHidden() and copies.count.text() == "2 projects"
         copies.header.clicked.emit()
@@ -162,8 +172,16 @@ def test_home_shows_the_sections_and_opens_test_copies_on_a_click(env, qapp):
     assert home.section_rows()[1]["open"]                                    # kept in the settings
     w.change_language("fr")                                                  # rebuilt: the opened section stays open
     assert w.worker.wait()
-    assert _section(w, "Copies de test").is_open and _section(w, "Mes projets").count.text() == "3 projets"
+    assert _section(w, "Copies de test").is_open and _section(w, "Mine").count.text() == "3 projets"
+    assert _section(w, "Projets récents").cards
     assert not i18n.missing(), sorted(i18n.missing())
+
+
+def test_home_with_nothing_to_show_says_how_to_start(env, qapp):
+    home.save_rows([])
+    w = _main(env)
+    assert [s.title.text() for s in w.home.sections] == ["Recent projects"]
+    assert w.home.sections[0].empty.text() == "No project opened yet: create one, or open one with Open project…"
 
 
 def test_settings_edit_the_sections(env, qapp):
@@ -174,10 +192,9 @@ def test_settings_edit_the_sections(env, qapp):
     d.show_page("folders")
     qapp.processEvents()
     assert len(d.sec_rows) == 2
-    ws_row = d.sec_rows[0]
-    assert not ws_row["folder"].isEnabled() and ws_row["folder"].text() == env["ws"].as_posix()
+    assert d.sec_rows[0]["folder"].isEnabled() and d.sec_rows[0]["folder"].text() == env["ws"].as_posix()
     removes = [b for b in d.pages.currentWidget().findChildren(QPushButton) if b.text() == "Remove"]
-    assert len(removes) == 2 and not removes[0].isEnabled()
+    assert len(removes) == 2 and all(b.isEnabled() for b in removes)        # every section can go
     add = next(b for b in d.pages.currentWidget().findChildren(QPushButton) if b.text() == "Add a section")
     add.click()
     qapp.processEvents()
@@ -191,12 +208,12 @@ def test_settings_edit_the_sections(env, qapp):
     removes = [b for b in d.pages.currentWidget().findChildren(QPushButton) if b.text() == "Remove"]
     removes[2].click()
     qapp.processEvents()
-    assert [r["label"] for r in home.section_rows()] == ["My projects", "Test copies"]
+    assert [r["label"] for r in home.section_rows()] == ["Mine", "Test copies"]
     # in French the default names show translated; left as they are, the English stays stored
     i18n.set_language("fr")
     d.rebuild()
     qapp.processEvents()
-    assert d.sec_rows[0]["name"].text() == "Mes projets"
+    assert d.sec_rows[1]["name"].text() == "Copies de test"
     d.sec_rows[1]["note"].editingFinished.emit()
     assert home.section_rows()[1]["label"] == "Test copies"
     assert all(isinstance(e, QLineEdit) for r in d.sec_rows for e in (r["name"], r["folder"], r["note"]))

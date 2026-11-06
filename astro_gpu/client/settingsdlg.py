@@ -58,7 +58,6 @@ class SettingsDialog(QDialog):
     languageChanged = Signal(str)
     deviceChanged = Signal(str)                      # auto | cuda:<n> | cpu
     specChanged = Signal(bool)
-    workspaceChanged = Signal(str)
     homeChanged = Signal()                           # the sections of Home (Folders page)
     clearCache = Signal()
 
@@ -91,7 +90,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle(_("Settings"))
         self.spec = prefs.spec()
         self.bars = {}
-        self.sec_rows, self.sec_ws = [], None
+        self.sec_rows = []
         self.nav = QListWidget()
         self.nav.setFixedWidth(200)
         self.h.addWidget(self.nav)
@@ -242,14 +241,12 @@ class SettingsDialog(QDialog):
         self.row(v, _("Spec mode"), spec)
 
     def folders(self, v):
-        self.path_row(v, _("Workspace"), "workspace", changed=self._workspace)
         self.path_row(v, _("Cache (calibrated frames)"), "cache_dir",
                       placeholder=_("In the project folder"), changed=lambda _x: self.measure_disks())
         self.path_row(v, _("Temporary files"), "temp_dir", new=True)
         self.row(v, _("Cache limit"), self.spin(10, 4000, "cache_limit_gb"), _("GB"), new=True)
         v.addWidget(label(_("Disk use"), "h2"))
-        for key, name, new in (("cache", _("Cache"), False), ("workspace", _("Workspace"), False),
-                               ("temp", _("Temporary"), True)):
+        for key, name, new in (("cache", _("Cache"), False), ("temp", _("Temporary"), True)):
             bar = QProgressBar()
             bar.setRange(0, 1000)
             bar.setTextVisible(False)
@@ -270,8 +267,7 @@ class SettingsDialog(QDialog):
         self.home_sections(v)
 
     def home_sections(self, v):
-        """The sections of Home: a row each (name, folder, description); the workspace's row takes its folder from
-        the Workspace setting above and cannot be removed."""
+        """The sections of Home, under the recent projects: a row each (name, folder, description)."""
         from .home import section_rows
         v.addSpacing(6)
         v.addWidget(label(_("Home sections"), "h2"))
@@ -296,14 +292,6 @@ class SettingsDialog(QDialog):
                 e.setPlaceholderText(text)
                 e.setToolTip(text)
                 e.setCursorPosition(0)
-            if r["workspace"]:
-                why = _("The workspace, set above: New project creates its folders there.")
-                folder.setEnabled(False)
-                browse.setEnabled(False)
-                rm.setEnabled(False)
-                for w in (folder, browse, rm):
-                    w.setToolTip(why)
-                self.sec_ws = folder
             self.sec_rows.append({"row": r, "name": name, "folder": folder, "note": note})
             for e in (name, folder, note):
                 e.editingFinished.connect(self._save_sections)
@@ -574,7 +562,6 @@ class SettingsDialog(QDialog):
         if self.worker is None or not self.bars:
             return
         self.worker.submit("settings.disks", disk_usage, {"cache": prefs.get("cache_dir"),
-                                                          "workspace": prefs.get("workspace"),
                                                           "temp": prefs.get("temp_dir")})
 
     def _done(self, channel, _n, result):
@@ -607,15 +594,6 @@ class SettingsDialog(QDialog):
         prefs.set("device", dev)
         self.deviceChanged.emit(dev)
 
-    def _workspace(self, folder):
-        self.measure_disks()
-        if getattr(self, "sec_ws", None) is not None:
-            try:
-                self.sec_ws.setText(folder)
-            except RuntimeError:                     # the page was built again meanwhile
-                pass
-        self.workspaceChanged.emit(folder)
-
     # ------------------------------------------------------------ the sections of Home
     def _section_values(self) -> list[dict]:
         """The rows as edited: a name or a description left as shown (translated) keeps its stored English."""
@@ -625,8 +603,7 @@ class SettingsDialog(QDialog):
             name, note = w["name"].text().strip(), w["note"].text().strip()
             r["label"] = r["label"] if name == maybe(r["label"]) else name
             r["note"] = r["note"] if note == maybe(r["note"]) else note
-            if not r["workspace"]:
-                r["folder"] = w["folder"].text().strip()
+            r["folder"] = w["folder"].text().strip()
             rows.append(r)
         return rows
 
@@ -645,12 +622,12 @@ class SettingsDialog(QDialog):
 
     def _remove_section(self, k: int):
         rows = self._section_values()
-        if 0 <= k < len(rows) and not rows[k]["workspace"]:
+        if 0 <= k < len(rows):
             del rows[k]
             self._save_sections(rows)
             QTimer.singleShot(0, self.rebuild)
 
     def _add_section(self):
-        rows = self._section_values() + [{"label": "", "folder": "", "note": "", "open": True, "workspace": False}]
+        rows = self._section_values() + [{"label": "", "folder": "", "note": "", "open": True, "only": ""}]
         self._save_sections(rows)
         QTimer.singleShot(0, self.rebuild)

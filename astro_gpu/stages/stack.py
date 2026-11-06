@@ -43,11 +43,11 @@ import torch
 import torch.nn.functional as F
 from pydantic import field_validator
 
+from ..core import cfa as cfa_mod
 from ..core.imgutil import asinh_preview
 from ..core.params import ADVANCED, Auto, P, StageParams, check_choice
 from ..core.stack_classic import HIGH_SHIFT
 from ..core.stage import Context, Stage, StageError
-from ..core import cfa as cfa_mod
 from ..io.frames import cfa_channel_map
 from .calibrate import VALID_MAX, open_cache
 

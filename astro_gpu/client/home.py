@@ -1,10 +1,10 @@
-"""Home: the projects, in sections. New project, open, import a folder as a new project, recent projects.
+"""Home: the projects opened last, then the sections. New project, open, import a folder as a new project.
 
-Home shows SECTIONS (Settings › Folders: a list of rows, prefs "home_sections"), each a folder with its name and a
-one-line description (a row's "only", a folder-name pattern such as "ours_*", keeps only the projects whose folder
-matches it): by default "My projects" (the workspace, prefs "workspace": where New project creates its
-folders) and "Test copies" (F:/astro_essais/v2, closed until its header is clicked). Above them, the projects opened
-last.
+There is no workspace (issue #31): a project lives where the user puts it, and Home first shows the projects opened
+last (prefs "recent", up to ``prefs.RECENT_MAX``). Below them, the SECTIONS (Settings › Folders: a list of rows, prefs
+"home_sections"), each a folder with its name and a one-line description (a row's "only", a folder-name pattern such as
+"ours_*", keeps only the projects whose folder matches it): by default "Test copies" (F:/astro_essais/v2, closed until
+its header is clicked). The "My projects" row of the settings of older versions (the workspace) is no longer shown.
 
 The folders are read in the ApiWorker (``scan_home``): every sub-folder holding a project.astroproj and, for a
 sub-folder holding none, its own sub-folders that do; names starting with "_" or ".", pytest and temporary folders are
@@ -16,7 +16,6 @@ Classes: ``HomeView`` shows a ``SectionView`` per section, each with its ``Proje
 """
 from __future__ import annotations
 
-import copy
 import json
 import os
 import re
@@ -49,40 +48,32 @@ from .widgets import ACCENT, WARN, ElidedLabel, label
 TW, TH = 260, 150
 CARD_W, GAP = TW + 20, 16
 THUMB = Path("cache") / "thumb.jpg"
-RECENT_SHOWN = 4                                     # the recent projects shown above the sections
+RECENT_SHOWN = prefs.RECENT_MAX                      # the recent projects shown above the sections: all those kept
 
 # ---------------------------------------------------------------------------------------------- the sections (prefs)
 
 
 def section_rows() -> list[dict]:
-    """The sections of Home, as Settings › Folders keeps them (a copy): [{"label", "folder", "note", "open",
-    "workspace"}]. The workspace row ("My projects") takes its folder from prefs "workspace"; there is always one."""
+    """The sections of Home, as Settings › Folders keeps them (a copy): [{"label", "folder", "note", "open", "only"}].
+    The workspace row of older settings ("My projects", no folder of its own) is left out (issue #31)."""
     rows = []
     for r in prefs.get("home_sections") or []:
-        if not isinstance(r, dict):
+        if not isinstance(r, dict) or r.get("workspace"):
             continue
-        ws = bool(r.get("workspace"))
-        folder = (prefs.get("workspace") or "") if ws else str(r.get("folder") or "")
-        rows.append({"label": str(r.get("label") or ""), "folder": folder, "note": str(r.get("note") or ""),
-                     "open": bool(r.get("open", True)), "workspace": ws, "only": str(r.get("only") or "")})
-    if not any(r["workspace"] for r in rows):
-        base = copy.deepcopy(prefs.DEFAULTS["home_sections"][0])
-        rows.insert(0, {"label": base["label"], "folder": prefs.get("workspace") or "", "note": base["note"],
-                        "open": True, "workspace": True})
+        rows.append({"label": str(r.get("label") or ""), "folder": str(r.get("folder") or ""),
+                     "note": str(r.get("note") or ""), "open": bool(r.get("open", True)),
+                     "only": str(r.get("only") or "")})
     return rows
 
 
 def save_rows(rows: list[dict]):
-    """Keep the sections (the workspace row without its folder: prefs "workspace" holds it)."""
+    """Keep the sections."""
     out = []
     for r in rows:
-        d = {"label": r.get("label", ""), "note": r.get("note", ""), "open": bool(r.get("open", True))}
+        d = {"label": r.get("label", ""), "folder": r.get("folder", ""), "note": r.get("note", ""),
+             "open": bool(r.get("open", True))}
         if r.get("only"):
             d["only"] = r["only"]
-        if r.get("workspace"):
-            d["workspace"] = True
-        else:
-            d["folder"] = r.get("folder", "")
         out.append(d)
     prefs.set("home_sections", out)
 
@@ -117,7 +108,6 @@ class SectionScan:
 class HomeScan:
     sections: list[SectionScan]
     recent: list[tuple[ProjectInfo, str]]            # (project, the name of its section or "")
-    n_ws: int                                        # projects of the workspace
 
 
 _HIDE = re.compile(r"^(?:[_.]|pytest|tmp|temp(?![a-z]))|[_\-.](?:tmp|temp)$", re.I)
@@ -339,7 +329,7 @@ def scan_home(rows: list[dict], recent: list[str]) -> HomeScan:
         return cache[k]
 
     rank = {_key(r): n for n, r in enumerate(recent)}
-    sections, n_ws = [], 0
+    sections = []
     for row in rows:
         folder = row.get("folder") or ""
         try:
@@ -351,8 +341,6 @@ def scan_home(rows: list[dict], recent: list[str]) -> HomeScan:
         infos = [info_of(d) for d in dirs]
         _titles(infos)
         sections.append(SectionScan(dict(row), infos, found))
-        if row.get("workspace"):
-            n_ws = len(infos)
     shown: list[tuple[ProjectInfo, str]] = []
     for r in recent:
         d = Path(r)
@@ -362,23 +350,26 @@ def scan_home(rows: list[dict], recent: list[str]) -> HomeScan:
             continue
         where = next((s.row.get("label", "") for s in sections if _inside(d, s.row.get("folder", ""))), "")
         shown.append((info_of(d), where))
-    return HomeScan(sections, shown, n_ws)
+    return HomeScan(sections, shown)
 
 
-def scan_workspace(workspace: str, recent: list[str]) -> tuple[list[ProjectInfo], int]:
-    """The projects of one folder (the workspace), recent ones first, then the newest; and how many it holds. Hidden
-    folders ("_qc", pytest, temporary) are skipped."""
-    s = scan_home([{"label": "", "folder": workspace, "workspace": True}], [])
-    infos = s.sections[0].infos
-    order = [d for d in (Path(r) for r in recent) if not hidden(d.name) and _is_project(d)]
-    known = {_key(i.root): i for i in infos}
-    head = []
-    for d in order:
-        if any(_same(d, Path(i.root)) for i in head):
+def known_projects(rows: list[dict], recent: list[str]) -> list[Path]:
+    """Every project Home knows (worker thread): the recent ones, then those of the sections, each once."""
+    out: list[Path] = []
+    seen: set[str] = set()
+    cands = [Path(r) for r in recent]
+    for row in rows:
+        folder = row.get("folder") or ""
+        try:
+            if folder and Path(folder).is_dir():
+                cands += find_projects(Path(folder), row.get("only") or "")
+        except OSError:
             continue
-        head.append(known.get(_key(d)) or _read(d))
-    rest = [i for i in infos if not any(_same(Path(i.root), Path(h.root)) for h in head)]
-    return head + rest, s.n_ws
+    for d in cands:
+        if _key(d) not in seen and _is_project(d):
+            seen.add(_key(d))
+            out.append(d)
+    return out
 
 
 # ---------------------------------------------------------------------------------------------- cards
@@ -551,11 +542,12 @@ def folder_name(name: str) -> str:
 
 
 class NewProjectDialog(QDialog):
-    """Name, target and folder of a new project; the folder is <workspace>/<name>."""
+    """Name, target and folder of a new project; the folder is <location>/<name>, the location chosen with Browse…
+    (the last folder used at first)."""
 
-    def __init__(self, workspace: str, name: str = "", target: str = "", parent=None):
+    def __init__(self, location: str, name: str = "", target: str = "", parent=None):
         super().__init__(parent)
-        self.workspace = Path(workspace)
+        self.location = Path(location)
         self.setWindowTitle(_("New project"))
         self.setMinimumWidth(520)
         v = QVBoxLayout(self)
@@ -628,7 +620,7 @@ class NewProjectDialog(QDialog):
             self._check_target()
 
     def folder(self) -> Path:
-        return self.workspace / folder_name(self.name.text())
+        return self.location / folder_name(self.name.text())
 
     def _check_target(self):
         """The target looked up in the catalogues shipped with the application and the names found before: what it
@@ -664,15 +656,15 @@ class NewProjectDialog(QDialog):
 
     def _browse(self):
         """The location chosen (issue #31: the project decides where it lives, not a workspace)."""
-        d = QFileDialog.getExistingDirectory(self, _("Location of the project"), self.workspace.as_posix())
+        d = QFileDialog.getExistingDirectory(self, _("Location of the project"), self.location.as_posix())
         if d:
-            self.workspace = Path(d)
+            self.location = Path(d)
             prefs.remember_folder(d)
             self._update()
 
     def _update(self):
         f = folder_name(self.name.text())
-        self.folder_lb.setText(self.workspace.as_posix() + "/" + (f or "…"))
+        self.folder_lb.setText(self.location.as_posix() + "/" + (f or "…"))
         taken = bool(f) and self.folder().exists()
         self.exists.setVisible(taken)
         self.ok.setEnabled(bool(f) and not taken)
@@ -697,13 +689,6 @@ class HomeView(QWidget):
         lv = QVBoxLayout(left)
         lv.setContentsMargins(18, 20, 18, 18)
         lv.setSpacing(8)
-        lv.addWidget(label(_("Workspace"), "h2"))
-        self.ws = ElidedLabel(prefs.get("workspace"), "dim")
-        lv.addWidget(self.ws)
-        ch = QPushButton(_("Change…"))
-        ch.clicked.connect(self.change_ws)
-        lv.addWidget(ch, 0, Qt.AlignLeft)
-        lv.addSpacing(14)
         buttons = []
         for text, fn, primary, on in ((_("New project…"), self.new_project, True, True),
                                       (_("Import folder as new project…"), lambda: self.importFolder.emit(), False,
@@ -717,11 +702,8 @@ class HomeView(QWidget):
             lv.addWidget(b)
             buttons.append(b)
         lv.addStretch(1)
-        self.count = label("", "small")
-        lv.addWidget(self.count)
         left.setFixedWidth(max([300] + [b.sizeHint().width() + 40 for b in buttons]))   # wider only for a long text
         root.addWidget(left)
-        self.cards: list[ProjectCard] = []           # the cards of the workspace ("My projects")
         self.recent_cards: list[ProjectCard] = []
         self.sections: list[SectionView] = []
         self.last: HomeScan | None = None
@@ -744,8 +726,7 @@ class HomeView(QWidget):
 
     # ------------------------------------------------------------ the projects
     def rescan(self):
-        """Read the sections' folders again (in the worker)."""
-        self.ws.setText(prefs.get("workspace"))
+        """Read the recent projects and the sections' folders again (in the worker)."""
         self._resolved = set()
         self.worker.submit("home", scan_home, section_rows(), [r["path"] for r in prefs.recent()])
 
@@ -781,7 +762,7 @@ class HomeView(QWidget):
             self.lay.removeWidget(s)
             s.hide()
             s.deleteLater()
-        self.sections, self.cards, self.recent_cards = [], [], []
+        self.sections, self.recent_cards = [], []
         at = 0
         if scan.recent:
             sec = SectionView(_("Recent projects"), collapsible=False)
@@ -800,20 +781,16 @@ class HomeView(QWidget):
             cards = [self._card(i) for i in s.infos]
             if not s.found:
                 empty = _("This folder is not there: is its disk plugged in?")
-            elif row.get("workspace"):
-                empty = _("No projects in this workspace yet.")
             else:
                 empty = _("No projects in this folder.")
             sec.set_cards(cards, empty)
             sec.toggled.connect(lambda on, sc=s: self._toggled(sc, on))
             self._add(sec, at)
             at += 1
-            if row.get("workspace"):
-                self.cards = cards
-        n_ws = scan.n_ws
-        self.count.setText(_("No project in the workspace") if n_ws == 0 else
-                           _("1 project in the workspace") if n_ws == 1 else
-                           _("{n} projects in the workspace").format(n=n_ws))
+        if not scan.recent and not any(s.row.get("folder") for s in scan.sections):
+            sec = SectionView(_("Recent projects"), collapsible=False)
+            sec.set_cards([], _("No project opened yet: create one, or open one with Open project…"))
+            self._add(sec, at)
         self._place()
 
     def _card(self, info: ProjectInfo, tag: str = "") -> ProjectCard:
@@ -830,8 +807,7 @@ class HomeView(QWidget):
         s.row["open"] = on
         rows = section_rows()
         for r in rows:
-            if (r["workspace"] and s.row.get("workspace")) or (not r["workspace"] and _key(r["folder"]) == _key(
-                    s.row.get("folder", "")) and r["label"] == s.row.get("label")):
+            if _key(r["folder"]) == _key(s.row.get("folder", "")) and r["label"] == s.row.get("label"):
                 r["open"] = on
         save_rows(rows)
         if on:
@@ -853,12 +829,6 @@ class HomeView(QWidget):
         return False
 
     # ------------------------------------------------------------ actions
-    def change_ws(self):
-        d = QFileDialog.getExistingDirectory(self, _("Workspace"), prefs.get("workspace"))
-        if d:
-            prefs.set("workspace", d)
-            self.rescan()
-
     def ask_new_project(self, name: str = "", target: str = "") -> tuple[str, str, str, dict] | None:
         """The New project dialog: (folder, name, target, details: ra, dec, focal_mm, pixel_um when known), or None."""
         d = NewProjectDialog(prefs.last_folder(), name, target, self.window())

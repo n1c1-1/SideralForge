@@ -3,6 +3,7 @@ and New project chooses its location."""
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -17,14 +18,13 @@ from astro_gpu.client import prefs  # noqa: E402
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
     prefs.load()
-    prefs.set("workspace", (tmp_path / "ws").as_posix())
-    (tmp_path / "ws").mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))       # the user's home folder
     yield tmp_path
     prefs.load()
 
 
 def test_the_last_folder_used_is_where_the_next_dialog_opens(env):
-    assert prefs.last_folder() == (env / "ws").as_posix()                     # the first time: the old workspace
+    assert prefs.last_folder() == str(env)                                       # the first time: the home folder
     lights = env / "night" / "LIGHTS"
     lights.mkdir(parents=True)
     f = lights / "a.cr3"
