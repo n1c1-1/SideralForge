@@ -190,6 +190,51 @@ def _fill_bad_xtrans(x: torch.Tensor, miss: torch.Tensor, rounds: int, ch_of_k) 
     return out
 
 
+# ------------------------------------------------------------------------------------------------ Markesteijn
+#: the raw files the X-Trans frames are demosaiced through (one kept: the session's template)
+_XTRANS_RAW: dict = {}
+
+
+def markesteijn(cfa: torch.Tensor, ch_of_k, template: str, passes: int = 3) -> torch.Tensor:
+    """(3, H, W): an X-Trans frame (H, W, no NaN) demosaiced by Frank Markesteijn's algorithm, the X-Trans
+    demosaicing of the raw converters and of the astronomy software (issue #35), run by the raw decoder's own
+    implementation (LibRaw's ``xtrans_interpolate``, the reference code, from dcraw): the frame is written into
+    the visible image of ``template`` (a raw file of the same camera), as 16-bit values over its [min, max] (as the
+    float path of RCD above), and demosaiced with no white balance, no colour conversion and no gamma; its own
+    samples are put back as they were. ``passes`` 3 (the decoder's high-quality setting): its 1-pass run lowers by
+    1/256 the red and blue of the greens of the 2 x 2 green blocks on a flat field (measured on a uniform frame:
+    19921 for 20000), the 3-pass run returns a flat field exactly (tests/test_xtrans.py)."""
+    import rawpy
+    x = cfa.float()
+    H, W = x.shape
+    r = _XTRANS_RAW.get(template)
+    if r is None:
+        for old in _XTRANS_RAW.values():
+            old.close()
+        _XTRANS_RAW.clear()
+        r = _XTRANS_RAW[template] = rawpy.imread(str(template))
+    vis = r.raw_image_visible
+    if vis.shape != (H, W):
+        raise ValueError(f"the raw file {template} is {vis.shape[1]} x {vis.shape[0]}, the frame {W} x {H}")
+    ch = channel_map(ch_of_k)
+    got = [0 if c == 0 else 2 if c == 2 else 1 for c in r.raw_colors_visible[:6, :6].ravel().tolist()]
+    if got != ch:
+        raise ValueError(f"the raw file {template} has another colour pattern than the frame")
+    lo, hi = float(x.min()), float(x.max())
+    span = max(hi - lo, 1e-6)
+    vis[...] = ((x - lo) * (65535.0 / span)).round().clamp(0, 65535).to(torch.int32).cpu().numpy().astype(np.uint16)
+    out = r.postprocess(demosaic_algorithm=rawpy.DemosaicAlgorithm.AHD if passes > 1 else
+                        rawpy.DemosaicAlgorithm.LINEAR, output_color=rawpy.ColorSpace.raw, gamma=(1, 1),
+                        no_auto_bright=True, bright=1.0, user_black=0, user_sat=65535, output_bps=16, user_flip=0,
+                        use_camera_wb=False, use_auto_wb=False, user_wb=[1.0, 1.0, 1.0, 1.0],
+                        highlight_mode=rawpy.HighlightMode.Clip)
+    rgb = torch.from_numpy(out.astype(np.float32)).to(x.device).permute(2, 0, 1) * (span / 65535.0) + lo
+    col = colour_of(ch_of_k, H, W, x.device)
+    for c in range(3):
+        rgb[c] = torch.where(col == c, x, rgb[c])
+    return rgb
+
+
 # ------------------------------------------------------------------------------------------------ bilinear
 def bilinear(cfa: torch.Tensor, ch_of_k) -> torch.Tensor:
     """(3, H, W): each missing colour the mean of the samples of that colour in the 3 x 3 neighbourhood (inside the
@@ -415,11 +460,14 @@ def rcd(cfa: torch.Tensor, ch_of_k, *, siril_range: bool = True, balance=None,
     return out
 
 
-def debayer(cfa: torch.Tensor, ch_of_k, method: str = "rcd", balance="auto") -> torch.Tensor:
+def debayer(cfa: torch.Tensor, ch_of_k, method: str = "rcd", balance="auto", template: str | None = None
+            ) -> torch.Tensor:
     if is_xtrans(ch_of_k):
-        # RCD is made for the Bayer lattice; an X-Trans frame: the bilinear (each 3 x 3 window holds the three
-        # colours). The published X-Trans demosaicing (Markesteijn's) is still to come: the Drizzle method needs none
-        return bilinear(cfa, ch_of_k)
+        # RCD is made for the Bayer lattice. An X-Trans frame: Markesteijn's demosaicing when a raw file of the
+        # session is given (``template``), else the bilinear (each 3 x 3 window holds the three colours)
+        if method == "bilinear" or template is None:
+            return bilinear(cfa, ch_of_k)
+        return markesteijn(cfa, ch_of_k, template)
     """(3, H, W) float32 from a CFA frame (H, W) without NaN: ``method`` one of METHODS. ``balance`` (RCD): "auto"
     the frame's own white balance (``cfa_balance``) before demosaicing, None none (as Siril), or the multipliers
     (R, G, B)."""

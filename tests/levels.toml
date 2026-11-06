@@ -21,6 +21,7 @@ level3 = [
     "tests/test_api.py::test_cli2_creates_plans_runs_follows_and_stops_a_toy_project",             # worker, 11 s
     "tests/test_runner2.py::test_after_a_gpu_fault_a_fresh_worker_retries_the_job_once_and_the_lock_is_held_throughout",  # workers, 8-11 s
     "tests/test_stacking.py::test_selection_at_k_sigma_with_reasons",                              # heavy: 2 stacks, 5 s
+    "tests/test_xtrans.py::test_markesteijn_demosaics_through_the_raw_file_a_flat_field_exactly",   # real data: 3 frames of 24 Mpx, 9 s
     # ---- client -------------------------------------------------------------------------------------------------
     "tests/client/test_walkthrough.py",                                                            # screenshots + real data + worker, 64 s
     # test_inspect.py: the test project, screenshots

@@ -239,14 +239,16 @@ def _reduce(count: np.ndarray, f: int) -> np.ndarray:
 
 def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weights=None,
                   params: ClassicParams | None = None, device="cpu", *, used, ch_of_k, H: int, W: int, sat_level=None,
-                  progress: Callable | None = None, masks: bool = False) -> ClassicResult:
+                  progress: Callable | None = None, masks: bool = False, raw_template: str | None = None
+                  ) -> ClassicResult:
     """Stack the frames ``used`` by the Classic method (see the module's docstring for what stack.py passes).
 
     ``load(i)``: frame i, the calibrated CFA (H, W) (torch or numpy; NaN = bad, > VALID_MAX = saturated); ``coef``
     (n, 2, 10) the registration polynomials; ``bad``: an extra bad-pixel mask (H, W) or None; ``norm``: the
     normalisation (``Norm``; None: none); ``weights``: (n,) frame weights (None: equal); ``sat_level``: the
     saturation level (a float or a map (H, W)), put on the saturated samples (None: VALID_MAX); ``masks``: keep what
-    was rejected in each frame (``ClassicResult.masks``)."""
+    was rejected in each frame (``ClassicResult.masks``); ``raw_template``: a raw file of the session, through which
+    an X-Trans frame is demosaiced (core/debayer.markesteijn; None: bilinear)."""
     p = params or ClassicParams()
     dev = torch.device(device)
     progress = progress or (lambda f, msg: None)
@@ -298,7 +300,7 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
             badm = badm | bad_t
         fr, filled = db.fill_bad(fr, badm, ch_of_k=ch_of_k)
         bal = db.cfa_balance(fr, ch_of_k) if p.cfa_balance and p.debayer == "rcd" else None
-        rgb = db.debayer(fr, ch_of_k, p.debayer, balance=bal)
+        rgb = db.debayer(fr, ch_of_k, p.debayer, balance=bal, template=raw_template)
         del fr
         tc = time.time()
         x, y = rs.source_positions(coef[i], H, W, W, H, dev)
