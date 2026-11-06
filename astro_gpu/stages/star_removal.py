@@ -75,6 +75,9 @@ class StarRemoval(Stage):
         t0 = time.time()
         starless = apply(net, (lin - bk) / unit, dev, ctx) * unit + bk
         ctx.log(f"stars taken off in {time.time() - t0:.1f} s on {dev}")
+        if np.array_equal(lin[0, ::97, ::97], lin[1, ::97, ::97]) and np.array_equal(lin[2, ::97, ::97],
+                                                                                    lin[1, ::97, ::97]):
+            starless = np.repeat(starless.mean(0, keepdims=True), 3, axis=0)   # a monochrome image stays grey (#43)
         starless[:, ~valid] = lin[:, ~valid]
         # the network's own grid (its checkerboard, at the multiples of 1/16 px^-1) notched where it stands out
         from ..core.periodic import lattice_frequencies, remove_periodic

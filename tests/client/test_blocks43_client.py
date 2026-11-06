@@ -141,3 +141,54 @@ def test_a_workflow_from_an_image_starts_on_its_own_lane(world):
     page.select(index=m.paths.index(v), step="image")
     page.refresh()
     page.graph.rebuild()                                                      # drawn without error, its lane last
+
+
+def test_filters_make_one_workflow_each_and_a_fusion_in_the_composition_section(world):
+    m, page = world["m"], world["page"]
+    m.set_session_filter(1, "Ha")
+    m.set_session_filter(2, "OIII")
+    assert m.filters() == {"Ha": [1], "OIII": [2]}
+    d = page.new_workflow()
+    d.tabs.setCurrentIndex(d.tab_keys.index("mono"))
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "sho"))
+    assert not d.ok.isEnabled() and "SII" in d.duration.text()               # no S II session
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "hoo"))
+    assert d.ok.isEnabled() and "Ha" in d.duration.text()
+    d.ok.click()
+    settle(world)
+    names = [q.name for q in m.paths]
+    assert names[-3:] == ["Ha", "OIII", "HOO"]
+    ha, oiii, hoo = m.paths[-3:]
+    assert ha.sessions == [1] and oiii.sessions == [2] and m.is_mono(ha) and not m.is_mono(hoo)
+    assert m.display_keys(hoo) == ["fusion"] and "couleur" in m.display_keys(ha)          # Color greyed
+    assert m.greyed_reason(ha, "couleur").startswith("a monochrome image")
+    g = Graph(m)
+    fn = g.node_of(hoo, "fusion")
+    assert fn.handle and g.node_of(hoo, "post") is fn
+    assert {id(n) for n in g.fusion_inputs[id(fn)]} == {id(g.leaves[ha.pid]), id(g.leaves[oiii.pid])}
+    page.graph.rebuild()
+    assert page.graph.graph.node_of(hoo, "fusion").col == page.graph._cx["composition"]
+    page.select(index=m.paths.index(hoo), step="fusion")
+    page.refresh()
+    assert any(b.text() == "HOO" and b.isChecked() for b in page.panel.findChildren(QPushButton))
+    assert m.set_fusion_palette(hoo, "SHO") is True                            # (the SII channel is then missing)
+    d = page.new_workflow()                                                   # the same filters again: reused
+    d.tabs.setCurrentIndex(d.tab_keys.index("mono"))
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "mono_each"))
+    d.ok.click()
+    settle(world)
+    assert [q.name for q in m.paths].count("Ha") == 1
+
+
+def test_an_already_stretched_image_workflow_goes_to_post(world):
+    import cv2
+    import numpy as np
+    m = world["m"]
+    png = world["tmp"] / "done.png"
+    cv2.imwrite(str(png), np.full((8, 8, 3), 100, np.uint8))
+    v = m.add_image_workflow("Done", str(png), {"debruitage": False, "etoiles": "retirer", "fond": "simple"},
+                             stretched=True)
+    assert v.source["stretched"] and m.all_stages(v) == ["image", "star_removal"]
+    assert m.display_keys(v) == ["image", "etoiles"] or m.display_keys(v) == ["image", "etoiles", "post"]
+    g = Graph(m)
+    assert g.summary(g.node_of(v, "image")).endswith("stretched")

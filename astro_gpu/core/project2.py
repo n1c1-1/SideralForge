@@ -85,6 +85,9 @@ class Workflow:
     breakpoints: list[str] = field(default_factory=list)
     #: issue #43: an image source, {"path": the image file, "stretched": False}; None: the sessions' frames
     source: dict[str, Any] | None = None
+    #: issue #43: the ids of the sessions this workflow stacks (one filter of a monochrome camera: its sessions);
+    #: None: every session of the project
+    sessions: list[int] | None = None
 
     def stored(self, stage: str) -> dict[str, Any]:
         """The values stored for a stage (a copy)."""
@@ -150,12 +153,27 @@ class Project2:
     def scratch(self) -> Path:
         return Path(self.abspath(self.scratch_dir)) if self.scratch_dir else self._root() / "scratch"
 
-    def inputs(self) -> Inputs:
-        """The union of the sessions, per kind, as absolute paths (one master dark and one master flat, as in v1)."""
+    def sessions_of(self, wid: int | Workflow | None = None) -> list[Session]:
+        """The sessions a workflow stacks (issue #43: a monochrome filter's workflow, its filter's sessions); every
+        session for None or a workflow without its own list."""
+        w = self.workflow(wid) if wid is not None else None
+        if w is None or w.sessions is None:
+            return list(self.sessions)
+        return [s for s in self.sessions if s.id in w.sessions]
+
+    def is_mono(self, wid: int | Workflow) -> bool:
+        """Whether a workflow stacks monochrome frames: every one of its sessions names a filter (a colour camera's
+        session names none)."""
+        ses = self.sessions_of(wid)
+        return bool(ses) and all(s.filter for s in ses)
+
+    def inputs(self, wid: int | Workflow | None = None) -> Inputs:
+        """The union of the sessions (of a workflow's), per kind, as absolute paths (one master dark and one master
+        flat, as in v1)."""
         out = Inputs()
         for kind in KINDS:
             got: list[str] = getattr(out, kind)
-            for s in self.sessions:
+            for s in self.sessions_of(wid):
                 for f in getattr(s, kind):
                     a = self.abspath(f)
                     if a not in got:
@@ -167,10 +185,11 @@ class Project2:
         s = self.session(sid)
         return Inputs(**{k: [self.abspath(f) for f in getattr(s, k)] for k in KINDS})
 
-    def separate_sessions(self) -> list[int]:
-        """The ids of the sessions calibrated each on its own (issue #43): every session when the project calibrates
-        them separately and has two or more; else none (one frame list, one calibration)."""
-        return [s.id for s in self.sessions] if self.stack_mode == "per_session" and len(self.sessions) >= 2 else []
+    def separate_sessions(self, wid: int | Workflow | None = None) -> list[int]:
+        """The ids of the sessions calibrated each on its own (issue #43): every session (of the workflow) when the
+        project calibrates them separately and has two or more; else none (one frame list, one calibration)."""
+        ses = self.sessions_of(wid)
+        return [s.id for s in ses] if self.stack_mode == "per_session" and len(ses) >= 2 else []
 
     def reference_path(self) -> str:
         """The reference image as an absolute path ('' when there is none)."""
@@ -215,8 +234,9 @@ class Project2:
     def chain(self, wid: int | Workflow) -> list[str]:
         """The stages of a workflow, in order (core/workflow.chain on this project's reference image)."""
         w = self.workflow(wid)
-        return wfl.chain(w.options, w.end, reference=bool(self.reference_image), sessions=self.separate_sessions(),
-                         image=w.source is not None)
+        return wfl.chain(w.options, w.end, reference=bool(self.reference_image), sessions=self.separate_sessions(w),
+                         image=is_image(w), mono=self.is_mono(w) and w.source is None, fusion=is_fusion(w),
+                         stretched=is_stretched(w))
 
     # ------------------------------------------------------------------ checks and JSON
     def validate(self) -> None:
@@ -258,6 +278,10 @@ class Project2:
                 raise ValueError(f"workflow {w.id}: params must be {{stage: {{param: value}}}}")
             check_breakpoints(w.breakpoints, f"workflow {w.id}")
             check_source(w.source, f"workflow {w.id}")
+            if is_fusion(w) and any(i["pid"] not in wids or i["pid"] == w.id for i in w.source["fusion"]["inputs"]):
+                raise ValueError(f"workflow {w.id}: its fusion reads workflows the project does not have")
+            if w.sessions is not None and (not w.sessions or any(x not in sids for x in w.sessions)):
+                raise ValueError(f"workflow {w.id}: its sessions {w.sessions} are not sessions of the project")
         if self.current is not None and self.current not in wids:
             raise ValueError(f"current workflow {self.current} does not exist")
         if not isinstance(self.devices, dict):
@@ -286,7 +310,8 @@ class Project2:
                               params=_copy_params(w.get("params") or {}), end=w.get("end"),
                               variant_of=w.get("variant_of"),
                               breakpoints=_breakpoints(w.get("breakpoints")),      # absent in older projects: none
-                              source=copy.deepcopy(w.get("source")))
+                              source=copy.deepcopy(w.get("source")),
+                              sessions=list(w["sessions"]) if w.get("sessions") is not None else None)
                      for w in d.get("workflows") or []]
         nxt = d.get("next_workflow_id") or (max((w.id for w in workflows), default=0) + 1)
         p = cls(name=d.get("name", ""), description=d.get("description", ""), created=d.get("created", ""),
@@ -311,17 +336,43 @@ def _copy_params(params: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]
 
 
 def check_source(source: Any, where: str = "source") -> dict[str, Any] | None:
-    """An image source as it is stored (issue #43): None, or {"path": a file, "stretched": bool}. A stretched image
-    (it would enter before Stars) is planned, not built."""
+    """A workflow's source as it is stored (issue #43): None (the sessions' frames); {"path": a file, "stretched":
+    bool} (an image: linear, or already stretched); or {"fusion": {"palette", "inputs": [{"pid", "role",
+    "channel"}]}} (other workflows' outputs combined, stages/fusion.py)."""
     if source is None:
         return None
+    if isinstance(source, dict) and "fusion" in source:
+        from ..stages.fusion import CHANNELS, PALETTES
+        f = source["fusion"]
+        if set(source) != {"fusion"} or not isinstance(f, dict) or f.get("palette") not in PALETTES:
+            raise ValueError(f"{where}: a fusion is {{'fusion': {{'palette': one of {list(PALETTES)}, 'inputs': "
+                             f"[...]}}}}, not {source!r}")
+        ins = f.get("inputs")
+        if not isinstance(ins, list) or not ins or not all(
+                isinstance(i, dict) and isinstance(i.get("pid"), int) and isinstance(i.get("role"), str)
+                and i.get("channel", "L") in CHANNELS for i in ins):
+            raise ValueError(f"{where}: the fusion's inputs are [{{'pid', 'role', 'channel'}}], not {ins!r}")
+        return source
     if not isinstance(source, dict) or not isinstance(source.get("path"), str) or not source["path"]:
         raise ValueError(f"{where}: an image source is {{'path': its file, 'stretched': false}}, not {source!r}")
     if set(source) - {"path", "stretched"}:
         raise ValueError(f"{where}: unknown keys of an image source: {sorted(set(source) - {'path', 'stretched'})}")
-    if source.get("stretched"):
-        raise ValueError(f"{where}: an already stretched image cannot start a workflow yet (a linear one only)")
     return source
+
+
+def is_fusion(w: Workflow) -> bool:
+    """A workflow that combines other workflows' outputs (issue #43)."""
+    return isinstance(w.source, dict) and "fusion" in w.source
+
+
+def is_image(w: Workflow) -> bool:
+    """A workflow that starts from an image file (issue #43)."""
+    return isinstance(w.source, dict) and "path" in w.source
+
+
+def is_stretched(w: Workflow) -> bool:
+    """A workflow that starts from an image already stretched (not linear)."""
+    return is_image(w) and bool(w.source.get("stretched"))
 
 
 def check_breakpoints(blocks: Any, where: str = "breakpoints") -> list[str]:

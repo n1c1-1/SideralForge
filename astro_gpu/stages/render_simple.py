@@ -131,6 +131,8 @@ def mosaic_notch(ctx: Context, img: np.ndarray, scale: float, valid: np.ndarray,
         cfa = str(ctx.metric_of("inventory", "cfa") or "")
     except Exception:  # noqa: BLE001 - no inventory to read (a stack given as a file): a Bayer lattice
         cfa = ""
+    if cfa == "GGGG":                                # monochrome (core/cfa.MONO): no colour mosaic to take off
+        return img, []
     out, taken = remove_mosaic_pattern(img, scale, valid, period=6 if len(cfa) == 36 else 2)
     if log:
         ctx.metric("mosaic_peaks", len(taken))
@@ -171,11 +173,20 @@ class RenderSimple(Stage):
         lin = np.tensordot(M.astype(np.float32), src, 1)
         ctx.progress(0.2, "sky")
         sky_name = "channel medians"
-        if not color:
+        meta = ctx.load_json("stack", "drz_meta.json")
+        # issue #43: a fusion of channels keeps its palette's balance (no gains), and a monochrome or uncalibrated
+        # workflow with the Gradient block takes that block's sky level
+        fused = meta.get("source") == "fusion"
+        graded = not color and ctx.has("gradient")
+        if fused or graded:
+            color_like = True
+        else:
+            color_like = color
+        if not color_like:
             # the spread of the sky of each channel, for the gains below, measured on the stack (the objects keep the
             # scaling they had before the sky was made grey)
             spread = np.array([sky_spread(lin[c][shown]) for c in range(3)])
-        if not color:                               # the Raw stack exit: a grey sky (below)
+        if not color_like:                          # the Raw stack exit: a grey sky (below)
             sky, sky_name = raw_exit_sky(ctx, lin, valid)
         elif ctx.has("gradient"):                   # the level the Gradient block measured between the objects
             level = np.asarray(ctx.load_json("gradient", "gradient.json")["level"], np.float64)
@@ -194,7 +205,7 @@ class RenderSimple(Stage):
             if n_sat:
                 ctx.log(f"{n_sat} clipped places (star cores) take the colour of their surroundings")
         gains = np.ones(3)
-        if not color:
+        if not color_like:
             # the camera's channels have different sensitivities: scaled to the same spread of the sky, the stretch
             # shows a neutral background (the spread below the median: the objects of the field are above it)
             gains = spread[1] / np.maximum(spread, 1e-12)
@@ -218,7 +229,7 @@ class RenderSimple(Stage):
                 "median": stats["lum"]["median"], "mad": stats["lum"]["mad"], "p99995": stats["lum"]["p99995"],
                 "stats": stats, "stretch": p.stretch, "linked": p.linked, "denoised": denoised, "color": color,
                 "sky": sky_name, "source": name, "gains": gains.tolist(),
-                "exit": None if color else "stacking", "width": W, "height": H,
+                "exit": None if color_like else "stacking", "width": W, "height": H,
                 "drizzle_scale": float(ctx.load_json("stack", "drz_meta.json").get("scale", 1.0))}
         del lin
         if denoised:

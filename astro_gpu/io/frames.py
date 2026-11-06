@@ -50,6 +50,7 @@ class FrameInfo:
     ra: float | None = None         # pointing hints from FITS headers (degrees)
     dec: float | None = None
     object: str = ""
+    pixel_scale: float | None = None  # arcsec per pixel, when the FITS headers give it (PIXSCALE, SECPIX)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -218,6 +219,24 @@ def _exposure_s(hd) -> float | None:
     return None
 
 
+#: filter names written by capture programs and observatories → the session filters (core/project2.FILTERS)
+FILTER_NAMES = {"ha": "Ha", "h-alpha": "Ha", "halpha": "Ha", "h_alpha": "Ha", "oiii": "OIII", "o3": "OIII",
+                "sii": "SII", "s2": "SII", "l": "L", "lum": "L", "luminance": "L", "clear": "L", "r": "R", "red": "R",
+                "rp": "R", "g": "G", "green": "G", "gp": "G", "v": "G", "b": "B", "blue": "B"}
+
+
+def frame_filter(path: str | Path) -> str:
+    """The session filter a FITS frame names (its FILTER keyword; "" for a raw file, an unknown or no filter)."""
+    p = Path(path)
+    if frame_kind(p) != "fits":
+        return ""
+    try:
+        name = str(fits_header(p).get("FILTER", "")).strip().lower()
+    except Exception:  # noqa: BLE001 - an unreadable header names no filter
+        return ""
+    return FILTER_NAMES.get(name, "")
+
+
 def _fits_info(path: Path) -> FrameInfo:
     hd = fits_header(path)
     naxis = int(hd.get("NAXIS", 0))
@@ -228,7 +247,7 @@ def _fits_info(path: Path) -> FrameInfo:
         grid = [[pat[0], pat[1]], [pat[2], pat[3]]]
         pat = "".join(grid[(i + yo) % 2][(j + xo) % 2] for i in range(2) for j in range(2))
     bitpix = int(hd.get("BITPIX", 16))
-    white = float(hd.get("DATAMAX", 2 ** 16 - 1 if bitpix in (16, 32) else 1.0))
+    white = float(hd.get("DATAMAX", hd.get("SATURATE", 2 ** 16 - 1 if bitpix in (16, 32) else 1.0)))
     info = FrameInfo(str(path), "fits", w, h, pat, float(hd.get("PEDESTAL", hd.get("OFFSET", 0)) or 0), white)
     info.exposure = _exposure_s(hd)
     info.iso = _num(hd.get("GAIN", hd.get("ISOSPEED")))
@@ -238,11 +257,15 @@ def _fits_info(path: Path) -> FrameInfo:
     info.pixel_um = _num(hd.get("XPIXSZ", hd.get("PIXSZ"))) or PIXEL_PITCH_UM.get(info.camera)
     info.temperature = _num(hd.get("CCD-TEMP", hd.get("SET-TEMP", hd.get("TEMP"))))
     info.object = str(hd.get("OBJECT", "")).strip()
+    info.pixel_scale = _num(hd.get("PIXSCALE", hd.get("SECPIX")))
     try:
         import astropy.units as u
         from astropy.coordinates import SkyCoord
         if "RA" in hd and "DEC" in hd and isinstance(hd["RA"], (int, float)):
             info.ra, info.dec = float(hd["RA"]), float(hd["DEC"])
+        elif "RA" in hd and "DEC" in hd and ":" in str(hd["RA"]):         # sexagesimal text (observatory archives)
+            c = SkyCoord(str(hd["RA"]), str(hd["DEC"]), unit=(u.hourangle, u.deg))
+            info.ra, info.dec = float(c.ra.deg), float(c.dec.deg)
         elif "OBJCTRA" in hd and "OBJCTDEC" in hd:
             c = SkyCoord(hd["OBJCTRA"], hd["OBJCTDEC"], unit=(u.hourangle, u.deg))
             info.ra, info.dec = float(c.ra.deg), float(c.dec.deg)

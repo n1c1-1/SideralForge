@@ -304,11 +304,13 @@ class SimpleRenderEngine:
     def tone(x: torch.Tensor, st: dict, s: SimpleSettings, linked: bool) -> torch.Tensor:
         """The automatic stretch of a linear image (linked: on the luminance's statistics; else each channel on its
         own), then the contrast and the saturation."""
-        if linked:
+        if st.get("stretched"):                    # an image already stretched (issue #43): as it is
+            y = x.clamp(0, 1)
+        elif linked:
             y = SimpleRenderEngine._stretch(x, st["lum"], s.sky)
         else:
             y = torch.stack([SimpleRenderEngine._stretch(x[c], st["channels"][c], s.sky) for c in range(3)])
-        k = float(getattr(s, "keep_colours", 0.0))
+        k = 0.0 if st.get("stretched") else float(getattr(s, "keep_colours", 0.0))
         if k > 0:
             # the luminance stretched and the channels scaled by its gain (Lupton et al. 2004, PASP 116, 133): the
             # ratios of the linear image kept; the black point first, as the stretch has it
@@ -320,7 +322,7 @@ class SimpleRenderEngine:
             yk = xl * gain[None]
             m = yk.amax(0, keepdim=True).clamp(min=1.0)              # a channel over 1: the colour kept, scaled down
             y = (1 - k) * y + k * (yk / m)
-        if getattr(s, "faint", 0.0):
+        if getattr(s, "faint", 0.0) and not st.get("stretched"):    # an image already stretched keeps its tones
             y = faint_tones(y, s.sky, float(s.faint))
         if s.contrast != 0:
             y = (y + s.contrast * (3 * y * y - 2 * y ** 3 - y)).clamp(0, 1)
@@ -342,7 +344,8 @@ class SimpleRenderEngine:
             x = w * x + (1 - w) * ops.gaussian_blur(x, s.smooth_px / f)
         raw = self.prep.get("stats_raw")
         mixed = {"lum": _mix_stats(st["lum"], raw and raw["lum"], mix),
-                 "channels": [_mix_stats(st["channels"][c], raw and raw["channels"][c], mix) for c in range(3)]}
+                 "channels": [_mix_stats(st["channels"][c], raw and raw["channels"][c], mix) for c in range(3)],
+                 "stretched": bool(st.get("stretched"))}
         if s.halpha:
             x = emission(x, self.continuum(), float(s.halpha), f)
         y = self.tone(x, mixed, s, linked)

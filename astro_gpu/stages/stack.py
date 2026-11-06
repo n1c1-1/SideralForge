@@ -300,6 +300,7 @@ class Stack(Stage):
         H, W = info["height"], info["width"]
         ch_of_k = cfa_channel_map(info["cfa"])
         P = cfa_mod.period(info["cfa"])                # the pattern's period: 2 (Bayer), 6 (X-Trans)
+        mono = cfa_mod.is_mono(info["cfa"])           # a monochrome sensor: one channel (issue #43)
         NP = P * P
         BS = 64 // P                                    # sky blocks of 64 sensor pixels
         reg = np.load(ctx.input("register", "reg.npz"))
@@ -403,6 +404,8 @@ class Stack(Stage):
             bkg_level = np.zeros(3)
             for c in range(3):
                 ks = [k for k in range(NP) if ch_of_k[k] == c]
+                if not ks:                       # a channel without samples (monochrome: green only)
+                    continue
                 rows, tg = [], []
                 for k in ks:
                     u, v = poly_eval(coef[i], cx[k], cy[k])
@@ -475,14 +478,16 @@ class Stack(Stage):
         # ---------------- the colours registered on each other for the whole night: the offsets of the red and blue
         # images of the stars from the green one (lateral chromatic aberration, atmospheric dispersion), measured on
         # the first mean
-        chan_fix = ChannelOffsets.measure(model, float(satval.median()), S, float(np.median(fwhm)))
-        chan_info = chan_fix.summary()
-        ctx.metric("channel_offsets", chan_info)
-        ctx.log(chan_fix.describe())
-        if chan_fix.applied:
-            model.shift_channels(chan_fix)
-        else:
-            chan_fix = None
+        chan_fix, chan_info = None, {"applied": False, "why": "monochrome: one channel"}
+        if not mono:                                  # one channel: nothing to register on another
+            chan_fix = ChannelOffsets.measure(model, float(satval.median()), S, float(np.median(fwhm)))
+            chan_info = chan_fix.summary()
+            ctx.metric("channel_offsets", chan_info)
+            ctx.log(chan_fix.describe())
+            if chan_fix.applied:
+                model.shift_channels(chan_fix)
+            else:
+                chan_fix = None
 
         def judge(i, model, kappa, edge, diag=None):
             """The samples of frame i rejected against the prediction ``model`` (``reject``)."""
@@ -552,7 +557,8 @@ class Stack(Stage):
 
         def finish(a):
             img = (a[0] / a[1].clamp(min=1e-12)).view(3, Ho, Wo)
-            return balanced(torch.where(a[1].view(3, Ho, Wo) > 0, img, torch.zeros_like(img)).cpu().numpy(), wb)
+            out = balanced(torch.where(a[1].view(3, Ho, Wo) > 0, img, torch.zeros_like(img)).cpu().numpy(), wb)
+            return cfa_mod.mono_rgb(out) if mono else out     # a monochrome sensor: its one channel in the three
 
         full = [accA[0] + accB[0], accA[1] + accB[1]]
         drz = finish(full)
@@ -564,7 +570,8 @@ class Stack(Stage):
             ctx.save(name, img)
             halves.append(img[:, ::step, ::step].copy())
             del img
-        ctx.save("drz_weight.npy", full[1].view(3, Ho, Wo).cpu().numpy())
+        wt = full[1].view(3, Ho, Wo).cpu().numpy()
+        ctx.save("drz_weight.npy", cfa_mod.mono_rgb(wt) if mono else wt)
         frac = torch.stack([(a / full[1].clamp(min=1e-12)).view(3, Ho, Wo).amax(0) for a in (near_acc, clip_acc)])
         ctx.save(SATURATION, torch.ceil(255 * frac.clamp(0, 1)).to(torch.uint8).cpu().numpy())
         ctx.metric("near_saturation_pct", round(100 * float((frac[0] > 0).float().mean()), 4))
@@ -1073,8 +1080,13 @@ def stack_classic(ctx: Context, p: StackParams, *, wb=None, load, coef, used, we
                            device=dev, used=used, ch_of_k=ch_of_k, H=H, W=W, sat_level=satval,
                            progress=lambda f, msg: ctx.progress(0.05 + 0.95 * f, msg),
                            raw_template=raw_template(meta, used, ch_of_k))
+    mono = cfa_mod.is_mono(meta[0].get("cfa", "")) if meta else False
     for name, a in res.arrays().items():
-        ctx.save(name, balanced(a, wb) if name in ("drz_full.npy", "drz_A.npy", "drz_B.npy") else a)
+        if name in ("drz_full.npy", "drz_A.npy", "drz_B.npy"):
+            a = balanced(a, wb)
+        if mono and name in ("drz_full.npy", "drz_A.npy", "drz_B.npy", "drz_weight.npy"):
+            a = cfa_mod.mono_rgb(a)
+        ctx.save(name, a)
     res.save_rejection(ctx.out(REJECTION))
     ctx.metric("grid", [W, H])
     ctx.metric("rejected_pct", round(float(res.rejected_pct), 3))

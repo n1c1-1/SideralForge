@@ -462,6 +462,10 @@ def rcd(cfa: torch.Tensor, ch_of_k, *, siril_range: bool = True, balance=None,
 
 def debayer(cfa: torch.Tensor, ch_of_k, method: str = "rcd", balance="auto", template: str | None = None
             ) -> torch.Tensor:
+    mono = ch_of_k == "GGGG" if isinstance(ch_of_k, str) else (
+        np.asarray(ch_of_k).dtype.kind in "iu" and bool(np.all(np.asarray(ch_of_k) == 1)))
+    if mono:                                          # monochrome (core/cfa.MONO): nothing to demosaic
+        return cfa[None].repeat(3, 1, 1) if isinstance(cfa, torch.Tensor) else np.repeat(np.asarray(cfa)[None], 3, 0)
     if is_xtrans(ch_of_k):
         # RCD is made for the Bayer lattice. An X-Trans frame: Markesteijn's demosaicing when a raw file of the
         # session is given (``template``), else the bilinear (each 3 x 3 window holds the three colours)

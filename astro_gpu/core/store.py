@@ -218,12 +218,12 @@ class InputScan:
             self._sessions[entries] = got
         return got
 
-    def frames(self, project: Project2, sid: int | None = None) -> list[list]:
+    def frames(self, project: Project2, sid: int | None = None, sessions: list | None = None) -> list[list]:
         """inventory's project part: [kind, file name, size] of each frame of the union of the sessions (``sid``: of
         that session only), per kind, in the order the inventory reads them (list_frames: by full path). Names and
         sizes only, so copied raws keep the key; ordered, because the half-stack blocks follow the order."""
         out: list[list] = []
-        sessions = project.sessions if sid is None else [project.session(sid)]
+        sessions = (sessions if sessions is not None else project.sessions) if sid is None else [project.session(sid)]
         for kind in KINDS:
             sizes: dict[Path, int] = {}
             for s in sessions:
@@ -270,9 +270,13 @@ class Keys:
         """The stages of a workflow, in order."""
         w = self._wf(wf)
         if id(w) not in self._chains:
+            from .project2 import is_fusion, is_image, is_stretched
+            src = getattr(w, "source", None)
             self._chains[id(w)] = self.rules.chains.chain(
                 w.options, w.end, reference=bool(self.project.reference_image),
-                sessions=self.project.separate_sessions(), image=getattr(w, "source", None) is not None)
+                sessions=self.project.separate_sessions(w), image=is_image(w) if src else False,
+                mono=self.project.is_mono(w) if src is None else False, fusion=is_fusion(w) if src else False,
+                stretched=is_stretched(w) if src else False)
         return self._chains[id(w)]
 
     def deps(self, wf: int | Workflow, stage: str) -> tuple[str, ...]:
@@ -333,12 +337,14 @@ class Keys:
         return p, m
 
 
-    def project_part(self, stage: str) -> Any:
+    def project_part(self, stage: str, w: Workflow | None = None) -> Any:
         """The project's part of a stage's key: the frame list for inventory, the target for astrometry, the image's
         file id for reference; None for the others."""
         p = self.project
         if base(stage) == "inventory":
             sid = session_of(stage)
+            if sid is None and w is not None and w.sessions is not None:     # a filter's workflow: its sessions'
+                return self.scan.frames(p, None, p.sessions_of(w))
             return self.scan.frames(p, int(sid) if sid is not None else None)
         if stage == "astrometry":
             # a field added later (pixel_um, issue #38) counts only when it is set: the keys of the projects made
@@ -350,18 +356,42 @@ class Keys:
         return None
 
     def source_part(self, w: Workflow, stage: str) -> Any:
-        """The image file of an image source, for the ``image`` stage's key: its file id (name, size, date)."""
+        """The source of a workflow that does not start from frames, for its first stage's key: an image file's id
+        (name, size, date; stretched or not); a fusion's palette and its inputs' keys (each input workflow's Output
+        and Astrometry: a change in a channel's workflow makes the fusion Outdated)."""
         src = getattr(w, "source", None)
         if stage == "image" and src:
-            return self.scan.file_id(_absolute(self.project, src["path"]))
+            fid = self.scan.file_id(_absolute(self.project, src["path"]))
+            return fid + ["stretched"] if src.get("stretched") else fid
+        if stage == "fusion" and src:
+            return {"palette": src["fusion"]["palette"], "inputs": [
+                {"role": i["role"], "channel": i.get("channel", "L"), "out": self._input_key(i["pid"], "render_simple"),
+                 "wcs": self._input_key(i["pid"], "astrometry")} for i in src["fusion"]["inputs"]]}
         return None
+
+    def _input_key(self, pid: int, stage: str) -> str | None:
+        """The key of a stage of another workflow (a fusion's input), None when its chain has none."""
+        try:
+            return self.key(pid, stage) if stage in self.chain(pid) else None
+        except (KeyError, ValueError):
+            return None
+
+    def fusion_inputs(self, wf: int | Workflow) -> list[tuple[int, str]]:
+        """(workflow id, stage) of what a fusion reads: each input's Output and, when it has one, its Astrometry."""
+        w = self._wf(wf)
+        out = []
+        for i in w.source["fusion"]["inputs"]:
+            for st in ("render_simple", "astrometry"):
+                if st in self.chain(i["pid"]) and (i["pid"], st) not in out:
+                    out.append((i["pid"], st))
+        return out
 
     def key_parts(self, wf: int | Workflow, stage: str) -> dict[str, Any]:
         """What a stage's key hashes (the manifest keeps it as ``key_parts``)."""
         w = self._wf(wf)
         p, m = self._key_values(w, stage)
         b = base(stage)
-        x = self.source_part(w, stage) if b == "image" else self.project_part(stage)
+        x = self.source_part(w, stage) if b in ("image", "fusion") else self.project_part(stage, w)
         sid = session_of(stage)
         # an instance reads its session's instances under the stages' names: keyed so, as in a one-session project
         u = {(base(d) if sid is not None and session_of(d) == sid else d): self.key(w, d) for d in self.deps(w, stage)}
@@ -401,6 +431,17 @@ class Keys:
         v = self._given(w, stage, excl)
         if base(stage) == "image" and getattr(w, "source", None):
             v["path"] = _absolute(self.project, w.source["path"])
+            v["stretched"] = bool(w.source.get("stretched"))
+        if base(stage) == "fusion" and getattr(w, "source", None):
+            store = Store(self.project.root) if self.project.root is not None else None
+            v["palette"] = w.source["fusion"]["palette"]
+            ins = []
+            for i in w.source["fusion"]["inputs"]:
+                out, wcs = self._input_key(i["pid"], "render_simple"), self._input_key(i["pid"], "astrometry")
+                ins.append({"role": i["role"], "channel": i.get("channel", "L"), "pid": i["pid"],
+                            "dir": str(store.dir("render_simple", out)) if store and out else "",
+                            "wcs": str(store.dir("astrometry", wcs) / "wcs.fits") if store and wcs else ""})
+            v["inputs"] = ins
         m = self._validated(w, stage, v)
         return {k: m[k] for k in v}
 
@@ -509,7 +550,7 @@ class StoreProject:
         self.results = self.root / "export"
         self.scratch = Path(os.path.abspath(p.scratch)) / self.key
         sid = session_of(stage)
-        inputs = p.session_inputs(int(sid)) if sid is not None else p.inputs()
+        inputs = p.session_inputs(int(sid)) if sid is not None else p.inputs(self.workflow)
         if getattr(self.workflow, "source", None) is not None:
             inputs = Inputs()                            # an image source: no frames
         devs = p.devices if devices is None else devices

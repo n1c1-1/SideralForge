@@ -80,6 +80,13 @@ class Astrometry(Stage):
             a["focal_mm"] = Auto(foc, "recorded in the files")
         if ctx.project.config.target.focal_mm:
             a["focal_mm"] = Auto(ctx.project.config.target.focal_mm, "entered when the project was created")
+        sc = ctx.metric_of("inventory", "pixel_scale")
+        if sc and not (foc and (pix or getattr(tgt, "pixel_um", None))):
+            try:
+                S = float(ctx.load_json("stack", "drz_meta.json")["scale"])
+            except Exception:  # noqa: BLE001 - no stack to read yet
+                S = 1.0
+            a["scale"] = Auto(round(float(sc) / S, 4), "pixel scale in the FITS headers")
         return a
 
     def run(self, ctx: Context, p: AstrometryParams) -> None:

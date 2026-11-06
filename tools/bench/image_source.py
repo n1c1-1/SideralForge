@@ -24,7 +24,7 @@ from astro_gpu.core import workflow as wfl  # noqa: E402
 from astro_gpu.core.store import Keys, Store  # noqa: E402
 
 
-def main(source: Path, bench: Path) -> dict:
+def main(source: Path, bench: Path, stretched: str = "") -> dict:
     src = project2.load(source)
     w0 = src.workflows[0]
     d = Store(src.root).dir("stack", Keys(src).key(w0.id, "stack"))
@@ -34,14 +34,16 @@ def main(source: Path, bench: Path) -> dict:
         from astropy.io import fits
         fits.PrimaryHDU(np.load(d / "drz_full.npy").astype(np.float32)).writeto(img)
     root = bench / "project"
-    if (root / project2.FILE).exists():
-        p = project2.load(root)
-    else:
-        p = project2.create(root, src.name + " (image)", src.target)
+    name = src.name + (" (stretched image)" if stretched else " (image)")
+    p = project2.load(root) if (root / project2.FILE).exists() else project2.create(root, name, src.target)
+    if not p.workflows and stretched:                # an image already stretched, its stars taken off
+        w = p.add_workflow("Stretched", wfl.TEMPLATES["Full"])
+        w.source = {"path": str(Path(stretched)), "stretched": True}
+    elif not p.workflows:
         w = p.add_workflow("From the image", wfl.TEMPLATES["Classic stack"])
         w.source = {"path": img.as_posix(), "stretched": False}
-        project2.save(p)
-        p = project2.load(root)
+    project2.save(p)
+    p = project2.load(root)
     wid = p.workflows[0].id
     print("chain:", Keys(p).chain(wid), flush=True)
     plan = runner2.plan_workflows(p, [wid])
@@ -65,4 +67,4 @@ def main(source: Path, bench: Path) -> dict:
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]), Path(sys.argv[2]))
+    main(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3] if len(sys.argv) > 3 else "")

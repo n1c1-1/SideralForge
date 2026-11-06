@@ -106,6 +106,18 @@ def from_engine(o: dict) -> dict:
             "deconv": bool(o.get("deconvolution")), "cut": list(o.get("cut") or [])}
 
 
+def is_fusion_view(p) -> bool:
+    """A workflow that combines other workflows' outputs (issue #43)."""
+    src = getattr(p, "source", None)
+    return isinstance(src, dict) and "fusion" in src
+
+
+def is_stretched_view(p) -> bool:
+    """A workflow that starts from an image already stretched."""
+    src = getattr(p, "source", None)
+    return isinstance(src, dict) and bool(src.get("stretched"))
+
+
 def engine_block(key: str) -> str:
     """The engine's block of a view's block key ("alignement" → "registration")."""
     return KEY_ENGINE_BLOCK.get(key, key)
@@ -155,6 +167,7 @@ class WorkflowView:
     layer: str = ""                                      # not read by the views (the layers are the engine's)
     provisional: bool = False
     source: dict | None = None                           # issue #43: the image it starts from, or None (the sessions)
+    sessions: list | None = None                         # issue #43: the sessions it stacks (a filter's); None: all
     model: Any = field(default=None, repr=False, compare=False)
 
     @property
@@ -367,6 +380,7 @@ class ProjectModel(QObject):
             v.params, v.variant_of = copy.deepcopy(w.params), w.variant_of
             v.end = "empilement" if w.end == "stacking" else None
             v.source = copy.deepcopy(w.source)
+            v.sessions = list(w.sessions) if w.sessions is not None else None
             out.append(v)
         self.paths[:] = out
         self.current = min(max(self.current, 0), len(self.paths) - 1) if self.paths else -1
@@ -756,13 +770,21 @@ class ProjectModel(QObject):
     def display_keys(self, p: WorkflowView) -> list[str]:
         """The blocks the graph draws for a workflow, in order: its blocks, with those the user cut and those greyed
         by a cut (they are not in the engine's chain, or run as a pass-through) at their place."""
+        if is_fusion_view(p):                              # a fusion: one block, in the Composition section
+            return ["fusion"]
         keys = self.block_keys(p)
+        if is_stretched_view(p) and "post" not in keys:  # its Output: the image itself (no stage of its own)
+            keys = keys + ["post"]
+        if self.separate_sessions() and p.source is None:
+            keys = [k for k in keys if k != "calibration"]      # each session's Calibration is drawn before the chain
         want = [k for k in ("image", "calibration", "alignement", "selection", "empilement", "astrometrie", "fond",
                             "couleur", "debruitage", "etoiles", "post")]
         have = set(keys)
         extra = {ENGINE_KEY.get(b, b) for b in self.cut_blocks(p)} | {ENGINE_KEY.get(b, b) for b in self.greyed(p)}
         if p.source is not None:
             extra -= {"calibration", "alignement", "selection", "empilement"}
+            if is_stretched_view(p):
+                extra -= {"astrometrie", "fond", "couleur", "debruitage"}
         elif self.separate_sessions():
             extra.discard("calibration")                   # each session's Calibration is drawn before the chain
         if p.end:
@@ -780,9 +802,69 @@ class ProjectModel(QObject):
     def greyed(self, p: WorkflowView) -> dict[str, str]:
         """{engine block: why it cannot run} (English, translated where shown) for this workflow."""
         try:
-            return wfl.greyed(to_engine(p.opts), image=p.source is not None)
+            return wfl.greyed(to_engine(p.opts), image=p.source is not None, mono=self.is_mono(p),
+                              stretched=is_stretched_view(p))
         except ValueError:
             return {}
+
+    def is_mono(self, p: WorkflowView) -> bool:
+        """A workflow of monochrome frames: each of its sessions names a filter."""
+        try:
+            return p.source is None and self.p.is_mono(p.pid)
+        except KeyError:
+            return False
+
+    def sessions_of(self, p: WorkflowView) -> list[int]:
+        """The ids of the sessions a workflow stacks."""
+        return [s.id for s in self.p.sessions_of(p.pid)] if p.source is None else []
+
+    def filters(self) -> dict[str, list[int]]:
+        """{filter: its sessions' ids} of the project's monochrome sessions."""
+        out: dict[str, list[int]] = {}
+        for s in self.p.sessions:
+            if s.filter:
+                out.setdefault(s.filter, []).append(s.id)
+        return out
+
+    def filter_workflow(self, flt: str, opts: dict | None = None, name: str | None = None) -> WorkflowView | None:
+        """The workflow stacking this filter's sessions (made when there is none). None without such sessions."""
+        sids = self.filters().get(flt)
+        if not sids:
+            return None
+        for q in self.paths:
+            if q.source is None and q.sessions is not None and sorted(q.sessions) == sorted(sids) and not q.end:
+                return q
+        o = dict(opts or {"debruitage": True, "etoiles": "garder", "fond": "simple"})
+        with self._edit():
+            if self.p.stack_mode == "together":
+                self.p.stack_mode = "per_session"
+            w = api.add_workflow(self.p, self.unique_name(name or flt), wfl.check_options(to_engine(o)), {})
+            self.p.workflow(w.id).sessions = list(sids)
+            self.p.validate()
+        return self._view_of(w.id)
+
+    def add_fusion(self, name: str, palette: str, inputs: list[dict]) -> WorkflowView:
+        """A fusion workflow (issue #43): the outputs of ``inputs`` [{"pid", "role", "channel"}] combined with a
+        palette, in the Composition section; its Output is a layer of Post."""
+        with self._edit():
+            w = api.add_workflow(self.p, self.unique_name(name), wfl.check_options(to_engine(
+                {"debruitage": False, "etoiles": "garder", "fond": "simple"})), {})
+            self.p.workflow(w.id).source = {"fusion": {"palette": palette, "inputs": [
+                {"pid": int(i["pid"]), "role": str(i["role"]), "channel": str(i.get("channel", "L"))} for i in inputs]}}
+            self.p.validate()
+        return self._view_of(w.id)
+
+    def set_fusion_palette(self, p: WorkflowView, palette: str) -> bool:
+        """Another palette for a fusion (its channels kept when the new one reads the same roles)."""
+        w = self.p.workflow(p.pid)
+        if not is_fusion_view(p) or w.source["fusion"]["palette"] == palette:
+            return False
+        with self._edit():
+            ws = api.workflows(self.p)
+            x = next(v for v in ws if v.id == p.pid)
+            x.source = {"fusion": {**x.source["fusion"], "palette": palette}}
+            api.set_workflows(self.p, ws, self.p.current)
+        return True
 
     def is_cut(self, p: WorkflowView, key: str) -> bool:
         return engine_block(key) in self.cut_blocks(p)
@@ -919,12 +1001,16 @@ class ProjectModel(QObject):
         return [o.id for o in self.p.sessions if o.id != sid
                 and sorted(norm_path(self.p.abspath(e)) for e in getattr(o, kind)) == mine]
 
-    def add_image_workflow(self, name: str, path: str, opts: dict | None = None) -> WorkflowView:
-        """A workflow that starts from an image file (issue #43: a linear stack), with the blocks after the stack."""
+    def add_image_workflow(self, name: str, path: str, opts: dict | None = None, stretched: bool = False
+                           ) -> WorkflowView:
+        """A workflow that starts from an image file (issue #43): a linear stack, with the blocks after the stack; or
+        an image already stretched, to Post as it is (or its stars taken off first)."""
         o = dict(opts or {"debruitage": False, "etoiles": "garder", "fond": "simple"})
+        if stretched and o.get("etoiles") == "retirer":
+            o["debruitage"] = True                     # the options' rule; a stretched image's chain reads only Stars
         with self._edit():
             w = api.add_workflow(self.p, self.unique_name(name), wfl.check_options(to_engine(o)), {})
-            self.p.workflow(w.id).source = {"path": Path(path).as_posix(), "stretched": False}
+            self.p.workflow(w.id).source = {"path": Path(path).as_posix(), "stretched": bool(stretched)}
             self.p.validate()
         return self._view_of(w.id)
 

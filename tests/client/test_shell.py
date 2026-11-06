@@ -487,21 +487,23 @@ def test_log_shows_the_history_newest_first_and_exports(env, tmp_path):
 def test_the_template_gallery_on_the_model(qapp, tmp_path):
     """Issue #43: tabs by kind of task, a thumbnail of each template's graph, the preview and its text, Create."""
     d = TemplateGallery(FakeModel())
-    assert d.tab_keys == ["frames", "image", "mono", "copy"]
+    assert d.tab_keys == ["frames", "mono", "image", "copy"]
     assert d.choice["key"] == "full" and d.name.text() == "Full 2"            # the recommended one first (#11)
     assert d.ok.isEnabled() and d.opts["etoiles"] == "retirer" and "cut" not in d.opts
     calibrated = next(c.t for c in d.cards if c.t["key"] == "calibrated")
     d.pick(calibrated)
     assert d.opts["cut"] == ["calibration"] and d.text.text().startswith("For frames another program")
-    d.tabs.setCurrentIndex(1)                                                 # from an image: a file first
+    d.tabs.setCurrentIndex(2)                                                 # from an image: a file first
     assert {c.t["key"] for c in d.cards} == {"image", "image_colours", "image_plain", "image_stretched"}
     assert not d.ok.isEnabled() and d.file_row.isVisibleTo(d)
     img = tmp_path / "m42.fits"
     img.write_bytes(bytes(2880))
     d.file.setText(str(img))
     assert d.ok.isEnabled()
-    d.tabs.setCurrentIndex(2)                                                 # monochrome: planned, not offered
-    assert all(c.t.get("planned") for c in d.cards) and not d.ok.isEnabled()
+    d.tabs.setCurrentIndex(1)                     # filters: the project's sessions have none, so nothing to make
+    assert {c.t["key"] for c in d.cards} >= {"mono_each", "sho", "hoo", "rgb", "lrgb", "dualband"}
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "sho"))
+    assert not d.ok.isEnabled() and "Missing" in d.duration.text()
     d.tabs.setCurrentIndex(3)
     assert [c.t["copy"].name for c in d.cards] == ["Classic stack", "Full"] and d.name.text() == "Classic stack (copy)"
     # the graphs drawn from the templates: a cut block, a greyed one, the planned mono ones' channels combined
@@ -509,7 +511,7 @@ def test_the_template_gallery_on_the_model(qapp, tmp_path):
     assert chain_of(plain) == [("astrometrie", "cut"), ("fond", ""), ("couleur", "cut"), ("post", "")]
     grey = dict(GALLERY[0], cut=["astrometry"])
     assert ("couleur", "grey") in chain_of(grey)
-    assert chain_of(next(t for t in GALLERY if t["key"] == "sho"))[0] == ("combine", "")
+    assert chain_of(next(t for t in GALLERY if t["key"] == "sho"))[-1] == ("post", "")
     pm = draw_graph(GALLERY[0], 300, 100, names=True)
     assert (pm.width(), pm.height()) == (300, 100)
 

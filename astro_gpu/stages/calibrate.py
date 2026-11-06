@@ -89,6 +89,7 @@ class Calibrate(Stage):
         if bias is not None:
             ctx.save("master_bias.npy", bias)
         dark, dark_noise = master_dark([f["path"] for f in frames["darks"]], bias, H, W, black, ctx)
+        dark = scaled_dark(ctx, dark, bias, black, frames)
         kept: dict = {}
         flat = master_flat([f["path"] for f in frames["flats"]], [f["path"] for f in frames["flat_darks"]], bias,
                            float(np.median(dark)), H, W, p.flat_scale_px, ctx, keep=kept,
@@ -133,6 +134,27 @@ def master_dark(paths: list[str], bias: np.ndarray | None, H: int, W: int, black
     ctx.log("no dark frames: using " + ("the master bias" if bias is not None else "the black level") +
             " as dark (hot pixels will not be removed by calibration)", "warning")
     return dark, None
+
+
+def _exposure(frames: list[dict]) -> float | None:
+    t = [float(f["exposure"]) for f in frames if f.get("exposure")]
+    return float(np.median(t)) if t else None
+
+
+def scaled_dark(ctx: Context, dark: np.ndarray, bias: np.ndarray | None, black: float, frames: dict) -> np.ndarray:
+    """The master dark brought to the lights' exposure when the darks were taken at another one: its thermal signal
+    (the dark minus the bias, or minus the black level without bias frames) scaled by the ratio of the exposures, the
+    bias put back (dark current grows in proportion to the exposure; the classic dark scaling of the reduction
+    guides, e.g. the astropy CCD reduction guide, "scaling dark frames"). Darks of the lights' exposure: as they are."""
+    t_l, t_d = _exposure(frames.get("lights") or []), _exposure(frames.get("darks") or [])
+    if not frames.get("darks") or not t_l or not t_d or abs(t_d - t_l) <= 0.05 * t_l:
+        return dark
+    base = bias if bias is not None else np.float32(black)
+    r = t_l / t_d
+    ctx.log(f"darks of {t_d:g} s for lights of {t_l:g} s: their thermal signal scaled by {r:.3f}"
+            + ("" if bias is not None else " (no bias frames: above the black level)"))
+    ctx.metric("dark_scale", round(r, 4))
+    return (base + (dark - base) * np.float32(r)).astype(np.float32)
 
 
 def master_flat(paths: list[str], flat_dark_paths: list[str], bias: np.ndarray | None, dark_level: float, H: int,

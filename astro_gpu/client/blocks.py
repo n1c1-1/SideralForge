@@ -46,7 +46,8 @@ PHASES = [("Pre-processing", "calibration", "empilement"), ("Linear processing",
           ("Composition", "composition", "composition")]
 TOOL_COLUMN = {"debruitage": "debruitage", "etoiles": "etoiles", "deconv": "deconv",
                "auto": "fond", "rbf": "fond", "simple": "fond"}
-TITLES = {"sources": "Frames", "final": "Post", "image": "Image", "session": "Session", "calibration": "Calibration",
+TITLES = {"sources": "Frames", "final": "Post", "image": "Image", "session": "Session", "fusion": "Fusion",
+          "calibration": "Calibration",
           "alignement": "Registration",
           "selection": "Selection", "empilement": "Stacking", "astrometrie": "Astrometry", "fond": "Gradient",
           "couleur": "Color", "debruitage": "Denoise", "deconv": "Deconvolution", "etoiles": "Split stars & background",
@@ -56,7 +57,8 @@ TOOLBOX = ["debruitage", "deconv", "etoiles"]
 #: the two images of the Stars block (the parts of Post's layers) and their words on the wires
 STAR_OUTPUTS = (("starless", "Starless image"), ("stars", "Stars alone"))
 # the engine's block names (core/workflow.BLOCKS) and the views' keys
-ENGINE_BLOCK = {"image": "image", "calibration": "calibration", "registration": "alignement", "selection": "selection",
+ENGINE_BLOCK = {"fusion": "fusion", "image": "image", "calibration": "calibration", "registration": "alignement",
+                "selection": "selection",
                 "stacking": "empilement", "astrometry": "astrometrie", "color": "couleur", "denoise": "debruitage",
                 "stars": "etoiles", "gradient": "fond", "output": "post"}
 KEY_ENGINE_BLOCK = {v: k for k, v in ENGINE_BLOCK.items()}
@@ -119,6 +121,9 @@ STEPS = [
               "Automatic: a more flexible surface that follows complex gradients."),
     dict(key="post", phase=5, title="Output", kind="fixed", stages=["render_simple"],
          what="Prepares the render: what this workflow gives in Post, its image and its sliders."),
+    dict(key="fusion", phase=6, title="Fusion", kind="slot", stages=["fusion", "render_simple"],
+         what="Combines the outputs of several workflows (one per filter, or a dual-band image's channels) into one "
+              "colour image with a palette (SHO, HSO, HOO, RGB, LRGB), aligned through their plate solutions."),
     dict(key="composition", phase=6, title="Combine stars & background layers", kind="slot", stages=[],
          what="Combines the split block's two images: the starless image and the stars, each stretched, the stars "
               "put back on top (Screen, Linear dodge or Lighten). Its settings are those of its layer in Post."),
@@ -262,8 +267,10 @@ class Graph:
         #: issue #43: (Session block, its Calibration block) per session calibrated on its own
         self.sessions: list[tuple[Node, Node]] = []
         sids = project.separate_sessions() if hasattr(project, "separate_sessions") else []
+        uses = getattr(project, "sessions_of", None)
         for sid in sids:
-            sn, cn = Node("session", list(frames), sid=sid), Node("calibration", list(frames), sid=sid)
+            mine = [p for p in frames if uses is None or sid in uses(p)]       # the workflows that stack it
+            sn, cn = Node("session", mine, sid=sid), Node("calibration", mine, sid=sid)
             self.sessions.append((sn, cn))
             self.nodes += [sn, cn]
         model = getattr(project, "model", None) or project
@@ -290,6 +297,18 @@ class Graph:
                 self.by_path[p.pid][k] = nxt
                 cur = nxt
             self.leaves[p.pid] = cur
+        # issue #43: a fusion's block holds its workflow (its Output: no block of its own); its inputs, the outputs of
+        # the workflows it combines
+        self.fusion_inputs: dict[int, list[Node]] = {}
+        for p in project.paths:
+            src = getattr(p, "source", None)
+            if isinstance(src, dict) and "fusion" in src:
+                n = self.by_path[p.pid].get("fusion")
+                if n is not None:
+                    n.handle = True
+                    self.by_path[p.pid]["post"] = n
+                    self.fusion_inputs[id(n)] = [self.leaves[i["pid"]] for i in src["fusion"]["inputs"]
+                                                 if i["pid"] in self.leaves and self.leaves[i["pid"]] is not n]
         self.compositions: list[Node] = []
         self.direct: list[tuple[Node, str]] = []
         self.to_post: set[int] = set()
@@ -371,8 +390,7 @@ class Graph:
         if node.key == "session":
             return "done" if self.s.session(node.sid).lights else "pending"
         if node.sid is not None:                      # a session's Calibration: its own stages in every workflow
-            stages = [f"inventory@{node.sid}", f"calibrate@{node.sid}"]
-            states = {self.s.state(p, x) for p in node.paths for x in stages}
+            states = {self.s.state(p, x) for p in node.paths for x in self.session_stages(p, node.sid)}
             return next((w for w in STATE_ORDER if w in states), "pending")
         if node.grey or (node.cut and node.key not in ("calibration", "alignement")):
             return "skipped" if node.grey else "done"
@@ -382,6 +400,13 @@ class Graph:
             return block_state(self.s, node.paths[0], "etoiles")
         states = {block_state(self.s, p, node.key) for p in node.paths}
         return next((w for w in STATE_ORDER if w in states), "pending")
+
+    def session_stages(self, p, sid) -> list[str]:
+        """The stages of a session's Calibration in a workflow: its instances, or the workflow's own when it stacks
+        that session alone (one filter's)."""
+        inst = [f"inventory@{sid}", f"calibrate@{sid}"]
+        allst = self.s.all_stages(p) if hasattr(self.s, "all_stages") else []
+        return inst if any(x in allst for x in inst) else ["inventory", "calibrate"]
 
     def breakpoint(self, node: Node) -> tuple[str, int, int] | None:
         """The review point of a block: (state, how many of its workflows have it, how many go through it), the state
@@ -399,12 +424,14 @@ class Graph:
         if node.key in ("sources", "final", "composition", "session") or not node.paths or node.grey:
             return 0.0
         if node.sid is not None:
-            return sum(self.s.seconds(x, node.paths[0]) for x in (f"inventory@{node.sid}", f"calibrate@{node.sid}"))
+            return sum(self.s.seconds(x, node.paths[0]) for x in self.session_stages(node.paths[0], node.sid))
         return block_seconds(self.s, node.paths[0], node.key)
 
     def summary(self, node: Node) -> str:
         """Under a block's title; the Stars block that holds its workflow's Output says the workflow's name first."""
         text = self._summary(node)
+        if node.key == "fusion":
+            return text
         return f"{node.paths[0].name} · {text}" if node.handle and node.paths else text
 
     def _summary(self, node: Node) -> str:
@@ -422,7 +449,12 @@ class Graph:
             return _("cut: frames taken as they are") if node.key == "calibration" else _("cut: frames taken as aligned")
         if node.key == "image":
             src = node.paths[0].source or {}
-            return Path(str(src.get("path") or "")).name
+            return Path(str(src.get("path") or "")).name + ("  · " + _("stretched") if src.get("stretched") else "")
+        if node.key == "fusion":
+            f = (node.paths[0].source or {}).get("fusion") or {}
+            text = f"{f.get('palette', '')} · " + ", ".join(i["role"] for i in f.get("inputs") or [])
+            name = node.paths[0].name
+            return text if name == f.get("palette") else f"{name} · {text}"
         if node.key == "sources":
             if not s.sources_loaded:
                 return _("to add")

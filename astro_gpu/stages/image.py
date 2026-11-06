@@ -16,11 +16,14 @@ import numpy as np
 from ..core.params import P, StageParams
 from ..core.stage import Context, Stage, StageError
 
-FORMATS = (".fits", ".fit", ".fts", ".tif", ".tiff")
+FORMATS = (".fits", ".fit", ".fts", ".tif", ".tiff", ".png", ".jpg", ".jpeg")
 
 
 class ImageParams(StageParams):
     path: str = P("", label="Image file", help="The image this workflow starts from (FITS or TIFF).")
+    stretched: bool = P(False, label="Already stretched", level="internal",
+                        help="The image is already stretched (not linear): it goes to Post, or to Split stars, as "
+                             "it is.")
 
 
 def read_image(path: str | Path) -> np.ndarray:
@@ -41,8 +44,15 @@ def read_image(path: str | Path) -> np.ndarray:
         a = np.asarray(tifffile.imread(path), np.float32)
         if a.ndim == 3 and a.shape[-1] in (1, 3, 4):
             a = np.moveaxis(a[..., :3], -1, 0)
+    elif suf in (".png", ".jpg", ".jpeg"):            # a stretched image (8 or 16 bits)
+        import cv2
+        a = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if a is None:
+            raise StageError(f"{path.name}: the image cannot be read")
+        a = a.astype(np.float32)
+        a = np.moveaxis(a[..., :3][..., ::-1], -1, 0) if a.ndim == 3 else a
     else:
-        raise StageError(f"{path.name}: not an image this version reads (FITS or TIFF)")
+        raise StageError(f"{path.name}: not an image this version reads (FITS, TIFF, PNG or JPEG)")
     if a.ndim == 2:
         a = a[None]
     if a.ndim != 3 or a.shape[0] not in (1, 3):
@@ -67,6 +77,9 @@ class ImageSource(Stage):
             raise StageError(f"the image file is not there: {p.path}")
         a = read_image(p.path)
         a = np.nan_to_num(a, nan=0.0, posinf=0.0, neginf=0.0)
+        if p.stretched:
+            self.stretched(ctx, p, a)
+            return
         top = float(np.percentile(a, 99.99)) if a.size else 0.0
         factor = 65535.0 if 0 < top <= 1.5 else 1.0
         if factor != 1.0:
@@ -83,3 +96,32 @@ class ImageSource(Stage):
         v = np.moveaxis(a, 0, -1)
         lo, hi = np.percentile(v, 1), np.percentile(v, 99.5)
         ctx.preview("image", np.clip((v - lo) / max(hi - lo, 1e-6), 0, 1) ** 0.5)
+
+    def stretched(self, ctx: Context, p: ImageParams, a: np.ndarray) -> None:
+        """An image already stretched: its values in 0-1 (an integer file by its type's range, a float one by its
+        maximum when above 1), written as the Output block writes (lin.npy, valid.npy, prep_simple.json, flagged
+        stretched: Post shows it as it is) and as a stack (for Split stars, which reads its noise there)."""
+        from ..render.simple import image_stats
+        top = float(a.max()) if a.size else 1.0
+        scale = 65535.0 if top > 255.5 else (255.0 if top > 1.5 else 1.0)
+        a = np.clip(a / np.float32(scale), 0, 1).astype(np.float32)
+        _c, H, W = a.shape
+        valid = np.ones((H, W), bool)
+        stats = image_stats(a, valid)
+        stats["stretched"] = True
+        ctx.save("lin.npy", a)
+        np.save(ctx.out("valid.npy"), valid)
+        for name in ("drz_full.npy", "drz_A.npy", "drz_B.npy"):
+            ctx.save(name, a)
+        ctx.save("drz_weight.npy", np.ones((3, H, W), np.float32))
+        ctx.save_json("drz_meta.json", {"scale": 1.0, "source": "image", "stretched": True, "width": W, "height": H})
+        ctx.save_json("prep_simple.json", {
+            "M": np.eye(3).tolist(), "crop": [0, W, 0, H], "median": stats["lum"]["median"], "mad": stats["lum"]["mad"],
+            "p99995": stats["lum"]["p99995"], "stats": stats, "stretch": "auto", "linked": True, "denoised": False,
+            "color": True, "sky": "as stretched", "source": Path(p.path).name, "gains": [1.0, 1.0, 1.0], "exit": None,
+            "width": W, "height": H, "drizzle_scale": 1.0, "stretched": True})
+        ctx.metric("width", W)
+        ctx.metric("height", H)
+        ctx.metric("factor", scale)
+        ctx.log(f"image {Path(p.path).name}: {W} x {H}, already stretched (values / {scale:g})")
+        ctx.preview("image", np.moveaxis(a, 0, -1))

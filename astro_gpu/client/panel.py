@@ -433,6 +433,8 @@ class Panel(QWidget):
             self.sources()
         elif k == "image":
             self.image_panel(node)
+        elif k == "fusion":
+            self.fusion_panel(node)
         elif node.cut or node.grey:
             self.cut_panel(node)
         elif k == "final":
@@ -640,6 +642,58 @@ class Panel(QWidget):
         self.bv.addSpacing(6)
         self.bv.addWidget(label(_("The blocks after it read it as a stack. Denoise needs the two half-stacks of a "
                                   "stack: it is not offered here."), "small", wrap=True))
+        self.bv.addStretch(1)
+
+    def fusion_panel(self, node):
+        """A Fusion block (issue #43): its workflow's name, its palette, its channels and the workflows they come
+        from; its output is a layer of Post."""
+        from ..stages.fusion import PALETTES
+        s = self.s
+        p = node.paths[0]
+        f = (p.source or {}).get("fusion") or {}
+        top = QHBoxLayout()
+        ed = QLineEdit(p.name)
+        ed.setStyleSheet("QLineEdit { font-size: 13pt; font-weight: 600; background: transparent; border: none; "
+                         "border-bottom: 1px dashed #3a4150; border-radius: 0; } "
+                         f"QLineEdit:focus {{ border-bottom: 1px solid {ACCENT}; }}")
+        ed.editingFinished.connect(lambda: ed.text().strip() and ed.text().strip() != p.name
+                                   and self.renamed.emit(p.pid, ed.text().strip()))
+        top.addWidget(ed, 1)
+        st = self.graph_state(node)
+        chip = QLabel(_(STATE_WORD[st]))
+        chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
+        top.addWidget(chip)
+        self.hv.addLayout(top)
+        self.hv.addWidget(label(_("Fusion of the channels"), "small"))
+        self.bv.addWidget(self.group_title(_("Palette")))
+        roles = [i["role"] for i in f.get("inputs") or []]
+        row = QHBoxLayout()
+        for pal, (need, _m) in PALETTES.items():
+            b = QPushButton(pal)
+            b.setCheckable(True)
+            b.setObjectName("face")
+            b.setChecked(pal == f.get("palette"))
+            ok = set(need) <= set(roles)
+            b.setEnabled(ok)
+            b.setToolTip(_("Needs the {roles} channels").format(roles=", ".join(need)) if not ok else "")
+            b.clicked.connect(lambda _c=False, x=pal: s.set_fusion_palette(p, x))
+            row.addWidget(b)
+        row.addStretch(1)
+        self.bv.addLayout(row)
+        self.bv.addWidget(self.group_title(_("Channels")))
+        words = {"L": _("its grey"), "R": _("its red"), "G": _("its green"), "B": _("its blue"),
+                 "GB": _("its green and blue")}
+        rows = []
+        for i in f.get("inputs") or []:
+            q = s.view(i["pid"])
+            rows.append((html.escape(i["role"]), _("{workflow}, {channel}").format(
+                workflow=html.escape(q.name if q is not None else "?"), channel=words.get(i.get("channel", "L"), ""))))
+        self.bv.addWidget(kv(rows, pad=10))
+        self.bv.addSpacing(6)
+        self.bv.addWidget(label(_("Each channel is its workflow's output, aligned on the first channel through the "
+                                  "plate solutions (each channel's workflow needs its Astrometry) and brought to the "
+                                  "same scale; the palette makes the colours. Its output is a layer of Post."),
+                                "small", wrap=True))
         self.bv.addStretch(1)
 
     def cut_panel(self, node):

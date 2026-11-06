@@ -132,11 +132,14 @@ class StarsRenderEngine(SimpleRenderEngine):
         """The stars alone stretched: black at 0, the white and the midtone of the whole image (its sky at the
         Sky setting), the midtone divided by ``star_strength``; then their size and their colour."""
         st = self.prep["stats_full"]["lum"]
-        c0 = st["median"] - 2.8 * st["mad"]
-        hi = max(st["p99995"], c0 + 1e-6)
-        xm = min(max((st["median"] - c0) / (hi - c0), 1e-6), 1 - 1e-6)
-        m = min(max(mtf_midtone(xm, s.sky) / s.star_strength, 1e-6), 0.5)
-        y = mtf((x / (hi - c0)).clamp(0, 1), m).clamp(0, 1)
+        if self.prep["stats_full"].get("stretched"):    # an image already stretched (issue #43): its stars as they are
+            y = (x * float(s.star_strength)).clamp(0, 1)
+        else:
+            c0 = st["median"] - 2.8 * st["mad"]
+            hi = max(st["p99995"], c0 + 1e-6)
+            xm = min(max((st["median"] - c0) / (hi - c0), 1e-6), 1 - 1e-6)
+            m = min(max(mtf_midtone(xm, s.sky) / s.star_strength, 1e-6), 0.5)
+            y = mtf((x / (hi - c0)).clamp(0, 1), m).clamp(0, 1)
         v = float(s.star_small)
         if v > 0:                                  # a gentle start: below SMALL_START they fade, above they go
             y = fade_small_stars(y, min(1.0, v / SMALL_START), max(v, SMALL_START) * self.star_fwhm() / f)

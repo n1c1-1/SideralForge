@@ -222,12 +222,18 @@ class Planner:
         deps = self.keys.deps(w, stage)
         for d in deps:
             self.need(w, d, as_input=True)
+        others = {}
+        if base(stage) == "fusion":                 # a fusion reads other workflows' results: computed first
+            for pid, st in self.keys.fusion_inputs(w):
+                self.need(pid, st, as_input=True)
+                others[f"{st}#{pid}"] = self.keys.key(pid, st)
         e = est.estimate(base(stage), self._facts_of(w), self.gpu, self.history)
         part = 1.0
         if session_of(stage) is not None:                # one session's share of the project's frames (issue #43)
-            part = 1.0 / max(1, len(self.project.separate_sessions()))
+            part = 1.0 / max(1, len(self.project.separate_sessions(w)))
         self.jobs[k] = Job(k, stage, self.chains.block_of(stage), self._sharing(w, stage, k), w.id,
-                           {d: self.keys.key(w, d) for d in deps}, round(e.seconds * part, 3), e.measured,
+                           {**{d: self.keys.key(w, d) for d in deps}, **others}, round(e.seconds * part, 3),
+                           e.measured,
                            round(e.disk_gb * part, 3), rerun=done)
 
     def plan(self, targets: list[tuple[int | Workflow, str]]) -> Plan:

@@ -443,7 +443,7 @@ class GraphView(QGraphicsView):
         used.discard("session")
         if self.drag_tool:
             used.add(TOOL_COLUMN[self.drag_tool])
-        if "etoiles" in used:                       # the Composition section, where the Stars block's images go
+        if "etoiles" in used or "fusion" in used:   # the Composition section: the stars recombined, the fusions
             used.add("composition")
         return [c for c in COLUMNS if c not in OPTIONAL or c in used]
 
@@ -519,7 +519,7 @@ class GraphView(QGraphicsView):
             else:
                 ys = [lanes[p.pid] for p in n.paths]
                 n.y = (min(ys) + max(ys)) / 2
-            col = "sources" if n.key in ("session", "image") else n.key
+            col = "sources" if n.key in ("session", "image") else ("composition" if n.key == "fusion" else n.key)
             n.col = cx[col]
             n.w = cw[col]
         seen: dict[int, int] = {}
@@ -545,14 +545,22 @@ class GraphView(QGraphicsView):
         for n in g.nodes:
             if n.key in ("sources", "composition", "session") or n.sid is not None or n is g.final:
                 continue
-            if n.key == "image" or (g.sessions and n in firsts):
+            if n.key in ("image", "fusion") or (g.sessions and n in firsts):
                 continue
             par = n.parent if n.parent is not None else g.root
             self._wire(par, n, cur is not None and cur in n.paths)
         for sn, cn in g.sessions:
             self._wire(sn, cn, True)
-        if g.sessions:
-            self._join([cn for _sn, cn in g.sessions], firsts, cur)
+        for t in (firsts if g.sessions else []):   # each first block from the sessions its workflows stack
+            src = [cn for _sn, cn in g.sessions if set(map(id, cn.paths)) & set(map(id, t.paths))]
+            if len(src) > 1:
+                self._join(src, [t], cur)
+            elif src:
+                self._wire(src[0], t, cur is not None and cur in t.paths)
+        # issue #43: the fusions, from the outputs of the workflows they combine
+        for n in g.nodes:
+            for a in g.fusion_inputs.get(id(n), []):
+                self._wire(a, n, cur is not None and (cur in n.paths or cur in a.paths))
         # issue #43: "+ Session" under the sessions (or under the one Session block), where a session goes
         if s.sources_loaded and g.root.paths:
             last = g.sessions[-1][0] if g.sessions else g.root
@@ -1282,8 +1290,12 @@ class GraphPage(QWidget):
         name = d.name.text().strip() or _("New workflow")
         if t.get("copy") is not None:                      # a copy keeps its options, settings and exit
             p = s.duplicate(t["copy"], name)
+        elif t.get("kind") in ("filters", "fusion", "dualband"):
+            p = self.make_filters(t, name, d.opts)
+            if p is None:
+                return
         elif t.get("source") == "image":
-            p = s.add_image_workflow(name, d.image, d.opts)
+            p = s.add_image_workflow(name, d.image, d.opts, stretched=bool(t.get("stretched")))
         else:
             with s.batch():
                 if t.get("sessions") and s.stack_mode == "together" and len(s.p.sessions) <= 1:
@@ -1291,6 +1303,28 @@ class GraphPage(QWidget):
                 p = s.add_path(name, d.opts, None, end=t.get("end"))
         s.log('Workflow "{name}" created', name=p.name)
         self.select(index=s.paths.index(p), step="post")
+
+    def make_filters(self, t: dict, name: str, opts: dict):
+        """A filters template (issue #43): one workflow per filter (made when the filter has none yet), then for a
+        palette the Fusion block of their outputs; a dual-band one: a colour workflow, then its fusion. Returns the
+        workflow shown (the fusion, or the first filter's)."""
+        s = self.s
+        with s.batch():
+            if t["kind"] == "dualband":
+                colour = next((q for q in s.paths if q.source is None and not s.is_mono(q) and not q.end), None)
+                if colour is None:
+                    colour = s.add_path(s.unique_name(_("Dual band")), opts)
+                return s.add_fusion(name, t["palette"], [{"pid": colour.pid, "role": "Ha", "channel": "R"},
+                                                         {"pid": colour.pid, "role": "OIII", "channel": "GB"}])
+            filters = sorted(s.filters()) if t["kind"] == "filters" else list(t["filters"])
+            made = [(f, s.filter_workflow(f, opts)) for f in filters]
+            made = [(f, q) for f, q in made if q is not None]
+            if not made:
+                self.toast(_("No session with a filter: set the filter of your sessions first (their Session block)"))
+                return None
+            if t["kind"] == "filters":
+                return made[0][1]
+            return s.add_fusion(name, t["palette"], [{"pid": q.pid, "role": f, "channel": "L"} for f, q in made])
 
     def toggle_cut(self, node, pids):
         """Cut a block, or restore it (issue #43): in ``pids`` only, else in every workflow going through it. Its

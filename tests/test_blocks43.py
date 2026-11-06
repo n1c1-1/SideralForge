@@ -250,9 +250,173 @@ def test_the_definition_checks_the_new_fields(tmp_path, nights):
     assert project2.load(p.root).sessions[0].filter == "Ha"
     for bad in (lambda q: setattr(q.sessions[0], "filter", "Z"),
                 lambda q: setattr(q.workflow(1), "source", {"path": ""}),
-                lambda q: setattr(q.workflow(1), "source", {"path": "x.fits", "stretched": True}),
+                lambda q: setattr(q.workflow(1), "source", {"fusion": {"palette": "XYZ", "inputs": []}}),
                 lambda q: q.workflow(1).options.update(cut=["output"])):
         q = project2.load(p.root)
         bad(q)
         with pytest.raises(ValueError):
             q.validate()
+
+
+# ---------------------------------------------------------------------------------------------- monochrome, fusion
+
+def test_a_monochrome_workflow_has_no_colour_and_stacks_its_filter_only(tmp_path, nights):
+    p = project(tmp_path / "p", nights, "per_session")
+    p.sessions[0].filter, p.sessions[1].filter = "Ha", "OIII"
+    p.workflow(1).sessions = [1]
+    project2.save(p)
+    k = Keys(project2.load(p.root))
+    ch = k.chain(1)
+    assert ch[:4] == ["inventory", "calibrate", "register", "stack"]          # its one session: a single chain
+    assert "color" not in ch and "catalogs" not in ch and "astrometry" in ch
+    assert wfl.greyed(FULL, mono=True) == {"color": wfl.MONO_NO_COLOUR}
+    alone = project(tmp_path / "q", nights, "together", sessions=("n1",))
+    alone.sessions[0].filter = "Ha"
+    project2.save(alone)
+    assert k.key(1, "calibrate") == Keys(project2.load(alone.root)).key(1, "calibrate")
+    assert [Path(f).name for f in StoreProject(k, 1, "inventory").config.inputs.lights] == ["n1"]
+
+
+def test_cfa_mono_is_one_channel_given_to_the_three():
+    from astro_gpu.core import cfa
+    assert cfa.is_supported(cfa.MONO) and cfa.period(cfa.MONO) == 2 and cfa.is_mono("GGGG")
+    a = np.arange(16, dtype=np.float32).reshape(4, 4)
+    sp = cfa.superpixel(a, cfa.MONO)
+    assert sp.shape == (2, 2, 3) and np.allclose(sp[..., 0], sp[..., 2]) and sp[0, 0, 1] == 2.5
+    img = np.zeros((3, 2, 2), np.float32)
+    img[1] = 5
+    assert np.all(cfa.mono_rgb(img) == 5)
+
+
+class _Ctx:
+    def __init__(self):
+        self.metrics = {}
+
+    def log(self, *a):
+        pass
+
+    def metric(self, k, v):
+        self.metrics[k] = v
+
+
+def test_darks_of_another_exposure_are_scaled():
+    from astro_gpu.stages.calibrate import scaled_dark
+    bias = np.full((2, 2), 100, np.float32)
+    dark = np.full((2, 2), 150, np.float32)                  # 300 s: 50 ADU of thermal signal
+    frames = {"lights": [{"exposure": 60.0}], "darks": [{"exposure": 300.0}]}
+    c = _Ctx()
+    assert np.allclose(scaled_dark(c, dark, bias, 0.0, frames), 110.0) and c.metrics["dark_scale"] == 0.2
+    frames["darks"] = [{"exposure": 60.0}]
+    assert np.allclose(scaled_dark(c, dark, bias, 0.0, frames), 150.0)
+
+
+def _output(folder: Path, img: np.ndarray, wcs=None):
+    folder.mkdir(parents=True)
+    np.save(folder / "lin.npy", img.astype(np.float32))
+    np.save(folder / "valid.npy", np.ones(img.shape[1:], bool))
+    (folder / "prep_simple.json").write_text(json.dumps({"drizzle_scale": 1.0}))
+    if wcs is not None:
+        wcs.to_fits().writeto(folder / "wcs.fits")
+
+
+def _wcs(crpix):
+    from astropy.wcs import WCS
+    w = WCS(naxis=2)
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    w.wcs.crval = [337.4, -20.8]
+    w.wcs.crpix = crpix
+    w.wcs.cdelt = [-0.0002, 0.0002]
+    return w
+
+
+def _star(H, W, x0, y0):
+    yy, xx = np.mgrid[0:H, 0:W]
+    return np.exp(-((xx - x0) ** 2 + (yy - y0) ** 2) / 4.0)
+
+
+def test_the_fusion_aligns_its_channels_through_their_plate_solutions(tmp_path):
+    from astro_gpu.stages.fusion import Fusion, FusionParams, fuse
+    H, W = 60, 80
+    ha = np.repeat((10 * _star(H, W, 40, 30))[None], 3, 0) + 0.01
+    oiii = np.repeat((5 * _star(H, W, 43, 28))[None], 3, 0) + 0.01     # the same star, 3 px right, 2 px up
+    _output(tmp_path / "ha", ha, _wcs([41.0, 31.0]))
+    _output(tmp_path / "oiii", oiii, _wcs([44.0, 29.0]))
+    pr = _Project(tmp_path, {"fusion": tmp_path / "out"}, ["fusion"])
+    st = Fusion()
+    ctx = Context(pr, st, Journal(pr.logs), "cpu")
+    ins = [{"role": "Ha", "channel": "L", "dir": str(tmp_path / "ha"), "wcs": str(tmp_path / "ha" / "wcs.fits")},
+           {"role": "OIII", "channel": "L", "dir": str(tmp_path / "oiii"),
+            "wcs": str(tmp_path / "oiii" / "wcs.fits")}]
+    st.run(ctx, FusionParams(palette="HOO", inputs=ins))
+    rgb = np.load(tmp_path / "out" / "drz_full.npy")
+    assert rgb.shape == (3, H, W)
+    for c in range(3):                                    # every channel peaks on the first one's star
+        assert np.unravel_index(np.argmax(rgb[c]), (H, W)) == (30, 40)
+    assert np.allclose(rgb[1], rgb[2])                    # HOO: O III green and blue
+    assert json.loads((tmp_path / "out" / "drz_meta.json").read_text())["source"] == "fusion"
+    ch = {"Ha": np.ones((2, 2), np.float32), "SII": np.zeros((2, 2), np.float32),
+          "OIII": np.full((2, 2), 0.5, np.float32)}
+    assert np.allclose(fuse(ch, "SHO")[:, 0, 0], [0, 1, 0.5]) and np.allclose(fuse(ch, "HSO")[:, 0, 0], [1, 0, 0.5])
+    one = np.ones((1, 1), np.float32)
+    lrgb = fuse({"L": 2 * one, "R": one, "G": one, "B": one}, "LRGB")
+    assert np.allclose(lrgb, 2.0)                         # the colour of RGB, the luminance of L
+    with pytest.raises(StageError, match="SII"):
+        fuse({"Ha": ch["Ha"]}, "SHO")
+
+
+def test_a_fusion_workflow_reads_its_channels_outputs(tmp_path, nights):
+    p = project(tmp_path / "p", nights, "per_session")
+    p.sessions[0].filter, p.sessions[1].filter = "Ha", "OIII"
+    p.workflow(1).sessions = [1]
+    o = p.add_workflow("OIII", CLASSIC)
+    o.sessions = [2]
+    f = p.add_workflow("HOO", CLASSIC)
+    f.source = {"fusion": {"palette": "HOO", "inputs": [{"pid": 1, "role": "Ha", "channel": "L"},
+                                                        {"pid": o.id, "role": "OIII", "channel": "L"}]}}
+    project2.save(p)
+    q = project2.load(p.root)
+    k = Keys(q)
+    assert k.chain(f.id) == ["fusion", "render_simple"] and k.deps(f.id, "render_simple") == ("fusion",)
+    assert k.fusion_inputs(f.id) == [(1, "render_simple"), (1, "astrometry"), (o.id, "render_simple"),
+                                     (o.id, "astrometry")]
+    ov = k.overrides(f.id, "fusion")
+    assert ov["palette"] == "HOO" and ov["inputs"][1]["dir"].endswith(k.key(o.id, "render_simple"))
+    before = k.key(f.id, "fusion")
+    q.workflow(o.id).params["stack"] = {"kappa": 6}                         # a channel's workflow changes
+    assert Keys(q).key(f.id, "fusion") != before
+    from astro_gpu.core import runner2
+    stages = [j.stage for j in runner2.plan_workflows(q, [f.id]).jobs]
+    assert stages[-2:] == ["fusion", "render_simple"] and stages.count("render_simple") == 3
+    q.workflow(f.id).source = {"fusion": {"palette": "HOO", "inputs": [{"pid": 99, "role": "Ha"}]}}
+    with pytest.raises(ValueError):                                          # a fusion of a workflow that is not there
+        q.validate()
+
+
+def test_an_already_stretched_image_goes_to_post_as_it_is(tmp_path, nights):
+    import cv2
+
+    from astro_gpu.render.simple import SimpleRenderEngine, SimpleSettings
+    from astro_gpu.stages.image import ImageParams, ImageSource
+    png = tmp_path / "done.png"
+    img = np.zeros((20, 30, 3), np.uint8)
+    img[5:15, 10:20] = (40, 120, 200)                                       # BGR
+    cv2.imwrite(str(png), img)
+    pr = _Project(tmp_path, {"image": tmp_path / "out"}, ["image"])
+    st = ImageSource()
+    st.run(Context(pr, st, Journal(pr.logs), "cpu"), ImageParams(path=str(png), stretched=True))
+    prep = json.loads((tmp_path / "out" / "prep_simple.json").read_text())
+    assert prep["stretched"] and prep["stats"]["stretched"]
+    y = SimpleRenderEngine(tmp_path / "out", device="cpu").render(SimpleSettings(contrast=0, saturation=1), 1.0)
+    out = y.final.numpy()
+    assert np.allclose(out[:, 10, 15], np.array([200, 120, 40]) / 255, atol=0.02)   # RGB, as it was
+    p = project(tmp_path / "p", nights, "per_session")
+    w = p.add_workflow("Done elsewhere", FULL)
+    w.source = {"path": str(png), "stretched": True}
+    project2.save(p)
+    k = Keys(project2.load(p.root))
+    assert k.chain(w.id) == ["image", "star_removal"]                         # Stars without Denoise
+    assert k.overrides(w.id, "image")["stretched"] is True
+    before = k.key(w.id, "image")
+    q = project2.load(p.root)
+    q.workflow(w.id).source = {"path": str(png), "stretched": False}
+    assert Keys(q).key(w.id, "image") != before                             # linear or stretched: two results

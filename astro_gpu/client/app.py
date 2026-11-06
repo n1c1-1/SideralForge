@@ -889,10 +889,16 @@ class Main(QMainWindow):
         if not folder:
             return
         prefs.remember_folder(folder)
+        from ..core.project import list_frames
+        from ..io.frames import frame_filter
+        first = next(iter(list_frames([folder])), None)
+        flt = frame_filter(first) if first is not None else ""     # a monochrome camera's filter, from the header
         with s.batch():
             if s.stack_mode == "together" and len(s.p.sessions) == 1:
                 s.set_stack_mode("per_session")
             sid = s.add_session(Path(folder).name, lights=[folder])
+            if flt:
+                s.set_session_filter(sid, flt)
         self.flash(_("Session “{name}” added: choose its darks and flats in its block").format(name=Path(folder).name))
         self.select(step=f"session@{sid}" if s.separate_sessions() else "sources")
 

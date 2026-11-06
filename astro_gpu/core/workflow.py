@@ -128,19 +128,23 @@ def cuts(options: dict[str, Any]) -> list[str]:
 NEEDS_ASTROMETRY = "needs Astrometry"
 NEEDS_HALF_STACKS = "needs the half-stacks of a stack"
 NEEDS_DENOISE = "needs Denoise"
+MONO_NO_COLOUR = "a monochrome image has no colours: they come from combining filters"
 
 
-def greyed(options: dict[str, Any], image: bool = False) -> dict[str, str]:
+def greyed(options: dict[str, Any], image: bool = False, mono: bool = False, stretched: bool = False
+           ) -> dict[str, str]:
     """{block: why it cannot run} for the blocks of a workflow that need a block it cut, or a stack when it starts
-    from an image (issue #43: greyed, the image passes on)."""
+    from an image, or colours its monochrome frames do not have (issue #43: greyed, the image passes on)."""
     o = check_options(options)
     cut = set(cuts(o))
     out: dict[str, str] = {}
+    if mono and "color" not in cut:
+        out["color"] = MONO_NO_COLOUR
     if "astrometry" in cut and "color" not in cut:
         out["color"] = NEEDS_ASTROMETRY
     if image and o["denoise"]:
         out["denoise"] = NEEDS_HALF_STACKS
-    if image and o["stars"]:
+    if image and o["stars"] and not stretched:
         out["stars"] = NEEDS_DENOISE
     return out
 
@@ -203,11 +207,12 @@ def implied(options: dict[str, Any], stage: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------------------------- the chain table
 
 #: the global order of the v2 stages (each stage only reads stages before it)
-ORDER = ["image", "inventory", "calibrate", "sessions", "register", "stack", "astrometry", "reference", "catalogs",
+ORDER = ["fusion", "image", "inventory", "calibrate", "sessions", "register", "stack", "astrometry", "reference", "catalogs",
          "surveys", "gradient", "color", "denoise", "render_simple", "star_removal"]
 #: stages that stand for others in a chain (issue #43): the sessions' join for each session's frames and calibration,
 #: the image of an image source for the stack
-PROVIDES: dict[str, tuple[str, ...]] = {"sessions": ("inventory", "calibrate"), "image": ("stack",)}
+PROVIDES: dict[str, tuple[str, ...]] = {"sessions": ("inventory", "calibrate"), "image": ("stack", "render_simple"),
+                                         "fusion": ("stack",)}
 #: dependencies a stage has beyond its declared ``deps``
 EXTRA: dict[str, tuple[str, ...]] = {}
 #: dependencies that may be absent from a chain (the stage then runs without them); the stages that read the stack
@@ -224,6 +229,7 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
 }
 #: the blocks of the graph and their stages; Selection has no stage of its own (it follows register)
 BLOCKS: dict[str, tuple[str, ...]] = {
+    "fusion": ("fusion",),
     "image": ("image",),
     "calibration": ("inventory", "calibrate"),
     "registration": ("sessions", "register"),       # the sessions join where they are registered together
@@ -236,7 +242,8 @@ BLOCKS: dict[str, tuple[str, ...]] = {
     "stars": ("star_removal",),                     # drawn before the Output, which every workflow ends with
     "output": ("render_simple",),
 }
-BLOCK_TITLES = {"image": "Image", "calibration": "Calibration", "registration": "Registration", "selection": "Selection",
+BLOCK_TITLES = {"fusion": "Fusion", "image": "Image", "calibration": "Calibration", "registration": "Registration",
+                "selection": "Selection",
                 "stacking": "Stacking", "astrometry": "Astrometry", "color": "Color", "denoise": "Denoise",
                 "stars": "Stars", "gradient": "Gradient", "output": "Output"}
 #: what Run to here runs for a block without stages of its own
@@ -256,12 +263,17 @@ def session_of(name: str) -> str | None:
 
 
 def chain_stages(options: dict[str, Any], end: str | None = None, reference: bool = False,
-                 sessions: Sequence[int] = (), image: bool = False) -> list[str]:
+                 sessions: Sequence[int] = (), image: bool = False, mono: bool = False,
+                 fusion: bool = False, stretched: bool = False) -> list[str]:
     """The stages of a workflow, in the global order. ``reference``: the project has a reference image (the stage sits
     in the Astrometry block). ``sessions``: the ids of the sessions calibrated each on its own (two or more; else the
     sessions are one frame list, as before issue #43). ``image``: the workflow starts from an image file."""
     o = check_options(options)
     cut = set(cuts(o))
+    if fusion:                      # other workflows' outputs combined (stages/fusion.py): then its Output block
+        return _ordered(["fusion", "render_simple"])
+    if stretched:                   # an image already stretched: its stars taken off, or Post at once
+        return _ordered(["image"] + (["star_removal"] if o["stars"] else []))
     if image:
         out = ["image"]
     elif len(sessions) >= 2:
@@ -270,12 +282,14 @@ def chain_stages(options: dict[str, Any], end: str | None = None, reference: boo
         out = ["inventory", "calibrate", "register", "stack"]
     if not image and check_end(end) == "stacking":
         return _ordered(out + ["render_simple"])
-    grey = greyed(o, image)
+    grey = greyed(o, image, mono)
+    colour = "color" not in cut and "color" not in grey
     if "astrometry" not in cut:
-        out += ["astrometry"] + (["reference"] if reference else []) + ["catalogs", "surveys"]
+        # the Gaia catalogue is the colour calibration's (without Color: not fetched)
+        out += ["astrometry"] + (["reference"] if reference else []) + (["catalogs"] if colour else []) + ["surveys"]
     if "gradient" not in cut:
         out.append("gradient")
-    if "color" not in cut and "color" not in grey:
+    if colour:
         out.append("color")
     if o["denoise"] and "denoise" not in grey:
         out.append("denoise")
@@ -324,12 +338,14 @@ class Chains:
 
     # ------------------------------------------------------------------ chains
     def chain(self, options: dict[str, Any], end: str | None = None, *, reference: bool = False,
-              sessions: Sequence[int] = (), image: bool = False) -> list[str]:
+              sessions: Sequence[int] = (), image: bool = False, mono: bool = False,
+              fusion: bool = False, stretched: bool = False) -> list[str]:
         """The stages of a workflow, ordered and checked."""
         if self.rule is None:
             raise TypeError("these Chains have no rule: use ordered() with the stage names")
-        if len(sessions) >= 2 or image:
-            return self.ordered(self.rule(options, end, reference, sessions=sessions, image=image))
+        if len(sessions) >= 2 or image or mono or fusion:
+            return self.ordered(self.rule(options, end, reference, sessions=sessions, image=image, mono=mono,
+                                          fusion=fusion, stretched=stretched))
         return self.ordered(self.rule(options, end, reference))
 
     def ordered(self, names: Iterable[str]) -> list[str]:
@@ -442,6 +458,8 @@ def chains() -> Chains:
 
 
 def chain(options: dict[str, Any], end: str | None = None, *, reference: bool = False,
-          sessions: Sequence[int] = (), image: bool = False) -> list[str]:
+          sessions: Sequence[int] = (), image: bool = False, mono: bool = False, fusion: bool = False,
+          stretched: bool = False) -> list[str]:
     """The checked chain of a workflow on the v2 stages."""
-    return chains().chain(options, end, reference=reference, sessions=sessions, image=image)
+    return chains().chain(options, end, reference=reference, sessions=sessions, image=image, mono=mono,
+                          fusion=fusion, stretched=stretched)

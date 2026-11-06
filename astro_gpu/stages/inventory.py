@@ -57,9 +57,13 @@ class Inventory(Stage):
         (w, h), _ = sizes.most_common(1)[0]
         cfas = Counter(f["cfa"] for f in lights)
         cfa = cfas.most_common(1)[0][0]
-        if not cfa:
-            raise StageError("these light frames are not raw colour (Bayer or X-Trans) frames. Monochrome cameras and "
-                             "already debayered images are not supported in this version.")
+        if not cfa:                                   # no colour filter array: a monochrome camera (issue #43)
+            cfa = cfa_mod.MONO
+            for k in out:
+                for f in out[k]:
+                    f["cfa"] = f["cfa"] or cfa_mod.MONO
+            lights = out["lights"]
+            ctx.metric("mono", True)
         if not cfa_mod.is_supported(cfa):
             raise StageError(f"unsupported colour pattern {cfa!r}")
         for k in ("darks", "flats", "bias", "flat_darks"):
@@ -91,6 +95,8 @@ class Inventory(Stage):
         ctx.metric("black_level", first["black"])
         ctx.metric("focal_mm", first["focal_mm"])
         ctx.metric("pixel_um", first["pixel_um"])
+        if first.get("pixel_scale"):
+            ctx.metric("pixel_scale", first["pixel_scale"])
         ctx.metric("first_time", times[0] if times else None)
         ctx.metric("last_time", times[-1] if times else None)
         hints = [(f["ra"], f["dec"]) for f in lights if f.get("ra") is not None]
@@ -100,7 +106,7 @@ class Inventory(Stage):
         objs = Counter(f["object"] for f in lights if f.get("object"))
         if objs:
             ctx.metric("object", objs.most_common(1)[0][0])
-        pattern = "X-Trans" if cfa_mod.is_xtrans(cfa) else cfa
+        pattern = "X-Trans" if cfa_mod.is_xtrans(cfa) else ("monochrome" if cfa_mod.is_mono(cfa) else cfa)
         ctx.log(f"{len(lights)} lights of {texp} s ({ctx.metrics['integration_h']} h), {w}x{h} {pattern}, "
                 f"{len(out['darks'])} darks, {len(out['flats'])} flats, {len(out['bias'])} bias, "
                 f"camera {first['camera'] or 'unknown'}")

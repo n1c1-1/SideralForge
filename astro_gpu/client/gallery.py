@@ -8,8 +8,12 @@ workflow".
 A template (``GALLERY``) is a starting point only: the workflow it makes is an ordinary one, every block of which can
 be changed, added, removed or cut later. Its graph is drawn here from the template itself (``draw_graph``): the blocks
 in the graph's order, a block cut hatched in grey, one greyed by a cut outlined in amber, two sessions joined before
-Registration, an image file in place of the frames. The monochrome templates are planned (mono is not built): shown,
-not offered.
+Registration, an image file in place of the frames.
+
+The Filters tab (issue #43): a monochrome camera's filters, each its own workflow (its sessions: those of that filter),
+then a Fusion block in the Composition section combines their outputs with a palette; a colour camera's image shot
+through a dual-band filter, its red and its green-blue split into H-alpha and O III, then the same fusion. A template
+says which of the project's sessions it uses and which filter is missing.
 
 Texts are English and go through _() where shown.
 """
@@ -44,7 +48,7 @@ CLASSIC_DN = dict(debruitage=True, etoiles="garder", fond="simple")
 CLASSIC = dict(debruitage=False, etoiles="garder", fond="simple")
 
 #: the tabs, in order: key and title
-TABS = (("frames", "From frames"), ("image", "From an image"), ("mono", "Monochrome"), ("copy", "Copy of a workflow"))
+TABS = (("frames", "From frames"), ("mono", "Filters"), ("image", "From an image"), ("copy", "Copy of a workflow"))
 
 #: the templates: key, tab, name, what it is for, the workflow's options (the views'), the blocks it cuts (the
 #: engine's names), and: end (its output leaves from Stacking), sessions (drawn with two nights calibrated each on its
@@ -85,18 +89,38 @@ GALLERY: list[dict] = [
          cut=["astrometry", "color"],
          text="Only the sky gradient is taken off, then Post: no astrometry, no colour calibration. For a field with "
               "too few stars to be solved, or without the network."),
-    dict(key="image_stretched", tab="image", name="Already stretched image", opts=FULL, source="image",
-         planned=True, stretched=True,
-         text="Planned: an image already stretched (not linear) enters before Split stars & background: its stars "
-              "are taken off and the two images come to Post as layers."),
-    dict(key="lrgb", tab="mono", name="LRGB", opts=FULL, planned=True, filters=("L", "R", "G", "B"),
-         text="Planned: monochrome sessions with the L, R, G and B filters, each filter stacked, the stacks aligned "
-              "and combined into one colour image (the luminance from L)."),
-    dict(key="sho", tab="mono", name="SHO (narrowband)", opts=FULL, planned=True, filters=("SII", "Ha", "OIII"),
-         text="Planned: monochrome sessions with the S II, H-alpha and O III filters, each stacked, combined as red, "
-              "green and blue."),
-    dict(key="hoo", tab="mono", name="HOO (narrowband)", opts=FULL, planned=True, filters=("Ha", "OIII"),
-         text="Planned: H-alpha as red, O III as green and blue: the usual palette of a dual-band filter."),
+    dict(key="image_stretched", tab="image", name="Already stretched image", opts=CLASSIC, source="image",
+         stretched=True,
+         text="An image already stretched (a TIFF, PNG or JPEG finished elsewhere, not linear) goes to Post as it is. "
+              "Add Split stars & background to take its stars off: the starless image and the stars come to Post as "
+              "two layers."),
+    dict(key="mono_each", tab="mono", name="One workflow per filter", opts=CLASSIC_DN, kind="filters",
+         filters=("any",),
+         text="A monochrome camera: each filter of the project's sessions gets its own complete workflow (its "
+              "sessions calibrated, registered, stacked, astrometry, sky gradient, denoise); each output is a layer "
+              "of Post. Colour calibration is not offered: the colours come from combining the filters."),
+    dict(key="sho", tab="mono", name="SHO (Hubble palette)", opts=CLASSIC_DN, kind="fusion", palette="SHO",
+         filters=("SII", "Ha", "OIII"),
+         text="Narrowband: one workflow per filter, then a Fusion block combines their outputs: S II red, H-alpha "
+              "green, O III blue. The channels are aligned through their plate solutions and brought to the same "
+              "scale."),
+    dict(key="hso", tab="mono", name="HSO", opts=CLASSIC_DN, kind="fusion", palette="HSO",
+         filters=("Ha", "SII", "OIII"),
+         text="Narrowband with H-alpha red, S II green, O III blue: the red nebulae stay red."),
+    dict(key="hoo", tab="mono", name="HOO", opts=CLASSIC_DN, kind="fusion", palette="HOO", filters=("Ha", "OIII"),
+         text="Two filters: H-alpha red, O III green and blue."),
+    dict(key="rgb", tab="mono", name="RGB with filters", opts=CLASSIC_DN, kind="fusion", palette="RGB",
+         filters=("R", "G", "B"),
+         text="A monochrome camera with red, green and blue filters: one workflow per filter, combined into a colour "
+              "image."),
+    dict(key="lrgb", tab="mono", name="LRGB", opts=CLASSIC_DN, kind="fusion", palette="LRGB",
+         filters=("L", "R", "G", "B"),
+         text="RGB with a luminance filter: the colour from R, G and B, the detail and the depth from L (each pixel's "
+              "luminance is L's)."),
+    dict(key="dualband", tab="mono", name="Dual band (colour camera)", opts=CLASSIC_DN, kind="dualband",
+         palette="HOO",
+         text="A colour camera behind a dual-band filter (H-alpha and O III): one workflow stacks it, then a Fusion "
+              "block takes its red as H-alpha and its green and blue as O III, combined as HOO."),
 ]
 
 #: the template chosen first in the frames' tab
@@ -113,12 +137,13 @@ def chain_of(t: dict) -> list[tuple[str, str]]:
     """The blocks a template's graph shows, in order: (views' key, "" | "cut" | "grey")."""
     o = t.get("opts") or {}
     cut = {_CUT_KEY[b] for b in t.get("cut") or ()}
-    if t.get("filters"):                               # planned: each filter stacked, then the channels combined
-        keys = ["combine", "astrometrie", "fond"] + (["couleur"] if "L" in t["filters"] else [])
-        keys += ["debruitage", "etoiles", "post"]
-        return [(k, "") for k in keys]
+    if t.get("kind") in ("filters", "fusion", "dualband"):     # each filter's own workflow (draw_filters)
+        keys = ["calibration", "empilement", "astrometrie", "fond"]
+        keys += ["couleur"] if t["kind"] == "dualband" else []
+        keys += ["debruitage"] if o.get("debruitage") else []
+        return [(k, "") for k in keys + ["post"]]
     if t.get("stretched"):
-        return [("etoiles", ""), ("post", "")]
+        return [("post", "")]
     if t.get("source") == "image":
         keys = ["astrometrie", "fond", "couleur"]
     else:
@@ -138,6 +163,8 @@ def chain_of(t: dict) -> list[tuple[str, str]]:
 def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     """A picture of a template's graph: its sources (one or two nights with their Calibration, or an image file),
     then its blocks; a cut block hatched, a greyed one outlined in amber."""
+    if t.get("kind") in ("filters", "fusion", "dualband"):
+        return draw_filters(t, w, h, names)
     pm = QPixmap(w, h)
     pm.fill(QColor("#15171c"))
     p = QPainter(pm)
@@ -245,6 +272,74 @@ def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
         f.setBold(True)
         p.setFont(f)
         p.drawText(QRectF(0, 0, w - 6, h * 0.22), Qt.AlignRight | Qt.AlignTop, _("planned"))
+    p.end()
+    return pm
+
+
+def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
+    """A filters template's graph: a row per filter (its session, then its own workflow up to its Output), the rows
+    joined into a Fusion block (a fusion's palette); a dual-band one: one colour row split into H-alpha and O III."""
+    pm = QPixmap(w, h)
+    pm.fill(QColor("#15171c"))
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    chain = [k for k, _h in chain_of(t)]
+    kind = t["kind"]
+    rows = (["Colour"] if kind == "dualband" else (["Ha", "OIII"] if kind == "filters" else list(t["filters"])))
+    fusion = kind in ("fusion", "dualband")
+    n = 1 + len(chain) + (1 if fusion else 0)
+    gap = max(4.0, w * 0.012)
+    bw = (w - 2 * gap - (n - 1) * gap - (gap * 2 if fusion else 0)) / n
+    pitch_max = (h - 8) / max(len(rows), 1)
+    bh = min(h * 0.34, pitch_max * 0.78, max(bw * 0.62, h * 0.12))
+    font = QFont("Segoe UI", min(10, max(6, int(bh * 0.3))))
+    font.setBold(True)
+
+    def block(x, y, text, colour):
+        r = QRectF(x, y - bh / 2, bw, bh)
+        p.setPen(QPen(QColor("#3a4150"), 1))
+        p.setBrush(QColor("#22262e"))
+        p.drawRoundedRect(r, 4, 4)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(colour))
+        p.drawRect(QRectF(x, y - bh / 2 + 2, 3, bh - 4))
+        if names:
+            f = QFont(font)
+            while f.pointSize() > 6 and QFontMetrics(f).horizontalAdvance(text) > bw - 7:
+                f.setPointSize(f.pointSize() - 1)
+            p.setFont(f)
+            p.setPen(QColor("#e8ebf0"))
+            p.drawText(r.adjusted(4, 0, -1, 0), Qt.AlignVCenter | Qt.AlignLeft,
+                       QFontMetrics(f).elidedText(text, Qt.ElideRight, int(bw - 5)))
+        return r
+
+    def wire(x1, y1, x2, y2):
+        p.setPen(QPen(QColor("#6f7888"), 1.4))
+        path = QPainterPath(QPointF(x1, y1))
+        mx = (x1 + x2) / 2
+        path.cubicTo(QPointF(mx, y1), QPointF(mx, y2), QPointF(x2, y2))
+        p.drawPath(path)
+
+    pitch = min(pitch_max, bh + max(4.0, h * 0.06))
+    ys = [h / 2 + (i - (len(rows) - 1) / 2) * pitch for i in range(len(rows))]
+    ends = []
+    for row, y in zip(rows, ys):
+        x = gap
+        r = block(x, y, _(row) if row == "Colour" else row, "#7aa2d6")
+        for k in chain:
+            x = r.right() + gap
+            wire(r.right(), y, x, y)
+            r = block(x, y, _(_SHORT.get(k, TITLES.get(k, k))), "#5fbf7f")
+        ends.append((r.right(), y))
+    if fusion:
+        x = ends[0][0] + 3 * gap
+        r = block(x, h / 2, _("Fusion") + " " + t.get("palette", ""), "#c9a227")
+        if kind == "dualband":                          # one colour image, two channels
+            for _lab, dy in (("Ha", -bh * 0.25), ("OIII", bh * 0.25)):
+                wire(ends[0][0], ends[0][1], r.left(), h / 2 + dy)
+        else:
+            for ex, ey in ends:
+                wire(ex, ey, r.left(), h / 2)
     p.end()
     return pm
 
@@ -412,9 +507,8 @@ class TemplateGallery(QDialog):
         self.file_row.setVisible(t.get("source") == "image" and not t.get("copy"))
         dur = ""
         if t.get("planned"):
-            dur = _("Not in this version yet: monochrome cameras are planned.") if t.get("filters") else \
-                _("Not in this version yet: planned.")
-        elif t.get("source") != "image" and hasattr(self.s, "opts_seconds"):
+            dur = _("Not in this version yet: planned.")
+        elif t.get("source") != "image" and not t.get("kind") and hasattr(self.s, "opts_seconds"):
             trunk = {k: v for k, v in (getattr(self.s.path, "params", {}) or {}).items() if k in TRUNK} \
                 if getattr(self.s, "path", None) is not None else {}
             try:
@@ -435,9 +529,28 @@ class TemplateGallery(QDialog):
             prefs.remember_folder(f)
             self.file.setText(f)
 
+    def needs(self, t: dict) -> tuple[list[str], list[str]]:
+        """(what the template uses of the project's sessions, what is missing) for a filters template."""
+        kind = t.get("kind")
+        have = self.s.filters() if hasattr(self.s, "filters") else {}
+        if kind == "filters":
+            return (sorted(have), [] if have else [_("a session with a filter (its Session block's Filter)")])
+        if kind == "fusion":
+            return ([f for f in t["filters"] if f in have], [f for f in t["filters"] if f not in have])
+        if kind == "dualband":
+            colour = [s for s in getattr(getattr(self.s, "p", None), "sessions", []) if not s.filter]
+            return ([_("colour sessions")] if colour else [], [] if colour else [_("a colour session")])
+        return [], []
+
     def _update(self):
         t = self.choice or {}
         ok = bool(t) and not t.get("planned")
+        if t.get("kind"):
+            used, missing = self.needs(t)
+            ok = ok and not missing
+            self.duration.setText((_("Uses: {what}").format(what=", ".join(used)) if used else "") +
+                                  ("\n" + _("Missing: {what}. Add a session with that filter (its Session block), then "
+                                             "come back.").format(what=", ".join(missing)) if missing else ""))
         if t.get("source") == "image" and not t.get("copy"):
             ok = ok and Path(self.file.text().strip()).is_file()
         self.ok.setEnabled(ok)
