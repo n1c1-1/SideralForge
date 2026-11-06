@@ -19,6 +19,13 @@ deconv, debruitage, etoiles, fond, post; composition for the Stars and backgroun
 engine's names to them. The stage names are the
 engine's (``gradient``, ``render_simple``...).
 
+Issue #43: a project whose sessions are calibrated each on its own starts with a Session block and a Calibration
+block per session (``Graph.sessions``), whose wires join into one bar before Registration: the only place where the
+graph joins. A project with one session (or its nights calibrated together, as before) has one Session block in
+place of Frames. A workflow that starts from an image has an Image block on its own lane, wired straight to its first
+block. A block the user cut is drawn hatched, its wire across it (``Node.cut``); a block that cannot run because of a
+cut is greyed with its reason (``Node.grey``): the image passes through both.
+
 This module also holds the block table (``STEPS``, ``BY_KEY``) that the Inspect strip and the panel share, and the
 block-level answers (stages, state, duration, summary) over a ``ProjectModel``. ``Graph`` builds the tree of
 ``Node`` objects the graph and the Inspect strip draw.
@@ -26,6 +33,7 @@ block-level answers (stages, state, duration, summary) over a ``ProjectModel``. 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .. import texts
 from .i18n import _, hm, language, number, plural
@@ -38,7 +46,8 @@ PHASES = [("Pre-processing", "calibration", "empilement"), ("Linear processing",
           ("Composition", "composition", "composition")]
 TOOL_COLUMN = {"debruitage": "debruitage", "etoiles": "etoiles", "deconv": "deconv",
                "auto": "fond", "rbf": "fond", "simple": "fond"}
-TITLES = {"sources": "Frames", "final": "Post", "calibration": "Calibration", "alignement": "Registration",
+TITLES = {"sources": "Frames", "final": "Post", "image": "Image", "session": "Session", "calibration": "Calibration",
+          "alignement": "Registration",
           "selection": "Selection", "empilement": "Stacking", "astrometrie": "Astrometry", "fond": "Gradient",
           "couleur": "Color", "debruitage": "Denoise", "deconv": "Deconvolution", "etoiles": "Split stars & background",
           "post": "Output", "demi_piles": "Half-stacks", "composition": "Combine stars & background layers"}
@@ -47,7 +56,7 @@ TOOLBOX = ["debruitage", "deconv", "etoiles"]
 #: the two images of the Stars block (the parts of Post's layers) and their words on the wires
 STAR_OUTPUTS = (("starless", "Starless image"), ("stars", "Stars alone"))
 # the engine's block names (core/workflow.BLOCKS) and the views' keys
-ENGINE_BLOCK = {"calibration": "calibration", "registration": "alignement", "selection": "selection",
+ENGINE_BLOCK = {"image": "image", "calibration": "calibration", "registration": "alignement", "selection": "selection",
                 "stacking": "empilement", "astrometry": "astrometrie", "color": "couleur", "denoise": "debruitage",
                 "stars": "etoiles", "gradient": "fond", "output": "post"}
 KEY_ENGINE_BLOCK = {v: k for k, v in ENGINE_BLOCK.items()}
@@ -72,10 +81,14 @@ REVIEW_ORDER = ["paused", "pending", "reviewed"]
 
 # the block table: key, phase, title, kind (fixed | tool | auto | slot), engine stages, what it does
 STEPS = [
+    dict(key="session", phase=0, title="Session", kind="fixed", stages=[],
+         what="One night: its light frames and the dark, flat and bias frames chosen for it, and the filter."),
+    dict(key="image", phase=0, title="Image", kind="fixed", stages=["image"],
+         what="An image file (a linear stack) this workflow starts from: the blocks after it read it as a stack."),
     dict(key="calibration", phase=1, title="Calibration", kind="fixed", stages=["inventory", "calibrate"],
          what="Dark and flat masters, then each light calibrated: thermal signal, vignetting and defective pixels "
               "removed."),
-    dict(key="alignement", phase=2, title="Registration", kind="fixed", stages=["register"],
+    dict(key="alignement", phase=2, title="Registration", kind="fixed", stages=["sessions", "register"],
          what="Measures the stars of each frame (size, transparency) and aligns all frames on the sharpest one."),
     dict(key="selection", phase=2, title="Selection", kind="fixed", stages=[], run=["register"],
          what="Which frames go into the stack: by star size and transparency thresholds, or one by one."),
@@ -128,7 +141,30 @@ def block_title(p, key: str) -> str:
     """The name of a block, translated. The output of a workflow carries the workflow's name."""
     if key == "post" and p is not None:
         return p.name
+    key = key.partition("@")[0]                       # a session's block: its block's name
     return _(TITLES.get(key) or BY_KEY[key]["title"])
+
+
+def session_summary(s, sid: int) -> str:
+    """Under a Session block's name: its lights, its calibration frames, its filter."""
+    ses = next((x for x in s.sessions if x["id"] == sid), {})
+    text = plural(int(ses.get("lights") or 0), "{n} light", "{n} lights")
+    text += " · " + _("{darks} darks, {flats} flats").format(darks=ses.get("darks", 0), flats=ses.get("flats", 0))
+    flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
+    return text + (f" · {flt}" if flt else "")
+
+
+def node_title(s, n) -> str:
+    """The name a block shows: a session's name for its Session block, the workflow's for its Output, the frames'
+    block named after its one session (or "All nights")."""
+    if n.key == "session":
+        return s.session(n.sid).name or _("Session {n}").format(n=n.sid)
+    if n.key == "sources" and hasattr(s, "session") and s.sessions:
+        if len(s.sessions) == 1:
+            return s.sessions[0]["name"] or _("Session")
+        if getattr(s, "stack_mode", "together") == "together":
+            return _("All nights")
+    return block_title(n.paths[0] if n.paths else None, n.key)
 
 
 def review_title(key: str) -> str:
@@ -139,19 +175,22 @@ def review_title(key: str) -> str:
 def chain(p) -> list[str]:
     """The block keys of a workflow, in order (the frames excluded, its Output last); a workflow pulled to the post
     from a block stops there, then has its output."""
-    return list(p.model.block_keys(p))
+    m = p.model
+    return list(m.display_keys(p) if hasattr(m, "display_keys") else m.block_keys(p))
 
 
 # ------------------------------------------------------------------ block-level answers over a model
 def stages_of(s, p, key: str) -> list[str]:
-    """The engine stages of this block in the workflow's chain."""
+    """The engine stages of this block in the workflow's chain; a session's block ("calibration@2"), that session's
+    instances (issue #43)."""
     allst = s.all_stages(p)
-    return [x for x in BY_KEY[key]["stages"] if x in allst]
+    k, _at, sid = key.partition("@")
+    return [x for x in (f"{st}@{sid}" if sid else st for st in BY_KEY[k]["stages"]) if x in allst]
 
 
 def run_stages(s, p, key: str) -> list[str]:
     """What Run to here runs for this block (Selection: Registration)."""
-    return BY_KEY[key].get("run") or stages_of(s, p, key)
+    return BY_KEY[key.partition("@")[0]].get("run") or stages_of(s, p, key)
 
 
 def block_state(s, p, key: str) -> str:
@@ -188,7 +227,15 @@ class Node:
     w: float = 0.0                             # its width in the graph (the column's)
     lid: int | None = None                     # a Stars and background block: its layer in Post
     handle: bool = False                       # the Stars block of a workflow whose Output block it holds (#17)
+    sid: int | None = None                     # a Session block, or a session's Calibration block: its session
+    cut: bool = False                          # cut by the user in its workflows (issue #43)
+    grey: str = ""                             # why it cannot run (a cut before it), translated; "" when it can
     _bk: object = None
+
+    @property
+    def ref(self) -> str:
+        """The key the views select the block by: its key, with its session ("calibration@2")."""
+        return f"{self.key}@{self.sid}" if self.sid is not None else self.key
 
     @property
     def shared(self) -> bool:
@@ -206,19 +253,36 @@ class Graph:
 
     def __init__(self, project, _unused=None):
         self.s = project
-        self.root = Node("sources", list(project.paths))
+        frames = [p for p in project.paths if getattr(p, "source", None) is None]
+        self.root = Node("sources", frames)
         self.final = Node("final", list(project.paths))
         self.leaves: dict[int, Node] = {}
         self.nodes: list[Node] = [self.root]
         self.by_path: dict[int, dict[str, Node]] = {}
+        #: issue #43: (Session block, its Calibration block) per session calibrated on its own
+        self.sessions: list[tuple[Node, Node]] = []
+        sids = project.separate_sessions() if hasattr(project, "separate_sessions") else []
+        for sid in sids:
+            sn, cn = Node("session", list(frames), sid=sid), Node("calibration", list(frames), sid=sid)
+            self.sessions.append((sn, cn))
+            self.nodes += [sn, cn]
+        model = getattr(project, "model", None) or project
         for p in project.paths:
             cur = self.root
             self.by_path[p.pid] = {"sources": self.root, "final": self.final}
+            for sn, cn in self.sessions:
+                if p in sn.paths:
+                    self.by_path[p.pid][sn.ref], self.by_path[p.pid][cn.ref] = sn, cn
             for k in chain(p):
-                bk = project.block_key(p, k)
+                cut = bool(getattr(model, "is_cut", None)) and model.is_cut(p, k)
+                grey = model.greyed_reason(p, k) if hasattr(model, "greyed_reason") else ""
+                if cut or grey:                         # not in the engine's chain (or a pass-through): its own branch
+                    bk = ("cut" if cut else "grey", k, project.block_key(p, k), cur._bk)
+                else:
+                    bk = project.block_key(p, k)
                 nxt = next((c for c in cur.children if c._bk == bk), None)
                 if nxt is None:
-                    nxt = Node(k, [], cur)
+                    nxt = Node(k, [], cur, cut=cut, grey=grey)
                     nxt._bk = bk
                     cur.children.append(nxt)
                     self.nodes.append(nxt)
@@ -289,6 +353,9 @@ class Graph:
             return self.root
         if key == "final":
             return self.final
+        if "@" in key:                                  # a session's block (issue #43)
+            k, sid = key.split("@", 1)
+            return next((n for pair in self.sessions for n in pair if n.key == k and str(n.sid) == sid), None)
         if p is None:
             return None
         if key == "composition":
@@ -301,6 +368,14 @@ class Graph:
         """done | pending | stale | running | failed | interrupted | skipped, for the workflows going through it."""
         if node.key == "sources":
             return "done" if self.s.sources_loaded else "pending"
+        if node.key == "session":
+            return "done" if self.s.session(node.sid).lights else "pending"
+        if node.sid is not None:                      # a session's Calibration: its own stages in every workflow
+            stages = [f"inventory@{node.sid}", f"calibrate@{node.sid}"]
+            states = {self.s.state(p, x) for p in node.paths for x in stages}
+            return next((w for w in STATE_ORDER if w in states), "pending")
+        if node.grey or (node.cut and node.key not in ("calibration", "alignement")):
+            return "skipped" if node.grey else "done"
         if node.key == "final":
             return "done" if self.s.paths and all(p.rendered for p in self.s.paths) else "pending"
         if node.key == "composition":                 # computed in Post from the Stars block's images
@@ -312,7 +387,8 @@ class Graph:
         """The review point of a block: (state, how many of its workflows have it, how many go through it), the state
         being the most urgent of theirs (paused, pending, reviewed); None when no workflow pauses after it."""
         review = getattr(self.s, "review_state", None)
-        if review is None or node.key in ("sources", "final", "composition") or not node.paths:
+        if review is None or node.key in ("sources", "final", "composition", "session") or node.sid is not None \
+                or not node.paths:
             return None
         have = [st for st in (review(p, node.key) for p in node.paths) if st]
         if not have:
@@ -320,8 +396,10 @@ class Graph:
         return next(w for w in REVIEW_ORDER if w in have), len(have), len(node.paths)
 
     def seconds(self, node: Node) -> float:
-        if node.key in ("sources", "final", "composition") or not node.paths:
+        if node.key in ("sources", "final", "composition", "session") or not node.paths or node.grey:
             return 0.0
+        if node.sid is not None:
+            return sum(self.s.seconds(x, node.paths[0]) for x in (f"inventory@{node.sid}", f"calibrate@{node.sid}"))
         return block_seconds(self.s, node.paths[0], node.key)
 
     def summary(self, node: Node) -> str:
@@ -331,9 +409,28 @@ class Graph:
 
     def _summary(self, node: Node) -> str:
         s = self.s
+        if node.grey:
+            return node.grey
+        if node.cut and node.key not in ("calibration", "alignement"):
+            return _("cut: the image passes through")
+        if node.key == "session":
+            return session_summary(s, node.sid)
+        if node.sid is not None:
+            ses = next((x for x in s.sessions if x["id"] == node.sid), {})
+            return _("{darks} darks, {flats} flats").format(darks=ses.get("darks", 0), flats=ses.get("flats", 0))
+        if node.cut:
+            return _("cut: frames taken as they are") if node.key == "calibration" else _("cut: frames taken as aligned")
+        if node.key == "image":
+            src = node.paths[0].source or {}
+            return Path(str(src.get("path") or "")).name
         if node.key == "sources":
             if not s.sources_loaded:
                 return _("to add")
+            if len(s.sessions) == 1 or getattr(s, "stack_mode", "together") == "together":
+                if len(s.sessions) > 1:
+                    return plural(len(s.sessions), "{n} night · {lights} lights", "{n} nights · {lights} lights",
+                                  lights=fmt_int(s.n_lights()))
+                return session_summary(s, s.sessions[0]["id"])
             return plural(len(s.sessions), "{n} session · {lights} lights", "{n} sessions · {lights} lights",
                           lights=fmt_int(s.n_lights()))
         if node.key == "final":
@@ -404,6 +501,7 @@ class Graph:
         return out
 
 
-__all__ = ["COLUMNS", "OPTIONAL", "PHASES", "TOOL_COLUMN", "TITLES", "TOOLBOX", "STEPS", "BY_KEY", "TOOLS",
+__all__ = ["session_summary", "node_title", "COLUMNS", "OPTIONAL", "PHASES", "TOOL_COLUMN", "TITLES", "TOOLBOX", "STEPS",
+           "BY_KEY", "TOOLS",
            "STATE_WORD", "STATE_ORDER", "ENGINE_BLOCK", "Graph", "Node", "block_title", "chain", "stages_of",
            "run_stages", "block_state", "block_seconds", "hm", "BREAK_COL", "PAUSE_COL", "REVIEWED_COL", "review_title"]

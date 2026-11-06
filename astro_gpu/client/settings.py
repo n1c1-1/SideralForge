@@ -355,6 +355,7 @@ TYPES = {"int": "int", "float": "float", "bool": "bool", "str": "str", "float | 
 
 # ======================================================================== resolving a setting for a workflow
 def catalog_key(p, step: str) -> str:
+    step = step.split("@", 1)[0]                     # a session's block: the block's catalogue (issue #43)
     if step == "fond":
         return f"fond:{p.opts['fond']}"
     if step == "debruitage":
@@ -362,9 +363,16 @@ def catalog_key(p, step: str) -> str:
     return step
 
 
-def _stage_of(s, p, it: dict) -> str | None:
-    """The stage of a catalogue item, when the workflow has it."""
-    return it["stage"] if it["stage"] in s.all_stages(p) else None
+def _stage_of(s, p, it: dict, sid: str | None = None) -> str | None:
+    """The stage of a catalogue item, when the workflow has it; for a session's block (``sid``, issue #43), that
+    session's instance ("calibrate@2"): the settings of that session."""
+    st = f"{it['stage']}@{sid}" if sid is not None else it["stage"]
+    return st if st in s.all_stages(p) else None
+
+
+def _split(step: str) -> tuple[str, str | None]:
+    """A block key and its session: "calibration@2" → ("calibration", "2")."""
+    return (step.split("@", 1)[0], step.split("@", 1)[1]) if "@" in step else (step, None)
 
 
 def _covered() -> set[tuple[str, str]]:
@@ -392,7 +400,8 @@ def _reason_text(s, info, stage: str) -> str:
 def resolve(s, p, step: str, it: dict, stage: str | None = None) -> dict | None:
     """The setting as shown: label, help, tip, value, suggestion, reason, bounds; None when not in this workflow (or
     when the worker has not described its stage yet). The texts are translated here, at display time."""
-    stage = stage or _stage_of(s, p, it)
+    step, sid = _split(step)
+    stage = stage or _stage_of(s, p, it, sid)
     if stage is None:
         return None
     r = dict(it, stage=stage, cat_stage=it["stage"], step_key=step, key=f"{stage}.{it['name']}", locked=False,
@@ -431,19 +440,21 @@ def _home_step(stage: str):
 def _stages_of_step(s, p, step: str) -> list[str]:
     """The engine stages whose settings a block's panel lists (the half-stacks are the block's own)."""
     from .blocks import BY_KEY
+    step, sid = _split(step)
     if step not in BY_KEY:
         return []
     if step == "post":
         return [x for x in s.all_stages(p) if x in OUTPUT_STAGES]
-    return [x for x in BY_KEY[step]["stages"] if x in s.all_stages(p)]
+    return [x for x in (f"{st}@{sid}" if sid else st for st in BY_KEY[step]["stages"]) if x in s.all_stages(p)]
 
 
 def needed_stages(s, p, step: str) -> set[str]:
     """Every stage the rows of this block come from (so that the panel can ask the worker for them)."""
     out = set()
-    for _t, items in CATALOG.get(catalog_key(p, step), []):
+    sid = _split(step)[1]
+    for _t, items in CATALOG.get(catalog_key(p, _split(step)[0]), []):
         for it in items:
-            st = _stage_of(s, p, it) if it["kind"] == "engine" else None
+            st = _stage_of(s, p, it, sid) if it["kind"] == "engine" else None
             if st:
                 out.add(st)
     out |= {x for x in _stages_of_step(s, p, step) if x not in ("inventory", "reference")}
@@ -534,7 +545,8 @@ def step_settings(s, p, step: str):
     rows = []
     for st in ([] if step == "demi_piles" else _stages_of_step(s, p, step)):
         for info in s.params(p, st) or []:
-            if (st, info.name) in COVERED or (st, info.name) in HIDDEN or info.level == "internal":
+            bst = st.split("@", 1)[0]
+            if (bst, info.name) in COVERED or (bst, info.name) in HIDDEN or info.level == "internal":
                 continue
             it = E(st, info.name, ENGINE_LEVEL.get(info.level, "normal"))
             r = resolve(s, p, step, it, st)

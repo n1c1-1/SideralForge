@@ -60,10 +60,9 @@ from pydantic import ValidationError
 
 from . import workflow as wfl
 from .params import StageParams
-from .workflow import base, session_of
 from .project import Inputs, ProjectConfig, list_frames
 from .project2 import KINDS, Project2, Workflow
-from .workflow import Chains
+from .workflow import Chains, base, session_of
 
 #: the target's fields added after the first keys were made: left out of the astrometry's key while unset (#38)
 LATER_TARGET_FIELDS = ("pixel_um",)

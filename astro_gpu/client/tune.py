@@ -658,7 +658,7 @@ class TuneView(QWidget):
         s = self.s
         g = g or Graph(s)
         self.strip.build(s, g)
-        if s.sel_step == "sources":
+        if s.sel_step == "sources" or s.sel_step.startswith("session@"):    # a Session block: its frames (#43)
             self.pages.setCurrentIndex(1)
             if hasattr(self.sources, "refresh"):
                 self.sources.refresh()
@@ -691,7 +691,13 @@ class TuneView(QWidget):
             return
         k = s.sel_step
         state = block_state(s, p, k)
-        self.head.addWidget(label(f"{block_title(p, k)}  ·  {p.name}" if k != "post" else p.name, "h1"))
+        title = block_title(p, k)
+        if node.sid is not None:                       # a session's Calibration (issue #43): its session's name
+            title += " · " + s.session(node.sid).name
+        self.head.addWidget(label(f"{title}  ·  {p.name}" if k != "post" else p.name, "h1"))
+        # a session's block shows that session's results (steps.which_for reads them from the selected block): the
+        # views are the block's own
+        k = k.partition("@")[0]
         not_done = state in ("pending", "running", "failed", "interrupted", "skipped") or \
             (state == "stale" and not self._has_previous(p, k))
         # the calibration frames can be looked at (and the wrong ones left out) before Calibration is computed: its

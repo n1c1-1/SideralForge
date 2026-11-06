@@ -51,7 +51,7 @@ BY_OUTPUT = ("render_simple",)
 POST_PART_NAMES = {"starless": "Starless image", "stars": "Stars alone", "combined": "Combine stars & background layers"}
 
 # ---------------------------------------------------------------------------------------------- vocabulary
-#: the starting points of the New workflow dialog, by their keys (dialogs.TEMPLATE_NAME gives their names)
+#: the classic starting points, whose durations are asked of the worker beforehand (the gallery quotes them)
 TEMPLATES = {
     "Vierge": dict(debruitage=False, etoiles="garder", fond="simple"),
     "Classique + débruitage": dict(debruitage=True, etoiles="garder", fond="simple"),
@@ -89,17 +89,31 @@ class NotInEngine(ValueError):
 
 
 def to_engine(o: dict) -> dict:
-    """The views' options of a workflow as the engine's (core/workflow)."""
+    """The views' options of a workflow as the engine's (core/workflow). "cut": the engine's names of the blocks the
+    user cut (issue #43), kept as they are."""
     stars = "neural" if o.get("etoiles") == "retirer" else None
-    return {"denoise": DN_ENGINE.get(o.get("dn"), "pretrained") if o.get("debruitage") else None, "stars": stars,
-            "gradient": GRADIENT_ENGINE.get(o.get("fond"), "polynomial"), "deconvolution": None}
+    out = {"denoise": DN_ENGINE.get(o.get("dn"), "pretrained") if o.get("debruitage") else None, "stars": stars,
+           "gradient": GRADIENT_ENGINE.get(o.get("fond"), "polynomial"), "deconvolution": None}
+    if o.get("cut"):
+        out["cut"] = list(o["cut"])
+    return out
 
 
 def from_engine(o: dict) -> dict:
     """The engine's options as the views'."""
     return {"debruitage": bool(o.get("denoise")), "dn": DN_VIEW.get(o.get("denoise"), "generique"),
             "etoiles": "retirer" if o.get("stars") else "garder", "fond": GRADIENT_VIEW.get(o.get("gradient"), "simple"),
-            "deconv": bool(o.get("deconvolution"))}
+            "deconv": bool(o.get("deconvolution")), "cut": list(o.get("cut") or [])}
+
+
+def engine_block(key: str) -> str:
+    """The engine's block of a view's block key ("alignement" → "registration")."""
+    return KEY_ENGINE_BLOCK.get(key, key)
+
+
+def cuttable(key: str) -> bool:
+    """Whether the user can cut this block (issue #43: Calibration, Registration, Astrometry, Gradient, Color)."""
+    return engine_block(key) in wfl.CUTTABLE
 
 
 def methods_of(block: str) -> list[dict]:
@@ -140,6 +154,7 @@ class WorkflowView:
     rendered: bool = False                               # has a result to show in Post (now or earlier)
     layer: str = ""                                      # not read by the views (the layers are the engine's)
     provisional: bool = False
+    source: dict | None = None                           # issue #43: the image it starts from, or None (the sessions)
     model: Any = field(default=None, repr=False, compare=False)
 
     @property
@@ -351,6 +366,7 @@ class ProjectModel(QObject):
             v.name, v.opts = w.name, from_engine(w.options)
             v.params, v.variant_of = copy.deepcopy(w.params), w.variant_of
             v.end = "empilement" if w.end == "stacking" else None
+            v.source = copy.deepcopy(w.source)
             out.append(v)
         self.paths[:] = out
         self.current = min(max(self.current, 0), len(self.paths) - 1) if self.paths else -1
@@ -686,7 +702,8 @@ class ProjectModel(QObject):
     def _extra(self):
         """What an edit may change besides the workflows: the sessions and the frames excluded by hand."""
         return (sorted(tuple(x) for x in self.p.excluded),
-                [(s.id, s.name, *(tuple(getattr(s, k)) for k in ("lights", "darks", "flats", "bias", "flat_darks")))
+                [(s.id, s.name, s.filter, *(tuple(getattr(s, k)) for k in ("lights", "darks", "flats", "bias",
+                                                                          "flat_darks")))
                  for s in self.p.sessions])
 
     # ------------------------------------------------------------ undo and redo
@@ -731,8 +748,185 @@ class ProjectModel(QObject):
         return [s for s in self.all_stages(p) if s not in TRUNK]
 
     def block_keys(self, p: WorkflowView) -> list[str]:
-        """The views' block keys of a workflow, in order (the frames and Post excluded; Output last)."""
+        """The views' block keys of a workflow, in order (the frames and Post excluded; Output last). The blocks of
+        each session (issue #43: "calibration@2") are not in it: the graph draws them before the chain."""
         return [ENGINE_KEY[b.block] for b in self._blocks.get(p.pid, []) if b.block in ENGINE_KEY]
+
+    # ------------------------------------------------------------ issue #43: cut and greyed blocks, sessions
+    def display_keys(self, p: WorkflowView) -> list[str]:
+        """The blocks the graph draws for a workflow, in order: its blocks, with those the user cut and those greyed
+        by a cut (they are not in the engine's chain, or run as a pass-through) at their place."""
+        keys = self.block_keys(p)
+        want = [k for k in ("image", "calibration", "alignement", "selection", "empilement", "astrometrie", "fond",
+                            "couleur", "debruitage", "etoiles", "post")]
+        have = set(keys)
+        extra = {ENGINE_KEY.get(b, b) for b in self.cut_blocks(p)} | {ENGINE_KEY.get(b, b) for b in self.greyed(p)}
+        if p.source is not None:
+            extra -= {"calibration", "alignement", "selection", "empilement"}
+        elif self.separate_sessions():
+            extra.discard("calibration")                   # each session's Calibration is drawn before the chain
+        if p.end:
+            extra = {k for k in extra if want.index(k) <= want.index(p.end)}
+        out = list(keys)                                   # the engine's order, the extras at their places
+        for k in sorted(extra - have, key=want.index):
+            before = [i for i, x in enumerate(out) if x in want and want.index(x) < want.index(k)]
+            out.insert(before[-1] + 1 if before else 0, k)
+        return out
+
+    def cut_blocks(self, p: WorkflowView) -> list[str]:
+        """The engine's names of the blocks the user cut in this workflow."""
+        return list(p.opts.get("cut") or [])
+
+    def greyed(self, p: WorkflowView) -> dict[str, str]:
+        """{engine block: why it cannot run} (English, translated where shown) for this workflow."""
+        try:
+            return wfl.greyed(to_engine(p.opts), image=p.source is not None)
+        except ValueError:
+            return {}
+
+    def is_cut(self, p: WorkflowView, key: str) -> bool:
+        return engine_block(key) in self.cut_blocks(p)
+
+    def greyed_reason(self, p: WorkflowView, key: str) -> str:
+        """Why this block of the workflow cannot run (translated), or ""."""
+        why = self.greyed(p).get(engine_block(key), "")
+        return _(why) if why else ""
+
+    def set_cut(self, paths, key: str, on: bool) -> bool:
+        """Cut a block (``on``) in these workflows, or restore it (issue #43): one change, for Undo. Its settings and
+        results are kept. False when nothing changes."""
+        block = engine_block(key)
+        if block not in wfl.CUTTABLE:
+            raise ValueError(f"this block cannot be cut: {key!r}")
+        paths = [q for q in paths if (block in self.cut_blocks(q)) != on]
+        if not paths:
+            return False
+        with self._edit():
+            ws = api.workflows(self.p)
+            for q in paths:
+                w = next(x for x in ws if x.id == q.pid)
+                w.options = wfl.set_cut(w.options, block, on)
+            api.set_workflows(self.p, ws, self.p.current)
+        return True
+
+    def separate_sessions(self) -> list[int]:
+        """The ids of the sessions calibrated each on its own, drawn as Session and Calibration blocks before the
+        chain (two or more, in the per-session mode); [] otherwise."""
+        return self.p.separate_sessions()
+
+    def session(self, sid: int):
+        return self.p.session(sid)
+
+    def add_session(self, name: str = "", lights=(), **calibration) -> int | None:
+        """A new session (issue #43): its lights, and its calibration frames by kind (``darks``, ``flats``, ``bias``,
+        ``flat_darks``): folders or files. A project made before issue #43 (all its nights calibrated together) keeps
+        that mode, so the new session joins the others' calibration. Returns its id."""
+        from ..core.project2 import Session
+        bad = set(calibration) - set(CALIBRATION_KINDS)
+        if bad:
+            raise ValueError(f"not kinds of calibration frames: {sorted(bad)}")
+        sid = max((s.id for s in self.p.sessions), default=0) + 1
+        with self._edit():
+            self.p.sessions.append(Session(sid, name or _("Session {n}").format(n=sid),
+                                           lights=[Path(x).as_posix() for x in lights],
+                                           **{k: [Path(x).as_posix() for x in v] for k, v in calibration.items()}))
+            self.p.validate()
+        self.reload_sources()
+        return sid
+
+    def remove_session(self, sid: int) -> bool:
+        """Take a session out of the project (its files are never touched); the last one stays."""
+        if len(self.p.sessions) <= 1:
+            return False
+        with self._edit():
+            self.p.sessions = [s for s in self.p.sessions if s.id != sid]
+            self.p.excluded = [x for x in self.p.excluded if x[0] != sid]
+            for w in self.p.workflows:
+                for k in [k for k in w.params if k.endswith(f"@{sid}")]:
+                    del w.params[k]
+        self.reload_sources()
+        return True
+
+    def rename_session(self, sid: int, name: str) -> bool:
+        name = name.strip()
+        s = self.p.session(sid)
+        if not name or name == s.name:
+            return False
+        with self._edit():
+            s.name = name
+        return True
+
+    def set_session_filter(self, sid: int, flt: str) -> bool:
+        """The filter of a session's lights (mono is planned: stored only)."""
+        s = self.p.session(sid)
+        if flt == s.filter:
+            return False
+        with self._edit():
+            s.filter = flt
+            self.p.validate()
+        return True
+
+    def add_session_entries(self, sid: int, kind: str, paths) -> int:
+        """Folders or files added to a session's list of a kind (lights, darks, flats, bias, flat_darks): the session
+        block is where they are chosen (issue #43). Returns how many were new."""
+        if kind not in ("lights",) + tuple(CALIBRATION_KINDS):
+            raise ValueError(f"not a kind of frames: {kind!r}")
+        s = self.p.session(sid)
+        have = {norm_path(self.p.abspath(e)) for e in getattr(s, kind)}
+        new = [Path(x).as_posix() for x in paths if norm_path(x) not in have]
+        if not new:
+            return 0
+        with self._edit():
+            setattr(s, kind, list(getattr(s, kind)) + new)
+            self.p.validate()
+        self.reload_sources()
+        return len(new)
+
+    def remove_session_entry(self, sid: int, kind: str, entry: str) -> bool:
+        """A folder or file taken out of a session's list (the files themselves are never touched). The lights of a
+        session keep at least one entry."""
+        s = self.p.session(sid)
+        lst = list(getattr(s, kind))
+        keep = [e for e in lst if norm_path(self.p.abspath(e)) != norm_path(self.p.abspath(entry))]
+        if len(keep) == len(lst) or (kind == "lights" and not keep):
+            return False
+        with self._edit():
+            setattr(s, kind, keep)
+            self.p.validate()
+        self.reload_sources()
+        return True
+
+    def use_from_session(self, src: int, dst: int, kind: str) -> bool:
+        """A session takes another session's calibration frames of a kind (the same files: the master is computed
+        once for both)."""
+        if kind not in CALIBRATION_KINDS:
+            raise ValueError(f"not a kind of calibration frames: {kind!r}")
+        frm, to = self.p.session(src), self.p.session(dst)
+        want = [self.p.abspath(e) for e in getattr(frm, kind)]
+        if [self.p.abspath(e) for e in getattr(to, kind)] == want:
+            return False
+        with self._edit():
+            setattr(to, kind, [Path(x).as_posix() for x in want])
+            self.p.validate()
+        self.reload_sources()
+        return True
+
+    def shared_with(self, sid: int, kind: str) -> list[int]:
+        """The other sessions that use the same calibration frames of a kind as this one."""
+        mine = sorted(norm_path(self.p.abspath(e)) for e in getattr(self.p.session(sid), kind))
+        if not mine:
+            return []
+        return [o.id for o in self.p.sessions if o.id != sid
+                and sorted(norm_path(self.p.abspath(e)) for e in getattr(o, kind)) == mine]
+
+    def add_image_workflow(self, name: str, path: str, opts: dict | None = None) -> WorkflowView:
+        """A workflow that starts from an image file (issue #43: a linear stack), with the blocks after the stack."""
+        o = dict(opts or {"debruitage": False, "etoiles": "garder", "fond": "simple"})
+        with self._edit():
+            w = api.add_workflow(self.p, self.unique_name(name), wfl.check_options(to_engine(o)), {})
+            self.p.workflow(w.id).source = {"path": Path(path).as_posix(), "stretched": False}
+            self.p.validate()
+        return self._view_of(w.id)
 
     def block_key(self, p: WorkflowView, key: str):
         """What two workflows must have equal to share a block (with everything before it): the keys of its stages
@@ -1201,9 +1395,10 @@ class ProjectModel(QObject):
             n += 1
         return f"{base} {n}"
 
-    def add_path(self, name: str, opts: dict, params: dict | None = None) -> WorkflowView:
+    def add_path(self, name: str, opts: dict, params: dict | None = None, end: str | None = None) -> WorkflowView:
         """A new workflow. Without settings of its own it joins the current one's pre-processing (the settings of
-        Calibration to Stacking are copied), so that the two share those blocks."""
+        Calibration to Stacking are copied), so that the two share those blocks. ``end``: "empilement", its output
+        leaves from Stacking (a raw stack)."""
         params = copy.deepcopy(params or {})
         if not params and self.path is not None:
             params = {s: dict(v) for s, v in self.path.params.items() if s in TRUNK}
@@ -1214,7 +1409,15 @@ class ProjectModel(QObject):
             params.setdefault("stack", {})["white_balance"] = True
         with self._edit():
             w = api.add_workflow(self.p, name, wfl.check_options(to_engine(opts)), params)
-        return self.view(w.id)
+            if end:
+                self.p.workflow(w.id).end = wfl.check_end(KEY_ENGINE_BLOCK.get(end, end))
+        return self._view_of(w.id)
+
+    def _view_of(self, wid: int) -> WorkflowView:
+        """The view of a workflow just made (inside a batch the views are built at its end: built here)."""
+        if self.view(wid) is None:
+            self._rebuild_views()
+        return self.view(wid)
 
     def batch(self):
         """Several edits that Undo takes back as one: ``with model.batch(): ...``."""
@@ -1686,13 +1889,18 @@ class ProjectModel(QObject):
         """Frames were added (Import folder): read them, then the keys again."""
         self.reload_sources()
 
-    def add_session(self, *a, **k) -> bool:
-        """Sessions are added through the Import folder dialog (api.add_frames, then ``reload_sources``)."""
-        return False
-
     def set_stack_mode(self, mode: str) -> bool:
-        """All sessions together is the only mode of this version (one stack per session is ◇)."""
-        return mode == self.p.stack_mode
+        """"per_session": each session calibrated with its own frames, then all stacked together (issue #43);
+        "together": one calibration for all (the projects made before). Calibration and what follows are computed
+        again. False when nothing changes."""
+        from ..core.project2 import STACK_MODES
+        if mode not in STACK_MODES:
+            raise ValueError(f"not a stack mode: {mode!r}")
+        if mode == self.p.stack_mode:
+            return False
+        with self._edit():
+            self.p.stack_mode = mode
+        return True
 
     @property
     def trunk_params(self) -> dict:

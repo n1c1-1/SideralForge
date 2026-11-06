@@ -322,7 +322,9 @@ class Main(QMainWindow):
             cache = prefs.get("cache_dir")
             if cache:
                 p.scratch_dir = (Path(cache) / Path(root).name).as_posix()
-                project2.save(p)
+            # issue #43: each session calibrated with its own frames (with one session, the same as before)
+            p.stack_mode = "per_session"
+            project2.save(p)
         except (OSError, ValueError, project2.LegacyProject) as e:
             QMessageBox.warning(self, _("New project"), _("The project cannot be created: {why}").format(why=e))
             return False
@@ -378,6 +380,9 @@ class Main(QMainWindow):
         self.build_menus()
         self.build_project()
         self.run.attach()                            # a run that goes on (started before, or elsewhere): follow it
+        if created and not d.workflows and self.graph is not None:
+            # issue #43: a new project starts from the template gallery
+            QTimer.singleShot(0, lambda: self.graph.new_workflow() if self.graph is not None else None)
         return True
 
     def make_model(self):
@@ -869,12 +874,27 @@ class Main(QMainWindow):
         import_folder(self.s, self, service=service_of(self.s))
 
     def add_session(self):
-        """Add session…: a folder of frames as a new session."""
-        if self.s is None:
+        """Add a session…: its folder of lights; its calibration frames are chosen in its Session block, shown then
+        (issue #43). A project of one session calibrates each session on its own from then on (its first session's
+        results stay valid: the same keys); one made before with several nights calibrated together keeps that."""
+        s = self.s
+        if s is None:
             return
-        from .services.inspect import service_of
-        from .sources import import_folder
-        import_folder(self.s, self, new_session=True, service=service_of(self.s))
+        if not s.sources_loaded:                      # the first frames: the import, which sorts them by kind
+            from .services.inspect import service_of
+            from .sources import import_folder
+            import_folder(s, self, new_session=True, service=service_of(s))
+            return
+        folder = QFileDialog.getExistingDirectory(self, _("Lights of the new session"), prefs.last_folder())
+        if not folder:
+            return
+        prefs.remember_folder(folder)
+        with s.batch():
+            if s.stack_mode == "together" and len(s.p.sessions) == 1:
+                s.set_stack_mode("per_session")
+            sid = s.add_session(Path(folder).name, lights=[folder])
+        self.flash(_("Session “{name}” added: choose its darks and flats in its block").format(name=Path(folder).name))
+        self.select(step=f"session@{sid}" if s.separate_sessions() else "sources")
 
     def import_frames(self, folder: str):
         """The frames of a folder into the open project, after Import folder as new project."""

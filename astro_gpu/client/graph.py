@@ -18,6 +18,12 @@ The window (app.py ``graph_page``) builds it again with the project screen and c
 and ``openPost`` (Inspect or Post), ``addSources`` and ``addSession`` (import frames), ``variantMade`` (Inspect opens
 the variant compared with its original), ``changed`` (the Run button and the status line).
 
+Issue #43: the sessions calibrated each on its own sit as rows of a Session block and its Calibration block before the
+chain; their wires join into one bar before Registration (``_join``). A block the user cut is drawn hatched in grey
+with its wire across it; a block greyed by a cut has a dashed amber outline, ⊘ and its reason: the image passes
+through both. A block is cut or restored by its menu, its panel's switch or the D key. A workflow from an image starts
+with an Image block on its own lane.
+
 The scene's items: ``BlockItem`` (a block), ``GhostItem`` (where a dragged tool can go), ``BandItem`` (a phase band);
 ``ToolCard`` is a card of the toolbar.
 """
@@ -71,16 +77,20 @@ from .blocks import (
     Graph,
     Node,
     block_title,
+    node_title,
 )
-from .dialogs import NewWorkflowDialog, ask_name
+from .dialogs import ask_name
+from .gallery import TemplateGallery
 from .i18n import _, hm, plural
-from .model import TEMPLATES, NotInEngine
+from .model import NotInEngine, cuttable
 from .panel import Panel
 from .widgets import ACCENT, BAD, NEW, OK, WARN, clear, label
 
 BW, BH = 120, 54            # block size (a column is wider when its title needs it: TITLE_PAD)
 GAP = 12                    # between two columns: where the branches split
 LANE = 80                   # lane pitch
+SROW = BH + 14              # the pitch of the sessions' rows (issue #43)
+CUT_COL, GREY_COL = "#6b7280", "#c9a227"
 TOP = 74                    # room for the phase labels
 MARGIN = 8                  # around the graph, left and right
 MIN_SCALE = 0.6             # the smallest the default view goes to show the whole chain; below, the text cannot be read:
@@ -131,7 +141,11 @@ class BlockItem(QGraphicsItem):
         self.port = bool(self.ports)
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.PointingHandCursor)
-        tip = f"{title}\n{summary}\n" + (_(STATE_WORD[state]) if node.key not in ("sources", "final") else "")
+        tip = f"{title}\n{summary}\n" + (_(STATE_WORD[state]) if node.key not in ("sources", "final", "session") else "")
+        if node.cut:
+            tip += "\n" + _("Cut: the image passes through. D or the menu restores it.")
+        elif node.grey:
+            tip += "\n" + _("Cannot run: {why}. The image passes through.").format(why=node.grey)
         if node.key in EXITS:
             tip += "\n" + _("Output ●: drag it onto Post to make a layer")
         elif node.key == "etoiles":
@@ -198,9 +212,22 @@ class BlockItem(QGraphicsItem):
         p.setPen(pen)
         p.setBrush(QColor(fill))
         p.drawRoundedRect(r, 7, 7)
-        if self.node.key not in ("sources", "final") or self.state != "pending":
+        if self.node.cut:                              # cut by the user: hatched, the wire drawn across it
+            p.save()
+            p.setClipPath(_rounded(r))
+            p.setPen(QPen(QColor("#3a4150"), 1.0))
+            for x in range(-int(BH), int(w) + 1, 9):
+                p.drawLine(QPointF(x, BH), QPointF(x + BH, 0))
+            p.restore()
+            p.setPen(QPen(QColor("#9aa3b2"), 1.8))
+            p.drawLine(QPointF(0, BH / 2), QPointF(w, BH / 2))
+        if self.node.grey:                             # greyed by a cut upstream: a dashed amber outline
+            p.setPen(QPen(QColor(GREY_COL), 1.4, Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 7, 7)
+        if self.node.key not in ("sources", "final", "session") or self.state != "pending":
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(STATE_COL[self.state]))
+            p.setBrush(QColor(CUT_COL if self.node.cut else (GREY_COL if self.node.grey else STATE_COL[self.state])))
             path = QPainterPath()
             path.addRoundedRect(QRectF(0, 0, 8, BH), 4, 4)
             clip = QPainterPath()
@@ -214,8 +241,9 @@ class BlockItem(QGraphicsItem):
         # a workflow's name loses its middle (two variants differ at their end; the whole name is in the tooltip), the
         # engine's words their end
         mode = Qt.ElideMiddle if self.node.key == "post" else Qt.ElideRight
+        title = ("⊘ " if self.node.grey else "") + self.title
         p.drawText(QRectF(11, 6, tw, 20), Qt.AlignLeft | Qt.AlignVCenter,
-                   QFontMetrics(f).elidedText(self.title, mode, int(tw)))
+                   QFontMetrics(f).elidedText(title, mode, int(tw)))
         f2 = QFont("Segoe UI", 8.5)
         p.setFont(f2)
         p.setPen(QColor("#8b93a1"))
@@ -283,6 +311,18 @@ class BlockItem(QGraphicsItem):
     def contextMenuEvent(self, e):                                    # noqa: N802
         self.view.block_menu(self.node, e.screenPos())
         e.accept()
+
+
+def _line(x1, y1, x2, y2) -> QPainterPath:
+    path = QPainterPath(QPointF(x1, y1))
+    path.lineTo(QPointF(x2, y2))
+    return path
+
+
+def _rounded(r: QRectF) -> QPainterPath:
+    path = QPainterPath()
+    path.addRoundedRect(r, 7, 7)
+    return path
 
 
 class GhostItem(QGraphicsItem):
@@ -360,6 +400,9 @@ class GraphView(QGraphicsView):
     newComposition = Signal(object)        # a Stars node's port pulled onto Composition: a new Stars and background block
     layerRemoved = Signal(int)             # a Stars and background block, or an image sent as it is: its Post layer
     openLayer = Signal(int)                # Open in Post (a Post layer's id)
+    cutToggled = Signal(object, object)    # Node, list of pids (None: every workflow of the block): cut or restore it
+    newSession = Signal()                  # "+ Session" (issue #43)
+    sessionMenu = Signal(str, int)         # action (rename, remove), session id
 
     def __init__(self, project, parent=None):
         super().__init__(parent)
@@ -397,6 +440,7 @@ class GraphView(QGraphicsView):
     # ------------------------------------------------------------ layout
     def columns(self, g: Graph):
         used = {n.key for n in g.nodes}
+        used.discard("session")
         if self.drag_tool:
             used.add(TOOL_COLUMN[self.drag_tool])
         if "etoiles" in used:                       # the Composition section, where the Stars block's images go
@@ -454,24 +498,37 @@ class GraphView(QGraphicsView):
             cx[c] = x
             x += cw[c] + GAP
         self._next_x = {c: cx[c] + cw[c] + GAP for c in cols}       # where the column after it starts
-        lanes = {pid: TOP + i * LANE for i, pid in enumerate(self.lane_order(g))}
+        order = self.lane_order(g)
+        frames = [pid for pid in order if getattr(s.view(pid), "source", None) is None]
+        order = frames + [pid for pid in order if pid not in frames]      # the image workflows' lanes last
         n_lanes = max(1, len(s.paths))
-        mid = TOP + (n_lanes - 1) * LANE / 2 if s.paths else TOP + LANE / 2
+        # issue #43: the sessions' rows, centred on the lanes of the workflows from the frames
+        ns = len(g.sessions)
+        f_mid = (len(frames) - 1) * LANE / 2 if frames else 0.0
+        top = TOP + max(0.0, (ns - 1) * SROW / 2 - f_mid)
+        lanes = {pid: top + i * LANE for i, pid in enumerate(order)}
+        mid = top + (n_lanes - 1) * LANE / 2 if s.paths else top + LANE / 2
+        fmid = top + f_mid
+        for i, (sn, cn) in enumerate(g.sessions):
+            sn.y = cn.y = fmid + (i - (ns - 1) / 2) * SROW
         for n in g.nodes:
-            if n.key in ("sources", "final") or not n.paths:
-                n.y = mid
+            if n.key == "session" or n.sid is not None:
+                pass
+            elif n.key in ("sources", "final") or not n.paths:
+                n.y = fmid if n.key == "sources" else mid
             else:
                 ys = [lanes[p.pid] for p in n.paths]
                 n.y = (min(ys) + max(ys)) / 2
-            n.col = cx[n.key]
-            n.w = cw[n.key]
+            col = "sources" if n.key in ("session", "image") else n.key
+            n.col = cx[col]
+            n.w = cw[col]
         seen: dict[int, int] = {}
         for n in g.compositions:                   # two blocks of one workflow: one a little below the other
             k = seen.get(n.paths[0].pid, 0)
             seen[n.paths[0].pid] = k + 1
             n.y += k * (BH + 6)
         self._lanes, self._cx, self._cw = lanes, cx, cw
-        bottom = TOP + n_lanes * LANE + LANE
+        bottom = max(top + n_lanes * LANE, fmid + (ns + 1) / 2 * SROW) + LANE
         # phase bands
         for title, a, b in PHASES:
             span = [c for c in COLUMNS[COLUMNS.index(a): COLUMNS.index(b) + 1] if c in cx]
@@ -483,12 +540,19 @@ class GraphView(QGraphicsView):
         cur = s.path
         sel = g.node_of(cur, s.sel_step) if s.sel_step not in ("sources", "final") else (
             g.root if s.sel_step == "sources" else g.final)
-        # wires along the chains
+        # wires along the chains; the sessions' wires join into one bar before their first block (issue #43)
+        firsts = [n for n in g.root.children if n.key != "image"]
         for n in g.nodes:
-            if n.key in ("sources", "composition") or n is g.final:
+            if n.key in ("sources", "composition", "session") or n.sid is not None or n is g.final:
+                continue
+            if n.key == "image" or (g.sessions and n in firsts):
                 continue
             par = n.parent if n.parent is not None else g.root
             self._wire(par, n, cur is not None and cur in n.paths)
+        for sn, cn in g.sessions:
+            self._wire(sn, cn, True)
+        if g.sessions:
+            self._join([cn for _sn, cn in g.sessions], firsts, cur)
         for p in s.paths:                          # a workflow's Output image, when it is a layer of Post
             if p.pid in g.to_post:
                 self._wire(g.leaves[p.pid], g.final, cur is not None and p is cur)
@@ -506,16 +570,19 @@ class GraphView(QGraphicsView):
         for n in self._post_sources(g):
             self._post_wire(n, g.final)
         # side inputs of the selected block
-        if sel is not None and sel.key not in ("sources", "final"):
+        if sel is not None and sel.key not in ("sources", "final") and not sel.grey and not sel.cut:
             for src, lab in g.side_inputs(sel):
                 self._side_wire(src, sel, lab)
         # blocks
         for n in g.nodes:
             if n.key not in ("sources", "final") and not n.paths:
                 continue
-            title = block_title(n.paths[0] if n.paths else None, n.key)
+            if n.key == "sources" and (g.sessions or (s.paths and not g.root.paths)):
+                continue                                  # the sessions' blocks stand for it; or only image workflows
+            title = node_title(s, n)
             removable = n.key in OPTIONAL_BLOCKS or n.key == "composition"
-            dim = cur is not None and n.key not in ("sources", "final") and cur not in n.paths
+            dim = cur is not None and n.key not in ("sources", "final", "session") and n.sid is None \
+                and cur not in n.paths
             it = BlockItem(self, n, title, g.summary(n), g.state(n), n is sel or (sel is not None and n.key ==
                            "composition" and sel.key == "composition" and n.lid == sel.lid), dim, removable, n.w,
                            g.breakpoint(n))
@@ -640,6 +707,30 @@ class GraphView(QGraphicsView):
             path.lineTo(QPointF(x2, y2))
         it = self.scene().addPath(path, QPen(QColor("#9aa3b2" if strong else "#3d4452"), 2.2 if strong else 1.6))
         it.setZValue(1)
+
+    def _join(self, sources: list[Node], targets: list[Node], cur):
+        """The sessions' Calibration blocks into the first blocks of the chain (issue #43): a wire from each to one
+        vertical bar in the gap before them, then one wire from the bar to each first block."""
+        if not sources or not targets:
+            return
+        x0 = max(n.col + n.w for n in sources)
+        x2 = min(n.col for n in targets)
+        xb = x0 + max(6.0, (x2 - x0) / 2)
+        pen = QPen(QColor("#9aa3b2"), 2.0)
+        ys = [n.y for n in sources] + [n.y for n in targets]
+        for n in sources:
+            path = QPainterPath(QPointF(n.col + n.w, n.y))
+            path.lineTo(QPointF(xb, n.y))
+            self.scene().addPath(path, pen).setZValue(1)
+        bar = self.scene().addPath(_line(xb, min(ys), xb, max(ys)), QPen(QColor("#9aa3b2"), 3.0))
+        bar.setZValue(1)
+        bar.setToolTip(_("The sessions join here: they are registered and stacked together"))
+        for t in targets:
+            strong = cur is not None and cur in t.paths
+            path = QPainterPath(QPointF(xb, t.y))
+            path.lineTo(QPointF(t.col, t.y))
+            self.scene().addPath(path, QPen(QColor("#9aa3b2" if strong else "#3d4452"), 2.2 if strong else 1.6)) \
+                .setZValue(1)
 
     def _image_wire(self, a: Node, ya: float, b: Node, yb: float, what: str, word: str, strong: bool,
                     direct: bool = False):
@@ -806,6 +897,26 @@ class GraphView(QGraphicsView):
                         lambda _x=False, q=p: self.remove_block(node, [q.pid]))
             else:
                 m.addAction(_("Delete block")).triggered.connect(lambda: self.remove_block(node, None))
+        if node.key == "session":
+            m.addAction(_("Rename session")).triggered.connect(lambda: self.sessionMenu.emit("rename", node.sid))
+            m.addAction(_("Remove from the project")).triggered.connect(lambda: self.sessionMenu.emit("remove", node.sid))
+            m.addSeparator()
+            m.addAction(_("Add a session…")).triggered.connect(lambda: self.newSession.emit())
+            m.exec(pos)
+            return
+        if node.sid is None and cuttable(node.key) and node.paths:
+            if not m.isEmpty():
+                m.addSeparator()
+            word = _("Restore") if node.cut else _("Cut")
+            if len(node.paths) > 1:
+                m.addAction(_("{action} in the {n} workflows").format(action=word, n=len(node.paths))).triggered.connect(
+                    lambda: self.cutToggled.emit(node, None))
+                for p in node.paths:
+                    m.addAction(_('{action} in "{name}" only').format(action=word, name=p.name)).triggered.connect(
+                        lambda _x=False, q=p: self.cutToggled.emit(node, [q.pid]))
+            else:
+                a = m.addAction(_("{action} this block").format(action=word) + "\tD")
+                a.triggered.connect(lambda: self.cutToggled.emit(node, None))
         if node.key not in ("sources", "final"):
             if not m.isEmpty():
                 m.addSeparator()
@@ -1009,6 +1120,9 @@ class GraphPage(QWidget):
         gv.newComposition.connect(self.new_composition)
         gv.layerRemoved.connect(self.remove_layer)
         gv.openLayer.connect(self.openLayer.emit)
+        gv.cutToggled.connect(self.toggle_cut)
+        gv.newSession.connect(self.addSession.emit)
+        gv.sessionMenu.connect(self.session_action)
         pn = self.panel
         pn.changed.connect(self.request_refresh)
         pn.openTune.connect(self.openBlock.emit)
@@ -1017,9 +1131,13 @@ class GraphPage(QWidget):
         pn.addSources.connect(self.addSources.emit)
         pn.addSession.connect(self.addSession.emit)
         pn.renamed.connect(self.rename)
+        if hasattr(pn, "selectBlock"):
+            pn.selectBlock.connect(lambda key: self.select(step=key))
         pn.toast.connect(self.toast)
         pn.removeTool.connect(lambda: self.remove_tool(self.current_node(), None))
         pn.openLayer.connect(self.openLayer.emit)
+        if hasattr(pn, "cutToggled"):
+            pn.cutToggled.connect(lambda: self.toggle_cut(self.current_node(), None))
         for sig in (project.pathsChanged, project.currentChanged, project.costChanged, project.sourcesChanged,
                     project.readyChanged):
             sig.connect(self.request_refresh)
@@ -1029,6 +1147,9 @@ class GraphPage(QWidget):
             ret = QShortcut(QKeySequence(key), self.graph)
             ret.setContext(Qt.WidgetWithChildrenShortcut)
             ret.activated.connect(self.openBlock.emit)
+        cut = QShortcut(QKeySequence("D"), self.graph)          # cut or restore the selected block (issue #43)
+        cut.setContext(Qt.WidgetWithChildrenShortcut)
+        cut.activated.connect(lambda: self.toggle_cut(self.current_node(), None))
         self.refresh()
 
     # ------------------------------------------------------------ refresh
@@ -1123,7 +1244,7 @@ class GraphPage(QWidget):
             s.scope = None
         if node.key == "composition":
             s.sel_layer = node.lid
-        s.select(step=node.key)
+        s.select(step=node.ref)
 
     def select(self, index=None, step=None):
         s = self.s
@@ -1134,18 +1255,68 @@ class GraphPage(QWidget):
 
     # ------------------------------------------------------------ actions
     def new_workflow(self, start=None):
+        """New workflow: the template gallery (issue #43), or a copy of a workflow (``start``)."""
+        d = TemplateGallery(self.s, start, self)
+        d.accepted.connect(lambda: self.make_workflow(d))
+        d.open()                                           # window-modal, without blocking (a new project opens it)
+        self._gallery = d
+        return d
+
+    def make_workflow(self, d):
+        """The workflow the gallery's choice makes: a copy, from an image, or from the frames."""
         s = self.s
-        d = NewWorkflowDialog(s, start, self)
-        if not d.exec():
+        t = d.choice
+        if t is None:
             return
         name = d.name.text().strip() or _("New workflow")
-        copy_of = d.cur - len(TEMPLATES)
-        if copy_of >= 0:                                   # a copy keeps its options, settings and exit
-            p = s.duplicate(s.paths[copy_of], name)
+        if t.get("copy") is not None:                      # a copy keeps its options, settings and exit
+            p = s.duplicate(t["copy"], name)
+        elif t.get("source") == "image":
+            p = s.add_image_workflow(name, d.image, d.opts)
         else:
-            p = s.add_path(name, d.opts, d.params)
+            with s.batch():
+                if t.get("sessions") and s.stack_mode == "together" and len(s.p.sessions) <= 1:
+                    s.set_stack_mode("per_session")
+                p = s.add_path(name, d.opts, None, end=t.get("end"))
         s.log('Workflow "{name}" created', name=p.name)
         self.select(index=s.paths.index(p), step="post")
+
+    def toggle_cut(self, node, pids):
+        """Cut a block, or restore it (issue #43): in ``pids`` only, else in every workflow going through it. Its
+        settings and results stay; Undo takes it back."""
+        s = self.s
+        if node is None or node.sid is not None or not cuttable(node.key) or not node.paths:
+            if node is not None and node.key in ("empilement", "post"):
+                self.toast(_("Stacking and Output cannot be cut"))
+            return
+        paths = [q for q in node.paths if pids is None or q.pid in pids]
+        on = not node.cut
+        try:
+            done = s.set_cut(paths, node.key, on)
+        except ValueError as e:
+            self.toast(str(e))
+            return
+        if done:
+            name = block_title(None, node.key)
+            where = paths[0].name if len(paths) == 1 else plural(len(paths), "{n} workflow", "{n} workflows")
+            self.toast((_("{block} cut in {where}: the image passes through") if on else
+                        _("{block} restored in {where}")).format(block=name, where=where))
+            s.log("Block {block} cut" if on else "Block {block} restored", block=node.key)
+
+    def session_action(self, action: str, sid: int):
+        s = self.s
+        if action == "rename":
+            name = ask_name(self, _("Rename session"), s.session(sid).name)
+            if name:
+                s.rename_session(sid, name)
+        elif action == "remove":
+            if len(s.p.sessions) <= 1:
+                self.toast(_("The last session stays"))
+                return
+            if QMessageBox.question(self, _("Remove from the project"), _(
+                    "Take the session “{name}” out of the project? Its files are not touched.").format(
+                    name=s.session(sid).name)) == QMessageBox.Yes:
+                s.remove_session(sid)
 
     def add_tool(self, key, pid):
         s = self.s

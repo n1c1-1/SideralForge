@@ -1064,13 +1064,21 @@ def _light_sessions(p: Project2) -> dict[str, int]:
 
 def _dir(p: Project2, wf: int | Workflow, stage: str, which: str = "current") -> Path | None:
     """The folder of a done result of the workflow's stage (``which`` current, or previous: the result an Outdated
-    stage had), else None."""
+    stage had), else None. Issue #43: ``which`` may name a session ("current@2": that session's instance of the
+    stage, for its Session and Calibration blocks); a stage the chain does not have is read from the stage that stands
+    for it (the sessions' join for "inventory" and "calibrate", the image for "stack")."""
     store = _store(p)
     if store is None:
         return None
     keys = _keys(p)
     w = keys.project.workflow(wf)
-    if stage not in keys.chain(w):
+    which, _at, sid = which.partition("@")
+    chain = keys.chain(w)
+    if sid and f"{stage}@{sid}" in chain:
+        stage = f"{stage}@{sid}"
+    elif stage not in chain:
+        stage = keys.rules.chains.resolve(chain, "", stage) or stage
+    if stage not in chain:
         return None
     k = keys.key(w, stage)
     if which == "previous":

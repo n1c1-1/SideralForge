@@ -17,6 +17,7 @@ Classes: ``Panel``, its rows (``CompactRow``), the method cards (``MethodCard``,
 from __future__ import annotations
 
 import html
+from pathlib import Path
 
 from PySide6.QtCore import QLocale, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -24,10 +25,12 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -38,8 +41,8 @@ from .. import texts
 from ..core import workflow as wfl
 from . import prefs
 from .blocks import STATE_WORD, block_state, block_title
-from .i18n import _, all_workflows, hm, language, number
-from .model import NotInEngine, method_of, method_value, methods_of
+from .i18n import _, all_workflows, hm, language, number, plural
+from .model import NotInEngine, cuttable, method_of, method_value, methods_of
 from .settings import RangeBar, SettingRow, fmt, needed_stages, selection_rule_text, step_settings
 from .settings import loading as settings_loading
 from .widgets import ACCENT, BAD, NEW, WARN, clear, hline, label
@@ -323,6 +326,8 @@ class Panel(QWidget):
     removeTool = Signal()
     variantMade = Signal(int, int)      # new workflow, the one it is a variant of
     toast = Signal(str)                 # a word to say (what came with a change, why it was refused)
+    cutToggled = Signal()               # the block's switch: cut it, or restore it (issue #43)
+    selectBlock = Signal(str)           # a greyed block's reason: select the block that was cut
 
     def __init__(self, project, steps=None, tune=False, parent=None):
         super().__init__(parent)
@@ -380,7 +385,7 @@ class Panel(QWidget):
         node = self.node
         if node is None or node.key in ("sources", "final", "composition") or not node.paths:
             return
-        if any(q.pid == wid for q in node.paths) and stage in needed_stages(self.s, node.paths[0], node.key):
+        if any(q.pid == wid for q in node.paths) and stage in needed_stages(self.s, node.paths[0], node.ref):
             self._later.start()
 
     def _rebuild(self):
@@ -418,8 +423,16 @@ class Panel(QWidget):
         if node is None:
             return
         k = node.key
-        if k == "sources":
+        if k == "session" or (k == "sources" and self.s.sources_loaded and len(self.s.sessions) == 1):
+            self.session_panel(node.sid if node.sid is not None else self.s.sessions[0]["id"])
+        elif k == "sources" and self.s.sources_loaded and self.s.stack_mode == "together":
+            self.all_nights()
+        elif k == "sources":
             self.sources()
+        elif k == "image":
+            self.image_panel(node)
+        elif node.cut or node.grey:
+            self.cut_panel(node)
         elif k == "final":
             self.hv.addWidget(label(_("Post"), "h1"))
             from .blocks import Graph
@@ -483,6 +496,183 @@ class Panel(QWidget):
         self.bv.addLayout(row)
         self.bv.addStretch(1)
 
+    # ------------------------------------------------------------ issue #43: sessions, cut blocks, image source
+    KIND_TITLES = (("lights", "Lights"), ("darks", "Darks"), ("flats", "Flats"), ("bias", "Bias"),
+                   ("flat_darks", "Flat darks"))
+
+    def session_panel(self, sid: int):
+        """A Session block: its name, its filter, and its frames kind by kind, chosen here (issue #43)."""
+        from ..core.project2 import FILTERS
+        s = self.s
+        ses = s.session(sid)
+        counts = next((x for x in s.sessions if x["id"] == sid), {})
+        top = QHBoxLayout()
+        ed = QLineEdit(ses.name)
+        ed.setStyleSheet("QLineEdit { font-size: 13pt; font-weight: 600; background: transparent; border: none; "
+                         "border-bottom: 1px dashed #3a4150; border-radius: 0; } "
+                         f"QLineEdit:focus {{ border-bottom: 1px solid {ACCENT}; }}")
+        ed.setToolTip(_("Session name"))
+        ed.editingFinished.connect(lambda: s.rename_session(sid, ed.text()))
+        top.addWidget(ed, 1)
+        self.hv.addLayout(top)
+        row = QHBoxLayout()
+        row.addWidget(label(_("Filter"), "dim"))
+        cb = QComboBox()
+        for f in FILTERS:
+            cb.addItem(f or _("none (colour camera)"), f)
+        cb.setCurrentIndex(max(0, cb.findData(ses.filter)))
+        cb.setToolTip(_("The filter of these lights. Monochrome cameras are planned: the filter is kept for then."))
+        cb.currentIndexChanged.connect(lambda _i: s.set_session_filter(sid, cb.currentData()))
+        row.addWidget(cb)
+        row.addStretch(1)
+        self.hv.addLayout(row)
+        n = {"lights": counts.get("lights", 0), "darks": counts.get("darks", 0), "flats": counts.get("flats", 0),
+             "bias": counts.get("bias", 0), "flat_darks": counts.get("dark_flats", 0)}
+        for kind, title in self.KIND_TITLES:
+            if kind == "lights":
+                kept = counts.get("kept", n["lights"])
+                count = _("{kept} / {n} used").format(kept=kept, n=n["lights"])
+            else:
+                count = str(n[kind]) if n[kind] else _("none")
+            self.bv.addWidget(self.group_title(_(title) + "  ·  " + count))
+            shared = s.shared_with(sid, kind) if kind != "lights" else []
+            if shared:
+                names = ", ".join(s.session(o).name for o in shared)
+                self.bv.addWidget(label("⇄ " + _("shared with {names}: one master for all").format(names=names),
+                                        "small", wrap=True))
+            sets: dict[str, list[str]] = {}            # one row per folder: its own entry, or its files chosen one by one
+            for e in getattr(ses, kind):
+                pth = Path(s.p.abspath(e))
+                sets.setdefault((pth.parent if pth.suffix else pth).as_posix(), []).append(e)
+            for folder, entries in sets.items():
+                r = QHBoxLayout()
+                whole = len(entries) == 1 and not Path(entries[0]).suffix
+                text = "📁 " + Path(folder).name + ("" if whole else "  · " + plural(len(entries), "{n} file",
+                                                                                     "{n} files"))
+                lb = label(text, None)
+                lb.setToolTip(folder)
+                r.addWidget(lb, 1)
+                x = QPushButton("×")
+                x.setFixedWidth(26)
+                x.setToolTip(_("Remove from the session (the files are not touched)"))
+                x.setEnabled(not (kind == "lights" and len(sets) == 1))
+                x.clicked.connect(lambda _c=False, k=kind, ens=list(entries): [s.remove_session_entry(sid, k, en)
+                                                                                for en in ens])
+                r.addWidget(x)
+                self.bv.addLayout(r)
+            add = QHBoxLayout()
+            b = QPushButton(_("Add folder…"))
+            b.clicked.connect(lambda _c=False, k=kind: self._add_entries(sid, k, folder=True))
+            add.addWidget(b)
+            b2 = QPushButton(_("Add files…"))
+            b2.clicked.connect(lambda _c=False, k=kind: self._add_entries(sid, k, folder=False))
+            add.addWidget(b2)
+            others = [o for o in s.p.sessions if o.id != sid and getattr(o, kind)] if kind != "lights" else []
+            if others:
+                ub = QComboBox()
+                ub.addItem(_("Use from another session…"), None)
+                for o in others:
+                    ub.addItem(o.name, o.id)
+                ub.activated.connect(lambda i, k=kind, box=ub: box.itemData(i) is not None
+                                     and s.use_from_session(box.itemData(i), sid, k))
+                add.addWidget(ub)
+            add.addStretch(1)
+            self.bv.addLayout(add)
+        self.bv.addSpacing(8)
+        row = QHBoxLayout()
+        if not self.tune:
+            b = QPushButton(_("Review frames…"))
+            b.setToolTip(_("Opens the frames in Inspect: leave out a frame with X"))
+            b.clicked.connect(self.openTune.emit)
+            row.addWidget(b)
+        a = QPushButton(_("Add a session…"))
+        a.clicked.connect(self.addSession.emit)
+        row.addWidget(a)
+        row.addStretch(1)
+        self.bv.addLayout(row)
+        self.bv.addStretch(1)
+
+    def _add_entries(self, sid: int, kind: str, folder: bool):
+        from . import prefs as _prefs
+        if folder:
+            d = QFileDialog.getExistingDirectory(self, _("Add folder…"), _prefs.last_folder())
+            got = [d] if d else []
+        else:
+            got, _f = QFileDialog.getOpenFileNames(self, _("Add files…"), _prefs.last_folder())
+        if got:
+            _prefs.remember_folder(got[0])
+            self.s.add_session_entries(sid, kind, got)
+
+    def all_nights(self):
+        """A project made before issue #43: its nights are calibrated together. They can be calibrated each on its
+        own (Calibration and what follows are computed again)."""
+        s = self.s
+        self.hv.addWidget(label(_("All nights"), "h1"))
+        self.hv.addWidget(label(_("Calibrated together: one master dark and one master flat for every night."),
+                                "small", wrap=True))
+        self.bv.addWidget(self.group_title(_("Sessions")))
+        for ses in s.sessions:
+            self.bv.addWidget(kv([(html.escape(ses["night"]), _("{lights} lights · {flats} flats · darks: {darks}").format(
+                lights=ses["lights"], flats=ses["flats"], darks=ses["darks"] or _("none")))], pad=10))
+        self.bv.addSpacing(8)
+        b = QPushButton(_("Calibrate each night separately…"))
+        b.setObjectName("primary")
+        b.setToolTip(_("Each night with its own calibration frames, then all stacked together"))
+        b.clicked.connect(self._separate)
+        self.bv.addWidget(b, 0, Qt.AlignLeft)
+        a = QPushButton(_("Add a session…"))
+        a.clicked.connect(self.addSession.emit)
+        self.bv.addWidget(a, 0, Qt.AlignLeft)
+        self.bv.addStretch(1)
+
+    def _separate(self):
+        if QMessageBox.question(self, _("Calibrate each night separately"), _(
+                "Each night gets its own Session and Calibration blocks, and its own masters. Calibration and "
+                "everything after it are computed again. Undo takes it back.")) == QMessageBox.Yes:
+            self.s.set_stack_mode("per_session")
+            self.changed.emit()
+
+    def image_panel(self, node):
+        """The Image block of a workflow that starts from an image (issue #43)."""
+        p = node.paths[0]
+        src = p.source or {}
+        self.hv.addWidget(label(_("Image"), "h1"))
+        self.hv.addWidget(label(p.name, "small"))
+        f = Path(str(src.get("path") or ""))
+        self.bv.addWidget(kv([(_("File"), html.escape(f.name)), (_("Folder"), html.escape(f.parent.as_posix())),
+                              (_("Kind"), _("linear (straight out of a stack)"))], pad=10))
+        self.bv.addSpacing(6)
+        self.bv.addWidget(label(_("The blocks after it read it as a stack. Denoise needs the two half-stacks of a "
+                                  "stack: it is not offered here."), "small", wrap=True))
+        self.bv.addStretch(1)
+
+    def cut_panel(self, node):
+        """A block the user cut, or greyed by a cut: what it means, and the way back."""
+        s = self.s
+        p = s.path if s.path in node.paths else node.paths[0]
+        top = QHBoxLayout()
+        top.addWidget(label(block_title(p, node.key), "h1", wrap=True), 1)
+        self.hv.addLayout(top)
+        self.hv.addWidget(label(p.name if len(node.paths) == 1 else all_workflows(len(node.paths)), "small"))
+        if node.cut:
+            self.bv.addWidget(label(_("Cut: this block does not change the image, which passes through to the next "
+                                      "block. Its settings are kept."), None, wrap=True))
+            b = QPushButton(_("Restore this block") + "  (D)")
+            b.setObjectName("primary")
+            b.clicked.connect(self.cutToggled.emit)
+            self.bv.addSpacing(6)
+            self.bv.addWidget(b, 0, Qt.AlignLeft)
+        else:
+            self.bv.addWidget(label(_("Cannot run: {why}. The image passes through to the next block.").format(
+                why=node.grey), "warn", wrap=True))
+            cause = {_("needs Astrometry"): "astrometrie", _("needs Denoise"): "debruitage"}.get(node.grey)
+            if cause and cause in s.display_keys(p):
+                b = QPushButton(_("Go to {block}").format(block=block_title(None, cause)))
+                b.clicked.connect(lambda: self.selectBlock.emit(cause))
+                self.bv.addSpacing(6)
+                self.bv.addWidget(b, 0, Qt.AlignLeft)
+        self.bv.addStretch(1)
+
     def block(self, node):
         s = self.s
         p = s.path if s.path in node.paths else node.paths[0]
@@ -498,7 +688,10 @@ class Panel(QWidget):
                                        and self.renamed.emit(p.pid, ed.text().strip()))
             top.addWidget(ed, 1)
         else:
-            top.addWidget(label(block_title(p, k), "h1", wrap=True), 1)     # a long name (#36) wraps, never cut
+            title = block_title(p, k)
+            if node.sid is not None:
+                title += " · " + s.session(node.sid).name
+            top.addWidget(label(title, "h1", wrap=True), 1)     # a long name (#36) wraps, never cut
         st = self.graph_state(node)
         chip = QLabel(_(STATE_WORD[st]))
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
@@ -507,6 +700,11 @@ class Panel(QWidget):
             x = QPushButton(_("Delete block"))
             x.clicked.connect(self.removeTool.emit)
             top.addWidget(x)
+        if cuttable(k) and node.sid is None and not self.tune:
+            cut = QPushButton(_("Cut"))
+            cut.setToolTip(_("Cut this block (D): the image passes through it; its settings are kept"))
+            cut.clicked.connect(self.cutToggled.emit)
+            top.addWidget(cut)
         self.hv.addLayout(top)
         # which workflows a change goes to (the Stars block has no setting: nothing to apply)
         if node.shared and k != "etoiles":
@@ -561,7 +759,8 @@ class Panel(QWidget):
             b.clicked.connect(self.openTune.emit)
             self.bv.addWidget(b, 0, Qt.AlignLeft)
             self.bv.addSpacing(6)
-        groups = self._groups(p, k)
+        sk = node.ref                                  # a session's block: that session's settings (issue #43)
+        groups = self._groups(p, sk)
         units = [r.get("unit") for _t, rs in groups for r in rs]          # hidden rows too: the column stays put
         if k == "selection":
             units += [_("% of the best"), "px", _("× median")]
@@ -581,7 +780,7 @@ class Panel(QWidget):
                                       "adjusted in a Combine stars & background layers block, or each as a layer of Post."),
                                     "small", wrap=True))
         else:
-            self.settings(p, k, groups, extra)
+            self.settings(p, sk, groups, extra)
         self.bv.addStretch(1)
 
     def stack_sessions(self):

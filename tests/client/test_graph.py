@@ -357,7 +357,8 @@ def test_states_come_from_the_api(world, model, page):
     assert block_state(model, model.view(2), "fond") == "running"
     model._sync()
     assert block_state(model, model.view(2), "fond") == "done"                 # back to the store's state
-    assert g.summary(g.root).startswith("1 session · ") and re.search(r"\d+ lights", g.summary(g.root))
+    # one session: the Session block in place of Frames, its lights and calibration frames (issue #43)
+    assert re.match(r"\d+ lights · \d+ darks, \d+ flats", g.summary(g.root))
 
 
 def test_a_shared_stage_is_one_key(world, model):
@@ -712,26 +713,32 @@ def test_the_mouse_over_and_on_every_block_works(world, model, page):
 
 
 def test_new_workflow_duplicate_rename_delete(world, model, page, monkeypatch):
-    from astro_gpu.client import graph as graphmod
-
-    class FakeDialog:
-        def __init__(self, session, start, parent):
-            self.name = type("N", (), {"text": lambda s: "Mine"})()
-            self.cur, self.opts, self.params = 0, dict(session.paths[0].opts), {}
-
-        def exec(self):
-            return True
-    monkeypatch.setattr(graphmod, "NewWorkflowDialog", FakeDialog)
+    """New workflow is the template gallery (issue #43): opened without blocking; Create makes the workflow."""
     n0 = len(model.paths)
-    page.new_workflow()
+    d = page.new_workflow()
+    assert d.isVisible() and d.choice["key"] == "full"
+    d.name.setText("Mine")
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "classic"))
+    d.name.setText("Mine")
+    d.ok.click()
     settle(world["w"], page)
     assert len(model.paths) == n0 + 1 and model.path.name == "Mine" and model.sel_step == "post"
-    # Duplicate keeps the options, the settings and the exit
+    assert not model.path.opts["debruitage"] and model.path.opts["etoiles"] == "garder"
+    # a template that cuts a block: the workflow has it cut
+    d = page.new_workflow()
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "calibrated"))
+    d.ok.click()
+    settle(world["w"], page)
+    assert model.path.opts["cut"] == ["calibration"] and model.is_cut(model.path, "calibration")
+    model.remove_path(model.paths.index(model.path))
+    settle(world["w"], page)
+    # Duplicate keeps the options, the settings and the exit (the gallery opens on the copy)
     src = model.view(1)
-    FakeDialog.__init__ = lambda s, session, start, parent: (setattr(s, "name", type("N", (), {"text": lambda z: "Full copy"})()),
-                                                              setattr(s, "cur", 3 + session.paths.index(start)),
-                                                              setattr(s, "opts", dict(start.opts)), setattr(s, "params", {}))[0]
     page.workflow_action("duplicate", src.pid)
+    d = page._gallery
+    assert d.choice.get("copy") is src
+    d.name.setText("Full copy")
+    d.ok.click()
     settle(world["w"], page)
     cp = model.path
     assert cp.name == "Full copy" and cp.opts == src.opts and cp.params == src.params

@@ -41,7 +41,8 @@ from PySide6.QtWidgets import (  # noqa: E402
 
 from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import i18n, prefs  # noqa: E402
-from astro_gpu.client.dialogs import NewWorkflowDialog, name_dialog  # noqa: E402
+from astro_gpu.client.dialogs import name_dialog  # noqa: E402
+from astro_gpu.client.gallery import GALLERY, TemplateGallery, chain_of, draw_graph  # noqa: E402
 from astro_gpu.client.home import NewProjectDialog, card_line, project_info, scan_home, section_rows, state_text  # noqa: E402
 from astro_gpu.client.services.worker import ApiWorker, Gpu, Machine  # noqa: E402
 from astro_gpu.client.settingsdlg import SettingsDialog  # noqa: E402
@@ -213,14 +214,15 @@ def _cut(root: QWidget) -> list[str]:
 
 
 class FakeModel:
-    """What the New workflow dialog reads of the project model."""
+    """What the template gallery reads of the project model."""
 
     class P:
-        def __init__(self, name, opts):
-            self.name, self.opts, self.params = name, opts, {}
+        def __init__(self, pid, name, opts):
+            self.pid, self.name, self.opts, self.params, self.end, self.source = pid, name, opts, {}, None, None
 
     def __init__(self):
-        self.paths = [self.P("Classic stack", {"d": 0}), self.P("Full", {"d": 2})]
+        self.paths = [self.P(1, "Classic stack", {"d": 0}), self.P(2, "Full", {"d": 2})]
+        self.path = self.paths[0]
 
     def opts_seconds(self, opts, params=None):
         return 2880 + 1860 * opts.get("d", 0)
@@ -482,13 +484,34 @@ def test_log_shows_the_history_newest_first_and_exports(env, tmp_path):
     assert [r[1] for r in w.logp.rows()] == ["Projet enregistré", "Projet ouvert"]
 
 
-def test_new_workflow_dialog_on_the_model(qapp):
-    d = NewWorkflowDialog(FakeModel(), templates=TEMPLATES)
-    assert len(d.cards) == 5 and d.name.text() == "Full 2"                    # the recommended one first (#11)
-    d.pick(2)
-    assert d.name.text() == "Full 2" and d.opts == {"d": 2}
-    d.pick(4)
-    assert d.name.text() == "Full (copy)"
+def test_the_template_gallery_on_the_model(qapp, tmp_path):
+    """Issue #43: tabs by kind of task, a thumbnail of each template's graph, the preview and its text, Create."""
+    d = TemplateGallery(FakeModel())
+    assert d.tab_keys == ["frames", "image", "mono", "copy"]
+    assert d.choice["key"] == "full" and d.name.text() == "Full 2"            # the recommended one first (#11)
+    assert d.ok.isEnabled() and d.opts["etoiles"] == "retirer" and "cut" not in d.opts
+    calibrated = next(c.t for c in d.cards if c.t["key"] == "calibrated")
+    d.pick(calibrated)
+    assert d.opts["cut"] == ["calibration"] and d.text.text().startswith("For frames another program")
+    d.tabs.setCurrentIndex(1)                                                 # from an image: a file first
+    assert {c.t["key"] for c in d.cards} == {"image", "image_colours", "image_plain"}
+    assert not d.ok.isEnabled() and d.file_row.isVisibleTo(d)
+    img = tmp_path / "m42.fits"
+    img.write_bytes(bytes(2880))
+    d.file.setText(str(img))
+    assert d.ok.isEnabled()
+    d.tabs.setCurrentIndex(2)                                                 # monochrome: planned, not offered
+    assert all(c.t.get("planned") for c in d.cards) and not d.ok.isEnabled()
+    d.tabs.setCurrentIndex(3)
+    assert [c.t["copy"].name for c in d.cards] == ["Classic stack", "Full"] and d.name.text() == "Classic stack (copy)"
+    # the graphs drawn from the templates: a cut block, a greyed one, the planned mono ones' channels combined
+    plain = next(t for t in GALLERY if t["key"] == "image_plain")
+    assert chain_of(plain) == [("astrometrie", "cut"), ("fond", ""), ("couleur", "cut"), ("post", "")]
+    grey = dict(GALLERY[0], cut=["astrometry"])
+    assert ("couleur", "grey") in chain_of(grey)
+    assert chain_of(next(t for t in GALLERY if t["key"] == "sho"))[0] == ("combine", "")
+    pm = draw_graph(GALLERY[0], 300, 100, names=True)
+    assert (pm.width(), pm.height()) == (300, 100)
 
 
 def test_french_covers_every_shell_screen(env, qapp):
@@ -514,7 +537,7 @@ def test_french_covers_every_shell_screen(env, qapp):
         d.nav.setCurrentRow(i)
         qapp.processEvents()
         texts += _texts(d)
-    for dlg in (NewProjectDialog(env["ws"].as_posix(), "Iris"), NewWorkflowDialog(FakeModel(), templates=TEMPLATES),
+    for dlg in (NewProjectDialog(env["ws"].as_posix(), "Iris"), TemplateGallery(FakeModel()),
                 name_dialog(w, "Rename", "Full")[0], w.about_dialog(), w.import_box(env["ws"] / "OldM31")):
         dlg.show()
         qapp.processEvents()
@@ -603,7 +626,7 @@ def test_shots(env, qapp, tmp_path):
         shot(w, f"log_{lang}")
         for dlg, name in ((NewProjectDialog(env["ws"].as_posix(), "Rosette", "NGC 2237"), "new_project"),
                           (NewProjectDialog(env["ws"].as_posix(), "Iris"), "new_project_taken"),
-                          (NewWorkflowDialog(FakeModel(), templates=TEMPLATES), "new_workflow"),
+                          (TemplateGallery(FakeModel()), "new_workflow"),
                           (name_dialog(w, "Rename", "Classic + denoise")[0], "rename"),
                           (w.about_dialog(), "about"), (w.import_box(env["ws"] / "OldM31"), "previous_version")):
             shot(dlg, f"dialog_{name}_{lang}")

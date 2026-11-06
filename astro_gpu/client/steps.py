@@ -182,13 +182,25 @@ class Steps(QObject):
         self.changed.emit()
 
     # ------------------------------------------------------------ the results a block holds
+    def _instance(self, p, stage: str) -> tuple[str, str]:
+        """(the stage Inspect reads, its session) for the block shown: a session's block ("calibration@2") reads that
+        session's instance of the stage (issue #43); any other block, the stage."""
+        sid = str(getattr(self.s, "sel_step", "") or "").partition("@")[2]
+        if sid and f"{stage}@{sid}" in self.s.all_stages(p):
+            return f"{stage}@{sid}", sid
+        return stage, ""
+
     def which_for(self, p, stage: str) -> str:
-        """The result of a stage Inspect shows: the current one, or the one an Outdated stage had."""
-        st = self.s.state_info(p, stage)
-        return "previous" if st is not None and st.state != "done" and st.previous_key else "current"
+        """The result of a stage Inspect shows: the current one, or the one an Outdated stage had ("…@2": of that
+        session)."""
+        inst, sid = self._instance(p, stage)
+        st = self.s.state_info(p, inst)
+        which = "previous" if st is not None and st.state != "done" and st.previous_key else "current"
+        return f"{which}@{sid}" if sid else which
 
     def key_of(self, p, stage: str, which: str = "current") -> str | None:
-        st = self.s.state_info(p, stage)
+        which, _at, sid = which.partition("@")
+        st = self.s.state_info(p, f"{stage}@{sid}" if sid else stage)
         if st is None:
             return None
         return st.previous_key if which == "previous" else (st.key if st.state == "done" else None)
