@@ -93,16 +93,20 @@ def test_the_session_block_edits_its_frames_and_its_filter(world):
     assert m.add_session_entries(2, "bias", [str(bias)]) == 1 and m.add_session_entries(2, "bias", [str(bias)]) == 0
     assert m.use_from_session(1, 2, "flats") and m.shared_with(2, "flats") == [1]
     assert m.set_session_filter(2, "Ha") and m.session(2).filter == "Ha"
-    assert not m.remove_session_entry(2, "lights", m.session(2).lights[0])  # a session keeps its lights
+    lights = m.session(2).lights[0]
+    assert m.remove_session_entry(2, "lights", lights) and not m.session(2).lights   # the last light can go (#58)
+    assert m.add_session_entries(2, "lights", [m.p.abspath(lights)]) == 1
     assert m.rename_session(2, "second night") and m.session(2).name == "second night"
+    assert m.dirty and not m.can_undo()            # a session's frames: saved by Save, not undone
     sid = m.add_session("third", lights=[str(frames(raw / "n3", ["c1.ARW"]))])
     assert sid == 3 and m.separate_sessions() == [1, 2, 3]
     assert m.remove_session(3) and m.separate_sessions() == [1, 2]
+    assert m.undo() and m.separate_sessions() == [1, 2, 3]            # a Session block removed: Ctrl+Z (#47)
+    assert m.session(3).lights and m.redo() and m.separate_sessions() == [1, 2]
     world["page"].select(step="session@2")
     world["page"].refresh()
     combos = world["page"].panel.findChildren(QComboBox)
     assert any(cb.currentData() == "Ha" for cb in combos)
-    assert m.dirty and not m.can_undo()            # saved by Save, as the frames are; Undo is for the workflows
 
 
 def test_switching_a_block_off_draws_it_so_refuses_what_cannot_and_undoes(world):

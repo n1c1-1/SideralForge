@@ -210,10 +210,14 @@ def implied(options: dict[str, Any], stage: str) -> dict[str, Any]:
 ORDER = ["fusion", "image", "inventory", "calibrate", "sessions", "register", "stack", "astrometry", "reference", "catalogs",
          "surveys", "gradient", "denoise", "color", "render_simple", "star_removal"]
 #: the stages that read the image the blocks before them made (issue #47), and which of those blocks they apply: all
-#: of them, or only the sky gradients (Color measures its stars on the stack, its sky removed; the star removal takes
-#: its noise from the half-stacks so)
-READERS: dict[str, str] = {"gradient": "all", "denoise": "all", "render_simple": "all", "color": "skies",
+#: of them, or only the sky gradients (Color measures its stars on the stack, its sky removed, and the Color blocks
+#: before it applied: a second one measures what the first left; the star removal takes its noise from the
+#: half-stacks so)
+READERS: dict[str, str] = {"gradient": "all", "denoise": "all", "render_simple": "all", "color": "colours",
                            "star_removal": "skies"}
+#: the image blocks each rule of READERS applies
+READ_KINDS: dict[str, tuple[str, ...]] = {"all": ("gradient", "denoise", "color"), "skies": ("gradient",),
+                                         "colours": ("gradient", "color")}
 #: stages that stand for others in a chain (issue #43): the sessions' join for each session's frames and calibration,
 #: the image of an image source for the stack
 PROVIDES: dict[str, tuple[str, ...]] = {"sessions": ("inventory", "calibrate"), "image": ("stack", "render_simple"),
@@ -403,7 +407,7 @@ class Chains:
         if reads:
             # issue #47: the image blocks before it in the graph, in order (an image block placed after it is not
             # read; a chain in the global order has them where they always were)
-            ops = IMAGE_OPS if READERS[b] == "all" else ("gradient",)
+            ops = READ_KINDS[READERS[b]]
             prior = [x for x in chain[:list(chain).index(stage)] if base(x) in ops]
         for d in self.deps2[b]:
             if reads and d in IMAGE_OPS:                 # where it was declared: the graph's blocks of that stage

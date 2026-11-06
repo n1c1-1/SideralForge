@@ -249,7 +249,7 @@ def test_the_definition_checks_the_new_fields(tmp_path, nights):
     project2.save(p)
     assert project2.load(p.root).sessions[0].filter == "Ha"
     for bad in (lambda q: setattr(q.sessions[0], "filter", "Z"),
-                lambda q: setattr(q.workflow(1), "source", {"path": ""}),
+                lambda q: setattr(q.workflow(1), "source", {"path": 3}),
                 lambda q: setattr(q.workflow(1), "source", {"fusion": {"palette": "XYZ", "inputs": []}}),
                 lambda q: q.workflow(1).options.update(cut=["output"])):
         q = project2.load(p.root)

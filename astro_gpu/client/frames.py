@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from .. import api, texts
 from . import prefs
-from .i18n import _, language, number
+from .i18n import _, language, number, plural
 from .imageview import exposure_text
 from .services.inspect import ProjectFrames, service_of
 from .widgets import NEW, OK, WARN, clear, label
@@ -61,6 +61,23 @@ def night_text(first: str) -> str:
     return f"{d0.day} {month[d0.month - 1]} → {d1.day} {month[d1.month - 1]} {d1.year}"
 
 
+KIND_WORDS = {"lights": "lights", "darks": "darks", "flats": "flats", "bias": "bias", "flat_darks": "flat darks"}
+
+
+def type_warning_text(w: dict) -> str:
+    """A file that may be a mistake (core.project.type_warnings, issue #58), in the interface's language."""
+    kind = _(KIND_WORDS.get(w.get("kind", ""), w.get("kind", "")))
+    if w["key"] == "unread":
+        return (_("{name} is not a frame the engine reads (camera raw or FITS): added by mistake?").format(name=w["name"])
+                if w["n"] == 1 else _("{n} {type} files are not frames the engine reads (camera raw or FITS)").format(
+                    n=w["n"], type=w["type"]))
+    if w["key"] == "mixed":
+        return plural(w["n"], "{n} {type} file among {of} {main} {kind}: added by mistake?",
+                      "{n} {type} files among {of} {main} {kind}: added by mistake?",
+                      type=w["type"], of=w["of"], main=w["main"], kind=kind)
+    return _("The {kind} are {type} files, the lights {main}").format(kind=kind, type=w["type"], main=w["main"])
+
+
 def check_text(c, data: ProjectFrames | None = None) -> str:
     """A health check of the engine (api.Check) in the language of the interface; the numbers come from its arguments."""
     a = c.args or {}
@@ -74,6 +91,9 @@ def check_text(c, data: ProjectFrames | None = None) -> str:
             return _("No bias: flats are calibrated with the camera black level ({black} ADU).").format(
                 black=int(black))
         return _("No bias: flats are calibrated with the camera black level.")
+    if c.key == "file_types":
+        return f"{a.get('session', '')} : " + type_warning_text(a) if language() == "fr" else \
+            f"{a.get('session', '')}: " + type_warning_text(a)
     if c.key == "flats_merged":
         return _("The flats of {n} sessions are merged into one master flat.").format(n=a.get("n", 0))
     if c.key == "disk":

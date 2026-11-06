@@ -317,3 +317,173 @@ def test_the_second_play_test_stays_fixed(qapp, tmp_path, monkeypatch):
         page.close()
         m.close(save=False)
         w.stop()
+
+
+def test_an_image_dropped_is_placed_empty_and_the_new_flow_zone_offers_no_template(qapp, tmp_path, monkeypatch):
+    """The third use: an Image dropped is placed like a Session, its file chosen in its panel (no template window);
+    without its file it is not run; once a graph is begun the new-flow zone takes drops only (no template)."""
+    from astro_gpu import api
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        page.graph.rebuild()
+        zone = page.graph.new_flow_ghost
+        assert zone.on_click is None and "template" not in zone.text
+        page.palette_action("image:new")
+        settle(w, page)
+        assert getattr(page, "_gallery", None) is None                    # no template window
+        img = m.paths[-1]
+        assert img.source == {"path": "", "stretched": False} and m.sel_step == "image"
+        assert m.graph(img) == [] and not m.has_data(img) and m.has_data()  # the frames of the other workflow
+        assert Graph(m).summary(Graph(m).node_of(img, "image")).endswith("file to choose")
+        assert img.pid in api.plan_all(m.p).skipped                        # not run without its file
+        m.set_image_file(img, str(tmp_path / "stack.fits"))
+        settle(w, page)
+        img = m.view(img.pid)
+        assert m.has_data(img) and img.source["path"].endswith("stack.fits")
+        assert img.pid not in api.plan_all(m.p).skipped
+        m.set_image_file(img, stretched=True)                              # nothing follows it: either kind
+        settle(w, page)
+        assert m.view(img.pid).source["stretched"] and m.p.workflow(img.pid).blocks == []   # no Output: to Post as is
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_session_chosen_beside_an_image_gets_the_frame_blocks_and_sources_have_their_cross(qapp, tmp_path,
+                                                                                            monkeypatch):
+    """A Session chosen after an Image was placed: the palette places in its frames (Calibration offered, a
+    workflow from the frames started when there is none); the Image, the sessions have their cross; the Image goes
+    with the blocks after it, a session with its own flow; Ctrl+Z brings either back."""
+    from astro_gpu.client.graph import NEW_FRAMES, BlockItem
+    w, m, page = open_page(tmp_path, monkeypatch, workflows=())
+    try:
+        page.palette_action("image")
+        settle(w, page)
+        drawn = {it.node.key: it for it in page.graph.scene().items() if isinstance(it, BlockItem)}
+        assert "sources" in drawn and drawn["image"].removable                # the Session still drawn
+        assert page.cards["calibration"].reason                               # the Image chosen
+        page.select_node(Graph(m).root)
+        settle(w, page)
+        assert page.palette_path() is None and not page.cards["calibration"].reason
+        page.graph.drag_block = "calibration"
+        page.graph.rebuild()
+        assert any(gh.pid == NEW_FRAMES for gh in page.graph.ghosts if hasattr(gh, "idx"))
+        page.graph.drag_block = None
+        page.palette_action("calibration")
+        settle(w, page)
+        frames = next(q for q in m.paths if q.source is None)
+        assert [n["block"] for n in m.graph(frames)] == ["calibration"]
+        img = next(q for q in m.paths if q.source is not None)
+        page.remove_tool(Graph(m).node_of(img, "image"), None)
+        settle(w, page)
+        assert all(q.source is None for q in m.paths)
+        assert m.undo() and any(q.source is not None for q in m.paths)
+        page.palette_action("session:new")                                     # a second flow, its own session
+        settle(w, page)
+        flow = m.paths[-1]
+        sid = m.sessions_of(flow)[0]
+        page.session_action("remove", sid)
+        settle(w, page)
+        assert m.view(flow.pid) is None and len(m.p.sessions) == 1
+        assert m.undo() and m.view(flow.pid) is not None and len(m.p.sessions) == 2
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_block_in_the_middle_sends_its_image_to_post(qapp, tmp_path, monkeypatch):
+    """Issue #47: Astrometry's image to Post (menu or its port pulled onto Post): a branch up to it, shared, computed
+    once; once sent, not offered again; the last block's image goes to Post already."""
+    from astro_gpu.client.graph import BlockItem
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        full = m.paths[0]
+        g = Graph(m)
+        astro = g.node_of(full, "astrometrie")
+        assert page.graph.can_exit(astro) and not page.graph.can_exit(g.node_of(full, "calibration"))
+        page.graph.rebuild()
+        item = next(it for it in page.graph.scene().items() if isinstance(it, BlockItem) and it.node.key == "astrometrie")
+        assert item.ports                                                  # its port, to pull onto Post
+        n_before = len(Graph(m).post_layers)
+        page.send_to_post(astro)
+        settle(w, page)
+        q = m.paths[-1]
+        assert [n["block"] for n in m.graph(q)][-1] == "astrometry"
+        g2 = Graph(m)
+        assert g2.node_of(q, "astrometrie") is g2.node_of(m.view(full.pid), "astrometrie")             # shared
+        assert len(Graph(m).post_layers) == n_before + 1
+        assert not page.graph.can_exit(Graph(m).node_of(m.view(full.pid), "astrometrie"))           # sent already
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_after_the_start_no_block_opens_the_template_window(qapp, tmp_path, monkeypatch):
+    """The templates once, when the project is made: a Fusion dropped is placed at once (here a colour workflow's
+    channels, dual band), Duplicate copies at once, the new-flow zone is no button."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        page.graph.rebuild()
+        assert page.graph.new_flow_ghost.on_click is None
+        page.palette_action("fusion:new")
+        settle(w, page)
+        assert getattr(page, "_gallery", None) is None
+        fu = m.paths[-1]
+        f = fu.source["fusion"]
+        assert f["palette"] == "HOO" and [i["channel"] for i in f["inputs"]] == ["R", "GB"] and m.sel_step == "fusion"
+        n = len(m.paths)
+        page.workflow_action("duplicate", m.paths[0].pid)
+        settle(w, page)
+        assert getattr(page, "_gallery", None) is None and len(m.paths) == n + 1
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_file_added_by_mistake_is_warned_and_taken_out_one_by_one(qapp, tmp_path, monkeypatch):
+    """Issue #58: a JPEG added among the raw files is warned (Session block, panel, health check); its group opens on
+    its files; one file taken out alone, a file of a folder chosen whole too (the folder becomes its other files);
+    the last light can go."""
+    from astro_gpu import api
+    from astro_gpu.client.panel import FileList
+    from astro_gpu.core.project import type_warnings
+    assert [w["key"] for w in type_warnings({"lights": ["a.ARW", "b.ARW", "c.JPG"], "flats": ["f.fits"]})] == \
+        ["unread", "other_type"]
+    assert type_warnings({"lights": ["a.ARW", "b.CR2", "c.ARW"]})[0] == {
+        "key": "mixed", "kind": "lights", "type": "CR2", "n": 1, "main": "ARW", "of": 2, "name": "b.CR2"}
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        raw = tmp_path / "raw" / "n1"
+        (raw / "a2.ARW").write_bytes(b"\0" * 300)
+        jpg = tmp_path / "phone" / "DSC05869.JPG"
+        jpg.parent.mkdir()
+        jpg.write_bytes(b"\0" * 50)
+        assert m.add_session_entries(1, "lights", [str(jpg)]) == 1
+        w.wait(60)
+        settle(w, page)
+        warns = m.file_warnings(1)
+        assert [x["key"] for x in warns] == ["unread"] and warns[0]["name"] == "DSC05869.JPG"
+        assert Graph(m).summary(Graph(m).root).startswith("⚠")
+        assert any(c.key == "file_types" for c in api.health_checks(m.p))
+        page.select_node(Graph(m).root)
+        settle(w, page)
+        lists = page.panel.findChildren(FileList)
+        assert lists and any("DSC05869.JPG" in it.data(256) for x in lists for it in
+                             [x.item(i) for i in range(x.count())])                # its group opened by itself
+        assert m.remove_session_files(1, "lights", [jpg.as_posix()])
+        w.wait(60)
+        settle(w, page)
+        assert not m.file_warnings(1) and [Path(e).name for e in m.session(1).lights] == ["n1"]
+        assert m.remove_session_files(1, "lights", [(raw / "a1.ARW").as_posix()])     # a file of a whole folder
+        w.wait(60)
+        assert [Path(e).name for e in m.session(1).lights] == ["a2.ARW"]
+        assert m.remove_session_files(1, "lights", [(raw / "a2.ARW").as_posix()])     # the last light too
+        assert m.session(1).lights == []
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()

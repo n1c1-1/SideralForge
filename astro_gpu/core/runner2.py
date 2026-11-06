@@ -61,7 +61,7 @@ from .files import write_json
 from .journal import Journal
 from .journal import read_events as _read_events
 from .params import params_hash
-from .project2 import Project2, Workflow
+from .project2 import Project2, Workflow, is_image
 from .runner import Pipeline, read_manifest
 from .stage import StageError
 from .store import InputScan, KeyRules, Keys, Store, StoreProject, key_rules
@@ -242,7 +242,8 @@ class Planner:
         asked: list[tuple[int, str]] = []
         for wf, stage in targets:
             w = self.project.workflow(wf)
-            why = self.skipped.get(w.id)
+            why = self.skipped.get(w.id) or (
+                "its Image block has no file yet" if is_image(w) and not w.source["path"] else "")
             if why:
                 self.skipped[w.id] = why
                 continue

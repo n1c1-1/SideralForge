@@ -20,7 +20,7 @@ import numpy as np
 
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage, StageError
-from .gradient import stack_image
+from .gradient import image_in
 
 XYZ_TO_SRGB = np.array([[3.2404542, -1.5371385, -0.4985314],
                         [-0.9692660, 1.8760108, 0.0415560],
@@ -67,7 +67,7 @@ class Color(Stage):
 
     def run(self, ctx: Context, p: ColorParams) -> None:
         import colour
-        img = stack_image(ctx)
+        img = image_in(ctx).img                       # its sky removed, the Color blocks before it applied (#47)
         xp = np.load(ctx.input("catalogs", "gaia_xp.npz"))
         table, star_why = colour_star_table(img, xp["x"], xp["y"], p.aperture, saturation_map(ctx))
         idx = np.where(star_why == "")[0]

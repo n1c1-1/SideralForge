@@ -34,6 +34,7 @@ from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -528,9 +529,12 @@ class Main(QMainWindow):
             h.addWidget(b)
             self.mode_btns.append(b)
         h.addStretch(1)
-        self.machine_lb = label("", "small")
-        h.addWidget(self.machine_lb)
-        h.addSpacing(12)
+        self.device_cb = QComboBox()                  # where the run computes: a GPU of the machine, or the CPU
+        self.device_cb.setToolTip(_("Where the run computes"))
+        self.device_cb.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.device_cb.activated.connect(lambda _i: self.set_device(self.device_cb.currentData()))
+        h.addWidget(self.device_cb)
+        h.addSpacing(6)
         self.bt_run = QPushButton(_("Run"))
         self.bt_run.setObjectName("primary")
         self.bt_run.clicked.connect(self.launch)
@@ -723,11 +727,7 @@ class Main(QMainWindow):
         s = self.s
         self.title.setText(self.project_name())
         self._title()
-        text, gpu = machine_text(self.machine, prefs.get("device"))
-        self.machine_lb.setText(text)
-        self.machine_lb.setStyleSheet("" if gpu else f"color: {WARN};")
-        g = self.machine.gpu(prefs.get("device")) if self.machine is not None else None
-        self.machine_lb.setToolTip(f"{g.device} · {g.memory_gb:.0f} GB" if g is not None else "")
+        self.update_device_combo()
         btn = 0 if self.mode == 0 else (2 if s is not None and s.sel_step == "final" else 1)
         if self.mode != btn:
             self.mode = btn
@@ -738,14 +738,41 @@ class Main(QMainWindow):
         self.update_spec_note()
         self._update_actions()
 
+    def update_device_combo(self):
+        """The combo left of Run: the machine's GPUs and the CPU, the one the run computes on chosen (Automatic: the
+        GPU it picks); orange on the CPU; not while a run goes (it keeps the device it started on)."""
+        cb = self.device_cb
+        dev = prefs.get("device") or "auto"
+        m = self.machine
+        items = [(g.name, g.device, f"{g.device} · {g.memory_gb:.0f} GB") for g in (m.gpus if m is not None else [])]
+        if m is None and dev.startswith("cuda:"):
+            items.append((dev, dev, ""))
+        items.append((_("CPU"), "cpu", _("The processor: much slower")))
+        cb.blockSignals(True)
+        if [(cb.itemText(i), cb.itemData(i)) for i in range(cb.count())] != [(t, d) for t, d, _tip in items]:
+            cb.clear()
+            for t, d, tip in items:
+                cb.addItem(t, d)
+                cb.setItemData(cb.count() - 1, tip, Qt.ToolTipRole)
+        _text, gpu = machine_text(m, dev)
+        if dev == "auto":                              # the GPU Automatic picks, or the CPU without one
+            g = max(m.gpus, key=lambda x: x.memory_gb) if m is not None and m.gpus else None
+            dev = g.device if g is not None else "cpu"
+        cb.setCurrentIndex(max(cb.findData(dev), 0))
+        cb.blockSignals(False)
+        cb.setStyleSheet("" if gpu else f"QComboBox {{ color: {WARN}; }}")
+
     def update_run_button(self):
         """The Run button (Run · the time of Run all) and the status line (workflows, what is left to run)."""
         s = self.s
-        frames = bool(s is not None and s.sources_loaded)
+        frames = bool(s is not None and s.has_data())          # lights, or an Image's file
         running = self.run is not None and self.run.running
         n = len(s.paths) if s is not None else 0
         cost = s.cost() if s is not None and s.ready and s.paths else None
         todo = cost is not None and cost.jobs > 0
+        self.device_cb.setEnabled(not running)
+        self.device_cb.setToolTip(_("A run computes on the device it started on") if running else
+                                  _("Where the run computes"))
         if running:
             self.bt_run.setText(_("Running · {pct} %").format(pct=int(round(100 * self.run.progress()))))
             self.bt_run.setEnabled(True)
@@ -754,7 +781,8 @@ class Main(QMainWindow):
             self.bt_run.setText(_("Run") + (f"  ·  {duration_text(cost.seconds, cost.measured)}"
                                             if todo and frames else ""))
             self.bt_run.setEnabled(frames and todo)
-            self.bt_run.setToolTip(_("No frames yet: add the lights in the Session blocks") if not frames else
+            self.bt_run.setToolTip(_("Nothing to compute yet: add the lights in the Session blocks, or choose the "
+                                     "Image's file") if not frames else
                                    "" if todo else (_("No frames yet") if not frames else
                                                     _("Nothing to compute: all up to date.") if cost is not None
                                                     else ""))
@@ -768,7 +796,7 @@ class Main(QMainWindow):
             elif not s.ready:
                 line += "  ·  " + _("reading the project…")
             elif not frames:                              # no estimate without frames (issue #47)
-                line += "  ·  " + _("no frames yet: add the lights in the Session blocks")
+                line += "  ·  " + _("nothing to compute yet: add the lights, or choose the Image's file")
             elif todo:
                 line += "  ·  " + _("to run: {t}").format(t=duration_text(cost.seconds, cost.measured))
             elif cost is not None:
@@ -928,8 +956,8 @@ class Main(QMainWindow):
     def launch(self):
         """Run all (F5, the Run button): the run starts at once, its window following it (issue #51); without
         frames, the window says why nothing runs."""
-        if self.s is not None and not self.s.sources_loaded:
-            self.flash(_("No frames yet: add the lights in the Session blocks"))
+        if self.s is not None and not self.s.has_data():
+            self.flash(_("Nothing to compute yet: add the lights in the Session blocks, or choose the Image's file"))
             return
         if self.run is not None:
             self.run.launch(start=True)

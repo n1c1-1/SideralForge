@@ -52,7 +52,11 @@ def read_manifest(project: Project, stage: str) -> dict:
 
 
 def _write_manifest(project: Project, stage: str, m: dict) -> None:
-    p = _manifest_path(project, stage)
+    """The manifest of the stage being run, in its own folder: a job's (the store's project) is its own ``.tmp``
+    folder, also for a graph's later block of the same stage ("gradient~2", issue #47), whose stage name is the first
+    one's."""
+    own = getattr(project, "own_dir", None)
+    p = own() / "manifest.json" if own is not None else _manifest_path(project, stage)
     p.parent.mkdir(parents=True, exist_ok=True)
     write_json(p, m)
 

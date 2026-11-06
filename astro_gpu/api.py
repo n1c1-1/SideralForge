@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING, Any
 from .core import estimate as est
 from .core import project2 as p2
 from .core import workflow as wfl
-from .core.project import Target
+from .core.project import Target, type_warnings
 from .core.project2 import KINDS, Project2, Session, Workflow
 from .core.skyobjects import CatalogueUnavailable, SkyObject  # noqa: F401 - re-exported: sky_objects raises it
 from .core.store import InputScan, KeyRules, Keys, Store, StoreProject
@@ -1001,6 +1001,11 @@ def health_checks(p: Project2) -> list[Check]:
     n = {k: len(getattr(inp, k)) for k in KINDS}
     if not p.sessions or not n["lights"]:
         return [Check("warn", "no_lights", "No light frames yet")]
+    keys = _keys(p)
+    for s in keys.project.sessions:                  # issue #58: a file added by mistake, said before the run
+        fr = keys.scan.session_frames(keys.project, s)
+        for w in type_warnings({k: [str(f) for f, _size in fr[k]] for k in KINDS}):
+            out.append(Check("warn", "file_types", type_warning_english(w, s.name), {**w, "session": s.name}))
     if not n["bias"]:
         out.append(Check("info", "no_bias", "No bias frames"))
     with_flats = [s for s in p.sessions if s.flats]
@@ -1016,6 +1021,16 @@ def health_checks(p: Project2) -> list[Check]:
     if not any(c.level == "warn" for c in out):
         out.insert(0, Check("ok", "ok", "Nothing to worry about"))
     return out
+
+
+def type_warning_english(w: dict, session: str) -> str:
+    """A file-type warning (core.project.type_warnings) in English."""
+    if w["key"] == "unread":
+        return (f"{session}: {w['name']} is not a frame the engine reads (camera raw or FITS)" if w["n"] == 1 else
+                f"{session}: {w['n']} {w['type']} files are not frames the engine reads (camera raw or FITS)")
+    if w["key"] == "mixed":
+        return f"{session}: {w['n']} {w['type']} file(s) among {w['of']} {w['main']} {w['kind']}: added by mistake?"
+    return f"{session}: the {w['kind']} are {w['type']}, the lights {w['main']}"
 
 
 def _disk_check(p: Project2) -> Check:

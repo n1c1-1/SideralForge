@@ -49,6 +49,43 @@ def frame_kind(path: str | Path) -> str:
     return ""
 
 
+def file_type(path: str | Path) -> str:
+    """What a file of a session is, as the user names it: its camera raw format ("ARW", "CR2"...), "FITS" (every FITS
+    form), or its extension for any other file ("JPG")."""
+    kind = frame_kind(path)
+    if kind == "fits":
+        return "FITS"
+    return Path(path).suffix.lstrip(".").upper() or "?"
+
+
+def type_warnings(files: dict[str, list]) -> list[dict]:
+    """What may be a mistake in one session's files ({kind: [path]}), issue #58: a file the engine does not read (it is
+    not a camera raw or a FITS frame); lights of mixed types (1 JPG among 14 ARW); calibration frames of another type
+    than the lights. Each: {"key": "unread" | "mixed" | "other_type", "kind", "type", "n", "main", "of", "name"}."""
+    out: list[dict] = []
+    main: dict[str, str] = {}
+    for kind, paths in files.items():
+        if not paths:
+            continue
+        types: dict[str, list] = {}
+        for f in paths:
+            types.setdefault(file_type(f), []).append(f)
+        top = max(types, key=lambda t: (len(types[t]), bool(frame_kind(types[t][0]))))
+        main[kind] = top
+        for t, fs in sorted(types.items()):
+            if not frame_kind(fs[0]):
+                out.append({"key": "unread", "kind": kind, "type": t, "n": len(fs), "name": Path(fs[0]).name})
+            elif t != top:
+                out.append({"key": "mixed", "kind": kind, "type": t, "n": len(fs), "main": top, "of": len(types[top]),
+                            "name": Path(fs[0]).name})
+    light = main.get("lights")
+    for kind, t in main.items():
+        if kind != "lights" and light and t != light and frame_kind("x." + t.lower()) and \
+                frame_kind("x." + light.lower()):
+            out.append({"key": "other_type", "kind": kind, "type": t, "main": light, "n": len(files[kind])})
+    return out
+
+
 @dataclass
 class Inputs:
     lights: list[str] = field(default_factory=list)

@@ -377,7 +377,7 @@ class Keys:
         and Astrometry: a change in a channel's workflow makes the fusion Outdated)."""
         src = getattr(w, "source", None)
         if stage == "image" and src:
-            fid = self.scan.file_id(_absolute(self.project, src["path"]))
+            fid = self.scan.file_id(_absolute(self.project, src["path"])) if src["path"] else ["", None, None]
             return fid + ["stretched"] if src.get("stretched") else fid
         if stage == "fusion" and src:
             f = src["fusion"]
@@ -462,7 +462,7 @@ class Keys:
         excl = self.scan.excluded_paths(self.project) if self.rules.injects_exclude(base(stage)) else None
         v = self._given(w, stage, excl)
         if base(stage) == "image" and getattr(w, "source", None):
-            v["path"] = _absolute(self.project, w.source["path"])
+            v["path"] = _absolute(self.project, w.source["path"]) if w.source["path"] else ""
             v["stretched"] = bool(w.source.get("stretched"))
         if base(stage) == "fusion" and getattr(w, "source", None):
             store = Store(self.project.root) if self.project.root is not None else None

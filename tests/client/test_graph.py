@@ -678,8 +678,8 @@ def test_outputs_pulled_to_post_make_a_raw_stack_workflow(world, model, page):
     n0 = len(model.paths)
     stacking = node(page, "empilement")
     item = next(it for it in page.graph.scene().items() if isinstance(it, BlockItem) and it.node is stacking)
-    assert item.port and not any(it.port for it in page.graph.scene().items()       # Stars has its two images'
-                                 if isinstance(it, BlockItem) and it.node.key not in ("empilement", "etoiles"))
+    assert item.port and not any(it.port for it in page.graph.scene().items()       # the frames' blocks: no image
+                                 if isinstance(it, BlockItem) and it.node.key in ("calibration", "alignement"))
     # drag the port onto Post, as the user does
     page.graph.start_wire(item)
     post = page.graph.final_item.sceneBoundingRect().center()
@@ -751,16 +751,14 @@ def test_new_workflow_duplicate_rename_delete(world, model, page, monkeypatch):
     assert model.path.opts["cut"] == ["calibration"] and "calibration" not in model.display_keys(model.path)
     model.remove_path(model.paths.index(model.path))
     settle(world["w"], page)
-    # Duplicate keeps the options, the settings and the exit (the gallery opens on the copy)
+    # Duplicate keeps the options, the settings and the exit, at once (no template window after the start)
     src = model.view(1)
+    page._gallery = None
     page.workflow_action("duplicate", src.pid)
-    d = page._gallery
-    assert d.choice.get("copy") is src
-    d.name.setText("Full copy")
-    d.ok.click()
     settle(world["w"], page)
     cp = model.path
-    assert cp.name == "Full copy" and cp.opts == src.opts and cp.params == src.params
+    assert page._gallery is None
+    assert cp.name == "Full (copy)" and cp.opts == src.opts and cp.params == src.params
     # Rename and Delete (confirmed)
     page.rename(cp.pid, "Other")
     assert model.view(cp.pid).name == "Other"
@@ -1356,7 +1354,7 @@ def test_a_project_without_workflows_has_a_graph_and_an_import_button(qapp, tmp_
     settle(w, pg)
     items = [it for it in pg.graph.scene().items() if isinstance(it, BlockItem)]
     assert not items                                          # issue #47: a blank page is empty
-    assert any(getattr(g, "text", "").startswith("+  New workflow") for g in pg.graph.scene().items())
+    assert any(getattr(g, "text", "").startswith("+  Drop a Session or an Image") for g in pg.graph.scene().items())
     got = []
     pg.addSources.connect(lambda: got.append(1))
     pg.select_node(pg.graph.graph.root)

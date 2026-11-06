@@ -184,3 +184,38 @@ def test_two_nights_with_frames_of_the_same_names_sizes_and_dates_have_their_own
     both = p.add_workflow("Both", TEMPLATES["Classic stack"])       # the two nights together, calibrated each alone
     assert Keys(p).key(both.id, "calibrate@1") == Keys(alone).key(1, "calibrate")
     assert Keys(p).key(both.id, "calibrate@2") != Keys(p).key(both.id, "calibrate@1")
+
+
+@pytest.mark.parametrize("second_first", [False, True])
+def test_a_block_placed_twice_runs_for_real_each_in_its_own_folder(tmp_path, second_first):
+    """Two Gradient blocks one after the other, from an image (real stages, on the processor): each job's manifest
+    in its own folder (the later block's used to go to the first one's, or nowhere: its run failed), in either order
+    of placing; the first block's result stays as it was."""
+    import json
+
+    import numpy as np
+    from astropy.io import fits
+
+    from astro_gpu.core import runner2
+    from astro_gpu.core.store import Store
+    rng = np.random.default_rng(1)
+    yy, xx = np.mgrid[0:120, 0:160].astype(np.float32)
+    img = np.stack([0.1 + 0.0004 * xx + 0.0002 * yy + c * 0.01 for c in range(3)]) + rng.normal(0, 0.002, (3, 120, 160))
+    f = tmp_path / "stack.fits"
+    fits.writeto(f, img.astype(np.float32))
+    p = project2.create(tmp_path / "P", "P", Target(name="M 31"))
+    w = p.add_workflow("Image", TEMPLATES["Classic stack"])
+    w.source = {"path": str(f), "stretched": False}
+    p.set_blocks(w.id, [node("gradient"), node("gradient", "rbf", name="gradient~2")] if not second_first
+                 else [node("gradient", "rbf", name="gradient~2"), node("gradient")])
+    project2.save(p)
+    plan = runner2.plan_all(p)
+    assert [j.stage for j in plan.jobs if j.stage.startswith("gradient")] == \
+        (["gradient", "gradient~2"] if not second_first else ["gradient~2", "gradient"])
+    assert runner2.run_plan(p.root, runner2.prepare_run(p, plan, "cpu").plan_file, echo=False) == "done"
+    k, store = Keys(project2.load(p.root)), Store(p.root)
+    for stage in ("gradient", "gradient~2"):
+        key = k.key(w.id, stage)
+        m = json.loads((store.dir(stage, key) / "manifest.json").read_text(encoding="utf-8"))
+        assert m["status"] == "done" and m["key"] == key
+    assert not (p.root / "store" / "_absent").exists()

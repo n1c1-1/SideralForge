@@ -677,7 +677,7 @@ class RunController(QObject):
         if self.running:
             return self.show_dialog()
         d = self._plan_and_open(self.model.plan_run, lambda: _("Run project"), show_done=True)
-        if start and d is not None and self.plan and self.model.sources_loaded:
+        if start and d is not None and self.plan and self.model.has_data():
             d.start()
         return d
 

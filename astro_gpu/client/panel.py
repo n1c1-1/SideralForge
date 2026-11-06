@@ -21,6 +21,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QLocale, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QAbstractSpinBox,
     QApplication,
     QComboBox,
@@ -30,6 +31,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -54,6 +57,25 @@ OPTIONAL_BLOCKS = ("debruitage", "etoiles", "deconv")
 EDITOR_W = 104                      # every editor of a row has this width...
 BACK_W = 22                         # ...then the unit column, then the ↺ button (its room kept when hidden)
 UNIT_MAX = 76                       # a longer unit wraps on two lines
+
+
+class FileList(QListWidget):
+    """A session's files of one folder (issue #58): several can be chosen (Ctrl, Shift), Del takes them out."""
+
+    def __init__(self, remove):
+        super().__init__()
+        self.remove = remove
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.setStyleSheet("QListWidget { background: transparent; border: none; }")
+
+    def chosen(self) -> list[str]:
+        return [it.data(Qt.UserRole) for it in self.selectedItems()]
+
+    def keyPressEvent(self, e):                                       # noqa: N802
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.selectedItems():
+            self.remove(self.chosen())
+            return
+        super().keyPressEvent(e)
 
 
 def kv(rows, pad=14) -> QLabel:
@@ -533,6 +555,9 @@ class Panel(QWidget):
         self.hv.addLayout(row)
         n = {"lights": counts.get("lights", 0), "darks": counts.get("darks", 0), "flats": counts.get("flats", 0),
              "bias": counts.get("bias", 0), "flat_darks": counts.get("dark_flats", 0)}
+        from .frames import type_warning_text
+        warns = s.file_warnings(sid)                       # issue #58: files that may be mistakes, shown on their kind
+        flagged = self._flagged(sid, warns)
         for kind, title in self.KIND_TITLES:
             if kind == "lights":
                 kept = counts.get("kept", n["lights"])
@@ -545,26 +570,18 @@ class Panel(QWidget):
                 names = ", ".join(s.session(o).name for o in shared)
                 self.bv.addWidget(label("⇄ " + _("shared with {names}: one master for all").format(names=names),
                                         "small", wrap=True))
+            for w in [w for w in warns if w["kind"] == kind]:      # issue #58: a file that may be a mistake
+                self.bv.addWidget(label("⚠ " + type_warning_text(w), "warn", wrap=True))
             sets: dict[str, list[str]] = {}            # one row per folder: its own entry, or its files chosen one by one
             for e in getattr(ses, kind):
                 pth = Path(s.p.abspath(e))
                 sets.setdefault((pth.parent if pth.suffix else pth).as_posix(), []).append(e)
+            files = s.session_files(sid, kind)
             for folder, entries in sets.items():
-                r = QHBoxLayout()
                 whole = len(entries) == 1 and not Path(entries[0]).suffix
-                text = "📁 " + Path(folder).name + ("" if whole else "  · " + plural(len(entries), "{n} file",
-                                                                                     "{n} files"))
-                lb = label(text, None)
-                lb.setToolTip(folder)
-                r.addWidget(lb, 1)
-                x = QPushButton("×")
-                x.setFixedWidth(26)
-                x.setToolTip(_("Remove from the session (the files are not touched)"))
-                x.setEnabled(not (kind == "lights" and len(sets) == 1))
-                x.clicked.connect(lambda _c=False, k=kind, ens=list(entries): [s.remove_session_entry(sid, k, en)
-                                                                                for en in ens])
-                r.addWidget(x)
-                self.bv.addLayout(r)
+                mine = [f for f in files if Path(f).parent.as_posix().lower() == folder.lower()] if whole else \
+                    [Path(s.p.abspath(e)).as_posix() for e in entries]
+                self._file_group(sid, kind, folder, entries, mine, flagged)
             add = QHBoxLayout()
             b = QPushButton(_("Add") + " ▾")                # one menu per kind: folder, files, another session's
             menu = QMenu(b)
@@ -591,13 +608,81 @@ class Panel(QWidget):
         self.bv.addLayout(row)
         self.bv.addStretch(1)
 
+    def _flagged(self, sid: int, warns: list[dict]) -> set[str]:
+        """The files a warning points at (lower-case paths): those of a type that is not read, or that differs."""
+        from ..core.project import file_type
+        out: set[str] = set()
+        for w in warns:
+            if w["key"] in ("unread", "mixed"):
+                out |= {f.lower() for f in self.s.session_files(sid, w["kind"]) if file_type(f) == w["type"]}
+        return out
+
+    def _file_group(self, sid: int, kind: str, folder: str, entries: list[str], files: list[str], flagged: set[str]):
+        """One folder of a session's list (issue #58): its row ("📁 folder · 15 files", its cross takes it all out),
+        opened on its files, each with its cross (several chosen, Del). A group holding a file a warning points at
+        opens by itself."""
+        s = self.s
+        opened = getattr(self, "_opened", set())
+        self._opened = opened
+        key = (sid, kind, folder.lower())
+        bad = [f for f in files if f.lower() in flagged]
+        is_open = key in opened or bool(bad)
+        r = QHBoxLayout()
+        whole = len(entries) == 1 and not Path(entries[0]).suffix
+        n = len(files) if files or not whole else 0
+        t = QPushButton(("▾ " if is_open else "▸ ") + "📁 " + Path(folder).name + "  · " +
+                        plural(n, "{n} file", "{n} files"))
+        t.setFlat(True)
+        t.setStyleSheet("QPushButton { text-align: left; padding: 2px 4px; } ")
+        t.setToolTip(folder + "\n" + _("Click to see its files, and take one out"))
+
+        def toggle(_c=False, k=key):
+            opened.symmetric_difference_update({k})
+            self.changed.emit()
+        t.clicked.connect(toggle)
+        r.addWidget(t, 1)
+        x = QPushButton("×")
+        x.setFixedWidth(26)
+        x.setToolTip(_("Remove the whole folder from the session (the files are not touched)"))
+        x.clicked.connect(lambda _c=False, k=kind, ens=list(entries): [s.remove_session_entry(sid, k, en)
+                                                                        for en in ens])
+        r.addWidget(x)
+        self.bv.addLayout(r)
+        if not is_open or not files:
+            return
+        lst = FileList(lambda chosen, k=kind: s.remove_session_files(sid, k, chosen))
+        for f in files:
+            it = QListWidgetItem()
+            it.setData(Qt.UserRole, f)
+            lst.addItem(it)
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(18, 0, 2, 0)
+            name = label(("⚠ " if f.lower() in flagged else "") + Path(f).name, "warn" if f.lower() in flagged else None)
+            name.setToolTip(f)
+            h.addWidget(name, 1)
+            b = QPushButton("×")
+            b.setFixedSize(26, 20)
+            b.setStyleSheet("QPushButton { padding: 0px; }")
+            b.setToolTip(_("Take this file out of the session (the file is not touched)"))
+            b.clicked.connect(lambda _c=False, k=kind, ff=f: s.remove_session_files(sid, k, [ff]))
+            h.addWidget(b)
+            it.setSizeHint(row.sizeHint())
+            lst.setItemWidget(it, row)
+        lst.setFixedHeight(min(len(files), 8) * (lst.sizeHintForRow(0) or 24) + 6)
+        self.bv.addWidget(lst)
+
     def _add_entries(self, sid: int, kind: str, folder: bool):
         from . import prefs as _prefs
         if folder:
             d = QFileDialog.getExistingDirectory(self, _("Add folder…"), _prefs.last_folder())
             got = [d] if d else []
         else:
-            got, _f = QFileDialog.getOpenFileNames(self, _("Add files…"), _prefs.last_folder())
+            from ..core.project import FITS_EXT, RAW_EXT    # frames first; any file still (issue #58: then warned)
+            pats = " ".join(f"*{e}" for e in sorted(RAW_EXT | FITS_EXT | {".fz"}))
+            got, _f = QFileDialog.getOpenFileNames(self, _("Add files…"), _prefs.last_folder(),
+                                                   _("Frames ({patterns})").format(patterns=pats) + ";;" +
+                                                   _("All files (*)"))
         if got:
             _prefs.remember_folder(got[0])
             self.s.add_session_entries(sid, kind, got)
@@ -633,17 +718,63 @@ class Panel(QWidget):
 
     def image_panel(self, node):
         """The Image block of a workflow that starts from an image (issue #43)."""
+        s = self.s
         p = node.paths[0]
         src = p.source or {}
         self.hv.addWidget(label(_("Image"), "h1"))
-        self.hv.addWidget(label(p.name, "small"))
-        f = Path(str(src.get("path") or ""))
-        self.bv.addWidget(kv([(_("File"), html.escape(f.name)), (_("Folder"), html.escape(f.parent.as_posix())),
-                              (_("Kind"), _("linear (straight out of a stack)"))], pad=10))
+        acts = QHBoxLayout()                             # as every block: its Delete under its name
+        x = QPushButton(_("Delete block"))
+        x.setToolTip(_("Take this block out, with the blocks after it (Del)"))
+        x.clicked.connect(self.removeTool.emit)
+        acts.addWidget(x)
+        acts.addStretch(1)
+        self.hv.addLayout(acts)
+        path = str(src.get("path") or "")
+        stretched = bool(src.get("stretched"))
+        if path:
+            f = Path(path)
+            self.bv.addWidget(kv([(_("File"), html.escape(f.name)), (_("Folder"), html.escape(f.parent.as_posix()))],
+                                 pad=10))
+        else:
+            self.bv.addWidget(label(_("No file yet: choose the image this block reads."), "warn", wrap=True))
         self.bv.addSpacing(6)
-        self.bv.addWidget(label(_("The blocks after it read it as a stack. Denoise needs the two half-stacks of a "
-                                  "stack: it is not offered here."), "small", wrap=True))
+        row = QHBoxLayout()
+        b = QPushButton(_("Change the image…") if path else _("Choose the image…"))
+        b.setObjectName("primary" if not path else "")
+        b.clicked.connect(lambda: self._choose_image(p))
+        row.addWidget(b)
+        row.addStretch(1)
+        self.bv.addLayout(row)
+        # its kind decides what can follow it: while nothing follows, either; then the one the blocks need
+        alone = not s.graph(p)
+        self.bv.addWidget(self.group_title(_("Kind")))
+        row = QHBoxLayout()
+        for value, text, tip in ((False, _("Linear"), _("Straight out of a stack: the blocks after it read it as a "
+                                                         "stack")),
+                                 (True, _("Stretched"), _("Already stretched: it goes to Post as it is"))):
+            k = QPushButton(text)
+            k.setCheckable(True)
+            k.setObjectName("face")
+            k.setChecked(value == stretched)
+            k.setEnabled(alone or value == stretched)
+            k.setToolTip(tip if alone else _("Fixed by the blocks that follow it"))
+            k.clicked.connect(lambda _c=False, v=value: s.set_image_file(p, stretched=v))
+            row.addWidget(k)
+        row.addStretch(1)
+        self.bv.addLayout(row)
+        self.bv.addSpacing(6)
+        if not stretched:
+            self.bv.addWidget(label(_("The blocks after it read it as a stack. Denoise needs the two half-stacks of a "
+                                      "stack: it is not offered here."), "small", wrap=True))
         self.bv.addStretch(1)
+
+    def _choose_image(self, p):
+        from . import prefs as _prefs
+        f, _x = QFileDialog.getOpenFileName(self, _("Image"), _prefs.last_folder(),
+                                            _("Images (*.fits *.fit *.fts *.tif *.tiff)"))
+        if f:
+            _prefs.remember_folder(f)
+            self.s.set_image_file(p, f)
 
     def fusion_panel(self, node):
         """A Fusion block (issue #43): its workflow's name, its palette, its channels and the workflows they come

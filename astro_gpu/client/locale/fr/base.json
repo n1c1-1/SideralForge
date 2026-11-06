@@ -870,5 +870,9 @@
   "Save the changes made to \"{name}\"?": "Enregistrer les modifications de « {name} » ?",
   "Without saving, the changes since the last save are lost (the computed results stay).": "Sans enregistrer, les modifications depuis le dernier enregistrement sont perdues (les résultats calculés restent).",
   "Don't save": "Ne pas enregistrer",
-  "Green removal": "Retrait du vert"
+  "Green removal": "Retrait du vert",
+  "Where the run computes": "Où le lancement calcule",
+  "A run computes on the device it started on": "Un lancement calcule là où il a démarré",
+  "CPU": "CPU",
+  "The processor: much slower": "Le processeur : beaucoup plus lent"
 }

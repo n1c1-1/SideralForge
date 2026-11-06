@@ -348,12 +348,14 @@ def test_open_and_close_a_project(env):
     before = _snapshot(env["ws"] / "Heart")
     assert "HeartSoul" in w.title.text() and "IC 1805" in w.title.text()
     assert w.status.text().startswith("3 workflows")
-    assert w.machine_lb.text() == "NVIDIA RTX 4060 Ti"
+    cb = w.device_cb                                            # left of Run: the GPUs and the CPU
+    assert cb.currentText() == "NVIDIA RTX 4060 Ti" and cb.itemData(cb.count() - 1) == "cpu"
     for i in (1, 2, 0):
         w.set_mode(i)
         assert w.modes.currentIndex() == min(i, 1) and w.mode_btns[i].isChecked()     # Post is in Inspect
-    w.set_device("cpu")
-    assert w.machine_lb.text() == "CPU only"
+    cb.setCurrentIndex(cb.count() - 1)
+    cb.activated.emit(cb.count() - 1)                           # the CPU chosen in the combo
+    assert prefs.get("device") == "cpu" and w.s.device == "cpu" and cb.currentData() == "cpu"
     file_menu = {a.text(): a for a in w.menuBar().actions()[0].menu().actions()}
     file_menu["Home"].trigger()                               # the project stays open behind Home
     assert w.project is not None and w.screens.currentWidget() is w.home

@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .blocks import ENGINE_BLOCK, PAUSE_COL, Graph, Node, block_title, review_title
+from .blocks import ENGINE_BLOCK, PAUSE_COL, Graph, Node, block_title, node_title, review_title
 from .i18n import _, all_workflows, hm, plural
 from .services.run import (
     DONE,
@@ -88,13 +88,16 @@ def build_rows(model, jobs, names: dict[int, str] | None = None, with_done: bool
     order = {id(n): i for i, n in enumerate(g.nodes)} if g is not None else {}
     found: dict = {}
     for i, j in enumerate(jobs):
-        bk = ENGINE_BLOCK.get(j.block)
+        b, sep, n = j.block.partition("~")                # a graph's later block (issue #47): "gradient~2"
+        bk = ENGINE_BLOCK[b] + (f"~{n}" if sep else "") if b in ENGINE_BLOCK else None
         v = model.view(j.run_wf) or next((model.view(w) for w in j.wf if model.view(w) is not None), None)
         node = g.node_of(v, bk) if (g is not None and v is not None and bk) else None
         rid = id(node) if node is not None else (j.block, tuple(sorted(j.wf)))
         if rid not in found:
             if bk == "post":
                 title = _('Output "{name}"').format(name=v.name if v is not None else names.get(j.run_wf, "?"))
+            elif node is not None:
+                title = node_title(model, node)               # as the graph names it ("Gradient 1", left to right)
             elif bk:
                 title = block_title(v, bk)
             else:
@@ -516,7 +519,7 @@ class RunDialog(QDialog):
         self.b_stop.setEnabled(self.c is not None and self.c.phase == "running")
         self.b_stop.setText(_("Stopping…") if stopping else _("Stop"))
         self.b_run.setVisible(ph == "plan" and not paused)
-        self.b_run.setEnabled(bool(n) and self.s.sources_loaded and (self.c is None or not self.c.running))
+        self.b_run.setEnabled(bool(n) and self.s.has_data() and (self.c is None or not self.c.running))
         self.b_done.setVisible(ph == "end")
         self.b_log.setVisible(ph == "end" and t is not None and (t.count()[FAILED] > 0 or t.lost or t.status == "failed"))
 

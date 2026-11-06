@@ -177,7 +177,8 @@ def session_summary(s, sid: int) -> str:
     text = plural(int(ses.get("lights") or 0), "{n} light", "{n} lights")
     text += " · " + _("{darks} darks, {flats} flats").format(darks=ses.get("darks", 0), flats=ses.get("flats", 0))
     flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
-    return text + (f" · {flt}" if flt else "")
+    warn = "⚠ " if hasattr(s, "file_warnings") and s.file_warnings(sid) else ""   # issue #58: see its panel
+    return warn + text + (f" · {flt}" if flt else "")
 
 
 def node_title(s, n) -> str:
@@ -505,6 +506,8 @@ class Graph:
                 _("switched off: frames taken as aligned")
         if node.key == "image":
             src = node.paths[0].source or {}
+            if not src.get("path"):
+                return _("file to choose")
             return Path(str(src.get("path") or "")).name + ("  · " + _("stretched") if src.get("stretched") else "")
         if node.key == "fusion":
             f = (node.paths[0].source or {}).get("fusion") or {}

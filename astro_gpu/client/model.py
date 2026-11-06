@@ -229,6 +229,7 @@ class Facts:
     register: dict = field(default_factory=dict)
     stack: dict = field(default_factory=dict)
     sessions: dict = field(default_factory=dict)         # session id -> {kind: file count}
+    files: dict = field(default_factory=dict)            # session id -> {kind: [file path]} (issue #58)
     reviewed: list = field(default_factory=list)         # the results the user marked as checked (state.json)
 
 
@@ -255,13 +256,16 @@ def _facts_job(p) -> Facts:
             if out is not None:
                 setattr(f, stage, dict(out.metrics))
     for s in p.sessions:
-        counts = {}
+        counts, files = {}, {}
         for kind in ("lights", "darks", "flats", "bias", "flat_darks"):
             try:
-                counts[kind] = len(list_frames([p.abspath(x) for x in getattr(s, kind)])) if getattr(s, kind) else 0
+                got = list_frames([p.abspath(x) for x in getattr(s, kind)]) if getattr(s, kind) else []
             except (OSError, ValueError):
-                counts[kind] = 0
+                got = []
+            counts[kind] = len(got)
+            files[kind] = [Path(x).as_posix() for x in got]
         f.sessions[s.id] = counts
+        f.files[s.id] = files
     if p.root is not None:
         f.reviewed = [str(x) for x in read_state(p.root).get("reviewed") or []]
     return f
@@ -280,6 +284,33 @@ def _selection_job(p, wid: int, tmin: float, ratio: float):
 def _sig(rows) -> tuple:
     return tuple((r.name, repr(r.value), repr(r.suggested), r.origin, r.reason, repr(r.reason_args), r.drift,
                   r.locked) for r in rows or [])
+
+
+class SessionSet:
+    """Which sessions a project has, for Undo (issue #47): equal when the same ids, whatever their frames (a session's
+    frames are saved by Save, not undone); it keeps a copy of each session, and of its frames excluded by hand, to
+    bring back one that was removed."""
+
+    def __init__(self, p):
+        self.ids = [s.id for s in p.sessions]
+        self.copies = {s.id: copy.deepcopy(s) for s in p.sessions}
+        self.excluded = [list(x) for x in p.excluded]
+
+    def __eq__(self, other):
+        return isinstance(other, SessionSet) and self.ids == other.ids
+
+    __hash__ = None
+
+    def put_back(self, p) -> bool:
+        """These sessions in ``p``: a removed one comes back as it was, an added one goes; the others keep their
+        frames as they are now. Whether any came or went."""
+        if [s.id for s in p.sessions] == self.ids:
+            return False
+        now = {s.id: s for s in p.sessions}
+        p.sessions = [now.get(i) or copy.deepcopy(self.copies[i]) for i in self.ids]
+        back = set(self.ids) - set(now)
+        p.excluded = [x for x in p.excluded if x[0] in self.ids] + [x for x in self.excluded if x[0] in back]
+        return True
 
 
 class ProjectModel(QObject):
@@ -363,6 +394,16 @@ class ProjectModel(QObject):
     @property
     def sources_loaded(self) -> bool:
         return any(s.lights for s in self.p.sessions)
+
+    def has_data(self, p: WorkflowView | None = None) -> bool:
+        """Whether there is something to compute (issue #48): lights in a session, or the file of an Image block;
+        for ``p``: its own source (a fusion: its channels')."""
+        if p is None:
+            return self.sources_loaded or any(bool((q.source or {}).get("path")) for q in self.paths)
+        src = p.source
+        if src is None:
+            return self.sources_loaded
+        return "fusion" in src or bool(src.get("path"))
 
     @property
     def sessions(self) -> list[dict]:
@@ -740,7 +781,9 @@ class ProjectModel(QObject):
                 self.pathsChanged.emit()
 
     def _snapshot(self):
-        return (api.workflows(self.p), self.p.current, self.p.stack_mode)
+        """What Undo puts back: the workflows, and which sessions there are (a Session block is a block of the graph:
+        removed, it comes back with what it had, issue #47). A session's frames are not for Undo (saved by Save)."""
+        return (api.workflows(self.p), self.p.current, self.p.stack_mode, SessionSet(self.p))
 
     def _extra(self):
         """What an edit may change besides the workflows: the sessions and the frames excluded by hand."""
@@ -767,9 +810,12 @@ class ProjectModel(QObject):
         if not src:
             return False
         dst.append(self._snapshot())
-        ws, current, mode = src.pop()
+        ws, current, mode, sessions = src.pop()
+        frames_back = sessions.put_back(self.p)           # first: the workflows name them
         api.set_workflows(self.p, ws, current)
         self.p.stack_mode = mode
+        if frames_back:
+            self.reload_sources()
         self.pending_change = None
         self.edited()
         self._sync()
@@ -1023,6 +1069,37 @@ class ProjectModel(QObject):
             self.p.validate()
         return self._view_of(w.id), node_key(n)
 
+    def can_send_to_post(self, p: WorkflowView, key: str) -> bool:
+        """Whether a block's image can be sent to Post as a layer of its own (issue #47): a block giving an image, not
+        the last one (its image goes to Post already), not switched off, and not sent yet."""
+        if p.source is not None and "fusion" in p.source:
+            return False
+        g = self.graph(p)                                 # a workflow of options too: its graph, the same keys
+        i = self.node_index(p, key)
+        if i is None or g[i]["off"] or g[i]["block"] not in wfl.IO or wfl.IO[g[i]["block"]][1] != wfl.IMAGE:
+            return False
+        if i == len(g) - 1 or all(n.get("off") for n in g[i + 1:]):
+            return False
+        head = [node_key(n) for n in g[:i + 1]]
+        return not any(q.pid != p.pid and q.source == p.source and self.sessions_of(q) == self.sessions_of(p)
+                       and [node_key(n) for n in self.graph(q)] == head for q in self.paths)
+
+    def send_to_post(self, p: WorkflowView, key: str, name: str) -> WorkflowView:
+        """A block's image as a layer of Post (issue #47): a branch of ``p`` up to that block, its Output its own;
+        what they share is computed once."""
+        if not self.can_send_to_post(p, key):
+            raise ValueError(_("its image cannot be sent to Post from there"))
+        head = [dict(n) for n in self.graph(p)[:self.node_index(p, key) + 1]]
+        with self._edit():
+            w = api.add_workflow(self.p, self.unique_name(name), None, None, copy_of=p.pid)
+            x = self.p.workflow(w.id)
+            x.source = copy.deepcopy(self.p.workflow(p.pid).source)
+            x.sessions = copy.deepcopy(self.p.workflow(p.pid).sessions)
+            x.end = None
+            self.p.set_blocks(w.id, head)
+            self.p.validate()
+        return self._view_of(w.id)
+
     def add_parallel_flow(self) -> WorkflowView:
         """A second flow of frames (issue #47: a Session dropped on the new-flow zone): its own empty Session, the
         flows that took every session keep the ones they had."""
@@ -1222,6 +1299,13 @@ class ProjectModel(QObject):
             for w in self.p.workflows:
                 for k in [k for k in w.params if k.endswith(f"@{sid}")]:
                     del w.params[k]
+            for w in list(self.p.workflows):              # a flow of that session alone goes with it (issue #47)
+                if w.source is None and w.sessions is not None and sid in w.sessions:
+                    w.sessions = [x for x in w.sessions if x != sid]
+                    if not w.sessions:
+                        api.delete_workflow(self.p, w.id)
+            self.p.validate()
+        self.current = max(0, min(self.current, len(self.paths) - 1))
         self.reload_sources()
         return True
 
@@ -1260,13 +1344,47 @@ class ProjectModel(QObject):
         self.reload_sources()
         return len(new)
 
+    def session_files(self, sid: int, kind: str) -> list[str]:
+        """The files a session's list gives for a kind (its folders' frames, its files), as the worker last read them."""
+        return list((self._facts.files.get(sid) or {}).get(kind) or [])
+
+    def file_warnings(self, sid: int) -> list[dict]:
+        """What may be a mistake among a session's files (issue #58): core.project.type_warnings."""
+        from ..core.project import type_warnings
+        return type_warnings(self._facts.files.get(sid) or {})
+
+    def remove_session_files(self, sid: int, kind: str, files: list[str]) -> bool:
+        """Files taken out of a session (issue #58; the files themselves are never touched): a file chosen alone leaves
+        the list; a file of a folder chosen whole turns that folder into its other files. The last light can go too
+        (the session then waits for its lights)."""
+        s = self.p.session(sid)
+        gone = {norm_path(self.p.abspath(f)) for f in files}
+        keep: list[str] = []
+        for e in getattr(s, kind):
+            pth = self.p.abspath(e)
+            if norm_path(pth) in gone:
+                continue
+            if not Path(e).suffix:                        # a folder: its frames as the worker read them
+                inside = [x for x in self.session_files(sid, kind) if norm_path(str(Path(x).parent)) == norm_path(pth)]
+                if any(norm_path(x) in gone for x in inside):
+                    keep += [x for x in inside if norm_path(x) not in gone]
+                    continue
+            keep.append(e)
+        if keep == list(getattr(s, kind)):
+            return False
+        with self._edit():
+            setattr(s, kind, keep)
+            self.p.validate()
+        self.reload_sources()
+        return True
+
     def remove_session_entry(self, sid: int, kind: str, entry: str) -> bool:
-        """A folder or file taken out of a session's list (the files themselves are never touched). The lights of a
-        session keep at least one entry."""
+        """A folder or file taken out of a session's list (the files themselves are never touched); the last light
+        too (issue #58: the session then waits for its lights)."""
         s = self.p.session(sid)
         lst = list(getattr(s, kind))
         keep = [e for e in lst if norm_path(self.p.abspath(e)) != norm_path(self.p.abspath(entry))]
-        if len(keep) == len(lst) or (kind == "lights" and not keep):
+        if len(keep) == len(lst):
             return False
         with self._edit():
             setattr(s, kind, keep)
@@ -1306,9 +1424,25 @@ class ProjectModel(QObject):
             o["debruitage"] = True                     # the options' rule; a stretched image's chain reads only Stars
         with self._edit():
             w = api.add_workflow(self.p, self.unique_name(name), wfl.check_options(to_engine(o)), {})
-            self.p.workflow(w.id).source = {"path": Path(path).as_posix(), "stretched": bool(stretched)}
+            self.p.workflow(w.id).source = {"path": Path(path).as_posix() if path else "", "stretched": bool(stretched)}
             self.p.validate()
         return self._view_of(w.id)
+
+    def set_image_file(self, p: WorkflowView, path: str | None = None, stretched: bool | None = None):
+        """The file of an Image block, or its kind (linear, or stretched already): chosen in its panel (an Image
+        placed from the palette starts without one)."""
+        src = dict(self.p.workflow(p.pid).source or {})
+        if path is not None:
+            src["path"] = Path(path).as_posix() if path else ""
+        if stretched is not None:
+            src["stretched"] = bool(stretched)
+        with self._edit():
+            w = self.p.workflow(p.pid)
+            blocks = w.blocks
+            w.source = src
+            if blocks is not None:                        # the kind decides the Output (a stretched image has none)
+                self.p.set_blocks(w.id, [n for n in blocks if n["block"] != "output"])
+            self.p.validate()
 
     def block_key(self, p: WorkflowView, key: str):
         """What two workflows must have equal to share a block (with everything before it): the keys of its stages
@@ -1327,7 +1461,8 @@ class ProjectModel(QObject):
                  "catalogs": "Gaia catalogues", "surveys": "H-alpha survey", "color": "Color", "denoise": "Denoise",
                  "gradient": "Sky gradient", "render_simple": "Output prep", "star_removal": "Star removal",
                  "deconv": "Deconvolution"}
-        return _(names.get(stage, stage))
+        b, sep, n = stage.partition("~")                  # a graph's later block (issue #47): "Denoise 2"
+        return _(names.get(b, b)) + (f" {n}" if sep else "")
 
     def state(self, p: WorkflowView | None, stage: str) -> str:
         """done | pending (never computed) | stale (computed once, a setting changed since) | running | failed |

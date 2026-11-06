@@ -333,10 +333,10 @@ def image_ops(ctx: Context, which: str | None = None) -> list[str]:
     """The image blocks a stage reads, in the graph's order: those before it (all of them, or the Gradient blocks
     only, ``which`` "skies"; by default the stage's rule, workflow.READERS). A project without keys (the v1 runner,
     the tests' toy projects) has them in the engine's order, read by name."""
-    from ..core.workflow import IMAGE_OPS, ORDER, READERS, base
+    from ..core.workflow import ORDER, READ_KINDS, READERS, base
     own = getattr(ctx.project, "stage", None) or ctx.stage.name
     rule = which or READERS.get(base(own), "all")
-    kinds = IMAGE_OPS if rule == "all" else ("gradient",)
+    kinds = READ_KINDS[rule]
     keys = getattr(ctx.project, "keys", None)
     if keys is not None and getattr(ctx.project, "workflow", None) is not None:
         chain = list(ctx.project.chain)

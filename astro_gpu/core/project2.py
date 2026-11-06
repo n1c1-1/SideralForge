@@ -387,7 +387,8 @@ def check_source(source: Any, where: str = "source") -> dict[str, Any] | None:
                 and i.get("channel", "L") in CHANNELS for i in ins):
             raise ValueError(f"{where}: the fusion's inputs are [{{'pid', 'role', 'channel'}}], not {ins!r}")
         return source
-    if not isinstance(source, dict) or not isinstance(source.get("path"), str) or not source["path"]:
+    # path "": an Image block placed from the palette, its file still to choose (it is not run)
+    if not isinstance(source, dict) or not isinstance(source.get("path"), str):
         raise ValueError(f"{where}: an image source is {{'path': its file, 'stretched': false}}, not {source!r}")
     if set(source) - {"path", "stretched"}:
         raise ValueError(f"{where}: unknown keys of an image source: {sorted(set(source) - {'path', 'stretched'})}")
