@@ -343,18 +343,6 @@ class GhostItem(QGraphicsItem):
 
     def paint(self, p, opt, widget=None):
         p.setRenderHint(QPainter.Antialiasing)
-        if getattr(self, "idx", None) is not None:     # a drop place of a dragged palette block (issue #47): a slot
-            c = QColor(ACCENT)
-            c.setAlpha(255 if self.hot else 150)
-            p.setPen(QPen(c, 2.0))
-            fill = QColor(ACCENT)
-            fill.setAlpha(110 if self.hot else 45)
-            p.setBrush(fill)
-            p.drawRoundedRect(self.rect, 5, 5)
-            p.setPen(QColor("#ffffff"))
-            p.setFont(QFont("Segoe UI", 11, QFont.Bold))
-            p.drawText(self.rect, Qt.AlignCenter, "+")
-            return
         p.setPen(QPen(QColor(ACCENT if self.hot else "#4a5263"), 1.6 if self.hot else 1.2, Qt.DashLine))
         p.setBrush(QColor("#1d2633") if self.hot else Qt.NoBrush)
         p.drawRoundedRect(self.rect, 7, 7)
@@ -521,9 +509,17 @@ class GraphView(QGraphicsView):
         g = Graph(s)
         self.graph = g
         cols = self.columns(g)
+        # issue #47: while a palette block is dragged, a column opens before each block it can go in front of (and
+        # after the last one): its places, shown as the block itself, the blocks after them moved aside
+        targets = self._drop_targets(g, cols) if self.drag_block else []
+        if targets:
+            gaps = {c for _pid, _idx, c in targets}
+            cols = [x for c in cols for x in ((("g:" + c), c) if c in gaps else (c,))]
         cw = {}
         for c in cols:
-            if c[:1] == "i" and c[1:].isdigit():          # an image rank: as wide as its widest block's name
+            if c.startswith("g:"):                          # an opened column: a block's width
+                cw[c] = BW
+            elif c[:1] == "i" and c[1:].isdigit():          # an image rank: as wide as its widest block's name
                 cw[c] = max((self.column_width(n.key) for n in g.nodes if n.paths and self.col_of(n) == c),
                             default=BW)
             else:
@@ -660,21 +656,17 @@ class GraphView(QGraphicsView):
             "+  " + _("New workflow: a template, or a Session or an Image placed from the palette")
         gh = GhostItem(QRectF(x0, y, x1 - x0, BH), text, self.newWorkflow.emit)
         sc.addItem(gh)
-        # issue #47: where the dragged palette block can go: a slot in each workflow where its rules allow it
-        if self.drag_block:
-            b = self.drag_block
-            for p in s.paths:
-                if p.pid not in lanes:
-                    continue
-                for idx in s.place_indices(p, b):
-                    r = self._gap_rect(g, p, idx, lanes[p.pid], cx, cw)
-                    gh = GhostItem(r, "+", None, p.pid)
-                    gh.idx = idx
-                    gh.setToolTip(_('{block} here, in "{name}"').format(block=block_title(None, view_key(b)),
-                                                                         name=p.name))
-                    gh.setZValue(8)
-                    sc.addItem(gh)
-                    self.ghosts.append(gh)
+        # issue #47: where the dragged palette block can go: the block itself, dashed, in each opened column
+        for pid, idx, c in targets:
+            p = s.view(pid)
+            title = block_title(None, view_key(self.drag_block))
+            r = QRectF(cx["g:" + c] + 4, lanes[pid] - BH / 2 + 4, cw["g:" + c] - 8, BH - 8)
+            gh = GhostItem(r, title, None, pid)
+            gh.idx = idx
+            gh.setToolTip(_('{block} here, in "{name}"').format(block=title, name=p.name))
+            gh.setZValue(8)
+            sc.addItem(gh)
+            self.ghosts.append(gh)
         r = sc.itemsBoundingRect().adjusted(-MARGIN, -10, MARGIN, 24)
         sc.setSceneRect(r)
         self.show_wait()
@@ -684,21 +676,27 @@ class GraphView(QGraphicsView):
             self.horizontalScrollBar().setValue(h0)
             self.verticalScrollBar().setValue(v0)
 
-    def _gap_rect(self, g: Graph, p, idx: int, y: float, cx: dict, cw: dict) -> QRectF:
-        """The drop place before the graph's node ``idx`` of a workflow (after its last one for idx = len): a thin
-        slot between two blocks of its lane."""
-        graph = self.s.graph(p)
-        shown = [(j, g.node_of(p, node_key(n))) for j, n in enumerate(graph)]
-        shown = [(j, nd) for j, nd in shown if nd is not None and nd.sid is None]
-        after = next((nd for j, nd in shown if j >= idx), None)
-        before = next((nd for j, nd in reversed(shown) if j < idx), None)
-        if after is not None and (before is None or after.col > before.col):
-            x = after.col - GAP / 2
-        elif before is not None:
-            x = before.col + before.w + GAP / 2
-        else:
-            x = cx["sources"] + cw["sources"] + GAP / 2
-        return QRectF(x - 10, y - BH / 2 + 2, 20, BH - 4)
+    def _drop_targets(self, g: Graph, cols: list[str]) -> list[tuple[int, int, str]]:
+        """(workflow, index in its graph, the column it opens before) of each place the dragged block can go: before
+        the block it would go in front of; after the last block, before the column that follows it."""
+        s, b = self.s, self.drag_block
+        out = []
+        for p in s.paths:
+            graph = s.graph(p)
+            shown = [(j, g.node_of(p, node_key(n))) for j, n in enumerate(graph)]
+            shown = [(j, nd) for j, nd in shown if nd is not None and nd.sid is None]
+            for idx in s.place_indices(p, b):
+                after = next((nd for j, nd in shown if j >= idx), None)
+                before = next((nd for j, nd in reversed(shown) if j < idx), None)
+                if after is not None:
+                    c = self.col_of(after)
+                elif before is not None:
+                    i = cols.index(self.col_of(before)) if self.col_of(before) in cols else len(cols) - 2
+                    c = cols[min(i + 1, len(cols) - 1)]
+                else:
+                    c = cols[1] if len(cols) > 1 else "final"
+                out.append((p.pid, idx, c))
+        return out
 
     def show_wait(self):
         """The line over the graph while the worker reads the project (or says why it could not)."""
