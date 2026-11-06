@@ -435,6 +435,12 @@ class Walk:
             d.ok.click()
         self.modal(w.home.new_project, new, "New project")
         self.wait_ready()
+        self.pump(0.3)
+        g = getattr(w.graph, "_gallery", None)            # a new project opens on the template gallery (#43)
+        if g is not None and g.isVisible():
+            self.shot("gallery_new_project", g)
+            g.reject()
+            self.settle()
         self.shot("graph_new_project")
         from astro_gpu.client.services.inspect import service_of
         from astro_gpu.client.sources import import_folder
@@ -465,7 +471,7 @@ class Walk:
         self.settle()
 
         def classic(d):
-            d.pick(0)
+            d.pick(next(c.t for c in d.cards if c.t["key"] == "classic"))
             d.name.setText("Classic stack")
             self.shot("new_workflow", d)
             d.accept()
@@ -484,7 +490,8 @@ class Walk:
         self.select("calibration", p.pid)
 
         def second(d):
-            d.pick(len(d.cards) - 1)                    # a copy of "Classic stack": the same settings
+            d.tabs.setCurrentIndex(d.tab_keys.index("copy"))
+            d.pick(d.cards[0].t)                        # a copy of "Classic stack": the same settings
             d.name.setText("Stars and denoise")
             self.shot("new_workflow_second", d)
             d.accept()

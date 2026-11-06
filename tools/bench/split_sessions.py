@@ -23,7 +23,6 @@ sys.path.insert(0, str(ROOT))
 from astro_gpu import api  # noqa: E402
 from astro_gpu.core import project2, runner2  # noqa: E402
 from astro_gpu.core.project import list_frames  # noqa: E402
-from astro_gpu.core.project2 import Session  # noqa: E402
 from astro_gpu.core.store import Keys, Store  # noqa: E402
 
 
