@@ -400,7 +400,7 @@ def test_the_original_filters_match_their_reference_formulas():
     # the families; the defaults are neutral (see the next test), the spec's old ones are the settings to try
     assert {f["family"] for f in FILTERS.values()} == set(postengine.FAMILIES)
     d = {k: {q["key"]: q["default"] for q in f["params"]} for k, f in FILTERS.items()}
-    assert d["stretch"] == {"strength": 0, "symmetry": 0.08} and d["saturation"] == {"strength": 0, "hues": "All"}
+    assert d["stretch"] == {"strength": 0, "symmetry": 0.08} and d["saturation"] == {"strength": 0, "hues": "All", "protect": 0}
     assert d["scnr"] == {"strength": 0, "method": "Average neutral", "lightness": True}
     assert d["local_contrast"] == {"strength": 0, "scale": 40}
     assert d["halpha_red"] == {"strength": 0}
@@ -773,7 +773,11 @@ def test_a_composition_saved_by_the_previous_version_opens_as_it_was():
     back = postengine.load_layers(json.loads(json.dumps(old)), {1, 2})
     assert [(x["name"], d) for x, d in postengine.rows(back)] == [("Sharpen", 0), ("Classic", 0), ("Full", 0),
                                                                 ("Saturation", 1)]
-    assert postengine.save_layers(back) == old                          # saved again: the same file
+    again = postengine.save_layers(back)                                # saved again: the same file, the settings
+    for d in again:                                                     # added since at their defaults (#23)
+        if d.get("filter") == "saturation":
+            assert d["params"].pop("protect") == 0
+    assert again == old
     pr = ToyProvider()
     a = Composer(pr).compose(back, 1).rgb
     b = Composer(pr).compose(postengine.snapshot(old), 1).rgb
@@ -1159,7 +1163,7 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     # the + Filter menu: the filters by family (the first Post's arcsinh stretch is no longer offered)
     fam = {a.text(): [x.text() for x in a.menu().actions()] for a in v.filter_menu.actions()}
     assert list(fam) == ["Stretch", "Contrast", "Color", "Detail", "Noise", "Combine"]
-    assert sum(len(x) for x in fam.values()) == len([f for f in FILTERS.values() if not f.get("hidden")]) == 19  # Dehaze, #22
+    assert sum(len(x) for x in fam.values()) == len([f for f in FILTERS.values() if not f.get("hidden")]) == 20  # #22, #23
     # Curves and Levels are stretches (2 November: where the user looked for them first)
     assert fam["Stretch"] == ["Generalised hyperbolic stretch", "Arcsinh stretch", "Histogram transformation", "Curves",
                               "Levels"]

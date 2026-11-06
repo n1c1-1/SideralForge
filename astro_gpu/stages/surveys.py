@@ -6,6 +6,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import numpy as np
 
@@ -132,16 +133,57 @@ def has_emission(img: np.ndarray) -> bool:
 
 
 def fetch_survey(name: str, wd, W: int, H: int, scale: float, log=print) -> np.ndarray:
-    """The survey on the stack's grid: from the CDS cut-out service, else from the survey's own HiPS server. Both are
-    cached under ASTRO_GPU_HOME (the cut-out by its exact grid, the tiles one by one): a re-run works offline."""
-    try:
-        return fetch_reprojected(SURVEYS[name][0], wd, W, H, scale)
-    except Exception as e:  # noqa: BLE001 - CDS unreachable: the survey's own server when it has one
-        if name not in HIPS_SERVERS:
-            raise
-        why = e.why if isinstance(e, online.ServiceDown) else f"does not answer ({str(e)[:120]})"
-        log(f"the CDS cut-out service {why}: tiles read from {HIPS_SERVERS[name]}", "warning")
-        return fetch_hips_tiles(HIPS_SERVERS[name], wd, W, H, scale)
+    """The survey on the stack's grid. A survey with its own HiPS server is read tile by tile, each tile cached under
+    ASTRO_GPU_HOME (issue #39: any field of a sky already seen, by any project, then works offline; the cut-out of the
+    CDS service was cached for its exact grid only, so that a new stack of the same field downloaded again); the
+    cut-out service when the tiles cannot be had (and for the surveys without a server of their own)."""
+    if name in HIPS_SERVERS:
+        try:
+            return fetch_hips_tiles(HIPS_SERVERS[name], wd, W, H, scale)
+        except Exception as e:  # noqa: BLE001 - the survey's server unreachable: the CDS cut-out (cached by grid)
+            why = e.why if isinstance(e, online.ServiceDown) else f"does not answer ({str(e)[:120]})"
+            log(f"the survey's own server {why}: the CDS cut-out service is asked", "warning")
+    return fetch_reprojected(SURVEYS[name][0], wd, W, H, scale)
+
+
+def prefetch_field(roots, which: str = "nsns", progress=None) -> dict:
+    """The survey's tiles of the solved fields of these projects fetched into the cache (Settings: Download for
+    offline use, issue #39); returns {"fields": n solved, "tiles": n now in the cache, "failed": [why...]}."""
+    import json as _json
+
+    from astropy.io import fits
+    from astropy.wcs import WCS
+    out = {"fields": 0, "tiles": 0, "failed": []}
+    url = HIPS_SERVERS.get(which)
+    if url is None:
+        out["failed"].append(f"{which} has no tile server")
+        return out
+    roots = list(roots)
+    for k, root in enumerate(roots):
+        if progress is not None:
+            progress(k / max(len(roots), 1), str(root))
+        store = Path(root) / "store"
+        sizes = []                                       # the stacks' grids (the solution's header holds none)
+        for m in store.glob("stack/*/drz_meta.json"):
+            try:
+                d = _json.loads(m.read_text(encoding="utf-8"))
+                sizes.append((int(d["width"]), int(d["height"])))
+            except (OSError, ValueError, KeyError):
+                continue
+        for wcsf in sorted(store.glob("astrometry/*/wcs.fits")):
+            try:
+                wd = WCS(fits.getheader(wcsf))
+                man = _json.loads((wcsf.parent / "manifest.json").read_text(encoding="utf-8"))
+                scale = float((man.get("metrics") or {}).get("scale_arcsec") or 0) or None
+                if scale is None or not sizes:
+                    continue
+                W, H = max(sizes, key=lambda wh: wh[0] * wh[1])   # the largest: the tiles cover the others too
+                fetch_hips_tiles(url, wd, W, H, scale)
+                out["fields"] += 1
+            except Exception as e:  # noqa: BLE001 - one field that cannot be read: the others still come
+                out["failed"].append(f"{Path(root).name}: {str(e)[:120]}")
+    out["tiles"] = len(list(skycache.cache_dir().glob("hips_tiles/*.fits")))
+    return out
 
 
 def _get(url: str, timeout: float = 60.0) -> bytes:
