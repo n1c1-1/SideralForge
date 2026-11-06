@@ -117,6 +117,15 @@ class Strip(QFrame):
         self.h.setSpacing(4)
 
     def build(self, s, g: Graph):
+        # issue #24: built again only when what it shows changes (a refresh closed its open dropdown)
+        p0 = s.path
+        keys0 = ["sources"] + (chain(p0) if p0 is not None else [])
+        sig = (s.sel_step, s.current, tuple((q.pid, q.name) for q in s.paths), tuple(keys0),
+               tuple(g.state(nd) if (nd := g.node_of(p0, k)) is not None else "pending" for k in keys0),
+               _("Graph"))
+        if sig == getattr(self, "_sig", None) and self.h.count():
+            return
+        self._sig = sig
         clear(self.h)
         bk = QPushButton("◂  " + _("Graph"))
         bk.setToolTip(_("Back to the graph (Esc)"))

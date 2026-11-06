@@ -1214,7 +1214,9 @@ class PostView(QWidget):
                     a.setToolTip(_(f["source"]))
                     a.triggered.connect(lambda _c=False, kk=k: self.add_filter(kk))
 
-    def rebuild(self):
+    def rebuild(self, props: bool = True):
+        """The layers' rows built again; ``props``: the properties panel too (not for a visibility toggle, issue #24:
+        its scroll and an open curves editor were lost)."""
         clear(self.lbox)
         self.rows = []
         ids = {lay["id"] for lay in self.layers}
@@ -1269,7 +1271,8 @@ class PostView(QWidget):
                                   _("Edit the mask of the selected layer"))
         self._undo_buttons()
         self.build_filter_menu()
-        self.build_props()
+        if props:
+            self.build_props()
 
     def select(self, lid, what):
         if self.sel == (lid, what):
@@ -1287,14 +1290,14 @@ class PostView(QWidget):
     def set_visible(self, lid, v):
         self.push()
         self.layer(lid)["visible"] = v
-        self.rebuild()
+        self.rebuild(props=False)
         self.request()
 
     def set_shown(self, lid, sub, v):
         """One of a Stars and background layer's two images shown or not in it (issue #3)."""
         self.push()
         self.layer(lid)["shown"][sub] = v
-        self.rebuild()
+        self.rebuild(props=False)
         self.request()
 
     def toggle_children(self, key):
