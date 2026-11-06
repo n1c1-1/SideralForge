@@ -464,5 +464,22 @@
  "Peaks of the colour mosaic's periodic pattern taken off the output image.": "Pics du motif périodique de la mosaïque de couleurs retirés de l'image de sortie.",
  "Network grid": "Grille du réseau",
  "Peaks of the star-removal network's own grid taken off the starless image.": "Pics de la grille propre au réseau de retrait des étoiles retirés de l'image sans étoiles.",
- "A network trained on our stacks takes the stars off the Output block's image: the starless image and the stars alone, two images that Post combines (the Combine stars & background layers block) or takes as they are.": "Un réseau entraîné sur nos empilements retire les étoiles de l'image du bloc Sortie : l'image sans étoiles et les étoiles seules, deux images que le Post combine (le bloc Combiner les calques étoiles et fond) ou prend telles quelles."
+ "A network trained on our stacks takes the stars off the Output block's image: the starless image and the stars alone, two images that Post combines (the Combine stars & background layers block) or takes as they are.": "Un réseau entraîné sur nos empilements retire les étoiles de l'image du bloc Sortie : l'image sans étoiles et les étoiles seules, deux images que le Post combine (le bloc Combiner les calques étoiles et fond) ou prend telles quelles.",
+ "Calibration cut": "Calibration coupée",
+ "The frames were taken as they are, without calibration frames.": "Les brutes ont été prises telles quelles, sans images de calibration.",
+ "Sessions": "Sessions",
+ "Number of sessions, each calibrated with its own frames, stacked together.": "Nombre de sessions, chacune calibrée avec ses propres images, empilées ensemble.",
+ "Value factor": "Facteur des valeurs",
+ "Factor the image's values were multiplied by (65535 for values in 0-1).": "Facteur par lequel les valeurs de l'image ont été multipliées (65535 pour des valeurs entre 0 et 1).",
+ "Registration cut": "Alignement coupé",
+ "The frames were taken as already aligned.": "Les brutes ont été prises comme déjà alignées.",
+ "Align the frames": "Aligner les brutes",
+ "Off when the Registration block is cut (issue #43): the frames are taken as already aligned (each stays where it is); the stars are still measured, to weigh and select the frames.": "Désactivé quand le bloc Alignement est coupé : les brutes sont prises comme déjà alignées (chacune reste où elle est) ; les étoiles sont tout de même mesurées, pour pondérer et sélectionner les brutes.",
+ "Apply the calibration frames": "Appliquer les images de calibration",
+ "Off when the Calibration block is cut (issue #43): the frames are taken as they are (already calibrated), without master dark, flat or defective pixels.": "Désactivé quand le bloc Calibration est coupé : les brutes sont prises telles quelles (déjà calibrées), sans master dark, flat ni pixels défectueux.",
+ "Image file": "Fichier image",
+ "The image this workflow starts from (FITS or TIFF).": "L'image dont part ce workflow (FITS ou TIFF).",
+ "Image": "Image",
+ "Starts the workflow from an image file (a linear stack): the blocks after it read it as they read a stack.": "Fait partir le workflow d'un fichier image (un empilement linéaire) : les blocs suivants la lisent comme un empilement.",
+ "Joins the sessions, each calibrated with its own master frames, into one set of calibrated frames for the registration and the stack.": "Réunit les sessions, chacune calibrée avec ses propres masters, en un seul ensemble de brutes calibrées pour l'alignement et l'empilement."
 }

@@ -29,6 +29,9 @@ class RegisterParams(StageParams):
                                 "dense Milky Way fields to keep only clean stars.")
     max_stars: int = P(2500, label="Stars per frame", level=ADVANCED, ge=100, le=20000,
                        help="Brightest stars kept per frame for matching and for the alignment polynomial.")
+    align: bool = P(True, label="Align the frames", level=ADVANCED,
+                    help="Off when the Registration block is cut (issue #43): the frames are taken as already aligned "
+                         "(each stays where it is); the stars are still measured, to weigh and select the frames.")
     workers: int = P(8, label="Parallel workers", level=ADVANCED, ge=1, le=64,
                      help="CPU processes used to detect stars in parallel.")
 
@@ -80,6 +83,9 @@ class Register(Stage):
                         cache_p.write_bytes(pickle.dumps((cats, fwhm, rmsb, rnd, noise, psf)))
                     ctx.progress(0.9 * (n - len(todo) + c + 1) / n, f"stars detected in {n - len(todo) + c + 1}/{n} frames")
         nst = np.array([len(c) for c in cats])
+        if not p.align:
+            self._not_aligned(ctx, p, meta, cats, fwhm, rmsb, rnd, noise, psf, nst, W, H)
+            return
         if np.median(nst) < 30:
             raise StageError(f"too few stars detected per frame (median {np.median(nst):.0f}); lower the detection "
                              "threshold or check the focus / exposure")
@@ -154,6 +160,42 @@ class Register(Stage):
         ctx.metric("drift_px", round(float(np.ptp(drift)), 1))
         ctx.log(f"{ok.sum()}/{n} frames aligned, residual {np.median(rms[ok]):.2f} px, FWHM {np.median(fwhm):.2f} px, "
                 f"transparency p10/p90 {np.percentile(transp[ok], 10):.2f}/{np.percentile(transp[ok], 90):.2f}")
+        ctx.preview("frame_quality", quality_plot(meta, fwhm, transp, ok))
+
+    def _not_aligned(self, ctx: Context, p: RegisterParams, meta, cats, fwhm, rmsb, rnd, noise, psf, nst, W, H):
+        """The Registration block cut (issue #43): every frame stays where it is (the identity map), its stars still
+        matched to the reference's within 3 px for the residual and the transparency."""
+        n = len(cats)
+        ctx.log("Registration cut: the frames are taken as already aligned")
+        ref = int(np.argmin(np.where(nst >= np.percentile(nst, 50), fwhm, np.inf)))
+        refcat = cats[ref] if cats[ref] is not None and len(cats[ref]) else np.zeros((1, 3))
+        tree = cKDTree(refcat[:, :2])
+        ident = np.zeros((2, 10))
+        ident[0, 0], ident[0, 1] = W / 2, W / 2
+        ident[1, 0], ident[1, 2] = H / 2, H / 2
+        coef = np.repeat(ident[None], n, axis=0)
+        nmatch, rms, transp = np.zeros(n, int), np.zeros(n), np.ones(n)
+        for i in range(n):
+            c = cats[i]
+            if c is None or not len(c):
+                continue
+            d, j = tree.query(c[:, :2], distance_upper_bound=3.0)
+            m = np.isfinite(d)
+            nmatch[i] = int(m.sum())
+            if m.any():
+                rms[i] = float(np.sqrt(np.mean(d[m] ** 2)))
+            if m.sum() >= 5:
+                transp[i] = float(np.median(c[m, 2] / refcat[j[m], 2]))
+        extra = moffat_arrays(psf)
+        np.savez(ctx.out("reg.npz"), coef=coef, fwhm=fwhm, transp=transp, nmatch=nmatch, rms=rms, ref=ref,
+                 nstars=nst, bkgrms=rmsb, roundness=rnd, noise=noise, **extra)
+        ctx.metric("registration_cut", True)
+        ctx.metric("reference_frame", os.path.basename(meta[ref]["path"]))
+        ctx.metric("aligned", n)
+        ctx.metric("rms_px", round(float(np.median(rms)), 3))
+        ctx.metric("fwhm_px", round(float(np.median(fwhm)), 2))
+        ok = np.ones(n, bool)
+        ctx.metric("drift_px", 0.0)
         ctx.preview("frame_quality", quality_plot(meta, fwhm, transp, ok))
 
 

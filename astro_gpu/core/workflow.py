@@ -9,8 +9,22 @@ when the stage key is the same (core/store.py); this module only says which stag
 each stage reads.
 
     options   {"denoise": None | "pretrained" | "adapted", "stars": None | "neural", "gradient": "polynomial" | "rbf" |
-               "automatic", "deconvolution": None}
+               "automatic", "deconvolution": None, "cut": [the blocks the user cut, CUTTABLE]}
     end       None, or "stacking" for the Raw stack exit (inventory → stack, then render_simple)
+
+Issue #43, the blocks redesign:
+
+- Sessions calibrated each on its own: when the project calibrates its sessions separately (``sessions``: their ids,
+  two or more), the chain holds an instance of inventory and calibrate per session, named ``<stage>@<session id>``,
+  then the ``sessions`` stage, which joins their frames into one calibrated set: what register and stack read as
+  "inventory" and "calibrate" (``PROVIDES``). An instance's key is that of a single-session project with its frames.
+- Cut blocks (``CUTTABLE``): Calibration and Registration stay in the chain and run in a pass-through mode (no master
+  frames; no alignment: their settings imply it); Astrometry, Gradient and Color leave the chain. A block that needs a
+  cut one is greyed (``greyed``: its reason): it leaves the chain too, and the image passes on.
+- Image source: a workflow may start from an image file (``image``): the ``image`` stage stands for the stack
+  (``PROVIDES``); the blocks before it are absent, and those that need a real stack (the half-stacks of Denoise, then
+  Stars) are greyed.
+- Mono is planned, not built: a session has a filter; sessions of one filter will stack together.
 
 The Gradient block comes right after stacking: its method models the sky gradient, which every later stage reads
 removed (stages/gradient.py). The Stars block takes the stars off the Output block's image (stages/star_removal.py):
@@ -36,8 +50,11 @@ OPTION_VALUES: dict[str, tuple[Any, ...]] = {
     "gradient": ("polynomial", "rbf", "automatic"),
     "deconvolution": (None,),
 }
-#: a missing option takes this value (the Classic stack)
+#: a missing option takes this value (the Classic stack). "cut", the blocks the user cut (a list, check_cut), is there
+#: only when one is: the options of a workflow without a cut stay as they were before issue #43
 DEFAULT_OPTIONS: dict[str, Any] = {"denoise": None, "stars": None, "gradient": "polynomial", "deconvolution": None}
+#: the blocks the user can cut (issue #43). Stacking and Output cannot be cut; Denoise and Stars are added or removed
+CUTTABLE = ("calibration", "registration", "astrometry", "gradient", "color")
 #: early exits: the block a workflow's output comes from when it does not go to the end
 EXITS = ("stacking",)
 
@@ -66,10 +83,13 @@ class OptionRefused(ValueError):
 def check_options(options: dict[str, Any]) -> dict[str, Any]:
     """The options, complete and in the fixed key order. Raises ValueError on an unknown option, a value that is
     not in the engine, or options that break a rule (Stars without Denoise, H-alpha without Stars)."""
-    unknown = set(options) - set(OPTION_VALUES)
+    unknown = set(options) - set(OPTION_VALUES) - {"cut"}
     if unknown:
         raise ValueError(f"unknown workflow option(s): {sorted(unknown)}")
     o = {k: options.get(k, DEFAULT_OPTIONS[k]) for k in OPTION_VALUES}
+    cut = check_cut(options.get("cut") or [])
+    if cut:
+        o["cut"] = cut
     for k, alias in OPTION_ALIASES.items():
         o[k] = alias.get(o[k], o[k])
     for k, allowed in OPTION_VALUES.items():
@@ -79,6 +99,50 @@ def check_options(options: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"workflow option stars={o['stars']!r} needs denoise: the star removal works on the "
                          "denoised stack")
     return o
+
+
+def check_cut(cut: Any) -> list[str]:
+    """The cut blocks as they are stored: distinct names of CUTTABLE, in the graph's order."""
+    if not isinstance(cut, (list, tuple)) or not all(isinstance(b, str) for b in cut):
+        raise ValueError(f"the cut blocks must be a list of block names, not {cut!r}")
+    bad = [b for b in cut if b not in CUTTABLE]
+    if bad:
+        raise ValueError(f"these blocks cannot be cut: {bad} (allowed: {list(CUTTABLE)})")
+    return [b for b in CUTTABLE if b in cut]
+
+
+def set_cut(options: dict[str, Any], block: str, on: bool) -> dict[str, Any]:
+    """The options with ``block`` cut (``on``) or restored."""
+    o = check_options(options)
+    cut = set(cuts(o)) | {block} if on else set(cuts(o)) - {block}
+    o.pop("cut", None)
+    return check_options({**o, "cut": sorted(cut)})
+
+
+def cuts(options: dict[str, Any]) -> list[str]:
+    """The blocks a workflow's options cut."""
+    return list(options.get("cut") or [])
+
+
+#: why a block cannot run (the user reads it on the greyed block; English, translated by the client)
+NEEDS_ASTROMETRY = "needs Astrometry"
+NEEDS_HALF_STACKS = "needs the half-stacks of a stack"
+NEEDS_DENOISE = "needs Denoise"
+
+
+def greyed(options: dict[str, Any], image: bool = False) -> dict[str, str]:
+    """{block: why it cannot run} for the blocks of a workflow that need a block it cut, or a stack when it starts
+    from an image (issue #43: greyed, the image passes on)."""
+    o = check_options(options)
+    cut = set(cuts(o))
+    out: dict[str, str] = {}
+    if "astrometry" in cut and "color" not in cut:
+        out["color"] = NEEDS_ASTROMETRY
+    if image and o["denoise"]:
+        out["denoise"] = NEEDS_HALF_STACKS
+    if image and o["stars"]:
+        out["stars"] = NEEDS_DENOISE
+    return out
 
 
 def check_end(end: str | None) -> str | None:
@@ -129,29 +193,40 @@ def implied(options: dict[str, Any], stage: str) -> dict[str, Any]:
         return {"method": o["gradient"]}
     if stage == "denoise" and o["denoise"]:
         return {"method": o["denoise"]}
+    if stage == "calibrate" and "calibration" in cuts(o):
+        return {"apply_masters": False}
+    if stage == "register" and "registration" in cuts(o):
+        return {"align": False}
     return {}
 
 
 # ---------------------------------------------------------------------------------------------- the chain table
 
 #: the global order of the v2 stages (each stage only reads stages before it)
-ORDER = ["inventory", "calibrate", "register", "stack", "astrometry", "reference", "catalogs", "surveys", "gradient",
-         "color", "denoise", "render_simple", "star_removal"]
+ORDER = ["image", "inventory", "calibrate", "sessions", "register", "stack", "astrometry", "reference", "catalogs",
+         "surveys", "gradient", "color", "denoise", "render_simple", "star_removal"]
+#: stages that stand for others in a chain (issue #43): the sessions' join for each session's frames and calibration,
+#: the image of an image source for the stack
+PROVIDES: dict[str, tuple[str, ...]] = {"sessions": ("inventory", "calibrate"), "image": ("stack",)}
 #: dependencies a stage has beyond its declared ``deps``
 EXTRA: dict[str, tuple[str, ...]] = {}
 #: dependencies that may be absent from a chain (the stage then runs without them); the stages that read the stack
 #: read it with the sky gradient removed when the chain has the Gradient block (gradient.stack_image)
 OPTIONAL: dict[str, tuple[str, ...]] = {
+    # an image source has no frame list: the camera, the pointing and the date come from the target, or are unknown
+    "astrometry": ("inventory",),
+    "catalogs": ("inventory",),
     "gradient": ("surveys",),                       # where the H-alpha survey sees nebulosity: no sky sample there
-    "color": ("gradient",),
+    "color": ("gradient", "register"),             # without Registration (an image source): a default star size
     "denoise": ("gradient",),
     "render_simple": ("color", "denoise", "gradient"),
     "star_removal": ("gradient",),
 }
 #: the blocks of the graph and their stages; Selection has no stage of its own (it follows register)
 BLOCKS: dict[str, tuple[str, ...]] = {
+    "image": ("image",),
     "calibration": ("inventory", "calibrate"),
-    "registration": ("register",),
+    "registration": ("sessions", "register"),       # the sessions join where they are registered together
     "selection": (),
     "stacking": ("stack",),
     "astrometry": ("astrometry", "reference", "catalogs", "surveys"),
@@ -161,7 +236,7 @@ BLOCKS: dict[str, tuple[str, ...]] = {
     "stars": ("star_removal",),                     # drawn before the Output, which every workflow ends with
     "output": ("render_simple",),
 }
-BLOCK_TITLES = {"calibration": "Calibration", "registration": "Registration", "selection": "Selection",
+BLOCK_TITLES = {"image": "Image", "calibration": "Calibration", "registration": "Registration", "selection": "Selection",
                 "stacking": "Stacking", "astrometry": "Astrometry", "color": "Color", "denoise": "Denoise",
                 "stars": "Stars", "gradient": "Gradient", "output": "Output"}
 #: what Run to here runs for a block without stages of its own
@@ -170,20 +245,50 @@ RUN_TO: dict[str, tuple[str, ...]] = {"selection": ("register",)}
 KEY_LEAVES_OUT: dict[str, tuple[str, ...]] = {"astrometry": ("surveys",)}
 
 
-def chain_stages(options: dict[str, Any], end: str | None = None, reference: bool = False) -> list[str]:
+def base(name: str) -> str:
+    """The stage of a chain entry: "calibrate" for the instance "calibrate@2"."""
+    return name.split("@", 1)[0]
+
+
+def session_of(name: str) -> str | None:
+    """The session id (as text) of an instance ("2" for "calibrate@2"), None for a plain stage."""
+    return name.split("@", 1)[1] if "@" in name else None
+
+
+def chain_stages(options: dict[str, Any], end: str | None = None, reference: bool = False,
+                 sessions: Sequence[int] = (), image: bool = False) -> list[str]:
     """The stages of a workflow, in the global order. ``reference``: the project has a reference image (the stage sits
-    in the Astrometry block)."""
+    in the Astrometry block). ``sessions``: the ids of the sessions calibrated each on its own (two or more; else the
+    sessions are one frame list, as before issue #43). ``image``: the workflow starts from an image file."""
     o = check_options(options)
-    out = ["inventory", "calibrate", "register", "stack"]
-    if check_end(end) == "stacking":
-        return out + ["render_simple"]
-    out += ["astrometry"] + (["reference"] if reference else []) + ["catalogs", "surveys", "gradient", "color"]
-    if o["denoise"]:
+    cut = set(cuts(o))
+    if image:
+        out = ["image"]
+    elif len(sessions) >= 2:
+        out = [f"{s}@{sid}" for s in ("inventory", "calibrate") for sid in sessions] + ["sessions", "register", "stack"]
+    else:
+        out = ["inventory", "calibrate", "register", "stack"]
+    if not image and check_end(end) == "stacking":
+        return _ordered(out + ["render_simple"])
+    grey = greyed(o, image)
+    if "astrometry" not in cut:
+        out += ["astrometry"] + (["reference"] if reference else []) + ["catalogs", "surveys"]
+    if "gradient" not in cut:
+        out.append("gradient")
+    if "color" not in cut and "color" not in grey:
+        out.append("color")
+    if o["denoise"] and "denoise" not in grey:
         out.append("denoise")
     out.append("render_simple")
-    if o["stars"]:
+    if o["stars"] and "stars" not in grey:
         out.append("star_removal")
-    return [s for s in ORDER if s in out]
+    return _ordered(out)
+
+
+def _ordered(names: Sequence[str]) -> list[str]:
+    """Chain entries in the global order; the instances of a stage in the order given (their sessions')."""
+    rank = {n: i for i, n in enumerate(names)}
+    return sorted(names, key=lambda n: (ORDER.index(base(n)), rank[n]))
 
 
 Rule = Callable[[dict, "str | None", bool], Iterable[str]]
@@ -218,40 +323,59 @@ class Chains:
         self._block_of = {s: b for b, ss in reversed(list(self.blocks.items())) for s in ss}
 
     # ------------------------------------------------------------------ chains
-    def chain(self, options: dict[str, Any], end: str | None = None, *, reference: bool = False) -> list[str]:
+    def chain(self, options: dict[str, Any], end: str | None = None, *, reference: bool = False,
+              sessions: Sequence[int] = (), image: bool = False) -> list[str]:
         """The stages of a workflow, ordered and checked."""
         if self.rule is None:
             raise TypeError("these Chains have no rule: use ordered() with the stage names")
+        if len(sessions) >= 2 or image:
+            return self.ordered(self.rule(options, end, reference, sessions=sessions, image=image))
         return self.ordered(self.rule(options, end, reference))
 
     def ordered(self, names: Iterable[str]) -> list[str]:
-        """Stage names as a chain: in the global order, every required dependency present (ValueError otherwise)."""
-        names = set(names)
-        unknown = names - set(self.stages)
+        """Stage names as a chain: in the global order (the instances of a stage in the order given), every required
+        dependency present (ValueError otherwise)."""
+        names = list(dict.fromkeys(names))
+        unknown = [n for n in names if base(n) not in self.stages]
         if unknown:
             raise ValueError(f"unknown stage(s): {sorted(unknown)}")
-        out = [n for n in self.order if n in names]
+        rank = {n: i for i, n in enumerate(names)}
+        out = sorted(names, key=lambda n: (self.order.index(base(n)), rank[n]))
         for n in out:
             self.deps_in_chain(out, n)
         return out
 
+    def resolve(self, chain: Sequence[str], reader: str, dep: str) -> str | None:
+        """The chain entry a stage reads as ``dep`` (issue #43): ``dep`` itself; for an instance, the instance of
+        ``dep`` of its own session; else the stage that stands for ``dep`` (``PROVIDES``); None when absent."""
+        if dep in chain:
+            return dep
+        sid = session_of(reader)
+        if sid is not None and f"{dep}@{sid}" in chain:
+            return f"{dep}@{sid}"
+        return next((x for x in chain if dep in PROVIDES.get(base(x), ())), None)
+
     def deps_in_chain(self, chain: Sequence[str], stage: str) -> tuple[str, ...]:
-        """What a stage reads in this chain: its dependencies present in it. A missing required dependency is a
-        ValueError naming its block."""
-        inside = set(chain)
-        if stage not in inside:
+        """What a stage reads in this chain: its dependencies present in it (``resolve``). A missing required
+        dependency is a ValueError naming its block. The sessions' join reads every instance of the chain."""
+        if stage not in chain:
             raise ValueError(f"stage '{stage}' is not in the chain")
-        out = []
-        for d in self.deps2[stage]:
-            if d in inside:
-                out.append(d)
-            elif d not in self.optional.get(stage, ()):
+        b = base(stage)
+        if b == "sessions":
+            return tuple(x for x in chain if session_of(x) is not None)
+        out: list[str] = []
+        for d in self.deps2[b]:
+            r = self.resolve(chain, stage, d)
+            if r is not None:
+                if r not in out:
+                    out.append(r)
+            elif d not in self.optional.get(b, ()):
                 raise ValueError(f"stage '{stage}' needs the {self.block_title(self.block_of(d))} block "
                                  f"(stage '{d}')")
         return tuple(out)
 
     def ancestors(self, chain: Sequence[str], stage: str) -> list[str]:
-        """Every stage this one reads, directly or not, in the chain, in order."""
+        """Every stage this one reads, directly or not, in the chain, in the chain's order."""
         seen: set[str] = set()
         todo = list(self.deps_in_chain(chain, stage))
         while todo:
@@ -259,7 +383,7 @@ class Chains:
             if d not in seen:
                 seen.add(d)
                 todo += self.deps_in_chain(chain, d)
-        return [s for s in self.order if s in seen]
+        return [s for s in chain if s in seen]
 
     def downstream(self, chain: Sequence[str], stage: str) -> list[str]:
         """The stages of the chain that read this one, directly or not, in order (the stage excluded)."""
@@ -267,33 +391,42 @@ class Chains:
 
     # ------------------------------------------------------------------ blocks
     def block_of(self, stage: str) -> str:
-        """The block a stage belongs to (the stage name itself when no block lists it)."""
-        return self._block_of.get(stage, stage)
+        """The block a stage belongs to (the stage name itself when no block lists it); an instance's block is the
+        block of its session: "calibration@2"."""
+        b = self._block_of.get(base(stage), base(stage))
+        sid = session_of(stage)
+        return f"{b}@{sid}" if sid is not None else b
 
     @staticmethod
     def block_title(block: str) -> str:
-        return BLOCK_TITLES.get(block, block)
+        return BLOCK_TITLES.get(base(block), base(block))
 
     def blocks_in(self, chain: Sequence[str]) -> list[tuple[str, tuple[str, ...]]]:
         """(block, its stages in the chain) for the blocks of a chain, in graph order; Selection comes with
-        register."""
+        register. The instances of a session make the block of that session ("calibration@2"), in session order."""
         inside = set(chain)
         out = []
         for b, ss in self.blocks.items():
             mine = tuple(s for s in ss if s in inside)
             if mine or (b in RUN_TO and all(s in inside for s in RUN_TO[b])):
                 out.append((b, mine))
+            sids = list(dict.fromkeys(session_of(s) for s in chain if session_of(s) is not None and base(s) in ss))
+            out += [(f"{b}@{sid}", tuple(s for s in chain if base(s) in ss and session_of(s) == sid)) for sid in sids]
         return out
 
     def run_to(self, block: str, chain: Sequence[str]) -> list[str]:
         """The stages Run to here targets for a block (their missing ancestors are the runner's business)."""
-        if block not in self.blocks:
+        b, sid = base(block), session_of(block)
+        if b not in self.blocks:
             raise ValueError(f"unknown block {block!r}")
-        return [s for s in chain if s in (RUN_TO.get(block) or self.blocks[block])]
+        ss = RUN_TO.get(b) or self.blocks[b]
+        return [s for s in chain if base(s) in ss and session_of(s) == sid]
 
     def key_stages(self, block: str, chain: Sequence[str]) -> list[str]:
         """The stages whose keys make a block's key (Output adds the workflow id: never shared)."""
-        return [s for s in chain if s in self.blocks.get(block, ()) and s not in KEY_LEAVES_OUT.get(block, ())]
+        b, sid = base(block), session_of(block)
+        return [s for s in chain if base(s) in self.blocks.get(b, ()) and session_of(s) == sid
+                and base(s) not in KEY_LEAVES_OUT.get(b, ())]
 
 
 _CHAINS: list[Chains] = []
@@ -308,6 +441,7 @@ def chains() -> Chains:
     return _CHAINS[0]
 
 
-def chain(options: dict[str, Any], end: str | None = None, *, reference: bool = False) -> list[str]:
+def chain(options: dict[str, Any], end: str | None = None, *, reference: bool = False,
+          sessions: Sequence[int] = (), image: bool = False) -> list[str]:
     """The checked chain of a workflow on the v2 stages."""
-    return chains().chain(options, end, reference=reference)
+    return chains().chain(options, end, reference=reference, sessions=sessions, image=image)

@@ -175,6 +175,11 @@ _METRIC_ROWS: list[tuple] = [
     ("sky_noise_adu", "Sky noise", "ADU", ".2f", "Noise of the sky background in one light frame."),
     ("cache_scale", "Cache scale", "", ".2f", "Size of the calibrated frames kept on disk (1 is full size)."),
     ("cache_gb", "Cache size", "GB", ".1f", "Disk space taken by the calibrated frames."),
+    ("calibration_cut", "Calibration cut", "", "", "The frames were taken as they are, without calibration frames."),
+    # the sessions' join (issue #43)
+    ("sessions", "Sessions", "", "d", "Number of sessions, each calibrated with its own frames, stacked together."),
+    # an image source (issue #43)
+    ("factor", "Value factor", "", "g", "Factor the image's values were multiplied by (65535 for values in 0-1)."),
     # register
     ("reference_frame", "Reference frame", "", "", "The frame all the others are aligned on."),
     ("aligned", "Aligned frames", "", "d", "Frames that could be aligned."),
@@ -184,6 +189,7 @@ _METRIC_ROWS: list[tuple] = [
     ("transparency_p10_p90", "Transparency range", "", ".2f",
      "Transparency of the worst and of the best frames (10 % and 90 %)."),
     ("drift_px", "Drift", "px", ".1f", "How far the field moved on the sensor during the session."),
+    ("registration_cut", "Registration cut", "", "", "The frames were taken as already aligned."),
     ("photometry_aperture_px", "Photometry aperture", "px", "g",
      "Diameter of the aperture the transparency of each frame is measured in."),
     ("fwhm_moffat_px", "Star FWHM (Moffat)", "px", ".2f",

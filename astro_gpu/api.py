@@ -1317,9 +1317,9 @@ def set_option(p: Project2, wf_ids: int | Iterable[int], key: str, value: Any) -
 def _check_param(keys: Keys, stage: str, name: str, value: Any) -> Any:
     """The value as the stage's Params read it (JSON form); ValueError naming the setting if it is not valid."""
     stages = keys.rules.chains.stages
-    if stage not in stages:
+    if wfl.base(stage) not in stages:
         raise ValueError(f"unknown stage {stage!r}")
-    model = keys.rules.params(stage)
+    model = keys.rules.params(wfl.base(stage))      # a session's own settings: "calibrate@2" (issue #43)
     if name not in model.model_fields:
         raise ValueError(f"{stage} has no setting {name!r}")
     if (model.model_fields[name].json_schema_extra or {}).get("level") == "internal":
@@ -2444,7 +2444,7 @@ def _autos(p: Project2, keys: Keys, w: Workflow, stage: str) -> tuple[dict[str, 
     anc = keys.ancestors(w, stage)
     if not all(store.done(a, keys.key(w, a)) for a in anc):
         return {}, False
-    st = keys.rules.chains.stages[stage]
+    st = keys.rules.chains.stages[wfl.base(stage)]
     c = _ctx(p)
     ck = (stage, keys.key(w, stage))
     if ck in c.autos:
@@ -2466,7 +2466,7 @@ def _resolve(p: Project2, wf: int | Workflow, stage: str) -> _Resolved:
     w = keys.project.workflow(wf)
     if stage not in keys.chain(w):
         raise ValueError(f"workflow {w.name!r} has no {stage!r} stage")
-    model = keys.rules.params(stage)
+    model = keys.rules.params(wfl.base(stage))
     autos, ok = _autos(p, keys, w, stage)
     given = keys.overrides(w, stage)
     try:
@@ -2488,12 +2488,13 @@ def describe(p: Project2, wf: int | Workflow, stage: str) -> list[ParamInfo]:
     keys, store = _keys(p), _store(p)
     w = keys.project.workflow(wf)
     r = _resolve(p, w, stage)
-    model = keys.rules.params(stage)
-    locked = set(keys.rules.implied(w.options, stage)) | ({"exclude"} if keys.rules.injects_exclude(stage) else set())
+    b = wfl.base(stage)
+    model = keys.rules.params(b)
+    locked = set(keys.rules.implied(w.options, b)) | ({"exclude"} if keys.rules.injects_exclude(b) else set())
     used: dict[str, Any] = {}
     if store is not None and store.done(stage, keys.key(w, stage)):
         used = store.manifest(stage, keys.key(w, stage)).get("params") or {}
-    skip = keys.rules.non_key(stage)
+    skip = keys.rules.non_key(b)
     out = []
     for d in model.describe():
         n = d["name"]

@@ -34,6 +34,12 @@ JSON, no set or hash order).
 The project parts read the disk (each session's frame files, the reference image): ``InputScan`` caches them. A scan
 stats every frame: keep it out of the client's interface thread.
 
+Issue #43: a chain entry may be an instance of a stage for one session, "calibrate@2". Its results live in the
+stage's folder (``store/calibrate/<key>``); its key is that of a project holding that session alone: the stage's name,
+its settings (the session's own, "calibrate@2" in the definition, over the stage's), the session's frames. A job of an
+instance reads its session's instances under the stages' names; a job after the sessions' join reads the join as
+"inventory" and "calibrate", and a workflow that starts from an image reads the image as "stack" (workflow.PROVIDES).
+
 ``StoreProject`` lets the stage code, and v1's ``Pipeline._run_stage``, run one job: its own stage writes into
 ``<key>.tmp`` (the runner renames it on success), every ancestor reads its done key folder, and any other stage
 resolves to ``store/_absent/<stage>``, which is never created (``Context.has`` is false there).
@@ -54,6 +60,7 @@ from pydantic import ValidationError
 
 from . import workflow as wfl
 from .params import StageParams
+from .workflow import base, session_of
 from .project import Inputs, ProjectConfig, list_frames
 from .project2 import KINDS, Project2, Workflow
 from .workflow import Chains
@@ -212,14 +219,15 @@ class InputScan:
             self._sessions[entries] = got
         return got
 
-    def frames(self, project: Project2) -> list[list]:
-        """inventory's project part: [kind, file name, size] of each frame of the union of the sessions, per kind, in
-        the order the inventory reads them (list_frames: by full path). Names and sizes only, so copied raws keep
-        the key; ordered, because the half-stack blocks follow the order."""
+    def frames(self, project: Project2, sid: int | None = None) -> list[list]:
+        """inventory's project part: [kind, file name, size] of each frame of the union of the sessions (``sid``: of
+        that session only), per kind, in the order the inventory reads them (list_frames: by full path). Names and
+        sizes only, so copied raws keep the key; ordered, because the half-stack blocks follow the order."""
         out: list[list] = []
+        sessions = project.sessions if sid is None else [project.session(sid)]
         for kind in KINDS:
             sizes: dict[Path, int] = {}
-            for s in project.sessions:
+            for s in sessions:
                 for f, n in self.session_frames(project, s)[kind]:
                     sizes.setdefault(f, n)
             out += [[kind, f.name, sizes[f]] for f in sorted(sizes)]
@@ -263,7 +271,9 @@ class Keys:
         """The stages of a workflow, in order."""
         w = self._wf(wf)
         if id(w) not in self._chains:
-            self._chains[id(w)] = self.rules.chains.chain(w.options, w.end, reference=bool(self.project.reference_image))
+            self._chains[id(w)] = self.rules.chains.chain(
+                w.options, w.end, reference=bool(self.project.reference_image),
+                sessions=self.project.separate_sessions(), image=getattr(w, "source", None) is not None)
         return self._chains[id(w)]
 
     def deps(self, wf: int | Workflow, stage: str) -> tuple[str, ...]:
@@ -277,9 +287,12 @@ class Keys:
     # ------------------------------------------------------------------ the key
     def _given(self, w: Workflow, stage: str, exclude: list[str] | None) -> dict[str, Any]:
         """The values a stage gets over the automatic ones: stored < implied < injected (later wins). The excluded
-        frames come from the definition only; a setting the stage no longer has (``retired``) is ignored."""
-        gone = self.rules.retired(stage)
-        v = {**{k: x for k, x in w.stored(stage).items() if k not in gone}, **self.rules.implied(w.options, stage)}
+        frames come from the definition only; a setting the stage no longer has (``retired``) is ignored. An
+        instance gets the stage's stored values, then its own (issue #43: "calibrate@2" in the definition)."""
+        b = base(stage)
+        gone = self.rules.retired(b)
+        stored = {**w.stored(b), **(w.stored(stage) if stage != b else {})}
+        v = {**{k: x for k, x in stored.items() if k not in gone}, **self.rules.implied(w.options, b)}
         if self.rules.injects_exclude(stage):
             v.pop("exclude", None)
             if exclude:
@@ -287,6 +300,7 @@ class Keys:
         return v
 
     def _validated(self, w: Workflow, stage: str, values: dict[str, Any]) -> dict[str, Any]:
+        stage = base(stage)
         try:
             return self.rules.params(stage)(**values).model_dump(mode="json")
         except ValidationError as e:
@@ -300,20 +314,21 @@ class Keys:
     def _key_values(self, w: Workflow, stage: str) -> tuple[dict[str, Any], dict[str, Any]]:
         """(the parameter part of the key, every validated value of the stage, defaults included)."""
         r = self.rules
-        pairs = sorted(self.project.excluded) if r.injects_exclude(stage) else []
+        b = base(stage)
+        pairs = sorted(self.project.excluded) if r.injects_exclude(b) else []
         v = self._given(w, stage, [name for _, name in pairs])       # validated as names, keyed as pairs
-        v = {k: x for k, x in v.items() if k not in r.non_key(stage)}
+        v = {k: x for k, x in v.items() if k not in r.non_key(b)}
         m = self._validated(w, stage, v)
         p = {k: m[k] for k in v}
-        auto, default = r.auto_fields(stage), r.defaults(stage)
+        auto, default = r.auto_fields(b), r.defaults(b)
         p = {k: x for k, x in p.items() if k in auto or x != default.get(k)}
-        for k, before in r.baseline(stage).items():      # a changed default: the effective value against the previous
+        for k, before in r.baseline(b).items():      # a changed default: the effective value against the previous
             if k in m:
                 if m[k] != before:
                     p[k] = m[k]
                 else:
                     p.pop(k, None)
-        p.update(r.constants(stage))
+        p.update(r.constants(b))
         if "exclude" in p and pairs:
             p["exclude"] = [list(t) for t in pairs]    # (session, name): the same after the raws move
         return p, m
@@ -323,8 +338,9 @@ class Keys:
         """The project's part of a stage's key: the frame list for inventory, the target for astrometry, the image's
         file id for reference; None for the others."""
         p = self.project
-        if stage == "inventory":
-            return self.scan.frames(p)
+        if base(stage) == "inventory":
+            sid = session_of(stage)
+            return self.scan.frames(p, int(sid) if sid is not None else None)
         if stage == "astrometry":
             # a field added later (pixel_um, issue #38) counts only when it is set: the keys of the projects made
             # before it stay as they were
@@ -334,12 +350,23 @@ class Keys:
             return self.scan.file_id(_absolute(p, p.reference_image)) if p.reference_image else None
         return None
 
+    def source_part(self, w: Workflow, stage: str) -> Any:
+        """The image file of an image source, for the ``image`` stage's key: its file id (name, size, date)."""
+        src = getattr(w, "source", None)
+        if stage == "image" and src:
+            return self.scan.file_id(_absolute(self.project, src["path"]))
+        return None
+
     def key_parts(self, wf: int | Workflow, stage: str) -> dict[str, Any]:
         """What a stage's key hashes (the manifest keeps it as ``key_parts``)."""
         w = self._wf(wf)
         p, m = self._key_values(w, stage)
-        return {"s": stage, "v": self.rules.version(stage, m), "p": p,
-                "u": {d: self.key(w, d) for d in self.deps(w, stage)}, "x": self.project_part(stage)}
+        b = base(stage)
+        x = self.source_part(w, stage) if b == "image" else self.project_part(stage)
+        sid = session_of(stage)
+        # an instance reads its session's instances under the stages' names: keyed so, as in a one-session project
+        u = {(base(d) if sid is not None and session_of(d) == sid else d): self.key(w, d) for d in self.deps(w, stage)}
+        return {"s": b, "v": self.rules.version(b, m), "p": p, "u": u, "x": x}
 
     def key(self, wf: int | Workflow, stage: str) -> str:
         """The key of a stage in a workflow (ValueError when the stage is not in its chain)."""
@@ -371,8 +398,10 @@ class Keys:
         excluded frames' files), validated. Settings left out of the key are kept: they change how the job runs, not
         its result."""
         w = self._wf(wf)
-        excl = self.scan.excluded_paths(self.project) if self.rules.injects_exclude(stage) else None
+        excl = self.scan.excluded_paths(self.project) if self.rules.injects_exclude(base(stage)) else None
         v = self._given(w, stage, excl)
+        if base(stage) == "image" and getattr(w, "source", None):
+            v["path"] = _absolute(self.project, w.source["path"])
         m = self._validated(w, stage, v)
         return {k: m[k] for k in v}
 
@@ -400,13 +429,14 @@ class Store:
         return key
 
     def dir(self, stage: str, key: str) -> Path:
-        return self.path / stage / self._check(key)
+        """``store/<stage>/<key>``; an instance's result lives in its stage's folder."""
+        return self.path / base(stage) / self._check(key)
 
     def tmp_dir(self, stage: str, key: str) -> Path:
-        return self.path / stage / (self._check(key) + TMP)
+        return self.path / base(stage) / (self._check(key) + TMP)
 
     def absent_dir(self, stage: str) -> Path:
-        return self.path / ABSENT / stage
+        return self.path / ABSENT / base(stage)
 
     @property
     def trash(self) -> Path:
@@ -439,11 +469,12 @@ class Store:
 
 
 def _external_data_ok(stage: str, d: Path) -> bool:
+    stage = base(stage)
     try:
         if stage == "inventory":
             frames = json.loads((d / "frames.json").read_text(encoding="utf-8"))
             return all(Path(f["path"]).is_file() for infos in frames.values() for f in infos)
-        if stage == "calibrate":
+        if stage in ("calibrate", "sessions"):
             return Path(json.loads((d / "cache.json").read_text(encoding="utf-8"))["path"]).is_file()
     except (OSError, ValueError, KeyError, TypeError):
         return False
@@ -478,7 +509,10 @@ class StoreProject:
         self.logs = self.root / "logs"
         self.results = self.root / "export"
         self.scratch = Path(os.path.abspath(p.scratch)) / self.key
-        inputs = p.inputs()
+        sid = session_of(stage)
+        inputs = p.session_inputs(int(sid)) if sid is not None else p.inputs()
+        if getattr(self.workflow, "source", None) is not None:
+            inputs = Inputs()                            # an image source: no frames
         devs = p.devices if devices is None else devices
         self.config = ProjectConfig(
             name=p.name, inputs=Inputs(**{k: [_absolute(p, f) for f in getattr(inputs, k)] for k in KINDS}),
@@ -488,10 +522,23 @@ class StoreProject:
         self.dirs: dict[str, Path] = {a: self.store.dir(a, keys.key(self.workflow, a))
                                       for a in keys.ancestors(self.workflow, stage)}
         self.dirs[stage] = Path(own_dir) if own_dir is not None else self.store.tmp_dir(stage, self.key)
+        # the names the stage code reads (issue #43): an instance reads its session's instances under the stages'
+        # names, and itself under its stage's; later stages read what stands for a stage (the join, the image)
+        self.alias: dict[str, str] = {}
+        for a in self.dirs:
+            if session_of(a) is not None and session_of(a) == sid:
+                self.alias[base(a)] = a
+        for a in self.dirs:
+            for d in wfl.PROVIDES.get(base(a), ()):
+                self.alias.setdefault(d, a)
 
     def stage_dir(self, stage: str) -> Path:
         d = self.dirs.get(stage)
+        if d is None and stage in self.alias:
+            d = self.dirs.get(self.alias[stage])
         return d if d is not None else self.store.absent_dir(stage)
 
     def overrides(self, stage: str) -> dict[str, Any]:
+        if stage == base(self.stage):
+            stage = self.stage                           # the job's own stage, an instance's settings included
         return self.keys.overrides(self.workflow, stage) if stage in self.chain else {}

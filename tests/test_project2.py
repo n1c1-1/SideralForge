@@ -126,7 +126,7 @@ def test_workflow_chain_follows_the_project(tmp_path):
     lambda p: setattr(p.workflows[1], "variant_of", 7),
     lambda p: setattr(p, "current", 9),
     lambda p: setattr(p, "next_workflow_id", 2),
-    lambda p: setattr(p, "stack_mode", "per_session"),           # ◇
+    lambda p: setattr(p, "stack_mode", "per_night"),             # not a stack mode
     lambda p: setattr(p.sessions[1], "id", 1),
     lambda p: setattr(p, "name", " "),
 ])

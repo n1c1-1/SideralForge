@@ -65,6 +65,7 @@ from .project2 import Project2, Workflow
 from .runner import Pipeline, read_manifest
 from .stage import StageError
 from .store import InputScan, KeyRules, Keys, Store, StoreProject, key_rules
+from .workflow import base, session_of
 
 LOCK = "run.lock"
 STOP = "STOP"
@@ -221,10 +222,13 @@ class Planner:
         deps = self.keys.deps(w, stage)
         for d in deps:
             self.need(w, d, as_input=True)
-        e = est.estimate(stage, self._facts_of(w), self.gpu, self.history)
+        e = est.estimate(base(stage), self._facts_of(w), self.gpu, self.history)
+        part = 1.0
+        if session_of(stage) is not None:                # one session's share of the project's frames (issue #43)
+            part = 1.0 / max(1, len(self.project.separate_sessions()))
         self.jobs[k] = Job(k, stage, self.chains.block_of(stage), self._sharing(w, stage, k), w.id,
-                           {d: self.keys.key(w, d) for d in deps}, round(e.seconds, 3), e.measured,
-                           round(e.disk_gb, 3), rerun=done)
+                           {d: self.keys.key(w, d) for d in deps}, round(e.seconds * part, 3), e.measured,
+                           round(e.disk_gb * part, 3), rerun=done)
 
     def plan(self, targets: list[tuple[int | Workflow, str]]) -> Plan:
         """The plan computing the given (workflow, stage) results and what they need. Workflows that cannot run
@@ -261,7 +265,7 @@ def order_jobs(jobs: Any, order: list[str], targets: set[int] | None = None) -> 
         ready = [j for j in left.values() if not any(k in left for k in j.deps.values())]
         if not ready:
             raise RuntimeError(f"jobs that wait on each other: {sorted(left)}")
-        j = min(ready, key=lambda j: (min(remaining[w] for w in mine(j)), rank.get(j.stage, len(rank)), j.key))
+        j = min(ready, key=lambda j: (min(remaining[w] for w in mine(j)), rank.get(base(j.stage), len(rank)), j.key))
         out.append(j)
         del left[j.key]
         for w in mine(j):
@@ -774,7 +778,7 @@ class _Worker:
         """The job failed and the GPU is gone with it: hand the rest of the run (the job first, unless it was already
         tried again) to a fresh worker process: 'handover'. When that cannot be, the job fails and the jobs left are
         not started: 'failed'."""
-        st = self.rules.chains.stages.get(job.stage)
+        st = self.rules.chains.stages.get(base(job.stage))
         title = getattr(st, "title", None) or job.stage
         again = job.key in retried
         if again:                                   # its second failure: a plain one
@@ -841,9 +845,10 @@ class _Worker:
             if sp.key != job.key:
                 raise StageError(f"the inputs of {job.stage} changed since the run was planned (key {sp.key}, "
                                  f"planned {job.key}): plan it again")
-            st = self.rules.chains.stages[job.stage]
-            pipe = Pipeline(sp, [self.rules.chains.stages[s] for s in sp.chain], self.journal)
-            if job.stage == "calibrate" and self.store.done(job.stage, job.key):
+            st = self.rules.chains.stages[base(job.stage)]
+            pipe = Pipeline(sp, [self.rules.chains.stages[s] for s in dict.fromkeys(base(x) for x in sp.chain)],
+                            self.journal)
+            if base(job.stage) == "calibrate" and self.store.done(job.stage, job.key):
                 self._give_masters(pipe, st, job)
             res = pipe._run_stage(st, run_id=job.key)
             if res != "done":
@@ -892,7 +897,8 @@ class _Worker:
         self.store.forget()
         try:
             f = est.facts(self.keys, w, self.store)
-            est.record(job.stage, float(m.get("duration") or 0.0), est.units(job.stage, f), self.gpu)
+            if session_of(job.stage) is None:          # a session's share is not the project's time
+                est.record(job.stage, float(m.get("duration") or 0.0), est.units(job.stage, f), self.gpu)
         except Exception:  # noqa: BLE001 - the history is a hint
             pass
 

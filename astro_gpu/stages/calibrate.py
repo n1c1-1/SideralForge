@@ -46,6 +46,9 @@ class CalibrateParams(StageParams):
                           help="Raw values above this fraction of the sensor white level are flagged as saturated; the "
                                "stacker then treats them specially instead of averaging clipped values.",
                           tip="Keep the default unless star cores look flat-topped or rings appear around bright stars.")
+    apply_masters: bool = P(True, label="Apply the calibration frames", level=ADVANCED,
+                            help="Off when the Calibration block is cut (issue #43): the frames are taken as they are "
+                                 "(already calibrated), without master dark, flat or defective pixels.")
     workers: int = P(8, label="Parallel workers", level=ADVANCED, ge=1, le=64,
                      help="Number of CPU processes used to calibrate frames in parallel.",
                      tip="Defaults to the number of CPU cores minus two (max 12).")
@@ -79,6 +82,9 @@ class Calibrate(Stage):
             return
         H, W = int(ctx.metric_of("inventory", "height")), int(ctx.metric_of("inventory", "width"))
         black = float(ctx.metric_of("inventory", "black_level"))
+        if not p.apply_masters:
+            pass_through(ctx, p, frames["lights"], H, W, black)
+            return
         bias = master_bias([f["path"] for f in frames["bias"]], ctx)
         if bias is not None:
             ctx.save("master_bias.npy", bias)
@@ -91,6 +97,23 @@ class Calibrate(Stage):
             ctx.save("master_flat_dark.npy", kept.pop("flat_dark"))
         calibrate_lights(ctx, p, frames["lights"], dark, flat, bool(frames["darks"]), dark_noise,
                          ctx.metric_of("inventory", "cfa"), float(ctx.metric_of("inventory", "white_level")))
+
+
+def pass_through(ctx: Context, p: CalibrateParams, lights: list[dict], H: int, W: int, black: float) -> None:
+    """The Calibration block cut (issue #43): the frames as they are (already calibrated), the black level taken off,
+    no flat, no defective pixel; the calibrated cache the later stages read is written all the same."""
+    ctx.log("Calibration cut: the frames are taken as they are (no master dark, flat or defective pixels)")
+    dark = np.full((H, W), black, np.float32)
+    flat = np.ones((H, W), np.float32)
+    ctx.save("master_dark.npy", dark)
+    ctx.save("master_flat.npy", flat)
+    bad = np.zeros((H, W), bool)
+    ctx.save("badmask.npy", bad)
+    ctx.metric("dark_level", round(black, 1))
+    ctx.metric("bad_pixels_pct", 0.0)
+    ctx.metric("calibration_cut", True)
+    _calibrated_cache(ctx, p, lights, dark, flat, bad, ctx.metric_of("inventory", "cfa"),
+                      float(ctx.metric_of("inventory", "white_level")), time.time())
 
 
 def master_bias(paths: list[str], ctx: Context) -> np.ndarray | None:
@@ -202,6 +225,8 @@ def result_params(p: CalibrateParams) -> dict:
     """The settings that decide the result (the worker count does not)."""
     d = p.model_dump(mode="json")
     d.pop("workers", None)
+    if d.get("apply_masters", True):                 # the default: as the results made before the setting existed
+        d.pop("apply_masters", None)
     return d
 
 
