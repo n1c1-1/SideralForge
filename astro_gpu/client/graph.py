@@ -29,7 +29,7 @@ The scene's items: ``BlockItem`` (a block), ``GhostItem`` (where a dragged tool 
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QMimeData, QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -40,13 +40,16 @@ from PySide6.QtGui import (
     QKeySequence,
     QPainter,
     QPainterPath,
+    QPainterPathStroker,
     QPen,
+    QPixmap,
     QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QGraphicsItem,
+    QGraphicsPathItem,
     QGraphicsScene,
     QGraphicsView,
     QHBoxLayout,
@@ -290,12 +293,19 @@ class BlockItem(QGraphicsItem):
             elif self.removable and self._x_rect().contains(e.pos()):
                 self.view.remove_block(self.node, None)
             else:
+                self._press = e.screenPos()
                 self.view.blockClicked.emit(self.node)
         e.accept()
 
     def mouseMoveEvent(self, e):                                      # noqa: N802
         if self._wire:
             self.view.move_wire(e.scenePos())
+            return
+        press = getattr(self, "_press", None)
+        if press is not None and self.removable and (e.buttons() & Qt.LeftButton) and \
+                (e.screenPos() - press).manhattanLength() >= QApplication.startDragDistance():
+            self._press = None                            # issue #54: dragged out to the palette, it is removed
+            self.view.drag_out(self.node)
 
     def mouseReleaseEvent(self, e):                                   # noqa: N802
         if self._wire:
@@ -313,6 +323,48 @@ class BlockItem(QGraphicsItem):
     def contextMenuEvent(self, e):                                    # noqa: N802
         self.view.block_menu(self.node, e.screenPos())
         e.accept()
+
+
+class WireItem(QGraphicsPathItem):
+    """A wire the user can take away (issue #52): an image sent to Post as a layer. Hovered it lights up, a click
+    selects it, Del or its menu's Remove takes the layer away. The wires of a chain are not selectable (no item)."""
+
+    def __init__(self, view, path, pen, on_remove, tip: str):
+        super().__init__(path)
+        self.view, self.base_pen, self.on_remove = view, QPen(pen), on_remove
+        self.setPen(pen)
+        self.setAcceptHoverEvents(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(tip + "\n" + _("Click to select it, Del to remove it"))
+        self.selected = False
+
+    def shape(self):                                                  # noqa: D102 - a wide band to hit
+        st = QPainterPathStroker()
+        st.setWidth(10)
+        return st.createStroke(self.path())
+
+    def _look(self, hot: bool):
+        pen = QPen(self.base_pen)
+        if hot or self.selected:
+            pen.setColor(QColor(ACCENT))
+            pen.setWidthF(self.base_pen.widthF() + 1.2)
+        self.setPen(pen)
+
+    def hoverEnterEvent(self, e):                                     # noqa: N802
+        self._look(True)
+
+    def hoverLeaveEvent(self, e):                                     # noqa: N802
+        self._look(False)
+
+    def mousePressEvent(self, e):                                     # noqa: N802
+        self.view.select_wire(self)
+        e.accept()
+
+    def contextMenuEvent(self, e):                                    # noqa: N802
+        self.view.select_wire(self)
+        m = QMenu(self.view)
+        m.addAction(_("Remove") + "\tDel").triggered.connect(self.on_remove)
+        m.exec(e.screenPos())
 
 
 def _line(x1, y1, x2, y2) -> QPainterPath:
@@ -394,6 +446,8 @@ class GraphView(QGraphicsView):
     toolDropped = Signal(str, int)         # tool key, workflow pid
     blockDropped = Signal(str, int, int)   # issue #47: a palette block (engine name) dropped on a workflow at an index
     sourceDropped = Signal(str)            # issue #47: a Session or an Image dropped on the graph
+    postLinkRemoved = Signal(int)          # issue #52: a workflow's link to Post taken away (its wire)
+    branchDropped = Signal(str, int, str)  # issue #47: a block dropped under a block: a new branch from there
     removeTool = Signal(object, object)    # Node, list of pids or None (all the workflows of the block)
     workflowMenu = Signal(str, int)        # action, pid
     sendToPost = Signal(object)            # Node whose output was pulled to the Post block
@@ -583,9 +637,11 @@ class GraphView(QGraphicsView):
             par = n.parent if n.parent is not None else g.root
             self._wire(par, n, cur is not None and cur in n.paths)
         for sn, cn in g.sessions:
-            self._wire(sn, cn, True)
+            if cn.paths:                                  # a session's Calibration, when its workflows have one
+                self._wire(sn, cn, True)
         for t in (firsts if g.sessions else []):   # each first block from the sessions its workflows stack
-            src = [cn for _sn, cn in g.sessions if set(map(id, cn.paths)) & set(map(id, t.paths))]
+            src = [cn if set(map(id, cn.paths)) & set(map(id, t.paths)) else sn for sn, cn in g.sessions
+                   if set(map(id, sn.paths)) & set(map(id, t.paths))]     # without Calibration: from the Session
             if len(src) > 1:
                 self._join(src, [t], cur)
             elif src:
@@ -603,7 +659,9 @@ class GraphView(QGraphicsView):
             sc.addItem(gh)
         for p in s.paths:                          # a workflow's Output image, when it is a layer of Post
             if p.pid in g.to_post:
-                self._wire(g.leaves[p.pid], g.final, cur is not None and p is cur)
+                self._wire(g.leaves[p.pid], g.final, cur is not None and p is cur,
+                           on_remove=lambda q=p: self.postLinkRemoved.emit(q.pid),
+                           tip=_("“{name}”: its image to Post as a layer").format(name=p.name))
         # the Stars block's images: into its Stars and background blocks, or straight to Post
         for n in g.compositions:
             strong = cur is not None and cur in n.paths
@@ -630,7 +688,8 @@ class GraphView(QGraphicsView):
             if n.key in ("sources", "final") and not s.paths and not s.p.sessions:
                 continue                                  # a blank page is empty (issue #47)
             title = node_title(s, n)
-            removable = n.key in OPTIONAL_BLOCKS or n.key == "composition"
+            removable = n.key == "composition" or (n.sid is None and bool(n.paths) and kbase(n.key) not in
+                                                    ("sources", "final", "session", "fusion", "image", "post"))
             dim = cur is not None and n.key not in ("sources", "final", "session") and n.sid is None \
                 and cur not in n.paths
             it = BlockItem(self, n, title, g.summary(n), g.state(n), n is sel or (sel is not None and n.key ==
@@ -652,10 +711,41 @@ class GraphView(QGraphicsView):
             x0 = cx["sources"]
             x1 = max(cx["final"] + cw["final"], x0 + 4 * BW)
             y = mid + BH
-        text = "+  " + _("New workflow") if s.paths or s.p.sessions else \
-            "+  " + _("New workflow: a template, or a Session or an Image placed from the palette")
+        text = "+  " + _("New flow: drop a Session or an Image here, or click for a template") if s.paths \
+            or s.p.sessions else "+  " + _("New workflow: a template, or a Session or an Image placed from the palette")
         gh = GhostItem(QRectF(x0, y, x1 - x0, BH), text, self.newWorkflow.emit)
+        gh.new_flow = True                               # issue #47: a parallel flow starts here
+        gh.hot = self.drag_block in ("session", "image")
         sc.addItem(gh)
+        self.new_flow_ghost = gh
+        # issue #47: while an image block is dragged, a new branch can start under each block it can follow
+        if self.drag_block in wfl.IO and wfl.IO[self.drag_block] == (wfl.IMAGE, wfl.IMAGE):
+            title = block_title(None, view_key(self.drag_block))
+            seen: set[int] = set()
+            for p in s.paths:
+                for key in s.display_keys(p):
+                    n = g.node_of(p, key)
+                    if n is None or id(n) in seen or n.sid is not None or not s.can_branch(p, key, self.drag_block):
+                        continue
+                    seen.add(id(n))
+                    r = QRectF(n.col + 6, n.y + BH / 2 + 5, n.w - 12, BH * 0.55)
+                    bg = GhostItem(r, "⑂  " + _("new branch"), None, p.pid)
+                    bg.branch_key = key
+                    bg.setToolTip(_("A new branch from here: what comes before is shared (computed once), then "
+                                    "{block}; it goes to Post as a layer of its own").format(block=title))
+                    bg.setZValue(8)
+                    sc.addItem(bg)
+                    self.ghosts.append(bg)
+        if self.drag_block == "composition" and "composition" in cx:     # issue #53: after each split block
+            title = block_title(None, "composition")
+            for n in g.nodes:
+                if n.key == "etoiles" and n.paths:
+                    r = QRectF(cx["composition"] + 4, n.y + BH / 2 + 6, cw["composition"] - 8, BH - 8)
+                    gh = GhostItem(r, title, None, n.paths[0].pid)
+                    gh.node = n
+                    gh.setZValue(8)
+                    sc.addItem(gh)
+                    self.ghosts.append(gh)
         # issue #47: where the dragged palette block can go: the block itself, dashed, in each opened column
         for pid, idx, c in targets:
             p = s.view(pid)
@@ -769,7 +859,29 @@ class GraphView(QGraphicsView):
         elif comp:
             QTimer.singleShot(0, lambda: self.newComposition.emit(node))
 
-    def _wire(self, a: Node, b: Node, strong: bool):
+    def select_wire(self, w):
+        """A removable wire selected (issue #52); a block's selection goes."""
+        old = getattr(self, "sel_wire", None)
+        if old is not None and old is not w:
+            try:
+                old.selected = False
+                old._look(False)
+            except RuntimeError:                          # rebuilt meanwhile
+                pass
+        self.sel_wire = w
+        if w is not None:
+            w.selected = True
+            w._look(True)
+
+    def remove_selected_wire(self) -> bool:
+        w = getattr(self, "sel_wire", None)
+        if w is None or w.scene() is not self.scene():
+            return False
+        self.sel_wire = None
+        w.on_remove()
+        return True
+
+    def _wire(self, a: Node, b: Node, strong: bool, on_remove=None, tip: str = ""):
         """A wire from a block to the next block of its workflows. A branch bends in the gap right after the block it
         leaves (the last one its workflows share), then runs straight on its own lane past the columns it skips."""
         x1, y1 = a.col + a.w, a.y
@@ -781,7 +893,12 @@ class GraphView(QGraphicsView):
             path.cubicTo(QPointF(x1 + dx, y1), QPointF(xb - dx, y2), QPointF(xb, y2))
         if xb < x2 or not dx:
             path.lineTo(QPointF(x2, y2))
-        it = self.scene().addPath(path, QPen(QColor("#9aa3b2" if strong else "#3d4452"), 2.2 if strong else 1.6))
+        pen = QPen(QColor("#9aa3b2" if strong else "#3d4452"), 2.2 if strong else 1.6)
+        if on_remove is not None:                          # issue #52: a link to Post the user can take away
+            it = WireItem(self, path, pen, on_remove, tip)
+            self.scene().addItem(it)
+        else:
+            it = self.scene().addPath(path, pen)
         it.setZValue(1)
 
     def _join(self, sources: list[Node], targets: list[Node], cur):
@@ -826,9 +943,15 @@ class GraphView(QGraphicsView):
         col = QColor(IMAGE_COL[what])
         if not strong:
             col.setAlpha(110)
-        it = self.scene().addPath(path, QPen(col, 2.0 if strong else 1.5, Qt.DashLine if direct else Qt.SolidLine))
+        pen = QPen(col, 2.0 if strong else 1.5, Qt.DashLine if direct else Qt.SolidLine)
+        if direct:                                         # issue #52: sent to Post as it is: it can be taken away
+            it = WireItem(self, path, pen, lambda: self.partOutOfPost.emit(a, what),
+                          _("{image}: to Post as a layer").format(image=word))
+            self.scene().addItem(it)
+        else:
+            it = self.scene().addPath(path, pen)
+            it.setToolTip(word)
         it.setZValue(4 if direct else 2)                  # behind the blocks (their text stays readable)
-        it.setToolTip(_("{image}: to Post as a layer").format(image=word) if direct else word)
 
     def _post_sources(self, g: Graph) -> list[Node]:
         """The blocks whose image is a layer of Post (``project.post["layers"]``, image layers: the key Inspect gave,
@@ -1021,6 +1144,24 @@ class GraphView(QGraphicsView):
         if not m.isEmpty():
             m.exec(pos)
 
+    def drag_out(self, node: Node):
+        """A placed block dragged (issue #54): dropped on the palette, it is removed (the same rules, Undo)."""
+        self._dragged = node
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText("placed:" + node.key)
+        drag.setMimeData(mime)
+        it = next((x for x in self.scene().items() if isinstance(x, BlockItem) and x.node is node), None)
+        if it is not None:
+            pm = QPixmap(int(it.boundingRect().width()), int(it.boundingRect().height()))
+            pm.fill(Qt.transparent)
+            pa = QPainter(pm)
+            it.paint(pa, None)
+            pa.end()
+            drag.setPixmap(pm)
+        drag.exec(Qt.MoveAction)
+        self._dragged = None
+
     def remove_block(self, node: Node, pids):
         if node.key == "composition":
             self.layerRemoved.emit(node.lid)
@@ -1039,8 +1180,13 @@ class GraphView(QGraphicsView):
 
     def dragEnterEvent(self, e):                                      # noqa: N802
         k = self._tool(e)
-        if k in ("session", "image"):                    # a source starts a workflow: the whole graph takes it
+        if k in ("session", "image", "fusion"):          # a source or a fusion starts a flow: the graph takes it
             self.drag_block = k
+            e.acceptProposedAction()
+            return
+        if k == "composition":                           # issue #53: after a split block, in the Composition column
+            self.drag_block = k
+            self.rebuild()
             e.acceptProposedAction()
             return
         if not k or k not in wfl.IO or not self.s.paths:
@@ -1058,7 +1204,7 @@ class GraphView(QGraphicsView):
         return None
 
     def dragMoveEvent(self, e):                                       # noqa: N802
-        if self.drag_block in ("session", "image"):
+        if self.drag_block in ("session", "image", "fusion"):
             e.acceptProposedAction()
             return
         hit = self._ghost_at(e.position().toPoint())
@@ -1079,9 +1225,25 @@ class GraphView(QGraphicsView):
         hit = self._ghost_at(e.position().toPoint())
         k = self.drag_block
         self.drag_block = None
-        if k in ("session", "image"):
+        if k in ("session", "image", "fusion"):
             e.acceptProposedAction()
-            QTimer.singleShot(0, lambda: self.sourceDropped.emit(k))
+            nf = getattr(self, "new_flow_ghost", None)
+            on_new = nf is not None and nf.scene() is self.scene() and \
+                nf.rect.adjusted(-10, -10, 10, 10).contains(self.mapToScene(e.position().toPoint()))
+            QTimer.singleShot(0, lambda: self.sourceDropped.emit(k + (":new" if on_new else "")))
+            return
+        if hit and getattr(hit, "branch_key", None) and k:      # a new branch from that block
+            e.acceptProposedAction()
+            pid, key = hit.pid, hit.branch_key
+            QTimer.singleShot(0, lambda: self.branchDropped.emit(k, pid, key))
+            return
+        if k == "composition":
+            if hit:
+                e.acceptProposedAction()
+                split = hit.node
+                QTimer.singleShot(0, lambda: self.newComposition.emit(split))
+            else:
+                self.rebuild()
             return
         if hit and k:
             e.acceptProposedAction()
@@ -1147,7 +1309,7 @@ PALETTE_W = 140
 PALETTE_GROUPS = [("Sources", ["session", "image"]),
                   ("On the frames", ["calibration", "registration", "selection", "stacking"]),
                   ("On the image", ["astrometry", "gradient", "denoise", "color"]),
-                  ("To Post", ["output", "stars"]),
+                  ("To Post", ["stars"]),
                   ("Composition", ["fusion", "composition"])]
 PALETTE_TITLES = {"session": "Session", "image": "Image", "fusion": "Fusion"}
 
@@ -1198,7 +1360,7 @@ class PaletteCard(QFrame):
 
     def mouseMoveEvent(self, e):                                      # noqa: N802
         if self._press is None or not (e.buttons() & Qt.LeftButton) or self.reason or \
-                self.block not in wfl.IO and self.block not in ("session", "image"):
+                self.block not in wfl.IO and self.block not in ("session", "image", "composition", "fusion"):
             return
         if (e.position().toPoint() - self._press).manhattanLength() < QApplication.startDragDistance():
             return
@@ -1290,6 +1452,9 @@ class GraphPage(QWidget):
                           "{ background: #3a4150; border-radius: 4px; min-height: 40px; } QScrollBar::add-line, "
                           "QScrollBar::sub-line { height: 0; }")
         self.palette_bar = bar
+        bar.setAcceptDrops(True)
+        bar.viewport().setAcceptDrops(True)
+        bar.viewport().installEventFilter(self)          # issue #54: a placed block dropped here is removed
         ph.addWidget(bar)
         self.graph = GraphView(project)
         cv.addWidget(self.graph, 1)
@@ -1303,6 +1468,8 @@ class GraphPage(QWidget):
         gv.toolDropped.connect(self.add_tool)
         gv.blockDropped.connect(lambda b, pid, idx: self.place_block(b, pid, None if idx < 0 else idx))
         gv.sourceDropped.connect(self.palette_action)
+        gv.postLinkRemoved.connect(self.remove_post_link)
+        gv.branchDropped.connect(self.branch_block)
         gv.removeTool.connect(self.remove_tool)
         gv.workflowMenu.connect(self.workflow_action)
         gv.sendToPost.connect(self.send_to_post)
@@ -1432,6 +1599,22 @@ class GraphPage(QWidget):
         self.combine_card = self.cards["composition"]
         self.tl.addStretch(1)
 
+    def eventFilter(self, obj, e):                                    # noqa: N802
+        """The palette takes a placed block dragged onto it: removed, as dragging out of a toolbar (issue #54)."""
+        bar = getattr(self, "palette_bar", None)
+        if bar is not None and obj is bar.viewport() and e.type() in (QEvent.DragEnter, QEvent.DragMove, QEvent.Drop):
+            t = e.mimeData().text() if e.mimeData().hasText() else ""
+            node = getattr(self.graph, "_dragged", None)
+            if not t.startswith("placed:") or node is None:
+                return False
+            if e.type() == QEvent.Drop:
+                e.acceptProposedAction()
+                QTimer.singleShot(0, lambda n=node: self.remove_tool(n, None))
+            else:
+                e.acceptProposedAction()
+            return True
+        return super().eventFilter(obj, e)
+
     def palette_reason(self, block: str, p, split) -> str:
         """Why a palette block cannot be placed now (translated), "" when it can."""
         s = self.s
@@ -1468,11 +1651,17 @@ class GraphPage(QWidget):
 
     def palette_action(self, block: str):
         """A double-click on a palette block: placed in the current workflow at its usual place; a source starts a
-        workflow."""
+        workflow. "<source>:new" (dropped on the new-flow zone): a parallel flow of its own."""
         s = self.s
-        if block == "session":
-            self.addSession.emit()
+        block, _sep, new = block.partition(":")
+        if block == "session" and new and any(q.source is None for q in s.paths):
+            q = s.add_parallel_flow()                      # issue #47: a second flow, its own night
+            self.select(index=s.paths.index(q), step=f"session@{s.sessions_of(q)[0]}")
+            return
+        if block == "session":                             # issue #48: placed empty, its frames in its panel
+            sid = s.add_filter_session("")
             s.ensure_frames_workflow()                     # a blank page: the Session starts a workflow
+            self.select(step=f"session@{sid}" if s.separate_sessions() else "sources")
         elif block == "image":
             self.new_workflow(tab="image")
         elif block == "fusion":
@@ -1507,7 +1696,39 @@ class GraphPage(QWidget):
         node = Graph(s).node_of(q, key)
         s.scope = [x.pid for x in node.paths] if node is not None else [p.pid]
 
+    def branch_block(self, block: str, pid: int, key: str):
+        """A block dropped under a block (issue #47): a new branch of the workflow from there, with that block."""
+        s = self.s
+        p = s.view(pid)
+        try:
+            q, new_key = s.add_branch(p, key, block)
+        except ValueError as e:
+            self.toast(str(e))
+            return
+        s.log('Branch "{name}" made', name=q.name)
+        self.select(index=s.paths.index(q), step=new_key)
+        self.toast(_("A new branch: what comes before {block} is shared, computed once · Ctrl+Z undoes it").format(
+            block=block_title(None, key)))
+
+    def remove_post_link(self, pid: int):
+        """A workflow's wire to Post taken away (issue #52): its image is no longer a layer; an output sent to Post
+        from a block (a workflow of its own) goes with it."""
+        s = self.s
+        p = s.view(pid)
+        if p is None:
+            return
+        if p.end:
+            s.remove_path(s.paths.index(p))
+            s.log('Workflow "{name}" deleted', name=p.name)
+        else:
+            s.remove_post_part(pid, None, self)
+        self.toast(_("“{name}” no longer goes to Post · Ctrl+Z undoes it").format(name=p.name) if not p.end else
+                   _("“{name}” deleted · Ctrl+Z undoes it").format(name=p.name))
+        self.request_refresh()
+
     def _delete_selected(self):
+        if self.graph.remove_selected_wire():             # issue #52: a selected wire first
+            return
         node = self.current_node()
         if node is not None and node.key not in ("sources", "final"):
             self.remove_tool(node, None)
@@ -1558,7 +1779,9 @@ class GraphPage(QWidget):
             return
         from .gallery import template_blocks, template_source
         empty = [q for q in s.paths if q.source is None and s.p.workflow(q.pid).blocks == []]
-        if empty and not t.get("copy"):                    # an empty workflow (#47): the template takes its place
+        frames_template = not t.get("copy") and template_source(t) == "frames"
+        if empty and frames_template:                      # an empty frames workflow (#47): a frames template takes
+            # its place; an image template starts a flow of its own beside it (issue #55)
             with s.batch():
                 for q in empty:
                     s.remove_path(s.paths.index(q))

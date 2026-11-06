@@ -93,26 +93,31 @@ def test_the_palette_places_a_block_at_its_usual_place_and_twice(qapp, tmp_path,
 
 
 def test_a_blank_page_starts_from_a_session_and_builds_block_by_block(qapp, tmp_path, monkeypatch):
+    """Issues #48, #49: a Session placed empty (its frames in its panel), a workflow built block by block, its Output
+    made automatically once a block gives an image (hidden in the wire of its last block)."""
     w, m, page = open_page(tmp_path, monkeypatch, workflows=())
     try:
         assert not m.paths
         cards = {c.block: c for c in page.findChildren(PaletteCard)}
-        assert not cards["session"].reason and not cards["calibration"].reason   # sessions: a block starts one
-        assert cards["gradient"].reason                                           # no stack yet
-        page.addSession.connect(lambda: None)                      # the app's dialog: the session is there already
-        page.palette_action("session")
+        assert not cards["session"].reason and "output" not in cards
+        page.palette_action("session")                             # placed empty, no dialog
         settle(w, page)
-        assert len(m.paths) == 1 and m.p.workflows[0].blocks == [] and m.paths[0].source is None
-        for b in ("calibration", "registration", "stacking", "gradient", "output"):
+        assert len(m.p.sessions) == 2 and not m.p.sessions[-1].lights and len(m.paths) == 1
+        assert m.p.workflows[0].blocks == [] and m.all_stages(m.paths[0]) == []     # nothing to run yet
+        for b in ("calibration", "registration", "stacking"):
             page.place_block(b, m.paths[0].pid)
             settle(w, page)
         p = m.paths[0]
-        assert m.display_keys(p) == ["calibration", "alignement", "empilement", "fond", "post"]
-        assert m.all_stages(p) == ["inventory", "calibrate", "register", "stack", "gradient", "render_simple"]
-        # Color without Astrometry: refused, and the palette says why
+        assert [n["block"] for n in m.p.workflow(p.pid).blocks] == ["calibration", "registration", "stacking",
+                                                                      "output"]      # the Output, automatic
+        g = Graph(m)
+        assert g.node_of(p, "post") is g.node_of(p, "empilement") and g.node_of(p, "empilement").handle
+        page.place_block("gradient", p.pid)
+        settle(w, page)
+        assert m.all_stages(p)[-2:] == ["gradient", "render_simple"]
         toasts = []
         page.toasted.connect(toasts.append)
-        page.place_block("color", p.pid)
+        page.place_block("color", p.pid)                           # Color without Astrometry: refused, said why
         assert toasts and "Astrometry" in toasts[-1]
         cards = {c.block: c for c in page.findChildren(PaletteCard)}
         assert "Astrometry" in cards["color"].reason
@@ -135,13 +140,14 @@ def test_a_workflow_saved_as_a_template_comes_back_in_the_gallery_and_as_a_file(
         d.tabs.setCurrentIndex(d.tab_keys.index("mine"))
         mine = next(c.t for c in d.cards if c.t["key"] == t["key"])
         d.pick(mine)
-        assert d.export_b.isVisibleTo(d) and template_blocks(mine) == g
+        placed = lambda blocks: [n for n in blocks if n["block"] != "output"]      # noqa: E731 (#49: automatic)
+        assert d.export_b.isVisibleTo(d) and placed(template_blocks(mine)) == g
         f = tmp_path / "two.sftemplate"
         export_template(mine, str(f))
         prefs.set("templates", [])
         assert not user_templates()
         back = import_template(str(f))
-        assert back["blocks"] == g and [x["name"] for x in user_templates()] == ["Two denoise"]
+        assert placed(back["blocks"]) == g and [x["name"] for x in user_templates()] == ["Two denoise"]
         d.pick(next(c.t for c in d.cards if c.t["key"] == t["key"]))
         d.ok.click()                                               # Create: a workflow of that graph
         page.make_workflow(d)
@@ -223,3 +229,62 @@ def test_a_template_takes_the_place_of_an_empty_workflow_and_channels_are_not_po
         page.close()
         m.close(save=False)
         w.stop()
+
+
+def test_branches_parallel_flows_removable_wires_and_the_palette_taking_a_block_back(qapp, tmp_path, monkeypatch):
+    """Issue #47: a new branch from a block (what comes before shared); a Session dropped on the new-flow zone makes
+    a parallel flow; #52: a workflow's wire to Post can be taken away (Del), the chain's cannot be selected; #54: every
+    removable block has its cross; a placed block dragged onto the palette is removed."""
+    from astro_gpu.client.graph import BlockItem, WireItem
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        full = m.paths[0]
+        assert m.can_branch(full, "astrometrie", "gradient")
+        q, key = m.add_branch(full, "astrometrie", "gradient")
+        settle(w, page)
+        assert [n["block"] for n in m.graph(q)][-2:] == ["astrometry", "gradient"] and key == "fond"
+        g = Graph(m)
+        assert g.node_of(q, "astrometrie") is g.node_of(m.view(full.pid), "astrometrie")   # shared, computed once
+        page.palette_action("session:new")                         # a parallel flow, its own night
+        settle(w, page)
+        flow = m.paths[-1]
+        assert m.p.workflow(flow.pid).blocks == [] and len(m.sessions_of(flow)) == 1
+        assert all(len(m.sessions_of(x)) == 1 for x in m.paths[:2])          # the others keep their night
+        # every removable block has its cross
+        crosses = {it.node.key for it in page.graph.scene().items() if isinstance(it, BlockItem) and it.removable}
+        assert {"fond", "couleur", "astrometrie", "debruitage"} <= crosses
+        # the wires to Post can be taken away; the chain's are not items
+        wires = [it for it in page.graph.scene().items() if isinstance(it, WireItem)]
+        assert wires
+        page.graph.select_wire(wires[0])
+        page._delete_selected()
+        settle(w, page)
+        assert len([it for it in page.graph.scene().items() if isinstance(it, WireItem)]) < len(wires)
+        # a placed block dragged onto the palette: removed
+        n = Graph(m).node_of(m.view(full.pid), "couleur")
+        page.graph._dragged = n
+        page.remove_tool(n, None)
+        settle(w, page)
+        assert "couleur" not in m.display_keys(m.view(full.pid))
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_stage_phase_moves_the_bar_from_its_first_file():
+    """Issue #50: progress within a phase fills that phase's share of the bar."""
+    from types import SimpleNamespace
+
+    from astro_gpu.core.stage import Context
+    sent = []
+    ctx = Context.__new__(Context)
+    ctx.stage = SimpleNamespace(name="calibrate")
+    ctx.journal = SimpleNamespace(emit=lambda kind, **kw: sent.append(kw["frac"]))
+    ctx._t0, ctx._last_progress = 0.0, 0.0
+    ctx.check_stop = lambda: None
+    ctx.phase(0.0, 0.4)
+    ctx.progress(0.5, "reading darks", force=True)
+    ctx.phase(0.4, 1.0)
+    ctx.progress(0.5, "lights", force=True)
+    assert sent == [0.2, 0.7]

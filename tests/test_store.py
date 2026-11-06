@@ -537,7 +537,7 @@ def test_real_stage_graph_shares_as_designed(tmp_path, raws):
     assert k.key(cdn, "render_simple") == k.key(full, "render_simple") != k.key(classic, "render_simple")
     assert k.sharing(full, "star_removal") == [full]
     assert k.block_key(classic, "calibration") == (k.key(classic, "inventory"), k.key(classic, "calibrate"))
-    assert k.block_key(full, "astrometry") == (k.key(full, "astrometry"), k.key(full, "catalogs"))  # no surveys
+    assert k.block_key(full, "astrometry") == (k.key(full, "astrometry"),)   # no surveys, no catalogs (#47)
     assert k.block_key(full, "output")[-1] == f"workflow {full}"
     assert k.block_key(full, "stars") == (k.key(full, "star_removal"),)
     # the implied method wins over a stored value; worker counts and the settings of the earlier Stars block (a

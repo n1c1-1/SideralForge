@@ -926,9 +926,10 @@ class Main(QMainWindow):
         self.post.export(self)
 
     def launch(self):
-        """Run all (F5): the plan dialog, or the progress of the run in progress."""
+        """Run all (F5, the Run button): the run starts at once, its window following it (issue #51); without
+        frames, the window says why nothing runs."""
         if self.run is not None:
-            self.run.launch()
+            self.run.launch(start=True)
 
     def run_to_here(self):
         """Run to the selected block (Shift+F5)."""

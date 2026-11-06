@@ -129,8 +129,16 @@ class Context:
         self.metrics[key] = value
         self.journal.emit("metric", stage=self.stage.name, key=key, value=value)
 
+    def phase(self, start: float, end: float) -> None:
+        """The share of the bar the next progress reports fill (issue #50: a stage's phases each move the bar, from
+        its first second): progress(f) shows start + f x (end - start)."""
+        self._phase = (float(start), float(end))
+
     def progress(self, frac: float, msg: str = "", force: bool = False) -> None:
-        """Report progress (0..1). Throttled to one event per second; also checks for a stop request."""
+        """Report progress (0..1, within the current phase). Throttled to one event per second; also checks for a
+        stop request."""
+        a, b = getattr(self, "_phase", (0.0, 1.0))
+        frac = a + max(0.0, min(1.0, float(frac))) * (b - a)
         self.check_stop()
         now = time.time()
         if not force and now - self._last_progress < 1.0 and frac < 1.0:

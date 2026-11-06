@@ -755,7 +755,7 @@ def user_templates() -> list[dict]:
 
 def make_template(name: str, tab: str, text: str, source: str, blocks: list[dict]) -> dict:
     """A user's template of a workflow's graph (checked)."""
-    blocks = wfl.check_blocks(blocks, source)
+    blocks = wfl.check_blocks(wfl.with_output(blocks, source), source)       # its Output where it belongs (#49)
     key = "user:" + "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_")
     return {"key": key, "tab": tab if tab in dict(TABS) and tab != "copy" else "mine", "name": name.strip(),
             "text": text.strip(), "source": source, "blocks": blocks}

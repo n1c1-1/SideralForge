@@ -769,7 +769,7 @@ class Walk:
         w.frames.show_page(0)
         self.step_inspect(computed)
         w.set_mode(0)
-        w.launch()
+        w.run.launch()                      # the plan, not started (#51: the button starts at once)
         self.run_dialog(False, "run_all")
         if computed:
             if w.run.track is not None:                     # the recap of the last run, if this window ran one
@@ -993,7 +993,7 @@ class Walk:
         if s.review_state(p, block) != "paused":
             self.problem(f"the breakpoint on {block} is {s.review_state(p, block)!r}, not 'paused'")
         self.shot("graph_breakpoint")
-        w.launch()
+        w.run.launch()
         self.until(lambda: w.run.dialog is not None and w.run.dialog.isVisible(), 30, "the Run window")
         self.settle()
         d = w.run.dialog
@@ -1065,7 +1065,7 @@ class Walk:
             g(self.step_variant)
             g(self.step_post)
         else:
-            self.w.launch()
+            self.w.run.launch()
             g(self.run_dialog, False, "run_all")
         g(self.step_reopen, root)
         if PREVIOUS.is_dir():

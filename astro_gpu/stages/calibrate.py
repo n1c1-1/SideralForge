@@ -85,6 +85,13 @@ class Calibrate(Stage):
         if not p.apply_masters:
             pass_through(ctx, p, frames["lights"], H, W, black)
             return
+        # issue #50: the masters' phase moves the bar too, file by file (its share: its files against the lights)
+        n_hot = min(40, len(frames["lights"])) + 2 if p.hot_from_lights and len(frames["lights"]) >= 15 else 0
+        nm = sum(len(frames[k]) for k in ("bias", "darks", "flats", "flat_darks")) + (1 if frames["darks"] else 0) \
+            + n_hot
+        share = nm / max(nm + len(frames["lights"]), 1)
+        ctx._files_total, ctx._files_read, ctx._lights_from = nm, 0, share
+        ctx.phase(0.0, share)
         bias = master_bias([f["path"] for f in frames["bias"]], ctx)
         if bias is not None:
             ctx.save("master_bias.npy", bias)
@@ -129,6 +136,7 @@ def master_dark(paths: list[str], bias: np.ndarray | None, H: int, W: int, black
     if paths:
         dark = _median_stack(paths, ctx, "darks")
         one = read_cfa(paths[0])
+        _tick(ctx, "the noise of one dark")
         return dark, robust_sigma(one[::3, ::3])[1]
     dark = bias.copy() if bias is not None else np.full((H, W), black, np.float32)
     ctx.log("no dark frames: using " + ("the master bias" if bias is not None else "the black level") +
@@ -222,7 +230,8 @@ def calibrate_lights(ctx: Context, p: CalibrateParams, lights: list[dict], dark:
     moved = True
     if p.hot_from_lights and len(lights) >= 15:
         n0 = int(bad.sum())
-        msg, moved = _hot_from_lights([f["path"] for f in lights], dark, flat, bad, median_filter, cfa=cfa)
+        msg, moved = _hot_from_lights([f["path"] for f in lights], dark, flat, bad, median_filter, cfa=cfa,
+                                      tick=lambda what: _tick(ctx, what))
         ctx.metric("hot_pixels_from_lights", int(bad.sum()) - n0)
         ctx.log(msg)
     # the sky did not move: a pixel left out would be a hole in the stack, it is filled from its neighbours instead
@@ -320,6 +329,8 @@ def _calibrated_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark
     todo = [(i, lights[i]["path"]) for i in range(n) if not done[i]]
     sat_raw = p.saturation * white
     init = (str(cache), n, H, W, str(paths_dir), sat_raw, scale, fill, cfa)
+    ctx.phase(getattr(ctx, "_lights_from", 0.0), 1.0)          # issue #50: the lights' share of the bar
+    ctx.progress(done.mean(), f"calibrating {len(todo)} frames ({p.workers} processes)", force=True)
     with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
         for c, (idx, st) in enumerate(pool.imap_unordered(_calib_one, todo, chunksize=2)):
             stats[idx] = st
@@ -358,7 +369,7 @@ def _median_stack(paths: list[str], ctx: Context, label: str) -> np.ndarray:
         if stack is None:
             stack = np.empty((len(paths), *a.shape), np.float32)
         stack[i] = a
-        ctx.progress(0.0, f"reading {label} {i + 1}/{len(paths)}", force=(i == 0))
+        _tick(ctx, f"reading {label} {i + 1}/{len(paths)}")
     out = np.empty(stack.shape[1:], np.float32)
     for r in range(0, out.shape[0], BAND):
         out[r:r + BAND] = np.median(stack[:, r:r + BAND], axis=0, overwrite_input=True)
@@ -378,6 +389,7 @@ def _master_flat(paths: list[str], fdark: np.ndarray, ctx: Context) -> np.ndarra
     fl = np.empty((len(paths), H, W), np.float32)
     for i, p in enumerate(paths):
         fl[i] = read_cfa(p) - fdark
+        _tick(ctx, f"reading flats {i + 1}/{len(paths)}")
     fl /= np.median(fl[:, H // 2 - 200:H // 2 + 200, W // 2 - 200:W // 2 + 200], axis=(1, 2), keepdims=True)
     out = np.empty((H, W), np.float32)
     for r in range(0, H, BAND):
@@ -395,7 +407,14 @@ def _master_flat(paths: list[str], fdark: np.ndarray, ctx: Context) -> np.ndarra
 LONE_SIGMA = 3.0
 
 
-def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0, cfa: str = "RGGB") -> str:
+def _tick(ctx: Context, what: str) -> None:
+    """One more file of the masters' phase read (issue #50): the bar moves by one file."""
+    ctx._files_read = getattr(ctx, "_files_read", 0) + 1
+    tot = getattr(ctx, "_files_total", 0)
+    ctx.progress(min(1.0, ctx._files_read / tot) if tot else 0.0, what, force=ctx._files_read == 1)
+
+
+def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0, cfa: str = "RGGB", tick=None) -> str:
     """Flag in ``bad`` the pixels that stand out from their same-colour neighbours in the lower quartile of ``n``
     light frames spread over the session, in sensor coordinates: a defect is bright in every frame. When the sky
     drifted by three star widths or more between the first and the last frame, a star covers a given pixel in a
@@ -416,8 +435,13 @@ def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0, cfa: st
     (dx, dy), _ = cv2.phaseCorrelate(hp[0], hp[1])
     drift = 2.0 * P * float(np.hypot(dx, dy))                 # sensor pixels (a green plane at half its resolution)
     moved = drift >= 12.0
+    if tick is not None:
+        tick("hot pixels: the sky's drift")
+        tick("hot pixels: the sky's drift")
     st = np.empty((len(sub), *dark.shape), np.float32)          # one array, the quartile in bands: the frames once
     for i, x in enumerate(sub):
+        if tick is not None:
+            tick(f"hot pixels: frame {i + 1}/{len(sub)}")
         st[i] = (read_cfa(x) - dark) / flat
     q = np.empty(dark.shape, np.float32)
     for r in range(0, q.shape[0], BAND):

@@ -670,12 +670,16 @@ class RunController(QObject):
         return text + " · " + _("≈ {t} left").format(t=hm(left)) if left > 30 else text
 
     # ------------------------------------------------------------ planning
-    def launch(self):
+    def launch(self, start: bool = False):
         """Run all (F5): the dialog of the plan, or the progress of the run in progress. With breakpoints the plan
-        stops after the first review not done yet."""
+        stops after the first review not done yet. ``start`` (the Run button, issue #51): the run starts at once, the
+        dialog following it; not without frames (issue #48)."""
         if self.running:
             return self.show_dialog()
-        return self._plan_and_open(self.model.plan_run, lambda: _("Run project"), show_done=True)
+        d = self._plan_and_open(self.model.plan_run, lambda: _("Run project"), show_done=True)
+        if start and d is not None and self.plan and self.model.sources_loaded:
+            d.start()
+        return d
 
     def run_to_here(self):
         """Run to the selected block (Shift+F5): the blocks it needs, in the current workflow (or the first review of

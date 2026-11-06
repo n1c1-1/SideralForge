@@ -171,6 +171,9 @@ def block_title(p, key: str) -> str:
 def session_summary(s, sid: int) -> str:
     """Under a Session block's name: its lights, its calibration frames, its filter."""
     ses = next((x for x in s.sessions if x["id"] == sid), {})
+    if not int(ses.get("lights") or 0):                # issue #48: a Session placed empty says what it needs
+        flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
+        return _("empty: add its lights") + (f" · {flt}" if flt else "")
     text = plural(int(ses.get("lights") or 0), "{n} light", "{n} lights")
     text += " · " + _("{darks} darks, {flats} flats").format(darks=ses.get("darks", 0), flats=ses.get("flats", 0))
     flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
@@ -298,7 +301,10 @@ class Graph:
         uses = getattr(project, "sessions_of", None)
         for sid in sids:
             mine = [p for p in frames if uses is None or sid in uses(p)]       # the workflows that stack it
-            sn, cn = Node("session", mine, sid=sid), Node("calibration", mine, sid=sid)
+            model_ = getattr(project, "model", None) or project
+            calib = [q for q in mine if not getattr(model_, "is_graph", lambda x: False)(q)
+                     or any(n["block"] == "calibration" for n in model_.graph(q))]      # #47: placed, or not drawn
+            sn, cn = Node("session", mine, sid=sid), Node("calibration", calib, sid=sid)
             self.sessions.append((sn, cn))
             self.nodes += [sn, cn]
         model = getattr(project, "model", None) or project
@@ -350,8 +356,10 @@ class Graph:
         have = {lay.get("pid") for lay in layers if lay.get("kind") == "workflow"}
         from .model import POST_PART_NAMES
         feeds = getattr(project, "feeds_fusion", None)
-        for p in project.paths:                       # the layer Post gives a workflow it does not have yet
-            if p.pid not in have and not (feeds is not None and feeds(p)):     # a fusion's channel: not by itself
+        fresh = not have                              # as Post fills them (post3.sync_paths): an empty composition,
+        for p in project.paths:                       # or an output sent from a block; else the user's layers only
+            if p.pid not in have and (fresh or p.end) and not (feeds is not None and feeds(p)) and \
+                    getattr(project, "gives_post", lambda q: True)(p):   # #49: no image yet, no link to Post
                 stars = p.opts.get("etoiles") == "retirer" and self.node_of(p, "etoiles") is not None
                 layers.insert(0, {"kind": "workflow", "pid": p.pid, "part": "combined" if stars else None, "id": None,
                                   "name": p.name + (" · " + POST_PART_NAMES["combined"] if stars else "")})
@@ -393,10 +401,16 @@ class Graph:
         Stars block and what follows it, its arrows around it): the Stars block holds it (the workflow's handle: its
         name, its menu; ``node_of(p, "post")`` answers it). Kept when the Stars block is shared by other workflows, or
         when the Output image itself is a layer of Post."""
+        model = getattr(project, "model", None) or project
         for p in project.paths:
             st, po = self.by_path[p.pid].get("etoiles"), self.by_path[p.pid].get("post")
+            graph = getattr(model, "p", None) is not None and p.pid in {w.id for w in model.p.workflows} and \
+                model.p.workflow(p.pid).blocks is not None
+            if graph and po is not None and po.parent is not None and po.parent.key not in ("sources", "session") \
+                    and not po.children and len(po.parent.paths) == 1 and po.parent is not st:
+                st = po.parent                            # issue #49: the Output hidden in the wire of its last block
             if st is None or po is None or po.parent is not st or po.children or len(st.paths) != 1 or \
-                    p.pid in self.to_post:
+                    (p.pid in self.to_post and not graph):
                 continue
             st.children.remove(po)
             self.nodes.remove(po)
@@ -498,7 +512,7 @@ class Graph:
             return text if name == f.get("palette") else f"{name} · {text}"
         if node.key == "sources":
             if not s.sources_loaded:
-                return _("to add")
+                return session_summary(s, s.sessions[0]["id"]) if len(s.sessions) == 1 else _("to add")
             if len(s.sessions) == 1 or getattr(s, "stack_mode", "together") == "together":
                 if len(s.sessions) > 1:
                     return plural(len(s.sessions), "{n} night · {lights} lights", "{n} nights · {lights} lights",

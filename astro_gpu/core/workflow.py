@@ -254,7 +254,8 @@ BLOCK_TITLES = {"fusion": "Fusion", "image": "Image", "calibration": "Calibratio
 #: what Run to here runs for a block without stages of its own
 RUN_TO: dict[str, tuple[str, ...]] = {"selection": ("register",)}
 #: stages a block's key leaves out: the survey follows the Gradient method, not the Astrometry block
-KEY_LEAVES_OUT: dict[str, tuple[str, ...]] = {"astrometry": ("surveys",)}
+KEY_LEAVES_OUT: dict[str, tuple[str, ...]] = {"astrometry": ("surveys", "catalogs")}   # catalogs: fetched for a
+#                                                 Color block after it; the plate solution is the same (issue #47)
 
 
 def base(name: str) -> str:
@@ -524,6 +525,7 @@ WHY_NEEDS = "it needs the {need} block before it"
 WHY_HALVES = "it needs the half-stacks of a stack (a workflow from frames)"
 WHY_SOURCE = "a workflow from {source} has no {block} block"
 WHY_AFTER_OUTPUT = "only Split stars & background comes after the Output block"
+WHY_OUTPUT_AUTO = "the Output is made automatically, at the end of every workflow that gives an image"
 WHY_OUTPUT_LAST = "the Output block ends the image blocks"
 WHY_REMOVE_NEEDED = "{other} needs it: remove {other} first"
 WHY_REMOVE_BRIDGE = "the blocks after it take {takes}: {block} makes it"
@@ -649,8 +651,10 @@ def graph_problem(blocks: Sequence[dict], source: str, raise_it: bool = False) -
 
 def place_problem(blocks: Sequence[dict], source: str, block: str, index: int) -> BlockRefused | None:
     """Why ``block`` cannot be inserted at ``index`` of the graph (None: it can)."""
+    if block == "output":
+        return BlockRefused(WHY_OUTPUT_AUTO)
     trial = list(blocks[:index]) + [node(block, name=new_name(blocks, block))] + list(blocks[index:])
-    return graph_problem(trial, source)
+    return graph_problem(with_output(trial, source), source)
 
 
 def places(blocks: Sequence[dict], source: str, block: str) -> list[int]:
@@ -690,8 +694,10 @@ def insert_place(blocks: Sequence[dict], source: str, block: str) -> int | None:
 
 def remove_problem(blocks: Sequence[dict], source: str, index: int) -> BlockRefused | None:
     """Why the block at ``index`` cannot be removed (None: it can)."""
+    if blocks[index]["block"] == "output":
+        return BlockRefused(WHY_OUTPUT_AUTO)
     trial = list(blocks[:index]) + list(blocks[index + 1:])
-    e = graph_problem(trial, source)
+    e = graph_problem(with_output(trial, source), source)
     if e is None:
         return None
     return _explain_removal(blocks, trial, source, index, e)
@@ -716,7 +722,7 @@ def off_problem(blocks: Sequence[dict], source: str, index: int) -> BlockRefused
     if n["block"] in ("output", "stacking", "stars") or takes != gives:
         return BlockRefused(WHY_OFF_KIND, block=_title(n["block"]), takes=KIND_WORDS[takes], gives=KIND_WORDS[gives])
     trial = [dict(x, off=True) if i == index else x for i, x in enumerate(blocks)]
-    e = graph_problem(trial, source)
+    e = graph_problem(with_output(trial, source), source)
     return None if e is None else _explain_removal(blocks, [x for i, x in enumerate(blocks) if i != index], source,
                                                    index, e)
 
@@ -784,6 +790,8 @@ def sequence_chain(blocks: Sequence[dict], source: str = "frames", *, reference:
         out.append("fusion")
     elif source in ("image", "stretched"):
         out.append("image")
+    elif not act:
+        return out                                    # an empty graph from frames: nothing to compute (issue #49)
     else:
         # a graph being built stops where its blocks do: the frames are aligned when a block from Registration on is
         # placed (without Registration, as a pass-through), stacked when Stacking is
@@ -889,6 +897,21 @@ def sync_blocks(blocks: Sequence[dict], source: str, options: dict[str, Any]) ->
         if n is not None and o.get(b):
             n["method"] = o[b]
     return g
+
+
+def with_output(blocks: Sequence[dict], source: str = "frames") -> list[dict[str, Any]]:
+    """A graph with its Output block where it belongs (issue #49: the user does not place it): right after the last
+    block that gives an image, before Split stars & background; none while the graph gives no image (it ends on
+    frames). A stretched image has none (it is its own output)."""
+    g = [dict(n) for n in blocks if n["block"] != "output"]
+    if source == "stretched":
+        return g
+    act = [n for n in g if not n.get("off")]
+    image = source in ("image", "fusion") or any(IO[n["block"]][1] in (IMAGE, PAIR) for n in act)
+    if not image:
+        return g
+    stars = next((i for i, n in enumerate(g) if n["block"] == "stars"), len(g))
+    return g[:stars] + [node("output")] + g[stars:]
 
 
 def source_of(w: Any) -> str:

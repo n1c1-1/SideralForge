@@ -417,7 +417,8 @@ def test_the_palette_offers_every_block_and_says_why_one_cannot_go(world, model,
     from astro_gpu.client.graph import PaletteCard
     cards = {c.block: c for c in page.findChildren(PaletteCard)}
     assert set(cards) >= {"session", "image", "calibration", "registration", "selection", "stacking", "astrometry",
-                          "gradient", "denoise", "color", "output", "stars", "fusion", "composition"}
+                          "gradient", "denoise", "color", "stars", "fusion", "composition"}
+    assert "output" not in cards                                  # issue #49: made automatically, in the wire
     # Full (the current one) has every block: the image blocks can go again, the others are there once
     assert not cards["denoise"].reason and not cards["gradient"].reason and not cards["session"].reason
     assert cards["stacking"].reason == "a workflow has one Stacking block"

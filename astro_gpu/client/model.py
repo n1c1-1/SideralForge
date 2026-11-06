@@ -613,7 +613,7 @@ class ProjectModel(QObject):
         made = []
         for q in self.paths:
             stars = q.opts.get("etoiles") == "retirer"
-            if q.pid == skip and stars or self.feeds_fusion(q):     # a fusion's channel: the fusion is the layer
+            if q.pid == skip and stars or self.feeds_fusion(q) or not self.gives_post(q):   # #47, #49
                 continue
             made.append(new_workflow_layer(q.pid, q.name + (" · " + POST_PART_NAMES["combined"] if stars else ""),
                                            False, "combined" if stars else None))
@@ -627,6 +627,7 @@ class ProjectModel(QObject):
         """A workflow's image taken out of Post: every layer showing it as it is (its own filters go with them);
         returns how many (issue #29: a link to Post the graph could not take away)."""
         def change(layers):
+            self._filled(layers)                          # the layers Post gives by default, made real first (#52)
             gone = {x["id"] for x in layers if x.get("kind") == "workflow" and x.get("pid") == pid
                     and x.get("part") == part}
             layers[:] = [x for x in layers if x["id"] not in gone and not (x["kind"] == "filter"
@@ -847,9 +848,10 @@ class ProjectModel(QObject):
 
     # ------------------------------------------------------------ issue #47: the graph of a workflow
     def graph(self, p: WorkflowView) -> list[dict]:
-        """The nodes of a workflow's graph (a copy)."""
+        """The nodes of a workflow's graph the user places (a copy): its Output is not one of them (issue #49: made
+        automatically, put back where it belongs when the graph is stored)."""
         try:
-            return wfl.graph_of(self.p.workflow(p.pid))
+            return [n for n in wfl.graph_of(self.p.workflow(p.pid)) if n["block"] != "output"]
         except (KeyError, ValueError):
             return []
 
@@ -875,6 +877,24 @@ class ProjectModel(QObject):
             return _("each session has its own Calibration, beside its Session block")
         e = wfl.palette_problem(self.graph(p), self.source_kind(p), block)
         return refused_text(e) if e is not None else ""
+
+    def gives_post(self, p) -> bool:
+        """Whether a workflow gives Post an image: one made before the free graph does; a graph does once it has an
+        Output block (a stretched image is its own; issue #49)."""
+        try:
+            w = self.p.workflow(p.pid)
+        except KeyError:
+            return False
+        if w.blocks is None or wfl.source_of(w) == "stretched":
+            return True
+        return any(n["block"] == "output" and not n["off"] for n in w.blocks)
+
+    def is_graph(self, p) -> bool:
+        """A workflow made as a graph (issue #47), not from options."""
+        try:
+            return self.p.workflow(p.pid).blocks is not None
+        except KeyError:
+            return False
 
     def feeds_fusion(self, p) -> bool:
         """Whether a workflow is a channel of a fusion (issue #47: its output is not a layer of Post by itself)."""
@@ -960,6 +980,52 @@ class ProjectModel(QObject):
                 self.p.stack_mode = "per_session"
             self.p.validate()
         return sid
+
+    def can_branch(self, p: WorkflowView, key: str, block: str) -> bool:
+        """Whether ``block`` can start a new branch right after the block ``key`` of a workflow (issue #47)."""
+        if block == "color" and self.is_mono(p):
+            return False
+        g = self.graph(p)
+        i = self.node_index(p, key)
+        if i is None or g[i]["off"]:
+            return False
+        head = g[:i + 1]
+        return wfl.place_problem(head, self.source_kind(p), block, len(head)) is None
+
+    def add_branch(self, p: WorkflowView, key: str, block: str) -> tuple[WorkflowView, str]:
+        """A new branch (issue #47): a workflow with the same source, sessions and settings as ``p``, its graph up to
+        the block ``key``, then ``block``. What they share is computed once (the same keys) and drawn once, as a fork.
+        Returns the branch and its new block's key."""
+        g = self.graph(p)
+        i = self.node_index(p, key)
+        if i is None or not self.can_branch(p, key, block):
+            raise ValueError(self.palette_reason(p, block) or _("a branch cannot start there"))
+        head = [dict(n) for n in g[:i + 1]]
+        n = wfl.node(block, name=wfl.new_name(head, block))
+        head.append(n)
+        from .blocks import block_title
+        with self._edit():
+            w = api.add_workflow(self.p, self.unique_name(f"{p.name} · {block_title(None, node_key(n))}"), None, None,
+                                 copy_of=p.pid)
+            x = self.p.workflow(w.id)
+            x.source = copy.deepcopy(self.p.workflow(p.pid).source)
+            x.sessions = copy.deepcopy(self.p.workflow(p.pid).sessions)
+            x.end = None
+            self.p.set_blocks(w.id, head)
+            self.p.validate()
+        return self._view_of(w.id), node_key(n)
+
+    def add_parallel_flow(self) -> WorkflowView:
+        """A second flow of frames (issue #47: a Session dropped on the new-flow zone): its own empty Session, the
+        flows that took every session keep the ones they had."""
+        with self._edit():
+            mine = [s.id for s in self.p.sessions]
+            for w in self.p.workflows:
+                if w.source is None and w.sessions is None:
+                    w.sessions = list(mine)                   # they keep their nights
+            sid = self.add_filter_session("")
+            q = self.add_graph_workflow(_("Flow"), [], sessions=[sid])
+        return q
 
     def _sync_graphs(self):
         """The graphs follow options set by code that speaks options (a method chosen in the panel...)."""
@@ -1107,7 +1173,7 @@ class ProjectModel(QObject):
                 g = self.graph(q)
                 i = self.node_index(q, key)
                 g[i] = dict(g[i], off=on)
-                e = wfl.graph_problem(g, self.source_kind(q))
+                e = wfl.graph_problem(wfl.with_output(g, self.source_kind(q)), self.source_kind(q))
                 if e is not None:
                     raise ValueError(refused_text(e))
                 self.p.set_blocks(q.pid, g)

@@ -1663,7 +1663,7 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
         assert block(1, "calibration").bp == ("pending", 2, 2) and block(1, "alignement").bp == ("pending", 2, 2)
         both("2_graph_breakpoints", lambda: w)
         # 2. Run all: the plan stops after Calibration
-        w.launch()
+        w.run.launch()                                     # the plan first (#51: the button starts)
         d = w.run.dialog
         assert d.pause_note.text() == "Stops after Calibration for your review" and d.pause_more.text().startswith(
             "1 more pause after it: Registration")
@@ -1708,7 +1708,7 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
         w.set_mode(0)
         settle()
         # 5. Continue: the review is marked, Registration runs for real, and the run stops again at its breakpoint
-        w.launch()
+        w.run.launch()
         d = w.run.dialog
         assert d.paused() and d.phase() == "plan" and d.summary.text() == "Waiting for your review"
         d.b_continue.click()
@@ -1755,3 +1755,10 @@ def test_the_plan_lists_the_blocks_up_to_date_too_with_a_tick(toy, monkeypatch):
     w = runs.RunRow(rows[0])
     w.show_state(runs.DONE, 1.0, "up to date", "")
     assert w.mark.state == runs.DONE and runs.STATE_COLOR[runs.WAITING] == runs.WARN
+
+
+def test_the_run_button_starts_the_run_at_once(toy):
+    """Issue #51: Run starts the run and shows its window following it (no second click)."""
+    d = toy.ctl.launch(start=True)
+    assert d is not None and toy.ctl.running and d.phase() == "run"
+    assert pump(lambda: toy.track is not None and toy.track.finished and not toy.ctl.running, 120)

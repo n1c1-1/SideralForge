@@ -426,7 +426,7 @@ class Panel(QWidget):
         if node is None:
             return
         k = node.key
-        if k == "session" or (k == "sources" and self.s.sources_loaded and len(self.s.sessions) == 1):
+        if k == "session" or (k == "sources" and len(self.s.sessions) == 1):      # #48: even empty, its lists
             self.session_panel(node.sid if node.sid is not None else self.s.sessions[0]["id"])
         elif k == "sources" and self.s.sources_loaded and self.s.stack_mode == "together":
             self.all_nights()

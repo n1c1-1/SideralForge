@@ -340,5 +340,19 @@
   "Name": "Nom",
   "No frames yet: add the lights in the Session blocks": "Pas encore de poses : ajoutez les brutes dans les blocs Session",
   "no frames yet: add the lights in the Session blocks": "pas encore de poses : ajoutez les brutes dans les blocs Session",
-  "Output": "Sortie"
+  "Output": "Sortie",
+  "empty: add its lights": "vide : ajoutez ses brutes",
+  "Each channel: every color stretched apart, which neutralizes the background (the workflow's output is prepared again)": "Chaque canal : chaque couleur étirée à part, ce qui neutralise le fond (la sortie du workflow est préparée à nouveau)",
+  "Click to select it, Del to remove it": "Cliquez pour le sélectionner, Suppr pour le retirer",
+  "Remove": "Retirer",
+  "“{name}”: its image to Post as a layer": "« {name} » : son image vers le Post en calque",
+  "“{name}” no longer goes to Post · Ctrl+Z undoes it": "« {name} » ne va plus au Post · Ctrl+Z l'annule",
+  "“{name}” deleted · Ctrl+Z undoes it": "« {name} » supprimé · Ctrl+Z l'annule",
+  "New flow: drop a Session or an Image here, or click for a template": "Nouveau flux : déposez une Session ou une Image ici, ou cliquez pour un modèle",
+  "{block}: new branch": "{block} : nouvelle branche",
+  "A new branch from here: what comes before is shared (computed once), then {block}; it goes to Post as a layer of its own": "Une nouvelle branche d'ici : ce qui précède est partagé (calculé une fois), puis {block} ; elle va au Post comme un calque à elle",
+  "a branch cannot start there": "une branche ne peut pas partir d'ici",
+  "A new branch: what comes before {block} is shared, computed once · Ctrl+Z undoes it": "Une nouvelle branche : ce qui précède {block} est partagé, calculé une fois · Ctrl+Z l'annule",
+  "Flow": "Flux",
+  "new branch": "nouvelle branche"
 }

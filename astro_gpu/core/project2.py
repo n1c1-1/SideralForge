@@ -249,7 +249,7 @@ class Project2:
     def set_blocks(self, wid: int | Workflow, blocks: list[dict[str, Any]]) -> None:
         """Give a workflow its graph (checked, issue #47); its options follow (what the code reading them sees)."""
         w = self.workflow(wid)
-        w.blocks = wfl.check_blocks(blocks, wfl.source_of(w))
+        w.blocks = wfl.check_blocks(wfl.with_output(blocks, wfl.source_of(w)), wfl.source_of(w))
         w.options = wfl.options_of(w.blocks, wfl.source_of(w))
         w.end = None
 

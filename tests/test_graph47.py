@@ -88,10 +88,10 @@ def test_the_placement_rules():
     assert [n["block"] for n in g] == ["calibration", "registration", "selection", "stacking", "astrometry",
                                        "gradient", "denoise", "color", "output", "stars"]
     # image blocks: anywhere among the image blocks before the Output, more than once
-    assert wfl.places(g, "frames", "denoise") == [4, 5, 6, 7, 8]
-    assert wfl.places(g, "frames", "gradient") == [4, 5, 6, 7, 8]
+    assert wfl.places(g, "frames", "denoise") == [4, 5, 6, 7, 8, 9]       # 8 and 9: the Output moves itself (#49)
+    assert wfl.places(g, "frames", "gradient") == [4, 5, 6, 7, 8, 9]
     # Color needs Astrometry before it
-    assert wfl.places(g, "frames", "color") == [5, 6, 7, 8]
+    assert wfl.places(g, "frames", "color") == [5, 6, 7, 8, 9]
     e = wfl.place_problem(g, "frames", "color", 4)
     assert e is not None and e.template == wfl.WHY_NEEDS and "Astrometry" in str(e)
     # a block that is there once: nowhere, with the reason the palette shows
@@ -105,11 +105,11 @@ def test_the_placement_rules():
     e = wfl.palette_problem(img, "image", "denoise")
     assert e is not None and e.template == wfl.WHY_HALVES
     assert wfl.palette_problem(img, "image", "stars").template == wfl.WHY_NEEDS            # Stars needs Denoise
-    assert wfl.places(img, "image", "gradient") == [0, 1]
+    assert wfl.places(img, "image", "gradient") == [0, 1, 2]
     # removing: Stacking makes the image the next blocks take; Astrometry is needed by Color; Output always there
     assert wfl.remove_problem(g, "frames", 3).template == wfl.WHY_REMOVE_BRIDGE
     assert wfl.remove_problem(g, "frames", 4).template == wfl.WHY_REMOVE_NEEDED
-    assert wfl.remove_problem(g, "frames", 8).template == wfl.WHY_REMOVE_NEEDED            # Stars needs Output
+    assert wfl.remove_problem(g, "frames", 8).template == wfl.WHY_OUTPUT_AUTO             # made automatically (#49)
     assert wfl.remove_problem(g, "frames", 6).template == wfl.WHY_REMOVE_NEEDED            # Stars needs Denoise
     assert wfl.remove_problem(g, "frames", 1) is None                                      # no Registration: trails
     # switching off: only a block whose output is its input's kind
