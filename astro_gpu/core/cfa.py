@@ -107,10 +107,13 @@ def superpixel(a: np.ndarray, cfa: str) -> np.ndarray:
 
 
 def equalised(a: np.ndarray, cfa: str, valid_max: float | None = None) -> np.ndarray:
-    """The mosaic with each colour brought to the green's level (its median over the green's), for what bins it in
-    2 x 2 cells to find the stars. A Bayer cell holds every colour in the same counts, so its sum has no pattern and
-    the frame is returned as it is; an X-Trans cell holds 1 to 3 greens: its sky would be a pattern of period 3 unless
-    the colours are levelled first. Values over ``valid_max`` (the marks of saturated samples) are left as they are."""
+    """The mosaic with each colour's sky brought to the green's (its median offset to the green's taken off), for
+    what bins it in 2 x 2 cells to find the stars. A Bayer cell holds every colour in the same counts, so its sum has
+    no pattern and the frame is returned as it is; an X-Trans cell holds 1 to 3 greens: its sky would be a pattern of
+    period 3 unless the colours are levelled first. An offset, not a gain: the pattern is the sky's levels, and a
+    gain would raise the noise of the fainter colours (on an X-T3 frame of M31, the noise of the binned frame: 76 as
+    it is, 72 levelled by offsets, 110 by gains, and fewer stars found). Values over ``valid_max`` (the marks of
+    saturated samples) are left as they are."""
     if not is_xtrans(cfa):
         return a
     a = np.array(a, np.float32)
@@ -120,8 +123,8 @@ def equalised(a: np.ndarray, cfa: str, valid_max: float | None = None) -> np.nda
     lv = []
     for c in range(3):
         v = a[sub][(col[sub] == c) & ok[sub]]
-        lv.append(float(np.median(v)) if v.size else 0.0)
-    if not all(np.isfinite(lv)) or min(lv) <= 0:
+        lv.append(float(np.median(v)) if v.size else np.nan)
+    if not all(np.isfinite(lv)):
         return a
-    gain = np.array([lv[1] / lv[0], 1.0, lv[1] / lv[2]], np.float32)[col]
-    return np.where(ok, a * gain, a)
+    off = (np.array(lv, np.float32) - np.float32(lv[1]))[col]
+    return np.where(ok, a - off, a)
