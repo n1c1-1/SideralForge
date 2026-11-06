@@ -53,6 +53,7 @@ from .postfilters import curves as pf_curves
 from .postfilters import dehaze as pf_dehaze
 from .postfilters import detail as pf_detail
 from .postfilters import heal as pf_heal
+from .postfilters import mixer as pf_mixer
 from .postfilters import tone as pf_tone
 
 MODES = ["Normal", "Lighten", "Screen", "Linear dodge (add)", "Multiply", "Soft light"]   # plain English: _() where shown
@@ -230,12 +231,45 @@ def f_saturation(x, p, ctx):
         return x
     L = lum(x)
     center = dict(HUES)[p["hues"]]
-    if center is None:                                 # every hue alike: L + (x - L) * (1 + k) in one pass
+    guard = background_guard(L, p.get("protect", 0.0))
+    if center is None and guard is None:               # every hue alike: L + (x - L) * (1 + k) in one pass
         return _mix(x, 1 + k, _gray3(L), -k)
-    h, s = hue(x)
-    w = (hue_weight(h, center, 45) * np.clip(s * 3, 0, 1))[..., None]
+    w = np.ones_like(L)
+    if center is not None:
+        h, s = hue(x)
+        w = hue_weight(h, center, 45) * np.clip(s * 3, 0, 1)
+    if guard is not None:
+        w = w * guard
     L = L[..., None]
-    return L + (x - L) * (1 + k * w)
+    return L + (x - L) * (1 + k * w[..., None])
+
+
+def background_guard(L, factor: float):
+    """Issue #23: the saturation of the astronomy software's colour tools spares the background: only the pixels
+    brighter than ``factor`` x (the median + one sigma of the image's luminance) change, so that the noise of the
+    background is not coloured. A smooth start over 20 % around that level; None at 0 (everything changes)."""
+    if factor <= 0:
+        return None
+    sub = L[::4, ::4]
+    med = float(np.median(sub))
+    sig = 1.4826 * float(np.median(np.abs(sub - med)))
+    thr = factor * (med + sig)
+    return np.clip((L - 0.8 * thr) / max(0.4 * thr, 1e-6), 0, 1).astype(np.float32)
+
+
+def mixer_params() -> list[dict]:
+    """The Colour mixer's settings: for each band its hue (degrees), saturation and luminance (percent)."""
+    words = {"hue": "hue", "sat": "saturation", "lum": "luminance"}
+    out = []
+    for k in pf_mixer.keys():
+        what, band = k.split("_")
+        top = pf_mixer.HUE_MAX if what == "hue" else 100
+        out.append(P(k, f"{band.capitalize()} · {words[what]}", -top, top, 0, "°" if what == "hue" else "%", 1))
+    return out
+
+
+def f_mixer(x, p, ctx):
+    return pf_mixer.mix(x, p)
 
 
 def f_scnr(x, p, ctx):
@@ -395,7 +429,12 @@ FILTERS = {
     "saturation": dict(name="Saturation", family="Color", fn=f_saturation,
                        source="Saturation around the luminance, by hue range",
                        params=[P("strength", "Strength", -100, 150, 0, "%", 1),
-                               C("hues", "Hues", [h for h, _ in HUES], "All")]),
+                               C("hues", "Hues", [h for h, _ in HUES], "All"),
+                               P("protect", "Background protection", 0, 3, 0, "", 0.1)]),
+    "mixer": dict(name="Colour mixer", family="Color", fn=f_mixer,
+                  source="Hue, saturation and luminance of eight colour ranges in CIE L*c*h*, as the colour mixers of "
+                         "photo editors; the grey background and white star cores left alone",
+                  params=mixer_params()),
     "scnr": dict(name="Green removal", family="Color", fn=f_scnr,
                  source="Removes a green cast: the green held under a neutral made of red and blue",
                  params=[P("strength", "Amount", 0, 1, 0, step=0.01),
