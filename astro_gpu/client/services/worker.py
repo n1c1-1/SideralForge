@@ -192,7 +192,8 @@ def norm_path(x) -> str:
 
 
 def disk_usage(folders: dict[str, str]) -> dict[str, tuple[float, float] | None]:
-    """{name: (used GB, total GB) of the drive holding the folder}, None when the drive is not there."""
+    """{name: (GB the folder itself holds, GB free on its drive)}, None when the drive is not there (GUI exploration 2:
+    the Cache bar showed the whole drive's use, read as the cache's)."""
     out: dict[str, tuple[float, float] | None] = {}
     for name, folder in folders.items():
         p = Path(folder) if folder else None
@@ -202,5 +203,25 @@ def disk_usage(folders: dict[str, str]) -> dict[str, tuple[float, float] | None]
             u = shutil.disk_usage(p) if p is not None and p.exists() else None
         except OSError:
             u = None
-        out[name] = (u.used / 1e9, u.total / 1e9) if u else None
+        own = folder_bytes(Path(folder)) if u and folder and Path(folder).is_dir() else 0
+        out[name] = (own / 1e9, u.free / 1e9) if u else None
     return out
+
+
+def folder_bytes(root: Path) -> int:
+    """The size of the files under a folder (links not followed; a file that cannot be read counts nothing)."""
+    total, todo = 0, [root]
+    while todo:
+        try:
+            with os.scandir(todo.pop()) as it:
+                for e in it:
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            todo.append(Path(e.path))
+                        elif e.is_file(follow_symlinks=False):
+                            total += e.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return total

@@ -585,7 +585,7 @@ def test_the_tools_in_french(preps, qapp):
         ed.fill_presets()
         texts = [ed.preset.itemText(i) for i in range(ed.preset.count())]
         assert "   Contraste moyen" in texts and "Personnalisé" in texts and "   Remonter les tons moyens" in texts
-        assert ed.b_reset.text() == "Réinitialiser le canal"
+        assert ed.b_reset.text() == "Réinitialiser canal"
         v.build_filter_menu()
         assert [a.text() for a in v.filter_menu.actions()][:2] == ["Étirement", "Contraste"]
         assert not i18n.missing(), sorted(i18n.missing())

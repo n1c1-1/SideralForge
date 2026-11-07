@@ -456,6 +456,9 @@ class Keys:
         sid = session_of(stage)
         # an instance reads its session's instances under the stages' names: keyed so, as in a one-session project
         u = {(base(d) if sid is not None and session_of(d) == sid else d): self.key(w, d) for d in self.deps(w, stage)}
+        # a block placed twice ("gradient~2") is keyed by its stage, not by its number: the same computation has the
+        # same key whatever the graph numbered it (GUI exploration 2). Only "~" names change: no other key moves.
+        u = {(k.split("~", 1)[0] if "~" in k and k.split("~", 1)[0] not in u else k): x for k, x in u.items()}
         return {"s": b, "v": self.rules.version(b, m), "p": p, "u": u, "x": x}
 
     def key(self, wf: int | Workflow, stage: str) -> str:

@@ -39,11 +39,40 @@ def image_problem(path: str | Path) -> str:
     try:
         with open(p, "rb") as f:
             head = f.read(8)
+        if any(head.startswith(m) for m in MAGIC[suf]) and suf in (".fits", ".fit", ".fts") and _fits_damaged(p):
+            return "{name} cannot be read: the file is damaged."
     except OSError:
         return "{name} cannot be read."
     if not any(head.startswith(m) for m in MAGIC[suf]):
         return "{name} is not an image: its content is not that of its format."
     return ""
+
+
+def _fits_damaged(p: Path) -> bool:
+    """Whether a FITS file is cut or damaged (GUI exploration round 2: said before the run, as a missing file is): its
+    header has no END card, or the file is shorter than the data its header declares. Reads only the header."""
+    size = p.stat().st_size
+    cards: dict[str, str] = {}
+    n = 0
+    with open(p, "rb") as f:
+        while True:
+            block = f.read(2880)
+            if len(block) < 2880 or n >= 1000:           # no END in what there is (or an absurd header)
+                return True
+            n += 1
+            for i in range(0, 2880, 80):
+                card = block[i:i + 80].decode("ascii", "replace")
+                key = card[:8].strip()
+                if key == "END":
+                    try:
+                        bitpix = abs(int(cards.get("BITPIX", "0")))
+                        dims = [int(cards.get(f"NAXIS{k}", "0")) for k in range(1, int(cards.get("NAXIS", "0")) + 1)]
+                    except ValueError:
+                        return True
+                    data = bitpix // 8 * int(np.prod(dims)) if dims else 0
+                    return size < n * 2880 + data
+                if card[8:10] == "= ":
+                    cards[key] = card[10:].split("/")[0].strip()
 
 
 class ImageParams(StageParams):

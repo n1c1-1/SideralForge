@@ -1,5 +1,5 @@
 """Engine exploration (engine_shapes): the anomalies found, each reproduced at least twice, written for the user to
-judge (F:/astro_essais/A_REGARDER/exploration/engine_shapes/anomalies.jsonl). Run once."""
+judge (F:/astro_essais/A_REGARDER/exploration2/engine_shapes/anomalies.jsonl). Run once."""
 from __future__ import annotations
 
 import sys

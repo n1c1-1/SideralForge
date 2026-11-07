@@ -688,6 +688,8 @@ def add_scan(p, scan, criteria=None, session: int | None = None) -> list:
     if len(groups) <= len(by_night):
         return api.add_frames(p, scan)
     made = [api.add_session(p, lights=g.paths, name=g.name) for g in groups]
+    for s, g in zip(made, groups):
+        s.filter = g.filter                           # read from the FITS headers
     from datetime import datetime
     mids = [datetime.fromisoformat(g.start) if g.start else None for g in groups]
     for kind in ("darks", "flats", "bias", "flat_darks"):

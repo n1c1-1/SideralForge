@@ -213,9 +213,12 @@ def test_a_run_that_cannot_start_says_why_in_plain_words_in_the_window_and_the_l
     texts = [lb.text() for lb in d.findChildren(QLabel) if lb.isVisibleTo(d)]
     assert "Exécution non démarrée" in texts
     assert any("accès refusé" in x for x in texts) and not any("Permission" in x or "Errno" in x for x in texts)
-    assert history and history[-1][0] == "Run not started: {why}"
+    # exploration 2: the real cause follows the plain sentence in the history and the console (never in the window)
+    assert history and history[-1][0] == "Run not started: {why} · cause: {detail}"
     assert event_text(("12:00:00", history[-1][0], history[-1][1]))[1] == \
-        "Exécution non démarrée : le dossier du projet ne peut pas être écrit : accès refusé"
+        "Exécution non démarrée : le dossier du projet ne peut pas être écrit : accès refusé · cause : " \
+        "PermissionError: [Errno 13] Permission denied: 'C:/P/logs'"
+    assert w.ctl.track.lines[-1][1] == "start_detail" and "Permission denied" in render_line(w.ctl.track.lines[-1])
     d.close()
 
 

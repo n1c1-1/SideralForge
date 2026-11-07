@@ -264,6 +264,12 @@ def test_card_shows_nights_integration_date_and_state(env):
     assert card_line(heart) == "2 nuits · 10 min · 2026-08-17"
     appmod.apply_language("en")
     assert card_line(heart) == "2 nights · 10 min · 2026-08-17"
+    # a template's empty Sessions are no nights: the card says what a blank project says (GUI exploration 2)
+    p = project2.load(env["ws"] / "NGC7822")
+    p.sessions = [project2.Session(1, "Ha", filter="Ha"), project2.Session(2, "OIII", filter="OIII")]
+    project2.save(p)
+    empty = project_info(env["ws"] / "NGC7822")
+    assert empty.nights == 0 and card_line(empty).startswith("No frames yet · ")
     assert state_text("up_to_date", {"n": 1}) == "1 workflow up to date"
     assert state_text("up_to_date", {"n": 4}) == "All 4 workflows up to date"
     assert state_text("mixed", {"n": 2, "stale": 1, "todo": 0}) == "2 workflows · 1 outdated"
@@ -542,7 +548,7 @@ def test_the_template_gallery_on_the_model(qapp, tmp_path):
     assert {c.t["key"] for c in d.cards} == {"blank", "image", "image_colours", "image_plain", "image_stretched"}
     assert not d.ok.isEnabled() and d.file_row.isVisibleTo(d)
     img = tmp_path / "m42.fits"
-    img.write_bytes(b"SIMPLE  =" + bytes(2871))                              # a FITS file: its first bytes (7.3)
+    img.write_bytes((b"SIMPLE  =                    T".ljust(80) + b"END".ljust(80)).ljust(2880))   # a FITS file (7.3)
     d.file.setText(str(img))
     assert d.ok.isEnabled()
     d.tabs.setCurrentIndex(1)                     # filters: the project's sessions have none, so nothing to make
@@ -559,6 +565,53 @@ def test_the_template_gallery_on_the_model(qapp, tmp_path):
     assert chain_of(next(t for t in GALLERY if t["key"] == "sho"))[-1] == ("post", "")
     pm = draw_graph(GALLERY[0], 300, 100, names=True)
     assert (pm.width(), pm.height()) == (300, 100)
+
+
+def test_the_gallery_fits_a_1366_by_768_screen_and_its_previews_never_cut_a_name(qapp, monkeypatch):
+    """GUI exploration 2: the window was 1180 x 700 over a 768 screen, and the preview cut the names ("Empile…"): it
+    is no taller than the window it opens over, and a chain too long for its width goes on, on a second row."""
+    from astro_gpu.client import gallery
+    top = QWidget()
+    top.resize(1366, 697)                                     # a maximised window of a 1366 x 768 screen
+    top.show()
+    d = TemplateGallery(FakeModel(), None, top)
+    assert d.height() <= 697 - 40 and d.width() <= 1366
+    d.close()
+    top.close()
+    cut = []
+
+    class Metrics(gallery.QFontMetrics):
+        def elidedText(self, text, mode, width, flags=0):                         # noqa: N802 - Qt's name
+            out = super().elidedText(text, mode, width, flags)
+            if out != text:
+                cut.append(text)
+            return out
+    monkeypatch.setattr(gallery, "QFontMetrics", Metrics)
+    for lang in ("fr", "en"):
+        i18n.set_language(lang)
+        try:
+            for t in GALLERY:
+                draw_graph(t, gallery.PREVIEW_W, 190, names=True)
+        finally:
+            i18n.set_language("en")
+    assert not cut, cut
+
+
+def test_the_unknown_target_message_is_never_cut(qapp, tmp_path):
+    """GUI exploration 2: New project's message for a target the catalogues do not have had its second line cut."""
+    i18n.set_language("fr")
+    try:
+        d = NewProjectDialog(tmp_path.as_posix(), "Truc")
+        d.show()
+        d.target.setText("Truc inconnu 42")
+        d._check_target()
+        for _i in range(3):
+            qapp.processEvents()
+        lb = d.found
+        assert lb.text().startswith("Absente des catalogues") and lb.height() >= lb.heightForWidth(lb.width())
+        d.close()
+    finally:
+        i18n.set_language("en")
 
 
 def test_french_covers_every_shell_screen(env, qapp):

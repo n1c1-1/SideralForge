@@ -38,8 +38,8 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from .. import api
 from ..core import workflow as wfl
-from ..core.project2 import Workflow, read_state, write_state
-from .blocks import COLUMNS, KEY_ENGINE_BLOCK, TOOLS, TRUNK, block_state  # noqa: F401  (TOOLS: test_model_surface reads it here)
+from ..core.project2 import FILTERS, Workflow, read_state, write_state
+from .blocks import COLUMNS, KEY_ENGINE_BLOCK, TOOLS, TRUNK, block_state, kbase, knum  # noqa: F401  (TOOLS: test_model_surface)
 from .blocks import ENGINE_BLOCK as ENGINE_KEY
 from .i18n import _, hm
 from .services.worker import ApiWorker, norm_path
@@ -214,7 +214,14 @@ class Pause:
     block: str
     pids: list[int]
     done: bool = False
-    later: list[str] = field(default_factory=list)
+    later: list[tuple[int, str]] = field(default_factory=list)      # (workflow id, block)
+    #: Run all: every workflow's own first review (workflow id, block); the first is ``block``. Empty: (pids, block)
+    stops: list[tuple[int, str]] = field(default_factory=list)
+    #: the workflows Run all holds back until the review (they would compute past a paused block)
+    waiting: list[int] = field(default_factory=list)
+
+    def all_stops(self) -> list[tuple[int, str]]:
+        return list(self.stops) or [(pid, self.block) for pid in self.pids]
 
 
 #: the reviews kept in state.json (the newest): enough for any project, small for the file
@@ -231,6 +238,9 @@ class Facts:
     sessions: dict = field(default_factory=dict)         # session id -> {kind: file count}
     files: dict = field(default_factory=dict)            # session id -> {kind: [file path]} (issue #58)
     reviewed: list = field(default_factory=list)         # the results the user marked as checked (state.json)
+    #: what makes a session's data impossible to compute, said before the run (``session_checks``): session id ->
+    #: [(English template, its fields)]
+    checks: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------------------------- worker jobs
@@ -266,9 +276,86 @@ def _facts_job(p) -> Facts:
             files[kind] = [Path(x).as_posix() for x in got]
         f.sessions[s.id] = counts
         f.files[s.id] = files
+        f.checks[s.id] = session_checks(p, s, files)
     if p.root is not None:
         f.reviewed = [str(x) for x in read_state(p.root).get("reviewed") or []]
     return f
+
+
+#: what the cheap reads of a frame said, by (path, modification time, size): a frame is read once per client
+_FRAME_READS: dict = {}
+#: the frame lists a session check names ("the folder of the darks")
+FRAME_KINDS = {"lights": "lights", "darks": "darks", "flats": "flats", "bias": "bias", "flat_darks": "flat darks"}
+
+
+def _frame_read(path: str, size: bool) -> tuple[bool, tuple[int, int] | None]:
+    """(whether the frame can be read, its size (width, height) or None). Without ``size`` only a FITS file's first
+    card is read (it must be SIMPLE: a text file renamed .fits is not a FITS file; a camera raw file is not opened);
+    with it, the size from the header (NAXIS1/NAXIS2, or the raw header). Never the pixels of a FITS file; remembered
+    per file."""
+    from ..core.project import frame_kind
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return False, None
+    k = (path, st.st_mtime_ns, st.st_size, size)
+    if k in _FRAME_READS:
+        return _FRAME_READS[k]
+    out: tuple[bool, tuple[int, int] | None] = (True, None)
+    kind = frame_kind(path)
+    try:
+        if kind == "fits":
+            with open(path, "rb") as fh:
+                head = fh.read(30)
+            if not head.startswith(b"SIMPLE") and not head.startswith(b"\x1f\x8b"):    # gzipped: read by the engine
+                out = (False, None)
+            elif size and head.startswith(b"SIMPLE"):
+                from ..io.frames import fits_header
+                hd = fits_header(path)
+                w, h = int(hd.get("NAXIS1", 0)), int(hd.get("NAXIS2", 0))
+                out = (True, (w, h) if w and h else None)
+        elif kind == "raw" and size:
+            try:
+                from ..io.frames import read_info
+                info = read_info(path)
+                out = (True, (int(info.width), int(info.height)))
+            except Exception:  # noqa: BLE001 - a raw file the decoder refuses: its size is not known, the engine says
+                out = (True, None)
+    except Exception:  # noqa: BLE001 - a FITS frame whose header cannot be read is said so
+        out = (False, None)
+    _FRAME_READS[k] = out
+    return out
+
+
+def session_checks(p, s, files: dict) -> list[tuple[str, dict]]:
+    """What makes a session's data impossible to compute, found before the run (worker thread; PRINCIPLES: nothing
+    runs without data): a folder of its frames that is not there (a disk unplugged), a FITS frame that is not a FITS
+    file, calibration frames of another size than the lights. (English template, its fields); the kinds are
+    translated where shown. Cheap reads only: the headers, the first frame of each kind for its size, each FITS file's
+    first card."""
+    out: list[tuple[str, dict]] = []
+    for kind in FRAME_KINDS:
+        for x in getattr(s, kind) or []:
+            if not Path(p.abspath(x)).exists():
+                out.append(("{session}: the folder of the {kind} is not found: {folder} (is its disk plugged in?)",
+                            dict(kind=FRAME_KINDS[kind], folder=str(x))))
+                break
+    sizes: dict[str, tuple[int, int]] = {}
+    for kind in FRAME_KINDS:
+        for path in files.get(kind) or []:
+            ok, size = _frame_read(path, kind not in sizes)   # the first readable frame of each kind says its size
+            if not ok:
+                out.append(("{session}: {name} is not a frame that can be read (damaged, or not a FITS file): take it "
+                            "out of the session", dict(name=Path(path).name)))
+                break
+            if size is not None and kind not in sizes:
+                sizes[kind] = size
+    light = sizes.get("lights")
+    for kind, size in sizes.items():
+        if light is not None and kind != "lights" and size != light:
+            out.append(("{session}: the {kind} are {w}×{h} pixels, the lights {lw}×{lh}: they cannot calibrate them",
+                        dict(kind=FRAME_KINDS[kind], w=size[0], h=size[1], lw=light[0], lh=light[1])))
+    return out
 
 
 def _describe_job(p, wid: int, stage: str):
@@ -370,12 +457,20 @@ class ProjectModel(QObject):
         self._reviewed: list[str] = []                     # "<block>:<fingerprint>" of the results marked as checked
         self._undo: list = []
         self._redo: list = []
+        self._undo_what: list = []                         # what each undo step did, in words (None: not said)
+        self._redo_what: list = []
+        self._naming = False                               # the last step still takes its words (the same gesture)
+        self.restored: str = ""                            # what the last Undo / Redo put back, in words
         self._depth = 0
         self._dirty = False
         self._post_removed_from_edited()
         self._rebuild_views()
+        # the workflow and block shown when the project was last closed or saved (kept in the settings, so that a
+        # project opened and closed without an edit is never written; GUI exploration 2), else as saved in it
+        mem = self._remembered_selection()
         if self.paths:
-            self.current = max(0, next((i for i, v in enumerate(self.paths) if v.pid == project.current), 0))
+            cur = mem.get("current", project.current)
+            self.current = max(0, next((i for i, v in enumerate(self.paths) if v.pid == cur), 0))
         # GUI exploration 6.6: the block selected when the project was saved, if it is still there; else the Session
         # (a Stacking was selected, often not in the graph). The selection is kept with the next save, as ``current``
         sids = [s.id for s in project.sessions]
@@ -385,8 +480,11 @@ class ProjectModel(QObject):
         if w is not None:
             have |= {"post"} | ({node_key(n) for n in w.blocks} if w.blocks is not None else
                                 {"calibration", "alignement", "selection", "empilement"})
-        saved = getattr(project, "current_block", "")
-        self.sel_step = saved if saved in have else (f"session@{sep[0]}" if sep and sids else "sources")
+            if w.source is not None:                    # an Image or a Fusion selected is taken back too
+                have |= {"fusion"} if "fusion" in w.source else {"image"}
+        saved = mem.get("block", getattr(project, "current_block", ""))
+        first = "image" if w is not None and w.source is not None and "fusion" not in w.source else "sources"
+        self.sel_step = saved if saved in have else (f"session@{sep[0]}" if sep and sids else first)
         self.currentChanged.connect(lambda: setattr(self.p, "current_block", self.sel_step or ""))
         self._start_warm()
 
@@ -580,6 +678,8 @@ class ProjectModel(QObject):
         is closed)."""
         if save:
             self.flush()
+        else:
+            self.remember_selection()                      # edits dropped: where it reopens is kept all the same
         self.worker.cancel(f"model.warm:{id(self)}")
         for sig, slot in ((self.worker.done, self._worker_done), (self.worker.failed, self._worker_failed)):
             try:
@@ -601,9 +701,35 @@ class ProjectModel(QObject):
             if self.path is not None:
                 self.p.current = self.path.pid
             api.save(self.p)
+        self.remember_selection()                          # with or without an edit: where it reopens (2, 6.6)
         if self._dirty:
             self._dirty = False
             self.dirtyChanged.emit(False)
+
+    #: the settings key of the block shown per project (its folder): {"current": workflow id, "block": block}
+    SELECTION_KEY = "selection"
+
+    def _remembered_selection(self) -> dict:
+        if self.root is None:
+            return {}
+        from . import prefs
+        got = (prefs.get(self.SELECTION_KEY) or {}).get(Path(self.root).as_posix().lower())
+        return got if isinstance(got, dict) else {}
+
+    def remember_selection(self):
+        """The workflow and block shown, kept in the settings (never in the project: opening and closing it without
+        an edit writes nothing into it): Save without an edit, and closing, keep where the project reopens."""
+        if self.readonly or self.root is None:
+            return
+        from . import prefs
+        want = {"current": self.path.pid if self.path is not None else None, "block": self.sel_step or ""}
+        key = Path(self.root).as_posix().lower()
+        cur = dict(prefs.get(self.SELECTION_KEY) or {})
+        if cur.get(key) == want:
+            return
+        cur.pop(key, None)
+        cur[key] = want                                    # the last one last; the oldest go beyond 50 projects
+        prefs.set(self.SELECTION_KEY, dict(list(cur.items())[-50:]))
 
     def edited(self):
         """The definition changed (the workflows, the sessions, the frames excluded by hand, the Post composition):
@@ -691,20 +817,39 @@ class ProjectModel(QObject):
         self.set_post_layers(save_layers(normalize(layers)), source)
         return out
 
-    def add_post_layer(self, pid: int, part: str | None, source=None) -> int:
+    def add_post_layer(self, pid: int, part: str | None, source=None, keep_default: bool = True) -> int:
         """A layer of a workflow's image at the top of Post, shown: its Output block's image (``part`` None) or one of
         its Stars block's (the starless image, the stars alone, or a new Stars and background block). Returns its
-        id."""
+        id. ``keep_default`` False: it is the layer Post shows by default for the workflow, made real (its first
+        setting)."""
         from .postengine import new_workflow_layer
         p = self.view(pid)
         name = p.name + ("" if part is None else " · " + POST_PART_NAMES[part])
         lay = new_workflow_layer(pid, name, True, part)
 
         def change(layers):
-            self._filled(layers, pid if part == "combined" else None)
+            self._filled(layers, None if keep_default else pid)
+            if keep_default and part is not None and any(q.pid == pid for q in self.post_defaults(layers)):
+                # the image Post shows by default for this workflow stays: a Recombine added is a second one, the
+                # first double-click of its card included (2nd round)
+                d = self.post_default_part(p)
+                layers.insert(0, new_workflow_layer(pid, p.name + ("" if d is None else " · " + POST_PART_NAMES[d]),
+                                                    True, d))
+            same = [x for x in layers if x.get("kind") == "workflow" and x.get("pid") == pid and x.get("part") == part]
+            if part == "combined" and same:               # several Recombine of one workflow: numbered (2nd round)
+                lay["name"] = f"{name} {len(same) + 1}"
             layers.insert(0, lay)
             return lay["id"]
         return self._post_edit(change, source)
+
+    def default_post_layer(self, pid: int) -> int:
+        """The Recombine Post shows by default for a workflow, made a layer of its own to open it in Post: what Post
+        shows does not change, so it is not an undo step (decision 7: opening is never one)."""
+        n, redo = len(self._undo), list(self._redo)
+        lid = self.add_post_layer(pid, "combined", None, keep_default=False)
+        del self._undo[n:]
+        self._redo[:] = redo
+        return lid
 
     def _filled(self, layers: list[dict], skip: int | None = None):
         """A composition never filled (no workflow layer yet): the layers Post gives the workflows first (with the
@@ -720,7 +865,8 @@ class ProjectModel(QObject):
             if q.pid == skip and stars:
                 continue
             made.append(new_workflow_layer(q.pid, q.name + (" · " + POST_PART_NAMES["combined"] if stars else ""),
-                                           False, "combined" if stars else None))
+                                           bool(q.end) or self.is_sent_branch(q),     # a block's image sent: shown,
+                                           "combined" if stars else None))           # as the Split's (2nd round)
         if made:
             base = next((x for x in made if x["name"].startswith("Full")), made[-1])
             base["visible"] = True
@@ -777,7 +923,10 @@ class ProjectModel(QObject):
         for v in self.paths:
             stages = self._chains.get(v.pid, [])
             v.computed = bool(stages) and all(self.state(v, s) == "done" for s in stages)
-            out = next((s for s in reversed(stages) if s in BY_OUTPUT), None)
+            # the Output's image; an already stretched Image stands for it (its chain has no render_simple, the Image
+            # block writes what the Output would: wfl.PROVIDES; engine_shapes: its layer never reached Post)
+            out = next((s for s in reversed(stages) if s in BY_OUTPUT or ((v.source or {}).get("stretched") and any(
+                o in BY_OUTPUT for o in wfl.PROVIDES.get(wfl.base(s), ())))), None)
             st = self._states.get((v.pid, out)) if out else None
             v.rendered = bool(st) and (st.state == "done" or bool(st.previous_key))
         for v in self.paths:
@@ -830,30 +979,65 @@ class ProjectModel(QObject):
             if top:
                 self._sync_graphs()
                 self._prune_breakpoints()
+                self._follow_branch_names()
                 self._prune_post()
                 if self._snapshot() != before:
                     self._undo.append(before)
                     del self._undo[:-200]
                     self._redo.clear()
+                    self._new_step()
                     self.edited()
                 elif self._extra() != extra:
                     self.edited()                           # not for Undo: the frames, not the workflows
                 self._sync()
                 self.pathsChanged.emit()
 
-    def join_session(self, p, sid: int):
-        """A session read by no workflow joins ``p``'s flow of frames (or the first one), or starts a flow of its own
-        (GUI exploration 1.8: a Session placed is always in the graph)."""
-        if any(sid in self.p.sessions_of(w.id) and w.source is None for w in self.p.workflows):
-            return
+    def join_session(self, p, sid: int) -> WorkflowView | None:
+        """A new session joins the chosen flow of frames ``p`` (GUI exploration 2, decision 1): it is added to that
+        flow's sessions (every workflow of the flow: its branches too), never put in their place; joining a filter's
+        flow, a session without a filter takes that filter. A Fusion or an Image chosen, a session of another filter,
+        or nothing chosen among several flows: it starts a flow of its own (1.8: a Session placed is always in the
+        graph). Returns the workflow that reads it (None when there is none)."""
         frames = [w for w in self.p.workflows if w.source is None]
-        w = next((x for x in frames if p is not None and x.id == p.pid), frames[0] if frames else None)
+        ses = self.p.session(sid)
+
+        def ids(w):
+            return None if w.sessions is None else tuple(sorted(w.sessions))
+        flows = {ids(w) for w in frames if ids(w) is None or sid not in ids(w)}
+        w = next((x for x in frames if p is not None and x.id == p.pid), None)
+        if w is None and p is None and len(flows) == 1:   # nothing chosen, one flow: that one (decision 5)
+            w = next(x for x in frames if ids(x) in flows)
+        if w is not None and sid in (w.sessions or ()):
+            return self._view_of(w.id)
+        flt = {x.filter for x in self.p.sessions_of(w.id) if x.id != sid} if w is not None else set()
+        like = None                                       # the flow an other filter's frames were refused from
+        if w is not None and ses.filter and flt and flt != {ses.filter}:
+            like = w
+            w = next((x for x in frames if x.sessions and sid not in x.sessions    # OIII frames never join the
+                      and {s.filter for s in self.p.sessions_of(x.id)} == {ses.filter}), None)   # H-alpha flow;
+            if w is not None:                             # an OIII flow there: that one
+                flt = {ses.filter}
         with self._edit():
-            if w is None:
-                self.add_graph_workflow(_("Flow"), [], sessions=[sid])
-            else:
-                w.sessions = list(w.sessions or []) + [sid]
+            if w is None:                                 # a flow of its own: the flows reading every session keep
+                mine = [x.id for x in self.p.sessions if x.id != sid]     # the ones they had
+                for x in frames:
+                    if x.sessions is None:
+                        x.sessions = list(mine)
+                # a filter's flow: its name, and the blocks of the flow it was kept out of (one chain per filter,
+                # as the filters template makes them)
+                blocks = json.loads(json.dumps(like.blocks)) if like is not None and like.blocks else []
+                q = self.add_graph_workflow(ses.filter or _("Flow"), blocks, sessions=[sid])
+                self.p.validate()
+                return q
+            if len(flt) == 1 and "" not in flt and not ses.filter:
+                ses.filter = next(iter(flt))              # a filter's flow: its filter (decision 1)
+            if w.sessions is not None:
+                flow = ids(w)
+                for x in frames:
+                    if ids(x) == flow:
+                        x.sessions = list(x.sessions) + [sid]
             self.p.validate()
+        return self._view_of(w.id)
 
     def _snapshot(self):
         """What Undo puts back: the workflows, and which sessions there are (a Session block is a block of the graph:
@@ -876,16 +1060,66 @@ class ProjectModel(QObject):
         return bool(self._redo)
 
     def undo(self) -> bool:
-        return self._restore(self._undo, self._redo)
+        what = self._move_what(self._undo, self._undo_what, self._redo_what)
+        done = self._restore(self._undo, self._redo)
+        self.restored = what if done else ""
+        return done
 
     def redo(self) -> bool:
-        return self._restore(self._redo, self._undo)
+        what = self._move_what(self._redo, self._redo_what, self._undo_what)
+        done = self._restore(self._redo, self._undo)
+        self.restored = what if done else ""
+        return done
+
+    def _new_step(self):
+        """A step was pushed for Undo: it takes the words of its gesture (``name_step``, or its first Log line) until
+        the gesture ends (the event loop's next turn)."""
+        self._undo_what.append(None)
+        self._redo_what.clear()
+        self._naming = True
+        QTimer.singleShot(0, self._end_naming)
+
+    def _end_naming(self):
+        self._naming = False
+
+    def name_step(self, text: str):
+        """Say what the step just pushed did ("Gradient 1 désactivé · Workflow"), for the Undo / Redo message: the
+        message the user saw for it, " · Ctrl+Z" taken off."""
+        if self._naming and self._undo_what:
+            self._undo_what[-1] = text.replace(" · Ctrl+Z", "").strip()
+            self._naming = False
+
+    @staticmethod
+    def _move_what(stack: list, src: list, dst: list) -> str:
+        """The words of the step Undo / Redo takes from ``stack`` (moved to the other list), "" when not said."""
+        if not stack:
+            return ""
+        while len(src) < len(stack):                       # the two lists stay aligned on the steps
+            src.insert(0, None)
+        del src[:len(src) - len(stack)]
+        what = src.pop()
+        dst.append(what)
+        if isinstance(what, tuple):                         # a Log line: its template and fields, translated now
+            try:
+                return _(what[0]).format(**what[1])
+            except (KeyError, IndexError, ValueError):
+                return what[0].format(**what[1])
+        return what or ""
+
+    def _shown_keys(self, p) -> set:
+        """The keys of the blocks the graph draws for ``p`` (a session's blocks, a source, Recombine included)."""
+        from .blocks import Graph
+        g = Graph(self)
+        return {n.ref for n in g.nodes if p in n.paths or (n.sid is not None and n.key != "calibration")} | \
+            {k for k in (self.sel_step,) if k and g.node_of(p, k) is not None}
 
     def _restore(self, src: list, dst: list) -> bool:
         """Put the workflows back as an earlier snapshot had them (computed results are never removed)."""
         if not src:
             return False
         dst.append(self._snapshot())
+        had = {v.pid: self.block_keys(v) for v in self.paths}      # decision 5: what comes back is selected
+        old_keys = self.block_keys(self.path) if self.path is not None else []
         ws, current, mode, sessions, post = src.pop()
         frames_back = sessions.put_back(self.p)           # first: the workflows name them
         api.set_workflows(self.p, ws, current)
@@ -898,11 +1132,19 @@ class ProjectModel(QObject):
         self.pending_change = None
         self.edited()
         self._sync()
+        self._unpatch_rows()
         if self.paths:
             self.current = next((i for i, v in enumerate(self.paths) if v.pid == self.p.current), 0)
+            # decision 5: a block brought back is selected; a block gone leaves the one before it selected
+            back = [(i, k) for i, v in sorted(enumerate(self.paths), key=lambda iv: iv[0] != self.current)
+                    for k in self.block_keys(v) if k != "post" and k not in had.get(v.pid, [])]
             keys = self.block_keys(self.path)
-            if self.sel_step not in ("sources", "final") and self.sel_step not in keys:
-                self.sel_step = keys[-1] if keys else "sources"
+            if back:
+                self.current, self.sel_step = back[0]
+            elif self.sel_step and self.sel_step not in ("sources", "final") and self.sel_step not in keys and \
+                    self.sel_step not in self._shown_keys(self.path):
+                j = old_keys.index(self.sel_step) if self.sel_step in old_keys else len(old_keys)
+                self.sel_step = next((k for k in reversed(old_keys[:j]) if k in keys), keys[-1] if keys else "sources")
         self.pathsChanged.emit()
         self.currentChanged.emit()
         if post_back:
@@ -1037,6 +1279,35 @@ class ProjectModel(QObject):
         """Whether a workflow is a channel of a fusion (issue #47: its output is not a layer of Post by itself)."""
         return any(is_fusion_view(q) and p.pid in [i["pid"] for i in q.source["fusion"]["inputs"]] for q in self.paths)
 
+    def fusions_of(self, p) -> list[WorkflowView]:
+        """The fusions that read a workflow's output (it is one of their channels)."""
+        return [q for q in self.paths if is_fusion_view(q) and p.pid in [i["pid"] for i in q.source["fusion"]["inputs"]]]
+
+    def channel_problem(self, p) -> str:
+        """Why a fusion's channel cannot go (its workflow, its only Session, its Image), translated; "" for a workflow
+        no fusion reads (GUI exploration 2, decision 3: refused with the reason, never a broken project)."""
+        fs = self.fusions_of(p)
+        if not fs:
+            return ""
+        role = next(i["role"] for i in fs[0].source["fusion"]["inputs"] if i["pid"] == p.pid)
+        return _("channel {role} of “{fusion}”").format(role=role, fusion=fs[0].name)
+
+    def _fusion_need(self, p, blocks) -> str:
+        """Why a channel's graph ``blocks`` (a block taken out, or switched off) would leave a fusion unable to run:
+        the Astrometry that aligns the channels, the Stars/background of a fusion that takes their starless images
+        (decision 3); "" when every fusion reading it still can."""
+        on = {n["block"] for n in blocks if not n.get("off")}
+        for q in self.fusions_of(p):
+            f = q.source["fusion"]
+            several = len({i["pid"] for i in f.get("inputs") or []}) > 1
+            if several and "astrometry" not in on and any(
+                    n["block"] == "astrometry" and not n.get("off") for n in self.graph(p)):
+                return _("needed by “{fusion}”").format(fusion=q.name)
+            if f.get("stars") and "stars" not in on and any(
+                    n["block"] == "stars" and not n.get("off") for n in self.graph(p)):
+                return _("needed by “{fusion}”").format(fusion=q.name)
+        return ""
+
     def fusion_problem(self, p) -> str:
         """Why a fusion cannot run, said before Run (GUI exploration 1.1, 7.6, question 8: the block is circled in red
         and the run refused); "" when it can, or for a workflow that is not a fusion. A channel's own block names it."""
@@ -1048,25 +1319,109 @@ class ProjectModel(QObject):
             return _("channels to choose")
         views = {q.pid: q for q in self.paths}
         several = len({i["pid"] for i in ins}) > 1
-        for i in ins:
+        found: list[tuple[str, tuple, list[str]]] = []      # (template, its other fields, the channels): every channel
+        for i in ins:                                       # said at once (round 2: "Ha" only, then "OIII" once fixed)
             q = views.get(i["pid"])
             role = i.get("role") or ""
-            if q is None:
-                return _("{role}: no workflow").format(role=role)
-            if q.source is None and not any(s.lights for s in self.p.sessions_of(q.pid)):
-                return _("{role}: no lights").format(role=role)
-            if q.source is not None and "fusion" not in q.source and not q.source.get("path"):
-                return _("{role}: no image file").format(role=role)
-            blocks = [n["block"] for n in self.graph(q) if not n.get("off")]
-            if several and self.is_graph(q) and "astrometry" not in blocks:
-                return _("{role}: needs Astrometry").format(role=role)
-            if f.get("stars") and self.is_graph(q) and "stars" not in blocks:
-                return _("{role}: needs Stars/background").format(role=role)
-        return ""
+            why = self._channel_problem(q, i, role, f, several)
+            if why is None:
+                continue
+            same = next((x for x in found if x[0] == why[0] and x[1] == why[1]), None)
+            if same is None:
+                found.append((why[0], why[1], [role]))
+            elif role not in same[2]:
+                same[2].append(role)
+        out = []
+        for t, more, roles in found:
+            who = ", ".join(roles)
+            out.append(_(t).format(role=who, **dict(more)) if t else f"{who}: {dict(more)['text']}")
+        return " · ".join(out)
 
-    def run_problems(self) -> list[tuple[str, str]]:
-        """(workflow name, reason) of the fusions that cannot run: Run is refused while there is one (1.1)."""
-        return [(q.name, why) for q in self.paths if (why := self.fusion_problem(q))]
+    def _channel_problem(self, q, i, role, f, several) -> tuple[str, tuple] | None:
+        """What a fusion's channel lacks: (English template with {role}, its other fields as pairs); the template
+        '' for a text made already (``text``). None when it has what the fusion needs."""
+        if q is None:
+            return "{role}: no workflow", ()
+        if q.source is None and not any(s.lights for s in self.p.sessions_of(q.pid)):
+            return "{role}: no lights", ()
+        flts = {s.filter for s in self.p.sessions_of(q.pid)} if q.source is None else set()
+        if i.get("channel", "L") == "L" and role in FILTERS and flts and flts != {role}:
+            # decision 3: a channel's session set to another filter: refused with the reason
+            return "{role}: session filter {filter}", (("filter", ", ".join(sorted(x or _("none") for x in flts - {role}))),)
+        if q.source is not None and "fusion" not in q.source and not q.source.get("path"):
+            return "{role}: no image file", ()
+        if self.image_problem(q):
+            return "", (("text", self.image_problem(q)),)
+        blocks = [n["block"] for n in self.graph(q) if not n.get("off")]
+        if several and self.is_graph(q) and "astrometry" not in blocks:
+            return "{role}: needs Astrometry", ()
+        if f.get("stars") and self.is_graph(q) and "stars" not in blocks:
+            return "{role}: needs Stars/background", ()
+        return None
+
+    def run_problems(self, pids=None) -> list[tuple[str, str]]:
+        """(workflow name, reason) of what cannot run: the fusions that cannot (1.1) and the workflows whose data
+        cannot be computed (``data_problems``). Run is refused while there is one. ``pids``: only these workflows
+        (a plan's: Run to here on a channel's Stacking is not refused because of the fusion after it)."""
+        views = [q for q in self.paths if pids is None or q.pid in pids]
+        return [(q.name, why) for q in views if (why := self.fusion_problem(q) or self.image_problem(q))] + \
+            self.data_problems(views)
+
+    def image_problem(self, p) -> str:
+        """Why an Image block's file cannot be read (moved, its disk unplugged, damaged; translated), "" when it can or
+        when none is chosen yet (that one is "choose its file"): its block is circled in red and Run refused."""
+        src = getattr(p, "source", None)
+        if not isinstance(src, dict) or "fusion" in src or not src.get("path"):
+            return ""
+        from ..stages.image import image_problem
+        why = image_problem(self.p.abspath(src["path"]))
+        return _(why).format(name=Path(str(src["path"])).name) if why else ""
+
+    def data_problems(self, views) -> list[tuple[str, str]]:
+        """(workflow name, reason) of the workflows among ``views`` whose data cannot be computed, said before the run
+        (PRINCIPLES: nothing runs without data): a session's folder not there, a frame that cannot be read, calibration
+        frames of another size than the lights (``session_problems``), fewer than 2 light frames to stack. From what the
+        worker read (``Facts``): nothing is read from the disk here. A workflow without lights is not one of them
+        (``has_data`` says it)."""
+        out = []
+        for q in views:
+            if q.source is not None:                      # an Image (``image_problem``), a fusion (its channels)
+                continue
+            ses = [s for s in self.p.sessions_of(q.pid) if s.lights]
+            if not ses:
+                continue
+            why = next((w for s in ses for w in self.session_problems(s.id)), "")
+            if not why and all(s.id in self._facts.sessions for s in ses):
+                blocks = {n.get("block") for n in self.graph(q) if not n.get("off")}
+                total = sum(self._facts.sessions[s.id].get("lights", 0) for s in ses)
+                gone = sum(1 for sid, _n in self.p.excluded if sid in {s.id for s in ses})
+                if total == 0:
+                    why = _("{session}: no light frame in its folders (camera raw or FITS files)").format(
+                        session=self._session_name(ses[0].id))
+                elif total - gone < 2 and blocks - {"calibration", "registration", "selection"}:
+                    why = (_("only 1 light frame: stacking needs at least 2") if total == 1 else
+                           _("{n} light frame kept of {total}: stacking needs at least 2").format(
+                               n=max(total - gone, 0), total=total))
+            if why:
+                out.append((q.name, why))
+        return out
+
+    def _session_name(self, sid: int) -> str:
+        try:
+            return self.p.session(sid).name or _("Session {n}").format(n=sid)
+        except (KeyError, ValueError, StopIteration):
+            return _("Session {n}").format(n=sid)
+
+    def session_problems(self, sid: int) -> list[str]:
+        """Why a session's data cannot be computed, translated (``session_checks``, read by the worker): its block is
+        circled in red and Run refused."""
+        name = self._session_name(sid)
+        return [_(t).format(session=name, **{k: _(v) if k == "kind" else v for k, v in a.items()})
+                for t, a in self._facts.checks.get(sid) or []]
+
+    def session_problem(self, sid: int) -> str:
+        """The first of ``session_problems``, "" when there is none."""
+        return next(iter(self.session_problems(sid)), "")
 
     def place_indices(self, p: WorkflowView, block: str) -> list[int]:
         """Where a block can be inserted in a workflow's graph."""
@@ -1112,7 +1467,10 @@ class ProjectModel(QObject):
         if i is None:
             return _("not in workflow")
         e = wfl.remove_problem(self.graph(p), self.source_kind(p), i)
-        return refused_text(e) if e is not None else ""
+        if e is not None:
+            return refused_text(e)
+        g = self.graph(p)
+        return self._fusion_need(p, g[:i] + g[i + 1:])    # a fusion's channel keeps what the fusion needs
 
     def remove_node(self, p: WorkflowView, key: str) -> None:
         """Take a block out of a workflow's graph; ValueError (translated) when the blocks after it need it."""
@@ -1130,7 +1488,10 @@ class ProjectModel(QObject):
         if i is None:
             return _("not in workflow")
         e = wfl.off_problem(self.graph(p), self.source_kind(p), i)
-        return refused_text(e) if e is not None else ""
+        if e is not None:
+            return refused_text(e)
+        g = self.graph(p)
+        return self._fusion_need(p, g[:i] + [dict(g[i], off=True)] + g[i + 1:])
 
     def set_graph(self, p: WorkflowView, blocks: list[dict]) -> None:
         """Give a workflow a whole graph (a template's)."""
@@ -1324,18 +1685,50 @@ class ProjectModel(QObject):
                 {"pid": int(i["pid"]), "role": str(i["role"]), "channel": str(i.get("channel", "L"))} for i in inputs]}
             if stars:
                 f["stars"] = dict(stars)
-                self._with_stars([i["pid"] for i in inputs] + ([stars["pid"]] if stars.get("pid") else []))
+                added = self._with_stars([i["pid"] for i in inputs] + ([stars["pid"]] if stars.get("pid") else []))
+                if added:                                 # what it added, taken back when it goes (decision 2)
+                    f["added"] = added
             self.p.workflow(w.id).source = {"fusion": f}
             self.p.validate()
         return self._view_of(w.id)
 
-    def _with_stars(self, pids):
-        """These workflows get Stars/background (and Denoise, which it needs)."""
+    def _with_stars(self, pids) -> list[dict]:
+        """These workflows get Stars/background (and Denoise, which it needs). Returns what each changed one had
+        before: [{"pid", "denoise", "stars"}] (the fusion keeps it, the engine does not read it)."""
+        out = []
         for pid in dict.fromkeys(pids):
             w = self.p.workflow(int(pid))
             if not w.options.get("stars"):
+                out.append({"pid": int(pid), "denoise": w.options.get("denoise"), "stars": w.options.get("stars")})
                 w.options = wfl.check_options({**w.options, "denoise": w.options.get("denoise") or "pretrained",
                                                "stars": "neural"})
+        return out
+
+    def remove_fusion(self, p: WorkflowView):
+        """A Fusion taken out (GUI exploration 2, decision 2): its workflow, and what placing it added to its channels
+        (their Denoise and Stars/background), unless another fusion still takes their starless images: the channels
+        come back as they were before it."""
+        f = (p.source or {}).get("fusion") or {}
+        with self._edit():
+            api.delete_workflow(self.p, p.pid)
+            still = {}                                    # channel id: a fusion left that takes its starless image
+            for w in self.p.workflows:
+                g = (w.source or {}).get("fusion") if isinstance(w.source, dict) else None
+                if g and g.get("stars"):
+                    for pid in [i["pid"] for i in g["inputs"]] + ([g["stars"]["pid"]] if g["stars"].get("pid") else []):
+                        still.setdefault(pid, g)
+            for a in f.get("added") or []:
+                if a.get("pid") in still:                 # that fusion takes it back when it goes
+                    g = still[a["pid"]]
+                    g["added"] = list(g.get("added") or []) + [a]
+                    continue
+                if a.get("pid") not in {w.id for w in self.p.workflows}:
+                    continue
+                w = self.p.workflow(a["pid"])
+                w.options = wfl.check_options({**w.options, "denoise": a.get("denoise"), "stars": a.get("stars")})
+            self.p.validate()
+        self.current = min(self.current, len(self.paths) - 1)
+        self.currentChanged.emit()
 
     def set_fusion_weight(self, p: WorkflowView, role: str, weight: float) -> bool:
         """A channel's weight in a fusion (1: as balanced)."""
@@ -1368,7 +1761,10 @@ class ProjectModel(QObject):
                                            "stars": "neural" if stars else None})
             api.set_workflows(self.p, ws, self.p.current)
             if stars:
-                self._with_stars([i["pid"] for i in f["inputs"]] + ([stars["pid"]] if stars.get("pid") else []))
+                added = self._with_stars([i["pid"] for i in f["inputs"]] + ([stars["pid"]] if stars.get("pid") else []))
+                if added:                                 # taken back when the fusion goes (decision 2)
+                    g = self.p.workflow(p.pid).source["fusion"]
+                    g["added"] = list(g.get("added") or []) + added
                 self.p.validate()
         return True
 
@@ -1415,6 +1811,26 @@ class ProjectModel(QObject):
                 self.p.set_blocks(q.pid, g)
         return True
 
+    def first_to_fill(self, p: WorkflowView) -> tuple[WorkflowView, str] | None:
+        """(workflow, block) of the first block of ``p`` that waits for the user: a Session without lights, an Image
+        without a file; for a Fusion, its channels'. None when nothing waits (a new project from a template opens
+        there, GUI exploration 2)."""
+        src = p.source or {}
+        if "fusion" in src:
+            for i in src["fusion"].get("inputs", []):
+                q = self.view(int(i["pid"]))
+                got = self.first_to_fill(q) if q is not None and q is not p else None
+                if got is not None:
+                    return got
+            return None
+        if p.source is not None:
+            return None if src.get("path") else (p, "image")
+        sep = self.separate_sessions()
+        for s in self.p.sessions_of(p.pid):
+            if not s.lights:
+                return p, (f"session@{s.id}" if s.id in sep else "sources")
+        return None
+
     def separate_sessions(self) -> list[int]:
         """The ids of the sessions calibrated each on its own, drawn as Session and Calibration blocks before the
         chain (two or more, in the per-session mode); [] otherwise."""
@@ -1433,46 +1849,66 @@ class ProjectModel(QObject):
             raise ValueError(f"not kinds of calibration frames: {sorted(bad)}")
         sid = max((s.id for s in self.p.sessions), default=0) + 1
         with self._edit():
-            self.p.sessions.append(Session(sid, name or _("Session {n}").format(n=sid),
+            self.p.sessions.append(Session(sid, api.unique_session_name(self.p, name or _("Session {n}").format(n=sid)),
                                            lights=[Path(x).as_posix() for x in lights],
                                            **{k: [Path(x).as_posix() for x in v] for k, v in calibration.items()}))
             self.p.validate()
         self.reload_sources()
         return sid
 
-    def remove_session(self, sid: int) -> bool:
-        """Take a session out of the project (its files are never touched); the last one stays."""
+    def flows_of_session(self, sid: int) -> list[WorkflowView]:
+        """The workflows that read this session alone: they go with it (issue #47)."""
+        return [q for q in self.paths if q.source is None and q.sessions is not None and list(q.sessions) == [sid]]
+
+    def session_removal_problem(self, sid: int) -> str:
+        """Why a session cannot be taken out (translated), "" when it can: the last one stays; the only session of a
+        fusion's channel stays (GUI exploration 2, decision 3: no empty session in its place, no broken project)."""
         if len(self.p.sessions) <= 1:
+            return _("only session")
+        for q in self.flows_of_session(sid):
+            why = self.channel_problem(q)
+            if why:
+                return why
+        return ""
+
+    def remove_session(self, sid: int) -> bool:
+        """Take a session out of the project (its files are never touched); the last one, and the only one of a
+        fusion's channel, stay (``session_removal_problem``)."""
+        if self.session_removal_problem(sid):
             return False
-        gone = self.p.session(sid)
         with self._edit():
             self.p.sessions = [s for s in self.p.sessions if s.id != sid]
             self.p.excluded = [x for x in self.p.excluded if x[0] != sid]
             for w in self.p.workflows:
                 for k in [k for k in w.params if k.endswith(f"@{sid}")]:
                     del w.params[k]
-            from ..core.project2 import Session
             for w in list(self.p.workflows):              # a flow of that session alone goes with it (issue #47)
                 if w.source is None and w.sessions is not None and sid in w.sessions:
                     w.sessions = [x for x in w.sessions if x != sid]
-                    v = self.view(w.id)
-                    if not w.sessions and v is not None and self.feeds_fusion(v):
-                        # a fusion's channel (1.1): its flow stays with an empty Session of the same filter; the
-                        # fusion is circled in red and not run until it has lights again
-                        new = max(x.id for x in self.p.sessions + [gone]) + 1
-                        self.p.sessions.append(Session(new, gone.name, filter=gone.filter))
-                        w.sessions = [new]
-                    elif not w.sessions:
+                    if not w.sessions:
                         api.delete_workflow(self.p, w.id)
             self.p.validate()
         self.current = max(0, min(self.current, len(self.paths) - 1))
         self.reload_sources()
         return True
 
+    def name_problem(self, name: str, pid: int | None = None, sid: int | None = None) -> str:
+        """Why a workflow (``pid``) or a session (``sid``) cannot take this name (translated), "" when it can (GUI
+        exploration 2, decision 8): never empty, never the name of another workflow, or of another session."""
+        name = name.strip()
+        if not name:
+            return _("a name is needed")
+        if sid is not None and any(s.name == name for s in self.p.sessions if s.id != sid):
+            return _("“{name}”: another session has it").format(name=name)
+        if pid is not None and any(w.name == name for w in self.p.workflows if w.id != pid):
+            return _("“{name}”: another workflow has it").format(name=name)
+        return ""
+
     def rename_session(self, sid: int, name: str) -> bool:
+        """A session's new name; False when it does not change or is refused (``name_problem`` says why)."""
         name = name.strip()
         s = self.p.session(sid)
-        if not name or name == s.name:
+        if name == s.name or self.name_problem(name, sid=sid):
             return False
         with self._edit():
             s.name = name
@@ -1620,13 +2056,17 @@ class ProjectModel(QObject):
     def set_image_file(self, p: WorkflowView, path: str | None = None, stretched: bool | None = None):
         """The file of an Image block, or its kind (linear, or stretched already): chosen in its panel (an Image
         placed from the palette starts without one)."""
+        from ..stages.image import STRETCHED_FORMATS
         src = dict(self.p.workflow(p.pid).source or {})
+        before = Path(str(src.get("path") or "")).suffix.lower()
         if path is not None:
             src["path"] = Path(path).as_posix() if path else ""
         if stretched is not None:
             src["stretched"] = bool(stretched)
-        elif path and Path(path).suffix.lower() in (".png", ".jpg", ".jpeg") and not self.graph(p):
+        elif path and Path(path).suffix.lower() in STRETCHED_FORMATS and not self.graph(p):
             src["stretched"] = True        # an 8/16-bit picture is stretched by nature; still changeable (1.7)
+        elif path and before in STRETCHED_FORMATS and not self.graph(p):
+            src["stretched"] = False       # the kind a PNG/JPEG gave goes with it: a FITS or TIFF after it is linear
         with self._edit():
             w = self.p.workflow(p.pid)
             blocks = w.blocks
@@ -1644,7 +2084,12 @@ class ProjectModel(QObject):
             return ("selection", st.get("min_transparency"), st.get("max_fwhm_ratio"),
                     st.get("selection", "min_weight"), st.get("selection_transparency", "on"))
         ref = next((b for b in self._blocks.get(p.pid, []) if view_key(b.block) == key), None)
-        return (key, ref.key if ref is not None else ())
+        # GUI exploration 2: flows of other sessions are never one chain, even before their frames give them other
+        # keys (a filters template's); two Image blocks without a file are two blocks (decision 4); a second Fusion
+        # is its own block (decision 2)
+        own = p.pid if is_fusion_view(p) or (isinstance(p.source, dict) and "path" in p.source
+                                            and not p.source.get("path")) else None
+        return (key, ref.key if ref is not None else (), tuple(sorted(self.sessions_of(p))), own)
 
     def title(self, stage: str) -> str:
         names = {"inventory": "Inventory", "calibrate": "Calibration", "register": "Registration",
@@ -1903,12 +2348,47 @@ class ProjectModel(QObject):
     # any key. What is reviewed is tied to the block's results: a fingerprint of its stage keys, kept in state.json.
     def has_breakpoint(self, p: WorkflowView, key: str) -> bool:
         """Whether this workflow pauses after this block (a block of the views)."""
-        return engine_name(key) in self.p.workflow(p.pid).breakpoints     # a repeated block too (1.2)
+        return engine_name(self._bp_key(p, key)) in self.p.workflow(p.pid).breakpoints     # a repeated block too (1.2)
+
+    def _bp_key(self, p: WorkflowView, key: str) -> str:
+        """The block a pause is set on: a session's Calibration drawn beside its session ("calibration@2") is the
+        workflow's own Calibration when the workflow stacks that one session (the engine computes it so)."""
+        if "@" in key and self.ready:
+            keys = self.pause_keys(p)
+            base = key.partition("@")[0]
+            if key not in keys and base in keys:
+                return base
+        return key
 
     def breakpoints(self, p: WorkflowView) -> list[str]:
-        """The blocks (of the views) this workflow pauses after, in the graph's order; only those it has."""
+        """The blocks (of the views) this workflow pauses after, in the graph's order; only those it computes (a
+        block switched off keeps its pause, which applies again once it is on). A session's Calibration
+        ("calibration@2") is one of them: it comes first."""
         have = {view_key(b) for b in self.p.workflow(p.pid).breakpoints if wfl.base(b) in ENGINE_KEY}
-        return [k for k in self.block_keys(p) if k in have]
+        return [k for k in self.pause_keys(p) if k in have]
+
+    def pause_keys(self, p: WorkflowView) -> list[str]:
+        """The blocks of a workflow a pause can follow, in the order they run: each session's Calibration, then the
+        chain (``block_keys``)."""
+        return [view_key(b.block) for b in self._blocks.get(p.pid, []) if wfl.base(b.block) in ENGINE_KEY]
+
+    def pause_name(self, pid: int, key: str) -> str:
+        """A paused block as the graph names it: "Gradient 1" when the workflow has two, a session's Calibration with
+        its session ("Calibration · Session 2")."""
+        from .blocks import block_title
+        q = self.view(pid)
+        base, at, sid = key.partition("@")
+        # a workflow's own Calibration drawn beside its one session: named with it
+        one = q is not None and q.source is None and len(self.sessions_of(q)) == 1
+        if base == "calibration" and not at and one and self.separate_sessions():
+            at, sid = "@", str(self.sessions_of(q)[0])
+        text = _("Output") if key == "post" else block_title(q, base) if q is not None else block_title(None, base)
+        if at:
+            try:
+                text += " · " + (self.p.session(int(sid)).name or _("Session {n}").format(n=sid))
+            except (KeyError, ValueError):
+                pass
+        return text
 
     def set_breakpoint(self, paths, key: str, on: bool = True):
         """Pause after this block in these workflows (or no longer). One change for Undo; saved with the project."""
@@ -1917,6 +2397,7 @@ class ProjectModel(QObject):
             raise ValueError(f"no breakpoint on {key!r}: it is not a block of the engine")
         with self._edit():
             for q in paths:
+                eb = engine_name(self._bp_key(q, key))
                 w = self.p.workflow(q.pid)
                 have = set(w.breakpoints)
                 w.breakpoints = sorted(have | {eb} if on else have - {eb}, key=wfl.block_order)
@@ -1955,6 +2436,8 @@ class ProjectModel(QObject):
                 continue
             try:
                 inside = {b.block for b in api.blocks(self.p, w.id)}
+                if w.blocks is not None:                 # a block switched off keeps its pause (it comes back with it)
+                    inside |= {n["name"] if n["block"] in wfl.IMAGE_OPS else n["block"] for n in wfl.graph_of(w)}
             except (ValueError, KeyError, OSError):
                 continue
             if any(b not in inside for b in w.breakpoints):
@@ -1963,10 +2446,12 @@ class ProjectModel(QObject):
     def review_key(self, p: WorkflowView, key: str) -> str:
         """What a review is tied to: the block's results, that is the keys of its stages (the engine's ``blocks``);
         for Selection, which has no stage, the Registration it follows, the thresholds and the frames excluded by hand."""
+        key = self._bp_key(p, key)
         k = ("rk", p.pid, key)
         if k not in self._cache:
-            def ref(view_key):
-                return next((b for b in self._blocks.get(p.pid, []) if ENGINE_KEY.get(b.block) == view_key), None)
+            def ref(vk):
+                # a repeated block ("fond~2") and a session's Calibration ("calibration@2") have their own
+                return next((b for b in self._blocks.get(p.pid, []) if view_key(b.block) == vk), None)
             b = ref(key)
             parts: list = [KEY_ENGINE_BLOCK.get(key, key), list(b.key) if b is not None else []]
             if key == "selection":
@@ -1992,7 +2477,7 @@ class ProjectModel(QObject):
         if self.is_reviewed(p, key):
             return "reviewed"
         first = next((k for k in self.breakpoints(p) if not self.is_reviewed(p, k)), None)
-        return "paused" if key == first else "pending"
+        return "paused" if self._bp_key(p, key) == first else "pending"
 
     def pause_point(self, only: WorkflowView | None = None, upto: str | None = None) -> Pause | None:
         """The review a run stops at: the first block, in the graph's order, that has a breakpoint whose results are
@@ -2000,32 +2485,35 @@ class ProjectModel(QObject):
         through."""
         if not self.ready:
             return None
-        found: list[tuple[int, int, WorkflowView, str]] = []
-        later: set[str] = set()
+        found: list[tuple[tuple, int, WorkflowView, str]] = []
+        later: list[tuple[int, str]] = []
         for i, q in enumerate(self.paths if only is None else [only]):
-            keys = self.block_keys(q)
+            keys = self.pause_keys(q)
             reach = keys[:keys.index(upto) + 1] if upto in keys else keys
             todo = [k for k in self.breakpoints(q) if k in reach and not self.is_reviewed(q, k)]
             if todo:
-                found.append((COLUMNS.index(todo[0]), i, q, todo[0]))
-                later |= set(todo[1:])
+                # the graph's order: the block's column, then a repeated block's number ("fond~2" after "fond", 1.2)
+                found.append(((COLUMNS.index(kbase(todo[0])) if kbase(todo[0]) in COLUMNS else len(COLUMNS),
+                               int(knum(todo[0]) or 0)), i, q, todo[0]))
+                later += [(q.pid, k) for k in todo[1:]]        # each workflow's later pauses, under its own name
         if not found:
             return None
-        col, _i, _q, block = min(found, key=lambda t: t[:2])
+        found.sort(key=lambda t: t[:2])
+        block = found[0][3]
         pids = [q.pid for _c, _j, q, k in found if k == block]
-        later |= {k for _c, _j, _q, k in found if k != block}
-        mine = [q for q in self.paths if q.pid in pids]
-        return Pause(block, pids, all(block_state(self, q, block) == "done" for q in mine),
-                     sorted((k for k in later if COLUMNS.index(k) > col), key=COLUMNS.index))
+        # Run all: every workflow stops at its own first review (GUI exploration: only the one paused the most
+        # upstream went on); the first in the graph's order names the pause
+        stops = [(q.pid, k) for _c, _j, q, k in found]
+        return Pause(block, pids, all(block_state(self, q, k) == "done" for _c, _j, q, k in found), later, stops)
 
     def mark_reviewed(self, pause: Pause):
         """Continue: the results the user has looked at are marked as checked. Only a block that is computed now is
         marked, with the results it has now: if the user changed something that made it Outdated meanwhile, the
         breakpoint applies again to the new results."""
-        for pid in pause.pids:
+        for pid, block in pause.all_stops():
             q = self.view(pid)
-            if q is not None and self.ready and block_state(self, q, pause.block) == "done":
-                k = self.review_key(q, pause.block)
+            if q is not None and self.ready and block_state(self, q, block) == "done":
+                k = self.review_key(q, block)
                 if k not in self._reviewed:
                     self._reviewed.append(k)
         self._save_reviewed()
@@ -2051,20 +2539,37 @@ class ProjectModel(QObject):
             pass                                             # the review is kept for this session
 
     def plan_run(self) -> tuple[api.Plan, Pause | None]:
-        """Run all, with the breakpoints: up to the first review not yet done (every workflow that pauses there), else
-        everything. Returns the plan and the pause it ends at (None: the whole project)."""
+        """Run all, with the breakpoints: each workflow up to its own first review not yet done, the others whole,
+        else everything. Returns the plan and the pause it ends at (None: the whole project)."""
         pause = self.pause_point()
-        return (self.plan_all(), None) if pause is None else (self._plan_pause(pause), pause)
+        return (self.plan_all(), None) if pause is None else (self._plan_pause(pause, everyone=True), pause)
 
     def plan_run_to(self, p: WorkflowView, key: str) -> tuple[api.Plan, Pause | None]:
         """Run to here, with the breakpoints: the block, or the first review of this workflow before it."""
         pause = self.pause_point(only=p, upto=key)
         return (self.plan_to_block(p, key), None) if pause is None else (self._plan_pause(pause), pause)
 
-    def _plan_pause(self, pause: Pause) -> api.Plan:
-        """The plans to the block of every workflow that pauses there, as one plan: a job two plans share is kept once
-        (the jobs of a plan come after those they read, so the concatenation stays in order)."""
-        plans = [self.plan_to_block(q, pause.block) for q in self.paths if q.pid in pause.pids]
+    def _plan_pause(self, pause: Pause, everyone: bool = False) -> api.Plan:
+        """The plans to each workflow's own review (``pause.all_stops``), as one plan: a job two plans share is kept
+        once (the jobs of a plan come after those they read, so the concatenation stays in order). ``everyone`` (Run
+        all): the workflows without a pause are computed whole too, unless that computes past a paused block (a
+        fusion of a paused channel): those wait for the review (``pause.waiting``)."""
+        views = {q.pid: q for q in self.paths}
+        plans = [self.plan_to_block(views[pid], k) for pid, k in pause.all_stops() if pid in views]
+        if everyone:
+            stopped = {pid for pid, _k in pause.all_stops()}
+            past: set = set()                                # the jobs after a paused block: not before the review
+            upto = {j.key for pl in plans for j in pl.jobs}
+            for pid in stopped & set(views):
+                past |={j.key for j in api.plan_workflows(self.p, [pid], self.device, self._history_est).jobs} - upto
+            for q in self.paths:
+                if q.pid in stopped:
+                    continue
+                pl = api.plan_workflows(self.p, [q.pid], self.device, self._history_est)
+                if past & {j.key for j in pl.jobs}:
+                    pause.waiting.append(q.pid)
+                else:
+                    plans.append(pl)
         jobs: dict = {}
         for pl in plans:
             for j in pl.jobs:
@@ -2166,16 +2671,68 @@ class ProjectModel(QObject):
             self.p.validate()
         return self.view(w.id)
 
-    def rename(self, pid: int, name: str):
-        old = self.p.workflow(pid).name
+    def rename(self, pid: int, name: str) -> bool:
+        """A workflow's new name; False when it does not change or is refused (``name_problem`` says why)."""
+        name = name.strip()
+        if name == self.p.workflow(pid).name or self.name_problem(name, pid=pid):
+            return False
         with self._edit():
-            api.rename_workflow(self.p, pid, name)
-            post = getattr(self.p, "post", None) or {}
-            if post.get("layers"):                        # its layers named after it follow (GUI exploration 3.4)
-                self.p.post = {**post, "layers": [
-                    {**x, "name": self.p.workflow(pid).name + x["name"][len(old):]}
-                    if x.get("kind") == "workflow" and x.get("pid") == pid and str(x.get("name", "")).startswith(old)
-                    else x for x in post["layers"]]}
+            self._rename(pid, name)
+        return True
+
+    def _rename(self, pid: int, name: str):
+        old = self.p.workflow(pid).name
+        api.rename_workflow(self.p, pid, name)
+        post = getattr(self.p, "post", None) or {}
+        if post.get("layers"):                            # its layers named after it follow (GUI exploration 3.4)
+            self.p.post = {**post, "layers": [
+                {**x, "name": self.p.workflow(pid).name + x["name"][len(old):]}
+                if x.get("kind") == "workflow" and x.get("pid") == pid and str(x.get("name", "")).startswith(old)
+                else x for x in post["layers"]]}
+
+    @staticmethod
+    def branch_name(flow: str, key: str) -> str:
+        """The name of a block's image sent to Post: its workflow's and its block's ("Ha · Denoise")."""
+        from .blocks import block_title
+        return f"{flow} · " + (_("Raw stack") if key == "empilement" else block_title(None, key.partition("~")[0]))
+
+    def _follow_branch_names(self):
+        """A branch sent to Post keeps a name that says what it is: blocks added or taken after its last one, its
+        name follows ("Ha · Gradient" becomes "Ha · Denoise"; GUI exploration 2). A name the user gave stays."""
+        from .blocks import BY_KEY
+        titles = {self.branch_name("", k)[3:] for k in BY_KEY}
+        names = {w.name for w in self.p.workflows}
+        for w in self.p.workflows:
+            flow, sep, title = w.name.partition(" · ")
+            if not sep or w.blocks is None or flow not in names - {w.name}:
+                continue
+            base = title.rsplit(" ", 1)[0] if title not in titles and title.rsplit(" ", 1)[-1].isdigit() else title
+            on = [n for n in w.blocks if not n.get("off") and n.get("block") != "output"]
+            if base not in titles or not on:
+                continue
+            want = self.branch_name(flow, node_key(on[-1]))
+            if want != f"{flow} · {base}":
+                self._rename(w.id, self.unique_name(want))
+
+    def delete_workflow(self, p: WorkflowView) -> list[str]:
+        """Delete workflow (GUI exploration 2): a fusion takes back what it added (``remove_fusion``); a flow of frames
+        goes with the Sessions only it read (a session no workflow reads would stay unwired, its frames said used),
+        the project's last ones excepted. Returns the names of the sessions gone (their files are never touched)."""
+        if is_fusion_view(p):
+            self.remove_fusion(p)
+            return []
+        w = self.p.workflow(p.pid)
+        mine = [s.id for s in self.p.sessions_of(w.id)] if w.source is None and w.sessions is not None else []
+        others = [x for x in self.p.workflows if x.id != w.id and x.source is None]
+        alone = [sid for sid in mine if not any(sid in [s.id for s in self.p.sessions_of(x.id)] for x in others)]
+        if len(alone) >= len(self.p.sessions):
+            alone = []                                    # the project keeps its sessions
+        names = [self.p.session(sid).name for sid in alone]
+        with self._edit():
+            self.remove_path(self.paths.index(p))
+            for sid in alone:
+                self.remove_session(sid)
+        return names
 
     def remove_path(self, i: int):
         pid = self.paths[i].pid
@@ -2387,6 +2944,20 @@ class ProjectModel(QObject):
                     r.origin = "default" if value is None else "user"
                 rows.append(r)
             e["rows"] = rows
+
+    def _unpatch_rows(self):
+        """Undo / Redo: the cached rows patched by a change (``_patch_rows``) show the settings put back (a setting
+        undone showed its undone value until the worker answered: Post's Linked channels stayed unticked)."""
+        for (wid, stage), e in list(self._pc.items()):
+            v = self.view(wid)
+            if v is None or not e or not e.get("rows"):
+                continue
+            st = v.params.get(stage) or {}
+            for r in e["rows"]:
+                if r.name in st and (r.value != st[r.name] or r.origin != "user"):
+                    self._patch_rows([wid], stage, r.name, st[r.name])
+                elif r.name not in st and r.origin == "user":
+                    self._patch_rows([wid], stage, r.name, None)
 
     def set_trunk_param(self, stage: str, name: str, value) -> bool:
         """A decision taken in the sources: it counts for every workflow. False when the engine has no such setting
@@ -2702,6 +3273,8 @@ class ProjectModel(QObject):
     def log(self, template: str, **args):
         """A history line: an English template and its arguments, translated when shown."""
         self.history.append((time.strftime("%H:%M:%S"), template, args))
+        if getattr(self, "_naming", False) and self._undo_what and self._undo_what[-1] is None:
+            self._undo_what[-1] = (template, args)         # the step's words, until its message says them
 
 
 # aliases (test_model_surface checks them)

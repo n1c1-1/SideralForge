@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
@@ -193,8 +193,9 @@ def _thumb(root: Path) -> QImage | None:
 
 def project_info(root: Path) -> ProjectInfo:
     p = project2.load(root)
-    info = ProjectInfo(root.as_posix(), p.name, p.target.name or "", len(p.sessions), n_workflows=len(p.workflows),
-                       description=p.description or "")
+    # a night is a session with lights: a template's empty Sessions are none (GUI exploration 2)
+    info = ProjectInfo(root.as_posix(), p.name, p.target.name or "", sum(1 for s in p.sessions if s.lights),
+                       n_workflows=len(p.workflows), description=p.description or "")
     inv = max(_manifests(root, "inventory"), key=lambda d: d.get("finished") or "", default=None)
     m = (inv or {}).get("metrics") or {}
     info.integration_h = m.get("integration_h")
@@ -656,6 +657,20 @@ class NewProjectDialog(QDialog):
             self.found.setText(_("Not in the catalogues here: it will be looked up online, else the field is solved "
                                  "from its stars alone"))
             self.found.setStyleSheet(f"color: {WARN};")
+        self._fit_found()
+        QTimer.singleShot(0, self._fit_found)             # again once the dialog has its width
+
+    def _fit_found(self):
+        """The message under the target as tall as its lines: a dialog already shown does not grow by itself for a
+        wrapped label (GUI exploration 2: its second line was cut at the bottom)."""
+        try:
+            lb = self.found
+            lb.setMinimumHeight(lb.heightForWidth(lb.width()) if lb.text() else 0)
+            self.layout().activate()
+            if self.height() < self.minimumSizeHint().height():
+                self.resize(self.width(), self.minimumSizeHint().height())
+        except RuntimeError:                              # the dialog was closed meanwhile
+            pass
 
     def details(self) -> dict:
         """What New project gives the project's target: its coordinates when found, the capture data entered."""
@@ -708,10 +723,11 @@ class HomeView(QWidget):
         lv.setSpacing(8)
         buttons = []
         for text, fn, primary, on in ((_("New project…"), self.new_project, True, True),
-                                      (_("Import folder as new project…"), lambda: self.importFolder.emit(), False,
-                                       can_import),
+                                      (_("Import folder…"), lambda: self.importFolder.emit(), False, can_import),
                                       (_("Open project…"), self.open_other, False, True)):
-            b = QPushButton(text)
+            b = QPushButton(text)                    # compact names (decision 12): the sentence in the tooltip
+            if fn is not self.new_project and fn is not self.open_other:
+                b.setToolTip(_("Import folder as new project…"))
             if primary:
                 b.setObjectName("primary")
             b.clicked.connect(lambda _x=False, f=fn: f())
@@ -862,8 +878,8 @@ class HomeView(QWidget):
 
     def open_other(self):
         f, _x = QFileDialog.getOpenFileName(self, _("Open project"), prefs.last_folder(),
-                                            _("Projects (*.astroproj)") + ";;"
-                                            + _("Projects made with an older version (project.json)"),
+                                            # one kind of file for the user: a project, of this version or older
+                                            _("SideralForge project") + " (*.astroproj project.json)",
                                             options=QFileDialog.HideNameFilterDetails)   # no file name shown
         if f:
             prefs.remember_folder(Path(f).parent.parent)       # the folder the project's folder is in

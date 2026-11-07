@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from explore_words_static import EXTERNAL, english_words, load_catalogue, punct_problems  # noqa: E402
 
-OUT = Path("F:/astro_essais/A_REGARDER/exploration/words_layout")
+OUT = Path("F:/astro_essais/A_REGARDER/exploration2/words_layout")
 # names the harness gives (projects, workflows, sessions, folders): the user's words, never translated
 USER_WORDS = re.compile(r"\b(Flow|Full|Bench|Workflow|Session \d|Chaine complete|Mono fusion|Image etoiles|Galerie|"
                         r"Bascule|two_flows|two_sessions|session_empty_wf|jpg_mistake|session\+image|legacy|mono|"

@@ -1084,7 +1084,9 @@ def test_the_page_is_empty_until_a_workflow_is_rendered(preps, qapp):
         assert s.page.pages.currentIndex() == 0
         texts = [lb.text() for lb in s.page.empty.findChildren(QLabel)] + \
                 [b.text() for b in s.page.empty.findChildren(QPushButton)]
-        assert "No layers yet" in texts and "Graph  →" in texts
+        # GUI exploration 2: the layers it will have, named as the graph's Post block counts them, not computed yet
+        assert "Nothing computed yet" in texts and "Graph  →" in texts
+        assert "Full  ·  not computed yet" in texts and "Classic  ·  not computed yet" in texts
         went = []
         s.page.goWorkflow.connect(lambda: went.append(1))
         next(b for b in s.page.empty.findChildren(QPushButton)).click()
@@ -1121,7 +1123,9 @@ def test_the_first_layers_and_the_first_image(post):
     assert "Later" in [lay["name"] for lay in v.layers]
     post.model.paths.append(WF(3, "Raw stack", "stacking"))
     post.model.pathsChanged.emit()
-    assert [(lay["name"], lay["visible"]) for lay in v.layers][0] == ("Raw stack", False)
+    # an image sent from a block arrives shown, as the Split images do (GUI exploration 2)
+    assert [(lay["name"], lay["visible"]) for lay in v.layers][0] == ("Raw stack", True)
+    assert [lay["visible"] for lay in v.layers if lay["name"] == "Later"] == [False]
     assert post.settle()
     # each workflow layer has its thumbnail, made from its image
     assert all(lay["id"] in v._lthumbs for lay in v.layers if lay["name"] != "Later")   # (no image of its own here)
@@ -1784,9 +1788,15 @@ def test_an_image_sent_from_a_stage_is_a_normal_layer(post, preps, tmp_path):
     # its settings: the channels and three sliders, nothing that needs a workflow
     names = [x.name.text() for x in widgets_of(v, ContSlider) if x.name.text() not in ("Opacity",)]
     assert names == ["Sky", "Contrast", "Saturation"]
-    from PySide6.QtWidgets import QComboBox
-    combos = [[c.itemText(i) for i in range(c.count())] for c in widgets_of(v, QComboBox)]
-    assert ["Linked", "Each channel"] in combos
+    from PySide6.QtWidgets import QCheckBox
+    # one name and one kind of control with the Output block's in the graph (GUI exploration 2)
+    boxes = [c for c in widgets_of(v, QCheckBox) if c.text() == "Linked channels"]
+    assert len(boxes) == 1 and boxes[0].isChecked()
+    boxes[0].setChecked(False)
+    assert lay["linked"] is False and v.undo
+    v.do_undo()
+    lay = v.layer(lay["id"])
+    assert lay["linked"] is True
     before = shown(v).copy()
     lay["sliders"]["sky"] = 3.4
     v.request(final_only=True)

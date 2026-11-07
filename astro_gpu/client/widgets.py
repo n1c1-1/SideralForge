@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QVBoxLayout, QWidget
 
 ACCENT, OK, WARN, SHARED, BAD = "#5ea1ff", "#5fbf7f", "#e6a23c", "#a395ff", "#e06c6c"
 NEW = "#c9b37e"                       # the ◇ mark: what the engine does not have yet (Spec mode)
@@ -111,6 +111,15 @@ def fit_height(lb: QLabel):
     lb.setFixedHeight(r.height() + 6)
 
 
+def size_within(w, width: int, height: int, margin: int = 40):
+    """Resizes a dialog to ``width`` x ``height``, smaller where the room it opens in is smaller (a 1366 x 768 screen,
+    GUI exploration 2): the window it opens over, else the screen's free area, less ``margin`` for its frame."""
+    top = w.parentWidget().window() if w.parentWidget() is not None else None
+    room = top.geometry() if top is not None and top.isVisible() else (w.screen() or QApplication.primaryScreen()) \
+        .availableGeometry()
+    w.resize(min(width, room.width() - margin), min(height, room.height() - margin))
+
+
 def hline() -> QFrame:
     f = QFrame()
     f.setFixedHeight(1)
@@ -123,7 +132,12 @@ def clear(layout):
         it = layout.takeAt(0)
         w = it.widget()
         if w is not None:
+            # GUI exploration 2: a field going away (hidden, its focus lost) says nothing any more: its "editing
+            # finished" would write into a block, session or workflow that may have just gone (Delete, Undo)
+            for c in [w] + w.findChildren(QWidget):
+                c.blockSignals(True)
             w.hide()                                       # not drawn again before it is deleted
+            w.setParent(None)                              # nor found among the panel's widgets meanwhile
             w.deleteLater()
         elif it.layout() is not None:
             clear(it.layout())

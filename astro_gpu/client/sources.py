@@ -415,6 +415,35 @@ def edit_session_frames(model, session: int, parent=None, service=None) -> bool:
     return True
 
 
+def fill_empty_sessions(p, made: list) -> tuple[list, set]:
+    """The sessions just made by an import, poured into the empty Session blocks of the project (a template's, waiting
+    for their frames): an empty session of the same filter first, else one without a filter, which takes the frames'
+    filter. Its name stays when a filter template named it, else it takes the night's. Returns (the sessions holding
+    the frames, the ids of the empty ones filled)."""
+    def empty(s):
+        return not any(getattr(s, k) for k in ("lights", "darks", "flats", "bias", "flat_darks"))
+    new_ids = {s.id for s in made}
+    free = [s for s in p.sessions if s.id not in new_ids and empty(s)]
+    out, filled = [], set()
+    for m in made:
+        e = next((s for s in free if s.filter and s.filter == m.filter), None) or \
+            next((s for s in free if not s.filter), None)
+        if e is None:
+            out.append(m)
+            continue
+        free.remove(e)
+        for k in ("lights", "darks", "flats", "bias", "flat_darks"):
+            setattr(e, k, list(getattr(m, k)))
+        p.sessions.remove(m)
+        if not e.filter:
+            e.filter, e.name = m.filter, m.name
+        out.append(e)
+        filled.add(e.id)
+    if filled:
+        p.validate()
+    return out, filled
+
+
 def import_folder(model, parent=None, folder: str | None = None, new_session: bool = False, service=None) -> bool:
     """Import folder… (File menu, the Frames block, Import folder as new project) and Add session…: ask for a folder when none
     is given, read it, and on Add to project put its frames into the project, which is saved and read again."""
@@ -442,12 +471,15 @@ def import_folder(model, parent=None, folder: str | None = None, new_session: bo
         if new_session:
             made = [api.add_session(model.p, name=scan.name)]
             api.add_frames(model.p, scan, session=made[0].id)
+            made[0].filter = next((i.filter for i in scan.frames.get("lights", []) if getattr(i, "filter", "")), "")
         else:
             made = add_scan(model.p, scan, svc.criteria)
+        made, filled = fill_empty_sessions(model.p, made)
         if made and not model.p.workflows:         # issue #11: a project is never left without a workflow; #47: an
             model.ensure_frames_workflow()         # empty one, built from the palette (a template chosen replaces it)
         for x in made:
-            model.join_session(model.path, x.id)   # a new night joins the flow shown, or one of its own (1.8)
+            if x.id not in filled:                 # an empty Session of the graph filled: already in its flow
+                model.join_session(model.path, x.id)   # a new night joins the flow shown, or one of its own (1.8)
     model.log('Folder "{folder}" imported · {lights} lights', folder=folder, lights=len(scan.frames.get("lights", [])))
     model.load_sources()                              # saved 300 ms after, then the frames are read again
     return bool(made)

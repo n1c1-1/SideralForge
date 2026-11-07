@@ -92,13 +92,13 @@ def test_the_section_shows_the_folder_the_state_and_the_two_downloads(env, qapp)
     d, page = _page(qapp)
     shown = _texts(page)
     assert "Offline Gaia extracts" in shown and "Without them" in " ".join(shown)
-    assert "Download star positions (1.1 GB)" in shown and "Download star spectra (10.6 GB)" in shown
+    assert "Download positions (1.1 GB)" in shown and "Download spectra (10.6 GB)" in shown
     assert shown.count("Not installed") == 2 and "Open folder" in shown
     assert not [t for t in shown if "Gaia DR3 folder" in t or "12 GB" in t or "◇" in t]      # the old, unbuilt widgets
     edit = next(e for e in page.findChildren(QLineEdit) if e.text() == str(ge.folder()))
     assert edit.isReadOnly() and ge.folder() == env / "home" / "cache" / "gaia_extracts"
     assert not [b for b in page.findChildren(QProgressBar) if b.isVisibleTo(page)]            # idle: no bar
-    assert _button(page, "Download star positions").isEnabled()
+    assert _button(page, "Download positions").isEnabled()
     assert not ge.folder().exists()                                  # looking at the page writes nothing
     d.close()
 
@@ -110,7 +110,7 @@ def test_installed_and_found_elsewhere_are_told_apart(env, qapp):
     d, page = _page(qapp)
     shown = _texts(page)
     assert f"Found in another program's data folder: {other}" in shown
-    assert _button(page, "Download star positions").isEnabled()      # an own copy can still be downloaded
+    assert _button(page, "Download positions").isEnabled()      # an own copy can still be downloaded
     _tiny_astro(ge.folder() / ASTRO_NAME)
     sirilcat.reset()
     d.rebuild()
@@ -118,7 +118,7 @@ def test_installed_and_found_elsewhere_are_told_apart(env, qapp):
     page = d.pages.currentWidget()
     shown = _texts(page)
     assert "Installed" in shown and shown.count("Not installed") == 1
-    b = _button(page, "Download star positions")
+    b = _button(page, "Download positions")
     assert not b.isEnabled() and b.toolTip() == "Already installed."
     # a download stopped half-way
     (ge.folder() / "siril_cat1_healpix8_xpsamp").mkdir()
@@ -142,12 +142,12 @@ def test_a_download_runs_off_the_gui_thread_and_reports(env, qapp, monkeypatch):
         sirilcat.reset()
     monkeypatch.setattr(ge, "download", fake)
     d, page = _page(qapp)
-    _button(page, "Download star positions").click()
+    _button(page, "Download positions").click()
     _wait(qapp, lambda: not extracts.job().running() and "Done." in _texts(d.pages.currentWidget()))
     assert ran_in and ran_in[0] != main
     page = d.pages.currentWidget()
     assert not [b for b in page.findChildren(QProgressBar) if b.isVisibleTo(page)]
-    assert "Installed" in _texts(page) and not _button(page, "Download star positions").isEnabled()
+    assert "Installed" in _texts(page) and not _button(page, "Download positions").isEnabled()
     d.close()
 
 
@@ -164,13 +164,13 @@ def test_cancel_stops_the_download_and_closing_the_window_does_not(env, qapp, mo
         raise ge.Cancelled()
     monkeypatch.setattr(ge, "download", slow)
     d, page = _page(qapp)
-    _button(page, "Download star spectra").click()
+    _button(page, "Download spectra").click()
     _wait(qapp, started.is_set)
     _wait(qapp, lambda: any("downloading 0.1 GB" in t for t in _texts(d.pages.currentWidget())))
     page = d.pages.currentWidget()
     bar = next(b for b in page.findChildren(QProgressBar))
     assert bar.isVisibleTo(page) and bar.value() == 100
-    assert not _button(page, "Download star positions").isEnabled()          # one download at a time
+    assert not _button(page, "Download positions").isEnabled()          # one download at a time
     d.close()                                                                # the download goes on
     d.deleteLater()
     qapp.processEvents()
@@ -181,7 +181,7 @@ def test_cancel_stops_the_download_and_closing_the_window_does_not(env, qapp, mo
     _wait(qapp, lambda: not extracts.job().running()
           and any(t.startswith("Cancelled.") for t in _texts(d2.pages.currentWidget())))
     assert stopped == ["xp"]
-    assert _button(d2.pages.currentWidget(), "Download star spectra").isEnabled()
+    assert _button(d2.pages.currentWidget(), "Download spectra").isEnabled()
     d2.close()
 
 
@@ -190,7 +190,7 @@ def test_an_error_is_shown_in_plain_words(env, qapp, monkeypatch):
         raise ge.DownloadError("Not enough free disk space in X: 1.5 GB needed")
     monkeypatch.setattr(ge, "download", refuse)
     d, page = _page(qapp)
-    _button(page, "Download star positions").click()
+    _button(page, "Download positions").click()
     _wait(qapp, lambda: not extracts.job().running() and
           "Not enough free disk space in X: 1.5 GB needed" in _texts(d.pages.currentWidget()))
     d.close()
@@ -200,8 +200,8 @@ def test_the_section_has_its_french(env, qapp):
     i18n.set_language("fr")
     d, page = _page(qapp)
     shown = _texts(page)
-    assert "Extraits Gaia hors ligne" in shown and "Télécharger les positions des étoiles (1,1 Go)" in shown
-    assert "Télécharger les spectres des étoiles (10,6 Go)" in shown and shown.count("Non installé") == 2
+    assert "Extraits Gaia hors ligne" in shown and "Télécharger positions (1,1 Go)" in shown
+    assert "Télécharger spectres (10,6 Go)" in shown and shown.count("Non installé") == 2
     _tiny_astro(env / "nowhere" / "siril" / ASTRO_NAME)
     sirilcat.reset()
     d.rebuild()

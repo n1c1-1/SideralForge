@@ -272,6 +272,25 @@ def test_branches_parallel_flows_removable_wires_and_the_palette_taking_a_block_
         w.stop()
 
 
+def test_a_lone_session_says_why_it_stays(qapp, tmp_path, monkeypatch):
+    """GUI exploration 2: Del, or the lone Session dragged onto the palette, is refused with the reason (it was
+    silent); the session stays."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    said = []
+    page.toasted.connect(said.append)
+    try:
+        m.select(step="sources")
+        settle(w, page)
+        page._delete_selected()                                    # Del
+        assert said == ["Last session: kept"] and len(m.p.sessions) == 1
+        page.remove_tool(Graph(m).root, None)                      # dropped on the palette
+        assert said[-1] == "Last session: kept" and len(m.p.sessions) == 1
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
 def test_a_stage_phase_moves_the_bar_from_its_first_file():
     """Issue #50: progress within a phase fills that phase's share of the bar."""
     from types import SimpleNamespace
@@ -292,7 +311,7 @@ def test_a_stage_phase_moves_the_bar_from_its_first_file():
 
 def test_the_second_play_test_stays_fixed(qapp, tmp_path, monkeypatch):
     """Dragging Combine does not break the page; a wire taken away stays away (Post gives no layer by itself any
-    more); a branch beside the same block tries another method; a rebuilt graph forgets its selected wire."""
+    more); a branch beside the same block tries another method; a rebuilt graph keeps its selected wire chosen."""
     from astro_gpu.client.graph import WireItem
     w, m, page = open_page(tmp_path, monkeypatch)
     try:
@@ -308,7 +327,11 @@ def test_the_second_play_test_stays_fixed(qapp, tmp_path, monkeypatch):
         wires = [it for it in page.graph.scene().items() if isinstance(it, WireItem)]
         page.graph.select_wire(wires[0])
         page.graph.rebuild()
-        assert page.graph.sel_wire is None                        # forgotten with the scene
+        sw = page.graph.sel_wire                                  # 2nd round: the same wire drawn again stays
+        assert sw is not None and sw is not wires[0] and sw.scene() is page.graph.scene() and sw.selected   # chosen
+        page.graph.clear_selection()
+        page.graph.rebuild()
+        assert page.graph.sel_wire is None                        # nothing chosen: none comes back
         n_before = len(Graph(m).post_layers)
         page.remove_post_link(q.pid)
         settle(w, page)
@@ -320,9 +343,8 @@ def test_the_second_play_test_stays_fixed(qapp, tmp_path, monkeypatch):
 
 
 def test_a_fusion_channel_session_removed_keeps_the_project_valid_and_the_fusion_red(qapp, tmp_path, monkeypatch):
-    """GUI exploration 1.1: removing the Session of a fusion's channel no longer breaks the project: the channel's flow
-    stays with an empty Session of its filter, the Fusion is circled in red with its reason and Run is refused; Ctrl+Z
-    brings the session back. 1.5: a parallel flow on a template's flow without any night yet is valid."""
+    """GUI exploration 2, decision 3: the only Session of a fusion's channel cannot be removed: refused with the reason
+    (no empty session put in its place, no broken project, no undo step); the channel's workflow and Image likewise."""
     w, m, page = open_page(tmp_path, monkeypatch, workflows=())
     try:
         assert m.ensure_frames_workflow() is not None
@@ -333,18 +355,17 @@ def test_a_fusion_channel_session_removed_keeps_the_project_valid_and_the_fusion
         hoo = next(q for q in m.paths if (q.source or {}).get("fusion"))
         ha = next(q for q in m.paths if m.feeds_fusion(q))
         sid = m.sessions_of(ha)[0]
-        filt = m.p.session(sid).filter
-        n_sessions = len(m.p.sessions)
-        assert m.remove_session(sid)
+        n_sessions, n_undo = len(m.p.sessions), len(m._undo)
+        assert "Ha" in m.session_removal_problem(sid) and hoo.name in m.session_removal_problem(sid)
+        assert not m.remove_session(sid)
+        toasts = []
+        page.toast = toasts.append
+        page.session_action("remove", sid)                         # the cross, Del, the menu: said why
+        page.workflow_action("delete", ha.pid)
         settle(w, page)
         m.p.validate()                                             # still a valid project
-        ha = m.view(ha.pid)
-        assert ha is not None and m.p.session(m.sessions_of(ha)[0]).filter == filt
-        assert len(m.p.sessions) == n_sessions and m.fusion_problem(m.view(hoo.pid))
-        assert Graph(m).node_of(m.view(hoo.pid), "fusion").broken and m.run_problems()
-        m.undo()
-        settle(w, page)
-        assert sid in [s.id for s in m.p.sessions]
+        assert len(m.p.sessions) == n_sessions and len(m._undo) == n_undo and m.view(ha.pid) is not None
+        assert len(toasts) == 2 and all(hoo.name in t for t in toasts)
     finally:
         page.close()
         m.close(save=False)
@@ -366,6 +387,17 @@ def test_a_parallel_flow_on_a_template_without_night_and_a_calibration_in_the_se
         settle(w, page)
         assert m.sel_step == f"calibration@{m.sessions_of(m.view(q.pid))[0]}"
         page.refresh()                                             # the panel shows it (no error)
+        # round 2: its review pause is its own and names its session (it did nothing, "after Calibration")
+        sid = m.sessions_of(m.view(q.pid))[0]
+        ref = f"calibration@{sid}"
+        page.toggle_pause(Graph(m).node_of(m.view(q.pid), ref))
+        settle(w, page)
+        # the flow stacks that one session: the engine computes its Calibration as the workflow's own
+        assert m.has_breakpoint(m.view(q.pid), ref) and m.breakpoints(m.view(q.pid)) == ["calibration"]
+        name = m.p.session(sid).name
+        assert m.history[-1][1] == "Pause set after {block}" and m.history[-1][2] == {"block": f"Calibration · {name}"}
+        assert m.pause_point().all_stops() == [(q.pid, "calibration")]
+        assert m.review_state(m.view(q.pid), ref) is not None                    # the dot on the block drawn
     finally:
         page.close()
         m.close(save=False)
@@ -389,6 +421,37 @@ def test_a_block_placed_twice_has_its_own_settings_and_its_own_pause(qapp, tmp_p
         assert m.has_breakpoint(p, "fond~2") and not m.has_breakpoint(p, "fond")
         assert m.breakpoints(p) == ["fond~2"]
         m.p.validate()
+        # round 2: Run planned up to it (an error hidden behind "Nothing to run" before), named as the graph names it
+        pause = m.pause_point()
+        assert pause is not None and pause.block == "fond~2" and pause.all_stops() == [(p.pid, "fond~2")]
+        plan, pause = m.plan_run()
+        assert plan.jobs and pause.block == "fond~2"
+        assert m.pause_name(p.pid, "fond~2") == "Gradient 2" and m.pause_name(p.pid, "fond") == "Gradient 1"
+        from astro_gpu.client.services.run import pause_text
+        assert pause_text(m, pause) == "Gradient 2"
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_pause_stays_with_a_block_switched_off_and_works_on_a_sessions_calibration(qapp, tmp_path, monkeypatch):
+    """Round 2: switching a block off kept no pause (switching it on did not bring it back); the pause on a session's
+    Calibration did nothing and its name did not say which session."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        p = m.paths[0]
+        m.set_breakpoint([p], "fond", True)
+        g = Graph(m)
+        node = g.node_of(m.view(p.pid), "fond")
+        page.toggle_cut(node, [p.pid])                                 # D
+        settle(w, page)
+        assert "gradient" in m.cut_blocks(m.view(p.pid))
+        assert m.has_breakpoint(m.view(p.pid), "fond")                # kept with the block switched off
+        assert "fond" not in m.breakpoints(m.view(p.pid))              # but no stop while it is off
+        m.undo()
+        settle(w, page)
+        assert m.breakpoints(m.view(p.pid)) == ["fond"]
     finally:
         page.close()
         m.close(save=False)

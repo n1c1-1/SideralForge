@@ -8,7 +8,7 @@ import json
 import time
 from pathlib import Path
 
-OUT = Path("F:/astro_essais/A_REGARDER/exploration/words_layout")
+OUT = Path("F:/astro_essais/A_REGARDER/exploration2/words_layout")
 N = OUT / "notes"
 
 

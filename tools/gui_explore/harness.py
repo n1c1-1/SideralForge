@@ -2,8 +2,10 @@
 
 Safety (always on, whatever a script does):
 - the settings file, the app's home folder, the projects and the scratch are in a fresh temporary folder;
-- no GPU: CUDA_VISIBLE_DEVICES is empty before anything imports torch;
+- no GPU: CUDA_VISIBLE_DEVICES is -1 (an empty value does not hide the GPUs here) before anything imports torch;
 - no run can start: the worker spawn raises ``RunsBlocked`` (a Run shows as a start that failed: not an anomaly);
+  opt-in, GUI_EXPLORE_CPU_RUNS=1 set before the harness is imported: runs really start, forced on the CPU (the plan
+  file rewritten to device "cpu", the worker with CUDA_VISIBLE_DEVICES=-1) — for tiny synthetic projects only;
 - message boxes, file dialogs and context menus never block: they are recorded (and answered from queues).
 
 Gestures go through Qt events, as a user's would: mouse presses, moves with the button held, releases, double clicks,
@@ -30,7 +32,7 @@ import traceback
 import warnings
 from pathlib import Path
 
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")
@@ -56,7 +58,7 @@ from astro_gpu.core import project2, runner2  # noqa: E402
 from astro_gpu.core.project import Target  # noqa: E402
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-OUT_BASE = Path("F:/astro_essais/A_REGARDER/exploration")
+OUT_BASE = Path("F:/astro_essais/A_REGARDER/exploration2")
 MACHINE = Machine([Gpu("cuda:0", "NVIDIA RTX 4090", 24.0), Gpu("cuda:1", "NVIDIA RTX 3070", 8.0)], 16, 64.0)
 
 
@@ -68,7 +70,21 @@ def _blocked(*a, **k):
     raise RunsBlocked("exploration: runs are blocked (no GPU, no computation)")
 
 
-runner2._spawn_worker = _blocked                     # nothing computes, whatever the window asks
+_real_spawn = runner2._spawn_worker
+CPU_RUNS = os.environ.get("GUI_EXPLORE_CPU_RUNS") == "1"
+
+
+def _cpu_spawn(root, plan_file, visible, log_file, python=None, notes=None):
+    """Opt-in (GUI_EXPLORE_CPU_RUNS=1, for tiny data only): the run's worker really starts, forced on the CPU: its plan
+    file says device "cpu" and the worker sees no GPU (CUDA_VISIBLE_DEVICES=-1), whatever the window chose."""
+    d = json.loads(Path(plan_file).read_text(encoding="utf-8"))
+    d["device"], d["visible"], d["inside"] = "cpu", "-1", "cpu"
+    Path(plan_file).write_text(json.dumps(d), encoding="utf-8")
+    return _real_spawn(root, plan_file, "-1", log_file, python or sys.executable, notes)
+
+
+# nothing computes, whatever the window asks (default); GUI_EXPLORE_CPU_RUNS=1: CPU runs of tiny projects
+runner2._spawn_worker = _cpu_spawn if CPU_RUNS else _blocked
 
 
 class Explorer:
@@ -319,6 +335,9 @@ class Explorer:
             if gal.__class__.__name__ != "TemplateGallery":
                 gal.reject()
                 return
+            tab = next((x["tab"] for x in gal.templates if x.get("key") == template), None) if template else None
+            if tab is not None and tab in gal.tab_keys:  # a template of another tab: that tab first, as the user
+                gal.tabs.setCurrentIndex(gal.tab_keys.index(tab))
             t = next((c.t for c in gal.cards if (c.t.get("key") == template if template else c.t.get("blank"))), None)
             if t is not None:
                 gal.pick(t)
@@ -382,8 +401,10 @@ class Explorer:
 
     def point_of(self, item, where: str = "center") -> QPoint:
         r = item.sceneBoundingRect()
+        if where == "cross":                           # the × itself: the bounding rect has the port's and the review
+            return self.view.mapFromScene(item.mapToScene(item._x_rect().center()))   # dot's margins
         p = {"center": r.center(), "left": QPointF(r.left() + 12, r.center().y()),
-             "cross": QPointF(r.right() - 11, r.top() + 11), "port": QPointF(r.right() - 1, r.center().y())}[where]
+             "port": QPointF(r.right() - 1, r.center().y())}[where]
         return self.view.mapFromScene(p)
 
     def ghosts(self) -> list:

@@ -139,6 +139,7 @@ class SessionGroup:
     paths: list[str]
     start: str = ""
     end: str = ""
+    filter: str = ""                  # the filter the FITS headers name (a monochrome camera's): never stacked with another
 
     @property
     def count(self) -> int:
@@ -709,7 +710,7 @@ def _summary(d: Path, deep: bool) -> ProjectSummary:
         s.error = f"{type(e).__name__}: {e}"
         return s
     s.name, s.description, s.target = p.name, p.description, p.target.name
-    s.nights, s.workflows = len(p.sessions), len(p.workflows)
+    s.nights, s.workflows = sum(1 for x in p.sessions if x.lights), len(p.workflows)
     s.running = _lock_alive(d)
     thumb = d / "cache" / "thumb.jpg"
     s.thumb = str(thumb) if thumb.is_file() else ""
@@ -885,37 +886,51 @@ def _when(info: Any) -> datetime | None:
 
 def group_sessions(infos: Sequence[Any], criteria: GroupingCriteria | None = None) -> list[SessionGroup]:
     """Split frames (``FrameInfo``) into sessions: one per night (noon to noon), then by exposure and ISO / gain as
-    the criteria say. Groups come in time order."""
+    the criteria say. Frames of different filters (a monochrome camera's FITS: Ha, OIII...) are never one session,
+    whatever the criteria: a session stacks one filter. Groups come in time order."""
     c = criteria or GroupingCriteria()
     groups: dict[tuple, list[Any]] = {}
     for i in infos:
         t = _when(i)
         night = (t - timedelta(hours=12)).date().isoformat() if t else "unknown"
-        key = (night if c.night else "", i.exposure if c.exposure else None, i.iso if c.iso else None)
+        key = (night if c.night else "", i.exposure if c.exposure else None, i.iso if c.iso else None,
+               getattr(i, "filter", "") or "")
         groups.setdefault(key, []).append(i)
     out: list[SessionGroup] = []
     order = sorted(groups.items(), key=lambda kv: (kv[0][0], -1 if kv[0][1] is None else kv[0][1],
-                                                   -1 if kv[0][2] is None else kv[0][2]))
-    for (night, exp, iso), fl in order:
+                                                   -1 if kv[0][2] is None else kv[0][2], kv[0][3]))
+    for (night, exp, iso, flt), fl in order:
         times = sorted(t.isoformat(timespec="seconds") for t in map(_when, fl) if t)
         name = night or "all frames"
-        more = sum(1 for k in groups if k[0] == night) > 1
+        more = sum(1 for k in groups if k[0] == night and k[3] == flt) > 1
         if more and c.exposure and exp is not None:
             name += f" · {exp:g} s"
         if more and c.iso and iso is not None:
             name += f" · ISO {iso:g}"
+        if flt:                                       # the filter in the name: two filters of a night, two names
+            name += f" · {flt}"
         out.append(SessionGroup(name, night, exp, iso, sorted(i.path for i in fl),
-                                times[0] if times else "", times[-1] if times else ""))
+                                times[0] if times else "", times[-1] if times else "", flt))
+    return out
+
+
+def unique_session_name(p: Project2, name: str) -> str:
+    """``name``, or ``name (2)``, ``name (3)``... when a session of the project has it (two sessions never share a
+    name)."""
+    taken = {s.name for s in p.sessions}
+    out, k = name, 2
+    while out in taken:
+        out, k = f"{name} ({k})", k + 1
     return out
 
 
 def add_session(p: Project2, lights: Iterable[str | Path] = (), darks: Iterable[str | Path] = (),
                 flats: Iterable[str | Path] = (), bias: Iterable[str | Path] = (),
                 flat_darks: Iterable[str | Path] = (), name: str = "") -> Session:
-    """A new session from folders or files (no header is read)."""
+    """A new session from folders or files (no header is read); its name is made unique."""
     sid = max((s.id for s in p.sessions), default=0) + 1
-    s = Session(sid, name or f"Session {sid}", lights=[str(x) for x in lights], darks=[str(x) for x in darks],
-                flats=[str(x) for x in flats], bias=[str(x) for x in bias], flat_darks=[str(x) for x in flat_darks])
+    s = Session(sid, unique_session_name(p, name or f"Session {sid}"), lights=[str(x) for x in lights],
+                darks=[str(x) for x in darks], flats=[str(x) for x in flats], bias=[str(x) for x in bias], flat_darks=[str(x) for x in flat_darks])
     p.sessions.append(s)
     p.validate()
     return s
@@ -949,8 +964,10 @@ def add_frames(p: Project2, scan: ScanResult, session: int | None = None) -> lis
     made: list[Session] = []
     whole = len(groups) == 1
     for g in groups:
-        s = add_session(p, name=g.night if g.night and g.night != "unknown" else g.name)
+        night = g.night if g.night and g.night != "unknown" else ""
+        s = add_session(p, name=(night + (f" · {g.filter}" if g.filter else "")) if night else g.name)
         s.lights = list(scan.folders["lights"]) if whole else list(g.paths)
+        s.filter = g.filter                       # read from the FITS headers (a monochrome camera's filter)
         made.append(s)
     mids = [datetime.fromisoformat(g.start) if g.start else None for g in groups]
     for kind in KINDS[1:]:
@@ -959,12 +976,18 @@ def add_frames(p: Project2, scan: ScanResult, session: int | None = None) -> lis
             if not fl:
                 continue
             ts = sorted(t for t in map(_when, fl) if t)
-            if whole or not ts or not any(mids):
-                target = made[0]
+            flt = next((i.filter for i in fl if getattr(i, "filter", "")), "")
+            near = [i for i, g in enumerate(groups) if g.filter == flt] if flt else []
+            near = near or list(range(len(made)))     # flats of a filter go to a session of that filter
+            if whole or not ts or not any(mids[i] for i in near):
+                target = made[near[0]]
             else:
                 mid = ts[len(ts) // 2]
-                target = made[min((i for i, m in enumerate(mids) if m), key=lambda i: abs(mids[i] - mid))]
-            _put(getattr(target, kind), f)
+                target = made[min((i for i in near if mids[i]), key=lambda i: abs(mids[i] - mid))]
+            night = groups[made.index(target)].night
+            for i, s in enumerate(made):              # darks and bias without a filter: every filter of that night
+                if s is target or (not flt and groups[i].filter and groups[i].night == night):
+                    _put(getattr(s, kind), f)
     p.validate()
     return made
 
@@ -1007,6 +1030,11 @@ def health_checks(p: Project2) -> list[Check]:
         fr = keys.scan.session_frames(keys.project, s)
         for w in type_warnings({k: [str(f) for f, _size in fr[k]] for k in KINDS}):
             out.append(Check("warn", "file_types", type_warning_english(w, s.name), {**w, "session": s.name}))
+    for w in p.workflows:                            # two filters in one stack: a mistake, said before the run
+        flts = sorted({s.filter for s in p.sessions_of(w) if s.lights} - {""}) if w.source is None else []
+        if len(flts) > 1:
+            out.append(Check("warn", "filters_mixed", f"{w.name}: frames of {', '.join(flts)} would be stacked "
+                             "together; give each filter its own workflow", {"workflow": w.name, "filters": flts}))
     if not n["bias"]:
         out.append(Check("info", "no_bias", "No bias frames"))
     with_flats = [s for s in p.sessions if s.flats]

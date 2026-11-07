@@ -761,6 +761,42 @@ def test_frames_shows_the_sessions_the_health_checks_and_the_counts(win):
     shot(win, "frames_sessions")
 
 
+def test_a_long_health_check_scrolls_and_never_makes_the_window_taller(win, monkeypatch):
+    """GUI exploration 2: 16 warnings took a 768 window to 920 px (and it stayed so): the Sessions page scrolls."""
+    from PySide6.QtWidgets import QScrollArea
+
+    from astro_gpu.client import frames
+    inspect(win, "sources")
+    f = win.frames
+    monkeypatch.setattr(frames, "check_lines", lambda _d: [("warn", f"Session 1: DSC{i:05d}.ARW cannot be read")
+                                                          for i in range(60)])
+    f._build()
+    settle(win)
+    assert isinstance(f.pages.widget(0), QScrollArea)
+    assert win.minimumSizeHint().height() < 700 and win.minimumHeight() < 700
+    monkeypatch.undo()
+    f._build()
+    settle(win)
+
+
+def test_the_strip_shows_the_open_block(win):
+    """GUI exploration 2: at 1366 x 768 the strip of a long chain showed only the first letter of the block opened."""
+    size = win.size()
+    try:
+        from astro_gpu.client.blocks import chain
+        win.resize(700, size.height())
+        inspect(win, [k for k in chain(win.s.path) if k != "post"][-1])        # the last block: at the strip's end
+        settle(win)
+        b, sa = win.tune.strip.current, win.tune.strip_scroll
+        assert b is not None and b.isVisible() and sa.horizontalScrollBar().value() > 0, (     # scrolled to it
+            win.width(), sa.viewport().width(), win.tune.strip.width(), sa.horizontalScrollBar().maximum())
+        left = b.mapTo(sa.viewport(), b.rect().topLeft()).x()
+        assert left >= 0 and left + b.width() <= sa.viewport().width(), (left, b.width(), sa.viewport().width())
+    finally:
+        win.resize(size)
+        settle(win)
+
+
 def shot_dialog(d, name, lang="en"):
     QApplication.processEvents()
     d.grab().save(str(shots_dir() / f"{name}_{lang}.png"))
@@ -823,7 +859,7 @@ def test_two_sessions_merge_their_flats_and_offer_the_stacking_mode(win):
         lines = check_lines(f.data)
         assert any(lv == "warn" and "The flats of 2 sessions are merged into one master flat" in tx for lv, tx in lines)
         assert "Stacking" in texts_of(f.pages.widget(0))
-        assert "All sessions together" in texts_of(f.pages.widget(0))
+        assert "All together" in texts_of(f.pages.widget(0))          # compact names: the sentence in its tooltip
         assert "One stack per session" not in " ".join(texts_of(f.pages.widget(0)))        # ◇
         prefs.set("spec_mode", True)
         f._build()

@@ -158,6 +158,23 @@ def test_repeated_and_reordered_image_blocks_get_their_own_entries_and_keys(tmp_
     assert Keys(p).key_params(w.id, "calibrate").get("apply_masters") is False
 
 
+def test_the_same_computation_has_the_same_key_whatever_number_the_graph_gave_its_block(tmp_path, nights):
+    """GUI exploration 2: Gradient 1 switched off, Gradient 2 alone does what a lone Gradient does: same keys, nothing
+    recomputed. A graph without a block placed twice keeps its keys (the user's computed projects)."""
+    p = project(tmp_path / "p", nights)
+    w = p.add_workflow("W", TEMPLATES["Full"])
+    ref = Keys(p).keys(w.id)
+    g = wfl.graph_of(w)
+    p.set_blocks(w.id, g)
+    assert Keys(p).keys(w.id) == ref
+    i = next(j for j, n in enumerate(g) if n["block"] == "gradient")
+    twice = g[:i] + [dict(g[i], off=True), dict(g[i], name="gradient~2")] + g[i + 1:]
+    p.set_blocks(w.id, twice)
+    k = Keys(p)
+    assert "gradient~2" in k.chain(w.id) and "gradient" not in k.chain(w.id)
+    assert k.key(w.id, "gradient~2") == ref["gradient"] and k.key(w.id, "render_simple") == ref["render_simple"]
+
+
 def test_two_nights_with_frames_of_the_same_names_sizes_and_dates_have_their_own_keys(tmp_path):
     """Issue #56: capture programs number every night's frames alike ("Light_001.fits", the same size; a camera whose
     clock was reset gives them the same dates too). A frame of a session after the first carries its session's id:

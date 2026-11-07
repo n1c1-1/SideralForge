@@ -93,9 +93,19 @@ def apply_language(code: str):
 
 def no_block(w) -> bool:
     """A workflow with no block placed after its source (GUI exploration 6.5: it is not "up to date", it has nothing
-    to compute); a Fusion computes itself, a workflow made before the free graph has its blocks."""
+    to compute); a Fusion computes itself, a workflow made before the free graph has its blocks; an image already
+    stretched is its own Output (Image → Post: its Image block is computed, GUI exploration round 2)."""
     from ..core.project2 import is_fusion
-    return w.blocks is not None and not is_fusion(w) and all(b.get("block") == "output" for b in w.blocks)
+    from ..core.workflow import source_of
+    return w.blocks is not None and not is_fusion(w) and source_of(w) != "stretched" and \
+        all(b.get("block") == "output" for b in w.blocks)
+
+
+def images_only(s) -> bool:
+    """Whether every workflow starts from an Image block (no Session): what is missing then is its file, not "lights
+    or image" (GUI exploration round 2: the "Already stretched image" template)."""
+    srcs = [q.source for q in s.paths if not (q.source and "fusion" in q.source)]
+    return bool(srcs) and all(isinstance(x, dict) and "path" in x for x in srcs)
 
 
 def machine_text(machine: Machine | None, device: str) -> tuple[str, bool]:
@@ -268,7 +278,7 @@ class Main(QMainWindow):
         self.a_spec.toggled.connect(self.set_spec)
         r = mb.addMenu(_("Run"))
         self.a_run = act(r, _("Run all"), self.launch, "F5", enabled=has)
-        self.a_here = act(r, _("Run to selected"), self.run_to_here, "Shift+F5", enabled=has)
+        self.a_here = act(r, _("Run to here"), self.run_to_here, "Shift+F5", enabled=has)   # Inspect's button's name
         r.addSeparator()
         self.a_stop = act(r, _("Stop"), self.stop_run, enabled=False)
         h = mb.addMenu(_("Help"))
@@ -288,6 +298,8 @@ class Main(QMainWindow):
             self.a_undo.setEnabled(s.can_undo() or self._post_shown())
             self.a_redo.setEnabled(s.can_redo() or self._post_shown())
             self.a_stop.setEnabled(self.run is not None and self.run.running)
+            self.a_stop.setToolTip(_("Stop the run: what is computed is kept") if self.a_stop.isEnabled()
+                                   else _("No run in progress"))             # greyed: why (round 2)
             self.a_export.setEnabled(any(p.rendered for p in s.paths))
             from .services.run import run_here_refusal
             why = run_here_refusal(s, s.sel_step)            # a Session block is not computed: greyed, and why (#29)
@@ -636,6 +648,7 @@ class Main(QMainWindow):
         page.set_image_resolver(lambda key, p=self.s.p: resolve_key(p, key))   # the layers Inspect sent, reopened
         page.goWorkflow.connect(lambda: self.set_mode(0))
         page.view.goResults.connect(self._go_results)
+        page.view.toasted.connect(self.flash)            # what a change of Post did beyond Post (a branch removed)
         page.view.goProcessing.connect(lambda pid, k: (self.select(index=self.s.index_of(pid), step=k),
                                                        self.set_mode(1)))
         return page
@@ -802,11 +815,15 @@ class Main(QMainWindow):
             self.bt_run.setToolTip(_("Show the run"))
         else:
             why = self.run_refusal(cost)
+            # no duration on a refused Run (round 2: "≈ 3 h 03" with the lights' folder gone, "≈ 10 min" on a fusion
+            # that cannot run)
             self.bt_run.setText(_("Run") + (f"  ·  {duration_text(cost.seconds, cost.measured)}"
-                                            if todo and frames and not empty else ""))
+                                            if todo and frames and not empty and not why else ""))
             self.bt_run.setEnabled(todo and not why)
             self.bt_run.setToolTip(why)                       # a greyed Run says why (6.7, #15)
         self.a_run.setEnabled(frames and not empty and (todo or running))
+        self.a_run.setToolTip(_("Run every workflow, up to the review pauses") if self.a_run.isEnabled() else
+                              self.run_refusal(cost) or _("All up to date"))       # greyed: why (round 2)
         if not n:
             line = _("No workflow yet") if s is not None and s.ready else ""
         else:
@@ -816,9 +833,12 @@ class Main(QMainWindow):
             elif not s.ready:
                 line += "  ·  " + _("reading the project…")
             elif not frames:                              # no estimate without frames (issue #47)
-                line += "  ·  " + _("nothing to compute: add lights or image")
+                line += "  ·  " + (_("Image: choose its file") if images_only(s) else
+                                   _("nothing to compute: add lights or image"))
             elif empty:                                   # never "all up to date" with nothing placed (6.5, #13)
                 line += "  ·  " + _("no block: place one")
+            elif todo and self.run_refusal(cost):         # refused: said, never a time to run (round 2)
+                line += "  ·  " + _("run refused")
             elif todo:
                 line += "  ·  " + _("to run: {t}").format(t=duration_text(cost.seconds, cost.measured))
             elif cost is not None:
@@ -836,12 +856,13 @@ class Main(QMainWindow):
         if not s.paths:
             return _("No workflow: place a block")
         if not s.has_data():
-            return _("Nothing to compute: add lights or image")
+            return _("Image: choose its file") if images_only(s) else _("Nothing to compute: add lights or image")
         if all(no_block(w) for w in s.p.workflows):
             return _("No block: place one")
         problems = getattr(s, "run_problems", lambda: [])()
         if problems:
-            return _("{name} blocked: {why}").format(name=problems[0][0], why=problems[0][1])
+            from .runs import refusal_text
+            return refusal_text(problems)
         if cost is not None and not cost.jobs:
             return _("All up to date")
         return ""
@@ -973,7 +994,12 @@ class Main(QMainWindow):
             sid = s.add_session(Path(folder).name, lights=[folder])
             if flt:
                 s.set_session_filter(sid, flt)
-        self.flash(_("Session “{name}” added · darks/flats in its block").format(name=Path(folder).name))
+            # "+ Session": it joins the flow it is drawn with (else the one shown), or one of its own (decision 1)
+            pid = getattr(getattr(self.graph, "graph", None), "plus_session_pid", None)
+            q = s.join_session(s.view(pid) if pid is not None else s.path, sid)
+        if q is not None:
+            s.current = s.paths.index(s.view(q.pid))
+        self.flash(_("Session “{name}” added · darks/flats in its block").format(name=s.session(sid).name))
         self.select(step=f"session@{sid}" if s.separate_sessions() else "sources")
 
     def import_frames(self, folder: str) -> bool:
@@ -1010,7 +1036,13 @@ class Main(QMainWindow):
             self.run.launch(start=True)
 
     def run_to_here(self):
-        """Run to the selected block (Shift+F5)."""
+        """Run to the selected block (Shift+F5): as F5 without data, nothing opens and why is said (round 2: a window
+        announced a disk need with no frames)."""
+        s = self.s
+        busy = self.run is not None and self.run.running
+        if s is not None and not busy and s.path is not None and not s.has_data(s.path):
+            self.flash(_("Nothing to compute: add lights or image"))
+            return
         if self.run is not None:
             self.run.run_to_here()
 
@@ -1024,15 +1056,23 @@ class Main(QMainWindow):
         if self._post_shown():
             self.post_holder.page.view.do_undo()
         elif self.s is not None and self.s.undo():
-            self.s.log("Undone")
-            self.flash(_("Undone"))
+            self._say_restored("Undone", "Undone: {what}")
 
     def redo(self):
         if self._post_shown():
             self.post_holder.page.view.do_redo()
         elif self.s is not None and self.s.redo():
-            self.s.log("Redone")
-            self.flash(_("Redone"))
+            self._say_restored("Redone", "Redone: {what}")
+
+    def _say_restored(self, plain: str, said: str):
+        """The Undo / Redo message and Log line: what was undone or redone, in the words of its step."""
+        what = getattr(self.s, "restored", "")
+        if what:
+            self.s.log(said, what=what)
+            self.flash(_(said).format(what=what))
+        else:
+            self.s.log(plain)
+            self.flash(_(plain))
 
     def clear_cache(self):
         """Clear the unused results of the closed projects Home knows (the recent ones and those of its sections),

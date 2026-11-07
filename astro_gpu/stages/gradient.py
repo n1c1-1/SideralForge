@@ -160,6 +160,13 @@ def coverage(ctx: Context, cover_min: float = 0.6) -> np.ndarray:
     return good
 
 
+#: the sky cannot be fitted: too little of the image is covered by enough frames (the run window says it in the user's
+#: language, services/run.py); NOT_ALIGNED when the frames were stacked without Registration (GUI exploration 2)
+TOO_LITTLE_SKY = "too little of the image is covered by enough frames to model the sky gradient"
+NOT_ALIGNED = ("the frames were stacked without being aligned: too little of the stack is covered by all of them to "
+               "model the sky gradient; place Registration before Stacking")
+
+
 def block_size(H: int, W: int, samples: int) -> int:
     """Side of the square blocks: each cell of the samples x samples grid holds about 4 x 4 of them."""
     return max(4, int(min(H / samples, W / samples) // 4))
@@ -181,7 +188,7 @@ def fit_poly_sky(rgb: np.ndarray, valid: np.ndarray, degree: int, samples: int, 
     yc, xc = (np.mgrid[0:hb, 0:wb] + 0.5) * b - 0.5
     L = np.tensordot(LUM, blk, 1)
     if vb.sum() < 10:
-        raise StageError("too few covered areas to fit a background")
+        raise StageError(TOO_LITTLE_SKY)
     A = poly_terms(xc.ravel(), yc.ravel(), W, H, degree)
     ok = sky_blocks(L.ravel().astype(np.float64), vb.ravel(), A, clip, vb.shape)
     if ok.sum() < 3 * A.shape[1]:
@@ -588,9 +595,16 @@ class Gradient(Stage):
         H, W = stack.shape[1:]
         valid = coverage(ctx)
         ctx.progress(0.2, f"{p.method} sky model")
-        m = sky_model_of(stack, valid, p, progress=lambda c: ctx.progress(0.2 + 0.25 * c, f"automatic model, "
-                                                                                        f"{'RGB'[c]}"),
-                         emission=survey_emission(ctx, p))
+        try:
+            m = sky_model_of(stack, valid, p, progress=lambda c: ctx.progress(0.2 + 0.25 * c, f"automatic model, "
+                                                                                            f"{'RGB'[c]}"),
+                             emission=survey_emission(ctx, p))
+        except StageError as e:
+            # too little sky because the frames were never aligned (Registration absent): say so, and what to do
+            if (str(e) == TOO_LITTLE_SKY or str(e).startswith("only ")) and ctx.has("register") and \
+                    ctx.metric_of("register", "registration_cut"):
+                raise StageError(NOT_ALIGNED) from e
+            raise
         if m["info"].get("away_from_emission"):
             ctx.log("the samples leave out the nebulosity the H-alpha survey sees")
         elif m["info"].get("away_note"):

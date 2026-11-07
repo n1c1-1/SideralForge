@@ -64,15 +64,13 @@ class SimpleSettings(StageParams):
                             help="How much of the stretch keeps the colours: 0 = each channel through the same curve "
                                  "(the faint colours turn grey, the bright cores white), 1 = the luminance stretched "
                                  "and the three channels scaled with it (Lupton et al. 2004: the colours of the linear "
-                                 "image kept). 0.5 by default: on Rosette, Heart and M8 (bench, 5 November) the "
-                                 "nebulae keep their colour and M8's core its structure, without the strong reds of "
-                                 "1.")
+                                 "image kept). 0.5 by default: the nebulae keep their colour and the bright cores "
+                                 "their structure, without the strong reds of 1.")    # bench of 5 November
     faint: float = P(0.8, label="Faint tones", ge=-1.0, le=3.0, step=0.05,
                      help="Raises (above 0) or lowers (below 0) the faint tones just above the sky, without moving "
                           "the sky: a generalised hyperbolic stretch (D. Payne and M. Cranfield) of the range above the "
                           "sky, its symmetry point at the sky. 0 = the automatic stretch as it is; 0.8 by "
-                          "default (checked on Heart, Iris, M8 and M31, 5 November: the faint extensions and outer "
-                          "arms come up, no core burnt).",
+                          "default: the faint extensions and outer arms come up, no core burnt.",  # checked 5 Nov.
                      tip="The faint extensions of a nebula, the outer arms of a galaxy. Sky sets the black, this the "
                          "faint tones, as Blacks and Shadows are two controls in photo editors.")
     halpha: float = P(0.0, label="H-alpha", ge=-1.0, le=3.0, step=0.05,

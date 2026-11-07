@@ -43,15 +43,15 @@ from ..core import workflow as wfl
 from . import prefs
 from .blocks import KEY_ENGINE_BLOCK, TITLES, TRUNK
 from .i18n import _, hm
-from .widgets import ACCENT, label
+from .widgets import ACCENT, label, size_within
 
 FULL = dict(debruitage=True, etoiles="retirer", fond="simple")
 CLASSIC_DN = dict(debruitage=True, etoiles="garder", fond="simple")
 CLASSIC = dict(debruitage=False, etoiles="garder", fond="simple")
 
 #: the tabs, in order: key and title
-TABS = (("frames", "From frames"), ("mono", "Filters"), ("image", "From an image"), ("mine", "My templates"),
-        ("copy", "Copy of a workflow"))
+TABS = (("frames", "From frames"), ("mono", "Filters"), ("image", "From image"), ("mine", "My templates"),
+        ("copy", "Workflow copy"))                    # compact names (decision 12): two words, no articles
 #: a user's template file (Export / Import)
 TEMPLATE_SUFFIX = ".sftemplate"
 
@@ -141,7 +141,7 @@ _CUT_KEY = {"calibration": "calibration", "registration": "alignement", "astrome
             "gradient": "fond", "color": "couleur"}
 _SHORT = {"calibration": "Calib.", "alignement": "Regist.", "selection": "Select.", "empilement": "Stack",
           "astrometrie": "Astrom.", "fond": "Gradient", "couleur": "Color", "debruitage": "Denoise",
-          "etoiles": "Stars/bg", "post": "Output", "image": "Image", "session": "Session", "combine": "Recombine"}
+          "etoiles": "Stars/bg", "post": "Post", "image": "Image", "session": "Session", "combine": "Recombine"}
 
 
 def template_source(t: dict) -> str:
@@ -210,6 +210,19 @@ def chain_of(t: dict) -> list[tuple[str, str]]:
     return out
 
 
+#: the width of the chosen template's graph, beside the cards (GUI exploration 2: 492 cut the blocks' names)
+PREVIEW_W = 612
+#: the smallest letter a block's name is written in, in a picture; a name wider than its block at this size makes the
+#: chain go on, on a second row (the names are never cut, GUI exploration 2)
+NAME_PT = 6
+
+
+def _name_width(text: str, pt: int = NAME_PT) -> int:
+    f = QFont("Segoe UI", pt)
+    f.setBold(True)
+    return QFontMetrics(f).horizontalAdvance(text) + 7
+
+
 def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     """A picture of a template's graph: its sources (one or two nights with their Calibration, or an image file),
     then its blocks; a cut block hatched, a greyed one outlined in amber."""
@@ -236,9 +249,23 @@ def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     lead = 1 if image else (3 if mono else 2)     # the image; a night and its Calibration; (mono) and its stack
     n = lead + len(chain)
     gap = max(4.0, w * 0.012)
-    bw = (w - 2 * gap - (n - 1) * gap - (gap * 2 if rows > 1 else 0)) / n
-    bh = min(h * 0.22 if rows > 1 else h * 0.34, max(bw * 0.62, h * (0.18 if rows > 2 else 0.24)))
-    mid = h / 2
+
+    def name_of(key):
+        kb, _t, num = key.partition("~")                    # a block placed twice (issue #47): its number
+        return key if key in mono else _(_SHORT.get(kb, TITLES.get(kb, kb))) + (f" {num}" if num else "")
+
+    def width_of(n):
+        return (w - 2 * gap - (n - 1) * gap - (gap * 2 if rows > 1 else 0)) / n
+    bw = width_of(n)
+    wrap = len(chain)                                   # the chain's blocks on the first row, the others on a second
+    if names and len(chain) > 2 and bw < max(_name_width(name_of(k)) for k, _h in chain):
+        wrap = max(1, (n + 1) // 2 - lead)
+        bw = width_of(max(lead + wrap, len(chain) - wrap))
+    hb = h if wrap == len(chain) else h / 2             # the height of a row of the picture
+    bh = min(hb * 0.22 if rows > 1 else hb * 0.34, max(bw * 0.62, hb * (0.18 if rows > 2 else 0.24)))
+    if hb < h and rows == 1:
+        bh = min(hb * 0.6, max(bh, hb * 0.42))
+    mid = hb / 2
     font = QFont("Segoe UI", min(10, max(6, int(bh * 0.28))))
     font.setBold(True)
     p.setFont(font)
@@ -271,8 +298,7 @@ def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
         p.drawRect(QRectF(x, y - bh / 2 + 2, 3, bh - 4))
         if names:
             p.setPen(QColor("#e8ebf0" if how != "cut" else "#8b93a1"))
-            kb, _t, num = key.partition("~")                # a block placed twice (issue #47): its number
-            text = key if key in mono else _(_SHORT.get(kb, TITLES.get(kb, kb))) + (f" {num}" if num else "")
+            text = name_of(key)
             f = QFont(font)
             while f.pointSize() > 6 and QFontMetrics(f).horizontalAdvance(text) > bw - 7:
                 f.setPointSize(f.pointSize() - 1)          # the name whole, in a smaller letter if need be
@@ -324,7 +350,18 @@ def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
             p.drawLine(QPointF(xb, min(ys)), QPointF(xb, max(ys)))
             ends = [(xb, mid)]
             x += gap * 2
-    for k, how in chain:
+    for i, (k, how) in enumerate(chain):
+        if i == wrap:                                     # the chain goes on, on the second row, from the left
+            (ex, ey), y2 = ends[0], h * 0.75
+            p.setPen(QPen(QColor("#6f7888"), 1.4))
+            p.setBrush(Qt.NoBrush)
+            turn = QPainterPath(QPointF(ex, ey))
+            for pt in ((ex + gap * 0.5, ey), (ex + gap * 0.5, (ey + y2) / 2), (gap * 0.5, (ey + y2) / 2),
+                       (gap * 0.5, y2), (gap, y2)):
+                turn.lineTo(QPointF(*pt))
+            p.drawPath(turn)
+            x, mid = gap, y2
+            ends = []
         for ex, ey in ends:
             wire(ex, ey, x, mid)
         r = block(x, mid, k, how)
@@ -352,8 +389,15 @@ def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     rows = (["Colour"] if kind == "dualband" else (["Ha", "OIII"] if kind == "filters" else list(t["filters"])))
     fusion = kind in ("fusion", "dualband")
     n = 1 + len(chain) + (2 if fusion else 0)
-    gap = max(4.0, w * 0.012)
+    gap = max(4.0, w * (0.008 if names else 0.012))      # with the names: narrower gaps, wider blocks
     bw = (w - 2 * gap - (n - 1) * gap - (gap * 2 if fusion else 0)) / n
+    # one row (dual band) whose names do not fit: the Fusion and the Recombine go on a second row (never cut names)
+    below = names and fusion and len(rows) == 1 and \
+        bw < max(_name_width(x) for x in [_(_SHORT.get(k, TITLES.get(k, k))) for k in chain] +
+                 [_("Fusion") + " " + t.get("palette", ""), _("Recombine")])
+    if below:
+        n = 1 + len(chain)
+        bw = (w - 2 * gap - (n - 1) * gap) / n
     pitch_max = (h - 8) / max(len(rows), 1)
     bh = min(h * 0.34, pitch_max * 0.78, max(bw * 0.62, h * 0.12))
     font = QFont("Segoe UI", min(10, max(6, int(bh * 0.3))))
@@ -385,7 +429,7 @@ def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
         p.drawPath(path)
 
     pitch = min(pitch_max, bh + max(4.0, h * 0.06))
-    ys = [h / 2 + (i - (len(rows) - 1) / 2) * pitch for i in range(len(rows))]
+    ys = [h / 2 + (i - (len(rows) - 1) / 2) * pitch for i in range(len(rows))] if not below else [h * 0.3]
     ends = []
     for row, y in zip(rows, ys):
         x = gap
@@ -396,13 +440,24 @@ def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
             r = block(x, y, _(_SHORT.get(k, TITLES.get(k, k))), "#5fbf7f")
         ends.append((r.right(), y))
     if fusion:
+        yf = h * 0.72 if below else h / 2
+        if below:                                       # the row's end turns down to the second row, on the left
+            (ex, ey) = ends[0]
+            p.setPen(QPen(QColor("#6f7888"), 1.4))
+            p.setBrush(Qt.NoBrush)
+            turn = QPainterPath(QPointF(ex, ey))
+            for pt in ((ex + gap * 0.5, ey), (ex + gap * 0.5, (ey + yf) / 2), (gap * 0.5, (ey + yf) / 2),
+                       (gap * 0.5, yf)):
+                turn.lineTo(QPointF(*pt))
+            p.drawPath(turn)
+            ends = [(gap * 0.5, yf)]
         x = ends[0][0] + 3 * gap
-        r = block(x, h / 2, _("Fusion") + " " + t.get("palette", ""), "#c9a227")
-        r2 = block(r.right() + gap, h / 2, _("Recombine"), "#c9a227")     # the stars put back (option A)
-        wire(r.right(), h / 2, r2.left(), h / 2)
+        r = block(x, yf, _("Fusion") + " " + t.get("palette", ""), "#c9a227")
+        r2 = block(r.right() + gap, yf, _("Recombine"), "#c9a227")     # the stars put back (option A)
+        wire(r.right(), yf, r2.left(), yf)
         if kind == "dualband":                          # one colour image, two channels
             for _lab, dy in (("Ha", -bh * 0.25), ("OIII", bh * 0.25)):
-                wire(ends[0][0], ends[0][1], r.left(), h / 2 + dy)
+                wire(ends[0][0], ends[0][1], r.left(), yf + dy)
         else:
             for ex, ey in ends:
                 wire(ex, ey, r.left(), h / 2)
@@ -453,7 +508,7 @@ class TemplateGallery(QDialog):
         self.s = session
         self.templates = list(GALLERY if templates is None else templates)
         self.setWindowTitle(_("New workflow"))
-        self.resize(1180, 700)
+        size_within(self, 1180, 700)                      # never taller than a 1366 x 768 screen's room
         self.choice: dict | None = None
         self.image = ""
         root = QVBoxLayout(self)
@@ -494,7 +549,7 @@ class TemplateGallery(QDialog):
         side = QFrame()
         side.setObjectName("side")
         side.setStyleSheet("QFrame#side { background: #1c1f26; border-radius: 8px; } QLabel { background: transparent; }")
-        side.setFixedWidth(520)
+        side.setFixedWidth(PREVIEW_W + 28)              # the room left by two columns of cards: a wide preview
         sv = QVBoxLayout(side)
         sv.setContentsMargins(14, 14, 14, 14)
         sv.setSpacing(8)
@@ -577,7 +632,7 @@ class TemplateGallery(QDialog):
 
     # ------------------------------------------------------------ the cards
     def _copies(self) -> list[dict]:
-        return [dict(key=f"copy:{p.pid}", tab="copy", name=_("Copy of “{name}”").format(name=p.name), copy=p,
+        return [dict(key=f"copy:{p.pid}", tab="copy", name=_("{name} (copy)").format(name=p.name), copy=p,
                      opts=p.opts, cut=p.opts.get("cut") or [], end=p.end, source="image" if p.source else None,
                      text=_("The workflow “{name}” with all its settings: to try one change against it.").format(
                          name=p.name)) for p in self.s.paths]
@@ -609,7 +664,7 @@ class TemplateGallery(QDialog):
         self.choice = t
         for c in self.cards:
             c.set_selected(c.t is t)
-        self.preview.setPixmap(draw_graph(t, 492, 190, names=True))
+        self.preview.setPixmap(draw_graph(t, PREVIEW_W, 190, names=True))
         self.title.setText(_(t["name"]) if not t.get("copy") else t["name"])
         self.text.setText(_(t["text"]) if not t.get("copy") else t["text"])
         self.file_row.setVisible(template_source(t) in ("image", "stretched") and not t.get("copy"))
@@ -772,7 +827,7 @@ def template_dialog(parent, name: str) -> tuple[str, str] | None:
     """Save as template: its name and its gallery tab, in one dialog (issue #47). None when cancelled."""
     from PySide6.QtWidgets import QComboBox, QDialogButtonBox, QFormLayout
     d = QDialog(parent)
-    d.setWindowTitle(_("Save as template"))
+    d.setWindowTitle(_("Save template"))
     f = QFormLayout(d)
     ed = QLineEdit(name)
     ed.selectAll()

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
-OUT = Path("F:/astro_essais/A_REGARDER/exploration/block_actions")
+OUT = Path("F:/astro_essais/A_REGARDER/exploration2/block_actions")
 ENGLISH = re.compile(r"\b(Delete|Switch|Send|Remove|Rename|Duplicate|Save|Inspect|Pause|Mark|Open|Take|New|block|"
                      r"only|Del|Split|stars|layer|Output|Image file|Add)\b")
 BRIEF = "--brief" in sys.argv

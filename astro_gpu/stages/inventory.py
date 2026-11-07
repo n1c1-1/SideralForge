@@ -76,7 +76,9 @@ class Inventory(Stage):
         for k in ("darks", "flats", "bias", "flat_darks"):
             bad = [f["path"] for f in out[k] if (f["width"], f["height"]) != (w, h)]
             if bad:
-                raise StageError(f"{len(bad)} {k} frame(s) have a different size than the lights, e.g. {bad[0]}")
+                raise StageError(f"{len(bad)} {k.replace('_', ' ')} have another size than the lights ({w}x{h}), e.g. "
+                                 f"{Path(bad[0]).name}: take them out of the session, or use those of this "
+                                 f"camera")
         odd = [f["path"] for f in lights if (f["width"], f["height"]) != (w, h) or f["cfa"] != cfa]
         if odd:
             ctx.log(f"{len(odd)} light frame(s) with a different size or pattern are ignored", "warning")

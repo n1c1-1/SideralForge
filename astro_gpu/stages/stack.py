@@ -325,7 +325,8 @@ class Stack(Stage):
         weight = sel.weight
         used = np.where(weight > 0)[0]
         if len(used) < 2:
-            raise StageError("fewer than 2 usable frames after selection; relax the selection thresholds")
+            raise StageError(too_few_frames(len(weight), int(np.isfinite(reg["rms"]).sum()), int(excl.sum()),
+                                            len(used)))
         ctx.save_json("frames.json", sel.rows(meta, transp, fwhm))
         sel.log(ctx)
         used_metrics(ctx, used, Wo, Ho)
@@ -1261,6 +1262,20 @@ class Selection:
             d["auto"] = {k: _auto_dict(a) for k, a in self.fs.auto.items()}
             d["suggestion"] = _auto_dict(self.fs.suggestion)
         return d
+
+
+def too_few_frames(n: int, aligned: int, by_hand: int, kept: int) -> str:
+    """Why a stack has fewer than 2 frames, and what to do, by the first cause (GUI exploration 2: "relax the selection
+    thresholds" was said with a single light frame and no Selection block)."""
+    if n < 2:
+        return f"only {n} light frame(s): a stack needs at least 2; add light frames to the session"
+    if aligned < 2:
+        return f"only {aligned} of {n} light frames could be aligned: a stack needs at least 2; check the frames"
+    if aligned - by_hand < 2:
+        return (f"only {kept} of {n} light frames are kept, {by_hand} taken out by hand: a stack needs at least 2; "
+                f"put frames back")
+    return (f"only {kept} of {n} light frames are kept by the frame selection: a stack needs at least 2; relax the "
+            f"selection thresholds")
 
 
 def frame_selection(p: StackParams, reg, stats, excl) -> Selection:

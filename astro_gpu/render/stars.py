@@ -49,8 +49,8 @@ class StarSettings(SimpleSettings):
     star_strength: float = P(0.6, label="Stars", ge=0.2, le=5.0, step=0.05,
                              help="How strongly the stars are stretched: 1 = the stretch of the whole image; less "
                                   "makes them fainter and smaller (the star reduction the separation allows), more "
-                                  "brighter. 0.6 by default, with a size of -1 (the user's choice on the Rosette, "
-                                  "checked on Heart, Iris, M8 and M31, 5 November: the nebula reads first).")
+                                  "brighter. 0.6 by default, with a size of -1: the nebula reads first.")  # the
+    # user's choice of 5 November, checked on four of his projects
     star_size: float = P(-1.0, label="Star size", ge=-3.0, le=3.0, step=0.1, unit="px",
                          help="Below 0 the stars are shrunk by this radius (a grey erosion: each pixel takes the "
                               "darkest of its neighbours), above 0 grown (a grey dilation: the brightest).")

@@ -51,6 +51,7 @@ class FrameInfo:
     dec: float | None = None
     object: str = ""
     pixel_scale: float | None = None  # arcsec per pixel, when the FITS headers give it (PIXSCALE, SECPIX)
+    filter: str = ""                # the session filter its FITS header names (FILTER: Ha, OIII...); "" for none
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -99,10 +100,13 @@ def read_cfa(path: str | Path) -> np.ndarray:
             return r.raw_image_visible.astype(np.float32)
     if kind == "fits":
         from astropy.io import fits
-        with fits.open(path, memmap=False) as h:          # compressed FITS: the image is in the first extension
-            hdu = next(x for x in h if x.data is not None)
-            a = np.asarray(hdu.data, np.float32)
-            hd = hdu.header
+        try:
+            with fits.open(path, memmap=False) as h:      # compressed FITS: the image is in the first extension
+                hdu = next(x for x in h if x.data is not None)
+                a = np.asarray(hdu.data, np.float32)
+                hd = hdu.header
+        except (OSError, StopIteration, TypeError, ValueError) as e:
+            raise unreadable(path) from e
         if a.ndim != 2:
             raise ValueError(f"{path.name}: expected a 2-D Bayer frame, got shape {a.shape}")
         if str(hd.get("ROWORDER", "TOP-DOWN")).upper() == "BOTTOM-UP":
@@ -201,11 +205,22 @@ def fits_header(path: str | Path):
     """The header of the image of a FITS file (of its first extension for a compressed one, whose primary part is
     empty)."""
     from astropy.io import fits
-    with fits.open(path, memmap=False) as h:
-        for hdu in h:
-            if hdu.header.get("NAXIS", 0) >= 2:
-                return hdu.header.copy()
-        return h[0].header.copy()
+    try:
+        with fits.open(path, memmap=False) as h:
+            for hdu in h:
+                if hdu.header.get("NAXIS", 0) >= 2:
+                    return hdu.header.copy()
+            return h[0].header.copy()
+    except (OSError, IndexError, ValueError) as e:     # not a FITS file (astropy: "No SIMPLE card found…")
+        raise unreadable(path) from e
+
+
+def unreadable(path: str | Path) -> Exception:
+    """The error of a frame that cannot be read, in plain words with its name and what to do (GUI exploration 2: the
+    run said astropy's "OSError: No SIMPLE card found…")."""
+    from ..core.stage import StageError
+    return StageError(f"{Path(path).name} cannot be read: it is not a valid FITS file (damaged, or wrongly named); "
+                      f"take it out of the session")
 
 
 def _exposure_s(hd) -> float | None:
@@ -231,10 +246,13 @@ def frame_filter(path: str | Path) -> str:
     if frame_kind(p) != "fits":
         return ""
     try:
-        name = str(fits_header(p).get("FILTER", "")).strip().lower()
+        return _filter_of(fits_header(p))
     except Exception:  # noqa: BLE001 - an unreadable header names no filter
         return ""
-    return FILTER_NAMES.get(name, "")
+
+
+def _filter_of(hd) -> str:
+    return FILTER_NAMES.get(str(hd.get("FILTER", "")).strip().lower(), "")
 
 
 def _fits_info(path: Path) -> FrameInfo:
@@ -258,6 +276,7 @@ def _fits_info(path: Path) -> FrameInfo:
     info.temperature = _num(hd.get("CCD-TEMP", hd.get("SET-TEMP", hd.get("TEMP"))))
     info.object = str(hd.get("OBJECT", "")).strip()
     info.pixel_scale = _num(hd.get("PIXSCALE", hd.get("SECPIX")))
+    info.filter = _filter_of(hd)
     try:
         import astropy.units as u
         from astropy.coordinates import SkyCoord

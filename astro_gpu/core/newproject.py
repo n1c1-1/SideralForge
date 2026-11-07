@@ -54,9 +54,10 @@ def guess_calibration(lights_folder: str) -> dict[str, list[str]]:
 
 def guess_names(lights_folder: str) -> dict[str, str]:
     """Project name, project folder, scratch folder and target from the first meaningful ancestor of the lights
-    folder (capture folder names such as 'lights' or 'raw' are skipped)."""
+    folder (capture folder names such as 'lights' or 'raw' are skipped, and a filter's: 'Ha', 'OIII'...)."""
+    from ..io.frames import FILTER_NAMES
     named = Path(lights_folder)
-    while named.name.lower() in GENERIC and named.parent != named:
+    while (named.name.lower() in GENERIC or named.name.lower() in FILTER_NAMES) and named.parent != named:
         named = named.parent
     return {"name": named.name, "folder": str(named / "astro_gpu"),
             "scratch": str(Path.home() / "astro_gpu_scratch" / named.name), "target": target_guess(named.name)}

@@ -133,14 +133,20 @@ def api_resolver(project) -> Callable[[Any], Folder | None]:
     def resolve(sid) -> Folder | None:
         pid, stage = (sid[1], STARS_STAGE) if isinstance(sid, tuple) else (sid, OUTPUT_STAGE)
         try:
-            if stage not in api.chain(project, pid):
-                return None
+            chain = api.chain(project, pid)
+            if stage not in chain:                       # an already stretched Image stands for the Output (it
+                from ...core import workflow as wfl      # writes what the Output would: workflow.PROVIDES)
+                stage = next((s for s in chain if stage in wfl.PROVIDES.get(wfl.base(s), ())), None)
+                if stage is None:
+                    return None
             so = api.stage_outputs(project, pid, stage) or api.stage_outputs(project, pid, stage, "previous")
         except (OSError, ValueError, KeyError):
             return None
         if so is None:
             return None
         d = Path(so.dir)
+        if stage != OUTPUT_STAGE and stage != STARS_STAGE and not (d / "prep_simple.json").is_file():
+            return None                                  # a linear image: no Output image yet
         try:
             mt = (d / "manifest.json").stat().st_mtime
         except OSError:

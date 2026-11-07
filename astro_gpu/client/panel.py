@@ -121,7 +121,8 @@ def retain(w: QWidget, shown: bool) -> QWidget:
     sp = w.sizePolicy()
     sp.setRetainSizeWhenHidden(True)
     w.setSizePolicy(sp)
-    w.setVisible(shown)
+    if not shown or w.parentWidget() is not None:  # shown without a parent yet, it would open as a window of its
+        w.setVisible(shown)                         # own for a moment and close the menu open (Stacking's, 2nd round)
     return w
 
 
@@ -481,9 +482,9 @@ class Panel(QWidget):
                 self.bv.addSpacing(8)
                 b = QPushButton(_("Open Post"))
                 b.setObjectName("primary")
-                b.setEnabled(any(q.rendered for q in self.s.paths))
-                if not b.isEnabled():                         # a greyed button says why
-                    b.setToolTip(_("No layer is computed yet: run a workflow first"))
+                if not any(q.rendered for q in self.s.paths):   # opened as its double-click does (2nd round): Post
+                    b.setToolTip(_("Nothing computed yet: Post lists the layers to come"))   # lists them
+
                 b.clicked.connect(self.openPost.emit)
                 self.bv.addWidget(b, 0, Qt.AlignLeft)
             self.bv.addStretch(1)
@@ -542,6 +543,23 @@ class Panel(QWidget):
     KIND_TITLES = (("lights", "Lights"), ("darks", "Darks"), ("flats", "Flats"), ("bias", "Bias"),
                    ("flat_darks", "Dark flats"))       # one name everywhere, as the import's (#49)
 
+    def name_edited(self, ed, old: str, pid: int | None = None, sid: int | None = None):
+        """A workflow's or a session's name typed in the panel (GUI exploration 2, decision 8): an empty name, or
+        another's, is refused with the reason, the old one back in the field."""
+        t = ed.text().strip()
+        gone = (sid is not None and sid not in [x.id for x in self.s.p.sessions]) or \
+            (pid is not None and self.s.view(pid) is None)
+        if t == old or gone:                              # its session or workflow went (Ctrl+Z): nothing to name
+            return
+        why = self.s.name_problem(t, pid=pid, sid=sid)
+        if why:
+            ed.setText(old)
+            self.toast.emit(_("Name refused: {why}").format(why=why))
+        elif sid is not None:
+            self.s.rename_session(sid, t)
+        else:
+            self.renamed.emit(pid, t)
+
     def session_panel(self, sid: int):
         """A Session block: its name, its filter, and its frames kind by kind, chosen here (issue #43)."""
         from ..core.project2 import FILTERS
@@ -554,9 +572,20 @@ class Panel(QWidget):
                          "border-bottom: 1px dashed #3a4150; border-radius: 0; } "
                          f"QLineEdit:focus {{ border-bottom: 1px solid {ACCENT}; }}")
         ed.setToolTip(_("Session name"))
-        ed.editingFinished.connect(lambda: s.rename_session(sid, ed.text()))
+        ed.editingFinished.connect(lambda: self.name_edited(ed, ses.name, sid=sid))
         top.addWidget(ed, 1)
         self.hv.addLayout(top)
+        if not self.tune:                                 # as every block: its Delete under its name (expl. 2)
+            acts = QHBoxLayout()
+            x = QPushButton(_("Delete"))
+            why = s.session_removal_problem(sid)
+            x.setEnabled(not why)                         # greyed, with why (its menu says the same)
+            x.setToolTip(_("Cannot be deleted: {why}").format(why=why) if why else
+                         _("Take this session out of the project, its files kept (Del)"))
+            x.clicked.connect(self.removeTool.emit)
+            acts.addWidget(x)
+            acts.addStretch(1)
+            self.hv.addLayout(acts)
         row = QHBoxLayout()
         row.addWidget(label(_("Filter"), "dim"))
         cb = QComboBox()
@@ -823,8 +852,7 @@ class Panel(QWidget):
         ed.setStyleSheet("QLineEdit { font-size: 13pt; font-weight: 600; background: transparent; border: none; "
                          "border-bottom: 1px dashed #3a4150; border-radius: 0; } "
                          f"QLineEdit:focus {{ border-bottom: 1px solid {ACCENT}; }}")
-        ed.editingFinished.connect(lambda: ed.text().strip() and ed.text().strip() != p.name
-                                   and self.renamed.emit(p.pid, ed.text().strip()))
+        ed.editingFinished.connect(lambda: self.name_edited(ed, p.name, pid=p.pid))
         top.addWidget(ed, 1)
         st = self.graph_state(node)
         chip = QLabel(_(STATE_WORD[st]))
@@ -962,8 +990,7 @@ class Panel(QWidget):
                              "border-bottom: 1px dashed #3a4150; border-radius: 0; } "
                              f"QLineEdit:focus {{ border-bottom: 1px solid {ACCENT}; }}")
             ed.setToolTip(_("Workflow name"))
-            ed.editingFinished.connect(lambda: ed.text().strip() and ed.text().strip() != p.name
-                                       and self.renamed.emit(p.pid, ed.text().strip()))
+            ed.editingFinished.connect(lambda: self.name_edited(ed, p.name, pid=p.pid))
             top.addWidget(ed, 1)
         else:
             from .blocks import node_title
@@ -977,12 +1004,13 @@ class Panel(QWidget):
         top.addWidget(chip)
         kb = k.partition("~")[0]
         graph_block = kb not in ("sources", "final", "session", "composition", "fusion", "image", "post") and \
-            node.sid is None and not self.tune
+            (node.sid is None or kb == "calibration") and not self.tune      # a session's Calibration too (expl. 2)
         acts = QHBoxLayout()                             # the block's actions, under its name (issue #47)
         acts.setSpacing(6)
         if graph_block:                                  # any block can go when what follows allows it
             x = QPushButton(_("Delete"))
-            x.setToolTip(_("Take this block out of the workflow (Del)"))
+            x.setToolTip(_("Take this block out of the workflow (Del)") if node.sid is None else
+                         _("Take the Calibration out of every session of the workflow (Del)"))
             x.clicked.connect(self.removeTool.emit)
             acts.addWidget(x)
         if graph_block:                                   # question 7: greyed with its reason, as in the menu
@@ -994,7 +1022,7 @@ class Panel(QWidget):
             cut.clicked.connect(self.cutToggled.emit)
             acts.addWidget(cut)
         if k == "post" and not self.tune:                # the workflow as a template of the gallery
-            tpl = QPushButton(_("Save as template…"))
+            tpl = QPushButton(_("Save template…"))
             tpl.setToolTip(_("Keep this workflow's graph as a template of the gallery"))
             tpl.clicked.connect(lambda: self.saveTemplate.emit(p.pid))
             acts.addWidget(tpl)
@@ -1308,21 +1336,34 @@ class Panel(QWidget):
         self.s.add_post_layer(p.pid, part, self)
         self.s.log('{image} of "{name}" sent to Post', image=dict(STAR_OUTPUTS)[part], name=p.name)
         self.s.select(index=self.s.paths.index(p), step="etoiles")
+        self.toast.emit(_('{image} · "{name}" to Post').format(image=_(dict(STAR_OUTPUTS)[part]), name=p.name)
+                        + " · Ctrl+Z")                    # said, as the graph's menu (decision 11)
 
     def _part_out_of_post(self, p, part):
         """One of the Stars/background block's images sent as it is, taken out of Post (#29)."""
         from .blocks import STAR_OUTPUTS
         if self.s.remove_post_part(p.pid, part, self):
             self.s.log('{image} of "{name}" taken out of Post', image=dict(STAR_OUTPUTS)[part], name=p.name)
+            self.toast.emit(_('{image} of "{name}" taken out of Post').format(
+                image=_(dict(STAR_OUTPUTS)[part]), name=p.name) + " · Ctrl+Z")
         self.s.select(index=self.s.paths.index(p), step="etoiles")
 
     def _new_composition(self, p):
         """A Stars and background block for this workflow's Stars block (as dragging a dot onto Composition)."""
+        from .post3 import tr_name
         lid = self.s.add_post_layer(p.pid, "combined", self)
         self.s.log('Recombine for "{name}"', name=p.name)
         self.s.sel_layer = lid
         self.s.select(index=self.s.paths.index(p), step="composition")
         self.s.scope = [p.pid]
+        lay = self.s.post_layer(lid) or {}
+        self.toast.emit(_('Layer "{name}" ({block}) to Post').format(
+            name=tr_name(str(lay.get("name") or p.name)), block=block_title(None, "composition")) + " · Ctrl+Z")
+
+    def _one_step(self, change):
+        """A change of a Recombine block whose layer is made real by it: one undo step (decision 7)."""
+        with self.s.batch():
+            change()
 
     def composition(self, node):
         """A Stars and background block: its layer of Post, recombining the Stars block's two images. How the stars go
@@ -1335,14 +1376,15 @@ class Panel(QWidget):
         p = node.paths[0]
         def lid():                                        # the layer is made at the first change, not by showing the
             if node.lid is None:                          # block (GUI exploration 3.6: a click made a layer)
-                node.lid = s.add_post_layer(p.pid, "combined", self)
+                node.lid = s.add_post_layer(p.pid, "combined", self, keep_default=False)   # it is the default one
             s.sel_layer = node.lid
             return node.lid
         if node.lid is not None:
             s.sel_layer = node.lid
         lay = (s.post_layer(node.lid) if node.lid is not None else None) or {}
         top = QHBoxLayout()
-        top.addWidget(label(block_title(p, "composition"), "h1", wrap=True), 1)
+        from .blocks import node_title
+        top.addWidget(label(node_title(s, node), "h1", wrap=True), 1)        # "Recombine 2": as the graph names it
         st = block_state(s, p, "etoiles")
         chip = QLabel(_(STATE_WORD[st]))
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
@@ -1365,7 +1407,8 @@ class Panel(QWidget):
                 sliders.pop(key, None)
             else:
                 sliders[key] = v
-            s.set_post_layer(lid(), self, sliders=dict(sliders))
+            with s.batch():                               # its layer made real and the value: one undo step (decision 7)
+                s.set_post_layer(lid(), self, sliders=dict(sliders))
         group = None
         infos = [x for x in s.slider_infos(p, "combined") if x.available]     # the stars first: what the block is for
         for sd in sorted(infos, key=lambda x: x.group != STARS_GROUP):
@@ -1381,7 +1424,8 @@ class Panel(QWidget):
                     cb.setToolTip(_("How the stars go back on the starless image: Screen (the usual way), Linear "
                                     "dodge (add) or Lighten"))
                     cb.setCurrentIndex(max(0, BLENDS.index(lay.get("blend") or BLENDS[0])))
-                    cb.currentIndexChanged.connect(lambda i, cb=cb: s.set_post_layer(lid(), self, blend=cb.itemData(i)))
+                    cb.currentIndexChanged.connect(lambda i, cb=cb: self._one_step(
+                        lambda: s.set_post_layer(lid(), self, blend=cb.itemData(i))))
                     row.addWidget(cb, 1)
                     self.bv.addLayout(row)
             sl = ContSlider(_(sd.name), 0, 4, sliders.get(sd.key, 2.0), 2, ends=[_(e) for e in sd.ends],
@@ -1391,10 +1435,11 @@ class Panel(QWidget):
             sl.done.connect(lambda v, k=sd.key: commit(k, v))
             self.bv.addWidget(sl)
         self.bv.addSpacing(8)
-        b = QPushButton(_("Open in Post"))
+        b = QPushButton(_("Open Post"))
         b.setObjectName("primary")
         b.setToolTip(_("Post, with this block's layer selected: the image, the same settings, masks and filters"))
-        b.clicked.connect(lambda: self.openLayer.emit(lid()))
+        b.clicked.connect(lambda: self.openLayer.emit(node.lid if node.lid is not None else
+                                                      s.default_post_layer(p.pid)))     # never an undo step (decision 7)
         self.bv.addWidget(b, 0, Qt.AlignLeft)
         self.bv.addStretch(1)
 

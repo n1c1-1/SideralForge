@@ -37,7 +37,7 @@ if MODE in ("drive", "summary", "show", "minimize_all", "note_all"):
 else:
     from harness import TMP, Explorer, RunsBlocked  # noqa: E402
 
-OUT = Path("F:/astro_essais/A_REGARDER/exploration/fuzz")
+OUT = Path("F:/astro_essais/A_REGARDER/exploration2/fuzz")
 RUNS = OUT / "runs"
 RUNS.mkdir(parents=True, exist_ok=True)
 PY = sys.executable

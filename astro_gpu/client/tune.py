@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (
 
 from .. import texts
 from . import prefs
-from .blocks import Graph, block_state, block_title, chain, stages_of
+from .blocks import Graph, block_state, block_title, chain, node_title, stages_of
 from .charts import (
     AMBER,
     BLUE,
@@ -114,6 +114,7 @@ class Strip(QFrame):
         super().__init__(parent)
         self.setObjectName("strip")
         self.setStyleSheet("QFrame#strip { background: #1c1f26; border-bottom: 1px solid #2a2f38; }")
+        self.current = None
         self.h = QHBoxLayout(self)
         self.h.setContentsMargins(10, 8, 10, 8)
         self.h.setSpacing(4)
@@ -129,6 +130,7 @@ class Strip(QFrame):
             return
         self._sig = sig
         clear(self.h)
+        self.current = None                               # the open block's button (the strip scrolls to it)
         bk = QPushButton("◂  " + _("Graph"))
         bk.setToolTip(_("Back to the graph (Esc)"))
         bk.clicked.connect(self.back.emit)
@@ -156,7 +158,12 @@ class Strip(QFrame):
                 self.h.addWidget(a)
             node = g.node_of(p, k)
             st = g.state(node) if node is not None else "pending"
-            b = QPushButton((block_title(None, k) if k == "post" else block_title(p, k)).replace("&", "&&"))  # no mnemonic
+            if k == "sources":                           # the graph's name of the first block (one name everywhere)
+                title = _("Image") if p is not None and isinstance(p.source, dict) and "fusion" not in p.source \
+                    else node_title(s, node) if node is not None else block_title(p, k)
+            else:
+                title = block_title(None, k) if k == "post" else block_title(p, k)
+            b = QPushButton(title.replace("&", "&&"))   # no mnemonic
             sel = k == s.sel_step
             b.setStyleSheet(f"QPushButton {{ border-left: 3px solid {STATE_COL.get(st, '#5d6470')}; padding: 4px 8px; "
                             f"background: {'#2b3446' if sel else '#22262e'}; "
@@ -167,6 +174,8 @@ class Strip(QFrame):
             b.setToolTip(_(STATE_WORD[st]))
             b.clicked.connect(lambda _x=False, kk=k: self.picked.emit(kk))
             self.h.addWidget(b)
+            if sel:
+                self.current = b
         if p is not None:
             a = QLabel("›")
             a.setStyleSheet("color: #6b7280; background: transparent;")
@@ -543,6 +552,7 @@ class TuneView(QWidget):
         sa.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         sa.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
         sa.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.strip_scroll = sa
         v.addWidget(sa)
         self.pages = QStackedWidget()
         v.addWidget(self.pages, 1)
@@ -603,6 +613,19 @@ class TuneView(QWidget):
         g = Graph(s)
         node = g.node_of(s.path, s.sel_step) if s.sel_step not in ("sources", "final") else None
         s.scope = [q.pid for q in node.paths] if node is not None else None
+
+    def show_open_block(self):
+        """The strip scrolled so that the open block's button is in view (GUI exploration 2: at 1366 x 768 the strip of
+        a long chain showed only the first letter of the block opened, at its right edge)."""
+        b, sa = self.strip.current, self.strip_scroll
+        try:
+            if b is not None and b.parent() is self.strip:
+                self.strip.layout().activate()            # its buttons placed, the strip as wide as they need
+                if self.strip.width() < self.strip.sizeHint().width():
+                    self.strip.resize(self.strip.sizeHint().width(), self.strip.height())
+                sa.ensureWidgetVisible(b, 60, 0)
+        except RuntimeError:                              # the strip was built again meanwhile
+            pass
 
     def _strip_pick(self, k: str):
         self.select(step=k)
@@ -667,6 +690,7 @@ class TuneView(QWidget):
         s = self.s
         g = g or Graph(s)
         self.strip.build(s, g)
+        QTimer.singleShot(0, self.show_open_block)         # once laid out: the open block's button in view
         if s.sel_step == "sources" or s.sel_step.startswith("session@"):    # a Session block: its frames (#43)
             self.pages.setCurrentIndex(1)
             if hasattr(self.sources, "refresh"):
@@ -1194,7 +1218,11 @@ class TuneView(QWidget):
             return
         vi = self.steps.view_image(p, shown)
         if vi is None:
-            self._message(si.not_computed(shown.stage))
+            if hasattr(self.s, "is_cut") and self.s.is_cut(p, k):     # nothing to show, and nothing was to compute
+                self._message(_("{block} switched off: the image passes through unchanged").format(
+                    block=block_title(p, k)))
+            else:
+                self._message(si.not_computed(shown.stage))
             return
         if shown.kind == "preview":
             vi.stretched, vi.white, vi.units = True, 255.0, ""
@@ -2147,10 +2175,18 @@ class TuneView(QWidget):
                                              if data and plan.jobs else ""))
         rb.setToolTip(", ".join(r.title for r in build_rows(s, plan.jobs)))
         rb.setEnabled(data and bool(plan.jobs))
+        refused = []
+        if data and plan.jobs and hasattr(s, "run_problems"):     # what Run to here would refuse (round 2: a fusion
+            refused = s.run_problems({p.pid})                      # that cannot run kept "Up to here" active)
         if not data:
             rb.setToolTip(self._no_data(p))
         elif not plan.jobs:
             rb.setToolTip(_("Nothing to run: what this block needs is up to date"))
+        elif refused:
+            from .runs import refusal_text
+            rb.setText(_("Run to here"))
+            rb.setEnabled(False)
+            rb.setToolTip(refusal_text(refused))
         if getattr(s, "run_active", False):              # issue #33: it would only open the run in progress
             rb.setEnabled(False)
             rb.setToolTip(_("A run is in progress: Run to here comes back when it ends"))

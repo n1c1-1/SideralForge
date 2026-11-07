@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CLIENT = ROOT / "astro_gpu" / "client"
 CORE = ROOT / "astro_gpu" / "core"
 FR = CLIENT / "locale" / "fr"
-OUT = Path("F:/astro_essais/A_REGARDER/exploration/words_layout")
+OUT = Path("F:/astro_essais/A_REGARDER/exploration2/words_layout")
 OUT.mkdir(parents=True, exist_ok=True)
 
 # words that exist in English and practically never in French text (a French sentence holding one is suspect)

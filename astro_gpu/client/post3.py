@@ -129,7 +129,13 @@ def tr_name(n: str, image: bool = False) -> str:
     if image:
         return _pieces(n, maybe) + _(COPY) * k
     known = {f["name"] for f in FILTERS.values()} | set(OLD_NAMES) | set(POST_PART_NAMES.values())
-    return " · ".join(_(b) if b in known else b for b in n.split(" · ")) + _(COPY) * k
+
+    def piece(b):                                 # "Recombine 2": a numbered copy of a Split image's name
+        m = re.fullmatch(r"(.+) (\d+)", b)
+        if b not in known and m and m.group(1) in POST_PART_NAMES.values():
+            return _(m.group(1)) + " " + m.group(2)
+        return _(b) if b in known else b
+    return " · ".join(piece(b) for b in n.split(" · ")) + _(COPY) * k
 
 
 def layer_name(lay: dict) -> str:
@@ -497,6 +503,8 @@ class PostView(QWidget):
     goProcessing = Signal(int, str)
     goResults = Signal(int)
     rendered = Signal(object)                             # a Result was shown (tests, the status line)
+    toasted = Signal(str)                                 # what a change did beyond Post (the window's status line)
+    layerAsked = Signal(int)                              # Open in Post of a layer (the page lists it when not computed)
 
     def __init__(self, session, parent=None, *, worker: RenderWorker | None = None, persist: bool = True):
         super().__init__(parent)
@@ -531,6 +539,7 @@ class PostView(QWidget):
         self._half_due = False                           # (CPU) the exact quarter is shown, the half not rendered
         self._missing_images: set[str] = set()           # image layers' keys whose pixels the worker did not find
         self._drop = None                                # the drop the drag shows (see drop_at)
+        self._restoring = False                          # a step of the workflows' Undo being undone/redone here
         self._hists: dict[int, dict] = {}                # filter id -> the histograms of its input (the last render)
         self.curves_editor: CurvesEditor | None = None   # the Curves panel shown, or the graph of a stretch
         self._curve_channel: dict[int, str] = {}         # filter id -> the channel its Curves panel showed last
@@ -772,8 +781,10 @@ class PostView(QWidget):
             channel = getattr(self.s, "feeds_fusion", None) is not None and self.s.feeds_fusion(p)   # #47: the fusion
             channel = channel or (getattr(self.s, "gives_post", None) is not None and not self.s.gives_post(p))
             if not out and p.rendered and p.pid not in known and not channel:   # with Stars: its Combine
+                # a block's image sent to Post (a branch made for it) is shown at once, as the Split images are
+                sent = getattr(p, "end", None) is not None or getattr(self.s, "is_sent_branch", lambda q: False)(p)
                 self.layers.insert(0, new_workflow_layer(
-                    p.pid, p.name + (" · " + POST_PART_NAMES["combined"] if stars else ""),
+                    p.pid, p.name + (" · " + POST_PART_NAMES["combined"] if stars else ""), bool(sent),
                     part="combined" if stars else None))
         self.layers = [lay for lay in self.layers if lay["kind"] != "workflow" or lay["pid"] in alive]
         self.layers = normalize(self.layers)
@@ -802,10 +813,13 @@ class PostView(QWidget):
             return
         post = getattr(getattr(self.s, "p", None), "post", None) or {}
         text = json.dumps(post.get("layers") or [], sort_keys=True)
-        if text == self._saved:
+        # what is shown, not what was saved last: a branch removed takes its layer from the panel without a save, and
+        # its Ctrl+Z puts back the very composition saved before (the layer with its settings, not a new one)
+        if text == self._saved and text == json.dumps(save_layers(self.layers), sort_keys=True):
             return
-        self.undo.append(snapshot(self.layers))
-        self.redo.clear()
+        if not getattr(self, "_restoring", False):      # (a step of the workflows' Undo undone here: no step of its own)
+            self.undo.append(snapshot(self.layers))
+            self.redo.clear()
         old = {lay["id"] for lay in self.layers}
         self.layers = load_layers(post.get("layers"), {p.pid for p in self.s.paths})
         self._saved = json.dumps(save_layers(self.layers), sort_keys=True)
@@ -814,13 +828,14 @@ class PostView(QWidget):
             self.sel = (added[0], "layer")
         elif self.sel and not self.layer(self.sel[0]):
             self.sel = (self.layers[0]["id"], "layer") if self.layers else None
-        self.rebuild()
-        self.request(final_only=True)
+        self.sync_paths()                           # the layers the workflows give and the composition lacks yet
 
     def select_layer(self, lid):
-        """Show this layer's settings (the graph's Open in Post)."""
+        """Show this layer's settings (the graph's Open in Post); not computed yet, the page's list shows it."""
         if self.layer(lid) is not None:
             self.select(lid, "layer")
+        if lid is not None:
+            self.layerAsked.emit(lid)
 
     def layer(self, lid):
         return next((lay for lay in self.layers if lay["id"] == lid), None)
@@ -1162,8 +1177,12 @@ class PostView(QWidget):
     def do_undo(self):
         if self.undo and self.undo[-1] is MODEL_STEP:
             self.undo.pop()
-            if self.s.undo():
-                self.redo.append(MODEL_STEP)
+            self._restoring = True                      # (the composition it puts back is not a step of Post's)
+            try:
+                if self.s.undo():
+                    self.redo.append(MODEL_STEP)
+            finally:
+                self._restoring = False
             self.rebuild()
             self._undo_buttons()
         elif self.undo:
@@ -1174,8 +1193,12 @@ class PostView(QWidget):
     def do_redo(self):
         if self.redo and self.redo[-1] is MODEL_STEP:
             self.redo.pop()
-            if self.s.redo():
-                self.undo.append(MODEL_STEP)
+            self._restoring = True
+            try:
+                if self.s.redo():
+                    self.undo.append(MODEL_STEP)
+            finally:
+                self._restoring = False
             self.rebuild()
             self._undo_buttons()
         elif self.redo:
@@ -1687,6 +1710,24 @@ class PostView(QWidget):
         others = [x for x in self.layers if x["id"] != lay["id"] and x.get("target") != lay["id"]] if lay else []
         if lay is None or not any(is_pixel(x) for x in others) and is_pixel(lay):
             return
+        p = self.path(lay["pid"]) if lay["kind"] == "workflow" and lay.get("part") is None else None
+        if p is not None and not any(x.get("pid") == p.pid for x in others if x["kind"] == "workflow") and (
+                getattr(p, "end", None) is not None or getattr(self.s, "is_sent_branch", lambda q: False)(p)):
+            # a block's image sent to Post: its branch was made only for it, it goes with its layer, as when its wire
+            # is taken away in the graph (one step of the workflows' Undo, which brings both back)
+            self.flush()
+            self._restoring = True
+            try:
+                self.s.remove_path(self.s.paths.index(p))
+            finally:
+                self._restoring = False
+            if hasattr(self.s, "log"):
+                self.s.log('Workflow "{name}" deleted', name=p.name)
+            self.undo.append(MODEL_STEP)
+            self.redo.clear()
+            self.toasted.emit(_('Layer "{name}" deleted: its branch went with it · Ctrl+Z').format(name=layer_name(lay)))
+            self._undo_buttons()
+            return
         self.push()
         i = self.index(lay["id"])
         self.layers = normalize(others)
@@ -1812,22 +1853,18 @@ class PostView(QWidget):
             self.pbox.addWidget(label(_(PART_NOTES[part]), "small", wrap=True))
         if p is not None and hasattr(self.s, "param_value") and hasattr(self.s, "set_param"):
             # issue #49: the Output block's setting, here (the block is in the wire): its channels stretched linked
-            r = QHBoxLayout()
-            r.addWidget(label(_("Channels"), "dim"))
-            c = QComboBox()
-            c.addItem(_("Linked"), True)
-            c.addItem(_("Each channel"), False)
-            c.setToolTip(_("Each channel: every color stretched apart, which neutralizes the background "
-                           "(the workflow's output is prepared again)"))
+            # the same control, the same name as in the Output's panel of the graph (one name, one kind of control)
+            c = QCheckBox(_("Linked channels"))
+            c.setToolTip(_("Unticked: every color stretched apart, which neutralizes the background (the "
+                           "workflow's output is prepared again)"))
             try:
                 linked = self.s.param_value(p, "render_simple", "linked")
             except Exception:  # noqa: BLE001 - a value the worker has not read yet
                 linked = True
-            c.setCurrentIndex(0 if linked in (None, True) else 1)
-            c.currentIndexChanged.connect(lambda i, c=c, q=p: self._set_workflow_param(q, "render_simple", "linked",
-                                                                                       c.itemData(i)))
-            r.addWidget(c, 1)
-            self.pbox.addLayout(r)
+            c.setChecked(linked in (None, True))
+            c.toggled.connect(lambda on, q=p: self._set_workflow_param(q, "render_simple", "linked", bool(on)))
+            self.pbox.addWidget(c)
+            self.linked_box = c
         bases = self.bases_of(p)
         if bases:
             r = QHBoxLayout()
@@ -1874,16 +1911,13 @@ class PostView(QWidget):
         ok = self.worker_has_image(lay)
         self.pbox.addWidget(label(_("A stage's image, stretched automatically.") if ok else
                                   _("This image is no longer in the project's results."), "small" if ok else "warn"))
-        r = QHBoxLayout()
-        r.addWidget(label(_("Channels"), "dim"))
-        c = QComboBox()
-        c.addItem(_("Linked"), True)
-        c.addItem(_("Each channel"), False)
-        c.setToolTip(_("Each channel: every color stretched apart, which neutralizes the background"))
-        c.setCurrentIndex(0 if lay.get("linked", True) else 1)
-        c.currentIndexChanged.connect(lambda i, c=c: self._set(lay, "linked", c.itemData(i)))
-        r.addWidget(c, 1)
-        self.pbox.addLayout(r)
+        # the same control, the same name as the Output block's in the graph (one name, one kind of control)
+        c = QCheckBox(_("Linked channels"))
+        c.setToolTip(_("Unticked: every color stretched apart, which neutralizes the background"))
+        c.setChecked(bool(lay.get("linked", True)))
+        c.toggled.connect(lambda on: self._set(lay, "linked", bool(on)))
+        self.pbox.addWidget(c)
+        self.linked_box = c
         self._group(_("Stretch"))
         for key, name, ends in IMAGE_SLIDERS:
             pos = lay["sliders"].get(key, 2.0)
@@ -2357,8 +2391,15 @@ class PostPage3(QWidget):
         self.empty = QWidget()
         ev = QVBoxLayout(self.empty)
         ev.setAlignment(Qt.AlignCenter)
-        ev.addWidget(label(_("No layers yet"), "h1"), 0, Qt.AlignHCenter)
-        ev.addWidget(label(_("Each computed workflow becomes a layer here."), "dim"), 0, Qt.AlignHCenter)
+        # nothing computed yet: the layers the graph counts (its Post block's "N layers"), named, each "not computed
+        # yet", so that the page and the block say the same thing
+        self.empty_title = label(_("No layers yet"), "h1")
+        ev.addWidget(self.empty_title, 0, Qt.AlignHCenter)
+        self.empty_note = label(_("Each computed workflow becomes a layer here."), "dim")
+        ev.addWidget(self.empty_note, 0, Qt.AlignHCenter)
+        self.empty_list = QVBoxLayout()
+        self.empty_list.setSpacing(2)
+        ev.addLayout(self.empty_list)
         b = QPushButton(_("Graph  →"))
         b.setObjectName("link")
         b.clicked.connect(self.goWorkflow.emit)
@@ -2366,12 +2407,43 @@ class PostPage3(QWidget):
         self.pages.addWidget(self.empty)
         self.view = PostView(session, worker=worker, persist=persist)
         self.pages.addWidget(self.view)
+        self._asked = None                               # the layer Open in Post asked for, shown in the list
+        self.view.layerAsked.connect(self._ask)
         session.pathsChanged.connect(self.update_page)
+        if hasattr(session, "postChanged"):
+            session.postChanged.connect(lambda *_a: self.update_page())
         self.update_page()
+
+    def _ask(self, lid):
+        self._asked = lid
+        self.update_page()
+
+    def coming_layers(self) -> list[tuple[str, int | None]]:
+        """The layers Post will have, top first, as the graph counts them: (name as saved, workflow id)."""
+        try:
+            from .blocks import Graph
+            return list(Graph(self.s).post_layers)
+        except Exception:  # noqa: BLE001 - a model without the graph's surface: its workflows' images
+            return [(p.name, p.pid) for p in self.s.paths]
 
     def update_page(self):
         shown = any(p.rendered for p in self.s.paths) or any(lay["kind"] == "image" for lay in self.view.layers)
         self.pages.setCurrentIndex(1 if shown else 0)
+        if shown:
+            return
+        clear(self.empty_list)
+        coming = self.coming_layers()
+        self.empty_title.setText(_("Nothing computed yet") if coming else _("No layers yet"))
+        self.empty_note.setText(_("The layers Post will have once their workflows are computed:") if coming else
+                                _("Each computed workflow becomes a layer here."))
+        asked = self.view.layer(self._asked) if self._asked is not None else None
+        if asked is None and self._asked is not None and hasattr(self.s, "post_layer"):
+            asked = self.s.post_layer(self._asked)
+        for name, _pid in coming:
+            lb = label(_("{name}  ·  not computed yet").format(name=tr_name(name)), "dim")
+            if asked is not None and asked.get("name") == name:     # Open in Post of this layer's block
+                lb.setStyleSheet(f"color: {ACCENT}; font-weight: 600;")
+            self.empty_list.addWidget(lb, 0, Qt.AlignHCenter)
 
     def add_image_layer(self, name: str, source, key: str) -> dict:
         """Inspect sends a stage's image to Post: a stack, a gradient-removed image, a denoised image. It becomes a

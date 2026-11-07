@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .blocks import ENGINE_BLOCK, PAUSE_COL, Graph, Node, block_title, node_title, review_title
+from .blocks import ENGINE_BLOCK, PAUSE_COL, Graph, Node, block_title, node_title
 from .i18n import _, all_workflows, hm, plural
 from .services.run import (
     DONE,
@@ -46,6 +46,8 @@ from .services.run import (
     RunTrack,
     duration_text,
     engine_text,
+    pause_text,
+    pause_titles,
     size_text,
     stage_title,
 )
@@ -75,6 +77,7 @@ class Row:
     pids: set = field(default_factory=set)
     everyone: bool = False                                   # every workflow of the project shares it
     uptodate: bool = False                                   # nothing to compute in it (issue #27: shown, ticked)
+    echo: bool = False                                       # Selection: it has no job, it follows its Registration
 
     def who_text(self) -> str:
         """The workflows sharing the block, as the panel's scope says them: "all 4 workflows", or their names."""
@@ -99,6 +102,12 @@ def _node(g, v, bk):
     if g is None or v is None or not bk:
         return None
     node = g.node_of(v, bk)
+    if node is None and bk == "calibration":
+        # a workflow of one session whose Calibration is drawn beside its session (a mono project's Ha, OIII: round
+        # 2, they had no row): the engine computes it as the workflow's own
+        node = next((n for pair in getattr(g, "sessions", []) for n in pair
+                     if n.key == "calibration" and v.pid in {q.pid for q in n.paths}), None)
+        return node
     return node if node is not None and v in node.paths else None
 
 
@@ -150,10 +159,22 @@ def build_rows(model, jobs, names: dict[int, str] | None = None, with_done: bool
         row = found[rid][1]
         row.keys.append(j.key)
         row.pids |= set(j.wf)
+    if g is not None:
+        # Selection has no job of its own: the Registration before it computes what it shows (round 2: placed after
+        # Registration it had no row); its row follows that Registration's
+        for nd in g.nodes:
+            if nd.key != "selection" or id(nd) in found or nd.cut or not nd.paths:
+                continue
+            pids = {q.pid for q in nd.paths}
+            reg = next((r for _p, r in found.values() if r.block == "alignement" and r.pids & pids), None)
+            if reg is not None:
+                found[id(nd)] = (order.get(id(nd), 0), Row(row_title(model, nd, nd.paths[0]), [], list(reg.keys),
+                                                           nd.ref, set(reg.pids & pids), echo=True))
     if with_done and g is not None:
         for nd in g.nodes:
-            # a Session block is not computed (exploration #10): never a row
-            if id(nd) in found or nd.key in ("sources", "final", "composition", "session") or not nd.paths:
+            # a Session block is not computed (exploration #10): never a row; nor a block switched off (round 2: it
+            # said "up to date" though nothing is computed in it)
+            if id(nd) in found or nd.key in ("sources", "final", "composition", "session") or not nd.paths or nd.cut:
                 continue
             if g.state(nd) != "done":
                 continue
@@ -183,6 +204,16 @@ def row_state(states: list[str]) -> str:
     if s <= {SKIPPED, NOT_STARTED}:
         return SKIPPED if SKIPPED in s else NOT_STARTED
     return RUNNING if DONE in s else WAITING
+
+
+def refusal_text(problems: list[tuple[str, str]]) -> str:
+    """Why Run is refused, in one line: the first workflow and its reason ("HOO: Ha, OIII: needs Astrometry"), and how
+    many more."""
+    if not problems:
+        return ""
+    name, why = problems[0]
+    text = _("Run refused · {name}: {why}").format(name=name, why=why)
+    return text + (" " + plural(len(problems) - 1, "(+{n} other)", "(+{n} others)") if len(problems) > 1 else "")
 
 
 # ---------------------------------------------------------------------------------------------- widgets
@@ -311,7 +342,9 @@ class RunDialog(QDialog):
         v.setSpacing(6)
         head = self.heading() if callable(self.heading) else self.heading
         self.setWindowTitle(head)
-        v.addWidget(label(head, "h1"))
+        title = ElidedLabel(head, "h1", mode=Qt.ElideRight)          # a long name: "…" and the whole in its tooltip
+        title.setMinimumWidth(0)
+        v.addWidget(title)
         self.warn = QVBoxLayout()
         self.warn.setSpacing(2)
         v.addLayout(self.warn)
@@ -439,14 +472,22 @@ class RunDialog(QDialog):
         pa = self.pause
         if pa is None:
             return "", ""
-        later = ", ".join(review_title(k) for k in pa.later)
-        more = plural(len(pa.later), "+{n} pause after: {blocks}", "+{n} pauses after: {blocks}",
-                      blocks=later) if pa.later else ""
-        names = [q.name for q in self.s.paths if q.pid in pa.pids]
+        stops = pa.all_stops()
+        pids = [pid for pid, _k in stops]
+        # each later pause under its own workflow when the run stops in several (GUI exploration: the other
+        # workflow's pause was listed as "after")
+        named = len({k for _p, k in stops}) > 1 or any(pid not in pids for pid, _k in pa.later)
+        later = pause_titles(self.s, None, [tuple(x) for x in pa.later], named=named)   # the same block in two
+        more = plural(len(later), "+{n} pause after: {blocks}", "+{n} pauses after: {blocks}",   # workflows: once
+                      blocks=", ".join(later)) if later else ""
+        one = len({k for _p, k in stops}) == 1
+        names = [q.name for q in self.s.paths if q.pid in pids]
         who = plural(len(names), "Workflow: {names}", "Workflows: {names}", names=", ".join(names)) \
-            if names and len(names) < len(self.s.paths) else ""
-        return (_("Review pause after {block}").format(block=review_title(pa.block)),
-                " · ".join(x for x in (who, more) if x))
+            if one and names and len(names) < len(self.s.paths) else ""
+        held = [q.name for q in self.s.paths if q.pid in (pa.waiting or [])]
+        wait = _("Waiting for the review: {names}").format(names=", ".join(held)) if held else ""
+        return (_("Review pause after {block}").format(block=pause_text(self.s, pa)),
+                " · ".join(x for x in (who, more, wait) if x))
 
     def finish_now(self):
         """For scripted walkthroughs: wait until the run is over."""
@@ -473,13 +514,16 @@ class RunDialog(QDialog):
             measured = all(plan_jobs[k].measured for k in r.keys if k in plan_jobs)
             if not jobs:
                 # the block and its time, never the engine's stages (exploration #30); no time without data (6.7)
-                text = duration_text(est, measured) if est and data else ""
+                text = duration_text(est, measured) if est and data and not r.echo else ""
                 tip = _("{block}: {t}").format(block=r.title, t=text) if text else r.title
                 w.show_state(WAITING, 0.0, text, tip)
                 continue
             state = row_state([j.state for j in jobs])
             tot = sum(RunTrack.weight(j) for j in jobs)
             frac = sum(RunTrack.weight(j) * t.share(j, True) for j in jobs) / tot
+            if r.echo:                                       # Selection: its Registration's state, no time of its own
+                w.show_state(state, frac, "", self._tip(jobs, state))
+                continue
             if state == DONE:
                 real = sum(j.duration or 0.0 for j in jobs)
                 text = hm(real) if any(not j.reused for j in jobs) else "—"
@@ -496,6 +540,22 @@ class RunDialog(QDialog):
             if j.state == FAILED and j.error:
                 lines.append(engine_text(j.error.strip().splitlines()[0][:300]))
         return "\n".join(lines)
+
+    def refused(self) -> list[tuple[str, str]]:
+        """(workflow, why) of what refuses this plan (the controller's ``refusal``)."""
+        if self.c is not None and hasattr(self.c, "refusal"):
+            return self.c.refusal(self.plan)
+        return getattr(self.s, "run_problems", lambda: [])()
+
+    def no_data_text(self) -> str:
+        """Why nothing can be computed: the workflows without their data named (round 2: "add lights or image" while
+        a channel had its image and the other had none)."""
+        if self.plan is not None and self.plan.jobs:
+            views = {j.run_wf: self.s.view(j.run_wf) for j in self.plan.jobs}
+            names = [v.name for v in views.values() if v is not None and not self.s.has_data(v)]
+            if names and len(names) < len(self.s.paths):
+                return _("No data in {names}: add lights or image").format(names=", ".join(names))
+        return _(NO_DATA)
 
     def has_data(self) -> bool:
         """Whether the workflows of the plan have their data (lights, or the Image's file): no time is quoted and Run is
@@ -521,6 +581,34 @@ class RunDialog(QDialog):
         return [_("{session}: {text}").format(session=self.s.p.session(sid).name, text=type_warning_text(w))
                 for sid in sids for w in self.s.file_warnings(sid)]
 
+    def warnings(self, sync: bool = False) -> list[str]:
+        """What the plan says before it runs: the workflows left out and why, the disk too small, the files that may be
+        mistakes. Run (F5) opens this window first when there is one (GUI exploration round 2: they were never seen).
+        ``sync``: the drive's free room is read now (it is asked to the worker otherwise)."""
+        out = []
+        for wid, why in (getattr(self.plan, "skipped", None) or {}).items():
+            v = self.s.view(wid)
+            out.append(_('"{name}" not run: {why}').format(
+                name=v.name if v is not None else self.names.get(wid, "?"), why=_(why)))
+        if self.plan is not None and self.plan.jobs and self.has_data():      # no disk need without data (6.7)
+            free = self.c.free_gb() if self.c is not None else None
+            if free is None and sync and self.c is not None:
+                try:
+                    from .services.run import _free_job
+                    free = self.c._free = _free_job(str(self.s.p.root))
+                except (OSError, AttributeError, TypeError):
+                    free = None
+            need = self.plan.disk_gb
+            if free is not None and need > free:
+                out.append(_("Disk: {need} GB needed, {free} GB free").format(need=size_text(need), free=size_text(free)))
+        out += ["⚠ " + text for text in self._file_warnings()]
+        return out
+
+    def set_plan(self, plan):
+        """The graph changed while the window was open: the new plan, drawn again (the controller made it)."""
+        self.plan = plan
+        self.rebuild()
+
     def refresh(self, *_a):
         if self.body is None:
             return
@@ -530,19 +618,8 @@ class RunDialog(QDialog):
         # notes of the plan
         clear(self.warn)
         if ph == "plan":
-            for wid, why in (getattr(self.plan, "skipped", None) or {}).items():
-                v = self.s.view(wid)
-                self.warn.addWidget(label(_('"{name}" not run: {why}').format(
-                    name=v.name if v is not None else self.names.get(wid, "?"), why=_(why)), "warn", wrap=True))
-                self.warn.itemAt(self.warn.count() - 1).widget().show()
-            free = self.c.free_gb() if self.c is not None else None
-            need = self.plan.disk_gb if self.plan is not None else 0.0
-            if free is not None and need > free:
-                self.warn.addWidget(label(_("Disk: {need} GB needed, {free} GB free").format(
-                    need=size_text(need), free=size_text(free)), "warn", wrap=True))
-                self.warn.itemAt(self.warn.count() - 1).widget().show()
-            for text in self._file_warnings():
-                self.warn.addWidget(label("⚠ " + text, "warn", wrap=True))
+            for text in self.warnings():
+                self.warn.addWidget(label(text, "warn", wrap=True))
                 self.warn.itemAt(self.warn.count() - 1).widget().show()
         data = self.has_data()
         paused = self.paused()
@@ -554,7 +631,7 @@ class RunDialog(QDialog):
         self.review.setVisible(paused)
         if paused:
             self.review_text.setText(_("Review pause: {block} · Inspect, then Continue").format(
-                block=review_title(self.pause.block)))
+                block=pause_text(self.s, self.pause)))
             self.review_more.setText(more or _("Continue goes on with the run."))
             self.b_continue.setEnabled(self.c is not None and not self.c.running)
         # the notes under the rows
@@ -562,7 +639,7 @@ class RunDialog(QDialog):
         self.done_note.setText(_("Up to date: {n} blocks").format(n=n_done) if n_done else "")
         self.done_note.setVisible(bool(n_done))
         self.hint.setVisible(ph == "run")
-        self.hint.setText(_("Closing this window: the run goes on"))
+        self.hint.setText(_("Closing does not stop the run"))
         self.recap.setVisible(ph == "end")
         if ph == "end":
             self._fill_recap(t)
@@ -574,7 +651,7 @@ class RunDialog(QDialog):
             self.summary.setStyleSheet(f"color: {PAUSE_COL};")
         elif ph == "plan" and n and not data:                # no figures without data, and why (exploration 6.7)
             self.summary.setText(_("Nothing to compute"))
-            self.detail.setText(_(NO_DATA))
+            self.detail.setText(self.no_data_text())
         elif ph == "plan":
             tot = self.plan.seconds if self.plan is not None else 0.0
             self.summary.setText(_("Duration: {t} · disk: {gb} GB").format(
@@ -587,19 +664,31 @@ class RunDialog(QDialog):
         self.b_cancel.setText(_("Cancel") if ph == "plan" and not paused else _("Close"))
         self.b_cancel.setVisible(ph != "end")
         self.b_stop.setVisible(ph == "run")
-        self.b_stop.setEnabled(self.c is not None and self.c.phase == "running")
+        self.b_stop.setEnabled(self.c is not None and self.c.phase in ("starting", "running"))   # starting too (round 2)
         self.b_stop.setText(_("Stopping…") if stopping else _("Stop"))
         self.b_run.setVisible(ph == "plan" and not paused)
-        refused = getattr(self.s, "run_problems", lambda: [])()   # a fusion that cannot run (1.1): Run refused
-        if refused and ph == "plan" and not paused:
-            self.summary.setText(_("{name} blocked: {why}").format(name=refused[0][0], why=refused[0][1]))
-            self.summary.setStyleSheet("color: #e05252;")
+        # what refuses the plan (a fusion, data that cannot be computed: 1.1), among the workflows it computes; a plan
+        # that could not be made (round 2: "Nothing to run" hid it)
+        refused = self.refused() if ph == "plan" and not paused else []
+        error = self.c.plan_error if self.c is not None and self.c.plan is self.plan and ph == "plan" else ""
+        if (refused or error) and ph == "plan" and not paused:
+            self.summary.setText(error or refusal_text(refused))
+            self.summary.setStyleSheet(f"color: {BAD};")
+            self.detail.setText("")
         busy = self.c is not None and self.c.running
-        self.b_run.setEnabled(bool(n) and data and not refused and not busy)
+        self.b_run.setEnabled(bool(n) and data and not refused and not error and not busy)
         # a greyed Run says why (exploration 6.7)
         self.b_run.setToolTip("" if self.b_run.isEnabled() else
-                              _("A run is in progress") if busy else _(NO_DATA) if n and not data else
-                              refused[0][1] if refused else _("Nothing to run: what this plan needs is up to date"))
+                              _("A run is in progress") if busy else error if error else
+                              refusal_text(refused) if refused else self.no_data_text() if n and not data else
+                              _("Nothing to run: what this plan needs is up to date"))
+        self.b_stop.setToolTip("" if self.b_stop.isEnabled() else _("Stopping…") if stopping else "")
+        # Enter: the button that leads (round 2: the default one was a hidden "Open in Inspect")
+        lead = (self.b_continue if paused and ph != "run" else self.b_run if ph == "plan" else
+                self.b_done if ph == "end" else self.b_cancel)
+        for b in (self.b_inspect, self.b_continue, self.b_cancel, self.b_stop, self.b_run, self.b_done):
+            b.setAutoDefault(False)
+            b.setDefault(b is lead)
         self.b_done.setVisible(ph == "end")
         self.b_log.setVisible(ph == "end" and t is not None and (t.count()[FAILED] > 0 or t.lost or t.status == "failed"))
 
@@ -645,7 +734,7 @@ class RunDialog(QDialog):
                 it.widget().deleteLater()
         c = t.counts or t.count()
         lines: list[tuple[str, str]] = []                          # (text, colour)
-        by_row = [(r, [t.by_key[k] for k in r.keys if k in t.by_key]) for r in self.rows_data]
+        by_row = [(r, [t.by_key[k] for k in r.keys if k in t.by_key]) for r in self.rows_data if not r.echo]
         failed = [(r, js) for r, js in by_row if any(j.state == FAILED for j in js)]
         stopped = [r for r, js in by_row if any(j.state == INTERRUPTED for j in js)]
         notrun = [(r, js) for r, js in by_row if js and all(j.state in (SKIPPED, NOT_STARTED) for j in js)]
@@ -760,7 +849,9 @@ class RunStatus(QFrame):
         if on:
             self.text.setText(self.c.status_text())
             self.bar.setValue(int(1000 * self.c.progress()))
-            self.b_stop.setEnabled(self.c.phase == "running")
+            self.b_stop.setEnabled(self.c.phase in ("starting", "running"))     # starting too: done once started
+            self.b_stop.setToolTip(_("Stop the run: what is computed is kept") if self.b_stop.isEnabled()
+                                   else _("Stopping…"))
 
 
 # ---------------------------------------------------------------------------------------------- on the graph

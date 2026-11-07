@@ -543,7 +543,7 @@ WHY_OUTPUT_AUTO = "Output is automatic"
 WHY_OUTPUT_LAST = "Output ends the chain"
 WHY_REMOVE_NEEDED = "needed by {other}"
 WHY_OFF_NEEDED = "needed by {other}: switch {other} off first"      # the same, said for a switch-off
-WHY_REMOVE_BRIDGE = "next blocks need {takes}"
+WHY_REMOVE_BRIDGE = "the next blocks need its {takes}"
 WHY_OFF_KIND = "{block}: {takes} → {gives}, needed"
 KIND_WORDS = {FRAMES: "frames", IMAGE: "image", PAIR: "starless + stars"}
 #: "from ..." as a whole: the French joins the preposition to the word ("de brutes", "d'un fichier image")
@@ -675,7 +675,11 @@ def place_problem(blocks: Sequence[dict], source: str, block: str, index: int) -
     if block not in IMAGE_OPS and any(n["block"] == block and n.get("off") for n in blocks):
         return BlockRefused(WHY_ONCE_OFF, block=_title(block))      # GUI exploration 4.4: no second one
     trial = list(blocks[:index]) + [node(block, name=new_name(blocks, block))] + list(blocks[index:])
-    return graph_problem(with_output(trial, source), source)
+    e = graph_problem(with_output(trial, source), source)
+    if e is not None and e.template == WHY_STACK_FIRST and getattr(e, "block", "") == "output":
+        e = BlockRefused(WHY_STACK_FIRST, block=_title(block))     # the block placed needs it, not the Output (never
+        e.block = block                                             # a block on screen)
+    return e
 
 
 def places(blocks: Sequence[dict], source: str, block: str) -> list[int]:

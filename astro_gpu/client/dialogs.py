@@ -10,8 +10,9 @@ from .i18n import _
 
 
 def ask_name(parent, title, current) -> str | None:
+    """The name typed, "" when OK was pressed on an empty name (the caller says it is refused); None: cancelled."""
     d, e = name_dialog(parent, title, current)
-    if d.exec() and e.text().strip():
+    if d.exec():
         return e.text().strip()
     return None
 

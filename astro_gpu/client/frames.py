@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -98,6 +99,9 @@ def check_text(c, data: ProjectFrames | None = None) -> str:
     if c.key == "unreadable":                             # GUI exploration 6.10: a light that cannot be read
         return _("{session}: {name} cannot be read (damaged, or not a frame): take it out of the session.").format(
             session=a.get("session", ""), name=a.get("name", ""))
+    if c.key == "filters_mixed":                         # two filters in one workflow's stack
+        return _("{workflow}: frames of {filters} would be stacked together; give each filter its own "
+                 "workflow.").format(workflow=a.get("workflow", ""), filters=", ".join(a.get("filters", [])))
     if c.key == "flats_merged":
         return _("The flats of {n} sessions are merged into one master flat.").format(n=a.get("n", 0))
     if c.key == "disk":
@@ -231,7 +235,13 @@ class FramesView(QWidget):
         self.sv = QVBoxLayout(sp)
         self.sv.setContentsMargins(16, 12, 16, 12)
         self.sv.setSpacing(8)
-        self.pages.addWidget(sp)
+        # the page scrolls: a long health check (a folder of unreadable files) never makes the window taller than the
+        # screen (GUI exploration 2: 16 warnings took a 768 window to 920 px, and kept it there)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(sp)
+        self.pages.addWidget(scroll)
         self.browser = browser
         self.pages.addWidget(browser)
         self.service.framesReady.connect(self._data_ready)
@@ -367,10 +377,12 @@ class FramesView(QWidget):
             self.sv.addWidget(label(_("Stacking"), "h2"))
             row = QHBoxLayout()
             g = QButtonGroup(self)
-            for text, mode in ((_("All sessions together"), "together"), (_("One stack per session"), "per_session")):
+            for text, tip, mode in ((_("All together"), _("All sessions together"), "together"),
+                                    (_("One per session"), _("One stack per session"), "per_session")):
                 if mode == "per_session" and not prefs.spec():
                     continue                                   # ◇: the engine stacks all the sessions together
-                b = QPushButton(text + ("  ◇" if mode == "per_session" else ""))
+                b = QPushButton(text + ("  ◇" if mode == "per_session" else ""))     # compact names (decision 12)
+                b.setToolTip(tip)
                 b.setObjectName("face")
                 b.setCheckable(True)
                 b.setChecked(s.stack_mode == mode)

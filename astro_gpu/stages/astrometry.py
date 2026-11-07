@@ -117,7 +117,8 @@ class Astrometry(Stage):
         det = np.c_[o["x"], o["y"]]
         ctx.log(f"{len(det)} stars detected in the stack")
         if len(det) < 50:
-            raise StageError("too few stars detected in the stack to solve the field")
+            raise StageError(f"only {len(det)} stars found in the stack, at least 50 are needed to identify the field: "
+                             f"add light frames, or take Astrometry out of this workflow")
         if ra0 is None or dec0 is None:
             if not p.blind:
                 raise StageError("the approximate field centre is unknown: enter the target name or its RA/Dec")
@@ -172,7 +173,8 @@ class Astrometry(Stage):
                         gs, gm = gaia_bright(ra0, dec0, radius, glim, ctx.log)
                 except Exception as e:  # noqa: BLE001 - no catalogue for this trial scale (offline, services down)
                     if p.scale:
-                        raise StageError(f"no Gaia stars for the field: {e}") from e
+                        raise StageError("the star catalogue for this field cannot be read: check the network "
+                                         "connection, or download the star positions in Settings") from e
                     ctx.log(f"no Gaia stars at {sc:.2f}\"/px ({str(e)[:150]})", "warning")
                     continue
                 if len(gm) < 20:
@@ -209,8 +211,8 @@ class Astrometry(Stage):
             if res is not None:
                 best = (*res, sc_b, glim, radius)
         if best is None:
-            raise StageError("could not match the stars with Gaia: check the target / coordinates and the image "
-                             "scale (focal length, pixel size)")
+            raise StageError("the stars of the image match no star of the catalogue: check the target or its "
+                             "coordinates, and the focal length and pixel size")
         flip, T, nm, crval, sc, glim, radius = best
         w0 = _tan(crval[0], crval[1], sc, W, H)
         ctx.log(f"triangle match: {nm} stars, scale {sc * T.scale:.3f}\"/px, mirror {flip}")

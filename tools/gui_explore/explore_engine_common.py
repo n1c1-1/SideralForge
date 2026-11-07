@@ -15,7 +15,7 @@ import time
 import traceback
 from pathlib import Path
 
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 BENCH = Path(os.environ.get("TEMP", "C:/Temp")) / "engine_explore_bench"
 BENCH.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("ASTRO_GPU_HOME", str(BENCH / "_home"))
@@ -25,7 +25,7 @@ if str(ROOT) not in sys.path:
 
 import numpy as np  # noqa: E402
 
-OUT = Path("F:/astro_essais/A_REGARDER/exploration/engine_shapes")
+OUT = Path("F:/astro_essais/A_REGARDER/exploration2/engine_shapes")
 RESULTS = Path("F:/astro_essais/bench_engine_explore/_results")
 PY = "C:/Users/Nicolas/sandbox/ComfyUI/.venv/Scripts/python.exe"
 
@@ -247,7 +247,7 @@ def drive(script: str, scenarios: list[str], timeout: float = 120.0, tag: str = 
 
     import psutil
     out = []
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "PYTHONIOENCODING": "utf-8"}
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "-1", "PYTHONIOENCODING": "utf-8"}
     for s in scenarios:
         t0 = time.time()
         proc = subprocess.Popen([PY, script, s], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,

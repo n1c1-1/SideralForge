@@ -259,7 +259,8 @@ class SettingsDialog(QDialog):
         lang.setCurrentIndex(max(lang.findData(prefs.get("language")), 0))
         lang.currentIndexChanged.connect(lambda _i: self._lang(lang.currentData()))
         self.row(v, _("Language"), lang)
-        spec = QCheckBox(_("Show what the engine still has to build (◇)"))
+        spec = QCheckBox(_("Show ◇"))                      # compact names (decision 12): the sentence in the tooltip
+        spec.setToolTip(_("Show what the engine still has to build (◇)"))
         spec.setChecked(self.spec)
         spec.toggled.connect(self._spec)
         self.row(v, _("Spec mode"), spec)
@@ -268,7 +269,9 @@ class SettingsDialog(QDialog):
         self.path_row(v, _("Cache (calibrated frames)"), "cache_dir",
                       placeholder=_("In the project folder"), changed=lambda _x: self.measure_disks())
         self.path_row(v, _("Temporary files"), "temp_dir", new=True)
-        self.row(v, _("Cache limit"), self.spin(10, 4000, "cache_limit_gb"), _("GB"), new=True)
+        limit = self.spin(10, 4000, "cache_limit_gb")
+        limit.valueChanged.connect(lambda _x: self.measure_disks())      # the Cache bar is read against it
+        self.row(v, _("Cache limit"), limit, _("GB"), new=True)
         v.addWidget(label(_("Disk use"), "h2"))
         for key, name, new in (("cache", _("Cache"), False), ("temp", _("Temporary"), True)):
             bar = QProgressBar()
@@ -284,7 +287,8 @@ class SettingsDialog(QDialog):
             hl.addWidget(text)
             self.row(v, name, h, new=new)
             self.bars[key] = (bar, text)
-        clean = QPushButton(_("Clear cache of closed projects"))
+        clean = QPushButton(_("Clear cache"))
+        clean.setToolTip(_("Clear cache of closed projects"))
         clean.setEnabled(self.can_clear)
         clean.clicked.connect(lambda: self.clearCache.emit())
         v.addWidget(clean, 0, Qt.AlignLeft)
@@ -446,12 +450,15 @@ class SettingsDialog(QDialog):
         self.row(v, _("Folder"), box)
         self.ex = {"status": {}, "button": {}}
         buttons = QHBoxLayout()
-        for kind, name, button in ((ge.ASTRO, _("Star positions"), _("Download star positions ({size})")),
-                                   (ge.XP, _("Star spectra"), _("Download star spectra ({size})"))):
+        for kind, name, button, tip in ((ge.ASTRO, _("Star positions"), _("Download positions ({size})"),
+                                         _("Download star positions ({size})")),
+                                        (ge.XP, _("Star spectra"), _("Download spectra ({size})"),
+                                         _("Download star spectra ({size})"))):
             st = label("", "small", wrap=True)
             self.row(v, name, st)
             gb = f"{number(ge.DOWNLOAD_BYTES[kind] / 1e9)} {_('GB')}"
             b = QPushButton(button.format(size=gb))
+            b.setToolTip(tip.format(size=gb))
             b.clicked.connect(lambda _x=False, k=kind: self._ex_start(k))
             buttons.addWidget(b)
             self.ex["status"][kind], self.ex["button"][kind] = st, b
@@ -546,7 +553,8 @@ class SettingsDialog(QDialog):
                                                "bits"))
         self.row(v, _("Compression"), self.combo([("None", "None", False), ("Rice (FITS)", "Rice (FITS)", False),
                                                   ("Gzip", "Gzip", False)], prefs.get("compression"), "compression"))
-        keep = QCheckBox(_("Keep calibrated + registered frames"))
+        keep = QCheckBox(_("Keep them"))                   # the row says which: "Intermediate frames"
+        keep.setToolTip(_("Keep calibrated + registered frames"))
         keep.setChecked(bool(prefs.get("keep_frames")))
         keep.toggled.connect(lambda x: prefs.set("keep_frames", x))
         self.row(v, _("Intermediate frames"), keep)
@@ -566,12 +574,14 @@ class SettingsDialog(QDialog):
         tab.horizontalHeader().setStretchLastSection(True)
         tab.setMinimumHeight(140)
         v.addWidget(tab)
-        b = QPushButton(_("Masters from folder…"))
+        b = QPushButton(_("Import masters…"))
+        b.setToolTip(_("Masters from folder…"))
         v.addWidget(b, 0, Qt.AlignLeft)
         self._mark([tab, b], True)
 
     def display(self, v):
-        st = QCheckBox(_("Auto-stretch linear images by default"))
+        st = QCheckBox(_("Auto-stretch"))                  # the row says which: "Linear images"
+        st.setToolTip(_("Auto-stretch linear images by default"))
         st.setChecked(bool(prefs.get("auto_stretch")))
         st.toggled.connect(lambda x: prefs.set("auto_stretch", x))
         self.row(v, _("Linear images"), st)
@@ -594,9 +604,18 @@ class SettingsDialog(QDialog):
                 if u is None:
                     bar.setValue(0)
                     text.setText(_("Not found"))
-                else:
-                    bar.setValue(int(1000 * u[0] / max(u[1], 1e-9)))
-                    text.setText(_("{u} GB of {t} GB").format(u=round(u[0]), t=round(u[1])))
+                    continue
+                own, free = u
+                if key == "cache":                   # the cache against its limit, never the whole drive (exploration 2)
+                    limit = float(prefs.get("cache_limit_gb") or 1)
+                    bar.setValue(min(int(1000 * own / max(limit, 1e-9)), 1000))
+                    text.setText(_("{u} GB of {t} GB").format(u=number(own, 1), t=round(limit)))
+                    bar.setToolTip(_("What the cache holds, against its limit; {f} GB free on its drive").format(
+                        f=round(free)))
+                else:                                # the temporary files against the room their drive leaves
+                    bar.setValue(min(int(1000 * own / max(own + free, 1e-9)), 1000))
+                    text.setText(_("{u} GB · {f} GB free").format(u=number(own, 1), f=round(free)))
+                    bar.setToolTip(_("What the temporary files take, against the room left on their drive"))
             except RuntimeError:                     # the page was built again meanwhile
                 return
 

@@ -175,6 +175,14 @@ def block_title(p, key: str) -> str:
     return f"{t} {n}" if n else t
 
 
+def calibration_counts(darks, flats, bias=None) -> str:
+    """"3 darks · 1 flat (· 0 bias)": each count with its noun in the right form, as the lights' (GUI exploration 2)."""
+    parts = [plural(int(darks or 0), "{n} dark", "{n} darks"), plural(int(flats or 0), "{n} flat", "{n} flats")]
+    if bias is not None:
+        parts.append(plural(int(bias or 0), "{n} bias", "{n} bias"))
+    return " · ".join(parts)
+
+
 def session_summary(s, sid: int) -> str:
     """Under a Session block's name: its lights, its calibration frames, its filter."""
     ses = next((x for x in s.sessions if x["id"] == sid), {})
@@ -182,7 +190,7 @@ def session_summary(s, sid: int) -> str:
         flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
         return _("lights to add") + (f" · {flt}" if flt else "")
     text = plural(int(ses.get("lights") or 0), "{n} light", "{n} lights")
-    text += " · " + _("{darks} dark · {flats} flat").format(darks=ses.get("darks", 0), flats=ses.get("flats", 0))
+    text += " · " + calibration_counts(ses.get("darks", 0), ses.get("flats", 0))
     flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
     warn = "⚠ " if hasattr(s, "file_warnings") and s.file_warnings(sid) else ""   # issue #58: see its panel
     return warn + text + (f" · {flt}" if flt else "")
@@ -195,6 +203,16 @@ def node_title(s, n) -> str:
         return s.session(n.sid).name or _("Session {n}").format(n=n.sid)
     if n.key == "post" and not n.handle:              # issue #47: the block's name; the workflow's under it
         return _("Output")
+    if n.key == "composition" and n.lid is not None and hasattr(s, "post_layer"):   # a second Recombine of a
+        from .model import POST_PART_NAMES                                           # workflow: its number, as its
+        name = str((s.post_layer(n.lid) or {}).get("name") or "")                    # layer's name (2nd round)
+        num = name.rpartition(" · " + POST_PART_NAMES["combined"] + " ")[2]
+        if num.isdigit() and name.endswith(" · " + POST_PART_NAMES["combined"] + " " + num):
+            return block_title(None, "composition") + " " + num
+    if n.key == "fusion" and n.paths:                 # several Fusions: numbered in the project's order (expl. 2)
+        fus = [q.pid for q in getattr(s, "paths", []) if isinstance(q.source, dict) and "fusion" in q.source]
+        if len(fus) > 1 and n.paths[0].pid in fus:
+            return f"{_('Fusion')} {fus.index(n.paths[0].pid) + 1}"
     if n.paths and "~" in n.key or (n.paths and n.key in ("fond", "couleur", "debruitage")):
         return block_title(n.paths[0], n.key)             # issue #47: a block placed twice, numbered left to right
     if n.key == "sources" and hasattr(s, "session") and s.sessions:
@@ -248,6 +266,16 @@ def block_seconds(s, p, key: str) -> float:
 
 def fmt_int(n) -> str:
     return f"{int(n):,}".replace(",", " ")
+
+
+def drizzle_auto(s, p) -> bool:
+    """Whether the Stacking's drizzle scale is the engine's automatic one and not known yet (the frames are not aligned):
+    the block says "auto", never the default 1.5 the engine would then replace (GUI exploration 2: "×1,5" before the
+    run, "×1" after, without any action)."""
+    if "scale" in (p.params.get("stack") or {}) or not hasattr(s, "param_info"):
+        return False
+    info = s.param_info(p, "stack", "scale")
+    return info is None or (info.origin != "user" and not info.suggestion_known)
 
 
 def method_summary(s, p, key: str) -> str:
@@ -310,7 +338,9 @@ class Graph:
             model_ = getattr(project, "model", None) or project
             calib = [q for q in mine if not getattr(model_, "is_graph", lambda x: False)(q)
                      or any(n["block"] == "calibration" for n in model_.graph(q))]      # #47: placed, or not drawn
-            sn, cn = Node("session", mine, sid=sid), Node("calibration", calib, sid=sid)
+            # switched off: one Calibration block for every session of the workflow, each drawn so (GUI exploration 2)
+            off = bool(calib) and all(getattr(model_, "is_cut", lambda q, k: False)(q, "calibration") for q in calib)
+            sn, cn = Node("session", mine, sid=sid), Node("calibration", calib, sid=sid, cut=off)
             self.sessions.append((sn, cn))
             self.nodes += [sn, cn]
         model = getattr(project, "model", None) or project
@@ -344,8 +374,19 @@ class Graph:
         # issue #43: a fusion's block holds its workflow (its Output: no block of its own); its inputs, the outputs of
         # the workflows it combines
         self.fusion_inputs: dict[int, list[Node]] = {}
+        # a session whose data cannot be computed (a folder not there, a frame that cannot be read, darks of another
+        # size): its block circled in red with the reason, Run refused (round 2)
+        why = getattr(project, "session_problem", None)
+        if why is not None:
+            for sn, _cn in self.sessions:
+                sn.broken = why(sn.sid)
+            if not self.sessions and frames:
+                self.root.broken = next((w for s in project.p.sessions if (w := why(s.id))), "")
         for p in project.paths:
             src = getattr(p, "source", None)
+            if isinstance(src, dict) and "fusion" not in src and self.by_path[p.pid].get("image") is not None:
+                # its file moved, unplugged or damaged: circled in red with the reason, Run refused (round 2)
+                self.by_path[p.pid]["image"].broken = getattr(project, "image_problem", lambda q: "")(p)
             if isinstance(src, dict) and "fusion" in src:
                 n = self.by_path[p.pid].get("fusion")
                 if n is not None:
@@ -406,27 +447,21 @@ class Graph:
         self.nodes.append(self.final)
 
     def _fold_outputs(self, project):
-        """Issue #17: a workflow with the Stars block has no Output block of its own in the graph (it sat between the
-        Stars block and what follows it, its arrows around it): the Stars block holds it (the workflow's handle: its
-        name, its menu; ``node_of(p, "post")`` answers it). Kept when the Stars block is shared by other workflows, or
-        when the Output image itself is a layer of Post."""
-        model = getattr(project, "model", None) or project
-        for p in project.paths:
-            st, po = self.by_path[p.pid].get("etoiles"), self.by_path[p.pid].get("post")
-            graph = getattr(model, "p", None) is not None and p.pid in {w.id for w in model.p.workflows} and \
-                model.p.workflow(p.pid).blocks is not None
-            if graph and po is not None and po.parent is not None and po.parent.key not in ("sources", "session") \
-                    and not po.children and len(po.parent.paths) == 1 and po.parent is not st:
-                st = po.parent                            # issue #49: the Output hidden in the wire of its last block
-            if st is None or po is None or po.parent is not st or po.children or len(st.paths) != 1 or \
-                    (p.pid in self.to_post and not graph):
+        """Issues #17, #49: a workflow has no Output block of its own in the graph: its last block holds it
+        (``node_of(p, "post")`` answers it; the workflow's handle, its name and menu, when the block is its own; the
+        wire to Post carries that menu otherwise)."""
+        for p in project.paths:                           # the Output is never a block: hidden in the wire of its
+            po = self.by_path[p.pid].get("post")          # last block, always (#49; GUI exploration 2: a shared last
+            last = po.parent if po is not None else None  # block, a branch sent to Post, showed it again)
+            if last is None or po.children or po.key != "post":
                 continue
-            st.children.remove(po)
+            last.children.remove(po)
             self.nodes.remove(po)
-            self.by_path[p.pid]["post"] = st
+            self.by_path[p.pid]["post"] = last
             if self.leaves.get(p.pid) is po:
-                self.leaves[p.pid] = st
-            st.handle = True
+                self.leaves[p.pid] = last
+            if len(last.paths) == 1 and last.key not in ("sources", "session"):
+                last.handle = True                        # its workflow's menu on it; a shared one: on the wire
 
     def node_of(self, p, key: str, lid: int | None = None) -> Node | None:
         """The node of a block of a workflow; a Stars and background block by its Post layer (``lid``; else the
@@ -462,6 +497,9 @@ class Graph:
         if node.key == "composition":                 # computed in Post from the Stars block's images
             return block_state(self.s, node.paths[0], "etoiles")
         states = {block_state(self.s, p, node.key) for p in node.paths}
+        # the Output hidden in its wire (#49): its image to Post is this block's too, not done until it is
+        states |= {block_state(self.s, p, "post") for p in node.paths
+                   if node.key != "post" and p.pid in self.to_post and self.by_path.get(p.pid, {}).get("post") is node}
         return next((w for w in STATE_ORDER if w in states), "pending")
 
     def session_stages(self, p, sid) -> list[str]:
@@ -475,10 +513,9 @@ class Graph:
         """The review point of a block: (state, how many of its workflows have it, how many go through it), the state
         being the most urgent of theirs (paused, pending, reviewed); None when no workflow pauses after it."""
         review = getattr(self.s, "review_state", None)
-        if review is None or node.key in ("sources", "final", "composition", "session") or node.sid is not None \
-                or not node.paths:
+        if review is None or node.key in ("sources", "final", "composition", "session") or not node.paths:
             return None
-        have = [st for st in (review(p, node.key) for p in node.paths) if st]
+        have = [st for st in (review(p, node.ref) for p in node.paths) if st]     # a session's Calibration: its own
         if not have:
             return None
         return next(w for w in REVIEW_ORDER if w in have), len(have), len(node.paths)
@@ -501,16 +538,19 @@ class Graph:
         s = self.s
         if node.grey:
             return node.grey
+        title = node_title(s, node) if node.cut else ""      # "désactivé" agrees with the block's name
         if node.cut and node.key not in ("calibration", "alignement"):
-            return _("off: image passes through")
+            return _("off: image passes through").format(block=title)
         if node.key == "session":
             return session_summary(s, node.sid)
+        if node.sid is not None and node.cut:
+            return _("off: frames as they are").format(block=title)
         if node.sid is not None:
             ses = next((x for x in s.sessions if x["id"] == node.sid), {})
-            return _("{darks} dark · {flats} flat").format(darks=ses.get("darks", 0), flats=ses.get("flats", 0))
+            return calibration_counts(ses.get("darks", 0), ses.get("flats", 0))
         if node.cut:
-            return _("off: frames as they are") if node.key == "calibration" else \
-                _("off: frames as aligned")
+            return (_("off: frames as they are") if node.key == "calibration" else
+                    _("off: frames as aligned")).format(block=title)
         if node.key == "image":
             src = node.paths[0].source or {}
             if not src.get("path"):
@@ -547,9 +587,7 @@ class Graph:
             return _("stars in {mode}").format(mode=_((lay or {}).get("blend") or "Screen"))
         if k == "calibration":
             inv = s.info()
-            return (_("{darks} dark · {flats} flat · 0 bias") if not inv.get("n_bias") else
-                    _("{darks} dark · {flats} flat · {bias} bias")).format(
-                darks=inv.get("n_darks", 0), flats=inv.get("n_flats", 0), bias=inv.get("n_bias", 0))
+            return calibration_counts(inv.get("n_darks", 0), inv.get("n_flats", 0), inv.get("n_bias", 0))
         if k == "alignement":
             return _("ref: sharpest frame")
         if k == "selection":
@@ -567,9 +605,12 @@ class Graph:
                 txt = _("classic stack · {how}").format(how=texts.choice_label(
                     str(s.param_value(p, "stack", "classic_debayer") or "rcd"), language()))
             else:
-                sc = number(s.param_value(p, "stack", "scale") or 1.0, 2).rstrip("0").rstrip(",.")
-                txt = _("drizzle ×{scale} · rejection at {kappa} σ").format(
-                    scale=sc, kappa=number(s.param_value(p, "stack", "kappa") or 5, 0))
+                kappa = number(s.param_value(p, "stack", "kappa") or 5, 0)
+                if drizzle_auto(s, p):          # the engine sets it from the frames once they are aligned
+                    txt = _("drizzle auto · rejection at {kappa} σ").format(kappa=kappa)
+                else:
+                    sc = number(s.param_value(p, "stack", "scale") or 1.0, 2).rstrip("0").rstrip(",.")
+                    txt = _("drizzle ×{scale} · rejection at {kappa} σ").format(scale=sc, kappa=kappa)
             if any(q.opts["debruitage"] for q in node.paths):
                 txt += " · " + _("+ half-stacks")
             return txt
