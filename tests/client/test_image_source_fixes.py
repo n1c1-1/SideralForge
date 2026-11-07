@@ -97,6 +97,34 @@ def test_the_kind_follows_the_file_chosen(model, tmp_path):
     assert src()["stretched"] is True
 
 
+def test_an_8_bit_tiff_is_a_stretched_picture(model, tmp_path):
+    """Control round: an 8-bit TIFF (an already stretched photo) stayed "Linear" where the same PNG or JPEG was
+    "Stretched": a stack is never stored on 8 bits. A 16 or 32-bit TIFF stays linear."""
+    import tifffile
+
+    from astro_gpu.stages.image import stretched_by_nature
+    t8, t16 = tmp_path / "photo8.tif", tmp_path / "stack16.tiff"
+    tifffile.imwrite(t8, np.zeros((8, 8, 3), np.uint8))
+    tifffile.imwrite(t16, np.zeros((8, 8, 3), np.uint16))
+    assert stretched_by_nature(t8) and not stretched_by_nature(t16) and stretched_by_nature(tmp_path / "x.png")
+    q = model.add_image_workflow("Image", "")
+    model.set_graph(q, [])
+    src = lambda: model.p.workflow(q.pid).source      # noqa: E731
+    model.set_image_file(q, str(t8))
+    assert src()["stretched"] is True
+    model.set_image_file(q, str(t16))                  # the kind the 8-bit TIFF gave goes with it
+    assert src()["stretched"] is False
+
+
+def test_a_damaged_file_s_tooltip_has_one_full_stop(qapp):
+    """Control round: "the file is damaged.. Run is refused" (the reason's own full stop, then the sentence's)."""
+    from astro_gpu.client.blocks import Node
+    from astro_gpu.client.graph import BlockItem
+    n = Node("image", [], broken="bad.fits cannot be read: the file is damaged.")
+    tip = BlockItem(SimpleNamespace(), n, "Image", "", "pending", False, False, True).toolTip()
+    assert "damaged. Run is refused" in tip and ".." not in tip
+
+
 def test_a_damaged_fits_is_said(tmp_path):
     """A FITS whose header has no end, or shorter than its data, is said unreadable before the run (as a missing file
     is said "File not found")."""

@@ -160,3 +160,62 @@ def test_the_split_images_names_are_translated_numbered_ones_too():
         assert tr_name("Recombine 2 · Workflow 2") == "Recombiner 2 · Workflow 2"
     finally:
         i18n.set_language("en")
+
+
+def test_control_round_the_post_page_rebuilt_never_answers_the_project_again(m, monkeypatch):
+    """Control round: a Post page gone (a language switch builds it again) never answers the project's changes; its
+    lambda did, and the next Ctrl+Z raised "QStackedWidget already deleted"."""
+    import sys
+
+    from PySide6.QtCore import QEvent
+    errors = []
+    monkeypatch.setattr(sys, "excepthook", lambda *a: errors.append(a))
+    page = _page(m)
+    page.shutdown()
+    page.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    m.postChanged.emit(None)
+    m.pathsChanged.emit()
+    QApplication.processEvents()
+    assert errors == []
+
+
+def test_control_round_a_layer_renamed_in_post_renames_its_workflow_when_it_had_its_name(m):
+    _rendered(m)
+    page = _page(m)
+    v = page.view
+    told = []
+    v.toasted.connect(told.append)
+    try:
+        lay = next(x for x in v.layers if x["name"] == "Classic stack")
+        pid = lay["pid"]
+        v.rename(lay, "Background only")
+        assert m.view(pid).name == "Background only"                       # the workflow (and its wire) follow
+        assert [x["name"] for x in v.layers if x.get("pid") == pid] == ["Background only"]
+        assert v.undo[-1] is MODEL_STEP and told and "Ctrl+Z" in told[-1]
+        v.do_undo()                                                         # one step brings both back
+        assert m.view(pid).name == "Classic stack"
+        assert [x["name"] for x in v.layers if x.get("pid") == pid] == ["Classic stack"]
+        lay = next(x for x in v.layers if x.get("pid") == pid)
+        lay["name"] = "My own"                                              # a name of the user's: the layer alone
+        v.rename(lay, "Other")
+        assert m.view(pid).name == "Classic stack" and lay["name"] == "Other"
+    finally:
+        page.shutdown()
+        page.deleteLater()
+
+
+def test_control_round_delete_greyed_on_the_last_layer_says_why_and_the_star_notes_name_the_block(m):
+    from astro_gpu.client.post3 import PART_NOTES
+    _rendered(m)
+    page = _page(m)
+    v = page.view
+    try:
+        lay = next(x for x in v.layers if x["kind"] == "workflow")
+        v.select(lay["id"], "layer")
+        v.rebuild()
+        assert not v.b_del.isEnabled() and "last image layer" in v.b_del.toolTip()
+        assert all("Stars/background block" in PART_NOTES[k] for k in ("starless", "stars"))
+    finally:
+        page.shutdown()
+        page.deleteLater()

@@ -139,9 +139,14 @@ RECOMMENDED = "full"
 #: the engine's cut blocks → the views' block keys
 _CUT_KEY = {"calibration": "calibration", "registration": "alignement", "astrometry": "astrometrie",
             "gradient": "fond", "color": "couleur"}
-_SHORT = {"calibration": "Calib.", "alignement": "Regist.", "selection": "Select.", "empilement": "Stack",
-          "astrometrie": "Astrom.", "fond": "Gradient", "couleur": "Color", "debruitage": "Denoise",
-          "etoiles": "Stars/bg", "post": "Post", "image": "Image", "session": "Session", "combine": "Recombine"}
+#: a block's name in the pictures: the graph's own, whole (control round: "Calib.", "Astrom." were abbreviations); the
+#: last block of a template is where its image goes, Post
+_PICTURE_NAMES = {"post": "Post", "combine": "Recombine"}
+
+
+def picture_name(key: str) -> str:
+    """The name a template's picture writes in a block: the graph's, never shortened."""
+    return _(_PICTURE_NAMES.get(key) or TITLES.get(key, key))
 
 
 def template_source(t: dict) -> str:
@@ -223,6 +228,21 @@ def _name_width(text: str, pt: int = NAME_PT) -> int:
     return QFontMetrics(f).horizontalAdvance(text) + 7
 
 
+def _draw_name(p: QPainter, r: QRectF, text: str, font: QFont):
+    """A block's name in its box, whole (control round: never shortened): in a smaller letter if need be, down to
+    NAME_PT, then on two lines (at its "/" or anywhere)."""
+    f = QFont(font)
+    room = r.width() - 7
+    while f.pointSize() > NAME_PT and QFontMetrics(f).horizontalAdvance(text) > room:
+        f.setPointSize(f.pointSize() - 1)
+    p.setFont(f)
+    box = r.adjusted(4, 0, -1, 0)
+    if QFontMetrics(f).horizontalAdvance(text) <= room:
+        p.drawText(box, Qt.AlignVCenter | Qt.AlignLeft, text)
+    else:
+        p.drawText(box, Qt.AlignVCenter | Qt.AlignLeft | Qt.TextWrapAnywhere, text.replace("/", "/\u200b"))
+
+
 def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     """A picture of a template's graph: its sources (one or two nights with their Calibration, or an image file),
     then its blocks; a cut block hatched, a greyed one outlined in amber."""
@@ -252,7 +272,7 @@ def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
 
     def name_of(key):
         kb, _t, num = key.partition("~")                    # a block placed twice (issue #47): its number
-        return key if key in mono else _(_SHORT.get(kb, TITLES.get(kb, kb))) + (f" {num}" if num else "")
+        return key if key in mono else picture_name(kb) + (f" {num}" if num else "")
 
     def width_of(n):
         return (w - 2 * gap - (n - 1) * gap - (gap * 2 if rows > 1 else 0)) / n
@@ -298,13 +318,7 @@ def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
         p.drawRect(QRectF(x, y - bh / 2 + 2, 3, bh - 4))
         if names:
             p.setPen(QColor("#e8ebf0" if how != "cut" else "#8b93a1"))
-            text = name_of(key)
-            f = QFont(font)
-            while f.pointSize() > 6 and QFontMetrics(f).horizontalAdvance(text) > bw - 7:
-                f.setPointSize(f.pointSize() - 1)          # the name whole, in a smaller letter if need be
-            p.setFont(f)
-            p.drawText(r.adjusted(4, 0, -1, 0), Qt.AlignVCenter | Qt.AlignLeft,
-                       QFontMetrics(f).elidedText(text, Qt.ElideRight, int(bw - 5)))
+            _draw_name(p, r, name_of(key), font)
             p.setFont(font)
         return r
 
@@ -393,7 +407,7 @@ def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     bw = (w - 2 * gap - (n - 1) * gap - (gap * 2 if fusion else 0)) / n
     # one row (dual band) whose names do not fit: the Fusion and the Recombine go on a second row (never cut names)
     below = names and fusion and len(rows) == 1 and \
-        bw < max(_name_width(x) for x in [_(_SHORT.get(k, TITLES.get(k, k))) for k in chain] +
+        bw < max(_name_width(x) for x in [picture_name(k) for k in chain] +
                  [_("Fusion") + " " + t.get("palette", ""), _("Recombine")])
     if below:
         n = 1 + len(chain)
@@ -412,13 +426,8 @@ def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
         p.setBrush(QColor(colour))
         p.drawRect(QRectF(x, y - bh / 2 + 2, 3, bh - 4))
         if names:
-            f = QFont(font)
-            while f.pointSize() > 6 and QFontMetrics(f).horizontalAdvance(text) > bw - 7:
-                f.setPointSize(f.pointSize() - 1)
-            p.setFont(f)
             p.setPen(QColor("#e8ebf0"))
-            p.drawText(r.adjusted(4, 0, -1, 0), Qt.AlignVCenter | Qt.AlignLeft,
-                       QFontMetrics(f).elidedText(text, Qt.ElideRight, int(bw - 5)))
+            _draw_name(p, r, text, font)
         return r
 
     def wire(x1, y1, x2, y2):
@@ -437,7 +446,7 @@ def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
         for k in chain:
             x = r.right() + gap
             wire(r.right(), y, x, y)
-            r = block(x, y, _(_SHORT.get(k, TITLES.get(k, k))), "#5fbf7f")
+            r = block(x, y, picture_name(k), "#5fbf7f")
         ends.append((r.right(), y))
     if fusion:
         yf = h * 0.72 if below else h / 2
@@ -508,7 +517,9 @@ class TemplateGallery(QDialog):
         self.s = session
         self.templates = list(GALLERY if templates is None else templates)
         self.setWindowTitle(_("New workflow"))
-        size_within(self, 1180, 700)                      # never taller than a 1366 x 768 screen's room
+        # never taller than a 1366 x 768 screen's room: 768 less the task bar and this window's title bar (control
+        # round: 700 was taller than that)
+        size_within(self, 1180, 660)
         self.choice: dict | None = None
         self.image = ""
         root = QVBoxLayout(self)

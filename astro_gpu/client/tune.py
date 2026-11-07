@@ -115,27 +115,73 @@ class Strip(QFrame):
         self.setObjectName("strip")
         self.setStyleSheet("QFrame#strip { background: #1c1f26; border-bottom: 1px solid #2a2f38; }")
         self.current = None
-        self.h = QHBoxLayout(self)
-        self.h.setContentsMargins(10, 8, 10, 8)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setSpacing(4)
+        # "◂ Graph" and the workflow list stay in view; only the blocks scroll (round 3: at 1366 the band scrolled to a
+        # block far right took them off the screen)
+        self.lead = QHBoxLayout()
+        self.lead.setSpacing(4)
+        outer.addLayout(self.lead)
+        self.blocks = QWidget()
+        self.blocks.setObjectName("stripBlocks")
+        self.blocks.setStyleSheet("QWidget#stripBlocks { background: transparent; }")
+        self.h = QHBoxLayout(self.blocks)                 # the blocks, one button each
+        self.h.setContentsMargins(0, 0, 0, 0)
         self.h.setSpacing(4)
+        sa = QScrollArea()                                # 9.1: a long chain scrolls, it never widens the window
+        sa.setWidget(self.blocks)
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sa.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
+        sa.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        sa.setStyleSheet("QScrollArea { background: transparent; } QScrollArea > QWidget > QWidget "
+                         "{ background: transparent; }")
+        self.scroll = sa
+        outer.addWidget(sa, 1)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+
+    def items(self, s, g: Graph) -> list[tuple[str, str, object]]:
+        """The band's blocks, (key the views select it by, name, node): the graph's blocks of the current workflow with
+        the graph's names (round 3: no "Output", which is never a block, no second "Image", each Session and its
+        Calibration when the sessions are calibrated each on its own, never a "Frames" the graph does not draw)."""
+        p = s.path
+        if p is None:
+            return []
+        out: list[tuple[str, str, object]] = []
+        if p.source is None:                              # a workflow of frames: its Session blocks first
+            mine = [(sn, cn) for sn, cn in g.sessions if p in sn.paths]
+            for sn, cn in mine:
+                out.append((sn.ref, node_title(s, sn), sn))
+                if p in cn.paths:
+                    out.append((cn.ref, node_title(s, cn), cn))
+            if not mine:
+                out.append(("sources", node_title(s, g.root), g.root))
+        for k in chain(p):
+            if k == "post":                               # the Output: held by the last block, never a block (#49)
+                continue
+            node = g.node_of(p, k)
+            out.append((k, node_title(s, node) if node is not None and node.paths else block_title(p, k), node))
+        return out
 
     def build(self, s, g: Graph):
         # issue #24: built again only when what it shows changes (a refresh closed its open dropdown)
-        p0 = s.path
-        keys0 = ["sources"] + (chain(p0) if p0 is not None else [])
-        sig = (s.sel_step, s.current, tuple((q.pid, q.name) for q in s.paths), tuple(keys0),
-               tuple(g.state(nd) if (nd := g.node_of(p0, k)) is not None else "pending" for k in keys0),
-               _("Graph"))
-        if sig == getattr(self, "_sig", None) and self.h.count():
+        items = self.items(s, g) if s.sel_step != "final" else []
+        sig = (s.sel_step, s.current, tuple((q.pid, q.name) for q in s.paths),
+               tuple((k, t, "off" if n is not None and n.cut else g.state(n) if n is not None else "pending")
+                     for k, t, n in items), _("Graph"))
+        if sig == getattr(self, "_sig", None) and self.lead.count():
             return
         self._sig = sig
+        clear(self.lead)
         clear(self.h)
         self.current = None                               # the open block's button (the strip scrolls to it)
         bk = QPushButton("◂  " + _("Graph"))
         bk.setToolTip(_("Back to the graph (Esc)"))
         bk.clicked.connect(self.back.emit)
-        self.h.addWidget(bk)
-        self.h.addSpacing(10)
+        self.lead.addWidget(bk)
+        self.lead.addSpacing(10)
         p = s.path
         if s.sel_step == "final":
             self.h.addWidget(label(_("Post") + "  ·  " + _("the workflows' layers, combined"), "h2"))
@@ -148,30 +194,26 @@ class Strip(QFrame):
             cb.setCurrentIndex(s.current)
             cb.setMinimumWidth(200)
             cb.currentIndexChanged.connect(lambda i: self.workflow.emit(i))
-            self.h.addWidget(cb)
-            self.h.addSpacing(10)
-        keys = ["sources"] + (chain(p) if p is not None else [])
-        for i, k in enumerate(keys):
+            self.lead.addWidget(cb)
+            self.lead.addSpacing(10)
+        for i, (k, title, node) in enumerate(items):
             if i:
                 a = QLabel("›")
                 a.setStyleSheet("color: #6b7280; background: transparent;")
                 self.h.addWidget(a)
-            node = g.node_of(p, k)
-            st = g.state(node) if node is not None else "pending"
-            if k == "sources":                           # the graph's name of the first block (one name everywhere)
-                title = _("Image") if p is not None and isinstance(p.source, dict) and "fusion" not in p.source \
-                    else node_title(s, node) if node is not None else block_title(p, k)
-            else:
-                title = block_title(None, k) if k == "post" else block_title(p, k)
+            off = node is not None and node.cut           # switched off: no state mark (round 3: a green "Up to date")
+            st = g.state(node) if node is not None and not off else "pending"
             b = QPushButton(title.replace("&", "&&"))   # no mnemonic
             sel = k == s.sel_step
-            b.setStyleSheet(f"QPushButton {{ border-left: 3px solid {STATE_COL.get(st, '#5d6470')}; padding: 4px 8px; "
+            mark = "#3a4150" if off else STATE_COL.get(st, '#5d6470')
+            b.setStyleSheet(f"QPushButton {{ border-left: 3px solid {mark}; padding: 4px 8px; "
                             f"background: {'#2b3446' if sel else '#22262e'}; "
                             f"border-top: 1px solid {ACCENT if sel else '#353b47'}; "
                             f"border-right: 1px solid {ACCENT if sel else '#353b47'}; "
                             f"border-bottom: 1px solid {ACCENT if sel else '#353b47'}; "
-                            f"{'font-weight: 600; color: #ffffff;' if sel else ''} }}")
-            b.setToolTip(_(STATE_WORD[st]))
+                            f"{'font-weight: 600; color: #ffffff;' if sel else 'color: #8b93a1;' if off else ''} }}")
+            b.setToolTip(_("{block} switched off: the image passes through unchanged").format(block=title) if off else
+                         "" if k == "sources" or k.startswith("session") else _(STATE_WORD[st]))
             b.clicked.connect(lambda _x=False, kk=k: self.picked.emit(kk))
             self.h.addWidget(b)
             if sel:
@@ -545,15 +587,8 @@ class TuneView(QWidget):
         self.strip.back.connect(self.back.emit)
         self.strip.picked.connect(self._strip_pick)
         self.strip.workflow.connect(self._strip_workflow)
-        sa = QScrollArea()                                # 9.1: a long chain scrolls, it never widens the window
-        sa.setWidget(self.strip)
-        sa.setWidgetResizable(True)
-        sa.setFrameShape(QFrame.NoFrame)
-        sa.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        sa.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
-        sa.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.strip_scroll = sa
-        v.addWidget(sa)
+        self.strip_scroll = self.strip.scroll             # its blocks scroll, "◂ Graph" and the list stay (round 3)
+        v.addWidget(self.strip)
         self.pages = QStackedWidget()
         v.addWidget(self.pages, 1)
         body = QWidget()
@@ -619,10 +654,11 @@ class TuneView(QWidget):
         a long chain showed only the first letter of the block opened, at its right edge)."""
         b, sa = self.strip.current, self.strip_scroll
         try:
-            if b is not None and b.parent() is self.strip:
-                self.strip.layout().activate()            # its buttons placed, the strip as wide as they need
-                if self.strip.width() < self.strip.sizeHint().width():
-                    self.strip.resize(self.strip.sizeHint().width(), self.strip.height())
+            blocks = self.strip.blocks
+            if b is not None and b.parent() is blocks:
+                blocks.layout().activate()                # its buttons placed, the band as wide as they need
+                if blocks.width() < blocks.sizeHint().width():
+                    blocks.resize(blocks.sizeHint().width(), blocks.height())
                 sa.ensureWidgetVisible(b, 60, 0)
         except RuntimeError:                              # the strip was built again meanwhile
             pass
@@ -723,7 +759,16 @@ class TuneView(QWidget):
         if node is None or p is None:
             return
         k = s.sel_step
-        state = block_state(s, p, k)
+        if node.cut:                                   # switched off: nothing computed, nothing to compute (round 3:
+            name = node_title(s, node)                 # "Gradient: not computed here", no number, a green mark)
+            self.head.addWidget(label(f"{name}  ·  {p.name}", "h1"))
+            self.head.addStretch(1)
+            self._message(_("{block} switched off: the image passes through unchanged").format(block=name) + "\n" +
+                          _("D or the block's menu switches it on again."))
+            return
+        # the graph's state of the block: a session's Calibration its own stages, the last block with the Output it
+        # holds (round 3: "Up to date" here where the graph said "Not computed yet" or "Outdated")
+        state = g.state(node)
         title = block_title(p, k)
         same = False
         if node.sid is not None:                       # a session's Calibration (issue #43): its session's name
@@ -743,7 +788,7 @@ class TuneView(QWidget):
             self.head.addStretch(1)
             self.pending(p, k, state)
             return
-        self._early = early
+        self._early, self._early_state = early, state
         if state == "stale":
             self._previous_tag(p, k)
         if k == "selection":
@@ -1502,10 +1547,11 @@ class TuneView(QWidget):
         return self._keys(p, "calibrate", "inventory") + (self._sources_sig(),)
 
     _early = False
+    _early_state = "pending"
 
     def _calibration_tab(self, p, spec: VisualSpec):
         if self._early and spec.kind in ("masters", "callights"):
-            self.pending(p, "calibration", block_state(self.s, p, "calibration"))
+            self.pending(p, "calibration", self._early_state)    # the graph's (a session's Calibration: its own)
             return
         which = self.steps.which_for(p, "calibrate")
         data = self._need("calibration", self._cal_keys(p), si.calibration_data, p.pid, which, self.service.headers)

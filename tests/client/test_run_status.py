@@ -237,6 +237,86 @@ def test_run_says_why_it_is_greyed_without_a_block_and_without_lights(world):
     d.close()
 
 
+# ---------------------------------------------------------------------------------------------- control round
+def test_a_switched_off_block_is_said_so_and_its_pause_waits_for_it(world):
+    """Round 3: Run to here on a switched-off Gradient 2 said "is no longer in the graph"; a pause kept on it was
+    announced as a stop while the run passed it silently. The reason is right, the pause says it waits, the run window
+    says there is no stop there."""
+    from astro_gpu.client.blocks import Graph
+    from astro_gpu.client.graph import BlockItem
+    w = world()
+    m = w.m
+    p = m.path
+    m.set_breakpoint([p], "fond~2")
+    assert m.set_cut([p], "fond~2", True)
+    p = m.path
+    assert m.waiting_breakpoints() == [(p.pid, "fond~2")]
+    m.select(step="fond~2")
+    d = w.ctl.run_to_here()
+    shown = [lb.text() for lb in d.findChildren(QLabel) if lb.isVisibleTo(d)]
+    assert "Gradient 2 is switched off: D switches it on again" in shown, shown
+    assert not any("no longer in the graph" in x for x in shown) and not d.b_run.isEnabled()
+    d.close()
+    m.select(step="empilement")
+    d = w.ctl.launch()
+    assert d.pause_off.isVisibleTo(d) and d.pause_off.text().startswith("No stop at Gradient 2: switched off")
+    assert not d.pause_note.isVisibleTo(d)                          # no stop announced
+    d.close()
+    node = Graph(m).node_of(p, "fond~2")
+    bp = Graph(m).breakpoint(node)
+    item = BlockItem(SimpleNamespace(), node, "Gradient 2", "", "done", False, False, True, bp=bp)
+    assert "waits for the block to be switched on again" in item.toolTip()
+    assert "the run stops here" not in item.toolTip()
+
+
+def test_a_fusion_without_lights_has_nothing_to_run_as_f5_says(world):
+    """Round 3: Shift+F5 on a Fusion of a project without lights opened the run window where F5 said in the status line
+    that there is nothing to compute: a Fusion's data are its channels'."""
+    w = world(lights=False)
+    fusion = SimpleNamespace(source={"fusion": {"inputs": []}})
+    assert not w.m.has_data() and not w.m.has_data(fusion)
+    w2 = world()
+    assert w2.m.has_data(fusion)
+
+
+def test_a_block_placed_twice_has_its_own_method_and_astrometry_says_what_it_will_do(world):
+    """Round 3: Gradient 2's Method list was greyed "Set by the options of the workflow" (its method is its node's:
+    chosen on its cards, one Undo step); the Astrometry block said "solved" before anything was computed."""
+    from astro_gpu.client.blocks import Graph
+    from astro_gpu.client.model import method_of
+    w = world(blocks=GRAPH[:3] + [{"block": "astrometry"}] + GRAPH[3:])
+    m = w.m
+    p = m.path
+    assert method_of(p, "fond~2") == method_of(p, "fond") == "simple"
+    assert m.set_node_method([p], "fond~2", "rbf")
+    p = m.path
+    assert method_of(p, "fond~2") == "rbf" and method_of(p, "fond") == "simple"
+    g = Graph(m)
+    assert g.summary(g.node_of(p, "fond~2")) != g.summary(g.node_of(p, "fond"))
+    assert g.summary(g.node_of(p, "astrometrie")) == "solves the field · Gaia DR3"
+    m.undo()
+    assert method_of(m.path, "fond~2") == "simple"
+
+
+def test_unreadable_lights_are_not_counted_as_used(env):
+    """Round 3: five .fits that are not FITS files: Run refused, the Session said "5 / 5 used". Every light is read
+    (the first card), the message names the first and the count is kept for the Session."""
+    from astro_gpu.client.model import session_checks
+    p = project2.create(env / "P", "P", Target(name="M 31"))
+    d = env / "bad"
+    d.mkdir()
+    files = []
+    for i in range(5):
+        f = d / f"light_{i:03d}.fits"
+        f.write_bytes(b"not a fits file" * 10)
+        files.append(str(f))
+    ses = project2.Session(1, "night 1", lights=[str(d)])
+    out = session_checks(p, ses, {"lights": files})
+    assert len(out) == 1 and out[0][1]["name"] == "light_000.fits" and out[0][1]["unread"] == 5
+    m = SimpleNamespace(_facts=SimpleNamespace(checks={1: out}))
+    assert ProjectModel.unreadable_lights(m, 1) == 5
+
+
 # ---------------------------------------------------------------------------------------------- 6.6
 def test_the_project_reopens_on_the_block_selected_and_a_new_one_on_the_session(world):
     w = world(current_block="fond~2")

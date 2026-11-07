@@ -107,8 +107,8 @@ FAMILY_COL = {"Stretch": "#c9a35e", "Contrast": "#d98a4e", "Color": "#c46fa8", "
 TW, TH = THUMB                                           # thumbnail size
 COPY = " (copy)"                                         # a piece of the layer names, translated where shown
 #: what the Stars block's images are, under their name in the properties
-PART_NOTES = {"starless": "The Stars block's starless image, stretched like the whole image.",
-              "stars": "The Stars block's stars alone, on black: in Screen mode above the background.",
+PART_NOTES = {"starless": "The Stars/background block's starless image, stretched like the whole image.",
+              "stars": "The Stars/background block's stars alone, on black: in Screen mode above the background.",
               "combined": "The starless image and the stars, recombined. The same settings as its block in the "
                           "graph."}
 REGION_MAX = 12_000_000                                  # pixels of the region rendered at full resolution
@@ -1317,6 +1317,10 @@ class PostView(QWidget):
         lay = self.layer(self.sel[0]) if self.sel else None
         self.b_dup.setEnabled(lay is not None)
         self.b_del.setEnabled(lay is not None and (not is_pixel(lay) or sum(map(is_pixel, self.layers)) > 1))
+        # greyed, it says why (control round): the last image layer stays, or nothing chosen
+        self.b_del.setToolTip(_("Delete the selected layer") if self.b_del.isEnabled() else
+                              _("Choose a layer first") if lay is None else
+                              _("The last image layer stays: Post needs an image (hide it with its eye)"))
         self.b_maskadd.setEnabled(lay is not None)
         self.b_maskadd.setText(_("+ Mask") if lay is None or lay["mask"] is None else _("Mask") + " ✓")
         self.b_maskadd.setToolTip(_("Add a mask to the selected layer") if lay is None or lay["mask"] is None else
@@ -1593,10 +1597,32 @@ class PostView(QWidget):
         if new is None:
             from .dialogs import ask_name
             new = ask_name(self.window(), _("Rename layer"), old)
-        if new and new != old:
-            self.push()
-            lay["name"] = new
-            self.rebuild()
+        if not new or new == old:
+            return
+        p = self.path(lay["pid"]) if lay["kind"] == "workflow" and lay.get("part") is None else None
+        if p is not None and lay.get("name") == p.name and hasattr(self.s, "name_problem"):
+            # the layer named after its workflow: the workflow (and its wire in the graph) take the name too, its
+            # layers follow (control round); one step of the workflows' Undo, as a branch removed with its layer
+            why = self.s.name_problem(new, pid=p.pid)
+            if why:
+                self.toasted.emit(_("Name refused: {why}").format(why=why))
+                return
+            self._save_t.stop()
+            self._save()                                  # the layers shown into the project, then renamed there
+            self._restoring = True
+            try:
+                self.s.rename(p.pid, new)
+                self._post_changed(None)                  # and taken back here with their new names
+            finally:
+                self._restoring = False
+            self.undo.append(MODEL_STEP)
+            self.redo.clear()
+            self._undo_buttons()
+            self.toasted.emit(_("“{old}” renamed “{name}”: its workflow too · Ctrl+Z").format(old=old, name=new))
+            return
+        self.push()
+        lay["name"] = new
+        self.rebuild()
 
     # ------------------------------------------------------------ layer actions
     def add_image_layer(self, name: str, source, key: str) -> dict:
@@ -2409,9 +2435,14 @@ class PostPage3(QWidget):
         self.pages.addWidget(self.view)
         self._asked = None                               # the layer Open in Post asked for, shown in the list
         self.view.layerAsked.connect(self._ask)
+        # bound to this page's own methods, never a lambda: Qt drops them with the page (control round: a page
+        # rebuilt by a language switch still answered the project's changes, a Python error at the next Ctrl+Z)
         session.pathsChanged.connect(self.update_page)
         if hasattr(session, "postChanged"):
-            session.postChanged.connect(lambda *_a: self.update_page())
+            session.postChanged.connect(self._post_changed)
+        self.update_page()
+
+    def _post_changed(self, _source):
         self.update_page()
 
     def _ask(self, lid):

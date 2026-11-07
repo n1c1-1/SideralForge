@@ -163,7 +163,7 @@ def test_the_graph_has_a_block_per_stars_and_background_layer_and_sends_the_othe
     assert [n.lid for n in g.compositions] == [b, a, first] and all(n.parent is stars for n in g.compositions)
     assert [model.post_layer(x)["name"] for x in (first, a, b)] == ["Full · Recombine", "Full · Recombine 2",
                                                                      "Full · Recombine 3"]
-    assert [node_title(model, n) for n in g.compositions] == ["Recombine 3", "Recombine 2", "Recombine"]
+    assert [node_title(model, n) for n in g.compositions] == ["Recombine 3", "Recombine 2", "Recombine 1"]
     assert g.node_of(full, "composition", a).lid == a and g.node_of(full, "composition").lid == b
     assert g.direct == [(stars, "stars"), (stars, "starless")]               # Post's order, top first
     # Classic has no layer yet: Post will give it its Output image

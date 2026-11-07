@@ -160,6 +160,13 @@ def methods_of(block: str) -> list[dict]:
 
 
 def method_of(p: WorkflowView, block: str) -> str:
+    if "~" in block:                      # a block placed twice ("fond~2"): its own node's method (round 3)
+        base = block.partition("~")[0]
+        m = getattr(p, "model", None)
+        n = next((x for x in m.graph(p) if node_key(x) == block), None) if hasattr(m, "graph") else None
+        if n is not None and n.get("method"):
+            return METHOD_KEY[base].get(n["method"], n["method"])
+        block = base
     if block == "fond":
         return p.opts["fond"]
     if block == "etoiles":
@@ -342,14 +349,19 @@ def session_checks(p, s, files: dict) -> list[tuple[str, dict]]:
                 break
     sizes: dict[str, tuple[int, int]] = {}
     for kind in FRAME_KINDS:
+        bad: list[str] = []
         for path in files.get(kind) or []:
             ok, size = _frame_read(path, kind not in sizes)   # the first readable frame of each kind says its size
             if not ok:
-                out.append(("{session}: {name} is not a frame that can be read (damaged, or not a FITS file): take it "
-                            "out of the session", dict(name=Path(path).name)))
-                break
+                bad.append(path)
+                if kind != "lights":
+                    break
+                continue                  # every light read: the Session says how many it uses (round 3: "5 / 5")
             if size is not None and kind not in sizes:
                 sizes[kind] = size
+        if bad:
+            out.append(("{session}: {name} is not a frame that can be read (damaged, or not a FITS file): take it "
+                        "out of the session", dict(name=Path(bad[0]).name, frames=kind, unread=len(bad))))
     light = sizes.get("lights")
     for kind, size in sizes.items():
         if light is not None and kind != "lights" and size != light:
@@ -374,13 +386,17 @@ def _sig(rows) -> tuple:
 
 
 class SessionSet:
-    """Which sessions a project has, for Undo (issue #47): equal when the same ids, whatever their frames (a session's
-    frames are saved by Save, not undone); it keeps a copy of each session, and of its frames excluded by hand, to
-    bring back one that was removed."""
+    """Which sessions a project has, for Undo (issue #47), with their names, filters and lists of files (control round,
+    decision 7: a file taken out of a session, or added, is one gesture, one undo step; before, Ctrl+Z undid an older
+    step and the file stayed out); it keeps a copy of each session, and of its frames excluded by hand, to bring back
+    one that was removed. The frames excluded by hand are not undone here (Frames has its own way back)."""
+
+    KINDS = ("lights", "darks", "flats", "bias", "flat_darks")
 
     def __init__(self, p):
         self.ids = [s.id for s in p.sessions]
-        self.labels = [(s.id, s.name, s.filter) for s in p.sessions]       # renamed, its filter changed: undone (2.3)
+        # renamed, its filter changed (2.3), a file taken out or added: undone
+        self.labels = [(s.id, s.name, s.filter, *(tuple(getattr(s, k)) for k in self.KINDS)) for s in p.sessions]
         self.copies = {s.id: copy.deepcopy(s) for s in p.sessions}
         self.excluded = [list(x) for x in p.excluded]
 
@@ -390,13 +406,19 @@ class SessionSet:
     __hash__ = None
 
     def put_back(self, p) -> bool:
-        """These sessions in ``p``: a removed one comes back as it was, an added one goes; the others keep their
-        frames as they are now, and get their name and filter back. Whether any came or went."""
+        """These sessions in ``p``: a removed one comes back as it was, an added one goes; the others get their name,
+        filter and lists of files back. Whether any came or went, or their files changed (read again)."""
+        files = False
         for s in p.sessions:
             if s.id in self.copies:
-                s.name, s.filter = self.copies[s.id].name, self.copies[s.id].filter
+                c = self.copies[s.id]
+                s.name, s.filter = c.name, c.filter
+                for k in self.KINDS:
+                    if list(getattr(s, k)) != list(getattr(c, k)):
+                        setattr(s, k, list(getattr(c, k)))
+                        files = True
         if [s.id for s in p.sessions] == self.ids:
-            return False
+            return files
         now = {s.id: s for s in p.sessions}
         p.sessions = [now.get(i) or copy.deepcopy(self.copies[i]) for i in self.ids]
         back = set(self.ids) - set(now)
@@ -517,7 +539,9 @@ class ProjectModel(QObject):
         src = p.source
         if src is None:
             return self.sources_loaded
-        return "fusion" in src or bool(src.get("path"))
+        if "fusion" in src:                  # its channels are the project's sessions: no lights, nothing (round 3: Shift+F5
+            return self.has_data()           # on a Fusion opened the run window where F5 said why in the status line)
+        return bool(src.get("path"))
 
     @property
     def sessions(self) -> list[dict]:
@@ -1041,7 +1065,7 @@ class ProjectModel(QObject):
 
     def _snapshot(self):
         """What Undo puts back: the workflows, and which sessions there are (a Session block is a block of the graph:
-        removed, it comes back with what it had, issue #47). A session's frames are not for Undo (saved by Save)."""
+        removed, it comes back with what it had, issue #47), with their lists of files (``SessionSet``)."""
         post = json.dumps(getattr(self.p, "post", None) or {}, sort_keys=True)     # the composition too (2.1)
         return (api.workflows(self.p), self.p.current, self.p.stack_mode, SessionSet(self.p), post)
 
@@ -1058,6 +1082,14 @@ class ProjectModel(QObject):
 
     def can_redo(self) -> bool:
         return bool(self._redo)
+
+    def forget_undo(self):
+        """The project as it is now is where Undo stops: a new project made from a template (decision 6, its first
+        Ctrl+Z never blanks the page)."""
+        self._undo.clear()
+        self._redo.clear()
+        self._undo_what.clear()
+        self._redo_what.clear()
 
     def undo(self) -> bool:
         what = self._move_what(self._undo, self._undo_what, self._redo_what)
@@ -1144,7 +1176,11 @@ class ProjectModel(QObject):
             elif self.sel_step and self.sel_step not in ("sources", "final") and self.sel_step not in keys and \
                     self.sel_step not in self._shown_keys(self.path):
                 j = old_keys.index(self.sel_step) if self.sel_step in old_keys else len(old_keys)
-                self.sel_step = next((k for k in reversed(old_keys[:j]) if k in keys), keys[-1] if keys else "sources")
+                # a block the graph draws (control round: the engine's Selection, not drawn, was chosen: nothing lit)
+                shown = self._shown_keys(self.path)
+                drawn = [k for k in keys if k in shown]
+                self.sel_step = next((k for k in reversed(old_keys[:j]) if k in drawn),
+                                     drawn[-1] if drawn else "sources")
         self.pathsChanged.emit()
         self.currentChanged.emit()
         if post_back:
@@ -1419,6 +1455,10 @@ class ProjectModel(QObject):
         return [_(t).format(session=name, **{k: _(v) if k == "kind" else v for k, v in a.items()})
                 for t, a in self._facts.checks.get(sid) or []]
 
+    def unreadable_lights(self, sid: int) -> int:
+        """How many of a session's lights cannot be read (``session_checks``): they are not used."""
+        return sum(int(a.get("unread", 0)) for _t, a in self._facts.checks.get(sid) or [] if a.get("frames") == "lights")
+
     def session_problem(self, sid: int) -> str:
         """The first of ``session_problems``, "" when there is none."""
         return next(iter(self.session_problems(sid)), "")
@@ -1593,6 +1633,19 @@ class ProjectModel(QObject):
             return False
         return any(q.pid != p.pid and q.source == p.source and self.sessions_of(q) == self.sessions_of(p)
                    and nodes(q)[:len(mine)] == mine and len(nodes(q)) > len(mine) for q in self.paths)
+
+    def is_emptied_branch(self, p: WorkflowView) -> bool:
+        """Whether a branch has no block of its own any more: it is only the first blocks of an older workflow (its
+        trunk), or all of them. Its last own block deleted, it goes with it (control round: it stayed, sending the
+        trunk's image). A branch is named after its trunk ("Workflow · Color", as made and as its name follows): two
+        workflows of their own (two templates) are never one's branch."""
+        mine = [(node_key(n), n.get("method"), bool(n.get("off"))) for n in self.graph(p) if n["block"] != "output"]
+        if not mine:
+            return False
+        return any(q.pid < p.pid and p.name.startswith(q.name + " · ") and q.source == p.source
+                   and self.sessions_of(q) == self.sessions_of(p)
+                   and [(node_key(n), n.get("method"), bool(n.get("off"))) for n in self.graph(q)
+                        if n["block"] != "output"][:len(mine)] == mine for q in self.paths)
 
     def send_to_post(self, p: WorkflowView, key: str, name: str) -> WorkflowView:
         """A block's image as a layer of Post (issue #47): a branch of ``p`` up to that block, its Output its own;
@@ -1779,6 +1832,21 @@ class ProjectModel(QObject):
             x.source = {"fusion": {**x.source["fusion"], "palette": palette}}
             api.set_workflows(self.p, ws, self.p.current)
         return True
+
+    def set_node_method(self, paths, key: str, method: str) -> bool:
+        """The method of a block placed twice ("fond~2", the engine's ``method``): its own, stored on its node (the
+        workflow's options set the first one only). One change, for Undo; False when nothing changes."""
+        changed = False
+        with self._edit():
+            for q in paths:
+                g = self.graph(q)
+                i = self.node_index(q, key)
+                if i is None or g[i].get("method") == method:
+                    continue
+                g[i] = dict(g[i], method=method)
+                self.p.set_blocks(q.pid, g)
+                changed = True
+        return changed
 
     def is_cut(self, p: WorkflowView, key: str) -> bool:
         """Whether the user switched this block off (issue #47)."""
@@ -2056,17 +2124,17 @@ class ProjectModel(QObject):
     def set_image_file(self, p: WorkflowView, path: str | None = None, stretched: bool | None = None):
         """The file of an Image block, or its kind (linear, or stretched already): chosen in its panel (an Image
         placed from the palette starts without one)."""
-        from ..stages.image import STRETCHED_FORMATS
+        from ..stages.image import stretched_by_nature
         src = dict(self.p.workflow(p.pid).source or {})
-        before = Path(str(src.get("path") or "")).suffix.lower()
+        before = stretched_by_nature(src.get("path") or "")
         if path is not None:
             src["path"] = Path(path).as_posix() if path else ""
         if stretched is not None:
             src["stretched"] = bool(stretched)
-        elif path and Path(path).suffix.lower() in STRETCHED_FORMATS and not self.graph(p):
-            src["stretched"] = True        # an 8/16-bit picture is stretched by nature; still changeable (1.7)
-        elif path and before in STRETCHED_FORMATS and not self.graph(p):
-            src["stretched"] = False       # the kind a PNG/JPEG gave goes with it: a FITS or TIFF after it is linear
+        elif path and stretched_by_nature(path) and not self.graph(p):
+            src["stretched"] = True        # a PNG/JPEG or 8-bit TIFF is stretched by nature; still changeable (1.7)
+        elif path and before and not self.graph(p):
+            src["stretched"] = False       # the kind such a picture gave goes with it: a FITS or TIFF after it is linear
         with self._edit():
             w = self.p.workflow(p.pid)
             blocks = w.blocks
@@ -2366,6 +2434,17 @@ class ProjectModel(QObject):
         ("calibration@2") is one of them: it comes first."""
         have = {view_key(b) for b in self.p.workflow(p.pid).breakpoints if wfl.base(b) in ENGINE_KEY}
         return [k for k in self.pause_keys(p) if k in have]
+
+    def waiting_breakpoints(self, paths=None) -> list[tuple[int, str]]:
+        """The pauses kept on blocks switched off, (pid, key of the views): a run goes through them until the block is
+        on again (GUI exploration round 3: the run window must not announce them, nor stay silent)."""
+        if not self.ready:
+            return []
+        out = []
+        for q in (self.paths if paths is None else paths):
+            have = [view_key(b) for b in self.p.workflow(q.pid).breakpoints if wfl.base(b) in ENGINE_KEY]
+            out += [(q.pid, k) for k in have if self.is_cut(q, k)]       # kept in the graph's order (set_breakpoint)
+        return out
 
     def pause_keys(self, p: WorkflowView) -> list[str]:
         """The blocks of a workflow a pause can follow, in the order they run: each session's Calibration, then the
@@ -2835,7 +2914,14 @@ class ProjectModel(QObject):
         cs = self._api_changes(ch)
         with self._edit():
             w = api.make_variant(self.p, p.pid, cs[0], self.unique_name(title))
-            self.p.workflow(w.id).breakpoints = list(self.p.workflow(p.pid).breakpoints)
+            x, s0 = self.p.workflow(w.id), self.p.workflow(p.pid)
+            x.breakpoints = list(s0.breakpoints)
+            # its source and sessions, and a graph stays a graph: the original's blocks, the change's options on them
+            # (control round: made from options alone, it had the template's chain, a Selection block "Keep" added)
+            x.source, x.sessions = copy.deepcopy(s0.source), copy.deepcopy(s0.sessions)
+            if s0.blocks is not None:
+                o = wfl.check_options(x.options)
+                self.p.set_blocks(w.id, wfl.sync_blocks(copy.deepcopy(s0.blocks), wfl.source_of(x), o))
             for c in cs[1:]:
                 api.apply_change(self.p, [w.id], c)
         return self.view(w.id)

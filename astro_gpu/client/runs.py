@@ -376,6 +376,9 @@ class RunDialog(QDialog):
         v.addWidget(self.pause_note)
         self.pause_more = label("", "small", wrap=True)                # which workflows, which pauses come after
         v.addWidget(self.pause_more)
+        self.pause_off = label("", "small", wrap=True)                 # pauses on blocks switched off: no stop
+        v.addWidget(self.pause_off)
+        self.pause_off.hide()
         self.hint = label("", "small", wrap=True)
         v.addWidget(self.hint)
         self.recap = Box(OK)
@@ -488,6 +491,20 @@ class RunDialog(QDialog):
         wait = _("Waiting for the review: {names}").format(names=", ".join(held)) if held else ""
         return (_("Review pause after {block}").format(block=pause_text(self.s, pa)),
                 " · ".join(x for x in (who, more, wait) if x))
+
+    def _off_pauses(self) -> str:
+        """The pauses this run goes through because their block is switched off: kept, they wait for it to be on again
+        (GUI exploration round 3: such a pause was announced in the graph and the run passed it silently)."""
+        waiting = getattr(self.s, "waiting_breakpoints", None)
+        if waiting is None:
+            return ""
+        scope = getattr(self.c, "scope", None) if self.c is not None else None
+        paths = [q for q in self.s.paths if scope is None or q.pid in scope]
+        stops = waiting(paths)
+        if not stops:
+            return ""
+        return _("No stop at {blocks}: switched off, the pause waits for it to be on again (D)").format(
+            blocks=pause_text(self.s, None, stops))
 
     def finish_now(self):
         """For scripted walkthroughs: wait until the run is over."""
@@ -628,6 +645,9 @@ class RunDialog(QDialog):
         self.pause_note.setText(stops)
         self.pause_more.setVisible(bool(stops) and bool(more) and ph in ("plan", "run") and not paused)
         self.pause_more.setText(more)
+        off = self._off_pauses() if ph == "plan" and not paused else ""
+        self.pause_off.setVisible(bool(off))
+        self.pause_off.setText(off)
         self.review.setVisible(paused)
         if paused:
             self.review_text.setText(_("Review pause: {block} · Inspect, then Continue").format(

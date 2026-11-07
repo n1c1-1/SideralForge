@@ -420,7 +420,10 @@ def resolve(s, p, step: str, it: dict, stage: str | None = None) -> dict | None:
                  reason=_reason_text(s, info, stage), min=lo, max=hi, step=info.step, tip=_(tip),
                  unit=_(it["unit"] if it["unit"] is not None else UNITS.get(info.unit, info.unit)),
                  choices=choices, type=typ, value=info.value, changed=info.origin == "user", locked=info.locked,
-                 drift=info.drift, result_value=info.result_value, optional=info.type == "float | None")
+                 drift=info.drift, result_value=info.result_value, optional=info.type == "float | None",
+                 # an automatic value the engine sets from the data, not known yet: "auto", never the default it would
+                 # replace (round 3: drizzle 1,50 before the run, 1,00 after, as the block said "auto")
+                 pending_auto=info.origin != "user" and not getattr(info, "suggestion_known", True))
     else:
         r.update(label=_(it["label"]), help=_(it["help"]), unit=_(it["unit"]), suggested=it["default"], tip="",
                  reason=_(it.get("reason") or "proposed value"), value=it["default"], changed=False,
@@ -546,7 +549,7 @@ def step_settings(s, p, step: str):
     rows = []
     for st in ([] if step == "demi_piles" else _stages_of_step(s, p, step)):
         for info in s.params(p, st) or []:
-            bst = st.split("@", 1)[0]
+            bst = st.split("@", 1)[0].split("~", 1)[0]   # "gradient~2": its method on its cards too (round 3)
             if (bst, info.name) in COVERED or (bst, info.name) in HIDDEN or info.level == "internal":
                 continue
             it = E(st, info.name, ENGINE_LEVEL.get(info.level, "normal"))
@@ -680,6 +683,25 @@ class SettingRow(QFrame):
             e.toggled.connect(lambda x: self.changed.emit(self.r, x))
         elif typ == "zone":
             e = QPushButton(_("Draw on image…"))
+        elif typ in ("int", "float") and r.get("pending_auto") and not off:
+            # set by the engine from the data, not known yet: "auto" (round 3), a number typed is the user's
+            e = QLineEdit("")
+            e.setFixedWidth(110)
+            e.setPlaceholderText("auto")
+            e.setToolTip(_("Automatic: set from the data when the previous blocks are done. Type a value to fix it."))
+
+            def typed():
+                t = e.text().strip().replace(",", ".")
+                try:
+                    v = float(t) if t else None
+                except ValueError:
+                    return
+                if v is not None:
+                    lo, hi = r.get("min"), r.get("max")
+                    v = max(v, lo) if lo is not None else v
+                    v = min(v, hi) if hi is not None else v
+                    self.changed.emit(self.r, int(round(v)) if typ == "int" else round(v, 6))
+            e.editingFinished.connect(typed)
         elif typ == "int":
             e = QSpinBox()
             e.setLocale(QLocale())                  # the language's numbers: a widget keeps its parent's locale

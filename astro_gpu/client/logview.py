@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -68,7 +69,12 @@ class LogPanel(QFrame):
         self.s = project
         self.setObjectName("log")
         self.setStyleSheet("QFrame#log { background: #1c1f26; border-top: 1px solid #2a2f38; }")
-        self.setFixedHeight(200)
+        # 200 px where there is room; less on a short screen, never the window taller (round 3: the Log open, Post
+        # opened, a 1366 x 768 window grew to 794 px and stayed so)
+        self.setMinimumHeight(120)
+        self.setMaximumHeight(200)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self._full = 200
         v = QVBoxLayout(self)
         v.setContentsMargins(10, 6, 10, 6)
         top = QHBoxLayout()
@@ -95,6 +101,16 @@ class LogPanel(QFrame):
         h.addWidget(self.console, 2)
         v.addLayout(h)
         self.refresh()
+
+    def sizeHint(self):                                              # noqa: N802 - Qt's name
+        s = super().sizeHint()
+        s.setHeight(self._full)
+        return s
+
+    def minimumSizeHint(self):                                       # noqa: N802 - Qt's name
+        s = super().minimumSizeHint()
+        s.setHeight(self.minimumHeight())
+        return s
 
     def rows(self) -> list[tuple[str, str]]:
         return [event_text(r) for r in reversed(getattr(self.s, "history", None) or [])]

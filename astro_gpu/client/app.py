@@ -377,7 +377,7 @@ class Main(QMainWindow):
             if not self.import_frames(folder):
                 self.flash(_("Project without lights: add them in Session"))
             if self.graph is not None and self.s is not None and all(w.blocks == [] for w in self.s.p.workflows):
-                QTimer.singleShot(0, lambda: self.graph.new_workflow() if self.graph is not None else None)
+                QTimer.singleShot(0, lambda: self.graph.new_workflow(fresh=True) if self.graph is not None else None)
 
     # ------------------------------------------------------------ a project
     def _device(self) -> tuple[bool, str | None]:
@@ -423,7 +423,7 @@ class Main(QMainWindow):
         self.run.attach()                            # a run that goes on (started before, or elsewhere): follow it
         if created and gallery and not d.workflows and self.graph is not None:
             # issue #43: a new project starts from the template gallery
-            QTimer.singleShot(0, lambda: self.graph.new_workflow() if self.graph is not None else None)
+            QTimer.singleShot(0, lambda: self.graph.new_workflow(fresh=True) if self.graph is not None else None)
         return True
 
     def make_model(self):
@@ -836,7 +836,11 @@ class Main(QMainWindow):
                 line += "  ·  " + (_("Image: choose its file") if images_only(s) else
                                    _("nothing to compute: add lights or image"))
             elif empty:                                   # never "all up to date" with nothing placed (6.5, #13)
-                line += "  ·  " + _("no block: place one")
+                # its Image or Session is a block on screen: what is missing is a block after it (round 3)
+                line += "  ·  " + (_("nothing after Image: place a block") if images_only(s) else
+                                   _("nothing after Session: place a block") if not any(
+                                       q.source is not None for q in s.paths) else
+                                   _("nothing after the sources: place a block"))
             elif todo and self.run_refusal(cost):         # refused: said, never a time to run (round 2)
                 line += "  ·  " + _("run refused")
             elif todo:

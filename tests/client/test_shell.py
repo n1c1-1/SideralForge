@@ -529,6 +529,37 @@ def test_log_shows_the_history_newest_first_and_exports(env, tmp_path):
     assert [r[1] for r in w.logp.rows()] == ["Projet enregistré", "Projet ouvert"]
 
 
+def test_the_log_gives_room_on_a_short_screen(env):
+    """Control round: the Log open, Post opened, a 1366 x 768 window grew to 794 px and stayed so: the Log is 200 px
+    where there is room, and shrinks before the window grows."""
+    w = _main(env)
+    w.open_project(env["ws"] / "Heart")
+    w.b_log.setChecked(True)
+    assert w.logp.sizeHint().height() == 200 and w.logp.minimumSizeHint().height() <= 120
+    assert w.logp.maximumHeight() == 200
+
+
+def test_the_status_line_names_the_source_on_screen(env):
+    """Control round: an Image project at opening said "no block: place one" while its Image block is on screen."""
+    from astro_gpu.core import workflow as wfl
+    root = env["ws"] / "ImageOnly"
+    p = project2.create(root, "ImageOnly", Target(name="M 31"))
+    pic = env["ws"] / "stack.fits"
+    from astropy.io import fits
+    fits.PrimaryHDU(np.zeros((3, 20, 20), np.float32)).writeto(pic, overwrite=True)
+    w0 = p.add_workflow("Image", wfl.TEMPLATES["Classic stack"])
+    w0.source = {"path": str(pic), "stretched": False}
+    p.set_blocks(w0.id, [])
+    project2.save(p)
+    w = _main(env)
+    assert w.open_project(root)
+    for _i in range(20):
+        w.worker.wait(30)
+        QApplication.processEvents()
+    assert "nothing after Image: place a block" in w.status.text(), w.status.text()
+    assert "no block" not in w.status.text()
+
+
 def test_the_template_gallery_on_the_model(qapp, tmp_path):
     """Issue #43: tabs by kind of task, a thumbnail of each template's graph, the preview and its text, Create. Issue
     #47: a template holds only the blocks it uses; the blank one; a missing filter gets an empty Session block."""
@@ -577,7 +608,21 @@ def test_the_gallery_fits_a_1366_by_768_screen_and_its_previews_never_cut_a_name
     d = TemplateGallery(FakeModel(), None, top)
     assert d.height() <= 697 - 40 and d.width() <= 1366
     d.close()
+    top.resize(1366, 768)                                     # control round: over a window of the screen's height,
+    d = TemplateGallery(FakeModel(), None, top)               # its title bar and the task bar still fit
+    assert d.height() + 32 <= 768 - 40, d.height()
+    d.close()
     top.close()
+    # control round: the names are the graph's, whole ("Calib.", "Astrom." were abbreviations)
+    for lang in ("fr", "en"):
+        i18n.set_language(lang)
+        try:
+            for t in GALLERY:
+                for k, _how in chain_of(t):
+                    assert not gallery.picture_name(k.partition("~")[0]).endswith("."), (lang, k)
+            assert gallery.picture_name("astrometrie") == i18n._("Astrometry")
+        finally:
+            i18n.set_language("en")
     cut = []
 
     class Metrics(gallery.QFontMetrics):

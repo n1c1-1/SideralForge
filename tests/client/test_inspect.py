@@ -792,9 +792,31 @@ def test_the_strip_shows_the_open_block(win):
             win.width(), sa.viewport().width(), win.tune.strip.width(), sa.horizontalScrollBar().maximum())
         left = b.mapTo(sa.viewport(), b.rect().topLeft()).x()
         assert left >= 0 and left + b.width() <= sa.viewport().width(), (left, b.width(), sa.viewport().width())
+        # control round: only the blocks scroll, "◂ Graph" and the workflow list stay in view
+        st = win.tune.strip
+        back = next(x for x in st.findChildren(QPushButton) if x.text().startswith("◂"))
+        assert not sa.isAncestorOf(back) and back.isVisible()
+        assert 0 <= back.mapTo(win, back.rect().topLeft()).x() < win.width()
+        # the graph's blocks with the graph's names: no Output (never a block), the Session first
+        names = [x.text() for x in st.blocks.findChildren(QPushButton)]
+        assert "Output" not in names and names[-1] == "Post" and names.count(names[0]) == 1, names
     finally:
         win.resize(size)
         settle(win)
+
+
+def test_the_panel_says_the_state_the_graph_shows(win):
+    """Control round: the last block (which holds the Output) said "Up to date" in its panel and in Inspect where the
+    graph said "Outdated"; a session's Calibration said "Up to date" never computed. One state: the graph's."""
+    from astro_gpu.client.blocks import STATE_WORD, Graph, chain
+    keys = [x for x in chain(win.s.path) if x != "post"]
+    k = keys[-1]                                            # the last block: it holds the Output
+    inspect(win, k)
+    g = Graph(win.s)
+    want = i18n._(STATE_WORD[g.state(g.node_of(win.s.path, k))])
+    chips = [lb.text() for lb in win.tune.panel.findChildren(QLabel)
+             if lb.isVisible() and lb.text() in {i18n._(x) for x in STATE_WORD.values()}]
+    assert chips[:1] == [want], (k, chips, want)
 
 
 def shot_dialog(d, name, lang="en"):

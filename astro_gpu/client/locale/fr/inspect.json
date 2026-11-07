@@ -66,6 +66,7 @@
   "To recompute: {block}": "À recalculer : {block}",
   "{block}: not computed here": "{block} : non calculé ici",
   "{block} switched off: the image passes through unchanged": "{block} désactivé{block:e} : l'image passe sans changement",
+  "D or the block's menu switches it on again.": "D ou le menu du bloc le réactive.",
   "Master dark": "Master dark",
   "Master bias": "Master offset",
   "Master dark flat": "Master dark de flat",

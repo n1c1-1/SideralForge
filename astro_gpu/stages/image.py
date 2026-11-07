@@ -25,6 +25,24 @@ MAGIC = {".fits": (b"SIMPLE",), ".fit": (b"SIMPLE",), ".fts": (b"SIMPLE",),
 STRETCHED_FORMATS = (".png", ".jpg", ".jpeg")
 
 
+def stretched_by_nature(path: str | Path) -> bool:
+    """Whether a file can only be a stretched picture: a PNG or JPEG, or an 8-bit TIFF (a stack is never stored on 8
+    bits; GUI exploration round 3: an 8-bit TIFF stayed "Linear" where the same photo in PNG was "Stretched"). Reads
+    the TIFF's first page header only."""
+    p = Path(str(path or ""))
+    suf = p.suffix.lower()
+    if suf in STRETCHED_FORMATS:
+        return True
+    if suf not in (".tif", ".tiff"):
+        return False
+    try:
+        import tifffile
+        with tifffile.TiffFile(p) as t:
+            return t.pages[0].bitspersample <= 8
+    except Exception:  # noqa: BLE001 - a TIFF that cannot be read: its problem is said elsewhere (image_problem)
+        return False
+
+
 def image_problem(path: str | Path) -> str:
     """Why a file cannot be an Image block's image, in plain English ("{name}" to fill in), or "" when it can: none
     chosen, not found, not a format read here, or its content not of its format (a text file renamed)."""

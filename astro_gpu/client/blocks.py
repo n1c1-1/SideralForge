@@ -203,18 +203,19 @@ def node_title(s, n) -> str:
         return s.session(n.sid).name or _("Session {n}").format(n=n.sid)
     if n.key == "post" and not n.handle:              # issue #47: the block's name; the workflow's under it
         return _("Output")
-    if n.key == "composition" and n.lid is not None and hasattr(s, "post_layer"):   # a second Recombine of a
-        from .model import POST_PART_NAMES                                           # workflow: its number, as its
-        name = str((s.post_layer(n.lid) or {}).get("name") or "")                    # layer's name (2nd round)
-        num = name.rpartition(" · " + POST_PART_NAMES["combined"] + " ")[2]
-        if num.isdigit() and name.endswith(" · " + POST_PART_NAMES["combined"] + " " + num):
-            return block_title(None, "composition") + " " + num
-    if n.key == "fusion" and n.paths:                 # several Fusions: numbered in the project's order (expl. 2)
-        fus = [q.pid for q in getattr(s, "paths", []) if isinstance(q.source, dict) and "fusion" in q.source]
-        if len(fus) > 1 and n.paths[0].pid in fus:
-            return f"{_('Fusion')} {fus.index(n.paths[0].pid) + 1}"
+    if n.key == "composition" and n.num:              # several Recombine blocks: all numbered, top to bottom, as
+        return f"{block_title(None, 'composition')} {n.num}"     # Gradient 1, Gradient 2 (control round)
+    if n.key in ("fusion", "image") and n.paths:      # several Fusions, several Images: numbered in the project's
+        src = "fusion" if n.key == "fusion" else "path"            # order (exploration 2, control round)
+        same = [q.pid for q in getattr(s, "paths", []) if isinstance(q.source, dict) and src in q.source]
+        if len(same) > 1 and n.paths[0].pid in same:
+            return f"{block_title(None, n.key)} {same.index(n.paths[0].pid) + 1}"
     if n.paths and "~" in n.key or (n.paths and n.key in ("fond", "couleur", "debruitage")):
-        return block_title(n.paths[0], n.key)             # issue #47: a block placed twice, numbered left to right
+        # issue #47: a block placed twice, numbered left to right; shared by a branch that has it twice: numbered
+        # as in that branch ("Gradient 1" before its "Gradient 2", control round)
+        base = kbase(n.key)
+        p = max(n.paths, key=lambda q: sum(kbase(k) == base for k in _safe_chain(q)))
+        return block_title(p, n.key)
     if n.key == "sources" and hasattr(s, "session") and s.sessions:
         if len(s.sessions) == 1:
             return s.sessions[0]["name"] or _("Session")
@@ -226,6 +227,13 @@ def node_title(s, n) -> str:
 def review_title(key: str) -> str:
     """The name of a block in the texts about a pause (the output of a workflow is just "Output" there)."""
     return _("Output") if key == "post" else block_title(None, key)
+
+
+def _safe_chain(p) -> list[str]:
+    try:
+        return chain(p) if getattr(p, "model", None) is not None else []
+    except (KeyError, ValueError, AttributeError):
+        return []
 
 
 def chain(p) -> list[str]:
@@ -280,8 +288,8 @@ def drizzle_auto(s, p) -> bool:
 
 def method_summary(s, p, key: str) -> str:
     from .model import method_of, methods_of
-    m = method_of(p, key)
-    return _(next(x["short"] for x in methods_of(key) if x["key"] == m))
+    m = method_of(p, key)                       # "fond~2": its own node's method (round 3)
+    return _(next(x["short"] for x in methods_of(kbase(key)) if x["key"] == m))
 
 
 @dataclass
@@ -300,6 +308,7 @@ class Node:
     grey: str = ""                             # why it cannot run (a cut before it), translated; "" when it can
     broken: str = ""                           # why it cannot run at all (a fusion's channel gone...): circled in red
     slot: int = -1                             # an image block: its rank among its workflow's image blocks (#47)
+    num: int = 0                               # a Recombine block among several: its number (control round)
     _bk: object = None
 
     @property
@@ -437,6 +446,14 @@ class Graph:
             elif (src, part) not in self.direct:
                 self.direct.append((src, part))
         self._fold_outputs(project)
+        for p in project.paths:                       # several Recombine blocks of a workflow: each its number, its
+            mine = [n for n in self.compositions if p in n.paths]   # layer's ("Full · Recombine 2"), the first 1
+            if len(mine) > 1:                         # (control round: as Gradient 1, Gradient 2)
+                for n in mine:
+                    name = str((project.post_layer(n.lid) or {}).get("name") or "") \
+                        if n.lid is not None and hasattr(project, "post_layer") else ""
+                    tail = name.rpartition(" ")[2]
+                    n.num = int(tail) if tail.isdigit() else 1
         for p in project.paths:                       # a fusion's inputs: its channels' last blocks (after the fold)
             src = getattr(p, "source", None)
             n = self.by_path[p.pid].get("fusion") if isinstance(src, dict) and "fusion" in src else None
@@ -614,15 +631,17 @@ class Graph:
             if any(q.opts["debruitage"] for q in node.paths):
                 txt += " · " + _("+ half-stacks")
             return txt
-        if k == "debruitage":
-            if p.opts.get("dn") == "affine":
+        if k == "debruitage":                   # a block placed twice: its own method (round 3)
+            from .model import engine_name, method_of
+            if method_of(p, node.key) == "affine":
+                stage = engine_name(node.key) if "~" in node.key else "denoise"
                 return _("pretrained + adapted · {length}").format(length=texts.choice_label(
-                    str(s.param_value(p, "denoise", "adaptation") or "short"), language()))
+                    str(s.param_value(p, stage, "adaptation") or "short"), language()))
             return _("pretrained network")
         if k in ("fond", "etoiles", "deconv"):
-            return method_summary(s, p, k)
-        if k == "astrometrie":
-            return _("solved · Gaia DR3")
+            return method_summary(s, p, node.key)
+        if k == "astrometrie":                  # a result once computed; before, what it will do (round 3)
+            return _("solved · Gaia DR3") if block_state(s, p, k) == "done" else _("solves the field · Gaia DR3")
         if k == "couleur":
             return _("Gaia stars · white balance")
         return ""

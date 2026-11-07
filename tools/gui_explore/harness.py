@@ -58,7 +58,7 @@ from astro_gpu.core import project2, runner2  # noqa: E402
 from astro_gpu.core.project import Target  # noqa: E402
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-OUT_BASE = Path("F:/astro_essais/A_REGARDER/exploration2")
+OUT_BASE = Path(os.environ.get("GUI_EXPLORE_OUT", "F:/astro_essais/A_REGARDER/exploration3"))   # one folder a round
 MACHINE = Machine([Gpu("cuda:0", "NVIDIA RTX 4090", 24.0), Gpu("cuda:1", "NVIDIA RTX 3070", 8.0)], 16, 64.0)
 
 

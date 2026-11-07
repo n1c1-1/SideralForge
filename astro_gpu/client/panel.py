@@ -487,6 +487,9 @@ class Panel(QWidget):
 
                 b.clicked.connect(self.openPost.emit)
                 self.bv.addWidget(b, 0, Qt.AlignLeft)
+            else:                                         # no layer left: what makes one (control round)
+                self.bv.addWidget(label(_("No layer: a block's image becomes one by “To Post” in its menu, or by "
+                                          "pulling its ● onto Post."), "dim", wrap=True))
             self.bv.addStretch(1)
         elif k == "composition":
             self.composition(node)
@@ -608,6 +611,8 @@ class Panel(QWidget):
                 kept = counts.get("kept", n["lights"])
                 # a file the engine does not read (a JPEG added by mistake) is not used (GUI exploration 6.10)
                 kept = max(kept - sum(w["n"] for w in warns if w["key"] == "unread" and w["kind"] == "lights"), 0)
+                # nor a light that cannot be read (damaged, or not a FITS file: round 3, "5 / 5 used")
+                kept = max(kept - getattr(s, "unreadable_lights", lambda _i: 0)(sid), 0)
                 count = _("{kept} / {n} used").format(kept=kept, n=n["lights"])
             else:
                 count = str(n[kind]) if n[kind] else _("none")
@@ -691,13 +696,12 @@ class Panel(QWidget):
         x = QPushButton("×")
         x.setFixedWidth(26)
         x.setToolTip(_("Remove the whole folder from the session (the files are not touched)"))
-        x.clicked.connect(lambda _c=False, k=kind, ens=list(entries): [s.remove_session_entry(sid, k, en)
-                                                                        for en in ens])
+        x.clicked.connect(lambda _c=False, k=kind, ens=list(entries): self._files_out(sid, k, ens, True))
         r.addWidget(x)
         self.bv.addLayout(r)
         if not is_open or not files:
             return
-        lst = FileList(lambda chosen, k=kind: s.remove_session_files(sid, k, chosen))
+        lst = FileList(lambda chosen, k=kind: self._files_out(sid, k, chosen))
         for f in files:
             it = QListWidgetItem()
             it.setData(Qt.UserRole, f)
@@ -712,12 +716,25 @@ class Panel(QWidget):
             b.setFixedSize(26, 20)
             b.setStyleSheet("QPushButton { padding: 0px; }")
             b.setToolTip(_("Take this file out of the session (the file is not touched)"))
-            b.clicked.connect(lambda _c=False, k=kind, ff=f: s.remove_session_files(sid, k, [ff]))
+            b.clicked.connect(lambda _c=False, k=kind, ff=f: self._files_out(sid, k, [ff]))
             h.addWidget(b)
             it.setSizeHint(row.sizeHint())
             lst.setItemWidget(it, row)
         lst.setFixedHeight(min(len(files), 8) * (lst.sizeHintForRow(0) or 24) + 6)
         self.bv.addWidget(lst)
+
+    def _files_out(self, sid: int, kind: str, files: list, entries: bool = False):
+        """Files (or a folder's entries) taken out of a session: one undo step, said with Ctrl+Z (control round,
+        decision 11: Ctrl+Z undid an older step, the file stayed out, nothing said)."""
+        s = self.s
+        name = s.session(sid).name
+        with s.batch():
+            done = any([s.remove_session_entry(sid, kind, e) for e in files]) if entries else \
+                s.remove_session_files(sid, kind, files)
+        if done:
+            self.toast.emit(_("Folder out of “{session}” · files kept · Ctrl+Z").format(session=name) if entries else
+                            plural(len(files), "{n} file out of “{session}” · file kept · Ctrl+Z",
+                                   "{n} files out of “{session}” · files kept · Ctrl+Z", session=name))
 
     def _add_entries(self, sid: int, kind: str, folder: bool):
         from . import prefs as _prefs
@@ -867,6 +884,9 @@ class Panel(QWidget):
         acts.addWidget(x)
         acts.addStretch(1)
         self.hv.addLayout(acts)
+        if node.broken:                                  # why Run is refused, as the graph's red circle says (round 3)
+            why = label(_("Run refused: {why}").format(why=node.broken.rstrip(".")), "warn", wrap=True)
+            self.hv.addWidget(why)
         self.bv.addWidget(self.group_title(_("Palette")))
         roles = [i["role"] for i in f.get("inputs") or []]
         read = PALETTES.get(f.get("palette"), (tuple(roles), None))[0]     # the channels its palette reads (7.6)
@@ -1071,7 +1091,7 @@ class Panel(QWidget):
                 self.bv.addSpacing(6)
         if k == "etoiles":                  # what the block gives first: its two images, and where they go
             self.outputs(node)
-        if k in ("fond", "debruitage", "etoiles", "deconv"):
+        if k.partition("~")[0] in ("fond", "debruitage", "etoiles", "deconv"):     # Gradient 2 too (round 3)
             self.methods(p, k)
         if k == "fond" and self.tune and getattr(self, "grad_editor", None) is not None:
             self.bv.addWidget(self.group_title(_("Samples · exclusions")))
@@ -1135,9 +1155,12 @@ class Panel(QWidget):
         row.addWidget(label(_('Variant of "{name}"').format(name=src.name), "dim"), 1)
         keep = QPushButton(_("Keep"))
         keep.setToolTip(_('Replaces "{name}" and takes its name').format(name=src.name))
-        keep.clicked.connect(lambda: (self.s.keep_variant(p), self.changed.emit()))
+        # what each did, said with Ctrl+Z (control round, decision 11)
+        keep.clicked.connect(lambda: (self.s.keep_variant(p), self.changed.emit(), self.toast.emit(
+            _("Variant “{name}” kept: it replaces “{orig}” · Ctrl+Z").format(name=p.name, orig=src.name))))
         drop = QPushButton(_("Discard"))
-        drop.clicked.connect(lambda: (self.s.drop_variant(p), self.changed.emit()))
+        drop.clicked.connect(lambda: (self.s.drop_variant(p), self.changed.emit(), self.toast.emit(
+            _("Variant “{name}” discarded · Ctrl+Z").format(name=p.name))))
         row.addWidget(keep)
         row.addWidget(drop)
         self.hv.addLayout(row)
@@ -1212,8 +1235,8 @@ class Panel(QWidget):
             self.changed.emit()
             return
         self.s.log("{what} · replaced in {names}", what=ch["what"], names=", ".join(q.name for q in paths))
-        if notes:
-            self.toast.emit(" · ".join(_(n) for n in notes))
+        said = _("{what} · replaced in {names}").format(what=ch["what"], names=", ".join(q.name for q in paths))
+        self.toast.emit(" · ".join([said] + [_(n) for n in notes] + ["Ctrl+Z"]))     # said, as the others (decision 11)
         self.changed.emit()
 
     def _variant(self, p):
@@ -1232,7 +1255,8 @@ class Panel(QWidget):
         """The ways of computing this block, as cards: what it does, where it runs, how long on this machine."""
         s = self.s
         from .model import METHOD_OPT
-        cur = method_of(p, k)
+        cur = method_of(p, k)                           # a block placed twice ("fond~2"): its own node's (round 3)
+        again, k = "~" in k, k.partition("~")[0]
         self.bv.addWidget(self.group_title(_("Method")))
         opt = METHOD_OPT[k]
         spec = prefs.spec()
@@ -1251,10 +1275,23 @@ class Panel(QWidget):
                 if on:
                     why = _("Computed earlier on a GPU; running it again here takes ≈ {t}.").format(t=t)
             card = MethodCard(m, on, ok, times, "gpu" if s.gpu else "cpu", why)
-            if not on and ok:
+            if not on and ok and again:
+                card.clicked.connect(lambda ek=m["engine_key"], nm=m["name"]: self._node_method(ek, _(nm)))
+            elif not on and ok:
                 card.clicked.connect(lambda mk=m["key"], nm=m["name"], sh=m["short"]: self.propose_opt(
                     opt, method_value(k, mk), _("Method: {name}").format(name=_(nm)), _(sh)))
             self.bv.addWidget(card)
+
+    def _node_method(self, method: str, name: str):
+        """The method of a block placed twice, chosen on its cards: stored on its node, one Undo step, said (round 3:
+        its Method list was greyed "Set by the options of the workflow")."""
+        from .blocks import node_title
+        node = self.node
+        if node is None or not node.paths:
+            return
+        if self.s.set_node_method(node.paths, node.key, method):
+            self.toast.emit(_("{block}: {method} · Ctrl+Z").format(block=node_title(self.s, node), method=name))
+        self.changed.emit()
 
     def stack_methods(self, p):
         """The stacking methods the engine offers, as cards; the engine's advice marks one "Recommended" (with its
@@ -1443,9 +1480,39 @@ class Panel(QWidget):
         self.bv.addWidget(b, 0, Qt.AlignLeft)
         self.bv.addStretch(1)
 
+    def show_wire(self, name: str, note: str, actions: list):
+        """A wire to Post selected (control round: the panel went empty): the layer it makes, its name, what it is,
+        and its actions ((text, function, tooltip))."""
+        clear(self.hv)
+        clear(self.bv)
+        self.details.hide()
+        self.node = None                                  # no block: nothing of a block's to build again
+        self._later.stop()                                # (the block chosen before, asked to build again)
+        self.hv.addWidget(label(name, "h1", wrap=True))
+        self.bv.addWidget(label(note, "dim", wrap=True))
+        self.bv.addSpacing(8)
+        row = QHBoxLayout()
+        for text, fn, tip in actions:
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _c=False, f=fn: f())
+            row.addWidget(b)
+        row.addStretch(1)
+        self.bv.addLayout(row)
+        self.bv.addStretch(1)
+
     def graph_state(self, node):
+        """The block's state as the graph shows it (round 3: a session's Calibration said "Up to date" never computed,
+        the last block "Up to date" where the graph said "Outdated" for the Output it holds)."""
+        from .blocks import STATE_ORDER, Graph
+        try:
+            g = Graph(self.s)
+            same = g.node_of(node.paths[0], node.ref) if node.paths else None
+            if same is not None:
+                return g.state(same)
+        except (KeyError, ValueError, AttributeError, IndexError):
+            pass
         states = {block_state(self.s, q, node.key) for q in node.paths}
-        from .blocks import STATE_ORDER
         return next((w for w in STATE_ORDER if w in states), "pending")
 
     def _scope(self, pids):

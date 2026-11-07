@@ -906,6 +906,8 @@ class RunController(QObject):
 
         def planner():
             q = m.view(pid)                                  # the window follows the graph: Ctrl+Z may take it away
+            if q is not None and m.ready and m.is_cut(q, run_key(key)):   # drawn, but switched off: not computed
+                raise PlanRefused(_("{block} is switched off: D switches it on again").format(block=name))
             if q is None or (m.ready and run_key(key) not in m.pause_keys(q) + ["post", "etoiles"]):
                 raise PlanRefused(_("{block} is no longer in the graph").format(block=name))
             return m.plan_run_to(q, run_key(key))
