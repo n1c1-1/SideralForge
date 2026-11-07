@@ -187,8 +187,10 @@ def session_summary(s, sid: int) -> str:
     """Under a Session block's name: its lights, its calibration frames, its filter."""
     ses = next((x for x in s.sessions if x["id"] == sid), {})
     if not int(ses.get("lights") or 0):                # issue #48: a Session placed empty says what it needs
-        flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
-        return _("lights to add") + (f" · {flt}" if flt else "")
+        se = s.session(sid) if hasattr(s, "session") else None
+        flt = getattr(se, "filter", "")
+        gone = [f for f in (getattr(se, "lights", None) or []) if not Path(f).exists()]
+        return (_("lights folder not found") if gone else _("lights to add")) + (f" · {flt}" if flt else "")
     text = plural(int(ses.get("lights") or 0), "{n} light", "{n} lights")
     text += " · " + calibration_counts(ses.get("darks", 0), ses.get("flats", 0))
     flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""

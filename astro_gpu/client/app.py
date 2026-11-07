@@ -841,8 +841,8 @@ class Main(QMainWindow):
                                    _("nothing after Session: place a block") if not any(
                                        q.source is not None for q in s.paths) else
                                    _("nothing after the sources: place a block"))
-            elif todo and self.run_refusal(cost):         # refused: said, never a time to run (round 2)
-                line += "  ·  " + _("run refused")
+            elif todo and self.run_refusal(cost):         # refused: said with its reason, never a time to run
+                line += "  ·  " + self.run_refusal(cost)  # (round 2; report shots: the reason only in a tooltip)
             elif todo:
                 line += "  ·  " + _("to run: {t}").format(t=duration_text(cost.seconds, cost.measured))
             elif cost is not None:
