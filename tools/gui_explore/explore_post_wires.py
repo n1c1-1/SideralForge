@@ -141,7 +141,7 @@ for end in ends:
         mf = ex.right_click_block(pp.final())
         print("menu Post block:", [d.get("text") for d in mf])
         continue
-    ex.right_click_block(last, "nvoyer son image")
+    ex.right_click_block(last, "Vers Post")
     pp.check_slot_errors("Envoyer son image au Post (après retrait du fil)", st)
     pp.dump("after send back")
     if not pp.wires():

@@ -167,7 +167,7 @@ def pause_repeated_block():
     if first is None:
         return None
     e, n = len(EXC), len(TOASTS)
-    m = menu(first, pick="Pause ici")
+    m = menu(first, pick="Pause vérif")
     exc = EXC[e:]
     it = blk(None, title="Gradient 1")
     if exc:
@@ -201,7 +201,7 @@ def repeated_numbering():
     ex.undo()
     place("color", "color")
     n2 = len(TOASTS)
-    menu(blk("astrometrie"), pick="Supprimer le bloc")
+    menu(blk("astrometrie"), pick="Supprimer")
     t2 = toasts_since(n2)
     words = " ".join(t)
     bad = [x for x in pan if x.startswith("Gradient") and x != "Gradient 1"] or ("Gradient 2" in words or "Gradient 3" in words
@@ -280,7 +280,7 @@ def post_undo():
 def output_drawn_after_send():
     new("session", SHORT)
     it = blk("fond")
-    menu(it, pick="Envoyer son image au Post")
+    menu(it, pick="Vers Post")
     titles = [d["title"] for d in drawn(ex)]
     if any(t == "Sortie" for t in titles):
         pan = panel_info(ex)
@@ -297,7 +297,7 @@ def output_drawn_after_send():
 @check
 def send_creates_workflow_in_menus():
     new("session", SHORT)
-    menu(blk("fond"), pick="Envoyer son image au Post")
+    menu(blk("fond"), pick="Vers Post")
     m = menu(blk("calibration"))
     t = texts(m)
     if any("seulement" in (x or "") for x in t):
@@ -333,7 +333,7 @@ def duplicate():
 def delete_workflow_popup():
     new("session", SHORT)
     n = len(ex.popups)
-    menu(blk("couleur"), pick="Supprimer le workflow")
+    menu(blk("couleur"), pick="Supprimer workflow")
     pops = ex.popups[n:]
     if pops:
         return ("gênant", "« Supprimer le workflow » ouvre une fenêtre de confirmation bloquante",
@@ -367,7 +367,7 @@ def del_key_word():
     new("session", SHORT)
     m = menu(blk("fond"))
     ex.click_block(blk("fond"))
-    tip = next((b["tip"] for b in panel_info(ex)["buttons"] if b["text"] == "Supprimer le bloc"), "")
+    tip = next((b["tip"] for b in panel_info(ex)["buttons"] if b["text"] == "Supprimer"), "")
     if any("\tDel" in (x or "") for x in texts(m)):
         return ("mineur", "Menus en français : raccourci écrit « Del » (le panneau dit « Suppr »)",
                 f"Menu du clic droit : « Supprimer le bloc\\tDel » ; info-bulle du bouton du panneau : « {tip} ». En "
@@ -385,7 +385,7 @@ def french_agreement():
     t1 = toasts_since(n)
     ex.undo()
     n = len(TOASTS)
-    menu(blk("astrometrie"), pick="Envoyer son image au Post")
+    menu(blk("astrometrie"), pick="Vers Post")
     t2 = toasts_since(n)
     words = " ".join(t1 + t2)
     if "Calibration désactivé " in words or "de Astrométrie" in words:
@@ -402,7 +402,7 @@ def french_agreement():
 def post_word():
     new("session", CHAIN)
     m = texts(menu(blk("etoiles")))
-    if "Envoyer son image au Post" in m and any("à Post-traitement" in (x or "") for x in m):
+    if "Vers Post" in m and any("à Post-traitement" in (x or "") for x in m):
         return ("mineur", "Le même menu dit « au Post » et « à Post-traitement »",
                 f"Menu de Split étoiles et fond : {[x for x in m if x and 'Post' in x]}. Le bloc s'appelle "
                 f"« Post-traitement » dans le graphe ; les messages disent « envoyée en Post-traitement ».",
@@ -512,7 +512,7 @@ def session_rename_undo():
             e.setText("Nuit renommée")
         d.accept()
     ex.dialog_handler = h
-    menu(blk("session", sid=1), pick="Renommer la session")
+    menu(blk("session", sid=1), pick="Renommer session")
     renamed = any(x["name"] == "Nuit renommée" for x in state(ex)["sessions"])
     can = ex.s.can_undo()
     ex.undo()
@@ -617,7 +617,7 @@ def split_english_word():
 @check
 def shared_partial_delete():
     new("session", SHORT)
-    menu(blk("fond"), pick="Envoyer son image au Post")
+    menu(blk("fond"), pick="Vers Post")
     act()
     ex.s._undo.clear()
     ex.s._redo.clear()
@@ -641,15 +641,15 @@ def shared_partial_delete():
 @check
 def output_block_actions():
     new("session", SHORT)
-    menu(blk("fond"), pick="Envoyer son image au Post")
+    menu(blk("fond"), pick="Vers Post")
     it = blk(None, title="Sortie")
     if it is None:
         return None
     m = texts(menu(it))
     n = len(TOASTS)
-    menu(blk(None, title="Sortie"), pick="Supprimer le bloc")
+    menu(blk(None, title="Sortie"), pick="Supprimer")
     t = toasts_since(n)
-    if any("pas dans le workflow" in (x or "") for x in m + t):
+    if any("absent du workflow" in (x or "") for x in m + t):
         return ("gênant", "Le bloc « Sortie » d'un envoi au Post : « Supprimer le bloc » refuse avec une phrase absurde",
                 f"Après « Envoyer son image au Post » sur Gradient, le bloc « Sortie » a ce menu : {m}. « Supprimer le "
                 f"bloc » répond : {t}. « Désactiver » est grisé avec « ce bloc n'est pas dans le workflow ». Il n'a pas "

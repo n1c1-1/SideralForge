@@ -48,7 +48,7 @@ from .services.worker import ApiWorker, norm_path
 BY_OUTPUT = ("render_simple",)
 #: the name a layer of the Stars block's images gets after its workflow's ("Full · Stars and background"); its words
 #: are translated where shown (post3.tr_name)
-POST_PART_NAMES = {"starless": "Starless image", "stars": "Stars alone", "combined": "Combine stars & background layers"}
+POST_PART_NAMES = {"starless": "Starless image", "stars": "Stars alone", "combined": "Recombine"}
 
 # ---------------------------------------------------------------------------------------------- vocabulary
 #: the classic starting points, whose durations are asked of the worker beforehand (the gallery quotes them)
@@ -939,7 +939,7 @@ class ProjectModel(QObject):
             keys = ["image"] if p.source is not None else []
             sep = bool(self.separate_sessions()) and p.source is None
             keys += [node_key(n) for n in g if not (sep and n["block"] == "calibration")]
-            if "etoiles" in keys and "post" in keys:     # drawn as always: the split block holds the Output (#17)
+            if "etoiles" in keys and "post" in keys:     # drawn as always: the Stars/background block holds the Output (#17)
                 keys.remove("post")
                 keys.insert(keys.index("etoiles") + 1, "post")
             if is_stretched_view(p) and "post" not in keys:
@@ -997,19 +997,18 @@ class ProjectModel(QObject):
         workflow, a project with sessions starts one from the frames (the block is checked on an empty graph)."""
         if p is None:
             if not self.p.sessions:
-                return _("place a Session or an Image first")
+                return _("place Session/Image first")
             e = wfl.palette_problem([], "frames", block)
             return refused_text(e) if e is not None else ""
         if block == "color" and self.is_mono(p):
             return _(wfl.MONO_NO_COLOUR)
         if block == "calibration" and p.source is None and self.separate_sessions() and \
                 any(n["block"] == "calibration" for n in self.graph(p)):
-            return _("each session has its own Calibration, beside its Session block")
+            return _("Calibration: one per session")
         e = wfl.palette_problem(self.graph(p), self.source_kind(p), block)
         if e is not None and block == "stars" and self.source_kind(p) == "image":
             # 8.4: not "Denoise first", which cannot go on an image: what the user can do instead
-            return _("on a linear image it needs Denoise, which works on stacked frames only: start from the frames, "
-                     "or mark the image as already stretched in its Image block")
+            return _("linear image: needs frames, or mark it stretched")
         return refused_text(e) if e is not None else ""
 
     def gives_post(self, p) -> bool:
@@ -1046,24 +1045,23 @@ class ProjectModel(QObject):
         f = p.source["fusion"]
         ins = f.get("inputs") or []
         if not ins:
-            return _("choose the channels of the fusion")
+            return _("channels to choose")
         views = {q.pid: q for q in self.paths}
         several = len({i["pid"] for i in ins}) > 1
         for i in ins:
             q = views.get(i["pid"])
             role = i.get("role") or ""
             if q is None:
-                return _("the {role} channel has no workflow any more").format(role=role)
+                return _("{role}: no workflow").format(role=role)
             if q.source is None and not any(s.lights for s in self.p.sessions_of(q.pid)):
-                return _("the {role} channel has no lights yet (its Session block)").format(role=role)
+                return _("{role}: no lights").format(role=role)
             if q.source is not None and "fusion" not in q.source and not q.source.get("path"):
-                return _("the {role} channel's Image block has no file yet").format(role=role)
+                return _("{role}: no image file").format(role=role)
             blocks = [n["block"] for n in self.graph(q) if not n.get("off")]
             if several and self.is_graph(q) and "astrometry" not in blocks:
-                return _("the {role} channel has no Astrometry: each channel needs it to be aligned").format(role=role)
+                return _("{role}: needs Astrometry").format(role=role)
             if f.get("stars") and self.is_graph(q) and "stars" not in blocks:
-                return _("the {role} channel has no Split stars & background: the starless fusion needs its starless "
-                         "image").format(role=role)
+                return _("{role}: needs Stars/background").format(role=role)
         return ""
 
     def run_problems(self) -> list[tuple[str, str]]:
@@ -1112,7 +1110,7 @@ class ProjectModel(QObject):
         """Why a block cannot be taken out of a workflow (translated), "" when it can."""
         i = self.node_index(p, key)
         if i is None:
-            return _("this block is not in the workflow")
+            return _("not in workflow")
         e = wfl.remove_problem(self.graph(p), self.source_kind(p), i)
         return refused_text(e) if e is not None else ""
 
@@ -1130,7 +1128,7 @@ class ProjectModel(QObject):
         """Why a block cannot be switched off (translated), "" when it can."""
         i = self.node_index(p, key)
         if i is None:
-            return _("this block is not in the workflow")
+            return _("not in workflow")
         e = wfl.off_problem(self.graph(p), self.source_kind(p), i)
         return refused_text(e) if e is not None else ""
 
@@ -1187,7 +1185,7 @@ class ProjectModel(QObject):
         g = self.graph(p)
         i = self.node_index(p, key)
         if i is None or not self.can_branch(p, key, block):
-            raise ValueError(self.palette_reason(p, block) or _("a branch cannot start there"))
+            raise ValueError(self.palette_reason(p, block) or _("no branch from here"))
         head = [dict(n) for n in g[:i + 1]]
         method = None
         nxt = g[i + 1] if i + 1 < len(g) else None
@@ -1239,7 +1237,7 @@ class ProjectModel(QObject):
         """A block's image as a layer of Post (issue #47): a branch of ``p`` up to that block, its Output its own;
         what they share is computed once."""
         if not self.can_send_to_post(p, key):
-            raise ValueError(_("its image cannot be sent to Post from there"))
+            raise ValueError(_("no Post from here"))
         head = [dict(n) for n in self.graph(p)[:self.node_index(p, key) + 1]]
         with self._edit():
             w = api.add_workflow(self.p, self.unique_name(name), None, None, copy_of=p.pid)
@@ -1318,7 +1316,7 @@ class ProjectModel(QObject):
         """A fusion workflow (issue #43): the outputs of ``inputs`` [{"pid", "role", "channel"}] combined with a
         palette, in the Composition section; its Output is a layer of Post. ``stars`` (option A): the channels'
         starless images fused, and the star layer's source ({"mode": "palette" | "channel" + "role" | "workflow" +
-        "pid"}); the channels' workflows get Split stars & background."""
+        "pid"}); the channels' workflows get Stars/background."""
         with self._edit():
             o = {"debruitage": bool(stars), "etoiles": "retirer" if stars else "garder", "fond": "simple"}
             w = api.add_workflow(self.p, self.unique_name(name), wfl.check_options(to_engine(o)), {})
@@ -1332,7 +1330,7 @@ class ProjectModel(QObject):
         return self._view_of(w.id)
 
     def _with_stars(self, pids):
-        """These workflows get Split stars & background (and Denoise, which it needs)."""
+        """These workflows get Stars/background (and Denoise, which it needs)."""
         for pid in dict.fromkeys(pids):
             w = self.p.workflow(int(pid))
             if not w.options.get("stars"):
@@ -1900,7 +1898,7 @@ class ProjectModel(QObject):
         return self._cache[k]
 
     # ------------------------------------------------------------ breakpoints: pause for the user to check
-    # A breakpoint is a block of one workflow ("Pause here for review"): a run stops after it, and goes on only when
+    # A breakpoint is a block of one workflow ("Review pause"): a run stops after it, and goes on only when
     # the user says so (Continue). It lives in the definition (``Workflow.breakpoints``, engine names) and is no part of
     # any key. What is reviewed is tied to the block's results: a fingerprint of its stage keys, kept in state.json.
     def has_breakpoint(self, p: WorkflowView, key: str) -> bool:
@@ -2693,11 +2691,11 @@ class ProjectModel(QObject):
         sec, _todo, reused = self.cost_of(need, p.params)
         stars = need["etoiles"] != p.opts["etoiles"]
         dn = need["debruitage"] != p.opts["debruitage"]
-        what = (_("Split stars & background and Denoise") if stars and dn else _("Split stars & background") if stars
+        what = (_("Stars/background and Denoise") if stars and dn else _("Stars/background") if stars
                 else _("Denoise") if dn else "")
-        t = _("Add {what} to the workflow: +{t}").format(what=what, t=hm(sec))
+        t = _("Add {what}: +{t}").format(what=what, t=hm(sec))
         if [s for s in reused if s not in set(self.all_stages(p))]:
-            t += _(", the rest is already computed by another workflow")
+            t += _(" · rest shared")
         return t
 
     # ------------------------------------------------------------ the log

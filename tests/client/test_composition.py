@@ -85,7 +85,7 @@ def test_a_stars_workflow_comes_as_its_stars_and_background_block_and_the_others
     assert [n.paths for n in g.compositions] == [[full]] and g.compositions[0].lid is None
     assert g.compositions[0].parent is g.node_of(full, "etoiles")
     assert g.to_post == {classic.pid} and g.direct == []
-    assert sorted(g.post_layers) == sorted([("Full · Combine stars & background layers", full.pid),
+    assert sorted(g.post_layers) == sorted([("Full · Recombine", full.pid),
                                             ("Classic stack", classic.pid)])
     assert g.summary(g.final) == "2 layers"
     # issue #17: no Output block of its own, its Stars block holds it (the workflow's name, its menu)
@@ -102,7 +102,7 @@ def test_the_default_layer_of_a_stars_workflow_puts_the_stars_back_in_screen():
     out = new_workflow_layer(2, "Classic stack", True)
     assert out["part"] is None and "blend" not in out and out["mode"] == "Normal"
     assert POST_PART_NAMES == {"starless": "Starless image", "stars": "Stars alone",
-                               "combined": "Combine stars & background layers"}
+                               "combined": "Recombine"}
 
 
 # ---------------------------------------------------------------------------------------------- the model's edits
@@ -224,7 +224,7 @@ def test_the_stars_panel_sends_each_image_to_post_and_makes_a_stars_and_backgrou
     stars = Graph(model).node_of(full, "etoiles")
     panel.outputs(stars)
     buttons = {b.text().replace("&&", "&"): b for b in panel.findChildren(QPushButton)}   # "&&": a plain "&" shown
-    assert "To Post" in buttons and "New Combine stars & background layers block" in buttons
+    assert "To Post" in buttons and "+ Recombine" in buttons
     panel._part_to_post(full, "starless")
     panel._new_composition(full)
     assert [x.get("part") for x in model.post_layers()][:2] == ["combined", "starless"]
@@ -233,7 +233,7 @@ def test_the_stars_panel_sends_each_image_to_post_and_makes_a_stars_and_backgrou
 def test_sending_the_stars_alone_keeps_the_combine_block_and_the_link_can_be_taken_back(model):
     """Issue #29: on a composition never filled, sending the stars alone first puts the layers Post gives the
     workflows (Full's Combine block), so that block does not vanish; the link of the stars alone to Post is taken
-    back from the graph (the split block's menu, its panel's Out of Post), with its layer's filters."""
+    back from the graph (the Stars/background block's menu, its panel's Out of Post), with its layer's filters."""
     from PySide6.QtWidgets import QPushButton
 
     from astro_gpu.client.panel import Panel

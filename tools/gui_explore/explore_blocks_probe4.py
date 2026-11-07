@@ -69,6 +69,6 @@ for action in ("cross", "menu", "del", "drag"):
     p2 = state(ex)["post"]
     titles2 = [d["title"] for d in drawn(ex)]
     print(action, "| post before", len(p0), "after", len(p1), "after undo", len(p2), "| comp drawn",
-          "Combiner les calques étoiles et fond" in titles, "after undo", "Combiner les calques étoiles et fond" in titles2,
+          "Recombiner" in titles, "after undo", "Recombiner" in titles2,
           "| toasts", TOASTS[n:], "| exc", [x[-150:] for x in EXC[e:]], "| sel", ex.s.sel_step)
 ex.close()

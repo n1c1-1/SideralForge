@@ -679,7 +679,7 @@ class SettingRow(QFrame):
             e.setChecked(bool(cur))
             e.toggled.connect(lambda x: self.changed.emit(self.r, x))
         elif typ == "zone":
-            e = QPushButton(_("Draw on the image…"))
+            e = QPushButton(_("Draw on image…"))
         elif typ == "int":
             e = QSpinBox()
             e.setLocale(QLocale())                  # the language's numbers: a widget keeps its parent's locale

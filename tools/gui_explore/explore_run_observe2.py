@@ -100,7 +100,7 @@ def sc_pause():
             P("  no block", ref)
             continue
         n0 = len(EXC)
-        m = ex.right_click_block(it, "Pause ici" if LANG == "fr" else "Pause here")
+        m = ex.right_click_block(it, "Pause vérif" if LANG == "fr" else "Review pause")
         ex.settle(10)
         P(f"  pause on {ref}: menu {[(a.get('text'), a.get('enabled'), a.get('checked')) for a in m]}")
         P(f"     exc {len(EXC) - n0} toast {toast()!r} status {ex.w.status.text()!r}")
@@ -121,7 +121,7 @@ def sc_pause():
         ex.close_dialogs()
     # take one off again, and the undo of a pause
     it = blk("calibration")
-    m = ex.right_click_block(it, "Pause ici" if LANG == "fr" else "Pause here")
+    m = ex.right_click_block(it, "Pause vérif" if LANG == "fr" else "Review pause")
     ex.settle(8)
     P("  second toggle calibration: checked before", [a.get("checked") for a in m if "ause" in (a.get("text") or "")],
       "toast", toast(), "bp", getattr(blk("calibration"), "bp", None))
@@ -147,7 +147,7 @@ def sc_pause_shared():
         ex.drag_palette("gradient", tgt)
         ex.settle(15)
     it = blk("empilement")
-    m = ex.right_click_block(it, "Pause ici" if LANG == "fr" else "Pause here")
+    m = ex.right_click_block(it, "Pause vérif" if LANG == "fr" else "Review pause")
     ex.settle(8)
     P("  shared pause menu", [(a.get('text'), a.get('checked')) for a in m], "toast", toast())
     P("  bp", getattr(blk("empilement"), "bp", None), blk("empilement").toolTip())

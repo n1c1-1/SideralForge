@@ -50,8 +50,8 @@ TITLES = {"sources": "Frames", "final": "Post", "image": "Image", "session": "Se
           "calibration": "Calibration",
           "alignement": "Registration",
           "selection": "Selection", "empilement": "Stacking", "astrometrie": "Astrometry", "fond": "Gradient",
-          "couleur": "Color", "debruitage": "Denoise", "deconv": "Deconvolution", "etoiles": "Split stars & background",
-          "post": "Output", "demi_piles": "Half-stacks", "composition": "Combine stars & background layers"}
+          "couleur": "Color", "debruitage": "Denoise", "deconv": "Deconvolution", "etoiles": "Stars/background",
+          "post": "Output", "demi_piles": "Half-stacks", "composition": "Recombine"}
 # the optional blocks, in the toolbar's order
 TOOLBOX = ["debruitage", "deconv", "etoiles"]
 #: the two images of the Stars block (the parts of Post's layers) and their words on the wires
@@ -79,7 +79,7 @@ STATE_WORD = {"done": "Up to date", "pending": "Not computed yet", "stale": "Out
 # worst first: a block is as bad as its worst stage in any of its workflows
 STATE_ORDER = ["running", "failed", "interrupted", "stale", "skipped", "pending", "done"]
 
-# the review points ("Pause here for review"): a dot like a debugger's, red while the run will stop there, yellow with
+# the review points ("Review pause"): a dot like a debugger's, red while the run will stop there, yellow with
 # the pause bars while the run is stopped there for the user, green once the user has checked these results
 BREAK_COL, PAUSE_COL, REVIEWED_COL = "#e5484d", "#f5c542", "#5fbf7f"
 # the most urgent first: what a block shows when its workflows are not all in the same case
@@ -116,9 +116,9 @@ STEPS = [
     dict(key="debruitage", phase=4, title="Denoise", kind="tool", tool="debruitage", stages=["denoise"],
          what="A network learns on the two half-stacks to predict one from the other: it removes the noise without "
               "inventing anything."),
-    dict(key="etoiles", phase=4, title="Split stars & background", kind="tool", tool="etoiles", stages=["star_removal"],
+    dict(key="etoiles", phase=4, title="Stars/background", kind="tool", tool="etoiles", stages=["star_removal"],
          what="A network trained on our stacks takes the stars off the image: two images, the starless image and the "
-              "stars alone, sent to Post as they are or combined by a Combine stars & background layers block."),
+              "stars alone, sent to Post as they are or combined by a Recombine block."),
     dict(key="fond", phase=4, title="Gradient", kind="slot", stages=["gradient"],
          what="Models the sky gradient (light pollution, the Moon, vignetting) on the stack and removes it from what "
               "every later block reads. Polynomial: a smooth surface fitted on the sky between the objects. "
@@ -128,8 +128,8 @@ STEPS = [
     dict(key="fusion", phase=6, title="Fusion", kind="slot", stages=["fusion", "render_simple"],
          what="Combines the outputs of several workflows (one per filter, or a dual-band image's channels) into one "
               "colour image with a palette (SHO, HSO, HOO, RGB, LRGB), aligned through their plate solutions."),
-    dict(key="composition", phase=6, title="Combine stars & background layers", kind="slot", stages=[],
-         what="Combines the split block's two images: the starless image and the stars, each stretched, the stars "
+    dict(key="composition", phase=6, title="Recombine", kind="slot", stages=[],
+         what="Combines the Stars/background block's two images: the starless image and the stars, each stretched, the stars "
               "put back on top (Screen, Linear dodge or Lighten). Its settings are those of its layer in Post."),
 ]
 BY_KEY = {b["key"]: b for b in STEPS}
@@ -138,9 +138,9 @@ TOOLS = {
     "debruitage": dict(title="Denoise", phase=4,
                        what="Removes the noise without inventing anything: a network learns on the two half-stacks "
                             "to predict one from the other."),
-    "etoiles": dict(title="Split stars & background", phase=4,
+    "etoiles": dict(title="Stars/background", phase=4,
                     what="Takes the stars off the image with a trained network: the starless image and the stars "
-                         "alone, two images for Post (combined by a Combine stars & background layers block, or as they are)."),
+                         "alone, two images for Post (combined by a Recombine block, or as they are)."),
     "deconv": dict(title="Deconvolution", phase=4,
                    what="Sharpens the image with the point spread function measured on the stars."),
 }
@@ -182,7 +182,7 @@ def session_summary(s, sid: int) -> str:
         flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
         return _("lights to add") + (f" · {flt}" if flt else "")
     text = plural(int(ses.get("lights") or 0), "{n} light", "{n} lights")
-    text += " · " + _("{darks} darks, {flats} flats").format(darks=ses.get("darks", 0), flats=ses.get("flats", 0))
+    text += " · " + _("{darks} dark · {flats} flat").format(darks=ses.get("darks", 0), flats=ses.get("flats", 0))
     flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
     warn = "⚠ " if hasattr(s, "file_warnings") and s.file_warnings(sid) else ""   # issue #58: see its panel
     return warn + text + (f" · {flt}" if flt else "")
@@ -502,15 +502,15 @@ class Graph:
         if node.grey:
             return node.grey
         if node.cut and node.key not in ("calibration", "alignement"):
-            return _("switched off: the image passes through")
+            return _("off: image passes through")
         if node.key == "session":
             return session_summary(s, node.sid)
         if node.sid is not None:
             ses = next((x for x in s.sessions if x["id"] == node.sid), {})
-            return _("{darks} darks, {flats} flats").format(darks=ses.get("darks", 0), flats=ses.get("flats", 0))
+            return _("{darks} dark · {flats} flat").format(darks=ses.get("darks", 0), flats=ses.get("flats", 0))
         if node.cut:
-            return _("switched off: frames taken as they are") if node.key == "calibration" else \
-                _("switched off: frames taken as aligned")
+            return _("off: frames as they are") if node.key == "calibration" else \
+                _("off: frames as aligned")
         if node.key == "image":
             src = node.paths[0].source or {}
             if not src.get("path"):
@@ -547,17 +547,17 @@ class Graph:
             return _("stars in {mode}").format(mode=_((lay or {}).get("blend") or "Screen"))
         if k == "calibration":
             inv = s.info()
-            return (_("{darks} darks, {flats} flats, no bias") if not inv.get("n_bias") else
-                    _("{darks} darks, {flats} flats, {bias} bias")).format(
+            return (_("{darks} dark · {flats} flat · 0 bias") if not inv.get("n_bias") else
+                    _("{darks} dark · {flats} flat · {bias} bias")).format(
                 darks=inv.get("n_darks", 0), flats=inv.get("n_flats", 0), bias=inv.get("n_bias", 0))
         if k == "alignement":
-            return _("on the sharpest frame")
+            return _("ref: sharpest frame")
         if k == "selection":
             rule = s.selection_rule(p)
             if rule == "min_weight":
-                return _("every frame, weight ≥ 5 % of the best")
+                return _("all frames · weight ≥ 5 %")
             if rule == "sota":
-                return _("k × σ filters · weight ≥ 5 % of the best")
+                return _("k × σ filters · weight ≥ 5 %")
             t, f = s.thresholds_now()
             unit = s.thresholds_unit()
             return (_("transparency ≥ {t} % · stars ≤ {f} px").format(t=f"{t:.0f}", f=number(f)) if unit == "px" else
@@ -581,7 +581,7 @@ class Graph:
         if k in ("fond", "etoiles", "deconv"):
             return method_summary(s, p, k)
         if k == "astrometrie":
-            return _("plate solved · Gaia DR3")
+            return _("solved · Gaia DR3")
         if k == "couleur":
             return _("Gaia stars · white balance")
         return ""

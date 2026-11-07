@@ -75,7 +75,7 @@ GALLERY: list[dict] = [
               "stack gives it, without denoise. The quickest complete workflow."),
     dict(key="nights", tab="frames", name="Several nights", opts=FULL, sessions=2,
          text="Each night is a Session block with its own lights, darks and flats, calibrated on its own; all the "
-              "nights are then registered and stacked together. Add the other nights with Add a session…, then "
+              "nights are then registered and stacked together. Add the other nights with Add session…, then "
               "choose their calibration frames in their blocks."),
     dict(key="calibrated", tab="frames", name="Frames already calibrated", opts=FULL, drop=["calibration"],
          text="For frames another program has already calibrated (darks and flats applied): no Calibration block, "
@@ -101,7 +101,7 @@ GALLERY: list[dict] = [
     dict(key="image_stretched", tab="image", name="Already stretched image", opts=CLASSIC, source="image",
          stretched=True,
          text="An image already stretched (a TIFF, PNG or JPEG finished elsewhere, not linear) goes to Post as it is. "
-              "Add Split stars & background to take its stars off: the starless image and the stars come to Post as "
+              "Add Stars/background to take its stars off: the starless image and the stars come to Post as "
               "two layers."),
     dict(key="mono_each", tab="mono", name="One workflow per filter", opts=CLASSIC_DN, kind="filters",
          filters=("any",),
@@ -141,7 +141,7 @@ _CUT_KEY = {"calibration": "calibration", "registration": "alignement", "astrome
             "gradient": "fond", "color": "couleur"}
 _SHORT = {"calibration": "Calib.", "alignement": "Regist.", "selection": "Select.", "empilement": "Stack",
           "astrometrie": "Astrom.", "fond": "Gradient", "couleur": "Color", "debruitage": "Denoise",
-          "etoiles": "Split stars", "post": "Output", "image": "Image", "session": "Session", "combine": "Combine"}
+          "etoiles": "Stars/bg", "post": "Output", "image": "Image", "session": "Session", "combine": "Recombine"}
 
 
 def template_source(t: dict) -> str:
@@ -398,7 +398,7 @@ def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     if fusion:
         x = ends[0][0] + 3 * gap
         r = block(x, h / 2, _("Fusion") + " " + t.get("palette", ""), "#c9a227")
-        r2 = block(r.right() + gap, h / 2, _("Combine"), "#c9a227")       # the stars put back (option A)
+        r2 = block(r.right() + gap, h / 2, _("Recombine"), "#c9a227")     # the stars put back (option A)
         wire(r.right(), h / 2, r2.left(), h / 2)
         if kind == "dualband":                          # one colour image, two channels
             for _lab, dy in (("Ha", -bh * 0.25), ("OIII", bh * 0.25)):

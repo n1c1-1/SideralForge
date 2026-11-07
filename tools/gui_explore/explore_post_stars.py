@@ -1,5 +1,5 @@
-"""post_wires C: Split stars & background: its two ports pulled to Post and to Composition, taken out of Post, the
-Combine stars & background blocks (palette double-click and drag, menu, panel button, delete, Ctrl+Z / Ctrl+Y)."""
+"""post_wires C: Stars/background: its two ports pulled to Post and to Composition, taken out of Post, the
+Recombine blocks (palette double-click and drag, menu, panel button, delete, Ctrl+Z / Ctrl+Y)."""
 from explore_post_common import CHAINS, P, Explorer, build_chain, session_project, start, steps_chain
 from PySide6.QtCore import Qt
 
@@ -62,7 +62,7 @@ print("toast twice:", pp.toast())
 if len(g3) != len(g2):
     pp.note_once("starless_twice", "mineur", "Image sans étoiles envoyée deux fois : deux calques", f"{g3}", ST)
 pp.check_texts("message", [pp.toast()], ST)
-# panel of the split block now
+# panel of the Stars/background block now
 ex.click_block(pp.block("etoiles"))
 print("split panel after:", pp.panel_texts(), pp.panel_buttons())
 # the Post block panel: names
@@ -176,7 +176,7 @@ if gh:
 else:
     pp.note_once("comb_noghost", "gênant", "Glisser Combiner depuis la palette : aucune place ne s'allume", "", ST)
 # menu New Combine
-m = ex.right_click_block(pp.block("etoiles"), "Nouveau bloc Combiner")
+m = ex.right_click_block(pp.block("etoiles"), "+ Recombiner")
 pp.check_slot_errors("menu Nouveau bloc Combiner", ST)
 c5, d5, g5 = state("menu new combine")
 # port to composition
@@ -205,7 +205,7 @@ if m and not any("\t" in (d.get("text") or "") for d in m):
                  "Les autres blocs affichent « Supprimer le bloc  Suppr » ; celui-ci non.",
                  ST + ["Clic droit sur Combiner les calques étoiles et fond"])
 n_before = len(pp.blocks_of("composition"))
-ex.right_click_block(cb, "Supprimer le bloc")
+ex.right_click_block(cb, "Supprimer")
 pp.check_slot_errors("menu Combiner > Supprimer le bloc", ST)
 state("combine deleted by menu")
 # cross of a Combine
@@ -225,10 +225,10 @@ if pp.block("etoiles") is None:
 while ex.s.can_redo():
     pp.redo()
 state("redo all")
-# delete the split block while Combine blocks hang on it
+# delete the Stars/background block while Combine blocks hang on it
 sp = pp.block("etoiles")
 m = ex.right_click_block(sp)
-ex.right_click_block(sp, "Supprimer le bloc")
+ex.right_click_block(sp, "Supprimer")
 pp.check_slot_errors("Supprimer Split avec des blocs Combiner", ST)
 c7, d7, g7 = state("split deleted")
 print("paths:", [(q.name, [n['block'] for n in ex.s.p.workflow(q.pid).blocks]) for q in ex.s.paths])

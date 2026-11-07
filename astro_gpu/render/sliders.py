@@ -29,11 +29,11 @@ SUGGESTED = 2.0
 LO, HI = 0.0, 4.0
 
 # the reasons of the greyed sliders (translated by the client's catalogues)
-WHY_STARS = "the star sliders work on the stars of the split block"
+WHY_STARS = "the star sliders work on the stars of the Stars/background block"
 WHY_STARS_ONLY = "this layer holds the stars only"
 WHY_DENOISE = "noise smoothing needs the Denoise block"
 WHY_WHOLE = "noise smoothing works on the whole image (the Output layer)"
-WHY_EXIT_STARS = "this layer leaves the graph before the split block"
+WHY_EXIT_STARS = "this layer leaves the graph before the Stars/background block"
 WHY_EXIT_DENOISE = "this layer leaves the graph before the Denoise block"
 
 

@@ -12,7 +12,7 @@ pp = P(ex)
 session_project(ex)
 build_chain(ex, CHAINS["color"])
 st = steps_chain("color") + ["Clic droit sur Gradient > Envoyer son image au Post"]
-ex.right_click_block(pp.block("fond"), "nvoyer son image" if lang == "fr" else "Send its image")
+ex.right_click_block(pp.block("fond"), "Vers Post" if lang == "fr" else "To Post")
 po = [b for b in ex.blocks() if b.node.key == "post"]
 print("visible Output blocks:", [(b.title, b.summary) for b in po])
 if po and lang == "fr":
@@ -24,7 +24,7 @@ if po and lang == "fr":
     m = ex.right_click_block(b)
     texts = [d.get("text") for d in m]
     print("Output menu:", texts)
-    odd = [t for t in texts if t and "pas dans le workflow" in t]
+    odd = [t for t in texts if t and "absent du workflow" in t]
     if odd:
         pp.note_once("output_menu_odd", "mineur", "Menu du bloc Sortie : « Désactiver — ce bloc n'est pas dans le "
                      "workflow »", f"Menu complet : {texts}. Le bloc est pourtant dans la branche ; et « Supprimer le "
@@ -38,7 +38,7 @@ if po and lang == "fr":
     po2 = [x for x in ex.blocks() if x.node.key == "post"]
     if po2 and not pp.toast():
         pp.note_once("output_del_silent", "mineur", "Suppr sur le bloc Sortie : rien, sans message", "", st)
-    elif po2 and "pas dans le workflow" in pp.toast():
+    elif po2 and "absent du workflow" in pp.toast():
         pp.note_once("output_del_msg", "mineur", "Suppr sur le bloc Sortie : message incompréhensible",
                      f"Le menu offre « Supprimer le bloc  Suppr », mais Suppr répond « {pp.toast()} » : le bloc est "
                      "nommé comme le workflow et la raison est fausse (il est bien dans le workflow).",
@@ -52,7 +52,7 @@ if po and lang == "fr":
                      st + ["Clic sur le bloc Sortie"])
     # its menu's Delete block
     if po2:
-        ex.right_click_block(po2[0], "Supprimer le bloc")
+        ex.right_click_block(po2[0], "Supprimer")
         pp.check_slot_errors("Supprimer le bloc Sortie (menu)", st)
         print("after menu delete: paths", [q.name for q in ex.s.paths], "toast", pp.toast(), "popups", ex.popups[-2:])
         po3 = [x for x in ex.blocks() if x.node.key == "post"]
@@ -61,7 +61,7 @@ if po and lang == "fr":
     po3 = [x for x in ex.blocks() if x.node.key == "post"]
     if po3:
         n = len(ex.popups)
-        ex.right_click_block(po3[0], "Supprimer le workflow")
+        ex.right_click_block(po3[0], "Supprimer workflow")
         print("delete workflow popups:", ex.popups[n:], "paths", [q.name for q in ex.s.paths])
         if len(ex.popups) > n:
             pp.note_once("delete_wf_popup", "mineur", "« Supprimer le workflow » demande une confirmation bloquante",

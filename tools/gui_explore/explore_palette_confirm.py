@@ -151,7 +151,7 @@ def comp_items():
 
 @case
 def composition_undo():
-    """A Combine stars & background block placed from the palette: the first double-click shows nothing new, Ctrl+Z
+    """A Recombine block placed from the palette: the first double-click shows nothing new, Ctrl+Z
     never takes it away, the two blocks have the same name, the layer's name is English."""
     for attempt in (1, 2):
         fresh("legacy")

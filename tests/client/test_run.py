@@ -462,7 +462,7 @@ def test_a_stopped_run_and_a_lost_worker_and_a_run_that_never_started():
     never.abort("ImportError: no module named x")
     assert never.status == "failed" and never.jobs[0].state == NOT_STARTED and never.lines[-1][1] == "not_started"
     # GUI exploration 6.4: said in plain words, the worker's own words kept in ``error`` only
-    assert render_line(never.lines[-1]).endswith("The run could not start: an unexpected error stopped it")
+    assert render_line(never.lines[-1]).endswith("Run not started: an unexpected error stopped it")
     assert never.never_started and "no module named x" in never.error
 
 
@@ -556,11 +556,11 @@ def test_the_plan_names_the_workflows_that_cannot_run_and_warns_about_the_disk(t
     d = toy.ctl.open_plan(plan, lambda: i18n._("Run project"))
     assert pump(lambda: toy.ctl.free_gb() is not None, 30)
     texts = texts_of(d)
-    assert '"Trained" is not run: the earlier layer belongs to another stack' in texts
-    assert not any("Not enough free disk space" in t for t in texts)
+    assert '"Trained" not run: the earlier layer belongs to another stack' in texts
+    assert not any(t.startswith("Disk: ") for t in texts)
     plan.jobs[0].disk_gb = 1e9                                                   # more than any drive
     toy.ctl.updated.emit()
-    assert any(t.startswith("Not enough free disk space: ") for t in texts_of(d))
+    assert any(t.startswith("Disk: ") for t in texts_of(d))
     d.close()
     empty = toy.ctl.open_plan(api.Plan(), lambda: i18n._("Run project"))
     assert empty.summary.text() == "Nothing to run" and not empty.b_run.isEnabled() and not empty.scroll.isVisible()
@@ -574,7 +574,7 @@ def test_the_dialog_in_french(toy):
     toy.model.plan_all = lambda: plan
     d = toy.ctl.launch()
     t = texts_of(d)
-    assert t[0] == "Exécuter le projet"
+    assert t[0] == "Exécuter projet"
     assert any(x.startswith("Durée : ≈ ") and x.endswith(f" · disque : {size_text(plan.disk_gb)} Go") and
                "," in size_text(plan.disk_gb) for x in t), t
     assert 'Sortie « Plain »' in t and "Annuler" in t and "Exécuter" in t
@@ -615,7 +615,7 @@ def test_a_breakpoint_stops_the_run_after_its_block_and_continue_goes_on(toy, mo
     # the plan: Calibration only, and it says why
     d = ctl.launch()
     assert [j.stage for j in d.plan.jobs] == ["inventory"] and [r.row.title for r in d.rows] == ["Calibration"]
-    assert d.pause_note.isVisibleTo(d) and d.pause_note.text() == "Stops after Calibration for your review"
+    assert d.pause_note.isVisibleTo(d) and d.pause_note.text() == "Review pause after Calibration"
     assert d.pause_more.isVisibleTo(d) and d.pause_more.text() == "Workflow: Plain"      # one of the two workflows
     assert not d.review.isVisibleTo(d) and d.b_run.isEnabled()
     assert ctl.pause is not None and ctl.pause.block == "calibration" and ctl.pause.pids == [1]
@@ -630,16 +630,16 @@ def test_a_breakpoint_stops_the_run_after_its_block_and_continue_goes_on(toy, mo
     assert states_of(toy)[(1, "inventory")] == "done" and states_of(toy)[(1, "stack")] == "pending"
     # the recap: paused, with its two buttons; the graph says paused
     assert d.phase() == "end" and d.paused() and d.review.isVisibleTo(d)
-    assert d.review_text.text() == "Paused for your review at Calibration: check it in Inspect, then Continue."
+    assert d.review_text.text() == "Review pause: Calibration · Inspect, then Continue"
     assert d.b_continue.isVisibleTo(d) and d.b_continue.text() == "Continue"
     assert d.b_inspect.isVisibleTo(d) and d.b_inspect.text() == "Open in Inspect"
-    assert d.summary.text() == "Paused for your review" and not d.pause_note.isVisibleTo(d)
+    assert d.summary.text() == "Review pause" and not d.pause_note.isVisibleTo(d)
     assert [r.mark.state for r in d.rows] == [DONE]
     assert Graph(m, None).breakpoint(Graph(m, None).node_of(plain, "calibration")) == ("paused", 1, 2)
     assert m.review_state(plain, "calibration") == "paused" and m.review_state(trained, "calibration") is None
-    assert "Paused for your review at Calibration: check it in Inspect, then Continue." in toy.console()
+    assert "Review pause: Calibration · Inspect, then Continue" in toy.console()
     # the history line is a template and its words, written in the language it is read in (exploration #31)
-    assert m.history[-1][1] == "Run paused for your review at {block}" and m.history[-1][2] == {"block": "Calibration"}
+    assert m.history[-1][1] == "Review pause at {block}" and m.history[-1][2] == {"block": "Calibration"}
     # Continue: the review is marked, and the run goes on to the end, in a new dialog, at once
     d.b_continue.click()
     assert ctl.pause is None and ctl.running and ctl.dialog is not d and m.is_reviewed(plain, "calibration")
@@ -661,25 +661,25 @@ def test_each_continue_runs_on_to_the_next_pause_and_the_plan_counts_them(toy, m
     m.set_breakpoint([plain], "empilement")
     m.set_breakpoint([plain], "post")
     d = ctl.launch()
-    assert d.pause_note.text() == "Stops after Calibration for your review"
-    assert d.pause_more.text() == "Workflow: Plain · 2 more pauses after it: Stacking, Output"
+    assert d.pause_note.text() == "Review pause after Calibration"
+    assert d.pause_more.text() == "Workflow: Plain · +2 pauses after: Stacking, Output"
     assert ctl.pause.later == ["empilement", "post"]
     d.start()
     finish(toy)
     assert [j.stage for j in toy.track.jobs] == ["inventory"] and d.paused()
-    assert d.review_more.text() == "Workflow: Plain · 2 more pauses after it: Stacking, Output"
+    assert d.review_more.text() == "Workflow: Plain · +2 pauses after: Stacking, Output"
     d.b_continue.click()                                       # to the second pause
     finish(toy)
     d2 = ctl.dialog
     assert [j.stage for j in toy.track.jobs] == ["stack"] and d2.paused()
-    assert d2.review_text.text() == "Paused for your review at Stacking: check it in Inspect, then Continue."
-    assert d2.review_more.text() == "Workflow: Plain · 1 more pause after it: Output"
+    assert d2.review_text.text() == "Review pause: Stacking · Inspect, then Continue"
+    assert d2.review_more.text() == "Workflow: Plain · +1 pause after: Output"
     assert [m.review_state(plain, k) for k in ("calibration", "empilement", "post")] == ["reviewed", "paused", "pending"]
     d2.b_continue.click()                                      # to the third (the Output of Plain)
     finish(toy)
     d3 = ctl.dialog
     assert [j.stage for j in toy.track.jobs] == ["color", "render_simple"] and d3.paused()
-    assert d3.review_text.text() == "Paused for your review at Output: check it in Inspect, then Continue."
+    assert d3.review_text.text() == "Review pause: Output · Inspect, then Continue"
     assert d3.review_more.text() == "Workflow: Plain"
     d3.b_continue.click()                                      # nothing is left but the other workflow
     finish(toy)
@@ -715,7 +715,7 @@ def test_reviewed_is_tied_to_the_results_of_the_block(toy, monkeypatch):
     m.apply_change(m.paths, {"kind": "param", "stage": "inventory", "name": "max_lights", "value": 2})
     stale = m.review_key(plain, "calibration")
     d2 = ctl.launch()
-    assert [j.stage for j in d2.plan.jobs][:1] == ["inventory"] and d2.pause_note.text().startswith("Stops after")
+    assert [j.stage for j in d2.plan.jobs][:1] == ["inventory"] and d2.pause_note.text().startswith("Review pause after")
     d2.start()
     finish(toy)
     assert d2.paused() and m.review_state(plain, "calibration") == "paused" and m.review_key(plain, "calibration") == stale
@@ -743,8 +743,8 @@ def test_a_block_done_and_not_reviewed_opens_the_dialog_on_the_pause(toy, monkey
     ctl.openInspect.connect(lambda pid, block: inspected.append((pid, block)))
     d = ctl.launch()
     assert d.phase() == "plan" and d.paused() and d.review.isVisibleTo(d) and not d.pause_note.isVisibleTo(d)
-    assert not d.b_run.isVisibleTo(d) and d.b_cancel.text() == "Close" and d.summary.text() == "Waiting for your review"
-    assert d.review_text.text() == "Paused for your review at Stacking: check it in Inspect, then Continue."
+    assert not d.b_run.isVisibleTo(d) and d.b_cancel.text() == "Close" and d.summary.text() == "Awaiting review"
+    assert d.review_text.text() == "Review pause: Stacking · Inspect, then Continue"
     # Open in Inspect: the block is selected for the window, which routes it (the graph page's openBlock)
     m.select(step="sources")
     d.b_inspect.click()
@@ -788,7 +788,7 @@ def test_run_to_here_stops_at_the_first_review_before_the_block(toy, monkeypatch
     d = ctl.run_to_here()
     assert d.windowTitle() == 'Run "Plain" to Stacking'
     assert [j.stage for j in d.plan.jobs] == ["inventory"]
-    assert d.pause_note.text() == "Stops after Calibration for your review"
+    assert d.pause_note.text() == "Review pause after Calibration"
     d.start()
     finish(toy)
     assert d.paused()
@@ -819,11 +819,11 @@ def test_several_workflows_pausing_at_one_block_are_planned_together_and_the_ear
     assert pause2.block == "empilement" and [j.stage for j in plan.jobs] == ["inventory", "stack"]    # shared: once
     assert plan.jobs[1].wf == [1, 2] and set(plan.targets) == {(1, "stack"), (2, "stack")}
     d = toy.ctl.launch()
-    assert d.pause_note.text() == "Stops after Stacking for your review" and not d.pause_more.isVisibleTo(d)   # both
+    assert d.pause_note.text() == "Review pause after Stacking" and not d.pause_more.isVisibleTo(d)   # both
     d.close()
     m.set_breakpoint([trained], "empilement", False)
     d = toy.ctl.launch()
-    assert d.pause_note.text() == "Stops after Stacking for your review" and d.pause_more.text() == "Workflow: Plain"
+    assert d.pause_note.text() == "Review pause after Stacking" and d.pause_more.text() == "Workflow: Plain"
     d.close()
     assert [Graph(m, None).breakpoint(n)[:3] for n in Graph(m, None).nodes if n.key == "empilement"] == [("pending", 1, 2)]
 
@@ -885,29 +885,29 @@ def test_the_pause_in_french(toy, monkeypatch):
         m.set_breakpoint([plain], k)
     d = ctl.launch()
     t = texts_of(d)
-    assert "S'arrête après Calibration pour votre vérification" in t, t
-    assert "Workflow : Plain · 2 autres pauses ensuite : Empilement, Sortie" in t, t
+    assert "Pause vérif après Calibration" in t, t
+    assert "Workflow : Plain · +2 pauses ensuite : Empilement, Sortie" in t, t
     assert untranslated(t) == []
     d.start()
     finish(toy)
     seen = texts_of(d)
-    assert "En pause pour votre vérification au bloc Calibration : vérifiez-le dans l'Inspection, puis cliquez sur Continuer." in seen
-    assert "Continuer" in seen and "Ouvrir dans l'Inspection" in seen and "En pause pour vérification" in seen
-    assert "Workflow : Plain · 2 autres pauses ensuite : Empilement, Sortie" in seen
-    assert "En pause pour votre vérification au bloc Calibration : vérifiez-le dans l'Inspection, puis cliquez sur Continuer." \
+    assert "Pause vérif : Calibration · Inspection, puis Continuer" in seen
+    assert "Continuer" in seen and "Ouvrir dans Inspection" in seen and "Pause vérif" in seen
+    assert "Workflow : Plain · +2 pauses ensuite : Empilement, Sortie" in seen
+    assert "Pause vérif : Calibration · Inspection, puis Continuer" \
         in toy.console()
-    assert event_text(m.history[-1])[1] == "Exécution en pause pour votre vérification au bloc Calibration"
+    assert event_text(m.history[-1])[1] == "Pause vérif à Calibration"
     assert untranslated(seen) == [], untranslated(seen)
     d.b_continue.click()
     finish(toy)
     d2 = ctl.dialog
-    assert "Workflow : Plain · 1 autre pause ensuite : Sortie" in texts_of(d2)
+    assert "Workflow : Plain · +1 pause ensuite : Sortie" in texts_of(d2)
     assert untranslated(texts_of(d2)) == []
     # the zero / one rule of French: "0 étape" and "1 étape" are singular, "2 étapes" is not
-    one, many = "{n} more pause after it: {blocks}", "{n} more pauses after it: {blocks}"
-    assert i18n.plural(0, one, many, blocks="x") == "0 autre pause ensuite : x"
-    assert i18n.plural(1, one, many, blocks="x") == "1 autre pause ensuite : x"
-    assert i18n.plural(2, one, many, blocks="x") == "2 autres pauses ensuite : x"
+    one, many = "+{n} pause after: {blocks}", "+{n} pauses after: {blocks}"
+    assert i18n.plural(0, one, many, blocks="x") == "+0 pause ensuite : x"
+    assert i18n.plural(1, one, many, blocks="x") == "+1 pause ensuite : x"
+    assert i18n.plural(2, one, many, blocks="x") == "+2 pauses ensuite : x"
 
 
 def test_every_plural_of_the_pause_has_its_french_in_both_forms():
@@ -926,7 +926,7 @@ def test_every_plural_of_the_pause_has_its_french_in_both_forms():
                 forms += 1
                 assert one == many or cat.get(one) != cat.get(many), (one, many)
     assert not missing and forms >= 6, (missing, forms)
-    for text in ("Continue", "Open in Inspect", "Waiting for your review", "Paused for your review"):
+    for text in ("Continue", "Open in Inspect", "Awaiting review", "Review pause"):
         assert text in cat and cat[text] != text
 
 
@@ -995,7 +995,7 @@ def test_failed_job_skips_its_downstream_blocks_and_says_so_in_plain_words(env):
         recap = texts_of(d.recap)
         assert "Denoise failed: b failed on purpose" in recap, recap
         assert 'Not run because Denoise failed: Output "Trained".' in recap
-        assert "The blocks that did not depend on it were computed." in recap
+        assert "Independent blocks computed" in recap
         assert [r.mark.state for r in d.rows] == [DONE, DONE, DONE, DONE, FAILED, SKIPPED]
         assert d.summary.text() == "Failed" and d.b_log.isVisible()
         # the engine's own states, and the graph's stripes, say it too
@@ -1057,7 +1057,7 @@ def test_stop_keeps_the_results_and_the_next_run_resumes_the_checkpoint(env):
         stopped_at = _checkpoint(w)
         assert 0 < stopped_at < 120
         assert d.phase() == "end" and d.summary.text() == "Run stopped"
-        assert any(x.startswith("Stopped. What was computed is kept") for x in texts_of(d.recap))
+        assert any(x.startswith("Stopped · results kept") for x in texts_of(d.recap))
         assert "Stopped during Denoise." in texts_of(d.recap)
         text = w.console()
         assert "Run stopped: " in text and "Stop asked" in text and "Denoise · stopped" in text
@@ -1091,7 +1091,7 @@ def test_killing_the_worker_marks_the_run_interrupted_and_the_next_run_resumes(e
         assert api.running(w.p) is None                      # a stale lock is not a run
         assert (root / "logs" / "run.lock").exists()
         assert w.model.state(w.model.view(2), "denoise") == "interrupted"
-        assert any("without warning" in x for x in texts_of(d.recap)) and "stopped without warning" in w.console()
+        assert any("ended unexpectedly" in x for x in texts_of(d.recap)) and "ended unexpectedly" in w.console()
         killed_at = _checkpoint(w)
         d.close()
         d = w.ctl.launch()                                   # the stale lock is replaced; the denoise resumes
@@ -1179,9 +1179,9 @@ def test_a_start_that_fails_is_said_and_nothing_stays_running(env, monkeypatch):
         d.start()
         assert pump(lambda: w.track.finished and not w.ctl.running, 30)
         # GUI exploration 6.4: in plain words, in the console, the history and the window
-        assert w.track.status == "failed" and "The run could not start: the project's drive is full" in w.console()
-        assert d.phase() == "end" and d.summary.text() == "The run could not start"
-        assert w.model.history[-1][1] == "The run could not start: {why}"
+        assert w.track.status == "failed" and "Run not started: the project's drive is full" in w.console()
+        assert d.phase() == "end" and d.summary.text() == "Run not started"
+        assert w.model.history[-1][1] == "Run not started: {why}"
     finally:
         w.close()
 
@@ -1654,14 +1654,14 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
             menus[-1].show()
             QApplication.processEvents()
             names = [a.text() for a in menus[-1].actions()]
-            assert i18n._("Pause here for review") in names
+            assert i18n._("Review pause") in names
             shot(menus[-1], "1_block_menu")
             menus[-1].hide()
         w.change_language("en")
         settle()
         for key in ("calibration", "alignement"):
             w.graph.graph.block_menu(graph().node_of(s.view(1), key), None)
-            next(a for a in menus[-1].actions() if a.text() == "Pause here for review").trigger()
+            next(a for a in menus[-1].actions() if a.text() == "Review pause").trigger()
             settle()
         assert [x.breakpoints for x in s.p.workflows] == [["calibration", "registration"]] * 2
         assert block(1, "calibration").bp == ("pending", 2, 2) and block(1, "alignement").bp == ("pending", 2, 2)
@@ -1669,8 +1669,8 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
         # 2. Run all: the plan stops after Calibration
         w.run.launch()                                     # the plan first (#51: the button starts)
         d = w.run.dialog
-        assert d.pause_note.text() == "Stops after Calibration for your review" and d.pause_more.text().startswith(
-            "1 more pause after it: Registration")
+        assert d.pause_note.text() == "Review pause after Calibration" and d.pause_more.text().startswith(
+            "+1 pause after: Registration")
         assert [j.stage for j in d.plan.jobs] == ["inventory", "calibrate"] and not d.review.isVisibleTo(d)
         both("3_plan_dialog", lambda: w.run.dialog)
         # 3. Run: the real calibration, in a detached worker
@@ -1683,7 +1683,7 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
         assert t.status == "done" and [j.stage for j in t.jobs] == ["inventory", "calibrate"], t.error
         d = w.run.dialog
         assert d.paused() and d.review.isVisibleTo(d) and d.b_continue.isVisibleTo(d) and d.b_inspect.isVisibleTo(d)
-        assert d.review_text.text() == "Paused for your review at Calibration: check it in Inspect, then Continue."
+        assert d.review_text.text() == "Review pause: Calibration · Inspect, then Continue"
         assert [s.state(s.view(1), x) for x in ("inventory", "calibrate", "register", "stack")] == \
             ["done", "done", "pending", "pending"]
         assert block(1, "calibration").bp == ("paused", 2, 2) and block(1, "alignement").bp == ("pending", 2, 2)
@@ -1696,8 +1696,8 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
             menus[-1].show()
             QApplication.processEvents()
             checked = [a for a in menus[-1].actions() if a.isChecked()]
-            assert [a.text() for a in checked] == [i18n._("Pause here for review")]
-            assert i18n._("Mark as reviewed") in [a.text() for a in menus[-1].actions()]
+            assert [a.text() for a in checked] == [i18n._("Review pause")]
+            assert i18n._("Mark reviewed") in [a.text() for a in menus[-1].actions()]
             shot(menus[-1], "5b_block_menu_paused")
             menus[-1].hide()
         # 4. Open in Inspect: the window shows the block in Inspect
@@ -1714,7 +1714,7 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
         # 5. Continue: the review is marked, Registration runs for real, and the run stops again at its breakpoint
         w.run.launch()
         d = w.run.dialog
-        assert d.paused() and d.phase() == "plan" and d.summary.text() == "Waiting for your review"
+        assert d.paused() and d.phase() == "plan" and d.summary.text() == "Awaiting review"
         d.b_continue.click()
         assert w.run.running or w.run.track.finished
         assert pump(lambda: w.run.track.finished and not w.run.running, 400), "the second run did not end"
@@ -1723,7 +1723,7 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
         assert t.status == "done" and [j.stage for j in t.jobs] == ["register"], t.error
         d = w.run.dialog
         assert d.paused() and d.review_text.text() == \
-            "Paused for your review at Registration: check it in Inspect, then Continue."
+            "Review pause: Registration · Inspect, then Continue"
         assert [s.review_state(s.view(1), k) for k in ("calibration", "alignement")] == ["reviewed", "paused"]
         assert [s.state(s.view(1), x) for x in ("calibrate", "register", "stack")] == ["done", "done", "pending"]
         both("7_second_pause_recap", lambda: w.run.dialog)

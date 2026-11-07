@@ -28,7 +28,7 @@ for chain in (["calibration", "registration", "stacking", "gradient"],) or (["ca
         setup(chain)
         ex.click_block(ex.block(pre))
         z = g()
-        m = ex.right_click_block(ex.block("fond"), pick="Désactiver ce bloc")
+        m = ex.right_click_block(ex.block("fond"), pick="Désactiver")
         ex.settle(6)
         ex.w.activateWindow()
         ex.settle(4)

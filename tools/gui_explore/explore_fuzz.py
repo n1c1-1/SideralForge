@@ -481,9 +481,9 @@ class Fuzz:
                 if it is None:
                     return "; ".join(desc + ["(pas de bloc Session)"])
                 from astro_gpu.client.i18n import _ as tr
-                desc.append(f"clic droit sur « {self.title(it)} » → « {tr('Add a session…')} » (dossier: "
+                desc.append(f"clic droit sur « {self.title(it)} » → « {tr("Add session…")} » (dossier: "
                             f"{_ans_word('folder', r3)})")
-                ex.right_click_block(it, pick=tr("Add a session…"))
+                ex.right_click_block(it, pick=tr("Add session…"))
         elif name in ("panel", "files", "image_file"):
             if name in ("files", "image_file"):
                 keys = ("session", "sources") if name == "files" else ("image",)

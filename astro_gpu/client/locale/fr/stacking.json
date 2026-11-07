@@ -37,8 +37,8 @@
  "Frames far worse than the night's median (over 2.5 σ) in star size, roundness or transparency are left out, then those weighing less than 5 % of the best one.": "Les images bien plus mauvaises que la médiane de la nuit (plus de 2,5 σ) en taille des étoiles, rondeur ou transparence sont écartées, puis celles qui pèsent moins de 5 % de la meilleure.",
  "Frames under the minimum transparency or over the maximum star size below are left out.": "Les images sous la transparence minimale ou au-dessus de la taille d'étoile maximale ci-dessous sont écartées.",
  "These thresholds act only when the frame selection is “{rule}”.": "Ces seuils n'agissent que si la sélection des images est sur « {rule} ».",
- "every frame, weight ≥ 5 % of the best": "toutes les images, poids ≥ 5 % du meilleur",
- "k × σ filters · weight ≥ 5 % of the best": "filtres k × σ · poids ≥ 5 % du meilleur",
+ "all frames · weight ≥ 5 %": "toutes · poids ≥ 5 %",
+ "k × σ filters · weight ≥ 5 %": "filtres k × σ · poids ≥ 5 %",
  "Frame: click": "Image : cliquer",
  "The recommended method shows once the registration is computed.": "La méthode conseillée s'affiche une fois l'alignement calculé."
 }

@@ -519,7 +519,7 @@ class Panel(QWidget):
             self.bv.addWidget(kv([(html.escape(ses["night"]), _("{lights} lights · {flats} flats · darks: {darks}").format(
                 lights=ses["lights"], flats=ses["flats"], darks=darks))], pad=10))
             if ses.get("rotation"):
-                self.bv.addWidget(label(_("Camera rotated {deg}°: this session uses its own flats").format(
+                self.bv.addWidget(label(_("Camera rotated {deg}°: own flats").format(
                     deg=number(ses["rotation"])), "warn", wrap=True))
         self.bv.addSpacing(6)
         self.bv.addWidget(kv([(_("Excluded by hand"), str(len(s.frames_excluded))),
@@ -586,7 +586,7 @@ class Panel(QWidget):
             shared = s.shared_with(sid, kind) if kind != "lights" else []
             if shared:
                 names = ", ".join(s.session(o).name for o in shared)
-                self.bv.addWidget(label("⇄ " + _("shared with {names}: one master for all").format(names=names),
+                self.bv.addWidget(label("⇄ " + _("shared with {names}: one master").format(names=names),
                                         "small", wrap=True))
             for w in [w for w in warns if w["kind"] == kind]:      # issue #58: a file that may be a mistake
                 self.bv.addWidget(label("⚠ " + type_warning_text(w), "warn", wrap=True))
@@ -720,18 +720,18 @@ class Panel(QWidget):
             self.bv.addWidget(kv([(html.escape(ses["night"]), _("{lights} lights · {flats} flats · darks: {darks}").format(
                 lights=ses["lights"], flats=ses["flats"], darks=ses["darks"] or _("none")))], pad=10))
         self.bv.addSpacing(8)
-        b = QPushButton(_("Calibrate each night separately…"))
+        b = QPushButton(_("Calibrate per night…"))
         b.setObjectName("primary")
         b.setToolTip(_("Each night with its own calibration frames, then all stacked together"))
         b.clicked.connect(self._separate)
         self.bv.addWidget(b, 0, Qt.AlignLeft)
-        a = QPushButton(_("Add a session…"))
+        a = QPushButton(_("Add session…"))
         a.clicked.connect(self.addSession.emit)
         self.bv.addWidget(a, 0, Qt.AlignLeft)
         self.bv.addStretch(1)
 
     def _separate(self):
-        if QMessageBox.question(self, _("Calibrate each night separately"), _(
+        if QMessageBox.question(self, _("Calibrate per night"), _(
                 "Each night gets its own Session and Calibration blocks, and its own masters. Calibration and "
                 "everything after it are computed again. Undo takes it back.")) == QMessageBox.Yes:
             self.s.set_stack_mode("per_session")
@@ -744,7 +744,7 @@ class Panel(QWidget):
         src = p.source or {}
         self.hv.addWidget(label(_("Image"), "h1"))
         acts = QHBoxLayout()                             # as every block: its Delete under its name
-        x = QPushButton(_("Delete block"))
+        x = QPushButton(_("Delete"))
         x.setToolTip(_("Take this block out, with the blocks after it (Del)"))
         x.clicked.connect(self.removeTool.emit)
         acts.addWidget(x)
@@ -764,7 +764,7 @@ class Panel(QWidget):
             self.bv.addWidget(label(_("No file yet: choose the image this block reads."), "warn", wrap=True))
         self.bv.addSpacing(6)
         row = QHBoxLayout()
-        b = QPushButton(_("Change the image…") if path else _("Choose the image…"))
+        b = QPushButton(_("Change image…") if path else _("Choose image…"))
         b.setObjectName("primary" if not path else "")
         b.clicked.connect(lambda: self._choose_image(p))
         row.addWidget(b)
@@ -831,9 +831,9 @@ class Panel(QWidget):
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
         top.addWidget(chip)
         self.hv.addLayout(top)
-        self.hv.addWidget(label(_("Fusion of the channels"), "small"))
+        self.hv.addWidget(label(_("Channel fusion"), "small"))
         acts = QHBoxLayout()                             # as the Image block: its Delete under its name (#34)
-        x = QPushButton(_("Delete block"))
+        x = QPushButton(_("Delete"))
         x.setToolTip(_("Take this block out, with the blocks after it (Del)"))
         x.clicked.connect(self.removeTool.emit)
         acts.addWidget(x)
@@ -857,8 +857,8 @@ class Panel(QWidget):
         row.addStretch(1)
         self.bv.addLayout(row)
         self.bv.addWidget(self.group_title(_("Channels")))
-        words = {"L": _("its grey"), "R": _("its red"), "G": _("its green"), "B": _("its blue"),
-                 "GB": _("its green and blue")}
+        words = {"L": _("grey"), "R": _("red"), "G": _("green"), "B": _("blue"),
+                 "GB": _("green + blue")}
         weights = f.get("weights") or {}
         for i in [i for i in f.get("inputs") or [] if i["role"] in read]:
             q = s.view(i["pid"])
@@ -867,7 +867,7 @@ class Panel(QWidget):
             role = label(f"<b>{html.escape(i['role'])}</b>", None)
             role.setMinimumWidth(36)
             row.addWidget(role, 0)
-            row.addWidget(label(_("{workflow}, {channel}").format(
+            row.addWidget(label(_("{workflow} · {channel}").format(
                 workflow=html.escape(q.name if q is not None else "?"),
                 channel=words.get(i.get("channel", "L"), "")), "small"), 1)
             sp = QDoubleSpinBox()
@@ -882,7 +882,7 @@ class Panel(QWidget):
             self.bv.addLayout(row)
         unread = [r for r in roles if r not in read]
         if unread:
-            self.bv.addWidget(label(_("Not read by the {palette} palette: {roles}").format(
+            self.bv.addWidget(label(_("Unused by {palette}: {roles}").format(
                 palette=f.get("palette", ""), roles=", ".join(unread)), "small", wrap=True))
         self.fusion_stars(p, f, [r for r in roles if r in read])
         self.bv.addSpacing(6)
@@ -894,16 +894,16 @@ class Panel(QWidget):
 
     def fusion_stars(self, p, f: dict, roles: list[str]):
         """Option A: the palette on the channels' starless images, then the stars from a source, put back by the
-        Combine stars & background block."""
+        Recombine block."""
         s = self.s
         cur = f.get("stars") or {}
         self.bv.addWidget(self.group_title(_("Stars")))
         others = [q for q in s.paths if q.pid != p.pid and q.source is None and not s.is_mono(q)]
-        choices = [(_("With the channels (no separation)"), None),
-                   (_("The channels' stars, same palette"), {"mode": "palette"})]
-        choices += [(_("The stars of {channel} (neutral)").format(channel=r), {"mode": "channel", "role": r})
+        choices = [(_("With channels (no split)"), None),
+                   (_("Channel stars, same palette"), {"mode": "palette"})]
+        choices += [(_("{channel} stars (neutral)").format(channel=r), {"mode": "channel", "role": r})
                     for r in roles]
-        choices += [(_("The stars of “{workflow}” (their colours)").format(workflow=q.name),
+        choices += [(_("“{workflow}” stars (own colours)").format(workflow=q.name),
                      {"mode": "workflow", "pid": q.pid}) for q in others]
         cb = QComboBox()
         cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)     # a long workflow name: elided,
@@ -912,7 +912,7 @@ class Panel(QWidget):
             cb.addItem(text, val)
         cb.setCurrentIndex(next((i for i, (_t, v) in enumerate(choices) if (v or {}) == cur), 0))
         cb.setToolTip(_("The palette is made on the channels' starless images; these stars are put back by the "
-                        "Combine stars & background block. Each channel's workflow gets Split stars & background."))
+                        "Recombine block. Each channel's workflow gets Stars/background."))
         cb.activated.connect(lambda i: s.set_fusion_stars(p, cb.itemData(i)))
         self.bv.addWidget(cb)
         if cur:
@@ -930,13 +930,13 @@ class Panel(QWidget):
         if node.cut:
             self.bv.addWidget(label(_("Switched off: this block does not change the data, which passes through to "
                                       "the next block. Its settings are kept."), None, wrap=True))
-            b = QPushButton(_("Switch this block on") + "  (D)")
+            b = QPushButton(_("Switch on") + "  (D)")
             b.setObjectName("primary")
             b.clicked.connect(self.cutToggled.emit)
             self.bv.addSpacing(6)
             self.bv.addWidget(b, 0, Qt.AlignLeft)
         else:
-            self.bv.addWidget(label(_("Cannot run: {why}. The image passes through to the next block.").format(
+            self.bv.addWidget(label(_("Blocked: {why} · image passes through").format(
                 why=node.grey), "warn", wrap=True))
             cause = {_("needs Astrometry"): "astrometrie", _("needs Denoise"): "debruitage"}.get(node.grey)
             if cause and cause in s.display_keys(p):
@@ -981,7 +981,7 @@ class Panel(QWidget):
         acts = QHBoxLayout()                             # the block's actions, under its name (issue #47)
         acts.setSpacing(6)
         if graph_block:                                  # any block can go when what follows allows it
-            x = QPushButton(_("Delete block"))
+            x = QPushButton(_("Delete"))
             x.setToolTip(_("Take this block out of the workflow (Del)"))
             x.clicked.connect(self.removeTool.emit)
             acts.addWidget(x)
@@ -1004,7 +1004,7 @@ class Panel(QWidget):
             self.hv.addLayout(acts)
         # which workflows a change goes to (the Stars block has no setting: nothing to apply)
         if node.shared and k != "etoiles":
-            self.hv.addWidget(label(_("Changes apply to:"), "dim"))
+            self.hv.addWidget(label(_("Apply to:"), "dim"))
             box = QVBoxLayout()
             box.setSpacing(2)
             allp = [q.pid for q in node.paths]
@@ -1046,10 +1046,10 @@ class Panel(QWidget):
         if k in ("fond", "debruitage", "etoiles", "deconv"):
             self.methods(p, k)
         if k == "fond" and self.tune and getattr(self, "grad_editor", None) is not None:
-            self.bv.addWidget(self.group_title(_("Samples and excluded areas")))
+            self.bv.addWidget(self.group_title(_("Samples · exclusions")))
             self.bv.addWidget(self.grad_editor.controls(p))
         elif k == "fond" and not self.tune:            # issue #15: the samples are edited on the image, in Inspect
-            b = QPushButton(_("Edit the samples on the image…"))
+            b = QPushButton(_("Edit samples…"))
             b.setToolTip(_("Opens the block in Inspect: place, move or remove the samples and the excluded areas on "
                            "the image"))
             b.clicked.connect(self.openTune.emit)
@@ -1073,7 +1073,7 @@ class Panel(QWidget):
             self.bv.addWidget(kv([(_("Output of"), block_title(p, p.end))]))
         if k == "etoiles":
             self.bv.addWidget(label(_("No setting here: the network is applied as it was trained. Its two images are "
-                                      "adjusted in a Combine stars & background layers block, or each as a layer of Post."),
+                                      "adjusted in a Recombine block, or each as a layer of Post."),
                                     "small", wrap=True))
         else:
             self.settings(p, sk, groups, extra)
@@ -1270,8 +1270,8 @@ class Panel(QWidget):
             to = [block_title(n.paths[0], "composition") + (f" ({n.paths[0].name})" if len(node.paths) > 1 else "")
                   for n in mine]
             if any(src._bk == node._bk and part == what for src, part in g.direct):
-                to.append(_("Post (as a layer)"))
-            to = to or [_("not used: drag its dot onto Post or onto Composition")]
+                to.append(_("Post layer"))
+            to = to or [_("unused: drag to Post or Composition")]
             lb = QLabel(f"<span style='color:{IMAGE_COL[what]}'>●</span> <b>{html.escape(names[what])}</b>"
                         + "".join(f"<br>&nbsp;&nbsp;&nbsp;→ {html.escape(t)}" for t in to))
             lb.setTextFormat(Qt.RichText)
@@ -1287,7 +1287,7 @@ class Panel(QWidget):
                     b.clicked.connect(lambda _c=False, w=what, pp=p: self._part_out_of_post(pp, w))
                 else:
                     b = QPushButton(_("To Post"))
-                    b.setToolTip(_("This image as a layer of Post, as it is (no Combine stars & background layers "
+                    b.setToolTip(_("This image as a layer of Post, as it is (no Recombine "
                                    "block)"))
                     b.clicked.connect(lambda _c=False, w=what, pp=p: self._part_to_post(pp, w))
                 row.addWidget(b, 0, Qt.AlignTop)
@@ -1295,7 +1295,7 @@ class Panel(QWidget):
             else:
                 self.bv.addWidget(lb)
         if len(node.paths) == 1:
-            nb = QPushButton(_("New Combine stars & background layers block").replace("&", "&&"))
+            nb = QPushButton(_("+ Recombine").replace("&", "&&"))
             nb.setToolTip(_("A layer of Post that puts the stars back on the starless image; each of the two keeps "
                             "its own settings"))
             nb.clicked.connect(lambda _c=False, pp=node.paths[0]: self._new_composition(pp))
@@ -1310,7 +1310,7 @@ class Panel(QWidget):
         self.s.select(index=self.s.paths.index(p), step="etoiles")
 
     def _part_out_of_post(self, p, part):
-        """One of the split block's images sent as it is, taken out of Post (#29)."""
+        """One of the Stars/background block's images sent as it is, taken out of Post (#29)."""
         from .blocks import STAR_OUTPUTS
         if self.s.remove_post_part(p.pid, part, self):
             self.s.log('{image} of "{name}" taken out of Post', image=dict(STAR_OUTPUTS)[part], name=p.name)
@@ -1319,7 +1319,7 @@ class Panel(QWidget):
     def _new_composition(self, p):
         """A Stars and background block for this workflow's Stars block (as dragging a dot onto Composition)."""
         lid = self.s.add_post_layer(p.pid, "combined", self)
-        self.s.log('Combine stars & background layers block for "{name}"', name=p.name)
+        self.s.log('Recombine for "{name}"', name=p.name)
         self.s.sel_layer = lid
         self.s.select(index=self.s.paths.index(p), step="composition")
         self.s.scope = [p.pid]
@@ -1347,8 +1347,8 @@ class Panel(QWidget):
         chip = QLabel(_(STATE_WORD[st]))
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
         top.addWidget(chip)
-        x = QPushButton(_("Delete block"))
-        x.setToolTip(_("Take this block out of Post (the split block's images stay computed)"))
+        x = QPushButton(_("Delete"))
+        x.setToolTip(_("Take this block out of Post (the Stars/background block's images stay computed)"))
         x.clicked.connect(self.removeTool.emit)
         top.addWidget(x)
         self.hv.addLayout(top)
@@ -1356,7 +1356,7 @@ class Panel(QWidget):
         from .blocks import BY_KEY
         self.bv.addWidget(label(_(BY_KEY["composition"]["what"]), "small", wrap=True))
         if st != "done":
-            self.bv.addWidget(label(_("The split block is not computed yet: run it to see the result in Post."),
+            self.bv.addWidget(label(_("To compute: Stars/background"),
                                     "warn", wrap=True))
         sliders = dict(lay.get("sliders") or {})
 
@@ -1501,8 +1501,8 @@ class Panel(QWidget):
         groups = self._groups(p, k) if groups is None else groups
         if settings_loading(s, p, k) and not groups:
             err = next((s.params_error(p, st) for st in needed_stages(s, p, k) if s.params_error(p, st)), "")
-            self.bv.addWidget(label(_("The settings cannot be read: {why}").format(why=err) if err else
-                                    _("Loading the settings…"), "dim", wrap=True))
+            self.bv.addWidget(label(_("Settings unreadable: {why}").format(why=err) if err else
+                                    _("Loading settings…"), "dim", wrap=True))
             return
         hidden = extra_hidden
         system = []
@@ -1516,7 +1516,7 @@ class Panel(QWidget):
             for r in shown:
                 self.add_row(r)
         if self.expert and system:
-            self.bv.addWidget(self.group_title(_("System: speed and memory")))
+            self.bv.addWidget(self.group_title(_("Speed · memory")))
             for r in system:
                 self.add_row(r)
         if hidden:

@@ -148,7 +148,7 @@ ex.shot("A_session_panel")
 look(ex, N, "panneau Session (15 ARW)", steps=["Projet d'une session de 15 ARW", "clic sur le bloc Session"])
 N.check("15 / 15" in group_title("Lights"), "gênant", "Compte des brutes faux dans le panneau Session",
         f"Titre : {group_title('Lights')!r}", steps=["clic sur le bloc Session"])
-if not button(panel(ex), _("Delete block"), QPushButton):
+if not button(panel(ex), _("Delete"), QPushButton):
     N.note("mineur", "Panneau Session : pas de bouton « Supprimer le bloc » (les panneaux Image et des autres blocs "
                      "en ont un)", "Le panneau d'une Session n'offre ni Supprimer ni Ajouter une session ; on ne "
            "les trouve que dans le menu du bloc.", steps=["clic sur le bloc Session"])
@@ -167,7 +167,7 @@ if not items:
            "Le bloc Session d'un projet d'une seule session n'a pas de menu contextuel ; avec deux sessions, chaque "
            "Session a « Renommer la session », « Supprimer le bloc » et « Ajouter une session… ».",
            steps=["projet d'une session", "clic droit sur le bloc Session"])
-dele = next((x for x in items if x.get("text", "").startswith(_("Delete block"))), None)
+dele = next((x for x in items if x.get("text", "").startswith(_("Delete"))), None)
 if dele is not None and not dele["enabled"] and not dele.get("tip"):
     N.note("mineur", "Menu d'une Session seule : « Supprimer le bloc » grisé sans dire pourquoi",
            f"Menu : {[x.get('text') for x in items]}", steps=["clic droit sur le bloc Session (seule session)"])
@@ -632,7 +632,7 @@ if two:
     n_pop = len(ex.popups)
     it2 = next((b for b in ex.blocks() if b.node.key == "session" and b.node.sid == 2), None)
     lights2 = list(ex.s.p.session(2).lights)
-    items = ex.right_click_block(it2, _("Delete block")) if it2 is not None else []
+    items = ex.right_click_block(it2, _("Delete")) if it2 is not None else []
     log("J menu", items)
     wait(ex, 1.0)
     log("J removed by menu", [s.id for s in ex.s.p.sessions], ex.popups[n_pop:], toasts[-1:])
@@ -843,7 +843,7 @@ else:
     n_paths = len(ex.s.paths)
     it3 = next((b for b in ex.blocks() if b.node.key == "session" and b.node.sid == new_sid), None)
     if it3 is not None:
-        ex.right_click_block(it3, _("Delete block"))
+        ex.right_click_block(it3, _("Delete"))
         wait(ex, 1.0)
         log("M flow session removed", len(ex.s.paths), n_paths, [x.id for x in ex.s.p.sessions])
         undo(ex)

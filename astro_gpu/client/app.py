@@ -248,7 +248,7 @@ class Main(QMainWindow):
         act(f, _("Import folder…"), self.add_sources, "Ctrl+I", enabled=has)
         self.a_export = act(f, _("Export image…"), self.export, "Ctrl+E", enabled=has)
         if spec:
-            act(f, _("Export project as script…"), new=True)
+            act(f, _("Export as script…"), new=True)
         f.addSeparator()
         act(f, _("Close project"), self.close_project, "Ctrl+W", enabled=has)
         act(f, _("Quit"), self.close, "Ctrl+Q")
@@ -268,7 +268,7 @@ class Main(QMainWindow):
         self.a_spec.toggled.connect(self.set_spec)
         r = mb.addMenu(_("Run"))
         self.a_run = act(r, _("Run all"), self.launch, "F5", enabled=has)
-        self.a_here = act(r, _("Run to selected block"), self.run_to_here, "Shift+F5", enabled=has)
+        self.a_here = act(r, _("Run to selected"), self.run_to_here, "Shift+F5", enabled=has)
         r.addSeparator()
         self.a_stop = act(r, _("Stop"), self.stop_run, enabled=False)
         h = mb.addMenu(_("Help"))
@@ -363,7 +363,7 @@ class Main(QMainWindow):
         got = self.home.ask_new_project(g["name"], g["target"], location=where)
         if got and self.create_project(*got, gallery=False):
             if not self.import_frames(folder):
-                self.flash(_("Project made without frames: add them in its Session block"))
+                self.flash(_("Project without lights: add them in Session"))
             if self.graph is not None and self.s is not None and all(w.blocks == [] for w in self.s.p.workflows):
                 QTimer.singleShot(0, lambda: self.graph.new_workflow() if self.graph is not None else None)
 
@@ -816,9 +816,9 @@ class Main(QMainWindow):
             elif not s.ready:
                 line += "  ·  " + _("reading the project…")
             elif not frames:                              # no estimate without frames (issue #47)
-                line += "  ·  " + _("nothing to compute yet: add the lights, or choose the Image's file")
+                line += "  ·  " + _("nothing to compute: add lights or image")
             elif empty:                                   # never "all up to date" with nothing placed (6.5, #13)
-                line += "  ·  " + _("no block to compute yet: place one from the palette")
+                line += "  ·  " + _("no block: place one")
             elif todo:
                 line += "  ·  " + _("to run: {t}").format(t=duration_text(cost.seconds, cost.measured))
             elif cost is not None:
@@ -834,16 +834,16 @@ class Main(QMainWindow):
         if s is None or not s.ready:
             return ""
         if not s.paths:
-            return _("No workflow yet: place a block from the palette")
+            return _("No workflow: place a block")
         if not s.has_data():
-            return _("Nothing to compute yet: add the lights in the Session blocks, or choose the Image's file")
+            return _("Nothing to compute: add lights or image")
         if all(no_block(w) for w in s.p.workflows):
-            return _("No block to compute yet: place one from the palette")
+            return _("No block: place one")
         problems = getattr(s, "run_problems", lambda: [])()
         if problems:
-            return _("Cannot run: “{name}”: {why}").format(name=problems[0][0], why=problems[0][1])
+            return _("{name} blocked: {why}").format(name=problems[0][0], why=problems[0][1])
         if cost is not None and not cost.jobs:
-            return _("Nothing to compute: all up to date.")
+            return _("All up to date")
         return ""
 
     def _run_updated(self):
@@ -973,7 +973,7 @@ class Main(QMainWindow):
             sid = s.add_session(Path(folder).name, lights=[folder])
             if flt:
                 s.set_session_filter(sid, flt)
-        self.flash(_("Session “{name}” added: choose its darks and flats in its block").format(name=Path(folder).name))
+        self.flash(_("Session “{name}” added · darks/flats in its block").format(name=Path(folder).name))
         self.select(step=f"session@{sid}" if s.separate_sessions() else "sources")
 
     def import_frames(self, folder: str) -> bool:
@@ -993,7 +993,7 @@ class Main(QMainWindow):
         if self.s is None:
             return
         if not any(p.rendered for p in self.s.paths):
-            self.flash(_("Nothing to export yet: no workflow is computed."))
+            self.flash(_("Nothing to export: no workflow computed"))
             return
         self.post.export(self)
 
@@ -1001,10 +1001,10 @@ class Main(QMainWindow):
         """Run all (F5, the Run button): the run starts at once, its window following it (issue #51); without
         frames, the window says why nothing runs."""
         if self.s is not None and not self.s.has_data():
-            self.flash(_("Nothing to compute yet: add the lights in the Session blocks, or choose the Image's file"))
+            self.flash(_("Nothing to compute: add lights or image"))
             return
         if self.s is not None and self.s.paths and all(no_block(w) for w in self.s.p.workflows):
-            self.flash(_("No block to compute yet: place one from the palette"))     # an empty workflow is not run
+            self.flash(_("No block: place one"))     # an empty workflow is not run
             return
         if self.run is not None:
             self.run.launch(start=True)

@@ -143,7 +143,7 @@ def test_options_speak_the_views_vocabulary():
     new, notes = ProjectModel.with_tool(classic, "auto")
     assert new["fond"] == "auto" and new["etoiles"] == "garder" and not notes
     no, why = ProjectModel.without_tool(full, "debruitage")
-    assert no is None and "remove Stars first" in why[0]
+    assert no is None and "needed by Stars/background" in why[0]
     new, notes = ProjectModel.without_tool(full, "etoiles")
     assert new["etoiles"] == "garder" and new["debruitage"] and new["fond"] == "simple" and not notes
     no, why = ProjectModel.without_tool(full, "simple")

@@ -30,7 +30,7 @@ pp.dump("after redo")
 it = pp.block("empilement")
 m = ex.right_click_block(it)
 print("menu empilement:", [d.get("text") for d in m])
-ex.right_click_block(it, "Envoyer son image")
+ex.right_click_block(it, "Vers Post")
 pp.dump("after send back")
 # the wire's own menu
 w = pp.wires()[0] if pp.wires() else None

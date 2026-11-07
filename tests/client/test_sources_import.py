@@ -229,9 +229,9 @@ def test_the_fusion_panel_lists_its_palette_s_channels_and_can_delete(qapp, tmp_
         page.select(index=m.paths.index(m.view(q.pid)), step="fusion")
         page.refresh()
         tx = texts(page.panel)
-        assert "Delete block" in tx
-        assert not any(t.startswith("SII,") for t in tx) and any(t.startswith("Ha,") for t in tx)
-        assert "Not read by the HOO palette: SII" in tx
+        assert "Delete" in tx
+        assert not any(t.startswith("SII ·") for t in tx) and any(t.startswith("Ha ·") for t in tx)
+        assert "Unused by HOO: SII" in tx
     finally:
         close(w, m, page)
 

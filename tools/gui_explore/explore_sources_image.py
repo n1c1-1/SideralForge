@@ -64,7 +64,7 @@ def sel_image():
 
 def choose(path):
     sel_image()
-    b = button(panel(ex), _("Choose the image…"), QPushButton) or button(panel(ex), _("Change the image…"), QPushButton)
+    b = button(panel(ex), _("Choose image…"), QPushButton) or button(panel(ex), _("Change image…"), QPushButton)
     if b is None:
         return None
     ex.file_queue = [str(path)]
@@ -249,7 +249,7 @@ def back():
 
 
 sel_image()
-b = button(panel(ex), _("Delete block"), QPushButton)
+b = button(panel(ex), _("Delete"), QPushButton)
 n_pop = len(ex.popups)
 if b is not None:
     ex.click(b)
@@ -270,7 +270,7 @@ log("E redo", img_block() is None)
 N.check(img_block() is None, "mineur", "Ctrl+Y ne refait pas la suppression de l'Image", "",
         steps=["Supprimer l'Image", "Ctrl+Z", "Ctrl+Y"])
 back()
-items = ex.right_click_block(img_block(), _("Delete block"))
+items = ex.right_click_block(img_block(), _("Delete"))
 wait(ex, 0.8)
 log("E menu delete", [x.get("text") for x in items], img_block() is None)
 N.check(img_block() is None, "gênant", "Menu de l'Image > Supprimer le bloc : sans effet", str(items),

@@ -360,7 +360,7 @@ def test_states_come_from_the_api(world, model, page):
     model._sync()
     assert block_state(model, model.view(2), "fond") == "done"                 # back to the store's state
     # one session: the Session block in place of Frames, its lights and calibration frames (issue #43)
-    assert re.match(r"\d+ lights · \d+ darks, \d+ flats", g.summary(g.root))
+    assert re.match(r"\d+ lights · \d+ dark · \d+ flat", g.summary(g.root))
 
 
 def test_a_shared_stage_is_one_key(world, model):
@@ -396,7 +396,7 @@ def test_adding_and_removing_blocks_follows_the_rules_with_toasts(world, model, 
     # Denoise cannot go while Split stars is there
     toasts.clear()
     page.remove_tool(node(page, "debruitage", classic.pid), [classic.pid])
-    assert model.view(2).opts["debruitage"] and toasts and "Split stars & background needs it" in toasts[0]
+    assert model.view(2).opts["debruitage"] and toasts and "needed by Stars/background" in toasts[0]
     # removing Split stars keeps Denoise: nothing else goes with it
     toasts.clear()
     page.remove_tool(node(page, "etoiles", classic.pid), [classic.pid])
@@ -422,13 +422,13 @@ def test_the_palette_offers_every_block_and_says_why_one_cannot_go(world, model,
     assert "output" not in cards                                  # issue #49: made automatically, in the wire
     # Full (the current one) has every block: the image blocks can go again, the others are there once
     assert not cards["denoise"].reason and not cards["gradient"].reason and not cards["session"].reason
-    assert cards["stacking"].reason == "a workflow has one Stacking block"
+    assert cards["stacking"].reason == "one Stacking per workflow"
     model.select(index=1)                                                      # Classic stack
     page.refresh()
     cards = {c.block: c for c in page.findChildren(PaletteCard)}
-    assert cards["stars"].reason == "it needs the Denoise block before it"
+    assert cards["stars"].reason == "needs Denoise first"
     page.show_hint(cards["stars"], cards["stars"].reason)
-    assert page.hint.isVisibleTo(page) and page.hint.text() == "It needs the Denoise block before it"
+    assert page.hint.isVisibleTo(page) and page.hint.text() == "Needs Denoise first"
     page.hide_hint()
     assert not page.hint.isVisibleTo(page)
     assert page.findChildren(QLabel, "h2")[0].text() == "Blocks"
@@ -703,7 +703,7 @@ def test_outputs_pulled_to_post_make_a_raw_stack_workflow(world, model, page):
     cards = {c.block: c for c in page.findChildren(PaletteCard)}
     assert not cards["gradient"].reason and cards["stars"].reason
     ok, why, need = model.slider_state(q, "star_strength")
-    assert ok is False and "split block" in why                                         # no star slider without it
+    assert ok is False and "Stars/background block" in why                                         # no star slider without it
     assert model.slider_state(model.view(1), "star_strength", "combined")[0] is True
 
 
@@ -975,10 +975,10 @@ def test_the_selection_rule_is_said_and_the_thresholds_act_only_with_the_thresho
         assert model.selection_rule() == "min_weight" and not model.thresholds_active()      # the default
         for rule, said, live, summary in (
                 ("min_weight", "Every aligned frame is kept, except those weighing less than 5 % of the best one.",
-                 False, "every frame, weight ≥ 5 % of the best"),
+                 False, "all frames · weight ≥ 5 %"),
                 ("sota", "Frames far worse than the night's median (over 2.5 σ) in star size, roundness or "
                          "transparency are left out, then those weighing less than 5 % of the best one.", False,
-                 "k × σ filters · weight ≥ 5 % of the best"),
+                 "k × σ filters · weight ≥ 5 %"),
                 ("thresholds", "Frames under the minimum transparency or over the maximum star size below are left out.",
                  True, "transparency ≥ ")):
             stored["selection"] = rule
@@ -1117,8 +1117,8 @@ def test_the_french_switch_translates_everything_visible(world, model, page):
     assert "Empilement" in tip and "À jour" in tip
     assert i18n._(STATE_WORD["pending"]) == "Pas encore calculé"                  # (the test project may have none pending)
     assert i18n._("Gradient") == "Gradient"
-    assert g.summary(next(n for n in g.nodes if n.key == "alignement")) == "sur l'image la plus nette"
-    assert "Blocs" in t and "SUR LES BRUTES" in t
+    assert g.summary(next(n for n in g.nodes if n.key == "alignement")) == "réf : plus nette"
+    assert "Blocs" in t and "BRUTES" in t
     # back to English at runtime: the page is built again, in English
     appmod.apply_language("en")
     page.refresh()
@@ -1315,7 +1315,7 @@ def test_the_page_says_it_is_reading_while_the_worker_works(qapp):
     pg.graph.show_wait()
     m.error = "boom"
     pg.graph.show_wait()
-    assert pg.graph.wait.isVisible() and "boom" in pg.graph.wait.text() and "ne peut pas" in pg.graph.wait.text()
+    assert pg.graph.wait.isVisible() and "boom" in pg.graph.wait.text() and "illisible" in pg.graph.wait.text()
     m.error = ""
     w.stop()
     root.close()
@@ -1356,7 +1356,7 @@ def test_a_project_without_workflows_has_a_graph_and_an_import_button(qapp, tmp_
     settle(w, pg)
     items = [it for it in pg.graph.scene().items() if isinstance(it, BlockItem)]
     assert not items                                          # issue #47: a blank page is empty
-    assert any(getattr(g, "text", "").startswith("+  Drop a Session or an Image") for g in pg.graph.scene().items())
+    assert any(getattr(g, "text", "").startswith("+  Start: Session/Image") for g in pg.graph.scene().items())
     got = []
     pg.addSources.connect(lambda: got.append(1))
     pg.select_node(pg.graph.graph.root)
@@ -1515,13 +1515,13 @@ def test_every_block_has_pause_here_for_review_and_the_dot_shows(world, model, p
         if n.key in ("sources", "final", "composition"):          # a Stars and background block is a layer of Post
             continue
         m = menu_of(page, n, monkeypatch)
-        act = next(a for a in m.actions() if a.text() == "Pause here for review")
+        act = next(a for a in m.actions() if a.text() == "Review pause")
         assert act.isCheckable() and not act.isChecked(), n.key
-        assert not any(a.text() == "Mark as reviewed" for a in m.actions())
+        assert not any(a.text() == "Mark reviewed" for a in m.actions())
     # choose it on Calibration: every workflow going through the block gets the breakpoint (the block is shared)
     cal = node(page, "calibration")
     assert len(cal.paths) == len(model.paths) == 4
-    act = next(a for a in menu_of(page, cal, monkeypatch).actions() if a.text() == "Pause here for review")
+    act = next(a for a in menu_of(page, cal, monkeypatch).actions() if a.text() == "Review pause")
     act.trigger()
     settle(world["w"], page)
     assert [w.breakpoints for w in model.p.workflows] == [["calibration"]] * 4
@@ -1532,7 +1532,7 @@ def test_every_block_has_pause_here_for_review_and_the_dot_shows(world, model, p
     assert any(h[1] == "Pause set after {block}" for h in model.history)
     assert graph_faults(page) == []                                             # the dot hides nothing and cuts nothing
     # the menu now shows it checked, and choosing it again takes it off
-    again = next(a for a in menu_of(page, cal, monkeypatch).actions() if a.text() == "Pause here for review")
+    again = next(a for a in menu_of(page, cal, monkeypatch).actions() if a.text() == "Review pause")
     assert again.isChecked()
     again.trigger()
     settle(world["w"], page)
@@ -1540,7 +1540,7 @@ def test_every_block_has_pause_here_for_review_and_the_dot_shows(world, model, p
     assert not pixel_near(page, item_of(page, "calibration"), BREAK_COL)
     # on a block of one workflow only
     leaf = node(page, "post", 2)
-    next(a for a in menu_of(page, leaf, monkeypatch).actions() if a.text() == "Pause here for review").trigger()
+    next(a for a in menu_of(page, leaf, monkeypatch).actions() if a.text() == "Review pause").trigger()
     settle(world["w"], page)
     assert [w.breakpoints for w in model.p.workflows] == [[], ["output"], [], []]
     assert item_of(page, "post", 2).bp == ("pending", 1, 1)
@@ -1563,19 +1563,19 @@ def test_the_dot_says_pending_paused_or_reviewed_and_the_graph_follows(world, mo
     assert "Paused: check this block (Inspect), then Continue from the Run window." in it.toolTip()
     assert "Pause set in 1 workflow of 4." in it.toolTip()                      # only one of the four workflows
     m = menu_of(page, node(page, "calibration"), monkeypatch)
-    assert "Mark as reviewed" in [a.text() for a in m.actions()]
+    assert "Mark reviewed" in [a.text() for a in m.actions()]
     # a second breakpoint, further on, waits (red) until the first is checked
     model.set_breakpoint([p], "empilement")
     pin(model, monkeypatch, "calibration", "empilement")
     settle(world["w"], page)
     assert [model.review_state(p, k) for k in ("calibration", "empilement")] == ["paused", "pending"]
     # Mark as reviewed: green, and the next one is the one the run will wait at
-    next(a for a in m.actions() if a.text() == "Mark as reviewed").trigger()
+    next(a for a in m.actions() if a.text() == "Mark reviewed").trigger()
     settle(world["w"], page)
     assert [model.review_state(p, k) for k in ("calibration", "empilement")] == ["reviewed", "paused"]
     assert item_of(page, "calibration").bp[0] == "reviewed" and pixel_near(page, item_of(page, "calibration"), REVIEWED_COL)
     assert item_of(page, "empilement").bp[0] == "paused"
-    assert any(h[1] == "{block} marked as reviewed" for h in model.history)
+    assert any(h[1] == "{block} reviewed" for h in model.history)
     state = json.loads((Path(world["folder"]) / "state.json").read_text(encoding="utf-8"))
     assert state["reviewed"] == [model.review_key(p, "calibration")]
     # a block that is not computed any more shows as waiting again (the run will go through it, and stop after it)
@@ -1667,11 +1667,11 @@ def test_the_pause_in_french_on_the_graph(world, model, page, monkeypatch):
     assert "Pause définie dans 1 workflow sur 4." in it.toolTip()
     m = menu_of(page, node(page, "calibration"), monkeypatch)
     names = [a.text() for a in m.actions()]
-    assert "Pause ici pour vérification" in names and "Pause here for review" not in names
-    next(a for a in m.actions() if a.text() == "Pause ici pour vérification").trigger()
-    assert page.graph.toast.text() == "L'exécution s'arrêtera après Calibration pour votre vérification dans 4 workflows"
-    for text in ("Pause here for review", "Mark as reviewed", "No more pause after {block}",
-                 "The run will stop after {block} for your review in {n} workflows", "{block} marked as reviewed",
+    assert "Pause vérif" in names and "Review pause" not in names
+    next(a for a in m.actions() if a.text() == "Pause vérif").trigger()
+    assert page.graph.toast.text() == "Pause vérif après Calibration · 4 workflows"
+    for text in ("Review pause", "Mark reviewed", "No more pause after {block}",
+                 "Review pause after {block} · {n} workflows", "{block} reviewed",
                  "Pause set after {block}", "Pause removed after {block}",
                  "Paused: check this block (Inspect), then Continue from the Run window.",
                  "Reviewed: the run goes through while these results stay as they are."):

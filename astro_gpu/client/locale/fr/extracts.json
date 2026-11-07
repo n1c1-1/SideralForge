@@ -1,7 +1,7 @@
 {
  "Offline Gaia extracts": "Extraits Gaia hors ligne",
  "Star positions find where the image points on the sky; star spectra calibrate the colours. Without them, Gaia stars are fetched online and kept in the cache.": "Les positions des étoiles servent à trouver où pointe l'image dans le ciel ; les spectres des étoiles, à calibrer les couleurs. Sans eux, les étoiles Gaia sont demandées en ligne et gardées dans le cache.",
- "Open folder": "Ouvrir le dossier",
+ "Open folder": "Ouvrir dossier",
  "Star positions": "Positions des étoiles",
  "Star spectra": "Spectres des étoiles",
  "Download star positions ({size})": "Télécharger les positions des étoiles ({size})",

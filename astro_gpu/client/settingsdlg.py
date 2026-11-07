@@ -328,7 +328,7 @@ class SettingsDialog(QDialog):
             g.addWidget(note, 1, 0, 1, 4)
             g.setColumnStretch(1, 1)
             v.addWidget(box)
-        add = QPushButton(_("Add a section"))
+        add = QPushButton(_("Add section"))
         add.clicked.connect(self._add_section)
         v.addWidget(add, 0, Qt.AlignLeft)
 
@@ -387,7 +387,7 @@ class SettingsDialog(QDialog):
                             "offline. Download fetches the tiles of the recent projects' solved fields now."),
                           "small", wrap=True))
         r = QHBoxLayout()
-        b = QPushButton(_("Download for offline use"))
+        b = QPushButton(_("Download (offline)"))
         st = label("", "small", wrap=True)
         r.addWidget(b)
         r.addWidget(st, 1)
@@ -546,7 +546,7 @@ class SettingsDialog(QDialog):
                                                "bits"))
         self.row(v, _("Compression"), self.combo([("None", "None", False), ("Rice (FITS)", "Rice (FITS)", False),
                                                   ("Gzip", "Gzip", False)], prefs.get("compression"), "compression"))
-        keep = QCheckBox(_("Keep the calibrated and registered frames after stacking"))
+        keep = QCheckBox(_("Keep calibrated + registered frames"))
         keep.setChecked(bool(prefs.get("keep_frames")))
         keep.toggled.connect(lambda x: prefs.set("keep_frames", x))
         self.row(v, _("Intermediate frames"), keep)
@@ -566,7 +566,7 @@ class SettingsDialog(QDialog):
         tab.horizontalHeader().setStretchLastSection(True)
         tab.setMinimumHeight(140)
         v.addWidget(tab)
-        b = QPushButton(_("Build masters from a folder…"))
+        b = QPushButton(_("Masters from folder…"))
         v.addWidget(b, 0, Qt.AlignLeft)
         self._mark([tab, b], True)
 

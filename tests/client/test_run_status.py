@@ -211,11 +211,11 @@ def test_a_run_that_cannot_start_says_why_in_plain_words_in_the_window_and_the_l
     QApplication.processEvents()
     assert w.ctl.track.never_started and not w.ctl.running
     texts = [lb.text() for lb in d.findChildren(QLabel) if lb.isVisibleTo(d)]
-    assert "L'exécution n'a pas pu démarrer" in texts
+    assert "Exécution non démarrée" in texts
     assert any("accès refusé" in x for x in texts) and not any("Permission" in x or "Errno" in x for x in texts)
-    assert history and history[-1][0] == "The run could not start: {why}"
+    assert history and history[-1][0] == "Run not started: {why}"
     assert event_text(("12:00:00", history[-1][0], history[-1][1]))[1] == \
-        "L'exécution n'a pas pu démarrer : le dossier du projet ne peut pas être écrit : accès refusé"
+        "Exécution non démarrée : le dossier du projet ne peut pas être écrit : accès refusé"
     d.close()
 
 
@@ -224,13 +224,13 @@ def test_run_says_why_it_is_greyed_without_a_block_and_without_lights(world):
     w = world(blocks=[])
     fake = SimpleNamespace(s=w.m)
     assert appmod.no_block(w.m.p.workflows[0])
-    assert appmod.Main.run_refusal(fake, w.m.cost()) == "No block to compute yet: place one from the palette"
+    assert appmod.Main.run_refusal(fake, w.m.cost()) == "No block: place one"
     w2 = world(blocks=[{"block": "stacking"}], lights=False)
-    assert appmod.Main.run_refusal(SimpleNamespace(s=w2.m), w2.m.cost()).startswith("Nothing to compute yet")
+    assert appmod.Main.run_refusal(SimpleNamespace(s=w2.m), w2.m.cost()).startswith("Nothing to compute")
     w2.m.select(step="empilement")
     d = w2.ctl.run_to_here()                       # 6.7: no invented figures, Run greyed with its reason
     assert d.plan.jobs and all(r.dur.text() == "" for r in d.rows)
-    assert d.summary.text() == "Nothing to compute yet" and not d.b_run.isEnabled() and d.b_run.toolTip()
+    assert d.summary.text() == "Nothing to compute" and not d.b_run.isEnabled() and d.b_run.toolTip()
     d.close()
 
 
@@ -298,7 +298,7 @@ def test_the_run_window_warns_about_a_file_of_another_type(world):
 # ---------------------------------------------------------------------------------------------- words
 def test_the_console_counts_blocks_and_the_log_follows_the_language():
     """#3: the console counts blocks; #31: a block's name written in French reads in English; 6.11."""
-    assert render_line((0.0, "starting", {"n": 3})).endswith("Starting the run: 3 blocks")
+    assert render_line((0.0, "starting", {"n": 3})).endswith("Starting: 3 blocks")
     t = RunTrack([runner2.Job("a", "inventory", "calibration", [1], 1, {}), runner2.Job("b", "stack", "stacking", [1],
                                                                                          1, {"inventory": "a"})])
     t.groups = [["a", "b"]]
@@ -315,7 +315,7 @@ def test_the_console_counts_blocks_and_the_log_follows_the_language():
     try:
         assert event_text(row)[1] == 'Empilement ajouté à « W »' or "Empilement" in event_text(row)[1]
         assert i18n._("its Image block has no file yet") != "its Image block has no file yet"
-        assert render_line((0.0, "starting", {"n": 1})).endswith("Démarrage de l'exécution : 1 bloc")
+        assert render_line((0.0, "starting", {"n": 1})).endswith("Démarrage : 1 bloc")
     finally:
         i18n.set_language("en")
 

@@ -204,7 +204,7 @@ def test_what_the_play_test_found_stays_fixed(qapp, tmp_path, monkeypatch):
         m.set_session_filter(1, "Ha")
         settle(w, page)
         ha = m.paths[0]
-        assert m.palette_reason(ha, "color").startswith("a monochrome image") and m.place_indices(ha, "color") == []
+        assert m.palette_reason(ha, "color").startswith("monochrome") and m.place_indices(ha, "color") == []
     finally:
         page.close()
         m.close(save=False)
@@ -297,7 +297,7 @@ def test_the_second_play_test_stays_fixed(qapp, tmp_path, monkeypatch):
     w, m, page = open_page(tmp_path, monkeypatch)
     try:
         page.graph.drag_block = "composition"
-        page.graph.rebuild()                                       # its places: after the split block, no error
+        page.graph.rebuild()                                       # its places: after the Stars/background block, no error
         assert any(getattr(gh, "node", None) is not None for gh in page.graph.ghosts)
         page.graph.drag_block = None
         page.graph.rebuild()
@@ -422,7 +422,7 @@ def test_the_answers_to_the_design_questions(qapp, tmp_path, monkeypatch):
         # 4.4: Registration switched off is not placed a second time
         page.toggle_cut(Graph(m).node_of(m.view(full.pid), "alignement"), None)
         settle(w, page)
-        assert "switched off" in m.palette_reason(m.view(full.pid), "registration")
+        assert "off: switch on" in m.palette_reason(m.view(full.pid), "registration")
         # 10.1: Delete workflow at once, no question
         toasts = []
         page.toasted.connect(toasts.append)

@@ -298,7 +298,7 @@ class LayerRow(QFrame):
         eye.setChecked(lay["visible"])
         eye.setToolTip(_("Show / hide layer"))
         if lay["kind"] == "sub":
-            eye.setToolTip(_("Show / hide this image in its Combine stars & background layers layer"))
+            eye.setToolTip(_("Show / hide this image in its Recombine layer"))
             eye.toggled.connect(lambda v: panel.set_shown(lay["id"], lay["sub"], v))
         else:
             eye.toggled.connect(lambda v: panel.set_visible(lay["id"], v))
@@ -363,7 +363,7 @@ class LayerRow(QFrame):
             tgt = panel.layer(lay.get("target"))
             self.setToolTip(_('Applies to "{name}" only').format(name=layer_name(tgt)) if tgt else "")
         elif lay["kind"] == "filter":
-            self.setToolTip(_("Applies to everything below"))
+            self.setToolTip(_("On all below"))
 
     def set_drop(self, on: bool, text: str = ""):
         """The frame of a drop that nests the dragged filter in this layer; ``text`` (what the drop does) shows in place of
@@ -1040,7 +1040,7 @@ class PostView(QWidget):
 
     def _on_failed(self, seq, kind, text):
         if kind in ("draft", "half", "region", "before", "start"):
-            first = _("The image cannot be computed: {why}").format(why=plain_error(text))
+            first = _("Image not computed: {why}").format(why=plain_error(text))
             if first != self.viewer.banner:                  # said once; the program's error in the Log only
                 log_detail(self.s, text)
             self.viewer.banner = first[:160]
@@ -1273,7 +1273,7 @@ class PostView(QWidget):
             self.rows.append(row)
         waiting = [p for p in self.s.paths if not p.rendered]
         for p in waiting:
-            b = QPushButton(_('"{name}": not computed yet  →').format(name=tr_name(p.name)))
+            b = QPushButton(_('"{name}": to compute  →').format(name=tr_name(p.name)))
             b.setObjectName("link")
             b.clicked.connect(lambda _=False, pid=p.pid: self.goResults.emit(pid))
             self.lbox.addWidget(b)
@@ -1413,7 +1413,7 @@ class PostView(QWidget):
                         "x0": rs[0].geometry().left() + 30 + 4 + INDENT * depth}
         else:
             index = len([r for r in rs[:gap] if not r.depth and r.lay["id"] not in mine])
-            text = _("Applies to everything below") if is_f else ""
+            text = _("On all below") if is_f else ""
             depth = 0
         line_y = below.geometry().top() - 2 if below is not None else rs[-1].geometry().bottom() + 1
         x0 = rs[0].geometry().left() + (34 + INDENT if depth else 30)
@@ -1507,7 +1507,7 @@ class PostView(QWidget):
         out = [(_('"{name}" only').format(name=layer_name(tgt)), tgt["id"])] if tgt else []
         if tgt is not None and is_group(tgt):           # or one of its two images (issue #3)
             out += [(_('"{name}" only').format(name=_(POST_PART_NAMES[sub])), (tgt["id"], sub)) for sub in SUBS]
-        return out + [(_("Everything below"), None)]
+        return out + [(_("All below"), None)]
 
     @staticmethod
     def scope_of(fl):
@@ -1524,7 +1524,7 @@ class PostView(QWidget):
         if lay["kind"] == "filter":
             m.addSeparator()
             for _txt, val in self.scope_choices(lay):
-                a = m.addAction(_("Applies to everything below") if val is None else _("Applies to {what}").format(
+                a = m.addAction(_("On all below") if val is None else _("Applies to {what}").format(
                     what=_txt))
                 a.setCheckable(True)
                 a.setChecked(self.scope_of(lay) == val)
@@ -2359,7 +2359,7 @@ class PostPage3(QWidget):
         ev.setAlignment(Qt.AlignCenter)
         ev.addWidget(label(_("No layers yet"), "h1"), 0, Qt.AlignHCenter)
         ev.addWidget(label(_("Each computed workflow becomes a layer here."), "dim"), 0, Qt.AlignHCenter)
-        b = QPushButton(_("Go to graph  →"))
+        b = QPushButton(_("Graph  →"))
         b.setObjectName("link")
         b.clicked.connect(self.goWorkflow.emit)
         ev.addWidget(b, 0, Qt.AlignHCenter)

@@ -646,12 +646,12 @@ def test_a_block_not_computed_says_so_and_offers_run_to_here(win):
         t.runHere.connect(lambda: got.append(1))
         run.click()
         assert got == [1]
-        assert not any("Preview on a region" in x for x in texts_)       # ◇: Spec mode only
+        assert not any("Preview region" in x for x in texts_)       # ◇: Spec mode only
         shot(win, "inspect_pending")
         prefs.set("spec_mode", True)
         t.refresh()
         settle(win)
-        assert any("Preview on a region" in x for x in texts_of(t))
+        assert any("Preview region" in x for x in texts_of(t))
         prefs.set("spec_mode", False)
     finally:
         s.remove_path(s.index_of(q.pid))
@@ -1155,8 +1155,7 @@ def test_the_image_cache_forgets_the_oldest_within_its_budget():
 
 def test_missing_diagnostics_are_said_plainly_in_the_language():
     e = "rejection maps: missing: recompute Stacking to get it"
-    assert si.missing_text(e) == ("Rejection maps: not in this result, made by an older version of the engine. "
-                                  "Recompute Stacking to get it.")
+    assert si.missing_text(e) == "Rejection maps: older result · recompute Stacking"
 
     class Diag:
         missing = [e, "roundness: missing: recompute Registration to get it"]
@@ -1165,9 +1164,9 @@ def test_missing_diagnostics_are_said_plainly_in_the_language():
     appmod.apply_language("fr")
     try:
         fr = si.missing_of(Diag())
-        assert fr[0].startswith("Les cartes de rejet : pas dans ce résultat") and "Recalculez Empilement" in fr[0]
+        assert fr[0].startswith("Les cartes de rejet : résultat ancien") and "recalculer Empilement" in fr[0]
         assert fr[1].startswith("La rondeur : ") and "Alignement" in fr[1]
-        assert si.not_yet("stack") == "Pas encore disponible : recalculez le bloc Empilement pour l'avoir."
+        assert si.not_yet("stack") == "À recalculer : Empilement"
     finally:
         appmod.apply_language("en")
 

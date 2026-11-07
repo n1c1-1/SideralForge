@@ -277,10 +277,10 @@ if ed is not None:
         ex.click_block(post)
         wait(ex, 0.3)
         log("R post panel", ptexts(ex))
-if not button(panel(ex), _("Delete block"), QPushButton):
+if not button(panel(ex), _("Delete"), QPushButton):
     pass
 sel_fusion()
-if not button(panel(ex), _("Delete block"), QPushButton):
+if not button(panel(ex), _("Delete"), QPushButton):
     N.note("mineur", "Panneau Fusion : pas de bouton « Supprimer le bloc » (le panneau Image en a un)",
            f"Panneau : {ptexts(ex)[:10]}", steps=steps)
 # the fusion's menu
@@ -317,7 +317,7 @@ N.check(any(x.name == "Ha" for x in ex.s.paths), "gênant", "Ctrl+Z ne rend pas 
 n_pop = len(ex.popups)
 it = next((b for b in ex.blocks() if b.node.key == "session" and b.node.sid == 2), None)
 if it is not None:
-    ex.right_click_block(it, _("Delete block"))
+    ex.right_click_block(it, _("Delete"))
     wait(ex, 1.0)
     log("D Ha session removed", [x.name for x in ex.s.paths], fusion_state(q), graph_texts(ex), toasts[-1:])
     N.exceptions(["projet SII+Ha+OIII avec sa Fusion SHO", "clic droit sur la Session Ha", "Supprimer le bloc"])
@@ -339,7 +339,7 @@ for how in ("menu", "cross", "del", "palette"):
     if it is None:
         break
     if how == "menu":
-        ex.right_click_block(it, _("Delete block"))
+        ex.right_click_block(it, _("Delete"))
     elif how == "cross":
         ex.click_block(it, "cross")
     elif how == "del":

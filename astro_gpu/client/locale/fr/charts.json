@@ -33,13 +33,13 @@
   "y offset": "décalage en y",
   "y offset ({unit})": "décalage en y ({unit})",
   "The chart's data as a CSV file, for a spreadsheet (right click: PNG too)": "Les données du graphique en fichier CSV, pour un tableur (clic droit : PNG aussi)",
-  "Drift path (x / y)": "Trajectoire de dérive (x / y)",
+  "Drift path (x / y)": "Dérive (x / y)",
   "The x / y tracking appears once the offsets of the frames are known (Registration).": "Le suivi x / y apparaît quand les décalages des images sont connus (Alignement).",
   "Colour of the lines": "Couleur des raies",
   "Relative response": "Réponse relative",
   "Wavelength (nm)": "Longueur d'onde (nm)",
   "Colour the camera gives to each wavelength": "Couleur que l'appareil donne à chaque longueur d'onde",
   "Share of the signal (%)": "Part du signal (%)",
-  "Approximate spectral response": "Approximation de la réponse spectrale",
+  "Approximate spectral response": "Réponse spectrale (approx.)",
   "Approximate sensor response, rebuilt from {n} stars of the field": "Réponse approchée du capteur, reconstruite à partir de {n} étoiles du champ"
 }

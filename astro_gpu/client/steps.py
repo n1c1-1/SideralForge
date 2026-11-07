@@ -72,10 +72,10 @@ OUTPUT_COLOR_NOTE = ("Final image: the colour-calibrated stack with Post's sugge
 OUTPUT_RAW_NOTE = ("Final image: the stack in the camera's colours, the sky of each channel levelled, with Post's "
                    "suggested stretch. Cropped to the covered area, at half size. Adjust it in Post.")
 STARLESS_NOTE = ("The image without its stars, compared with the image with them (the same stretch: drag the divider). "
-                 "The Stars block's two images go to Post: combined by a Combine stars & background layers block, or as they "
+                 "The Stars block's two images go to Post: combined by a Recombine block, or as they "
                  "are.")
 STARS_NOTE = ("The stars alone: the image minus its starless image, stretched on their own. They go back on the "
-              "starless image with the blend mode of their Combine stars & background layers block, or as a layer of Post.")
+              "starless image with the blend mode of their Recombine block, or as a layer of Post.")
 
 
 def output_note(stage: str, stages: set) -> str:
@@ -304,7 +304,7 @@ class Steps(QObject):
         if key == "denoised" and "denoise" in stages:
             return V("denoised", "Denoised stack", "array", "denoise", "n2n_full", True, True, camera=True)
         if key == "whole" and "render_simple" in stages:
-            return V("whole", "Image with its stars", "array", "render_simple", "lin", True, True, camera=False)
+            return V("whole", "Image with stars", "array", "render_simple", "lin", True, True, camera=False)
         if key == "color" and "color" in stages:
             return V("color", "Colour-calibrated stack", "color", "color", "", True, True, camera=False,
                      base=("stack", "drz_full"))

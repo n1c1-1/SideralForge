@@ -44,11 +44,11 @@ for mid in mids:
         if how == "menu":
             m = ex.right_click_block(it)
             texts = [d.get("text") for d in m]
-            if not any("nvoyer son image" in (t or "") for t in texts):
+            if not any("Vers Post" in (t or "") for t in texts):
                 pp.note_once(f"nomenu_{mid}", "gênant", f"{FR[mid]} : pas d'entrée « Envoyer son image au Post »",
                              f"Menu : {texts}", st + [f"Clic droit sur {FR[mid]}"])
                 continue
-            ex.right_click_block(pp.block(k), "nvoyer son image")
+            ex.right_click_block(pp.block(k), "Vers Post")
         else:
             if not it.ports:
                 pp.note_once(f"noport_{mid}", "gênant", f"{FR[mid]} n'a pas de port ● vers le Post-traitement", "", st)
@@ -85,8 +85,8 @@ for mid in mids:
         print("menu after send:", texts)
         npaths1 = len(ex.s.paths)
         if how == "menu":
-            if any("nvoyer son image" in (t or "") for t in texts):
-                ex.right_click_block(it, "nvoyer son image")
+            if any("Vers Post" in (t or "") for t in texts):
+                ex.right_click_block(it, "Vers Post")
         else:
             if it.ports:
                 pp.pull_port(it)

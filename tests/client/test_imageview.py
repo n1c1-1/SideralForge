@@ -1104,12 +1104,12 @@ def test_overlays_of_the_old_viewer_still_draw(qapp, loader):
 # ---------------------------------------------------------------------------------------------- what Inspect asks
 def test_a_source_that_knows_why_it_is_missing_says_it_alone(qapp, loader):
     def gone():
-        raise iv.Unavailable("Not available yet: recompute Stacking to get it.")
+        raise iv.Unavailable("To recompute: Stacking")
 
     v = make_view(qapp, loader)
     v.set_image(iv.ViewImage(gone, "Rejection", key="gone"))
     assert v.wait(30)
-    assert v.canvas.message == "Not available yet: recompute Stacking to get it."
+    assert v.canvas.message == "To recompute: Stacking"
     v.set_image(iv.ViewImage(lambda: 1 / 0, "Broken", key="broken"))      # any other failure: in plain words, the
     assert v.wait(30) and v.canvas.message == ("This image cannot be shown: an error of the program (the details "
                                                "are in the Log)")         # Python error is for the Log only (9.9)
@@ -1118,7 +1118,7 @@ def test_a_source_that_knows_why_it_is_missing_says_it_alone(qapp, loader):
     toasts = []
     v.toasted.connect(toasts.append)
     v.set_compare_targets([iv.ViewImage(gone, "Gone", key="gone2")], current=0)
-    assert v.wait(30) and v.canvas2.message.startswith("Not available yet") and toasts
+    assert v.wait(30) and v.canvas2.message.startswith("To recompute") and toasts
 
 
 def test_a_picture_for_the_eye_is_shown_as_it_is_and_read_as_levels(qapp, loader):

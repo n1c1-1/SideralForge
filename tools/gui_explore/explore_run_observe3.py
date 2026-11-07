@@ -24,7 +24,7 @@ def hook(t, v, tb):
 
 
 sys.excepthook = hook
-PAUSE = "Pause ici" if LANG == "fr" else "Pause here"
+PAUSE = "Pause vérif" if LANG == "fr" else "Review pause"
 
 
 def P(*a):
@@ -116,7 +116,7 @@ def sc_review():
             ex.settle(5)
     ex.close_dialogs()
     it = blk("calibration")
-    ex.right_click_block(it, "Marquer" if LANG == "fr" else "Mark as reviewed")
+    ex.right_click_block(it, "Marquer" if LANG == "fr" else "Mark reviewed")
     ex.settle(8)
     it = blk("calibration")
     P("  after mark: bp", it.bp, "tip", it.toolTip(), "status", ex.w.status.text())

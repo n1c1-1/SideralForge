@@ -184,7 +184,7 @@ class Fusion(Stage):
             d = Path(inp["stars_dir"] if starless else inp["dir"])
             name = "starless.npy" if starless else "lin.npy"
             if not (d / name).is_file():
-                raise StageError(f"the {inp['role']} channel has no starless image: add Split stars & background to "
+                raise StageError(f"the {inp['role']} channel has no starless image: add Stars/background to "
                                  "its workflow, and run it" if starless else
                                  f"the output of the {inp['role']} channel is not computed")
             valid = np.load(d / "valid.npy")
@@ -266,7 +266,7 @@ class Fusion(Stage):
         if mode == "workflow":
             d = Path(p.stars.get("dir") or "")
             if not (d / "stars.npy").is_file() or not (d / "starless.npy").is_file():
-                raise StageError("the stars' workflow has no Split stars result: add Split stars & background to it, "
+                raise StageError("the stars' workflow has no Split stars result: add Stars/background to it, "
                                  "and run it")
             s = np.stack([star_support(c) for c in np.asarray(np.load(d / "stars.npy"), np.float32)])
             base = np.tensordot(LUM, np.asarray(np.load(d / "starless.npy", mmap_mode="r"), np.float32), 1)

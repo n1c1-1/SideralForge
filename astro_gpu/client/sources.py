@@ -197,14 +197,14 @@ class KindRow(QFrame):
         return prefs.last_folder()                   # issue #32: where the last kind was chosen, not the workspace
 
     def _pick_files(self):
-        fs, _f = QFileDialog.getOpenFileNames(self, _("Choose the {kind}").format(kind=_(KIND_WORD[self.key])),
+        fs, _f = QFileDialog.getOpenFileNames(self, _("Choose {kind}").format(kind=_(KIND_WORD[self.key])),
                                               self._start(), frame_filter())
         if fs:
             prefs.remember_folder(fs[0])
             self.changed.emit(self.key, fs)
 
     def _pick_folder(self):
-        d = QFileDialog.getExistingDirectory(self, _("Choose the {kind}").format(kind=_(KIND_WORD[self.key])),
+        d = QFileDialog.getExistingDirectory(self, _("Choose {kind}").format(kind=_(KIND_WORD[self.key])),
                                              self._start())
         if d:
             prefs.remember_folder(d)
@@ -403,7 +403,7 @@ def edit_session_frames(model, session: int, parent=None, service=None) -> bool:
     chosen = {k: [model.p.abspath(x) for x in getattr(ses, k)] for k, _t, _s in GROUPS}
     first = next(iter(chosen["lights"]), "")
     d = ImportDialog(model, first, True, parent, svc, chosen=chosen,
-                     title=_("Frames of the session {name}").format(name=ses.name))
+                     title=_("Session {name}: frames").format(name=ses.name))
     ok = d.exec()
     scan, picked = d.scan, d.chosen
     d.deleteLater()
@@ -430,7 +430,7 @@ def import_folder(model, parent=None, folder: str | None = None, new_session: bo
         if any(norm_path(model.p.abspath(x)) == norm for x in ses.lights):
             from PySide6.QtGui import QCursor
             from PySide6.QtWidgets import QToolTip
-            QToolTip.showText(QCursor.pos(), _("This folder is already in the project."), parent)   # not blocking (10.2)
+            QToolTip.showText(QCursor.pos(), _("Folder already in project"), parent)   # not blocking (10.2)
             return False
     d = ImportDialog(model, folder, new_session, parent, svc)
     ok = d.exec()
@@ -707,7 +707,7 @@ class SourcesView(QWidget):
             row.clicked.connect(self.select_group)
             self.lv.addWidget(row)
             if key == "lights":
-                b = QPushButton(_("+ Add lights (another night)…"))
+                b = QPushButton(_("+ Lights (another night)…"))
                 b.setObjectName("link")
                 b.clicked.connect(self.add_session)
                 self.lv.addWidget(b)
@@ -1075,7 +1075,7 @@ class SourcesView(QWidget):
             f.excluded = want
         else:
             if not set_calibration_excluded(self.s, f, want, self.items):
-                QMessageBox.information(self, _("Browse"), _("The last frame of a folder cannot be left out."))
+                QMessageBox.information(self, _("Browse"), _("Last frame of folder: kept"))
                 pos = self._seq_order.index(i) if i in self._seq_order else -1
                 if pos >= 0:
                     self.viewer.set_excluded(pos, f.excluded)
@@ -1154,7 +1154,7 @@ class SourcesView(QWidget):
             self.rv.addSpacing(8)
             self.rv.addWidget(label(_("FWHM and transparency are measured at registration. To exclude by thresholds "
                                       "rather than one by one:"), "small", wrap=True))
-            b = QPushButton(_("Frame selection by thresholds  →"))
+            b = QPushButton(_("Select by thresholds  →"))
             b.setObjectName("link")
             b.clicked.connect(lambda: self.goChain.emit("selection"))
             self.rv.addWidget(b)

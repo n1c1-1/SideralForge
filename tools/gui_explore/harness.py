@@ -181,14 +181,15 @@ class Explorer:
         return out
 
     def _find_action(self, m: QMenu, part: str):
-        for a in m.actions():
-            if a.menu() is not None:
-                got = self._find_action(a.menu(), part)
-                if got is not None:
-                    return got
-            elif part.lower() in a.text().replace("&&", "&").lower():
-                return a
-        return None
+        """The action whose text (its shortcut left out) is ``part``, else the first that holds it: "Vers Post" is
+        the block's own item, not "Sans étoiles vers Post"."""
+        def flat(menu):
+            for a in menu.actions():
+                yield from (flat(a.menu()) if a.menu() is not None else (a,))
+        acts = list(flat(m))
+        low = part.lower()
+        return next((a for a in acts if a.text().replace("&&", "&").split("\t")[0].lower() == low), None) or \
+            next((a for a in acts if low in a.text().replace("&&", "&").lower()), None)
 
     def _drop(self, widget: QWidget, pos: QPoint, mime: QMimeData) -> bool:
         pf = QPointF(pos)

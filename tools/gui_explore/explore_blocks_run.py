@@ -226,7 +226,7 @@ def sc_paused():
     ex.open(ex.project("session", "paused"))
     build_chain(["calibration", "registration", "stacking", "gradient"])
     it = ex.block("empilement")
-    ex.right_click_block(it, pick="examen")       # "Pause here for review" (fr: ... pour examen)
+    ex.right_click_block(it, pick="pause")       # "Pause here for review" (fr: ... pour examen)
     ex.settle(4)
 
 

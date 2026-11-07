@@ -13,7 +13,7 @@ The window (app.py ``make_model``) makes one controller per project, after the m
 calls ``watch_graph`` with each new graph, ``attach`` when a project opens (a live run is followed again),
 ``retranslate`` when the project screen is rebuilt and ``close`` when the project closes (the run goes on).
 
-Breakpoints ("Pause here for review", set on the blocks of the graph): ``launch`` and ``run_to_here`` plan the run up to
+Breakpoints ("Review pause", set on the blocks of the graph): ``launch`` and ``run_to_here`` plan the run up to
 the first review not done yet (``ProjectModel.plan_run``); the dialog says "Stops after Calibration for your review", and
 at the end of the run its recap offers Continue (``continue_run``: the review is marked, the run goes on to the next pause
 or to the end) and Open in Inspect (``open_in_inspect``: selects the block, then the window's graph page emits the
@@ -99,7 +99,7 @@ def start_failure(text: str) -> str:
 
 def run_key(key: str) -> str:
     """The block Run to here plans for a block of the views: its own, a block placed twice included ("fond~2"); for
-    Combine stars & background, the Split block it reads (exploration #21: it answered "Nothing to run")."""
+    Recombine, the Split block it reads (exploration #21: it answered "Nothing to run")."""
     return "etoiles" if key == "composition" else key
 
 
@@ -112,7 +112,7 @@ def run_here_refusal(model, key: str | None) -> str:
     """Why Run to here cannot run on this block (English, translated where shown), '' when it can (exploration #29: a
     Session block opened "Nothing to run")."""
     if model is None or model.path is None or not key:
-        return "Select a block of a workflow first"
+        return "Select a block first"
     if key in ("sources", "final") or key.startswith("session"):
         return "A Session block is not computed: select a block after it" if key != "final" else \
             "Post is not computed by a run: select a block of a workflow"
@@ -519,7 +519,7 @@ def render_line(line: Line, title=lambda stage: stage) -> str:
     when = time.strftime("%H:%M:%S", time.localtime(t))
     stage = title(d["stage"]) if d.get("stage") else ""
     if kind == "starting":                       # #3: blocks, as the run window counts them
-        text = plural(d["n"], "Starting the run: {n} block", "Starting the run: {n} blocks")
+        text = plural(d["n"], "Starting: {n} block", "Starting: {n} blocks")
     elif kind == "run_start":
         text = plural(d["n"], "Run started: {n} block · {t}", "Run started: {n} blocks · {t}",
                       t=duration_text(d["sec"], d["measured"]))
@@ -543,9 +543,9 @@ def render_line(line: Line, title=lambda stage: stage) -> str:
     elif kind == "stage_skipped":
         up = ", ".join(title(s) for s in d["upstream"])
         text = (_("{stage} · not run, {up} failed").format(stage=stage, up=up) if up
-                else _("{stage} · not run, an earlier stage failed").format(stage=stage))
+                else _("{stage} · not run, earlier failure").format(stage=stage))
     elif kind == "stop_asked":
-        text = _("Stop asked: the stage in progress stops at its next check")
+        text = _("Stop asked")
     elif kind == "run_end":
         st = d["status"]
         b = d.get("blocks") or {DONE: d[DONE], FAILED: d[FAILED], "notrun": d[SKIPPED] + d[NOT_STARTED]}
@@ -558,12 +558,12 @@ def render_line(line: Line, title=lambda stage: stage) -> str:
             text = _("Run failed: {failed} failed, {skipped} not run").format(failed=b[FAILED], skipped=b["notrun"])
     elif kind == "paused":
         from ..blocks import review_title
-        text = _("Paused for your review at {block}: check it in Inspect, then Continue.").format(
+        text = _("Review pause: {block} · Inspect, then Continue").format(
             block=review_title(d["block"]))
     elif kind == "run_lost":
-        text = _("The run stopped without warning: its process ended")
+        text = _("Run ended unexpectedly")
     elif kind == "not_started":
-        text = _("The run could not start: {why}").format(why=_(d["why"]))
+        text = _("Run not started: {why}").format(why=_(d["why"]))
     else:
         text = kind
     return f"{when}  {text}"
@@ -704,7 +704,7 @@ class RunController(QObject):
     statusChanged = Signal(str)              # the status line of a run in progress ('' when none)
     updated = Signal()                       # the track changed: the dialog, the status widget and the graph redraw
     finished = Signal(str, str)              # status (done | failed | interrupted), one line to flash
-    logRequested = Signal()                  # "Show the log" of the recap
+    logRequested = Signal()                  # "Show log" of the recap
     openInspect = Signal(int, str)           # "Open in Inspect" of a paused run: workflow id, block (of the views)
 
     def __init__(self, model, window=None, console=None, worker: ApiWorker | None = None):
@@ -751,7 +751,7 @@ class RunController(QObject):
         if self.phase == "idle" or t is None:
             return ""
         if self.phase == "starting" or not t.running:
-            return _("Starting the run…")
+            return _("Starting…")
         if self.phase == "stopping":
             return _("Stopping…")
         j = t.current()
@@ -938,8 +938,8 @@ class RunController(QObject):
             else:                                # 6.4: plain words in the console, the history and the window
                 self.append_console(self.track.abort(why).lines)
                 plain = start_failure(why)
-                self.model.log("The run could not start: {why}", why=plain)
-                self.finished.emit("failed", _("The run could not start: {why}").format(why=_(plain)))
+                self.model.log("Run not started: {why}", why=plain)
+                self.finished.emit("failed", _("Run not started: {why}").format(why=_(plain)))
             self._emit_state(False)
         elif channel == self.ch_attach:
             self._attaching = False
@@ -991,10 +991,10 @@ class RunController(QObject):
         self.model.results_changed()
         n, c = t.elapsed(), t.block_count()                  # #3: blocks, as the run window shows them
         if t.status == "done" and self.pause is not None:
-            text = plural(c[DONE], "Run paused for your review at {block}: {n} block in {t}",
-                          "Run paused for your review at {block}: {n} blocks in {t}", block=self.pause_text(), t=hm(n))
+            text = plural(c[DONE], "Review pause at {block}: {n} block in {t}",
+                          "Review pause at {block}: {n} blocks in {t}", block=self.pause_text(), t=hm(n))
             # the history line is written in the language shown when it is read (#31): a template and its words
-            self.model.log("Run paused for your review at {block}", block=self.pause_text())
+            self.model.log("Review pause at {block}", block=self.pause_text())
             line = (time.time(), "paused", {"block": self.pause.block})       # the console says what comes next
             t.lines.append(line)
             self.append_console([line])
@@ -1006,8 +1006,8 @@ class RunController(QObject):
             self.model.log("Run stopped")
         elif t.never_started:                                # 6.4: said in plain words, in the history too
             why = start_failure(t.error)
-            text = _("The run could not start: {why}").format(why=_(why))
-            self.model.log("The run could not start: {why}", why=why)
+            text = _("Run not started: {why}").format(why=_(why))
+            self.model.log("Run not started: {why}", why=why)
         else:
             text = _("Run failed: {failed} failed, {skipped} not run").format(failed=c[FAILED], skipped=c["notrun"])
             self.model.log("Run failed: {failed} failed, {skipped} not run", failed=c[FAILED], skipped=c["notrun"])

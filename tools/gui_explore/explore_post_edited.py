@@ -23,11 +23,11 @@ for how in ("menu", "port"):
     w = pp.wires()[0]
     pp.click_wire(w)
     pp.del_key()
-    ex.right_click_block(pp.block("couleur"), "nvoyer son image")
+    ex.right_click_block(pp.block("couleur"), "Vers Post")
     print("after remove + send back:", count(), (ex.s.p.post or {}).get("edited"))
     c0 = count()
     if how == "menu":
-        ex.right_click_block(pp.block("fond"), "nvoyer son image")
+        ex.right_click_block(pp.block("fond"), "Vers Post")
     else:
         pp.pull_port(pp.block("fond"))
     ex.settle(6)
@@ -54,7 +54,7 @@ for how in ("menu", "port"):
     pp.pull_port(pp.block("etoiles"), "starless")
     c0 = count()
     if how == "menu":
-        ex.right_click_block(pp.block("couleur"), "nvoyer son image")
+        ex.right_click_block(pp.block("couleur"), "Vers Post")
     else:
         pp.pull_port(pp.block("couleur"))
     ex.settle(6)
@@ -83,7 +83,7 @@ for edited in (False, True):
     if edited:
         pp.click_wire(pp.wires()[0])
         pp.del_key()
-        ex.right_click_block(pp.block("fond"), "nvoyer son image")
+        ex.right_click_block(pp.block("fond"), "Vers Post")
     c0 = count()
     ex.drag_palette_hover("denoise", ex.view.viewport().rect().center())
     gh = [g for g in ex.ghosts() if getattr(g, "branch_key", None)]

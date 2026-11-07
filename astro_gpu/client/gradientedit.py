@@ -281,7 +281,7 @@ class GradientEditor(QObject):
         self._ui["size"] = sz
         row = QHBoxLayout()
         if sampled:
-            g = QPushButton(_("Generate the grid"))
+            g = QPushButton(_("Generate grid"))
             g.setToolTip(_("Editable samples on a regular grid, the brighter areas left out (Object rejection), in "
                            "place of the ones the block chooses at each run; then move or remove them by hand"))
             g.clicked.connect(self.generate)

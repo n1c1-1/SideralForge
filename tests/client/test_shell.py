@@ -419,7 +419,7 @@ def test_french_and_back_rebuild_the_menus(env, qapp):
     assert d.windowTitle() == "Paramètres" and d.nav.item(0).text() == "Général"
     assert w.windowTitle() == "SideralForge · Accueil" and w.screens.currentWidget() is w.home
     assert w.home.sections[0].count.text() == "3 projets"
-    assert [m.text() for m in w.mode_btns] == ["Graphe", "Inspection", "Post-traitement"]
+    assert [m.text() for m in w.mode_btns] == ["Graphe", "Inspection", "Post"]
     assert prefs.get("language") == "fr"
     saved = json.loads(Path(os.environ["ASTRO_GPU_SETTINGS"]).read_text(encoding="utf-8"))
     assert saved["language"] == "fr"

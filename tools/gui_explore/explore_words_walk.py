@@ -712,10 +712,10 @@ if part("rich"):
     screen("graph/rich_two_flows", graph=True)
     # actions from the menus: switch off, pause, send to Post, a refused delete, rename, template, duplicate
     for nid_key, pick in (("fond", "Switch off" if LANG == "en" else T("Switch off")),
-                          ("debruitage", T("Pause here for review")),
-                          ("empilement", T("Send its image to Post")),
-                          ("astrometrie", T("Delete block")),
-                          ("calibration", T("Delete block"))):
+                          ("debruitage", T("Review pause")),
+                          ("empilement", T("To Post")),
+                          ("astrometrie", T("Delete")),
+                          ("calibration", T("Delete"))):
         it = next((x for x in ex.blocks() if x.node.key == nid_key or x.node.key.startswith(nid_key)), None)
         if it is None:
             continue
@@ -796,11 +796,11 @@ if part("fusion"):
         ex.settle(4)
     it = next((x for x in ex.blocks() if x.node.key == "etoiles"), None)
     if it is not None:
-        items = ex.right_click_block(it, T("Send the starless image to Post"))
+        items = ex.right_click_block(it, T("Starless to Post"))
         ex.settle(5)
         screen("action/starless_to_post", graph=True, extra=menu_texts(items, "menu of split"))
         it = next((x for x in ex.blocks() if x.node.key == "etoiles"), None)
-        items = ex.right_click_block(it, T("New Combine stars & background layers block"))
+        items = ex.right_click_block(it, T("+ Recombine"))
         ex.settle(5)
         screen("action/new_combine", graph=True, extra=menu_texts(items, "menu of split"))
     walk_graph("image_split", inspect=True)

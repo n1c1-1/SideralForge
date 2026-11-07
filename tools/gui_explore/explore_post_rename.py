@@ -20,7 +20,7 @@ def rename_to(name):
 
 session_project(ex)
 build_chain(ex, CHAINS["stars"])
-ex.right_click_block(pp.block("etoiles"), "Envoyer l'image sans")
+ex.right_click_block(pp.block("etoiles"), "Sans étoiles vers Post")
 print("before rename:", pp.graph_layers())
 ex.dialog_handler = rename_to("M31 final")
 ex.right_click_block(pp.block("etoiles"), "Renommer")
@@ -43,7 +43,7 @@ ex.shot("rename_1366")
 ex.click_block(pp.block("etoiles"))
 btns = [b for b in ex.page.panel.findChildren(QPushButton) if b.isVisible()]
 print("split panel buttons:", [(b.text(), b.toolTip()) for b in btns])
-out = [b for b in btns if b.text() == "Retirer du Post"]
+out = [b for b in btns if b.text() == "Hors Post"]
 t0 = pp.toast()
 if out:
     n0 = len(pp.graph_layers())
@@ -59,7 +59,7 @@ if out:
                      ST + ["Clic droit sur Split > Envoyer l'image sans étoiles", "Clic sur Split",
                            "Panneau : « Retirer du Post »"])
 btns = [b for b in ex.page.panel.findChildren(QPushButton) if b.isVisible()]
-to = [b for b in btns if b.text() == "Vers le Post"]
+to = [b for b in btns if b.text() == "Vers Post"]
 t0 = pp.toast()
 if to:
     ex.click(to[0])
@@ -72,7 +72,7 @@ if to:
 # Combine panel: Delete block, Ctrl+Z
 cb = pp.blocks_of("composition")[0]
 ex.click_block(cb)
-db = [b for b in ex.page.panel.findChildren(QPushButton) if b.isVisible() and b.text() == "Supprimer le bloc"]
+db = [b for b in ex.page.panel.findChildren(QPushButton) if b.isVisible() and b.text() == "Supprimer"]
 n0 = len(pp.blocks_of("composition"))
 if db:
     ex.click(db[0])

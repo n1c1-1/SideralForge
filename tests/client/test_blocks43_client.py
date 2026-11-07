@@ -123,9 +123,9 @@ def test_switching_a_block_off_draws_it_so_refuses_what_cannot_and_undoes(world)
     assert Graph(m).node_of(m.path, "fond").cut and m.p.workflow(1).blocks is not None
     page.toggle_cut(Graph(m).node_of(m.path, "astrometrie"), None)          # Color needs it
     settle(world)
-    assert not m.is_cut(m.path, "astrometrie") and "Color needs it" in toasts[-1]
+    assert not m.is_cut(m.path, "astrometrie") and "needed by Color" in toasts[-1]
     page.toggle_cut(Graph(m).node_of(m.path, "empilement"), None)           # it turns frames into an image
-    assert not m.is_cut(m.path, "empilement") and toasts[-1].startswith("Stacking turns a series of frames")
+    assert not m.is_cut(m.path, "empilement") and toasts[-1].startswith("Stacking: frames → image")
     m.undo()
     settle(world)
     assert not m.is_cut(m.path, "fond")

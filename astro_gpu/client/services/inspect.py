@@ -889,7 +889,7 @@ def block_of(stage: str) -> str:
 def not_yet(stage: str) -> str:
     """The words for a diagnostic the engine does not give yet, or that this result does not hold (translated)."""
     from ..i18n import _
-    return _("Not available yet: recompute {block} to get it.").format(block=_(block_of(stage)))
+    return _("To recompute: {block}").format(block=_(block_of(stage)))
 
 
 _MISSING = re.compile(r"^(.*): missing: recompute (.*) to get it\.?$")
@@ -904,8 +904,7 @@ def missing_text(entry: str) -> str:
         return _("Not in this result.")
     what, stage = m.group(1).strip(), m.group(2).strip()
     w = _(what)
-    return _("{what}: not in this result, made by an older version of the engine. Recompute {stage} to get "
-             "it.").format(what=w[:1].upper() + w[1:], stage=_(stage))
+    return _("{what}: older result · recompute {stage}").format(what=w[:1].upper() + w[1:], stage=_(stage))
 
 
 def missing_of(obj, word: str = "") -> list[str]:
@@ -915,7 +914,7 @@ def missing_of(obj, word: str = "") -> list[str]:
 
 def not_computed(stage: str) -> str:
     from ..i18n import _
-    return _("{block} is not computed for this workflow.").format(block=_(block_of(stage)))
+    return _("{block}: not computed here").format(block=_(block_of(stage)))
 
 
 def _unavailable(text: str):

@@ -121,7 +121,7 @@ class ExportDialog(QDialog):
         self.warn.setWordWrap(True)
         v.addWidget(self.warn)
         v.addWidget(label(_("Include"), "h2"))
-        self.c_wcs = self._check(v, _("Astrometric solution (WCS) in the header"), True)
+        self.c_wcs = self._check(v, _("Astrometry (WCS) in header"), True)
         self.c_hist = self._check(v, _("Processing history (a file next to the image; in the header too for FITS)"),
                                   True)
         self.c_layers = self._check(v, _("Each layer as a separate file"), False)

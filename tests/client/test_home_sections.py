@@ -195,7 +195,7 @@ def test_settings_edit_the_sections(env, qapp):
     assert d.sec_rows[0]["folder"].isEnabled() and d.sec_rows[0]["folder"].text() == env["ws"].as_posix()
     removes = [b for b in d.pages.currentWidget().findChildren(QPushButton) if b.text() == "Remove"]
     assert len(removes) == 2 and all(b.isEnabled() for b in removes)        # every section can go
-    add = next(b for b in d.pages.currentWidget().findChildren(QPushButton) if b.text() == "Add a section")
+    add = next(b for b in d.pages.currentWidget().findChildren(QPushButton) if b.text() == "Add section")
     add.click()
     qapp.processEvents()
     assert len(d.sec_rows) == 3 and len(home.section_rows()) == 3

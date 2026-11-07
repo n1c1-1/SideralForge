@@ -46,7 +46,7 @@ if pp.wires():
     if not any("nvoyer" in (d.get("text") or "") for d in m):
         pp.note_once("image_no_sendback", "gênant", "Bloc Image : fil retiré, pas de « Envoyer son image au Post »",
                      f"Menu : {[d.get('text') for d in m]}", st + ["Retirer son fil vers Post-traitement"])
-    ex.right_click_block(pp.block("image"), "nvoyer son image")
+    ex.right_click_block(pp.block("image"), "Vers Post")
     summary("image sent back")
 
 # ---------------------------------------------------------------- 2. a blank project: an empty Session (no frames)
@@ -175,8 +175,8 @@ for f in ("Ha", "OIII"):
     texts = [d.get("text") for d in m]
     print(f"channel {f} stacking menu:", texts, "ports", it.ports)
     pp.check_texts("menu d'un canal", pp.menu_texts(m), st2)
-    if any("nvoyer son image" in (t or "") for t in texts):
-        ex.right_click_block(it, "nvoyer son image")
+    if any("Vers Post" in (t or "") for t in texts):
+        ex.right_click_block(it, "Vers Post")
         g2 = summary(f"channel {f} sent")
         if any(n == f for n, _ in g2) or len(g2) > len(gl):
             print("channel became a layer")
@@ -193,7 +193,7 @@ print("wires now:", [w.toolTip() for w in pp.wires()])
 # delete the Fusion: do the channels come back as layers?
 fu = pp.block("fusion")
 if fu is not None:
-    ex.right_click_block(fu, "Supprimer le bloc")
+    ex.right_click_block(fu, "Supprimer")
     pp.check_slot_errors("Supprimer la Fusion", st2)
     g3 = summary("fusion deleted")
     pp.undo()

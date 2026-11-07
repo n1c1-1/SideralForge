@@ -626,7 +626,7 @@ class TuneView(QWidget):
         self.select(index=self.s.index_of(pid))
         q = self.s.view(pid)
         if q is not None:
-            self.toasted.emit(_('Variant "{name}": it shares everything up to this block').format(name=q.name))
+            self.toasted.emit(_('Variant "{name}" created').format(name=q.name))
 
     # ------------------------------------------------------------ refresh
     def request_refresh(self, *_a):
@@ -1230,7 +1230,7 @@ class TuneView(QWidget):
     def _neutral_box(self, v: ImageView, compare: bool = False) -> QCheckBox:
         """Neutral sky as an explicit display option of a picture in the camera's colours (``compare``: of the
         before of a before / after). It follows the stretch panel's own Neutral sky."""
-        c = QCheckBox(_("Neutral sky on the before (display only)") if compare else _("Neutral sky (display only)"))
+        c = QCheckBox(_("Neutral sky on before (display)") if compare else _("Neutral sky (display)"))
         c.setToolTip(_("Each channel scaled on the screen so that the sky is grey and the stars white. The data stay "
                        "in the camera's colours."))
         if compare:
@@ -1391,7 +1391,7 @@ class TuneView(QWidget):
     def _image_failed(self, slot: int, token: int, why: str):
         if slot != 0 or token != self._render_token or self.view is None:
             return
-        self.view.canvas.message = _("This image is not available: {why}").format(why=why)
+        self.view.canvas.message = _("Image unavailable: {why}").format(why=why)
         self.view.canvas.update()
 
     def _show_render(self, im):
@@ -1687,7 +1687,7 @@ class TuneView(QWidget):
             row.addWidget(b)
         row.addSpacing(14)
         todo = [it for it in flagged if not it.excluded]
-        ex = QPushButton(_("Exclude the suspicious frames ({n})").format(n=len(todo)))
+        ex = QPushButton(_("Exclude suspicious ({n})").format(n=len(todo)))
         ex.setEnabled(bool(todo))
         ex.setToolTip(_("Leaves every suspicious frame out of the master in one go: Calibration is then computed "
                         "again. Include takes a frame back; a folder left empty comes back with Add a folder."))
@@ -1711,8 +1711,8 @@ class TuneView(QWidget):
         res = self.s.leave_out_calibration([(it.session, it.kind, it.path) for it in todo],
                                            [(g.session, g.kind, g.path, g.excluded) for g in items
                                             if g.session is not None])
-        msg = plural(res["done"], "{n} suspicious frame left out of the master: Calibration is to compute again.",
-                     "{n} suspicious frames left out of the master: Calibration is to compute again.")
+        msg = plural(res["done"], "{n} suspicious frame out of master · Calibration to recompute",
+                     "{n} suspicious frames out of master · Calibration to recompute")
         if res["emptied"]:
             msg += " " + no_frames_text(kind)
         self._cal_filter.clear()
@@ -1745,7 +1745,7 @@ class TuneView(QWidget):
         targets = [x.id for x in P.sessions if not getattr(x, kind)] or [x.id for x in P.sessions]
         done = [sid for sid in targets if self.s.add_calibration_folder(sid, kind, folder)]
         if done:
-            self.toasted.emit(_("Folder added: Calibration is to compute again."))
+            self.toasted.emit(_("Folder added · Calibration to recompute"))
         return bool(done)
 
     @property
@@ -1760,12 +1760,12 @@ class TuneView(QWidget):
             self._excl_mark = None
             if self.view is not None:
                 self.view.set_excluded(i, not excluded)
-            self.toasted.emit(_("The last frame of a folder cannot be left out."))
+            self.toasted.emit(_("Last frame of folder: kept"))
             return
         it.excluded = excluded
         self._count_line_update(group if group is not None else items)
-        self.toasted.emit((_("{file} left out of the master: Calibration is to compute again.") if excluded else
-                           _("{file} taken back into the master.")).format(file=it.name))
+        self.toasted.emit((_("{file} out of master · Calibration to recompute") if excluded else
+                           _("{file} back in master")).format(file=it.name))
 
     def _stats_ready(self, path: str, _st: dict):
         v = self.view
@@ -2166,8 +2166,8 @@ class TuneView(QWidget):
     def _no_data(p) -> str:
         """Why nothing of this workflow can be computed yet, in the status bar's words (exploration #36)."""
         if p.source is None:
-            return _("No lights yet: add them in the Session block.")
-        return _("No image file yet: choose it in the Image block.")
+            return _("No lights: add them in Session")
+        return _("No image file: choose it in Image")
 
     def pending(self, p, k, state="pending"):
         from .services.run import plan_to
@@ -2187,7 +2187,7 @@ class TuneView(QWidget):
         rb.setObjectName("primary")
         box.addWidget(rb, 0, Qt.AlignHCenter)
         if prefs.spec():
-            pv = QPushButton(_("Preview on a region") + "  ·  " + duration_text(max(plan.seconds / 12, 30), False) + "  ◇")
+            pv = QPushButton(_("Preview region") + "  ·  " + duration_text(max(plan.seconds / 12, 30), False) + "  ◇")
             pv.setToolTip("◇ " + _("Not in the engine yet."))
             pv.setEnabled(False)
             box.addWidget(pv, 0, Qt.AlignHCenter)
