@@ -988,7 +988,7 @@ def test_cache_only_calibrate_gives_the_same_frames_as_a_full_run(tmp_path, stat
     info = runner2.prepare_run(p, plan, "cpu")
     assert runner2.run_plan(p.root, info.plan_file, echo=False) == "done"
     msgs = [e.get("msg") or "" for e in runner2.read_events(p.root, info.offset, info.run_id)[0]]
-    assert any("rebuilt with the masters" in m for m in msgs)
+    assert any("rebuilt with the masters" in m for m in msgs), msgs
     assert not any("reading darks" in m or "reading flats" in m for m in msgs)      # no master was made again
     assert {"cache": digest(cache), "stats": digest(cal / "frame_stats.npy"),
             "dark": digest(cal / "master_dark.npy")} == full

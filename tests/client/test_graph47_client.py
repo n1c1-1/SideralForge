@@ -524,6 +524,67 @@ def test_a_wire_taken_away_stays_away_and_what_is_sent_after_still_goes_to_post(
         w.stop()
 
 
+def test_branch_names_are_numbered_as_names_not_by_their_blocks_number(qapp, tmp_path, monkeypatch):
+    """GUI exploration 4: a branch whose new block is the chain's second Gradient was named "… · Gradient 2", and the
+    next one "… · Gradient 2 2". Branches are named by their block's kind, numbered only to stay unique."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        full = m.paths[0]
+        if "fond" not in m.display_keys(full):
+            page.place_block("gradient", full.pid)
+            settle(w, page)
+        names = []
+        for key in ("astrometrie", "fond", "fond"):
+            q, _k = m.add_branch(m.view(full.pid), key, "gradient")
+            names.append(q.name)
+        assert names == [f"{full.name} · Gradient", f"{full.name} · Gradient 2", f"{full.name} · Gradient 3"]
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_new_projects_template_is_saved_with_it(qapp, tmp_path, monkeypatch):
+    """GUI exploration 4: the template chosen when the project is made is part of it: saved at once (closing the
+    project then asks nothing, and it reopens with its workflow, not empty with no template window)."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        n0 = len(m.paths)
+        d = page.new_workflow(fresh=True)
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "classic"))
+        d.name.setText("Made")
+        d.ok.click()
+        settle(w, page)
+        assert len(m.paths) == n0 + 1 and not m.dirty and not m.can_undo()
+        assert "Made" in [x.name for x in project2.load(m.root).workflows]
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_post_saving_its_layers_keeps_the_workflows_not_computed_yet(qapp, tmp_path, monkeypatch):
+    """GUI exploration 4: Post holds layers only for the computed workflows; its saving a composition (a filter added)
+    does not take the others' images out of Post (they used to be listed as removed, their wires gone for good)."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        full = m.paths[0]
+        q, _key = m.add_branch(full, "astrometrie", "gradient")
+        settle(w, page)
+        before = set(Graph(m).to_post)
+        assert q.pid in before
+        post_page = type("PostView", (), {"is_post_page": True})()
+        lay = {"id": 50, "kind": "filter", "filter": "curves", "name": "Curves", "visible": True, "opacity": 100.0,
+               "mode": "Normal", "params": {}, "mask": None}
+        m.set_post_layers([lay], post_page)                                      # nothing computed: no workflow layer
+        settle(w, page)
+        assert not m.post_removed() and set(Graph(m).to_post) == before
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
 def test_an_image_dropped_is_placed_empty_and_the_new_flow_zone_offers_no_template(qapp, tmp_path, monkeypatch):
     """The third use: an Image dropped is placed like a Session, its file chosen in its panel (no template window);
     without its file it is not run; once a graph is begun the new-flow zone takes drops only (no template)."""

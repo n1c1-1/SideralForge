@@ -72,8 +72,14 @@ def settle(w, page):
 
 
 def close(w, m, page):
+    """As the window closes a project: the import's frame service stopped too (its threads left running crashed the
+    test process at its exit)."""
+    from astro_gpu.client.services.inspect import _services
+    sv = _services.get(m)
     page.close()
     m.close(save=False)
+    if sv is not None:
+        sv.stop()
     w.stop()
 
 
@@ -315,3 +321,28 @@ def test_import_words_and_where_a_new_project_goes(tmp_path, monkeypatch):
         assert i18n._("Dark flats") == "Darks de flat" and i18n._("Flat darks") == "Darks de flat"
     finally:
         i18n.set_language("en")
+
+
+def test_new_project_is_never_proposed_in_the_frames_last_added(tmp_path, monkeypatch):
+    """GUI exploration 4: darks just added to a session (their folder the last one used), Home > New project proposes
+    where the projects are, never inside the darks' folder; with no project yet, not in a folder of frames either."""
+    from astro_gpu.client import home
+    monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
+    prefs.load()
+    darks = tmp_path / "data" / "darks"
+    fits_file(darks / "D_001.fits")
+    prefs.remember_folder(darks)
+    assert Path(home.projects_location()) != darks                          # no project yet: not the frames' folder
+    (tmp_path / "projects").mkdir()
+    prefs.add_recent((tmp_path / "projects" / "First").as_posix(), "First")
+    seen = []
+
+    class Dialog:
+        def __init__(self, location, *a):
+            seen.append(Path(location))
+
+        def exec(self):
+            return False
+    monkeypatch.setattr(home, "NewProjectDialog", Dialog)
+    home.HomeView.ask_new_project(SimpleNamespace(window=lambda: None))
+    assert seen == [tmp_path / "projects"]

@@ -216,14 +216,33 @@ class InputScan:
     def __init__(self) -> None:
         self._sessions: dict[tuple, dict[str, list[tuple[Path, int]]]] = {}
         self._files: dict[str, list] = {}
+        self._abs: dict[tuple[str, str], str] = {}
+        self._frames: dict[tuple, list[list]] = {}     # frames(): the estimates of a large project ask it thousands
+                                                        # of times (GUI exploration 4: 9 to 40 s at its opening)
 
     def forget(self) -> None:
         self._sessions.clear()
         self._files.clear()
+        self._abs.clear()
+        self._frames.clear()
+
+    def _entries(self, project: Project2, session: Any) -> tuple:
+        """A session's folder and file lists, absolute: what its frames are found from."""
+        root = str(getattr(project, "root", ""))
+        out = []
+        for k in KINDS:
+            row = []
+            for f in getattr(session, k):
+                a = self._abs.get((root, f))
+                if a is None:
+                    a = self._abs[(root, f)] = _absolute(project, f)
+                row.append(a)
+            out.append(tuple(row))
+        return tuple(out)
 
     def session_frames(self, project: Project2, session: Any) -> dict[str, list[tuple[Path, int]]]:
         """{kind: [(file, size)]} of one session, as list_frames finds them."""
-        entries = tuple(tuple(_absolute(project, f) for f in getattr(session, k)) for k in KINDS)
+        entries = self._entries(project, session)
         got = self._sessions.get(entries)
         if got is None:
             got = {}
@@ -246,10 +265,19 @@ class InputScan:
         A frame of a session after the project's first carries that session's id (issue #56): capture programs
         number every night's frames alike ("Light_001.fits", the same size, even the same dates on a camera whose
         clock was reset), so that two nights' frames would be taken for the same ones. The first session's frames
-        carry none: a project of one session, and the first night of several, keep their keys."""
-        out: list[list] = []
+        carry none: a project of one session, and the first night of several, keep their keys.
+
+        The list is cached (until ``forget``) and shared: read it, never change it."""
         first = min((s.id for s in project.sessions), default=None)
         sessions = (sessions if sessions is not None else project.sessions) if sid is None else [project.session(sid)]
+        memo = (first, tuple((s.id, self._entries(project, s)) for s in sessions))
+        got = self._frames.get(memo)
+        if got is None:
+            got = self._frames[memo] = self._list_frames(project, sessions, first)
+        return got
+
+    def _list_frames(self, project: Project2, sessions: list, first: int | None) -> list[list]:
+        out: list[list] = []
         for kind in KINDS:
             sizes: dict[Path, int] = {}
             tag: dict[Path, int | None] = {}

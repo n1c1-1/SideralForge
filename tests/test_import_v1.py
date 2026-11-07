@@ -434,8 +434,8 @@ def test_the_reference_image_goes_to_inputs_or_is_dropped(tmp_path):
 # ---------------------------------------------------------------------------------------------- heart_a7s (a copy)
 
 HEART = Path("F:/astro_essais/projets/heart_a7s")
-FULL_CHAIN = ["inventory", "calibrate", "register", "stack", "astrometry", "catalogs", "gradient", "color", "denoise",
-              "render_simple", "star_removal"]
+FULL_CHAIN = ["inventory", "calibrate", "register", "stack", "astrometry", "catalogs", "surveys", "gradient", "color",
+              "denoise", "render_simple", "star_removal"]
 
 
 def _up_to_date(root: Path, chain: list[str], logs: Path) -> list[str]:

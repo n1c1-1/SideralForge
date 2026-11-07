@@ -1163,8 +1163,10 @@ class PostView(QWidget):
         self._save_t.start(0)
 
     def _undo_buttons(self):
-        self.b_undo.setEnabled(bool(self.undo))
-        self.b_redo.setEnabled(bool(self.redo))
+        can = getattr(self.s, "can_undo", None)          # with none of Post's, the workflows' (do_undo)
+        self.b_undo.setEnabled(bool(self.undo) or bool(can and can()))
+        can = getattr(self.s, "can_redo", None)
+        self.b_redo.setEnabled(bool(self.redo) or bool(can and can()))
 
     def _set_workflow_param(self, p, stage, name, value):
         """A setting of the workflow shown here (its Output's channels): a step of Post's Undo too (2.4), undone by the
@@ -1174,37 +1176,43 @@ class PostView(QWidget):
         self.redo.clear()
         self._undo_buttons()
 
-    def do_undo(self):
-        if self.undo and self.undo[-1] is MODEL_STEP:
-            self.undo.pop()
-            self._restoring = True                      # (the composition it puts back is not a step of Post's)
-            try:
-                if self.s.undo():
-                    self.redo.append(MODEL_STEP)
-            finally:
-                self._restoring = False
-            self.rebuild()
-            self._undo_buttons()
-        elif self.undo:
+    def do_undo(self) -> bool:
+        """Post's last change undone; with none left, the workflows' (a "To Post" made in the graph, say): one Undo
+        for the whole window. True when it was the workflows' step."""
+        if self.undo and self.undo[-1] is not MODEL_STEP:
             self.redo.append(snapshot(self.layers))
             self.layers = self.undo.pop()
             self._restored()
+            return False
+        if self.undo:
+            self.undo.pop()
+        return self._model_step(getattr(self.s, "undo", None), self.redo)
 
-    def do_redo(self):
-        if self.redo and self.redo[-1] is MODEL_STEP:
-            self.redo.pop()
-            self._restoring = True
-            try:
-                if self.s.redo():
-                    self.undo.append(MODEL_STEP)
-            finally:
-                self._restoring = False
-            self.rebuild()
-            self._undo_buttons()
-        elif self.redo:
+    def do_redo(self) -> bool:
+        if self.redo and self.redo[-1] is not MODEL_STEP:
             self.undo.append(snapshot(self.layers))
             self.layers = self.redo.pop()
             self._restored()
+            return False
+        if self.redo:
+            self.redo.pop()
+        return self._model_step(getattr(self.s, "redo", None), self.undo)
+
+    def _model_step(self, fn, other: list) -> bool:
+        """A step of the workflows' Undo taken back or redone from here: the composition it puts back is not a step
+        of Post's."""
+        if fn is None:
+            return False
+        self._restoring = True
+        try:
+            done = fn()
+            if done:
+                other.append(MODEL_STEP)
+        finally:
+            self._restoring = False
+        self.rebuild()
+        self._undo_buttons()
+        return done
 
     def _restored(self):
         if self.sel and not self.layer(self.sel[0]):

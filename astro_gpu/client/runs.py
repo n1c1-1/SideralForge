@@ -63,6 +63,8 @@ ROW_H = 28
 #: why nothing can be computed yet (the status bar's words; exploration 6.7 and #36)
 NO_DATA = "Nothing to compute: add lights or image"
 ROWS_MAX_H = 440
+#: the recap's lines scroll past this height (GUI exploration 4)
+RECAP_MAX_H = 170
 
 
 # ---------------------------------------------------------------------------------------------- the rows
@@ -382,6 +384,22 @@ class RunDialog(QDialog):
         self.hint = label("", "small", wrap=True)
         v.addWidget(self.hint)
         self.recap = Box(OK)
+        # its lines scroll past a few lines (GUI exploration 4: 72 blocks not started ran out of the box, cut mid-name)
+        self.recap_area = QScrollArea()
+        self.recap_area.setWidgetResizable(True)
+        self.recap_area.setFrameShape(QFrame.NoFrame)
+        self.recap_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.recap_area.setMaximumHeight(RECAP_MAX_H)
+        self.recap_area.setStyleSheet("QScrollArea { background: transparent; }")
+        lines = QWidget()
+        lines.setObjectName("recaplines")
+        lines.setStyleSheet("QWidget#recaplines { background: transparent; }")
+        self.recap_area.viewport().setAutoFillBackground(False)
+        self.recap_lines = QVBoxLayout(lines)
+        self.recap_lines.setContentsMargins(0, 0, 0, 0)
+        self.recap_lines.setSpacing(6)
+        self.recap_area.setWidget(lines)
+        self.recap.v.addWidget(self.recap_area)
         self.recap.hide()
         v.addWidget(self.recap)
         self.review = Box(PAUSE_COL)                                   # the pause: what to do now
@@ -747,8 +765,8 @@ class RunDialog(QDialog):
     def _fill_recap(self, t: RunTrack):
         """What happened, in plain words: computed, failed, not run because of what, stopped."""
         box = self.recap
-        while box.v.count():
-            it = box.v.takeAt(0)
+        while self.recap_lines.count():
+            it = self.recap_lines.takeAt(0)
             if it.widget() is not None:                    # hidden at once: a rebuild never shows it twice (#35)
                 it.widget().hide()
                 it.widget().deleteLater()
@@ -804,8 +822,12 @@ class RunDialog(QDialog):
             lb = label(text, None, wrap=True)
             if color:
                 lb.setStyleSheet(f"color: {color};")
-            box.v.addWidget(lb)
+            self.recap_lines.addWidget(lb)
             lb.show()
+        # as tall as its lines at the dialog's width, up to RECAP_MAX_H; past it, a scroll bar
+        width = max(self.recap_area.viewport().width(), self.width() - 60, 200)
+        h = self.recap_lines.totalHeightForWidth(width)
+        self.recap_area.setMinimumHeight(min(h if h > 0 else self.recap_lines.sizeHint().height(), RECAP_MAX_H))
 
     def _named(self) -> dict[int, str]:
         """The rows' names in the recap: a name two rows share says its workflows (#34: "Stacking, Stacking")."""

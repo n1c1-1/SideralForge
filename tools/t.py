@@ -106,7 +106,9 @@ def main(argv: list[str]) -> int:
     cmd += ["-n", str(n), "--dist", DIST] if n > 0 else (["-p", "no:xdist"] if _has_xdist() else [])
     cmd += rest
     print(f"level {level}: " + (f"{n} workers" if n > 0 else "one process") + "  |  " + shlex.join(cmd[2:]), flush=True)
-    return subprocess.call(cmd, cwd=ROOT, env=env)
+    low = os.environ.get("ASTRO_TEST_LOW_PRIORITY") == "1" and sys.platform == "win32"
+    # ASTRO_TEST_LOW_PRIORITY=1: below-normal priority, the tests' workers included (a training shares the machine)
+    return subprocess.call(cmd, cwd=ROOT, env=env, creationflags=0x4000 if low else 0)
 
 
 def _has_xdist() -> bool:

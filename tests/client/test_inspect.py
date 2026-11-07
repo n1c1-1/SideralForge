@@ -175,8 +175,8 @@ class Harness(appmod.Main):
         self.tune.back.connect(lambda: self.set_mode(0))
         return self.tune
 
-    def close_project(self, go_home=True):
-        return super().close_project(go_home)
+    def close_project(self, go_home=True, discard=False):
+        return super().close_project(go_home, discard)
 
 
 def open_window(root: Path, size=(1680, 1000), readonly=True) -> Harness:
@@ -788,8 +788,11 @@ def test_the_strip_shows_the_open_block(win):
         inspect(win, [k for k in chain(win.s.path) if k != "post"][-1])        # the last block: at the strip's end
         settle(win)
         b, sa = win.tune.strip.current, win.tune.strip_scroll
-        assert b is not None and b.isVisible() and sa.horizontalScrollBar().value() > 0, (     # scrolled to it
-            win.width(), sa.viewport().width(), win.tune.strip.width(), sa.horizontalScrollBar().maximum())
+        bar = sa.horizontalScrollBar()
+        # scrolled to it when the blocks overflow (the window may stay wider than 700 px: its minimum width depends
+        # on what the module's earlier tests left open; under a parallel run it did)
+        assert b is not None and b.isVisible() and (bar.maximum() == 0 or bar.value() > 0), (
+            win.width(), sa.viewport().width(), win.tune.strip.width(), bar.maximum())
         left = b.mapTo(sa.viewport(), b.rect().topLeft()).x()
         assert left >= 0 and left + b.width() <= sa.viewport().width(), (left, b.width(), sa.viewport().width())
         # control round: only the blocks scroll, "◂ Graph" and the workflow list stay in view
@@ -1738,6 +1741,59 @@ def test_edits_wait_for_save_and_closing_asks(qapp, tmp_path, monkeypatch):
         assert w.close_project() is False and w.project is not None              # Cancel: still open
         assert w.close_project() is True and w.project is None                   # Don't save
         assert project2.load(root).workflows[0].name == "Renamed"
+    finally:
+        w.close()
+
+
+def test_save_as_writes_the_edits_into_the_copy_only(qapp, tmp_path, monkeypatch):
+    """GUI exploration 4: Save As cancelled writes nothing (the original keeps its file, the edits stay pending); Save
+    As to a new folder puts the edits in the copy, opened at once without a question, the original as it was."""
+    from astro_gpu.client import app as appmod_
+    root = tmp_path / "ws" / "Orig"
+    p = project2.create(root, "Orig", Target(name="IC 1805"))
+    api.add_workflow(p, "Full", "Full", None)
+    api.save(p)
+    before = (root / project2.FILE).read_bytes()
+    w = open_window(root, readonly=False)
+    try:
+        monkeypatch.setattr(type(w), "ask_save", lambda self: pytest.fail("no question on Save As"))
+        w.s.rename(w.s.paths[0].pid, "Edited")
+        monkeypatch.setattr(appmod_.QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: ""))
+        w.save_as()                                                              # cancelled
+        assert (root / project2.FILE).read_bytes() == before and w.s.dirty
+        copy = tmp_path / "ws" / "Copy"
+        copy.mkdir()
+        monkeypatch.setattr(appmod_.QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(copy)))
+        w.save_as()
+        assert (root / project2.FILE).read_bytes() == before
+        assert project2.load(copy).workflows[0].name == "Edited"
+        assert Path(w.s.root) == copy and not w.s.dirty
+    finally:
+        w.close()
+
+
+def test_save_takes_the_name_being_typed(qapp, tmp_path):
+    """GUI exploration 4: a name typed in a field without Enter, then Ctrl+S: the name typed is saved (the field
+    applies what it holds before the save, as in reference apps). And Ctrl+Shift+Z redoes, as Ctrl+Y."""
+    from PySide6.QtGui import QKeySequence
+    from PySide6.QtWidgets import QLineEdit
+    root = tmp_path / "ws" / "Typed"
+    p = project2.create(root, "Typed", Target(name="IC 1805"))
+    api.add_workflow(p, "Full", "Full", None)
+    api.save(p)
+    w = open_window(root, readonly=False)
+    try:
+        ed = QLineEdit("Full", w)
+        ed.editingFinished.connect(lambda: w.s.rename(w.s.paths[0].pid, ed.text()))
+        ed.show()
+        w.activateWindow()
+        ed.setFocus()
+        qapp.processEvents()
+        assert QApplication.focusWidget() is ed
+        ed.setText("Night of the 4th")                                       # typed, no Enter
+        w.save()
+        assert project2.load(root).workflows[0].name == "Night of the 4th"
+        assert QKeySequence("Ctrl+Shift+Z") in w.a_redo.shortcuts()
     finally:
         w.close()
 

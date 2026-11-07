@@ -33,6 +33,11 @@ import warnings
 from pathlib import Path
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_v, "2")      # a training may share the machine: few threads...
+if sys.platform == "win32":             # ...and below-normal priority (inherited by the run workers it starts)
+    import ctypes
+    ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x4000)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")
@@ -58,7 +63,7 @@ from astro_gpu.core import project2, runner2  # noqa: E402
 from astro_gpu.core.project import Target  # noqa: E402
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-OUT_BASE = Path(os.environ.get("GUI_EXPLORE_OUT", "F:/astro_essais/A_REGARDER/exploration3"))   # one folder a round
+OUT_BASE = Path(os.environ.get("GUI_EXPLORE_OUT", "F:/astro_essais/A_REGARDER/exploration4"))   # one folder a round
 MACHINE = Machine([Gpu("cuda:0", "NVIDIA RTX 4090", 24.0), Gpu("cuda:1", "NVIDIA RTX 3070", 8.0)], 16, 64.0)
 
 

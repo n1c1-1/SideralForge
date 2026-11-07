@@ -1432,7 +1432,8 @@ CLASSIC_STORE = ("inventory", "calibrate", "register", "stack", "astrometry", "s
 
 def _classic_copy(tmp: Path) -> Path:
     """A copy of the test project holding the results of the Classic stack chain (not the scratch, not the stages of
-    Full alone): a run in it writes into the copy only."""
+    Full alone, not the other results the bench left in those stages' folders): a run in it writes into the copy
+    only."""
     dst = tmp / "heart"
     dst.mkdir()
     for f in F_COPY.iterdir():
@@ -1441,11 +1442,23 @@ def _classic_copy(tmp: Path) -> Path:
     for name in ("inputs",):
         if (F_COPY / name).is_dir():
             shutil.copytree(F_COPY / name, dst / name)
+    src = api.open_project(F_COPY)                                           # in memory: never saved
+    classic = api.add_workflow(src, "Classic stack", "Classic stack")
+    keep = {(st, Path(o.dir).name) for st in CLASSIC_STORE
+            if (o := api.stage_outputs(src, classic.id, st)) is not None}
+    assert {st for st, _k in keep} == set(CLASSIC_STORE), f"the test project lacks Classic results: {sorted(keep)}"
+    (dst / "store").mkdir()
     for sd in (F_COPY / "store").iterdir():
-        if sd.is_dir() and (sd.name in CLASSIC_STORE or sd.name.startswith("_")):
+        if sd.is_dir() and sd.name.startswith("_"):
             shutil.copytree(sd, dst / "store" / sd.name)
+        elif sd.is_dir() and sd.name in CLASSIC_STORE:
+            for e in sd.iterdir():
+                if e.is_file():
+                    (dst / "store" / sd.name).mkdir(exist_ok=True)
+                    shutil.copy2(e, dst / "store" / sd.name / e.name)
+                elif (sd.name, e.name) in keep:
+                    shutil.copytree(e, dst / "store" / sd.name / e.name)
         elif sd.is_file():
-            (dst / "store").mkdir(exist_ok=True)
             shutil.copy2(sd, dst / "store" / sd.name)
     return dst
 
@@ -1457,12 +1470,15 @@ def _grab(w: QWidget, name: str):
 
 
 def _real_world(root: Path) -> World:
-    """The project in ``root`` with the four workflows, on the CPU: the model never saves (the plan carries the
-    definition), the runs write the new results into ``root``."""
+    """The project in ``root`` with the four workflows (its Full, whatever workflows the bench added, and three
+    more), on the CPU: the model never saves (the plan carries the definition), the runs write the new results into
+    ``root``."""
+    from conftest import full_only
+
     from astro_gpu.core import workflow as wfl
-    p = api.open_project(root)
+    p = full_only(api.open_project(root), fresh_ids=True)
     for name, template, params in (("Classic stack", "Classic stack", None),
-                                   ("Classic + denoise", "Classic + denoise", {"denoise": {"iterations": 6000}}),
+                                   ("Classic + denoise", "Classic + denoise", None),
                                    ("Full", "Full", None)):
         assert template in wfl.TEMPLATES
         api.add_workflow(p, name, template, params)
@@ -1499,7 +1515,7 @@ def _shell(w: World):
 @real
 @pytest.mark.slow
 def test_a_real_render_simple_job_runs_with_the_heartbeat_under_200_ms_and_the_screenshots(env, monkeypatch):
-    """Run the Classic stack of a copy of the test project for real on the CPU: gradient and render_simple.
+    """Run the Classic stack of a copy of the test project for real on the CPU: gradient, color and render_simple.
     The stripes turn green and the layer appears. Takes the screenshots in English and in French."""
     w = _real_world(_classic_copy(env["tmp"]))
     root = None
@@ -1529,21 +1545,26 @@ def test_a_real_render_simple_job_runs_with_the_heartbeat_under_200_ms_and_the_s
             d.refresh()
             _grab(d, f"run_plan_{lang}")
             assert any(len(r.row.who) == 4 for r in d.rows)
-            assert all(r.dur.text().startswith("≈") or r.dur.text() == "≤ 1 min" for r in d.rows)
+            # every block in the graph's order (#27): the ones up to date say so, the others give their time
+            assert any(not r.row.uptodate for r in d.rows)
+            assert all(r.dur.text() == i18n._("up to date") if r.row.uptodate else
+                       r.dur.text().startswith("≈") or r.dur.text() == "≤ 1 min" for r in d.rows), \
+                [(r.row.title, r.row.uptodate, r.dur.text()) for r in d.rows]
             assert untranslated(texts_of(d)) == [], untranslated(texts_of(d))
             d.close()
             w.model.undo()
             for _i in range(10):
                 w.worker.wait(30)
                 QApplication.processEvents()
-            # a late, cheap setting of the Classic workflow: Run to its Output only runs two short jobs
+            # a late, cheap setting of the Classic workflow: Run to its last block only runs the short jobs after the
+            # Gradient (it comes right after the stacking: Color reads the stack with its gradient removed)
             w.model.set_param(classic, "gradient", "object_clip", 2.5 + (int(time.time()) % 100000 + n) / 1e6)
             for _i in range(10):
                 w.worker.wait(30)
                 QApplication.processEvents()
             d = w.ctl.run_to_here()
             jobs = [(j.stage, j.measured) for j in d.plan.jobs]
-            assert [s for s, _m in jobs] == ["gradient", "render_simple"], jobs
+            assert [s for s, _m in jobs] == ["gradient", "color", "render_simple"], jobs
             w.beat.start()
             d.start()
             shot = False
@@ -1592,6 +1613,11 @@ def test_screenshots_of_the_failed_run_and_the_stopped_run_on_the_real_plan(env)
     the recaps in English and French."""
     w = _real_world(F_COPY)
     try:
+        # a change of the stacking (in memory: the model never saves) makes the plan whatever the bench computed
+        assert w.model.set_trunk_param("stack", "kappa", 4.0)
+        for _i in range(10):
+            w.worker.wait(30)
+            QApplication.processEvents()
         plan = w.model.plan_all()
         jobs = plan.jobs
         assert len(jobs) >= 3
@@ -1761,7 +1787,8 @@ def test_real_pause_after_calibration_runs_for_real_continues_and_the_shots_en_f
             "the run did not end"
         settle(30)
         t = w.run.track
-        assert t.status == "done" and [j.stage for j in t.jobs] == ["inventory", "calibrate"], t.error
+        assert t.status == "done" and [j.stage for j in t.jobs] == ["inventory", "calibrate"], (
+            t.error, [(j.stage, j.state, getattr(j, "error", "")) for j in t.jobs], t.lines[-6:])
         d = w.run.dialog
         assert d.paused() and d.review.isVisibleTo(d) and d.b_continue.isVisibleTo(d) and d.b_inspect.isVisibleTo(d)
         assert d.review_text.text() == "Review pause: Calibration · Inspect, then Continue"

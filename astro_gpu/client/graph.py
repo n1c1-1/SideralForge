@@ -619,6 +619,37 @@ class GraphView(QGraphicsView):
             todo += reversed(n.children)
         return out + [p.pid for p in g.s.paths if p.pid not in out]
 
+    @staticmethod
+    def session_rows(g: Graph, order: list[int], frames: list[int]) -> tuple[dict[int, float], dict[int, float]]:
+        """The lanes (workflow -> y) and the sessions' rows (session -> y), from 0 (issue #43): each session level with
+        the chains it feeds, with the other sessions of those chains (a filter's second night with its filter's
+        chain, not under the last chain: GUI exploration 4); rows never closer than SROW, the lanes below moved down
+        when the rows need the room. A session no workflow reads: after the others."""
+        rel = {pid: i * LANE for i, pid in enumerate(order)}
+        fr = set(frames)
+        idx = {pid: i for i, pid in enumerate(order) if pid in fr}
+        groups: dict[tuple, list[int]] = {}
+        for sn, _cn in g.sessions:
+            groups.setdefault(tuple(sorted(idx[p.pid] for p in sn.paths if p.pid in idx)), []).append(sn.sid)
+        rows: dict[int, float] = {}
+        prev = None
+        for key in sorted(groups, key=lambda k: (not k, k)):
+            sids = groups[key]
+            if key:
+                centre = (rel[order[key[0]]] + rel[order[key[-1]]]) / 2
+            else:
+                centre = prev + SROW + (len(sids) - 1) * SROW / 2 if prev is not None else 0.0
+            first = centre - (len(sids) - 1) * SROW / 2
+            if prev is not None and first < prev + SROW:
+                d = prev + SROW - first
+                first += d
+                for pid in order[key[0]:] if key else []:  # its chains and those below: down, level with it
+                    rel[pid] += d
+            for i, sid in enumerate(sids):
+                rows[sid] = first + i * SROW
+            prev = first + (len(sids) - 1) * SROW
+        return rel, rows
+
     def rebuild(self):
         sc = self.scene()
         # issue #24: a change (or a stage event of a run) builds the graph again; where the user had scrolled stays,
@@ -660,18 +691,18 @@ class GraphView(QGraphicsView):
         frames = [pid for pid in order if getattr(s.view(pid), "source", None) is None]
         order = frames + [pid for pid in order if pid not in frames]      # the image workflows' lanes last
         n_lanes = max(1, len(s.paths))
-        # issue #43: the sessions' rows, centred on the lanes of the workflows from the frames
-        ns = len(g.sessions)
-        f_mid = (len(frames) - 1) * LANE / 2 if frames else 0.0
-        top = TOP + max(0.0, (ns - 1) * SROW / 2 - f_mid)
-        lanes = {pid: top + i * LANE for i, pid in enumerate(order)}
-        mid = top + (n_lanes - 1) * LANE / 2 if s.paths else top + LANE / 2
-        fmid = top + f_mid
-        for i, (sn, cn) in enumerate(g.sessions):
-            sn.y = cn.y = fmid + (i - (ns - 1) / 2) * SROW
+        # issue #43: the sessions' rows, each level with the chains it feeds (session_rows)
+        rel, rows = self.session_rows(g, order, frames)
+        top = TOP + max(0.0, -min(rows.values(), default=0.0))
+        lanes = {pid: top + rel[pid] for pid in order}
+        mid = (lanes[order[0]] + lanes[order[-1]]) / 2 if order else top + LANE / 2
+        fmid = (lanes[frames[0]] + lanes[frames[-1]]) / 2 if frames else top
+        for sn, cn in g.sessions:
+            sn.y = cn.y = top + rows[sn.sid]
+        s_last = max((sn.y for sn, _cn in g.sessions), default=fmid)      # the lowest session's row
         others = [pid for pid in order if pid not in frames]
         if others and (s.sources_loaded or s.p.sessions):   # the image lanes: below the sessions and "+ Session"
-            last = fmid + max(ns - 1, 0) / 2 * SROW
+            last = s_last
             low = last + BH / 2 + 8 + BH * 0.6 + 10 + BH / 2
             shift = max(0.0, low - lanes[others[0]])
             for pid in others:
@@ -700,7 +731,8 @@ class GraphView(QGraphicsView):
                     n.y = low
                 low = n.y + BH + 6
         self._lanes, self._cx, self._cw = lanes, cx, cw
-        bottom = max(top + n_lanes * LANE, max(lanes.values(), default=top) + LANE, fmid + (ns + 1) / 2 * SROW) + LANE
+        bottom = max(top + n_lanes * LANE, max(lanes.values(), default=top) + LANE,
+                     s_last + SROW if g.sessions else fmid + SROW / 2) + LANE
         # phase bands
         bands = [("Pre-processing", [c for c in cols if c in FRAME_KEYS]),
                  ("Linear processing", [c for c in cols if (c[:1] == "i" and c[1:].isdigit()) or c == "etoiles"]),
@@ -741,7 +773,7 @@ class GraphView(QGraphicsView):
         self.plus_session_ghost = None
         self.plus_session_pid = None                      # the flow it joins: the one it is drawn with
         if s.sources_loaded:
-            last = g.sessions[-1][0] if g.sessions else g.root
+            last = max((sn for sn, _cn in g.sessions), key=lambda n: n.y) if g.sessions else g.root   # the lowest
             gh = GhostItem(QRectF(cx["sources"], last.y + BH / 2 + 8, cw["sources"], BH * 0.6), "+  " + _("Session"),
                            self.newSession.emit)
             cur_flow = s.path if s.path is not None and s.path.source is None else None
@@ -925,6 +957,7 @@ class GraphView(QGraphicsView):
         self._pull_port = port
         self._pull_path = self.scene().addPath(QPainterPath(), QPen(QColor(ACCENT), 2, Qt.DashLine))
         self._pull_path.setZValue(9)
+        self.grabKeyboard()                              # Escape cancels, wherever the focus was (keyPressEvent)
         self._comp_ghost = None
         if item.node.key == "etoiles" and "composition" in getattr(self, "_cx", {}):
             x, w = self._cx["composition"], self._cw["composition"]
@@ -959,6 +992,7 @@ class GraphView(QGraphicsView):
         self._edge_scroll(self.mapFromScene(pos))         # held near the edge, the view scrolls (Post off view)
 
     def end_wire(self, pos):
+        self.releaseKeyboard()
         self._wiring = False
         self._edge_scroll(None)
         node, port = self._pull.node, self._pull_port
@@ -976,6 +1010,38 @@ class GraphView(QGraphicsView):
                 QTimer.singleShot(0, lambda: self.partToPost.emit(node, port))
         elif comp:
             QTimer.singleShot(0, lambda: self.newComposition.emit(node))
+
+    def event(self, e):                                               # noqa: N802
+        if e.type() == QEvent.ShortcutOverride and e.key() == Qt.Key_Escape and self._pulling():
+            e.accept()                                   # Escape is the pull's, not a shortcut's
+            return True
+        return super().event(e)
+
+    def keyPressEvent(self, e):                                       # noqa: N802
+        if e.key() == Qt.Key_Escape and self.cancel_wire():
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def _pulling(self) -> bool:
+        return getattr(getattr(self, "_pull", None), "_wire", False)
+
+    def cancel_wire(self) -> bool:
+        """Escape while a port is pulled: the wire goes and its release sends nothing."""
+        item = getattr(self, "_pull", None)
+        if item is None or not getattr(item, "_wire", False):
+            return False
+        item._wire = False
+        self.releaseKeyboard()
+        self._wiring = False
+        self._edge_scroll(None)
+        self.scene().removeItem(self._pull_path)
+        self.final_item.target = False
+        self.final_item.update()
+        if self._comp_ghost is not None:
+            self.scene().removeItem(self._comp_ghost)
+            self._comp_ghost = None
+        return True
 
     def _keep_selected(self, it, key):
         """A wire drawn again (the graph is rebuilt at each change) stays selected when it was (2nd round)."""
@@ -1888,7 +1954,7 @@ class GraphPage(QWidget):
             ret.activated.connect(lambda: self.current_node() is not None and self.openBlock.emit())
         esc = QShortcut(QKeySequence(Qt.Key_Escape), self.graph)    # decision 5: Escape selects nothing
         esc.setContext(Qt.WidgetWithChildrenShortcut)
-        esc.activated.connect(self.graph.clear_selection)
+        esc.activated.connect(lambda: self.graph.cancel_wire() or self.graph.clear_selection())   # a pulled wire first
         cut = QShortcut(QKeySequence("D"), self.graph)          # switch the selected block off or on (issue #47)
         cut.setContext(Qt.WidgetWithChildrenShortcut)
         cut.activated.connect(lambda: self.toggle_cut(self.current_node(), None))
@@ -2414,8 +2480,9 @@ class GraphPage(QWidget):
                 p = s.add_path(name, d.opts, None, end=t.get("end"))
                 s.set_graph(p, template_blocks(t))         # issue #47: only the blocks it uses
         s.log('Workflow "{name}" created', name=p.name)
-        if getattr(d, "fresh", False):                     # a new project's template: where Undo stops (decision 6)
-            s.forget_undo()
+        if getattr(d, "fresh", False):                     # a new project's template: where Undo stops (decision 6),
+            s.forget_undo()                                # and part of the project made (saved: closing it at once
+            s.flush()                                      # asks nothing; GUI exploration 4)
         todo = s.first_to_fill(p)                          # the block that waits for the user: its empty Session,
         if todo is not None:                               # its Image without a file (GUI exploration 2)
             self.select(index=s.paths.index(todo[0]), step=todo[1])

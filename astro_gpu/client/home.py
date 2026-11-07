@@ -542,11 +542,22 @@ def folder_name(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name.strip()).rstrip(". ")
 
 
+def holds_frames(folder: Path) -> bool:
+    """Whether a folder holds frames (camera raw or FITS files) itself: the folder of a session's frames."""
+    from ..core.project import frame_kind
+    try:
+        return any(frame_kind(q.name) for q in folder.iterdir())
+    except OSError:
+        return False
+
+
 def projects_location(avoid: str = "") -> str:
     """Where a new project is proposed (GUI exploration 7.1): beside the last project opened, else the last folder
-    used, else the home folder; never in ``avoid`` or below it (the folder of the frames an import reads)."""
+    used, else the home folder; never in ``avoid`` or below it (the folder of the frames an import reads), never in a
+    folder of frames (GUI exploration 4: the darks just added to a session were the last folder used)."""
     bad = Path(avoid).resolve() if avoid else None
-    for c in [Path(r["path"]).parent for r in prefs.recent()] + [Path(prefs.last_folder()), Path.home()]:
+    last = Path(prefs.last_folder())
+    for c in [Path(r["path"]).parent for r in prefs.recent()] + [last, Path.home()]:
         try:
             if not c.is_dir():
                 continue
@@ -555,13 +566,15 @@ def projects_location(avoid: str = "") -> str:
             continue
         if bad is not None and (r == bad or bad in r.parents):
             continue
+        if c is last and holds_frames(c):
+            continue
         return c.as_posix()
     return (bad.parent if bad is not None else Path.home()).as_posix()
 
 
 class NewProjectDialog(QDialog):
     """Name, target and folder of a new project; the folder is <location>/<name>, the location chosen with Browse…
-    (the last folder used at first)."""
+    (where the projects are at first: ``projects_location``)."""
 
     def __init__(self, location: str, name: str = "", target: str = "", parent=None):
         super().__init__(parent)
@@ -865,8 +878,9 @@ class HomeView(QWidget):
     def ask_new_project(self, name: str = "", target: str = "", location: str | None = None
                         ) -> tuple[str, str, str, dict] | None:
         """The New project dialog: (folder, name, target, details: ra, dec, focal_mm, pixel_um when known), or None.
-        ``location``: where it is proposed (else the last folder used)."""
-        d = NewProjectDialog(location or prefs.last_folder(), name, target, self.window())
+        ``location``: where it is proposed (else where the projects are: ``projects_location``, never the folder of
+        the frames last added, GUI exploration 4)."""
+        d = NewProjectDialog(location or projects_location(), name, target, self.window())
         if d.exec():
             return d.folder().as_posix(), d.name.text().strip(), d.target.text().strip(), d.details()
         return None

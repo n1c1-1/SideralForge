@@ -238,3 +238,46 @@ def test_plus_session_joins_the_flow_it_is_drawn_with(qapp, tmp_path, monkeypatc
         assert new in m.p.workflow(pid).sessions and new not in m.p.workflow(q1.pid).sessions
     finally:
         close(w, m, page)
+
+
+def test_a_folder_not_found_says_so_and_is_chosen_again_from_its_row(qapp, tmp_path, monkeypatch):
+    """GUI exploration 4: a darks (or lights) folder renamed outside: the Session and Calibration blocks and the
+    panel say it is not found, never "0 dark" or "none"; a click on its row chooses where it is now (one undo
+    step)."""
+    from PySide6.QtWidgets import QPushButton
+    from test_sources_import import texts
+
+    from astro_gpu.client.blocks import Graph
+    w, m, page = open_page(tmp_path, monkeypatch, sessions=1, workflows=("Full",))
+    try:
+        darks = tmp_path / "cal" / "darks"
+        for k in range(2):
+            fits_frame(darks / f"D_{k:03d}.fits")
+        m.p.session(1).darks = [(tmp_path / "cal" / "darks_old").as_posix()]      # renamed outside
+        m.reload_sources()
+        settle(w, page)
+        g = Graph(m)
+        assert "darks not found" in g.summary(g.root)                            # the one Session block
+        assert "darks not found" in g.summary(g.node_of(m.paths[0], "calibration"))
+        page.select(index=0, step="sources")
+        page.refresh()
+        assert any(t.startswith("Darks") and "folder not found" in t for t in texts(page.panel))
+        row = next(b for b in page.panel.findChildren(QPushButton) if "darks_old" in b.text())
+        assert "folder not found" in row.text() and "click to choose" in row.toolTip()
+        said: list = []
+        page.panel.toast.connect(said.append)
+        monkeypatch.setattr(type(page.panel), "pick_folder", lambda self, title, start: darks.as_posix())
+        row.click()
+        settle(w, page)
+        assert m.p.session(1).darks == [darks.as_posix()] and said and "found again" in said[-1]
+        g = Graph(m)
+        assert "2 darks" in g.summary(g.root)
+        m.undo()
+        assert m.p.session(1).darks == [(tmp_path / "cal" / "darks_old").as_posix()]
+        m.p.session(1).lights = [(tmp_path / "raw" / "gone").as_posix()]         # the lights' folder too
+        m.reload_sources()
+        settle(w, page)
+        page.refresh()
+        assert any(t.startswith("Lights") and "folder not found" in t for t in texts(page.panel))
+    finally:
+        close(w, m, page)

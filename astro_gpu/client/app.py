@@ -32,6 +32,7 @@ from pathlib import Path
 from PySide6.QtCore import QCoreApplication, QLibraryInfo, QLocale, Qt, QTimer, QTranslator
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
     QButtonGroup,
     QComboBox,
@@ -40,6 +41,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -265,6 +267,7 @@ class Main(QMainWindow):
         e = mb.addMenu(_("Edit"))
         self.a_undo = act(e, _("Undo"), self.undo, "Ctrl+Z", enabled=has)
         self.a_redo = act(e, _("Redo"), self.redo, "Ctrl+Y", enabled=has)
+        self.a_redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
         e.addSeparator()
         act(e, _("Settings…"), self.open_settings, "Ctrl+,")
         v = mb.addMenu(_("View"))
@@ -495,11 +498,12 @@ class Main(QMainWindow):
         box.exec()
         return "save" if box.clickedButton() is b_save else "discard" if box.clickedButton() is b_drop else "cancel"
 
-    def close_project(self, go_home=True) -> bool:
+    def close_project(self, go_home=True, discard=False) -> bool:
         """Close the project, asking first when it has edits not saved (a run in progress goes on: opening the
-        project follows it again). False when the user cancels."""
-        save = True
-        if self.project is not None:
+        project follows it again). False when the user cancels. ``discard``: closed without its edits, no question
+        (Save As wrote them elsewhere)."""
+        save = not discard
+        if self.project is not None and not discard:
             self._flush_post()
             if self.s is not None and self.s.dirty:
                 answer = self.ask_save()
@@ -519,7 +523,9 @@ class Main(QMainWindow):
             self._flush_post()
             if self.s is not None:
                 from .services.inspect import _services
-                sv = _services.get(self.s)
+                # taken out: the service holds its model, so the weak key never let either go (GUI exploration 4: a
+                # project closed stayed in memory with its workers and image cache, ≈ 10 MB a reopening)
+                sv = _services.pop(self.s, None)
                 self.s.close(save)
                 if sv is not None:
                     sv.stop()
@@ -532,8 +538,8 @@ class Main(QMainWindow):
                 self.screens.removeWidget(self.proj_screen)
                 self.proj_screen.deleteLater()
                 self.proj_screen = None
-            self.graph = self.tune = self.frames = self.browser = self.post_holder = None
-            self.build_menus()
+            self.graph = self.tune = self.frames = self.browser = self.steps = self.post_holder = None   # (steps held
+            self.build_menus()                                                       # the closed model, GUI expl. 4)
         if go_home:
             self.show_home()
         return True
@@ -905,18 +911,28 @@ class Main(QMainWindow):
 
     # ------------------------------------------------------------ files
     def save(self):
-        """Save: the edits written into the project (nothing is written before, issue #1)."""
+        """Save: the edits written into the project (nothing is written before, issue #1), a field still being typed
+        in included (its focus taken away: it applies what it holds, as Enter would)."""
+        self._commit_typing()
         self._flush_post()
         if self.s is not None:
             self.s.flush()
         self.flash(_("Project saved"))
 
+    @staticmethod
+    def _commit_typing():
+        w = QApplication.focusWidget()
+        if isinstance(w, (QLineEdit, QAbstractSpinBox)):
+            w.clearFocus()                               # editingFinished: what is typed applies before the save
+
     def save_as(self):
-        """The definition of the project in another folder (its results stay where they are), then opened."""
+        """The definition of the project, its edits included, in another folder (its results stay where they are),
+        then opened in place of the project, which keeps what it had on disk (as Save As does in reference apps:
+        cancelled, nothing is written; GUI exploration 4)."""
         if self.project is None:
             return
-        if self.s is not None:
-            self.s.flush()
+        self._commit_typing()
+        self._flush_post()                               # Post's last edit into the definition (not written)
         d = QFileDialog.getExistingDirectory(self, _("Save as…"), prefs.last_folder())
         prefs.remember_folder(d)
         if not d:
@@ -926,6 +942,8 @@ class Main(QMainWindow):
             QMessageBox.warning(self, _("Save as…"), _("This folder already holds a project."))
             return
         old = self.project.definition
+        if self.s is not None and self.s.path is not None:
+            old.current = self.s.path.pid                # the copy opens on the workflow shown
         p = project2.Project2.from_dict(old.to_dict())
         for s in p.sessions:
             for kind in project2.KINDS:
@@ -938,6 +956,7 @@ class Main(QMainWindow):
         except (OSError, ValueError, project2.LegacyProject) as e:
             QMessageBox.warning(self, _("Save as…"), _("The project cannot be saved: {why}").format(why=e))
             return
+        self.close_project(go_home=False, discard=True)  # its edits went into the copy: no question
         self.open_project(root)
 
     def offer_import(self, root: Path):
@@ -1058,13 +1077,15 @@ class Main(QMainWindow):
     def undo(self):
         """Undo: in Post, the composition's last change; elsewhere the workflows' last change."""
         if self._post_shown():
-            self.post_holder.page.view.do_undo()
+            if self.post_holder.page.view.do_undo():
+                self._say_restored("Undone", "Undone: {what}")
         elif self.s is not None and self.s.undo():
             self._say_restored("Undone", "Undone: {what}")
 
     def redo(self):
         if self._post_shown():
-            self.post_holder.page.view.do_redo()
+            if self.post_holder.page.view.do_redo():
+                self._say_restored("Redone", "Redone: {what}")
         elif self.s is not None and self.s.redo():
             self._say_restored("Redone", "Redone: {what}")
 

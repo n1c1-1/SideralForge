@@ -433,7 +433,9 @@ class Panel(QWidget):
         scroll = self._sc.verticalScrollBar().value() if same else 0
         self._refresh(node)
         if same:
-            QTimer.singleShot(0, lambda v=scroll: self._sc.verticalScrollBar().setValue(v))
+            # the scroll area as context, never the panel in the lambda: a panel closed meanwhile is not kept with its
+            # model (GUI exploration 4: every closed project stayed in memory)
+            QTimer.singleShot(0, self._sc, lambda v=scroll, sb=self._sc.verticalScrollBar(): sb.setValue(v))
             if had_focus and self.focus_key is not None:
                 shown = [self.bv.itemAt(i).widget() for i in range(self.bv.count())]   # not the rows going away
                 row = next((r for r in shown if isinstance(r, CompactRow) and r.r.get("key") == self.focus_key), None)
@@ -603,7 +605,9 @@ class Panel(QWidget):
         self.hv.addLayout(row)
         n = {"lights": counts.get("lights", 0), "darks": counts.get("darks", 0), "flats": counts.get("flats", 0),
              "bias": counts.get("bias", 0), "flat_darks": counts.get("dark_flats", 0)}
+        from .blocks import gone_kinds
         from .frames import type_warning_text
+        gone = gone_kinds(s, {sid})
         warns = s.file_warnings(sid)                       # issue #58: files that may be mistakes, shown on their kind
         flagged = self._flagged(sid, warns)
         for kind, title in self.KIND_TITLES:
@@ -616,6 +620,8 @@ class Panel(QWidget):
                 count = _("{kept} / {n} used").format(kept=kept, n=n["lights"])
             else:
                 count = str(n[kind]) if n[kind] else _("none")
+            if not n[kind] and kind in gone:              # not an empty folder: one not found (GUI exploration 4)
+                count = _("folder not found")
             self.bv.addWidget(self.group_title(_(title) + "  ·  " + count))
             shared = s.shared_with(sid, kind) if kind != "lights" else []
             if shared:
@@ -682,16 +688,25 @@ class Panel(QWidget):
         is_open = key in opened or bool(bad)
         r = QHBoxLayout()
         n = len(files)
-        t = QPushButton(("▾ " if is_open else "▸ ") + "📁 " + Path(folder).name + "  · " +
-                        plural(n, "{n} file", "{n} files"))
-        t.setFlat(True)
-        t.setStyleSheet("QPushButton { text-align: left; padding: 2px 4px; } ")
-        t.setToolTip(folder + "\n" + _("Click to see its files, and take one out"))
+        if not Path(folder).exists():                     # moved, renamed outside, its disk unplugged: said, and a
+            # click chooses where it is now, as a reference photo app's missing folder (GUI exploration 4)
+            t = QPushButton("⚠ 📁 " + Path(folder).name + "  · " + _("folder not found"))
+            t.setFlat(True)
+            t.setStyleSheet(f"QPushButton {{ text-align: left; padding: 2px 4px; color: {WARN}; }} ")
+            t.setToolTip(folder + "\n" + _("Not found (moved, renamed, or its disk unplugged): click to choose where "
+                                           "it is now"))
+            t.clicked.connect(lambda _c=False, k=kind, ens=list(entries): self._locate(sid, k, folder, ens))
+        else:
+            t = QPushButton(("▾ " if is_open else "▸ ") + "📁 " + Path(folder).name + "  · " +
+                            plural(n, "{n} file", "{n} files"))
+            t.setFlat(True)
+            t.setStyleSheet("QPushButton { text-align: left; padding: 2px 4px; } ")
+            t.setToolTip(folder + "\n" + _("Click to see its files, and take one out"))
 
-        def toggle(_c=False, k=key):
-            opened.symmetric_difference_update({k})
-            self.changed.emit()
-        t.clicked.connect(toggle)
+            def toggle(_c=False, k=key):
+                opened.symmetric_difference_update({k})
+                self.changed.emit()
+            t.clicked.connect(toggle)
         r.addWidget(t, 1)
         x = QPushButton("×")
         x.setFixedWidth(26)
@@ -754,6 +769,34 @@ class Panel(QWidget):
             self.s.add_session_entries(sid, kind, got, notes)
             if notes:
                 self.toast.emit(" · ".join(_(t).format(name=nm) for t, nm in notes))
+
+    def _locate(self, sid: int, kind: str, folder: str, entries: list[str]):
+        """A folder of a session not found: where it is now, chosen (a reference photo app's "find missing folder",
+        GUI exploration 4); it takes the old one's place in the list, its files chosen one by one found in it by their
+        names. One undo step; a folder without frames chosen: nothing changes, said."""
+        from . import prefs as _prefs
+        start = next((p for p in Path(folder).parents if p.is_dir()), Path(_prefs.last_folder()))
+        d = self.pick_folder(_("Where is “{name}” now?").format(name=Path(folder).name), start.as_posix())
+        if not d:
+            return
+        _prefs.remember_folder(d)
+        whole = any(not Path(e).suffix for e in entries)
+        new = [Path(d).as_posix()] if whole else [(Path(d) / Path(e).name).as_posix() for e in entries
+                                                  if (Path(d) / Path(e).name).is_file()]
+        notes: list = [] if new else [("“{name}” holds no frames (camera raw or FITS): not added.", Path(d).name)]
+        s = self.s
+        with s.batch():
+            if new and s.add_session_entries(sid, kind, new, notes):
+                for e in entries:
+                    s.remove_session_entry(sid, kind, e)
+                notes = []
+                self.toast.emit(_("“{name}” found again in “{session}” · Ctrl+Z").format(
+                    name=Path(d).name, session=s.session(sid).name))
+        if notes:
+            self.toast.emit(" · ".join(_(t).format(name=nm) for t, nm in notes))
+
+    def pick_folder(self, title: str, start: str) -> str:
+        return QFileDialog.getExistingDirectory(self, title, start)
 
     def all_nights(self):
         """A project made before issue #43: its nights are calibrated together. They can be calibrated each on its

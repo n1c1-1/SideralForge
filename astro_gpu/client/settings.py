@@ -355,17 +355,18 @@ TYPES = {"int": "int", "float": "float", "bool": "bool", "str": "str", "float | 
 # ======================================================================== resolving a setting for a workflow
 def catalog_key(p, step: str) -> str:
     step = step.split("@", 1)[0]                     # a session's block: the block's catalogue (issue #43)
-    if step == "fond":
-        return f"fond:{p.opts['fond']}"
-    if step == "debruitage":
-        return f"debruitage:{p.opts.get('dn', 'generique')}"
-    return step
+    base = step.partition("~")[0]                    # a block placed twice ("fond~2"): the same catalogue (round 4)
+    if base in ("fond", "debruitage"):
+        from .model import method_of                 # the node's own method: Gradient 2 may differ from Gradient 1
+        return f"{base}:{method_of(p, step)}"
+    return base
 
 
-def _stage_of(s, p, it: dict, sid: str | None = None) -> str | None:
+def _stage_of(s, p, it: dict, sid: str | None = None, num: str = "") -> str | None:
     """The stage of a catalogue item, when the workflow has it; for a session's block (``sid``, issue #43), that
-    session's instance ("calibrate@2"): the settings of that session."""
-    st = f"{it['stage']}@{sid}" if sid is not None else it["stage"]
+    session's instance ("calibrate@2"): the settings of that session; for a block placed twice (``num``, "fond~2"),
+    its own stage ("gradient~2"): the items of a shared stage (the first block's catalogs) are not its own."""
+    st = f"{it['stage']}@{sid}" if sid is not None else f"{it['stage']}~{num}" if num else it["stage"]
     return st if st in s.all_stages(p) else None
 
 
@@ -400,7 +401,7 @@ def resolve(s, p, step: str, it: dict, stage: str | None = None) -> dict | None:
     """The setting as shown: label, help, tip, value, suggestion, reason, bounds; None when not in this workflow (or
     when the worker has not described its stage yet). The texts are translated here, at display time."""
     step, sid = _split(step)
-    stage = stage or _stage_of(s, p, it, sid)
+    stage = stage or _stage_of(s, p, it, sid, step.partition("~")[2])
     if stage is None:
         return None
     r = dict(it, stage=stage, cat_stage=it["stage"], step_key=step, key=f"{stage}.{it['name']}", locked=False,
@@ -456,9 +457,10 @@ def needed_stages(s, p, step: str) -> set[str]:
     """Every stage the rows of this block come from (so that the panel can ask the worker for them)."""
     out = set()
     sid = _split(step)[1]
+    num = _split(step)[0].partition("~")[2]
     for _t, items in CATALOG.get(catalog_key(p, _split(step)[0]), []):
         for it in items:
-            st = _stage_of(s, p, it, sid) if it["kind"] == "engine" else None
+            st = _stage_of(s, p, it, sid, num) if it["kind"] == "engine" else None
             if st:
                 out.add(st)
     out |= {x for x in _stages_of_step(s, p, step) if x not in ("inventory", "reference")}

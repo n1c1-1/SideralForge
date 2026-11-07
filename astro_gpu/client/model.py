@@ -66,6 +66,8 @@ EXTRA_SECONDS = {"deconv": 150.0}
 NOT_IN_ENGINE = "Not in the engine yet."
 #: the block of the views → the engine's block of ``api.methods``, and the option each method sets
 METHOD_BLOCK = {"debruitage": "denoise", "fond": "gradient", "etoiles": "stars", "deconv": "deconvolution"}
+#: a Fusion's stars are chosen in its panel: a Stars block in its graph was never drawn (GUI exploration 4)
+FUSION_STARS = "Fusion: its stars in its panel"
 METHOD_OPT = {"debruitage": "dn", "fond": "fond", "etoiles": "etoiles", "deconv": "deconv_m"}
 #: the engine's method keys → the views'
 METHOD_KEY = {"debruitage": {"pretrained": "generique", "adapted": "affine"},
@@ -504,11 +506,26 @@ class ProjectModel(QObject):
                                 {"calibration", "alignement", "selection", "empilement"})
             if w.source is not None:                    # an Image or a Fusion selected is taken back too
                 have |= {"fusion"} if "fusion" in w.source else {"image"}
+            # a Recombine block (a Post layer, not a node; GUI exploration 4: it reopened on the Session): its stored
+            # layer, the one remembered first; none stored yet, the workflow's default one
+            if any(n["block"] == "stars" for n in self.graph(self.paths[self.current])):
+                mine = [x for x in self.post_layers() if x.get("kind") == "workflow" and x.get("pid") == w.id]
+                lids = [x.get("id") for x in mine if x.get("part") == "combined"]
+                if lids or not mine:
+                    have.add("composition")
+                    self.sel_layer = mem.get("layer") if mem.get("layer") in lids else (lids[0] if lids else None)
         saved = mem.get("block", getattr(project, "current_block", ""))
         first = "image" if w is not None and w.source is not None and "fusion" not in w.source else "sources"
         self.sel_step = saved if saved in have else (f"session@{sep[0]}" if sep and sids else first)
-        self.currentChanged.connect(lambda: setattr(self.p, "current_block", self.sel_step or ""))
+        if self.sel_step != "composition":
+            self.sel_layer = None
+        # a method, not a lambda: a lambda holding the model, connected to its own signal, kept every closed project
+        # in memory (GUI exploration 4)
+        self.currentChanged.connect(self._keep_block)
         self._start_warm()
+
+    def _keep_block(self):
+        self.p.current_block = self.sel_step or ""
 
     # ------------------------------------------------------------ the definition, as the views see it
     @property
@@ -747,6 +764,8 @@ class ProjectModel(QObject):
             return
         from . import prefs
         want = {"current": self.path.pid if self.path is not None else None, "block": self.sel_step or ""}
+        if self.sel_step == "composition" and self.sel_layer is not None:
+            want["layer"] = self.sel_layer                  # which Recombine block (GUI exploration 4)
         key = Path(self.root).as_posix().lower()
         cur = dict(prefs.get(self.SELECTION_KEY) or {})
         if cur.get(key) == want:
@@ -825,7 +844,11 @@ class ProjectModel(QObject):
     def _set_post_layers(self, layers: list[dict], source=None):
         old =(getattr(self.p, "post", None) or {}).get("layers") or []
         shown = {(x.get("pid"), x.get("part")) for x in old if x.get("kind") == "workflow"}
-        shown |= {(q.pid, self.post_default_part(q)) for q in self.post_defaults(old)}
+        # Post holds layers only for the workflows already computed: the others' images, which it never had, are not
+        # taken out by its saving its composition (GUI exploration 4: a filter added emptied Post of new branches)
+        post = getattr(source, "is_post_page", False)
+        shown |= {(q.pid, self.post_default_part(q)) for q in self.post_defaults(old)
+                  if not post or getattr(q, "rendered", True)}
         now = {(x.get("pid"), x.get("part")) for x in layers if x.get("kind") == "workflow"}
         alive = {q.pid for q in self.paths}
         out = {x for x in (self.post_removed() | (shown - now)) - now if x[0] in alive}
@@ -1055,6 +1078,14 @@ class ProjectModel(QObject):
                 return q
             if len(flt) == 1 and "" not in flt and not ses.filter:
                 ses.filter = next(iter(flt))              # a filter's flow: its filter (decision 1)
+                # a default name shows the filter when the filter's other nights' names do ("Ha 2", GUI exploration 4)
+                mates = [x.name for x in self.p.sessions_of(w.id) if x.id != sid]
+                default = ses.name.startswith(_("Session {n}").format(n="")) and ses.name.split()[-1].isdigit()
+                if default and mates and all(ses.filter in x for x in mates):
+                    k = len(mates) + 1
+                    while f"{ses.filter} {k}" in {x.name for x in self.p.sessions}:
+                        k += 1
+                    ses.name = f"{ses.filter} {k}"
             if w.sessions is not None:
                 flow = ids(w)
                 for x in frames:
@@ -1280,6 +1311,8 @@ class ProjectModel(QObject):
             return refused_text(e) if e is not None else ""
         if block == "color" and self.is_mono(p):
             return _(wfl.MONO_NO_COLOUR)
+        if block == "stars" and is_fusion_view(p):
+            return _(FUSION_STARS)
         if block == "calibration" and p.source is None and self.separate_sessions() and \
                 any(n["block"] == "calibration" for n in self.graph(p)):
             return _("Calibration: one per session")
@@ -1465,7 +1498,7 @@ class ProjectModel(QObject):
 
     def place_indices(self, p: WorkflowView, block: str) -> list[int]:
         """Where a block can be inserted in a workflow's graph."""
-        if block == "color" and self.is_mono(p):
+        if block == "color" and self.is_mono(p) or block == "stars" and is_fusion_view(p):
             return []
         return wfl.places(self.graph(p), self.source_kind(p), block)
 
@@ -1475,6 +1508,8 @@ class ProjectModel(QObject):
         g, src = self.graph(p), self.source_kind(p)
         if block == "color" and self.is_mono(p):
             raise ValueError(_(wfl.MONO_NO_COLOUR))
+        if block == "stars" and is_fusion_view(p):
+            raise ValueError(_(FUSION_STARS))
         if index is None:
             index = wfl.insert_place(g, src, block)
             if index is None:
@@ -1562,11 +1597,21 @@ class ProjectModel(QObject):
         with self._edit():
             sid = max((s.id for s in self.p.sessions), default=0) + 1
             from ..core.project2 import Session
-            self.p.sessions.append(Session(sid, flt or _("Session {n}").format(n=sid), filter=flt))
+            name = api.unique_session_name(self.p, flt) if flt else self.new_session_name(sid)
+            self.p.sessions.append(Session(sid, name, filter=flt))
             if len(self.p.sessions) >= 2 and self.p.stack_mode == "together":
                 self.p.stack_mode = "per_session"
             self.p.validate()
         return sid
+
+    def new_session_name(self, sid: int) -> str:
+        """A new session's default name: "Session n", n its id or the next number no session's name has (GUI
+        exploration 4: a session renamed "Session 2" by the user, the next one was "Session 2" too)."""
+        taken = {s.name for s in self.p.sessions}
+        n = sid
+        while _("Session {n}").format(n=n) in taken:
+            n += 1
+        return _("Session {n}").format(n=n)
 
     def can_branch(self, p: WorkflowView, key: str, block: str) -> bool:
         """Whether ``block`` can start a new branch right after the block ``key`` of a workflow (issue #47)."""
@@ -1595,9 +1640,9 @@ class ProjectModel(QObject):
             method = next((m for m in wfl.METHODS[block] if m != nxt["method"]), None)
         n = wfl.node(block, method, name=wfl.new_name(head, block))
         head.append(n)
-        from .blocks import block_title
-        with self._edit():
-            w = api.add_workflow(self.p, self.unique_name(f"{p.name} · {block_title(None, node_key(n))}"), None, None,
+        with self._edit():                                # named by its block's kind, numbered as names are (not the
+            # block's own "~2", which made "Ha · Gradient 2 2"; GUI exploration 4)
+            w = api.add_workflow(self.p, self.unique_name(self.branch_name(p.name, node_key(n))), None, None,
                                  copy_of=p.pid)
             x = self.p.workflow(w.id)
             x.source = copy.deepcopy(self.p.workflow(p.pid).source)
@@ -1822,15 +1867,29 @@ class ProjectModel(QObject):
         return True
 
     def set_fusion_palette(self, p: WorkflowView, palette: str) -> bool:
-        """Another palette for a fusion (its channels kept when the new one reads the same roles)."""
+        """Another palette for a fusion (its channels kept when the new one reads the same roles). Its name follows
+        while it is the one its palette gave it ("SHO (Hubble palette)" → "HSO"); a name the user gave stays (GUI
+        exploration 4: an HSO fusion kept saying SHO)."""
         w = self.p.workflow(p.pid)
         if not is_fusion_view(p) or w.source["fusion"]["palette"] == palette:
             return False
+        from ..texts import choice_label
+        from .gallery import GALLERY
+        from .i18n import language
+
+        def given(pal):                                   # the names a palette gives: its own, its templates'
+            names = {pal, choice_label(pal, "en")} | {t["name"] for t in GALLERY if t.get("palette") == pal}
+            return names | {_(x) for x in names}
+        base, _sp, num = w.name.rpartition(" ")           # "HSO 2": a second one, numbered by unique_name
+        follow = w.name in given(w.source["fusion"]["palette"]) or \
+            (num.isdigit() and base in given(w.source["fusion"]["palette"]))
         with self._edit():
             ws = api.workflows(self.p)
             x = next(v for v in ws if v.id == p.pid)
             x.source = {"fusion": {**x.source["fusion"], "palette": palette}}
             api.set_workflows(self.p, ws, self.p.current)
+            if follow:
+                self._rename(p.pid, self.unique_name(choice_label(palette, language())))
         return True
 
     def set_node_method(self, paths, key: str, method: str) -> bool:
@@ -1917,7 +1976,8 @@ class ProjectModel(QObject):
             raise ValueError(f"not kinds of calibration frames: {sorted(bad)}")
         sid = max((s.id for s in self.p.sessions), default=0) + 1
         with self._edit():
-            self.p.sessions.append(Session(sid, api.unique_session_name(self.p, name or _("Session {n}").format(n=sid)),
+            self.p.sessions.append(Session(sid, api.unique_session_name(self.p, name) if name else
+                                           self.new_session_name(sid),
                                            lights=[Path(x).as_posix() for x in lights],
                                            **{k: [Path(x).as_posix() for x in v] for k, v in calibration.items()}))
             self.p.validate()

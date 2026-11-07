@@ -44,7 +44,7 @@ from collections import OrderedDict
 from functools import partial
 
 import numpy as np
-from PySide6.QtCore import QAbstractTableModel, QSortFilterProxyModel, Qt, QTimer, Signal
+from PySide6.QtCore import QAbstractTableModel, QEvent, QSortFilterProxyModel, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -588,6 +588,7 @@ class TuneView(QWidget):
         self.strip.picked.connect(self._strip_pick)
         self.strip.workflow.connect(self._strip_workflow)
         self.strip_scroll = self.strip.scroll             # its blocks scroll, "◂ Graph" and the list stay (round 3)
+        self.strip_scroll.viewport().installEventFilter(self)     # narrowed: the open block kept in view (round 4)
         v.addWidget(self.strip)
         self.pages = QStackedWidget()
         v.addWidget(self.pages, 1)
@@ -648,6 +649,14 @@ class TuneView(QWidget):
         g = Graph(s)
         node = g.node_of(s.path, s.sel_step) if s.sel_step not in ("sources", "final") else None
         s.scope = [q.pid for q in node.paths] if node is not None else None
+
+    def eventFilter(self, obj, e):                                    # noqa: N802
+        try:
+            if e.type() == QEvent.Resize and obj is self.strip_scroll.viewport():
+                QTimer.singleShot(0, self.show_open_block)    # the window resized after the strip was built
+        except RuntimeError:                              # closing: the strip already gone
+            pass
+        return super().eventFilter(obj, e)
 
     def show_open_block(self):
         """The strip scrolled so that the open block's button is in view (GUI exploration 2: at 1366 x 768 the strip of

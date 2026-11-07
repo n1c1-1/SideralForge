@@ -175,6 +175,28 @@ def test_the_recap_names_the_flow_when_two_rows_share_a_name_and_is_written_once
     d.close()
 
 
+def test_a_long_recap_scrolls_in_its_box_never_cut(world):
+    """GUI exploration 4: a large project's run not started listed its 72 blocks in one paragraph that ran out of the
+    box, cut mid-name. The recap's lines are in a scroll area of bounded height; every name is in its text."""
+    from astro_gpu.client.runs import RECAP_MAX_H
+    w = world(blocks=GRAPH, flows=16, sessions=16)
+    plan = w.m.plan_all()
+    t = RunTrack.of_plan(plan)
+    t.plan = plan
+    t.abort("PermissionError: [Errno 13] Permission denied: 'x'")
+    d = RunDialog(w.m, plan, "Run", track=t)
+    d.resize(740, 700)
+    d.show()
+    QApplication.processEvents()
+    d.refresh()
+    QApplication.processEvents()
+    texts = [lb.text() for lb in d.recap_area.widget().findChildren(QLabel)]
+    line = next(x for x in texts if x.startswith("Not started: "))
+    assert all(name in line for name in d._named().values())
+    assert d.recap_area.height() <= RECAP_MAX_H and d.recap_area.verticalScrollBar().maximum() > 0
+    d.close()
+
+
 # ---------------------------------------------------------------------------------------------- 4.3: Run to here
 def test_run_to_here_runs_the_block_placed_twice_and_is_refused_on_a_session(world):
     w = world()
@@ -298,6 +320,24 @@ def test_a_block_placed_twice_has_its_own_method_and_astrometry_says_what_it_wil
     assert method_of(m.path, "fond~2") == "simple"
 
 
+def test_a_block_placed_twice_has_the_settings_of_the_first_its_own_values(world):
+    """Round 4: Gradient 2's panel had no setting (no surface degree, no advanced settings): its catalogue was looked up
+    under "fond~2". It lists Gradient 1's settings, read from and written to its own stage ("gradient~2")."""
+    from astro_gpu.client.settings import needed_stages, step_settings
+    w = world()
+    m = w.m
+    p = m.path
+    for st in needed_stages(m, p, "fond") | needed_stages(m, p, "fond~2"):
+        m.params(p, st)
+    assert w.worker.wait(60)
+    QApplication.processEvents()
+    one, two = step_settings(m, p, "fond"), step_settings(m, p, "fond~2")
+    names = [(t, [r["name"] for r in rs]) for t, rs in two]
+    assert names == [(t, [r["name"] for r in rs]) for t, rs in one] and "degree" in names[0][1], names
+    assert all(r["stage"] == "gradient~2" for _t, rs in two for r in rs)
+    assert all(r["stage"] == "gradient" for _t, rs in one for r in rs)
+
+
 def test_unreadable_lights_are_not_counted_as_used(env):
     """Round 3: five .fits that are not FITS files: Run refused, the Session said "5 / 5 used". Every light is read
     (the first card), the message names the first and the count is kept for the Session."""
@@ -326,6 +366,52 @@ def test_the_project_reopens_on_the_block_selected_and_a_new_one_on_the_session(
     assert project2.Project2.from_dict(w.m.p.to_dict(), w.m.p.root).current_block == "empilement"
     assert world(blocks=[{"block": "stacking"}], current_block="fond").m.sel_step == "sources"   # gone: the Session
     assert world(sessions=2, mode="per_session").m.sel_step == "session@1"
+
+
+def test_a_closed_project_leaves_no_model_in_memory(env):
+    """GUI exploration 4: memory grew at each close and reopening. A model's lambda on its own signal, and the Inspect
+    service whose weak key was its model (the service holding it), kept every closed project alive."""
+    import gc
+    import weakref
+
+    from PySide6.QtCore import QEvent
+
+    from astro_gpu.client.services.inspect import service_of
+    p = project(env)
+    win = appmod.Main()
+    try:
+        assert win.open_project(p.root)
+        assert win.worker.wait(120)
+        service_of(win.s)
+        ref = weakref.ref(win.s)
+        assert win.close_project(discard=True)
+        for _i in range(3):                       # the event loop's deferred deletions
+            QApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            QApplication.processEvents()
+        gc.collect()
+        assert ref() is None
+    finally:
+        win.close()
+
+
+def test_the_project_reopens_on_its_recombine_block(env):
+    """GUI exploration 4: Recombine selected, saved and reopened, the Session was selected (a Recombine is a Post layer,
+    not a node of the graph). Its layer is selected again; without a Stars block, the Session."""
+    stars = GRAPH[:3] + [{"block": "denoise"}, {"block": "stars"}]
+    p = project(env, blocks=stars, current_block="composition")
+    wid = p.workflows[0].id
+    p.post = {"layers": [{"kind": "workflow", "pid": wid, "part": "combined", "id": 7, "name": "Workflow · Recombine"}]}
+    project2.save(p)
+    w = World(p)
+    try:
+        assert w.m.sel_step == "composition" and w.m.sel_layer == 7
+    finally:
+        w.close()
+    w = World(project(env, blocks=GRAPH, current_block="composition"))
+    try:
+        assert w.m.sel_step == "sources" and w.m.sel_layer is None
+    finally:
+        w.close()
 
 
 # ---------------------------------------------------------------------------------------------- 6.8, 6.9

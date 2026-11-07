@@ -28,6 +28,7 @@ pytest.importorskip("PySide6")
 from conftest import TEST_PROJECT, full_only, needs_test_project, scratch_project  # noqa: E402
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QFont, QFontMetricsF  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractButton,
     QAbstractSpinBox,
@@ -689,6 +690,26 @@ def test_undo_and_redo_restore_the_workflows(world, model, page):
     assert model.view(1) is None
     model.undo()
     assert model.view(1) is not None and model.view(1).computed and full.pid == 1
+
+
+def test_escape_cancels_a_port_pulled_to_post(world, model, page):
+    """GUI exploration 4: Escape while a port is pulled toward Post cancels it, as in reference apps: the wire goes,
+    released on Post it sends nothing."""
+    from PySide6.QtWidgets import QGraphicsSceneMouseEvent
+    n0 = len(model.paths)
+    stacking = node(page, "empilement")
+    item = next(it for it in page.graph.scene().items() if isinstance(it, BlockItem) and it.node is stacking)
+    press = QGraphicsSceneMouseEvent(QEvent.GraphicsSceneMousePress)
+    press.setButton(Qt.LeftButton)
+    press.setPos(QPointF(item.w, BH / 2))
+    item.mousePressEvent(press)
+    post = page.graph.final_item.sceneBoundingRect().center()
+    page.graph.move_wire(post)
+    QTest.keyClick(page.graph.viewport(), Qt.Key_Escape)
+    assert not item._wire and not page.graph.final_item.target and page.graph._pull_path.scene() is None
+    item.mouseReleaseEvent(QGraphicsSceneMouseEvent(QEvent.GraphicsSceneMouseRelease))
+    settle(world["w"], page)
+    assert len(model.paths) == n0
 
 
 def test_outputs_pulled_to_post_make_a_raw_stack_workflow(world, model, page):

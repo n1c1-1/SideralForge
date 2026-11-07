@@ -171,6 +171,71 @@ def test_a_fusion_is_greyed_until_its_channels_have_astrometry_and_says_what_it_
         done(w, m, page)
 
 
+def test_one_image_sent_to_post_from_a_block_is_not_numbered(qapp, tmp_path, monkeypatch):
+    """Round 4: a block of an Image's chain sent to Post (a branch with the same source) made the only Image block
+    "Image 1"; a second Image file makes them "Image 1" and "Image 2"."""
+    w, m, page = open_page(tmp_path, monkeypatch, workflows=())
+    try:
+        tif = frames(tmp_path / "img", ["a.tif", "b.tif"])
+        src = {"path": (tif / "a.tif").as_posix(), "stretched": False}
+        p = m.add_graph_workflow("Image", [wfl.node("astrometry"), wfl.node("gradient"),
+                                           wfl.node("gradient", name="gradient~2")], source=src)
+        settle(w, page)
+        m.send_to_post(m.view(p.pid), "fond", "Image · Gradient")
+        settle(w, page)
+        g = Graph(m)
+        images = {id(g.node_of(q, "image")): g.node_of(q, "image") for q in m.paths}
+        assert len(images) == 1 and [node_title(m, n) for n in images.values()] == ["Image"]
+        m.add_graph_workflow("Other", [wfl.node("astrometry")],
+                             source={"path": (tif / "b.tif").as_posix(), "stretched": False})
+        settle(w, page)
+        g = Graph(m)
+        images = {id(g.node_of(q, "image")): g.node_of(q, "image") for q in m.paths}
+        assert sorted(node_title(m, n) for n in images.values()) == ["Image 1", "Image 2"]
+    finally:
+        done(w, m, page)
+
+
+def test_a_fusion_named_by_its_palette_follows_it_and_a_name_given_stays(qapp, tmp_path, monkeypatch):
+    """GUI exploration 4: an SHO fusion switched to HSO kept "SHO (Hubble palette)" as its name (workflow, panel, block
+    summary, Post layer). Its palette's name follows, Ctrl+Z takes it back; a name the user gave stays."""
+    w, m, page = open_page(tmp_path, monkeypatch, filters=("SII", "Ha", "OIII"))
+    try:
+        chans = [{"pid": q.pid, "role": q.name, "channel": "L"} for q in m.paths]
+        f = m.add_fusion("SHO (Hubble palette)", "SHO", chans)
+        assert m.set_fusion_palette(m.view(f.pid), "HSO")
+        assert m.view(f.pid).name == "HSO"
+        m.undo()
+        assert m.view(f.pid).name == "SHO (Hubble palette)"
+        assert m.rename(f.pid, "My nebula")
+        assert m.set_fusion_palette(m.view(f.pid), "HOO")
+        assert m.view(f.pid).name == "My nebula"
+    finally:
+        done(w, m, page)
+
+
+def test_no_stars_block_is_placed_in_a_fusion_where_it_would_not_be_drawn(qapp, tmp_path, monkeypatch):
+    """GUI exploration 4: dragging Stars/background lit a place on each Fusion's lane; dropped there, the block went
+    into the fusion's graph, never drawn (a Fusion is one block; its stars are chosen in its panel). No place, the
+    palette says why, a placing is refused."""
+    w, m, page = open_page(tmp_path, monkeypatch, filters=("Ha", "OIII"))
+    try:
+        chans = [{"pid": q.pid, "role": q.name, "channel": "L"} for q in m.paths]
+        f = m.add_fusion("HOO", "HOO", chans)
+        settle(w, page)
+        fv = m.view(f.pid)
+        assert m.place_indices(fv, "stars") == [] and m.palette_reason(fv, "stars")
+        page.graph.drag_block = "stars"
+        page.graph.rebuild()
+        assert not [g for g in page.graph.ghosts if g.pid == f.pid]
+        page.graph.drag_block = None
+        n = len(m._undo)
+        page.place_block("stars", f.pid, 0)
+        assert len(m._undo) == n and "panel" in page.toasts[-1]
+    finally:
+        done(w, m, page)
+
+
 def test_a_fusion_channel_keeps_what_the_fusion_needs(qapp, tmp_path, monkeypatch):
     """Decision 3: a channel's Astrometry cannot be deleted nor switched off, its workflow cannot be deleted (no
     Python error on Ctrl+Y any more); its session set to another filter: the Fusion red with the reason."""
@@ -316,3 +381,44 @@ def test_a_field_going_away_writes_nothing(qapp):
     QApplication.processEvents()
     assert calls == []
     host.close()
+
+
+def test_a_filter_s_second_night_is_named_and_drawn_with_its_filter(qapp, tmp_path, monkeypatch):
+    """GUI exploration 4: a second night joining Ha is "Ha 2" (the filter's other night shows it), drawn with the Ha
+    sessions, level with the Ha chain, not under OIII; each session level with its chain (also in big projects); the
+    sessions' bars of two filters never run into each other."""
+    w, m, page = open_page(tmp_path, monkeypatch, filters=("Ha", "OIII"))
+    try:
+        ha, oiii = (next(q for q in m.paths if q.name == n) for n in ("Ha", "OIII"))
+        page.refresh()
+        lanes, g = page.graph._lanes, page.graph.graph
+        assert {sn.sid: sn.y for sn, _c in g.sessions} == {1: lanes[ha.pid], 2: lanes[oiii.pid]}
+        for q in (ha, oiii):
+            page.select(index=m.paths.index(m.view(q.pid)), step=f"session@{m.sessions_of(m.view(q.pid))[0]}")
+            page.palette_action("session")
+            settle(w, page)
+        assert [(s.name, s.filter) for s in m.p.sessions] == [("Ha", "Ha"), ("OIII", "OIII"), ("Ha 2", "Ha"),
+                                                               ("OIII 2", "OIII")]
+        assert page.toasts[0].startswith("“Ha 2” joins “Ha”")
+        page.refresh()
+        lanes, g = page.graph._lanes, page.graph.graph
+        y = {sn.sid: sn.y for sn, _c in g.sessions}
+        assert y[1] < y[3] < y[2] < y[4]                                          # Ha, Ha 2, then OIII, OIII 2
+        assert (y[1] + y[3]) / 2 == lanes[ha.pid] and (y[2] + y[4]) / 2 == lanes[oiii.pid]
+        assert max(y[3], lanes[ha.pid]) < min(y[2], lanes[oiii.pid])             # two bars, apart
+    finally:
+        done(w, m, page)
+
+
+def test_a_new_session_s_name_is_never_another_s(qapp, tmp_path, monkeypatch):
+    """GUI exploration 4: Session 1 renamed "Session 2" by the user: the next session is not "Session 2" too."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        assert m.rename_session(1, "Session 2")
+        sid = m.add_filter_session("")
+        assert sid == 2 and m.p.session(sid).name == "Session 3"
+        sid = m.add_session()
+        names = [s.name for s in m.p.sessions]
+        assert len(set(names)) == len(names) == 3
+    finally:
+        done(w, m, page)

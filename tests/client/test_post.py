@@ -1481,6 +1481,33 @@ def test_a_starless_slider_leaves_the_stars_as_they_are(preps, qapp):
         s.close()
 
 
+def test_post_undo_takes_back_a_graph_gesture_when_post_has_none(post):
+    """GUI exploration 4: on the Post page, Ctrl+Z after a gesture made in the graph (Post having no step of its
+    own) undoes that gesture, then Ctrl+Y redoes it: one Undo for the whole window."""
+    v = post.view
+    s = v.s
+    v.undo.clear()
+    v.redo.clear()
+    assert v.do_undo() is False                                  # nothing anywhere: nothing happens
+    p = s.paths[0]
+    old = p.name
+    names = {"undo": [old], "redo": []}                          # the workflows' Undo, as the model keeps it
+
+    def back(src, dst):
+        if not names[src]:
+            return False
+        names[dst].append(p.name)
+        p.name = names[src].pop()
+        return True
+    s.undo, s.redo = (lambda: back("undo", "redo")), (lambda: back("redo", "undo"))
+    s.can_undo, s.can_redo = (lambda: bool(names["undo"])), (lambda: bool(names["redo"]))
+    p.name = "Renamed in the graph"                              # a gesture in the graph, before Post is shown
+    v._undo_buttons()
+    assert v.b_undo.isEnabled()
+    assert v.do_undo() is True and s.paths[0].name == old
+    assert v.do_redo() is True and s.paths[0].name == "Renamed in the graph"
+
+
 def test_undo_and_redo_one_step_per_action(post):
     from astro_gpu.client.post3 import ContSlider
     v = post.view

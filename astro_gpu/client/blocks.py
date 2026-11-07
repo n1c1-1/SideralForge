@@ -175,24 +175,45 @@ def block_title(p, key: str) -> str:
     return f"{t} {n}" if n else t
 
 
-def calibration_counts(darks, flats, bias=None) -> str:
-    """"3 darks · 1 flat (· 0 bias)": each count with its noun in the right form, as the lights' (GUI exploration 2)."""
-    parts = [plural(int(darks or 0), "{n} dark", "{n} darks"), plural(int(flats or 0), "{n} flat", "{n} flats")]
+def calibration_counts(darks, flats, bias=None, gone=()) -> str:
+    """"3 darks · 1 flat (· 0 bias)": each count with its noun in the right form, as the lights' (GUI exploration 2).
+    A kind in ``gone`` (``gone_kinds``) without a frame: its folder is not found, not empty (GUI exploration 4)."""
+    def one(kind, n, counted, missing):
+        return _(missing) if kind in gone and not int(n or 0) else counted
+    parts = [one("darks", darks, plural(int(darks or 0), "{n} dark", "{n} darks"), "darks not found"),
+             one("flats", flats, plural(int(flats or 0), "{n} flat", "{n} flats"), "flats not found")]
     if bias is not None:
-        parts.append(plural(int(bias or 0), "{n} bias", "{n} bias"))
+        parts.append(one("bias", bias, plural(int(bias or 0), "{n} bias", "{n} bias"), "bias not found"))
     return " · ".join(parts)
 
 
+def gone_kinds(s, sids=None) -> set[str]:
+    """The kinds of frames (lights, darks...) of these sessions (all when None) one of whose folders is not there:
+    moved or renamed outside, its disk unplugged (GUI exploration 4). Each folder is looked at once, never each file."""
+    if not hasattr(s, "session") or getattr(s, "p", None) is None:
+        return set()
+    out: set[str] = set()
+    for se in s.p.sessions:
+        if sids is not None and se.id not in sids:
+            continue
+        for kind in ("lights", "darks", "flats", "bias", "flat_darks"):
+            folders = {(p if not p.suffix else p.parent) for p in (Path(s.p.abspath(e)) for e in getattr(se, kind))}
+            if any(not f.exists() for f in folders):
+                out.add(kind)
+    return out
+
+
 def session_summary(s, sid: int) -> str:
-    """Under a Session block's name: its lights, its calibration frames, its filter."""
+    """Under a Session block's name: its lights, its calibration frames, its filter; a kind whose folder is not
+    found says so (GUI exploration 4)."""
     ses = next((x for x in s.sessions if x["id"] == sid), {})
+    gone = gone_kinds(s, {sid})
     if not int(ses.get("lights") or 0):                # issue #48: a Session placed empty says what it needs
         se = s.session(sid) if hasattr(s, "session") else None
         flt = getattr(se, "filter", "")
-        gone = [f for f in (getattr(se, "lights", None) or []) if not Path(f).exists()]
-        return (_("lights folder not found") if gone else _("lights to add")) + (f" · {flt}" if flt else "")
+        return (_("lights folder not found") if "lights" in gone else _("lights to add")) + (f" · {flt}" if flt else "")
     text = plural(int(ses.get("lights") or 0), "{n} light", "{n} lights")
-    text += " · " + calibration_counts(ses.get("darks", 0), ses.get("flats", 0))
+    text += " · " + calibration_counts(ses.get("darks", 0), ses.get("flats", 0), gone=gone)
     flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
     warn = "⚠ " if hasattr(s, "file_warnings") and s.file_warnings(sid) else ""   # issue #58: see its panel
     return warn + text + (f" · {flt}" if flt else "")
@@ -208,10 +229,16 @@ def node_title(s, n) -> str:
     if n.key == "composition" and n.num:              # several Recombine blocks: all numbered, top to bottom, as
         return f"{block_title(None, 'composition')} {n.num}"     # Gradient 1, Gradient 2 (control round)
     if n.key in ("fusion", "image") and n.paths:      # several Fusions, several Images: numbered in the project's
-        src = "fusion" if n.key == "fusion" else "path"            # order (exploration 2, control round)
-        same = [q.pid for q in getattr(s, "paths", []) if isinstance(q.source, dict) and src in q.source]
-        if len(same) > 1 and n.paths[0].pid in same:
-            return f"{block_title(None, n.key)} {same.index(n.paths[0].pid) + 1}"
+        src = "fusion" if n.key == "fusion" else "path"            # order (exploration 2, control round); a branch
+        bk = getattr(s, "block_key", None)                         # shares its source's block: counted once (round 4:
+        ident = (lambda q: bk(q, n.key)) if bk is not None else (lambda q: q.pid)   # one Image became "Image 1")
+        same = []
+        for q in getattr(s, "paths", []):
+            if isinstance(q.source, dict) and src in q.source and ident(q) not in same:
+                same.append(ident(q))
+        mine = ident(n.paths[0])
+        if len(same) > 1 and mine in same:
+            return f"{block_title(None, n.key)} {same.index(mine) + 1}"
     if n.paths and "~" in n.key or (n.paths and n.key in ("fond", "couleur", "debruitage")):
         # issue #47: a block placed twice, numbered left to right; shared by a branch that has it twice: numbered
         # as in that branch ("Gradient 1" before its "Gradient 2", control round)
@@ -568,7 +595,7 @@ class Graph:
             return _("off: frames as they are").format(block=title)
         if node.sid is not None:
             ses = next((x for x in s.sessions if x["id"] == node.sid), {})
-            return calibration_counts(ses.get("darks", 0), ses.get("flats", 0))
+            return calibration_counts(ses.get("darks", 0), ses.get("flats", 0), gone=gone_kinds(s, {node.sid}))
         if node.cut:
             return (_("off: frames as they are") if node.key == "calibration" else
                     _("off: frames as aligned")).format(block=title)
@@ -608,7 +635,8 @@ class Graph:
             return _("stars in {mode}").format(mode=_((lay or {}).get("blend") or "Screen"))
         if k == "calibration":
             inv = s.info()
-            return calibration_counts(inv.get("n_darks", 0), inv.get("n_flats", 0), inv.get("n_bias", 0))
+            return calibration_counts(inv.get("n_darks", 0), inv.get("n_flats", 0), inv.get("n_bias", 0),
+                                      gone=gone_kinds(s))
         if k == "alignement":
             return _("ref: sharpest frame")
         if k == "selection":

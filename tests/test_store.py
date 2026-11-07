@@ -380,6 +380,21 @@ def test_inventory_part_follows_names_sizes_and_order(proj, raws, tmp_path):
     assert K(proj).key(CLASSIC, "inventory") != ordered
 
 
+def test_the_frame_list_is_listed_once_until_forget(proj, raws, tmp_path):
+    """GUI exploration 4: the estimates of a large project asked the frame list thousands of times (9 to 40 s at its
+    opening): it is listed once per set of sessions, again when their folders change or after ``forget``."""
+    scan = InputScan()
+    first = scan.frames(proj)
+    assert scan.frames(proj) is first                                         # cached
+    proj.sessions[0].darks = [str(write_frames(tmp_path / "dark", {"d1.ARW": 10}))]
+    with_darks = scan.frames(proj)                                             # another folder list: listed again
+    assert with_darks is not first and ["darks", "d1.ARW", 10] in with_darks
+    write_frames(tmp_path / "dark", {"d2.ARW": 10})
+    assert scan.frames(proj) is with_darks                                    # files on disk: until forget
+    scan.forget()
+    assert ["darks", "d2.ARW", 10] in scan.frames(proj)
+
+
 def test_target_and_reference_parts(proj, tmp_path):
     k = K(proj)
     assert k.project_part("c") is None and k.project_part("reference") is None
