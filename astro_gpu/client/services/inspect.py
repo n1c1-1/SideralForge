@@ -562,6 +562,7 @@ class ProjectFrames:
     flats: dict[str, Any] = field(default_factory=dict)
     folders: dict[str, list[str]] = field(default_factory=dict)    # kind -> folders as the sessions list them
     counts: dict[str, int] = field(default_factory=dict)           # kind -> files in the project
+    unreadable: list[tuple[str, str]] = field(default_factory=list)  # (session, file name) of lights that cannot be read
 
 
 def _files(p, entries) -> list[Path]:
@@ -575,9 +576,24 @@ def _median_level(path, info) -> float:
     return float(np.median(a))
 
 
+def _first_readable(files: list, like=None, bad: list | None = None, tries: int = 8):
+    """The header of the first of ``files`` that can be read (``bad`` gets the names of those that cannot; ``tries``
+    of them at most), or None."""
+    from ...io.frames import read_info
+    for f in files[:tries]:
+        try:
+            return read_info(f, like=like) if like is not None else read_info(f)
+        except Exception:  # noqa: BLE001 - a damaged or foreign file: said in the checks (exploration 6.10)
+            if bad is not None and f.name not in bad:
+                bad.append(f.name)
+    return None
+
+
 def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFrames:
     """The sessions, headers, star sizes and health checks of a project. ``headers`` caches the headers read (a dict
-    owned by the service)."""
+    owned by the service). A light that cannot be read never stops it (exploration 6.10: the checks stayed on "Reading
+    the frames…"): it is said in the checks; the files the engine does not read (a JPEG) are not counted as kept."""
+    from ...core.project import frame_kind
     from ...io.frames import read_info
     hdr = headers if headers is not None else {}
     out = ProjectFrames()
@@ -593,23 +609,28 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
             by_session.setdefault(r.session, []).append(r)
     first_info = None
     for s in p.sessions:
-        row = SessionRow(s.id, s.name)
+        row = SessionRow(s.id, s.name, filter=s.filter)
         lights = _files(p, s.lights)
         row.lights = len(lights)
+        frames = [f for f in lights if frame_kind(f)]             # what the engine reads (not a JPEG added by mistake)
         row.darks, row.flats = len(_files(p, s.darks)), len(_files(p, s.flats))
         row.bias, row.flat_darks = len(_files(p, s.bias)), len(_files(p, s.flat_darks))
         for kind in ("lights", "darks", "flats", "bias", "flat_darks"):
             out.counts[kind] = out.counts.get(kind, 0) + getattr(row, kind)
-        if lights:
-            k = (str(lights[0]), str(lights[-1]), len(lights))
+        if frames:
+            k = (str(frames[0]), str(frames[-1]), len(frames))
             if k not in hdr:
-                a = read_info(lights[0])
-                hdr[k] = (a, read_info(lights[-1], like=a) if len(lights) > 1 else a)
-            a, b = hdr[k]
-            first_info = first_info or a
-            row.exposure, row.iso, row.temperature = a.exposure, a.iso, a.temperature
-            times = [x for x in (a.time, b.time) if x]
-            row.first, row.last = (min(times), max(times)) if times else ("", "")
+                bad: list[str] = []
+                a = _first_readable(frames, bad=bad)
+                b = (_first_readable(frames[::-1], like=a, bad=bad) if a is not None and len(frames) > 1 else a)
+                hdr[k] = (a, b, bad)
+            a, b, bad = hdr[k]
+            out.unreadable += [(s.name, n) for n in bad]
+            if a is not None:
+                first_info = first_info or a
+                row.exposure, row.iso, row.temperature = a.exposure, a.iso, a.temperature
+                times = [x for x in (a.time, b.time if b is not None else None) if x]
+                row.first, row.last = (min(times), max(times)) if times else ("", "")
         rows = by_session.get(s.id)
         if rows:
             fw = [r.fwhm for r in rows if np.isfinite(r.fwhm)]
@@ -617,7 +638,7 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
             row.kept = sum(1 for r in rows if not r.status)
         else:
             ex = sum(1 for sid, _n in p.excluded if sid == s.id)
-            row.kept = max(row.lights - ex, 0)
+            row.kept = max(len(frames) - ex, 0)
         out.sessions.append(row)
     if first_info is not None:
         out.camera = dict(camera=first_info.camera, width=first_info.width, height=first_info.height,
@@ -650,6 +671,9 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
         out.checks = api.health_checks(p)
     except Exception:  # noqa: BLE001
         out.checks = []
+    out.checks[:0] = [api.Check("warn", "unreadable", f"{name}: {f} cannot be read", {"session": name, "name": f})
+                      for name, f in out.unreadable]      # 6.10: said, never a silent stop
+    out.checks = [c for c in out.checks if not (c.key == "ok" and any(x.level == "warn" for x in out.checks))]
     return out
 
 

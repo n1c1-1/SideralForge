@@ -61,7 +61,8 @@ def night_text(first: str) -> str:
     return f"{d0.day} {month[d0.month - 1]} → {d1.day} {month[d1.month - 1]} {d1.year}"
 
 
-KIND_WORDS = {"lights": "lights", "darks": "darks", "flats": "flats", "bias": "bias", "flat_darks": "flat darks"}
+#: the kinds of frames in a sentence ("dark flats": one name everywhere, #49)
+KIND_WORDS = {"lights": "lights", "darks": "darks", "flats": "flats", "bias": "bias", "flat_darks": "dark flats"}
 
 
 def type_warning_text(w: dict) -> str:
@@ -94,6 +95,9 @@ def check_text(c, data: ProjectFrames | None = None) -> str:
     if c.key == "file_types":
         return f"{a.get('session', '')} : " + type_warning_text(a) if language() == "fr" else \
             f"{a.get('session', '')}: " + type_warning_text(a)
+    if c.key == "unreadable":                             # GUI exploration 6.10: a light that cannot be read
+        return _("{session}: {name} cannot be read (damaged, or not a frame): take it out of the session.").format(
+            session=a.get("session", ""), name=a.get("name", ""))
     if c.key == "flats_merged":
         return _("The flats of {n} sessions are merged into one master flat.").format(n=a.get("n", 0))
     if c.key == "disk":
@@ -386,12 +390,15 @@ class FramesView(QWidget):
         def count(n):
             return str(n) if n else _("none")
         src = row if row is not None else None
+        # the session's filter (exploration 6.10: the column always said "–"); a colour camera's: OSC
+        flt = (src.filter if src is not None else ses.get("filter", "")) or ""
+        flt = "" if flt == "OSC" else flt
         lights = src.lights if src else ses["lights"]
         kept = src.kept if src is not None and src.kept is not None else ses["kept"]
         return [ses["name"], night_text(src.first) if src else "–", str(lights),
                 fexp(src.exposure) if src else "–", str(int(src.iso)) if src and src.iso else "–",
                 f"{number(src.temperature)} °C" if src and src.temperature is not None else "–",
-                "OSC" if osc else "–", count(src.flats if src else ses["flats"]),
+                flt or ("OSC" if osc else "–"), count(src.flats if src else ses["flats"]),
                 count(src.darks if src else ses["darks"]), count(src.bias if src else ses["bias"]),
                 f"{number(src.fwhm)} px" if src and src.fwhm else "–", f"{kept} / {lights}"]
 

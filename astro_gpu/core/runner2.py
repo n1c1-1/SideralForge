@@ -600,8 +600,8 @@ def wait_gone(old: dict[str, Any], timeout: float | None = None) -> str:
 # ---------------------------------------------------------------------------------------------- the worker
 
 class RunJournal(Journal):
-    """The journal of a run: every event carries the run id; the events of the job's stage add its key, the
-    workflows sharing it and its block."""
+    """The journal of a run: every event carries the run id; the events of the job's stage (its own name, or the
+    plain stage it is an instance of) add its key, the workflows sharing it and its block."""
 
     def __init__(self, log_dir: Path, run_id: str, echo: bool = True):
         super().__init__(log_dir, echo)
@@ -611,7 +611,9 @@ class RunJournal(Journal):
     def emit(self, type_: str, **kw: Any) -> None:
         kw.setdefault("run", self.run_id)
         j = self.job
-        if j is not None and kw.get("stage") == j.stage:
+        # the stage code names itself by its stage alone ("gradient"): the job of a block placed twice ("gradient~2")
+        # or of a session ("calibrate@2") is the one running it (exploration 4.2: its events went to the first one)
+        if j is not None and kw.get("stage") is not None and base(str(kw["stage"])) == base(j.stage):
             kw.setdefault("key", j.key)
             kw.setdefault("wf", j.wf)
             kw.setdefault("block", j.block)

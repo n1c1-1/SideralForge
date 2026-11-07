@@ -15,6 +15,7 @@ a decimal comma in French.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 LOCALE = Path(__file__).parent / "locale"
@@ -94,3 +95,40 @@ def hm(seconds: float) -> str:
     if m < 1:
         return "≤ 1 min"
     return f"{m // 60} h {m % 60:02d}" if m >= 60 else f"{m} min"
+
+
+#: a program error as Python writes it ("TypeError: ...", a traceback): never shown as it is (GUI exploration 9.9)
+_RAW_ERROR = re.compile(r"^\s*(Traceback|[A-Za-z_.]*(Error|Exception|Interrupt)\b)")
+#: the usual troubles behind a program error, in plain words (searched in the error's text)
+_PLAIN_ERRORS = (
+    (("PermissionError", "Permission denied", "Access is denied"), "no permission to write or read there"),
+    (("FileNotFoundError", "No such file", "cannot find the path"), "a file or folder is not found"),
+    (("No space left", "ENOSPC", "not enough space on the disk"), "the disk is full"),
+    (("MemoryError", "out of memory", "Unable to allocate"), "not enough memory"),
+)
+
+
+def is_raw_error(text: str) -> bool:
+    """Whether a text is a program error as Python writes it, not a sentence for the user."""
+    return bool(text) and bool(_RAW_ERROR.match(text))
+
+
+def plain_error(text: str) -> str:
+    """The reason of a failure in plain words, translated: a sentence the program wrote is kept (translated when the
+    catalogue has it); a program error becomes the usual trouble it shows (no permission, a file not found, a full
+    disk, not enough memory), else "an error of the program", the technical text being for the Log only."""
+    text = (text or "").strip()
+    if not is_raw_error(text):
+        return maybe(text.splitlines()[0]) if text else _("an error of the program (the details are in the Log)")
+    for marks, words in _PLAIN_ERRORS:
+        if any(m in text for m in marks):
+            return _(words)
+    return _("an error of the program (the details are in the Log)")
+
+
+def log_detail(model, text: str) -> None:
+    """The technical text of a failure, kept in the Log (the history of the project) when a model is at hand."""
+    log = getattr(model, "log", None)
+    if callable(log) and is_raw_error(text or ""):
+        lines = (text or "").strip().splitlines()
+        log("Technical detail: {detail}", detail=(lines[-1] if lines[0].startswith("Traceback") else lines[0])[:300])

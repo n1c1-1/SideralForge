@@ -102,6 +102,26 @@ def file_id(path: str | Path) -> list:
     return [name, st.st_size, mtime_key(st.st_mtime_ns)]
 
 
+#: an image source's content sample: this many pieces of PIECE bytes, spread over the file
+PIECES, PIECE = 16, 4096
+
+
+def content_sample(path: str | Path) -> str | None:
+    """A short hash of pieces of a file spread over it (GUI exploration 7.7): two images of the same name, size and
+    date in two folders (a batch export writes them in the same second) differ in it, a copy elsewhere keeps it.
+    Reads 64 KB at most; None when the file cannot be read."""
+    try:
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            h = hashlib.sha1()
+            for i in range(PIECES):
+                f.seek(max(0, (size - PIECE) * i // max(PIECES - 1, 1)))
+                h.update(f.read(PIECE))
+    except OSError:
+        return None
+    return h.hexdigest()[:16]
+
+
 def _absolute(project: Project2, path: str | Path) -> str:
     """A path of the definition, absolute (relative to the project) and normalised, with '/'."""
     return Path(os.path.abspath(project.abspath(path))).as_posix()
@@ -131,13 +151,13 @@ class KeyRules:
         self._defaults: dict[str, dict[str, Any]] = {}
 
     def params(self, stage: str) -> type[StageParams]:
-        return self.chains.stages[stage].Params
+        return self.chains.stages[wfl.base(stage)].Params     # a graph's later node ("denoise~2"): its stage's
 
     def version(self, stage: str, values: Mapping[str, Any] | None = None) -> str:
         """The stage's version in a key: its ``version``; with the definition's validated ``values``, the stage's
         ``key_version(values)`` when it has one (a part of the stage revised on its own, keyed only where the settings
         use it: the stack's Classic part)."""
-        st = self.chains.stages[stage]
+        st = self.chains.stages[wfl.base(stage)]
         kv = getattr(st, "key_version", None)
         return str(kv(dict(values)) if callable(kv) and values is not None else st.version)
 
@@ -146,23 +166,23 @@ class KeyRules:
         side)."""
         if self._auto is None:
             return frozenset(self.params(stage).model_fields)
-        return self._auto.get(stage, frozenset())
+        return self._auto.get(wfl.base(stage), frozenset())
 
     def baseline(self, stage: str) -> dict[str, Any]:
         """{field: its previous default} of the fields whose default changed (stages/v2.KEY_BASELINE): the key holds
         their effective value, stored or not, unless it is that previous default."""
-        return self._baseline.get(stage, {})
+        return self._baseline.get(wfl.base(stage), {})
 
     def retired(self, stage: str) -> frozenset[str]:
         """The settings removed from the stage (stages/v2.RETIRED): a stored one is ignored."""
-        return self._retired.get(stage, frozenset())
+        return self._retired.get(wfl.base(stage), frozenset())
 
     def constants(self, stage: str) -> dict[str, Any]:
         """{field: value} of the removed settings whose last value stays in every key (stages/v2.KEY_CONSTANTS)."""
-        return self._constants.get(stage, {})
+        return self._constants.get(wfl.base(stage), {})
 
     def non_key(self, stage: str) -> frozenset[str]:
-        return self._non_key.get(stage, frozenset())
+        return self._non_key.get(wfl.base(stage), frozenset())
 
     def defaults(self, stage: str) -> dict[str, Any]:
         """The static defaults of a stage, in their JSON form."""
@@ -252,6 +272,14 @@ class InputScan:
         if path not in self._files:
             self._files[path] = file_id(path)
         return self._files[path]
+
+    def image_id(self, path: str) -> list:
+        """An image source's id: its ``file_id`` and its ``content_sample`` (GUI exploration 7.7)."""
+        k = "image:" + path
+        if k not in self._files:
+            fid = self.file_id(path)
+            self._files[k] = fid + [content_sample(path) if fid[1] is not None else None]
+        return self._files[k]
 
 
 # ---------------------------------------------------------------------------------------------- keys
@@ -373,11 +401,12 @@ class Keys:
 
     def source_part(self, w: Workflow, stage: str) -> Any:
         """The source of a workflow that does not start from frames, for its first stage's key: an image file's id
-        (name, size, date; stretched or not); a fusion's palette and its inputs' keys (each input workflow's Output
-        and Astrometry: a change in a channel's workflow makes the fusion Outdated)."""
+        (name, size, date, a sample of its content; stretched or not); a fusion's palette and its inputs' keys (each
+        input workflow's Output and Astrometry: a change in a channel's workflow makes the fusion Outdated)."""
         src = getattr(w, "source", None)
         if stage == "image" and src:
-            fid = self.scan.file_id(_absolute(self.project, src["path"])) if src["path"] else ["", None, None]
+            # 7.7: with a sample of its content, so that two images alike by name, size and date differ
+            fid = self.scan.image_id(_absolute(self.project, src["path"])) if src["path"] else ["", None, None]
             return fid + ["stretched"] if src.get("stretched") else fid
         if stage == "fusion" and src:
             f = src["fusion"]

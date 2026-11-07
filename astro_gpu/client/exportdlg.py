@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import prefs
-from .i18n import _, plural
+from .i18n import _, log_detail, plain_error, plural
 from .imageview import slug
 from .postengine import snapshot
 from .services.render import ExportJob
@@ -283,7 +283,9 @@ class ExportDialog(QDialog):
             self.error = error
             self.bar.hide()
             self.status.setText(_("Export stopped.") if error == "stopped"
-                                else _("The export failed: {why}").format(why=error))
+                                else _("The export failed: {why}").format(why=plain_error(error)))
+            if error != "stopped":
+                log_detail(getattr(self.view, "s", None), error)     # the program's error: in the Log only
             self.status.setStyleSheet(f"color: {WARN};")
             return
         self.files = files

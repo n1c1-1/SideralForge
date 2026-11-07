@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from .. import api
 from . import prefs
 from .home import folder_name
-from .i18n import _, language, number, plural
+from .i18n import _, language, number, plain_error, plural
 from .services.worker import ApiWorker
 from .widgets import ElidedLabel, label
 
@@ -247,7 +247,7 @@ class PreviousVersionDialog(QDialog):
         if not channel.startswith(self._ch):
             return
         self._busy = False
-        why = (text or "?").splitlines()[0].split(": ", 1)[-1]
+        why = plain_error(text)
         self.bar.hide()
         self.note.setText(_("The project cannot be imported: {why}").format(why=why))
         self.note.show()

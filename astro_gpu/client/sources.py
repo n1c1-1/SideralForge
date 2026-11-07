@@ -123,6 +123,25 @@ def frame_filter() -> str:
     return _("Raw and FITS frames ({patterns})").format(patterns=pats) + ";;" + _("All files (*)")
 
 
+def no_lights_text(entries) -> str:
+    """Why folders or files chosen give no light frame, translated (#28, #29): not found, empty, or only files of a
+    kind not read (JPEG lights are not read yet)."""
+    from ..core.project import file_type, frame_kind
+    files: list[Path] = []
+    for e in entries:
+        p = Path(e)
+        if not p.exists():
+            return _("Not found: {folder}. Is its disk plugged in?").format(folder=p.as_posix())
+        files += [q for q in p.iterdir() if q.is_file()] if p.is_dir() else [p]
+    other = sorted({file_type(f) for f in files if not frame_kind(f)})
+    if not files:
+        return _("This folder holds no files.")
+    if other:
+        return _("No camera raw or FITS frames here, only {types} files: this version does not read them as "
+                 "lights yet.").format(types=", ".join(other))
+    return _("No light frames chosen.")
+
+
 def common(values) -> str:
     """The most frequent of the values, as text ('' when none)."""
     vals = [v for v in values if v not in (None, "")]
@@ -348,13 +367,15 @@ class ImportDialog(QDialog):
         self.bar.setValue(1000)
         self.cur.setText(_("{n} files read.").format(n=total))
         if not n["lights"]:
-            self.warn.setText(_("No light frames chosen."))
+            lentries = (self.chosen or {}).get("lights") or [self.folder]
+            self.warn.setText(no_lights_text(lentries) if any(lentries) else _("No light frames chosen."))
             return
         parts = [_(KIND_COUNT[k]).format(n=n[k]) for k, _t, _s in GROUPS if n[k]]
-        missing = [_(KIND_WORD[k]) for k in ("bias", "flat_darks") if not n[k]]
+        missing = tuple(k for k in ("bias", "flat_darks") if not n[k])
         txt = _("<b>Found</b>: {parts}.").format(parts=join_and(parts))
-        if missing:
-            txt += " " + _("No {what}.").format(what=", ".join(missing))
+        if missing:                                   # whole sentences, for the French elision (GUI exploration 7.5)
+            txt += " " + _({("bias",): "No bias.", ("flat_darks",): "No dark flats.",
+                            ("bias", "flat_darks"): "No bias, no dark flats."}[missing])
         self.found.setText(txt)
         gs = api.group_sessions(scan.frames["lights"], self.service.criteria)
         names = " · ".join(_("{name} ({n} lights)").format(name=g.name, n=g.count) for g in gs)
@@ -407,7 +428,9 @@ def import_folder(model, parent=None, folder: str | None = None, new_session: bo
     norm = norm_path(folder)
     for ses in model.p.sessions:
         if any(norm_path(model.p.abspath(x)) == norm for x in ses.lights):
-            QMessageBox.information(parent, _("Add folder"), _("This folder is already in the project."))
+            from PySide6.QtGui import QCursor
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.showText(QCursor.pos(), _("This folder is already in the project."), parent)   # not blocking (10.2)
             return False
     d = ImportDialog(model, folder, new_session, parent, svc)
     ok = d.exec()
@@ -415,14 +438,17 @@ def import_folder(model, parent=None, folder: str | None = None, new_session: bo
     d.deleteLater()
     if not ok or scan is None:
         return False
-    if new_session:
-        made = [api.add_session(model.p, name=scan.name)]
-        api.add_frames(model.p, scan, session=made[0].id)
-    else:
-        made = add_scan(model.p, scan, svc.criteria)
+    with model.batch():                               # one step of Undo (2.3)
+        if new_session:
+            made = [api.add_session(model.p, name=scan.name)]
+            api.add_frames(model.p, scan, session=made[0].id)
+        else:
+            made = add_scan(model.p, scan, svc.criteria)
+        if made and not model.p.workflows:         # issue #11: a project is never left without a workflow; #47: an
+            model.ensure_frames_workflow()         # empty one, built from the palette (a template chosen replaces it)
+        for x in made:
+            model.join_session(model.path, x.id)   # a new night joins the flow shown, or one of its own (1.8)
     model.log('Folder "{folder}" imported · {lights} lights', folder=folder, lights=len(scan.frames.get("lights", [])))
-    if made and not model.p.workflows:             # issue #11: a project is never left without a workflow; #47: an
-        model.ensure_frames_workflow()             # empty one, built from the palette (a template chosen replaces it)
     model.load_sources()                              # saved 300 ms after, then the frames are read again
     return bool(made)
 

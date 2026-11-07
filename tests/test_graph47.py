@@ -98,9 +98,9 @@ def test_the_placement_rules():
     # a block that is there once: nowhere, with the reason the palette shows
     e = wfl.palette_problem(g, "frames", "stacking")
     assert e is not None and e.template == wfl.WHY_ONCE
-    # the frame blocks keep their order; a frame block after the stack takes the wrong data
+    # an image block before the stack: what to do, said (GUI exploration 8.5)
     e = wfl.place_problem(g, "frames", "denoise", 2)
-    assert e is not None and e.template == wfl.WHY_INPUT
+    assert e is not None and e.template == wfl.WHY_STACK_FIRST
     # Denoise needs the half-stacks of a stack: not on an image file
     img = [node("astrometry"), node("output")]
     e = wfl.palette_problem(img, "image", "denoise")

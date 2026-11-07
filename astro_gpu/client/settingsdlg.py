@@ -54,6 +54,30 @@ def not_yet() -> str:
     return "◇ " + _("Not in the engine yet.")
 
 
+def auto_device(machine: Machine | None) -> str | None:
+    """The device Automatic computes on: the GPU with the most memory, the CPU without a GPU; None while the machine is
+    not known yet."""
+    if machine is None:
+        return None
+    g = max(machine.gpus, key=lambda x: x.memory_gb) if machine.gpus else None
+    return g.device if g is not None else "cpu"
+
+
+def device_items(machine: Machine | None, dev: str = "auto") -> list[tuple[str, str, str]]:
+    """(text, device, tooltip) of the devices a run can compute on, translated: Automatic (it says what it picks), the
+    machine's GPUs, the CPU. Settings > Compute and the combo left of Run list the same (GUI exploration 6.9)."""
+    auto = auto_device(machine)
+    g = machine.gpu(auto) if machine is not None and auto else None
+    out = [(_("Automatic"), "auto", _("The graphics card with the most memory: {name}").format(name=g.name) if g else
+            _("The processor: this computer has no graphics card the engine can use") if auto == "cpu" else "")]
+    out += [(x.name, x.device, _("Graphics card, {gb} GB of memory").format(gb=f"{x.memory_gb:.0f}"))
+            for x in (machine.gpus if machine else [])]
+    if machine is None and dev.startswith("cuda:"):
+        out.append((dev, dev, ""))
+    out.append((_("CPU only"), "cpu", _("The processor: much slower")))
+    return out
+
+
 class SettingsDialog(QDialog):
     languageChanged = Signal(str)
     deviceChanged = Signal(str)                      # auto | cuda:<n> | cpu
@@ -310,16 +334,11 @@ class SettingsDialog(QDialog):
 
     def compute(self, v):
         m = self.machine
-        options = [("Automatic", "auto", False)]
-        dev = prefs.get("device")
-        c = self.combo(options, dev)
-        if m is not None:
-            for g in m.gpus:
-                c.addItem(g.name, g.device)
-                c.setItemData(c.count() - 1, f"{g.device} · {g.memory_gb:.0f} GB", Qt.ToolTipRole)
-        elif dev.startswith("cuda:"):
-            c.addItem(dev, dev)
-        c.addItem(_("CPU only"), "cpu")
+        dev = prefs.get("device") or "auto"
+        c = QComboBox()
+        for text, data, tip in device_items(m, dev):           # the same list as the combo left of Run (6.9)
+            c.addItem(text, data)
+            c.setItemData(c.count() - 1, tip, Qt.ToolTipRole)
         c.setCurrentIndex(max(c.findData(dev), 0))
         c.currentIndexChanged.connect(lambda _i: self._device(c.currentData()))
         self.row(v, _("Device"), c)
@@ -352,8 +371,10 @@ class SettingsDialog(QDialog):
 
     def catalogs(self, v):
         self.offline_extracts(v)
-        self.row(v, _("Plate solver"), self.combo([("Internal (Gaia)", "internal", False), ("ASTAP", "astap", True),
-                                                   ("astrometry.net (local)", "astrometry.net", True)],
+        self.row(v, _("Plate solver"), self.combo([("Internal (Gaia)", "internal", False),
+                                                   ("External solver (installed separately)", "astap", True),
+                                                   ("External all-sky index solver (installed separately)",
+                                                    "astrometry.net", True)],
                                                   prefs.get("solver"), "solver"))
         self.path_row(v, _("Survey cache (H-alpha)"), "survey_cache", new=True)
         self.survey_offline(v)

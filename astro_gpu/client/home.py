@@ -541,6 +541,23 @@ def folder_name(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name.strip()).rstrip(". ")
 
 
+def projects_location(avoid: str = "") -> str:
+    """Where a new project is proposed (GUI exploration 7.1): beside the last project opened, else the last folder
+    used, else the home folder; never in ``avoid`` or below it (the folder of the frames an import reads)."""
+    bad = Path(avoid).resolve() if avoid else None
+    for c in [Path(r["path"]).parent for r in prefs.recent()] + [Path(prefs.last_folder()), Path.home()]:
+        try:
+            if not c.is_dir():
+                continue
+            r = c.resolve()
+        except OSError:
+            continue
+        if bad is not None and (r == bad or bad in r.parents):
+            continue
+        return c.as_posix()
+    return (bad.parent if bad is not None else Path.home()).as_posix()
+
+
 class NewProjectDialog(QDialog):
     """Name, target and folder of a new project; the folder is <location>/<name>, the location chosen with Browse…
     (the last folder used at first)."""
@@ -829,9 +846,11 @@ class HomeView(QWidget):
         return False
 
     # ------------------------------------------------------------ actions
-    def ask_new_project(self, name: str = "", target: str = "") -> tuple[str, str, str, dict] | None:
-        """The New project dialog: (folder, name, target, details: ra, dec, focal_mm, pixel_um when known), or None."""
-        d = NewProjectDialog(prefs.last_folder(), name, target, self.window())
+    def ask_new_project(self, name: str = "", target: str = "", location: str | None = None
+                        ) -> tuple[str, str, str, dict] | None:
+        """The New project dialog: (folder, name, target, details: ra, dec, focal_mm, pixel_um when known), or None.
+        ``location``: where it is proposed (else the last folder used)."""
+        d = NewProjectDialog(location or prefs.last_folder(), name, target, self.window())
         if d.exec():
             return d.folder().as_posix(), d.name.text().strip(), d.target.text().strip(), d.details()
         return None
@@ -844,7 +863,8 @@ class HomeView(QWidget):
     def open_other(self):
         f, _x = QFileDialog.getOpenFileName(self, _("Open project"), prefs.last_folder(),
                                             _("Projects (*.astroproj)") + ";;"
-                                            + _("Projects made with an older version (project.json)"))
+                                            + _("Projects made with an older version (project.json)"),
+                                            options=QFileDialog.HideNameFilterDetails)   # no file name shown
         if f:
             prefs.remember_folder(Path(f).parent.parent)       # the folder the project's folder is in
             self.openProject.emit(Path(f).parent.as_posix())

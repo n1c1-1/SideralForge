@@ -163,8 +163,15 @@ def block_title(p, key: str) -> str:
     if key == "post" and p is not None:
         return p.name
     n = knum(key)
-    key = kbase(key)                                  # a session's block: its block's name
-    t = _(TITLES.get(key) or BY_KEY[key]["title"])
+    base = kbase(key)                                 # a session's block: its block's name
+    t = _(TITLES.get(base) or BY_KEY[base]["title"])
+    if p is not None and getattr(p, "model", None) is not None:   # numbered left to right in its workflow, the
+        try:                                                       # same name everywhere (GUI exploration 4.1)
+            same = [k for k in chain(p) if kbase(k) == base]
+        except (KeyError, ValueError, AttributeError):
+            same = []
+        if key in same:
+            return f"{t} {same.index(key) + 1}" if len(same) > 1 else t
     return f"{t} {n}" if n else t
 
 
@@ -189,10 +196,7 @@ def node_title(s, n) -> str:
     if n.key == "post" and not n.handle:              # issue #47: the block's name; the workflow's under it
         return _("Output")
     if n.paths and "~" in n.key or (n.paths and n.key in ("fond", "couleur", "debruitage")):
-        keys = chain(n.paths[0])                          # issue #47: a block placed twice, numbered left to right
-        same = [k for k in keys if kbase(k) == kbase(n.key)]
-        if len(same) > 1 and n.key in same:
-            return f"{block_title(None, kbase(n.key))} {same.index(n.key) + 1}"
+        return block_title(n.paths[0], n.key)             # issue #47: a block placed twice, numbered left to right
     if n.key == "sources" and hasattr(s, "session") and s.sessions:
         if len(s.sessions) == 1:
             return s.sessions[0]["name"] or _("Session")
@@ -266,6 +270,7 @@ class Node:
     sid: int | None = None                     # a Session block, or a session's Calibration block: its session
     cut: bool = False                          # cut by the user in its workflows (issue #43)
     grey: str = ""                             # why it cannot run (a cut before it), translated; "" when it can
+    broken: str = ""                           # why it cannot run at all (a fusion's channel gone...): circled in red
     slot: int = -1                             # an image block: its rank among its workflow's image blocks (#47)
     _bk: object = None
 
@@ -345,6 +350,7 @@ class Graph:
                 n = self.by_path[p.pid].get("fusion")
                 if n is not None:
                     n.handle = True
+                    n.broken = getattr(project, "fusion_problem", lambda q: "")(p)   # circled in red (1.1)
                     self.by_path[p.pid]["post"] = n
                     if src["fusion"].get("stars"):       # option A: its starless image and its star layer
                         self.by_path[p.pid]["etoiles"] = n
@@ -357,10 +363,11 @@ class Graph:
         have = {lay.get("pid") for lay in layers if lay.get("kind") == "workflow"}
         from .model import POST_PART_NAMES
         feeds = getattr(project, "feeds_fusion", None)
-        model_p = getattr(getattr(project, "model", None) or project, "p", None)
-        fresh = not have and not (getattr(model_p, "post", None) or {}).get("edited")   # as Post fills them (post3):
-        for p in project.paths:                       # or an output sent from a block; else the user's layers only
-            if p.pid not in have and (fresh or p.end) and not (feeds is not None and feeds(p)) and \
+        removed = getattr(project, "post_removed", lambda: set())()     # as Post fills them (post3): every image
+        for p in project.paths:                       # not taken out by the user (#52), an output sent from a block
+            default = "combined" if p.opts.get("etoiles") == "retirer" else None
+            if p.pid not in have and ((p.pid, default) not in removed or p.end) and \
+                    not (feeds is not None and feeds(p)) and \
                     getattr(project, "gives_post", lambda q: True)(p):   # #49: no image yet, no link to Post
                 stars = p.opts.get("etoiles") == "retirer" and self.node_of(p, "etoiles") is not None
                 layers.insert(0, {"kind": "workflow", "pid": p.pid, "part": "combined" if stars else None, "id": None,

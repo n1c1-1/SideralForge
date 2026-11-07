@@ -132,11 +132,18 @@ class Denoise(Stage):
         ctx.metric("noise_after", round(g1, 3))
         ctx.metric("noise_reduction", round(g0 / max(g1, 1e-9), 2))
         ctx.log(f"background noise divided by {g0 / max(g1, 1e-9):.1f}")
-        h, w = full.shape[1:]
-        y0, x0 = h // 2 - 400, w // 2 - 400
-        a = asinh_preview(full[:, y0:y0 + 800, x0:x0 + 800])
-        b = asinh_preview(dF[:, y0:y0 + 800, x0:x0 + 800])
-        ctx.preview("before_after", np.concatenate([a, np.ones((3, 800, 6)) * 0.2, b], 2))
+        ctx.preview("before_after", before_after(full, dF))
+
+
+def before_after(full: np.ndarray, done: np.ndarray, size: int = 800) -> np.ndarray:
+    """The preview: a central square of the image before and after, side by side; a stack smaller than ``size`` gives
+    a smaller square (GUI exploration 7.8: it failed under 800 px)."""
+    h, w = full.shape[1:]
+    s = min(size, h, w)
+    y0, x0 = (h - s) // 2, (w - s) // 2
+    a = asinh_preview(full[:, y0:y0 + s, x0:x0 + s])
+    b = asinh_preview(done[:, y0:y0 + s, x0:x0 + s])
+    return np.concatenate([a, np.ones((3, s, 6)) * 0.2, b], 2)
 
 
 def noise_correlation(A, B, size: int = 800) -> float:

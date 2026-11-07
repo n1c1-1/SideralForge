@@ -337,9 +337,8 @@ TIPS = {
     ("stack", "pixfrac"): "Smaller, the image is sharper but noisier, with a risk of holes; 0.6 to 0.8 is the usual "
                           "range.",
     ("stack", "kappa"): "Lower (3 to 4), it removes more trails, but can eat into the star cores in poor seeing.",
-    ("stack", "pattern_removal"): "Off by default: on the Rosette, the estimate also held the traces of the faint "
-                                  "stars, and subtracting it drew the streaks it was meant to remove. Neutral on "
-                                  "Heart.",
+    ("stack", "pattern_removal"): "Off by default: on some stacks the estimate also held the traces of the faint "
+                                  "stars, and subtracting it drew the streaks it was meant to remove.",
 }
 UNITS = {"x median": "× median", "frames": "frames", "deg": "°", "sigma": "σ", "x": "×", "G mag": "G",
          "arcsec/px": "″/px", "e-/ADU": "e⁻/ADU", "um": "µm", "x field": "× field", "x noise": "× noise",

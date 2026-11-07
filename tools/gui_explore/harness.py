@@ -174,7 +174,7 @@ class Explorer:
             if a.isSeparator():
                 out.append({"text": "---"})
                 continue
-            d = {"text": a.text(), "enabled": a.isEnabled(), "tip": a.toolTip(), "checked": a.isChecked()}
+            d = {"text": a.text().replace("&&", "&"), "enabled": a.isEnabled(), "tip": a.toolTip(), "checked": a.isChecked()}
             if a.menu() is not None:
                 d["sub"] = self.menu_items(a.menu())
             out.append(d)
@@ -186,7 +186,7 @@ class Explorer:
                 got = self._find_action(a.menu(), part)
                 if got is not None:
                     return got
-            elif part.lower() in a.text().lower():
+            elif part.lower() in a.text().replace("&&", "&").lower():
                 return a
         return None
 
@@ -400,7 +400,7 @@ class Explorer:
             if not x.isVisible():
                 continue
             if isinstance(x, (QLabel, QAbstractButton)) and x.text():
-                out.append(x.text())
+                out.append(x.text().replace("&&", "&") if isinstance(x, QAbstractButton) else x.text())
             if x.toolTip():
                 out.append(x.toolTip())
         for it in self.view.scene().items() if self.w is not None and self.w.graph is not None else []:

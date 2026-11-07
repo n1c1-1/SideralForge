@@ -1,0 +1,345 @@
+"""The GUI exploration's points on the run window, the status bar and the checks before a run (RAPPORT 4.2, 4.3, 6.1 to
+6.11 and the run_status notes), offscreen on scratch projects: nothing is computed, no GPU."""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+if Path("C:/Windows/Fonts").is_dir():
+    os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")
+pytest.importorskip("PySide6")
+from PySide6.QtWidgets import QApplication, QLabel  # noqa: E402
+
+from astro_gpu import api  # noqa: E402
+from astro_gpu.client import app as appmod  # noqa: E402
+from astro_gpu.client import i18n, prefs  # noqa: E402
+from astro_gpu.client.logview import event_text  # noqa: E402
+from astro_gpu.client.model import ProjectModel  # noqa: E402
+from astro_gpu.client.runs import RunDialog, build_rows  # noqa: E402
+from astro_gpu.client.services.run import (  # noqa: E402
+    DONE,
+    RunController,
+    RunTrack,
+    render_line,
+    run_here_refusal,
+    run_key,
+)
+from astro_gpu.client.services.worker import ApiWorker, Gpu, Machine  # noqa: E402
+from astro_gpu.client.settingsdlg import auto_device, device_items  # noqa: E402
+from astro_gpu.core import project as project_mod  # noqa: E402
+from astro_gpu.core import project2, runner2  # noqa: E402
+from astro_gpu.core.project import Target  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def env(tmp_path, monkeypatch, qapp):
+    monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
+    prefs.load()
+    state = tmp_path / "state"
+    monkeypatch.setattr(project_mod, "STATE", state)
+    monkeypatch.setenv("ASTRO_GPU_HOME", str(state))
+    appmod.apply_language("en")
+    yield tmp_path
+    appmod.apply_language("en")
+
+
+def raws(folder: Path, n: int = 3, ext: str = "ARW") -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        (folder / f"IMG_{i:03d}.{ext}").write_bytes(b"\0" * (100 + i))
+    return folder
+
+
+GRAPH = [{"block": "calibration"}, {"block": "registration"}, {"block": "stacking"}, {"block": "gradient"},
+         {"block": "gradient", "name": "gradient~2"}]
+
+
+def project(tmp: Path, blocks=GRAPH, sessions: int = 1, lights: bool = True, mode: str = "together",
+            current_block: str = "", flows: int = 1):
+    tmp = tmp / f"p{len(list(tmp.glob('p*')))}"                    # a project of its own for each call of a test
+    p = project2.create(tmp / "P", "P", Target(name="M 31"))
+    p.stack_mode = mode
+    for i in range(sessions):
+        p.sessions.append(project2.Session(i + 1, f"night {i + 1}",
+                                           lights=[str(raws(tmp / "raw" / f"n{i}"))] if lights else []))
+    for k in range(flows):
+        w = p.add_workflow("Workflow" if not k else f"Flow {k + 1}", {})
+        if flows > 1 and sessions == flows:                         # a flow per session: nothing shared
+            w.sessions = [k + 1]
+        p.set_blocks(w.id, list(blocks))
+    p.current_block = current_block
+    project2.save(p)
+    return p
+
+
+class World:
+    def __init__(self, p):
+        self.worker = ApiWorker()
+        self.m = ProjectModel(p, self.worker, readonly=True, gpu=False, device="cpu")
+        assert self.worker.wait(120) and self.m.ready, self.m.error
+        self.ctl = RunController(self.m, None, None, self.worker)
+
+    def close(self):
+        self.ctl.close()
+        self.m.close(save=False)
+        self.worker.stop()
+        QApplication.processEvents()
+
+
+@pytest.fixture
+def world(env):
+    made = []
+
+    def make(**kw):
+        w = World(project(env, **kw))
+        made.append(w)
+        return w
+    yield make
+    for w in made:
+        w.close()
+
+
+# ---------------------------------------------------------------------------------------------- 4.2: the events
+def test_the_events_of_a_block_placed_twice_go_to_its_own_job(tmp_path):
+    """4.2: the stage code names itself "gradient"; the job of the second Gradient ("gradient~2") gets its events, not
+    the first one (it stayed "not started" after a run that computed it)."""
+    j = runner2.RunJournal(tmp_path / "logs", "r1", echo=False)
+    jobs = [runner2.Job("k1", "gradient", "gradient", [1], 1, {}), runner2.Job("k2", "gradient~2", "gradient~2", [1], 1,
+                                                                             {"gradient": "k1"}),
+            runner2.Job("k3", "calibrate@2", "calibration@2", [1], 1, {})]
+    for job in jobs:
+        j.job = job
+        j.emit("stage_start", stage=job.stage.partition("~")[0].partition("@")[0])
+        j.emit("stage_end", stage=job.stage.partition("~")[0].partition("@")[0], status="done", duration=1.0)
+    events = [json.loads(x) for x in (tmp_path / "logs" / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [e["key"] for e in events] == ["k1", "k1", "k2", "k2", "k3", "k3"]
+    assert events[2]["block"] == "gradient~2" and events[4]["block"] == "calibration@2"
+    t = RunTrack(jobs, "r1")
+    t.apply(events)
+    assert [x.state for x in t.jobs] == [DONE, DONE, DONE]
+
+
+# ---------------------------------------------------------------------------------------------- the rows
+def test_the_run_window_names_its_rows_as_the_graph_names_its_blocks(world):
+    """6.1: a session's Calibration is "Calibration · night 1", never "inventory@1"; 4.1: "Gradient 1", "Gradient 2";
+    #10: no row for the Session blocks; #30: a row's tooltip is the block and its time, no stage of the engine."""
+    w = world(sessions=2, mode="per_session")
+    plan = w.m.plan_all()
+    titles = [r.title for r in build_rows(w.m, plan.jobs)]
+    assert "Calibration · night 1" in titles and "Calibration · night 2" in titles
+    assert "Gradient 1" in titles and "Gradient 2" in titles
+    assert not any("@" in x or "~" in x or x in ("Session", "inventory", "sessions") for x in titles), titles
+    d = w.ctl.launch()
+    assert all("@" not in r.toolTip() and "~" not in r.toolTip() and "Inventory" not in r.toolTip() for r in d.rows)
+    assert d.rows[0].toolTip() == f"{d.rows[0].row.title}: {d.rows[0].dur.text()}"
+    assert not any(r.row.title in ("Session", "night 1", "night 2") for r in d.rows)
+    d.close()
+
+
+def test_blocks_not_placed_are_not_rows_and_the_output_is_not_a_row_of_its_own(world):
+    """6.3: Calibration and Registration not placed are computed within Stacking (no rows after it); 6.2: the
+    Output hidden in the wire of the last block is that block's row."""
+    w = world(blocks=[{"block": "stacking"}])
+    plan = w.m.plan_all()
+    rows = build_rows(w.m, plan.jobs)
+    assert [r.title for r in rows] == ["Stacking"]
+    assert {j.stage for j in plan.jobs} <= {"inventory", "calibrate", "register", "stack", "render_simple"}
+    assert len(rows[0].keys) == len(plan.jobs)
+
+
+def test_the_recap_names_the_flow_when_two_rows_share_a_name_and_is_written_once(world):
+    """#34: "Stacking (Workflow), Stacking (Flow 2)"; #35: a rebuild (a change of language) writes the recap once."""
+    w = world(blocks=[{"block": "stacking"}], flows=2, sessions=2)
+    plan = w.m.plan_all()
+    t = RunTrack.of_plan(plan)
+    t.plan = plan
+    t.abort("PermissionError: [Errno 13] Permission denied: 'x'")
+    d = RunDialog(w.m, plan, "Run", track=t)
+    names = sorted(d._named().values())
+    assert names == ["Stacking (Flow 2)", "Stacking (Workflow)"], names
+    d.rebuild()
+    QApplication.processEvents()
+    d.rebuild()
+    shown = [lb.text() for lb in d.recap.findChildren(QLabel) if lb.isVisibleTo(d)]
+    assert len(shown) == len(set(shown)), shown
+    d.close()
+
+
+# ---------------------------------------------------------------------------------------------- 4.3: Run to here
+def test_run_to_here_runs_the_block_placed_twice_and_is_refused_on_a_session(world):
+    w = world()
+    p = w.m.path
+    w.m.select(step="fond~2")
+    d = w.ctl.run_to_here()
+    assert d is not None and "gradient~2" in [j.stage for j in d.plan.jobs]
+    assert d.windowTitle() == 'Run "Workflow" to Gradient 2'
+    d.close()
+    w.m.select(step="fond")
+    d1 = w.ctl.run_to_here()
+    assert "gradient~2" not in [j.stage for j in d1.plan.jobs] and "gradient" in [j.stage for j in d1.plan.jobs]
+    d1.close()
+    w.m.select(step="sources")                      # #29: a Session block is not computed: refused, with the reason
+    assert w.ctl.run_to_here() is None and run_here_refusal(w.m, "sources")
+    assert run_here_refusal(w.m, "fond~2") == "" and run_key("composition") == "etoiles"
+    assert p is w.m.path
+
+
+# ---------------------------------------------------------------------------------------------- 6.4: cannot start
+def test_a_run_that_cannot_start_says_why_in_plain_words_in_the_window_and_the_log(world, monkeypatch):
+    from astro_gpu.client.services import run as run_service
+    w = world()
+    history = []
+    w.m.log = lambda template, **a: history.append((template, a))
+
+    def refuse(*_a):
+        raise PermissionError(13, "Permission denied", "C:/P/logs")
+    monkeypatch.setattr(run_service, "_start_job", refuse)
+    appmod.apply_language("fr")
+    d = w.ctl.launch()
+    d.start()
+    assert w.worker.wait(30)
+    QApplication.processEvents()
+    assert w.ctl.track.never_started and not w.ctl.running
+    texts = [lb.text() for lb in d.findChildren(QLabel) if lb.isVisibleTo(d)]
+    assert "L'exécution n'a pas pu démarrer" in texts
+    assert any("accès refusé" in x for x in texts) and not any("Permission" in x or "Errno" in x for x in texts)
+    assert history and history[-1][0] == "The run could not start: {why}"
+    assert event_text(("12:00:00", history[-1][0], history[-1][1]))[1] == \
+        "L'exécution n'a pas pu démarrer : le dossier du projet ne peut pas être écrit : accès refusé"
+    d.close()
+
+
+# ---------------------------------------------------------------------------------------------- 6.5, 6.7, #15
+def test_run_says_why_it_is_greyed_without_a_block_and_without_lights(world):
+    w = world(blocks=[])
+    fake = SimpleNamespace(s=w.m)
+    assert appmod.no_block(w.m.p.workflows[0])
+    assert appmod.Main.run_refusal(fake, w.m.cost()) == "No block to compute yet: place one from the palette"
+    w2 = world(blocks=[{"block": "stacking"}], lights=False)
+    assert appmod.Main.run_refusal(SimpleNamespace(s=w2.m), w2.m.cost()).startswith("Nothing to compute yet")
+    w2.m.select(step="empilement")
+    d = w2.ctl.run_to_here()                       # 6.7: no invented figures, Run greyed with its reason
+    assert d.plan.jobs and all(r.dur.text() == "" for r in d.rows)
+    assert d.summary.text() == "Nothing to compute yet" and not d.b_run.isEnabled() and d.b_run.toolTip()
+    d.close()
+
+
+# ---------------------------------------------------------------------------------------------- 6.6
+def test_the_project_reopens_on_the_block_selected_and_a_new_one_on_the_session(world):
+    w = world(current_block="fond~2")
+    assert w.m.sel_step == "fond~2"
+    w.m.select(step="empilement")
+    assert w.m.p.current_block == "empilement"
+    assert project2.Project2.from_dict(w.m.p.to_dict(), w.m.p.root).current_block == "empilement"
+    assert world(blocks=[{"block": "stacking"}], current_block="fond").m.sel_step == "sources"   # gone: the Session
+    assert world(sessions=2, mode="per_session").m.sel_step == "session@1"
+
+
+# ---------------------------------------------------------------------------------------------- 6.8, 6.9
+def test_automatic_is_the_gpu_it_picks_and_both_lists_are_the_same():
+    m = Machine([Gpu("cuda:0", "RTX 3070", 8.0), Gpu("cuda:1", "RTX 4090", 24.0)], 16, 64.0)
+    assert auto_device(m) == "cuda:1" and auto_device(Machine([], 8, 16.0)) == "cpu" and auto_device(None) is None
+    assert [t for t, _d, _tip in device_items(m)] == ["Automatic", "RTX 3070", "RTX 4090", "CPU only"]
+    assert "RTX 4090" in device_items(m)[0][2]
+    prefs.set("device", "auto")
+    assert appmod.Main._device(SimpleNamespace(machine=m)) == (True, "cuda:1")       # estimated on the GPU it uses
+    prefs.set("device", "cpu")
+    assert appmod.Main._device(SimpleNamespace(machine=m)) == (False, "cpu")
+
+
+# ---------------------------------------------------------------------------------------------- 6.10
+def test_the_checks_finish_on_an_unreadable_frame_and_say_the_foreign_files(env):
+    from astro_gpu.client.frames import FramesView, check_text
+    from astro_gpu.client.services.inspect import project_frames
+    p = project2.create(env / "P", "P", Target(name="M 31"))
+    lights = raws(env / "raw" / "n1", 3)                       # not real raws: none of them can be read
+    (env / "phone.JPG").write_bytes(b"\xff\xd8\xff" + b"\0" * 50)
+    p.sessions.append(project2.Session(1, "night 1", filter="OIII", lights=[str(lights), str(env / "phone.JPG")]))
+    w = p.add_workflow("Workflow", {})
+    p.set_blocks(w.id, [{"block": "stacking"}])
+    project2.save(p)
+    out = project_frames(p, None)                              # it ends (it stopped on the first unreadable frame)
+    row = out.sessions[0]
+    assert row.lights == 4 and row.kept == 3 and row.filter == "OIII"       # the JPEG is not kept
+    keys = [c.key for c in out.checks]
+    assert "unreadable" in keys and "file_types" in keys and "ok" not in keys
+    text = check_text(next(c for c in out.checks if c.key == "unreadable"))
+    assert text.startswith("night 1: IMG_000.ARW cannot be read")
+    ses = {"name": "night 1", "lights": 4, "kept": 4, "flats": 0, "darks": 0, "bias": 0, "filter": "OIII"}
+    assert FramesView._cells(ses, row, osc=True)[6] == "OIII"
+
+
+def test_the_run_window_warns_about_a_file_of_another_type(world):
+    """6.10: a JPEG among the lights is said before the run too (it was on the Session block and its panel only)."""
+    w = world(blocks=[{"block": "stacking"}])
+    jpg = Path(w.m.p.sessions[0].lights[0]).parent / "phone.JPG"
+    jpg.write_bytes(b"\xff\xd8\xff" + bytes(50))
+    w.m.p.sessions[0].lights.append(str(jpg))
+    w.m._start_warm()                                          # the frames read again, as after an import
+    assert w.worker.wait(60)
+    QApplication.processEvents()
+    assert w.m.file_warnings(1)
+    d = w.ctl.launch()
+    texts = [lb.text() for lb in d.findChildren(QLabel) if lb.isVisibleTo(d)]
+    assert any(t.startswith("⚠ night 1: phone.JPG is not a frame the engine reads") for t in texts), texts
+    d.close()
+
+
+# ---------------------------------------------------------------------------------------------- words
+def test_the_console_counts_blocks_and_the_log_follows_the_language():
+    """#3: the console counts blocks; #31: a block's name written in French reads in English; 6.11."""
+    assert render_line((0.0, "starting", {"n": 3})).endswith("Starting the run: 3 blocks")
+    t = RunTrack([runner2.Job("a", "inventory", "calibration", [1], 1, {}), runner2.Job("b", "stack", "stacking", [1],
+                                                                                         1, {"inventory": "a"})])
+    t.groups = [["a", "b"]]
+    t.apply([{"t": 1.0, "type": "run_start", "run": "r"},
+             {"t": 2.0, "type": "stage_end", "run": "r", "key": "a", "stage": "inventory", "status": "done"},
+             {"t": 3.0, "type": "stage_end", "run": "r", "key": "b", "stage": "stack", "status": "done"},
+             {"t": 4.0, "type": "run_end", "run": "r", "status": "done"}])
+    assert t.block_count()[DONE] == 1 and "1 block in" in render_line(t.lines[-1])
+    row = ("12:00:00", '{block} added to "{name}"', {"block": "Empilement", "name": "W"})
+    assert event_text(row)[1] == 'Stacking added to "W"'
+    assert event_text(("1", '{block} added to "{name}"', {"block": "Débruitage 2", "name": "W"}))[1] == \
+        'Denoise 2 added to "W"'
+    i18n.set_language("fr")
+    try:
+        assert event_text(row)[1] == 'Empilement ajouté à « W »' or "Empilement" in event_text(row)[1]
+        assert i18n._("its Image block has no file yet") != "its Image block has no file yet"
+        assert render_line((0.0, "starting", {"n": 1})).endswith("Démarrage de l'exécution : 1 bloc")
+    finally:
+        i18n.set_language("en")
+
+
+def test_every_new_text_has_its_french():
+    """The texts of this work, in run.json (or an older file)."""
+    import ast
+    i18n.set_language("fr")
+    try:
+        cat = i18n._cat
+        root = Path(__file__).parents[2] / "astro_gpu"
+        missing = []
+        for f in ("client/runs.py", "client/services/run.py", "client/settingsdlg.py", "client/frames.py"):
+            for n in ast.walk(ast.parse((root / f).read_text(encoding="utf-8"))):
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ("_", "plural") \
+                        and n.args:
+                    for a in (n.args if n.func.id == "plural" else n.args[:1]):
+                        if isinstance(a, ast.Constant) and isinstance(a.value, str) and a.value not in cat:
+                            missing.append(a.value)
+        from astro_gpu.client.services.run import STAGE_TITLES, start_failure
+        missing += [v for v in STAGE_TITLES.values() if v not in cat]
+        for why in ("Errno 28 No space left", "PermissionError: x", "FileNotFoundError: x", "has no folder yet", "?"):
+            missing += [start_failure(why)] if start_failure(why) not in cat else []
+        assert not missing, missing
+        assert api is not None
+    finally:
+        i18n.set_language("en")

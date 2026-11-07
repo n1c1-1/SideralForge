@@ -142,16 +142,16 @@ class StackParams(StageParams):
                                    "as the median of the frames in sensor coordinates (stars and sky removed) and "
                                    "subtracted from every frame. Skipped automatically when the drift is too small "
                                    "to tell the pattern from the sky.",
-                              tip="Off by default: on the Rosette the estimate also held the tracks of the faint stars "
-                                  "across the sensor, and subtracting it drew the very streaks it was meant to remove "
-                                  "(without it the stacked background has none; it was neutral on Heart).")
+                              tip="Off by default: on some stacks the estimate also held the tracks of the faint "
+                                  "stars across the sensor, and subtracting it drew the very streaks it was meant to "
+                                  "remove (without it the stacked background has none).")
     pattern_frames: int = P(48, label="Frames for the pattern reference", level=ADVANCED, ge=8, le=400,
                             help="Number of frames, evenly spread over the session, whose median is the first estimate "
                                  "of the fixed pattern; the final estimate uses all frames around it.")
     white_balance: bool = P(False, label="Camera white balance", key_neutral=False,
                             help="The three colours of the stack multiplied by the camera's daylight white balance, "
-                                 "read from the raw files (as the camera and the raw converters do; DeepSkyStacker's "
-                                 "Use camera white balance): the stack no longer looks green. Colour calibration "
+                                 "read from the raw files (as the camera and the raw converters do): the stack no "
+                                 "longer looks green. Colour calibration "
                                  "measures the white on the stars and takes this factor back exactly; the steps "
                                  "between work on each colour apart. FITS frames hold no such balance: unchanged.",
                             tip="On in new workflows. Turning it on makes Stacking and what follows Outdated.")

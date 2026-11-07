@@ -56,6 +56,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStackedWidget,
     QTabBar,
@@ -66,7 +68,7 @@ from PySide6.QtWidgets import (
 
 from .. import texts
 from . import prefs
-from .blocks import ENGINE_BLOCK, Graph, block_state, block_title, chain, stages_of
+from .blocks import Graph, block_state, block_title, chain, stages_of
 from .charts import (
     AMBER,
     BLUE,
@@ -154,7 +156,7 @@ class Strip(QFrame):
                 self.h.addWidget(a)
             node = g.node_of(p, k)
             st = g.state(node) if node is not None else "pending"
-            b = QPushButton(block_title(None, k) if k == "post" else block_title(p, k))
+            b = QPushButton((block_title(None, k) if k == "post" else block_title(p, k)).replace("&", "&&"))  # no mnemonic
             sel = k == s.sel_step
             b.setStyleSheet(f"QPushButton {{ border-left: 3px solid {STATE_COL.get(st, '#5d6470')}; padding: 4px 8px; "
                             f"background: {'#2b3446' if sel else '#22262e'}; "
@@ -534,7 +536,14 @@ class TuneView(QWidget):
         self.strip.back.connect(self.back.emit)
         self.strip.picked.connect(self._strip_pick)
         self.strip.workflow.connect(self._strip_workflow)
-        v.addWidget(self.strip)
+        sa = QScrollArea()                                # 9.1: a long chain scrolls, it never widens the window
+        sa.setWidget(self.strip)
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        sa.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sa.setSizeAdjustPolicy(QScrollArea.AdjustToContents)
+        sa.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        v.addWidget(sa)
         self.pages = QStackedWidget()
         v.addWidget(self.pages, 1)
         body = QWidget()
@@ -692,9 +701,12 @@ class TuneView(QWidget):
         k = s.sel_step
         state = block_state(s, p, k)
         title = block_title(p, k)
+        same = False
         if node.sid is not None:                       # a session's Calibration (issue #43): its session's name
             title += " · " + s.session(node.sid).name
-        self.head.addWidget(label(f"{title}  ·  {p.name}" if k != "post" else p.name, "h1"))
+            same = s.session(node.sid).name == p.name   # its workflow named after it: not said twice (#33)
+        self.head.addWidget(label(f"{title}  ·  {p.name}" if k != "post" and not same else
+                                  title if same else p.name, "h1"))
         # a session's block shows that session's results (steps.which_for reads them from the selected block): the
         # views are the block's own
         k = k.partition("@")[0].partition("~")[0]
@@ -2123,26 +2135,44 @@ class TuneView(QWidget):
 
     # ------------------------------------------------------------ a block not computed
     def _run_button(self, p, k) -> QPushButton:
+        """Run to here on the selected block: its own instance (a block placed twice, a session's Calibration: GUI
+        exploration 4.3), its time only with data (6.7), the blocks it runs named as the graph names them, and a
+        greyed button that says why (#18)."""
+        from .runs import build_rows
+        from .services.run import plan_to
         s = self.s
-        plan = s.plan_to_block(p, k)
-        rb = QPushButton(_("Run to here") + "  ·  " + duration_text(plan.seconds, plan.measured))
-        titles = []
-        for j in plan.jobs:
-            key = ENGINE_BLOCK.get(j.block)
-            t = block_title(p, key) if key else j.block
-            if t not in titles:
-                titles.append(t)
-        rb.setToolTip(", ".join(titles))
-        rb.setEnabled(s.has_data(p) and bool(plan.jobs))
+        plan = plan_to(s, p, self._full_key(k))
+        data = s.has_data(p)
+        rb = QPushButton(_("Run to here") + ("  ·  " + duration_text(plan.seconds, plan.measured)
+                                             if data and plan.jobs else ""))
+        rb.setToolTip(", ".join(r.title for r in build_rows(s, plan.jobs)))
+        rb.setEnabled(data and bool(plan.jobs))
+        if not data:
+            rb.setToolTip(self._no_data(p))
+        elif not plan.jobs:
+            rb.setToolTip(_("Nothing to run: what this block needs is up to date"))
         if getattr(s, "run_active", False):              # issue #33: it would only open the run in progress
             rb.setEnabled(False)
             rb.setToolTip(_("A run is in progress: Run to here comes back when it ends"))
         rb.clicked.connect(self.runHere.emit)
         return rb
 
+    def _full_key(self, k: str) -> str:
+        """The selected block's own key when ``k`` is its plain block ("fond" for the selected "fond~2")."""
+        sel = self.s.sel_step or ""
+        return sel if sel.partition("@")[0].partition("~")[0] == k else k
+
+    @staticmethod
+    def _no_data(p) -> str:
+        """Why nothing of this workflow can be computed yet, in the status bar's words (exploration #36)."""
+        if p.source is None:
+            return _("No lights yet: add them in the Session block.")
+        return _("No image file yet: choose it in the Image block.")
+
     def pending(self, p, k, state="pending"):
+        from .services.run import plan_to
         s = self.s
-        plan = s.plan_to_block(p, k)
+        plan = plan_to(s, p, self._full_key(k))
         box = QVBoxLayout()
         box.setAlignment(Qt.AlignCenter)
         if state in ("pending", "stale"):
@@ -2162,8 +2192,7 @@ class TuneView(QWidget):
             pv.setEnabled(False)
             box.addWidget(pv, 0, Qt.AlignHCenter)
         if not s.has_data(p):
-            box.addWidget(label(_("No frames yet.") if p.source is None else _("No image file yet: choose it in the "
-                                                                              "Image block."), "warn"), 0, Qt.AlignHCenter)
+            box.addWidget(label(self._no_data(p), "warn"), 0, Qt.AlignHCenter)
         self.center.addStretch(1)
         self.center.addLayout(box)
         self.center.addStretch(2)

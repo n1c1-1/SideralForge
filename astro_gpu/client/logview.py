@@ -7,6 +7,7 @@ when shown, so that a change of language applies to them too. The console is fed
 """
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -22,12 +23,30 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from .i18n import _
+from .i18n import LOCALE, _
 from .widgets import label
 
-#: the arguments of a history line that are words of the interface (a block's name), translated when shown, so that a
-#: line written in one language reads in the other
-WORD_ARGS = ("block",)
+#: the arguments of a history line that are words of the interface (a block's name, why a run could not start),
+#: translated when shown, so that a line written in one language reads in the other
+WORD_ARGS = ("block", "why", "image")
+_SOURCES: dict[str, str] = {}
+
+
+def english(word: str) -> str:
+    """The English text a word of the interface was translated from, whatever the language it was written in
+    ("Empilement" → "Stacking"; a block placed twice keeps its number: "Débruitage 2" → "Denoise 2"). GUI exploration
+    #31: the name of a block was written in the language of the moment, and stayed French in English."""
+    if not _SOURCES:
+        for f in sorted(LOCALE.glob("*/*.json")):
+            try:
+                for en, tr in json.loads(f.read_text(encoding="utf-8")).items():
+                    _SOURCES.setdefault(tr, en)
+            except (OSError, ValueError):
+                continue
+    head, sep, num = word.rpartition(" ")
+    if sep and num.isdigit() and head in _SOURCES:
+        return f"{_SOURCES[head]} {num}"
+    return _SOURCES.get(word, word)
 
 
 def event_text(row) -> tuple[str, str]:
@@ -36,7 +55,9 @@ def event_text(row) -> tuple[str, str]:
         t, template, args = row[0], row[1], dict(row[2] or {})
         for k in WORD_ARGS:
             if isinstance(args.get(k), str):
-                args[k] = _(args[k])
+                w = english(args[k])
+                head, sep, num = w.rpartition(" ")
+                args[k] = f"{_(head)} {num}" if sep and num.isdigit() and _(head) != head else _(w)
         return t, _(template).format(**args)
     return row[0], row[1]
 

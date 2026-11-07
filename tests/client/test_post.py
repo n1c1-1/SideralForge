@@ -1114,16 +1114,17 @@ def test_the_first_layers_and_the_first_image(post):
     assert v.src.canvas == (688, 464) and shown(v).shape == (232, 344, 3) and shown(v).dtype == np.uint8
     assert np.array_equal(shown(v), reference(post).rgb)                    # the page shows what the engine path gives
     assert post.model.touched == 0                                          # opening Post writes nothing in the project
-    # a workflow rendered later does not come by itself (issue #10); a block's output sent from the graph does
+    # a workflow rendered later comes too (GUI exploration 1.3); only an image the user took out stays out (issues
+    # #10, #52: model.post_removed, tests/client/test_graph47_client.py); a block's output sent from the graph comes
     post.model.paths.append(WF(4, "Later", None))
     post.model.pathsChanged.emit()
-    assert "Later" not in [lay["name"] for lay in v.layers]
+    assert "Later" in [lay["name"] for lay in v.layers]
     post.model.paths.append(WF(3, "Raw stack", "stacking"))
     post.model.pathsChanged.emit()
     assert [(lay["name"], lay["visible"]) for lay in v.layers][0] == ("Raw stack", False)
     assert post.settle()
     # each workflow layer has its thumbnail, made from its image
-    assert all(lay["id"] in v._lthumbs for lay in v.layers)
+    assert all(lay["id"] in v._lthumbs for lay in v.layers if lay["name"] != "Later")   # (no image of its own here)
     assert v._lthumbs[named(v, "Full")["id"]][1].width() == 54
 
 
@@ -2369,7 +2370,7 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
             widgets_of(v, QLabel)
         v.select(named(v, "Classic")["id"], "layer")                                    # greyed sliders and their reasons
         sl = {x.name.text(): x for x in widgets_of(v, ContSlider)}
-        assert any("bloc Split" in x.why.text() for x in sl.values())
+        assert any("bloc Séparation étoiles et fond" in x.why.text() for x in sl.values())
         v.select(named(v, "Full")["id"], "layer")
         v.add_mask(named(v, "Full"))
         for src in postengine.MASK_SOURCES:

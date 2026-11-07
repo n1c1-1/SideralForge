@@ -94,7 +94,7 @@ from PySide6.QtWidgets import (
 
 from . import APP_NAME
 from . import stretch as sm
-from .i18n import _, language, number
+from .i18n import _, language, log_detail, number, plain_error
 from .widgets import ACCENT, BAD, OK, WARN, ElidedLabel, label
 
 TILE = 512
@@ -2795,7 +2795,8 @@ class ImageView(QWidget):
             self._failed_key = key
             self.canvas.busy = False
             self.canvas.message = why if key in self.loader.unavailable else \
-                _("This image cannot be shown: {why}").format(why=why)
+                _("This image cannot be shown: {why}").format(why=plain_error(why))
+            log_detail(getattr(self.window(), "s", None), why)      # the program's error: in the Log only
             if not self._frames:
                 self.canvas.set_display(None)
             self.canvas.update()
@@ -2803,7 +2804,7 @@ class ImageView(QWidget):
                 self._targets[self._cmp_i].identity() == key:
             self._cmp_failed = key                  # the compared image cannot be read: said, and not waited for
             text = why if key in self.loader.unavailable else \
-                _("This image cannot be shown: {why}").format(why=why)
+                _("This image cannot be shown: {why}").format(why=plain_error(why))
             self.canvas2.message = text
             self.canvas2.update()
             self.toasted.emit(text)
@@ -3915,7 +3916,8 @@ class ImageExportDialog(QDialog):
         self.go.setEnabled(True)
         if error:
             self.error = error
-            self.status.setText(_("The export failed: {why}").format(why=error))
+            self.status.setText(_("The export failed: {why}").format(why=plain_error(error)))
+            log_detail(getattr(self.parent(), "s", None) or getattr(self.window(), "s", None), error)
             self.status.setStyleSheet(f"color: {WARN};")
             return
         self.result_path = Path(path)

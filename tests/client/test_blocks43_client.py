@@ -97,7 +97,9 @@ def test_the_session_block_edits_its_frames_and_its_filter(world):
     assert m.remove_session_entry(2, "lights", lights) and not m.session(2).lights   # the last light can go (#58)
     assert m.add_session_entries(2, "lights", [m.p.abspath(lights)]) == 1
     assert m.rename_session(2, "second night") and m.session(2).name == "second night"
-    assert m.dirty and not m.can_undo()            # a session's frames: saved by Save, not undone
+    assert m.dirty and m.can_undo()                # its name and filter are undone (GUI exploration 2.3) ...
+    assert m.undo() and m.session(2).name != "second night" and m.session(2).lights   # ... its frames are not
+    assert m.redo() and m.session(2).name == "second night"
     sid = m.add_session("third", lights=[str(frames(raw / "n3", ["c1.ARW"]))])
     assert sid == 3 and m.separate_sessions() == [1, 2, 3]
     assert m.remove_session(3) and m.separate_sessions() == [1, 2]

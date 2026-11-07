@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import numpy as np
 
@@ -31,7 +32,13 @@ class Inventory(Stage):
 
     def run(self, ctx: Context, p: InventoryParams) -> None:
         cfg = ctx.project.config.inputs
-        groups = {k: list_frames(getattr(cfg, k)) for k in ("lights", "darks", "flats", "bias", "flat_darks")}
+        kinds = ("lights", "darks", "flats", "bias", "flat_darks")
+        for k in kinds:                        # a folder not there (its disk unplugged) is said, not "add frames" (7.9)
+            gone = next((e for e in getattr(cfg, k) if not Path(e).exists()), None)
+            if gone is not None:
+                raise StageError(f"the folder of the {k.replace('_', ' ')} is not found: {Path(gone).as_posix()} "
+                                 f"(is its disk plugged in?)")
+        groups = {k: list_frames(getattr(cfg, k)) for k in kinds}
         if not groups["lights"]:
             raise StageError("no light frame found: add at least one folder of light frames")
         if p.max_lights and p.max_lights < len(groups["lights"]):

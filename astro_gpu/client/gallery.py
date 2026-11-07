@@ -141,11 +141,13 @@ _CUT_KEY = {"calibration": "calibration", "registration": "alignement", "astrome
             "gradient": "fond", "color": "couleur"}
 _SHORT = {"calibration": "Calib.", "alignement": "Regist.", "selection": "Select.", "empilement": "Stack",
           "astrometrie": "Astrom.", "fond": "Gradient", "couleur": "Color", "debruitage": "Denoise",
-          "etoiles": "Stars", "post": "Output", "image": "Image", "session": "Session", "combine": "Combine"}
+          "etoiles": "Split stars", "post": "Output", "image": "Image", "session": "Session", "combine": "Combine"}
 
 
 def template_source(t: dict) -> str:
     """The source of a template's workflow: frames, an image, a stretched image."""
+    if t.get("stretched"):                       # "Already stretched image" is an image too: its kind first (1.7)
+        return "stretched"
     if t.get("source") in wfl.SOURCES:
         return t["source"]
     return "stretched" if t.get("stretched") else ("image" if t.get("source") == "image" else "frames")
@@ -517,6 +519,26 @@ class TemplateGallery(QDialog):
         b.clicked.connect(self._browse)
         fr.addWidget(b)
         sv.addWidget(self.file_row)
+        # One workflow per filter on a project without filters yet (GUI exploration 7.2): the filters shot, chosen
+        # here, each get an empty Session block and its workflow
+        self.filter_row = QWidget()
+        flr = QHBoxLayout(self.filter_row)
+        flr.setContentsMargins(0, 0, 0, 0)
+        flr.addWidget(label(_("Filters"), "dim"))
+        self.filter_b: dict[str, QPushButton] = {}
+        from ..core.project2 import FILTERS
+        for f in [x for x in FILTERS if x]:
+            fb = QPushButton(f)
+            fb.setCheckable(True)
+            fb.setObjectName("face")
+            fb.setMinimumWidth(40)
+            fb.toggled.connect(lambda _on: self._update())
+            flr.addWidget(fb)
+            self.filter_b[f] = fb
+        flr.addStretch(1)
+        sv.addWidget(self.filter_row)
+        self.why = label("", "warn", wrap=True)             # why Create is greyed (GUI exploration 7.5)
+        sv.addWidget(self.why)
         nr = QHBoxLayout()
         nr.addWidget(label(_("Name"), "dim"))
         self.name = QLineEdit()
@@ -591,6 +613,9 @@ class TemplateGallery(QDialog):
         self.title.setText(_(t["name"]) if not t.get("copy") else t["name"])
         self.text.setText(_(t["text"]) if not t.get("copy") else t["text"])
         self.file_row.setVisible(template_source(t) in ("image", "stretched") and not t.get("copy"))
+        self.file.setPlaceholderText(_("a TIFF, PNG or JPEG file, already stretched") if template_source(t) ==
+                                     "stretched" else _("a FITS or TIFF file, straight out of a stack"))
+        self.filter_row.setVisible(self._asks_filters(t))
         mine = bool(t.get("user"))
         self.export_b.setVisible(mine)
         self.delete_b.setVisible(mine)
@@ -613,8 +638,7 @@ class TemplateGallery(QDialog):
         self._update()
 
     def _browse(self):
-        f, _x = QFileDialog.getOpenFileName(self, _("Image"), prefs.last_folder(),
-                                            _("Images (*.fits *.fit *.fts *.tif *.tiff)"))
+        f, _x = QFileDialog.getOpenFileName(self, _("Image"), prefs.last_folder(), image_filter())
         if f:
             prefs.remember_folder(f)
             self.file.setText(f)
@@ -623,8 +647,8 @@ class TemplateGallery(QDialog):
         """(what the template uses of the project's sessions, what is missing) for a filters template."""
         kind = t.get("kind")
         have = self.s.filters() if hasattr(self.s, "filters") else {}
-        if kind == "filters":
-            return (sorted(have), [] if have else [_("a session with a filter (its Session block's Filter)")])
+        if kind == "filters":                             # none yet: the filters chosen here (GUI exploration 7.2)
+            return sorted(have), []
         if kind == "fusion":                              # a missing filter gets an empty Session block (#47)
             return ([f for f in t["filters"] if f in have], [])
         if kind == "dualband":
@@ -637,31 +661,52 @@ class TemplateGallery(QDialog):
         have = self.s.filters() if hasattr(self.s, "filters") else {}
         if t.get("kind") == "fusion":
             return [f for f in t["filters"] if f not in have]
+        if t.get("kind") == "filters" and not have:
+            return self.chosen_filters()
         if t.get("kind") == "dualband":
             colour = [s for s in getattr(getattr(self.s, "p", None), "sessions", []) if not s.filter]
             return [] if colour else [_("colour")]
         return []
 
+    def _asks_filters(self, t: dict) -> bool:
+        """One workflow per filter, on a project whose sessions name no filter yet: its filters are chosen here."""
+        return t.get("kind") == "filters" and not (self.s.filters() if hasattr(self.s, "filters") else {})
+
+    def chosen_filters(self) -> list[str]:
+        return [f for f, b in self.filter_b.items() if b.isChecked()]
+
     def _update(self):
         t = self.choice or {}
         ok = bool(t) and not t.get("planned")
+        why = ""
         if t.get("kind"):
             used, missing = self.needs(t)
             new = self.to_create(t)
             ok = ok and not missing
+            if self._asks_filters(t) and not new:
+                ok, why = False, _("Choose the filters you shot: each gets its Session block and its workflow.")
             self.duration.setText((_("Uses: {what}").format(what=", ".join(used)) if used else "") +
                                   ("\n" + _("Missing: {what}. Add a session with that filter (its Session block), then "
                                              "come back.").format(what=", ".join(missing)) if missing else "") +
                                   ("\n" + _("Empty Session blocks are made for {what}: add their frames there.").format(
                                       what=", ".join(new)) if new else ""))
         if template_source(t) in ("image", "stretched") and not t.get("copy") and not t.get("blank"):
-            ok = ok and Path(self.file.text().strip()).is_file()
+            from ..stages.image import image_problem
+            f = self.file.text().strip()                 # a greyed Create says why (GUI exploration 7.5)
+            why = _(image_problem(f)).format(name=Path(f).name)
+            ok = ok and not why
+        self.why.setText(why)
+        self.why.setVisible(bool(why))
         self.ok.setEnabled(ok)
+        self.ok.setToolTip(why)
 
     def _create(self):
         if not self.ok.isEnabled():
             return
         self.image = self.file.text().strip()
+        t = self.choice or {}
+        if self._asks_filters(t):                          # the filters chosen go with the choice (7.2)
+            self.choice = {**t, "filters": tuple(self.chosen_filters())}
         self.accept()
 
     # ------------------------------------------------------------ the user's templates (issue #47)
@@ -676,8 +721,8 @@ class TemplateGallery(QDialog):
         prefs.remember_folder(f)
         try:
             t = import_template(f)
-        except (OSError, ValueError) as e:
-            self.duration.setText(_("This file is not a template: {why}").format(why=e))
+        except (OSError, ValueError):                      # said once, plainly (GUI exploration 7.5)
+            self.duration.setText(_("“{name}” is not a template file of this program.").format(name=Path(f).name))
             return
         self._reload()
         self._show_tab("mine")
@@ -716,6 +761,11 @@ class TemplateGallery(QDialog):
     @property
     def opts(self) -> dict:
         return _view_opts(self.choice or {})
+
+
+def image_filter() -> str:
+    """The file dialog's filter of an Image block (GUI exploration 7.3): every format it reads, then any file."""
+    return (_("Images (*.fits *.fit *.fts *.tif *.tiff *.png *.jpg *.jpeg)") + ";;" + _("All files (*)"))
 
 
 def template_dialog(parent, name: str) -> tuple[str, str] | None:

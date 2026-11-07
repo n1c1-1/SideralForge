@@ -37,7 +37,8 @@ class AstrometryParams(StageParams):
                             tip="206.265 x pixel size (um) / focal length (mm), divided by the drizzle scale.")
     blind: bool = P(True, label="Blind solving", level=ADVANCED,
                     help="When the field centre is unknown (or the guided search fails), identify the field on the "
-                         "whole sky from its brightest stars (geometric hashing of star quads, like astrometry.net).",
+                         "whole sky from its brightest stars (the shapes of groups of four stars, looked up in an "
+                         "index of the sky).",
                     tip="Works for fields wider than about 1 deg; the first use downloads two bright-star catalogues.")
     search_offsets: float = P(0.2, label="Centre search range", level=ADVANCED, ge=0.0, le=1.0, step=0.05,
                               unit="x field", help="How far from the given centre the solver looks for the field.")

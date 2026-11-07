@@ -567,7 +567,8 @@ def _keys(p: Project2) -> Keys:
     again when the definition changes. Its ``project`` is the snapshot."""
     c = _ctx(p)
     d = p.to_dict()
-    fp = hashlib.sha1(json.dumps([str(p.root), d], sort_keys=True, default=str).encode()).hexdigest()
+    seen = {k: v for k, v in d.items() if k != "current_block"}       # the selected block keys nothing
+    fp = hashlib.sha1(json.dumps([str(p.root), seen], sort_keys=True, default=str).encode()).hexdigest()
     with c.lock:
         if c.keys is None or c.fp != fp:
             c.keys = Keys(Project2.from_dict(d, p.root), c.rules(), c.scan)

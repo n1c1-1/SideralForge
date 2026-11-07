@@ -1,0 +1,317 @@
+"""GUI exploration of 6-7 November, part 7 (sources, import, templates, files) and 1.7: what it found stays fixed.
+Offscreen on scratch projects; nothing is computed (the Denoise preview and the inventory on tiny synthetic data)."""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+if Path("C:/Windows/Fonts").is_dir():
+    os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")
+pytest.importorskip("PySide6")
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
+
+from astro_gpu.client import i18n, prefs  # noqa: E402
+from astro_gpu.client.gallery import GALLERY, chain_of, template_blocks, template_source  # noqa: E402
+from astro_gpu.client.graph import GraphPage  # noqa: E402
+from astro_gpu.client.model import ProjectModel  # noqa: E402
+from astro_gpu.client.services.worker import ApiWorker  # noqa: E402
+from astro_gpu.core import project2  # noqa: E402
+from astro_gpu.core import workflow as wfl  # noqa: E402
+from astro_gpu.core.project import Target  # noqa: E402
+
+FITS_HEAD = b"SIMPLE  =                    T" + b" " * 50
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    return QApplication.instance() or QApplication([])
+
+
+def fits_file(path: Path, flt: str = "") -> Path:
+    from astropy.io import fits
+    path.parent.mkdir(parents=True, exist_ok=True)
+    h = fits.PrimaryHDU(np.zeros((4, 4), np.float32))
+    if flt:
+        h.header["FILTER"] = flt
+    h.writeto(path, overwrite=True)
+    return path
+
+
+def open_page(tmp_path, monkeypatch, sessions=0, workflows=()):
+    monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
+    prefs.load()
+    i18n.set_language("en")
+    p = project2.create(tmp_path / "P", "P", Target(name="M 31"))
+    p.stack_mode = "per_session"
+    for i in range(sessions):
+        raw = tmp_path / "raw" / f"n{i + 1}"
+        for k in range(3):
+            fits_file(raw / f"L_{k:03d}.fits")
+        p.sessions.append(project2.Session(i + 1, f"night {i + 1}", lights=[raw.as_posix()]))
+    for name in workflows:
+        p.add_workflow(name, wfl.TEMPLATES[name])
+    project2.save(p)
+    w = ApiWorker()
+    m = ProjectModel(p, w)
+    assert w.wait(120)
+    m._sync()
+    page = GraphPage(m)
+    page.resize(1500, 800)
+    return w, m, page
+
+
+def settle(w, page):
+    w.wait(60)
+    QApplication.processEvents()
+    page.refresh()
+
+
+def close(w, m, page):
+    page.close()
+    m.close(save=False)
+    w.stop()
+
+
+def texts(widget) -> list[str]:
+    return [x.text() for x in widget.findChildren(QLabel)] + [x.text() for x in widget.findChildren(QPushButton)]
+
+
+def test_the_already_stretched_template_makes_a_stretched_image(qapp, tmp_path, monkeypatch):
+    """1.7: its chain goes to Post as it is, its image marked stretched; its preview shows the same."""
+    t = next(x for x in GALLERY if x["key"] == "image_stretched")
+    assert template_source(t) == "stretched" and template_blocks(t) == [] and chain_of(t) == [("post", "")]
+    png = tmp_path / "done.png"
+    import cv2
+    cv2.imwrite(str(png), np.full((8, 8, 3), 128, np.uint8))
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        d = page.new_workflow(tab="image")
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "image_stretched"))
+        assert not d.ok.isEnabled() and d.why.text() == "No image file chosen yet."      # 7.5: says why
+        d.file.setText(str(tmp_path / "gone.png"))
+        assert not d.ok.isEnabled() and "File not found" in d.ok.toolTip()
+        d.file.setText(str(png))
+        assert d.ok.isEnabled() and not d.why.isVisibleTo(d)
+        d.ok.click()
+        settle(w, page)
+        q = m.paths[-1]
+        assert m.p.workflow(q.pid).source == {"path": png.as_posix(), "stretched": True}
+        assert m.graph(q) == [] and m.source_kind(q) == "stretched"
+    finally:
+        close(w, m, page)
+
+
+def test_an_image_block_takes_a_png_as_stretched_and_refuses_what_is_not_an_image(qapp, tmp_path, monkeypatch):
+    """1.7, 7.3: a PNG or JPEG chosen is stretched (still changeable); a missing or a text file is refused, said why."""
+    from astro_gpu.client.gallery import image_filter
+    from astro_gpu.stages.image import image_problem
+    assert "*.png" in image_filter() and "*.jpg" in image_filter() and "(*)" in image_filter()
+    jpg, txt = tmp_path / "a.jpg", tmp_path / "notes.txt"
+    import cv2
+    cv2.imwrite(str(jpg), np.full((8, 8, 3), 128, np.uint8))
+    txt.write_text("hello")
+    fake = tmp_path / "fake.fits"
+    fake.write_text("not a FITS file at all")
+    assert image_problem(jpg) == "" and image_problem(fits_file(tmp_path / "s.fits")) == ""
+    assert image_problem(tmp_path / "gone.fits").startswith("File not found")
+    assert "not an image this version reads" in image_problem(txt)
+    assert "its content is not that of its format" in image_problem(fake)
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        page.palette_action("image")                                       # placed from the palette: no file yet
+        settle(w, page)
+        q = m.paths[-1]
+        assert m.p.workflow(q.pid).source == {"path": "", "stretched": False}
+        page.select(index=m.paths.index(m.view(q.pid)), step="image")
+        page.refresh()
+        toasts = []
+        page.panel.toast.connect(toasts.append)
+        for bad in (txt, tmp_path / "gone.fits"):
+            assert not page.panel.set_image(m.view(q.pid), str(bad)) and toasts
+        assert m.p.workflow(q.pid).source["path"] == ""
+        assert page.panel.set_image(m.view(q.pid), str(jpg))
+        assert m.p.workflow(q.pid).source == {"path": jpg.as_posix(), "stretched": True}
+        m.set_image_file(m.view(q.pid), stretched=False)                  # the user can still change it
+        assert m.p.workflow(q.pid).source["stretched"] is False
+    finally:
+        close(w, m, page)
+
+
+def test_frames_templates_start_from_session_blocks(qapp, tmp_path, monkeypatch):
+    """7.2: Full on a project without frames starts from an (empty) Session block; Several nights from two."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        d = page.new_workflow(tab="frames")
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "full"))
+        d.ok.click()
+        settle(w, page)
+        assert len(m.p.sessions) == 1 and not m.p.sessions[0].lights
+        d = page.new_workflow(tab="frames")
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "nights"))
+        d.ok.click()
+        settle(w, page)
+        assert len(m.p.sessions) == 2 and len(m.separate_sessions()) == 2
+    finally:
+        close(w, m, page)
+
+
+def test_one_workflow_per_filter_works_on_a_new_project(qapp, tmp_path, monkeypatch):
+    """7.2: its filters are chosen in the gallery; each gets its empty Session block and its workflow."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        d = page.new_workflow(tab="mono")
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "mono_each"))
+        assert d.filter_row.isVisibleTo(d) and not d.ok.isEnabled() and "Choose the filters" in d.why.text()
+        d.filter_b["Ha"].setChecked(True)
+        d.filter_b["OIII"].setChecked(True)
+        assert d.ok.isEnabled() and "Ha, OIII" in d.duration.text()
+        d.ok.click()
+        settle(w, page)
+        assert sorted(s.filter for s in m.p.sessions) == ["Ha", "OIII"]
+        assert sorted(q.name for q in m.paths) == ["Ha", "OIII"]
+    finally:
+        close(w, m, page)
+
+
+def test_files_added_to_a_session_stay_listed_and_removable(qapp, tmp_path, monkeypatch):
+    """7.4, 7.5: a file of a folder already there is already in the session; a file or folder twice, an empty folder:
+    said, not added; the lights' filter from their FITS header; a file of the folder taken out alone, the others
+    kept."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        sid = m.add_filter_session("")
+        folder = tmp_path / "sii"
+        files = [fits_file(folder / f"S_{k}.fits", "SII") for k in range(4)]
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        notes: list = []
+        assert m.add_session_entries(sid, "lights", [str(folder)], notes) == 1 and not notes
+        assert m.p.session(sid).filter == "SII"                            # from the header
+        assert m.add_session_entries(sid, "lights", [str(files[1]), str(folder)], notes) == 0
+        assert [t for t, _n in notes] == ["“{name}” is already in the session."] * 2
+        notes.clear()
+        assert m.add_session_entries(sid, "flats", [str(empty)], notes) == 0 and "holds no frames" in notes[0][0]
+        settle(w, page)
+        assert len(m.session_files(sid, "lights")) == 4
+        assert m.remove_session_files(sid, "lights", [str(files[1])])
+        assert sorted(Path(e).name for e in m.p.session(sid).lights) == ["S_0.fits", "S_2.fits", "S_3.fits"]
+    finally:
+        close(w, m, page)
+
+
+def test_a_folder_after_its_files_replaces_them(qapp, tmp_path, monkeypatch):
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        sid = m.add_filter_session("")
+        folder = tmp_path / "lights"
+        files = [fits_file(folder / f"L_{k}.fits") for k in range(3)]
+        assert m.add_session_entries(sid, "lights", [str(files[0])]) == 1
+        assert m.add_session_entries(sid, "lights", [str(folder)]) == 1
+        assert [Path(e).name for e in m.p.session(sid).lights] == ["lights"]
+    finally:
+        close(w, m, page)
+
+
+def test_the_fusion_panel_lists_its_palette_s_channels_and_can_delete(qapp, tmp_path, monkeypatch):
+    """7.6, #27, #34: in HOO, SII is not listed with a weight; a Delete block button as the Image block's."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        for f in ("SII", "Ha", "OIII"):
+            m.add_filter_session(f)
+        made = {f: m.filter_workflow(f) for f in ("SII", "Ha", "OIII")}
+        q = m.add_fusion("Nebula", "HOO", [{"pid": made[f].pid, "role": f, "channel": "L"} for f in made])
+        settle(w, page)
+        page.select(index=m.paths.index(m.view(q.pid)), step="fusion")
+        page.refresh()
+        tx = texts(page.panel)
+        assert "Delete block" in tx
+        assert not any(t.startswith("SII,") for t in tx) and any(t.startswith("Ha,") for t in tx)
+        assert "Not read by the HOO palette: SII" in tx
+    finally:
+        close(w, m, page)
+
+
+def test_two_images_alike_by_name_size_and_date_have_two_keys(tmp_path):
+    """7.7: the image source's key holds a sample of its content; a copy elsewhere keeps its key."""
+    from astro_gpu.core.store import Keys
+    a, b, c = tmp_path / "A" / "stack.fits", tmp_path / "B" / "stack.fits", tmp_path / "C" / "stack.fits"
+    for f, v in ((a, 1.0), (b, 2.0), (c, 1.0)):
+        from astropy.io import fits
+        f.parent.mkdir()
+        fits.PrimaryHDU(np.full((3, 20, 30), v, np.float32)).writeto(f)
+        os.utime(f, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+    p = project2.create(tmp_path / "P", "P", Target(name="M 31"))
+    ws = []
+    for f in (a, b, c):
+        x = p.add_workflow(f.parent.name, wfl.TEMPLATES["Full"])
+        x.source = {"path": f.as_posix(), "stretched": False}
+        ws.append(x)
+    project2.save(p)
+    k = Keys(project2.load(p.root))
+    ka, kb, kc = (k.key(x.id, "image") for x in ws)
+    assert ka != kb and ka == kc
+
+
+def test_denoise_preview_of_a_small_stack(tmp_path):
+    """7.8: the before/after preview of a stack under 800 px is a smaller square, not a Python error."""
+    from astro_gpu.stages.denoise import before_after
+    a = np.random.default_rng(0).random((3, 200, 300)).astype(np.float32)
+    out = before_after(a, a)
+    assert out.shape == (3, 200, 406)
+    assert before_after(np.ones((3, 900, 1000), np.float32), np.ones((3, 900, 1000), np.float32)).shape == \
+        (3, 800, 1606)
+
+
+def test_a_frames_folder_not_found_is_said(tmp_path):
+    """7.9: the inventory names the folder that is not there, rather than asking to add frames."""
+    from astro_gpu.core.project import Inputs
+    from astro_gpu.core.stage import StageError
+    from astro_gpu.stages.inventory import Inventory, InventoryParams
+    gone = (tmp_path / "unplugged" / "lights").as_posix()
+    ctx = SimpleNamespace(project=SimpleNamespace(config=SimpleNamespace(inputs=Inputs(lights=[gone]))))
+    with pytest.raises(StageError, match="the folder of the lights is not found: .*unplugged/lights"):
+        Inventory().run(ctx, InventoryParams())
+    from astro_gpu.client.services.run import engine_text
+    i18n.set_language("fr")
+    try:
+        assert engine_text(f"the folder of the flat darks is not found: {gone} (is its disk plugged in?)") == \
+            f"dossier des darks de flat introuvable : {gone} (son disque est-il branché ?)"
+    finally:
+        i18n.set_language("en")
+
+
+def test_import_words_and_where_a_new_project_goes(tmp_path, monkeypatch):
+    """7.1, 7.5, #28, #29: the import's "no lights" says why; the project is never proposed inside the frames'
+    folder; "Pas d'offsets"."""
+    from astro_gpu.client.home import projects_location
+    from astro_gpu.client.sources import no_lights_text
+    monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
+    prefs.load()
+    phone = tmp_path / "phone"
+    phone.mkdir()
+    (phone / "a.JPG").write_bytes(b"\xff\xd8\xff")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert "only JPG files" in no_lights_text([str(phone)])
+    assert no_lights_text([str(empty)]) == "This folder holds no files."
+    assert no_lights_text([str(tmp_path / "gone")]).startswith("Not found:")
+    raw = tmp_path / "M81" / "lights"
+    raw.mkdir(parents=True)
+    prefs.remember_folder(raw)
+    where = Path(projects_location(avoid=str(raw)))
+    assert where.resolve() != raw.resolve() and raw.resolve() not in where.resolve().parents
+    prefs.add_recent((tmp_path / "projects" / "Old").as_posix(), "Old")
+    (tmp_path / "projects").mkdir()
+    assert Path(projects_location(avoid=str(raw))) == tmp_path / "projects"
+    i18n.set_language("fr")
+    try:
+        assert i18n._("No bias.") == "Pas d'offsets." and i18n._("No bias, no dark flats.") == \
+            "Ni offsets ni darks de flat."
+        assert i18n._("Dark flats") == "Darks de flat" and i18n._("Flat darks") == "Darks de flat"
+    finally:
+        i18n.set_language("en")

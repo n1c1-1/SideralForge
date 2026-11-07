@@ -63,7 +63,7 @@ from ..render.sliders import STARS as STARS_GROUP
 from ..render.sliders import group_title
 from . import prefs
 from .curveseditor import CurvesEditor, FunctionGraph, caption
-from .i18n import _, language, maybe, plural
+from .i18n import _, language, log_detail, maybe, plain_error, plural
 from .model import POST_PART_NAMES
 from .postengine import (
     BLENDS,
@@ -488,7 +488,12 @@ class BeforeSource:
 
 
 # ======================================================================== the view
+#: a step of Post's Undo that is a change of a workflow (its Output's channels): the workflows' Undo takes it back
+MODEL_STEP = object()
+
+
 class PostView(QWidget):
+    is_post_page = True                                   # its changes go to its own Undo, not the graph's (2.1)
     goProcessing = Signal(int, str)
     goResults = Signal(int)
     rendered = Signal(object)                             # a Result was shown (tests, the status line)
@@ -758,15 +763,15 @@ class PostView(QWidget):
             self.layers = load_layers(post.get("layers"), alive)
             self._saved = json.dumps(save_layers(self.layers), sort_keys=True)
         known = {lay["pid"] for lay in self.layers if lay["kind"] == "workflow"}
-        fresh = not known and not (getattr(getattr(self.s, "p", None), "post", None) or {}).get("edited")
+        fresh = not known
+        removed = getattr(self.s, "post_removed", lambda: set())()
         for p in paths:
-            # an empty composition is filled; afterwards only a block's output sent from the graph (an exit) comes
-            # (issue #10: every computed workflow came back on top, hidden, even one the user had taken away)
-            sent = getattr(p, "end", None) is not None
+            # every workflow's image comes, except one the user took out (issues #10, #52: it does not come back)
+            stars = p.opts.get("etoiles") == "retirer"
+            out = (p.pid, "combined" if stars else None) in removed and getattr(p, "end", None) is None
             channel = getattr(self.s, "feeds_fusion", None) is not None and self.s.feeds_fusion(p)   # #47: the fusion
             channel = channel or (getattr(self.s, "gives_post", None) is not None and not self.s.gives_post(p))
-            if (fresh or sent) and p.rendered and p.pid not in known and not channel:   # with Stars: its Combine
-                stars = p.opts.get("etoiles") == "retirer"
+            if not out and p.rendered and p.pid not in known and not channel:   # with Stars: its Combine
                 self.layers.insert(0, new_workflow_layer(
                     p.pid, p.name + (" · " + POST_PART_NAMES["combined"] if stars else ""),
                     part="combined" if stars else None))
@@ -1035,7 +1040,9 @@ class PostView(QWidget):
 
     def _on_failed(self, seq, kind, text):
         if kind in ("draft", "half", "region", "before", "start"):
-            first = text.splitlines()[0] if text else "?"
+            first = _("The image cannot be computed: {why}").format(why=plain_error(text))
+            if first != self.viewer.banner:                  # said once; the program's error in the Log only
+                log_detail(self.s, text)
             self.viewer.banner = first[:160]
             self.viewer.update()
 
@@ -1144,14 +1151,34 @@ class PostView(QWidget):
         self.b_undo.setEnabled(bool(self.undo))
         self.b_redo.setEnabled(bool(self.redo))
 
+    def _set_workflow_param(self, p, stage, name, value):
+        """A setting of the workflow shown here (its Output's channels): a step of Post's Undo too (2.4), undone by the
+        workflows' Undo."""
+        self.s.set_param(p, stage, name, value)
+        self.undo.append(MODEL_STEP)
+        self.redo.clear()
+        self._undo_buttons()
+
     def do_undo(self):
-        if self.undo:
+        if self.undo and self.undo[-1] is MODEL_STEP:
+            self.undo.pop()
+            if self.s.undo():
+                self.redo.append(MODEL_STEP)
+            self.rebuild()
+            self._undo_buttons()
+        elif self.undo:
             self.redo.append(snapshot(self.layers))
             self.layers = self.undo.pop()
             self._restored()
 
     def do_redo(self):
-        if self.redo:
+        if self.redo and self.redo[-1] is MODEL_STEP:
+            self.redo.pop()
+            if self.s.redo():
+                self.undo.append(MODEL_STEP)
+            self.rebuild()
+            self._undo_buttons()
+        elif self.redo:
             self.undo.append(snapshot(self.layers))
             self.layers = self.redo.pop()
             self._restored()
@@ -1797,8 +1824,8 @@ class PostView(QWidget):
             except Exception:  # noqa: BLE001 - a value the worker has not read yet
                 linked = True
             c.setCurrentIndex(0 if linked in (None, True) else 1)
-            c.currentIndexChanged.connect(lambda i, c=c, q=p: self.s.set_param(q, "render_simple", "linked",
-                                                                              c.itemData(i)))
+            c.currentIndexChanged.connect(lambda i, c=c, q=p: self._set_workflow_param(q, "render_simple", "linked",
+                                                                                       c.itemData(i)))
             r.addWidget(c, 1)
             self.pbox.addLayout(r)
         bases = self.bases_of(p)

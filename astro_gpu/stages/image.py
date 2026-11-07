@@ -17,6 +17,33 @@ from ..core.params import P, StageParams
 from ..core.stage import Context, Stage, StageError
 
 FORMATS = (".fits", ".fit", ".fts", ".tif", ".tiff", ".png", ".jpg", ".jpeg")
+#: the first bytes of each format (GUI exploration 7.3: a text file or a missing one is refused with its reason)
+MAGIC = {".fits": (b"SIMPLE",), ".fit": (b"SIMPLE",), ".fts": (b"SIMPLE",),
+         ".tif": (b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"), ".tiff": (b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"),
+         ".png": (b"\x89PNG",), ".jpg": (b"\xff\xd8\xff",), ".jpeg": (b"\xff\xd8\xff",)}
+#: an 8 or 16-bit picture: stretched by nature (GUI exploration 1.7)
+STRETCHED_FORMATS = (".png", ".jpg", ".jpeg")
+
+
+def image_problem(path: str | Path) -> str:
+    """Why a file cannot be an Image block's image, in plain English ("{name}" to fill in), or "" when it can: none
+    chosen, not found, not a format read here, or its content not of its format (a text file renamed)."""
+    if not str(path or "").strip():
+        return "No image file chosen yet."
+    p = Path(str(path).strip())
+    if not p.is_file():
+        return "File not found: {name}"
+    suf = p.suffix.lower()
+    if suf not in FORMATS:
+        return "{name} is not an image this version reads (FITS, TIFF, PNG or JPEG)."
+    try:
+        with open(p, "rb") as f:
+            head = f.read(8)
+    except OSError:
+        return "{name} cannot be read."
+    if not any(head.startswith(m) for m in MAGIC[suf]):
+        return "{name} is not an image: its content is not that of its format."
+    return ""
 
 
 class ImageParams(StageParams):

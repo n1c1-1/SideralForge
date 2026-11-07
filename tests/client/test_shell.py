@@ -26,6 +26,7 @@ if Path("C:/Windows/Fonts").is_dir():
 
 pytest.importorskip("PySide6")
 from conftest import HAVE_TEST_PROJECT, NO_TEST_PROJECT, TEST_PROJECT  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractButton,
     QApplication,
@@ -323,6 +324,41 @@ def test_new_project_writes_a_v2_folder(env):
     assert dlg.ok.isEnabled() and dlg.folder() == env["ws"] / "Rosette_ night 2"
 
 
+def test_import_folder_as_new_project_one_window_after_the_other(env, monkeypatch, qapp):
+    """GUI exploration 7.1, #28, #30: proposed where the projects are, never in the frames' folder; the import, then
+    the gallery; a folder without lights makes no project; an unreadable project says so plainly."""
+    w = _main(env)
+    raw = env["tmp"] / "shoot" / "lights"
+    raw.mkdir(parents=True)
+    (raw / "L_001.fits").write_bytes(b"SIMPLE  =" + bytes(2871))
+    asked, order = [], []
+    monkeypatch.setattr(appmod.QFileDialog, "getExistingDirectory", lambda *a, **k: raw.as_posix())
+
+    def ask(name="", target="", location=None):
+        asked.append(location)
+        return (Path(location) / "M81").as_posix(), "M81", "", {}
+    monkeypatch.setattr(w.home, "ask_new_project", ask)
+    monkeypatch.setattr(w, "import_frames", lambda folder: order.append(("import", getattr(w.graph, "_gallery",
+                                                                                          None))) or True)
+    w.import_folder_as_new()
+    qapp.processEvents()
+    assert asked and Path(asked[0]).resolve() != raw.resolve() and raw.resolve() not in Path(asked[0]).resolve().parents
+    assert w.project is not None and raw.resolve() not in w.project.root.resolve().parents
+    assert order == [("import", None)] and w.graph._gallery is not None          # the gallery after the import
+    w.graph._gallery.reject()
+    empty = env["tmp"] / "empty"
+    empty.mkdir()
+    monkeypatch.setattr(appmod.QFileDialog, "getExistingDirectory", lambda *a, **k: empty.as_posix())
+    asked.clear()
+    w.import_folder_as_new()
+    assert not asked and "No project made" in w.status.text()
+    bad = env["ws"] / "Broken"
+    bad.mkdir()
+    (bad / "project.astroproj").write_text("{'broken", encoding="utf-8")
+    assert not w.open_project(bad)
+    assert "damaged" in env["shown"][-1][1][1] and "Expecting" not in env["shown"][-1][1][1]
+
+
 def test_open_a_v1_folder_offers_its_import_and_writes_nothing(env, monkeypatch):
     from astro_gpu.client.previous import PreviousVersionDialog
     offered = []
@@ -348,8 +384,9 @@ def test_open_and_close_a_project(env):
     before = _snapshot(env["ws"] / "Heart")
     assert "HeartSoul" in w.title.text() and "IC 1805" in w.title.text()
     assert w.status.text().startswith("3 workflows")
-    cb = w.device_cb                                            # left of Run: the GPUs and the CPU
-    assert cb.currentText() == "NVIDIA RTX 4060 Ti" and cb.itemData(cb.count() - 1) == "cpu"
+    cb = w.device_cb                    # left of Run: Automatic, the GPUs and the CPU, as Settings > Compute (6.9)
+    assert cb.currentText() == "Automatic" and cb.itemData(cb.count() - 1) == "cpu"
+    assert "NVIDIA RTX 4060 Ti" in cb.itemData(0, Qt.ToolTipRole) and cb.itemText(cb.count() - 1) == "CPU only"
     for i in (1, 2, 0):
         w.set_mode(i)
         assert w.modes.currentIndex() == min(i, 1) and w.mode_btns[i].isChecked()     # Post is in Inspect
@@ -505,7 +542,7 @@ def test_the_template_gallery_on_the_model(qapp, tmp_path):
     assert {c.t["key"] for c in d.cards} == {"blank", "image", "image_colours", "image_plain", "image_stretched"}
     assert not d.ok.isEnabled() and d.file_row.isVisibleTo(d)
     img = tmp_path / "m42.fits"
-    img.write_bytes(bytes(2880))
+    img.write_bytes(b"SIMPLE  =" + bytes(2871))                              # a FITS file: its first bytes (7.3)
     d.file.setText(str(img))
     assert d.ok.isEnabled()
     d.tabs.setCurrentIndex(1)                     # filters: the project's sessions have none, so nothing to make

@@ -113,6 +113,9 @@ class Project2:
     stack_mode: str = "together"
     workflows: list[Workflow] = field(default_factory=list)
     current: int | None = None
+    #: the block selected when the project was last saved, as the views name it ("empilement", "fond~2", "sources"):
+    #: the project reopens on it (GUI exploration 6.6); like ``current``, no part of any result
+    current_block: str = ""
     render_bases: dict[str, dict[str, Any]] = field(default_factory=dict)
     post: dict[str, Any] = field(default_factory=lambda: {"layers": []})
     next_workflow_id: int = 1        # ids are never reused, so an undo can bring a deleted workflow back
@@ -318,8 +321,8 @@ class Project2:
                 "sessions": [asdict(s) for s in self.sessions],
                 "excluded": [[sid, name] for sid, name in self.excluded], "stack_mode": self.stack_mode,
                 "workflows": [asdict(w) for w in self.workflows], "current": self.current,
-                "next_workflow_id": self.next_workflow_id, "render_bases": copy.deepcopy(self.render_bases),
-                "post": copy.deepcopy(self.post)}
+                "current_block": self.current_block, "next_workflow_id": self.next_workflow_id,
+                "render_bases": copy.deepcopy(self.render_bases), "post": copy.deepcopy(self.post)}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any], root: str | Path | None = None) -> Project2:
@@ -343,7 +346,8 @@ class Project2:
                 reference_image=d.get("reference_image", ""),
                 devices={"main": "", "aux": "", **(d.get("devices") or {})}, sessions=sessions,
                 excluded=_excluded(d.get("excluded") or []), stack_mode=d.get("stack_mode", "together"),
-                workflows=workflows, current=d.get("current"), render_bases=copy.deepcopy(d.get("render_bases") or {}),
+                workflows=workflows, current=d.get("current"), current_block=str(d.get("current_block") or ""),
+                render_bases=copy.deepcopy(d.get("render_bases") or {}),
                 post=copy.deepcopy(d.get("post") or {"layers": []}), next_workflow_id=nxt,
                 root=Path(root) if root is not None else None)
         p.validate()
@@ -414,7 +418,7 @@ def check_breakpoints(blocks: Any, where: str = "breakpoints") -> list[str]:
     """The breakpoints as they are stored: a list of distinct block names of the engine (core/workflow.BLOCKS)."""
     if not isinstance(blocks, list) or not all(isinstance(b, str) for b in blocks):
         raise ValueError(f"{where}: breakpoints must be a list of block names")
-    unknown = [b for b in blocks if b not in wfl.BLOCKS]
+    unknown = [b for b in blocks if wfl.base(b) not in wfl.BLOCKS]      # a graph's later node too: "gradient~2"
     if unknown:
         raise ValueError(f"{where}: no such block to pause after: {unknown} (known: {list(wfl.BLOCKS)})")
     if len(set(blocks)) != len(blocks):
@@ -432,8 +436,7 @@ def _breakpoints(raw: Any) -> list[str]:
     seen = [b for b in raw if isinstance(b, str)]
     if len(seen) != len(raw):
         raise ValueError(f"breakpoints must be a list of block names: {raw!r}")
-    order = list(wfl.BLOCKS)
-    return sorted(dict.fromkeys(seen), key=lambda b: order.index(b) if b in order else len(order))
+    return sorted(dict.fromkeys(seen), key=wfl.block_order)
 
 
 def _target(d: dict[str, Any]) -> Target:

@@ -44,7 +44,7 @@ from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import i18n, prefs  # noqa: E402
 from astro_gpu.client.blocks import Graph  # noqa: E402
 from astro_gpu.client.graph import BlockItem, GraphPage  # noqa: E402
-from astro_gpu.client.logview import LogPanel  # noqa: E402
+from astro_gpu.client.logview import LogPanel, event_text  # noqa: E402
 from astro_gpu.client.model import ProjectModel  # noqa: E402
 from astro_gpu.client.runs import RunDialog, RunOverlay, RunStatus, build_rows, row_state, run_blocks  # noqa: E402
 from astro_gpu.client.services.run import (  # noqa: E402
@@ -461,7 +461,9 @@ def test_a_stopped_run_and_a_lost_worker_and_a_run_that_never_started():
     never = RunTrack([job("ka", "a", "stacking")], "r1")
     never.abort("ImportError: no module named x")
     assert never.status == "failed" and never.jobs[0].state == NOT_STARTED and never.lines[-1][1] == "not_started"
-    assert "no module named x" in render_line(never.lines[-1])
+    # GUI exploration 6.4: said in plain words, the worker's own words kept in ``error`` only
+    assert render_line(never.lines[-1]).endswith("The run could not start: an unexpected error stopped it")
+    assert never.never_started and "no module named x" in never.error
 
 
 def test_row_states_and_the_progress_numbers():
@@ -636,8 +638,8 @@ def test_a_breakpoint_stops_the_run_after_its_block_and_continue_goes_on(toy, mo
     assert Graph(m, None).breakpoint(Graph(m, None).node_of(plain, "calibration")) == ("paused", 1, 2)
     assert m.review_state(plain, "calibration") == "paused" and m.review_state(trained, "calibration") is None
     assert "Paused for your review at Calibration: check it in Inspect, then Continue." in toy.console()
-    assert m.history[-1][1] == "{text}"
-    assert m.history[-1][2]["text"].startswith("Run paused for your review at Calibration: 1 stage in")
+    # the history line is a template and its words, written in the language it is read in (exploration #31)
+    assert m.history[-1][1] == "Run paused for your review at {block}" and m.history[-1][2] == {"block": "Calibration"}
     # Continue: the review is marked, and the run goes on to the end, in a new dialog, at once
     d.b_continue.click()
     assert ctl.pause is None and ctl.running and ctl.dialog is not d and m.is_reviewed(plain, "calibration")
@@ -889,12 +891,12 @@ def test_the_pause_in_french(toy, monkeypatch):
     d.start()
     finish(toy)
     seen = texts_of(d)
-    assert "En pause pour votre vérification à Calibration : vérifiez-le dans Inspection, puis cliquez sur Continuer." in seen
-    assert "Continuer" in seen and "Ouvrir dans Inspection" in seen and "En pause pour vérification" in seen
+    assert "En pause pour votre vérification au bloc Calibration : vérifiez-le dans l'Inspection, puis cliquez sur Continuer." in seen
+    assert "Continuer" in seen and "Ouvrir dans l'Inspection" in seen and "En pause pour vérification" in seen
     assert "Workflow : Plain · 2 autres pauses ensuite : Empilement, Sortie" in seen
-    assert "En pause pour votre vérification à Calibration : vérifiez-le dans Inspection, puis cliquez sur Continuer." \
+    assert "En pause pour votre vérification au bloc Calibration : vérifiez-le dans l'Inspection, puis cliquez sur Continuer." \
         in toy.console()
-    assert m.history[-1][2]["text"].startswith("Exécution en pause pour votre vérification à Calibration : 1 étape en")
+    assert event_text(m.history[-1])[1] == "Exécution en pause pour votre vérification au bloc Calibration"
     assert untranslated(seen) == [], untranslated(seen)
     d.b_continue.click()
     finish(toy)
@@ -1176,8 +1178,10 @@ def test_a_start_that_fails_is_said_and_nothing_stays_running(env, monkeypatch):
         d = w.ctl.launch()
         d.start()
         assert pump(lambda: w.track.finished and not w.ctl.running, 30)
-        assert w.track.status == "failed" and "The run could not start: the disk is full" in w.console()
-        assert d.phase() == "end" and d.summary.text() == "Failed"
+        # GUI exploration 6.4: in plain words, in the console, the history and the window
+        assert w.track.status == "failed" and "The run could not start: the project's drive is full" in w.console()
+        assert d.phase() == "end" and d.summary.text() == "The run could not start"
+        assert w.model.history[-1][1] == "The run could not start: {why}"
     finally:
         w.close()
 

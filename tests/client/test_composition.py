@@ -44,6 +44,10 @@ def two(qapp, tmp_path_factory):
     """A model on an empty project with Full (Stars) and Classic stack (no Stars), read-only."""
     root = tmp_path_factory.mktemp("composition") / "P"
     p = project2.create(root, "P", Target(name="M 1"))
+    raw = root.parent / "raw"                         # lights: a workflow without any gives Post no layer (question 4)
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "a1.ARW").write_bytes(b"\0" * 100)
+    p.sessions.append(project2.Session(1, "night 1", lights=[str(raw)]))
     api.add_workflow(p, "Full", "Full")
     api.add_workflow(p, "Classic stack", "Classic stack")
     w = ApiWorker()
@@ -219,7 +223,7 @@ def test_the_stars_panel_sends_each_image_to_post_and_makes_a_stars_and_backgrou
     panel = Panel(model)
     stars = Graph(model).node_of(full, "etoiles")
     panel.outputs(stars)
-    buttons = {b.text(): b for b in panel.findChildren(QPushButton)}
+    buttons = {b.text().replace("&&", "&"): b for b in panel.findChildren(QPushButton)}   # "&&": a plain "&" shown
     assert "To Post" in buttons and "New Combine stars & background layers block" in buttons
     panel._part_to_post(full, "starless")
     panel._new_composition(full)

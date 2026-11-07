@@ -319,6 +319,148 @@ def test_the_second_play_test_stays_fixed(qapp, tmp_path, monkeypatch):
         w.stop()
 
 
+def test_a_fusion_channel_session_removed_keeps_the_project_valid_and_the_fusion_red(qapp, tmp_path, monkeypatch):
+    """GUI exploration 1.1: removing the Session of a fusion's channel no longer breaks the project: the channel's flow
+    stays with an empty Session of its filter, the Fusion is circled in red with its reason and Run is refused; Ctrl+Z
+    brings the session back. 1.5: a parallel flow on a template's flow without any night yet is valid."""
+    w, m, page = open_page(tmp_path, monkeypatch, workflows=())
+    try:
+        assert m.ensure_frames_workflow() is not None
+        d = page.new_workflow(tab="mono")
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "hoo"))
+        page.make_workflow(d)
+        settle(w, page)
+        hoo = next(q for q in m.paths if (q.source or {}).get("fusion"))
+        ha = next(q for q in m.paths if m.feeds_fusion(q))
+        sid = m.sessions_of(ha)[0]
+        filt = m.p.session(sid).filter
+        n_sessions = len(m.p.sessions)
+        assert m.remove_session(sid)
+        settle(w, page)
+        m.p.validate()                                             # still a valid project
+        ha = m.view(ha.pid)
+        assert ha is not None and m.p.session(m.sessions_of(ha)[0]).filter == filt
+        assert len(m.p.sessions) == n_sessions and m.fusion_problem(m.view(hoo.pid))
+        assert Graph(m).node_of(m.view(hoo.pid), "fusion").broken and m.run_problems()
+        m.undo()
+        settle(w, page)
+        assert sid in [s.id for s in m.p.sessions]
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_parallel_flow_on_a_template_without_night_and_a_calibration_in_the_second_flow(qapp, tmp_path,
+                                                                                          monkeypatch):
+    """GUI exploration 1.5: a template's flow of frames, no night yet: a Session dropped on the new-flow zone makes a
+    valid project. 1.6: Calibration placed in the second flow is selected beside that flow's own session."""
+    w, m, page = open_page(tmp_path, monkeypatch, workflows=())
+    try:
+        m.p.sessions.clear()
+        m.add_graph_workflow("Workflow", [])
+        q = m.add_parallel_flow()
+        m.p.validate()
+        assert m.sessions_of(q) and m.sessions_of(m.paths[0]) and m.sessions_of(q) != m.sessions_of(m.paths[0])
+        page.place_block("calibration", q.pid)
+        settle(w, page)
+        assert m.sel_step == f"calibration@{m.sessions_of(m.view(q.pid))[0]}"
+        page.refresh()                                             # the panel shows it (no error)
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_block_placed_twice_has_its_own_settings_and_its_own_pause(qapp, tmp_path, monkeypatch):
+    """GUI exploration 1.2: the second Gradient is a block of its own: its setting changes (the first keeps its
+    own), it gets its pause for review, and Run to here aims at it."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        full = m.paths[0]
+        page.place_block("gradient")
+        settle(w, page)
+        p = m.view(full.pid)
+        assert "fond~2" in m.display_keys(p)
+        m.set_param(p, "gradient~2", "degree", 4)
+        assert m.p.workflow(full.pid).params.get("gradient~2", {}).get("degree") == 4
+        assert m.p.workflow(full.pid).params.get("gradient", {}).get("degree") is None
+        m.set_breakpoint([p], "fond~2", True)
+        assert m.has_breakpoint(p, "fond~2") and not m.has_breakpoint(p, "fond")
+        assert m.breakpoints(p) == ["fond~2"]
+        m.p.validate()
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_the_answers_to_the_design_questions(qapp, tmp_path, monkeypatch):
+    """The user's answers (GUI exploration, 7 November): a branch made only to send an image goes with its wire (1);
+    a block placed starts from its defaults (9); Fusion is greyed with what to do while there is nothing to combine
+    (6); a workflow deleted at once, said (10.1); a block switched off is not placed twice (4.4); a removal refused in
+    one workflow is refused in all (3.7)."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        full = m.paths[0]
+        page.send_to_post(Graph(m).node_of(m.view(full.pid), "astrometrie"))
+        settle(w, page)
+        sent = m.paths[-1]
+        assert m.is_sent_branch(sent)
+        page.remove_post_link(sent.pid)
+        settle(w, page)
+        assert m.view(sent.pid) is None                            # question 1: the branch went with its wire
+        # question 9: a Gradient placed again starts from its defaults
+        m.set_param(m.view(full.pid), "gradient", "degree", 4)
+        page.remove_tool(Graph(m).node_of(m.view(full.pid), "fond"), None)
+        settle(w, page)
+        page.place_block("gradient", full.pid)
+        settle(w, page)
+        assert m.p.workflow(full.pid).params.get("gradient", {}).get("degree") is None
+        # question 6: nothing to combine yet in a project of one colour workflow without Stacking? it has one: placeable
+        assert page.palette_reason("fusion", m.view(full.pid), None) == ""
+        # 4.4: Registration switched off is not placed a second time
+        page.toggle_cut(Graph(m).node_of(m.view(full.pid), "alignement"), None)
+        settle(w, page)
+        assert "switched off" in m.palette_reason(m.view(full.pid), "registration")
+        # 10.1: Delete workflow at once, no question
+        toasts = []
+        page.toasted.connect(toasts.append)
+        page.workflow_action("delete", full.pid)
+        settle(w, page)
+        assert m.view(full.pid) is None and toasts and "Ctrl+Z" in toasts[-1]
+        assert m.undo() and m.view(full.pid) is not None
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_wire_taken_away_stays_away_and_what_is_sent_after_still_goes_to_post(qapp, tmp_path, monkeypatch):
+    """GUI exploration 1.3: once a wire to Post was taken away, a block's image sent to Post, a new branch and the
+    wire given back all reach Post; only the image taken out stays out (it is listed, not the whole composition)."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        full = m.paths[0]
+        page.remove_post_link(full.pid)
+        settle(w, page)
+        assert full.pid not in Graph(m).to_post
+        page.send_to_post(Graph(m).node_of(m.view(full.pid), "astrometrie"))      # a block's image, sent
+        settle(w, page)
+        sent = m.paths[-1]
+        assert sent.pid in Graph(m).to_post and full.pid not in Graph(m).to_post
+        q, _key = m.add_branch(full, "astrometrie", "gradient")                  # a new branch
+        settle(w, page)
+        assert q.pid in Graph(m).to_post and full.pid not in Graph(m).to_post
+        m.add_post_layer(full.pid, None)                                          # the wire given back
+        settle(w, page)
+        assert full.pid in Graph(m).to_post and (full.pid, None) not in m.post_removed()
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
 def test_an_image_dropped_is_placed_empty_and_the_new_flow_zone_offers_no_template(qapp, tmp_path, monkeypatch):
     """The third use: an Image dropped is placed like a Session, its file chosen in its panel (no template window);
     without its file it is not run; once a graph is begun the new-flow zone takes drops only (no template)."""

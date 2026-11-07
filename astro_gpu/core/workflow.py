@@ -268,6 +268,14 @@ def base(name: str) -> str:
     return name.split("@", 1)[0].split("~", 1)[0]
 
 
+def block_order(name: str) -> tuple[int, int]:
+    """Where an engine block stands in the usual order: its block's rank, then a graph's later node after the first
+    ("gradient~2" after "gradient")."""
+    order = list(BLOCKS)
+    b, _sep, n = name.partition("~")
+    return (order.index(b) if b in order else len(order), int(n) if n.isdigit() else 0)
+
+
 def session_of(name: str) -> str | None:
     """The session id (as text) of an instance ("2" for "calibrate@2"), None for a plain stage."""
     return name.split("@", 1)[1] if "@" in name else None
@@ -523,19 +531,24 @@ SOURCE_GIVES = {"frames": FRAMES, "image": IMAGE, "stretched": IMAGE, "fusion": 
 
 #: why a block cannot be placed (the client translates them)
 WHY_INPUT = "it takes {takes}, and {before} gives {gives}"
+WHY_STACK_FIRST = "{block} works on an image: place Stacking before it, to make one image of the frames"
 WHY_ONCE = "a workflow has one {block} block"
+WHY_ONCE_OFF = "{block} is in the workflow already, switched off: switch it on again (D or its menu)"
 WHY_FRAME_ORDER = "{block} comes {where} {other}"
 WHY_NEEDS = "it needs the {need} block before it"
 WHY_HALVES = "it needs the half-stacks of a stack (a workflow from frames)"
-WHY_SOURCE = "a workflow from {source} has no {block} block"
+WHY_SOURCE = "a workflow {source} has no {block} block"
 WHY_AFTER_OUTPUT = "only Split stars & background comes after the Output block"
 WHY_OUTPUT_AUTO = "the Output is made automatically, at the end of every workflow that gives an image"
 WHY_OUTPUT_LAST = "the Output block ends the image blocks"
 WHY_REMOVE_NEEDED = "{other} needs it: remove {other} first"
+WHY_OFF_NEEDED = "{other} needs it: switch off or remove {other} first"      # the same, said for a switch-off
 WHY_REMOVE_BRIDGE = "the blocks after it take {takes}: {block} makes it"
 WHY_OFF_KIND = "{block} turns {takes} into {gives}: switched off, the next block would get the wrong data"
 KIND_WORDS = {FRAMES: "a series of frames", IMAGE: "an image", PAIR: "a starless image and its stars"}
-SOURCE_WORDS = {"frames": "frames", "image": "an image file", "stretched": "a stretched image", "fusion": "a fusion"}
+#: "from ..." as a whole: the French joins the preposition to the word ("de brutes", "d'un fichier image")
+SOURCE_WORDS = {"frames": "from frames", "image": "from an image file", "stretched": "from a stretched image",
+                "fusion": "from a fusion"}
 
 
 class BlockRefused(ValueError):
@@ -630,6 +643,8 @@ def graph_problem(blocks: Sequence[dict], source: str, raise_it: bool = False) -
             return bad(WHY_SOURCE, source=SOURCE_WORDS[source], block=_title(b))
         if after_output and b != "stars":
             return bad(WHY_AFTER_OUTPUT)
+        if takes != kind and takes == IMAGE and kind == FRAMES:      # what to do, not only why (8.5)
+            return bad(WHY_STACK_FIRST, block=_title(b))
         if takes != kind:
             return bad(WHY_INPUT, takes=KIND_WORDS[takes], before=before, gives=KIND_WORDS[kind])
         if b in FRAME_BLOCKS:
@@ -657,6 +672,8 @@ def place_problem(blocks: Sequence[dict], source: str, block: str, index: int) -
     """Why ``block`` cannot be inserted at ``index`` of the graph (None: it can)."""
     if block == "output":
         return BlockRefused(WHY_OUTPUT_AUTO)
+    if block not in IMAGE_OPS and any(n["block"] == block and n.get("off") for n in blocks):
+        return BlockRefused(WHY_ONCE_OFF, block=_title(block))      # GUI exploration 4.4: no second one
     trial = list(blocks[:index]) + [node(block, name=new_name(blocks, block))] + list(blocks[index:])
     return graph_problem(with_output(trial, source), source)
 
@@ -727,8 +744,12 @@ def off_problem(blocks: Sequence[dict], source: str, index: int) -> BlockRefused
         return BlockRefused(WHY_OFF_KIND, block=_title(n["block"]), takes=KIND_WORDS[takes], gives=KIND_WORDS[gives])
     trial = [dict(x, off=True) if i == index else x for i, x in enumerate(blocks)]
     e = graph_problem(with_output(trial, source), source)
-    return None if e is None else _explain_removal(blocks, [x for i, x in enumerate(blocks) if i != index], source,
-                                                   index, e)
+    if e is None:
+        return None
+    e = _explain_removal(blocks, [x for i, x in enumerate(blocks) if i != index], source, index, e)
+    if e.template == WHY_REMOVE_NEEDED:                  # a switch-off is not a removal: say what to switch off
+        return BlockRefused(WHY_OFF_NEEDED, **e.fields)
+    return e
 
 
 def from_options(options: dict[str, Any], end: str | None = None, source: str = "frames") -> list[dict[str, Any]]:

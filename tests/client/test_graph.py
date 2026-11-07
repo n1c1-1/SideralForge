@@ -402,7 +402,8 @@ def test_adding_and_removing_blocks_follows_the_rules_with_toasts(world, model, 
     page.remove_tool(node(page, "etoiles", classic.pid), [classic.pid])
     settle(world["w"], page)
     classic = model.view(2)
-    refused = lambda: [t for t in toasts if "to run" not in t]                   # noqa: E731 (the cost's toast)
+    refused = lambda: [t for t in toasts if "to run" not in t and "Ctrl+Z" not in t]   # noqa: E731 (the cost's,
+    #                                                                         and a removal's: said, with Ctrl+Z)
     assert classic.opts["etoiles"] == "garder" and classic.opts["debruitage"] and not refused()
     # the Gradient can go too: a graph holds the blocks it uses
     page.remove_tool(node(page, "fond", classic.pid), [classic.pid])
@@ -689,11 +690,12 @@ def test_outputs_pulled_to_post_make_a_raw_stack_workflow(world, model, page):
     settle(world["w"], page)
     assert len(model.paths) == n0 + 1
     q = model.paths[-1]
-    assert q.name == "Raw stack" and q.end == "empilement" and model.path is q and model.sel_step == "post"
+    # a branch up to Stacking, its Output its own (GUI exploration 3.1: no exit block)
+    assert q.name == "Raw stack" and q.end is None and model.path is q and model.sel_step == "post"
     assert model.block_keys(q) == ["calibration", "alignement", "selection", "empilement", "post"]
     assert model.all_stages(q)[-1] == "render_simple"
     g = Graph(model)
-    assert g.summary(g.node_of(q, "post")) == "from Stacking"
+    assert "Raw stack" in g.summary(g.node_of(q, "post"))
     assert g.node_of(q, "empilement") is g.node_of(model.view(1), "empilement")      # shares everything up to Stacking
     assert any("Raw stack" in t for t in texts_of(page.graph))
     # issue #47: its graph can grow (an image block before its Output); no Split stars without Denoise
@@ -701,7 +703,7 @@ def test_outputs_pulled_to_post_make_a_raw_stack_workflow(world, model, page):
     cards = {c.block: c for c in page.findChildren(PaletteCard)}
     assert not cards["gradient"].reason and cards["stars"].reason
     ok, why, need = model.slider_state(q, "star_strength")
-    assert ok is False and "before the split block" in why and need is None             # nothing to add after the exit
+    assert ok is False and "split block" in why                                         # no star slider without it
     assert model.slider_state(model.view(1), "star_strength", "combined")[0] is True
 
 
@@ -1116,7 +1118,7 @@ def test_the_french_switch_translates_everything_visible(world, model, page):
     assert i18n._(STATE_WORD["pending"]) == "Pas encore calculé"                  # (the test project may have none pending)
     assert i18n._("Gradient") == "Gradient"
     assert g.summary(next(n for n in g.nodes if n.key == "alignement")) == "sur l'image la plus nette"
-    assert "Blocs" in t and "SUR LES POSES" in t
+    assert "Blocs" in t and "SUR LES BRUTES" in t
     # back to English at runtime: the page is built again, in English
     appmod.apply_language("en")
     page.refresh()
@@ -1502,8 +1504,8 @@ def test_every_block_has_pause_here_for_review_and_the_dot_shows(world, model, p
     from astro_gpu.client.blocks import BREAK_COL
     pin(model, monkeypatch)                                                     # nothing computed
     settle(world["w"], page)
-    # no menu, no dot, on the Frames and Post blocks
-    assert menu_of(page, page.graph.graph.root, monkeypatch) is None
+    # no dot on the Frames and Post blocks; a lone Session has its menu (GUI exploration 5.2), Post none
+    assert menu_of(page, page.graph.graph.root, monkeypatch) is not None
     assert menu_of(page, page.graph.graph.final, monkeypatch) is None
     assert all(it.bp is None for it in block_items(page))
     keys = [n.key for n in page.graph.graph.nodes if n.key not in ("sources", "final")]

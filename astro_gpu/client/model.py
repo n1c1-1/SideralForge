@@ -293,17 +293,21 @@ class SessionSet:
 
     def __init__(self, p):
         self.ids = [s.id for s in p.sessions]
+        self.labels = [(s.id, s.name, s.filter) for s in p.sessions]       # renamed, its filter changed: undone (2.3)
         self.copies = {s.id: copy.deepcopy(s) for s in p.sessions}
         self.excluded = [list(x) for x in p.excluded]
 
     def __eq__(self, other):
-        return isinstance(other, SessionSet) and self.ids == other.ids
+        return isinstance(other, SessionSet) and self.labels == other.labels
 
     __hash__ = None
 
     def put_back(self, p) -> bool:
         """These sessions in ``p``: a removed one comes back as it was, an added one goes; the others keep their
-        frames as they are now. Whether any came or went."""
+        frames as they are now, and get their name and filter back. Whether any came or went."""
+        for s in p.sessions:
+            if s.id in self.copies:
+                s.name, s.filter = self.copies[s.id].name, self.copies[s.id].filter
         if [s.id for s in p.sessions] == self.ids:
             return False
         now = {s.id: s for s in p.sessions}
@@ -368,10 +372,22 @@ class ProjectModel(QObject):
         self._redo: list = []
         self._depth = 0
         self._dirty = False
+        self._post_removed_from_edited()
         self._rebuild_views()
         if self.paths:
             self.current = max(0, next((i for i, v in enumerate(self.paths) if v.pid == project.current), 0))
-            self.sel_step = "empilement"
+        # GUI exploration 6.6: the block selected when the project was saved, if it is still there; else the Session
+        # (a Stacking was selected, often not in the graph). The selection is kept with the next save, as ``current``
+        sids = [s.id for s in project.sessions]
+        sep = project.separate_sessions()
+        w = project.workflow(self.paths[self.current].pid) if self.paths else None
+        have = {"sources", "final"} | {f"{k}@{i}" for i in sep for k in ("session", "calibration")}
+        if w is not None:
+            have |= {"post"} | ({node_key(n) for n in w.blocks} if w.blocks is not None else
+                                {"calibration", "alignement", "selection", "empilement"})
+        saved = getattr(project, "current_block", "")
+        self.sel_step = saved if saved in have else (f"session@{sep[0]}" if sep and sids else "sources")
+        self.currentChanged.connect(lambda: setattr(self.p, "current_block", self.sel_step or ""))
         self._start_warm()
 
     # ------------------------------------------------------------ the definition, as the views see it
@@ -614,12 +630,57 @@ class ProjectModel(QObject):
             return self.post_shown()
         return _copy.deepcopy(list(((getattr(self.p, "post", None) or {}).get("layers")) or []))
 
+    # A workflow's image is a layer of Post by default (the graph draws its wire, Post shows it). The images the user
+    # took out (a wire removed, a layer deleted in Post) are listed in ``project.post["removed"]`` as (workflow id,
+    # part) and do not come back by themselves (issues #10, #52); any other image, a new branch's or a new flow's,
+    # still goes to Post.
+    def _post_removed_from_edited(self):
+        """A composition saved before the list (only "edited"): every workflow then without a layer was taken out."""
+        post = getattr(self.p, "post", None) or {}
+        if "removed" in post or not post.get("edited"):
+            return
+        have = {x.get("pid") for x in post.get("layers") or [] if x.get("kind") == "workflow"}
+        self.p.post = {k: v for k, v in post.items() if k != "edited"}
+        self.p.post["removed"] = [[w.id, part] for w in self.p.workflows if w.id not in have
+                                  for part in (None, "combined")]
+
+    def post_removed(self) -> set:
+        """The (workflow id, part) taken out of Post by the user."""
+        return {(int(a), b) for a, b in ((getattr(self.p, "post", None) or {}).get("removed") or [])}
+
+    def post_default_part(self, p):
+        """The part a workflow gives Post by default: with Stars, its Stars and background image."""
+        return "combined" if p.opts.get("etoiles") == "retirer" else None
+
+    def post_defaults(self, layers=None) -> list:
+        """The workflows whose image Post shows by default with these layers (the saved ones by default): no layer of
+        their own yet, an image to give, not a fusion's channel, not taken out."""
+        if layers is None:
+            layers = (getattr(self.p, "post", None) or {}).get("layers") or []
+        have = {x.get("pid") for x in layers if x.get("kind") == "workflow"}
+        out = self.post_removed()
+        return [q for q in self.paths if q.pid not in have and (q.pid, self.post_default_part(q)) not in out
+                and not self.feeds_fusion(q) and self.gives_post(q)]
+
     def set_post_layers(self, layers: list[dict], source=None):
         """The composition replaced (saved layers, postengine.save_layers); ``source``: who changed it (Post itself
-        does not reload what it wrote)."""
-        self.p.post = {**(getattr(self.p, "post", None) or {}), "layers": layers}
-        if any(x.get("kind") == "workflow" for x in layers):
-            self.p.post["edited"] = True                  # the user's composition: Post gives no layer by itself
+        does not reload what it wrote). An image shown before and not any more was taken out: it stays out. A change
+        made from the graph is a step of its Undo (2.1); Post's own changes are in Post's Undo."""
+        if getattr(source, "is_post_page", False) or self._depth:
+            self._set_post_layers(layers, source)
+            return
+        with self._edit():
+            self._set_post_layers(layers, source)
+
+    def _set_post_layers(self, layers: list[dict], source=None):
+        old =(getattr(self.p, "post", None) or {}).get("layers") or []
+        shown = {(x.get("pid"), x.get("part")) for x in old if x.get("kind") == "workflow"}
+        shown |= {(q.pid, self.post_default_part(q)) for q in self.post_defaults(old)}
+        now = {(x.get("pid"), x.get("part")) for x in layers if x.get("kind") == "workflow"}
+        alive = {q.pid for q in self.paths}
+        out = {x for x in (self.post_removed() | (shown - now)) - now if x[0] in alive}
+        self.p.post = {**{k: v for k, v in (getattr(self.p, "post", None) or {}).items() if k != "edited"},
+                       "layers": layers, "removed": sorted([list(x) for x in out], key=str)}
         self.edited()
         self.postChanged.emit(source)
 
@@ -651,12 +712,12 @@ class ProjectModel(QObject):
         that an image sent on top does not take their place (issue #29). ``skip``: a workflow whose Combine block is
         the one being added."""
         from .postengine import new_workflow_layer
-        if any(x.get("kind") == "workflow" for x in layers) or (getattr(self.p, "post", None) or {}).get("edited"):
+        if any(x.get("kind") == "workflow" for x in layers):
             return
         made = []
-        for q in self.paths:
+        for q in self.post_defaults(layers):                   # #47, #49, #52
             stars = q.opts.get("etoiles") == "retirer"
-            if q.pid == skip and stars or self.feeds_fusion(q) or not self.gives_post(q):   # #47, #49
+            if q.pid == skip and stars:
                 continue
             made.append(new_workflow_layer(q.pid, q.name + (" · " + POST_PART_NAMES["combined"] if stars else ""),
                                            False, "combined" if stars else None))
@@ -671,7 +732,6 @@ class ProjectModel(QObject):
         returns how many (issue #29: a link to Post the graph could not take away)."""
         def change(layers):
             self._filled(layers)                          # the layers Post gives by default, made real first (#52)
-            self.p.post = {**(getattr(self.p, "post", None) or {}), "edited": True}     # and no longer given
             gone = {x["id"] for x in layers if x.get("kind") == "workflow" and x.get("pid") == pid
                     and x.get("part") == part}
             layers[:] = [x for x in layers if x["id"] not in gone and not (x["kind"] == "filter"
@@ -770,6 +830,7 @@ class ProjectModel(QObject):
             if top:
                 self._sync_graphs()
                 self._prune_breakpoints()
+                self._prune_post()
                 if self._snapshot() != before:
                     self._undo.append(before)
                     del self._undo[:-200]
@@ -780,10 +841,25 @@ class ProjectModel(QObject):
                 self._sync()
                 self.pathsChanged.emit()
 
+    def join_session(self, p, sid: int):
+        """A session read by no workflow joins ``p``'s flow of frames (or the first one), or starts a flow of its own
+        (GUI exploration 1.8: a Session placed is always in the graph)."""
+        if any(sid in self.p.sessions_of(w.id) and w.source is None for w in self.p.workflows):
+            return
+        frames = [w for w in self.p.workflows if w.source is None]
+        w = next((x for x in frames if p is not None and x.id == p.pid), frames[0] if frames else None)
+        with self._edit():
+            if w is None:
+                self.add_graph_workflow(_("Flow"), [], sessions=[sid])
+            else:
+                w.sessions = list(w.sessions or []) + [sid]
+            self.p.validate()
+
     def _snapshot(self):
         """What Undo puts back: the workflows, and which sessions there are (a Session block is a block of the graph:
         removed, it comes back with what it had, issue #47). A session's frames are not for Undo (saved by Save)."""
-        return (api.workflows(self.p), self.p.current, self.p.stack_mode, SessionSet(self.p))
+        post = json.dumps(getattr(self.p, "post", None) or {}, sort_keys=True)     # the composition too (2.1)
+        return (api.workflows(self.p), self.p.current, self.p.stack_mode, SessionSet(self.p), post)
 
     def _extra(self):
         """What an edit may change besides the workflows: the sessions and the frames excluded by hand."""
@@ -810,10 +886,13 @@ class ProjectModel(QObject):
         if not src:
             return False
         dst.append(self._snapshot())
-        ws, current, mode, sessions = src.pop()
+        ws, current, mode, sessions, post = src.pop()
         frames_back = sessions.put_back(self.p)           # first: the workflows name them
         api.set_workflows(self.p, ws, current)
         self.p.stack_mode = mode
+        post_back = json.loads(post) != (getattr(self.p, "post", None) or {})
+        if post_back:
+            self.p.post = json.loads(post)
         if frames_back:
             self.reload_sources()
         self.pending_change = None
@@ -826,6 +905,8 @@ class ProjectModel(QObject):
                 self.sel_step = keys[-1] if keys else "sources"
         self.pathsChanged.emit()
         self.currentChanged.emit()
+        if post_back:
+            self.postChanged.emit(None)
         return True
 
     # ------------------------------------------------------------ stages, keys, states
@@ -925,6 +1006,10 @@ class ProjectModel(QObject):
                 any(n["block"] == "calibration" for n in self.graph(p)):
             return _("each session has its own Calibration, beside its Session block")
         e = wfl.palette_problem(self.graph(p), self.source_kind(p), block)
+        if e is not None and block == "stars" and self.source_kind(p) == "image":
+            # 8.4: not "Denoise first", which cannot go on an image: what the user can do instead
+            return _("on a linear image it needs Denoise, which works on stacked frames only: start from the frames, "
+                     "or mark the image as already stretched in its Image block")
         return refused_text(e) if e is not None else ""
 
     def gives_post(self, p) -> bool:
@@ -934,6 +1019,10 @@ class ProjectModel(QObject):
             w = self.p.workflow(p.pid)
         except KeyError:
             return False
+        if w.source is None and not any(s.lights for s in self.p.sessions_of(w.id)):
+            return False                                  # no lights yet: no layer (GUI exploration, question 4)
+        if isinstance(w.source, dict) and "path" in w.source and not w.source["path"]:
+            return False                                  # an Image block without its file (3.5)
         if w.blocks is None or wfl.source_of(w) == "stretched":
             return True
         return any(n["block"] == "output" and not n["off"] for n in w.blocks)
@@ -948,6 +1037,38 @@ class ProjectModel(QObject):
     def feeds_fusion(self, p) -> bool:
         """Whether a workflow is a channel of a fusion (issue #47: its output is not a layer of Post by itself)."""
         return any(is_fusion_view(q) and p.pid in [i["pid"] for i in q.source["fusion"]["inputs"]] for q in self.paths)
+
+    def fusion_problem(self, p) -> str:
+        """Why a fusion cannot run, said before Run (GUI exploration 1.1, 7.6, question 8: the block is circled in red
+        and the run refused); "" when it can, or for a workflow that is not a fusion. A channel's own block names it."""
+        if not is_fusion_view(p):
+            return ""
+        f = p.source["fusion"]
+        ins = f.get("inputs") or []
+        if not ins:
+            return _("choose the channels of the fusion")
+        views = {q.pid: q for q in self.paths}
+        several = len({i["pid"] for i in ins}) > 1
+        for i in ins:
+            q = views.get(i["pid"])
+            role = i.get("role") or ""
+            if q is None:
+                return _("the {role} channel has no workflow any more").format(role=role)
+            if q.source is None and not any(s.lights for s in self.p.sessions_of(q.pid)):
+                return _("the {role} channel has no lights yet (its Session block)").format(role=role)
+            if q.source is not None and "fusion" not in q.source and not q.source.get("path"):
+                return _("the {role} channel's Image block has no file yet").format(role=role)
+            blocks = [n["block"] for n in self.graph(q) if not n.get("off")]
+            if several and self.is_graph(q) and "astrometry" not in blocks:
+                return _("the {role} channel has no Astrometry: each channel needs it to be aligned").format(role=role)
+            if f.get("stars") and self.is_graph(q) and "stars" not in blocks:
+                return _("the {role} channel has no Split stars & background: the starless fusion needs its starless "
+                         "image").format(role=role)
+        return ""
+
+    def run_problems(self) -> list[tuple[str, str]]:
+        """(workflow name, reason) of the fusions that cannot run: Run is refused while there is one (1.1)."""
+        return [(q.name, why) for q in self.paths if (why := self.fusion_problem(q))]
 
     def place_indices(self, p: WorkflowView, block: str) -> list[int]:
         """Where a block can be inserted in a workflow's graph."""
@@ -972,18 +1093,36 @@ class ProjectModel(QObject):
         g.insert(index, n)
         with self._edit():
             self.p.set_blocks(p.pid, g)
+            self._fresh_settings(p.pid, n)
         return node_key(n)
+
+    def _fresh_settings(self, wid: int, n: dict):
+        """A block placed from the palette starts from its defaults (question 9): not the settings a block of the same
+        name left behind, nor those of the workflow a branch was copied from. Ctrl+Z gives them back."""
+        w = self.p.workflow(wid)
+        name = n["name"] if n["block"] in wfl.IMAGE_OPS else n["block"]
+        try:
+            stages = next((b.stages for b in api.blocks(self.p, wid) if b.block == name), ())
+        except (ValueError, KeyError, OSError):
+            stages = ()
+        for st in stages:
+            w.params.pop(st, None)
+
+    def removal_problem(self, p: WorkflowView, key: str) -> str:
+        """Why a block cannot be taken out of a workflow (translated), "" when it can."""
+        i = self.node_index(p, key)
+        if i is None:
+            return _("this block is not in the workflow")
+        e = wfl.remove_problem(self.graph(p), self.source_kind(p), i)
+        return refused_text(e) if e is not None else ""
 
     def remove_node(self, p: WorkflowView, key: str) -> None:
         """Take a block out of a workflow's graph; ValueError (translated) when the blocks after it need it."""
-        g, src = self.graph(p), self.source_kind(p)
-        i = self.node_index(p, key)
-        if i is None:
-            raise ValueError(_("this block is not in the workflow"))
-        e = wfl.remove_problem(g, src, i)
-        if e is not None:
-            raise ValueError(refused_text(e))
-        del g[i]
+        why = self.removal_problem(p, key)
+        if why:
+            raise ValueError(why)
+        g = self.graph(p)
+        del g[self.node_index(p, key)]
         with self._edit():
             self.p.set_blocks(p.pid, g)
 
@@ -1066,6 +1205,7 @@ class ProjectModel(QObject):
             x.sessions = copy.deepcopy(self.p.workflow(p.pid).sessions)
             x.end = None
             self.p.set_blocks(w.id, head)
+            self._fresh_settings(w.id, n)                 # its new block: from its defaults (question 9)
             self.p.validate()
         return self._view_of(w.id), node_key(n)
 
@@ -1083,6 +1223,17 @@ class ProjectModel(QObject):
         head = [node_key(n) for n in g[:i + 1]]
         return not any(q.pid != p.pid and q.source == p.source and self.sessions_of(q) == self.sessions_of(p)
                        and [node_key(n) for n in self.graph(q)] == head for q in self.paths)
+
+    def is_sent_branch(self, p: WorkflowView) -> bool:
+        """Whether a workflow is only a block's image sent to Post: its blocks are the first blocks of another workflow
+        of the same source, nothing of its own after them (question 1: its wire taken away, it goes)."""
+        def nodes(q):                                     # a block with its method: another method is its own
+            return [(node_key(n), n.get("method"), bool(n.get("off"))) for n in self.graph(q) if n["block"] != "output"]
+        mine = nodes(p)
+        if not mine or not self.is_graph(p):
+            return False
+        return any(q.pid != p.pid and q.source == p.source and self.sessions_of(q) == self.sessions_of(p)
+                   and nodes(q)[:len(mine)] == mine and len(nodes(q)) > len(mine) for q in self.paths)
 
     def send_to_post(self, p: WorkflowView, key: str, name: str) -> WorkflowView:
         """A block's image as a layer of Post (issue #47): a branch of ``p`` up to that block, its Output its own;
@@ -1105,9 +1256,11 @@ class ProjectModel(QObject):
         flows that took every session keep the ones they had."""
         with self._edit():
             mine = [s.id for s in self.p.sessions]
-            for w in self.p.workflows:
-                if w.source is None and w.sessions is None:
-                    w.sessions = list(mine)                   # they keep their nights
+            frames = [w for w in self.p.workflows if w.source is None and w.sessions is None]
+            if frames and not mine:                       # a template's flow, no night yet (1.5): its own Session first
+                mine = [self.add_filter_session("")]
+            for w in frames:
+                w.sessions = list(mine)                   # they keep their nights
             sid = self.add_filter_session("")
             q = self.add_graph_workflow(_("Flow"), [], sessions=[sid])
         return q
@@ -1293,16 +1446,25 @@ class ProjectModel(QObject):
         """Take a session out of the project (its files are never touched); the last one stays."""
         if len(self.p.sessions) <= 1:
             return False
+        gone = self.p.session(sid)
         with self._edit():
             self.p.sessions = [s for s in self.p.sessions if s.id != sid]
             self.p.excluded = [x for x in self.p.excluded if x[0] != sid]
             for w in self.p.workflows:
                 for k in [k for k in w.params if k.endswith(f"@{sid}")]:
                     del w.params[k]
+            from ..core.project2 import Session
             for w in list(self.p.workflows):              # a flow of that session alone goes with it (issue #47)
                 if w.source is None and w.sessions is not None and sid in w.sessions:
                     w.sessions = [x for x in w.sessions if x != sid]
-                    if not w.sessions:
+                    v = self.view(w.id)
+                    if not w.sessions and v is not None and self.feeds_fusion(v):
+                        # a fusion's channel (1.1): its flow stays with an empty Session of the same filter; the
+                        # fusion is circled in red and not run until it has lights again
+                        new = max(x.id for x in self.p.sessions + [gone]) + 1
+                        self.p.sessions.append(Session(new, gone.name, filter=gone.filter))
+                        w.sessions = [new]
+                    elif not w.sessions:
                         api.delete_workflow(self.p, w.id)
             self.p.validate()
         self.current = max(0, min(self.current, len(self.paths) - 1))
@@ -1328,18 +1490,43 @@ class ProjectModel(QObject):
             self.p.validate()
         return True
 
-    def add_session_entries(self, sid: int, kind: str, paths) -> int:
+    def add_session_entries(self, sid: int, kind: str, paths, notes: list | None = None) -> int:
         """Folders or files added to a session's list of a kind (lights, darks, flats, bias, flat_darks): the session
-        block is where they are chosen (issue #43). Returns how many were new."""
+        block is where they are chosen (issue #43). Returns how many were new. GUI exploration 7.4, 7.5: a file of a
+        folder already there, or one added twice, is already in the session; a folder replaces its files chosen one
+        by one; a folder without frames is not added; the lights' filter, when the session has none, is read from
+        their FITS header. ``notes``: what was not added and why, (English text, the file's name) to say."""
+        from ..core.project import frame_kind, list_frames
         if kind not in ("lights",) + tuple(CALIBRATION_KINDS):
             raise ValueError(f"not a kind of frames: {kind!r}")
         s = self.p.session(sid)
-        have = {norm_path(self.p.abspath(e)) for e in getattr(s, kind)}
-        new = [Path(x).as_posix() for x in paths if norm_path(x) not in have]
+        notes = [] if notes is None else notes
+        cur = list(getattr(s, kind))
+        have = {norm_path(self.p.abspath(e)) for e in cur}
+        folders = {norm_path(self.p.abspath(e)) for e in cur if Path(self.p.abspath(e)).is_dir()}
+        new: list[str] = []
+        for x in paths:
+            px = Path(x)
+            if norm_path(x) in have or (frame_kind(px) and norm_path(str(px.parent)) in folders):
+                notes.append(("“{name}” is already in the session.", px.name))
+            elif px.is_dir() and not list_frames([str(px)]):
+                notes.append(("“{name}” holds no frames (camera raw or FITS): not added.", px.name))
+            else:
+                new.append(px.as_posix())
+                have.add(norm_path(x))
         if not new:
             return 0
+        added = {norm_path(x) for x in new if Path(x).is_dir()}
+        keep = [e for e in cur if not (frame_kind(e) and norm_path(str(Path(self.p.abspath(e)).parent)) in added)]
+        flt = ""
+        if kind == "lights" and not s.filter:
+            from ..io.frames import frame_filter
+            first = next((f for f in list_frames(new) if frame_kind(f) == "fits"), None)
+            flt = frame_filter(first) if first is not None else ""
         with self._edit():
-            setattr(s, kind, list(getattr(s, kind)) + new)
+            setattr(s, kind, keep + new)
+            if flt:
+                s.filter = flt
             self.p.validate()
         self.reload_sources()
         return len(new)
@@ -1370,6 +1557,10 @@ class ProjectModel(QObject):
                     keep += [x for x in inside if norm_path(x) not in gone]
                     continue
             keep.append(e)
+        once: dict[str, str] = {}                         # a file of a folder that was also chosen alone: once (7.4)
+        for e in keep:
+            once.setdefault(norm_path(self.p.abspath(e)), e)
+        keep = list(once.values())
         if keep == list(getattr(s, kind)):
             return False
         with self._edit():
@@ -1436,6 +1627,8 @@ class ProjectModel(QObject):
             src["path"] = Path(path).as_posix() if path else ""
         if stretched is not None:
             src["stretched"] = bool(stretched)
+        elif path and Path(path).suffix.lower() in (".png", ".jpg", ".jpeg") and not self.graph(p):
+            src["stretched"] = True        # an 8/16-bit picture is stretched by nature; still changeable (1.7)
         with self._edit():
             w = self.p.workflow(p.pid)
             blocks = w.blocks
@@ -1703,7 +1896,7 @@ class ProjectModel(QObject):
             return api.Plan()
         k = ("plan_to", p.pid, key, self.device)
         if k not in self._cache:
-            self._cache[k] = api.plan_to_block(self.p, p.pid, KEY_ENGINE_BLOCK[key], self.device, self._history_est)
+            self._cache[k] = api.plan_to_block(self.p, p.pid, engine_name(key), self.device, self._history_est)
         return self._cache[k]
 
     # ------------------------------------------------------------ breakpoints: pause for the user to check
@@ -1712,25 +1905,48 @@ class ProjectModel(QObject):
     # any key. What is reviewed is tied to the block's results: a fingerprint of its stage keys, kept in state.json.
     def has_breakpoint(self, p: WorkflowView, key: str) -> bool:
         """Whether this workflow pauses after this block (a block of the views)."""
-        eb = KEY_ENGINE_BLOCK.get(key)
-        return eb is not None and eb in self.p.workflow(p.pid).breakpoints
+        return engine_name(key) in self.p.workflow(p.pid).breakpoints     # a repeated block too (1.2)
 
     def breakpoints(self, p: WorkflowView) -> list[str]:
         """The blocks (of the views) this workflow pauses after, in the graph's order; only those it has."""
-        have = {ENGINE_KEY[b] for b in self.p.workflow(p.pid).breakpoints if b in ENGINE_KEY}
+        have = {view_key(b) for b in self.p.workflow(p.pid).breakpoints if wfl.base(b) in ENGINE_KEY}
         return [k for k in self.block_keys(p) if k in have]
 
     def set_breakpoint(self, paths, key: str, on: bool = True):
         """Pause after this block in these workflows (or no longer). One change for Undo; saved with the project."""
-        eb = KEY_ENGINE_BLOCK.get(key)
-        if eb is None:
+        eb = engine_name(key)                             # a repeated block: its own node ("gradient~2", 1.2)
+        if wfl.base(eb) not in wfl.BLOCKS:
             raise ValueError(f"no breakpoint on {key!r}: it is not a block of the engine")
-        order = list(wfl.BLOCKS)
         with self._edit():
             for q in paths:
                 w = self.p.workflow(q.pid)
                 have = set(w.breakpoints)
-                w.breakpoints = sorted(have | {eb} if on else have - {eb}, key=order.index)
+                w.breakpoints = sorted(have | {eb} if on else have - {eb}, key=wfl.block_order)
+
+    def _prune_post(self):
+        """Post follows the graph (GUI exploration 3.3): a layer of a Split image goes with its Split block (the
+        workflow's own image then comes back to Post), a layer of a workflow gone goes."""
+        post = getattr(self.p, "post", None) or {}
+        layers = post.get("layers") or []
+        if not layers:
+            return
+        ws = {w.id: w for w in self.p.workflows}
+        keep, gone, changed = [], set(), False
+        for x in layers:
+            if x.get("kind") != "workflow":
+                keep.append(x)
+                continue
+            w = ws.get(x.get("pid"))
+            split = w is not None and (bool((w.options or {}).get("stars")) or (
+                isinstance(w.source, dict) and bool((w.source.get("fusion") or {}).get("stars"))))
+            if w is None or (x.get("part") is not None and not split):
+                gone.add(x.get("id"))
+                changed = True
+                continue
+            keep.append(x)
+        if changed:
+            keep = [x for x in keep if not (x.get("kind") == "filter" and x.get("target") in gone)]
+            self.p.post = {**post, "layers": keep}
 
     def _prune_breakpoints(self):
         """A block that left a workflow takes its breakpoint with it (it would otherwise come back with the block)."""
@@ -1944,12 +2160,24 @@ class ProjectModel(QObject):
         """A copy of a workflow: its options, settings and exit."""
         with self._edit():
             w = api.add_workflow(self.p, self.unique_name(name), None, None, copy_of=src.pid)
-            self.p.workflow(w.id).breakpoints = list(self.p.workflow(src.pid).breakpoints)
+            x, s0 = self.p.workflow(w.id), self.p.workflow(src.pid)
+            x.breakpoints = list(s0.breakpoints)
+            x.source, x.sessions = copy.deepcopy(s0.source), copy.deepcopy(s0.sessions)
+            if s0.blocks is not None:                     # a graph stays a graph, with its own blocks (3.2)
+                self.p.set_blocks(w.id, copy.deepcopy(s0.blocks))
+            self.p.validate()
         return self.view(w.id)
 
     def rename(self, pid: int, name: str):
+        old = self.p.workflow(pid).name
         with self._edit():
             api.rename_workflow(self.p, pid, name)
+            post = getattr(self.p, "post", None) or {}
+            if post.get("layers"):                        # its layers named after it follow (GUI exploration 3.4)
+                self.p.post = {**post, "layers": [
+                    {**x, "name": self.p.workflow(pid).name + x["name"][len(old):]}
+                    if x.get("kind") == "workflow" and x.get("pid") == pid and str(x.get("name", "")).startswith(old)
+                    else x for x in post["layers"]]}
 
     def remove_path(self, i: int):
         pid = self.paths[i].pid

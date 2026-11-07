@@ -1110,8 +1110,9 @@ def test_a_source_that_knows_why_it_is_missing_says_it_alone(qapp, loader):
     v.set_image(iv.ViewImage(gone, "Rejection", key="gone"))
     assert v.wait(30)
     assert v.canvas.message == "Not available yet: recompute Stacking to get it."
-    v.set_image(iv.ViewImage(lambda: 1 / 0, "Broken", key="broken"))      # any other failure keeps its type
-    assert v.wait(30) and v.canvas.message.startswith("This image cannot be shown: ZeroDivisionError")
+    v.set_image(iv.ViewImage(lambda: 1 / 0, "Broken", key="broken"))      # any other failure: in plain words, the
+    assert v.wait(30) and v.canvas.message == ("This image cannot be shown: an error of the program (the details "
+                                               "are in the Log)")         # Python error is for the Log only (9.9)
     # a compared image that cannot be read is said too, and not waited for
     show(v, iv.ViewImage(sky(), "S", key="ok"))
     toasts = []

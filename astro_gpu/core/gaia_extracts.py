@@ -347,7 +347,7 @@ def download(kind: str, progress: Callable[[int, int, str], None] | None = None,
     if kind not in RECORDS:
         raise ValueError(kind)
     if online.offline():
-        raise DownloadError(_t("The program is in offline mode (ASTRO_GPU_OFFLINE): nothing is downloaded."))
+        raise DownloadError(_t("The program is in offline mode: nothing is downloaded."))
     if not _RUN.acquire(blocking=False):
         raise DownloadError(_t("A download is already running."))
     try:

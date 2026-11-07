@@ -31,8 +31,8 @@
  "Not enough free disk space in {folder}: {need} needed for {name}, {free} free.": "Pas assez de place sur le disque dans {folder} : {need} nécessaires pour {name}, {free} libres.",
  "{name} was damaged during the download (its checksum does not match Zenodo's). The file was deleted; start again.": "{name} a été abîmé pendant le téléchargement (sa somme de contrôle ne correspond pas à celle de Zenodo). Le fichier a été supprimé ; recommencez.",
  "{name} unpacked into something that is not an extract. It was deleted; start again.": "{name} s'est décompressé en autre chose qu'un extrait. Il a été supprimé ; recommencez.",
- "The program is in offline mode (ASTRO_GPU_OFFLINE): nothing is downloaded.": "Le programme est en mode hors ligne (ASTRO_GPU_OFFLINE) : rien n'est téléchargé.",
  "A download is already running.": "Un téléchargement est déjà en cours.",
  "Cannot write in {folder}: {why}": "Impossible d'écrire dans {folder} : {why}",
- "Done": "Terminé"
+ "Done": "Terminé",
+ "The program is in offline mode: nothing is downloaded.": "Le programme est en mode hors ligne : rien n'est téléchargé."
 }

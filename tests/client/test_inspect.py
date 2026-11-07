@@ -1167,7 +1167,7 @@ def test_missing_diagnostics_are_said_plainly_in_the_language():
         fr = si.missing_of(Diag())
         assert fr[0].startswith("Les cartes de rejet : pas dans ce résultat") and "Recalculez Empilement" in fr[0]
         assert fr[1].startswith("La rondeur : ") and "Alignement" in fr[1]
-        assert si.not_yet("stack") == "Pas encore disponible : recalculez Empilement pour l'avoir."
+        assert si.not_yet("stack") == "Pas encore disponible : recalculez le bloc Empilement pour l'avoir."
     finally:
         appmod.apply_language("en")
 
