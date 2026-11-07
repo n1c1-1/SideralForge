@@ -517,8 +517,10 @@ class Graph:
             return block_state(self.s, node.paths[0], "etoiles")
         states = {block_state(self.s, p, node.key) for p in node.paths}
         # the Output hidden in its wire (#49): its image to Post is this block's too, not done until it is
-        states |= {block_state(self.s, p, "post") for p in node.paths
-                   if node.key != "post" and p.pid in self.to_post and self.by_path.get(p.pid, {}).get("post") is node}
+        states |= {st for st in (block_state(self.s, p, "post") for p in node.paths
+                                 if node.key != "post" and p.pid in self.to_post and
+                                 self.by_path.get(p.pid, {}).get("post") is node)
+                   if st != "skipped"}                    # skipped for a failure elsewhere: the block itself is done
         return next((w for w in STATE_ORDER if w in states), "pending")
 
     def session_stages(self, p, sid) -> list[str]:

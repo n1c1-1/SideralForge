@@ -136,7 +136,9 @@ class B(Stage):
         ck = ctx.ckpt / "i.json"
         start = json.loads(ck.read_text())["i"] if ck.exists() else 0
         for i in range(start, p.steps):
-            ck.write_text(json.dumps({"i": i + 1}))
+            part = ck.with_suffix(".part")                 # written whole, then put in place: never read half-written
+            part.write_text(json.dumps({"i": i + 1}))      # (the test reads it while it runs)
+            os.replace(part, ck)
             time.sleep(p.delay)
             ctx.progress((i + 1) / p.steps, f"step {i + 1}", force=True)        # raises Interrupted on STOP
         ctx.save_json("b.json", {"steps": p.steps, "resumed_from": start})

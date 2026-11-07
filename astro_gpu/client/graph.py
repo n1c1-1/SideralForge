@@ -93,6 +93,7 @@ from .widgets import ACCENT, BAD, NEW, OK, WARN, clear, label
 
 BW, BH = 120, 54            # block size (a column is wider when its title needs it: TITLE_PAD)
 GAP = 12                    # between two columns: where the branches split
+BEND = 22                   # a wire to Post: the length of its bends onto its lane and into Post
 LANE = 80                   # lane pitch
 SROW = BH + 14              # the pitch of the sessions' rows (issue #43)
 CUT_COL, GREY_COL = "#6b7280", "#c9a227"
@@ -599,25 +600,22 @@ class GraphView(QGraphicsView):
         """The workflows' lanes in the order of the tree (depth first): the workflows of every block sit on lanes next
         to each other, so that a block is drawn between its own lanes only, and a workflow that leaves the trunk before
         a block never runs behind it. A workflow that ends on a block the others go on from (a branch sent to Post
-        from a block in the middle) takes the last lane of its own tree, never one after another tree's (control
-        round: it came after the other channels of a Fusion, and drew two channels' blocks on top of each other)."""
+        from a block in the middle) takes the lane right after the lanes of that block's own subtree: never one after
+        another channel's (control round: two Fusion channels' blocks on top of each other), nor after the trunk's
+        other branches (a workflow ending on Color drawn below a branch leaving at Gradient overlapped it)."""
         out: list[int] = []
-        pending: list[int] = []                           # the workflows ending inside the tree being walked
         todo: list = [g.root]
         while todo:
             n = todo.pop()
-            if n is None:                                 # a tree from the sources walked: its workflows ending inside
-                out += [pid for pid in pending if pid not in out]
-                pending.clear()
+            if isinstance(n, list):                       # a block's subtree walked: the workflows ending on it
+                out += [pid for pid in n if pid not in out]
                 continue
             if not n.children:
                 out += [p.pid for p in n.paths if p.pid not in out]
                 continue
-            if n is g.root:
-                for c in reversed(n.children):
-                    todo += [None, c]
-                continue
-            pending += [p.pid for p in n.paths if g.leaves.get(p.pid) is n and p.pid not in pending]
+            ending = [p.pid for p in n.paths if g.leaves.get(p.pid) is n] if n is not g.root else []
+            if ending:
+                todo.append(ending)                       # popped once every child below it is walked
             todo += reversed(n.children)
         return out + [p.pid for p in g.s.paths if p.pid not in out]
 
@@ -762,7 +760,8 @@ class GraphView(QGraphicsView):
             if p.pid in g.to_post:
                 self._wire(g.leaves[p.pid], g.final, cur is not None and p is cur,
                            on_remove=lambda q=p: self.postLinkRemoved.emit(q.pid),
-                           tip=_("“{name}”: its image to Post as a layer").format(name=p.name), pid=p.pid)
+                           tip=_("“{name}”: its image to Post as a layer").format(name=p.name), pid=p.pid,
+                           via_y=lanes.get(p.pid))
         # the Stars block's images: into its Stars and background blocks, or straight to Post
         for n in g.compositions:
             strong = cur is not None and cur in n.paths
@@ -1031,17 +1030,25 @@ class GraphView(QGraphicsView):
         w.on_remove()
         return True
 
-    def _wire(self, a: Node, b: Node, strong: bool, on_remove=None, tip: str = "", pid: int | None = None):
+    def _wire(self, a: Node, b: Node, strong: bool, on_remove=None, tip: str = "", pid: int | None = None,
+              via_y: float | None = None):
         """A wire from a block to the next block of its workflows. A branch bends in the gap right after the block it
         leaves (the last one its workflows share), then runs straight on its own lane past the columns it skips."""
         x1, y1 = a.col + a.w, a.y
         x2, y2 = b.col, b.y
         path = QPainterPath(QPointF(x1, y1))
-        xb = min(x2, self._next_x.get(a.key, x2)) if b.key != "final" else x2     # where the bend ends
-        dx = max(30.0, (xb - x1) * 0.5) if abs(y2 - y1) > 1 else 0
+        if via_y is not None and x2 - x1 > 4 * BEND:  # a workflow's image to Post: on its own lane past the blocks
+            if abs(via_y - y1) > 1:                   # of the others, bent only at both ends (control round: it
+                path.cubicTo(QPointF(x1 + BEND / 2, y1), QPointF(x1 + BEND / 2, via_y), QPointF(x1 + BEND, via_y))
+            path.lineTo(QPointF(x2 - BEND, via_y))    # crossed the Recombine blocks on its way)
+            path.cubicTo(QPointF(x2 - BEND / 2, via_y), QPointF(x2 - BEND / 2, y2), QPointF(x2, y2))
+            dx = xb = None
+        else:
+            xb = min(x2, self._next_x.get(a.key, x2)) if b.key != "final" else x2     # where the bend ends
+            dx = max(30.0, (xb - x1) * 0.5) if abs(y2 - y1) > 1 else 0
         if dx:
             path.cubicTo(QPointF(x1 + dx, y1), QPointF(xb - dx, y2), QPointF(xb, y2))
-        if xb < x2 or not dx:
+        if xb is not None and (xb < x2 or not dx):
             path.lineTo(QPointF(x2, y2))
         pen = QPen(QColor("#9aa3b2" if strong else "#3d4452"), 2.2 if strong else 1.6)
         if on_remove is not None:                          # issue #52: a link to Post the user can take away

@@ -695,6 +695,7 @@ class Panel(QWidget):
         r.addWidget(t, 1)
         x = QPushButton("×")
         x.setFixedWidth(26)
+        x.setStyleSheet("QPushButton { padding: 0px; }")    # the cross whole in its 26 px (as a file's, below)
         x.setToolTip(_("Remove the whole folder from the session (the files are not touched)"))
         x.clicked.connect(lambda _c=False, k=kind, ens=list(entries): self._files_out(sid, k, ens, True))
         r.addWidget(x)

@@ -1437,6 +1437,8 @@ def test_no_setting_of_the_engine_is_out_of_reach(world, model, page):
                     continue                                      # the other stacking method's (its own test)
                 if another_methods(v, stage, info.name):
                     continue
+                if (stage, info.name) == ("render_simple", "linked"):
+                    continue                  # #49: the Output is in the wire; its channels setting is in Post's layer
                 want.add(f"{stage}.{info.name}")
     got = set()
     page.panel.expert = True

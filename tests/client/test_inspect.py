@@ -886,7 +886,7 @@ def test_two_sessions_merge_their_flats_and_offer_the_stacking_mode(win):
         prefs.set("spec_mode", True)
         f._build()
         settle(win)
-        b = [x for x in f.findChildren(QPushButton) if x.text().startswith("One stack per session")][0]
+        b = [x for x in f.findChildren(QPushButton) if x.text().startswith("One per session")][0]   # compact name
         assert not b.isEnabled() and "◇" in b.text()
         prefs.set("spec_mode", False)
         shot(win, "frames_two_sessions")
@@ -1119,8 +1119,9 @@ def test_importing_the_heart_folder_gives_the_counts_the_sessions_and_the_thumbn
         assert import_folder(w.s, w, str(DATA / "flats"), new_session=True, service=w.tune.service)
         assert len(w.s.p.sessions) == 2
         # the same folder twice: said, not added
+        from PySide6.QtWidgets import QToolTip
         assert not import_folder(w.s, w, str(DATA / "lights"), service=w.tune.service)
-        assert len(w.s.p.sessions) == 2 and any(k == "information" for k, _a in env["shown"])
+        assert len(w.s.p.sessions) == 2 and QToolTip.text() == "Folder already in project"   # said, not blocking (10.2)
     finally:
         w.s.flush()
         w.close()

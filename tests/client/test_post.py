@@ -2364,7 +2364,8 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
     root.mkdir(parents=True)
     empty = Setup(preps, qapp, rendered=False)
     try:
-        assert "Pas encore de calque" in [lb.text() for lb in empty.page.empty.findChildren(QLabel)]
+        shown = [lb.text() for lb in empty.page.empty.findChildren(QLabel)]   # 2nd round: the layers to come, named
+        assert "Rien de calculé" in shown and any("pas encore calculé" in t for t in shown), shown
     finally:
         empty.close()
     s = Setup(preps, qapp, root=root)
