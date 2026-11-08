@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QFrame, QLabel, QVBoxLayout, QWidget
 ACCENT, OK, WARN, SHARED, BAD = "#5ea1ff", "#5fbf7f", "#e6a23c", "#a395ff", "#e06c6c"
 NEW = "#c9b37e"                       # the ◇ mark: what the engine does not have yet (Spec mode)
 DISABLED = "#5d6470"
+ICON, ICON_DIM, INK = "#c9cfd8", "#8b93a1", "#0f1115"     # the icons (icons.py): their usual, secondary and on-accent colours
 
 QSS = f"""
 * {{ font-family: 'Segoe UI'; font-size: 10pt; color: #d8dce4; }}

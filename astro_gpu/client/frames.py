@@ -35,9 +35,10 @@ from PySide6.QtWidgets import (
 from .. import api, texts
 from . import prefs
 from .i18n import _, language, number, plural
+from .icons import IconLabel
 from .imageview import exposure_text
 from .services.inspect import ProjectFrames, service_of
-from .widgets import NEW, OK, WARN, cap_dialog, clear, label
+from .widgets import NEW, cap_dialog, clear, label
 
 MONTHS = {"en": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
           "fr": ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]}
@@ -434,9 +435,7 @@ class FramesView(QWidget):
 
     def _check_row(self, lvl: str, text: str):
         row = QHBoxLayout()
-        mark = QLabel({"ok": "✓", "warn": "⚠", "info": "i"}.get(lvl, "i"))
-        mark.setFixedWidth(18)
-        mark.setStyleSheet(f"color: {OK if lvl == 'ok' else WARN if lvl == 'warn' else '#8b93a1'}; font-weight: 700;")
-        row.addWidget(mark, 0, Qt.AlignTop)
+        role, state = {"ok": ("ok", "ok"), "warn": ("warning", "warning")}.get(lvl, ("info", "dim"))
+        row.addWidget(IconLabel(role, 16, state), 0, Qt.AlignTop)
         row.addWidget(label(text, "", wrap=True), 1)
         self.sv.addLayout(row)

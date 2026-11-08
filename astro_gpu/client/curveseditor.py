@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from .i18n import _, language
+from .icons import icon_only
 from .postfilters import curves as pc
 from .widgets import ACCENT, label
 
@@ -384,9 +385,9 @@ class CurvesEditor(QWidget):
         self.b_save = QPushButton(_("Save…"))
         self.b_save.setToolTip(_("Keep these curves as a preset of yours"))
         self.b_save.clicked.connect(lambda: self.save_preset())
-        self.b_more = QPushButton("⋯")
-        self.b_more.ensurePolished()                    # its width from the style's padding: never narrower than "⋯"
-        self.b_more.setFixedWidth(max(28, self.b_more.sizeHint().width()))
+        self.b_more = icon_only(QPushButton(), "more", _("More actions"), 16)
+        self.b_more.setFixedWidth(28)
+        self.b_more.setStyleSheet("QPushButton { padding: 0; }")
         self.more = QMenu(self.b_more)
         self.a_delete = self.more.addAction(_("Delete this preset"))
         self.a_delete.triggered.connect(self.delete_preset)

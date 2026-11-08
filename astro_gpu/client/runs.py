@@ -19,8 +19,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QEvent, QObject, QRectF, Qt
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from .blocks import ENGINE_BLOCK, PAUSE_COL, Graph, Node, block_title, node_title
 from .i18n import _, all_workflows, hm, plural
+from .icons import IconText, draw, set_icon
 from .services.run import (
     DONE,
     FAILED,
@@ -57,9 +58,12 @@ GREY = "#5d6470"
 #: waiting: to compute, an orange circle (issue #27)
 STATE_COLOR = {WAITING: WARN, RUNNING: ACCENT, DONE: OK, FAILED: BAD, INTERRUPTED: WARN, SKIPPED: GREY,
                NOT_STARTED: GREY}
+STATE_ICON = {WAITING: ("waiting", "warning"), RUNNING: ("running", "selected"), DONE: ("ok", "ok"), FAILED: ("failed", "error"),
+              INTERRUPTED: ("stop", "warning"), SKIPPED: ("skipped", "dim"), NOT_STARTED: ("skipped", "dim")}
 STATE_TIP = {WAITING: "Waiting", RUNNING: "Running", DONE: "Done", FAILED: "Failed", INTERRUPTED: "Stopped",
              SKIPPED: "Not run", NOT_STARTED: "Not run"}
 ROW_H = 28
+WARN_NOTE = "⚠ "                  # a note of the plan that opens with it: drawn with the warning icon
 #: why nothing can be computed yet (the status bar's words; exploration 6.7 and #36)
 NO_DATA = "Nothing to compute: add lights or image"
 ROWS_MAX_H = 440
@@ -234,27 +238,8 @@ class Mark(QWidget):
 
     def paintEvent(self, e):                                      # noqa: N802
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        c = QColor(STATE_COLOR[self.state])
-        pen = QPen(c, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-        p.setPen(pen)
-        s = self.state
-        if s == DONE:
-            p.drawPolyline([QPointF(3, 8.5), QPointF(6.5, 12), QPointF(13, 4.5)])
-        elif s == FAILED:
-            p.drawLine(QPointF(4, 4), QPointF(12, 12))
-            p.drawLine(QPointF(12, 4), QPointF(4, 12))
-        elif s == RUNNING:
-            p.setBrush(c)
-            p.drawEllipse(QPointF(8, 8), 3.6, 3.6)
-        elif s == INTERRUPTED:
-            p.setBrush(c)
-            p.drawRect(QRectF(4.5, 4.5, 7, 7))
-        elif s in (SKIPPED, NOT_STARTED):
-            p.drawLine(QPointF(4.5, 8), QPointF(11.5, 8))
-        else:
-            p.setPen(QPen(c, 1.4))
-            p.drawEllipse(QPointF(8, 8), 3.2, 3.2)
+        draw(p, QRectF(0, 0, 16, 16), *STATE_ICON[self.state])
+        p.end()
 
 
 class RunRow(QFrame):
@@ -436,9 +421,9 @@ class RunDialog(QDialog):
         foot.addSpacing(8)
         self.b_cancel = QPushButton(_("Cancel"))
         self.b_cancel.clicked.connect(self.close)
-        self.b_stop = QPushButton(_("Stop"))
+        self.b_stop = set_icon(QPushButton(_("Stop")), "stop", 16)
         self.b_stop.clicked.connect(self._stop)
-        self.b_run = QPushButton(_("Run"))
+        self.b_run = set_icon(QPushButton(_("Run")), "run", 16, "on_accent")
         self.b_run.setObjectName("primary")
         self.b_run.clicked.connect(self.start)
         self.b_done = QPushButton(_("Close"))
@@ -641,7 +626,7 @@ class RunDialog(QDialog):
             need = self.plan.disk_gb
             if free is not None and need > free:
                 out.append(_("Disk: {need} GB needed, {free} GB free").format(need=size_text(need), free=size_text(free)))
-        out += ["⚠ " + text for text in self._file_warnings()]
+        out += [WARN_NOTE + text for text in self._file_warnings()]
         return out
 
     def set_plan(self, plan):
@@ -659,7 +644,8 @@ class RunDialog(QDialog):
         clear(self.warn)
         if ph == "plan":
             for text in self.warnings():
-                self.warn.addWidget(label(text, "warn", wrap=True))
+                self.warn.addWidget(IconText("warning", text[len(WARN_NOTE):], "warning", "warn") if text.startswith(WARN_NOTE)
+                                    else label(text, "warn", wrap=True))
                 self.warn.itemAt(self.warn.count() - 1).widget().show()
         data = self.has_data()
         paused = self.paused()
@@ -880,7 +866,7 @@ class RunStatus(QFrame):
         self.b_details = QPushButton(_("Details"))
         self.b_details.setObjectName("link")
         self.b_details.clicked.connect(self.c.show_dialog)
-        self.b_stop = QPushButton(_("Stop"))
+        self.b_stop = set_icon(QPushButton(_("Stop")), "stop", 16)
         self.b_stop.setStyleSheet("padding: 1px 10px;")
         self.b_stop.clicked.connect(self.c.stop)
         for w in (self.text, self.bar, self.b_details, self.b_stop):

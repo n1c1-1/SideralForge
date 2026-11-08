@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from . import prefs
 from .i18n import _, log_detail, plain_error, plural
+from .icons import icon_only
 from .imageview import slug
 from .postengine import snapshot
 from .services.render import ExportJob
@@ -114,7 +115,7 @@ class ExportDialog(QDialog):
             self.size_cb.addItem(_(name), px)
         row(_("Size"), self.size_cb)
         self.dest = QLineEdit(self.default_file("tiff16"))
-        self.browse = QPushButton("…")
+        self.browse = icon_only(QPushButton(), "open", _("Choose the folder"), 16)
         self.browse.setFixedWidth(max(30, self.browse.sizeHint().width()))
         self.browse.setToolTip(_("Choose the folder"))
         row(_("File"), self.dest, self.browse)

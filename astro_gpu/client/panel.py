@@ -22,7 +22,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from PySide6.QtCore import QLocale, Qt, QTimer, Signal
+from PySide6.QtCore import QLocale, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -50,6 +51,7 @@ from ..core import workflow as wfl
 from . import prefs
 from .blocks import STATE_WORD, block_state, block_title
 from .i18n import _, all_workflows, hm, language, number, plural
+from .icons import IconLabel, IconText, draw, icon_only, menu_button, set_icon
 from .model import NotInEngine, method_of, method_value, methods_of
 from .settings import RangeBar, SettingRow, fmt, needed_stages, selection_rule_text, step_settings
 from .settings import loading as settings_loading
@@ -181,10 +183,8 @@ class CompactRow(SettingRow):
         self.setToolTip(r.get("help") or "")
 
     def _back(self, r, shown: bool) -> QPushButton:
-        rb = QPushButton("↺")
-        rb.setFixedSize(BACK_W, BACK_W)
-        rb.setStyleSheet("padding: 0;")
-        rb.setToolTip(_("Back to the suggested value: {v}").format(v=fmt(r["suggested"], r["type"], r.get("choices"))))
+        rb = icon_only(QPushButton(), "reset", _("Back to the suggested value: {v}").format(
+            v=fmt(r["suggested"], r["type"], r.get("choices"))), 16, box=BACK_W)
         rb.clicked.connect(lambda: self.changed.emit(self.r, None))
         return retain(rb, shown)
 
@@ -227,9 +227,8 @@ class MethodCard(QFrame):
         v = QVBoxLayout(self)
         v.setContentsMargins(10, 6, 10, 6)
         v.setSpacing(1)
-        n = QLabel(("● " if on else "○ ") + _(m["name"]))
-        n.setWordWrap(True)
-        n.setStyleSheet("font-weight: 600;" + ("" if ok else " color: #6b7280;"))
+        n = IconText("radio_on" if on else "radio_off", _(m["name"]), "selected" if on else "dim")
+        n.label.setStyleSheet("font-weight: 600;" + ("" if ok else " color: #6b7280;"))
         v.addWidget(n)
         top = QHBoxLayout()
         top.setSpacing(6)
@@ -248,16 +247,12 @@ class MethodCard(QFrame):
             self.clicked.emit()
 
 
-class InfoDot(QLabel):
+class InfoDot(IconLabel):
     """A small "i" in a circle: what it is about shows in its tooltip."""
 
     def __init__(self, tip: str, parent=None):
-        super().__init__("i", parent)
+        super().__init__("info", 16, "dim", parent=parent)
         self.setObjectName("infodot")
-        self.setAlignment(Qt.AlignCenter)
-        self.setFixedSize(15, 15)
-        self.setStyleSheet("QLabel#infodot { color: #b9c2cf; border: 1px solid #6b7280; border-radius: 7px; "
-                           "font-size: 8pt; font-weight: 600; font-family: Georgia, serif; padding: 0; }")
         self.setToolTip(tip)
         self.setCursor(Qt.WhatsThisCursor)
 
@@ -283,8 +278,9 @@ class StackMethodCard(QFrame):
         v.setSpacing(2)
         top = QHBoxLayout()
         top.setSpacing(6)
-        n = QLabel(("● " if on else "○ ") + name)
-        n.setStyleSheet("font-weight: 600;" + ("" if enabled else " color: #6b7280;"))
+        n = IconText("radio_on" if on else "radio_off", name, "selected" if on else "dim")
+        n.label.setWordWrap(False)
+        n.label.setStyleSheet("font-weight: 600;" + ("" if enabled else " color: #6b7280;"))
         top.addWidget(n)
         top.addStretch(1)
         self.tag = self.info = None
@@ -343,6 +339,18 @@ class Details(QFrame):
         self.show()
 
 
+#: the panel's sections drawn as icons on the folded strip: their English titles (a title's count stays out), the rest "section"
+SECTION_ROLES = {"Sessions": "block_session", "Lights": "block_image", "Layers": "layers", "Stars": "block_stars",
+                 "Palette": "palette", "Channels": "block_colour", "Measurements": "measure", "Samples · exclusions": "samples",
+                 "Outputs": "export", "Rule": "thresholds", "Thresholds": "thresholds", "Speed · memory": "compute"}
+
+
+def section_role(title: str) -> str:
+    """The icon of a section, from its title as shown (in the interface's language)."""
+    base = title.split("  ·  ")[0]
+    return next((role for english, role in SECTION_ROLES.items() if _(english) == base), "section")
+
+
 class SectionTitle(QLabel):
     """A section's title (issue #44): a click folds it, Alt-click opens only that one, as the reference editors'
     panels do. Its arrow shows when folded or under the mouse, so that a large window looks as it did."""
@@ -376,9 +384,9 @@ class SectionTitle(QLabel):
         super().paintEvent(e)
         if self.folded or self._hover:
             p = QPainter(self)
-            p.setPen(self.palette().mid().color() if not self.folded else self.palette().text().color())
-            p.drawText(self.contentsRect().adjusted(0, 0, -2, 0), Qt.AlignRight | Qt.AlignVCenter,
-                       "▸" if self.folded else "▾")
+            r = self.contentsRect()
+            draw(p, QRectF(r.right() - 17, r.center().y() - 7, 16, 16), "chevron_right" if self.folded else "chevron_down",
+                 "normal" if self.folded else "dim")
             p.end()
 
 
@@ -664,8 +672,7 @@ class Panel(QWidget):
         note = getattr(s, "colour_note", lambda _i: None)(sid)
         if note:                                           # issue #57: the limit of frames already in colour, said
             from .frames import colour_note_text
-            lb = label("ⓘ " + colour_note_text(note), "small", wrap=True)
-            lb.setObjectName("colour_note")
+            lb = IconText("info", colour_note_text(note), "dim", "colour_note")
             self.bv.addWidget(lb)
         for kind, title in self.KIND_TITLES:
             if kind == "lights":
@@ -683,10 +690,9 @@ class Panel(QWidget):
             shared = s.shared_with(sid, kind) if kind != "lights" else []
             if shared:
                 names = ", ".join(s.session(o).name for o in shared)
-                self.bv.addWidget(label("⇄ " + _("shared with {names}: one master").format(names=names),
-                                        "small", wrap=True))
+                self.bv.addWidget(IconText("link", _("shared with {names}: one master").format(names=names), "dim", "small"))
             for w in [w for w in warns if w["kind"] == kind]:      # issue #58: a file that may be a mistake
-                self.bv.addWidget(label("⚠ " + type_warning_text(w), "warn", wrap=True))
+                self.bv.addWidget(IconText("warning", type_warning_text(w), "warning", "warn"))
             sets: dict[str, list[str]] = {}            # one row per folder: its own entry, or its files chosen one by one
             for e in getattr(ses, kind):
                 pth = Path(s.p.abspath(e))
@@ -699,7 +705,7 @@ class Panel(QWidget):
                     if whole else [Path(s.p.abspath(e)).as_posix() for e in entries]
                 self._file_group(sid, kind, folder, entries, mine, flagged)
             add = QHBoxLayout()
-            b = QPushButton(_("Add") + " ▾")                # one menu per kind: folder, files, another session's
+            b = QPushButton(_("Add"))                       # one menu per kind: folder, files, another session's
             menu = QMenu(b)
             menu.addAction(_("Add folder…"), lambda k=kind: self._add_entries(sid, k, folder=True))
             menu.addAction(_("Add files…"), lambda k=kind: self._add_entries(sid, k, folder=False))
@@ -710,6 +716,7 @@ class Panel(QWidget):
                     menu.addAction(_("Use the frames of “{name}”").format(name=o.name),
                                    lambda k=kind, oid=o.id: s.use_from_session(oid, sid, k))
             b.setMenu(menu)
+            menu_button(b)
             add.addWidget(b)
             add.addStretch(1)
             self.bv.addLayout(add)
@@ -734,7 +741,7 @@ class Panel(QWidget):
         return out
 
     def _file_group(self, sid: int, kind: str, folder: str, entries: list[str], files: list[str], flagged: set[str]):
-        """One folder of a session's list (issue #58): its row ("📁 folder · 15 files", its cross takes it all out),
+        """One folder of a session's list (issue #58): its row (folder icon, name · 15 files, its cross takes it all out),
         opened on its files, each with its cross (several chosen, Del). A group holding a file a warning points at
         opens by itself."""
         opened = getattr(self, "_opened", set())
@@ -746,15 +753,16 @@ class Panel(QWidget):
         n = len(files)
         if not Path(folder).exists():                     # moved, renamed outside, its disk unplugged: said, and a
             # click chooses where it is now, as a reference photo app's missing folder (GUI exploration 4)
-            t = QPushButton("⚠ 📁 " + Path(folder).name + "  · " + _("folder not found"))
+            t = QPushButton(Path(folder).name + "  · " + _("folder not found"))
+            set_icon(t, "folder_missing", 16, "warning")
             t.setFlat(True)
             t.setStyleSheet(f"QPushButton {{ text-align: left; padding: 2px 4px; color: {WARN}; }} ")
             t.setToolTip(folder + "\n" + _("Not found (moved, renamed, or its disk unplugged): click to choose where "
                                            "it is now"))
             t.clicked.connect(lambda _c=False, k=kind, ens=list(entries): self._locate(sid, k, folder, ens))
         else:
-            t = QPushButton(("▾ " if is_open else "▸ ") + "📁 " + Path(folder).name + "  · " +
-                            plural(n, "{n} file", "{n} files"))
+            t = QPushButton(Path(folder).name + "  · " + plural(n, "{n} file", "{n} files"))
+            set_icon(t, "folder", 16)
             t.setFlat(True)
             t.setStyleSheet("QPushButton { text-align: left; padding: 2px 4px; } ")
             t.setToolTip(folder + "\n" + _("Click to see its files, and take one out"))
@@ -763,11 +771,17 @@ class Panel(QWidget):
                 opened.symmetric_difference_update({k})
                 self.changed.emit()
             t.clicked.connect(toggle)
+            chevron = QToolButton()                       # the row's disclosure
+            icon_only(chevron, "chevron_down" if is_open else "chevron_right", _("Show the files"), 16, "dim")
+            chevron.setAutoRaise(True)
+            chevron.setFixedSize(20, 20)
+            chevron.setStyleSheet("QToolButton { border: none; padding: 0; }")
+            chevron.clicked.connect(toggle)
+            r.addWidget(chevron)
         r.addWidget(t, 1)
-        x = QPushButton("×")
+        x = icon_only(QPushButton(), "remove", _("Remove the whole folder from the session (the files are not touched)"))
         x.setFixedWidth(26)
         x.setStyleSheet("QPushButton { padding: 0px; }")    # the cross whole in its 26 px (as a file's, below)
-        x.setToolTip(_("Remove the whole folder from the session (the files are not touched)"))
         x.clicked.connect(lambda _c=False, k=kind, ens=list(entries): self._files_out(sid, k, ens, True))
         r.addWidget(x)
         self.bv.addLayout(r)
@@ -781,13 +795,15 @@ class Panel(QWidget):
             row = QWidget()
             h = QHBoxLayout(row)
             h.setContentsMargins(18, 0, 2, 0)
-            name = label(("⚠ " if f.lower() in flagged else "") + Path(f).name, "warn" if f.lower() in flagged else None)
+            bad_file = f.lower() in flagged
+            if bad_file:
+                h.addWidget(IconLabel("warning", 16, "warning"))
+            name = label(Path(f).name, "warn" if bad_file else None)
             name.setToolTip(f)
             h.addWidget(name, 1)
-            b = QPushButton("×")
+            b = icon_only(QPushButton(), "remove", _("Take this file out of the session (the file is not touched)"))
             b.setFixedSize(26, 20)
             b.setStyleSheet("QPushButton { padding: 0px; }")
-            b.setToolTip(_("Take this file out of the session (the file is not touched)"))
             b.clicked.connect(lambda _c=False, k=kind, ff=f: self._files_out(sid, k, [ff]))
             h.addWidget(b)
             it.setSizeHint(row.sizeHint())
@@ -1491,7 +1507,7 @@ class Panel(QWidget):
             else:
                 self.bv.addWidget(lb)
         if len(node.paths) == 1:
-            nb = QPushButton(_("+ Recombine").replace("&", "&&"))
+            nb = set_icon(QPushButton(_("Recombine").replace("&", "&&")), "add", 16)
             nb.setToolTip(_("A layer of Post that puts the stars back on the starless image; each of the two keeps "
                             "its own settings"))
             nb.clicked.connect(lambda _c=False, pp=node.paths[0]: self._new_composition(pp))
@@ -1709,7 +1725,7 @@ class Panel(QWidget):
 
     def section_list(self) -> list[tuple[str, object]]:
         """For the strip of icons: (title, what opens that section and brings it in view)."""
-        return [(t.text(), (lambda x=t: self._show_section(x))) for t in self.sections]
+        return [(t.text(), (lambda x=t: self._show_section(x)), section_role(t.text())) for t in self.sections]
 
     def _show_section(self, t: SectionTitle):
         if t.folded:
@@ -1840,8 +1856,9 @@ class Panel(QWidget):
                 self.add_row(r)
         if hidden:
             self.bv.addSpacing(8)
-            # a disclosure, as Lightroom's panels have: ▸ shows the advanced rows in their groups, ▾ hides them
-            ex = QPushButton(("▾ " if self.expert else "▸ ") + _("Advanced settings ({n})").format(n=hidden))
+            # a disclosure, as Lightroom's panels have: the chevron shows the advanced rows in their groups, or hides them
+            ex = QPushButton(_("Advanced settings ({n})").format(n=hidden))
+            set_icon(ex, "chevron_down" if self.expert else "chevron_right", 16, "dim")
             ex.setObjectName("disclosure")
             ex.setFlat(True)
             ex.setCursor(Qt.PointingHandCursor)

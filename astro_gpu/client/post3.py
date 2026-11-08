@@ -40,7 +40,7 @@ import re
 
 import numpy as np
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -64,6 +64,8 @@ from ..render.sliders import group_title
 from . import prefs
 from .curveseditor import CurvesEditor, FunctionGraph, caption
 from .i18n import _, language, log_detail, maybe, plain_error, plural
+from .icons import draw as draw_icon
+from .icons import icon_only, pixmap, set_icon
 from .imageview import ZOOM_PRESETS, ZOOM_STEP
 from .layout import Dock
 from .model import POST_PART_NAMES
@@ -282,6 +284,24 @@ class ContSlider(QWidget):
 PANEL_W, PANEL_MIN, PANEL_MAX = 400, 320, 760
 
 
+class EyeBox(QCheckBox):
+    """A layer's visibility, drawn as an eye: a check box underneath (its clicks, keys and signals as any check box's)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(20, 20)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def hitButton(self, pos):                             # noqa: N802 - Qt's name
+        return self.rect().contains(pos)
+
+    def paintEvent(self, e):                              # noqa: N802
+        p = QPainter(self)
+        on = self.isChecked()
+        p.drawPixmap(2, 2, pixmap("eye" if on else "eye_off", 16, "normal" if on else "dim", self.devicePixelRatioF()))
+        p.end()
+
+
 class LayerRow(QFrame):
     """A row of the layers panel. ``depth`` 1: a filter nested in the pixel layer above it (indented, with a guide
     line), or one of a Stars and background layer's two images (``kind`` "sub", issue #3); 2: a filter of one of those
@@ -302,7 +322,7 @@ class LayerRow(QFrame):
         compact = lay["kind"] in ("filter", "sub")      # issue #5: the filters, many, on one short line each
         h.setContentsMargins(4, 1 if compact else 3, 6, 1 if compact else 3)
         h.setSpacing(6)
-        eye = QCheckBox()
+        eye = EyeBox()
         eye.setChecked(lay["visible"])
         eye.setToolTip(_("Show / hide layer"))
         if lay["kind"] == "sub":
@@ -323,11 +343,10 @@ class LayerRow(QFrame):
         if kids:                                        # issue #21: down expanded, right collapsed; none without
             key = (lay["id"], lay["sub"]) if lay["kind"] == "sub" else lay["id"]
             self.toggle = QToolButton()
-            self.toggle.setArrowType(Qt.RightArrow if collapsed else Qt.DownArrow)
+            icon_only(self.toggle, "chevron_right" if collapsed else "chevron_down", _("Show / hide what is under it"), 16, "dim")
             self.toggle.setAutoRaise(True)
             self.toggle.setFixedSize(TOGGLE_W, TOGGLE_W)
             self.toggle.setStyleSheet("QToolButton { border: none; padding: 0; }")
-            self.toggle.setToolTip(_("Show / hide what is under it"))
             self.toggle.clicked.connect(lambda: panel.toggle_children(key))
             h.addWidget(self.toggle)
         else:
@@ -567,7 +586,8 @@ class PostView(QWidget):
         root.addWidget(self.split)
         # issue #44: docked, or the strip of icons (a click opens it over the viewer) or hidden, as the other pages
         self.dock = Dock(self, self.right, self._dock_panel, lambda: self.right.setParent(self),
-                         lambda: [(_("Layers"), self._show_layers), (_("Properties"), self._show_props)], _("Layers"))
+                         lambda: [(_("Layers"), self._show_layers, "layers"), (_("Properties"), self._show_props, "adjust")],
+                         _("Layers"), role="section")
         root.addWidget(self.dock.strip)
         self.strip = self.dock.strip
         self.dock.chosen.connect(lambda st: self.panelChosen.emit(st))
@@ -589,7 +609,8 @@ class PostView(QWidget):
         bar = QHBoxLayout()
         bar.setContentsMargins(10, 6, 10, 6)
         self.top_bar = bar
-        self.b_fit, self.b_100 = QPushButton(_("Fit")), QPushButton(with_unit("100", "%"))
+        self.b_fit = icon_only(QPushButton(), "fit", _("Fit (F)"), 16)
+        self.b_100 = icon_only(QPushButton(), "actual_size", _("Actual size (1)"), 16)
         self.zoom_lab = QPushButton(with_unit("100", "%"))   # the zoom, and its presets (issue #44: as Inspect's viewer)
         self.zoom_lab.setToolTip(_("Zoom (wheel, + and −)"))
         self.zoom_menu = QMenu(self.zoom_lab)
@@ -619,10 +640,9 @@ class PostView(QWidget):
         for b in (self.b_grid, self.b_names):
             b.setCheckable(True)
             b.setObjectName("toggle")
-        self.b_undo, self.b_redo = QPushButton("↶"), QPushButton("↷")
-        self.b_undo.setToolTip(_("Undo (Ctrl+Z)"))
-        self.b_redo.setToolTip(_("Redo (Ctrl+Y)"))
-        self.b_export = QPushButton(_("Export…"))
+        self.b_undo = icon_only(QPushButton(), "undo", _("Undo (Ctrl+Z)"), 16)
+        self.b_redo = icon_only(QPushButton(), "redo", _("Redo (Ctrl+Y)"), 16)
+        self.b_export = set_icon(QPushButton(_("Export…")), "export", 16)
         for w in (self.b_fit, self.b_100, self.zoom_lab):
             bar.addWidget(w)
         bar.addStretch(1)
@@ -655,10 +675,11 @@ class PostView(QWidget):
         head.addWidget(label(_("Layers"), "h2"))
         head.addStretch(1)
         fold = QToolButton()
-        fold.setText("»")
+        icon_only(fold, "fold_right", _("Fold the panel"), 16, "dim")
         fold.setAutoRaise(True)
-        fold.setToolTip(_("Fold the panel"))
-        fold.setStyleSheet("QToolButton { border: none; color: #aab2bf; font-size: 13pt; padding: 0 4px; }")
+        fold.setFixedSize(20, 18)
+        fold.setStyleSheet("QToolButton { border: none; padding: 0; } "
+                           "QToolButton:hover { background: #2b3446; border-radius: 3px; }")
         self.fold_b = fold
         # while a row is dragged between two others: what the drop does, beside the panel's title (a drop onto a layer
         # says it in that layer's row)
@@ -688,16 +709,16 @@ class PostView(QWidget):
         self.drop_dot.hide()
         btns = QHBoxLayout()
         btns.setSpacing(4)
-        self.b_filter = QPushButton(_("+ Filter"))
-        self.b_filter.setToolTip(_("A filter layer above the selected layer"))
+        # the layers' buttons, as the reference editors': icons with their full names in the tooltips
+        self.b_filter = icon_only(QPushButton(), "add", _("Add a filter layer above the selected layer"), 16, box=28)
         self.filter_menu = QMenu(self.b_filter)
         self.b_filter.setMenu(self.filter_menu)
-        self.b_dup = QPushButton(_("Duplicate"))
-        self.b_dup.setToolTip("Ctrl+J")
-        self.b_maskadd = QPushButton(_("+ Mask"))
-        self.b_del = QPushButton(_("Delete"))
+        self.b_dup = icon_only(QPushButton(), "duplicate", _("Duplicate (Ctrl+J)"), 16, box=28)
+        self.b_maskadd = icon_only(QPushButton(), "mask", _("Add a mask to the selected layer"), 16, box=28)
+        self.b_del = icon_only(QPushButton(), "delete", _("Delete the selected layer"), 16, box=28)
         for b in (self.b_filter, self.b_dup, self.b_maskadd, self.b_del):
             btns.addWidget(b)
+        btns.addStretch(1)
         rv.addLayout(btns)
         rv.addWidget(hline())
         psc = QScrollArea()
@@ -1267,16 +1288,10 @@ class PostView(QWidget):
     # ------------------------------------------------------------ the layers panel
     def thumb(self, lay) -> QPixmap:
         if lay["kind"] == "filter":
-            f = FILTERS[lay["filter"]]
             pm = QPixmap(TW, TH)
             pm.fill(QColor("#1d2129"))
             qp = QPainter(pm)
-            qp.setPen(QColor(FAMILY_COL[f["family"]]))
-            fo = QFont("Segoe UI", 15)
-            fo.setItalic(True)
-            fo.setBold(True)
-            qp.setFont(fo)
-            qp.drawText(pm.rect(), Qt.AlignCenter, "ƒ")
+            draw_icon(qp, QRectF((TW - 20) / 2, (TH - 20) / 2, 20, 20), "filter_layer", "dim", 20)
             qp.end()
             return pm
         hit = self._lthumbs.get(lay["id"])
@@ -1373,9 +1388,9 @@ class PostView(QWidget):
                               _("Choose a layer first") if lay is None else
                               _("The last image layer stays: Post needs an image (hide it with its eye)"))
         self.b_maskadd.setEnabled(lay is not None)
-        self.b_maskadd.setText(_("+ Mask") if lay is None or lay["mask"] is None else _("Mask") + " ✓")
-        self.b_maskadd.setToolTip(_("Add a mask to the selected layer") if lay is None or lay["mask"] is None else
-                                  _("Edit the mask of the selected layer"))
+        masked = lay is not None and lay["mask"] is not None      # the accent: the selected layer has its mask
+        icon_only(self.b_maskadd, "mask", _("Edit the mask of the selected layer") if masked else
+                  _("Add a mask to the selected layer"), 16, "selected" if masked else "normal", box=28)
         self._undo_buttons()
         self.build_filter_menu()
         if props:
@@ -2110,7 +2125,7 @@ class PostView(QWidget):
             self.pbox.addWidget(label(_("Empty: the layer shows everywhere."), "small"))
         for j, part in enumerate(m["parts"]):
             self.pbox.addWidget(self.part_box(lay, part, j))
-        add = QPushButton(_("+ Add to mask"))
+        add = set_icon(QPushButton(_("Add to mask")), "add", 16)
         am = QMenu(add)
         for src, name in MASK_SOURCES.items():
             a = am.addAction(_(name))
@@ -2153,10 +2168,7 @@ class PostView(QWidget):
         t = QLabel(_(MASK_SOURCES[part["src"]]))
         t.setStyleSheet("font-weight: 600;")
         top.addWidget(t, 1)
-        x = QPushButton("✕")
-        x.setFixedSize(22, 22)
-        x.setStyleSheet("padding: 0;")
-        x.setToolTip(_("Remove from mask"))
+        x = icon_only(QPushButton(), "remove", _("Remove from mask"), 16, box=22)
         x.clicked.connect(lambda: self.remove_part(lay, part))
         top.addWidget(x)
         v.addLayout(top)

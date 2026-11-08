@@ -1225,7 +1225,7 @@ def test_french_view_has_no_missing_text_and_decimal_commas(qapp, loader, tmp_pa
         v.set_sequence(frames_for_test(2), 0)
         assert v.wait(30)
         assert "," in v.pixel_text(10.5, 10.5).split("R ")[1][:8]
-        assert v.fit_b.text() == "Adapter" and v.split_b.text() == "Rideau" and v.panel.neutral_c.text() == "Ciel neutre"
+        assert v.fit_b.toolTip().startswith("Adapter") and v.split_b.text() == "Rideau" and v.panel.neutral_c.text() == "Ciel neutre"
         assert v.band.cells["fwhm"][1].text().startswith("3,00") and v.band.cells["exposure"][1].text() == "15 s"
         assert "," in v.panel.fields["black"].text()
         dlg = v.export_dialog()

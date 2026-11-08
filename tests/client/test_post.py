@@ -1149,7 +1149,7 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     # the panel (Affinity Photo's): the filter is a child of its layer, indented under it
     assert [(r.lay["name"], r.depth) for r in v.rows] == [("Classic", 0), ("Full", 0), ("Saturation", 1)]
     assert rows[sat["id"]].sub.text() == "Normal · 100%" and rows[sat["id"]].toolTip() == 'Applies to "Full" only'
-    assert rows[full["id"]].toggle is not None and rows[full["id"]].toggle.arrowType() == Qt.DownArrow
+    assert rows[full["id"]].toggle is not None and rows[full["id"]].toggle.property("iconRole") == "chevron_down"
     assert rows[classic["id"]].toggle is None
     # another one, on everything below
     v.select(classic["id"], "layer")
@@ -1238,7 +1238,7 @@ def test_every_filter_and_every_mask_source_is_offered_without_the_stars_block(p
         assert "Stars" not in [a.text() for a in v.filter_menu.actions()]
         assert all(x.isEnabled() for a in v.filter_menu.actions() for x in a.menu().actions())
         v.add_mask(v.layers[0])
-        add = next(b for b in widgets_of(v, QPushButton) if b.text() == "+ Add to mask")
+        add = next(b for b in widgets_of(v, QPushButton) if b.text() == "Add to mask")
         acts = {a.text(): a.isEnabled() for a in add.menu().actions()}
         assert acts == {"H-alpha": True, "Luminance range": True, "Color range": True, "Linear gradient": True,
                         "Brush": True}
@@ -1250,9 +1250,9 @@ def test_masks_with_parts_show_on_the_image_and_in_the_thumbnails(post):
     v = post.view
     full = named(v, "Full")
     v.select(full["id"], "layer")
-    assert v.b_maskadd.text() == "+ Mask"
+    assert v.b_maskadd.toolTip() == "Add a mask to the selected layer"
     v.mask_button()
-    assert full["mask"] is not None and v.sel == (full["id"], "mask") and v.b_maskadd.text() == "Mask ✓"
+    assert full["mask"] is not None and v.sel == (full["id"], "mask") and v.b_maskadd.toolTip() == "Edit the mask of the selected layer"
     assert post.settle() and v.mask1 is not None and np.allclose(v.mask1, 1.0)         # empty: the layer shows everywhere
     assert "Empty: the layer shows everywhere." in [lb.text() for lb in widgets_of(v, QLabel)]
     for src in ("halpha", "luminance", "color", "gradient", "brush"):
@@ -1281,7 +1281,7 @@ def test_masks_with_parts_show_on_the_image_and_in_the_thumbnails(post):
     v.remove_part(full, full["mask"]["parts"][0])
     assert full["mask"]["parts"][0]["src"] == "luminance"
     v.remove_mask(full)
-    assert full["mask"] is None and v.b_maskadd.text() == "+ Mask"
+    assert full["mask"] is None and v.b_maskadd.toolTip() == "Add a mask to the selected layer"
 
 
 def test_the_brush_paints_erases_and_is_one_undo_step(post):
@@ -1424,10 +1424,10 @@ def test_a_stars_and_background_layer_has_its_two_images_as_sub_layers_with_thei
         assert [(r.lay.get("sub"), r.depth) for r in v.rows][2:] == [("stars", 1), ("stars", 2), ("starless", 1)]
         # issue #21: an arrow on a row with rows under it only, down expanded, right collapsed
         subs = {r.lay["sub"]: r for r in v.rows if r.lay["kind"] == "sub"}
-        assert subs["stars"].toggle.arrowType() == Qt.DownArrow and subs["starless"].toggle is None
+        assert subs["stars"].toggle.property("iconRole") == "chevron_down" and subs["starless"].toggle is None
         v.toggle_children((full["id"], "stars"))
         assert [(r.lay.get("sub"), r.depth) for r in v.rows][2:] == [("stars", 1), ("starless", 1)]
-        assert next(r for r in v.rows if r.lay.get("sub") == "stars").toggle.arrowType() == Qt.RightArrow
+        assert next(r for r in v.rows if r.lay.get("sub") == "stars").toggle.property("iconRole") == "chevron_right"
         v.toggle_children((full["id"], "stars"))
         v.request(final_only=True)
         assert s.settle()
@@ -1627,7 +1627,7 @@ def test_dragging_a_row_nests_or_unnests_a_filter_with_clear_hints(post):
     assert post.settle() and np.array_equal(shown(v), reference(post).rgb)
     # ▾ / ▸ hides a layer's children in the panel only
     v.toggle_children(full["id"])
-    assert [r.lay["name"] for r in v.rows] == ["Classic", "Full"] and row(full["id"]).toggle.arrowType() == Qt.RightArrow
+    assert [r.lay["name"] for r in v.rows] == ["Classic", "Full"] and row(full["id"]).toggle.property("iconRole") == "chevron_right"
     assert "2 filters" in row(full["id"]).sub.text()
     v.toggle_children(full["id"])
     assert len(v.rows) == 4
@@ -2464,7 +2464,7 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
     try:
         assert s.settle()
         v = s.view
-        assert v.b_filter.text() == "+ Filtre" and v.b_cmp.text() == "Avant / après" and v.b_maskadd.text() == "+ Masque"
+        assert v.b_filter.toolTip().startswith("Ajouter") and v.b_cmp.text() == "Avant / après" and v.b_maskadd.toolTip().startswith("Ajouter")
         assert [lb.text() for lb in v.findChildren(QLabel)][:1] != []
         for k in FILTERS:                                                               # every filter's panel
             v.select(full_layer(v)["id"], "layer")

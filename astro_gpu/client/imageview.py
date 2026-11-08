@@ -95,6 +95,7 @@ from PySide6.QtWidgets import (
 from . import APP_NAME
 from . import stretch as sm
 from .i18n import _, language, log_detail, number, plain_error
+from .icons import IconLabel, IconText, draw, icon_only, menu_button, set_icon
 from .layout import pinch_factor, wheel_gesture
 from .widgets import ACCENT, BAD, OK, WARN, ElidedLabel, cap_dialog, label
 
@@ -1051,16 +1052,22 @@ def to_qimage(buf: np.ndarray) -> QImage:
 TAG_BG = QColor(0, 0, 0, 170)
 
 
-def tag(p: QPainter, pt: QPointF, text: str, right: bool = False, color: str = "#ffffff", bg: QColor = TAG_BG):
-    """A small label on the image (rounded, dark)."""
+def tag(p: QPainter, pt: QPointF, text: str, right: bool = False, color: str = "#ffffff", bg: QColor = TAG_BG,
+        role: str | None = None):
+    """A small label on the image (rounded, dark); ``role``: an icon on the side it points at."""
     m = p.fontMetrics()
-    w = m.horizontalAdvance(text) + 14
-    r = QRectF(pt.x() - w if right else pt.x(), pt.y(), w, m.height() + 6)
+    w = m.horizontalAdvance(text) + 14 + (18 if role else 0)
+    r = QRectF(pt.x() - w if right else pt.x(), pt.y(), w, max(m.height() + 6, 20))
     p.setPen(Qt.NoPen)
     p.setBrush(bg)
     p.drawRoundedRect(r, 4, 4)
     p.setPen(QColor(color))
-    p.drawText(r, Qt.AlignCenter, text)
+    if role:
+        ix = r.left() + 4 if right else r.right() - 20
+        draw(p, QRectF(ix, r.center().y() - 8, 16, 16), role)
+        p.drawText(r.adjusted(20, 0, 0, 0) if right else r.adjusted(0, 0, -20, 0), Qt.AlignCenter, text)
+    else:
+        p.drawText(r, Qt.AlignCenter, text)
     return r
 
 
@@ -1330,9 +1337,9 @@ class ImageCanvas(QWidget):
             p.drawPolyline(tri)
         left, right = self.split_names
         if left:
-            tag(p, QPointF(xs - 10, 10), "◂  " + left, right=True)
+            tag(p, QPointF(xs - 10, 10), left, right=True, role="chevron_left")
         if right:
-            tag(p, QPointF(xs + 10, 10), right + "  ▸")
+            tag(p, QPointF(xs + 10, 10), right, role="chevron_right")
         p.setRenderHint(QPainter.Antialiasing, False)
 
     def minimap_rect(self) -> QRectF:
@@ -2177,9 +2184,8 @@ class InfoBand(QFrame):
         self.mode = "on"                          # on | off (no toggle, no state) | spec (◇: shown, disabled)
         self.spec_tip = ""
         # why the engine flags the frame shown, written out (not only in a tooltip): a line under the numbers
-        self.why = QLabel("")
-        self.why.setWordWrap(True)
-        self.why.setTextFormat(Qt.PlainText)
+        self.why = IconText("warning", "", "warning")
+        self.why.label.setTextFormat(Qt.PlainText)
         self.why.hide()
 
     def set_mode(self, mode: str, tip: str = ""):
@@ -2250,7 +2256,8 @@ class InfoBand(QFrame):
             self.state.setStyleSheet(f"color: {col}; border: 1px solid {col}; border-radius: 9px; "
                                      "padding: 2px 10px;")
         why = str(info.get("flag_reason") or "") if flag else ""
-        self.why.setText(("⚠  " + why) if why else "")
+        self.why.setText(why)
+        self.why.icon.set_role("warning", "error" if info.get("flag_level") == "bad" else "warning")
         self.why.setStyleSheet(f"color: {col}; font-weight: 600;")
         self.why.setVisible(bool(why))
         self.toggle.setText(_("Include") if excluded else _("Exclude"))
@@ -2393,16 +2400,12 @@ class FilmStrip(QWidget):
                 p.setBrush(Qt.NoBrush)
                 p.drawRect(cell.adjusted(1, 1, -1, -1))
                 p.setPen(Qt.NoPen)
-                p.setBrush(fc)
-                p.drawPolygon(QPolygonF([QPointF(cell.x(), cell.y()), QPointF(cell.x() + 18, cell.y()),
-                                         QPointF(cell.x(), cell.y() + 18)]))
-                p.setPen(QColor("#ffffff"))
-                p.drawText(QRectF(cell.x() + 1, cell.y(), 9, 10), Qt.AlignCenter, "!")
+                p.setBrush(QColor(15, 17, 21, 200))
+                p.drawRoundedRect(QRectF(cell.x() + 2, cell.y() + 2, 20, 20), 3, 3)
+                draw(p, QRectF(cell.x() + 4, cell.y() + 4, 16, 16), "warning", "error" if fl == "bad" else "warning")
             if ex:
                 p.fillRect(cell, QColor(15, 17, 21, 150))
-                p.setPen(QPen(QColor(BAD), 2))
-                p.drawLine(QPointF(cell.right() - 14, cell.y() + 4), QPointF(cell.right() - 4, cell.y() + 14))
-                p.drawLine(QPointF(cell.right() - 4, cell.y() + 4), QPointF(cell.right() - 14, cell.y() + 14))
+                draw(p, QRectF(cell.right() - 18, cell.y() + 3, 16, 16), "remove", "error")
             if i == self.current:
                 p.setPen(QPen(QColor(ACCENT), 2))
                 p.setBrush(Qt.NoBrush)
@@ -2498,6 +2501,7 @@ class ImageView(QWidget):
         ab = QHBoxLayout(self.align_bar)
         ab.setContentsMargins(12, 2, 12, 3)
         self.align_l = ElidedLabel("", "ivalign", Qt.ElideRight)
+        ab.addWidget(IconLabel("link", 16, "dim"))
         ab.addWidget(self.align_l, 1)
         self.align_bar.hide()
         v.addWidget(self.align_bar)
@@ -2562,8 +2566,9 @@ class ImageView(QWidget):
             (b.toggled if checkable else b.clicked).connect(slot)
             h.addWidget(b)
             return b
-        self.fit_b = tool(_("Fit"), _("The whole image (F)"), self.fit)
-        self.one_b = tool("1:1", _("One image pixel per screen pixel (1)"), lambda: self.set_zoom_percent(100))
+        self.fit_b = icon_only(tool("", "", self.fit), "fit", _("Fit: the whole image (F)"), 16)
+        self.one_b = icon_only(tool("", "", lambda: self.set_zoom_percent(100)), "actual_size",
+                               _("Actual size: one image pixel per screen pixel (1)"), 16)
         self.zoom_b = QPushButton("100 %")
         self.zoom_b.setObjectName("ivtool")
         self.zoom_b.setToolTip(_("Zoom (wheel, + and −)"))
@@ -2634,7 +2639,7 @@ class ImageView(QWidget):
         self.tool_box.hide()
         h.addStretch(1)
         # what leaves the viewer, in one menu (a file, the clipboard, Post): one button, whatever the language
-        self.out_b = QPushButton(_("Export") + "  ▾")
+        self.out_b = QPushButton(_("Export"))
         self.out_b.setObjectName("ivtool")
         self.out_b.setToolTip(_("Export the image: to a file, to the clipboard or to Post"))
         menu = QMenu(self.out_b)
@@ -2653,6 +2658,7 @@ class ImageView(QWidget):
                                               "(Ctrl+C)"), self.copy_view, copy)
         self.post_b = item(_("Send to Post"), _("Use this image in Post"), self._send_post, post)
         self.out_b.setMenu(menu)
+        menu_button(self.out_b)
         self.out_b.setVisible(export or copy or post)
         h.addWidget(self.out_b)
         return bar
@@ -2689,9 +2695,8 @@ class ImageView(QWidget):
         v.setSpacing(6)
         row = QHBoxLayout()
         row.setSpacing(6)
-        self.prev_b = QPushButton("◂")
+        self.prev_b = icon_only(QPushButton(), "previous", _("Previous frame (←)"), 16)
         self.prev_b.setObjectName("ivtool")
-        self.prev_b.setToolTip(_("Previous frame (←)"))
         self.prev_b.clicked.connect(self.previous_frame)
         row.addWidget(self.prev_b)
         self.num = QSpinBox()                     # with its arrows (see StretchPanel)
@@ -2704,12 +2709,11 @@ class ImageView(QWidget):
         row.addWidget(self.num)
         self.total_l = label("", "dim")
         row.addWidget(self.total_l)
-        self.next_b = QPushButton("▸")
+        self.next_b = icon_only(QPushButton(), "next", _("Next frame (→)"), 16)
         self.next_b.setObjectName("ivtool")
-        self.next_b.setToolTip(_("Next frame (→)"))
         self.next_b.clicked.connect(self.next_frame)
         row.addWidget(self.next_b)
-        self.blink_b = QPushButton("▶  " + _("Blink"))
+        self.blink_b = set_icon(QPushButton(_("Blink")), "play", 16)
         self.blink_b.setObjectName("toggle")
         self.blink_b.setCheckable(True)
         self.blink_b.setToolTip(_("Plays the frames at 5 frames/s (Space)"))
@@ -3280,9 +3284,9 @@ class ImageView(QWidget):
             bits.append(_("their distortions followed, up to {d} px").format(d=number(al.residual, 1)))
         what = ", ".join(bits) or _("on the same pixels")
         if al.how == "sky":
-            return _("⇄ Aligned for display by the astrometric solutions: “{name}” resampled onto this image "
+            return _("Aligned for display by the astrometric solutions: “{name}” resampled onto this image "
                      "({what})").format(name=name, what=what)
-        return _("⇄ Aligned for display by the geometry of the results (drizzle scale, crop, size): “{name}” "
+        return _("Aligned for display by the geometry of the results (drizzle scale, crop, size): “{name}” "
                  "resampled onto this image ({what})").format(name=name, what=what)
 
     def _names(self):
@@ -3441,7 +3445,7 @@ class ImageView(QWidget):
                 self.strip.set_thumb(i, arr)
 
     def _blink_toggled(self, on: bool):
-        self.blink_b.setText(("❚❚  " if on else "▶  ") + _("Blink"))
+        set_icon(self.blink_b, "pause" if on else "play", 16)
         if on:
             self._blink.start()
         else:
@@ -3819,7 +3823,7 @@ class ImageExportDialog(QDialog):
         grid.addWidget(label(_("File")), r, 0)
         fh = QHBoxLayout()
         self.dest = QLineEdit()
-        self.browse = QPushButton("…")
+        self.browse = icon_only(QPushButton(), "open", _("Choose the file"), 16)
         self.browse.setFixedWidth(34)
         self.browse.setToolTip(_("Choose the file"))
         self.browse.clicked.connect(self._browse)

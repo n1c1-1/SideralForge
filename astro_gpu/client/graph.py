@@ -86,6 +86,7 @@ from .blocks import (
     STEPS,
     TOOL_COLUMN,
     TOOLS,
+    WARN_MARK,
     Graph,
     Node,
     block_title,
@@ -95,6 +96,7 @@ from .blocks import (
 from .dialogs import ask_name
 from .gallery import TemplateGallery
 from .i18n import _, hm, number, plural
+from .icons import BLOCK_ROLES, IconLabel, draw, icon, icon_only, set_icon
 from .imageview import ZOOM_PRESETS, ZOOM_STEP
 from .layout import ARROW_H, ARROW_W, Dock, fold_button, pinch_factor, wheel_gesture
 from .model import NotInEngine, cuttable, node_key, view_key  # noqa: F401  (cuttable: older callers)
@@ -155,6 +157,9 @@ class BlockItem(QGraphicsItem):
     def __init__(self, view, node: Node, title, summary, state, selected, dim, removable, w: float = BW, bp=None):
         super().__init__()
         self.view, self.node, self.w = view, node, w
+        # a warning at the head of the summary (issue #58) is its mark, drawn as an icon
+        self.warned = summary.startswith(WARN_MARK)
+        summary = summary[len(WARN_MARK):] if self.warned else summary
         self.title, self.summary, self.state = title, summary, state
         self.selected, self.dim, self.removable = selected, dim, removable
         self.bp = bp                           # None, or Graph.breakpoint: (state, workflows that pause here, of how many)
@@ -280,25 +285,29 @@ class BlockItem(QGraphicsItem):
         f.setBold(True)
         p.setFont(f)
         p.setPen(QColor("#e8ebf0"))
-        tw = w - 18 - (18 if self.removable and self.hover else 0)
+        mark = ("failed", "error") if self.node.broken else ("off", "dim") if self.node.cut else \
+            ("not_computable", "warning") if self.node.grey else None
+        x0 = 11 + (20 if mark else 0)                     # the block's state, before its title
+        tw = w - 7 - x0 - (18 if self.removable and self.hover else 0)
         # a workflow's name loses its middle (two variants differ at their end; the whole name is in the tooltip), the
         # engine's words their end
         mode = Qt.ElideMiddle if self.node.key == "post" else Qt.ElideRight
-        title = ("⊘ " if self.node.grey else "") + self.title
         readable = QStyleOptionGraphicsItem.levelOfDetailFromTransform(p.worldTransform()) >= MIN_SCALE - 1e-6
-        p.drawText(QRectF(11, 6, tw, 20) if readable else QRectF(11, 0, tw, BH), Qt.AlignLeft | Qt.AlignVCenter,
-                   QFontMetrics(f).elidedText(title, mode, int(tw)))
+        p.drawText(QRectF(x0, 6, tw, 20) if readable else QRectF(x0, 0, tw, BH), Qt.AlignLeft | Qt.AlignVCenter,
+                   QFontMetrics(f).elidedText(self.title, mode, int(tw)))
+        if mark:
+            draw(p, QRectF(11, 8 if readable else (BH - 16) / 2, 16, 16), mark[0], mark[1])
         # issue #44: below the readable size the subtitles go, so that a zoomed-out graph is still a map of titles
         if readable:
             f2 = QFont("Segoe UI", 8.5)
             p.setFont(f2)
             p.setPen(QColor("#8b93a1"))
-            p.drawText(QRectF(11, 28, w - 15, 18), Qt.AlignLeft | Qt.AlignVCenter, elide(self.summary, f2, w - 15))
+            sx = 11 + (20 if self.warned else 0)
+            p.drawText(QRectF(sx, 28, w - 4 - sx, 18), Qt.AlignLeft | Qt.AlignVCenter, elide(self.summary, f2, w - 4 - sx))
+            if self.warned:
+                draw(p, QRectF(11, 29, 16, 16), "warning", "warning")
         if self.removable and self.hover:
-            p.setPen(QPen(QColor("#e06c6c"), 1.6))
-            xr = self._x_rect().adjusted(4, 4, -4, -4)
-            p.drawLine(xr.topLeft(), xr.bottomRight())
-            p.drawLine(xr.topRight(), xr.bottomLeft())
+            draw(p, self._x_rect(), "remove", "error")
         if self.node.key == "composition":                 # its two inputs, in the colours of the Stars block's outputs
             for what, y in PORTS["etoiles"]:
                 p.setPen(QPen(QColor(IMAGE_COL[what]), 1.5))
@@ -455,11 +464,11 @@ def _rounded(r: QRectF) -> QPainterPath:
 
 
 class GhostItem(QGraphicsItem):
-    """A dashed place: where a dragged tool can go, or the next workflow."""
+    """A dashed place: where a dragged tool can go, or the next workflow; ``role``: an icon before its text."""
 
-    def __init__(self, rect: QRectF, text, on_click=None, pid=None):
+    def __init__(self, rect: QRectF, text, on_click=None, pid=None, role: str | None = None):
         super().__init__()
-        self.rect, self.text, self.on_click, self.pid = rect, text, on_click, pid
+        self.rect, self.text, self.on_click, self.pid, self.role = rect, text, on_click, pid, role
         self.hot = False
         self.setAcceptHoverEvents(True)
         if on_click:
@@ -476,7 +485,13 @@ class GhostItem(QGraphicsItem):
         f = QFont("Segoe UI", 9)
         p.setFont(f)
         p.setPen(QColor(ACCENT if self.hot or self.on_click else "#8b93a1"))
-        p.drawText(self.rect, Qt.AlignCenter, self.text)
+        if self.role:                                    # the icon and the text centred together
+            tw = QFontMetricsF(f).horizontalAdvance(self.text)
+            x = self.rect.center().x() - (tw + 20) / 2
+            draw(p, QRectF(x, self.rect.center().y() - 8, 16, 16), self.role, "selected" if self.hot else "dim")
+            p.drawText(QRectF(x + 20, self.rect.y(), tw + 2, self.rect.height()), Qt.AlignVCenter | Qt.AlignLeft, self.text)
+        else:
+            p.drawText(self.rect, Qt.AlignCenter, self.text)
 
     def hoverEnterEvent(self, e):                                     # noqa: N802
         if self.on_click:
@@ -844,8 +859,8 @@ class GraphView(QGraphicsView):
         self.plus_session_pid = None                      # the flow it joins: the one it is drawn with
         if s.sources_loaded:
             last = max((sn for sn, _cn in g.sessions), key=lambda n: n.y) if g.sessions else g.root   # the lowest
-            gh = GhostItem(QRectF(cx["sources"], last.y + BH / 2 + 8, cw["sources"], BH * 0.6), "+  " + _("Session"),
-                           self.newSession.emit)
+            gh = GhostItem(QRectF(cx["sources"], last.y + BH / 2 + 8, cw["sources"], BH * 0.6), _("Session"),
+                           self.newSession.emit, role="add")
             cur_flow = s.path if s.path is not None and s.path.source is None else None
             if g.sessions and last.sid is not None:       # it joins the flow of the session it is drawn under
                 cur_flow = next((q for q in s.paths if q.source is None and q.sessions is not None
@@ -922,11 +937,10 @@ class GraphView(QGraphicsView):
             if ps is not None:
                 low.append(ps.rect.bottom())
             y = max([y] + [v + 14 for v in low])
-        text = "+  " + (_("Workflow: Session/Image") if s.paths or s.p.sessions else
-                        _("Start: Session/Image"))
-        need = QFontMetricsF(QFont("Segoe UI", 9)).horizontalAdvance(text) + 40
+        text = _("Workflow: Session/Image") if s.paths or s.p.sessions else _("Start: Session/Image")
+        need = QFontMetricsF(QFont("Segoe UI", 9)).horizontalAdvance(text) + 60
         x1 = max(x1, x0 + need)                          # its text whole, however short the chain
-        gh = GhostItem(QRectF(x0, y, x1 - x0, BH), text, None)
+        gh = GhostItem(QRectF(x0, y, x1 - x0, BH), text, None, role="add")
         gh.new_flow = True                               # issue #47: a parallel flow starts here
         gh.hot = self.drag_block in ("session", "image")
         sc.addItem(gh)
@@ -943,7 +957,7 @@ class GraphView(QGraphicsView):
                     seen.add(id(n))
                     r = QRectF(n.col + 6, n.y + BH / 2 + 4, n.w - 12, LANE - BH - 8)   # in the gap, not on the
                     #                                                                    block under it (8.1)
-                    bg = GhostItem(r, "⑂  " + _("new branch"), None, p.pid)
+                    bg = GhostItem(r, _("new branch"), None, p.pid, role="branch")
                     bg.branch_key = key
                     bg.setToolTip(_("A new branch from here: what comes before is shared (computed once), then "
                                     "{block}; it goes to Post as a layer of its own").format(block=title))
@@ -1057,7 +1071,7 @@ class GraphView(QGraphicsView):
         if item.node.key == "etoiles" and "composition" in getattr(self, "_cx", {}):
             x, w = self._cx["composition"], self._cw["composition"]
             y = item.node.y - BH / 2
-            self._comp_ghost = GhostItem(QRectF(x + 4, y + 4, w - 8, BH - 8), "+  " + _("Recombine"))
+            self._comp_ghost = GhostItem(QRectF(x + 4, y + 4, w - 8, BH - 8), _("Recombine"), role="add")
             self._comp_ghost.setZValue(8)
             self.scene().addItem(self._comp_ghost)
 
@@ -1622,7 +1636,9 @@ class GraphView(QGraphicsView):
         if gone or self.drag_block is not None or vp.contains(box):
             b.hide()
             return
-        b.setText(_("Post") + "  ›")
+        b.setText(_("Post"))
+        set_icon(b, "forward", 16)
+        b.setLayoutDirection(Qt.RightToLeft)              # its arrow after its name
         b.setToolTip(_("Post is further on: show it"))
         b.adjustSize()
         b.move(self.width() - b.width() - 14, self.b_all.geometry().bottom() + 6)   # under "Show all", over no block
@@ -1766,7 +1782,7 @@ class GraphView(QGraphicsView):
                     to_post.append((_(out), lambda _c=False, w=what: self.partOutOfPost.emit(node, w)))
                 else:
                     to_post.append((_(text), lambda _c=False, w=what: self.partToPost.emit(node, w)))
-            to_post.append((_("+ Recombine"), lambda: self.newComposition.emit(node)))
+            to_post.append((_("Recombine"), lambda: self.newComposition.emit(node), "add"))
         elif self.has_port(node):
             to_post.append((_("To Post"), lambda: self.sendToPost.emit(node)))
         wf = None
@@ -1841,8 +1857,11 @@ class GraphView(QGraphicsView):
             m.addAction(_("Inspect")).triggered.connect(lambda: self.blockOpened.emit(node))
             if to_post:
                 m.addSeparator()
-            for text, fn in to_post:
-                m.addAction(text).triggered.connect(fn)
+            for text, fn, *role in to_post:
+                a = m.addAction(text)
+                if role:
+                    a.setIcon(icon(role[0], 16))
+                a.triggered.connect(fn)
             m.addSeparator()
             bp = self.graph.breakpoint(node) if self.graph is not None else None
             a = m.addAction(_("Review pause"))
@@ -2155,7 +2174,7 @@ class ToolCard(QFrame):
             self.page.add_tool(self.key, self.page.s.path.pid)
 
 
-#: the palette's width (issue #47): a panel on the left of the graph; folded (issue #44), a column of first letters
+#: the palette's width (issue #47): a panel on the left of the graph; folded (issue #44), a column of icons
 PALETTE_W = 140
 PALETTE_FOLDED_W = 46
 NEW_FRAMES = -1        # a block placed "in the workflow from the frames" of sessions that have none yet: it starts one
@@ -2177,7 +2196,7 @@ class PaletteCard(QFrame):
         super().__init__(parent)
         self.page, self.block, self.reason = page, block, reason
         self._press = None
-        # inside the palette, its scroll bar beside it; folded (issue #44): its first letters, the name in the tooltip
+        # inside the palette, its scroll bar beside it; folded (issue #44): its icon alone, the name in the tooltip
         self.setMaximumWidth(PALETTE_FOLDED_W - 12 if folded else PALETTE_W - 26)
         on = not reason
         self.setObjectName("tool")
@@ -2189,19 +2208,23 @@ class PaletteCard(QFrame):
                            f"{'#353b47' if on else '#262a31'}; border-radius: 6px; }}"
                            f"QFrame#tool:hover {{ border-color: {ACCENT if on else '#3a4150'}; }}"
                            " QLabel { background: transparent; }")
-        v = QVBoxLayout(self)
-        v.setContentsMargins(9, 5, 9, 5)
-        v.setSpacing(0)
         self.title = _(PALETTE_TITLES[block]) if block in PALETTE_TITLES else block_title(None, view_key(block))
         if block == "deconv":
             self.title += "  ◇"
-        t = QLabel(self.title[:2] if folded else self.title)
-        t.setWordWrap(not folded)                        # a long name wraps in the palette's width
+        role = BLOCK_ROLES[block]
         if folded:
-            t.setAlignment(Qt.AlignCenter)
-            v.setContentsMargins(1, 5, 1, 5)
-        t.setStyleSheet("font-weight: 600; font-size: 9pt;" + ("" if on else " color: #555b66;"))
-        v.addWidget(t)
+            v = QVBoxLayout(self)
+            v.setContentsMargins(0, 6, 0, 6)
+            v.addWidget(IconLabel(role, 20, "normal" if on else "disabled"), 0, Qt.AlignHCenter)
+        else:
+            v = QHBoxLayout(self)
+            v.setContentsMargins(7, 5, 7, 5)
+            v.setSpacing(5)
+            v.addWidget(IconLabel(role, 16, "normal" if on else "disabled"), 0, Qt.AlignTop)
+            t = QLabel(self.title)
+            t.setWordWrap(True)                          # a long name wraps in the palette's width
+            t.setStyleSheet("font-weight: 600; font-size: 9pt;" + ("" if on else " color: #555b66;"))
+            v.addWidget(t, 1)
         key = view_key(block)
         what = BY_KEY[key]["what"] if key in BY_KEY else ""
         tip = _(what) if what and not reason else ""     # unavailable: the message under it says why
@@ -2334,12 +2357,11 @@ class GraphPage(QWidget):
         self.panel.corner = fold_button(self.panel, self.dock.fold, _("Fold to icons"))
         self.left_state = "docked"
         self.left_arrow = QToolButton(self)
-        self.left_arrow.setText("›")
+        set_icon(self.left_arrow, "chevron_right", 16, "dim")
         self.left_arrow.setFixedSize(ARROW_W, ARROW_H)
         self.left_arrow.setToolTip(_("Show the blocks again"))
-        self.left_arrow.setStyleSheet("QToolButton { background: #1c1f26; border: 1px solid #2a2f38; color: #aab2bf; "
-                                      "border-top-right-radius: 5px; border-bottom-right-radius: 5px; "
-                                      "font-weight: 600; }")
+        self.left_arrow.setStyleSheet("QToolButton { background: #1c1f26; border: 1px solid #2a2f38; padding: 0; "
+                                      "border-top-right-radius: 5px; border-bottom-right-radius: 5px; }")
         self.left_arrow.clicked.connect(self.sidesShown.emit)
         self.left_arrow.hide()
         gv = self.graph
@@ -2497,11 +2519,12 @@ class GraphPage(QWidget):
         folded = self.left_state == "folded"
         self.tl.setContentsMargins(*((4, 6, 8, 6) if folded else (10, 10, 14, 10)))
         toggle = QToolButton()
-        toggle.setText("»" if folded else "«")
+        icon_only(toggle, "fold_right" if folded else "fold_left",
+                  _("Unfold the blocks") if folded else _("Fold the blocks"), 16, "dim")
         toggle.setAutoRaise(True)
-        toggle.setToolTip(_("Unfold the blocks") if folded else _("Fold the blocks"))
-        toggle.setStyleSheet("QToolButton { border: none; color: #8b93a1; font-size: 11pt; padding: 0; } "
-                             "QToolButton:hover { color: #e8ebf0; }")
+        toggle.setFixedSize(20, 18)
+        toggle.setStyleSheet("QToolButton { border: none; padding: 0; } "
+                             "QToolButton:hover { background: #2b3446; border-radius: 3px; }")
         toggle.clicked.connect(lambda: self.sideChosen.emit("left", "docked" if folded else "folded"))
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)

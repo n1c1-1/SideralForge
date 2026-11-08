@@ -797,7 +797,7 @@ def test_the_strip_shows_the_open_block(win):
         assert left >= 0 and left + b.width() <= sa.viewport().width(), (left, b.width(), sa.viewport().width())
         # control round: only the blocks scroll, "◂ Graph" and the workflow list stay in view
         st = win.tune.strip
-        back = next(x for x in st.findChildren(QPushButton) if x.text().startswith("◂"))
+        back = next(x for x in st.findChildren(QPushButton) if x.property("iconRole") == "back")
         assert not sa.isAncestorOf(back) and back.isVisible()
         assert 0 <= back.mapTo(win, back.rect().topLeft()).x() < win.width()
         # the graph's blocks with the graph's names: no Output (never a block), the Session first

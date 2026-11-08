@@ -34,6 +34,7 @@ from PySide6.QtGui import QColor, QImage, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from .i18n import _
+from .icons import icon_only
 from .widgets import label
 
 #: the preview's copy of the stack holds about this many pixels
@@ -307,9 +308,8 @@ class GradientEditor(QObject):
             v.addWidget(av)
             self._ui["avoid"] = av
             row = QHBoxLayout()                # the grid on its line, the undo and removal on the next
-        for key, text, tip, fn in (("undo", "↶", "Undo (Ctrl+Z)", self.undo), ("redo", "↷", "Redo (Ctrl+Y)", self.redo)):
-            b = QPushButton(text)
-            b.setToolTip(_(tip))
+        for key, tip, fn in (("undo", "Undo (Ctrl+Z)", self.undo), ("redo", "Redo (Ctrl+Y)", self.redo)):
+            b = icon_only(QPushButton(), key, _(tip), 16)
             b.clicked.connect(fn)
             row.addWidget(b)
             self._ui[key] = b

@@ -108,6 +108,20 @@ DATA_SOURCES: list[dict] = [
 ]
 
 
+def icons_html() -> str:
+    """The icons of the interface (Apache-2.0 asks to say what is used), as rich text."""
+    from .icons import BLOCK_ROLES, CARBON
+    e = html.escape
+    rows = "".join(f"<tr><td>{e(k)}</td><td>&nbsp;·&nbsp;{e(v)}</td></tr>" for k, v in sorted(CARBON.items()))
+    own = ", ".join(e(r.removeprefix("block_")) for r in sorted(set(BLOCK_ROLES.values()) - set(CARBON)))
+    return (f"<h3>{e(_('Icons'))}</h3>"
+            f"<p>{e(_('Interface icons from IBM Carbon, © IBM Corp., under the Apache License 2.0 '))}"
+            f"(<a href='https://www.apache.org/licenses/LICENSE-2.0'>apache.org/licenses/LICENSE-2.0</a>), "
+            f"{e(_('recoloured and resized here; the licence text ships with the icons.'))}</p>"
+            f"<p>{e(_('Function → Carbon icon:'))}</p><table>{rows}</table>"
+            f"<p>{e(_('The block icons were drawn for this program: {names}.').format(names=own))}</p>")
+
+
 def data_sources_html() -> str:
     """The "Data sources" section of About, as rich text (the labels and uses translated)."""
     e = html.escape
@@ -131,4 +145,5 @@ def data_sources_html() -> str:
             bits.append(e(_(s["note"])))
         out.append("<p>" + "<br>".join(bits) + "</p>")
     out.append(f"<p>{e(_('Gaia, NSNS and the NGC/IC data of W. Steinicke are free for non-commercial use only.'))}</p>")
+    out.append(icons_html())
     return "".join(out)

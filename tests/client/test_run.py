@@ -1884,7 +1884,7 @@ def test_run_shows_the_window_first_when_the_plan_has_a_warning(toy, monkeypatch
     monkeypatch.setattr(runs.RunDialog, "_file_warnings", lambda self: ["Session 1: DSC0001.JPG is not a raw"])
     d = toy.ctl.launch(start=True)
     assert d is not None and not toy.ctl.running and d.phase() == "plan"
-    assert "⚠ Session 1: DSC0001.JPG is not a raw" in texts_of(d)
+    assert "Session 1: DSC0001.JPG is not a raw" in texts_of(d)
     assert d.b_run.isEnabled() and d.b_run.isDefault()                       # Enter runs (it was a hidden button)
     d.close()
 

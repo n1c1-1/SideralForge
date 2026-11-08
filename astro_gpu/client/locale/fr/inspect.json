@@ -105,8 +105,6 @@
   "Rotation (°)": "Rotation (°)",
   "Residual (px)": "Résidu (px)",
   "Aligned": "Alignée",
-  "★ the reference frame.": "★ l'image de référence.",
-  "★ the reference frame. Rotation, scale and roundness: {why}": "★ l'image de référence. Rotation, échelle et rondeur : {why}",
   "The stack cannot be read: {why}": "L'empilement ne peut pas être lu : {why}",
   "Scale R": "Échelle R",
   "Scale G": "Échelle V",

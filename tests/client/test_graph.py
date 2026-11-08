@@ -274,7 +274,7 @@ def panel_faults(page) -> list[str]:
     host = panel.findChildren(QScrollArea)[0].widget()
     eds = [w for w in host.findChildren(QWidget) if w.isVisibleTo(panel) and (
         isinstance(w, QAbstractSpinBox) or (isinstance(w, QCheckBox) and not w.text()) or
-        (isinstance(w, (QLineEdit, QPushButton)) and isinstance(w.parent(), CompactRow) and w.text() != "↺"))]
+        (isinstance(w, (QLineEdit, QPushButton)) and isinstance(w.parent(), CompactRow) and w.property("iconRole") != "reset"))]
     xs = sorted({w.mapTo(panel, QPoint(0, 0)).x() for w in eds})
     return [f"editors at x = {xs}"] if len(xs) > 1 else []
 
@@ -873,7 +873,7 @@ def test_a_settings_row_changes_marks_and_goes_back_to_the_suggestion(world, mod
         it = rows["gradient.degree"]
         assert it.r["changed"] and it.r["value"] == 3 and it.r["suggested"] == 2
         assert model.state(model.view(1), "gradient") == "stale"
-        back = [b for b in it.findChildren(QPushButton) if b.text() == "↺"][0]
+        back = [b for b in it.findChildren(QPushButton) if b.property("iconRole") == "reset"][0]
         assert not back.isHidden() and "2" in back.toolTip()
         name = it.findChildren(QLabel)[0]
         assert "e6a23c" in name.styleSheet().lower()                                      # the name of a changed row
@@ -1109,7 +1109,7 @@ def test_spec_mode_shows_what_the_engine_does_not_have_disabled(world, model, pa
     rows = live_rows(page)
     new_rows = [r for r in rows if r.r["kind"] == "new"]
     assert new_rows and not [b for r in new_rows for b in r.findChildren(QPushButton)
-                             if b.text() == "↺" and b.isVisibleTo(r)]           # never changed: no ↺
+                             if b.property("iconRole") == "reset" and b.isVisibleTo(r)]           # never changed: no ↺
     for r in new_rows:
         editors = r.findChildren(QComboBox) + r.findChildren(QCheckBox) + r.findChildren(QDoubleSpinBox) + \
             r.findChildren(QSpinBox)
@@ -1405,7 +1405,7 @@ def test_a_project_without_workflows_has_a_graph_and_an_import_button(qapp, tmp_
     settle(w, pg)
     items = [it for it in pg.graph.scene().items() if isinstance(it, BlockItem)]
     assert not items                                          # issue #47: a blank page is empty
-    assert any(getattr(g, "text", "").startswith("+  Start: Session/Image") for g in pg.graph.scene().items())
+    assert any(getattr(g, "text", "").startswith("Start: Session/Image") and g.role == "add" for g in pg.graph.scene().items())
     got = []
     pg.addSources.connect(lambda: got.append(1))
     pg.select_node(pg.graph.graph.root)

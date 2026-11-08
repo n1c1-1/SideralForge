@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 from ..core import gaia_extracts as ge
 from . import prefs
 from .i18n import LANGUAGES, _, maybe, number
+from .icons import icon
 from .services import extracts
 from .services.selftest import job as card_test_job
 from .services.worker import Machine, disk_usage
@@ -48,6 +49,9 @@ from .widgets import cap_dialog, label, spec_mark
 PAGES = [("general", "General", False), ("folders", "Folders & disk", False), ("compute", "Compute", False),
          ("catalogs", "Catalogs & astrometry", False), ("formats", "File formats", True),
          ("masters", "Master library", True), ("display", "Display", False)]
+#: the pages' icons in the settings' list
+PAGE_ROLES = {"general": "adjust", "folders": "folder", "compute": "compute", "catalogs": "catalogue", "formats": "file",
+              "masters": "layers", "display": "display"}
 LABEL_MIN = 200
 
 
@@ -132,7 +136,7 @@ class SettingsDialog(QDialog):
         for key, title, new in PAGES:
             if new and not self.spec:
                 continue
-            item = QListWidgetItem(_(title) + ("  ◇" if new else ""))
+            item = QListWidgetItem(icon(PAGE_ROLES[key], 16), _(title) + ("  ◇" if new else ""))
             if new:
                 item.setForeground(QColor("#8b93a1"))
                 item.setToolTip(not_yet())

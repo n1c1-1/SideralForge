@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 from ..core import project2
 from . import prefs
 from .i18n import _, hours_text, maybe, plural
+from .icons import IconLabel, set_icon
 from .widgets import ACCENT, WARN, ElidedLabel, cap_dialog, label
 
 TW, TH = 260, 150
@@ -479,8 +480,7 @@ class SectionView(QWidget):
         h = QHBoxLayout(self.header)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(8)
-        self.arrow = label("", "h1")
-        self.arrow.setFixedWidth(16)
+        self.arrow = IconLabel("chevron_down", 16, "dim")
         self.arrow.setVisible(collapsible)
         h.addWidget(self.arrow)
         self.title = label(title, "h1")
@@ -512,7 +512,7 @@ class SectionView(QWidget):
 
     def set_open(self, on: bool, by_click: bool = False):
         self.is_open = on or not self.collapsible
-        self.arrow.setText("▾" if self.is_open else "▸")
+        self.arrow.set_role("chevron_down" if self.is_open else "chevron_right")
         self.body.setVisible(self.is_open)
         if by_click:
             self.toggled.emit(self.is_open)
@@ -737,10 +737,11 @@ class HomeView(QWidget):
         lv.setContentsMargins(18, 20, 18, 18)
         lv.setSpacing(8)
         buttons = []
-        for text, fn, primary, on in ((_("New project…"), self.new_project, True, True),
-                                      (_("Import folder…"), lambda: self.importFolder.emit(), False, can_import),
-                                      (_("Open project…"), self.open_other, False, True)):
+        for text, fn, primary, on, role in ((_("New project…"), self.new_project, True, True, "new"),
+                                            (_("Import folder…"), lambda: self.importFolder.emit(), False, can_import, "import"),
+                                            (_("Open project…"), self.open_other, False, True, "open")):
             b = QPushButton(text)                    # compact names (decision 12): the sentence in the tooltip
+            set_icon(b, role, 16, "on_accent" if primary else "normal")
             if fn is not self.new_project and fn is not self.open_other:
                 b.setToolTip(_("Import folder as new project…"))
             if primary:

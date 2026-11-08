@@ -63,6 +63,8 @@ from . import layout as lay
 from .gcguard import GuiGarbageCollector
 from .home import HomeView
 from .i18n import _, language, plain_error, plural, set_language
+from .icons import icon as make_icon
+from .icons import set_icon
 from .logview import LogPanel
 from .services.run import duration_text
 from .services.worker import ApiWorker, Machine, machine_info
@@ -244,8 +246,10 @@ class Main(QMainWindow):
         has = self.project is not None
         spec = prefs.spec()
 
-        def act(menu, text, fn=None, key=None, checkable=False, enabled=True, new=False):
+        def act(menu, text, fn=None, key=None, checkable=False, enabled=True, new=False, role=None):
             a = QAction(text + ("  ◇" if new else ""), menu)
+            if role:
+                a.setIcon(make_icon(role, 16))
             if key:
                 a.setShortcut(QKeySequence(key))
             a.setCheckable(checkable)
@@ -258,9 +262,9 @@ class Main(QMainWindow):
             return a
 
         f = mb.addMenu(_("File"))
-        act(f, _("Home"), self.show_home, "Ctrl+H")
-        act(f, _("New project…"), self.new_project, "Ctrl+N")
-        act(f, _("Open project…"), self.open_other, "Ctrl+O")
+        act(f, _("Home"), self.show_home, "Ctrl+H", role="home")
+        act(f, _("New project…"), self.new_project, "Ctrl+N", role="new")
+        act(f, _("Open project…"), self.open_other, "Ctrl+O", role="open")
         rec = f.addMenu(_("Recent projects"))
         for r in prefs.recent():
             text = r["name"] + (f" · {r['target']}" if r.get("target") else "")
@@ -269,44 +273,44 @@ class Main(QMainWindow):
         rec.setEnabled(bool(prefs.recent()))
         rec.setToolTipsVisible(True)
         f.addSeparator()
-        act(f, _("Save"), self.save, "Ctrl+S", enabled=has)
-        act(f, _("Save as…"), self.save_as, enabled=has)
+        act(f, _("Save"), self.save, "Ctrl+S", enabled=has, role="save")
+        act(f, _("Save as…"), self.save_as, enabled=has, role="save")
         f.addSeparator()
-        act(f, _("Import folder…"), self.add_sources, "Ctrl+I", enabled=has)
-        self.a_export = act(f, _("Export image…"), self.export, "Ctrl+E", enabled=has)
+        act(f, _("Import folder…"), self.add_sources, "Ctrl+I", enabled=has, role="import")
+        self.a_export = act(f, _("Export image…"), self.export, "Ctrl+E", enabled=has, role="export")
         if spec:
             act(f, _("Export as script…"), new=True)
         f.addSeparator()
-        act(f, _("Close project"), self.close_project, "Ctrl+W", enabled=has)
-        act(f, _("Quit"), self.close, "Ctrl+Q")
+        act(f, _("Close project"), self.close_project, "Ctrl+W", enabled=has, role="close_project")
+        act(f, _("Quit"), self.close, "Ctrl+Q", role="quit")
         e = mb.addMenu(_("Edit"))
-        self.a_undo = act(e, _("Undo"), self.undo, "Ctrl+Z", enabled=has)
-        self.a_redo = act(e, _("Redo"), self.redo, "Ctrl+Y", enabled=has)
+        self.a_undo = act(e, _("Undo"), self.undo, "Ctrl+Z", enabled=has, role="undo")
+        self.a_redo = act(e, _("Redo"), self.redo, "Ctrl+Y", enabled=has, role="redo")
         self.a_redo.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
         e.addSeparator()
-        act(e, _("Settings…"), self.open_settings, "Ctrl+,")
+        act(e, _("Settings…"), self.open_settings, "Ctrl+,", role="settings")
         v = mb.addMenu(_("View"))
-        act(v, _("Graph"), lambda: self.set_mode(0), "Ctrl+1", enabled=has)
-        act(v, _("Inspect"), lambda: self.set_mode(1), "Ctrl+2", enabled=has)
-        act(v, _("Post"), lambda: self.set_mode(2), "Ctrl+3", enabled=has)
+        act(v, _("Graph"), lambda: self.set_mode(0), "Ctrl+1", enabled=has, role="graph")
+        act(v, _("Inspect"), lambda: self.set_mode(1), "Ctrl+2", enabled=has, role="inspect")
+        act(v, _("Post"), lambda: self.set_mode(2), "Ctrl+3", enabled=has, role="layers")
         v.addSeparator()
         self.a_hide = act(v, _("Hide panels") + "\tTab", lambda: self.toggle_panels("hidden"), None, True, enabled=has)
         self.a_hide_r = act(v, _("Hide right") + "\tShift+Tab", lambda: self.toggle_panels("right_hidden"), None, True,
                             enabled=has)
         self.a_max = act(v, _("Maximise"), lambda: self.toggle_panels("max"), "Ctrl+Space", True, enabled=has)
-        act(v, _("Reset layout"), self.reset_layout, enabled=has)
+        act(v, _("Reset layout"), self.reset_layout, enabled=has, role="reset")
         v.addSeparator()
-        act(v, _("Log"), lambda: self.b_log.toggle(), "Ctrl+L")
+        act(v, _("Log"), lambda: self.b_log.toggle(), "Ctrl+L", role="log")
         self.a_spec = act(v, _("Spec mode"), None, None, True)
         self.a_spec.setChecked(spec)
         self.a_spec.toggled.connect(self.set_spec)
         r = mb.addMenu(_("Run"))
-        self.a_run = act(r, _("Run all"), self.launch, "F5", enabled=has)
-        self.a_here = act(r, _("Run to here"), self.run_to_here, "Shift+F5", enabled=has)   # Inspect's button's name
+        self.a_run = act(r, _("Run all"), self.launch, "F5", enabled=has, role="run")
+        self.a_here = act(r, _("Run to here"), self.run_to_here, "Shift+F5", enabled=has, role="run")   # Inspect's button's name
         r.addSeparator()
-        self.a_stop = act(r, _("Stop"), self.stop_run, enabled=False)
+        self.a_stop = act(r, _("Stop"), self.stop_run, enabled=False, role="stop")
         h = mb.addMenu(_("Help"))
-        act(h, _("About"), self.about, "F1")
+        act(h, _("About"), self.about, "F1", role="about")
         if spec:
             act(h, _("Glossary"), new=True)
         for m in (f, e, v, r, h):
@@ -703,7 +707,7 @@ class Main(QMainWindow):
         self.device_cb.activated.connect(lambda _i: self.set_device(self.device_cb.currentData()))
         h.addWidget(self.device_cb)
         h.addSpacing(6)
-        self.bt_run = QPushButton(_("Run"))
+        self.bt_run = set_icon(QPushButton(_("Run")), "run", 16, "on_accent")
         self.bt_run.setObjectName("primary")
         self.bt_run.clicked.connect(self.launch)
         h.addWidget(self.bt_run)
@@ -1368,6 +1372,8 @@ class Main(QMainWindow):
         src = QTextBrowser()                         # the data the product reads, credited (credits.py)
         src.setObjectName("data_sources")
         src.setOpenExternalLinks(True)
+        src.setStyleSheet('QTextBrowser { background: #12141a; border: 1px solid #353b47; }')
+        src.document().setDefaultStyleSheet('a { color: #5ea1ff; } th, td { padding-right: 8px; }')
         src.setHtml(data_sources_html())
         lv.addWidget(src, 1)
         b = QPushButton(_("Close"))

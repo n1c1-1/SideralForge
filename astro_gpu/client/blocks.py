@@ -54,6 +54,7 @@ TITLES = {"sources": "Frames", "final": "Post", "image": "Image", "session": "Se
           "post": "Output", "demi_piles": "Half-stacks", "composition": "Recombine"}
 # the optional blocks, in the toolbar's order
 TOOLBOX = ["debruitage", "deconv", "etoiles"]
+WARN_MARK = "⚠ "                       # a summary that opens with it: the block draws a warning icon (issue #58)
 #: the two images of the Stars block (the parts of Post's layers) and their words on the wires
 STAR_OUTPUTS = (("starless", "Starless image"), ("stars", "Stars alone"))
 # the engine's block names (core/workflow.BLOCKS) and the views' keys
@@ -215,7 +216,7 @@ def session_summary(s, sid: int) -> str:
     text = plural(int(ses.get("lights") or 0), "{n} light", "{n} lights")
     text += " · " + calibration_counts(ses.get("darks", 0), ses.get("flats", 0), gone=gone)
     flt = getattr(s.session(sid), "filter", "") if hasattr(s, "session") else ""
-    warn = "⚠ " if hasattr(s, "file_warnings") and s.file_warnings(sid) else ""   # issue #58: see its panel
+    warn = WARN_MARK if hasattr(s, "file_warnings") and s.file_warnings(sid) else ""   # issue #58: see its panel
     return warn + text + (f" · {flt}" if flt else "")
 
 

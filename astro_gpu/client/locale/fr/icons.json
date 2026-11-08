@@ -1,0 +1,20 @@
+{
+ "Add to mask": "Ajouter au masque",
+ "Lights (another night)…": "Brutes (autre nuit)…",
+ "Fit (F)": "Adapter (F)",
+ "Actual size (1)": "Taille réelle (1)",
+ "Fit: the whole image (F)": "Adapter : l'image entière (F)",
+ "Actual size: one image pixel per screen pixel (1)": "Taille réelle : un pixel de l'image par pixel d'écran (1)",
+ "Add a filter layer above the selected layer": "Ajouter un calque de filtre au-dessus du calque choisi",
+ "Duplicate (Ctrl+J)": "Dupliquer (Ctrl+J)",
+ "Delete the selected layer": "Supprimer le calque choisi",
+ "More actions": "Autres actions",
+ "Show the files": "Voir les fichiers",
+ "Icons": "Icônes",
+ "Interface icons from IBM Carbon, © IBM Corp., under the Apache License 2.0 ": "Icônes de l'interface : IBM Carbon, © IBM Corp., sous licence Apache 2.0 ",
+ "recoloured and resized here; the licence text ships with the icons.": "recolorées et redimensionnées ici ; le texte de la licence est livré avec les icônes.",
+ "Function → Carbon icon:": "Fonction → icône Carbon :",
+ "The block icons were drawn for this program: {names}.": "Les icônes de blocs ont été dessinées pour ce programme : {names}.",
+ "the reference frame.": "l'image de référence.",
+ "the reference frame. Rotation, scale and roundness: {why}": "l'image de référence. Rotation, échelle et rondeur : {why}"
+}

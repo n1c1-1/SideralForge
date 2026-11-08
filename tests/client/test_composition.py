@@ -231,7 +231,7 @@ def test_the_stars_panel_sends_each_image_to_post_and_makes_a_stars_and_backgrou
     stars = Graph(model).node_of(full, "etoiles")
     panel.outputs(stars)
     buttons = {b.text().replace("&&", "&"): b for b in panel.findChildren(QPushButton)}   # "&&": a plain "&" shown
-    assert "To Post" in buttons and "+ Recombine" in buttons
+    assert "To Post" in buttons and "Recombine" in buttons
     panel._part_to_post(full, "starless")
     panel._new_composition(full)
     assert [x.get("part") for x in model.post_layers()][:2] == ["combined", "starless"]

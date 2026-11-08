@@ -82,6 +82,7 @@ from .charts import (
 )
 from .chartview import ChartView
 from .i18n import _, hours_text, language, number, plural
+from .icons import IconLabel, IconText, icon, set_icon
 from .imageview import ImageView, ViewImage, quick_thumbnail, sky_text
 from .layout import Dock, fold_button
 from .panel import STATE_COLOR, STATE_WORD, Panel
@@ -180,7 +181,7 @@ class Strip(QFrame):
         clear(self.lead)
         clear(self.h)
         self.current = None                               # the open block's button (the strip scrolls to it)
-        bk = QPushButton("◂  " + _("Graph"))
+        bk = set_icon(QPushButton(_("Graph")), "back", 16)
         bk.setToolTip(_("Back to the graph (Esc)"))
         bk.clicked.connect(self.back.emit)
         self.lead.addWidget(bk)
@@ -201,9 +202,7 @@ class Strip(QFrame):
             self.lead.addSpacing(10)
         for i, (k, title, node) in enumerate(items):
             if i:
-                a = QLabel("›")
-                a.setStyleSheet("color: #6b7280; background: transparent;")
-                self.h.addWidget(a)
+                self.h.addWidget(IconLabel("chevron_right", 16, "dim"))
             off = node is not None and node.cut           # switched off: no state mark (round 3: a green "Up to date")
             st = g.state(node) if node is not None and not off else "pending"
             b = QPushButton(title.replace("&", "&&"))   # no mnemonic
@@ -222,9 +221,7 @@ class Strip(QFrame):
             if sel:
                 self.current = b
         if p is not None:
-            a = QLabel("›")
-            a.setStyleSheet("color: #6b7280; background: transparent;")
-            self.h.addWidget(a)
+            self.h.addWidget(IconLabel("chevron_right", 16, "dim"))
             b = QPushButton(_("Post"))
             b.setStyleSheet("QPushButton { padding: 4px 8px; }")
             b.clicked.connect(lambda: self.picked.emit("final"))
@@ -263,6 +260,9 @@ class _Cell:
         return self._t
 
 
+REF_MARK = "  ★"                  # a table's cell that ends with it holds the reference frame: its icon in the cell
+
+
 class TableModel(QAbstractTableModel):
     """The rows of a ``Table``: texts made once, numbers kept for sorting (−inf when unknown), red rows."""
 
@@ -271,6 +271,7 @@ class TableModel(QAbstractTableModel):
         self.headers = list(headers)
         self.texts: list[list[str]] = []
         self.keys: list[list] = []
+        self.stars: set[tuple[int, int]] = set()
         for row in rows:
             tr, kr = [], []
             for c, v in enumerate(row):
@@ -281,6 +282,9 @@ class TableModel(QAbstractTableModel):
                     kr.append(x if ok else -np.inf)
                 else:
                     t = "" if v is None else str(v)
+                    if t.endswith(REF_MARK):              # the reference frame: its star, drawn in the cell
+                        t = t[:-len(REF_MARK)]
+                        self.stars.add((len(self.texts), c))
                     tr.append(t)
                     kr.append(t)
             self.texts.append(tr)
@@ -300,6 +304,8 @@ class TableModel(QAbstractTableModel):
             return self.texts[r][c]
         if role == Qt.UserRole:
             return self.keys[r][c]
+        if role == Qt.DecorationRole and (r, c) in self.stars:
+            return icon("reference", 16)
         if role == Qt.TextAlignmentRole and c in self.numeric:
             return int(Qt.AlignRight | Qt.AlignVCenter)
         if role == Qt.ForegroundRole and self.red[r]:
@@ -1075,8 +1081,7 @@ class TuneView(QWidget):
 
     def _missing_line(self, text: str) -> QLabel:
         """A line on what this result does not hold (amber: the user can recompute to get it)."""
-        lb = label("◌  " + text, "warn", wrap=True)
-        return lb
+        return IconText("missing", text, "warning", "warn")
 
     def _card(self, title: str, lines: list[str], more: str = ""):
         """A missing diagnostic, said plainly in the middle of the tab: what, why and how to get it."""
@@ -2042,12 +2047,12 @@ class TuneView(QWidget):
             rows, red = [], []
             for i, r in enumerate(b.table):
                 tr = d.transp[i] if i < d.n else np.nan
-                rows.append([r.name + ("  ★" if getattr(r, "reference", False) else ""), (r.time or "")[11:19],
+                rows.append([r.name + (REF_MARK if getattr(r, "reference", False) else ""), (r.time or "")[11:19],
                              r.dx, r.dy, r.rotation, r.scale, r.nmatch if r.used else None, r.nstars or None, r.fwhm,
                              r.roundness, getattr(r, "rms", None), tr, _("yes") if r.used else _("no")])
                 red.append(not r.used)
             t = make_table(heads, rows, {2: 2, 3: 2, 4: 3, 5: 5, 6: 0, 7: 0, 8: 2, 9: 3, 10: 3, 11: 0}, red)
-            self.center.addWidget(label(_("★ the reference frame."), "small"))
+            self.center.addWidget(IconText("reference", _("the reference frame."), name="small"))
             for line in si.missing_of(b.table):
                 self.center.addWidget(self._missing_line(line))
         else:
@@ -2055,13 +2060,13 @@ class TuneView(QWidget):
                      _("Stars detected"), _("FWHM (px)"), _("Residual (px)"), _("Transparency (%)"), _("Aligned")]
             rows, red = [], []
             for i in range(d.n):
-                rows.append([d.names[i] + ("  ★" if i == d.ref else ""), (d.iso[i] or "")[11:19], d.dx[i], d.dy[i],
+                rows.append([d.names[i] + (REF_MARK if i == d.ref else ""), (d.iso[i] or "")[11:19], d.dx[i], d.dy[i],
                              d.nmatch[i], d.nstars[i], d.fwhm[i], d.rms[i], d.transp[i],
                              _("yes") if d.aligned[i] else _("no")])
                 red.append(not d.aligned[i])
             t = make_table(heads, rows, {2: 2, 3: 2, 4: 0, 5: 0, 6: 2, 7: 3, 8: 0}, red)
-            self.center.addWidget(label(_("★ the reference frame. Rotation, scale and roundness: {why}").format(
-                why=si.not_yet("register")), "small", wrap=True))
+            self.center.addWidget(IconText("reference", _("the reference frame. Rotation, scale and roundness: {why}").format(
+                why=si.not_yet("register")), name="small"))
         self.center.addWidget(t, 1)
 
     # ------------------------------------------------------------ Stacking

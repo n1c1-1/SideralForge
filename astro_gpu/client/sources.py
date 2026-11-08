@@ -41,13 +41,14 @@ from PySide6.QtWidgets import (
 )
 
 from .. import api
+from . import icons as ic
 from . import prefs
 from .frames import fexp, night_text
 from .i18n import _, hours_text, number, plural
 from .imageview import ImageView, ViewImage, quick_thumbnail
 from .services.inspect import FrameItem, ProjectFrames, add_scan, light_thumb, service_of, set_calibration_excluded
 from .services.worker import norm_path
-from .widgets import NEW, OK, WARN, ElidedLabel, cap_dialog, clear, hline, label, para
+from .widgets import NEW, ElidedLabel, cap_dialog, clear, hline, label, para
 
 # (key, title, section): plain English, translated where shown
 GROUPS = [("lights", "Lights", "Lights"), ("darks", "Darks", "Calibration"), ("flats", "Flats", "Calibration"),
@@ -183,8 +184,7 @@ class KindRow(QFrame):
         self.folder_b = QPushButton(_("Folder…"))
         self.folder_b.setToolTip(_("Every frame of a folder"))
         self.folder_b.clicked.connect(self._pick_folder)
-        self.clear_b = QPushButton("✕")
-        self.clear_b.setToolTip(_("None of this kind"))
+        self.clear_b = ic.icon_only(QPushButton(), "remove", _("None of this kind"), 16)
         self.clear_b.clicked.connect(lambda: self.changed.emit(self.key, []))
         for b in (self.files_b, self.folder_b, self.clear_b):
             h.addWidget(b)
@@ -752,7 +752,7 @@ class SourcesView(QWidget):
             row.clicked.connect(self.select_group)
             self.lv.addWidget(row)
             if key == "lights":
-                b = QPushButton(_("+ Lights (another night)…"))
+                b = ic.set_icon(QPushButton(_("Lights (another night)…")), "add", 16)
                 b.setObjectName("link")
                 b.clicked.connect(self.add_session)
                 self.lv.addWidget(b)
@@ -761,18 +761,17 @@ class SourcesView(QWidget):
         self.lv.addWidget(label(_("Calibration matching"), "h2"))
         for ok, text in self.checks():
             row = QHBoxLayout()
-            ic = QLabel("✓" if ok is True else ("!" if ok is False else "i"))
-            ic.setFixedWidth(14)
-            ic.setStyleSheet(f"color: {OK if ok is True else (WARN if ok is False else '#8b93a1')}; font-weight: 700;")
-            row.addWidget(ic, 0, Qt.AlignTop)
+            mark = ic.IconLabel("ok" if ok is True else "warning" if ok is False else "info", 16,
+                                "ok" if ok is True else "warning" if ok is False else "dim")
+            row.addWidget(mark, 0, Qt.AlignTop)
             row.addWidget(label(text, "small", wrap=True), 1)
             self.lv.addLayout(row)
         if prefs.spec():
             row = QHBoxLayout()
-            ic = QLabel("◇")
-            ic.setFixedWidth(14)
-            ic.setStyleSheet(f"color: {NEW}; font-weight: 700;")
-            row.addWidget(ic, 0, Qt.AlignTop)
+            mark = QLabel("◇")
+            mark.setFixedWidth(16)
+            mark.setStyleSheet(f"color: {NEW}; font-weight: 700;")
+            row.addWidget(mark, 0, Qt.AlignTop)
             t = label(_("Library masters, sensor temperature and rotation checks."), "small", wrap=True)
             t.setEnabled(False)
             t.setToolTip("◇ " + _("Not in the engine yet."))
@@ -847,7 +846,7 @@ class SourcesView(QWidget):
             t = f"{f.name}\n{(number(f.fwhm) + ' px') if f.fwhm is not None else '–'} · {tr}"
         else:
             t = f"{f.name}\n{(number(f.level, 0) + ' ADU') if f.level is not None else (f.time[:10] if f.time else '')}"
-        return ("✕ " if self.excluded(i) else "") + t
+        return t
 
     def fill(self):
         idx = self.order()
@@ -859,9 +858,8 @@ class SourcesView(QWidget):
             it.setToolTip(self._item_text(i).replace("\n", " · "))
             if self.excluded(i):
                 it.setForeground(QColor("#e06c6c"))
-            th = self.service.thumb_cache.get(self.items[i].path)
-            if th is not None:
-                it.setIcon(QIcon(pixmap(th)))
+            if self.service.thumb_cache.get(self.items[i].path) is not None:
+                it.setIcon(self._item_icon(i))
             else:
                 self._icons.setdefault(self.items[i].path, []).append(it)
             self.grid.addItem(it)
@@ -956,10 +954,21 @@ class SourcesView(QWidget):
             i = it.data(Qt.UserRole)
             it.setForeground(QColor("#e06c6c") if self.excluded(i) else QColor("#d8dce4"))
             it.setText(self._item_text(i))
+            if self.service.thumb_cache.get(self.items[i].path) is not None:
+                it.setIcon(self._item_icon(i))
+
+    def _item_icon(self, i: int) -> QIcon:
+        """A frame's thumbnail, an excluded one with its cross."""
+        th = self.service.thumb_cache.get(self.items[i].path)
+        if th is None:
+            return placeholder()
+        pm = pixmap(th)
+        return QIcon(ic.stamped(pm, "remove", "error") if self.excluded(i) else pm)
 
     def _thumb(self, path: str, arr):
         for it in self._icons.pop(path, []):
-            it.setIcon(QIcon(pixmap(arr)))
+            i = it.data(Qt.UserRole)
+            it.setIcon(self._item_icon(i) if self.service.thumb_cache.get(path) is not None else QIcon(pixmap(arr)))
 
     def _want_thumbs(self):
         """Thumbnails of the grid for the frames in view and around the current one (the worker makes them in this

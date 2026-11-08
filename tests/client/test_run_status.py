@@ -460,7 +460,7 @@ def test_the_run_window_warns_about_a_file_of_another_type(world):
     assert w.m.file_warnings(1)
     d = w.ctl.launch()
     texts = [lb.text() for lb in d.findChildren(QLabel) if lb.isVisibleTo(d)]
-    assert any(t.startswith("⚠ night 1: phone.JPG is not a frame the engine reads") for t in texts), texts
+    assert any(t.startswith("night 1: phone.JPG is not a frame the engine reads") for t in texts), texts
     d.close()
 
 

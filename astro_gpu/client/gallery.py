@@ -43,6 +43,7 @@ from ..core import workflow as wfl
 from . import prefs
 from .blocks import KEY_ENGINE_BLOCK, TITLES, TRUNK
 from .i18n import _, hm
+from .icons import draw, set_icon
 from .widgets import ACCENT, cap_dialog, label, size_within
 
 FULL = dict(debruitage=True, etoiles="retirer", fond="simple")
@@ -256,9 +257,7 @@ def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
         r = QRectF(w * 0.3, h * 0.3, w * 0.4, h * 0.4)
         p.setPen(QPen(QColor("#4a5263"), 1.4, Qt.DashLine))
         p.drawRoundedRect(r, 6, 6)
-        p.setPen(QColor("#8b93a1"))
-        p.setFont(QFont("Segoe UI", max(8, int(h * 0.12))))
-        p.drawText(r, Qt.AlignCenter, "+")
+        draw(p, QRectF(w / 2 - 10, h / 2 - 10, 20, 20), "add", "dim", 20)
         p.end()
         return pm
     chain = chain_of(t)
@@ -612,15 +611,15 @@ class TemplateGallery(QDialog):
         nr.addWidget(self.name, 1)
         sv.addLayout(nr)
         bb = QHBoxLayout()
-        imp = QPushButton(_("Import…"))
+        imp = set_icon(QPushButton(_("Import…")), "import", 16)
         imp.setToolTip(_("A template saved as a file (Export… of a template of yours)"))
         imp.clicked.connect(self._import)
         bb.addWidget(imp)
-        self.export_b = QPushButton(_("Export…"))
+        self.export_b = set_icon(QPushButton(_("Export…")), "export", 16)
         self.export_b.setToolTip(_("Save this template of yours as a file, to share it"))
         self.export_b.clicked.connect(self._export)
         bb.addWidget(self.export_b)
-        self.delete_b = QPushButton(_("Delete"))
+        self.delete_b = set_icon(QPushButton(_("Delete")), "delete", 16)
         self.delete_b.clicked.connect(self._delete)
         bb.addWidget(self.delete_b)
         bb.addStretch(1)
