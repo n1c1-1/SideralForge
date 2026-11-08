@@ -50,6 +50,73 @@ def test_a_tiny_image_is_padded_to_one_tile(net):
     assert out.shape == (3, 40, 70) and np.isfinite(out).all()
 
 
+def test_the_channel_attention_averages_over_a_window_only_when_applied():
+    """Issue #45: applied to more than the training size, the attention's average is local (Test-time Local Converter);
+    within the window, and in training, it is the average over the whole tile, as the network was trained."""
+    pool = sr._LocalPool(16)
+    x = torch.zeros(1, 2, 64, 64)
+    x[:, :, :, 32:] = 1.0
+    pool.eval()
+    local = pool(x)
+    assert local.shape == x.shape
+    assert local[0, 0, 32, 2] == pytest.approx(0.0) and local[0, 0, 32, 61] == pytest.approx(1.0)
+    assert local[0, 0, 32, 32] == pytest.approx(0.5, abs=0.07)                      # an even window: half a pixel off
+    assert pool(x[:, :, 24:40, 24:40]).shape == (1, 2, 1, 1)                        # within the window: the whole tile
+    pool.train()
+    assert pool(x).shape == (1, 2, 1, 1) and pool(x)[0, 0, 0, 0] == pytest.approx(0.5)
+
+
+def test_the_local_average_is_exact_in_half_precision():
+    """Sums over a big tile in bfloat16 would lose the small values; the average of a constant stays the constant."""
+    pool = sr._LocalPool(32).eval()
+    x = torch.full((1, 1, 512, 512), 3.0, dtype=torch.bfloat16)
+    assert torch.allclose(pool(x).float(), torch.full((1, 1, 512, 512), 3.0), rtol=1e-3)
+
+
+def test_the_window_follows_each_level_of_the_network():
+    """The window is the training size in the pixels of each level, and the bundled network's weights still load."""
+    net = sr.NAFNet()
+    pools = [net.encs[0][0].sca[0], net.encs[3][0].sca[0], net.mid[0].sca[0], net.decs[0][0].sca[0], net.decs[3][0].sca[0]]
+    assert [p.window for p in pools] == [sr.WINDOW, sr.WINDOW // 8, sr.WINDOW // 16, sr.WINDOW // 8, sr.WINDOW]
+    assert not any("sca.0" in k for k in net.state_dict())                          # no weight added: the checkpoint loads
+
+
+class _Tiles(torch.nn.Module):
+    """Stands for the network: the input unchanged, the tiles it was given noted."""
+
+    def __init__(self):
+        super().__init__()
+        self.sizes = []
+
+    def forward(self, x):
+        self.sizes.append(tuple(x.shape))
+        return x
+
+
+def test_a_large_image_goes_in_tiles_larger_than_the_largest_stars():
+    """Issue #45: the tiles hold the halo of the largest stars with their core; the same memory at a time; the result
+    is the image when the network changes nothing (the tiles add up)."""
+    fake = _Tiles()
+    img = np.random.default_rng(3).normal(0.0, 1.0, (3, 1300, 1500)).astype(np.float32)
+    out = sr.apply(fake, img, DEV)
+    assert {s[2:] for s in fake.sizes} == {(sr.TILE, sr.TILE)} and {s[0] for s in fake.sizes} == {1}
+    assert sr.TILE > 280                                                            # the largest halos measured (M45)
+    assert np.allclose(out, img, atol=1e-3)
+
+
+def test_a_small_image_keeps_the_tiles_of_the_training_size():
+    fake = _Tiles()
+    sr.apply(fake, np.ones((3, 600, 1500), np.float32), DEV)
+    assert {s[2:] for s in fake.sizes} == {(sr.NET_TILE, sr.NET_TILE)}
+
+
+def test_a_small_card_takes_smaller_tiles_on_a_large_image(monkeypatch):
+    monkeypatch.setattr(sr.devices, "free_memory", lambda d: 600 * 2 ** 20)
+    fake = _Tiles()
+    out = sr.apply(fake, np.ones((3, 1300, 1500), np.float32), DEV)
+    assert all(s[2] < sr.TILE for s in fake.sizes) and np.allclose(out, 1.0, atol=1e-3)
+
+
 def test_without_half_stacks_the_noise_unit_is_the_spread_of_the_sky():
     """Issue #55: a linear Image has no half-stack: the unit is read on its own sky, the stars and the nebula above the
     sky do not widen it, the uncovered pixels do not count; an image without noise keeps a defined unit."""
