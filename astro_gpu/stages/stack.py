@@ -664,19 +664,22 @@ def drizzle_deposit(num, den, val, Xo, Yo, w, keep, chmap, h: float, S: float, H
         bands = deposit_bands(yo, h, span, workers)
     if bands is None:
         _drops(num, den, v, xo, yo, c, w, h, S, Ho, Wo, span, rej, tally)
-        return
+    elif rej is None:
+        from ..core.stack_kernels import deposit                  # compiled: 15 times the generic operations
+        deposit(num.numpy(), den.numpy() if den is not None else np.empty(0, np.float32), v.numpy(), xo.numpy(),
+                yo.numpy(), c.numpy(), bands, w, h, Ho, Wo, span, workers)
+    else:
+        def one(band):
+            i0, i1 = band
+            _drops(num, den, v[i0:i1], xo[i0:i1], yo[i0:i1], c[i0:i1], w, h, S, Ho, Wo, span, rej, None)
 
-    def one(band):
-        i0, i1 = band
-        _drops(num, den, v[i0:i1], xo[i0:i1], yo[i0:i1], c[i0:i1], w, h, S, Ho, Wo, span, rej, None)
-
-    torch.set_num_threads(1)                                 # each band on one core: the bands are the parallelism
-    try:
-        with ThreadPoolExecutor(workers) as pool:
-            for group in (bands[0::2], bands[1::2]):         # two bands of a group never write to the same rows
-                list(pool.map(one, group))
-    finally:
-        torch.set_num_threads(workers)
+        torch.set_num_threads(1)                             # each band on one core: the bands are the parallelism
+        try:
+            with ThreadPoolExecutor(workers) as pool:
+                for group in (bands[0::2], bands[1::2]):     # two bands of a group never write to the same rows
+                    list(pool.map(one, group))
+        finally:
+            torch.set_num_threads(workers)
 
 
 def deposit_bands(yo, h: float, span: int, workers: int) -> list[tuple[int, int]] | None:
@@ -807,6 +810,8 @@ class Prediction:
     def sample(self, Xo: torch.Tensor, Yo: torch.Tensor, chmap: torch.Tensor) -> dict[str, torch.Tensor]:
         """The prediction (``pred``), coverage, background and sky floor of each sample landing at (Xo, Yo), in the
         sample's own channel (``chmap``); the mean is interpolated from the covered pixels only."""
+        if Xo.device.type == "cpu" and Xo.numel() >= PARALLEL_SAMPLES:
+            return self._sample_cpu(Xo, Yo, chmap)
         grid = torch.stack([(Xo + 0.5) / self.Wo * 2 - 1, (Yo + 0.5) / self.Ho * 2 - 1], -1).unsqueeze(0)
 
         def at(a: torch.Tensor) -> torch.Tensor:
@@ -818,6 +823,22 @@ class Prediction:
         pred = at(self.M * vf) / w.clamp(min=1e-6)
         floor = torch.tensor(self.floor, device=Xo.device, dtype=torch.float32)[chmap]
         return {"pred": pred, "cover": torch.where(w > 0.5, at(self.cover), torch.zeros_like(w)), "bkg": at(self.bkg),
+                "floor": floor}
+
+
+    def _sample_cpu(self, Xo: torch.Tensor, Yo: torch.Tensor, chmap: torch.Tensor) -> dict[str, torch.Tensor]:
+        """``sample`` for a frame on the CPU, compiled: each sample read in its own channel only."""
+        from ..core.stack_kernels import sample
+        shape = Xo.shape
+        vf = self.valid.float()
+        # the coordinates as grid_sample rounds them (float32, through its normalised grid): the same samples rejected
+        x = (((Xo + 0.5) / self.Wo * 2 - 1 + 1) * self.Wo - 1) / 2
+        y = (((Yo + 0.5) / self.Ho * 2 - 1 + 1) * self.Ho - 1) / 2
+        mv, w, cov, bk = sample((self.M * vf).numpy(), vf.numpy(), self.cover.numpy(), self.bkg.numpy(),
+                                x.ravel().numpy(), y.ravel().numpy(), chmap.ravel().numpy(), torch.get_num_threads())
+        mv, w, cov, bk = (torch.from_numpy(a).view(shape) for a in (mv, w, cov, bk))
+        floor = torch.tensor(self.floor, dtype=torch.float32)[chmap]
+        return {"pred": mv / w.clamp(min=1e-6), "cover": torch.where(w > 0.5, cov, torch.zeros_like(w)), "bkg": bk,
                 "floor": floor}
 
 
@@ -926,6 +947,16 @@ class ChannelOffsets:
                 f"{self.edge['R']} px in the corners; blue {self.centre['B']} px, up to {self.edge['B']} px")
 
 
+def touching(mask: torch.Tensor) -> torch.Tensor:
+    """The pixels of the mask (H, W) and their eight neighbours (a 3 x 3 dilation, along the rows then the columns: a
+    max pooling of the whole frame cost a second per frame on the CPU)."""
+    def spread(a, dim):
+        n = a.shape[dim]
+        return a | torch.cat([a.narrow(dim, 1, n - 1), torch.zeros_like(a.narrow(dim, 0, 1))], dim) | \
+            torch.cat([torch.zeros_like(a.narrow(dim, 0, 1)), a.narrow(dim, 0, n - 1)], dim)
+    return spread(spread(mask, 1), 0)
+
+
 def reject(val, pr: dict, sat, bad, grad, chmap, t: float, p: StackParams, kappa: float, edge: bool,
            diag: list | None = None):
     """The samples of a normalised frame (``val``, ADU of the reference) deviating from the prediction ``pr``
@@ -958,8 +989,7 @@ def reject(val, pr: dict, sat, bad, grad, chmap, t: float, p: StackParams, kappa
     z = r / (var_n * s[chmap] ** 2 + allow).sqrt()
     hi = (z > kappa) & test
     if edge:
-        near = F.max_pool2d(hi.float()[None, None], 3, 1, 1)[0, 0] > 0
-        hi = hi | (near & (z > EDGE_SIGMA) & test)
+        hi = hi | (touching(hi) & (z > EDGE_SIGMA) & test)
     lo = (z < -kappa) & test
     if diag is not None:
         row = {"noise_scale": [round(float(x), 3) for x in s]}
