@@ -19,6 +19,7 @@ curve, contrast and white balance are in it). So the frames stay non-linear, whi
 from __future__ import annotations
 
 import io
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -122,6 +123,10 @@ def read_cfa(path: str | Path) -> np.ndarray:
             return cfa_mod.luminance(_rows_top_down(a, hd))
         if a.ndim != 2:
             raise ValueError(f"{path.name}: expected a 2-D Bayer frame, got shape {a.shape}")
+        area = useful_area(hd)
+        if area is not None:                              # in the file's own rows: before they are put top first
+            x, y, w, h = area
+            a = a[y:y + h, x:x + w]
         return np.ascontiguousarray(_rows_top_down(a, hd))
     if kind == "colour":
         return cfa_mod.luminance(read_colour(path))
@@ -363,6 +368,26 @@ def fits_header(path: str | Path):
         raise unreadable(path) from e
 
 
+#: a FITS image section: [first column:last column,first row:last row], counted from 1, both ends included
+_SECTION = re.compile(r"^\[\s*(\d+)\s*:\s*(\d+)\s*,\s*(\d+)\s*:\s*(\d+)\s*\]$")
+
+
+def useful_area(hd) -> tuple[int, int, int, int] | None:
+    """The useful area of a FITS image, (first column, first row, width, height) from 0 in the file's own rows; None
+    when it is the whole image (no such keyword, or one that cannot be read or does not fit the image). TRIMSEC, the
+    section to keep once the frame is reduced (IRAF's ccdproc, Massey's "A User's Guide to CCD Reductions with IRAF"),
+    decides over DATASEC: observatory frames can give the whole image as DATASEC and the real area as TRIMSEC only."""
+    W, H = int(hd.get("NAXIS1", 0)), int(hd.get("NAXIS2", 0))
+    for key in ("TRIMSEC", "DATASEC"):
+        m = _SECTION.match(str(hd.get(key, "")).strip())
+        if m is None:
+            continue
+        x1, x2, y1, y2 = (int(v) for v in m.groups())
+        if 1 <= x1 <= x2 <= W and 1 <= y1 <= y2 <= H:
+            return None if (x2 - x1 + 1, y2 - y1 + 1) == (W, H) else (x1 - 1, y1 - 1, x2 - x1 + 1, y2 - y1 + 1)
+    return None
+
+
 def unreadable(path: str | Path) -> Exception:
     """The error of a frame that cannot be read, in plain words with its name and what to do (GUI exploration 2: the
     run said astropy's "OSError: No SIMPLE card found…")."""
@@ -408,10 +433,16 @@ def _fits_info(path: Path) -> FrameInfo:
     naxis = int(hd.get("NAXIS", 0))
     w, h = int(hd.get("NAXIS1", 0)), int(hd.get("NAXIS2", 0))
     pat = str(hd.get("BAYERPAT", "")).strip().upper() if naxis == 2 else ""
+    area = useful_area(hd) if naxis == 2 else None
     if pat:
         xo, yo = int(hd.get("XBAYROFF", 0)) % 2, int(hd.get("YBAYROFF", 0)) % 2
+        if area is not None:                          # the image now starts at the area's first pixel, top row first
+            xo += area[0]
+            yo += h - area[1] - area[3] if str(hd.get("ROWORDER", "")).upper() == "BOTTOM-UP" else area[1]
         grid = [[pat[0], pat[1]], [pat[2], pat[3]]]
         pat = "".join(grid[(i + yo) % 2][(j + xo) % 2] for i in range(2) for j in range(2))
+    if area is not None:
+        w, h = area[2], area[3]
     bitpix = int(hd.get("BITPIX", 16))
     white = float(hd.get("DATAMAX", hd.get("SATURATE", 2 ** 16 - 1 if bitpix in (16, 32) else 1.0)))
     if _is_rgb_fits(hd):                       # a frame already in colour (issue #57): read_colour's range

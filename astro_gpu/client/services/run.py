@@ -222,6 +222,10 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
          "the folder of the {0} is not found: {1} (is its disk plugged in?)", (0,)),
         # GUI exploration 2: the failures data can cause, with what to do (stages/stack.py, inventory.py, astrometry.py,
         # io/frames.py)
+        (r"^useful area from the frames' header: (\d+)x(\d+) of (\d+)x(\d+) pixels, the overscan left out$",
+         "useful area from the frames' header: {0}x{1} of {2}x{3} pixels, the overscan left out", ()),
+        (r"^sparse field: (\d+) frame\(s\) aligned from a few stars \(rotation, shift and scale only\)$",
+         "sparse field: {0} frame(s) aligned from a few stars (rotation, shift and scale only)", ()),
         (r"^only (\d+) light frame\(s\): a stack needs at least 2; add light frames to the session$",
          "only {0} light frame(s): a stack needs at least 2; add light frames to the session", ()),
         (r"^only (\d+) of (\d+) light frames could be aligned: a stack needs at least 2; check the frames$",

@@ -11,7 +11,7 @@ from ..core import cfa as cfa_mod
 from ..core.params import ADVANCED, P, StageParams
 from ..core.project import frame_kind, list_frames
 from ..core.stage import Context, Stage, StageError
-from ..io.frames import fits_header, read_cfa, read_colour, read_info
+from ..io.frames import fits_header, read_cfa, read_colour, read_info, useful_area
 
 
 class InventoryParams(StageParams):
@@ -126,6 +126,11 @@ class Inventory(Stage):
         ctx.log(f"{len(lights)} lights of {texp} s ({ctx.metrics['integration_h']} h), {w}x{h} {pattern}, "
                 f"{len(out['darks'])} darks, {len(out['flats'])} flats, {len(out['bias'])} bias, "
                 f"camera {first['camera'] or 'unknown'}")
+        if frame_kind(first["path"]) == "fits":
+            hd = fits_header(first["path"])
+            if useful_area(hd) is not None:
+                ctx.log(f"useful area from the frames' header: {w}x{h} of {hd['NAXIS1']}x{hd['NAXIS2']} pixels, the "
+                        "overscan left out")
         # quick look at the middle frame (2x2 super-pixels, no calibration)
         read = read_colour if cfa_mod.is_colour(cfa) else read_cfa
         mid = read(lights[len(lights) // 2]["path"]) - first["black"]
