@@ -31,7 +31,8 @@ RETIRED: dict[str, frozenset[str]] = {
     "color": frozenset({"correction", "hii_weight", "camera_profile", "synthetic_weight", "profile_tolerance"}),
     "background": frozenset({"sky_order", "large_scale_px"}),
     # the network trained from scratch on each image, replaced by the pretrained one (stages/denoise.py)
-    "denoise": frozenset({"iterations", "patch", "batch", "learning_rate", "reuse_model"}),
+    # and the automatic adaptation of the monochrome stacks of few frames (issue #45)
+    "denoise": frozenset({"iterations", "patch", "batch", "learning_rate", "reuse_model", "mono_adapt"}),
     # the deep catalogue and the faint stars of the star model (the Stars block before its network)
     "catalogs": frozenset({"deep_stars", "g_deep", "g_faint", "max_faint"}),
 }

@@ -18,8 +18,9 @@ noise reduction) on the held-out stacks, for the pretrained network, the fine-tu
 (the stack minus the sky gradient of the bench's run), and a sheet of crops per stack.
 
 Outcome (8 November 2026): the fine-tuned networks removed most of the invented dots but did not keep the stars within
-2 % on the held-out stacks (1 h: faint stars' flux +4 to +11 %; 20 min: bright stars' peak -15 to -28 % on Helix and M45),
-so no monochrome network is shipped: stages/denoise.py adapts the monochrome stacks of few frames instead.
+2 % on the held-out stacks (1 h: faint stars' flux +4 to +11 %; 20 min: bright stars' peak -15 to -28 % on Helix and M45).
+The 1 h one ships for the monochrome stacks of few frames, for pictures and not for photometry (resources/denoise,
+stages/denoise.py): the Adapted method, the alternative, left a black dot in a bright star of M51.
 """
 from __future__ import annotations
 

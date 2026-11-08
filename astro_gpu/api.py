@@ -1552,7 +1552,9 @@ _METHODS: dict[str, list[MethodInfo]] = {
     "denoise": [
         MethodInfo("pretrained", "Pretrained network", "pretrained", "both", "denoise", False,
                    "A network trained on many pairs of half-stacks (Noise2Noise), applied as it is. Nothing is "
-                   "invented: it learned to predict one half-stack from the other."),
+                   "invented: it learned to predict one half-stack from the other. A monochrome stack of fewer than "
+                   "30 frames gets a network made for monochrome noise. It slightly brightens faint stars (+8 to +11 % "
+                   "on the bench): it is for pictures, not for photometry."),
         MethodInfo("adapted", "Pretrained + adapted to the image", "adapted", "both", "denoise", False,
                    "The same network first learns this image's own noise on its half-stacks: longer, fitted to this "
                    "image (a session without dithering most of all)."),

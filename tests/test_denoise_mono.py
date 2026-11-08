@@ -1,7 +1,8 @@
-"""Issue #45: a monochrome stack of few frames is adapted by default, its key, and the bench tool of the fine-tuning."""
+"""Issue #45: the Denoise network of the monochrome stacks of few frames, its key, and the bench tool of its training."""
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,12 +17,13 @@ from astro_gpu.core.store import Keys
 from astro_gpu.core.workflow import TEMPLATES
 from astro_gpu.stages import denoise as dn
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "bench"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools" / "bench"))
 import denoise_dataset  # noqa: E402
 import denoise_mono  # noqa: E402
 
 DENOISED = TEMPLATES["Classic + denoise"]
-FEW_FRAMES_ADAPTED = f"{dn.Denoise.version}+mono-few-adapted"
+FEW = 2                                                 # light frames of a default test project
 
 
 class Zero(torch.nn.Module):
@@ -35,58 +37,99 @@ class Zero(torch.nn.Module):
         return torch.zeros_like(x)[:, :3] * self.w
 
 
-def frames(folder: Path, names: dict[str, int]) -> Path:
+def frames(folder: Path, n: int) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
-    for n, size in names.items():
-        (folder / n).write_bytes(b"\0" * size)
+    for i in range(n):
+        (folder / f"a{i}.fit").write_bytes(b"\0" * (100 + i))
     return folder
 
 
-def project(root: Path, tmp: Path, filt: str, method: str = "pretrained", params=None) -> project2.Project2:
-    lights = frames(tmp / "raw" / "n1", {"a1.fit": 100, "a2.fit": 110})
+def project(root: Path, filt: str, method: str = "pretrained", lights: int = FEW, params=None) -> project2.Project2:
+    folder = frames(root.parent / f"raw_{root.name}", lights)
     p = project2.create(root, "p")
-    p.sessions.append(Session(1, "n1", lights=[str(lights)], filter=filt))
+    p.sessions.append(Session(1, "n1", lights=[str(folder)], filter=filt))
     p.add_workflow("W", {**DENOISED, "denoise": method}, params)
     project2.save(p)
     return project2.load(root)
 
 
+@pytest.fixture
+def mono_file(tmp_path, monkeypatch):
+    f = tmp_path / "pretrained_unet_mono.pt"
+    f.write_bytes(b"x")
+    monkeypatch.setattr(dn, "MODEL_MONO", f)
+    monkeypatch.setattr(dn, "MODEL_MONO_ID", "abc1234567")
+    return f
+
+
+MONO_V = f"{dn.Denoise.version}+mono-abc1234567"
+
+
+# ---------------------------------------------------------------------------------------------- the network shipped
+def test_the_monochrome_network_is_in_the_app_and_in_what_the_installer_copies():
+    assert dn.MODEL_MONO.exists()
+    tracked = subprocess.run(["git", "ls-files", "astro_gpu/resources/denoise"], capture_output=True, text=True, cwd=ROOT,
+                             check=True).stdout.split()                  # installer/build.py copies what git tracks
+    assert "astro_gpu/resources/denoise/pretrained_unet_mono.pt" in tracked
+
+
+def test_the_monochrome_network_loads_and_differs_from_the_colour_one():
+    dev = torch.device("cpu")
+    a, b = dn.pretrained(dev), dn.pretrained(dev, mono=True)
+    assert any(not torch.equal(x, y) for x, y in zip(a.parameters(), b.parameters()))
+
+
 # ---------------------------------------------------------------------------------------------- the key
-def test_only_a_monochrome_stack_with_the_pretrained_method_changes_key(tmp_path):
-    colour = Keys(project(tmp_path / "c", tmp_path, ""))
-    mono = Keys(project(tmp_path / "m", tmp_path, "Ha"))
-    # colour: exactly the stage's version, the new setting not in the key
-    assert colour.key_parts(1, "denoise")["v"] == dn.Denoise.version
-    assert "mono_adapt" not in colour.key_parts(1, "denoise")["p"]
-    assert mono.key_parts(1, "denoise")["v"] == FEW_FRAMES_ADAPTED
+def test_only_a_monochrome_stack_of_few_frames_with_the_pretrained_method_changes_key(tmp_path, mono_file):
+    colour = Keys(project(tmp_path / "c", ""))
+    mono = Keys(project(tmp_path / "m", "Ha"))
+    assert colour.key_parts(1, "denoise")["v"] == dn.Denoise.version       # colour: as before the issue
+    assert mono.mono_lights(1) == FEW and colour.mono_lights(1) is None
+    assert mono.key_parts(1, "denoise")["v"] == MONO_V
     assert mono.key(1, "denoise") != colour.key(1, "denoise")
 
 
-def test_the_adapted_method_keeps_its_key_on_a_monochrome_stack(tmp_path):
-    mono = Keys(project(tmp_path / "m", tmp_path, "Ha", "adapted"))
-    assert mono.key_parts(1, "denoise")["v"] == dn.Denoise.version
+def test_a_monochrome_stack_of_30_frames_or_more_keeps_its_key(tmp_path, mono_file):
+    k = Keys(project(tmp_path / "m", "Ha", lights=dn.MONO_FEW_FRAMES))
+    assert k.mono_lights(1) == dn.MONO_FEW_FRAMES and k.key_parts(1, "denoise")["v"] == dn.Denoise.version
 
 
-def test_the_setting_turned_off_gives_the_plain_version(tmp_path):
-    mono = Keys(project(tmp_path / "m", tmp_path, "Ha", params={"denoise": {"mono_adapt": False}}))
-    assert mono.key_parts(1, "denoise")["v"] == dn.Denoise.version
+def test_the_frame_limit_counts(tmp_path, mono_file):
+    k = Keys(project(tmp_path / "m", "Ha", lights=40, params={"inventory": {"max_lights": 20}}))
+    assert k.mono_lights(1) == 20 and k.key_parts(1, "denoise")["v"] == MONO_V
 
 
-def test_a_monochrome_workflows_other_stages_have_the_versions_of_a_colour_one(tmp_path):
-    colour = Keys(project(tmp_path / "c", tmp_path, ""))
-    mono = Keys(project(tmp_path / "m", tmp_path, "Ha"))
+def test_the_adapted_method_keeps_its_key_on_a_monochrome_stack(tmp_path, mono_file):
+    k = Keys(project(tmp_path / "m", "Ha", "adapted"))
+    assert k.key_parts(1, "denoise")["v"] == dn.Denoise.version
+
+
+def test_without_the_monochrome_file_the_key_is_the_colour_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(dn, "MODEL_MONO", tmp_path / "absent.pt")
+    assert Keys(project(tmp_path / "m", "Ha")).key_parts(1, "denoise")["v"] == dn.Denoise.version
+
+
+def test_a_monochrome_workflows_other_stages_have_the_versions_of_a_colour_one(tmp_path, mono_file):
+    colour = Keys(project(tmp_path / "c", ""))
+    mono = Keys(project(tmp_path / "m", "Ha"))
     shared = [s for s in mono.chain(1) if s in colour.chain(1) and s != "denoise"]
     assert "stack" in shared
     assert all(mono.key_parts(1, s)["v"] == colour.key_parts(1, s)["v"] for s in shared)
 
 
+def test_the_setting_removed_is_ignored_where_it_is_stored(tmp_path, mono_file):
+    plain = Keys(project(tmp_path / "a", "Ha"))
+    stored = Keys(project(tmp_path / "b", "Ha", params={"denoise": {"mono_adapt": False}}))
+    assert stored.key_parts(1, "denoise") == plain.key_parts(1, "denoise")
+
+
 # ---------------------------------------------------------------------------------------------- the run
 class Ctx:
-    def __init__(self, tmp: Path, img: np.ndarray, used: int | None):
+    def __init__(self, tmp: Path, img: np.ndarray, lights: int | None):
         self.device = torch.device("cpu")
         self.tmp = tmp
         self.img = img
-        self.used = used
+        self.project = SimpleNamespace(keys=SimpleNamespace(mono_lights=lambda w: lights), workflow=object())
         self.metrics: dict = {}
         self.logs: list[str] = []
         self.saved: dict[str, np.ndarray] = {}
@@ -96,9 +139,6 @@ class Ctx:
 
     def metric(self, k, v):
         self.metrics[k] = v
-
-    def metric_of(self, stage, key, default=None):
-        return self.used if (stage, key) == ("stack", "frames_used") and self.used is not None else default
 
     def log(self, msg, *_a):
         self.logs.append(msg)
@@ -119,14 +159,14 @@ class Ctx:
         pass
 
 
-def run_stage(monkeypatch, tmp_path, img, used=12, **params):
-    adapted = []
+def run_stage(monkeypatch, tmp_path, img, lights=12, **params):
+    asked, adapted = [], []
     monkeypatch.setattr(dn, "image_in", lambda ctx, half="full": SimpleNamespace(img=img.copy()))
-    monkeypatch.setattr(dn, "pretrained", lambda dev: Zero())
+    monkeypatch.setattr(dn, "pretrained", lambda dev, mono=False: asked.append(mono) or Zero())
     monkeypatch.setattr(dn, "adapt", lambda *a, **k: adapted.append(a[8]))
-    ctx = Ctx(tmp_path, img, used)
+    ctx = Ctx(tmp_path, img, lights)
     dn.Denoise().run(ctx, dn.DenoiseParams(**params))
-    return adapted, ctx
+    return asked, adapted, ctx
 
 
 def noisy(grey: bool) -> np.ndarray:
@@ -138,39 +178,49 @@ def noisy(grey: bool) -> np.ndarray:
     return a
 
 
-def test_a_grey_stack_of_few_frames_is_adapted(monkeypatch, tmp_path):
-    adapted, ctx = run_stage(monkeypatch, tmp_path, noisy(grey=True), used=12)
-    assert adapted == [dn.ADAPTATIONS["short"][0]] and ctx.metrics["adaptation_steps"] == 500
-    assert any("adapted to it first" in m for m in ctx.logs)
+@pytest.mark.parametrize("lights", [1, 12, dn.MONO_FEW_FRAMES - 1])
+def test_a_grey_stack_of_few_frames_uses_the_monochrome_network_and_is_not_adapted(monkeypatch, tmp_path, mono_file, lights):
+    asked, adapted, ctx = run_stage(monkeypatch, tmp_path, noisy(grey=True), lights=lights)
+    assert asked == [True] and adapted == [] and ctx.metrics["adaptation_steps"] == 0
     full = ctx.saved["n2n_full.npy"]
     assert np.array_equal(full[0], full[1]) and np.array_equal(full[2], full[1])       # it stays grey
 
 
-@pytest.mark.parametrize("used", [dn.MONO_FEW_FRAMES - 1, 1])
-def test_under_the_limit_is_few_frames(monkeypatch, tmp_path, used):
-    assert run_stage(monkeypatch, tmp_path, noisy(grey=True), used=used)[0] == [500]
+@pytest.mark.parametrize("lights", [dn.MONO_FEW_FRAMES, 200, None])
+def test_many_frames_or_a_workflow_not_monochrome_keep_the_colour_network(monkeypatch, tmp_path, mono_file, lights):
+    asked, adapted, _ = run_stage(monkeypatch, tmp_path, noisy(grey=True), lights=lights)
+    assert asked == [False] and adapted == []
 
 
-@pytest.mark.parametrize("used", [dn.MONO_FEW_FRAMES, 200, None])
-def test_many_frames_or_an_unknown_count_stay_pretrained(monkeypatch, tmp_path, used):
-    adapted, ctx = run_stage(monkeypatch, tmp_path, noisy(grey=True), used=used)
-    assert adapted == [] and ctx.metrics["adaptation_steps"] == 0
+def test_a_colour_stack_keeps_the_colour_network(monkeypatch, tmp_path, mono_file):
+    assert run_stage(monkeypatch, tmp_path, noisy(grey=False), lights=None)[0] == [False]
 
 
-def test_a_colour_stack_of_few_frames_stays_pretrained(monkeypatch, tmp_path):
-    assert run_stage(monkeypatch, tmp_path, noisy(grey=False), used=12)[0] == []
+def test_the_adapted_method_stays_a_choice_and_starts_from_the_colour_network(monkeypatch, tmp_path, mono_file):
+    asked, adapted, _ = run_stage(monkeypatch, tmp_path, noisy(grey=True), method="adapted")
+    assert asked == [False] and adapted == [500]
 
 
-def test_the_setting_off_leaves_the_grey_stack_pretrained(monkeypatch, tmp_path):
-    assert run_stage(monkeypatch, tmp_path, noisy(grey=True), used=12, mono_adapt=False)[0] == []
+def test_without_the_monochrome_file_a_grey_stack_uses_the_colour_network(monkeypatch, tmp_path):
+    monkeypatch.setattr(dn, "MODEL_MONO", tmp_path / "absent.pt")
+    assert run_stage(monkeypatch, tmp_path, noisy(grey=True))[0] == [False]
 
 
-def test_the_adapted_method_adapts_once(monkeypatch, tmp_path):
-    assert run_stage(monkeypatch, tmp_path, noisy(grey=False), used=200, method="adapted")[0] == [500]
+def test_a_mono_key_and_run_agree_on_the_count(tmp_path, mono_file):
+    k = Keys(project(tmp_path / "m", "Ha", lights=dn.MONO_FEW_FRAMES - 1))
+    assert dn.uses_mono_network("pretrained", k.mono_lights(1))
+    assert not dn.uses_mono_network("adapted", k.mono_lights(1))
 
 
 def test_is_grey():
     assert dn.is_grey(noisy(grey=True)) and not dn.is_grey(noisy(grey=False))
+
+
+def test_the_tooltip_says_it_brightens_faint_stars_in_both_languages():
+    from astro_gpu import texts
+    en, fr = texts.param_tip("denoise", "method"), texts.param_tip("denoise", "method", "fr")
+    assert "+8 to +11 %" in en and "not for photometry" in en
+    assert "+8 à +11 %" in fr and "pas à la photométrie" in fr
 
 
 # ---------------------------------------------------------------------------------------------- the bench tool

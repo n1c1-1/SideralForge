@@ -153,15 +153,15 @@ class KeyRules:
     def params(self, stage: str) -> type[StageParams]:
         return self.chains.stages[wfl.base(stage)].Params     # a graph's later node ("denoise~2"): its stage's
 
-    def version(self, stage: str, values: Mapping[str, Any] | None = None, mono: bool = False) -> str:
+    def version(self, stage: str, values: Mapping[str, Any] | None = None, mono_lights: int | None = None) -> str:
         """The stage's version in a key: its ``version``; with the definition's validated ``values``, the stage's
         ``key_version(values)`` when it has one (a part of the stage revised on its own, keyed only where the settings
-        use it: the stack's Classic part); for a monochrome workflow, its ``mono_key_version(values)`` when it has one
-        (the Denoise network of monochrome stacks, issue #45)."""
+        use it: the stack's Classic part); for a monochrome workflow of ``mono_lights`` light frames, its
+        ``mono_key_version(values, mono_lights)`` when it has one (the Denoise network of few frames, issue #45)."""
         st = self.chains.stages[wfl.base(stage)]
         mv = getattr(st, "mono_key_version", None)
-        if mono and callable(mv) and values is not None:
-            return str(mv(dict(values)))
+        if mono_lights is not None and callable(mv) and values is not None:
+            return str(mv(dict(values), mono_lights))
         kv = getattr(st, "key_version", None)
         return str(kv(dict(values)) if callable(kv) and values is not None else st.version)
 
@@ -525,8 +525,18 @@ class Keys:
         # a block placed twice ("gradient~2") is keyed by its stage, not by its number: the same computation has the
         # same key whatever the graph numbered it (GUI exploration 2). Only "~" names change: no other key moves.
         u = {(k.split("~", 1)[0] if "~" in k and k.split("~", 1)[0] not in u else k): x for k, x in u.items()}
-        mono = getattr(w, "source", None) is None and self.project.is_mono(w)
-        return {"s": b, "v": self.rules.version(b, m, mono), "p": p, "u": u, "x": x}
+        lights = self.mono_lights(w) if hasattr(self.rules.chains.stages[b], "mono_key_version") else None
+        return {"s": b, "v": self.rules.version(b, m, lights), "p": p, "u": u, "x": x}
+
+    def mono_lights(self, wf: int | Workflow) -> int | None:
+        """The light frames a monochrome workflow stacks, its frame limit applied; None for any other workflow. What a
+        key can know before the run: the frames the stack's selection will set aside are not counted."""
+        w = self._wf(wf)
+        if getattr(w, "source", None) is not None or not self.project.is_mono(w):
+            return None
+        n = sum(f[0] == "lights" for f in self.scan.frames(self.project, None, self.project.sessions_of(w)))
+        limit = self._key_values(w, "inventory")[1].get("max_lights", 0) if "inventory" in self.chain(w) else 0
+        return min(n, limit) if limit else n
 
     def key(self, wf: int | Workflow, stage: str) -> str:
         """The key of a stage in a workflow (ValueError when the stage is not in its chain)."""
