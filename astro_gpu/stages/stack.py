@@ -363,6 +363,22 @@ class Stack(Stage):
             return (sum(float(c[0, i]) * t for i, t in enumerate(terms)),
                     sum(float(c[1, i]) * t for i, t in enumerate(terms)))
 
+        grid_terms = None
+
+        def grid_poly(c):
+            """``poly_eval`` on the whole output grid (every frame's): its terms kept, the sums compiled on the CPU."""
+            nonlocal grid_terms
+            if dev.type != "cpu":
+                return poly_eval(c, xx, yy)
+            if grid_terms is None:
+                u, v = xx / (W / 2) - 1.0, yy / (H / 2) - 1.0
+                grid_terms = torch.stack([torch.ones_like(u), u, v, u * u, u * v, v * v, u ** 3, u * u * v, u * v * v,
+                                          v ** 3]).numpy()
+            from ..core.stack_kernels import poly
+            n = torch.get_num_threads()
+            return (torch.from_numpy(poly(grid_terms, [float(c[0, i]) for i in range(10)], n)),
+                    torch.from_numpy(poly(grid_terms, [float(c[1, i]) for i in range(10)], n)))
+
         def quad_terms(u, v):
             a = u / (W / 2) - 1.0
             b = v / (H / 2) - 1.0
@@ -449,7 +465,7 @@ class Stack(Stage):
             fr = torch.from_numpy(np.asarray(mm[i], np.float32)).to(dev)
             if fpn is not None:
                 fr = torch.where(fr > VALID_MAX, fr, fr - fpn)
-            X, Y = poly_eval(coef[i], xx, yy)
+            X, Y = grid_poly(coef[i])
             Q, bkg_level = frame_norm(i, fr)
             a = X / (W / 2) - 1.0
             b = Y / (H / 2) - 1.0

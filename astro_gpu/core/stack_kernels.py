@@ -75,3 +75,23 @@ def sample(mv, valid, cover, bkg, x, y, c, workers: int):
     out = [np.empty(n, np.float32) for _ in range(4)]
     _sample(mv, valid, cover, bkg, x, y, c, *out, mv.shape[1], mv.shape[2])
     return out
+
+
+@njit(nogil=True, parallel=True, cache=True)
+def _poly(terms, c, out):
+    n = len(c)
+    for i in prange(terms.shape[1]):
+        for j in range(terms.shape[2]):
+            acc = c[0] * terms[0, i, j]
+            for k in range(1, n):
+                acc = acc + c[k] * terms[k, i, j]
+            out[i, j] = acc
+
+
+def poly(terms, c, workers: int):
+    """The sum of ``c[k] x terms[k]`` over the grid of ``terms`` (k, H, W), float32, in the order of the terms: the same
+    bits as the sum of the tensors."""
+    set_num_threads(max(1, workers))
+    out = np.empty(terms.shape[1:], np.float32)
+    _poly(terms, np.asarray(c, np.float32), out)
+    return out

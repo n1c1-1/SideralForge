@@ -62,3 +62,15 @@ def test_touching_is_a_three_by_three_dilation():
     m = torch.from_numpy(np.random.default_rng(3).random((60, 80)) < 0.02)
     want = F.max_pool2d(m.float()[None, None], 3, 1, 1)[0, 0] > 0
     assert torch.equal(touching(m), want)
+
+
+def test_the_compiled_polynomial_gives_the_same_bits():
+    from astro_gpu.core.stack_kernels import poly
+    H, W = 90, 120
+    yy, xx = torch.meshgrid(torch.arange(H, dtype=torch.float32), torch.arange(W, dtype=torch.float32), indexing="ij")
+    u, v = xx / (W / 2) - 1.0, yy / (H / 2) - 1.0
+    terms = [torch.ones_like(u), u, v, u * u, u * v, v * v, u ** 3, u * u * v, u * v * v, v ** 3]
+    c = np.random.default_rng(5).uniform(-2000, 2000, 10)
+    want = sum(float(c[i]) * t for i, t in enumerate(terms))
+    got = torch.from_numpy(poly(torch.stack(terms).numpy(), [float(x) for x in c], 2))
+    assert torch.equal(got, want)
