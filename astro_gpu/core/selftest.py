@@ -32,7 +32,8 @@ import numpy as np
 from . import devices
 
 #: the operations tested, in order, and the stage each one decides (Stack has two)
-OPERATIONS = {"drizzle": "stack", "sampling": "stack", "classic": "stack", "denoise": "denoise", "stars": "star_removal", "post": "post"}
+OPERATIONS = {"drizzle": "stack", "sampling": "stack", "classic": "stack", "denoise": "denoise", "stars": "star_removal",
+              "post": "post"}
 STAGES = ("stack", "denoise", "star_removal", "post")
 #: the largest difference allowed between the card and the CPU, in the unit each operation returns its result in: the
 #: image's own scale for the sums and the render (rounding of float32 and of the order of the additions), the noise of
@@ -176,7 +177,8 @@ def op_post(dev: str) -> dict[str, np.ndarray]:
 
 
 OPS: dict[str, Callable[[str], dict[str, np.ndarray]]] = {
-    "drizzle": op_drizzle, "sampling": op_sampling, "classic": op_classic, "denoise": op_denoise, "stars": op_stars, "post": op_post}
+    "drizzle": op_drizzle, "sampling": op_sampling, "classic": op_classic, "denoise": op_denoise, "stars": op_stars,
+    "post": op_post}
 
 
 # ---------------------------------------------------------------------------------------------- one operation
