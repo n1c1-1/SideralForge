@@ -448,7 +448,14 @@ class Keys:
         p = self.project
         if base(stage) == "inventory":
             sid = session_of(stage)
-            if sid is None and w is not None and w.sessions is not None:     # a filter's workflow: its sessions'
+            own = w is not None and bool(w.calibration)        # its Calibration placed in parallel: its own files
+            if own and sid is not None:
+                sessions = [p.own_session(w, int(sid))]
+                frames = self.scan.frames(p, None, sessions)
+            elif own:
+                sessions = [p.own_session(w, s.id) for s in p.sessions_of(w)]
+                frames = self.scan.frames(p, None, sessions)
+            elif sid is None and w is not None and w.sessions is not None:     # a filter's workflow: its sessions'
                 frames, sessions = self.scan.frames(p, None, p.sessions_of(w)), p.sessions_of(w)
             else:
                 frames = self.scan.frames(p, int(sid) if sid is not None else None)
@@ -700,7 +707,7 @@ class StoreProject:
         self.results = self.root / "export"
         self.scratch = Path(os.path.abspath(p.scratch)) / self.key
         sid = session_of(stage)
-        inputs = p.session_inputs(int(sid)) if sid is not None else p.inputs(self.workflow)
+        inputs = p.session_inputs(int(sid), self.workflow) if sid is not None else p.inputs(self.workflow)
         if getattr(self.workflow, "source", None) is not None:
             inputs = Inputs()                            # an image source: no frames
         devs = p.devices if devices is None else devices

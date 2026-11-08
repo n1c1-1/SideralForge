@@ -1330,6 +1330,8 @@ def add_workflow(p: Project2, name: str, options: dict[str, Any] | str | None = 
     for st, kv in (params or {}).items():
         merged.setdefault(st, {}).update(copy.deepcopy(kv))
     w = p.add_workflow(name, opts, merged, end=end)
+    if copy_of is not None:                            # the same frames: its Calibration placed in parallel too
+        w.calibration = copy.deepcopy(p.workflow(copy_of).calibration)
     return copy.deepcopy(w)
 
 

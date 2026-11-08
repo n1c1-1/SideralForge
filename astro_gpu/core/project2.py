@@ -24,7 +24,7 @@ from __future__ import annotations
 import copy
 import json
 import os
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,8 @@ FILE = "project.astroproj"
 STATE_FILE = "state.json"
 V1_FILE = "project.json"
 KINDS = ("lights", "darks", "flats", "bias", "flat_darks")
+#: the frames a Calibration block placed in parallel can have of its own
+CALIBRATION_KINDS = KINDS[1:]
 #: "together": the sessions are one frame list, one calibration (the projects made before issue #43);
 #: "per_session": each session calibrated with its own frames, then all stacked together (issue #43)
 STACK_MODES = ("together", "per_session")
@@ -91,6 +93,9 @@ class Workflow:
     #: issue #47: the graph the user built, [{"block", "name", "method", "off"}] after the source (core/workflow.py);
     #: None: a workflow made before, its graph given by its options (workflow.from_options)
     blocks: list[dict[str, Any]] | None = None
+    #: the Calibration blocks placed in parallel: {night's session id, as text: {"fork": what tells it from the others,
+    #: and its own files of the kinds changed}}: a kind not there follows the session; None: the sessions' calibration
+    calibration: dict[str, dict[str, Any]] | None = None
 
     def stored(self, stage: str) -> dict[str, Any]:
         """The values stored for a stage (a copy)."""
@@ -170,6 +175,13 @@ class Project2:
             return list(self.sessions)
         return [s for s in self.sessions if s.id in w.sessions]
 
+    def own_session(self, wid: int | Workflow, sid: int) -> Session:
+        """A session as a workflow reads it: its Calibration placed in parallel takes its own files of the kinds it
+        changed, the session's for the others."""
+        s = self.session(sid)
+        own = (self.workflow(wid).calibration or {}).get(str(sid))
+        return replace(s, **{k: list(own[k]) for k in CALIBRATION_KINDS if k in own}) if own else s
+
     def is_mono(self, wid: int | Workflow) -> bool:
         """Whether a workflow stacks monochrome frames: every one of its sessions names a filter (a colour camera's
         session names none)."""
@@ -183,15 +195,15 @@ class Project2:
         for kind in KINDS:
             got: list[str] = getattr(out, kind)
             for s in self.sessions_of(wid):
-                for f in getattr(s, kind):
+                for f in getattr(self.own_session(wid, s.id) if wid is not None else s, kind):
                     a = self.abspath(f)
                     if a not in got:
                         got.append(a)
         return out
 
-    def session_inputs(self, sid: int) -> Inputs:
-        """One session's frames, per kind, as absolute paths."""
-        s = self.session(sid)
+    def session_inputs(self, sid: int, wid: int | Workflow | None = None) -> Inputs:
+        """One session's frames, per kind, as absolute paths (as the workflow ``wid`` reads them)."""
+        s = self.own_session(wid, sid) if wid is not None else self.session(sid)
         return Inputs(**{k: [self.abspath(f) for f in getattr(s, k)] for k in KINDS})
 
     def separate_sessions(self, wid: int | Workflow | None = None) -> list[int]:
@@ -311,6 +323,7 @@ class Project2:
                 raise ValueError(f"workflow {w.id}: its fusion's stars come from a workflow the project does not have")
             if w.sessions is not None and (not w.sessions or any(x not in sids for x in w.sessions)):
                 raise ValueError(f"workflow {w.id}: its sessions {w.sessions} are not sessions of the project")
+            check_calibration(w.calibration, sids, f"workflow {w.id}")
         if self.current is not None and self.current not in wids:
             raise ValueError(f"current workflow {self.current} does not exist")
         if not isinstance(self.devices, dict):
@@ -341,7 +354,8 @@ class Project2:
                               breakpoints=_breakpoints(w.get("breakpoints")),      # absent in older projects: none
                               source=copy.deepcopy(w.get("source")),
                               sessions=list(w["sessions"]) if w.get("sessions") is not None else None,
-                              blocks=copy.deepcopy(w["blocks"]) if w.get("blocks") is not None else None)
+                              blocks=copy.deepcopy(w["blocks"]) if w.get("blocks") is not None else None,
+                              calibration=copy.deepcopy(w.get("calibration")))      # absent in older projects
                      for w in d.get("workflows") or []]
         nxt = d.get("next_workflow_id") or (max((w.id for w in workflows), default=0) + 1)
         p = cls(name=d.get("name", ""), description=d.get("description", ""), created=d.get("created", ""),
@@ -400,6 +414,21 @@ def check_source(source: Any, where: str = "source") -> dict[str, Any] | None:
     if set(source) - {"path", "stretched"}:
         raise ValueError(f"{where}: unknown keys of an image source: {sorted(set(source) - {'path', 'stretched'})}")
     return source
+
+
+def check_calibration(own: Any, sids: list[int], where: str = "calibration") -> None:
+    """A workflow's Calibration blocks placed in parallel as they are stored (``Workflow.calibration``)."""
+    if own is None:
+        return
+    if not isinstance(own, dict) or not own:
+        raise ValueError(f"{where}: its own calibration is {{session id: {{'fork', kinds}}}}, not {own!r}")
+    for night, e in own.items():
+        if not isinstance(e, dict) or not _is_int(e.get("fork")) or set(e) - {"fork", *CALIBRATION_KINDS} or \
+                not all(isinstance(e[k], list) and all(isinstance(f, str) and f for f in e[k])
+                        for k in CALIBRATION_KINDS if k in e):
+            raise ValueError(f"{where}: its own calibration of session {night} is not {{'fork', kinds}}: {e!r}")
+        if not str(night).isdigit() or int(night) not in sids:
+            raise ValueError(f"{where}: its own calibration names a session the project does not have: {night!r}")
 
 
 def is_fusion(w: Workflow) -> bool:

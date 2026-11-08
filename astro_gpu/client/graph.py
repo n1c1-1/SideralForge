@@ -710,11 +710,13 @@ class GraphView(QGraphicsView):
         return out + [p.pid for p in g.s.paths if p.pid not in out]
 
     @staticmethod
-    def session_rows(g: Graph, order: list[int], frames: list[int]) -> tuple[dict[int, float], dict[int, float]]:
+    def session_rows(g: Graph, order: list[int], frames: list[int], ghost: bool = False
+                     ) -> tuple[dict[int, float], dict[int, float]]:
         """The lanes (workflow -> y) and the sessions' rows (session -> y), from 0 (issue #43): each session level with
         the chains it feeds, with the other sessions of those chains (a filter's second night with its filter's
         chain, not under the last chain: GUI exploration 4); rows never closer than SROW, the lanes below moved down
-        when the rows need the room. A session no workflow reads: after the others."""
+        when the rows need the room. A session no workflow reads: after the others. A night takes a row more per
+        Calibration placed in parallel on it, and one for the place of a new one (``ghost``, while one is dragged)."""
         rel = {pid: i * LANE for i, pid in enumerate(order)}
         fr = set(frames)
         idx = {pid: i for i, pid in enumerate(order) if pid in fr}
@@ -723,21 +725,25 @@ class GraphView(QGraphicsView):
             groups.setdefault(tuple(sorted(idx[p.pid] for p in sn.paths if p.pid in idx)), []).append(sn.sid)
         rows: dict[int, float] = {}
         prev = None
+        high = {sn.sid: 1 + len(getattr(g, "calib_forks", {}).get(sn.sid, [])) + int(ghost) for sn, _cn in g.sessions}
         for key in sorted(groups, key=lambda k: (not k, k)):
             sids = groups[key]
+            span = sum(high[sid] for sid in sids)
             if key:
                 centre = (rel[order[key[0]]] + rel[order[key[-1]]]) / 2
             else:
-                centre = prev + SROW + (len(sids) - 1) * SROW / 2 if prev is not None else 0.0
-            first = centre - (len(sids) - 1) * SROW / 2
+                centre = prev + SROW + (span - 1) * SROW / 2 if prev is not None else 0.0
+            first = centre - (span - 1) * SROW / 2
             if prev is not None and first < prev + SROW:
                 d = prev + SROW - first
                 first += d
                 for pid in order[key[0]:] if key else []:  # its chains and those below: down, level with it
                     rel[pid] += d
-            for i, sid in enumerate(sids):
-                rows[sid] = first + i * SROW
-            prev = first + (len(sids) - 1) * SROW
+            at = first
+            for sid in sids:
+                rows[sid] = at
+                at += high[sid] * SROW
+            prev = at - SROW
         return rel, rows
 
     def rebuild(self):
@@ -784,14 +790,17 @@ class GraphView(QGraphicsView):
         order = frames + [pid for pid in order if pid not in frames]      # the image workflows' lanes last
         n_lanes = max(1, len(s.paths))
         # issue #43: the sessions' rows, each level with the chains it feeds (session_rows)
-        rel, rows = self.session_rows(g, order, frames)
+        rel, rows = self.session_rows(g, order, frames, self.drag_block == "calibration" and bool(g.sessions))
         top = TOP + max(0.0, -min(rows.values(), default=0.0))
         lanes = {pid: top + rel[pid] for pid in order}
         mid = (lanes[order[0]] + lanes[order[-1]]) / 2 if order else top + LANE / 2
         fmid = (lanes[frames[0]] + lanes[frames[-1]]) / 2 if frames else top
         for sn, cn in g.sessions:
             sn.y = cn.y = top + rows[sn.sid]
-        s_last = max((sn.y for sn, _cn in g.sessions), default=fmid)      # the lowest session's row
+            for i, c in enumerate(g.calib_forks.get(sn.sid, [])):          # under the night's own Calibration
+                c.y = sn.y + (i + 1) * SROW
+        s_last = max((n.y for pair in g.sessions for n in pair + tuple(g.calib_forks.get(pair[0].sid, []))),
+                     default=fmid)                                          # the lowest session's row
         others = [pid for pid in order if pid not in frames]
         if others and (s.sources_loaded or s.p.sessions):   # the image lanes: below the sessions and "+ Session"
             last = s_last
@@ -850,9 +859,14 @@ class GraphView(QGraphicsView):
         for sn, cn in g.sessions:
             if cn.paths:                                  # a session's Calibration, when its workflows have one
                 self._wire(sn, cn, True)
+            for c in g.calib_forks.get(sn.sid, []):       # and those placed in parallel: a fork from the Session
+                self._wire(sn, c, cur is not None and cur in c.paths)
         for t in (firsts if g.sessions else []):   # each first block from the sessions its workflows stack
-            src = [cn if set(map(id, cn.paths)) & set(map(id, t.paths)) else sn for sn, cn in g.sessions
-                   if set(map(id, sn.paths)) & set(map(id, t.paths))]     # without Calibration: from the Session
+            src = []
+            for sn, cn in g.sessions:
+                if set(map(id, sn.paths)) & set(map(id, t.paths)):      # without Calibration: from the Session
+                    src += [c for c in [cn] + g.calib_forks.get(sn.sid, [])
+                            if set(map(id, c.paths)) & set(map(id, t.paths))] or [sn]
             if len(src) > 1:
                 self._join(src, [t], cur)
             elif src:
@@ -947,6 +961,8 @@ class GraphView(QGraphicsView):
             ps = self.plus_session_ghost
             if ps is not None:
                 low.append(ps.rect.bottom())
+            if self.drag_block == "calibration" and g.sessions:   # the row open for a new one: never under this zone
+                low.append(s_last + SROW + BH / 2)
             y = max([y] + [v + 14 for v in low])
         text = _("Workflow: Session/Image") if s.paths or s.p.sessions else _("Start: Session/Image")
         need = QFontMetricsF(QFont("Segoe UI", 9)).horizontalAdvance(text) + 60
@@ -956,17 +972,21 @@ class GraphView(QGraphicsView):
         gh.hot = self.drag_block in ("session", "image")
         sc.addItem(gh)
         self.new_flow_ghost = gh
-        # issue #47: while an image block is dragged, a new branch can start under each block it can follow
-        if self.drag_block in wfl.IO and wfl.IO[self.drag_block] == (wfl.IMAGE, wfl.IMAGE):
+        # issue #47: while an image or a frame block is dragged, a new branch can start under each block it can follow
+        if self.drag_block in wfl.IO and (wfl.IO[self.drag_block] == (wfl.IMAGE, wfl.IMAGE)
+                                          or self.drag_block in wfl.FRAME_BLOCKS):
             title = block_title(None, view_key(self.drag_block))
             seen: set[int] = set()
             for p in self._flows():
-                for key in s.display_keys(p):
-                    n = g.node_of(p, key)
-                    if n is None or id(n) in seen or n.sid is not None or not s.can_branch(p, key, self.drag_block):
+                for key in s.branch_keys(p):
+                    if not s.can_branch(p, key, self.drag_block):
+                        continue
+                    n, row = self._branch_anchor(g, p, key)
+                    if n is None or id(n) in seen:
                         continue
                     seen.add(id(n))
-                    r = QRectF(n.col + 6, n.y + BH / 2 + 4, n.w - 12, LANE - BH - 8)   # in the gap, not on the
+                    r = QRectF(n.col + 6, n.y + BH / 2 + 4, n.w - 12, LANE - BH - 8) if not row else \
+                        QRectF(n.col + 4, n.y + SROW - BH / 2 + 4, n.w - 8, BH - 8)   # in the gap, not on the
                     #                                                                    block under it (8.1)
                     bg = GhostItem(r, _("new branch"), None, p.pid, role="branch")
                     bg.branch_key = key
@@ -1024,6 +1044,22 @@ class GraphView(QGraphicsView):
         if self._sel_seen is not None and seen != self._sel_seen:
             self.reveal(self._sel_item)
         self._sel_seen = seen
+
+    def _branch_anchor(self, g: Graph, p, key: str) -> tuple[Node | None, bool]:
+        """The block a new branch's place is drawn under, and whether a whole row is open there: a Calibration beside
+        a night's own (its lowest), any other under the block it follows; ``None`` for what is not drawn there."""
+        if key == "sources":
+            return g.node_of(p, "calibration"), False
+        if key.startswith("session@"):
+            sid = int(key.partition("@")[2])
+            cn = next((c for sn, c in g.sessions if sn.sid == sid), None)
+            forks = g.calib_forks.get(sid, [])
+            return (forks[-1] if forks else cn), True
+        if key == "calibration" and g.sessions:           # the frames of every night: under the last Calibration
+            sn, cn = g.sessions[-1]
+            return (g.calib_forks.get(sn.sid) or [cn])[-1], False
+        n = g.node_of(p, key)
+        return (None if n is not None and n.sid is not None else n), False
 
     def _flows(self) -> list:
         """The workflows a dragged palette block can go in: the one the palette says ("for …"; GUI exploration 4, Q11:
@@ -2210,15 +2246,16 @@ PALETTE_TITLES = {"session": "Session", "image": "Image", "fusion": "Fusion"}
 
 class PaletteCard(QFrame):
     """A block of the palette (issue #47): dragged onto a workflow (only its valid places light up), or placed in the
-    current workflow at its usual place by a double-click. Greyed when it cannot be placed: hovered, it says why."""
+    current workflow at its usual place by a double-click. Greyed when it cannot be placed: its tooltip says why.
+    ``branch``: it cannot be placed in the chain, but can be set in parallel: available, by a drag only."""
 
-    def __init__(self, page, block: str, reason: str, parent=None, folded: bool = False):
+    def __init__(self, page, block: str, reason: str, parent=None, folded: bool = False, branch: bool = False):
         super().__init__(parent)
-        self.page, self.block, self.reason = page, block, reason
+        self.page, self.block, self.reason, self.branch = page, block, reason, branch
         self._press = None
         # inside the palette, its scroll bar beside it; folded (issue #44): its icon alone, the name in the tooltip
         self.setMaximumWidth(PALETTE_FOLDED_W - 12 if folded else PALETTE_W - 26)
-        on = not reason
+        on = not reason or branch
         self.setObjectName("tool")
         self.setCursor(Qt.OpenHandCursor if on and block in wfl.IO else
                        Qt.PointingHandCursor if on else Qt.ForbiddenCursor)
@@ -2247,22 +2284,20 @@ class PaletteCard(QFrame):
             v.addWidget(t, 1)
         key = view_key(block)
         what = BY_KEY[key]["what"] if key in BY_KEY else ""
-        tip = _(what) if what and not reason else ""     # unavailable: the message under it says why
+        if branch:
+            tip = (_(what) + "\n" if what else "") + _("Drag it between blocks for a new branch")
+        elif reason:                                     # not available: why, the sentence begun with a capital
+            tip = reason[:1].upper() + reason[1:]
+        else:
+            tip = _(what) if what else ""
         self.setToolTip((self.title + ("\n" + tip if tip else "")) if folded else tip)
         self.setAccessibleName(self.title)
-
-    def enterEvent(self, e):                                          # noqa: N802
-        if self.reason:
-            self.page.show_hint(self, self.reason)
-
-    def leaveEvent(self, e):                                          # noqa: N802
-        self.page.hide_hint()
 
     def mousePressEvent(self, e):                                     # noqa: N802
         self._press = e.position().toPoint()
 
     def mouseMoveEvent(self, e):                                      # noqa: N802
-        if self._press is None or not (e.buttons() & Qt.LeftButton) or self.reason or \
+        if self._press is None or not (e.buttons() & Qt.LeftButton) or (self.reason and not self.branch) or \
                 self.block not in wfl.IO and self.block not in ("session", "image", "composition", "fusion"):
             return
         if (e.position().toPoint() - self._press).manhattanLength() < QApplication.startDragDistance():
@@ -2461,11 +2496,6 @@ class GraphPage(QWidget):
                 sc = QShortcut(QKeySequence(seq), self.graph)
                 sc.setContext(Qt.WidgetWithChildrenShortcut)
                 sc.activated.connect(fn)
-        self.hint = QLabel(self)                        # why a palette block is greyed, over the graph (issue #47)
-        self.hint.setStyleSheet("background: #2b2f38; border: 1px solid #5d6470; border-radius: 6px; "
-                                "padding: 5px 9px; color: #e8ebf0;")
-        self.hint.setWordWrap(True)
-        self.hint.hide()
         self.refresh()
 
     # ------------------------------------------------------------ refresh
@@ -2533,7 +2563,6 @@ class GraphPage(QWidget):
     def build_tools(self):
         """The palette (issue #47): every block, greyed where it cannot be placed in the current workflow."""
         clear(self.tl)
-        self.hide_hint()                                 # the card it explained is gone (Ctrl+Y may have freed it)
         s = self.s
         p = self.palette_path()
         folded = self.left_state == "folded"
@@ -2571,7 +2600,8 @@ class GraphPage(QWidget):
             head_l.setVisible(not folded)                     # folded: only the blocks' first letters
             self.tl.addWidget(head_l)
             for b in blocks:
-                card = PaletteCard(self, b, self.palette_reason(b, p, split), folded=folded)
+                reason = self.palette_reason(b, p, split)
+                card = PaletteCard(self, b, reason, folded=folded, branch=bool(reason) and self.branch_possible(b))
                 self.cards[b] = card
                 self.tl.addWidget(card)
             if title == "Image" and prefs.spec():        # ◇ in Spec mode: not in the engine yet
@@ -2618,6 +2648,12 @@ class GraphPage(QWidget):
             return True
         return super().eventFilter(obj, e)
 
+    def branch_possible(self, block: str) -> bool:
+        """Whether a frame block can be set in parallel somewhere (its card can then be dragged)."""
+        s = self.s
+        return s.ready and block in wfl.FRAME_BLOCKS and any(
+            s.can_branch(q, key, block) for q in self.graph._flows() for key in s.branch_keys(q))
+
     def palette_reason(self, block: str, p, split) -> str:
         """Why a palette block cannot be placed now (translated), "" when it can."""
         s = self.s
@@ -2657,21 +2693,6 @@ class GraphPage(QWidget):
         if getattr(p, "source", None) and "fusion" in (p.source or {}) and block not in ("output", "stars"):
             return s.palette_reason(p, block)
         return s.palette_reason(p, block)
-
-    def show_hint(self, card, text: str):
-        """The small message under a greyed palette block: why it is not available."""
-        self.hint.setText(text[:1].upper() + text[1:])
-        self.hint.setMaximumWidth(320)
-        self.hint.adjustSize()
-        pos = card.mapTo(self, QPoint(card.width() + 6, 0))           # beside the card, over the graph
-        # inside the page (GUI exploration 2: a card low in the palette, the Log open, put it under the page's bottom)
-        self.hint.move(max(4, min(pos.x(), self.width() - self.hint.width() - 4)),
-                       max(4, min(pos.y(), self.height() - self.hint.height() - 4)))
-        self.hint.raise_()
-        self.hint.show()
-
-    def hide_hint(self):
-        self.hint.hide()
 
     def add_dropped_files(self, sid: int, paths: list):
         """Files or folders dragged from the Explorer onto a Session block (decision 9, as reference apps import by
@@ -3200,8 +3221,9 @@ class GraphPage(QWidget):
             return
         key = node.key
         targets = [q for q in node.paths if pids is None or q.pid in pids]
+        night = None if key != "calibration" or not targets else s.own_calibration_night(targets[0], node.sid)
         for p in targets:                                 # all or none (GUI exploration 3.7): refused, the block
-            why = s.removal_problem(p, key)               # stays, selected, in every workflow
+            why = "" if night is not None else s.removal_problem(p, key)     # stays, selected, in every workflow
             if why:
                 self.toast(_("{block} kept: {why}").format(
                     block=block_title(p, key), name=p.name, why=why))
@@ -3214,7 +3236,10 @@ class GraphPage(QWidget):
         with s.batch():
             for p in targets:
                 s.log('{block} removed from "{name}"', block=block_title(p, key), name=p.name)
-                s.remove_node(p, key)
+                if night is not None:                     # beside the Session's: the workflow takes that one again
+                    s.remove_own_calibration(p, night)
+                else:
+                    s.remove_node(p, key)
             for p in targets:                             # a branch left with no block of its own goes with it, in
                 q = s.view(p.pid)                         # the same undo step (control round)
                 if q is not None and q.pid not in sent and s.is_emptied_branch(q):
@@ -3229,6 +3254,8 @@ class GraphPage(QWidget):
         if gone:
             self.toast(_("{block} removed with its branch “{name}” · Ctrl+Z").format(block=title,
                                                                                     name=", ".join(gone)))
+        elif night is not None:
+            self.toast(_("{block} removed · Ctrl+Z").format(block=title))
         elif node.sid is not None:                        # a session's Calibration: the one of every session goes
             self.toast(_("{block} removed · all sessions · Ctrl+Z").format(block=title))
         else:
