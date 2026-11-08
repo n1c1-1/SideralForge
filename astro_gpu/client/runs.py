@@ -51,7 +51,7 @@ from .services.run import (
     size_text,
     stage_title,
 )
-from .widgets import ACCENT, BAD, OK, WARN, Box, ElidedLabel, clear, label
+from .widgets import ACCENT, BAD, OK, WARN, Box, ElidedLabel, cap_dialog, clear, label
 
 GREY = "#5d6470"
 #: waiting: to compute, an orange circle (issue #27)
@@ -311,6 +311,7 @@ class RunDialog(QDialog):
         self.heading, self.show_done = title, show_done
         self.names = dict(names or {})
         self.setMinimumWidth(740)
+        cap_dialog(self)
         self.setModal(False)
         self._track = track
         self.root = QVBoxLayout(self)

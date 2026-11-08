@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 from ..core import project2
 from . import prefs
 from .i18n import _, hours_text, maybe, plural
-from .widgets import ACCENT, WARN, ElidedLabel, label
+from .widgets import ACCENT, WARN, ElidedLabel, cap_dialog, label
 
 TW, TH = 260, 150
 CARD_W, GAP = TW + 20, 16
@@ -581,6 +581,7 @@ class NewProjectDialog(QDialog):
         self.location = Path(location)
         self.setWindowTitle(_("New project"))
         self.setMinimumWidth(520)
+        cap_dialog(self)
         v = QVBoxLayout(self)
         v.addWidget(label(_("New project"), "h1"))
         rows = []

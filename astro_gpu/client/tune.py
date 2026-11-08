@@ -83,6 +83,7 @@ from .charts import (
 from .chartview import ChartView
 from .i18n import _, hours_text, language, number, plural
 from .imageview import ImageView, ViewImage, quick_thumbnail, sky_text
+from .layout import Dock, fold_button
 from .panel import STATE_COLOR, STATE_WORD, Panel
 from .services import inspect as si
 from .services.inspect import CATALOGUE_G_MAX, VisualSpec
@@ -115,7 +116,9 @@ class Strip(QFrame):
         self.setObjectName("strip")
         self.setStyleSheet("QFrame#strip { background: #1c1f26; border-bottom: 1px solid #2a2f38; }")
         self.current = None
+        self._compact = False
         outer = QHBoxLayout(self)
+        self.outer = outer
         outer.setContentsMargins(10, 8, 10, 8)
         outer.setSpacing(4)
         # "◂ Graph" and the workflow list stay in view; only the blocks scroll (round 3: at 1366 the band scrolled to a
@@ -227,6 +230,26 @@ class Strip(QFrame):
             b.clicked.connect(lambda: self.picked.emit("final"))
             self.h.addWidget(b)
         self.h.addStretch(1)
+        if self._compact:
+            QTimer.singleShot(0, self, self._fit_height)
+
+    def set_compact(self, on: bool):
+        """Issue #44: on a small window the band is one tight line (its scroll bar's room only while it scrolls)."""
+        if on == self._compact:
+            return
+        self._compact = on
+        self.outer.setContentsMargins(*((8, 3, 8, 3) if on else (10, 8, 10, 8)))
+        self._fit_height()
+
+    def _fit_height(self):
+        sa = self.scroll
+        if not self._compact:
+            sa.setMinimumHeight(0)
+            sa.setMaximumHeight(16777215)
+            return
+        self.blocks.layout().activate()
+        need = self.blocks.sizeHint().width() > sa.viewport().width()
+        sa.setFixedHeight(self.blocks.sizeHint().height() + (sa.horizontalScrollBar().sizeHint().height() if need else 0))
 
 
 # ---------------------------------------------------------------------------------------------- small pieces
@@ -546,6 +569,8 @@ class TuneView(QWidget):
     removeTool = Signal()                 # Remove, on the panel of an optional block
     toasted = Signal(str)                 # a word to say (what came with a change, why it was refused)
     sendToPost = Signal(str, object, object)       # name, source (what the viewer reads), key
+    sideChosen = Signal(str)              # issue #44: the panel pinned or folded by the user
+    sidesShown = Signal()                 # the arrow of the hidden panel
 
     def __init__(self, project, steps, sources_view, post_page, parent=None, service=None):
         super().__init__(parent)
@@ -608,6 +633,14 @@ class TuneView(QWidget):
         h.addWidget(mid, 1)
         self.panel = Panel(project, steps, tune=True)
         h.addWidget(self.panel)
+        # issue #44: as the graph's: the panel folds to icons or hides
+        self.dock = Dock(body, self.panel, lambda: h.addWidget(self.panel), lambda: h.removeWidget(self.panel),
+                         self.panel.section_list, _("Block settings"))
+        h.insertWidget(h.indexOf(self.panel), self.dock.strip)
+        self.dock.chosen.connect(lambda st: self.sideChosen.emit(st))
+        self.dock.arrow.clicked.connect(self.sidesShown.emit)
+        self.panel.sectionsChanged.connect(self.dock.refresh_icons)
+        self.panel.corner = fold_button(self.panel, self.dock.fold, _("Fold to icons"))
         from .gradientedit import GradientEditor
         self.grad_editor = GradientEditor(self)            # the Gradient block's samples and areas, on the image
         self.panel.grad_editor = self.grad_editor
@@ -642,6 +675,13 @@ class TuneView(QWidget):
         esc.activated.connect(self.back.emit)
 
     # ------------------------------------------------------------ selection (what the strip does)
+    def set_layout(self, right: str, strip_shown: bool, compact: bool, solo: bool):
+        """Issue #44: the right panel (docked | icons | hidden), the band of blocks and the compact look."""
+        self.panel.set_solo(solo)
+        self.dock.set_state(right)
+        self.strip.setVisible(strip_shown)
+        self.strip.set_compact(compact)
+
     def select(self, index=None, step=None):
         s = self.s
         s.pending_change = None
@@ -654,6 +694,7 @@ class TuneView(QWidget):
         try:
             if e.type() == QEvent.Resize and obj is self.strip_scroll.viewport():
                 QTimer.singleShot(0, self.show_open_block)    # the window resized after the strip was built
+                QTimer.singleShot(0, self.strip._fit_height)
         except RuntimeError:                              # closing: the strip already gone
             pass
         return super().eventFilter(obj, e)

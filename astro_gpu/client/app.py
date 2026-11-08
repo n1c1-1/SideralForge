@@ -30,7 +30,7 @@ import traceback
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QLibraryInfo, QLocale, Qt, QTimer, QTranslator
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -45,8 +45,10 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QStackedWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -56,6 +58,7 @@ from ..core import project2
 from ..core.newproject import guess_names
 from ..core.project import Target
 from . import APP_NAME, prefs
+from . import layout as lay
 from .gcguard import GuiGarbageCollector
 from .home import HomeView
 from .i18n import _, language, plain_error, plural, set_language
@@ -63,7 +66,7 @@ from .logview import LogPanel
 from .services.run import duration_text
 from .services.worker import ApiWorker, Machine, machine_info
 from .settingsdlg import SettingsDialog, auto_device, device_items
-from .widgets import NEW, QSS, WARN, label
+from .widgets import NEW, QSS, WARN, cap_dialog, label, size_within
 
 EXTRA_QSS = ("QSlider:horizontal { margin-left: 6px; margin-right: 6px; }"
              "QMenuBar { background: #1c1f26; } QMenuBar::item:selected { background: #2b3446; }")
@@ -216,7 +219,16 @@ class Main(QMainWindow):
         self.b_log.toggled.connect(self.toggle_log)
         self.statusBar().addPermanentWidget(self.b_log)
         self.statusBar().setStyleSheet("QStatusBar { background: #1c1f26; border-top: 1px solid #2a2f38; }")
+        self.setMinimumSize(*lay.MIN_WINDOW)
+        self.size_range = None                       # issue #44: the window's size range (layout.py)
+        self.compact = False
         self.build_menus()
+        # Tab: focus goes on in a field, as in a form; elsewhere it hides the panels (a reference editor's habit)
+        for seq, fn in (("Tab", self._tab), ("Shift+Tab", self._shift_tab), ("Backtab", self._shift_tab),
+                        ("Shift+Backtab", self._shift_tab)):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.WindowShortcut)
+            sc.activated.connect(fn)
         self.show_home()
         self.worker.submit("machine", machine_info)
 
@@ -275,6 +287,12 @@ class Main(QMainWindow):
         act(v, _("Inspect"), lambda: self.set_mode(1), "Ctrl+2", enabled=has)
         act(v, _("Post"), lambda: self.set_mode(2), "Ctrl+3", enabled=has)
         v.addSeparator()
+        self.a_hide = act(v, _("Hide panels") + "\tTab", lambda: self.toggle_panels("hidden"), None, True, enabled=has)
+        self.a_hide_r = act(v, _("Hide right") + "\tShift+Tab", lambda: self.toggle_panels("right_hidden"), None, True,
+                            enabled=has)
+        self.a_max = act(v, _("Maximise"), lambda: self.toggle_panels("max"), "Ctrl+Space", True, enabled=has)
+        act(v, _("Reset layout"), self.reset_layout, enabled=has)
+        v.addSeparator()
         act(v, _("Log"), lambda: self.b_log.toggle(), "Ctrl+L")
         self.a_spec = act(v, _("Spec mode"), None, None, True)
         self.a_spec.setChecked(spec)
@@ -291,6 +309,7 @@ class Main(QMainWindow):
         for m in (f, e, v, r, h):
             m.setToolTipsVisible(True)
         self._update_actions()
+        self._sync_layout_marks()
 
     def _update_actions(self):
         """What the menus allow now: Undo / Redo, Stop, Export."""
@@ -310,6 +329,106 @@ class Main(QMainWindow):
             self.a_here.setToolTip(_(why) if why else _("Run what the selected block needs, up to it"))
         except RuntimeError:                         # the menus are being rebuilt
             pass
+
+    # ------------------------------------------------------------ small screens (issue #44)
+    def resizeEvent(self, e):                                        # noqa: N802 - Qt's name
+        super().resizeEvent(e)
+        c = lay.size_class(self.width(), self.height(), self.size_range)
+        if c != self.size_range:
+            self.size_range = c
+            self.apply_layout()
+
+    def apply_layout(self):
+        """What the window's size range and the user's choices say: the look, the panels, the bars."""
+        cls = self.size_range or lay.LARGE
+        comp = lay.compact(cls)
+        if comp != self.compact:
+            self.compact = comp
+            self.setStyleSheet(lay.COMPACT_QSS if comp else "")
+        st = lay.state(cls)
+        full = bool(st["max"])
+        right = "hidden" if st["hidden"] or st["right_hidden"] or full else st["right"]
+        left = "hidden" if st["hidden"] or full else st["left"]
+        solo = lay.effective(cls) == lay.SMALL
+        if self.project is not None and self.proj_screen is not None:
+            self.proj_bar.setFixedHeight(36 if comp else 46)
+            self.proj_bar.setVisible(not full)
+            self.statusBar().setVisible(not full)
+            self.logp.setVisible(self.b_log.isChecked() and not full)
+            if self.graph is not None:
+                self.graph.set_layout(right, left, solo)
+            if self.tune is not None:
+                self.tune.set_layout(right, not st["hidden"] and not full, comp, solo)
+            if self.browser is not None:
+                self.browser.set_compact(solo)
+            self._layout_post()
+        self._sync_layout_marks()
+
+    def _sync_layout_marks(self):
+        """The View menu's check marks: Hide panels, Hide right, Maximise."""
+        st = lay.state(self.size_range or lay.LARGE)
+        for a, on in ((getattr(self, "a_hide", None), st["hidden"]), (getattr(self, "a_hide_r", None), st["right_hidden"]),
+                      (getattr(self, "a_max", None), st["max"])):
+            if a is not None:
+                a.setChecked(bool(on))
+
+    def _layout_post(self):
+        """Post's panel follows, except when the user folded or pinned Post's own (its choice is kept for this range)."""
+        page = self.post_holder.page if self.post_holder is not None else None
+        view = getattr(page, "view", None)
+        if view is None:
+            return
+        cls = self.size_range or lay.LARGE
+        st = lay.state(cls)
+        if st["hidden"] or st["right_hidden"] or st["max"]:
+            state = "hidden"
+        else:
+            state = st.get("post") or ("icons" if prefs.get("post_panel_shown") is False else st["right"])
+        view.set_layout(state)
+        view.set_compact(lay.compact(cls))
+
+    def _tab(self):
+        fw = QApplication.focusWidget()
+        if self.project is None or isinstance(fw, (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit)) or \
+                (isinstance(fw, QComboBox) and fw.isEditable()):
+            self.focusNextPrevChild(True)
+        else:
+            self.toggle_panels("hidden")
+
+    def _shift_tab(self):
+        fw = QApplication.focusWidget()
+        if self.project is None or isinstance(fw, (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit)) or \
+                (isinstance(fw, QComboBox) and fw.isEditable()):
+            self.focusNextPrevChild(False)
+        else:
+            self.toggle_panels("right_hidden")
+
+    def toggle_panels(self, key: str):
+        """Tab (hidden), Shift+Tab (right_hidden), Ctrl+Space (max): a toggle, remembered for this size range."""
+        if self.project is None:
+            return
+        cls = self.size_range or lay.LARGE
+        lay.remember(cls, **{key: not lay.state(cls)[key]})
+        self.apply_layout()
+
+    def _side_chosen(self, side: str, st: str):
+        """A panel pinned or folded by the user: his choice from now on, for this size range."""
+        lay.remember(self.size_range or lay.LARGE, **{side: st})
+        self.apply_layout()
+
+    def _post_panel_chosen(self, st: str):
+        prefs.set("post_panel_shown", st == "docked")
+        lay.remember(self.size_range or lay.LARGE, post=st)
+        self.apply_layout()
+
+    def _show_sides(self):
+        """The arrow of a hidden side: the panels come back (Tab pressed again)."""
+        lay.remember(self.size_range or lay.LARGE, hidden=False, right_hidden=False)
+        self.apply_layout()
+
+    def reset_layout(self):
+        lay.reset()
+        self.apply_layout()
 
     # ------------------------------------------------------------ Home
     def show_home(self, last=None):
@@ -586,6 +705,7 @@ class Main(QMainWindow):
         self.bt_run.clicked.connect(self.launch)
         h.addWidget(self.bt_run)
         bar.setFixedHeight(46)
+        self.proj_bar = bar
         sv.addWidget(bar)
         self.modes = QStackedWidget()
         sv.addWidget(self.modes, 1)
@@ -601,6 +721,7 @@ class Main(QMainWindow):
         if self.run is not None:
             self.run.retranslate()                   # the console of the last run, in the new Log panel
         self.set_mode(self.mode)
+        self.apply_layout()
 
     def graph_page(self) -> QWidget:
         """Graph: the toolbar of optional blocks, the GraphView and the block Panel."""
@@ -615,6 +736,8 @@ class Main(QMainWindow):
         page.addSession.connect(self.add_session)
         page.variantMade.connect(self._variant_made)
         page.changed.connect(self.request_refresh)
+        page.sideChosen.connect(self._side_chosen)
+        page.sidesShown.connect(self._show_sides)
         self.graph = page
         if self.run is not None:
             self.run.watch_graph(page.graph)
@@ -637,6 +760,8 @@ class Main(QMainWindow):
         tune.openPost.connect(lambda: self.set_mode(2))
         tune.removeTool.connect(self._remove_tool)
         tune.toasted.connect(self.flash)
+        tune.sideChosen.connect(lambda st: self._side_chosen("right", st))
+        tune.sidesShown.connect(self._show_sides)
         tune.can_post = self.browser.can_post = lambda: True    # Post takes Inspect's images as layers
         tune.sendToPost.connect(self._send_to_post)
         self.browser.sendToPost.connect(self._send_to_post)
@@ -657,6 +782,9 @@ class Main(QMainWindow):
         page.view.toasted.connect(self.flash)            # what a change of Post did beyond Post (a branch removed)
         page.view.goProcessing.connect(lambda pid, k: (self.select(index=self.s.index_of(pid), step=k),
                                                        self.set_mode(1)))
+        page.view.panelChosen.connect(self._post_panel_chosen)
+        page.view.dock.arrow.clicked.connect(self._show_sides)
+        QTimer.singleShot(0, self._layout_post)
         return page
 
     @property
@@ -1129,6 +1257,7 @@ class Main(QMainWindow):
         d.specChanged.connect(self.set_spec)
         d.homeChanged.connect(lambda: self.home.rescan() if self.home is not None else None)
         d.clearCache.connect(self.clear_cache)
+        d.densityChanged.connect(self.apply_layout)
         d.exec()
         d.deleteLater()
 
@@ -1200,6 +1329,7 @@ class Main(QMainWindow):
 
     def about_dialog(self) -> QDialog:
         d = QDialog(self)
+        cap_dialog(d)
         d.setWindowTitle(_("About"))
         lv = QVBoxLayout(d)
         t = QLabel(HELP.format(
@@ -1302,7 +1432,7 @@ def main(argv=None):
     sys.excepthook = show_error
     threading.Thread(target=_warm_up, name="warm-up", daemon=True).start()
     w = Main()
-    w.resize(1680, 1000)
+    size_within(w, 1680, 1000)                          # a laptop: no taller than its screen (issue #44)
     w.showMaximized()
     if argv:
         w.open_project(argv[0])

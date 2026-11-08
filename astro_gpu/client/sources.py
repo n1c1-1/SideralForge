@@ -47,7 +47,7 @@ from .i18n import _, hours_text, number, plural
 from .imageview import ImageView, ViewImage, quick_thumbnail
 from .services.inspect import FrameItem, ProjectFrames, add_scan, light_thumb, service_of, set_calibration_excluded
 from .services.worker import norm_path
-from .widgets import NEW, OK, WARN, ElidedLabel, clear, hline, label, para
+from .widgets import NEW, OK, WARN, ElidedLabel, cap_dialog, clear, hline, label, para
 
 # (key, title, section): plain English, translated where shown
 GROUPS = [("lights", "Lights", "Lights"), ("darks", "Darks", "Calibration"), ("flats", "Flats", "Calibration"),
@@ -273,6 +273,7 @@ class ImportDialog(QDialog):
         title = title or (_("Add session") if new_session else _("Add folder"))
         self.setWindowTitle(title)
         self.setMinimumWidth(760)
+        cap_dialog(self)
         v = QVBoxLayout(self)
         v.addWidget(label(title, "h1"))
         v.addWidget(label(_("Choose the frames of each kind: by their files, a folder, or by dropping them here."),
@@ -520,6 +521,7 @@ class SourcesView(QWidget):
         left = QWidget()
         left.setObjectName("panel")
         left.setFixedWidth(300)
+        self._left_w = left
         self.lv = QVBoxLayout(left)
         self.lv.setContentsMargins(10, 12, 10, 10)
         root.addWidget(left)
@@ -592,6 +594,7 @@ class SourcesView(QWidget):
         right = QWidget()
         right.setObjectName("panel")
         right.setFixedWidth(320)
+        self._right_w = right
         self.rv = QVBoxLayout(right)
         self.rv.setContentsMargins(12, 12, 12, 12)
         root.addWidget(right)
@@ -614,6 +617,16 @@ class SourcesView(QWidget):
         self.set_mode(1)
 
     # ------------------------------------------------------------ the empty project
+    def set_compact(self, on: bool):
+        """Issue #44: on a small window the two side columns narrow, the viewer between them keeps its room."""
+        self._left_w.setFixedWidth(240 if on else 300)
+        self._right_w.setFixedWidth(260 if on else 320)
+        p = self                                       # hidden, its page would keep its minimum width: the layouts up
+        while p is not None:                           # to the window (which that width would hold above 1024) are told
+            if p.layout() is not None:
+                p.layout().invalidate()
+            p = p.parentWidget()
+
     def _empty_page(self):
         w = QWidget()
         v = QVBoxLayout(w)

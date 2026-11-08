@@ -3,7 +3,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QEvent, QObject, QSize, Qt
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QVBoxLayout, QWidget
 
 ACCENT, OK, WARN, SHARED, BAD = "#5ea1ff", "#5fbf7f", "#e6a23c", "#a395ff", "#e06c6c"
@@ -114,10 +114,35 @@ def fit_height(lb: QLabel):
 def size_within(w, width: int, height: int, margin: int = 40):
     """Resizes a dialog to ``width`` x ``height``, smaller where the room it opens in is smaller (a 1366 x 768 screen,
     GUI exploration 2): the window it opens over, else the screen's free area, less ``margin`` for its frame."""
-    top = w.parentWidget().window() if w.parentWidget() is not None else None
-    room = top.geometry() if top is not None and top.isVisible() else (w.screen() or QApplication.primaryScreen()) \
-        .availableGeometry()
+    room = _room(w)
     w.resize(min(width, room.width() - margin), min(height, room.height() - margin))
+
+
+class _Cap(QObject):
+    """Shown, a dialog never takes more than ``SHARE`` of the room it opens in (see ``cap_dialog``)."""
+
+    def eventFilter(self, d, e):                     # noqa: N802 - Qt's name
+        if e.type() == QEvent.Show:
+            room = _room(d)
+            d.resize(min(d.width(), int(room.width() * SHARE)), min(d.height(), int(room.height() * SHARE)))
+        return False
+
+
+SHARE = 0.9
+_CAP = _Cap()
+
+
+def _room(w):
+    """Where a dialog opens: the window it opens over, else the screen's free area."""
+    top = w.parentWidget().window() if w.parentWidget() is not None else None
+    return top.geometry() if top is not None and top.isVisible() else (w.screen() or QApplication.primaryScreen())         .availableGeometry()
+
+
+def cap_dialog(d):
+    """Issue #44: a dialog is never larger than 90 % of the room it opens in (its designed size kept wherever that
+    fits), and it can be resized: on a laptop no OK / Cancel goes under the screen's edge."""
+    d.setSizeGripEnabled(True)
+    d.installEventFilter(_CAP)
 
 
 def hline() -> QFrame:

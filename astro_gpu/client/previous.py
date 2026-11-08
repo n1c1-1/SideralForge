@@ -28,7 +28,7 @@ from . import prefs
 from .home import folder_name
 from .i18n import _, language, number, plain_error, plural
 from .services.worker import ApiWorker
-from .widgets import ElidedLabel, label
+from .widgets import ElidedLabel, cap_dialog, label
 
 #: the stages as the views name them (the blocks they belong to)
 STAGE_BLOCK = {"inventory": "Calibration", "calibrate": "Calibration", "register": "Registration", "stack": "Stacking",
@@ -114,6 +114,7 @@ class PreviousVersionDialog(QDialog):
         self._relay.said.connect(self._progress)
         self.setWindowTitle(_("Import a project"))
         self.setMinimumWidth(640)
+        cap_dialog(self)
         v = QVBoxLayout(self)
         v.setContentsMargins(18, 16, 18, 14)
         v.setSpacing(10)

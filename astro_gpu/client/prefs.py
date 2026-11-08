@@ -46,6 +46,9 @@ DEFAULTS = {
     # display
     "auto_stretch": True,
     "units": "arcsec",                # arcsec | px
+    # the window on a small screen (issue #44): auto | compact | comfortable; the user's panels per size range
+    "layout_density": "auto",
+    "layout": {},
     # master library
     "masters_dir": "",
     "master_tolerance_temp": 2.0,     # °C
