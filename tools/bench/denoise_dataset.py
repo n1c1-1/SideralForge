@@ -233,9 +233,9 @@ def latest_stack(store: Path) -> Path | None:
     return max(dirs, key=lambda d: (d / "drz_A.npy").stat().st_mtime) if dirs else None
 
 
-def export_one(name: str, stack_dir: Path, role: str) -> dict:
+def export_one(name: str, stack_dir: Path, role: str, base: Path = OUT) -> dict:
     from astro_gpu.stages.denoise import norm_params
-    out = OUT / name
+    out = base / name
     if (out / "pair.json").exists():
         return json.loads((out / "pair.json").read_text())
     A = np.load(stack_dir / "drz_A.npy").astype(np.float32)
@@ -285,19 +285,20 @@ def export() -> int:
 
 
 # ---------------------------------------------------------------------------------------------- train
-def train(hours: float, device: str, patch: int, batch: int, lr: float, resume: bool, tag: str = "") -> int:
+def train(hours: float, device: str, patch: int, batch: int, lr: float, resume: bool, tag: str = "",
+          base: Path = OUT, init: Path | None = None) -> int:
     import torch
     import torch.nn.functional as F
 
     from astro_gpu.stages.denoise import UNet
     dev = torch.device(device)
-    metas = [json.loads(f.read_text()) for f in sorted(OUT.glob("*/pair.json"))]
+    metas = [json.loads(f.read_text()) for f in sorted(base.glob("*/pair.json"))]
     tr = [m for m in metas if m["role"] == "train" and not m["name"].startswith(HELD_OUT)]
     va = [m for m in metas if m["role"] == "validation"]
     log(f"training pairs: {len(tr)}, validation pairs: {len(va)}")
 
     def load(m, ram):
-        d = OUT / m["name"]
+        d = base / m["name"]
         mode = None if ram else "r"
         return (np.load(d / "A.npy", mmap_mode=mode), np.load(d / "B.npy", mmap_mode=mode),
                 np.load(d / "nm.npy", mmap_mode=mode))
@@ -344,11 +345,15 @@ def train(hours: float, device: str, patch: int, batch: int, lr: float, resume: 
 
     vrng = np.random.default_rng(1)
     vset = [tuple(tiles([v], 8, 256, vrng)) for v in vdata]           # fixed validation tiles, 8 per bench case
-    ck = OUT / f"pretrain{tag}.pt"
-    hist_f = OUT / f"pretrain{tag}_history.json"
+    ck = base / f"pretrain{tag}.pt"
+    hist_f = base / f"pretrain{tag}_history.json"
     best_val = None
     torch.manual_seed(0)
     net = UNet().to(dev)
+    if init is not None:                                  # a fine-tuning pass from these weights (issue #45)
+        state = torch.load(init, map_location=dev, weights_only=False)["net"]
+        net.load_state_dict({k: v.float() for k, v in state.items()})
+        log(f"starting from {init}")
     opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4)
     start, hist = 0, []
     if resume and ck.exists():
@@ -388,11 +393,11 @@ def train(hours: float, device: str, patch: int, batch: int, lr: float, resume: 
             torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "it": it}, ck)
             if best_val is None or np.mean(vl) < best_val:
                 best_val = float(np.mean(vl))
-                torch.save({"net": net.state_dict(), "it": it}, OUT / f"pretrained_unet{tag}_best.pt")
+                torch.save({"net": net.state_dict(), "it": it}, base / f"pretrained_unet{tag}_best.pt")
             log(f"step {it}: train {run:.4f}, validation {np.mean(vl):.4f} ({', '.join(f'{v:.3f}' for v in vl)}), "
                 f"lr {opt.param_groups[0]['lr']:.2e}")
     torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "it": it}, ck)
-    torch.save({"net": net.state_dict()}, OUT / f"pretrained_unet{tag}.pt")
+    torch.save({"net": net.state_dict()}, base / f"pretrained_unet{tag}.pt")
     log(f"done: {it} steps in {(time.time() - t0) / 60:.0f} min")
     return 0
 

@@ -153,11 +153,15 @@ class KeyRules:
     def params(self, stage: str) -> type[StageParams]:
         return self.chains.stages[wfl.base(stage)].Params     # a graph's later node ("denoise~2"): its stage's
 
-    def version(self, stage: str, values: Mapping[str, Any] | None = None) -> str:
+    def version(self, stage: str, values: Mapping[str, Any] | None = None, mono: bool = False) -> str:
         """The stage's version in a key: its ``version``; with the definition's validated ``values``, the stage's
         ``key_version(values)`` when it has one (a part of the stage revised on its own, keyed only where the settings
-        use it: the stack's Classic part)."""
+        use it: the stack's Classic part); for a monochrome workflow, its ``mono_key_version(values)`` when it has one
+        (the Denoise network of monochrome stacks, issue #45)."""
         st = self.chains.stages[wfl.base(stage)]
+        mv = getattr(st, "mono_key_version", None)
+        if mono and callable(mv) and values is not None:
+            return str(mv(dict(values)))
         kv = getattr(st, "key_version", None)
         return str(kv(dict(values)) if callable(kv) and values is not None else st.version)
 
@@ -487,7 +491,8 @@ class Keys:
         # a block placed twice ("gradient~2") is keyed by its stage, not by its number: the same computation has the
         # same key whatever the graph numbered it (GUI exploration 2). Only "~" names change: no other key moves.
         u = {(k.split("~", 1)[0] if "~" in k and k.split("~", 1)[0] not in u else k): x for k, x in u.items()}
-        return {"s": b, "v": self.rules.version(b, m), "p": p, "u": u, "x": x}
+        mono = getattr(w, "source", None) is None and self.project.is_mono(w)
+        return {"s": b, "v": self.rules.version(b, m, mono), "p": p, "u": u, "x": x}
 
     def key(self, wf: int | Workflow, stage: str) -> str:
         """The key of a stage in a workflow (ValueError when the stage is not in its chain)."""
