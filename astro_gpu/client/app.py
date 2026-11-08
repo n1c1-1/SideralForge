@@ -387,7 +387,7 @@ class Main(QMainWindow):
             state = "hidden"
         else:
             state = st.get("post") or ("icons" if prefs.get("post_panel_shown") is False else st["right"])
-        view.set_layout(state)
+        view.set_layout(state, lay.effective(cls) == lay.SMALL)
         view.set_compact(lay.compact(cls))
 
     def _tab(self):
