@@ -44,11 +44,11 @@ from astro_gpu import api, texts  # noqa: E402
 from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import i18n, prefs  # noqa: E402
 from astro_gpu.client.charts import FramesChart  # noqa: E402
-from astro_gpu.client.frames import FramesView, GroupingDialog, check_lines, night_text  # noqa: E402
+from astro_gpu.client.frames import FramesView, check_lines, night_text  # noqa: E402
 from astro_gpu.client.imageview import ImageView, default_loader  # noqa: E402
 from astro_gpu.client.model import ProjectModel  # noqa: E402
 from astro_gpu.client.services import inspect as si  # noqa: E402
-from astro_gpu.client.sources import ImportDialog, SourcesView, import_folder  # noqa: E402
+from astro_gpu.client.sources import SourcesView  # noqa: E402
 from astro_gpu.client.steps import SkyOverlay, Steps  # noqa: E402
 from astro_gpu.client.tune import (  # noqa: E402
     Table,  # noqa: E402
@@ -827,47 +827,23 @@ def shot_dialog(d, name, lang="en"):
     d.grab().save(str(shots_dir() / f"{name}_{lang}.png"))
 
 
-def test_the_grouping_dialog_holds_the_criteria_of_the_engine(win):
-    d = GroupingDialog(api.GroupingCriteria(night=True, exposure=False, iso=True), win)
-    d.show()
-    assert set(d.boxes) == {"night", "exposure", "iso"}                  # the others are ◇: Spec mode only
-    assert d.boxes["night"].isChecked() and not d.boxes["exposure"].isChecked()
-    d.boxes["exposure"].setChecked(True)
-    c = d.criteria()
-    assert (c.night, c.exposure, c.iso) == (True, True, True)
-    prefs.set("spec_mode", True)
-    d2 = GroupingDialog(None, win)
-    assert {"filter", "temp", "binning", "rotation", "object"} <= set(d2.boxes)
-    assert all(not d2.boxes[k].isEnabled() and "◇" in d2.boxes[k].text() for k in ("filter", "temp", "object"))
-    prefs.set("spec_mode", False)
-    d3 = GroupingDialog(None, win)
-    d3.show()
-    shot_dialog(d3, "grouping")
-    sv = win.tune.service
-    old = sv.criteria
-    sv.criteria = c
-    inspect(win, "sources")
-    win.frames._build()
-    settle(win)
-    assert "night (noon to noon), exposure and ISO / gain" in " ".join(texts_of(win.frames.pages.widget(0)))
-    sv.criteria = old
-    for x in (d, d2, d3):
-        x.close()
-
-
-def test_the_import_buttons_run_the_import(win, monkeypatch):
-    import astro_gpu.client.sources as srcmod
-    calls = []
-    monkeypatch.setattr(srcmod, "import_folder", lambda *a, **k: calls.append(bool(k.get("new_session"))) or True)
+def test_add_session_makes_an_empty_session_shown_in_its_files(win):
+    """No folder asked, nothing guessed: an empty session, its files added on the Files page, shown then."""
+    s = win.s
+    n = len(s.p.sessions)
     inspect(win, "sources")
     got = []
     win.frames.imported.connect(lambda: got.append(1))
-    win.frames.b_import.click()
     win.frames.b_add.click()
-    assert calls == [False, True] and got == [1, 1]
-    win.tune.panel.addSources.emit()                                  # the panel of the Frames block, in Inspect
-    win.tune.panel.addSession.emit()
-    assert calls == [False, True, False, True]
+    settle(win)
+    try:
+        assert len(s.p.sessions) == n + 1 and got == [1] and not s.p.sessions[-1].lights
+        assert win.browser.sid == s.p.sessions[-1].id and win.frames.pages.currentIndex() == 1
+        assert win.browser.stack.currentIndex() == 3 and "Drop your files here" in texts_of(win.browser)
+    finally:
+        assert s.undo()
+        settle(win)
+
 
 def test_two_sessions_merge_their_flats_and_offer_the_stacking_mode(win):
     """A second night with flats: the engine's check says the flats merge, and the Stacking modes show."""
@@ -881,6 +857,8 @@ def test_two_sessions_merge_their_flats_and_offer_the_stacking_mode(win):
         assert len(s.sessions) == 2
         inspect(win, "sources")
         f = win.frames
+        f.show_page(0)                                                 # the table of the sessions and the health check
+        settle(win)
         lines = check_lines(f.data)
         assert any(lv == "warn" and "The flats of 2 sessions are merged into one master flat" in tx for lv, tx in lines)
         assert "Stacking" in texts_of(f.pages.widget(0))
@@ -988,101 +966,45 @@ def test_a_variant_is_shown_compared_with_its_original(scratch):
     assert any(n.startswith(full.name + "  ·  ") for n in names) and v.compare_mode() == "side"
 
 
-def test_the_frames_of_each_kind_are_chosen_by_their_files(env, monkeypatch, tmp_path):
-    """The import: the darks chosen by three of their files, the flats taken away; read again, then into the project
-    exactly so (the user's rule, 5 November: each kind chosen by selecting its files)."""
+def test_the_frames_of_each_kind_are_chosen_by_their_files(env, tmp_path):
+    """The Session's files: the darks chosen by three of their files, no flats although a folder of them lies next to
+    the lights (nothing guessed): saved exactly so; one file taken out, the others kept."""
     root = tmp_path / "ws" / "Chosen"
     project2.create(root, "Chosen", Target(name="IC 1805"))
     w = open_window(root, readonly=False)
     try:
         darks = sorted(str(p) for p in (DATA / "darks").iterdir())[:3]
-
-        def wait_scan(d):
-            end = time.monotonic() + 120
-            while (d.scan is None or not d.ok.isEnabled()) and time.monotonic() < end:
-                QApplication.processEvents()
-                time.sleep(0.01)
-            assert d.scan is not None
-
-        def fake_exec(self):
-            wait_scan(self)
-            assert "darks" in self.suggested and len(self.scan.frames["darks"]) == 15
-            self.rows["darks"].changed.emit("darks", darks)                # Choose files…: three of them
-            wait_scan(self)
-            self.rows["flats"].changed.emit("flats", [])                   # ✕: no flats
-            wait_scan(self)
-            assert len(self.scan.frames["darks"]) == 3 and not self.scan.frames["flats"]
-            assert "darks" not in self.suggested and "3 darks" in self.rows["darks"].detail.text()
-            assert self.rows["flats"].what.text() == "None"
-            self.accept()
-            return 1
-        monkeypatch.setattr(ImportDialog, "exec", fake_exec)
-        assert import_folder(w.s, w, str(DATA / "lights"), service=w.tune.service)
+        inspect(w, "sources")
+        w.browser.add_session()
+        assert w.browser.add_files("lights", [str(DATA / "lights")]) == 40
+        assert w.browser.add_files("darks", darks) == 3
         w.s.flush()
         d = project2.load(root)
-        assert len(d.sessions) == 1 and sorted(d.sessions[0].darks) == darks and not d.sessions[0].flats
+        assert len(d.sessions) == 1 and sorted(d.sessions[0].darks) == [Path(x).as_posix() for x in darks]
+        assert not d.sessions[0].flats and len(d.sessions[0].lights) == 40
+        w.browser.files_out("darks", darks[:1])
+        w.s.flush()
+        assert sorted(project2.load(root).sessions[0].darks) == [Path(x).as_posix() for x in darks[1:]]
     finally:
         w.s.flush()
         w.close()
 
 
-def test_change_frames_replaces_the_darks_of_a_session(env, monkeypatch, tmp_path):
-    """Frames > Sessions: Change frames… opens the import on the session's frames; two darks chosen, the session holds
-    them (and only them)."""
-    from astro_gpu.client.sources import edit_session_frames
-    root = tmp_path / "ws" / "Edit"
-    p = project2.create(root, "Edit", Target(name="IC 1805"))
-    api.add_session(p, lights=[DATA / "lights"], darks=[DATA / "darks"], flats=[DATA / "flats"], name="night")
-    api.save(p)
-    w = open_window(root, readonly=False)
-    try:
-        darks = sorted(str(x) for x in (DATA / "darks").iterdir())[:2]
-
-        def wait_scan(d):
-            end = time.monotonic() + 120
-            while (d.scan is None or not d.ok.isEnabled()) and time.monotonic() < end:
-                QApplication.processEvents()
-                time.sleep(0.01)
-            assert d.scan is not None
-
-        def fake_exec(self):
-            wait_scan(self)
-            assert len(self.scan.frames["darks"]) == 15 and not self.suggested     # the session's own, no guess
-            self.rows["darks"].changed.emit("darks", darks)
-            wait_scan(self)
-            self.accept()
-            return 1
-        monkeypatch.setattr(ImportDialog, "exec", fake_exec)
-        assert edit_session_frames(w.s, w.s.p.sessions[0].id, w, service=w.tune.service)
-        w.s.flush()
-        d = project2.load(root)
-        assert sorted(d.sessions[0].darks) == [Path(x).as_posix() for x in darks] and d.sessions[0].flats
-    finally:
-        w.s.flush()
-        w.close()
-
-
-def test_importing_the_heart_folder_gives_the_counts_the_sessions_and_the_thumbnails(env, monkeypatch, tmp_path):
+def test_adding_the_heart_files_gives_the_counts_the_sessions_and_the_thumbnails(env, tmp_path):
     root = tmp_path / "ws" / "New"
     project2.create(root, "New", Target(name="IC 1805"))
     w = open_window(root, readonly=False)
     try:
         inspect(w, "sources")
+        assert "No session yet" in texts_of(w.browser.pages.widget(0))
+        w.frames.show_page(0)
+        settle(w)
         assert "No frames yet" in texts_of(w.frames.pages.widget(0))
-        shots = shots_dir()
-
-        def fake_exec(self):
-            end = time.monotonic() + 120
-            while self.scan is None and time.monotonic() < end:
-                QApplication.processEvents()
-                time.sleep(0.01)
-            assert self.scan is not None and self.ok.isEnabled()
-            QApplication.processEvents()
-            self.grab().save(str(shots / f"import_dialog_{i18n.language()}.png"))
-            self.accept()
-            return 1
-        monkeypatch.setattr(ImportDialog, "exec", fake_exec)
-        assert import_folder(w.s, w, str(DATA / "lights"), service=w.tune.service)
+        w.frames.show_page(1)
+        w.browser.add_session()
+        first = w.browser.sid
+        for kind in ("lights", "darks", "flats"):
+            w.browser.add_files(kind, [str(DATA / kind)])
         for _i in range(200):
             if w.s.ready and w.s.sources_loaded and len(w.s.sessions) == 1 and w.s.sessions[0]["lights"]:
                 break
@@ -1091,19 +1013,21 @@ def test_importing_the_heart_folder_gives_the_counts_the_sessions_and_the_thumbn
         settle(w)
         ses = w.s.sessions
         assert len(ses) == 1 and (ses[0]["lights"], ses[0]["darks"], ses[0]["flats"]) == (40, 15, 15)
-        assert w.s.history[-1][1].startswith('Folder "{folder}" imported')
         # saved: the definition holds the session, so the project opens again with it
         w.s.flush()
         d = project2.load(root)
         assert len(d.sessions) == 1 and d.sessions[0].lights and d.sessions[0].darks and d.sessions[0].flats
-        # the Frames page, from the headers
+        # the Sessions page, from the headers
         inspect(w, "sources")
+        w.frames.show_page(0)
+        settle(w)
         from PySide6.QtWidgets import QTableWidget
         t = w.frames.pages.widget(0).findChildren(QTableWidget)[0]
         row = [t.item(0, i).text() for i in range(t.columnCount())]
         assert row[2:5] == ["40", "15 s", "5000"] and row[7:10] == ["15", "15", "none"] and row[11] == "40 / 40"
         # the thumbnails of the browser come from the worker
         w.frames.show_page(1)
+        w.browser.select_group("lights")
         settle(w)
         time.sleep(1.0)
         settle(w)
@@ -1118,13 +1042,12 @@ def test_importing_the_heart_folder_gives_the_counts_the_sessions_and_the_thumbn
         have = [b.grid.item(i) for i in range(b.grid.count()) if i < 20]
         assert all(not it.icon().isNull() for it in have)
         shot(w, "frames_browse_import")
-        # Add session…: everything goes into a session of its own
-        assert import_folder(w.s, w, str(DATA / "flats"), new_session=True, service=w.tune.service)
-        assert len(w.s.p.sessions) == 2
+        # Add session…: a session of its own, empty
+        w.frames.add_session()
+        assert len(w.s.p.sessions) == 2 and b.sid != first
         # the same folder twice: said, not added
-        from PySide6.QtWidgets import QToolTip
-        assert not import_folder(w.s, w, str(DATA / "lights"), service=w.tune.service)
-        assert len(w.s.p.sessions) == 2 and QToolTip.text() == "Folder already in project"   # said, not blocking (10.2)
+        b.show_session(first)
+        assert b.add_files("lights", [str(DATA / "lights")]) == 0 and len(d.sessions[0].lights) == 40
     finally:
         w.s.flush()
         w.close()
@@ -1256,6 +1179,7 @@ def test_a_calibration_frame_is_left_out_frame_by_frame_and_taken_back(tmp_path)
 
     class Model:                                   # the model's own method, on a model with no worker
         set_calibration_excluded = ProjectModel.set_calibration_excluded
+        _note_left_out = staticmethod(ProjectModel._note_left_out)
 
         def __init__(self):
             self.p, self.edits, self.reloads = p, 0, 0
@@ -1276,16 +1200,21 @@ def test_a_calibration_frame_is_left_out_frame_by_frame_and_taken_back(tmp_path)
     assert [(i.name, i.excluded) for i in items] == [("D0.ARW", False), ("D1.ARW", True), ("D2.ARW", False)]
     assert si.set_calibration_excluded(m, items[0], True, items)
     items = si.browse_group(p, None, "darks")
-    assert not si.set_calibration_excluded(m, items[2], True, items)        # the last frame of a folder stays
-    assert si.set_calibration_excluded(m, items[0], False, items)
+    assert si.set_calibration_excluded(m, items[2], True, items)            # the last one too: no darks left
     items = si.browse_group(p, None, "darks")
-    assert si.set_calibration_excluded(m, items[1], False, items)
-    assert s.darks == [str(darks)]                                           # the folder, as it was
-    # the model's method alone lists the folder itself when it is not given the worker's listing
+    assert s.darks == [] and [i.excluded for i in items] == [True, True, True]
+    for k in range(3):
+        assert si.set_calibration_excluded(m, si.browse_group(p, None, "darks")[k], False,
+                                           si.browse_group(p, None, "darks"))
+    assert sorted(Path(x).name for x in s.darks) == ["D0.ARW", "D1.ARW", "D2.ARW"] and not s.left_out["darks"]
+    # the model's method alone reads the session's own lists when it is not given the worker's listing
     assert m.set_calibration_excluded(s.id, "darks", str(darks / "D2.ARW"), True)
     assert sorted(Path(x).name for x in s.darks) == ["D0.ARW", "D1.ARW"]
     assert m.set_calibration_excluded(s.id, "darks", str(darks / "D2.ARW"), False)
-    assert s.darks == [str(darks)]
+    assert sorted(Path(x).name for x in s.darks) == ["D0.ARW", "D1.ARW", "D2.ARW"]
+    # a file of the folder that was never given is not one left out
+    other = api.add_session(p, lights=[str(tmp_path / "lights")], darks=[str(darks / "D0.ARW")])
+    assert [(i.name, i.excluded) for i in si.browse_group(p, None, "darks", session=other.id)] == [("D0.ARW", False)]
     with pytest.raises(ValueError):
         m.set_calibration_excluded(s.id, "lights", str(darks / "D2.ARW"), True)
 
@@ -1517,10 +1446,7 @@ def test_french_translates_every_screen_with_decimal_commas(module_win, env):
         w.browser.select_group("lights")
         w.frames.show_page(0)
         settle(w)
-        d = GroupingDialog(None, w)
-        d.show()
-        seen += texts_of(d)
-        d.close()
+        seen += texts_of(w)
         assert not untranslated(seen), sorted(set(untranslated(seen)))
         assert not decimal_points(seen), sorted(set(decimal_points(seen)))
         mine = {t for t in i18n.missing()}
@@ -1582,11 +1508,9 @@ def test_the_shots_in_english_and_french_have_no_cut_text(module_win, env):
         settle(w)
         take("inspect_selection")
         inspect(w, "sources")
+        w.frames.show_page(0)
+        settle(w)
         take("frames_sessions")
-        d = GroupingDialog(None, w)
-        d.show()
-        shot_dialog(d, "grouping", lang)
-        d.close()
         w.frames.show_page(1)
         w.browser.set_mode(1)
         settle(w)
@@ -1608,7 +1532,7 @@ def test_the_shots_in_english_and_french_have_no_cut_text(module_win, env):
     for lang in ("en", "fr"):
         for n in ("inspect_stack", "inspect_stack_weights", "inspect_denoise", "inspect_stars", "inspect_selection",
                   "inspect_color", "inspect_astrometry", "inspect_survey", "inspect_output", "frames_sessions",
-                  "frames_browse", "grouping"):
+                  "frames_browse"):
             assert f"{n}_{lang}.png" in names, n
 
 

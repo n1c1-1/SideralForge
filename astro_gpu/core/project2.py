@@ -65,6 +65,8 @@ class Session:
     bias: list[str] = field(default_factory=list)
     flat_darks: list[str] = field(default_factory=list)
     filter: str = ""                 # issue #43: the filter of the lights ("" for a colour sensor); mono is planned
+    #: the calibration frames left out by hand, {kind: [path]}: out of the lists above, still shown, to take them back
+    left_out: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -333,6 +335,7 @@ class Project2:
         if d.get("format") != FORMAT:
             raise ValueError(f"not a format {FORMAT} project definition (format {d.get('format')!r})")
         sessions = [Session(id=s["id"], name=s.get("name", ""), filter=s.get("filter") or "",
+                            left_out={k: list(v) for k, v in (s.get("left_out") or {}).items()},
                             **{k: list(s.get(k) or []) for k in KINDS})
                     for s in d.get("sessions") or []]
         workflows = [Workflow(id=w["id"], name=w.get("name", ""), options=wfl.check_options(w.get("options") or {}),

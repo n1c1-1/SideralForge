@@ -720,7 +720,7 @@ class ProjectModel(QObject):
                 self.paramsChanged.emit(int(pid), stage)
 
     def reload_sources(self):
-        """The sessions or the frames changed (Import folder, a new session): the definition is saved, the frames are
+        """The sessions or the frames changed (files added, a new session): the definition is saved, the frames are
         scanned again, then the keys rebuilt. Until the worker is done the model answers from what it knew (no disk
         access in the GUI thread)."""
         self.edited()
@@ -2165,12 +2165,26 @@ class ProjectModel(QObject):
             self.p.validate()
         return True
 
+    def new_session(self, pid: int | None = None) -> int:
+        """A new empty session in the project ("+ Session", Add session…): it joins the flow ``pid`` (else the one shown),
+        or starts one on a blank page; its frames are added in its Inspect. A project of one session calibrates each
+        session on its own from then on; one made before with several nights calibrated together keeps that."""
+        with self.batch():
+            if self.stack_mode == "together" and len(self.p.sessions) == 1:
+                self.set_stack_mode("per_session")
+            sid = self.add_session()
+            made = self.ensure_frames_workflow()
+            q = made or self.join_session(self.view(pid) if pid is not None else self.path, sid)
+        if q is not None:
+            self.current = self.paths.index(self.view(q.pid))
+        return sid
+
     def add_session_entries(self, sid: int, kind: str, paths, notes: list | None = None) -> int:
-        """Folders or files added to a session's list of a kind (lights, darks, flats, bias, flat_darks): the session
-        block is where they are chosen (issue #43). Returns how many were new. GUI exploration 7.4, 7.5: a file of a
-        folder already there, or one added twice, is already in the session; a folder replaces its files chosen one
-        by one; a folder without frames is not added; the lights' filter, when the session has none, is read from
-        their FITS header. ``notes``: what was not added and why, (English text, the file's name) to say."""
+        """Files added to a session's list of a kind (lights, darks, flats, bias, flat_darks): a folder given is a
+        shortcut for its frames, listed once and for all. Returns how many files were new. GUI exploration 7.4, 7.5: a
+        file already there, or in a folder a project made before lists, is already in the session; a folder without
+        frames adds nothing; the lights' filter, when the session has none, is read from their FITS header. ``notes``:
+        what was not added and why, (English text, the file's name) to say."""
         from ..core.project import frame_kind, list_frames
         if kind not in ("lights",) + tuple(CALIBRATION_KINDS):
             raise ValueError(f"not a kind of frames: {kind!r}")
@@ -2179,27 +2193,31 @@ class ProjectModel(QObject):
         cur = list(getattr(s, kind))
         have = {norm_path(self.p.abspath(e)) for e in cur}
         folders = {norm_path(self.p.abspath(e)) for e in cur if Path(self.p.abspath(e)).is_dir()}
+
+        def known(f) -> bool:
+            return norm_path(f) in have or (bool(frame_kind(Path(f))) and norm_path(str(Path(f).parent)) in folders)
         new: list[str] = []
         for x in paths:
             px = Path(x)
-            if norm_path(x) in have or (frame_kind(px) and norm_path(str(px.parent)) in folders):
-                notes.append(("“{name}” is already in the session.", px.name))
-            elif px.is_dir() and not list_frames([str(px)]):
+            files = [str(f) for f in list_frames([str(px)])] if px.is_dir() else [str(px)]
+            if not files:
                 notes.append(("“{name}” holds no frames (camera raw, FITS, JPEG, PNG or TIFF): not added.", px.name))
-            else:
-                new.append(px.as_posix())
-                have.add(norm_path(x))
+            elif all(known(f) for f in files):
+                notes.append(("“{name}” is already in the session.", px.name))
+            for f in files:
+                if not known(f):
+                    new.append(Path(f).as_posix())
+                    have.add(norm_path(f))
         if not new:
             return 0
-        added = {norm_path(x) for x in new if Path(x).is_dir()}
-        keep = [e for e in cur if not (frame_kind(e) and norm_path(str(Path(self.p.abspath(e)).parent)) in added)]
         flt = ""
         if kind == "lights" and not s.filter:
             from ..io.frames import frame_filter
             first = next((f for f in list_frames(new) if frame_kind(f) == "fits"), None)
             flt = frame_filter(first) if first is not None else ""
         with self._edit():
-            setattr(s, kind, keep + new)
+            setattr(s, kind, cur + new)
+            self._note_left_out(s, kind, new, False)      # a frame left out by hand, given again: in again
             if flt:
                 s.filter = flt
             self.p.validate()
@@ -3293,15 +3311,24 @@ class ProjectModel(QObject):
         self._sel, self._sel_want = None, None
         self.sourcesChanged.emit()
 
+    @staticmethod
+    def _note_left_out(s, kind: str, paths: list[str], left: bool):
+        """A session's record of its calibration frames left out by hand (they are shown, to be taken back)."""
+        norm = {norm_path(x) for x in paths}
+        kept = [f for f in s.left_out.get(kind, []) if norm_path(f) not in norm]
+        if left:
+            kept += [Path(x).as_posix() for x in paths]
+        if kept or kind in s.left_out:
+            s.left_out[kind] = kept
+
     def set_calibration_excluded(self, session: int, kind: str, path: str, excluded: bool,
                                  folder: list[tuple[str, bool]] | None = None) -> bool:
-        """Leave a calibration frame out of its master, or take it back (``kind``: darks, flats, bias or flat_darks).
-        The engine's lists take folders and files, so the session lists the frames of that frame's folder one by one,
-        without it; when every frame of the folder is in again, the folder itself is listed, as it was. ``folder``: the
-        frames of that folder and whether each is left out now, as the worker listed them
-        (``services/inspect.browse_group``); None: the folder is listed here (a directory listing in the GUI thread).
-        One change, saved, the frames scanned again; Calibration and what follows become Outdated. False when nothing is
-        done: the last frame of a folder stays (remove the folder instead), or the session is not known."""
+        """Leave a calibration frame out of its master, or take it back (``kind``: darks, flats, bias or flat_darks):
+        it leaves the session's list and is noted, to be shown and taken back; a folder a project made before lists
+        becomes its frames. ``folder``: the frames of that folder and whether each is left out now, as the worker
+        listed them (``services/inspect.browse_group``); None: the session's own lists say it. The last frame can go
+        too (the session then has none of that kind). One change, saved, the frames scanned again; Calibration and what
+        follows become Outdated. False when the session is not known."""
         if kind not in CALIBRATION_KINDS:
             raise ValueError(f"not a kind of calibration frame: {kind!r}")
         p = self.p
@@ -3315,18 +3342,17 @@ class ProjectModel(QObject):
         if folder is None:
             from ..core.project import list_frames
             listed = {norm(p.abspath(e)) for e in lst}
-            folder = [(str(f), not (here in listed or norm(f) in listed)) for f in list_frames([str(Path(path).parent)])]
+            notes = {norm(f) for f in s.left_out.get(kind, [])}
+            folder = [(str(f), norm(f) in notes) for f in list_frames([str(Path(path).parent)])
+                      if here in listed or norm(f) in listed or norm(f) in notes]
         in_folder = [(x, left) for x, left in folder if norm(Path(x).parent) == here]
         if not any(norm(x) == me for x, _left in in_folder):
             in_folder.append((str(path), excluded))
         keep = [x for x, left in in_folder if (norm(x) == me and not excluded) or (norm(x) != me and not left)]
-        if not keep:
-            return False
         rest = [e for e in lst if norm(p.abspath(e)) != here and norm(Path(p.abspath(e)).parent) != here]
-        original = next((e for e in lst if norm(p.abspath(e)) == here), None)
-        whole = len(keep) == len(in_folder)
         with self._edit():
-            setattr(s, kind, rest + ([original or str(Path(path).parent)] if whole else sorted(keep)))
+            setattr(s, kind, rest + sorted(keep))
+            self._note_left_out(s, kind, [str(path)], excluded)
             p.validate()
         self.reload_sources()
         return True
@@ -3335,16 +3361,15 @@ class ProjectModel(QObject):
                               listing: list[tuple[int, str, str, bool]]) -> dict:
         """Leave several calibration frames out of their masters in one change (saved once): ``frames`` (session, kind,
         path); ``listing`` the frames of their folders as the worker listed them (session, kind, path, left out now).
-        A folder whose every frame goes is taken out of the session, so a session can be left without any frame of a
-        kind (all its "darks" were frames of the sky): ``emptied`` says which. Returns {"done": n, "emptied":
-        [(session, kind)]}; nothing done: {"done": 0, "emptied": []}."""
+        A session can be left without any frame of a kind (all its "darks" were frames of the sky): ``emptied`` says
+        which. Returns {"done": n, "emptied": [(session, kind)]}; nothing done: {"done": 0, "emptied": []}."""
         norm = norm_path
         p = self.p
-        groups: dict[tuple[int, str, str], set[str]] = {}
+        groups: dict[tuple[int, str, str], dict[str, str]] = {}
         for sid, kind, path in frames:
             if kind not in CALIBRATION_KINDS:
                 raise ValueError(f"not a kind of calibration frame: {kind!r}")
-            groups.setdefault((int(sid), kind, norm(Path(path).parent)), set()).add(norm(path))
+            groups.setdefault((int(sid), kind, norm(Path(path).parent)), {})[norm(path)] = str(path)
         if not groups:
             return {"done": 0, "emptied": []}
         done, touched = 0, set()
@@ -3358,55 +3383,17 @@ class ProjectModel(QObject):
                 in_folder = [(x, left) for ss, kk, x, left in listing
                              if ss == sid and kk == kind and norm(Path(x).parent) == here]
                 known = {norm(x) for x, _left in in_folder}
-                in_folder += [(x, False) for x in out if x not in known]
+                in_folder += [(x, False) for n, x in out.items() if n not in known]
                 keep = [x for x, left in in_folder if not left and norm(x) not in out]
                 done += sum(1 for x, left in in_folder if not left and norm(x) in out)
                 rest = [e for e in lst if norm(p.abspath(e)) != here and norm(Path(p.abspath(e)).parent) != here]
-                original = next((e for e in lst if norm(p.abspath(e)) == here), None)
-                whole = len(keep) == len(in_folder)
-                setattr(s, kind, rest + (([original or str(Path(next(iter(out))).parent)] if whole else sorted(keep))
-                                         if keep else []))
+                setattr(s, kind, rest + sorted(keep))
+                self._note_left_out(s, kind, list(out.values()), True)
                 touched.add((sid, kind))
             p.validate()
         emptied = sorted((sid, kind) for sid, kind in touched if not getattr(p.session(sid), kind))
         self.reload_sources()
         return {"done": done, "emptied": emptied}
-
-    def set_session_frames(self, session: int, chosen: dict) -> bool:
-        """The frames of a session, kind by kind (folders or files, as the import dialog chose them): saved, the frames
-        read again, what follows Outdated. False when the session is not known or nothing changes."""
-        try:
-            s = self.p.session(session)
-        except (KeyError, ValueError):
-            return False
-        new = {k: [Path(x).as_posix() for x in chosen.get(k, [])] for k in ("lights",) + tuple(CALIBRATION_KINDS)}
-        old = {k: [Path(self.p.abspath(x)).as_posix() for x in getattr(s, k)] for k in new}
-        if new == old or not new["lights"]:
-            return False
-        with self._edit():
-            for k, v in new.items():
-                setattr(s, k, v)
-            self.p.validate()
-        self.reload_sources()
-        return True
-
-    def add_calibration_folder(self, session: int, kind: str, folder: str) -> bool:
-        """A folder of calibration frames (darks, flats, bias, flat darks) added to a session: saved, the frames read
-        again, Calibration and what follows Outdated. False when the session is not known or lists it already."""
-        if kind not in CALIBRATION_KINDS:
-            raise ValueError(f"not a kind of calibration frame: {kind!r}")
-        try:
-            s = self.p.session(session)
-        except (KeyError, ValueError):
-            return False
-        lst = list(getattr(s, kind))
-        if any(norm_path(self.p.abspath(e)) == norm_path(folder) for e in lst):
-            return False
-        with self._edit():
-            setattr(s, kind, lst + [Path(folder).as_posix()])
-            self.p.validate()
-        self.reload_sources()
-        return True
 
     def request_selection(self, tmin: float | None = None, fmax: float | None = None):
         """Ask the worker how many frames these thresholds keep (answer: ``selectionChanged``, ``kept_frames``)."""
@@ -3459,7 +3446,7 @@ class ProjectModel(QObject):
         return (int(g[0]), int(g[1])) if g else None
 
     def load_sources(self):
-        """Frames were added (Import folder): read them, then the keys again."""
+        """Frames were added: read them, then the keys again."""
         self.reload_sources()
 
     def set_stack_mode(self, mode: str) -> bool:

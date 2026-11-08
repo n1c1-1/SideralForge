@@ -25,7 +25,7 @@ from astro_gpu.client.graph import GraphPage  # noqa: E402
 from astro_gpu.client.model import ProjectModel  # noqa: E402
 from astro_gpu.client.runs import RunDialog  # noqa: E402
 from astro_gpu.client.services.worker import ApiWorker  # noqa: E402
-from astro_gpu.client.sources import frame_filter, no_lights_text  # noqa: E402
+from astro_gpu.client.sources import frame_filter  # noqa: E402
 from astro_gpu.core import project as project_mod  # noqa: E402
 from astro_gpu.core import project2  # noqa: E402
 from astro_gpu.core import workflow as wfl  # noqa: E402
@@ -109,7 +109,7 @@ def test_a_dropped_folder_of_jpegs_is_taken_and_the_session_says_the_limit(tmp_p
     w, m, page = opened(tmp_path)
     try:
         lights = jpegs(tmp_path / "phone")
-        page.add_dropped_files(1, [str(lights)])
+        page.add_dropped_files(1, [str(lights)], "lights")
         settle(w, page)
         assert m.session_files(1, "lights") and len(m.session_files(1, "lights")) == 3
         assert m.file_warnings(1) == [] and m.run_problems() == []
@@ -301,19 +301,8 @@ def test_inspect_shows_a_calibrated_colour_frame_in_colour(tmp_path, on_disk):
         QApplication.processEvents()
 
 
-def test_the_file_dialog_shows_them_and_a_folder_of_other_files_says_why():
+def test_the_file_dialog_shows_them():
     assert "*.jpg" in frame_filter() and "*.tiff" in frame_filter() and "*.png" in frame_filter()
-
-
-def test_no_lights_text_names_the_other_files(tmp_path):
-    (tmp_path / "phone").mkdir()
-    (tmp_path / "phone" / "a.MOV").write_bytes(b"\0")
-    assert "only MOV files" in no_lights_text([str(tmp_path / "phone")])
-    i18n.set_language("fr")
-    try:
-        assert "seulement des fichiers MOV" in no_lights_text([str(tmp_path / "phone")])
-    finally:
-        i18n.set_language("en")
 
 
 def test_french_for_every_new_text():

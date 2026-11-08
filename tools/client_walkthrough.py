@@ -444,18 +444,15 @@ class Walk:
             g.ok.click()
             self.settle()
         self.shot("graph_new_project")
-        from astro_gpu.client.services.inspect import service_of
-        from astro_gpu.client.sources import import_folder
-
-        def scan(d):
-            d.finish_now()
-            self.until(lambda: d.ok.isEnabled(), 120, "the scan of the folder")
-            self.shot("import_folder", d)
-            d.ok.click()
-        self.modal(lambda: import_folder(w.s, w, folder=str(raw), service=service_of(w.s)), scan, "Import folder")
+        sid = w.s.p.sessions[0].id                        # its files, kind by kind, as its Inspect adds them
+        for kind, folder in (("lights", raw), ("darks", raw.parent / "darks"), ("flats", raw.parent / "flats"),
+                             ("bias", raw.parent / "bias")):
+            if folder.is_dir():
+                w.s.add_session_entries(sid, kind, [str(folder)])
         self.wait_ready()
         self.select("sources")
         w.set_mode(1)
+        w.frames.show_page(0)
         self.settle()
         self.until(lambda: w.frames.data is not None, 120, "the sessions table")
         self.shot("frames_sessions")

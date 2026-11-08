@@ -1,5 +1,5 @@
-"""Issues #31, #32: every file dialog opens in the last folder used (not a workspace), the import's kinds share it,
-and New project chooses its location."""
+"""Issues #31, #32: every file dialog opens in the last folder used (not a workspace), and New project chooses its
+location."""
 from __future__ import annotations
 
 import os
@@ -31,10 +31,6 @@ def test_the_last_folder_used_is_where_the_next_dialog_opens(env):
     f.write_bytes(b"")
     prefs.remember_folder(f)                                                     # a file: its folder
     assert prefs.last_folder() == lights.as_posix()
-    from astro_gpu.client.sources import KindRow
-    QApplication.instance() or QApplication([])
-    flats = KindRow("flats", "Flats")
-    assert flats._start() == lights.as_posix()                                   # the flats start where the lights were
 
 
 def test_new_project_chooses_its_location(env, monkeypatch):

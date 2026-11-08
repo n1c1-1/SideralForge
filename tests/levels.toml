@@ -34,7 +34,7 @@ level3 = [
     "tests/client/test_inspect.py::test_an_outdated_block_shows_its_previous_result",
     "tests/client/test_inspect.py::test_each_block_shows_its_real_picture",
     "tests/client/test_inspect.py::test_french_translates_every_screen_with_decimal_commas",
-    "tests/client/test_inspect.py::test_importing_the_heart_folder_gives_the_counts_the_sessions_and_the_thumbnails",
+    "tests/client/test_inspect.py::test_adding_the_heart_files_gives_the_counts_the_sessions_and_the_thumbnails",
     "tests/client/test_inspect.py::test_no_disk_access_in_the_gui_thread",
     "tests/client/test_inspect.py::test_the_frame_chart_and_the_browser_keep_and_exclude_frames",
     "tests/client/test_inspect.py::test_the_gui_thread_keeps_beating_while_the_images_load",

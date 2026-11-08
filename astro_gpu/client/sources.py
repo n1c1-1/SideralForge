@@ -1,5 +1,7 @@
-"""Browse: the lights and calibration frames of the project, their calibration matching, and a raw frames browser (grid,
-the common viewer with its frame sequence, sortable list) where frames are kept or excluded; and Import folder.
+"""The files of a session: its lights and calibration frames kind by kind, added and taken out here one by one from
+anywhere on the disk (nothing is guessed from a folder's name: each file goes where the user puts it), their calibration
+matching, and a raw frames browser (grid, the common viewer with its frame sequence, sortable list) where frames are kept
+or excluded.
 
 The grid's thumbnails are made by the worker from the raw files (``api.frame_thumb``: one stretch for all the lights of
 a session, so that a hazy frame looks darker when blinking). The viewer (``imageview.ImageView``) reads the raw frame
@@ -8,7 +10,7 @@ exposure, ISO, temperature, FWHM, roundness, transparency, weight, kept or exclu
 calibration frame left out by hand is left out of its master (``services/inspect.set_calibration_excluded``). Nothing
 here reads a file.
 
-Classes: ``SourcesView`` (the browser), ``ImportDialog`` (the scan of a folder, used by ``import_folder``).
+Classes: ``SourcesView`` (the files and the browser), ``GroupRow`` (a kind of frames), ``FileList`` (its files).
 """
 from __future__ import annotations
 
@@ -22,7 +24,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QComboBox,
-    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -30,32 +31,32 @@ from PySide6.QtWidgets import (
     QListView,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
-    QProgressBar,
+    QMenu,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from .. import api
 from . import icons as ic
 from . import prefs
-from .frames import fexp, night_text
+from .frames import colour_note_text, fexp, night_text, type_warning_text
 from .i18n import _, hours_text, number, plural
 from .imageview import ImageView, ViewImage, quick_thumbnail
-from .services.inspect import FrameItem, ProjectFrames, add_scan, light_thumb, service_of, set_calibration_excluded
+from .services.inspect import FrameItem, ProjectFrames, light_thumb, service_of, set_calibration_excluded
 from .services.worker import norm_path
-from .widgets import NEW, ElidedLabel, cap_dialog, clear, hline, label, para
+from .widgets import ACCENT, NEW, WARN, ElidedLabel, clear, hline, label, para
 
 # (key, title, section): plain English, translated where shown
 GROUPS = [("lights", "Lights", "Lights"), ("darks", "Darks", "Calibration"), ("flats", "Flats", "Calibration"),
           ("bias", "Bias", "Calibration"), ("flat_darks", "Dark flats", "Calibration")]
-KIND_WORD = {"lights": "lights", "darks": "darks", "flats": "flats", "bias": "bias", "flat_darks": "dark flats"}
-KIND_COUNT = {"lights": "{n} lights", "darks": "{n} darks", "flats": "{n} flats", "bias": "{n} bias",
-              "flat_darks": "{n} dark flats"}
+COUNT_KEY = {"lights": "lights", "darks": "darks", "flats": "flats", "bias": "bias", "flat_darks": "dark_flats"}
+#: under this exposure (s), lights look like flats: a light of the deep sky lasts seconds, a flat a fraction of one
+FLAT_LIKE_S = 0.1
 
 
 class NumItem(QTableWidgetItem):
@@ -69,18 +70,28 @@ class NumItem(QTableWidgetItem):
         return self.v < getattr(other, "v", 0)
 
 
-class GroupRow(QFrame):
-    clicked = Signal(str)
+def local_paths(mime) -> list[str]:
+    """The files or folders of a drop from the Explorer."""
+    return [u.toLocalFile() for u in mime.urls() if u.isLocalFile()]
 
-    def __init__(self, key, title, sub, selected, empty, parent=None):
+
+class GroupRow(QFrame):
+    """A kind of frames of the session: its name, what it holds and its +; a click shows it, files dropped on it are
+    added to it."""
+    clicked = Signal(str)
+    dropped = Signal(str, list)                        # kind, the files or folders
+
+    def __init__(self, key, title, sub, selected, empty, fill_menu=None, parent=None):
         super().__init__(parent)
         self.key = key
         self.setCursor(Qt.PointingHandCursor)
+        self.setAcceptDrops(True)
         self.setStyleSheet(("QFrame { background: #2b3446; border-radius: 4px; }" if selected else
                             "QFrame { background: transparent; border-radius: 4px; } QFrame:hover "
                             "{ background: #232831; }") + " QLabel { background: transparent; }")
-        v = QVBoxLayout(self)
-        v.setContentsMargins(8, 5, 8, 5)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(8, 5, 4, 5)
+        v = QVBoxLayout()
         v.setSpacing(0)
         a = QLabel(title)
         a.setStyleSheet("font-weight: 600;" + (" color: #6b7280;" if empty else ""))
@@ -89,9 +100,47 @@ class GroupRow(QFrame):
         b.setWordWrap(True)
         v.addWidget(a)
         v.addWidget(b)
+        h.addLayout(v, 1)
+        if fill_menu is not None:
+            add = ic.icon_only(QToolButton(), "add", _("Add frames"), 16)
+            add.setAutoRaise(True)
+            add.setStyleSheet("QToolButton::menu-indicator { image: none; }")
+            menu = QMenu(add)
+            fill_menu(menu)
+            add.setMenu(menu)
+            add.setPopupMode(QToolButton.InstantPopup)
+            h.addWidget(add, 0, Qt.AlignTop)
 
     def mousePressEvent(self, e):                                    # noqa: N802 - Qt's name
         self.clicked.emit(self.key)
+
+    def dragEnterEvent(self, e):                                     # noqa: N802 - Qt's name
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):                                          # noqa: N802 - Qt's name
+        paths = local_paths(e.mimeData())
+        if paths:
+            self.dropped.emit(self.key, paths)
+
+
+class FileList(QListWidget):
+    """The files of a kind: several can be chosen (Ctrl, Shift, Ctrl+A), Del takes them out."""
+
+    def __init__(self, remove):
+        super().__init__()
+        self.remove = remove
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.setStyleSheet("QListWidget { background: #1c1f26; border: none; }")
+
+    def chosen(self) -> list[str]:
+        return [it.data(Qt.UserRole) for it in self.selectedItems() if it.data(Qt.UserRole)]
+
+    def keyPressEvent(self, e):                                       # noqa: N802 - Qt's name
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.chosen():
+            self.remove(self.chosen())
+            return
+        super().keyPressEvent(e)
 
 
 def pixmap(arr: np.ndarray) -> QPixmap:
@@ -112,11 +161,6 @@ def placeholder() -> QIcon:
     return _PLACEHOLDER[0]
 
 
-def join_and(parts: list[str]) -> str:
-    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " " + _("and") + " " + parts[-1]
-
-
-# ---------------------------------------------------------------------------------------------- Import folder
 def frame_filter() -> str:
     """The file dialog's filter: the frames the engine reads (raw, FITS, and the frames already in colour, #57)."""
     from ..core.project import COLOUR_EXT, FITS_EXT, RAW_EXT
@@ -124,372 +168,10 @@ def frame_filter() -> str:
     return _("Frames ({patterns})").format(patterns=pats) + ";;" + _("All files (*)")
 
 
-def no_lights_text(entries) -> str:
-    """Why folders or files chosen give no light frame, translated (#28, #29): not found, empty, or only files of a
-    kind not read (a video, a document)."""
-    from ..core.project import file_type, frame_kind
-    files: list[Path] = []
-    for e in entries:
-        p = Path(e)
-        if not p.exists():
-            return _("Not found: {folder}. Is its disk plugged in?").format(folder=p.as_posix())
-        files += [q for q in p.iterdir() if q.is_file()] if p.is_dir() else [p]
-    other = sorted({file_type(f) for f in files if not frame_kind(f)})
-    if not files:
-        return _("This folder holds no files.")
-    if other:
-        return _("No camera raw, FITS, JPEG, PNG or TIFF frames here, only {types} files: this version does not "
-                 "read them as lights.").format(types=", ".join(other))
-    return _("No light frames chosen.")
-
-
-def common(values) -> str:
-    """The most frequent of the values, as text ('' when none)."""
-    vals = [v for v in values if v not in (None, "")]
-    if not vals:
-        return ""
-    return max(set(vals), key=vals.count)
-
-
-class KindRow(QFrame):
-    """One kind of frames of the import (lights, darks, flats, bias, dark flats): what is chosen and what it holds,
-    Choose files…, Choose folder…, Remove; files or folders dropped on it from the Explorer are chosen too (the
-    import of photo editors: each source visible, never applied in silence)."""
-
-    changed = Signal(str, list)                       # kind, the folders or files now chosen
-
-    def __init__(self, key: str, title: str, parent=None):
-        super().__init__(parent)
-        self.key = key
-        self.setObjectName("kindrow")
-        self.setAcceptDrops(True)
-        self.setStyleSheet("QFrame#kindrow { background: #20242c; border: 1px solid #353b47; border-radius: 6px; } "
-                           "QLabel { background: transparent; border: none; }")
-        h = QHBoxLayout(self)
-        h.setContentsMargins(10, 6, 8, 6)
-        t = label(_(title), "")
-        t.setStyleSheet("font-weight: 600;")
-        t.setFixedWidth(110)
-        h.addWidget(t)
-        v = QVBoxLayout()
-        v.setSpacing(1)
-        self.what = ElidedLabel("")
-        self.detail = label("", "small", wrap=True)
-        v.addWidget(self.what)
-        v.addWidget(self.detail)
-        h.addLayout(v, 1)
-        self.files_b = QPushButton(_("Choose files…"))
-        self.files_b.setToolTip(_("Select the frames themselves (Ctrl or Shift + click, Ctrl+A)"))
-        self.files_b.clicked.connect(self._pick_files)
-        self.folder_b = QPushButton(_("Folder…"))
-        self.folder_b.setToolTip(_("Every frame of a folder"))
-        self.folder_b.clicked.connect(self._pick_folder)
-        self.clear_b = ic.icon_only(QPushButton(), "remove", _("None of this kind"), 16)
-        self.clear_b.clicked.connect(lambda: self.changed.emit(self.key, []))
-        for b in (self.files_b, self.folder_b, self.clear_b):
-            h.addWidget(b)
-        self.entries: list[str] = []
-
-    def _start(self) -> str:
-        if self.entries:
-            p = Path(self.entries[0])
-            return str(p if p.is_dir() else p.parent)
-        return prefs.last_folder()                   # issue #32: where the last kind was chosen, not the workspace
-
-    def _pick_files(self):
-        fs, _f = QFileDialog.getOpenFileNames(self, _("Choose {kind}").format(kind=_(KIND_WORD[self.key])),
-                                              self._start(), frame_filter())
-        if fs:
-            prefs.remember_folder(fs[0])
-            self.changed.emit(self.key, fs)
-
-    def _pick_folder(self):
-        d = QFileDialog.getExistingDirectory(self, _("Choose {kind}").format(kind=_(KIND_WORD[self.key])),
-                                             self._start())
-        if d:
-            prefs.remember_folder(d)
-            self.changed.emit(self.key, [d])
-
-    def dragEnterEvent(self, e):                                     # noqa: N802 - Qt's name
-        if e.mimeData().hasUrls():
-            e.acceptProposedAction()
-
-    def dropEvent(self, e):                                          # noqa: N802 - Qt's name
-        paths = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
-        if paths:
-            self.changed.emit(self.key, paths)
-
-    def show_state(self, entries: list[str], frames: list, suggested: bool, reading: bool, lights_exp=None,
-                   lights_entries=()):
-        self.entries = list(entries)
-        self.clear_b.setEnabled(bool(entries) and self.key != "lights")
-        if reading:
-            self.what.setText(_("Reading…"))
-            self.detail.setText("")
-            return
-        if not entries:
-            self.what.setText(_("None"))
-            self.detail.setText("")
-            return
-        folders = [e for e in entries if Path(e).is_dir()]
-        if len(entries) == 1 and folders:
-            where = entries[0]
-        else:
-            where = _("{n} files from {folder}").format(n=len(entries), folder=str(Path(entries[0]).parent)) \
-                if not folders else _("{n} folders and files").format(n=len(entries))
-        self.what.setText(where)
-        n = len(frames)
-        exp, iso = common(getattr(i, "exposure", None) for i in frames), common(getattr(i, "iso", None) for i in frames)
-        bits = [_(KIND_COUNT[self.key]).format(n=n)]
-        if exp != "":
-            bits.append(fexp(exp))
-        if iso != "":
-            bits.append(_("ISO {iso}").format(iso=number(iso, 0)))
-        if suggested:
-            bits.append(_("found from the folder names"))
-        if self.key == "darks" and lights_exp not in (None, "") and exp not in (None, "") and \
-                abs(float(exp) - float(lights_exp)) > 0.01 * max(float(lights_exp), 1e-6):
-            bits.append(_("exposure differs from the lights ({exp})").format(exp=fexp(lights_exp)))
-        if self.key != "lights" and {norm_path(e) for e in entries} & {norm_path(e) for e in lights_entries}:
-            bits.append(_("the same frames as the lights"))
-        self.detail.setText(" · ".join(bits))
-        self.detail.setObjectName("warn" if self.key != "lights" and not n else "small")
-
-
-class ImportDialog(QDialog):
-    """The frames of an import, kind by kind: the folder read first (the lights, and the darks, flats and bias found
-    next to it by their names: a suggestion, said as such), then each kind chosen by its files or its folder, and read
-    again; what is found and the sessions it makes. The reading is the worker's; Cancel stops it."""
-
-    def __init__(self, model, folder: str, new_session: bool = False, parent=None, service=None,
-                 chosen: dict | None = None, title: str | None = None):
-        super().__init__(parent)
-        self.s, self.folder, self.new_session = model, folder, new_session
-        self.service = service or service_of(model)
-        self.scan = None
-        # kind -> folders or files: after the first read of the folder, or a session's frames given at once
-        self.chosen: dict[str, list[str]] | None = {k: list(v) for k, v in chosen.items()} if chosen else None
-        self.suggested: set[str] = set()                              # the kinds still as the folder names gave them
-        title = title or (_("Add session") if new_session else _("Add folder"))
-        self.setWindowTitle(title)
-        self.setMinimumWidth(760)
-        cap_dialog(self)
-        v = QVBoxLayout(self)
-        v.addWidget(label(title, "h1"))
-        v.addWidget(label(_("Choose the frames of each kind: by their files, a folder, or by dropping them here."),
-                          "dim", wrap=True))
-        self.rows: dict[str, KindRow] = {}
-        for key, title, _sec in GROUPS:
-            r = KindRow(key, title)
-            r.changed.connect(self._changed)
-            self.rows[key] = r
-            v.addWidget(r)
-        self.bar = QProgressBar()
-        self.bar.setRange(0, 1000)
-        self.bar.setTextVisible(False)
-        v.addWidget(self.bar)
-        self.cur = label(_("Reading the files…"), "small")
-        v.addWidget(self.cur)
-        self.found = label("", "", wrap=True)
-        self.found.setTextFormat(Qt.RichText)
-        v.addWidget(self.found)
-        self.groups = label("", "small", wrap=True)
-        v.addWidget(self.groups)
-        self.warn = label("", "warn", wrap=True)
-        v.addWidget(self.warn)
-        row = QHBoxLayout()
-        row.addStretch(1)
-        cancel = QPushButton(_("Cancel"))
-        cancel.clicked.connect(self._cancel)
-        self.ok = QPushButton(_("Add to project"))
-        self.ok.setObjectName("primary")
-        self.ok.setEnabled(False)
-        self.ok.clicked.connect(self.accept)
-        row.addWidget(cancel)
-        row.addWidget(self.ok)
-        v.addLayout(row)
-        sv = self.service
-        sv.scanProgress.connect(self._progress)
-        sv.scanDone.connect(self._done)
-        sv.scanFailed.connect(self._failed)
-        self._show_rows(reading=True)
-        self.token = sv.scan_files(dict(self.chosen)) if self.chosen is not None else sv.scan(folder)
-
-    def _show_rows(self, reading: bool = False):
-        sc = self.scan
-        lights = sc.frames.get("lights", []) if sc else []
-        lexp = common(getattr(i, "exposure", None) for i in lights)
-        lentries = (self.chosen or {}).get("lights", []) if self.chosen is not None else [self.folder]
-        for key, r in self.rows.items():
-            entries = (self.chosen or {}).get(key, []) if self.chosen is not None else ([self.folder] if key == "lights"
-                                                                                    else [])
-            r.show_state(entries, sc.frames.get(key, []) if sc else [], key in self.suggested, reading, lexp, lentries)
-
-    def _changed(self, kind: str, paths: list):
-        if self.chosen is None:
-            return
-        self.chosen[kind] = [str(p) for p in paths]
-        self.suggested.discard(kind)
-        self.scan = None
-        self.ok.setEnabled(False)
-        self.found.setText("")
-        self.groups.setText("")
-        self.warn.setText("")
-        self.service.cancel_scan(self.token)
-        self._show_rows(reading=True)
-        self.token = self.service.scan_files(dict(self.chosen))
-
-    def _cancel(self):
-        self.service.cancel_scan(self.token)
-        self.reject()
-
-    def _progress(self, token: int, f: float, text: str):
-        if token != self.token:
-            return
-        self.bar.setValue(int(f * 1000))
-        self.cur.setText(_("Reading the files: {pct} %").format(pct=int(100 * f)))
-
-    def _failed(self, token: int, why: str):
-        if token != self.token:
-            return
-        self.cur.setText("")
-        self.warn.setText(_("The folder cannot be read: {why}").format(why=why))
-
-    def _done(self, token: int, scan):
-        if token != self.token:
-            return
-        self.scan = scan
-        if self.chosen is None:                    # the first read: the suggestion of the folder names
-            self.chosen = {k: list(scan.folders.get(k, [])) for k, _t, _s in GROUPS}
-            self.suggested = {k for k, _t, _s in GROUPS if k != "lights" and self.chosen[k]}
-        self._show_rows()
-        n = {k: len(scan.frames.get(k, [])) for k, _t, _s in GROUPS}
-        total = sum(n.values())
-        self.bar.setValue(1000)
-        self.cur.setText(_("{n} files read.").format(n=total))
-        if not n["lights"]:
-            lentries = (self.chosen or {}).get("lights") or [self.folder]
-            self.warn.setText(no_lights_text(lentries) if any(lentries) else _("No light frames chosen."))
-            return
-        parts = [_(KIND_COUNT[k]).format(n=n[k]) for k, _t, _s in GROUPS if n[k]]
-        missing = tuple(k for k in ("bias", "flat_darks") if not n[k])
-        txt = _("<b>Found</b>: {parts}.").format(parts=join_and(parts))
-        if missing:                                   # whole sentences, for the French elision (GUI exploration 7.5)
-            txt += " " + _({("bias",): "No bias.", ("flat_darks",): "No dark flats.",
-                            ("bias", "flat_darks"): "No bias, no dark flats."}[missing])
-        self.found.setText(txt)
-        gs = api.group_sessions(scan.frames["lights"], self.service.criteria)
-        names = " · ".join(_("{name} ({n} lights)").format(name=g.name, n=g.count) for g in gs)
-        self.groups.setText(plural(len(gs), "{n} session: {names}", "{n} sessions: {names}", names=names)
-                            if not self.new_session else _("One session: {name}").format(name=scan.name))
-        if scan.errors:
-            self.warn.setText(plural(len(scan.errors), "{n} file could not be read.",
-                                     "{n} files could not be read."))
-        self.ok.setEnabled(True)
-
-    def finish_now(self):
-        """Wait for the scan (tests and scripted walkthroughs)."""
-        self.service.wait(120)
-
-
-def edit_session_frames(model, session: int, parent=None, service=None) -> bool:
-    """Change the frames of a session (Frames > Sessions: Change frames…, or a double click on its row): the import
-    dialog opened on what the session holds; on OK the session holds what is chosen, Calibration and what follows to
-    compute again."""
-    svc = service or service_of(model)
-    try:
-        ses = model.p.session(session)
-    except (KeyError, ValueError):
-        return False
-    chosen = {k: [model.p.abspath(x) for x in getattr(ses, k)] for k, _t, _s in GROUPS}
-    first = next(iter(chosen["lights"]), "")
-    d = ImportDialog(model, first, True, parent, svc, chosen=chosen,
-                     title=_("Session {name}: frames").format(name=ses.name))
-    ok = d.exec()
-    scan, picked = d.scan, d.chosen
-    d.deleteLater()
-    if not ok or scan is None or picked is None:
-        return False
-    if not model.set_session_frames(session, picked):
-        return False
-    model.log('Frames of the session "{name}" changed', name=ses.name)
-    return True
-
-
-def fill_empty_sessions(p, made: list) -> tuple[list, set]:
-    """The sessions just made by an import, poured into the empty Session blocks of the project (a template's, waiting
-    for their frames): an empty session of the same filter first, else one without a filter, which takes the frames'
-    filter. Its name stays when a filter template named it, else it takes the night's. Returns (the sessions holding
-    the frames, the ids of the empty ones filled)."""
-    def empty(s):
-        return not any(getattr(s, k) for k in ("lights", "darks", "flats", "bias", "flat_darks"))
-    new_ids = {s.id for s in made}
-    free = [s for s in p.sessions if s.id not in new_ids and empty(s)]
-    out, filled = [], set()
-    for m in made:
-        e = next((s for s in free if s.filter and s.filter == m.filter), None) or \
-            next((s for s in free if not s.filter), None)
-        if e is None:
-            out.append(m)
-            continue
-        free.remove(e)
-        for k in ("lights", "darks", "flats", "bias", "flat_darks"):
-            setattr(e, k, list(getattr(m, k)))
-        p.sessions.remove(m)
-        if not e.filter:
-            e.filter, e.name = m.filter, m.name
-        out.append(e)
-        filled.add(e.id)
-    if filled:
-        p.validate()
-    return out, filled
-
-
-def import_folder(model, parent=None, folder: str | None = None, new_session: bool = False, service=None) -> bool:
-    """Import folder… (File menu, the Frames block, Import folder as new project) and Add session…: ask for a folder when none
-    is given, read it, and on Add to project put its frames into the project, which is saved and read again."""
-    svc = service or service_of(model)
-    if folder is None:
-        folder = QFileDialog.getExistingDirectory(parent, _("Add session") if new_session else _("Add folder"),
-                                                  prefs.last_folder())
-        if not folder:
-            return False
-        prefs.remember_folder(folder)
-    norm = norm_path(folder)
-    for ses in model.p.sessions:
-        if any(norm_path(model.p.abspath(x)) == norm for x in ses.lights):
-            from PySide6.QtGui import QCursor
-            from PySide6.QtWidgets import QToolTip
-            QToolTip.showText(QCursor.pos(), _("Folder already in project"), parent)   # not blocking (10.2)
-            return False
-    d = ImportDialog(model, folder, new_session, parent, svc)
-    ok = d.exec()
-    scan = d.scan
-    d.deleteLater()
-    if not ok or scan is None:
-        return False
-    with model.batch():                               # one step of Undo (2.3)
-        if new_session:
-            made = [api.add_session(model.p, name=scan.name)]
-            api.add_frames(model.p, scan, session=made[0].id)
-            made[0].filter = next((i.filter for i in scan.frames.get("lights", []) if getattr(i, "filter", "")), "")
-        else:
-            made = add_scan(model.p, scan, svc.criteria)
-        made, filled = fill_empty_sessions(model.p, made)
-        if made and not model.p.workflows:         # issue #11: a project is never left without a workflow; #47: an
-            model.ensure_frames_workflow()         # empty one, built from the palette (a template chosen replaces it)
-        for x in made:
-            if x.id not in filled:                 # an empty Session of the graph filled: already in its flow
-                model.join_session(model.path, x.id)   # a new night joins the flow shown, or one of its own (1.8)
-    model.log('Folder "{folder}" imported · {lights} lights', folder=folder, lights=len(scan.frames.get("lights", [])))
-    model.load_sources()                              # saved 300 ms after, then the frames are read again
-    return bool(made)
-
-
-# ---------------------------------------------------------------------------------------------- Browse
+# ---------------------------------------------------------------------------------------------- the files and the browser
 class SourcesView(QWidget):
     goChain = Signal(str)
-    imported = Signal()
+    toast = Signal(str)                                    # what an addition or a removal did
     sendToPost = Signal(str, object, object)               # name, source, key (Send to Post of the viewer)
 
     def __init__(self, project, parent=None, service=None):
@@ -499,6 +181,9 @@ class SourcesView(QWidget):
         self.data: ProjectFrames | None = None
         self.items: list[FrameItem] = []
         self.group = "lights"
+        self.sid: int | None = None                        # the session shown
+        self._step = None                                  # the block opened when it was last looked at
+        self.file_list: FileList | None = None             # the files of the kind shown
         self.mode = 1                                      # 0 grid, 1 viewer, 2 list
         self.cur = 0
         self.sort = "time"
@@ -518,11 +203,16 @@ class SourcesView(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         # ---- left: groups and calibration matching
-        left = QWidget()
-        left.setObjectName("panel")
+        left = QScrollArea()                               # a long list of warnings never makes the window taller
+        left.setWidgetResizable(True)
+        left.setFrameShape(QFrame.NoFrame)
+        left.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         left.setFixedWidth(300)
         self._left_w = left
-        self.lv = QVBoxLayout(left)
+        inner = QWidget()
+        inner.setObjectName("panel")
+        left.setWidget(inner)
+        self.lv = QVBoxLayout(inner)
         self.lv.setContentsMargins(10, 12, 10, 10)
         root.addWidget(left)
         # ---- centre: browser
@@ -588,6 +278,7 @@ class SourcesView(QWidget):
                                                            self.set_mode(1)))
         self.table.cellClicked.connect(lambda r, c: self._table_click(r, c))
         self.stack.addWidget(self.table)
+        self.stack.addWidget(self._drop_page())
         mv.addWidget(self.stack, 1)
         root.addWidget(mid, 1)
         # ---- right: properties
@@ -613,6 +304,7 @@ class SourcesView(QWidget):
         sv.framesReady.connect(self._frames_ready)
         sv.thumbReady.connect(self._thumb)
         sv.statsReady.connect(self._stats_ready)
+        self.setAcceptDrops(True)
         self._fill_sort()
         self.set_mode(1)
 
@@ -631,41 +323,302 @@ class SourcesView(QWidget):
         w = QWidget()
         v = QVBoxLayout(w)
         v.setAlignment(Qt.AlignCenter)
-        v.addWidget(label(_("No frames yet"), "h1"), 0, Qt.AlignHCenter)
-        v.addWidget(para(_("Add the folder of the lights. Darks, flats and bias are searched next to it and sorted by "
-                           "type; their match with the lights (exposure, ISO, levels) is checked and reported. Each "
-                           "frame can then be browsed and excluded.")), 0, Qt.AlignHCenter)
+        v.addWidget(label(_("No session yet"), "h1"), 0, Qt.AlignHCenter)
+        v.addWidget(para(_("A session holds the files of one night: its lights, darks, flats and bias, from wherever "
+                           "they are on the disk.")), 0, Qt.AlignHCenter)
         v.addSpacing(10)
-        b = QPushButton(_("Add folder…"))
+        b = QPushButton(_("Add session…"))
         b.setObjectName("primary")
-        b.clicked.connect(self.import_folder)
+        b.clicked.connect(self.add_session)
         v.addWidget(b, 0, Qt.AlignHCenter)
         return w
 
-    def import_folder(self):
-        if import_folder(self.s, self.window(), service=self.service):
-            self.imported.emit()
+    def _drop_page(self):
+        """What an empty kind shows, in the place of its frames: where its files go."""
+        w = QWidget()
+        o = QVBoxLayout(w)
+        o.setContentsMargins(24, 24, 24, 24)
+        self.drop_zone = QFrame()
+        self.drop_zone.setObjectName("dropzone")
+        self._drop_hot(False)
+        v = QVBoxLayout(self.drop_zone)
+        v.setAlignment(Qt.AlignCenter)
+        v.addWidget(label(_("Drop your files here"), "h1"), 0, Qt.AlignHCenter)
+        self.drop_kind = label("", "dim")
+        v.addWidget(self.drop_kind, 0, Qt.AlignHCenter)
+        v.addSpacing(10)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        a = QPushButton(_("Add files…"))
+        a.setObjectName("primary")
+        a.clicked.connect(lambda: self.pick_files(self.group))
+        b = QPushButton(_("Add folder…"))
+        b.clicked.connect(lambda: self.pick_folder(self.group))
+        row.addWidget(a)
+        row.addWidget(b)
+        row.addStretch(1)
+        v.addLayout(row)
+        o.addWidget(self.drop_zone)
+        return w
+
+    def _drop_hot(self, on: bool):
+        self.drop_zone.setStyleSheet("QFrame#dropzone { border: 2px dashed " + (ACCENT if on else "#3a4150") +
+                                     "; border-radius: 8px; } QLabel { border: none; }")
+
+    def _show_zone(self):
+        """An empty kind shows where its files go; the grid, the viewer and the list come back with its first files."""
+        self.current_session()                             # taken away meanwhile (Ctrl+Z): another one is shown
+        empty = self.sid is not None and not self.held(self.group)
+        self.stack.setCurrentIndex(3 if empty else self.mode)
+        for b in self.mode_btns + [self.sort_cb]:
+            b.setEnabled(not empty)
+        self.info.setVisible(self.mode != 1 and not empty)
+        if empty:
+            title = next(t for k, t, _s in GROUPS if k == self.group)
+            self.drop_kind.setText(_("{kind} of “{session}”").format(kind=_(title), session=self._session().name))
+
+    # ------------------------------------------------------------ the files of the session
+    def _session(self):
+        return self.s.p.session(self.sid)
+
+    def current_session(self):
+        """The session shown: the block just opened, else the one chosen here, else the first."""
+        st = self.s.sel_step or ""
+        if st != self._step:
+            self._step = st
+            if st.startswith("session@"):
+                self._set_session(int(st.partition("@")[2]))
+        ids = [x.id for x in self.s.p.sessions]
+        if self.sid not in ids:
+            self._set_session(ids[0] if ids else None)
+
+    def _set_session(self, sid):
+        if sid != self.sid:
+            self.sid, self.items, self.cur = sid, [], 0
+
+    def show_session(self, sid: int, kind: str = "lights"):
+        """Show a session's files of a kind."""
+        self._set_session(sid)
+        if self.s.separate_sessions():
+            self.s.select(None, f"session@{sid}")
+            self._step = self.s.sel_step
+        self.select_group(kind)
 
     def add_session(self):
-        if import_folder(self.s, self.window(), new_session=True, service=self.service):
-            self.imported.emit()
+        """A new session, without frames: shown here, where they are added."""
+        self.show_session(self.s.new_session())
+
+    def add_files(self, kind: str, paths: list) -> int:
+        """Files or folders into a kind of the session shown (a folder is a shortcut for its frames); said, and shown."""
+        if self.sid is None:
+            return 0
+        notes: list = []                                   # what was not added, said (GUI exploration 7.5)
+        n = self.s.add_session_entries(self.sid, kind, paths, notes)
+        said = [_(t).format(name=nm) for t, nm in notes[:2]] + (["…"] if len(notes) > 2 else [])
+        if n:
+            said.insert(0, plural(n, "{n} file added to “{session}” · Ctrl+Z", "{n} files added to “{session}” · Ctrl+Z",
+                                  session=self._session().name))
+            self.select_group(kind)
+        self.toast.emit(" · ".join(said) if said else _("Nothing added: no frame in what was dropped"))
+        return n
+
+    def pick_files(self, kind: str):
+        got, _f = QFileDialog.getOpenFileNames(self.window(), _("Add files…"), prefs.last_folder(), frame_filter())
+        if got:
+            prefs.remember_folder(got[0])
+            self.add_files(kind, got)
+
+    def pick_folder(self, kind: str):
+        d = QFileDialog.getExistingDirectory(self.window(), _("Add folder…"), prefs.last_folder())
+        if d:
+            prefs.remember_folder(d)
+            self.add_files(kind, [d])
+
+    def files_out(self, kind: str, files: list):
+        """Files taken out of the session (the files themselves are never touched): one undo step, said."""
+        s, name = self.s, self._session().name
+        with s.batch():
+            done = s.remove_session_files(self.sid, kind, files)
+        if done:
+            self.toast.emit(plural(len(files), "{n} file out of “{session}” · file kept · Ctrl+Z",
+                                   "{n} files out of “{session}” · files kept · Ctrl+Z", session=name))
+
+    def locate(self, kind: str, folder: str, entries: list[str]):
+        """A folder of the session not found: where it is now, chosen (a reference photo app's "find missing folder",
+        GUI exploration 4); it takes the old one's place in the list, its files found in it by their names. One undo
+        step; a folder without frames chosen: nothing changes, said."""
+        start = next((p for p in Path(folder).parents if p.is_dir()), Path(prefs.last_folder()))
+        d = self.ask_folder(_("Where is “{name}” now?").format(name=Path(folder).name), start.as_posix())
+        if not d:
+            return
+        prefs.remember_folder(d)
+        whole = any(not Path(e).suffix for e in entries)
+        new = [Path(d).as_posix()] if whole else [(Path(d) / Path(e).name).as_posix() for e in entries
+                                                  if (Path(d) / Path(e).name).is_file()]
+        notes: list = [] if new else [("“{name}” holds no frames (camera raw, FITS, JPEG, PNG or TIFF): not added.",
+                                       Path(d).name)]
+        s = self.s
+        with s.batch():
+            if new and s.add_session_entries(self.sid, kind, new, notes):
+                for e in entries:
+                    s.remove_session_entry(self.sid, kind, e)
+                notes = []
+                self.toast.emit(_("“{name}” found again in “{session}” · Ctrl+Z").format(
+                    name=Path(d).name, session=self._session().name))
+        if notes:
+            self.toast.emit(" · ".join(_(t).format(name=nm) for t, nm in notes))
+
+    def ask_folder(self, title: str, start: str) -> str:
+        return QFileDialog.getExistingDirectory(self, title, start)
+
+    def anomalies(self, kind: str) -> list[str]:
+        """What may be a mistake in a kind's files, said beside it as long as it holds (issue #58): a file not read or
+        of another type, the same files in two kinds, and lights with the exposure of flats."""
+        out = [type_warning_text(w) for w in self.s.file_warnings(self.sid) if w["kind"] == kind]
+        row = self._row()
+        if kind == "lights" and row is not None and row.exposure is not None and row.exposure < FLAT_LIKE_S:
+            out.append(_("Lights at {exp}: the exposure of flats. Right row?").format(exp=fexp(row.exposure)))
+        return out
+
+    def _flagged(self, kind: str) -> set[str]:
+        """The files a warning points at (lower-case paths): those of a type that is not read, or that differs."""
+        from ..core.project import file_type
+        out: set[str] = set()
+        for w in self.s.file_warnings(self.sid):
+            if w["kind"] == kind and w["key"] in ("unread", "mixed"):
+                out |= {f.lower() for f in self.s.session_files(self.sid, kind) if file_type(f) == w["type"]}
+        return out
+
+    def not_found(self, kind: str) -> tuple[dict[str, list[str]], list[str]]:
+        """What a kind lists and the disk does not give: ({folder not found: its entries}, the files gone from a folder
+        still there; these only once the worker has read the kind)."""
+        p, folders = self.s.p, {}
+        for e in getattr(self._session(), kind):
+            pth = Path(p.abspath(e))
+            folders.setdefault((pth.parent if pth.suffix else pth).as_posix(), []).append(e)
+        read = {norm_path(f) for f in self.s.session_files(self.sid, kind)}
+        gone, files = {}, []
+        for folder, entries in folders.items():
+            if not Path(folder).exists():
+                gone[folder] = entries
+            elif read:
+                files += [e for e in entries if Path(e).suffix and norm_path(p.abspath(e)) not in read]
+        return gone, files
+
+    def _fill_add_menu(self, kind: str, menu: QMenu):
+        """One menu per kind: its files, a folder's, another session's."""
+        menu.addAction(_("Add files…"), lambda k=kind: self.pick_files(k))
+        menu.addAction(_("Add folder…"), lambda k=kind: self.pick_folder(k))
+        others = [o for o in self.s.p.sessions if o.id != self.sid and getattr(o, kind)] if kind != "lights" else []
+        if others:
+            menu.addSeparator()
+        for o in others:
+            menu.addAction(_("Use the frames of “{name}”").format(name=o.name),
+                           lambda k=kind, oid=o.id: self.s.use_from_session(oid, self.sid, k))
+
+    def _file_box(self, kind: str, was: tuple):
+        """The files of the kind shown, under its row, by folder when there are several; ``was``: the selection and the
+        scrolling of the list before it was built again."""
+        files = self.s.session_files(self.sid, kind)
+        flagged = self._flagged(kind)
+        by: dict[str, list[str]] = {}
+        for f in files:
+            by.setdefault(Path(f).parent.as_posix(), []).append(f)
+        lst = FileList(lambda chosen, k=kind: self.files_out(k, chosen))
+        for folder, fs in by.items():
+            if len(by) > 1:
+                head = QListWidgetItem(f"{Path(folder).name} · {len(fs)}")
+                head.setFlags(Qt.NoItemFlags)
+                head.setToolTip(folder)
+                lst.addItem(head)
+            for f in fs:
+                it = QListWidgetItem(Path(f).name)
+                it.setData(Qt.UserRole, f)
+                it.setToolTip(f)
+                if f.lower() in flagged:
+                    it.setForeground(QColor(WARN))
+                lst.addItem(it)
+                it.setSelected(f in was[0])
+        lst.setFixedHeight(min(lst.count(), 10) * (lst.sizeHintForRow(0) or 20) + 6)
+        lst.verticalScrollBar().setValue(was[1])
+        lst.currentItemChanged.connect(self._file_picked)
+        self.lv.addWidget(lst)
+        self.file_list = lst
+        b = ic.set_icon(QPushButton(_("Remove")), "remove", 16)
+        b.clicked.connect(lambda _c=False, k=kind: self.files_out(k, lst.chosen()))
+
+        def selection():
+            on = bool(lst.chosen())
+            b.setEnabled(on)
+            b.setToolTip(_("Take the chosen files out of the session (the files are not touched)") if on else
+                         _("Choose files in the list first"))
+        lst.itemSelectionChanged.connect(selection)
+        selection()
+        self.lv.addWidget(b, 0, Qt.AlignLeft)
+
+    def _file_picked(self, it, _prev=None):
+        """A file chosen in the list: shown in the viewer."""
+        path = it.data(Qt.UserRole) if it is not None else None
+        i = next((n for n, x in enumerate(self.items) if norm_path(x.path) == norm_path(path)), None) if path else None
+        if i is not None:
+            self._goto(i)
+
+    def _not_found_rows(self, kind: str):
+        """What a kind lists and the disk does not give: said, with what can be done about it."""
+        gone, files = self.not_found(kind)
+        for folder, entries in gone.items():
+            r = QHBoxLayout()
+            line = ic.IconText("folder_missing", Path(folder).name + " · " + _("folder not found"), "warning", "warn")
+            line.setToolTip(folder + "\n" + _("Not found (moved, renamed, or its disk unplugged): click to choose where "
+                                              "it is now"))
+            r.addWidget(line, 1)
+            b = QPushButton(_("Locate…"))
+            b.clicked.connect(lambda _c=False, k=kind, d=folder, ens=list(entries): self.locate(k, d, ens))
+            r.addWidget(b, 0, Qt.AlignTop)
+            self.lv.addLayout(r)
+        if files:
+            r = QHBoxLayout()
+            r.addWidget(ic.IconText("warning", plural(len(files), "{n} file not found: moved or deleted?",
+                                                      "{n} files not found: moved or deleted?"), "warning", "warn"), 1)
+            b = QPushButton(_("Take out"))
+            b.clicked.connect(lambda _c=False, k=kind, fs=list(files): self.files_out(k, fs))
+            r.addWidget(b, 0, Qt.AlignTop)
+            self.lv.addLayout(r)
+
+    def dragEnterEvent(self, e):                                     # noqa: N802 - Qt's name
+        if e.mimeData().hasUrls() and self.sid is not None:
+            self._drop_hot(True)
+            e.acceptProposedAction()
+
+    def dragLeaveEvent(self, e):                                     # noqa: N802 - Qt's name
+        self._drop_hot(False)
+
+    def dropEvent(self, e):                                          # noqa: N802 - Qt's name
+        """Dropped anywhere but on a kind's row: into the kind shown."""
+        self._drop_hot(False)
+        paths = local_paths(e.mimeData())
+        if paths:
+            self.add_files(self.group, paths)
 
     # ------------------------------------------------------------ data
     def refresh(self):
-        """Show what the project holds; ask the worker for the headers and the frames of the group."""
-        loaded = self.s.sources_loaded
+        """Show the session's files; ask the worker for the headers and the frames of the group."""
+        loaded = bool(self.s.p.sessions)
         self.pages.setCurrentIndex(1 if loaded else 0)
         self.zone_b.setVisible(prefs.spec() and self.group == "lights")
         if not loaded:
             return
+        self.current_session()
         wid = self.s.path.pid if self.s.path is not None else None
-        self._group_token = self.service.request_group(wid, self.group)
+        self._group_token = self.service.request_group(wid, self.group, self.sid)
         self.service.request_frames(wid)
         self.build_left()
         self.build_right()
+        self._show_zone()
 
     def _frames_ready(self, data: ProjectFrames):
         self.data = data
+        self.current_session()
         if self.pages.currentIndex() == 1 and self.isVisibleTo(self.window()):
             self.build_left()
             self.build_right()
@@ -675,6 +628,7 @@ class SourcesView(QWidget):
             return
         same = [it.path for it in items] == [it.path for it in self.items]
         self.items = items
+        self._show_zone()
         self.cur = min(self.cur, max(len(items) - 1, 0))
         if same and self.grid.count() == len(items):
             self._marks()
@@ -721,16 +675,55 @@ class SourcesView(QWidget):
 
     # ------------------------------------------------------------ left panel
     def count_of(self, key: str) -> int:
-        if self.data is not None:
-            return self.data.counts.get(key, 0)
-        return sum(ses.get({"lights": "lights", "darks": "darks", "flats": "flats", "bias": "bias",
-                            "flat_darks": "dark_flats"}[key], 0) for ses in self.s.sessions)
+        """The files of a kind in the session shown."""
+        ses = next((x for x in self.s.sessions if x["id"] == self.sid), None)
+        return ses.get(COUNT_KEY[key], 0) if ses is not None else 0
+
+    def held(self, key: str) -> int:
+        """What a kind has to show: its files, and those left out by hand (to take them back)."""
+        return self.count_of(key) + len(self._session().left_out.get(key, []))
+
+    def _row(self):
+        """What the headers say of the session shown (None until the worker has read them)."""
+        d = self.data
+        return next((r for r in d.sessions if r.id == self.sid), None) if d is not None else None
+
+    def _sub(self, key: str, n: int, row) -> str:
+        """The line under a kind's name: what it holds."""
+        if not n:
+            return _("none yet") if key == "lights" else _("none · optional")
+        if key == "lights" and row is not None and row.first:
+            return _("{n} lights · {exp} · ISO {iso} · night of {day}/{month}").format(
+                n=n, exp=fexp(row.exposure), iso=int(row.iso) if row.iso else "–", day=night_text(row.first)[:2].strip(),
+                month=row.first[5:7])
+        folders = {Path(f).parent.name for f in self.s.session_files(self.sid, key)}
+        if len(folders) == 1:
+            return _("{n} frames · {folder}").format(n=n, folder=folders.pop())
+        return _("{n} frames · {f} folders").format(n=n, f=len(folders))
 
     def build_left(self):
+        old = self.file_list
+        was = (set(old.chosen()), old.verticalScrollBar().value()) if old is not None else (set(), 0)
         clear(self.lv)
+        self.file_list = None
+        if self.sid is None:
+            return
+        sessions = self.s.p.sessions
+        if len(sessions) > 1:
+            cb = QComboBox()
+            for x in sessions:
+                cb.addItem(x.name, x.id)
+            cb.setCurrentIndex(max(0, cb.findData(self.sid)))
+            cb.currentIndexChanged.connect(lambda _i, c=cb: self.show_session(c.currentData(), self.group))
+            cb.setToolTip(_("The session whose files are shown"))
+            self.lv.addWidget(cb)
+        else:
+            self.lv.addWidget(label(self._session().name, "h2"))
+        note = self.s.colour_note(self.sid)
+        if note:                                           # issue #57: the limit of frames already in colour, said
+            self.lv.addWidget(ic.IconText("info", colour_note_text(note), "dim", "colour_note"))
         section = None
-        d = self.data
-        row0 = d.sessions[0] if d is not None and d.sessions else None
+        row0 = self._row()
         for key, title, sec in GROUPS:
             if sec != section:
                 section = sec
@@ -738,24 +731,20 @@ class SourcesView(QWidget):
                     self.lv.addSpacing(8)
                 self.lv.addWidget(label(_(sec), "h2"))
             n = self.count_of(key)
-            if key == "lights":
-                sub = _("{n} lights · {exp} · ISO {iso} · night of {day}/{month}").format(
-                    n=n, exp=fexp(row0.exposure) if row0 else "–", iso=int(row0.iso) if row0 and row0.iso else "–",
-                    day=night_text(row0.first)[:2].strip() if row0 and row0.first else "–",
-                    month=row0.first[5:7] if row0 and row0.first else "–")
-            elif n:
-                folder = (d.folders.get(key) or [""])[0] if d is not None else ""
-                sub = _("{n} frames · {folder}").format(n=n, folder=folder)
-            else:
-                sub = _("none · optional")
-            row = GroupRow(key, f"{_(title)} · {n}" if n else _(title), sub, key == self.group, not n)
+            row = GroupRow(key, f"{_(title)} · {n}" if n else _(title), self._sub(key, n, row0), key == self.group, not n,
+                           partial(self._fill_add_menu, key))
             row.clicked.connect(self.select_group)
+            row.dropped.connect(self.add_files)
             self.lv.addWidget(row)
-            if key == "lights":
-                b = ic.set_icon(QPushButton(_("Lights (another night)…")), "add", 16)
-                b.setObjectName("link")
-                b.clicked.connect(self.add_session)
-                self.lv.addWidget(b)
+            shared = self.s.shared_with(self.sid, key) if key != "lights" else []
+            if shared:
+                names = ", ".join(self.s.session(o).name for o in shared)
+                self.lv.addWidget(ic.IconText("link", _("shared with {names}: one master").format(names=names), "dim", "small"))
+            for text in self.anomalies(key):               # beside its kind, as long as it holds
+                self.lv.addWidget(ic.IconText("warning", text, "warning", "warn"))
+            self._not_found_rows(key)
+            if key == self.group and n:
+                self._file_box(key, was)
         self.lv.addSpacing(10)
         self.lv.addWidget(hline())
         self.lv.addWidget(label(_("Calibration matching"), "h2"))
@@ -785,7 +774,7 @@ class SourcesView(QWidget):
         out = []
         if d is None:
             return [(None, _("Reading the frames…"))]
-        ref = d.sessions[0] if d.sessions else None
+        ref = self._row()
         if d.darks and ref is not None:
             same = d.darks.get("exposure") == ref.exposure and d.darks.get("iso") == ref.iso
             t = (_("Darks: exposure {exp}, ISO {iso}, same as the lights.") if same else
@@ -813,15 +802,12 @@ class SourcesView(QWidget):
         return out
 
     def select_group(self, key):
-        if not self.count_of(key):
-            QMessageBox.information(self, _("Browse"), _("No frames in this group. Use Import folder… to add some."))
-            return
+        """Show a kind: its frames, or where its files go."""
         self.group = key
         self.cur = 0
         self.items = []
         self.viewer.blink_b.setChecked(False)
         self._fill_sort()
-        self.build_left()
         self.fill()
         self.refresh()
 
@@ -1042,8 +1028,7 @@ class SourcesView(QWidget):
     def set_mode(self, k):
         self.mode = k
         self.mode_btns[k].setChecked(True)
-        self.stack.setCurrentIndex(k)
-        self.info.setVisible(k != 1)                     # the viewer has its own info band
+        self._show_zone()                                # the viewer has its own info band
         self._goto(self.cur)
         self._thumb_timer.start()
 
@@ -1081,7 +1066,7 @@ class SourcesView(QWidget):
         """One line on the frame chosen, above the grid and the list (the viewer has its info band)."""
         f = self.items[self.cur]
         d = self.data
-        row0 = d.sessions[0] if d is not None and d.sessions else None
+        row0 = self._row() if d is not None else None
         if self.group == "lights":
             tr = f"{100 * f.transparency / self.p90:.0f}" if f.transparency is not None else "–"
             exp = f.exposure if f.exposure is not None else (row0.exposure if row0 else None)
@@ -1119,8 +1104,7 @@ class SourcesView(QWidget):
         self._set_excluded(self.cur, not f.excluded)
 
     def _set_excluded(self, i: int, want: bool):
-        """A light frame: by hand, for the whole project. A calibration frame: left out of its master (the session
-        lists the frames of its folder one by one)."""
+        """A light frame: by hand, for the whole project. A calibration frame: left out of its master."""
         f = self.items[i]
         if f.session is None:
             return
@@ -1129,7 +1113,6 @@ class SourcesView(QWidget):
             f.excluded = want
         else:
             if not set_calibration_excluded(self.s, f, want, self.items):
-                QMessageBox.information(self, _("Browse"), _("Last frame of folder: kept"))
                 pos = self._seq_order.index(i) if i in self._seq_order else -1
                 if pos >= 0:
                     self.viewer.set_excluded(pos, f.excluded)
@@ -1149,19 +1132,17 @@ class SourcesView(QWidget):
         d = self.data
         self.rv.addWidget(label(_("Properties"), "h2"))
         rows = []
-        row0 = d.sessions[0] if d is not None and d.sessions else None
+        row0 = self._row()
         if self.group == "lights" and d is not None and row0 is not None:
             cam = d.camera
-            n = d.counts.get("lights", 0)
+            n = row0.lights
             hours = n * (row0.exposure or 0) / 3600
             rows = [(_("Camera"), cam.get("camera") or "–"),
                     (_("Sensor"), _("{w} × {h} px, {cfa} pattern").format(w=cam.get("width"), h=cam.get("height"),
                                                                           cfa=cam.get("cfa"))),
                     (_("Exposure"), fexp(row0.exposure)), ("ISO", f"{int(row0.iso)}" if row0.iso else "–"),
-                    (_("First frame"), (min((r.first for r in d.sessions if r.first), default="") or "–")
-                     .replace("T", " ")[:16]),
-                    (_("Last frame"), (max((r.last for r in d.sessions if r.last), default="") or "–")
-                     .replace("T", " ")[:16]),
+                    (_("First frame"), (row0.first or "–").replace("T", " ")[:16]),
+                    (_("Last frame"), (row0.last or "–").replace("T", " ")[:16]),
                     (_("Integration"), f"{hours_text(hours)} ({n} × {fexp(row0.exposure)})"),
                     (_("Black / white level"), f"{int(cam.get('black') or 0)} / {int(cam.get('white') or 0)} ADU")]
         elif d is not None and self.items:
@@ -1170,10 +1151,9 @@ class SourcesView(QWidget):
             rows = [(_("Frames"), str(len(self.items))), (_("Exposure"), fexp(info.get("exposure")) if info else "–"),
                     ("ISO", str(int(info["iso"])) if info and info.get("iso") else "–"),
                     (_("Taken on"), (first.time or "")[:10] or "–")]
-        folder = (d.folders.get(self.group) or [""])[0] if d is not None and self.group != "lights" else \
-            (self.s.p.abspath(self.s.p.sessions[0].lights[0]) if self.s.p.sessions and self.s.p.sessions[0].lights
-             else "")
-        rows.append((_("Folder"), folder))
+        folder = Path(self.items[min(self.cur, len(self.items) - 1)].path).parent.as_posix() if self.items else ""
+        if folder:
+            rows.append((_("Folder"), folder))
         self.rv.addWidget(self._kv(rows))
         self.rv.addSpacing(8)
         self.rv.addWidget(hline())
@@ -1226,4 +1206,4 @@ class SourcesView(QWidget):
         return lb
 
 
-__all__ = ["SourcesView", "ImportDialog", "import_folder", "GROUPS"]
+__all__ = ["SourcesView", "GROUPS"]

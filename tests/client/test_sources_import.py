@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")
 pytest.importorskip("PySide6")
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from astro_gpu.client import i18n, prefs  # noqa: E402
@@ -185,9 +186,8 @@ def test_one_workflow_per_filter_works_on_a_new_project(qapp, tmp_path, monkeypa
 
 
 def test_files_added_to_a_session_stay_listed_and_removable(qapp, tmp_path, monkeypatch):
-    """7.4, 7.5: a file of a folder already there is already in the session; a file or folder twice, an empty folder:
-    said, not added; the lights' filter from their FITS header; a file of the folder taken out alone, the others
-    kept."""
+    """7.4, 7.5: a folder gives its files, once for all; a file already there, a folder twice, an empty folder: said,
+    not added; the lights' filter from their FITS header; one file taken out alone, the others kept."""
     w, m, page = open_page(tmp_path, monkeypatch)
     try:
         sid = m.add_filter_session("")
@@ -196,7 +196,8 @@ def test_files_added_to_a_session_stay_listed_and_removable(qapp, tmp_path, monk
         empty = tmp_path / "empty"
         empty.mkdir()
         notes: list = []
-        assert m.add_session_entries(sid, "lights", [str(folder)], notes) == 1 and not notes
+        assert m.add_session_entries(sid, "lights", [str(folder)], notes) == 4 and not notes
+        assert sorted(Path(e).name for e in m.p.session(sid).lights) == ["S_0.fits", "S_1.fits", "S_2.fits", "S_3.fits"]
         assert m.p.session(sid).filter == "SII"                            # from the header
         assert m.add_session_entries(sid, "lights", [str(files[1]), str(folder)], notes) == 0
         assert [t for t, _n in notes] == ["“{name}” is already in the session."] * 2
@@ -210,16 +211,74 @@ def test_files_added_to_a_session_stay_listed_and_removable(qapp, tmp_path, monk
         close(w, m, page)
 
 
-def test_a_folder_after_its_files_replaces_them(qapp, tmp_path, monkeypatch):
+def test_a_folder_after_some_of_its_files_adds_the_others(qapp, tmp_path, monkeypatch):
     w, m, page = open_page(tmp_path, monkeypatch)
     try:
         sid = m.add_filter_session("")
         folder = tmp_path / "lights"
         files = [fits_file(folder / f"L_{k}.fits") for k in range(3)]
         assert m.add_session_entries(sid, "lights", [str(files[0])]) == 1
-        assert m.add_session_entries(sid, "lights", [str(folder)]) == 1
-        assert [Path(e).name for e in m.p.session(sid).lights] == ["lights"]
+        assert m.add_session_entries(sid, "lights", [str(folder)]) == 2
+        assert [Path(e).name for e in m.p.session(sid).lights] == ["L_0.fits", "L_1.fits", "L_2.fits"]
     finally:
+        close(w, m, page)
+
+
+def test_a_project_listing_a_folder_still_reads_it_and_its_files_are_known(qapp, tmp_path, monkeypatch):
+    """A project made before the files were listed one by one: its folder entry is read, a file of it is already in."""
+    w, m, page = open_page(tmp_path, monkeypatch, sessions=1, workflows=("Full",))
+    try:
+        assert [Path(e).name for e in m.p.session(1).lights] == ["n1"] and len(m.session_files(1, "lights")) == 3
+        notes: list = []
+        assert m.add_session_entries(1, "lights", [m.session_files(1, "lights")[0]], notes) == 0 and notes
+    finally:
+        close(w, m, page)
+
+
+def test_the_session_files_are_added_taken_out_and_said_kind_by_kind(qapp, tmp_path, monkeypatch):
+    """The Session's Inspect is where its files go: an empty kind shows where, with no window in the way; the files of
+    a kind are listed under it; the same files in two kinds, and lights at the exposure of flats, are said beside it."""
+    from PySide6.QtCore import QMimeData, QUrl
+
+    from astro_gpu.client.services.inspect import SessionRow
+    from astro_gpu.client.sources import GroupRow, SourcesView, local_paths
+    w, m, page = open_page(tmp_path, monkeypatch, sessions=1, workflows=("Full",))
+    view = SourcesView(m)
+    said: list = []
+    view.toast.connect(said.append)
+    try:
+        view.refresh()
+        view.select_group("darks")
+        assert view.stack.currentIndex() == 3 and "Drop your files here" in texts(view)
+        assert not view.mode_btns[0].isEnabled()
+        one, other = fits_file(tmp_path / "a" / "D_1.fits"), fits_file(tmp_path / "b" / "D_2.fits")
+        assert view.add_files("darks", [str(one), str(other)]) == 2                # from two places
+        settle(w, page)
+        view.refresh()
+        assert "2 files added" in said[-1] and view.stack.currentIndex() == view.mode
+        lst = view.file_list
+        assert sorted(lst.item(i).text() for i in range(lst.count())) == ["D_1.fits", "D_2.fits", "a · 1", "b · 1"]
+        assert not lst.item(0).flags() & Qt.ItemIsSelectable                       # the folder's name: only a title
+        lst.item(1).setSelected(True)
+        view.files_out("darks", lst.chosen())
+        settle(w, page)
+        view.refresh()
+        assert [Path(x).name for x in m.p.session(1).darks] == ["D_2.fits"] and "Ctrl+Z" in said[-1]
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(one))])
+        assert local_paths(mime) == [Path(one).as_posix()]
+        row = next(r for r in view.findChildren(GroupRow) if r.key == "flats")
+        row.dropped.emit("flats", [m.session_files(1, "lights")[0]])               # a row takes what is dropped on it
+        settle(w, page)
+        view.refresh()
+        assert view.group == "flats" and any("also in the lights" in t for t in view.anomalies("flats"))
+        assert any("also in the lights" in t for t in texts(view))
+        view.data = SimpleNamespace(sessions=[SessionRow(1, "night 1", lights=3, exposure=1 / 8000)])
+        assert any("exposure of flats" in t for t in view.anomalies("lights"))
+        view.data = SimpleNamespace(sessions=[SessionRow(1, "night 1", lights=3, exposure=15.0)])
+        assert not any("exposure of flats" in t for t in view.anomalies("lights"))
+    finally:
+        view.close()
         close(w, m, page)
 
 
@@ -325,20 +384,10 @@ def test_a_frame_with_a_useful_area_is_sized_and_said_as_the_engine_reads_it(tmp
 
 
 def test_import_words_and_where_a_new_project_goes(tmp_path, monkeypatch):
-    """7.1, 7.5, #28, #29: the import's "no lights" says why; the project is never proposed inside the frames'
-    folder; "Pas d'offsets"."""
+    """7.1, #28: the project is never proposed inside the frames' folder; "Pas d'offsets"."""
     from astro_gpu.client.home import projects_location
-    from astro_gpu.client.sources import no_lights_text
     monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
     prefs.load()
-    phone = tmp_path / "phone"
-    phone.mkdir()
-    (phone / "a.MOV").write_bytes(b"\xff\xd8\xff")                  # not a frame (JPEG lights are read, issue #57)
-    empty = tmp_path / "empty"
-    empty.mkdir()
-    assert "only MOV files" in no_lights_text([str(phone)])
-    assert no_lights_text([str(empty)]) == "This folder holds no files."
-    assert no_lights_text([str(tmp_path / "gone")]).startswith("Not found:")
     raw = tmp_path / "M81" / "lights"
     raw.mkdir(parents=True)
     prefs.remember_folder(raw)

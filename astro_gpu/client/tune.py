@@ -32,7 +32,7 @@ from the model's signals while it is visible. Its signals: ``back`` (the Graph b
 selected block of the current workflow), ``openPost``, ``removeTool`` (Remove on the panel of an optional block: the
 graph's ``remove_tool(node, None)``), ``toasted(text)``, ``sendToPost(name, source, key)`` (Send to Post of a viewer:
 the window gives it to Post's ``add_image_layer``; ``can_post``, a callable the window sets, says whether Post takes
-it). Importing is the views' own: ``sources.import_folder(model, parent, folder=None, new_session=False)``.
+it). The files of a session are the Session's Inspect (``sources.py``).
 
 Classes: ``TuneView``, ``Strip`` (the strip of blocks), ``WeightsChart`` and ``ColorFitChart`` (Stacking and Color).
 """
@@ -50,7 +50,6 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
-    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -658,7 +657,6 @@ class TuneView(QWidget):
         pn.changed.connect(self.request_refresh)
         pn.openPost.connect(self.openPost.emit)
         pn.variantMade.connect(self._variant_made)
-        pn.addSources.connect(self._import)
         pn.addSession.connect(self._add_session)
         pn.renamed.connect(lambda pid, name: self.s.rename(pid, name))
         pn.toast.connect(self.toasted.emit)
@@ -726,13 +724,8 @@ class TuneView(QWidget):
         self.select(index=i)
         self.workflow.emit(i)
 
-    def _import(self):
-        from .sources import import_folder
-        import_folder(self.s, self.window(), service=self.service)
-
     def _add_session(self):
-        from .sources import import_folder
-        import_folder(self.s, self.window(), new_session=True, service=self.service)
+        self.sources.add_session()
 
     def _variant_made(self, pid, orig):
         """The variant is shown at the same block, side by side with the workflow it comes from."""
@@ -1845,32 +1838,24 @@ class TuneView(QWidget):
 
     def _no_frames(self, kind: str):
         """No frame of a kind in the project (none was given, or all were left out): what Calibration does then, and
-        Add a folder."""
+        the Session's files, where they are added."""
         title, line = NO_FRAMES.get(kind, ("No frames", "No frames of this kind."))
         box, v = self._card_frame(10)
         v.addWidget(label(_(title), "h2"))
         v.addWidget(label(_(line), "", wrap=True))
-        b = QPushButton(_(ADD_FOLDER.get(kind, "Add a folder…")))
+        b = QPushButton(_("Open frames"))
         b.setObjectName("primary")
-        b.clicked.connect(lambda _x=False, kk=kind: self.add_calibration_folder(kk))
+        b.clicked.connect(lambda _x=False, kk=kind: self.open_frames(kk))
         v.addWidget(b, 0, Qt.AlignLeft)
         self._place_card(box, v)
 
-    def add_calibration_folder(self, kind: str, folder: str | None = None) -> bool:
-        """Add a folder of darks (flats, bias, dark flats) to the sessions that have none of that kind (to every
-        session when all have some): Calibration is then computed again."""
-        if folder is None:
-            folder = QFileDialog.getExistingDirectory(self.window(), _(ADD_FOLDER.get(kind, "Add a folder…")),
-                                                      prefs.last_folder())
-            if not folder:
-                return False
-            prefs.remember_folder(folder)
-        P = self.s.p
-        targets = [x.id for x in P.sessions if not getattr(x, kind)] or [x.id for x in P.sessions]
-        done = [sid for sid in targets if self.s.add_calibration_folder(sid, kind, folder)]
-        if done:
-            self.toasted.emit(_("Folder added · Calibration to recompute"))
-        return bool(done)
+    def open_frames(self, kind: str):
+        """A session's files of a kind, in its Inspect: the first session that has none, else the first."""
+        ses = self.s.p.sessions
+        sid = next((x.id for x in ses if not getattr(x, kind)), ses[0].id)
+        self.select(step=f"session@{sid}" if self.s.separate_sessions() else "sources")
+        self.sources.browser.show_session(sid, kind)
+        self.sources.show_page(1)
 
     @property
     def _seq_index(self) -> dict:
@@ -1884,7 +1869,6 @@ class TuneView(QWidget):
             self._excl_mark = None
             if self.view is not None:
                 self.view.set_excluded(i, not excluded)
-            self.toasted.emit(_("Last frame of folder: kept"))
             return
         it.excluded = excluded
         self._count_line_update(group if group is not None else items)
@@ -2546,8 +2530,6 @@ NO_FRAMES = {
     "flat_darks": ("No dark flats", "No dark flats: the flats are calibrated with the bias, or the camera's black "
                                     "level."),
 }
-ADD_FOLDER = {"darks": "Add a darks folder…", "flats": "Add a flats folder…", "bias": "Add a bias folder…",
-              "flat_darks": "Add a dark flats folder…"}
 
 
 def no_frames_text(kind: str) -> str:

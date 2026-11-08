@@ -38,11 +38,11 @@ def test_the_short_walkthrough_shows_every_screen_in_both_languages_without_a_pr
     assert rep["untranslated_asked"] == [], tail
     assert r.returncode == 0, tail
     names = sorted(p.name for p in out.glob("*.png"))
-    for screen in ("home", "new_project", "import_folder", "frames_sessions", "frames_browse", "new_workflow",
+    for screen in ("home", "new_project", "frames_sessions", "frames_browse", "new_workflow",
                    "graph_step_added", "graph_show_all", "run_all_plan", "inspect_pending", "reopened", "undo",
                    "redo", "import_previous", "settings", "about", "log"):
         for lang in ("en", "fr"):
-            if screen in ("import_folder", "graph_step_added", "reopened", "undo", "redo") and lang == "fr":
+            if screen in ("graph_step_added", "reopened", "undo", "redo") and lang == "fr":
                 continue                                           # made once, in English
             if screen in ("about", "log") and lang == "en":
                 continue                                           # shown in the French tour
