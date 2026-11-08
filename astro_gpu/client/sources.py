@@ -117,15 +117,15 @@ def join_and(parts: list[str]) -> str:
 
 # ---------------------------------------------------------------------------------------------- Import folder
 def frame_filter() -> str:
-    """The file dialog's filter: the raw and FITS frames the engine reads."""
-    from ..core.project import FITS_EXT, RAW_EXT
-    pats = " ".join(f"*{e}" for e in sorted(RAW_EXT | FITS_EXT | {".fz"}))
-    return _("Raw and FITS frames ({patterns})").format(patterns=pats) + ";;" + _("All files (*)")
+    """The file dialog's filter: the frames the engine reads (raw, FITS, and the frames already in colour, #57)."""
+    from ..core.project import COLOUR_EXT, FITS_EXT, RAW_EXT
+    pats = " ".join(f"*{e}" for e in sorted(RAW_EXT | FITS_EXT | COLOUR_EXT | {".fz"}))
+    return _("Frames ({patterns})").format(patterns=pats) + ";;" + _("All files (*)")
 
 
 def no_lights_text(entries) -> str:
     """Why folders or files chosen give no light frame, translated (#28, #29): not found, empty, or only files of a
-    kind not read (JPEG lights are not read yet)."""
+    kind not read (a video, a document)."""
     from ..core.project import file_type, frame_kind
     files: list[Path] = []
     for e in entries:
@@ -137,8 +137,8 @@ def no_lights_text(entries) -> str:
     if not files:
         return _("This folder holds no files.")
     if other:
-        return _("No camera raw or FITS frames here, only {types} files: this version does not read them as "
-                 "lights yet.").format(types=", ".join(other))
+        return _("No camera raw, FITS, JPEG, PNG or TIFF frames here, only {types} files: this version does not "
+                 "read them as lights.").format(types=", ".join(other))
     return _("No light frames chosen.")
 
 

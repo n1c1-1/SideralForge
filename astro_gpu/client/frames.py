@@ -70,14 +70,28 @@ def type_warning_text(w: dict) -> str:
     """A file that may be a mistake (core.project.type_warnings, issue #58), in the interface's language."""
     kind = _(KIND_WORDS.get(w.get("kind", ""), w.get("kind", "")))
     if w["key"] == "unread":
-        return (_("{name} is not a frame the engine reads (camera raw or FITS): added by mistake?").format(name=w["name"])
-                if w["n"] == 1 else _("{n} {type} files are not frames the engine reads (camera raw or FITS)").format(
-                    n=w["n"], type=w["type"]))
+        return (_("{name} is not a frame the engine reads here (camera raw or FITS; a JPEG, PNG or TIFF only with lights "
+                  "of its kind): added by mistake?").format(name=w["name"])
+                if w["n"] == 1 else _("{n} {type} files are not frames the engine reads here (camera raw or FITS; a JPEG, "
+                                      "PNG or TIFF only with lights of its kind)").format(n=w["n"], type=w["type"]))
     if w["key"] == "mixed":
         return plural(w["n"], "{n} {type} file among {of} {main} {kind}: added by mistake?",
                       "{n} {type} files among {of} {main} {kind}: added by mistake?",
                       type=w["type"], of=w["of"], main=w["main"], kind=kind)
+    if w["key"] == "wrong_kind":
+        return _("The {kind} are {type} files, the lights {main}: they cannot calibrate them").format(
+            kind=kind, type=w["type"], main=w["main"])
     return _("The {kind} are {type} files, the lights {main}").format(kind=kind, type=w["type"], main=w["main"])
+
+
+def colour_note_text(note: dict) -> str:
+    """The limit of frames already in colour (issue #57), said plainly: ``note`` is io.frames.colour_session's."""
+    if note.get("stretched"):
+        return _("{type} frames already in colour: no debayering, no Bayer drizzle. They are not linear data (the "
+                 "camera or a program already stretched and balanced them): dark and flat correction are "
+                 "approximate.").format(type=note["type"])
+    return _("{type} frames already in colour: no debayering, no Bayer drizzle. If they were stretched they are not "
+             "linear data: dark and flat correction are then approximate.").format(type=note["type"])
 
 
 def check_text(c, data: ProjectFrames | None = None) -> str:
@@ -96,6 +110,9 @@ def check_text(c, data: ProjectFrames | None = None) -> str:
     if c.key == "file_types":
         return f"{a.get('session', '')} : " + type_warning_text(a) if language() == "fr" else \
             f"{a.get('session', '')}: " + type_warning_text(a)
+    if c.key == "colour_frames":                          # issue #57: the limit of frames already in colour
+        return f"{a.get('session', '')} : " + colour_note_text(a) if language() == "fr" else \
+            f"{a.get('session', '')}: " + colour_note_text(a)
     if c.key == "unreadable":                             # GUI exploration 6.10: a light that cannot be read
         return _("{session}: {name} cannot be read (damaged, or not a frame): take it out of the session.").format(
             session=a.get("session", ""), name=a.get("name", ""))

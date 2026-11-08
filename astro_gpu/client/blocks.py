@@ -659,7 +659,9 @@ class Graph:
             return (_("transparency ≥ {t} % · stars ≤ {f} px").format(t=f"{t:.0f}", f=number(f)) if unit == "px" else
                     _("transparency ≥ {t} % · stars ≤ {f} × median").format(t=f"{t:.0f}", f=number(f)))
         if k == "empilement":
-            if s.param_value(p, "stack", "method") == "classic":
+            if getattr(s, "colour_frames", lambda _p: False)(p):      # issue #57: no demosaicing, no drizzle
+                txt = _("Classic stack · colour frames")
+            elif s.param_value(p, "stack", "method") == "classic":
                 txt = _("classic stack · {how}").format(how=texts.choice_label(
                     str(s.param_value(p, "stack", "classic_debayer") or "rcd"), language()))
             else:

@@ -24,6 +24,9 @@ level3 = [
     "tests/test_runner2.py::test_after_a_gpu_fault_a_fresh_worker_retries_the_job_once_and_the_lock_is_held_throughout",  # workers, 8-11 s
     "tests/test_stacking.py::test_selection_at_k_sigma_with_reasons",                              # heavy: 2 stacks, 5 s
     "tests/test_xtrans.py::test_markesteijn_demosaics_through_the_raw_file_a_flat_field_exactly",   # real data: 3 frames of 24 Mpx, 9 s
+    "tests/test_colour_frames.py::test_the_whole_chain_on_jpeg_frames",                            # heavy: the chain on the CPU
+    "tests/test_colour_frames.py::test_a_drizzle_chosen_by_hand_on_colour_frames_fails_with_its_reason",  # heavy: the chain on the CPU
+    "tests/test_colour_frames.py::test_calibrate_divides_the_flat_colour_by_colour",               # heavy: spawned workers
     # ---- client -------------------------------------------------------------------------------------------------
     "tests/client/test_walkthrough.py",                                                            # screenshots + real data + worker, 64 s
     # test_inspect.py: the test project, screenshots

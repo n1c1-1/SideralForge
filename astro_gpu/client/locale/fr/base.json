@@ -856,7 +856,6 @@
   "Finkbeiner 2003 H-alpha composite (all sky, 6')": "Finkbeiner 2003, composite H-alpha (tout le ciel, 6')",
   "Show in amber where the professional H-alpha survey of the field sees nebulosity (R): no sample should sit there. Downloaded once; the field must be solved": "Montrer en ambre où le relevé H-alpha professionnel du champ voit de la nébulosité (R) : aucun échantillon ne doit s'y trouver. Téléchargé une fois ; le champ doit être résolu",
   "Faint tones": "Tons faibles",
-  "Raw and FITS frames ({patterns})": "Images brutes et FITS ({patterns})",
   "All files (*)": "Tous les fichiers (*)",
   "Choose files…": "Choisir fichiers…",
   "Select the frames themselves (Ctrl or Shift + click, Ctrl+A)": "Sélectionner les images elles-mêmes (Ctrl ou Maj + clic, Ctrl+A)",
@@ -877,7 +876,6 @@
   "No bias, no dark flats.": "Ni offsets ni darks de flat.",
   "Not found: {folder}. Is its disk plugged in?": "Introuvable : {folder}. Son disque est-il branché ?",
   "This folder holds no files.": "Ce dossier ne contient aucun fichier.",
-  "No camera raw or FITS frames here, only {types} files: this version does not read them as lights yet.": "Aucun fichier RAW d'appareil ou FITS ici, seulement des fichiers {types} : cette version ne les lit pas encore comme brutes.",
   "No project made.": "Aucun projet créé.",
   "Project without lights: add them in Session": "Projet sans brutes : les ajouter dans Session",
   "This project cannot be opened: its file is damaged, or it is not a project file of this program.": "Impossible d'ouvrir ce projet : son fichier est abîmé, ou ce n'est pas un fichier de projet de ce programme.",
@@ -909,5 +907,6 @@
   "an error of the program (the details are in the Log)": "une erreur du programme (le détail est dans le Journal)",
   "Technical detail: {detail}": "Détail technique : {detail}",
   "Image not computed: {why}": "Image non calculée : {why}",
-  "Graphics card, {gb} GB of memory": "Carte graphique, {gb} Go de mémoire"
+  "Graphics card, {gb} GB of memory": "Carte graphique, {gb} Go de mémoire",
+  "No camera raw, FITS, JPEG, PNG or TIFF frames here, only {types} files: this version does not read them as lights.": "Aucun fichier RAW d'appareil, FITS, JPEG, PNG ou TIFF ici, seulement des fichiers {types} : cette version ne les lit pas comme brutes."
 }

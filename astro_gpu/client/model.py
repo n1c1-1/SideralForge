@@ -250,6 +250,8 @@ class Facts:
     #: what makes a session's data impossible to compute, said before the run (``session_checks``): session id ->
     #: [(English template, its fields)]
     checks: dict = field(default_factory=dict)
+    #: session id -> io.frames.colour_session of its lights (issue #57), None for raw or FITS mosaics
+    colour: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------------------------- worker jobs
@@ -286,9 +288,35 @@ def _facts_job(p) -> Facts:
         f.sessions[s.id] = counts
         f.files[s.id] = files
         f.checks[s.id] = session_checks(p, s, files)
+        f.colour[s.id] = _colour_of(files)
     if p.root is not None:
         f.reviewed = [str(x) for x in read_state(p.root).get("reviewed") or []]
     return f
+
+
+def _colour_of(files: dict) -> dict | None:
+    """io.frames.colour_session of a session's lights; None when it cannot be told (a damaged header: said elsewhere)."""
+    from ..io.frames import colour_session
+    try:
+        return colour_session(files.get("lights") or [], _is_colour)
+    except (OSError, ValueError):
+        return None
+
+
+#: whether a frame is already in colour, by (path, modification time, size): its header is read once per client
+_COLOUR_READS: dict = {}
+
+
+def _is_colour(path) -> bool:
+    from ..io.frames import is_colour_frame
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return False
+    k = (str(path), st.st_mtime_ns, st.st_size)
+    if k not in _COLOUR_READS:
+        _COLOUR_READS[k] = is_colour_frame(path)
+    return _COLOUR_READS[k]
 
 
 #: what the cheap reads of a frame said, by (path, modification time, size): a frame is read once per client
@@ -297,17 +325,18 @@ _FRAME_READS: dict = {}
 FRAME_KINDS = {"lights": "lights", "darks": "darks", "flats": "flats", "bias": "bias", "flat_darks": "flat darks"}
 
 
-def _frame_read(path: str, size: bool) -> tuple[bool, tuple[int, int] | None]:
+def _frame_read(path: str, size: bool, colour: bool = False) -> tuple[bool, tuple[int, int] | None]:
     """(whether the frame can be read, its size (width, height) or None). Without ``size`` only a FITS file's first
     card is read (it must be SIMPLE: a text file renamed .fits is not a FITS file; a camera raw file is not opened);
     with it, the size from the header (NAXIS1/NAXIS2, or the raw header). Never the pixels of a FITS file; remembered
-    per file."""
+    per file. ``colour``: the session's lights are already in colour (issue #57), so its JPEG, PNG and TIFF files are
+    frames: their header is read (elsewhere they are not read at all)."""
     from ..core.project import frame_kind
     try:
         st = Path(path).stat()
     except OSError:
         return False, None
-    k = (path, st.st_mtime_ns, st.st_size, size)
+    k = (path, st.st_mtime_ns, st.st_size, size, colour)
     if k in _FRAME_READS:
         return _FRAME_READS[k]
     out: tuple[bool, tuple[int, int] | None] = (True, None)
@@ -330,6 +359,10 @@ def _frame_read(path: str, size: bool) -> tuple[bool, tuple[int, int] | None]:
                 out = (True, (int(info.width), int(info.height)))
             except Exception:  # noqa: BLE001 - a raw file the decoder refuses: its size is not known, the engine says
                 out = (True, None)
+        elif kind == "colour" and colour:
+            from ..io.frames import read_info
+            info = read_info(path)
+            out = (True, (int(info.width), int(info.height)) if size else None)
     except Exception:  # noqa: BLE001 - a FITS frame whose header cannot be read is said so
         out = (False, None)
     _FRAME_READS[k] = out
@@ -349,11 +382,12 @@ def session_checks(p, s, files: dict) -> list[tuple[str, dict]]:
                 out.append(("{session}: the folder of the {kind} is not found: {folder} (is its disk plugged in?)",
                             dict(kind=FRAME_KINDS[kind], folder=str(x))))
                 break
+    colour = _colour_of(files) is not None
     sizes: dict[str, tuple[int, int]] = {}
     for kind in FRAME_KINDS:
         bad: list[str] = []
         for path in files.get(kind) or []:
-            ok, size = _frame_read(path, kind not in sizes)   # the first readable frame of each kind says its size
+            ok, size = _frame_read(path, kind not in sizes, colour)   # the first readable frame says its kind's size
             if not ok:
                 bad.append(path)
                 if kind != "lights":
@@ -364,6 +398,13 @@ def session_checks(p, s, files: dict) -> list[tuple[str, dict]]:
         if bad:
             out.append(("{session}: {name} is not a frame that can be read (damaged, or not a FITS file): take it "
                         "out of the session", dict(name=Path(bad[0]).name, frames=kind, unread=len(bad))))
+    if files.get("lights"):                  # issue #57: frames already in colour against mosaics, either way round
+        for kind in ("darks", "flats", "bias", "flat_darks"):
+            first = (files.get(kind) or [None])[0]
+            if first is not None and _is_colour(first) != colour:
+                out.append(("{session}: the {kind} ({name}) are not of the same kind as the lights (frames already in "
+                            "colour against a raw mosaic): they cannot calibrate them; use {kind} of their kind",
+                            dict(kind=FRAME_KINDS[kind], name=Path(first).name)))
     light = sizes.get("lights")
     for kind, size in sizes.items():
         if light is not None and kind != "lights" and size != light:
@@ -1479,7 +1520,7 @@ class ProjectModel(QObject):
                 total = sum(self._facts.sessions[s.id].get("lights", 0) for s in ses)
                 gone = sum(1 for sid, _n in self.p.excluded if sid in {s.id for s in ses})
                 if total == 0:
-                    why = _("{session}: no light frame in its folders (camera raw or FITS files)").format(
+                    why = _("{session}: no light frame in its folders (camera raw, FITS, JPEG, PNG or TIFF files)").format(
                         session=self._session_name(ses[0].id))
                 elif total - gone < 2 and blocks - {"calibration", "registration", "selection"}:
                     why = (_("only 1 light frame: stacking needs at least 2") if total == 1 else
@@ -1501,6 +1542,14 @@ class ProjectModel(QObject):
         name = self._session_name(sid)
         return [_(t).format(session=name, **{k: _(v) if k == "kind" else v for k, v in a.items()})
                 for t, a in self._facts.checks.get(sid) or []]
+
+    def colour_note(self, sid: int) -> dict | None:
+        """io.frames.colour_session of a session's lights (issue #57), as the worker last read them; None: mosaics."""
+        return self._facts.colour.get(sid)
+
+    def colour_frames(self, p: WorkflowView) -> bool:
+        """A workflow that stacks frames already in colour (issue #57): no Bayer drizzle for it."""
+        return p.source is None and any(self.colour_note(s) for s in self.sessions_of(p))
 
     def unreadable_lights(self, sid: int) -> int:
         """How many of a session's lights cannot be read (``session_checks``): they are not used."""
@@ -2135,7 +2184,7 @@ class ProjectModel(QObject):
             if norm_path(x) in have or (frame_kind(px) and norm_path(str(px.parent)) in folders):
                 notes.append(("“{name}” is already in the session.", px.name))
             elif px.is_dir() and not list_frames([str(px)]):
-                notes.append(("“{name}” holds no frames (camera raw or FITS): not added.", px.name))
+                notes.append(("“{name}” holds no frames (camera raw, FITS, JPEG, PNG or TIFF): not added.", px.name))
             else:
                 new.append(px.as_posix())
                 have.add(norm_path(x))

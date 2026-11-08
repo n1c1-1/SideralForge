@@ -11,7 +11,7 @@ from ..core import cfa as cfa_mod
 from ..core.params import ADVANCED, P, StageParams
 from ..core.project import frame_kind, list_frames
 from ..core.stage import Context, Stage, StageError
-from ..io.frames import fits_header, read_cfa, read_info
+from ..io.frames import fits_header, read_cfa, read_colour, read_info
 
 
 class InventoryParams(StageParams):
@@ -73,6 +73,12 @@ class Inventory(Stage):
             ctx.metric("mono", True)
         if not cfa_mod.is_supported(cfa):
             raise StageError(f"unsupported colour pattern {cfa!r}")
+        same_kind(out, cfa, next((f for f in lights if f["cfa"] == cfa), lights[0]))
+        if cfa_mod.is_colour(cfa):                    # said plainly: the frames are the camera's or a program's images
+            ctx.metric("colour_frames", True)
+            ctx.log("frames already in colour: no debayering, calibrated colour by colour, registered on their "
+                    "luminance, stacked by the Classic method (no Bayer drizzle). They are not linear data when they "
+                    "were stretched (every JPEG is): dark and flat correction are then approximate", "warning")
         for k in ("darks", "flats", "bias", "flat_darks"):
             bad = [f["path"] for f in out[k] if (f["width"], f["height"]) != (w, h)]
             if bad:
@@ -115,13 +121,36 @@ class Inventory(Stage):
         objs = Counter(f["object"] for f in lights if f.get("object"))
         if objs:
             ctx.metric("object", objs.most_common(1)[0][0])
-        pattern = "X-Trans" if cfa_mod.is_xtrans(cfa) else ("monochrome" if cfa_mod.is_mono(cfa) else cfa)
+        pattern = ("X-Trans" if cfa_mod.is_xtrans(cfa) else "monochrome" if cfa_mod.is_mono(cfa) else
+                   "colour" if cfa_mod.is_colour(cfa) else cfa)
         ctx.log(f"{len(lights)} lights of {texp} s ({ctx.metrics['integration_h']} h), {w}x{h} {pattern}, "
                 f"{len(out['darks'])} darks, {len(out['flats'])} flats, {len(out['bias'])} bias, "
                 f"camera {first['camera'] or 'unknown'}")
         # quick look at the middle frame (2x2 super-pixels, no calibration)
-        mid = read_cfa(lights[len(lights) // 2]["path"]) - first["black"]
+        read = read_colour if cfa_mod.is_colour(cfa) else read_cfa
+        mid = read(lights[len(lights) // 2]["path"]) - first["black"]
         ctx.preview("middle_frame", _superpixel_rgb(mid, cfa))
+
+
+def same_kind(out: dict, cfa: str, light: dict) -> None:
+    """Calibration frames that cannot calibrate these lights are refused, with the reason (issue #57): frames already
+    in colour against a mosaic (one way or the other), or colour frames of another depth (8-bit darks under 16-bit
+    lights): a dark is taken off and a flat divided by, value for value."""
+    colour = cfa_mod.is_colour(cfa)
+    for k in ("darks", "flats", "bias", "flat_darks"):
+        word = k.replace("_", " ")
+        for f in out[k]:
+            if cfa_mod.is_colour(f["cfa"]) != colour:
+                raise StageError(
+                    f"the {word} ({Path(f['path']).name}) are "
+                    f"{'already in colour' if not colour else 'a raw mosaic or monochrome'}, the lights "
+                    f"{'already in colour' if colour else 'a raw mosaic or monochrome'}: they cannot calibrate them; "
+                    f"take them out of the session, or use {word} of the same kind as the lights")
+            if colour and float(f["white"]) != float(light["white"]):
+                raise StageError(
+                    f"the {word} ({Path(f['path']).name}) reach {float(f['white']):.0f} and the lights "
+                    f"{float(light['white']):.0f} (another bit depth): they cannot calibrate them; take them out of "
+                    f"the session, or use {word} of the same kind as the lights")
 
 
 def _superpixel_rgb(cfa_img: np.ndarray, pattern: str) -> np.ndarray:

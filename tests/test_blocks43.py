@@ -163,6 +163,38 @@ def test_the_join_puts_the_sessions_frames_one_after_the_other_on_one_scale(tmp_
     assert m["first_time"] == "2026-01-01T22:00"
 
 
+def test_the_join_of_colour_sessions_keeps_their_planes(tmp_path):
+    """Issue #57: frames already in colour, their luminance cache and their three planes, joined the same way."""
+    from astro_gpu.stages.sessions import Sessions, SessionsParams
+    dirs = {}
+    for i, (n, sc) in enumerate(((2, 1.0), (1, 0.5)), 1):
+        inv = tmp_path / f"inv{i}"
+        inv.mkdir()
+        (inv / "frames.json").write_text(json.dumps({"lights": [{"path": f"s{i}_{j}"} for j in range(n)], "darks": [],
+                                                     "flats": [], "bias": [], "flat_darks": []}))
+        (inv / "manifest.json").write_text(json.dumps({"metrics": {"width": 10, "height": 8, "cfa": "RGB",
+                                                                   "n_lights": n, "white_level": 255.0}}))
+        dirs[f"inventory@{i}"] = inv
+        _calibrated(tmp_path / f"cal{i}", tmp_path / f"c{i}.f16", n, 40.0, sc, 0.0, 255.0)
+        rgb = tmp_path / f"r{i}.f16"
+        mm = np.memmap(rgb, dtype=np.float16, mode="w+", shape=(n, 3, 8, 10))
+        mm[:, 0], mm[:, 1], mm[:, 2] = 10.0, 20.0, 30.0
+        mm.flush()
+        del mm
+        c = tmp_path / f"cal{i}" / "cache.json"
+        c.write_text(json.dumps({**json.loads(c.read_text()), "cfa": "GGGG", "colour": True, "rgb_path": str(rgb)}))
+        dirs[f"calibrate@{i}"] = tmp_path / f"cal{i}"
+    dirs["sessions"] = tmp_path / "out"
+    pr = _Project(tmp_path, dirs, ["inventory@1", "inventory@2", "calibrate@1", "calibrate@2", "sessions", "register"])
+    st = Sessions()
+    st.run(Context(pr, st, Journal(pr.logs), "cpu"), SessionsParams())
+    info = json.loads((tmp_path / "out" / "cache.json").read_text())
+    assert info["colour"] and info["cfa"] == "GGGG" and info["n"] == 3
+    rgb = np.memmap(info["rgb_path"], dtype=np.float16, mode="r", shape=(3, 3, 8, 10))
+    assert [float(rgb[0, c, 1, 1]) for c in range(3)] == [5.0, 10.0, 15.0]   # on the smallest scale (0.5)
+    assert float(rgb[2, 2, 1, 1]) == 30.0
+
+
 def test_sessions_of_different_sensors_are_refused():
     from astro_gpu.stages.sessions import joined_inventory
     a = {"width": 10, "height": 8, "cfa": "RGGB"}

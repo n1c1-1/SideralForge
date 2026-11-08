@@ -165,6 +165,8 @@ _METRIC_ROWS: list[tuple] = [
     ("pointing_dec", "Pointing Dec", "deg", ".3f", "Declination the telescope was pointing at."),
     ("object", "Object", "", "", "Name of the object written in the files."),
     ("mono", "Monochrome", "", "", "The frames have no colour filter array: a monochrome camera."),
+    ("colour_frames", "Colour frames", "", "",
+     "The frames are already in colour (JPEG, PNG, TIFF or RGB FITS): no debayering, no Bayer drizzle."),
     # calibrate
     ("dark_level", "Dark level", "ADU", ".1f", "Typical level of the master dark."),
     ("dark_frame_noise", "Dark noise", "ADU", ".2f", "Noise of a single dark frame (read noise)."),

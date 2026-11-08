@@ -593,7 +593,7 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
     """The sessions, headers, star sizes and health checks of a project. ``headers`` caches the headers read (a dict
     owned by the service). A light that cannot be read never stops it (exploration 6.10: the checks stayed on "Reading
     the frames…"): it is said in the checks; the files the engine does not read (a JPEG) are not counted as kept."""
-    from ...core.project import frame_kind
+    from ...core.project import colour_lights, frame_kind
     from ...io.frames import read_info
     hdr = headers if headers is not None else {}
     out = ProjectFrames()
@@ -612,7 +612,8 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
         row = SessionRow(s.id, s.name, filter=s.filter)
         lights = _files(p, s.lights)
         row.lights = len(lights)
-        frames = [f for f in lights if frame_kind(f)]             # what the engine reads (not a JPEG added by mistake)
+        colour = colour_lights(lights)                            # issue #57: JPEGs only when they are the lights
+        frames = [f for f in lights if frame_kind(f) and (colour or frame_kind(f) != "colour")]   # what the engine reads
         row.darks, row.flats = len(_files(p, s.darks)), len(_files(p, s.flats))
         row.bias, row.flat_darks = len(_files(p, s.bias)), len(_files(p, s.flat_darks))
         for kind in ("lights", "darks", "flats", "bias", "flat_darks"):
