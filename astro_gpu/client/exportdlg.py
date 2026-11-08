@@ -30,7 +30,7 @@ from .i18n import _, log_detail, plain_error, plural
 from .imageview import slug
 from .postengine import snapshot
 from .services.render import ExportJob
-from .widgets import WARN, label
+from .widgets import WARN, cap_dialog, label
 
 #: display name -> the engine's format key (None: not in the engine yet)
 FORMATS = {"TIFF 16-bit": "tiff16", "TIFF 32-bit float": "tiff32f", "FITS 32-bit float": "fits32f",
@@ -76,6 +76,7 @@ class ExportDialog(QDialog):
         spec = prefs.spec()
         self.setWindowTitle(_("Export"))
         self.setMinimumWidth(640)
+        cap_dialog(self)
         v = QVBoxLayout(self)
         v.addWidget(label(_("Export"), "h1"))
 

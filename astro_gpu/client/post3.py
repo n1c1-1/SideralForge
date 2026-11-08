@@ -64,6 +64,8 @@ from ..render.sliders import group_title
 from . import prefs
 from .curveseditor import CurvesEditor, FunctionGraph, caption
 from .i18n import _, language, log_detail, maybe, plain_error, plural
+from .imageview import ZOOM_PRESETS, ZOOM_STEP
+from .layout import Dock
 from .model import POST_PART_NAMES
 from .postengine import (
     BLENDS,
@@ -502,6 +504,7 @@ class PostView(QWidget):
     is_post_page = True                                   # its changes go to its own Undo, not the graph's (2.1)
     goProcessing = Signal(int, str)
     goResults = Signal(int)
+    panelChosen = Signal(str)                             # issue #44: the panel pinned or folded by the user
     rendered = Signal(object)                             # a Result was shown (tests, the status line)
     toasted = Signal(str)                                 # what a change did beyond Post (the window's status line)
     layerAsked = Signal(int)                              # Open in Post of a layer (the page lists it when not computed)
@@ -562,7 +565,13 @@ class PostView(QWidget):
         self.split.setSizes([10_000, int(prefs.get("post_panel_width") or PANEL_W)])
         self.split.splitterMoved.connect(self._panel_moved)
         root.addWidget(self.split)
-        root.addWidget(self._build_strip())
+        # issue #44: docked, or the strip of icons (a click opens it over the viewer) or hidden, as the other pages
+        self.dock = Dock(self, self.right, self._dock_panel, lambda: self.right.setParent(self),
+                         lambda: [(_("Layers"), self._show_layers), (_("Properties"), self._show_props)], _("Layers"))
+        root.addWidget(self.dock.strip)
+        self.strip = self.dock.strip
+        self.dock.chosen.connect(lambda st: self.panelChosen.emit(st))
+        self.fold_b.clicked.connect(self.dock.fold)
         self._show_panel(prefs.get("post_panel_shown") is not False)
         self._connect(own_worker=worker is None)
         if self.layers:
@@ -579,8 +588,15 @@ class PostView(QWidget):
         mv.setSpacing(0)
         bar = QHBoxLayout()
         bar.setContentsMargins(10, 6, 10, 6)
+        self.top_bar = bar
         self.b_fit, self.b_100 = QPushButton(_("Fit")), QPushButton(with_unit("100", "%"))
-        self.zoom_lab = label("", "dim")
+        self.zoom_lab = QPushButton(with_unit("100", "%"))   # the zoom, and its presets (issue #44: as Inspect's viewer)
+        self.zoom_lab.setToolTip(_("Zoom (wheel, + and −)"))
+        self.zoom_menu = QMenu(self.zoom_lab)
+        self.zoom_menu.addAction(_("Fit"), lambda: self.viewer.fit())
+        for z in ZOOM_PRESETS:
+            self.zoom_menu.addAction(with_unit(f"{z * 100:g}", "%"), lambda zz=z: self.viewer.zoom_to(zz))
+        self.zoom_lab.setMenu(self.zoom_menu)
         self.b_cmp = QPushButton(_("Before / after"))
         self.b_cmp.setCheckable(True)
         self.b_cmp.setObjectName("toggle")
@@ -643,7 +659,7 @@ class PostView(QWidget):
         fold.setAutoRaise(True)
         fold.setToolTip(_("Fold the panel"))
         fold.setStyleSheet("QToolButton { border: none; color: #aab2bf; font-size: 13pt; padding: 0 4px; }")
-        fold.clicked.connect(lambda: self._show_panel(False))
+        self.fold_b = fold
         # while a row is dragged between two others: what the drop does, beside the panel's title (a drop onto a layer
         # says it in that layer's row)
         self.drop_text = QLabel()
@@ -693,6 +709,7 @@ class PostView(QWidget):
         self.pbox.setSpacing(4)
         psc.setWidget(ph)
         rv.addWidget(psc, 1)
+        self.psc = psc
         return right
 
     def _connect(self, own_worker: bool):
@@ -718,7 +735,11 @@ class PostView(QWidget):
         # Ctrl+Z / Ctrl+Y are the window's Edit > Undo / Redo, which come here while Post is shown (two shortcuts on
         # one key would cancel each other)
         for seq, fn in (("C", self.b_cmp.toggle), ("M", self.b_mask.toggle), ("F", self.viewer.fit),
-                        ("1", lambda: self.viewer.zoom_to(1.0)), ("X", self.toggle_paint),
+                        ("Ctrl+0", self.viewer.fit), ("1", lambda: self.viewer.zoom_to(1.0)),
+                        ("+", lambda: self.viewer.zoom_by(ZOOM_STEP)), ("=", lambda: self.viewer.zoom_by(ZOOM_STEP)),
+                        ("Ctrl++", lambda: self.viewer.zoom_by(ZOOM_STEP)),
+                        ("-", lambda: self.viewer.zoom_by(1 / ZOOM_STEP)),
+                        ("Ctrl+-", lambda: self.viewer.zoom_by(1 / ZOOM_STEP)), ("X", self.toggle_paint),
                         ("[", lambda: self.brush_size(1 / 1.25)), ("]", lambda: self.brush_size(1.25)),
                         ("Ctrl+J", self.duplicate)):
             sc = QShortcut(QKeySequence(seq), self)
@@ -1596,27 +1617,27 @@ class PostView(QWidget):
             m.addAction(_("Delete")).triggered.connect(lambda: (self.select(lay["id"], "layer"), self.delete()))
         m.exec(gpos)
 
-    def _build_strip(self) -> QWidget:
-        """The folded panel: a thin strip at the window's edge, its chevron opens the panel again."""
-        self.strip = QWidget()
-        self.strip.setObjectName("panel")
-        self.strip.setFixedWidth(26)
-        v = QVBoxLayout(self.strip)
-        v.setContentsMargins(0, 8, 0, 0)
-        unfold = QToolButton()
-        unfold.setText("«")
-        unfold.setAutoRaise(True)
-        unfold.setToolTip(_("Open the layers panel"))
-        unfold.setStyleSheet("QToolButton { border: none; color: #aab2bf; font-size: 13pt; }")
-        unfold.clicked.connect(lambda: self._show_panel(True))
-        v.addWidget(unfold, 0, Qt.AlignHCenter)
-        v.addStretch(1)
-        return self.strip
+    def _dock_panel(self):
+        self.split.addWidget(self.right)
+        self.split.setStretchFactor(1, 0)
+        self.split.setSizes([10_000, int(prefs.get("post_panel_width") or PANEL_W)])
+
+    def _show_layers(self):
+        self.lsc.ensureVisible(0, 0)
+
+    def _show_props(self):
+        self.psc.ensureVisible(0, 0)
 
     def _show_panel(self, on: bool):
-        self.right.setVisible(on)
-        self.strip.setVisible(not on)
+        self.dock.set_state("docked" if on else "icons")
         prefs.set("post_panel_shown", bool(on))
+
+    def set_layout(self, state: str):
+        """Issue #44: docked | icons | hidden (the panel's state the window chose for this size range)."""
+        self.dock.set_state(state)
+
+    def set_compact(self, on: bool):
+        self.top_bar.setContentsMargins(*((8, 2, 8, 2) if on else (10, 6, 10, 6)))
 
     def _panel_moved(self, *_a):
         if self.right.isVisible():

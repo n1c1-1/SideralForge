@@ -24,12 +24,19 @@ with its wire across it; a block greyed by a cut has a dashed amber outline, ⊘
 through both. A block is cut or restored by its menu, its panel's switch or the D key. A workflow from an image starts
 with an Image block on its own lane.
 
+Issue #44: zoom and navigation are the Post image's: the wheel at the pointer, + and −, F / Ctrl+0 (Show all), 1 / Ctrl+1
+(the readable size, 100 %), the presets' menu, a pan by the middle button, Space + drag or a left drag on the empty area,
+a minimap in the corner when part of the graph is out of view. The view, once moved by the user, stays through rebuilds
+and with the project (the settings, ``GraphView.GRAPH_VIEW_KEY``); below the readable size the blocks show their titles
+only. The right panel can fold to icons or hide (``layout.Dock``), the palette fold or hide.
+
 The scene's items: ``BlockItem`` (a block), ``GhostItem`` (where a dragged tool can go), ``BandItem`` (a phase band);
 ``ToolCard`` is a card of the toolbar.
 """
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -59,6 +66,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QStyleOptionGraphicsItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -85,7 +94,9 @@ from .blocks import (
 )
 from .dialogs import ask_name
 from .gallery import TemplateGallery
-from .i18n import _, hm, plural
+from .i18n import _, hm, number, plural
+from .imageview import ZOOM_PRESETS, ZOOM_STEP
+from .layout import ARROW_H, ARROW_W, Dock, fold_button, pinch_factor, wheel_gesture
 from .model import NotInEngine, cuttable, node_key, view_key  # noqa: F401  (cuttable: older callers)
 from .panel import Panel
 from .widgets import ACCENT, BAD, NEW, OK, WARN, clear, label
@@ -104,6 +115,8 @@ MIN_SCALE = 0.75            # the smallest the default view goes to show the who
 #                             titles of 7.5 pt here): the view keeps this scale, shows the left end (Frames) and scrolls
 #                             right, Post pinned at the right edge ("Post ›"), a drag near the edge scrolls. Show all
 #                             goes lower
+MIN_ZOOM, MAX_ZOOM = 0.1, 8.0  # issue #44: the zoom the user can choose (100 % is the blocks at their designed size)
+MAP_W, MAP_H = 190.0, 130.0  # the minimap, as the Inspect viewer's (issue #44)
 EDGE = 40                   # a drag this near the view's edge scrolls it
 EDGE_WAIT = 0.35            # s held near the edge before it scrolls (a drag that only crosses the edge moves nothing)
 TITLE_PAD = 22              # a block's title, its state stripe and its padding
@@ -272,12 +285,15 @@ class BlockItem(QGraphicsItem):
         # engine's words their end
         mode = Qt.ElideMiddle if self.node.key == "post" else Qt.ElideRight
         title = ("⊘ " if self.node.grey else "") + self.title
-        p.drawText(QRectF(11, 6, tw, 20), Qt.AlignLeft | Qt.AlignVCenter,
+        readable = QStyleOptionGraphicsItem.levelOfDetailFromTransform(p.worldTransform()) >= MIN_SCALE - 1e-6
+        p.drawText(QRectF(11, 6, tw, 20) if readable else QRectF(11, 0, tw, BH), Qt.AlignLeft | Qt.AlignVCenter,
                    QFontMetrics(f).elidedText(title, mode, int(tw)))
-        f2 = QFont("Segoe UI", 8.5)
-        p.setFont(f2)
-        p.setPen(QColor("#8b93a1"))
-        p.drawText(QRectF(11, 28, w - 15, 18), Qt.AlignLeft | Qt.AlignVCenter, elide(self.summary, f2, w - 15))
+        # issue #44: below the readable size the subtitles go, so that a zoomed-out graph is still a map of titles
+        if readable:
+            f2 = QFont("Segoe UI", 8.5)
+            p.setFont(f2)
+            p.setPen(QColor("#8b93a1"))
+            p.drawText(QRectF(11, 28, w - 15, 18), Qt.AlignLeft | Qt.AlignVCenter, elide(self.summary, f2, w - 15))
         if self.removable and self.hover:
             p.setPen(QPen(QColor("#e06c6c"), 1.6))
             xr = self._x_rect().adjusted(4, 4, -4, -4)
@@ -567,13 +583,39 @@ class GraphView(QGraphicsView):
         # kept with the project, as the selection (GUI exploration 4, Q9)
         self.b_all.setChecked(bool(getattr(getattr(project, "p", None), "show_all", False)))
         self.b_all.toggled.connect(self._show_all)
+        # issue #44: zoom and position, as the Post image's: "auto" is today's view (b_all, or the readable fit);
+        # once the user zooms or moves it, it is his: kept through rebuilds and with the project
+        self._zoomed = False
+        self._k, self._c = 1.0, QPointF()
+        self._rebuilding = False
+        self._view_timer = QTimer(self)               # the settings written at most twice a second, as a pan goes
+        self._view_timer.setSingleShot(True)
+        self._view_timer.setInterval(500)
+        self._view_timer.timeout.connect(self._write_view)
+        saved = self._saved_view()
+        if saved is not None:
+            self._zoomed = True
+            self._k, self._c = saved
+        self._pan = None                               # the pan under way: (start, h value, v value, moved, empty click)
+        self._space = False                            # Space is held: a left drag pans
+        self._sel_seen = None                          # the selection last shown (a new one is scrolled into view)
+        self.map = GraphMap(self)
+        self.map.hide()
+        self.b_zoom = QPushButton("100 %", self)
+        self.b_zoom.setToolTip(_("Zoom (wheel, + and −)"))
+        self.b_zoom.setMinimumWidth(62)
+        zm = QMenu(self.b_zoom)
+        zm.addAction(_("Show all"), lambda: self.b_all.setChecked(True))
+        for z in ZOOM_PRESETS:
+            zm.addAction(f"{number(z * 100, 1 if z * 100 % 1 else 0)} %", lambda zz=z: self.zoom_to(zz))
+        self.b_zoom.setMenu(zm)
         # GUI exploration 2: a long chain at a readable scale goes past the view's right edge; Post stays at hand: a
         # button at the top right corner while it is out of view, a click scrolls to it
         self.b_post = QPushButton("", self)
         self.b_post.clicked.connect(self.show_post)
         self.b_post.hide()
         for bar in (self.horizontalScrollBar(), self.verticalScrollBar()):
-            bar.valueChanged.connect(lambda _v: self._place_post_button())
+            bar.valueChanged.connect(lambda _v: self._scrolled())
         # a drag (a palette block, a placed block, a port's wire) held near the view's edge scrolls the view that way
         self._edge_pos: QPoint | None = None
         self._edge_since = 0.0
@@ -681,6 +723,7 @@ class GraphView(QGraphicsView):
         # issue #24: a change (or a stage event of a run) builds the graph again; where the user had scrolled stays,
         # when the graph keeps its size
         was = (sc.sceneRect(), self.horizontalScrollBar().value(), self.verticalScrollBar().value())
+        self._rebuilding = True
         sc.clear()
         self.ghosts = []
         self.sel_wire = None                              # issue #52: a wire selected before is gone with the scene
@@ -689,6 +732,7 @@ class GraphView(QGraphicsView):
         self.b_all.setText(_("Show all"))
         self.b_all.setToolTip(_("The whole graph in the window, smaller; off: readable size, scrolling"))
         self.b_all.adjustSize()
+        self.b_zoom.setToolTip(_("Zoom (wheel, + and −)"))
         s = self.s
         g = Graph(s)
         self.graph = g
@@ -940,11 +984,21 @@ class GraphView(QGraphicsView):
         r = sc.itemsBoundingRect().adjusted(-MARGIN, -10, MARGIN, 24)
         sc.setSceneRect(r)
         self.show_wait()
+        self.map.rows = [(it.sceneBoundingRect(), QColor(STATE_COL.get(it.state, "#5d6470")))
+                         for it in sc.items() if isinstance(it, BlockItem)]
+        self._rebuilding = False
         self.fit()
         old, h0, v0 = was
-        if not old.isEmpty() and abs(old.width() - r.width()) < 1 and abs(old.height() - r.height()) < 1:
+        if not self._zoomed and not old.isEmpty() and abs(old.width() - r.width()) < 1 and \
+                abs(old.height() - r.height()) < 1:
             self.horizontalScrollBar().setValue(h0)
             self.verticalScrollBar().setValue(v0)
+        # issue #44: a block selected from the panel, a run or Inspect, off-screen, is scrolled into view (zoom kept);
+        # the block selected when the project opens does not move the default view
+        seen = (cur.pid if cur is not None else None, s.sel_step, getattr(s, "sel_layer", None))
+        if self._sel_seen is not None and seen != self._sel_seen:
+            self.reveal(self._sel_item)
+        self._sel_seen = seen
 
     def _flows(self) -> list:
         """The workflows a dragged palette block can go in: the one the palette says ("for …"; GUI exploration 4, Q11:
@@ -1056,13 +1110,52 @@ class GraphView(QGraphicsView):
         if e.type() == QEvent.ShortcutOverride and e.key() == Qt.Key_Escape and self._pulling():
             e.accept()                                   # Escape is the pull's, not a shortcut's
             return True
+        if e.type() == QEvent.ShortcutOverride and e.key() == Qt.Key_1 and e.modifiers() == Qt.ControlModifier:
+            e.accept()                                   # here Ctrl+1 is the readable size (issue #44), not the
+            return True                                  # window's "Graph" (a shortcut of both would do neither)
         return super().event(e)
 
     def keyPressEvent(self, e):                                       # noqa: N802
         if e.key() == Qt.Key_Escape and self.cancel_wire():
             e.accept()
             return
+        if e.key() == Qt.Key_1 and e.modifiers() == Qt.ControlModifier:
+            self.zoom_to(1.0)
+            e.accept()
+            return
+        if e.key() == Qt.Key_Space and not e.isAutoRepeat():
+            self._space = True
+            self.viewport().setCursor(Qt.OpenHandCursor)
+            e.accept()
+            return
         super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e):                                     # noqa: N802
+        if e.key() == Qt.Key_Space and not e.isAutoRepeat():
+            self._space = False
+            self.viewport().unsetCursor()
+            e.accept()
+            return
+        super().keyReleaseEvent(e)
+
+    def wheelEvent(self, e):                                          # noqa: N802
+        """As the Post image: the wheel zooms at the pointer; two fingers on a touchpad pan, a pinch zooms."""
+        if self.scene().sceneRect().isEmpty():
+            return
+        kind, a, b = wheel_gesture(e)
+        if kind == "zoom":
+            if a:
+                self.zoom_by(ZOOM_STEP ** a, e.position())
+        else:
+            self.pan_by(a, b)
+        e.accept()
+
+    def viewportEvent(self, e):                                       # noqa: N802
+        f = pinch_factor(e)
+        if f is not None:                                # a native pinch (macOS, Wayland)
+            self.zoom_by(f, e.position())
+            return True
+        return super().viewportEvent(e)
 
     def _pulling(self) -> bool:
         return getattr(getattr(self, "_pull", None), "_wire", False)
@@ -1124,10 +1217,50 @@ class GraphView(QGraphicsView):
         self.deselected.emit()
 
     def mousePressEvent(self, e):                                     # noqa: N802
-        it = self.itemAt(e.position().toPoint()) if e.button() == Qt.LeftButton else None
-        if e.button() == Qt.LeftButton and not isinstance(it, (BlockItem, WireItem, GhostItem)):   # bands, chain wires
+        pos = e.position().toPoint()
+        left = e.button() == Qt.LeftButton
+        it = self.itemAt(pos) if left else None
+        empty = left and not isinstance(it, (BlockItem, WireItem, GhostItem))        # bands, chain wires
+        # issue #44: the middle button, Space + drag, or a left drag on an empty area moves the graph; a press on a
+        # chain wire says what it says, a left click on a block still selects it
+        if e.button() == Qt.MiddleButton or (left and (self._space or (empty and not isinstance(it, ChainWireItem)))):
+            self._pan = (pos, self.horizontalScrollBar().value(), self.verticalScrollBar().value(), False,
+                         empty and not self._space)
+            self.viewport().setCursor(Qt.ClosedHandCursor)
+            e.accept()
+            return
+        if empty:                                         # a chain wire: it selects nothing, as an empty click
             self.clear_selection()
         super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):                                      # noqa: N802
+        if self._pan is not None:
+            start, h0, v0, moved, click = self._pan
+            d = e.position().toPoint() - start
+            if not moved and d.manhattanLength() >= QApplication.startDragDistance():
+                moved = True
+            self.horizontalScrollBar().setValue(h0 - d.x())
+            self.verticalScrollBar().setValue(v0 - d.y())
+            self._pan = (start, h0, v0, moved, click)
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):                                   # noqa: N802
+        if self._pan is not None:
+            _start, _h, _v, moved, click = self._pan
+            self._pan = None
+            if self._space:
+                self.viewport().setCursor(Qt.OpenHandCursor)
+            else:
+                self.viewport().unsetCursor()
+            if moved:
+                self._now_manual()
+            elif click:                                   # a click on the empty area: nothing selected (decision 5)
+                self.clear_selection()
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
 
     def remove_selected_wire(self) -> bool:
         w = getattr(self, "sel_wire", None)
@@ -1289,10 +1422,18 @@ class GraphView(QGraphicsView):
         t.setZValue(3)
 
     def _show_all(self, on: bool):
-        p = getattr(self.s, "p", None)
-        if p is not None and hasattr(p, "show_all"):
-            p.show_all = bool(on)
+        self._keep_show_all(on)
+        self._zoomed = False                              # today's view (issue #44: Show all is F / Ctrl+0)
+        self._view_timer.stop()
+        self._write_view()
         self.fit()
+
+    def fit_all(self):
+        """F, Ctrl+0: the whole graph (today's Show all)."""
+        if self.b_all.isChecked():
+            self._show_all(True)
+        else:
+            self.b_all.setChecked(True)
 
     def fit(self):
         """The default view shows the whole chain, from Frames to Post, at any window width: the scale that fits (at most
@@ -1300,6 +1441,9 @@ class GraphView(QGraphicsView):
         user scrolls right (or down). It is done again whenever the view changes size (the window, the panel)."""
         r = self.scene().sceneRect()
         if r.isEmpty() or self._fitting:
+            return
+        if self._zoomed:                                 # the user's zoom and position: kept (issue #44)
+            self._apply_view()
             return
         self._fitting = True
         try:
@@ -1321,7 +1465,147 @@ class GraphView(QGraphicsView):
                 self.ensureVisible(QRectF(seen.left(), box.top(), 1, box.height()), 0, 40)
         finally:
             self._fitting = False
+        self._after_view()
+
+    # ------------------------------------------------------------ zoom and position (issue #44)
+    def zoom(self) -> float:
+        """The scale shown: 1.0 is the blocks at their designed size (100 %)."""
+        return self.transform().m11()
+
+    def _apply_view(self):
+        """The user's zoom and centre, on the view as it is now."""
+        self._fitting = True
+        try:
+            self.resetTransform()
+            self.scale(self._k, self._k)
+            self.centerOn(self._c)
+        finally:
+            self._fitting = False
+        self._after_view()
+
+    def _manual(self, k: float, c: QPointF):
+        """From now on the view is the user's: ``k`` around ``c``; "Show all" goes off."""
+        self._zoomed = True
+        self._k, self._c = k, c
+        if self.b_all.isChecked():
+            self.b_all.blockSignals(True)
+            self.b_all.setChecked(False)
+            self.b_all.blockSignals(False)
+            self._keep_show_all(False)
+        self._apply_view()
+        self._store_view()
+
+    def _now_manual(self):
+        """The view moved by hand (a pan, a scroll bar): what it shows becomes the user's view."""
+        vp = self.viewport().rect()
+        self._manual(self.zoom(), self.mapToScene(vp.center()))
+
+    def _keep_show_all(self, on: bool):
+        p = getattr(self.s, "p", None)
+        if p is not None and hasattr(p, "show_all"):
+            p.show_all = bool(on)
+
+    def zoom_to(self, k: float, at: QPointF | None = None):
+        """The zoom ``k`` (1.0 is 100 %), the scene point under ``at`` (default: the view's centre) kept in place."""
+        vp = self.viewport()
+        mid = QPointF(vp.width() / 2, vp.height() / 2)
+        at = at if at is not None else mid
+        k = min(max(k, MIN_ZOOM), MAX_ZOOM)
+        pt = self.mapToScene(at.toPoint())
+        self._manual(k, QPointF(pt + (mid - at) / k))
+
+    def zoom_by(self, f: float, at: QPointF | None = None):
+        self.zoom_to(self.zoom() * f, at)
+
+    def pan_by(self, dx: float, dy: float):
+        """The graph moved by (dx, dy) pixels of the view (two fingers on a touchpad)."""
+        h, v = self.horizontalScrollBar(), self.verticalScrollBar()
+        h.setValue(h.value() - int(dx))
+        v.setValue(v.value() - int(dy))
+        self._now_manual()
+
+    def center_on(self, c: QPointF):
+        """The view centred on this scene point (the minimap); the zoom kept."""
+        self._manual(self.zoom(), c)
+
+    def reveal(self, it):
+        """Scrolls the view so that the block is seen, only when it is off-screen; the zoom is kept."""
+        try:
+            if it is None or it.scene() is not self.scene():
+                return
+        except RuntimeError:                              # the item went with the scene
+            return
+        if self.viewport().rect().contains(self.mapFromScene(it.sceneBoundingRect()).boundingRect()):
+            return
+        self.ensureVisible(it.sceneBoundingRect(), 30, 30)
+        if self._zoomed:
+            self._store_view()
+
+    # the user's zoom and position: kept per project in the settings (as the block shown, ProjectModel.remember_selection:
+    # opening a project and looking at it writes nothing into it)
+    GRAPH_VIEW_KEY = "graph_view"
+
+    def _view_key(self) -> str | None:
+        root = getattr(self.s, "root", None)
+        return Path(root).as_posix().lower() if root is not None else None
+
+    def _saved_view(self):
+        key = self._view_key()
+        got = (prefs.get(self.GRAPH_VIEW_KEY) or {}).get(key) if key else None
+        if not isinstance(got, dict) or "k" not in got:
+            return None
+        return float(got["k"]), QPointF(float(got.get("x", 0.0)), float(got.get("y", 0.0)))
+
+    def _store_view(self):
+        """The user's view changed: taken, and written to the settings a moment later."""
+        if self._rebuilding or self._fitting or not self._zoomed:
+            return
+        self._k, self._c = self.zoom(), self.mapToScene(self.viewport().rect().center())
+        self._view_timer.start()
+
+    def _write_view(self):
+        key = self._view_key()
+        if key is None:
+            return
+        cur = dict(prefs.get(self.GRAPH_VIEW_KEY) or {})
+        cur.pop(key, None)
+        if self._zoomed:
+            cur[key] = {"k": round(self._k, 4), "x": round(self._c.x(), 1), "y": round(self._c.y(), 1)}
+        prefs.set(self.GRAPH_VIEW_KEY, dict(list(cur.items())[-50:]))   # the oldest go beyond 50 projects
+
+    def hideEvent(self, e):                                           # noqa: N802
+        if self._view_timer.isActive():                  # closing the project or leaving the page: not lost
+            self._view_timer.stop()
+            self._write_view()
+        super().hideEvent(e)
+
+    def _scrolled(self):
+        if self._rebuilding:
+            return
         self._place_post_button()
+        if self._zoomed and not self._fitting:
+            self._store_view()
+        self._place_map()
+
+    def _after_view(self):
+        self._place_post_button()
+        k = self.zoom()
+        self.b_zoom.setText(number(k * 100, 0 if k >= 0.1 else 1) + " %")
+        self._place_map()
+
+    def _whole_visible(self) -> bool:
+        return self.horizontalScrollBar().maximum() <= 0 and self.verticalScrollBar().maximum() <= 0
+
+    def _place_map(self):
+        """The minimap in the view's corner, while part of the graph is out of view (as the Post image's)."""
+        m = getattr(self, "map", None)
+        if m is None:
+            return
+        whole = self._whole_visible() or self.scene().sceneRect().isEmpty()
+        m.setVisible(not whole)
+        if not whole:
+            m.place()
+            m.update()
 
     def _place_post_button(self):
         """"Post ›" at the view's top right corner, under "Show all", while the Post block is out of view (hidden while a
@@ -1409,6 +1693,9 @@ class GraphView(QGraphicsView):
         self.toast.move(16, self.height() - self.toast.height() - 16)
         self.b_all.adjustSize()
         self.b_all.move(self.width() - self.b_all.width() - 14, 10)
+        self.b_zoom.adjustSize()
+        self.b_zoom.move(self.b_all.x() - self.b_zoom.width() - 6, 10)
+        self.b_zoom.raise_()
         self.wait.setGeometry(0, self.height() // 2 - 40, self.width(), 30)
         self._place_post_button()
 
@@ -1746,6 +2033,78 @@ class GraphView(QGraphicsView):
             self.rebuild()
 
 
+class GraphMap(QWidget):
+    """The graph's overview in the view's corner, as the Inspect and Post viewers' (issue #44): shown while part of the
+    graph is out of view; a click or a drag in it moves the view there."""
+
+    def __init__(self, view):
+        super().__init__(view.viewport())
+        self.view = view
+        self.rows: list[tuple[QRectF, QColor]] = []       # each block: its rectangle in the scene, the colour of its state
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip(_("Overview: click or drag to move the view"))
+
+    def _frame(self) -> tuple[QRectF, float]:
+        """The map's rectangle in this widget, and pixels per scene unit."""
+        r = self.view.scene().sceneRect()
+        f = min(MAP_W / max(r.width(), 1.0), MAP_H / max(r.height(), 1.0))
+        return QRectF(4, 4, r.width() * f, r.height() * f), f
+
+    def place(self):
+        m, _f = self._frame()
+        vp = self.view.viewport().rect()
+        self.setGeometry(vp.width() - int(m.width()) - 16, vp.height() - int(m.height()) - 16, int(m.width()) + 8,
+                         int(m.height()) + 8)
+        self.raise_()
+
+    def paintEvent(self, e):                                         # noqa: N802
+        m, f = self._frame()
+        sr = self.view.scene().sceneRect()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(15, 17, 21, 220))
+        p.drawRoundedRect(QRectF(self.rect()), 5, 5)
+
+        def place(r: QRectF) -> QRectF:
+            return QRectF(m.x() + (r.x() - sr.x()) * f, m.y() + (r.y() - sr.y()) * f, r.width() * f, r.height() * f)
+        for r, col in self.rows:
+            p.setBrush(col)
+            p.drawRoundedRect(place(r), 1.5, 1.5)
+        v = place(self.view.mapToScene(self.view.viewport().rect()).boundingRect()).intersected(m)
+        p.save()
+        p.setClipRect(m)
+        out = QPainterPath()
+        out.addRect(m)
+        inner = QPainterPath()
+        inner.addRect(v)
+        p.setBrush(QColor(0, 0, 0, 110))
+        p.drawPath(out.subtracted(inner))
+        p.restore()
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(ACCENT), 1.5))
+        p.drawRect(v)
+        p.end()
+
+    def _go(self, pos: QPointF):
+        m, f = self._frame()
+        sr = self.view.scene().sceneRect()
+        self.view.center_on(QPointF(sr.x() + (pos.x() - m.x()) / f, sr.y() + (pos.y() - m.y()) / f))
+
+    def mousePressEvent(self, e):                                    # noqa: N802
+        if e.button() == Qt.LeftButton:
+            self._go(e.position())
+        e.accept()
+
+    def mouseMoveEvent(self, e):                                     # noqa: N802
+        if e.buttons() & Qt.LeftButton:
+            self._go(e.position())
+        e.accept()
+
+    def wheelEvent(self, e):                                         # noqa: N802
+        e.ignore()                                       # the wheel still zooms the graph
+
+
 class ToolCard(QFrame):
     """A tool: dragged onto a workflow of the graph, or added to the current workflow by a double-click."""
 
@@ -1796,8 +2155,9 @@ class ToolCard(QFrame):
             self.page.add_tool(self.key, self.page.s.path.pid)
 
 
-#: the palette's width (issue #47): a panel on the left of the graph
+#: the palette's width (issue #47): a panel on the left of the graph; folded (issue #44), a column of first letters
 PALETTE_W = 140
+PALETTE_FOLDED_W = 46
 NEW_FRAMES = -1        # a block placed "in the workflow from the frames" of sessions that have none yet: it starts one
 #: the palette (issue #47): every block, by group; the sources and the composition blocks are not graph nodes. The
 #: headings are one word, shown in capitals ("FRAMES": its own entry, "Frames" being the frames' block, "Images")
@@ -1813,11 +2173,12 @@ class PaletteCard(QFrame):
     """A block of the palette (issue #47): dragged onto a workflow (only its valid places light up), or placed in the
     current workflow at its usual place by a double-click. Greyed when it cannot be placed: hovered, it says why."""
 
-    def __init__(self, page, block: str, reason: str, parent=None):
+    def __init__(self, page, block: str, reason: str, parent=None, folded: bool = False):
         super().__init__(parent)
         self.page, self.block, self.reason = page, block, reason
         self._press = None
-        self.setMaximumWidth(PALETTE_W - 26)             # inside the palette, its scroll bar beside it
+        # inside the palette, its scroll bar beside it; folded (issue #44): its first letters, the name in the tooltip
+        self.setMaximumWidth(PALETTE_FOLDED_W - 12 if folded else PALETTE_W - 26)
         on = not reason
         self.setObjectName("tool")
         self.setCursor(Qt.OpenHandCursor if on and block in wfl.IO else
@@ -1834,13 +2195,17 @@ class PaletteCard(QFrame):
         self.title = _(PALETTE_TITLES[block]) if block in PALETTE_TITLES else block_title(None, view_key(block))
         if block == "deconv":
             self.title += "  ◇"
-        t = QLabel(self.title)
-        t.setWordWrap(True)                              # a long name wraps in the palette's width
+        t = QLabel(self.title[:2] if folded else self.title)
+        t.setWordWrap(not folded)                        # a long name wraps in the palette's width
+        if folded:
+            t.setAlignment(Qt.AlignCenter)
+            v.setContentsMargins(1, 5, 1, 5)
         t.setStyleSheet("font-weight: 600; font-size: 9pt;" + ("" if on else " color: #555b66;"))
         v.addWidget(t)
         key = view_key(block)
         what = BY_KEY[key]["what"] if key in BY_KEY else ""
-        self.setToolTip(_(what) if what and not reason else "")   # unavailable: the message under it says why
+        tip = _(what) if what and not reason else ""     # unavailable: the message under it says why
+        self.setToolTip((self.title + ("\n" + tip if tip else "")) if folded else tip)
         self.setAccessibleName(self.title)
 
     def enterEvent(self, e):                                          # noqa: N802
@@ -1914,6 +2279,8 @@ class GraphPage(QWidget):
     variantMade = Signal(int, int)         # a variant (id) was made from this workflow (id): Inspect compares them
     changed = Signal()                     # the page was built again: the window updates its Run button and status
     toasted = Signal(str)
+    sideChosen = Signal(str, str)          # issue #44: the user folded or pinned a side: "right" | "left", its state
+    sidesShown = Signal()                  # the arrow of a hidden side: the panels come back
 
     def __init__(self, project, steps=None, parent=None):
         super().__init__(parent)
@@ -1957,6 +2324,24 @@ class GraphPage(QWidget):
         ph.addWidget(centre, 1)
         self.panel = Panel(project, steps)
         ph.addWidget(self.panel)
+        # issue #44: the right panel folds to icons (it opens over the graph), or hides leaving a small arrow
+        self.dock = Dock(self, self.panel, lambda: ph.addWidget(self.panel), lambda: ph.removeWidget(self.panel),
+                         self.panel.section_list, _("Block settings"))
+        ph.insertWidget(ph.indexOf(self.panel), self.dock.strip)
+        self.dock.chosen.connect(lambda st: self.sideChosen.emit("right", st))
+        self.dock.arrow.clicked.connect(self.sidesShown.emit)
+        self.panel.sectionsChanged.connect(self.dock.refresh_icons)
+        self.panel.corner = fold_button(self.panel, self.dock.fold, _("Fold to icons"))
+        self.left_state = "docked"
+        self.left_arrow = QToolButton(self)
+        self.left_arrow.setText("›")
+        self.left_arrow.setFixedSize(ARROW_W, ARROW_H)
+        self.left_arrow.setToolTip(_("Show the blocks again"))
+        self.left_arrow.setStyleSheet("QToolButton { background: #1c1f26; border: 1px solid #2a2f38; color: #aab2bf; "
+                                      "border-top-right-radius: 5px; border-bottom-right-radius: 5px; "
+                                      "font-weight: 600; }")
+        self.left_arrow.clicked.connect(self.sidesShown.emit)
+        self.left_arrow.hide()
         gv = self.graph
         gv.blockClicked.connect(self.select_node)
         gv.blockOpened.connect(lambda n: (self.select_node(n), self.openBlock.emit()))
@@ -2027,6 +2412,13 @@ class GraphPage(QWidget):
         dup = QShortcut(QKeySequence("Ctrl+D"), self.graph)
         dup.setContext(Qt.WidgetWithChildrenShortcut)
         dup.activated.connect(self._duplicate_selected)
+        # issue #44: the same keys as the Post image; D, Del, F2, Ctrl+D and Enter keep their meaning
+        for seqs, fn in ((("F", "Ctrl+0"), gv.fit_all), (("1",), lambda: gv.zoom_to(1.0)),
+                         (("+", "=", "Ctrl++"), lambda: gv.zoom_by(ZOOM_STEP)), (("-", "Ctrl+-"), lambda: gv.zoom_by(1 / ZOOM_STEP))):
+            for seq in seqs:
+                sc = QShortcut(QKeySequence(seq), self.graph)
+                sc.setContext(Qt.WidgetWithChildrenShortcut)
+                sc.activated.connect(fn)
         self.hint = QLabel(self)                        # why a palette block is greyed, over the graph (issue #47)
         self.hint.setStyleSheet("background: #2b2f38; border: 1px solid #5d6470; border-radius: 6px; "
                                 "padding: 5px 9px; color: #e8ebf0;")
@@ -2058,6 +2450,9 @@ class GraphPage(QWidget):
         if node is None and w is not None:                # a wire still chosen: its layer stays in the panel
             self.show_wire(w)
         self.build_tools()
+        self.panel.corner.setToolTip(_("Fold to icons"))     # issue #44: its words follow the language as the page's
+        self.left_arrow.setToolTip(_("Show the blocks again"))
+        self.dock.retranslate()
         if s.ready:
             sec = s.total_seconds()
             last = self._last
@@ -2099,12 +2494,28 @@ class GraphPage(QWidget):
         self.hide_hint()                                 # the card it explained is gone (Ctrl+Y may have freed it)
         s = self.s
         p = self.palette_path()
+        folded = self.left_state == "folded"
+        self.tl.setContentsMargins(*((4, 6, 8, 6) if folded else (10, 10, 14, 10)))
+        toggle = QToolButton()
+        toggle.setText("»" if folded else "«")
+        toggle.setAutoRaise(True)
+        toggle.setToolTip(_("Unfold the blocks") if folded else _("Fold the blocks"))
+        toggle.setStyleSheet("QToolButton { border: none; color: #8b93a1; font-size: 11pt; padding: 0; } "
+                             "QToolButton:hover { color: #e8ebf0; }")
+        toggle.clicked.connect(lambda: self.sideChosen.emit("left", "docked" if folded else "folded"))
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
         head = QVBoxLayout()
         head.setSpacing(0)
-        head.addWidget(label(_("Blocks"), "h2"))
-        head.addWidget(label(_('for "{name}"').format(name=p.name) if p is not None else _("new workflow"),
-                             "small", wrap=True))
-        self.tl.addLayout(head)
+        if folded:
+            top.addStretch(1)
+        else:
+            head.addWidget(label(_("Blocks"), "h2"))
+            head.addWidget(label(_('for "{name}"').format(name=p.name) if p is not None else _("new workflow"),
+                                 "small", wrap=True))
+            top.addLayout(head, 1)
+        top.addWidget(toggle, 0, Qt.AlignTop)
+        self.tl.addLayout(top)
         self.tl.addSpacing(4)
         g = getattr(self.graph, "graph", None)
         split = g.node_of(p, "etoiles") if (g is not None and p is not None and s.ready) else None
@@ -2114,17 +2525,39 @@ class GraphPage(QWidget):
             head_l = QLabel(_(title).upper())                 # a group's header, as the graph's phase bands
             head_l.setStyleSheet("color: #8b93a1; font-size: 8pt; font-weight: 600; letter-spacing: 1px; "
                                  "background: transparent;")
+            head_l.setVisible(not folded)                     # folded: only the blocks' first letters
             self.tl.addWidget(head_l)
             for b in blocks:
-                card = PaletteCard(self, b, self.palette_reason(b, p, split))
+                card = PaletteCard(self, b, self.palette_reason(b, p, split), folded=folded)
                 self.cards[b] = card
                 self.tl.addWidget(card)
             if title == "Image" and prefs.spec():        # ◇ in Spec mode: not in the engine yet
-                card = PaletteCard(self, "deconv", "◇ " + _("Not in the engine yet."))
+                card = PaletteCard(self, "deconv", "◇ " + _("Not in the engine yet."), folded=folded)
                 self.cards["deconv"] = card
                 self.tl.addWidget(card)
         self.combine_card = self.cards["composition"]
         self.tl.addStretch(1)
+
+    def set_layout(self, right: str, left: str, solo: bool):
+        """Issue #44: the right panel (docked | icons | hidden), the blocks' palette (docked | folded | hidden) and the
+        sections of the panel (one at a time on a small window)."""
+        self.panel.set_solo(solo)
+        self.dock.set_state(right)
+        if left != self.left_state:
+            self.left_state = left
+            self.palette_bar.setFixedWidth(PALETTE_FOLDED_W if left == "folded" else PALETTE_W)
+            self.palette_bar.setVisible(left != "hidden")
+            self.left_arrow.setVisible(left == "hidden")
+            self.build_tools()
+        self._place_arrows()
+
+    def _place_arrows(self):
+        self.left_arrow.move(0, (self.height() - ARROW_H) // 2)
+        self.left_arrow.raise_()
+
+    def resizeEvent(self, e):                                         # noqa: N802
+        super().resizeEvent(e)
+        self._place_arrows()
 
     def eventFilter(self, obj, e):                                    # noqa: N802
         """The palette takes a placed block dragged onto it: removed, as dragging out of a toolbar (issue #54)."""

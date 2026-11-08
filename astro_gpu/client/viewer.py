@@ -7,11 +7,12 @@ It only asks its source for the pixels of the visible region, at full or half re
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 from .i18n import _
+from .layout import pinch_factor, wheel_gesture
 
 
 class StaticSource:
@@ -65,6 +66,8 @@ class Viewer(QWidget):
         self._rect = None
         self._mouse = None
         self._fitted = False
+        self._space = False                               # Space is held: a left drag pans, whatever the tool
+        self._thumb = None                                # the minimap: (source, its version, the small picture)
         self.setFocusPolicy(Qt.StrongFocus)
 
     # ------------------------------------------------------------ source and view
@@ -96,6 +99,29 @@ class Viewer(QWidget):
         if cx is not None:
             self.cx, self.cy = cx, cy
         self._fitted = True                               # a chosen view: kept on resize
+        self.viewChanged.emit()
+        self.update()
+
+    def zoom_by(self, k, at: QPointF | None = None):
+        """Zoom by ``k`` keeping the image point under ``at`` (default: the centre) in place."""
+        if not self.source:
+            return
+        at = at or QPointF(self.width() / 2, self.height() / 2)
+        ix, iy = self.w_to_img(at.x(), at.y())
+        self.scale = float(np.clip(self.scale * k, 0.02, 8.0))
+        self.cx = ix - (at.x() - self.width() / 2) / self.scale
+        self.cy = iy - (at.y() - self.height() / 2) / self.scale
+        self._fitted = True
+        self.viewChanged.emit()
+        self.update()
+
+    def pan_by(self, dx, dy):
+        """The image moved by (dx, dy) pixels of the widget (two fingers on a touchpad)."""
+        if not self.source:
+            return
+        self.cx -= dx / self.scale
+        self.cy -= dy / self.scale
+        self._fitted = True
         self.viewChanged.emit()
         self.update()
 
@@ -189,6 +215,8 @@ class Viewer(QWidget):
             p.setBrush(Qt.NoBrush)
             p.setPen(QPen(QColor(255, 255, 255, 200), 1.2))
             p.drawEllipse(self._mouse, self.brush_r * self.scale, self.brush_r * self.scale)
+        if not self.whole_visible():
+            self._minimap(p)
         if self.banner:
             f = QFont(self.font())
             f.setBold(True)
@@ -201,6 +229,66 @@ class Viewer(QWidget):
             p.drawRoundedRect(r, 4, 4)
             p.setPen(QColor("#15171c"))
             p.drawText(r, Qt.AlignCenter, self.banner)
+
+    # ------------------------------------------------------------ minimap (issue #44: as the Inspect viewer's)
+    def whole_visible(self) -> bool:
+        if not self.source:
+            return True
+        w, h = self.source.size()
+        x0, y0 = self.w_to_img(0, 0)
+        x1, y1 = self.w_to_img(self.width(), self.height())
+        return x0 <= 0 and y0 <= 0 and x1 >= w and y1 >= h
+
+    def minimap_rect(self) -> QRectF:
+        w, h = self.source.size()
+        f = min(190.0 / w, 130.0 / h)
+        return QRectF(self.width() - w * f - 12, self.height() - h * f - 12, w * f, h * f)
+
+    def _in_minimap(self, pos: QPointF) -> bool:
+        return bool(self.source) and not self.whole_visible() and \
+            self.minimap_rect().adjusted(-4, -4, 4, 4).contains(pos)
+
+    def _thumbnail(self) -> QImage:
+        """The small picture of the minimap, cut once per version of the image."""
+        src = self.source
+        c = self._thumb
+        if c is not None and c[0] is src and c[1] == src.version:
+            return c[2]
+        w, h = src.size()
+        a = np.ascontiguousarray(src.region(1, 0, 0, max(w // 2, 1), max(h // 2, 1)))
+        step = max(1, int(max(a.shape[1], a.shape[0]) / 200))
+        qi = to_qimage(a[::step, ::step])
+        self._thumb = (src, src.version, qi)
+        return qi
+
+    def _minimap(self, p: QPainter):
+        r = self.minimap_rect()
+        p.save()
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(15, 17, 21, 220))
+        p.drawRoundedRect(r.adjusted(-4, -4, 4, 4), 5, 5)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.drawImage(r, self._thumbnail())
+        w, h = self.source.size()
+        f = r.width() / w
+        x0, y0 = self.w_to_img(0, 0)
+        x1, y1 = self.w_to_img(self.width(), self.height())
+        v = QRectF(r.x() + max(x0, 0) * f, r.y() + max(y0, 0) * f, (min(x1, w) - max(x0, 0)) * f,
+                   (min(y1, h) - max(y0, 0)) * f)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor("#5ea1ff"), 1.5))
+        p.drawRect(v)
+        p.restore()
+
+    def _minimap_goto(self, pos: QPointF):
+        r = self.minimap_rect()
+        w, _h = self.source.size()
+        f = r.width() / w
+        self.cx = (pos.x() - r.x()) / f
+        self.cy = (pos.y() - r.y()) / f
+        self._fitted = True
+        self.viewChanged.emit()
+        self.update()
 
     def _outside(self, r: QRectF):
         from PySide6.QtGui import QRegion
@@ -220,15 +308,38 @@ class Viewer(QWidget):
     def wheelEvent(self, e):
         if not self.source:
             return
-        pos = e.position()
-        ix, iy = self.w_to_img(pos.x(), pos.y())
-        k = 1.2 if e.angleDelta().y() > 0 else 1 / 1.2
-        self.scale = float(np.clip(self.scale * k, 0.02, 8.0))
-        self.cx = ix - (pos.x() - self.width() / 2) / self.scale
-        self.cy = iy - (pos.y() - self.height() / 2) / self.scale
-        self._fitted = True
-        self.viewChanged.emit()
-        self.update()
+        kind, a, b = wheel_gesture(e)                      # a touchpad's two fingers pan, its pinch (Ctrl) zooms (#44)
+        if kind == "pan":
+            self.pan_by(a, b)
+        elif a:
+            self.zoom_by(1.2 ** a, e.position())
+        e.accept()
+
+    def event(self, e):
+        if e.type() == QEvent.ShortcutOverride and e.key() == Qt.Key_1 and e.modifiers() == Qt.ControlModifier:
+            e.accept()                                     # 100 % here, not the window's "Graph"
+            return True
+        f = pinch_factor(e)
+        if f is not None:                                  # a native pinch (macOS, Wayland)
+            self.zoom_by(f, e.position())
+            return True
+        return super().event(e)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_1 and e.modifiers() == Qt.ControlModifier:
+            self.zoom_to(1.0)
+            return
+        if e.key() == Qt.Key_Space and not e.isAutoRepeat():
+            self._space = True
+            self.setCursor(Qt.OpenHandCursor)
+            return
+        super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e):
+        if e.key() == Qt.Key_Space and not e.isAutoRepeat():
+            self._space = False
+            return
+        super().keyReleaseEvent(e)
 
     def _near_curtain(self, x):
         return self.compare is not None and abs(x - self.width() * self.curtain) < 10
@@ -236,7 +347,12 @@ class Viewer(QWidget):
     def mousePressEvent(self, e):
         pos = e.position()
         ix, iy = self.w_to_img(pos.x(), pos.y())
-        if e.button() == Qt.LeftButton and self._near_curtain(pos.x()):
+        if e.button() == Qt.LeftButton and self._in_minimap(pos):
+            self._drag = ("minimap",)
+            self._minimap_goto(pos)
+        elif e.button() == Qt.LeftButton and self._space:
+            self._drag = ("pan", pos, self.cx, self.cy)
+        elif e.button() == Qt.LeftButton and self._near_curtain(pos.x()):
             self._drag = ("curtain",)
         elif e.button() == Qt.LeftButton and self.mode == "rect":
             self._rect = [(ix, iy), (ix, iy)]
@@ -257,10 +373,14 @@ class Viewer(QWidget):
         self._mouse = pos
         self.hovered.emit(ix, iy)
         d = self._drag
-        if d is None:
+        if d is None and self._in_minimap(pos):
+            self.setCursor(Qt.PointingHandCursor)
+        elif d is None:
             self.setCursor(Qt.SplitHCursor if self._near_curtain(pos.x()) else
                            (Qt.CrossCursor if self.mode in ("rect",) else
                             (Qt.BlankCursor if self.mode in ("brush", "heal") else Qt.OpenHandCursor)))
+        elif d[0] == "minimap":
+            self._minimap_goto(pos)
         elif d[0] == "curtain":
             self.curtain = float(np.clip(pos.x() / max(self.width(), 1), 0.02, 0.98))
         elif d[0] == "rect":

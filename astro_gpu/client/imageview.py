@@ -95,7 +95,8 @@ from PySide6.QtWidgets import (
 from . import APP_NAME
 from . import stretch as sm
 from .i18n import _, language, log_detail, number, plain_error
-from .widgets import ACCENT, BAD, OK, WARN, ElidedLabel, label
+from .layout import pinch_factor, wheel_gesture
+from .widgets import ACCENT, BAD, OK, WARN, ElidedLabel, cap_dialog, label
 
 TILE = 512
 CANVAS_BG = QColor("#0f1115")
@@ -1390,12 +1391,11 @@ class ImageCanvas(QWidget):
     def wheelEvent(self, e):  # noqa: N802
         if self.display is None:
             return
-        dy = e.angleDelta().y()
-        if dy == 0:
-            dy = e.pixelDelta().y() * 4
-        if dy == 0:
-            return
-        self.zoom_by(ZOOM_STEP ** (dy / 120.0), e.position())
+        kind, a, b = wheel_gesture(e)                      # a touchpad's two fingers pan, its pinch (Ctrl) zooms (#44)
+        if kind == "pan":
+            self.pan_by(a, b)
+        elif a:
+            self.zoom_by(ZOOM_STEP ** a, e.position())
         e.accept()
 
     def mousePressEvent(self, e):  # noqa: N802
@@ -1475,9 +1475,19 @@ class ImageCanvas(QWidget):
                 and self.tool.wants(e)):
             e.accept()
             return True
+        if e.type() == QEvent.ShortcutOverride and e.key() == Qt.Key_1 and e.modifiers() == Qt.ControlModifier:
+            e.accept()                                 # issue #44: here Ctrl+1 is 100 %, not the window's "Graph"
+            return True                                # (a shortcut of both made it do neither)
+        f = pinch_factor(e)
+        if f is not None and self.display is not None:   # a native pinch (macOS, Wayland)
+            self.zoom_by(f, e.position())
+            return True
         return super().event(e)
 
     def keyPressEvent(self, e):  # noqa: N802
+        if e.key() == Qt.Key_1 and e.modifiers() == Qt.ControlModifier:
+            self.set_zoom_percent(100.0)
+            return
         if self.tool is not None and e.key() != Qt.Key_Space and self.tool.key(e):
             return
         if e.key() == Qt.Key_Space and self.tool is not None and not e.isAutoRepeat():
@@ -3740,6 +3750,7 @@ class ImageExportDialog(QDialog):
         self.error = ""
         self.setWindowTitle(_("Export image"))
         self.setMinimumWidth(600)
+        cap_dialog(self)
         self.setStyleSheet(QSS)
         v = QVBoxLayout(self)
         v.setContentsMargins(18, 16, 18, 14)

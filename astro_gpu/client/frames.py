@@ -37,7 +37,7 @@ from . import prefs
 from .i18n import _, language, number, plural
 from .imageview import exposure_text
 from .services.inspect import ProjectFrames, service_of
-from .widgets import NEW, OK, WARN, clear, label
+from .widgets import NEW, OK, WARN, cap_dialog, clear, label
 
 MONTHS = {"en": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
           "fr": ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]}
@@ -173,6 +173,7 @@ class GroupingDialog(QDialog):
         c = criteria or api.GroupingCriteria()
         v = QVBoxLayout(self)
         self.setMinimumWidth(340)
+        cap_dialog(self)
         v.addWidget(label(_("Group frames by"), "h2"))
         self.boxes: dict[str, QCheckBox] = {}
         rows = [("night", _("Night (noon to noon)"), c.night, True), ("exposure", _("Exposure"), c.exposure, True),

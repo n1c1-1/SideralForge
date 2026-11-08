@@ -43,7 +43,7 @@ from ..core import workflow as wfl
 from . import prefs
 from .blocks import KEY_ENGINE_BLOCK, TITLES, TRUNK
 from .i18n import _, hm
-from .widgets import ACCENT, label, size_within
+from .widgets import ACCENT, cap_dialog, label, size_within
 
 FULL = dict(debruitage=True, etoiles="retirer", fond="simple")
 CLASSIC_DN = dict(debruitage=True, etoiles="garder", fond="simple")
@@ -520,6 +520,7 @@ class TemplateGallery(QDialog):
         # never taller than a 1366 x 768 screen's room: 768 less the task bar and this window's title bar (control
         # round: 700 was taller than that)
         size_within(self, 1180, 660)
+        cap_dialog(self)
         self.choice: dict | None = None
         self.image = ""
         root = QVBoxLayout(self)

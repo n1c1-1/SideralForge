@@ -42,7 +42,7 @@ from .i18n import LANGUAGES, _, maybe, number
 from .services import extracts
 from .services.selftest import job as card_test_job
 from .services.worker import Machine, disk_usage
-from .widgets import label, spec_mark
+from .widgets import cap_dialog, label, spec_mark
 
 # (key, title, ◇ page)
 PAGES = [("general", "General", False), ("folders", "Folders & disk", False), ("compute", "Compute", False),
@@ -88,6 +88,7 @@ class SettingsDialog(QDialog):
     specChanged = Signal(bool)
     homeChanged = Signal()                           # the sections of Home (Folders page)
     clearCache = Signal()
+    densityChanged = Signal()                        # the compact look was set (issue #44)
 
     def __init__(self, worker=None, machine: Machine | None = None, can_clear: bool = False, parent=None):
         super().__init__(parent)
@@ -95,6 +96,7 @@ class SettingsDialog(QDialog):
         self.machine = machine
         self.can_clear = can_clear
         self.resize(900, 600)
+        cap_dialog(self)
         self.h = QHBoxLayout(self)
         self.nav = self.pages = None
         self.keys: list[str] = []
@@ -149,12 +151,12 @@ class SettingsDialog(QDialog):
             width = max([LABEL_MIN] + [lb.sizeHint().width() + 12 for lb in self._labels if not lb.isHidden()])
             for lb in self._labels:
                 lb.setFixedWidth(width)
-            if key == "folders":                     # the sections of Home make it the longest page: it scrolls
-                sc = QScrollArea()
-                sc.setWidgetResizable(True)
-                sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-                sc.setWidget(w)
-                w = sc
+            # every page scrolls (the Folders page is the longest; issue #44: a small window's dialog is capped)
+            sc = QScrollArea()
+            sc.setWidgetResizable(True)
+            sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            sc.setWidget(w)
+            w = sc
             self.pages.addWidget(w)
             self.keys.append(key)
         self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
@@ -270,6 +272,17 @@ class SettingsDialog(QDialog):
         spec.setChecked(self.spec)
         spec.toggled.connect(self._spec)
         self.row(v, _("Spec mode"), spec)
+        dens = QComboBox()                                # issue #44: how the window adapts to its size
+        dens.setToolTip(_("Auto: compact and icons on a small window · Never: today's layout on any screen"))
+        for text, key in (("Auto", "auto"), ("Always compact", "compact"), ("Never compact", "comfortable")):
+            dens.addItem(_(text), key)
+        dens.setCurrentIndex(max(dens.findData(prefs.get("layout_density") or "auto"), 0))
+        dens.currentIndexChanged.connect(lambda _i: self._density(dens.currentData()))
+        self.row(v, _("Interface density"), dens)
+
+    def _density(self, key: str):
+        prefs.set("layout_density", key)
+        self.densityChanged.emit()
 
     def folders(self, v):
         self.path_row(v, _("Cache (calibrated frames)"), "cache_dir",
