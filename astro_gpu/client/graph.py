@@ -2349,7 +2349,7 @@ class GraphPage(QWidget):
         ph.addWidget(self.panel)
         # issue #44: the right panel folds to icons (it opens over the graph), or hides leaving a small arrow
         self.dock = Dock(self, self.panel, lambda: ph.addWidget(self.panel), lambda: ph.removeWidget(self.panel),
-                         self.panel.section_list, _("Block settings"))
+                         self.panel.folds.items, _("Block settings"))
         ph.insertWidget(ph.indexOf(self.panel), self.dock.strip)
         self.dock.chosen.connect(lambda st: self.sideChosen.emit("right", st))
         self.dock.arrow.clicked.connect(self.sidesShown.emit)
@@ -2436,7 +2436,8 @@ class GraphPage(QWidget):
         dup.activated.connect(self._duplicate_selected)
         # issue #44: the same keys as the Post image; D, Del, F2, Ctrl+D and Enter keep their meaning
         for seqs, fn in ((("F", "Ctrl+0"), gv.fit_all), (("1",), lambda: gv.zoom_to(1.0)),
-                         (("+", "=", "Ctrl++"), lambda: gv.zoom_by(ZOOM_STEP)), (("-", "Ctrl+-"), lambda: gv.zoom_by(1 / ZOOM_STEP))):
+                         (("+", "=", "Ctrl++"), lambda: gv.zoom_by(ZOOM_STEP)),
+                         (("-", "Ctrl+-"), lambda: gv.zoom_by(1 / ZOOM_STEP))):
             for seq in seqs:
                 sc = QShortcut(QKeySequence(seq), self.graph)
                 sc.setContext(Qt.WidgetWithChildrenShortcut)
@@ -2564,7 +2565,7 @@ class GraphPage(QWidget):
     def set_layout(self, right: str, left: str, solo: bool):
         """Issue #44: the right panel (docked | icons | hidden), the blocks' palette (docked | folded | hidden) and the
         sections of the panel (one at a time on a small window)."""
-        self.panel.set_solo(solo)
+        self.panel.folds.set_solo(solo)
         self.dock.set_state(right)
         if left != self.left_state:
             self.left_state = left

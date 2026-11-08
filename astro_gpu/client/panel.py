@@ -11,7 +11,7 @@ The settings come from the model's cache of the engine's ``describe`` (the worke
 and builds itself again when the rest arrives. The ◇ methods and settings (not in the engine yet) show in Spec mode
 only, disabled.
 
-Issue #44: the section titles fold (``SectionTitle``); Alt-click keeps one open and closes the others; on a small window
+Issue #44: the section titles fold (``layout.Sections``); Alt-click keeps one open and closes the others; on a small window
 the panel opens with one section at a time, and the ``layout.Dock`` of its page folds the whole panel to icons.
 
 Classes: ``Panel``, its rows (``CompactRow``), the method cards (``MethodCard``, ``StackMethodCard`` with its
@@ -22,8 +22,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from PySide6.QtCore import QLocale, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QPainter
+from PySide6.QtCore import QLocale, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -51,7 +50,8 @@ from ..core import workflow as wfl
 from . import prefs
 from .blocks import STATE_WORD, block_state, block_title
 from .i18n import _, all_workflows, hm, language, number, plural
-from .icons import IconLabel, IconText, draw, icon_only, menu_button, set_icon
+from .icons import IconLabel, IconText, icon_only, menu_button, set_icon
+from .layout import Sections
 from .model import NotInEngine, method_of, method_value, methods_of
 from .settings import RangeBar, SettingRow, fmt, needed_stages, selection_rule_text, step_settings
 from .settings import loading as settings_loading
@@ -339,57 +339,6 @@ class Details(QFrame):
         self.show()
 
 
-#: the panel's sections drawn as icons on the folded strip: their English titles (a title's count stays out), the rest "section"
-SECTION_ROLES = {"Sessions": "block_session", "Lights": "block_image", "Layers": "layers", "Stars": "block_stars",
-                 "Palette": "palette", "Channels": "block_colour", "Measurements": "measure", "Samples · exclusions": "samples",
-                 "Outputs": "export", "Rule": "thresholds", "Thresholds": "thresholds", "Speed · memory": "compute"}
-
-
-def section_role(title: str) -> str:
-    """The icon of a section, from its title as shown (in the interface's language)."""
-    base = title.split("  ·  ")[0]
-    return next((role for english, role in SECTION_ROLES.items() if _(english) == base), "section")
-
-
-class SectionTitle(QLabel):
-    """A section's title (issue #44): a click folds it, Alt-click opens only that one, as the reference editors'
-    panels do. Its arrow shows when folded or under the mouse, so that a large window looks as it did."""
-
-    def __init__(self, text, panel):
-        super().__init__(text)
-        self.setObjectName("dim")
-        self.panel, self.folded, self.rows, self._hover = panel, False, [], False
-        self.setToolTip(_("Click: fold or unfold · Alt-click: only this section"))
-        self.setCursor(Qt.PointingHandCursor)
-
-    def set_folded(self, on: bool):
-        self.folded = on
-        for w in self.rows:
-            w.setVisible(not on)
-        self.update()
-
-    def enterEvent(self, e):                                         # noqa: N802 - Qt's name
-        self._hover = True
-        self.update()
-
-    def leaveEvent(self, e):                                         # noqa: N802
-        self._hover = False
-        self.update()
-
-    def mouseReleaseEvent(self, e):                                  # noqa: N802
-        if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
-            self.panel.section_clicked(self, bool(e.modifiers() & Qt.AltModifier))
-
-    def paintEvent(self, e):                                         # noqa: N802
-        super().paintEvent(e)
-        if self.folded or self._hover:
-            p = QPainter(self)
-            r = self.contentsRect()
-            draw(p, QRectF(r.right() - 17, r.center().y() - 7, 16, 16), "chevron_right" if self.folded else "chevron_down",
-                 "normal" if self.folded else "dim")
-            p.end()
-
-
 class Panel(QWidget):
     changed = Signal()                  # a setting changed (the window rebuilds the graph)
     openTune = Signal()                 # "Browse frames" and the like
@@ -410,10 +359,6 @@ class Panel(QWidget):
     def __init__(self, project, steps=None, tune=False, parent=None):
         super().__init__(parent)
         self.s, self.steps, self.tune = project, steps, tune
-        self.sections: list[SectionTitle] = []     # the section titles shown (issue #44: they fold)
-        self._folded: dict[str, set[str]] = {}     # kind of block -> the titles of its folded sections
-        self._auto_folded: set[str] = set()        # the blocks folded by the small window's default, not by the user
-        self.solo = False                          # one section open at a time (the default on small windows)
         self.corner = None                         # the » button that folds the panel (its page's, issue #44)
         self.expert = False
         self.focus_key = None
@@ -439,6 +384,7 @@ class Panel(QWidget):
         self.bv.setContentsMargins(10, 8, 10, 8)
         self.bv.setSpacing(1)
         sc.setWidget(host)
+        self.folds = Sections(self.bv, sc)              # its section titles fold (issue #44)
         v.addWidget(sc, 1)
         self.details = Details()
         v.addWidget(self.details)
@@ -504,7 +450,7 @@ class Panel(QWidget):
     def _refresh(self, node):
         clear(self.hv)
         clear(self.bv)
-        self.sections = []
+        self.folds.reset()
         self.details.hide()
         if node is not None and not self._alive(node):     # its block went away (Ctrl+Z, a removal): the page gives
             node = None                                     # the panel the block selected now
@@ -1632,7 +1578,7 @@ class Panel(QWidget):
         and its actions ((text, function, tooltip))."""
         clear(self.hv)
         clear(self.bv)
-        self.sections = []
+        self.folds.reset()
         self.details.hide()
         self.node = None                                  # no block: nothing of a block's to build again
         self._later.stop()                                # (the block chosen before, asked to build again)
@@ -1671,77 +1617,14 @@ class Panel(QWidget):
         self.changed.emit()
 
     def group_title(self, text):
-        g = SectionTitle(text, self)
+        g = self.folds.title(text)
         g.setStyleSheet("color: #aab2bf; font-weight: 600; margin-top: 8px; margin-bottom: 2px;")
-        self.sections.append(g)
         return g
 
     # ------------------------------------------------------------ sections (issue #44)
-    def _fold_key(self) -> str:
-        return (self.node.key.partition("~")[0] if self.node is not None else "") or "wire"
-
     def _finish_sections(self):
-        """The rows of each section, between its title and the next one, follow its fold; on a small window (``solo``) a
-        block is first shown with its first section open and the others folded, as Alt-click would."""
-        titles = self.sections
-        items = [self.bv.itemAt(i).widget() for i in range(self.bv.count())]
-        for t in titles:
-            at = items.index(t) if t in items else -1
-            rows = []
-            for w in items[at + 1:]:
-                if w is None:
-                    continue
-                if isinstance(w, SectionTitle):
-                    break
-                if w.objectName() != "disclosure":             # the Advanced settings' line stays
-                    rows.append(w)
-            t.rows = rows
-        key = self._fold_key()
-        if self.solo and len(titles) > 1 and key not in self._folded:
-            self._folded[key] = {t.text() for t in titles[1:]}
-            self._auto_folded.add(key)
-        self._apply_folds()
+        self.folds.finish((self.node.key.partition("~")[0] if self.node is not None else "") or "wire")
         self.sectionsChanged.emit()
-
-    def _apply_folds(self):
-        off = self._folded.get(self._fold_key(), set())
-        for t in self.sections:
-            t.set_folded(t.text() in off)
-
-    def section_clicked(self, t: SectionTitle, alt: bool):
-        """A click on a section's title folds or unfolds it; Alt-click (and any click on a small window) opens only
-        that one."""
-        key = self._fold_key()
-        self._auto_folded.discard(key)
-        off = self._folded.setdefault(key, set())
-        if alt or self.solo:
-            off.clear()
-            off.update(x.text() for x in self.sections if x is not t)
-        elif t.text() in off:
-            off.discard(t.text())
-        else:
-            off.add(t.text())
-        self._apply_folds()
-
-    def section_list(self) -> list[tuple[str, object]]:
-        """For the strip of icons: (title, what opens that section and brings it in view)."""
-        return [(t.text(), (lambda x=t: self._show_section(x)), section_role(t.text())) for t in self.sections]
-
-    def _show_section(self, t: SectionTitle):
-        if t.folded:
-            self.section_clicked(t, False)
-        self._sc.ensureWidgetVisible(t, 0, 10)
-
-    def set_solo(self, on: bool):
-        """Small windows: one section at a time. Leaving them, what only that default folded opens again."""
-        if on == self.solo:
-            return
-        self.solo = on
-        if not on:
-            for key in self._auto_folded:
-                self._folded.pop(key, None)
-            self._auto_folded.clear()
-            self._apply_folds()
 
     def resizeEvent(self, e):                                         # noqa: N802 - Qt's name
         super().resizeEvent(e)

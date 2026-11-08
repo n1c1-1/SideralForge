@@ -136,7 +136,9 @@ _CAP = _Cap()
 def _room(w):
     """Where a dialog opens: the window it opens over, else the screen's free area."""
     top = w.parentWidget().window() if w.parentWidget() is not None else None
-    return top.geometry() if top is not None and top.isVisible() else (w.screen() or QApplication.primaryScreen())         .availableGeometry()
+    if top is not None and top.isVisible():
+        return top.geometry()
+    return (w.screen() or QApplication.primaryScreen()).availableGeometry()
 
 
 def cap_dialog(d):

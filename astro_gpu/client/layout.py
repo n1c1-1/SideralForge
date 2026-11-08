@@ -18,12 +18,13 @@ or a click elsewhere closes it, the pin docks it again) or hidden (a small arrow
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QSize, Qt, QTimer, Signal
-from PySide6.QtWidgets import QApplication, QFrame, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QPainter
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLayout, QToolButton, QVBoxLayout, QWidget
 
 from . import prefs
 from .i18n import _
-from .icons import icon_only, set_icon
+from .icons import draw, icon_only, set_icon
 
 LARGE, MEDIUM, SMALL = "large", "medium", "small"
 LARGE_W, LARGE_H = 1600, 880
@@ -293,23 +294,179 @@ class Dock(QObject):
         if self._open:
             if t == QEvent.Hide and o is self.page:
                 self.close_overlay()
-            elif t == QEvent.ShortcutOverride and e.key() == Qt.Key_Escape:
+            elif t == QEvent.ShortcutOverride and e.key() == Qt.Key_Escape and self._in_window(o):
                 e.accept()                                    # Escape closes the panel, before any shortcut of the page
                 return True
-            elif t == QEvent.KeyPress and e.key() == Qt.Key_Escape:
+            elif t == QEvent.KeyPress and e.key() == Qt.Key_Escape and self._in_window(o):
                 self.close_overlay()
                 return True
-            elif t == QEvent.MouseButtonPress and isinstance(o, QWidget) and self._outside(e.globalPosition().toPoint()):
+            elif t == QEvent.MouseButtonPress and self._in_window(o) and self._outside(e.globalPosition().toPoint()):
                 self.close_overlay()                           # the click goes on to what is under it, as a flyout's
         return False
 
+    def _in_window(self, o) -> bool:
+        """Whether an event goes to a widget of the page's window: a combo's list, a menu or a dialog is a window of
+        its own, and keeps its click and its Escape."""
+        return isinstance(o, QWidget) and o.window() is self.page.window()
+
     def _outside(self, gp: QPoint) -> bool:
-        if QApplication.activePopupWidget() is not None or QApplication.activeModalWidget() is not None:
-            return False                                       # a combo's list, a menu or a dialog of the panel
         for w in (self.panel, self.strip):
             if w.isVisible() and w.rect().contains(w.mapFromGlobal(gp)):
                 return False
         return True
+
+
+# ---------------------------------------------------------------------------------------------- folding sections
+def _widgets_of(layout: QLayout) -> list[QWidget]:
+    out: list[QWidget] = []
+    for i in range(layout.count()):
+        it = layout.itemAt(i)
+        if it.widget() is not None:
+            out.append(it.widget())
+        elif it.layout() is not None:
+            out += _widgets_of(it.layout())
+    return out
+
+
+class SectionTitle(QLabel):
+    """A section's title: a click folds it, Alt-click opens only that one, as the reference editors' panels do. Its
+    arrow shows when folded or under the mouse, so that a large window looks as it did."""
+
+    def __init__(self, text, sections):
+        super().__init__(text)
+        self.setObjectName("dim")
+        self.sections, self.folded, self.rows, self._hover, self._shown = sections, False, [], False, []
+        self.setToolTip(_("Click: fold or unfold · Alt-click: only this section"))
+        self.setCursor(Qt.PointingHandCursor)
+
+    def set_folded(self, on: bool):
+        """Only what it hid comes back: a row its panel keeps hidden for its own reasons stays hidden."""
+        if on == self.folded:
+            return
+        self.folded = on
+        if on:
+            self._shown = [w for w in self.rows if not (w.isHidden() and w.testAttribute(Qt.WA_WState_ExplicitShowHide))]
+            for w in self._shown:
+                w.setVisible(False)
+        else:
+            for w in self._shown:                      # setVisible: a slider's ``show`` is its value's text
+                w.setVisible(True)
+            self._shown = []
+        self.update()
+
+    def enterEvent(self, e):                                         # noqa: N802 - Qt's name
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, e):                                         # noqa: N802
+        self._hover = False
+        self.update()
+
+    def mouseReleaseEvent(self, e):                                  # noqa: N802
+        if e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.sections.clicked(self, bool(e.modifiers() & Qt.AltModifier))
+
+    def paintEvent(self, e):                                         # noqa: N802
+        super().paintEvent(e)
+        if self.folded or self._hover:
+            p = QPainter(self)
+            r = self.contentsRect()
+            draw(p, QRectF(r.right() - 17, r.center().y() - 7, 16, 16), "chevron_right" if self.folded else "chevron_down",
+                 "normal" if self.folded else "dim")
+            p.end()
+
+
+#: the sections drawn as icons on a folded strip: their English titles (a title's count stays out), the rest "section"
+SECTION_ROLES = {"Sessions": "block_session", "Lights": "block_image", "Layers": "layers", "Stars": "block_stars",
+                 "Palette": "palette", "Channels": "block_colour", "Measurements": "measure", "Samples · exclusions": "samples",
+                 "Outputs": "export", "Rule": "thresholds", "Thresholds": "thresholds", "Speed · memory": "compute"}
+
+
+def section_role(title: str) -> str:
+    """The icon of a section, from its title as shown (in the interface's language)."""
+    base = title.split("  ·  ")[0]
+    return next((role for english, role in SECTION_ROLES.items() if _(english) == base), "section")
+
+
+class Sections:
+    """The folding sections of a settings column (a box of titles and rows, built again at each change): a section is
+    what lies between its title and the next one. What is folded is kept per kind of block or layer (``key``). On a
+    small window (``solo``) a kind is first shown with its first section open, and a click opens only the one clicked."""
+
+    def __init__(self, box, scroll):
+        self.box, self.scroll = box, scroll
+        self.titles: list[SectionTitle] = []
+        self.key = ""
+        self.solo = False
+        self.folded: dict[str, set[str]] = {}          # kind -> the titles of its folded sections
+        self.auto: set[str] = set()                    # the kinds folded by the small window's default, not by the user
+
+    def reset(self):
+        self.titles = []
+
+    def title(self, text: str) -> SectionTitle:
+        t = SectionTitle(text, self)
+        self.titles.append(t)
+        return t
+
+    def finish(self, key: str):
+        """The box is built: each title takes the rows under it, and the folds of this kind apply."""
+        self.key = key
+        cur = None
+        for i in range(self.box.count()):
+            it = self.box.itemAt(i)
+            w = it.widget()
+            if isinstance(w, SectionTitle):
+                cur = w
+            elif cur is not None and w is not None:
+                if w.objectName() != "disclosure":     # the Advanced settings' line stays
+                    cur.rows.append(w)
+            elif cur is not None and it.layout() is not None:
+                cur.rows += _widgets_of(it.layout())
+        if self.solo and len(self.titles) > 1 and key not in self.folded:
+            self.folded[key] = {t.text() for t in self.titles[1:]}
+            self.auto.add(key)
+        self.apply()
+
+    def apply(self):
+        off = self.folded.get(self.key, set())
+        for t in self.titles:
+            t.set_folded(t.text() in off)
+
+    def clicked(self, t: SectionTitle, alt: bool):
+        self.auto.discard(self.key)
+        off = self.folded.setdefault(self.key, set())
+        if alt or self.solo:
+            off.clear()
+            off.update(x.text() for x in self.titles if x is not t)
+        elif t.text() in off:
+            off.discard(t.text())
+        else:
+            off.add(t.text())
+        self.apply()
+
+    def items(self) -> list[tuple[str, object, str]]:
+        """For the strip of icons: (title, what opens that section and brings it in view, its icon)."""
+        return [(t.text(), (lambda x=t: self.show(x)), section_role(t.text())) for t in self.titles]
+
+    def show(self, t: SectionTitle):
+        if t.folded:
+            self.clicked(t, False)
+        self.scroll.ensureWidgetVisible(t, 0, 10)
+
+    def set_solo(self, on: bool):
+        """Small windows: one section at a time. Leaving them, what only that default folded opens again."""
+        if on == self.solo:
+            return
+        self.solo = on
+        if on and len(self.titles) > 1 and self.key not in self.folded:   # already built when the window says so
+            self.folded[self.key] = {t.text() for t in self.titles[1:]}
+            self.auto.add(self.key)
+        if not on:
+            for key in self.auto:
+                self.folded.pop(key, None)
+            self.auto.clear()
+        self.apply()
 
 
 def fold_button(owner: QWidget, on_click, tip: str, role: str = "fold_right") -> QToolButton:

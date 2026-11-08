@@ -641,7 +641,7 @@ class TuneView(QWidget):
         h.addWidget(self.panel)
         # issue #44: as the graph's: the panel folds to icons or hides
         self.dock = Dock(body, self.panel, lambda: h.addWidget(self.panel), lambda: h.removeWidget(self.panel),
-                         self.panel.section_list, _("Block settings"))
+                         self.panel.folds.items, _("Block settings"))
         h.insertWidget(h.indexOf(self.panel), self.dock.strip)
         self.dock.chosen.connect(lambda st: self.sideChosen.emit(st))
         self.dock.arrow.clicked.connect(self.sidesShown.emit)
@@ -683,7 +683,7 @@ class TuneView(QWidget):
     # ------------------------------------------------------------ selection (what the strip does)
     def set_layout(self, right: str, strip_shown: bool, compact: bool, solo: bool):
         """Issue #44: the right panel (docked | icons | hidden), the band of blocks and the compact look."""
-        self.panel.set_solo(solo)
+        self.panel.folds.set_solo(solo)
         self.dock.set_state(right)
         self.strip.setVisible(strip_shown)
         self.strip.set_compact(compact)
