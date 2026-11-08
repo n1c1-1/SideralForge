@@ -115,7 +115,7 @@
   "Open Post": "Ouvrir Post",
   "Measurements": "Mesures",
   "Variant of \"{name}\"": "Variante de « {name} »",
-  "Needs an NVIDIA GPU (≈ {t} on the CPU).": "Nécessite un GPU NVIDIA (≈ {t} sur le CPU).",
+  "Needs a GPU (≈ {t} on the CPU).": "Nécessite un GPU (≈ {t} sur le CPU).",
   "{kept} of {n} frames kept": "{kept} images sur {n} gardées",
   "Advanced settings ({n})": "Réglages avancés ({n})",
   "Show the advanced settings": "Afficher les réglages avancés",

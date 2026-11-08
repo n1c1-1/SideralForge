@@ -175,9 +175,11 @@ class Context:
     @property
     def device(self):
         import torch
-        if not torch.cuda.is_available():
-            return torch.device("cpu")
+
+        from . import devices
         d = torch.device(self.device_name)
+        if d.type == "cpu" or not devices.available(d):
+            return torch.device("cpu")
         if d.type == "cuda" and (d.index or 0) >= torch.cuda.device_count():
             # the project names a GPU this machine (or this program) does not see: the first one is used
             if not getattr(self, "_device_warned", False):

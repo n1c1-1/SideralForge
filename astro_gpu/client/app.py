@@ -23,6 +23,7 @@ Post page). Classes: ``Main`` (the window), ``OpenProject`` (the open project as
 from __future__ import annotations
 
 import html
+import os
 import sys
 import threading
 import time
@@ -186,6 +187,8 @@ class Main(QMainWindow):
         super().__init__()
         self.worker = worker or ApiWorker(self)
         self.worker.done.connect(self._worker_done)
+        from .services.selftest import job as card_test_job
+        card_test_job().changed.connect(self._card_tested, Qt.QueuedConnection)
         self.worker.failed.connect(self._worker_failed)
         self.project: OpenProject | None = None
         self.s = None                                # the ProjectModel of the views
@@ -897,6 +900,7 @@ class Main(QMainWindow):
             if self.s is not None:
                 self.s.set_machine(*self._device())
             self.refresh()
+            self.test_card()
         elif channel == "cache.usage":
             self._confirm_clear(result)
         elif channel == "cache.clear":
@@ -1150,8 +1154,24 @@ class Main(QMainWindow):
             if on_home:
                 self.show_home()
 
+    def test_card(self):
+        """The card test once in the background (first launch, a changed card or driver): never in the tests."""
+        if "PYTEST_CURRENT_TEST" in os.environ:
+            return
+        from .services.selftest import job
+        pref = prefs.get("device") or "auto"
+        job().start(pref, auto_device(self.machine) if pref == "auto" else pref)
+
+    def _card_tested(self):
+        """A new profile from the card test: Post follows it at its next render (a run reads it when it starts)."""
+        if self.render is not None:
+            from .services.render import default_device_pref
+            self.render.pref = default_device_pref() if self._device()[0] else "cpu"
+            self.render._busy_at, self.render._last_busy = 0.0, "?"
+
     def set_device(self, device: str):
         prefs.set("device", device)
+        self.test_card()
         if self.s is not None:
             self.s.set_machine(*self._device())
         if self.render is not None:                  # Post picks its device again before its next render

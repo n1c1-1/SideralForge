@@ -32,7 +32,9 @@ DEFAULTS = {
     "temp_dir": (Path(tempfile.gettempdir()) / "astro_gpu").as_posix(),
     "cache_limit_gb": 200,
     # compute
-    "device": "auto",                 # auto | cuda:<n> | cpu
+    "device": "auto",                 # auto | cuda:<n> | xpu:<n> | mps | privateml:<n> | cpu
+    # what the card test decided: {device (or "auto"): profile}, core/selftest.py; {}: not tested yet
+    "compute_profiles": {},
     "threads": 0,                     # 0 = all cores but two
     "memory_limit_gb": 24,
     # catalogs and astrometry

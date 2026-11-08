@@ -47,6 +47,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .core import devices
 from .core import estimate as est
 from .core import project2 as p2
 from .core import workflow as wfl
@@ -226,9 +227,10 @@ class Cost:
 
 @dataclass
 class Gpu:
-    device: str                          # "cuda:0"
+    device: str                          # "cuda:0", "xpu:0", "mps"
     name: str
     memory_gb: float
+    beta: bool = False                   # an Intel, AMD or Apple card: never tested here, the card test guards it
 
 
 @dataclass
@@ -1859,12 +1861,8 @@ def machine(force: bool = False) -> MachineInfo:
         return _MACHINE[0]
     gpus: list[Gpu] = []
     try:
-        import torch
-        if torch.cuda.is_available():
-            for i in range(torch.cuda.device_count()):
-                pr = torch.cuda.get_device_properties(i)
-                gpus.append(Gpu(f"cuda:{i}", " ".join(w for w in pr.name.split() if w != "GeForce"),
-                                pr.total_memory / 2 ** 30))
+        gpus = [Gpu(d.device, " ".join(w for w in d.name.split() if w != "GeForce"), d.memory_gb, d.beta)
+                for d in devices.list_devices()]
     except Exception:  # noqa: BLE001 - no torch or no driver
         pass
     mem = 0.0
@@ -1877,15 +1875,51 @@ def machine(force: bool = False) -> MachineInfo:
     return _MACHINE[0]
 
 
-def start_run(p: Project2, plan: Plan, device: str | None = None) -> RunInfo:
+#: the run window says why (its translations: client/services/run.py, run.json)
+STACK_ON_CPU = "the graphics card has {free} GB free and this stack needs about {need} GB: it is computed on the CPU"
+
+
+def _stack_on_cpu(p: Project2, plan: Plan, device: str | None) -> dict[str, str]:
+    """{key: why} of the Stack jobs of the plan that do not fit in the card's memory (``devices.stack_memory`` for the
+    frame size and the drizzle scale), which go to the CPU."""
+    dev = (device if device not in (None, "", "auto") else (p.devices.get("main") or "cuda:0"))
+    if dev == "cpu":
+        return {}
+    try:
+        free = devices.free_memory(dev) if devices.available(dev) else None
+    except Exception:  # noqa: BLE001 - no torch or no driver
+        free = None
+    out: dict[str, str] = {}
+    if free is None:
+        return out
+    keys, store = _keys(p), _store(p)
+    for j in plan.jobs:
+        if wfl.base(j.stage) != "stack":
+            continue
+        need = devices.stack_memory(est.facts(keys, j.run_wf, store).grid_mpx)
+        if need * 2 ** 30 > free:
+            out[j.key] = STACK_ON_CPU.format(free=f"{free / 2 ** 30:.1f}", need=f"{need:.1f}")
+    return out
+
+
+def start_run(p: Project2, plan: Plan, device: str | None = None, cpu_jobs: dict[str, str] | None = None) -> RunInfo:
     """Launch a plan in a detached worker process; returns at once. Follow it with ``read_events(p, info.offset,
-    info.run_id)``. Raises ``RunInProgress`` when the project already has a live run."""
+    info.run_id)``. Raises ``RunInProgress`` when the project already has a live run. ``cpu_jobs``: {key: why} of the
+    jobs that go to the CPU whatever the device (the card test); a Stack job that does not fit in the card's memory goes
+    there too. The jobs left on the CPU have their duration estimated as such."""
     r2 = _r2()
     if r2.running(p.root) is not None:
         raise RunInProgress("a run is already in progress for this project")
     if plan.rules is None:
         plan.rules = _ctx(p).spec
-    info = r2.launch(p, plan, device)
+    cpu = {**(cpu_jobs or {}), **_stack_on_cpu(p, plan, device)}
+    if cpu:
+        import dataclasses
+        keys, store = _keys(p), _store(p)
+        jobs = [dataclasses.replace(j, est_s=est.estimate(wfl.base(j.stage), est.facts(keys, j.run_wf, store),
+                                                          False).seconds) if j.key in cpu else j for j in plan.jobs]
+        plan = dataclasses.replace(plan, jobs=jobs)
+    info = r2.launch(p, plan, device, cpu_jobs=cpu)
     refresh(p)
     return info
 

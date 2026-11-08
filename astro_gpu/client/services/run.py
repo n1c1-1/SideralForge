@@ -198,6 +198,10 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
         (r"^PSF channel ([RGB]): (.*)$", "PSF channel {0}: {1}", ()),
         (r"^training target: (.*)$", "training target: {0}", ()),
         (r"^downloading (.+)$", "downloading {0}", ()),
+        (r"^the card test sends this block to the processor: (.+)$",
+         "the card test sends this block to the processor: {0}", (0,)),
+        (r"^the graphics card has ([\d.]+) GB free and this stack needs about ([\d.]+) GB: it is computed on the CPU$",
+         "the graphics card has {0} GB free and this stack needs about {1} GB: it is computed on the CPU", ()),
         # the runner's hand-over of a run to a fresh process after a graphics card fault (core/runner2.py)
         (r"^the graphics card stopped responding during (.+); the rest of the run continues in a fresh process$",
          "the graphics card stopped responding during {0}; the rest of the run continues in a fresh process", (0,)),
@@ -681,8 +685,12 @@ def _tail(path: str, lines: int = 6) -> str:
 
 
 def _start_job(snapshot: Project2, plan, device: str | None):
-    """Launch the run (worker thread): the plan and the definition it was made from are frozen in its plan file."""
-    return api.start_run(snapshot, plan, device)
+    """Launch the run (worker thread): the plan and the definition it was made from are frozen in its plan file. The
+    stages the card test sends to the CPU go there."""
+    from ...core import selftest
+    from .. import prefs
+    profile = selftest.profile_of(prefs.get("compute_profiles"), device)
+    return api.start_run(snapshot, plan, device, selftest.cpu_jobs(profile, plan))
 
 
 def _stop_job(p: Project2):

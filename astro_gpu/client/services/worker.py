@@ -139,9 +139,10 @@ class ApiWorker(QObject):
 
 @dataclass
 class Gpu:
-    device: str                                      # "cuda:0"
+    device: str                                      # "cuda:0", "xpu:0", "mps"
     name: str                                        # the name the driver gives
     memory_gb: float
+    beta: bool = False                               # an Intel, AMD or Apple card: the card test guards it
 
 
 @dataclass
@@ -159,14 +160,12 @@ def _short(name: str) -> str:
 
 
 def machine_info() -> Machine:
-    """The GPUs (in CUDA's order, the device names the engine uses), the CPU cores and the memory."""
+    """The cards (the 'cuda' ones in CUDA's order, then the Intel, Apple or AMD ones: the device names the engine uses),
+    the CPU cores and the memory."""
     gpus: list[Gpu] = []
     try:
-        import torch
-        if torch.cuda.is_available():
-            for i in range(torch.cuda.device_count()):
-                pr = torch.cuda.get_device_properties(i)
-                gpus.append(Gpu(f"cuda:{i}", _short(pr.name), pr.total_memory / 2 ** 30))
+        from ...core import devices
+        gpus = [Gpu(d.device, _short(d.name), d.memory_gb, d.beta) for d in devices.list_devices()]
     except Exception:  # noqa: BLE001 - no torch or no driver: try nvidia-smi
         try:
             out = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],

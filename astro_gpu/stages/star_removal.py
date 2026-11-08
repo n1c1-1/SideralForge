@@ -29,6 +29,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from ..core import devices
 from ..core.imgutil import asinh_preview
 from ..core.params import StageParams
 from ..core.stage import Context, Stage
@@ -39,6 +40,9 @@ MODEL_ID = hashlib.sha256(MODEL.read_bytes()).hexdigest()[:10] if MODEL.exists()
 STRETCH, SCALE = 3.0, 10.0
 #: the tiles the network works on (its training size: its channel attention averages over a tile), their overlap
 TILE, OVERLAP = 256, 64
+#: tiles through the network at once, and the card memory one of them takes at TILE: 1.4 GB measured for 16 on 8 November
+#: 2026, in bfloat16; a 4 GB card holds the whole batch
+BATCH, TILE_GB = 16, 0.09
 
 
 class StarRemovalParams(StageParams):
@@ -245,14 +249,37 @@ def network(dev) -> NAFNet:
 
 
 @torch.no_grad()
-def apply(net, img: np.ndarray, dev, ctx: Context | None = None, tile: int = TILE, overlap: int = OVERLAP) -> np.ndarray:
+def apply(net, img: np.ndarray, dev, ctx: Context | None = None, tile: int = TILE, overlap: int = OVERLAP,
+          batch: int = BATCH) -> np.ndarray:
     """The network over a whole (3, H, W) image in noise units, in tiles of its training size, blended with a cosine
-    window; returns the starless image in the same units."""
+    window; returns the starless image in the same units. On a card with little free memory the tiles go through
+    fewer at a time, and only below one tile of its training size are they cut smaller; a memory error does the same
+    (the batch size changes nothing in the result, the tile a little)."""
+    free = devices.free_memory(dev)
+    if free is not None:
+        batch = max(1, min(batch, int(free / 2 ** 30 / (TILE_GB * (tile / TILE) ** 2 * 1.5))))
+    while True:
+        try:
+            return _apply(net, img, dev, ctx, tile, overlap, batch)
+        except Exception as e:  # noqa: BLE001 - only a memory error is retried
+            if not devices.is_out_of_memory(e):
+                raise
+            devices.empty_cache(dev)
+            if batch > 1:
+                batch //= 2
+            elif tile // 2 >= devices.SMALLEST_TILE:
+                tile, overlap = tile // 2, overlap // 2
+            else:
+                raise
+
+
+def _apply(net, img: np.ndarray, dev, ctx: Context | None, tile: int, overlap: int, batch_size: int) -> np.ndarray:
     img = np.asarray(img, np.float32)
     C, H, W = img.shape
     if H < tile or W < tile:                                    # a tiny image: padded to one tile
         ph, pw = max(0, tile - H), max(0, tile - W)
-        return apply(net, np.pad(img, ((0, 0), (0, ph), (0, pw)), mode="reflect"), dev, ctx, tile, overlap)[:, :H, :W]
+        return _apply(net, np.pad(img, ((0, 0), (0, ph), (0, pw)), mode="reflect"), dev, ctx, tile, overlap,
+                      batch_size)[:, :H, :W]
     step = tile - overlap
     out = np.zeros_like(img, np.float32)
     wsum = np.zeros((H, W), np.float32)
@@ -262,12 +289,12 @@ def apply(net, img: np.ndarray, dev, ctx: Context | None = None, tile: int = TIL
     xs = list(range(0, W - tile + 1, step)) + ([W - tile] if (W - tile) % step else [])
     for i, y in enumerate(ys):
         batch = [img[:, y:y + tile, x:x + tile] for x in xs]
-        for j in range(0, len(batch), 16):
-            b = torch.from_numpy(np.ascontiguousarray(np.stack(batch[j:j + 16]))).to(dev)
+        for j in range(0, len(batch), batch_size):
+            b = torch.from_numpy(np.ascontiguousarray(np.stack(batch[j:j + batch_size]))).to(dev)
             with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
                 r = net(fwd(b)).float()
             r = inv(r).cpu().numpy()
-            for k, x in enumerate(xs[j:j + 16]):
+            for k, x in enumerate(xs[j:j + batch_size]):
                 out[:, y:y + tile, x:x + tile] += r[k] * win
                 wsum[y:y + tile, x:x + tile] += win
         if ctx is not None:

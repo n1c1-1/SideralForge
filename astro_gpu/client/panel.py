@@ -1337,7 +1337,7 @@ class Panel(QWidget):
                 why = "◇ " + _("Not in the engine yet.")
             elif not ok:
                 t = hm(times["cpu"][0]) if times and "cpu" in times else "…"
-                why = _("Needs an NVIDIA GPU (≈ {t} on the CPU).").format(t=t)
+                why = _("Needs a GPU (≈ {t} on the CPU).").format(t=t)
                 if on:
                     why = _("Computed earlier on a GPU; running it again here takes ≈ {t}.").format(t=t)
             card = MethodCard(m, on, ok, times, "gpu" if s.gpu else "cpu", why)
