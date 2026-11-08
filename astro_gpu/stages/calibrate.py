@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import get_context
 from pathlib import Path
 
@@ -365,16 +366,33 @@ def _plane(a: np.ndarray, k: int, P: int = 2) -> np.ndarray:
     return cfa_mod.plane(a, k, P)
 
 
+#: the files of the masters read at a time (their reading and decoding are what these phases wait for)
+READERS = 4
+
+
+def _read_frames(paths: list[str], put, start: int = 0, tick=None) -> None:
+    """The files from rank ``start`` read on several threads: ``put(i, frame)`` stores each one in its place (so the
+    result does not depend on which is read first); ``tick(c)``: c files of ``paths`` are done."""
+    with ThreadPoolExecutor(READERS) as pool:
+        jobs = [pool.submit(lambda i=i, q=q: put(i, read_cfa(q))) for i, q in enumerate(paths) if i >= start]
+        for c, job in enumerate(as_completed(jobs)):
+            job.result()
+            if tick is not None:
+                tick(start + c + 1)
+
+
 def _median_stack(paths: list[str], ctx: Context, label: str) -> np.ndarray:
     """The pixel-wise median of the frames. They are read into one array (no list then stack), and the median is taken
     in bands of rows, in place: the memory is the frames once, not three times (28 darks of 12 Mpx: 1.3 GB, not 4)."""
-    stack = None
-    for i, p in enumerate(paths):
-        a = read_cfa(p)
-        if stack is None:
-            stack = np.empty((len(paths), *a.shape), np.float32)
+    first = read_cfa(paths[0])
+    stack = np.empty((len(paths), *first.shape), np.float32)
+    stack[0] = first
+    _tick(ctx, f"reading {label} 1/{len(paths)}")
+
+    def put(i, a):
         stack[i] = a
-        _tick(ctx, f"reading {label} {i + 1}/{len(paths)}")
+
+    _read_frames(paths, put, 1, lambda c: _tick(ctx, f"reading {label} {c}/{len(paths)}"))
     out = np.empty(stack.shape[1:], np.float32)
     for r in range(0, out.shape[0], BAND):
         out[r:r + BAND] = np.median(stack[:, r:r + BAND], axis=0, overwrite_input=True)
@@ -392,9 +410,11 @@ def _master_flat(paths: list[str], fdark: np.ndarray, ctx: Context) -> np.ndarra
     into one array and reduced in bands of rows: the memory is the frames once (46 flats of 12 Mpx: 2 GB, not 10)."""
     H, W = fdark.shape
     fl = np.empty((len(paths), H, W), np.float32)
-    for i, p in enumerate(paths):
-        fl[i] = read_cfa(p) - fdark
-        _tick(ctx, f"reading flats {i + 1}/{len(paths)}")
+
+    def put(i, a):
+        fl[i] = a - fdark
+
+    _read_frames(paths, put, 0, lambda c: _tick(ctx, f"reading flats {c}/{len(paths)}"))
     fl /= np.median(fl[:, H // 2 - 200:H // 2 + 200, W // 2 - 200:W // 2 + 200], axis=(1, 2), keepdims=True)
     out = np.empty((H, W), np.float32)
     for r in range(0, H, BAND):
@@ -444,10 +464,11 @@ def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0, cfa: st
         tick("hot pixels: the sky's drift")
         tick("hot pixels: the sky's drift")
     st = np.empty((len(sub), *dark.shape), np.float32)          # one array, the quartile in bands: the frames once
-    for i, x in enumerate(sub):
-        if tick is not None:
-            tick(f"hot pixels: frame {i + 1}/{len(sub)}")
-        st[i] = (read_cfa(x) - dark) / flat
+
+    def put(i, a):
+        st[i] = (a - dark) / flat
+
+    _read_frames(sub, put, 0, (lambda c: tick(f"hot pixels: frame {c}/{len(sub)}")) if tick is not None else None)
     q = np.empty(dark.shape, np.float32)
     for r in range(0, q.shape[0], BAND):
         q[r:r + BAND] = np.percentile(st[:, r:r + BAND], 25, axis=0, overwrite_input=True)

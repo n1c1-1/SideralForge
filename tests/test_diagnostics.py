@@ -693,3 +693,26 @@ def test_an_unlit_flat_edge_does_not_make_a_still_sky_look_moved(monkeypatch):
     assert not moved and "lone pixels" in msg
     cores = [(int(round(y)), int(round(x))) for y, x in stars]
     assert not any(bad[y, x] for y, x in cores)                              # no star taken for a hot pixel
+
+
+def test_the_master_frames_are_read_in_their_place_whichever_is_read_first(monkeypatch):
+    """The files of the masters are read on several threads: each lands at its own rank, and every one is counted."""
+    import time
+
+    from astro_gpu.stages import calibrate as cal
+    paths = [str(i) for i in range(12)]
+
+    def slow(q):
+        time.sleep(0.01 * (12 - int(q)))                     # the first ones come back last
+        return np.full((2, 2), float(q), np.float32)
+
+    monkeypatch.setattr(cal, "read_cfa", slow)
+    got = np.full((12, 2, 2), -1.0, np.float32)
+    ticks = []
+
+    def put(i, a):
+        got[i] = a
+
+    cal._read_frames(paths, put, 1, ticks.append)
+    assert got[0, 0, 0] == -1.0 and [float(v) for v in got[1:, 0, 0]] == [float(i) for i in range(1, 12)]
+    assert ticks == list(range(2, 13))
