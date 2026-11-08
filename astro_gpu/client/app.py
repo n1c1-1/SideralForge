@@ -945,6 +945,7 @@ class Main(QMainWindow):
         if self.s is not None and self.s.path is not None:
             old.current = self.s.path.pid                # the copy opens on the workflow shown
         p = project2.Project2.from_dict(old.to_dict())
+        p.name = root.name                               # two projects of one name on Home otherwise (GUI exploration 4, Q8)
         for s in p.sessions:
             for kind in project2.KINDS:
                 setattr(s, kind, [old.abspath(x) for x in getattr(s, kind)])

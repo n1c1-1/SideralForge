@@ -1767,6 +1767,8 @@ def test_save_as_writes_the_edits_into_the_copy_only(qapp, tmp_path, monkeypatch
         w.save_as()
         assert (root / project2.FILE).read_bytes() == before
         assert project2.load(copy).workflows[0].name == "Edited"
+        assert project2.load(copy).name == "Copy"                 # Q8: named after its folder, not "Orig" twice
+        assert project2.load(root).name == "Orig"
         assert Path(w.s.root) == copy and not w.s.dirty
     finally:
         w.close()

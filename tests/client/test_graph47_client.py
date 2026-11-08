@@ -44,12 +44,13 @@ def frames(folder: Path, names) -> Path:
     return folder
 
 
-def open_page(tmp_path, monkeypatch, workflows=("Full",)):
+def open_page(tmp_path, monkeypatch, workflows=("Full",), lights=True):
     monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
     prefs.load()
     i18n.set_language("en")
     p = project2.create(tmp_path / "P", "P", Target(name="M 31"))
-    p.sessions.append(project2.Session(1, "night 1", lights=[str(frames(tmp_path / "raw" / "n1", ["a1.ARW"]))]))
+    p.sessions.append(project2.Session(1, "night 1", lights=[str(frames(tmp_path / "raw" / "n1", ["a1.ARW"]))]
+                                       if lights else []))
     for name in workflows:
         p.add_workflow(name, wfl.TEMPLATES[name])
     project2.save(p)
@@ -963,6 +964,88 @@ def test_control_round_a_variant_of_a_graph_keeps_its_blocks_and_each_choice_is_
         assert [n["block"] for n in m.p.workflow(m.paths[0].pid).blocks] == before
         page.workflow_action("duplicate", m.paths[0].pid)
         assert "duplicated" in told[-1] and "Ctrl+Z" in told[-1]
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def _shortcut(page, key):
+    from PySide6.QtGui import QKeySequence, QShortcut
+    return next(sc for sc in page.findChildren(QShortcut) if sc.key() == QKeySequence(key))
+
+
+def test_f2_renames_and_ctrl_d_duplicates_what_is_selected(qapp, tmp_path, monkeypatch):
+    """GUI exploration 4, Q5: F2 renames the workflow of the selected block (the Session, when it is selected), Ctrl+D
+    duplicates the workflow, as in the reference apps; D alone still switches the block off."""
+    from astro_gpu.client import graph as graphmod
+    w, m, page = open_page(tmp_path, monkeypatch)
+    names = iter(["Renamed", "Night A"])
+    monkeypatch.setattr(graphmod, "ask_name", lambda parent, title, current: next(names))
+    try:
+        full = m.paths[0]
+        page.select(index=0, step="empilement")
+        settle(w, page)
+        _shortcut(page, "F2").activated.emit()
+        settle(w, page)
+        assert m.view(full.pid).name == "Renamed"
+        n0 = len(m.paths)
+        _shortcut(page, "Ctrl+D").activated.emit()
+        settle(w, page)
+        assert len(m.paths) == n0 + 1 and m.paths[-1].name == "Renamed (copy)"
+        assert not any(n.cut for n in Graph(m).nodes)
+        page.select(index=0, step="sources")
+        settle(w, page)
+        _shortcut(page, "F2").activated.emit()
+        _shortcut(page, "Ctrl+D").activated.emit()                   # a Session: nothing to duplicate
+        settle(w, page)
+        assert m.session(1).name == "Night A" and len(m.paths) == n0 + 1
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_show_all_is_kept_with_the_project(qapp, tmp_path, monkeypatch):
+    """GUI exploration 4, Q9: "Show all" on, the project saved and opened again: it is still on (as the selection);
+    it keys no result."""
+    from astro_gpu import api
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        before = api._keys(m.p).project.to_dict()
+        page.graph.b_all.setChecked(True)
+        assert m.p.show_all
+        assert {k: v for k, v in api._keys(m.p).project.to_dict().items() if k != "show_all"} == \
+            {k: v for k, v in before.items() if k != "show_all"}
+        project2.save(m.p)
+        assert project2.load(m.root).show_all
+        page2 = GraphPage(m)
+        assert page2.graph.b_all.isChecked()
+        page2.close()
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_recombine_is_shown_greyed_before_the_lights(qapp, tmp_path, monkeypatch):
+    """GUI exploration 4, Q10: a workflow with Split stars but no lights yet has no layer in Post, so no Recombine
+    block; it is drawn greyed from the start ("after the lights"), with no wire, and a click says why instead of
+    choosing it. Once the lights are there it is the real one."""
+    w, m, page = open_page(tmp_path, monkeypatch, lights=False)
+    told = []
+    page.toasted.connect(told.append)
+    try:
+        full = m.paths[0]
+        assert full.opts.get("etoiles") == "retirer"
+        g = Graph(m)
+        comp = [n for n in g.nodes if n.key == "composition"]
+        assert len(comp) == 1 and comp[0].grey and comp[0].lid is None and not g.compositions
+        assert not g.post_layers
+        page.select_node(comp[0])
+        assert m.sel_step != "composition" and "lights" in told[-1]
+        from astro_gpu.client.graph import BlockItem
+        assert any(isinstance(it, BlockItem) and it.node.key == "composition" for it in page.graph.scene().items())
     finally:
         page.close()
         m.close(save=False)

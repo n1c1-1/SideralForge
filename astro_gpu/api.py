@@ -568,7 +568,7 @@ def _keys(p: Project2) -> Keys:
     again when the definition changes. Its ``project`` is the snapshot."""
     c = _ctx(p)
     d = p.to_dict()
-    seen = {k: v for k, v in d.items() if k != "current_block"}       # the selected block keys nothing
+    seen = {k: v for k, v in d.items() if k not in ("current_block", "show_all")}   # view state keys nothing
     fp = hashlib.sha1(json.dumps([str(p.root), seen], sort_keys=True, default=str).encode()).hexdigest()
     with c.lock:
         if c.keys is None or c.fp != fp:
@@ -930,7 +930,8 @@ def add_session(p: Project2, lights: Iterable[str | Path] = (), darks: Iterable[
     """A new session from folders or files (no header is read); its name is made unique."""
     sid = max((s.id for s in p.sessions), default=0) + 1
     s = Session(sid, unique_session_name(p, name or f"Session {sid}"), lights=[str(x) for x in lights],
-                darks=[str(x) for x in darks], flats=[str(x) for x in flats], bias=[str(x) for x in bias], flat_darks=[str(x) for x in flat_darks])
+                darks=[str(x) for x in darks], flats=[str(x) for x in flats], bias=[str(x) for x in bias],
+                flat_darks=[str(x) for x in flat_darks])
     p.sessions.append(s)
     p.validate()
     return s

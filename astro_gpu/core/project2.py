@@ -116,6 +116,9 @@ class Project2:
     #: the block selected when the project was last saved, as the views name it ("empilement", "fond~2", "sources"):
     #: the project reopens on it (GUI exploration 6.6); like ``current``, no part of any result
     current_block: str = ""
+    #: "Show all" was on when the project was last saved (GUI exploration 4, Q9): like the selection, no part of any
+    #: result
+    show_all: bool = False
     render_bases: dict[str, dict[str, Any]] = field(default_factory=dict)
     post: dict[str, Any] = field(default_factory=lambda: {"layers": []})
     next_workflow_id: int = 1        # ids are never reused, so an undo can bring a deleted workflow back
@@ -321,7 +324,7 @@ class Project2:
                 "sessions": [asdict(s) for s in self.sessions],
                 "excluded": [[sid, name] for sid, name in self.excluded], "stack_mode": self.stack_mode,
                 "workflows": [asdict(w) for w in self.workflows], "current": self.current,
-                "current_block": self.current_block, "next_workflow_id": self.next_workflow_id,
+                "current_block": self.current_block, "show_all": self.show_all, "next_workflow_id": self.next_workflow_id,
                 "render_bases": copy.deepcopy(self.render_bases), "post": copy.deepcopy(self.post)}
 
     @classmethod
@@ -347,7 +350,7 @@ class Project2:
                 devices={"main": "", "aux": "", **(d.get("devices") or {})}, sessions=sessions,
                 excluded=_excluded(d.get("excluded") or []), stack_mode=d.get("stack_mode", "together"),
                 workflows=workflows, current=d.get("current"), current_block=str(d.get("current_block") or ""),
-                render_bases=copy.deepcopy(d.get("render_bases") or {}),
+                show_all=bool(d.get("show_all")), render_bases=copy.deepcopy(d.get("render_bases") or {}),
                 post=copy.deepcopy(d.get("post") or {"layers": []}), next_workflow_id=nxt,
                 root=Path(root) if root is not None else None)
         p.validate()

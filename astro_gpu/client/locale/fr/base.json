@@ -235,6 +235,8 @@
   "Include": "Inclure",
   "Astrometry (WCS) in header": "Astrométrie (WCS) dans l'en-tête",
   "Each layer as a separate file": "Chaque calque dans un fichier séparé",
+  "{n} layer is a preview: an outdated result": "{n} calque est un aperçu : un résultat périmé",
+  "{n} layers are previews: outdated results": "{n} calques sont des aperçus : des résultats périmés",
   "The masks": "Les masques",
   "Each workflow's output, linear (FITS)": "La sortie de chaque workflow, linéaire (FITS)",
   "Export log…": "Exporter journal…",

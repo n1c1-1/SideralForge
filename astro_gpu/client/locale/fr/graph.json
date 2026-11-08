@@ -510,5 +510,8 @@
   "Variant “{name}” discarded · Ctrl+Z": "Variante « {name} » abandonnée · Ctrl+Z",
   "No layer: a block's image becomes one by “To Post” in its menu, or by pulling its ● onto Post.": "Aucun calque : l'image d'un bloc en devient un par « Vers Post » dans son menu, ou en tirant son ● sur Post.",
   "Its image is no longer a layer": "Son image n'est plus un calque",
-  "Post, where the layer is set": "Post, où le calque se règle"
+  "Post, where the layer is set": "Post, où le calque se règle",
+  "after the lights": "après les brutes",
+  "Recombine comes with the lights: add them to the Session": "Recombiner vient avec les brutes : ajoutez-les à la Session",
+  "Comes with the lights: once they are added, Post combines the Stars block's two images": "Vient avec les brutes : une fois ajoutées, Post combine les deux images du bloc Étoiles"
 }

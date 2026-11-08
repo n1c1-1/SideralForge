@@ -135,7 +135,7 @@ def api_resolver(project) -> Callable[[Any], Folder | None]:
         try:
             chain = api.chain(project, pid)
             if stage not in chain:                       # an already stretched Image stands for the Output (it
-                from ...core import workflow as wfl      # writes what the Output would: workflow.PROVIDES)
+                from ...core import workflow as wfl  # writes what the Output would: workflow.PROVIDES)
                 stage = next((s for s in chain if stage in wfl.PROVIDES.get(wfl.base(s), ())), None)
                 if stage is None:
                     return None
@@ -454,7 +454,8 @@ class Request:
     """What the view asks for. ``kind``: draft (quarter, while something moves), half (the screen, on release), region
     (full resolution, the visible part), before (the bottom layer alone, at its suggestion), thumbs (the layers'
     thumbnails), inspect (a workflow's final image for Inspect: the same rendering as half, on a lane of its own so that
-    it never replaces or stops what Post asked for)."""
+    it never replaces or stops what Post asked for), exact (after the release, the half image made from the full
+    resolution: what the export writes, reduced)."""
     kind: str = "half"
     layers: list = field(default_factory=list)          # a snapshot (postengine.snapshot)
     level: int = HALF_LEVEL
@@ -493,7 +494,7 @@ class Result:
 
 
 _RETIRED: list = []                    # workers asked to stop that were still busy: kept until their thread ends
-LANES = {"draft": "main", "half": "main", "refine": "main", "region": "region", "before": "before",
+LANES = {"draft": "main", "half": "main", "refine": "main", "exact": "main", "region": "region", "before": "before",
          "inspect": "inspect", "thumbs": "thumbs"}
 PRIORITY = ("main", "region", "before", "inspect", "thumbs")
 
@@ -532,6 +533,8 @@ class Renderer:
         self.source.engine_ms = 0.0
         if req.kind == "thumbs":
             return self._thumbs(req, stop, t0)
+        if req.kind == "exact":
+            return self._exact(req, stop, t0)
         layers = req.layers
         if req.kind == "before":
             layers = self._before_layers(layers)
@@ -559,6 +562,24 @@ class Renderer:
                                     and not self.source.available(source_id(lay))}))
         if req.kind in ("half", "refine") and req.box is None:        # thumbnails of what was just drawn, for free
             res.layer_thumbs = self._visible_thumbs(layers, cp.canvas_of(layers))
+        res.ms = 1000 * (time.perf_counter() - t0)
+        return res
+
+    def _exact(self, req: Request, stop, t0) -> Result:
+        """The half image made from the full resolution (GUI exploration 4, Q1): the composition at level 0, clipped as
+        the export writes it, then reduced. A filter run on the reduced image sees its colour noise already averaged
+        (a strong Saturation turned the sky another colour on screen than in the file); this one shows the file."""
+        cp = self.composer
+        comp = cp.compose(req.layers, 0, stop=stop)
+        if stop is not None and stop():
+            raise Superseded()
+        canvas = cp.canvas_of(req.layers)
+        if comp is None or canvas is None:
+            return Result(req.seq, "exact", req.level, None, None, None, device=self.device, tag=req.tag)
+        w, h = canvas.size(req.level)
+        small = cv2.resize(np.clip(comp.rgb, 0, 1), (w, h), interpolation=cv2.INTER_AREA)
+        res = Result(req.seq, "exact", req.level, None, to_u8(small), canvas, device=self.device, tag=req.tag)
+        res.layer_ms, res.drawn, res.notes = self.source.engine_ms, comp.drawn, comp.notes
         res.ms = 1000 * (time.perf_counter() - t0)
         return res
 

@@ -1361,16 +1361,26 @@ def test_the_page_says_it_is_reading_while_the_worker_works(qapp):
 
 
 def test_dropping_a_block_on_a_lane_puts_it_where_the_rules_say(world, model, page):
-    """Issue #47: while a palette block is dragged, its valid places light up in each workflow; dropped on one, it
-    goes there."""
+    """Issue #47: while a palette block is dragged, its valid places light up; dropped on one, it goes there. GUI
+    exploration 4, Q11: only in the workflow the palette places in ("for …"), a large project lit a hundred places."""
     graph = page.graph
+
+    def palette_on(pid):
+        model.select(index=model.paths.index(model.view(pid)), step="empilement")
+        assert page.palette_path().pid == pid
+
     graph.drag_block = "stars"                                   # a palette block is being dragged
+    palette_on(1)
     graph.rebuild()
-    assert {g.pid for g in graph.ghosts} == {3}                  # Classic + denoise only: Classic has no Denoise,
-    idx = next(g.idx for g in graph.ghosts if g.pid == 3)        # the others have Split stars already
+    assert not graph.ghosts                                      # Full has Split stars already
+    palette_on(3)
+    graph.rebuild()
+    assert {g.pid for g in graph.ghosts} == {3}                  # Classic + denoise: no Split stars yet
+    idx = next(g.idx for g in graph.ghosts if g.pid == 3)
     graph.drag_block = "gradient"
+    palette_on(2)
     graph.rebuild()
-    assert {g.pid for g in graph.ghosts} == {1, 2, 3, 4} and len([g for g in graph.ghosts if g.pid == 2]) >= 3
+    assert {g.pid for g in graph.ghosts} == {2} and len(graph.ghosts) >= 3
     graph.drag_block = None
     graph.rebuild()
     assert not graph.ghosts

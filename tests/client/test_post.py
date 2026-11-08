@@ -1768,6 +1768,42 @@ def test_zooming_in_renders_the_visible_region_at_full_resolution(wide, qapp):
     assert post.settle() and "region" not in seen
 
 
+def test_the_fitted_view_is_made_again_from_the_full_resolution_after_a_filter(wide, qapp):
+    """GUI exploration 4, Q1 and Q4: a filter run on the reduced image differs from the export's (a strong Saturation
+    turned the sky another colour; the 1 px detail sliders did nothing): after the release, the fitted view is made
+    again from the full resolution, then reduced; a new gesture abandons it. Without a filter, nothing more."""
+    post = wide
+    v = post.view
+    seen = []
+    v.rendered.connect(lambda r: seen.append(r.kind))
+    assert v.viewer.scale < 0.5
+    named(v, "Full")["sliders"]["sky"] = 3.0
+    v.request(final_only=True)
+    assert post.settle() and "half" in seen and "exact" not in seen                  # no filter: the half is the image
+    seen.clear()
+    sat = v.add_filter("saturation")
+    sat["params"]["strength"] = 100.0
+    v.request(final_only=True)
+    assert post.settle() and seen.index("half") < seen.index("exact")
+    exact = reference(post, level=1)
+    full = Renderer(LayerSource(lambda pid: post.folders.get(pid), LayerService(DEV))).run(
+        Request(kind="exact", layers=snapshot(v.layers), level=1))
+    assert full.kind == "exact" and full.rgb.shape == exact.rgb.shape
+    assert np.array_equal(shown(v), full.rgb)
+    small = full.rgb  # what the export writes, reduced: the composition at level 0, clipped, then INTER_AREA
+    comp = post.worker.renderer.composer.compose(snapshot(v.layers), 0, cache=False)
+    w, h = comp.rgb.shape[1] // 2 + comp.rgb.shape[1] % 2, comp.rgb.shape[0] // 2 + comp.rgb.shape[0] % 2
+    ref = rsv.to_u8(cv2.resize(np.clip(comp.rgb, 0, 1), (w, h), interpolation=cv2.INTER_AREA))
+    assert np.array_equal(small, ref)
+    seen.clear()                                             # a gesture after the release: the exact one is not shown
+    v.request()
+    named(v, "Full")["sliders"]["sky"] = 2.0
+    v.request(final_only=True)
+    assert post.settle() and seen.count("exact") <= 1 and np.array_equal(shown(v), Renderer(
+        LayerSource(lambda pid: post.folders.get(pid), LayerService(DEV))).run(
+        Request(kind="exact", layers=snapshot(v.layers), level=1)).rgb)
+
+
 def test_before_and_after(post):
     v = post.view
     named(v, "Full")["sliders"]["sky"] = 3.5
@@ -2138,6 +2174,29 @@ def test_the_export_dialog_follows_the_spec_and_refuses_the_results_folder(expor
     finally:
         d.reject()
         d.deleteLater()
+
+
+def test_the_export_dialog_says_how_many_layers_are_previews(exporting):
+    """GUI exploration 4, Q3: Export wrote an image made of outdated results without a word (only the history file
+    said it): the dialog says how many shown layers are previews, without blocking."""
+    s = exporting
+    d = ExportDialog(s.view)
+    try:
+        assert d.previews.isHidden() and d.go.isEnabled()
+    finally:
+        d.reject()
+        d.deleteLater()
+    shown_ = [lay for lay in s.view.layers if lay["kind"] == "workflow" and lay["visible"]]
+    assert shown_
+    s.model.view(shown_[0]["pid"]).provisional = True
+    d = ExportDialog(s.view)
+    try:
+        assert not d.previews.isHidden() and d.previews.text() == "1 layer is a preview: an outdated result"
+        assert d.go.isEnabled()
+    finally:
+        d.reject()
+        d.deleteLater()
+        s.model.view(shown_[0]["pid"]).provisional = False
 
 
 def test_the_export_writes_only_into_the_folder_chosen_and_it_reads_back(exporting):

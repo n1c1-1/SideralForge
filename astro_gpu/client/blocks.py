@@ -474,6 +474,15 @@ class Graph:
                 self.compositions.append(n)
             elif (src, part) not in self.direct:
                 self.direct.append((src, part))
+        # GUI exploration 4, Q10: a workflow with Stars but no lights yet has no layer, so no Recombine block; it is
+        # shown greyed from the start (no wire, never chosen), the one Post will give it once the lights are added
+        gives = getattr(project, "gives_post", lambda q: True)
+        for p in project.paths:
+            if p.opts.get("etoiles") == "retirer" and p.pid not in have and getattr(p, "source", None) is None \
+                    and (p.pid, "combined") not in removed and not gives(p):
+                src = self.node_of(p, "etoiles")
+                if src is not None:
+                    self.nodes.append(Node("composition", [p], src, grey=_("after the lights")))
         self._fold_outputs(project)
         for p in project.paths:                       # several Recombine blocks of a workflow: each its number, its
             mine = [n for n in self.compositions if p in n.paths]   # layer's ("Full · Recombine 2"), the first 1

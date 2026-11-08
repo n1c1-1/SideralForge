@@ -57,7 +57,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -166,6 +165,8 @@ class BlockItem(QGraphicsItem):
             tip += "\n" + _("Cannot run: {why}. Run is refused until it is fixed.").format(why=node.broken.rstrip("."))
         if node.cut:
             tip += "\n" + _("Switched off: the image passes through. D or the menu switches it on again.")
+        elif node.grey and node.key == "composition":     # a Recombine to come (GUI exploration 4, Q10)
+            tip += "\n" + _("Comes with the lights: once they are added, Post combines the Stars block's two images")
         elif node.grey:
             tip += "\n" + _("Cannot run: {why}. The image passes through.").format(why=node.grey.rstrip("."))
         if self.exit:
@@ -521,6 +522,7 @@ class GraphView(QGraphicsView):
         self.setAcceptDrops(True)
         self.drag_tool = None
         self.drag_block = None                                         # issue #47: the palette block being dragged
+        self.palette_flow = lambda: None                 # the workflow the palette places in (the page's); None: all
         self.ghosts: list[GhostItem] = []
         self.graph: Graph | None = None
         self._sel_item = None
@@ -542,7 +544,9 @@ class GraphView(QGraphicsView):
         self.b_all.setCheckable(True)
         self.b_all.setObjectName("toggle")
         self.b_all.setToolTip(_("The whole graph in the window, smaller; off: readable size, scrolling"))
-        self.b_all.toggled.connect(lambda _x: self.fit())
+        # kept with the project, as the selection (GUI exploration 4, Q9)
+        self.b_all.setChecked(bool(getattr(getattr(project, "p", None), "show_all", False)))
+        self.b_all.toggled.connect(self._show_all)
         # GUI exploration 2: a long chain at a readable scale goes past the view's right edge; Post stays at hand: a
         # button at the top right corner while it is out of view, a click scrolls to it
         self.b_post = QPushButton("", self)
@@ -865,7 +869,7 @@ class GraphView(QGraphicsView):
         if self.drag_block in wfl.IO and wfl.IO[self.drag_block] == (wfl.IMAGE, wfl.IMAGE):
             title = block_title(None, view_key(self.drag_block))
             seen: set[int] = set()
-            for p in s.paths:
+            for p in self._flows():
                 for key in s.display_keys(p):
                     n = g.node_of(p, key)
                     if n is None or id(n) in seen or n.sid is not None or not s.can_branch(p, key, self.drag_block):
@@ -882,8 +886,9 @@ class GraphView(QGraphicsView):
                     self.ghosts.append(bg)
         if self.drag_block == "composition" and "composition" in cx:     # issue #53: after each split block
             title = block_title(None, "composition")
+            flows = self._flows()
             for n in g.nodes:
-                if n.key == "etoiles" and n.paths:
+                if n.key == "etoiles" and n.paths and any(p in flows for p in n.paths):
                     r = QRectF(cx["composition"] + 4, n.y + BH / 2 + 6, cw["composition"] - 8, BH - 8)
                     gh = GhostItem(r, title, None, n.paths[0].pid)
                     gh.node = n
@@ -911,12 +916,18 @@ class GraphView(QGraphicsView):
             self.horizontalScrollBar().setValue(h0)
             self.verticalScrollBar().setValue(v0)
 
+    def _flows(self) -> list:
+        """The workflows a dragged palette block can go in: the one the palette says ("for …"; GUI exploration 4, Q11:
+        a large project lit a hundred places at once); every one when it says none."""
+        p = self.palette_flow()
+        return [p] if p is not None and p in self.s.paths else list(self.s.paths)
+
     def _drop_targets(self, g: Graph, cols: list[str]) -> list[tuple[int, int, str]]:
         """(workflow, index in its graph, the column it opens before) of each place the dragged block can go: before
         the block it would go in front of; after the last block, before the column that follows it."""
         s, b = self.s, self.drag_block
         out = []
-        for p in s.paths:
+        for p in self._flows():
             graph = s.graph(p)
             shown = [(j, g.node_of(p, node_key(n))) for j, n in enumerate(graph)]
             shown = [(j, nd) for j, nd in shown if nd is not None and nd.sid is None]
@@ -1241,6 +1252,12 @@ class GraphView(QGraphicsView):
         m = path.pointAtPercent(0.5)
         t.setPos(m.x() - t.boundingRect().width() / 2, m.y() + 2)
         t.setZValue(3)
+
+    def _show_all(self, on: bool):
+        p = getattr(self.s, "p", None)
+        if p is not None and hasattr(p, "show_all"):
+            p.show_all = bool(on)
+        self.fit()
 
     def fit(self):
         """The default view shows the whole chain, from Frames to Post, at any window width: the scale that fits (at most
@@ -1894,6 +1911,7 @@ class GraphPage(QWidget):
         bar.viewport().installEventFilter(self)          # issue #54: a placed block dropped here is removed
         ph.addWidget(bar)
         self.graph = GraphView(project)
+        self.graph.palette_flow = self.palette_path       # Q11: a palette block dragged lights its workflow's places
         cv.addWidget(self.graph, 1)
         ph.addWidget(centre, 1)
         self.panel = Panel(project, steps)
@@ -1961,7 +1979,14 @@ class GraphPage(QWidget):
         dele = QShortcut(QKeySequence(QKeySequence.Delete), self.graph)      # delete the selected block (issue #47)
         dele.setContext(Qt.WidgetWithChildrenShortcut)
         dele.activated.connect(self._delete_selected)
-        self.hint = QLabel(self)                         # why a palette block is greyed, over the graph (issue #47)
+        # GUI exploration 4, Q5: F2 renames, Ctrl+D duplicates, as in the reference apps
+        f2 = QShortcut(QKeySequence(Qt.Key_F2), self.graph)
+        f2.setContext(Qt.WidgetWithChildrenShortcut)
+        f2.activated.connect(self._rename_selected)
+        dup = QShortcut(QKeySequence("Ctrl+D"), self.graph)
+        dup.setContext(Qt.WidgetWithChildrenShortcut)
+        dup.activated.connect(self._duplicate_selected)
+        self.hint = QLabel(self)                        # why a palette block is greyed, over the graph (issue #47)
         self.hint.setStyleSheet("background: #2b2f38; border: 1px solid #5d6470; border-radius: 6px; "
                                 "padding: 5px 9px; color: #e8ebf0;")
         self.hint.setWordWrap(True)
@@ -2348,6 +2373,26 @@ class GraphPage(QWidget):
         if node is not None and node.key != "final":     # a lone Session ("sources") says why it stays
             self.remove_tool(node, None)
 
+    def _rename_selected(self):
+        """F2: a Session selected, the Session (the only one, when its block stands for the frames); a block of a
+        workflow, its workflow; Post or nothing, nothing."""
+        s = self.s
+        k = s.sel_step or ""
+        if k.startswith("session@"):
+            self.session_action("rename", int(k.split("@")[1]))
+        elif k == "sources":
+            if len(s.p.sessions) == 1:
+                self.session_action("rename", s.p.sessions[0].id)
+        elif k and k != "final" and "@" not in k and s.path is not None:     # a session's Calibration: nothing
+            self.workflow_action("rename", s.path.pid)
+
+    def _duplicate_selected(self):
+        """Ctrl+D: the workflow of the selected block, as its menu's Duplicate."""
+        s = self.s
+        k = s.sel_step or ""
+        if k and k not in ("sources", "final") and "@" not in k and s.path is not None:
+            self.workflow_action("duplicate", s.path.pid)
+
     # ------------------------------------------------------------ selection
     def deselect(self):
         """Nothing selected (decision 5): an empty click, Escape, or a wire chosen; the panel empties, Del and D do
@@ -2395,6 +2440,9 @@ class GraphPage(QWidget):
 
     def select_node(self, node):
         s = self.s
+        if node.key == "composition" and node.lid is None and node.grey:   # a Recombine to come (Q10): said, not chosen
+            self.toast(_("Recombine comes with the lights: add them to the Session"))
+            return
         s.pending_change = None
         self.graph.select_wire(None)                      # a block chosen: the wire chosen before is not any more
         if node.key not in ("sources", "final") and node.paths:

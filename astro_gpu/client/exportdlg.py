@@ -120,6 +120,13 @@ class ExportDialog(QDialog):
         self.warn = label("", "warn")
         self.warn.setWordWrap(True)
         v.addWidget(self.warn)
+        # GUI exploration 4, Q3: layers whose image is a preview (an earlier result) are said, without blocking
+        n = self.preview_layers()
+        self.previews = label(plural(n, "{n} layer is a preview: an outdated result",
+                                     "{n} layers are previews: outdated results"), "warn")
+        self.previews.setWordWrap(True)
+        self.previews.setVisible(n > 0)
+        v.addWidget(self.previews)
         v.addWidget(label(_("Include"), "h2"))
         self.c_wcs = self._check(v, _("Astrometry (WCS) in header"), True)
         self.c_hist = self._check(v, _("Processing history (a file next to the image; in the header too for FITS)"),
@@ -184,6 +191,14 @@ class ExportDialog(QDialog):
         c.setChecked(on)
         layout.addWidget(c)
         return c
+
+    def preview_layers(self) -> int:
+        """The shown workflow layers whose image is a preview (PostView.is_preview)."""
+        view = self.view
+        if not hasattr(view, "is_preview"):
+            return 0
+        return sum(1 for lay in getattr(view, "layers", []) or []
+                   if lay.get("kind") == "workflow" and lay.get("visible", True) and view.is_preview(lay.get("pid")))
 
     def default_file(self, fmt: str) -> str:
         base = self.root if self.root is not None else Path(prefs.last_folder()) / slug(self.pname)

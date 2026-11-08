@@ -730,6 +730,7 @@ class PostView(QWidget):
         self._final_t = QTimer(self)
         self._final_t.setSingleShot(True)
         self._final_t.timeout.connect(self._send_final)
+        self._main_seq = 0                               # the newest draft or release request (the exact view's, Q1)
         self._region_t = QTimer(self)
         self._region_t.setSingleShot(True)
         self._region_t.timeout.connect(self._send_region)
@@ -885,8 +886,18 @@ class PostView(QWidget):
 
     def _send_draft(self):
         want, overlay = self._selected_wants()
-        self.worker.request(Request(kind="draft", layers=snapshot(self.layers), level=self.draft_level, want=want,
-                                    overlay=overlay))
+        self._main_seq = self.worker.request(Request(kind="draft", layers=snapshot(self.layers),
+                                                     level=self.draft_level, want=want, overlay=overlay))
+
+    def _exact_wanted(self, res) -> bool:
+        """After the release's image (GUI exploration 4, Q1 and Q4): the fitted view made again from the full
+        resolution, when a filter is shown (a filter run on the reduced image differs from the export's: a strong
+        Saturation, the 1 px detail sliders) and the screen shows the image reduced (zoomed in, the region is exact)."""
+        if res.seq != self._main_seq or self.viewer.scale >= 0.5:
+            return False
+        if not (res.kind == "half" or (res.kind == "refine" and self._half_due)):
+            return False
+        return any(lay["kind"] == "filter" and lay["visible"] for lay in self.layers)
 
     def _quarter_enough(self) -> bool:
         """On the CPU, when the screen shows the image at a quarter or less: the exact quarter is the picture."""
@@ -901,13 +912,15 @@ class PostView(QWidget):
             # the CPU, zoomed out: the exact quarter (about a second) is what the screen shows; the half comes when the
             # view is zoomed in past a quarter
             self._half_due = True
-            self.worker.request(Request(kind="refine", layers=snapshot(self.layers), level=HALF_LEVEL + 1, want=want,
-                                        thumbs=True, overlay=overlay, hists=self._hist_ids()))
+            self._main_seq = self.worker.request(Request(kind="refine", layers=snapshot(self.layers),
+                                                         level=HALF_LEVEL + 1, want=want, thumbs=True, overlay=overlay,
+                                                         hists=self._hist_ids()))
         else:
             # on the CPU the exact quarter comes first, then the half
             self._half_due = False
-            self.worker.request(Request(kind="half", layers=snapshot(self.layers), level=HALF_LEVEL, want=want,
-                                        thumbs=True, overlay=overlay, refine=cpu, hists=self._hist_ids()))
+            self._main_seq = self.worker.request(Request(kind="half", layers=snapshot(self.layers), level=HALF_LEVEL,
+                                                         want=want, thumbs=True, overlay=overlay, refine=cpu,
+                                                         hists=self._hist_ids()))
         if self.b_cmp.isChecked():
             self._send_before()
         need = tuple(self._stale_thumbs())
@@ -966,6 +979,13 @@ class PostView(QWidget):
     def _on_result(self, res):
         if res.kind == "inspect":
             return                                              # Inspect's final image, rendered on the same worker
+        if res.kind == "exact":                                 # the release's image from the full resolution (Q1)
+            if res.tag == self._main_seq and res.rgb is not None:     # nothing asked since its release
+                self.src.img1, self.src.seq1 = res.rgb, res.seq
+                self.src.version += 1
+                self.viewer.refresh()
+                self.rendered.emit(res)
+            return
         if res.seq < self._last_seq.get(res.kind, 0):
             return                                              # an answer older than one already shown
         if res.kind != "thumbs":
@@ -1016,6 +1036,9 @@ class PostView(QWidget):
                 if self.viewer.scale >= 0.5:
                     self._region_t.start(60)
             self.viewer.refresh()
+            if self._exact_wanted(res):
+                self.worker.request(Request(kind="exact", layers=snapshot(self.layers), level=HALF_LEVEL,
+                                            tag=res.seq))
         elif res.kind == "region":
             self.src.full = (res.box, res.rgb)
             self.src.version += 1
