@@ -32,6 +32,7 @@ import torch
 import torch.nn.functional as F
 from pydantic import field_validator
 
+from ..core import devices
 from ..core.params import P, check_choice
 from . import ops
 from .simple import Layers, SimpleRenderEngine, SimpleSettings, continuum_ratio, emission, mtf, mtf_midtone
@@ -81,7 +82,7 @@ class StarsRenderEngine(SimpleRenderEngine):
 
     def __init__(self, folder: str | Path, device: str = "cuda:0"):
         self.dir = Path(folder)
-        self.dev = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.dev = torch.device(devices.usable(device))
         self.prep = json.loads((self.dir / "prep_stars.json").read_text(encoding="utf-8"))
         self.M = np.array(self.prep["M"], np.float64)
         self.SC = float(self.prep.get("drizzle_scale", 1.0))

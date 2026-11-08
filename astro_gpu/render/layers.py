@@ -26,6 +26,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from ..core import devices
 from ..core.params import P, StageParams
 from . import ops
 from .simple import SimpleRenderEngine
@@ -132,8 +133,7 @@ class LayerService:
                 del self._eng[k]
                 self._size.pop(k, None)
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        devices.empty_cache()
 
     def kind(self, folder, part: str | None = None) -> str:
         return layer_kind(folder, part)
@@ -148,8 +148,8 @@ class LayerService:
         eng = self.engine(folder)
         try:
             return eng.render(s, scale, region, **kw), ""
-        except torch.OutOfMemoryError:
-            if eng.dev.type != "cuda":
+        except Exception as e:  # noqa: BLE001 - a memory error, in each backend's own words
+            if eng.dev.type == "cpu" or not devices.is_out_of_memory(e):
                 raise
         k = self._key(folder)
         self.evict(k)

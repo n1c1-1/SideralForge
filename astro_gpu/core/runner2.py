@@ -55,6 +55,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import devices
 from . import estimate as est
 from . import workflow as wfl
 from .files import write_json
@@ -316,7 +317,8 @@ class RunInfo:
 
 def device_env(device: str | None, parent: str | None = None) -> tuple[str, str]:
     """(CUDA_VISIBLE_DEVICES of the worker, its device inside) for 'cuda:N', 'cuda', 'cpu' or None / 'auto'
-    (cuda:0). ``parent``: the launching process's CUDA_VISIBLE_DEVICES, whose numbering 'cuda:N' follows."""
+    (cuda:0), and for the other cards, 'xpu:N', 'mps' or 'privateml:N', named the same inside (with no CUDA card in
+    the worker). ``parent``: the launching process's CUDA_VISIBLE_DEVICES, whose numbering 'cuda:N' follows."""
     d = (device or "cuda:0").strip().lower()
     if d == "auto":
         d = "cuda:0"
@@ -324,7 +326,9 @@ def device_env(device: str | None, parent: str | None = None) -> tuple[str, str]
         return "-1", "cpu"
     m = re.fullmatch(r"cuda(?::(\d+))?", d)
     if not m:
-        raise ValueError(f"unknown device {device!r}: 'cuda:N' or 'cpu'")
+        if devices.is_device(d):                 # 'xpu:N', 'mps'...: the worker's torch finds it by itself
+            return "-1", d
+        raise ValueError(f"unknown device {device!r}: 'cuda:N', 'xpu:N', 'mps' or 'cpu'")
     n = int(m.group(1) or 0)
     if parent is None:
         return str(n), "cuda:0"
@@ -355,9 +359,12 @@ def rotate_events(logs: Path, limit: int | None = None) -> Path | None:
     return dst
 
 
-def prepare_run(project: Project2, plan: Plan, device: str | None = None) -> RunInfo:
+def prepare_run(project: Project2, plan: Plan, device: str | None = None, cpu_jobs: dict[str, str] | None = None
+                ) -> RunInfo:
     """Everything a run needs before its worker starts: no run alive, STOP removed, events rotated, and the frozen
-    plan file (run id, device, targets, the whole definition, the jobs). Raises RuntimeError when a run is alive."""
+    plan file (run id, device, targets, the whole definition, the jobs, and in ``cpu_jobs`` the {key: why} of the
+    jobs that run on the CPU whatever the device: the card test said so, or the card lacks the memory). Raises
+    RuntimeError when a run is alive."""
     if project.root is None:
         raise ValueError(f"project {project.name!r} has no folder yet")
     root = Path(os.path.abspath(project.root))
@@ -378,15 +385,16 @@ def prepare_run(project: Project2, plan: Plan, device: str | None = None) -> Run
     plan_file, log_file = runs / f"{run_id}.plan.json", runs / f"{run_id}.log"
     body = {"run_id": run_id, "created": datetime.now().isoformat(timespec="seconds"), "device": dev,
             "visible": visible, "inside": inside, "offset": offset, **plan.to_dict(),
-            "definition": project.to_dict()}
+            "definition": project.to_dict(), "cpu_jobs": dict(cpu_jobs or {})}
     write_json(plan_file, body)
     return RunInfo(run_id, str(root), str(plan_file), str(log_file), offset, dev)
 
 
-def launch(project: Project2, plan: Plan, device: str | None = None, python: str | None = None) -> RunInfo:
+def launch(project: Project2, plan: Plan, device: str | None = None, python: str | None = None,
+           cpu_jobs: dict[str, str] | None = None) -> RunInfo:
     """Start a run in a detached worker process (``prepare_run``, then the process). Returns at once; the run is
     followed through ``read_events(root, info.offset, info.run_id)``."""
-    info = prepare_run(project, plan, device)
+    info = prepare_run(project, plan, device, cpu_jobs)
     d = json.loads(Path(info.plan_file).read_text(encoding="utf-8"))
     info.pid = _spawn_worker(info.root, info.plan_file, d["visible"], info.log_file, python, info.notes)
     return info
@@ -627,14 +635,6 @@ def _rules(spec: str | None) -> KeyRules:
     return getattr(importlib.import_module(mod), fn)()
 
 
-def _cuda() -> bool:
-    try:
-        import torch
-        return bool(torch.cuda.is_available())
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def cuda_alive(device: str | None = None, timeout: float | None = None) -> bool | None:
     """Whether this process's CUDA context still works: None when CUDA was not used in it (nothing to check), else a
     tiny op and a synchronize on ``device`` ('cuda:N'; default the current one). After a GPU fault (a device-side
@@ -655,7 +655,7 @@ def cuda_alive(device: str | None = None, timeout: float | None = None) -> bool 
         try:
             x = torch.ones(8, device=dev)
             ok = float((x * 2).sum().item()) == 16.0
-            torch.cuda.synchronize(dev)
+            torch.cuda.synchronize(dev)                  # (this check is for CUDA only: raises when the context died)
             got.append(ok)
         except Exception:  # noqa: BLE001 - RuntimeError: CUDA error ..., AcceleratorError
             got.append(False)
@@ -707,6 +707,7 @@ class _Worker:
         same_gpu = os.environ.get("CUDA_VISIBLE_DEVICES") == d.get("visible")
         self.device = d.get("inside") if same_gpu else d.get("device")   # in-process: the device as named
         self.device = self.device or "cuda:0"
+        self.cpu_jobs: dict[str, str] = d.get("cpu_jobs") or {}  # {key: why}: these jobs run on the CPU
         self._gpu: bool | None = None
         self.resume: dict[str, Any] = d.get("resume") or {}      # set in the plan of a worker taking over a run
         self.part = int(self.resume.get("part") or 1)
@@ -715,8 +716,15 @@ class _Worker:
     @property
     def gpu(self) -> bool:
         if self._gpu is None:
-            self._gpu = self.device != "cpu" and _cuda()
+            try:
+                self._gpu = self.device != "cpu" and devices.available(self.device)
+            except Exception:  # noqa: BLE001 - no torch here (a tool's toy stages)
+                self._gpu = False
         return self._gpu
+
+    def device_of(self, job: Job) -> str:
+        """Where a job runs: the device of the run, unless ``cpu_jobs`` sends it to the CPU."""
+        return "cpu" if job.key in self.cpu_jobs else self.device
 
     def stop_requested(self) -> bool:
         return (self.root / "logs" / STOP).exists()
@@ -849,8 +857,10 @@ class _Worker:
             self.journal.emit("stage_end", stage=job.stage, status="done", reused=True, duration=0.0)
             return "done"
         try:
+            if job.key in self.cpu_jobs and self.device != "cpu":
+                self.journal.emit("log", stage=job.stage, level="warning", msg=self.cpu_jobs[job.key])
             w = self.project.workflow(job.run_wf)
-            sp = StoreProject(self.keys, w, job.stage, devices={"main": self.device})
+            sp = StoreProject(self.keys, w, job.stage, devices={"main": self.device_of(job)})
             if sp.key != job.key:
                 raise StageError(f"the inputs of {job.stage} changed since the run was planned (key {sp.key}, "
                                  f"planned {job.key}): plan it again")
@@ -907,7 +917,8 @@ class _Worker:
         try:
             f = est.facts(self.keys, w, self.store)
             if session_of(job.stage) is None:          # a session's share is not the project's time
-                est.record(job.stage, float(m.get("duration") or 0.0), est.units(job.stage, f), self.gpu)
+                est.record(job.stage, float(m.get("duration") or 0.0), est.units(job.stage, f),
+                           self.gpu and job.key not in self.cpu_jobs)
         except Exception:  # noqa: BLE001 - the history is a hint
             pass
 

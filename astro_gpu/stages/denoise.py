@@ -23,6 +23,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from pydantic import field_validator
 
+from ..core import devices
 from ..core.imgutil import asinh_preview
 from ..core.params import ADVANCED, Auto, P, StageParams, check_choice
 from ..core.stage import Context, Stage
@@ -37,6 +38,9 @@ UNDITHERED_CORRELATION = 0.08
 MODEL = Path(__file__).resolve().parents[1] / "resources" / "denoise" / "pretrained_unet.pt"
 MODEL_ID = hashlib.sha256(MODEL.read_bytes()).hexdigest()[:10] if MODEL.exists() else "missing"
 PATCH, BATCH = 192, 12
+#: the card memory the network takes for a tile of 512 (with its padding): 0.21 GB measured on 8 November 2026 for 512
+#: pixels in bfloat16, plus the padding's area; a 4 GB card holds it many times over
+TILE_GB = 0.35
 
 
 class DenoiseParams(StageParams):
@@ -257,8 +261,11 @@ def to_input(x, nm, bk, sg):
 def adapt(ctx, net, A, B, nm, bk, sg, dev, steps: int, lr: float, seed: int) -> None:
     """Noise2Noise steps on random tiles of the half-stacks (one predicts the other, both ways), all the weights,
     a one-cycle learning rate: the network learns this image's noise. The loss is weighted by the expected noise."""
-    tA, tB = torch.from_numpy(A).to(dev), torch.from_numpy(B).to(dev)
-    tN = torch.from_numpy(nm).to(dev)[None]
+    # the half-stacks stay on the host when the card has little free memory (the tiles go to the card one batch at a time)
+    free = devices.free_memory(dev)
+    home = dev if free is None or (A.nbytes + B.nbytes + nm.nbytes) * 2 < free else torch.device("cpu")
+    tA, tB = torch.from_numpy(A).to(home), torch.from_numpy(B).to(home)
+    tN = torch.from_numpy(nm).to(home)[None]
     bk_t, sg_t = torch.from_numpy(bk).to(dev), torch.from_numpy(sg).to(dev)
     Hh, Ww = tA.shape[1:]
     valid = (tN[0] > 0) & (tN[0] < 1.6)
@@ -287,7 +294,7 @@ def adapt(ctx, net, A, B, nm, bk, sg, dev, steps: int, lr: float, seed: int) -> 
                 break
         if not xin:
             continue
-        xin, tgt, nmp = torch.stack(xin), torch.stack(tgt), torch.stack(nmp)
+        xin, tgt, nmp = torch.stack(xin).to(dev), torch.stack(tgt).to(dev), torch.stack(nmp).to(dev)
         with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
             out = net(to_input(xin, nmp, bk_t, sg_t)).float()
         a_in = (xin - bk_t.view(1, 3, 1, 1)) / sg_t.view(1, 3, 1, 1)
@@ -310,11 +317,22 @@ def adapt(ctx, net, A, B, nm, bk, sg, dev, steps: int, lr: float, seed: int) -> 
 
 @torch.no_grad()
 def apply_net(net, x, nm, bk, sg, dev, tile=512, pad=48):
-    """Denoise a (3, H, W) linear image tile by tile with overlap."""
+    """Denoise a (3, H, W) linear image tile by tile with overlap. On a card with little free memory the tile is
+    smaller (``devices.tile_that_fits``; a memory error halves it, ``shrink_on_memory``): only then does the result
+    differ, by a fraction of the noise, at the seams of the tiles."""
+    tile = devices.tile_that_fits(tile, dev, TILE_GB * (tile / 512) ** 2)
+    return devices.shrink_on_memory(lambda t: _apply_net(net, x, nm, bk, sg, dev, t, pad), tile, dev)
+
+
+@torch.no_grad()
+def _apply_net(net, x, nm, bk, sg, dev, tile, pad):
     Hh, Ww = x.shape[1:]
     out = np.zeros_like(x)
-    tx = torch.from_numpy(np.ascontiguousarray(x)).to(dev)
-    tn = torch.from_numpy(np.ascontiguousarray(nm)).to(dev)[None]
+    # the image goes to the card when it has the room; otherwise each tile does (the same numbers, only slower)
+    free = devices.free_memory(dev)
+    home = dev if free is None or (x.nbytes + nm.nbytes) * 2 < free else torch.device("cpu")
+    tx = torch.from_numpy(np.ascontiguousarray(x)).to(home)
+    tn = torch.from_numpy(np.ascontiguousarray(nm)).to(home)[None]
     bk_t = torch.as_tensor(np.asarray(bk), device=dev)
     sg_t = torch.as_tensor(np.asarray(sg), device=dev)
     for y in range(0, Hh, tile):
@@ -323,8 +341,8 @@ def apply_net(net, x, nm, bk, sg, dev, tile=512, pad=48):
             y2, x2 = min(Hh, y + tile + pad), min(Ww, x0 + tile + pad)
             ph, pw = (y2 - y1), (x2 - x1)
             ph8, pw8 = (ph + 7) // 8 * 8, (pw + 7) // 8 * 8
-            pt = F.pad(tx[None, :, y1:y2, x1:x2], (0, pw8 - pw, 0, ph8 - ph), mode="reflect")
-            pn = F.pad(tn[None, :, y1:y2, x1:x2], (0, pw8 - pw, 0, ph8 - ph), mode="reflect")
+            pt = F.pad(tx[None, :, y1:y2, x1:x2].to(dev), (0, pw8 - pw, 0, ph8 - ph), mode="reflect")
+            pn = F.pad(tn[None, :, y1:y2, x1:x2].to(dev), (0, pw8 - pw, 0, ph8 - ph), mode="reflect")
             with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
                 o = net(to_input(pt, pn, bk_t, sg_t)).float()
             a = (pt - bk_t.view(1, 3, 1, 1)) / sg_t.view(1, 3, 1, 1) + o

@@ -1250,7 +1250,7 @@ def test_a_run_that_is_already_going_is_followed_instead_of_started_twice(env):
 def test_a_start_that_fails_is_said_and_nothing_stays_running(env, monkeypatch):
     w = make_world(env["tmp"])
     try:
-        def refuse(p, plan, device=None):
+        def refuse(p, plan, device=None, cpu_jobs=None):
             raise OSError("the disk is full")
         monkeypatch.setattr(api, "start_run", refuse)
         d = w.ctl.launch()

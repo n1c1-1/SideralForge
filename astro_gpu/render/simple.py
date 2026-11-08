@@ -28,6 +28,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from ..core import devices
 from ..core.params import ADVANCED, P, StageParams
 from . import ops
 
@@ -167,7 +168,7 @@ class SimpleRenderEngine:
 
     def __init__(self, prep_dir: str | Path, device: str = "cuda:0"):
         self.dir = Path(prep_dir)
-        self.dev = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.dev = torch.device(devices.usable(device))
         self.prep = json.loads((self.dir / "prep_simple.json").read_text(encoding="utf-8"))
         self.M = np.array(self.prep["M"], np.float64)
         self.SC = float(self.prep.get("drizzle_scale", 1.0))
@@ -205,7 +206,7 @@ class SimpleRenderEngine:
             valid = finite
         eng = cls.__new__(cls)
         eng.dir = None
-        eng.dev = torch.device(device if torch.cuda.is_available() else "cpu")
+        eng.dev = torch.device(devices.usable(device))
         H, W = a.shape[1:]
         sl = (slice(None), slice(None, None, sample), slice(None, None, sample))
         v = valid[sl[1:]]

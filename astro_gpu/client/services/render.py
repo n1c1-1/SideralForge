@@ -66,15 +66,43 @@ def gpu_count() -> int:
         return 0
 
 
+def _free(device: str) -> int | None:
+    """Bytes free on the card now, None when it cannot tell."""
+    try:
+        from ...core import devices
+        return devices.free_memory(device)
+    except Exception:  # noqa: BLE001 - no torch, no driver
+        return None
+
+
+def _available(device: str) -> bool:
+    try:
+        from ...core import devices
+        return devices.available(device)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _first_other() -> str:
+    """The first card of another kind (an Intel, Apple or AMD card as the settings offer it), else the CPU."""
+    try:
+        from ...core import devices
+        cards = [d.device for d in devices.list_devices() if not d.device.startswith("cuda")]
+    except Exception:  # noqa: BLE001
+        return "cpu"
+    return cards[0] if cards else "cpu"
+
+
 def choose_device(pref: str = "auto", busy: str | None = None, need_gb: float = 3.0) -> str:
     """Where Post renders: the GPU the settings name, else the free GPU with the most memory, else the CPU. ``busy``:
     the GPU a running job holds (never used for Post while it runs). A GPU with less than ``need_gb`` free is skipped."""
     if (pref or "auto").lower() == "cpu":
         return "cpu"
+    if pref and pref != "auto" and not pref.startswith("cuda"):        # another card, named in the settings (beta)
+        return pref if _available(pref) else "cpu"
     n = gpu_count()
     if n == 0:
-        return "cpu"
-    import torch
+        return _first_other()
     free = []
     order = [f"cuda:{i}" for i in range(n)]
     if pref and pref != "auto" and pref in order:
@@ -82,10 +110,10 @@ def choose_device(pref: str = "auto", busy: str | None = None, need_gb: float = 
     for d in order:
         if d == busy:
             continue
-        try:
-            gb = torch.cuda.mem_get_info(int(d.split(":")[1]))[0] / 2 ** 30
-        except Exception:  # noqa: BLE001
+        room = _free(d)
+        if room is None:
             continue
+        gb = room / 2 ** 30
         if gb >= need_gb:
             free.append((d, gb))
     if not free:
@@ -1085,9 +1113,12 @@ class RenderWorker(QThread):
 
 
 def default_device_pref() -> str:
-    """The device of Settings > Compute for Post's renders ('auto', 'cpu', 'cuda:N')."""
+    """The device of Settings > Compute for Post's renders ('auto', 'cpu', 'cuda:N'): the CPU when the card test sent
+    Post there."""
     try:
+        from ...core import selftest
         from .. import prefs
-        return str(prefs.get("device") or "auto")
+        dev = str(prefs.get("device") or "auto")
+        return "cpu" if selftest.stage_on_cpu(prefs.get("compute_profiles"), dev, "post") else dev
     except Exception:  # noqa: BLE001
         return os.environ.get("ASTRO_GPU_DEVICE", "auto")
