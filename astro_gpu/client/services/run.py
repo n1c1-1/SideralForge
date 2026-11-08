@@ -265,8 +265,16 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
          r"choose the Classic stack$",
          "Bayer drizzle does not apply to frames already in colour (no mosaic of raw colour samples to drop): choose "
          "the Classic stack", ()),
-        (r"^only (\d+) stars found in the stack, at least 50 are needed to identify the field: add light frames, or "
-         r"take Astrometry out of this workflow$", "only {0} stars found in the stack, at least 50 are needed to "
+        (r"^the (\d+) stars of this sparse field do not identify it on the sky beyond doubt, so no solution is given "
+         r"rather than a wrong one: take Astrometry out of this workflow$",
+         "the {0} stars of this sparse field do not identify it on the sky beyond doubt, so no solution is given "
+         "rather than a wrong one: take Astrometry out of this workflow", ()),
+        (r"^sparse field: the solution holds (\d+) powers of ten over chance, 9 needed \((\d+) of (\d+) stars\)$",
+         "sparse field: the solution holds {0} powers of ten over chance, 9 needed ({1} of {2} stars)", ()),
+        (r"^reference frame: (.+) aligned too few of the frames \(another field\?\), (.+) is used$",
+         "reference frame: {0} aligned too few of the frames (another field?), {1} is used", ()),
+        (r"^only (\d+) stars found in the stack, at least (\d+) are needed to identify the field: add light frames, or "
+         r"take Astrometry out of this workflow$", "only {0} stars found in the stack, at least {1} are needed to "
                                                    "identify the field: add light frames, or take Astrometry out of "
                                                    "this workflow", ()),
 

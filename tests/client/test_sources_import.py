@@ -308,6 +308,18 @@ def test_a_frame_with_a_useful_area_is_sized_and_said_as_the_engine_reads_it(tmp
             == "zone utile lue dans l'en-tête des images : 3054x2042 sur 3136x2112 pixels, l'overscan laissé de côté"
         assert engine_text("sparse field: 12 frame(s) aligned from a few stars (rotation, shift and scale only)") == \
             "champ peu étoilé : 12 image(s) alignée(s) sur quelques étoiles (rotation, décalage et échelle seulement)"
+        assert engine_text("the 37 stars of this sparse field do not identify it on the sky beyond doubt, so no solution "
+                           "is given rather than a wrong one: take Astrometry out of this workflow") == \
+            "les 37 étoiles de ce champ peu étoilé ne le reconnaissent pas sur le ciel avec certitude : pas de solution " \
+            "plutôt qu'une solution fausse ; retirez l'Astrométrie de ce workflow"
+        assert engine_text("sparse field: the solution holds 117 powers of ten over chance, 9 needed (31 of 37 stars)") \
+            == "champ peu étoilé : la solution tient à 117 puissances de dix au-dessus du hasard, 9 exigées (31 étoiles sur 37)"
+        assert engine_text("reference frame: a.fits aligned too few of the frames (another field?), b.fits is used") == \
+            "image de référence : a.fits alignait trop peu d'images (un autre champ ?), b.fits est prise"
+        assert engine_text("only 5 stars found in the stack, at least 6 are needed to identify the field: add light "
+                           "frames, or take Astrometry out of this workflow") == \
+            "5 étoiles seulement dans l'empilement, il en faut au moins 6 pour reconnaître le champ : ajoutez des " \
+            "brutes, ou retirez l'Astrométrie de ce workflow"
     finally:
         i18n.set_language("en")
 

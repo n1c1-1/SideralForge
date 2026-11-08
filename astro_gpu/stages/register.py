@@ -90,33 +90,58 @@ class Register(Stage):
         if np.median(nst) < SPARSE_MIN_MATCHES:
             raise StageError(f"too few stars detected per frame (median {np.median(nst):.0f}); lower the detection "
                              "threshold or check the focus / exposure")
-        cand = np.where(nst >= np.percentile(nst, 50))[0]
-        mid = cand[(cand > n * 0.3) & (cand < n * 0.7)]
-        cand = mid if len(mid) else cand
-        ref = int(cand[np.argmin(fwhm[cand])])
-        refcat = cats[ref]
-        tree = cKDTree(refcat[:, :2])
-        coef = np.zeros((n, 2, 10))
-        nmatch, rms, transp = np.zeros(n, int), np.full(n, np.inf), np.zeros(n)
-        failed = []
-        recovered = from_few = 0
-        for i in range(n):
-            r = fit_frame(cats[i], refcat, tree, W, H)
-            if r is None and cats[i] is not None and len(cats[i]) >= 30:
-                # no clear vote of the stars (a dense field: the brightest detections change from frame to frame):
-                # the shift from the images themselves (phase correlation), then the same fit (issue #37)
-                sh = phase_shift(mm, i, ref, H, W, info["cfa"])
-                if sh is not None:
-                    r = _fit_from(cats[i], refcat, tree, W, H, cats[i][:, :2] - sh, 8.0)
-                    recovered += r is not None
-            if r is None and sparse:
-                r = fit_sparse(cats[i], refcat, tree, W, H)
-                from_few += r is not None
-            if r is None:
-                failed.append(meta[i]["path"])
-            else:
-                coef[i], nmatch[i], rms[i], transp[i] = r
-            ctx.progress(0.9 + 0.1 * (i + 1) / n, f"aligning frame {i + 1}/{n}")
+
+        def align_on(ref):
+            """Every frame on the reference ``ref``: (ref, its catalogue, its tree, coef, nmatch, rms, transp, failed,
+            recovered, from_few)."""
+            refcat = cats[ref]
+            tree = cKDTree(refcat[:, :2])
+            coef = np.zeros((n, 2, 10))
+            nmatch, rms, transp = np.zeros(n, int), np.full(n, np.inf), np.zeros(n)
+            failed = []
+            recovered = from_few = 0
+            for i in range(n):
+                r = fit_frame(cats[i], refcat, tree, W, H)
+                if r is None and cats[i] is not None and len(cats[i]) >= 30:
+                    # no clear vote of the stars (a dense field: the brightest detections change from frame to frame):
+                    # the shift from the images themselves (phase correlation), then the same fit (issue #37)
+                    sh = phase_shift(mm, i, ref, H, W, info["cfa"])
+                    if sh is not None:
+                        r = _fit_from(cats[i], refcat, tree, W, H, cats[i][:, :2] - sh, 8.0)
+                        recovered += r is not None
+                if r is None and sparse:
+                    r = fit_sparse(cats[i], refcat, tree, W, H)
+                    from_few += r is not None
+                if r is None:
+                    failed.append(meta[i]["path"])
+                else:
+                    coef[i], nmatch[i], rms[i], transp[i] = r
+                ctx.progress(0.9 + 0.1 * (i + 1) / n, f"aligning frame {i + 1}/{n}")
+            return ref, refcat, tree, coef, nmatch, rms, transp, failed, recovered, from_few
+
+        # the reference is that of the session's majority: a frame of another field in the folder aligns almost none
+        # of the others. Another one is tried only then, so that a session aligned on its first reference never pays
+        # for this nor changes
+        kept = None
+        seen = np.zeros(n, bool)
+        order = reference_order(nst, fwhm)
+        tries = 0
+        for r_try in order:
+            if seen[r_try]:                                  # aligned on a reference already tried: the same field
+                continue
+            got = align_on(r_try)
+            tries += 1
+            ok_try = np.isfinite(got[5])
+            seen |= ok_try
+            seen[r_try] = True
+            if kept is None or ok_try.sum() > np.isfinite(kept[5]).sum():
+                kept = got
+            if 2 * ok_try.sum() >= n or tries == REFERENCE_TRIES:
+                break
+        ref, refcat, tree, coef, nmatch, rms, transp, failed, recovered, from_few = kept
+        if ref != order[0]:
+            ctx.log(f"reference frame: {os.path.basename(meta[order[0]]['path'])} aligned too few of the frames (another "
+                    f"field?), {os.path.basename(meta[ref]['path'])} is used")
         if recovered:
             ctx.log(f"{recovered} frame(s) aligned from the shift the images' phase correlation gives (no clear vote "
                     "of their stars)")
@@ -203,6 +228,23 @@ class Register(Stage):
         ok = np.ones(n, bool)
         ctx.metric("drift_px", 0.0)
         ctx.preview("frame_quality", quality_plot(meta, fwhm, transp, ok))
+
+
+#: how many frames are tried as the reference when the first ones align less than half the session
+REFERENCE_TRIES = 5
+
+
+def reference_order(nst: np.ndarray, fwhm: np.ndarray) -> list[int]:
+    """The frames in the order they are tried as the reference: first the sharpest of the middle of the night among
+    those with at least the median number of stars, then the others of that kind by sharpness, then every other."""
+    n = len(nst)
+    rich = np.where(nst >= np.percentile(nst, 50))[0]
+    mid = rich[(rich > n * 0.3) & (rich < n * 0.7)]
+    cand = mid if len(mid) else rich
+    first = int(cand[np.argmin(fwhm[cand])])
+    sharp = np.argsort(fwhm, kind="stable").tolist()
+    in_cand, in_rich = set(cand.tolist()), set(rich.tolist())
+    return list(dict.fromkeys([first, *(i for i in sharp if i in in_cand), *(i for i in sharp if i in in_rich), *sharp]))
 
 
 def moffat_arrays(psf: list) -> dict[str, np.ndarray]:
@@ -388,14 +430,18 @@ SPARSE_MIN_MATCHES = 6
 SPARSE_RMS, SPARSE_SCALE = 1.0, 0.05
 
 
-def _triangles(xy):
-    """(star indices, shape) of the triangles each star makes with its nearest neighbours: its vertices ordered by the
-    length of the opposite side, and the two ratios of its sorted sides (longest / middle, middle / shortest), which
-    neither a rotation, a shift nor a change of scale alters."""
+def _triangles(xy, nearest=True):
+    """(star indices, shape) of the triangles each star makes with its nearest neighbours (``nearest`` False: of every
+    three stars): its vertices ordered by the length of the opposite side, and the two ratios of its sorted sides
+    (longest / middle, middle / shortest), which neither a rotation, a shift nor a change of scale alters."""
     from itertools import combinations
-    k = min(TRIANGLE_NEIGHBOURS, len(xy))
-    near = cKDTree(xy).query(xy, k=k)[1].reshape(len(xy), k)
-    tri = np.array(sorted({tuple(sorted(t)) for row in near.tolist() for t in combinations(row, 3)}), int).reshape(-1, 3)
+    if nearest:
+        k = min(TRIANGLE_NEIGHBOURS, len(xy))
+        near = cKDTree(xy).query(xy, k=k)[1].reshape(len(xy), k)
+        tri = np.array(sorted({tuple(sorted(t)) for row in near.tolist() for t in combinations(row, 3)}), int)
+    else:
+        tri = np.array(list(combinations(range(len(xy)), 3)), int)
+    tri = tri.reshape(-1, 3)
     p = xy[tri]
     side = np.stack([np.hypot(*(p[:, 1] - p[:, 2]).T), np.hypot(*(p[:, 0] - p[:, 2]).T),
                      np.hypot(*(p[:, 0] - p[:, 1]).T)], 1)
@@ -424,6 +470,26 @@ def _similarity(a, b):
     return s, mb[..., 0] - s * ma[..., 0]
 
 
+def triangle_similarities(a, b, nearest=True, max_scale=SPARSE_SCALE):
+    """The similarities z_b = s z_a + t that the triangles of the positions ``a`` similar to one of ``b`` propose: (s, t,
+    the three stars of ``a`` each comes from), those within ``max_scale`` of the unit scale whose triangle lands within
+    STAR_TOL of its match. In a fixed order: no random draw."""
+    none = np.zeros(0, complex), np.zeros(0, complex), np.zeros((0, 3), int)
+    ta, sa = _triangles(a, nearest)
+    tb, sb = _triangles(b, nearest)
+    if not len(ta) or not len(tb):
+        return none
+    near = cKDTree(sa).query_ball_tree(cKDTree(sb), r=TRIANGLE_RADIUS)
+    ia = np.array([i for i, v in enumerate(near) for _ in v], int)
+    ib = np.array([j for v in near for j in sorted(v)], int)
+    if not len(ia):
+        return none
+    p, q = (a[:, 0] + 1j * a[:, 1])[ta[ia]], (b[:, 0] + 1j * b[:, 1])[tb[ib]]
+    s, t = _similarity(p, q)
+    keep = (np.abs(np.abs(s) - 1) < max_scale) & (np.abs(s[:, None] * p + t[:, None] - q).max(1) < STAR_TOL)
+    return s[keep], t[keep], ta[ia][keep]
+
+
 def fit_sparse(cat, ref, tree, W, H):
     """Registration of a frame of a sparse field, where the vote on the shifts has too few stars and the polynomial
     cannot find its 30 matches: the triangle matching of V. Valdes et al. (PASP 107, 1119, 1995) and E. Groth (AJ 91,
@@ -437,21 +503,10 @@ def fit_sparse(cat, ref, tree, W, H):
     if cat is None or min(len(cat), len(ref)) < SPARSE_MIN_MATCHES:
         return None
     a, b = cat[:, :2], ref[:, :2]
-    ta, sa = _triangles(a[:TRIANGLE_STARS])
-    tb, sb = _triangles(b[:TRIANGLE_STARS])
-    if not len(ta) or not len(tb):
-        return None
-    near = cKDTree(sa).query_ball_tree(cKDTree(sb), r=TRIANGLE_RADIUS)
-    ia = np.array([i for i, v in enumerate(near) for _ in v], int)
-    ib = np.array([j for v in near for j in sorted(v)], int)
-    if not len(ia):
-        return None
+    s, t, _ = triangle_similarities(a[:TRIANGLE_STARS], b[:TRIANGLE_STARS])
     za, zb = a[:, 0] + 1j * a[:, 1], b[:, 0] + 1j * b[:, 1]
-    p, q = za[ta[ia]], zb[tb[ib]]
-    s, t = _similarity(p, q)
-    keep = (np.abs(np.abs(s) - 1) < SPARSE_SCALE) & (np.abs(s[:, None] * p + t[:, None] - q).max(1) < STAR_TOL)
     best, top = None, (0, 0.0)
-    for s1, t1 in zip(s[keep], t[keep]):
+    for s1, t1 in zip(s, t):
         z = s1 * za + t1
         i, _, d = _matched(np.c_[z.real, z.imag], tree)
         score = (len(i), -float(np.sum(d ** 2)))

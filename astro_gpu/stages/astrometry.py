@@ -12,6 +12,15 @@ from ..core.stage import Context, Stage, StageError
 
 GOOD_PAIRS = 15     # matched star pairs that make a triangle match certain (false matches raise instead)
 TRIAL_G = 11.0      # the stars of the scale search trials when they are enough (see the search)
+#: under this many stars in the stack, a field is solved by ``_match_sparse``
+SPARSE_FIELD = 50
+#: the fewest stars that can prove a solution: the 3 of the triangle that proposes it, and 3 it did not use
+SPARSE_MIN_STARS = 6
+#: the detected stars, and twice as many catalogue stars, whose triangles are compared (every triple of them)
+SPARSE_TRIANGLE_STARS = 30
+#: the published decision on a solution (D. Lang et al., "Astrometry.net", AJ 139, 1782, 2010, and the defaults of its
+#: solver): the Bayes factor it must reach, the stars' position error (px), the share of stars with no counterpart
+ODDS_TO_SOLVE, VERIFY_PX, DISTRACTORS = 1e9, 1.0, 0.25
 
 
 class AstrometryParams(StageParams):
@@ -116,9 +125,13 @@ class Astrometry(Stage):
         o = np.sort(o[o["flag"] == 0], order="flux")[::-1]
         det = np.c_[o["x"], o["y"]]
         ctx.log(f"{len(det)} stars detected in the stack")
-        if len(det) < 50:
-            raise StageError(f"only {len(det)} stars found in the stack, at least 50 are needed to identify the field: "
-                             f"add light frames, or take Astrometry out of this workflow")
+        if len(det) < SPARSE_MIN_STARS:
+            raise StageError(f"only {len(det)} stars found in the stack, at least {SPARSE_MIN_STARS} are needed to "
+                             f"identify the field: add light frames, or take Astrometry out of this workflow")
+        sparse = len(det) < SPARSE_FIELD
+        unproved = StageError(f"the {len(det)} stars of this sparse field do not identify it on the sky beyond doubt, so "
+                              "no solution is given rather than a wrong one: take Astrometry out of this workflow")
+        odds = 0.0
         if ra0 is None or dec0 is None:
             if not p.blind:
                 raise StageError("the approximate field centre is unknown: enter the target name or its RA/Dec")
@@ -179,6 +192,12 @@ class Astrometry(Stage):
                     continue
                 if len(gm) < 20:
                     continue
+                if sparse:
+                    res = _match_sparse(gs, gm, ra0, dec0, sc, W, H, det, off, fw, fh, tol, flips)
+                    if res is not None:
+                        best, odds = (*res[:4], sc, glim, radius), res[4]
+                        break
+                    continue
                 seen: list[float] = []
                 # scale unknown: 60 control points per trial (a vain trial costs ~2 s instead of ~70 s), and the
                 # scale that matches is matched again with the usual 100, as when the scale is known
@@ -198,7 +217,7 @@ class Astrometry(Stage):
                         ctx.log(f"stars matched at {sc:.2f}\"/px trial: the image scale is about {s2:.2f}\"/px")
                         queue.insert(0, s2)
                         break
-            if best is not None and best[2] >= GOOD_PAIRS:
+            if best is not None and (sparse or best[2] >= GOOD_PAIRS):
                 break
         if best is None and p.blind:
             ctx.log("guided search failed: trying the all-sky blind solver", "warning")
@@ -207,21 +226,33 @@ class Astrometry(Stage):
             glim = float(np.clip(12.5 - 1.25 * np.log10(max(fw * fh, 1e-3) / 37.0), 10.5, 16.0))
             radius = 0.5 * np.hypot(fw, fh) * (1 + 2 * p.search_offsets) + 0.2
             gs, gm = gaia_bright(ra0, dec0, radius, glim, ctx.log)
-            res = _match(gs, gm, ra0, dec0, sc_b, W, H, brightdet, 0.0, fw, fh, aa, 0.15, flips)
-            if res is not None:
-                best = (*res, sc_b, glim, radius)
+            if sparse:
+                res = _match_sparse(gs, gm, ra0, dec0, sc_b, W, H, det, 0.0, fw, fh, 0.15, flips)
+                if res is not None:
+                    best, odds = (*res[:4], sc_b, glim, radius), res[4]
+            else:
+                res = _match(gs, gm, ra0, dec0, sc_b, W, H, brightdet, 0.0, fw, fh, aa, 0.15, flips)
+                if res is not None:
+                    best = (*res, sc_b, glim, radius)
         if best is None:
+            if sparse:
+                raise unproved
             raise StageError("the stars of the image match no star of the catalogue: check the target or its "
                              "coordinates, and the focal length and pixel size")
         flip, T, nm, crval, sc, glim, radius = best
         w0 = _tan(crval[0], crval[1], sc, W, H)
         ctx.log(f"triangle match: {nm} stars, scale {sc * T.scale:.3f}\"/px, mirror {flip}")
+        if sparse:
+            ctx.log(f"sparse field: the solution holds {odds / np.log(10):.0f} powers of ten over chance, 9 needed "
+                    f"({nm} of {len(det)} stars)")
+        # with a few dozen stars, a distortion polynomial would follow their noise
+        sip = None if sparse else (p.sip_order or None)
         q = det[:4000].copy()
         if flip:
             q[:, 1] = H - 1 - q[:, 1]
         pred = T(q)
         sky = w0.pixel_to_world(pred[:, 0], pred[:, 1])
-        w1 = fit_wcs_from_points((det[:4000, 0], det[:4000, 1]), sky, projection="TAN", sip_degree=p.sip_order or None)
+        w1 = fit_wcs_from_points((det[:4000, 0], det[:4000, 1]), sky, projection="TAN", sip_degree=sip)
         gs, gm = gaia_bright(ra0, dec0, radius, glim, ctx.log)
         res = None
         for it, tol in enumerate((3.0, 1.5, 1.0)):
@@ -231,10 +262,14 @@ class Astrometry(Stage):
             tr = cKDTree(det[:8000])
             dd, j = tr.query(np.c_[gx[ins], gy[ins]], distance_upper_bound=tol)
             m = np.isfinite(dd)
+            if sparse and m.sum() < SPARSE_MIN_STARS:
+                raise unproved
             w1 = fit_wcs_from_points((det[:8000][j[m], 0], det[:8000][j[m], 1]), gs[ins][m], projection="TAN",
-                                     sip_degree=p.sip_order or None)
+                                     sip_degree=sip)
             gx2, gy2 = w1.world_to_pixel(gs[ins][m])
             res = np.hypot(gx2 - det[:8000][j[m], 0], gy2 - det[:8000][j[m], 1])
+        if sparse and float(np.median(res)) > VERIFY_PX:
+            raise unproved
         fits.PrimaryHDU(header=w1.to_header(relax=True)).writeto(ctx.out("wcs.fits"), overwrite=True)
         c = w1.pixel_to_world(W / 2, H / 2)
         scale = abs(w1.proj_plane_pixel_scales()[0].to_value("arcsec"))
@@ -419,6 +454,66 @@ def _match(gs, gm, ra0, dec0, sc, W, H, brightdet, off, fw, fh, aa, tol, flips=(
         if best is not None and best[2] >= GOOD_PAIRS:
             break
     return best
+
+
+def log_odds(pred, cat, s, t, tree, W, H, used) -> tuple[float, int]:
+    """(natural log of the Bayes factor of a solution, stars matched) by the decision of Lang et al. 2010 (section 2.4):
+    against the hypothesis that the stars fall anywhere in the image (1 / area), each star either has no counterpart
+    (DISTRACTORS of them) or lies in a Gaussian of VERIFY_PX around one of the catalogue stars the solution puts in the
+    frame. ``pred``: the stars' positions through the solution, complex; ``cat``: the catalogue's; ``used``: the three
+    stars that proposed the solution, which prove nothing and are left out of the product (they still count as
+    matched); a catalogue star is taken once, by its nearest star. Every other star counts, so that stars that match
+    nothing weigh against the solution."""
+    z = (cat - t) / s
+    n_ref = int(((z.real >= 0) & (z.real < W) & (z.imag >= 0) & (z.imag < H)).sum())
+    if n_ref == 0:
+        return -np.inf, 0
+    rest = np.delete(pred, used)
+    d, j = tree.query(np.c_[rest.real, rest.imag], distance_upper_bound=3 * VERIFY_PX)
+    hit = np.where(np.isfinite(d))[0]
+    hit = hit[np.argsort(d[hit], kind="stable")]
+    hit = hit[np.unique(j[hit], return_index=True)[1]]
+    fg = (1 - DISTRACTORS) / n_ref * np.exp(-d[hit] ** 2 / (2 * VERIFY_PX ** 2)) / (2 * np.pi * VERIFY_PX ** 2)
+    lo = float(np.log(DISTRACTORS + W * H * fg).sum() + (len(rest) - len(hit)) * np.log(DISTRACTORS))
+    return lo, len(hit) + len(used)
+
+
+def _match_sparse(gs, gm, ra0, dec0, sc, W, H, det, off, fw, fh, tol, flips):
+    """The field of a stack of few stars on the catalogue: (mirror, transform, matched stars, centre, log odds) or None.
+    Every triple of its brightest stars and of the catalogue's (the triangle matching of Groth 1986 and Valdes et al.
+    1995: the nearest-neighbour triangles of the frames' registration need two lists of the same stars, which a list
+    of detections and a catalogue are not) proposes a similarity; the one the stars prove best stands if its Bayes
+    factor reaches ODDS_TO_SOLVE (``log_odds``). No random draw: the same stars give the same solution."""
+    from scipy.spatial import cKDTree
+    from skimage.transform import SimilarityTransform
+
+    from .register import triangle_similarities
+    for ra, dec in _centres(ra0, dec0, off, fw, fh):
+        w0 = _tan(ra, dec, sc, W, H)
+        px, py = w0.world_to_pixel(gs)
+        inb = (px > -0.15 * W) & (px < 1.15 * W) & (py > -0.15 * H) & (py < 1.15 * H)
+        if inb.sum() < SPARSE_MIN_STARS:
+            continue
+        gpos = np.c_[px[inb], py[inb]][np.argsort(gm[inb], kind="stable")]
+        gz = gpos[:, 0] + 1j * gpos[:, 1]
+        tree = cKDTree(gpos)
+        for flip in flips:
+            q = det.copy()
+            if flip:
+                q[:, 1] = H - 1 - q[:, 1]
+            sim, tra, tri = triangle_similarities(q[:SPARSE_TRIANGLE_STARS], gpos[:2 * SPARSE_TRIANGLE_STARS],
+                                                  nearest=False, max_scale=tol)
+            zq = q[:, 0] + 1j * q[:, 1]
+            best = None
+            for s, t, used in zip(sim, tra, tri):
+                lo, nm = log_odds(s * zq + t, gz, s, t, tree, W, H, used)
+                if best is None or lo > best[0]:
+                    best = (lo, nm, s, t)
+            if best is not None and best[0] >= np.log(ODDS_TO_SOLVE):
+                lo, nm, s, t = best
+                T = SimilarityTransform(matrix=np.array([[s.real, -s.imag, t.real], [s.imag, s.real, t.imag], [0, 0, 1]]))
+                return flip, T, nm, list(w0.wcs.crval), lo
+    return None
 
 
 _GAIA_CACHE: dict = {}
