@@ -769,12 +769,15 @@ def browse_group(p, wid: int | None, kind: str, headers: dict | None = None, ses
     for s in p.sessions:
         if session is not None and s.id != session:
             continue
-        for f in _files(p, getattr(s, kind)):
+        # a Calibration placed in parallel lists its own files
+        for f in _files(p, getattr(p.own_session(wid, s.id) if wid is not None else s, kind)):
             listed.append((s.id, f, False))
     if kind != "lights":                           # a calibration frame left out: still shown, to take it back
         seen = {norm_path(f) for _sid, f, _x in listed}
+        own = (p.workflow(wid).calibration or {}) if wid is not None else {}
         for sid, f in calibration_left_out(p, kind, seen):
-            listed.append((sid, f, True))
+            if str(sid) not in own:                # its own frames are taken out of its list, not left out
+                listed.append((sid, f, True))
     for sid, f, left_out in listed:
         norm = norm_path(f)
         it = FrameItem(str(f), f.name, kind, sid)

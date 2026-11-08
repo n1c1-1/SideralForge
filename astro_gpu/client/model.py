@@ -1355,10 +1355,9 @@ class ProjectModel(QObject):
             return _(wfl.MONO_NO_COLOUR)
         if block == "stars" and is_fusion_view(p):
             return _(FUSION_STARS)
-        if block == "calibration" and p.source is None and self.separate_sessions() and \
-                any(n["block"] == "calibration" for n in self.graph(p)):
-            return _("Calibration: one per session")
         e = wfl.palette_problem(self.graph(p), self.source_kind(p), block)
+        if e is not None and block == "calibration" and self._nights_as_one(p):
+            return _("calibrate per night first")   # one Calibration of all the nights: none to set beside it
         return refused_text(e) if e is not None else ""
 
     def gives_post(self, p) -> bool:
@@ -1677,8 +1676,35 @@ class ProjectModel(QObject):
             n += 1
         return _("Session {n}").format(n=n)
 
+    def _nights_as_one(self, p: WorkflowView) -> bool:
+        """Several nights of a workflow calibrated together (a project made before they could be apart)."""
+        return p.source is None and len(self.sessions_of(p)) > 1 and not self.separate_sessions()
+
+    def branch_keys(self, p: WorkflowView) -> list[str]:
+        """The blocks a new branch can start after, in order: the Session (a Calibration in parallel), then the
+        workflow's blocks; each night's Session when the nights are calibrated apart."""
+        keys = list(self.display_keys(p))
+        if p.source is not None:
+            return keys
+        sep = self.separate_sessions()
+        if sep and any(n["block"] == "calibration" for n in self.graph(p)):
+            keys.insert(0, "calibration")                 # drawn before the chain, one per night
+        mine = self.sessions_of(p)
+        return ([f"session@{sid}" for sid in sep if sid in mine] if sep else ["sources"]) + keys
+
+    def _branch_night(self, p: WorkflowView, key: str) -> int | None:
+        """The night a Calibration in parallel is placed on, from the Session block it follows."""
+        if key == "sources":
+            mine = self.sessions_of(p)
+            return mine[0] if len(mine) == 1 else None
+        return int(key.partition("@")[2]) if key.startswith("session@") else None
+
     def can_branch(self, p: WorkflowView, key: str, block: str) -> bool:
-        """Whether ``block`` can start a new branch right after the block ``key`` of a workflow (issue #47)."""
+        """Whether ``block`` can start a new branch right after the block ``key`` of a workflow (issue #47); after a
+        Session (``branch_keys``), a Calibration beside the workflow's own."""
+        if key == "sources" or key.startswith("session@"):
+            return block == "calibration" and p.source is None and self._branch_night(p, key) is not None and \
+                any(n["block"] == "calibration" for n in self.graph(p))
         if block == "color" and self.is_mono(p):
             return False
         g = self.graph(p)
@@ -1692,30 +1718,122 @@ class ProjectModel(QObject):
         """A new branch (issue #47): a workflow with the same source, sessions and settings as ``p``, its graph up to
         the block ``key``, then ``block``. What they share is computed once (the same keys) and drawn once, as a fork.
         Returns the branch and its new block's key."""
+        if not self.can_branch(p, key, block):
+            raise ValueError(self.palette_reason(p, block) or _("no branch from here"))
+        night = self._branch_night(p, key)
         g = self.graph(p)
         i = self.node_index(p, key)
-        if i is None or not self.can_branch(p, key, block):
-            raise ValueError(self.palette_reason(p, block) or _("no branch from here"))
-        head = [dict(n) for n in g[:i + 1]]
+        head = [dict(n) for n in g[:i + 1]] if night is None else []
         method = None
-        nxt = g[i + 1] if i + 1 < len(g) else None
+        nxt = g[i + 1] if i is not None and i + 1 < len(g) else None
         if nxt is not None and nxt["block"] == block and block in wfl.METHODS:
             # the same block with the same method would be the same result, drawn once: the branch tries another one
             method = next((m for m in wfl.METHODS[block] if m != nxt["method"]), None)
         n = wfl.node(block, method, name=wfl.new_name(head, block))
         head.append(n)
+        flow = p.name.partition(" · ")[0]                 # beside a block of the frames: named from the flow it leaves,
+        if block not in wfl.FRAME_BLOCKS or flow not in {w.name for w in self.p.workflows}:     # not the last branch
+            flow = p.name
         with self._edit():                                # named by its block's kind, numbered as names are (not the
             # block's own "~2", which made "Ha · Gradient 2 2"; GUI exploration 4)
-            w = api.add_workflow(self.p, self.unique_name(self.branch_name(p.name, node_key(n))), None, None,
+            w = api.add_workflow(self.p, self.unique_name(self.branch_name(flow, node_key(n))), None, None,
                                  copy_of=p.pid)
             x = self.p.workflow(w.id)
             x.source = copy.deepcopy(self.p.workflow(p.pid).source)
             x.sessions = copy.deepcopy(self.p.workflow(p.pid).sessions)
             x.end = None
+            if night is not None:                         # beside the Calibration: this night's own, the others as
+                x.calibration = {**(x.calibration or {}), str(night): {"fork": w.id}}      # in the workflow it left
+            elif block in wfl.FRAME_BLOCKS:               # a frame block is drawn on its own, even while it computes
+                head[-1]["fork"] = w.id                   # the same as the one beside it (computed once)
             self.p.set_blocks(w.id, head)
             self._fresh_settings(w.id, n)                 # its new block: from its defaults (question 9)
             self.p.validate()
-        return self._view_of(w.id), node_key(n)
+        new = node_key(n)
+        return self._view_of(w.id), f"{new}@{night}" if night is not None and self.separate_sessions() else new
+
+    # ------------------------------------------------------------ a Calibration placed in parallel
+    def calibration_fork(self, p: WorkflowView, sid: int) -> int | None:
+        """What tells a Calibration placed in parallel on a night from the others; None: the session's calibration."""
+        try:
+            own = (self.p.workflow(p.pid).calibration or {}).get(str(sid))
+        except KeyError:
+            return None
+        return own["fork"] if own else None
+
+    def own_calibration_night(self, p: WorkflowView, sid: int | None = None) -> int | None:
+        """The night of a workflow's Calibration placed in parallel (``sid``: that one, when it has one): None when
+        the workflow calibrates as its sessions say."""
+        try:
+            own = self.p.workflow(p.pid).calibration or {}
+        except KeyError:
+            return None
+        return next((int(n) for n in own if sid is None or int(n) == sid), None)
+
+    def same_calibration(self, p: WorkflowView, sid: int) -> list[WorkflowView]:
+        """The workflows going through a Calibration placed in parallel on a night ([] for a Session's own)."""
+        mark = self.calibration_fork(p, sid)
+        return [] if mark is None else [q for q in self.paths if self.calibration_fork(q, sid) == mark]
+
+    def calibration_follows(self, p: WorkflowView, sid: int, kind: str) -> bool:
+        """Whether a Calibration placed in parallel still takes a kind of frames from its Session."""
+        return kind not in ((self.p.workflow(p.pid).calibration or {}).get(str(sid)) or {})
+
+    def calibration_files(self, p: WorkflowView, sid: int, kind: str) -> list[str]:
+        """The files of a kind a workflow's Calibration reads for a night (its own, else its Session's)."""
+        if self.calibration_follows(p, sid, kind):
+            return self.session_files(sid, kind)
+        return [self.p.abspath(f) for f in self.p.workflow(p.pid).calibration[str(sid)][kind]]
+
+    def _set_calibration_files(self, paths: list[WorkflowView], sid: int, kind: str, files: list[str] | None) -> None:
+        with self._edit():
+            for q in paths:
+                own = self.p.workflow(q.pid).calibration[str(sid)]
+                if files is None:
+                    own.pop(kind, None)
+                else:
+                    own[kind] = list(files)
+            self.p.validate()
+
+    def add_calibration_files(self, paths: list[WorkflowView], sid: int, kind: str, files) -> int:
+        """Files added to a Calibration placed in parallel (``paths``: the workflows going through it): the kind stops
+        following its Session. Returns how many were new."""
+        cur = self.calibration_files(paths[0], sid, kind)
+        have = {norm_path(f) for f in cur}
+        new = [Path(f).as_posix() for f in files if norm_path(f) not in have]
+        if new:
+            self._set_calibration_files(paths, sid, kind, cur + new)
+        return len(new)
+
+    def remove_calibration_files(self, paths: list[WorkflowView], sid: int, kind: str, files) -> bool:
+        """Files taken out of a Calibration placed in parallel (the files themselves are never touched)."""
+        cur = self.calibration_files(paths[0], sid, kind)
+        gone = {norm_path(f) for f in files}
+        keep = [f for f in cur if norm_path(f) not in gone]
+        if len(keep) == len(cur):
+            return False
+        self._set_calibration_files(paths, sid, kind, keep)
+        return True
+
+    def follow_session(self, paths: list[WorkflowView], sid: int, kind: str) -> None:
+        """A kind of a Calibration placed in parallel given back to its Session."""
+        self._set_calibration_files(paths, sid, kind, None)
+
+    def remove_own_calibration(self, p: WorkflowView, sid: int) -> None:
+        """A Calibration placed in parallel taken out: the workflow calibrates that night as its Session says again."""
+        with self._edit():
+            w = self.p.workflow(p.pid)
+            own = dict(w.calibration or {})
+            own.pop(str(sid), None)
+            w.calibration = own or None
+
+    def _forks(self, q: WorkflowView) -> tuple:
+        """What sets a workflow's Calibrations placed in parallel apart: its nights' and each one's mark."""
+        try:
+            own = self.p.workflow(q.pid).calibration or {}
+        except KeyError:
+            return ()
+        return tuple(sorted((int(n), e["fork"]) for n, e in own.items()))
 
     def can_send_to_post(self, p: WorkflowView, key: str) -> bool:
         """Whether a block's image can be sent to Post as a layer of its own (issue #47): a block giving an image, not
@@ -1728,19 +1846,22 @@ class ProjectModel(QObject):
             return False
         if i == len(g) - 1 or all(n.get("off") for n in g[i + 1:]):
             return False
-        head = [node_key(n) for n in g[:i + 1]]
+        head = [(node_key(n), n.get("fork")) for n in g[:i + 1]]
         return not any(q.pid != p.pid and q.source == p.source and self.sessions_of(q) == self.sessions_of(p)
-                       and [node_key(n) for n in self.graph(q)] == head for q in self.paths)
+                       and self._forks(q) == self._forks(p)
+                       and [(node_key(n), n.get("fork")) for n in self.graph(q)] == head for q in self.paths)
 
     def is_sent_branch(self, p: WorkflowView) -> bool:
         """Whether a workflow is only a block's image sent to Post: its blocks are the first blocks of another workflow
         of the same source, nothing of its own after them (question 1: its wire taken away, it goes)."""
         def nodes(q):                                     # a block with its method: another method is its own
-            return [(node_key(n), n.get("method"), bool(n.get("off"))) for n in self.graph(q) if n["block"] != "output"]
+            return [(node_key(n), n.get("method"), bool(n.get("off")), n.get("fork")) for n in self.graph(q)
+                    if n["block"] != "output"]
         mine = nodes(p)
         if not mine or not self.is_graph(p):
             return False
         return any(q.pid != p.pid and q.source == p.source and self.sessions_of(q) == self.sessions_of(p)
+                   and self._forks(q) == self._forks(p)
                    and nodes(q)[:len(mine)] == mine and len(nodes(q)) > len(mine) for q in self.paths)
 
     def is_emptied_branch(self, p: WorkflowView) -> bool:
@@ -1748,13 +1869,15 @@ class ProjectModel(QObject):
         trunk), or all of them. Its last own block deleted, it goes with it (control round: it stayed, sending the
         trunk's image). A branch is named after its trunk ("Workflow · Color", as made and as its name follows): two
         workflows of their own (two templates) are never one's branch."""
-        mine = [(node_key(n), n.get("method"), bool(n.get("off"))) for n in self.graph(p) if n["block"] != "output"]
+        def nodes(q):
+            return [(node_key(n), n.get("method"), bool(n.get("off")), n.get("fork")) for n in self.graph(q)
+                    if n["block"] != "output"]
+        mine = nodes(p)
         if not mine:
             return False
         return any(q.pid < p.pid and p.name.startswith(q.name + " · ") and q.source == p.source
-                   and self.sessions_of(q) == self.sessions_of(p)
-                   and [(node_key(n), n.get("method"), bool(n.get("off"))) for n in self.graph(q)
-                        if n["block"] != "output"][:len(mine)] == mine for q in self.paths)
+                   and self.sessions_of(q) == self.sessions_of(p) and self._forks(q) == self._forks(p)
+                   and nodes(q)[:len(mine)] == mine for q in self.paths)
 
     def send_to_post(self, p: WorkflowView, key: str, name: str) -> WorkflowView:
         """A block's image as a layer of Post (issue #47): a branch of ``p`` up to that block, its Output its own;
@@ -2123,6 +2246,8 @@ class ProjectModel(QObject):
             for w in self.p.workflows:
                 for k in [k for k in w.params if k.endswith(f"@{sid}")]:
                     del w.params[k]
+                if w.calibration and str(sid) in w.calibration:    # its Calibration placed in parallel on that night
+                    w.calibration = {n: e for n, e in w.calibration.items() if n != str(sid)} or None
             for w in list(self.p.workflows):              # a flow of that session alone goes with it (issue #47)
                 if w.source is None and w.sessions is not None and sid in w.sessions:
                     w.sessions = [x for x in w.sessions if x != sid]
@@ -2320,17 +2445,26 @@ class ProjectModel(QObject):
         """What two workflows must have equal to share a block (with everything before it): the keys of its stages
         (the engine's ``blocks``); Selection is the thresholds (it has no stage of its own); Output has the
         workflow's id."""
+        # a Calibration or another frame block placed in parallel is a block of its own, and what follows it too, even
+        # while they compute the same (one result): the user set it there
+        own = (self.node_fork(p, key), self._forks(p))
         if key == "selection":
             st = p.params.get("stack") or {}
-            return ("selection", st.get("min_transparency"), st.get("max_fwhm_ratio"),
+            base = ("selection", st.get("min_transparency"), st.get("max_fwhm_ratio"),
                     st.get("selection", "min_weight"), st.get("selection_transparency", "on"))
+            return base + own if own != (None, ()) else base
         ref = next((b for b in self._blocks.get(p.pid, []) if view_key(b.block) == key), None)
         # GUI exploration 2: flows of other sessions are never one chain, even before their frames give them other
         # keys (a filters template's); two Image blocks without a file are two blocks (decision 4); a second Fusion
         # is its own block (decision 2)
-        own = p.pid if is_fusion_view(p) or (isinstance(p.source, dict) and "path" in p.source
-                                            and not p.source.get("path")) else None
-        return (key, ref.key if ref is not None else (), tuple(sorted(self.sessions_of(p))), own)
+        mine = p.pid if is_fusion_view(p) or (isinstance(p.source, dict) and "path" in p.source
+                                             and not p.source.get("path")) else None
+        base = (key, ref.key if ref is not None else (), tuple(sorted(self.sessions_of(p))), mine)
+        return base + own if own != (None, ()) else base
+
+    def node_fork(self, p: WorkflowView, key: str) -> int | None:
+        """The mark of a frame block placed in parallel (``wfl.node``), None for the others."""
+        return next((n.get("fork") for n in self.graph(p) if node_key(n) == key), None)
 
     def title(self, stage: str) -> str:
         names = {"inventory": "Inventory", "calibrate": "Calibration", "register": "Registration",

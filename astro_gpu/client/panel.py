@@ -1175,6 +1175,9 @@ class Panel(QWidget):
                 self.bv.addWidget(self.group_title(_("Measurements")))
                 self.bv.addWidget(kv(facts, pad=10))
                 self.bv.addSpacing(6)
+        if k == "calibration":              # a Calibration placed in parallel: its own frames
+            from .ownframes import own_frames
+            own_frames(self, node, p)
         if k == "etoiles":                  # what the block gives first: its two images, and where they go
             self.outputs(node)
         if k.partition("~")[0] in ("fond", "debruitage", "etoiles", "deconv"):     # Gradient 2 too (round 3)

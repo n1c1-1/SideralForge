@@ -1832,6 +1832,10 @@ class TuneView(QWidget):
         if not todo:
             return {"done": 0, "emptied": []}
         kind = todo[0].kind
+        own = self._own_series(todo[0].session)
+        if own:                                           # its own list: the files leave it (Ctrl+Z brings them back)
+            self.s.remove_calibration_files(own, todo[0].session, kind, [it.path for it in todo])
+            return {"done": len(todo), "emptied": []}
         res = self.s.leave_out_calibration([(it.session, it.kind, it.path) for it in todo],
                                            [(g.session, g.kind, g.path, g.excluded) for g in items
                                             if g.session is not None])
@@ -1866,6 +1870,14 @@ class TuneView(QWidget):
                 return False
             prefs.remember_folder(folder)
         P = self.s.p
+        night = self.s.own_calibration_night(self._cur[0]) if self._cur is not None else None
+        if night is not None:                             # a Calibration placed in parallel: into its own list
+            from ..core.project import list_frames
+            n = self.s.add_calibration_files(self.s.same_calibration(self._cur[0], night), night, kind,
+                                             [str(f) for f in list_frames([folder])])
+            if n:
+                self.toasted.emit(_("Folder added · Calibration to recompute"))
+            return bool(n)
         targets = [x.id for x in P.sessions if not getattr(x, kind)] or [x.id for x in P.sessions]
         done = [sid for sid in targets if self.s.add_calibration_folder(sid, kind, folder)]
         if done:
@@ -1877,8 +1889,18 @@ class TuneView(QWidget):
         d = self.__dict__.setdefault("_seq_pos", {})
         return d
 
+    def _own_series(self, sid) -> list:
+        """The workflows going through the Calibration placed in parallel shown on this night ([] for a Session's)."""
+        p = self._cur[0] if self._cur is not None else self.s.path
+        return self.s.same_calibration(p, sid) if p is not None and sid is not None else []
+
     def _cal_exclude(self, items, i: int, excluded: bool, group=None):
         it = items[i]
+        own = self._own_series(it.session) if excluded else []
+        if own:                                           # its own list: the file leaves it, Ctrl+Z brings it back
+            self.s.remove_calibration_files(own, it.session, it.kind, [it.path])
+            self.toasted.emit(_("{file} out of master · Calibration to recompute").format(file=it.name))
+            return
         self._mark_exclusion()
         if not si.set_calibration_excluded(self.s, it, excluded, group if group is not None else items):
             self._excl_mark = None

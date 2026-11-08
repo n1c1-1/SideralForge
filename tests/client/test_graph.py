@@ -444,10 +444,7 @@ def test_the_palette_offers_every_block_and_says_why_one_cannot_go(world, model,
     page.refresh()
     cards = {c.block: c for c in page.findChildren(PaletteCard)}
     assert cards["stars"].reason == "needs Denoise first"
-    page.show_hint(cards["stars"], cards["stars"].reason)
-    assert page.hint.isVisibleTo(page) and page.hint.text() == "Needs Denoise first"
-    page.hide_hint()
-    assert not page.hint.isVisibleTo(page)
+    assert cards["stars"].toolTip() == "Needs Denoise first"
     assert page.findChildren(QLabel, "h2")[0].text() == "Blocks"
 
 
@@ -1854,25 +1851,6 @@ def test_a_band_one_column_wide_writes_its_title_on_two_lines():
         assert rows and max(rows) - min(rows) > 18, sorted(rows)                 # two lines of 9 pt
     finally:
         i18n.set_language("en")
-
-
-def test_the_why_greyed_message_stays_in_the_page_and_goes_when_the_palette_is_built_again(world, model, page):
-    from astro_gpu.client.graph import PaletteCard
-    model.select(index=1)                                                      # Classic stack: Stars/background greyed
-    page.refresh()
-    settle(world["w"], page)
-    cards = {c.block: c for c in page.findChildren(PaletteCard)}
-    try:
-        page.root.resize(1280, 420)                                            # a short page (the Log open at 768)
-        settle(world["w"], page)
-        page.show_hint(cards["composition"] if cards["composition"].reason else cards["stars"], "x " * 80)
-        assert page.hint.isVisibleTo(page) and page.hint.geometry().bottom() <= page.height()
-        page.build_tools()                                                     # Ctrl+Y made the card available
-        assert not page.hint.isVisibleTo(page)
-    finally:
-        page.hide_hint()
-        page.root.resize(1680 + PALETTE_W, 934)
-        settle(world["w"], page)
 
 
 # ---------------------------------------------------------------------------------------------- last

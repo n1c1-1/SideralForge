@@ -204,6 +204,13 @@ def gone_kinds(s, sids=None) -> set[str]:
     return out
 
 
+def own_calibration_summary(s, p, sid: int) -> str:
+    """Under a Calibration placed in parallel: its counts, and whether they are its own or still its Session's."""
+    n = {k: len(s.calibration_files(p, sid, k)) for k in ("darks", "flats")}
+    follows = all(s.calibration_follows(p, sid, k) for k in ("darks", "flats", "bias", "flat_darks"))
+    return (_("as Session") if follows else _("own files")) + " · " + calibration_counts(n["darks"], n["flats"])
+
+
 def session_summary(s, sid: int) -> str:
     """Under a Session block's name: its lights, its calibration frames, its filter; a kind whose folder is not
     found says so (GUI exploration 4)."""
@@ -229,6 +236,8 @@ def node_title(s, n) -> str:
         return _("Output")
     if n.key == "composition" and n.num:              # several Recombine blocks: all numbered, top to bottom, as
         return f"{block_title(None, 'composition')} {n.num}"     # Gradient 1, Gradient 2 (control round)
+    if n.num and n.key in FRAME_KEYS:                 # frame blocks placed in parallel, the same way
+        return f"{block_title(None, n.key)} {n.num}"
     if n.key in ("fusion", "image") and n.paths:      # several Fusions, several Images: numbered in the project's
         src = "fusion" if n.key == "fusion" else "path"            # order (exploration 2, control round); a branch
         bk = getattr(s, "block_key", None)                         # shares its source's block: counted once (round 4:
@@ -338,7 +347,8 @@ class Node:
     grey: str = ""                             # why it cannot run (a cut before it), translated; "" when it can
     broken: str = ""                           # why it cannot run at all (a fusion's channel gone...): circled in red
     slot: int = -1                             # an image block: its rank among its workflow's image blocks (#47)
-    num: int = 0                               # a Recombine block among several: its number (control round)
+    num: int = 0                               # a Recombine block among several, or a frame block among those
+    #                                            placed in parallel: its number (control round)
     _bk: object = None
 
     @property
@@ -370,6 +380,8 @@ class Graph:
         self.by_path: dict[int, dict[str, Node]] = {}
         #: issue #43: (Session block, its Calibration block) per session calibrated on its own
         self.sessions: list[tuple[Node, Node]] = []
+        #: the Calibration blocks placed in parallel on a night, drawn under its own (session -> blocks)
+        self.calib_forks: dict[int, list[Node]] = {}
         sids = project.separate_sessions() if hasattr(project, "separate_sessions") else []
         uses = getattr(project, "sessions_of", None)
         for sid in sids:
@@ -379,9 +391,20 @@ class Graph:
                      or any(n["block"] == "calibration" for n in model_.graph(q))]      # #47: placed, or not drawn
             # switched off: one Calibration block for every session of the workflow, each drawn so (GUI exploration 2)
             off = bool(calib) and all(getattr(model_, "is_cut", lambda q, k: False)(q, "calibration") for q in calib)
-            sn, cn = Node("session", mine, sid=sid), Node("calibration", calib, sid=sid, cut=off)
+            fork = getattr(model_, "calibration_fork", lambda q, n: None)
+            sn, cn = Node("session", mine, sid=sid), Node("calibration", [q for q in calib if fork(q, sid) is None],
+                                                          sid=sid, cut=off)
             self.sessions.append((sn, cn))
             self.nodes += [sn, cn]
+            apart: dict[int, list] = {}                # night's Calibrations placed in parallel, each with its workflows
+            for q in calib:
+                if fork(q, sid) is not None:
+                    apart.setdefault(fork(q, sid), []).append(q)
+            for mark in sorted(apart):
+                n = Node("calibration", apart[mark], sid=sid, cut=all(getattr(model_, "is_cut", lambda q, k: False)(
+                    q, "calibration") for q in apart[mark]))
+                self.calib_forks.setdefault(sid, []).append(n)
+                self.nodes.append(n)
         model = getattr(project, "model", None) or project
         for p in project.paths:
             cur = self.root
@@ -389,6 +412,7 @@ class Graph:
             for sn, cn in self.sessions:
                 if p in sn.paths:
                     self.by_path[p.pid][sn.ref], self.by_path[p.pid][cn.ref] = sn, cn
+                    self.by_path[p.pid][cn.ref] = next((n for n in self.calib_forks.get(sn.sid, []) if p in n.paths), cn)
             rank = 0
             for k in chain(p):
                 cut = bool(getattr(model, "is_cut", None)) and model.is_cut(p, k)
@@ -485,6 +509,7 @@ class Graph:
                 if src is not None:
                     self.nodes.append(Node("composition", [p], src, grey=_("after the lights")))
         self._fold_outputs(project)
+        self._number_parallel(model)
         for p in project.paths:                       # several Recombine blocks of a workflow: each its number, its
             mine = [n for n in self.compositions if p in n.paths]   # layer's ("Full · Recombine 2"), the first 1
             if len(mine) > 1:                         # (control round: as Gradient 1, Gradient 2)
@@ -501,6 +526,24 @@ class Graph:
                                                   for i in src["fusion"]["inputs"]
                                                   if i["pid"] in self.leaves and self.leaves[i["pid"]] is not n}.values())
         self.nodes.append(self.final)
+
+    def _number_parallel(self, model):
+        """Frame blocks placed in parallel: all of a kind numbered, as a block placed twice in a chain, so that two
+        alike are never two of the same name. A night's Calibrations, among themselves."""
+        fork = getattr(model, "node_fork", lambda q, k: None)
+        night = getattr(model, "own_calibration_night", lambda q, s=None: None)
+
+        def number(group):
+            for i, n in enumerate(group):
+                n.num = i + 1
+        for k in FRAME_KEYS:
+            shown = [n for n in self.nodes if n.key == k and n.paths and n.sid is None]
+            if len(shown) > 1 and any(fork(n.paths[0], k) is not None or
+                                      (k == "calibration" and night(n.paths[0]) is not None) for n in shown):
+                number(shown)
+        for sn, cn in self.sessions:
+            if sn.sid in self.calib_forks:
+                number([n for n in [cn] + self.calib_forks[sn.sid] if n.paths])
 
     def _fold_outputs(self, project):
         """Issues #17, #49: a workflow has no Output block of its own in the graph: its last block holds it
@@ -528,7 +571,8 @@ class Graph:
             return self.final
         if "@" in key:                                  # a session's block (issue #43)
             k, sid = key.split("@", 1)
-            return next((n for pair in self.sessions for n in pair if n.key == k and str(n.sid) == sid), None)
+            mine = self.by_path.get(p.pid, {}).get(key) if p is not None else None   # beside its own Calibration
+            return mine or next((n for pair in self.sessions for n in pair if n.key == k and str(n.sid) == sid), None)
         if p is None:
             return None
         if key == "composition":
@@ -603,6 +647,10 @@ class Graph:
             return session_summary(s, node.sid)
         if node.sid is not None and node.cut:
             return _("off: frames as they are").format(block=title)
+        if node.key == "calibration" and node.paths and not node.cut and hasattr(s, "own_calibration_night"):
+            night = node.sid if node.sid is not None else s.own_calibration_night(node.paths[0])
+            if night is not None and s.own_calibration_night(node.paths[0], night) is not None:
+                return own_calibration_summary(s, node.paths[0], night)
         if node.sid is not None:
             ses = next((x for x in s.sessions if x["id"] == node.sid), {})
             return calibration_counts(ses.get("darks", 0), ses.get("flats", 0), gone=gone_kinds(s, {node.sid}))

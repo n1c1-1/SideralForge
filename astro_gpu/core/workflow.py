@@ -560,14 +560,17 @@ def _title(b: str) -> str:
     return BLOCK_TITLES.get(b, b)
 
 
-def node(block: str, method: str | None = None, off: bool = False, name: str | None = None) -> dict[str, Any]:
-    """A node of a workflow's graph."""
+def node(block: str, method: str | None = None, off: bool = False, name: str | None = None,
+         fork: int | None = None) -> dict[str, Any]:
+    """A node of a workflow's graph. ``fork``: a frame block placed in parallel with another (its identity: drawn as a
+    block of its own even while its settings, so its result, are the same; no key reads it)."""
     if block not in IO:
         raise ValueError(f"unknown block {block!r} (allowed: {list(IO)})")
     m = method if method is not None else DEFAULT_METHOD.get(block)
     if block in METHODS and m not in METHODS[block]:
         raise ValueError(f"block {block!r}: method {m!r} is not in the engine (allowed: {list(METHODS[block])})")
-    return {"block": block, "name": name or block, "method": m if block in METHODS else None, "off": bool(off)}
+    out = {"block": block, "name": name or block, "method": m if block in METHODS else None, "off": bool(off)}
+    return out | {"fork": int(fork)} if fork is not None else out
 
 
 def new_name(blocks: Sequence[dict], block: str) -> str:
@@ -593,7 +596,7 @@ def check_blocks(blocks: Any, source: str = "frames") -> list[dict[str, Any]]:
     for n in blocks:
         if not isinstance(n, dict) or "block" not in n:
             raise ValueError(f"a block is {{'block', 'name', 'method', 'off'}}, not {n!r}")
-        nn = node(n["block"], n.get("method"), n.get("off", False), n.get("name"))
+        nn = node(n["block"], n.get("method"), n.get("off", False), n.get("name"), n.get("fork"))
         if nn["block"] not in IMAGE_OPS and nn["name"] != nn["block"] or \
                 nn["block"] in IMAGE_OPS and base(nn["name"]) != nn["block"]:
             raise ValueError(f"block {nn['block']!r} cannot be named {nn['name']!r}")
