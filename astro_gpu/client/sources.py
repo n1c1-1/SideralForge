@@ -1133,7 +1133,7 @@ class SourcesView(QWidget):
         self.rv.addWidget(label(_("Properties"), "h2"))
         rows = []
         row0 = self._row()
-        if self.group == "lights" and d is not None and row0 is not None:
+        if self.group == "lights" and d is not None and row0 is not None and row0.lights:
             cam = d.camera
             n = row0.lights
             hours = n * (row0.exposure or 0) / 3600
