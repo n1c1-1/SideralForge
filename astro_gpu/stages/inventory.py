@@ -15,7 +15,7 @@ from ..io.frames import fits_header, read_cfa, read_info
 
 
 class InventoryParams(StageParams):
-    max_lights: int = P(0, label="Limit number of light frames", level=ADVANCED, ge=0,
+    max_lights: int = P(0, label="Frame limit", level=ADVANCED, ge=0,
                         help="Use only N light frames, evenly spaced over the whole session (so that drift, "
                              "transparency and sky changes stay representative). 0 uses all of them.",
                         tip="Useful for a quick test run of the whole pipeline on a subset; keep 0 for the real run.")

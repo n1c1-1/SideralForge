@@ -32,13 +32,13 @@ class CalibrateParams(StageParams):
                            help="Pixels whose flat response differs from their neighbourhood by more than this fraction "
                                 "(dust specks, dead pixels) are excluded.",
                            tip="0.3 = 30 %. Lower it if dust donuts remain visible after calibration.")
-    hot_from_lights: bool = P(True, label="Hot pixels seen in the lights", level=ADVANCED,
+    hot_from_lights: bool = P(True, label="Hot pixels (lights)", level=ADVANCED,
                               help="Also flag the pixels that stand out from their neighbours in many light frames "
                                    "taken at different sky positions (the sky drifts across the sensor, a defect "
                                    "does not). Darks taken at another temperature miss pixels that are hot only "
                                    "when the sensor is warmer; in the stack they draw the drift path of the mount.",
                               tip="Skipped automatically when the sky did not move on the sensor during the night.")
-    flat_scale_px: float = P(0.0, label="Flat: large scales only", level=ADVANCED, ge=0, le=500, step=5, unit="px",
+    flat_scale_px: float = P(0.0, label="Flat scale", level=ADVANCED, ge=0, le=500, step=5, unit="px",
                              help="Keep only the scales of the master flat larger than this (Gaussian sigma, sensor "
                                   "pixels). 0 = the whole flat. For flat frames borrowed from another night of the "
                                   "same optics: they hold the vignetting of the instrument, but not this night's dust.",
@@ -47,7 +47,7 @@ class CalibrateParams(StageParams):
                           help="Raw values above this fraction of the sensor white level are flagged as saturated; the "
                                "stacker then treats them specially instead of averaging clipped values.",
                           tip="Keep the default unless star cores look flat-topped or rings appear around bright stars.")
-    apply_masters: bool = P(True, label="Apply the calibration frames", level=ADVANCED,
+    apply_masters: bool = P(True, label="Apply calibration", level=ADVANCED,
                             help="Off when the Calibration block is cut (issue #43): the frames are taken as they are "
                                  "(already calibrated), without master dark, flat or defective pixels.")
     workers: int = P(8, label="Parallel workers", level=ADVANCED, ge=1, le=64,
