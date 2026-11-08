@@ -891,13 +891,12 @@ class PostView(QWidget):
 
     def _exact_wanted(self, res) -> bool:
         """After the release's image (GUI exploration 4, Q1 and Q4): the fitted view made again from the full
-        resolution, when a filter is shown (a filter run on the reduced image differs from the export's: a strong
-        Saturation, the 1 px detail sliders) and the screen shows the image reduced (zoomed in, the region is exact)."""
+        resolution, when the screen shows the image reduced (zoomed in, the region is exact). The reduced image is not
+        the file reduced: a filter sees its noise already averaged (a strong Saturation, the 1 px detail sliders), and
+        so does the stretch."""
         if res.seq != self._main_seq or self.viewer.scale >= 0.5:
             return False
-        if not (res.kind == "half" or (res.kind == "refine" and self._half_due)):
-            return False
-        return any(lay["kind"] == "filter" and lay["visible"] for lay in self.layers)
+        return res.kind == "half" or (res.kind == "refine" and self._half_due)
 
     def _quarter_enough(self) -> bool:
         """On the CPU, when the screen shows the image at a quarter or less: the exact quarter is the picture."""

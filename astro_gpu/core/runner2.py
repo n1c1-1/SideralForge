@@ -915,7 +915,7 @@ class _Worker:
         """A done calibrate whose frame cache is lost: its masters go into the job's folder, with their settings
         and metrics and the checkpoint tag the job will have, so calibrate rebuilds the cache only (the same files,
         so the same cache). An interrupted job of this key already there is resumed as it is."""
-        from ..stages.calibrate import MASTER_FILES, MASTERS, result_params
+        from ..stages.calibrate import MASTER_FILES, MASTERS, result_params, result_values
         old = self.store.dir(job.stage, job.key)
         tmp = pipe.project.stage_dir(job.stage)
         p, _, _ = pipe.effective_params(st)                     # (creates the job's folder)
@@ -928,9 +928,8 @@ class _Worker:
         except (OSError, ValueError):
             pass
         om = self.store.manifest(job.stage, job.key)
-        given = dict(om.get("params") or {})
-        given.pop("workers", None)
-        if given != result_params(p) or not all((old / n).is_file() for n in MASTER_FILES):
+        same = result_values(om.get("params") or {}) == result_params(p)
+        if not same or not all((old / n).is_file() for n in MASTER_FILES):
             return                                              # a full calibration
         _empty(tmp)
         for n in MASTER_FILES:

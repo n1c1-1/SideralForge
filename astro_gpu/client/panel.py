@@ -435,7 +435,7 @@ class Panel(QWidget):
         if same:
             # the scroll area as context, never the panel in the lambda: a panel closed meanwhile is not kept with its
             # model (GUI exploration 4: every closed project stayed in memory)
-            QTimer.singleShot(0, self._sc, lambda v=scroll, sb=self._sc.verticalScrollBar(): sb.setValue(v))
+            QTimer.singleShot(0, self._sc, lambda v=scroll, sb=self._sc.verticalScrollBar(): sb.setValue(v))  # noqa: B008
             if had_focus and self.focus_key is not None:
                 shown = [self.bv.itemAt(i).widget() for i in range(self.bv.count())]   # not the rows going away
                 row = next((r for r in shown if isinstance(r, CompactRow) and r.r.get("key") == self.focus_key), None)
@@ -680,7 +680,6 @@ class Panel(QWidget):
         """One folder of a session's list (issue #58): its row ("📁 folder · 15 files", its cross takes it all out),
         opened on its files, each with its cross (several chosen, Del). A group holding a file a warning points at
         opens by itself."""
-        s = self.s
         opened = getattr(self, "_opened", set())
         self._opened = opened
         key = (sid, kind, folder.lower())
@@ -758,7 +757,7 @@ class Panel(QWidget):
             d = QFileDialog.getExistingDirectory(self, _("Add folder…"), _prefs.last_folder())
             got = [d] if d else []
         else:
-            from ..core.project import FITS_EXT, RAW_EXT    # frames first; any file still (issue #58: then warned)
+            from ..core.project import FITS_EXT, RAW_EXT  # frames first; any file still (issue #58: then warned)
             pats = " ".join(f"*{e}" for e in sorted(RAW_EXT | FITS_EXT | {".fz"}))
             got, _f = QFileDialog.getOpenFileNames(self, _("Add files…"), _prefs.last_folder(),
                                                    _("Frames ({patterns})").format(patterns=pats) + ";;" +
@@ -959,9 +958,7 @@ class Panel(QWidget):
             role = label(f"<b>{html.escape(i['role'])}</b>", None)
             role.setMinimumWidth(36)
             row.addWidget(role, 0)
-            row.addWidget(label(_("{workflow} · {channel}").format(
-                workflow=html.escape(q.name if q is not None else "?"),
-                channel=words.get(i.get("channel", "L"), "")), "small"), 1)
+            row.addWidget(self.channel_source(p, i, q, words.get(i.get("channel", "L"), "")), 1)
             sp = QDoubleSpinBox()
             sp.setRange(0.0, 5.0)
             sp.setSingleStep(0.05)
@@ -984,12 +981,35 @@ class Panel(QWidget):
                                 "small", wrap=True))
         self.bv.addStretch(1)
 
+    def channel_source(self, p, i: dict, q, word: str):
+        """What a channel reads (issue #55): its workflow, chosen on its row among the stacks of its filter and the
+        linear images; said only, when there is no other."""
+        s = self.s
+        choices = s.channel_choices(p, i["role"])
+        if len(choices) < 2:
+            return label(_("{workflow} · {channel}").format(workflow=html.escape(q.name if q is not None else "?"),
+                                                            channel=word), "small")
+        cb = QComboBox()
+        cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)     # as the Stars list below
+        cb.setMinimumContentsLength(10)
+        for x, why in choices:
+            cb.addItem(_("{workflow} · {channel}").format(workflow=x.name, channel=word), x.pid)
+            if why:
+                item = cb.model().item(cb.count() - 1)
+                item.setEnabled(False)
+                item.setToolTip(why)
+        cb.setCurrentIndex(cb.findData(i["pid"]))
+        cb.setToolTip(_("The workflow this channel reads: a stack of its filter, or a linear image's output"))
+        cb.activated.connect(lambda k, r=i["role"]: s.set_fusion_channel(p, r, cb.itemData(k)))
+        return cb
+
     def fusion_stars(self, p, f: dict, roles: list[str]):
         """Option A: the palette on the channels' starless images, then the stars from a source, put back by the
         Recombine block."""
         s = self.s
         cur = f.get("stars") or {}
         self.bv.addWidget(self.group_title(_("Stars")))
+        # a stack only (issue #55): a linear Image has no Stars block, a stretched one no Astrometry to align its stars
         others = [q for q in s.paths if q.pid != p.pid and q.source is None and not s.is_mono(q)]
         choices = [(_("With channels (no split)"), None),
                    (_("Channel stars, same palette"), {"mode": "palette"})]
@@ -1002,6 +1022,10 @@ class Panel(QWidget):
         cb.setMinimumContentsLength(20)                                              # never wider than the panel
         for text, val in choices:
             cb.addItem(text, val)
+            if val and s.reads_linear_image(p):          # issue #55: no starless image from a linear Image channel
+                item = cb.model().item(cb.count() - 1)
+                item.setEnabled(False)
+                item.setToolTip(_("A linear image among the channels has no Stars/background"))
         cb.setCurrentIndex(next((i for i, (_t, v) in enumerate(choices) if (v or {}) == cur), 0))
         cb.setToolTip(_("The palette is made on the channels' starless images; these stars are put back by the "
                         "Recombine block. Each channel's workflow gets Stars/background."))

@@ -32,7 +32,7 @@ if Path("C:/Windows/Fonts").is_dir():
 
 pytest.importorskip("PySide6")
 import torch  # noqa: E402
-from conftest import TEST_PROJECT, TEST_PROJECT_CLASSIC, needs_test_project  # noqa: E402
+from conftest import TEST_PROJECT, TEST_PROJECT_CLASSIC, full_only, needs_test_project  # noqa: E402
 from PySide6.QtCore import QObject, Qt, Signal  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
@@ -1052,6 +1052,11 @@ def named(view, name):
     return next(lay for lay in view.layers if lay["name"] == name)
 
 
+def full_layer(view):
+    """The test project's Full layer: named after its workflow, or its Stars and background block ("Full · …")."""
+    return next(lay for lay in view.layers if lay["name"].split(" · ")[0] == "Full")
+
+
 def reference(post, layers=None, level=1, box=None, want=()):
     """The same request rendered apart, by a renderer of its own: what the page shows must be this."""
     svc = LayerService(DEV)
@@ -1771,7 +1776,8 @@ def test_zooming_in_renders_the_visible_region_at_full_resolution(wide, qapp):
 def test_the_fitted_view_is_made_again_from_the_full_resolution_after_a_filter(wide, qapp):
     """GUI exploration 4, Q1 and Q4: a filter run on the reduced image differs from the export's (a strong Saturation
     turned the sky another colour; the 1 px detail sliders did nothing): after the release, the fitted view is made
-    again from the full resolution, then reduced; a new gesture abandons it. Without a filter, nothing more."""
+    again from the full resolution, then reduced; a new gesture abandons it. Without a filter too: the stretch of the
+    reduced image is not the reduced stretch (Heart: 5 levels of 255 on average between the screen and the file)."""
     post = wide
     v = post.view
     seen = []
@@ -1779,7 +1785,7 @@ def test_the_fitted_view_is_made_again_from_the_full_resolution_after_a_filter(w
     assert v.viewer.scale < 0.5
     named(v, "Full")["sliders"]["sky"] = 3.0
     v.request(final_only=True)
-    assert post.settle() and "half" in seen and "exact" not in seen                  # no filter: the half is the image
+    assert post.settle() and seen.index("half") < seen.index("exact")                # no filter: the same
     seen.clear()
     sat = v.add_filter("saturation")
     sat["params"]["strength"] = 100.0
@@ -2461,23 +2467,23 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
         assert v.b_filter.text() == "+ Filtre" and v.b_cmp.text() == "Avant / après" and v.b_maskadd.text() == "+ Masque"
         assert [lb.text() for lb in v.findChildren(QLabel)][:1] != []
         for k in FILTERS:                                                               # every filter's panel
-            v.select(named(v, "Full")["id"], "layer")
+            v.select(full_layer(v)["id"], "layer")
             fl = v.add_filter(k)
             assert fl is not None
             widgets_of(v, QLabel)
         v.select(named(v, "Classic")["id"], "layer")                                    # greyed sliders and their reasons
         sl = {x.name.text(): x for x in widgets_of(v, ContSlider)}
         assert any("bloc Étoiles/fond" in x.why.text() for x in sl.values())
-        v.select(named(v, "Full")["id"], "layer")
-        v.add_mask(named(v, "Full"))
+        v.select(full_layer(v)["id"], "layer")
+        v.add_mask(full_layer(v))
         for src in postengine.MASK_SOURCES:
-            v.add_part(named(v, "Full"), src)
+            v.add_part(full_layer(v), src)
         v.b_mask.setChecked(True)
         v.b_cmp.setChecked(True)
         assert s.settle()
         assert v.hint.text()
         v.b_cmp.setChecked(False)
-        v.select(named(v, "Full")["id"], "mask")
+        v.select(full_layer(v)["id"], "mask")
         post_texts = [w.text() for w in widgets_of(v, QPushButton)] + [w.text() for w in widgets_of(v, QLabel)]
         assert "Voir masque" in [v.b_mask.text()] and any("Ajouter au masque" in t for t in post_texts)
         for lay in list(v.layers):                                                      # every row, in French
@@ -2539,7 +2545,7 @@ def test_nothing_here_wrote_the_users_settings():
 def _shot_composition(s):
     """Post with 2 workflow layers and 2 filters: Saturation on "Full" only, Sharpen on everything below."""
     v = s.view
-    full, classic = named(v, "Full"), named(v, "Classic")
+    full, classic = full_layer(v), named(v, "Classic")
     classic["visible"], classic["opacity"], classic["mode"] = True, 45.0, "Screen"
     v.select(full["id"], "layer")
     sat = v.add_filter("saturation")
@@ -2648,7 +2654,7 @@ needs_real = needs_test_project
 
 def real_project():
     """The test project with its computed Classic workflow added in memory (TEST_PROJECT_CLASSIC): nothing is saved."""
-    p = api.open_project(REAL)
+    p = full_only(api.open_project(REAL))
     api.add_workflow(p, *TEST_PROJECT_CLASSIC)
     return p
 
@@ -2695,7 +2701,8 @@ def test_real_the_layers_render_filters_masks_and_undo(real):
     v = s.view
     # Full's layer: its Output block's image, or its Stars and background image when it has the Stars block
     assert [(lay["name"].split(" · ")[0], lay["visible"]) for lay in v.layers] == [("Classic", False), ("Full", True)]
-    assert v.src.canvas == (6216, 4224) and shown(v).shape == (2112, 3108, 3)
+    W, H = v.src.canvas                                                  # the half image: half of the canvas
+    assert shown(v).shape == (-(-H // 2), -(-W // 2), 3)
     full, classic = v.layers[1], named(v, "Classic")
     v.select(full["id"], "layer")
     sat = v.add_filter("saturation")
@@ -2717,8 +2724,8 @@ def test_real_the_layers_render_filters_masks_and_undo(real):
     v.request(final_only=True)
     assert s.settle(600)
     m = v.mask1
-    assert m.shape == (2112, 3108) and 0 <= m.min() <= m.max() <= 1 and m.max() > 0.9 and 0.01 < m.mean() < 0.99
-    ha = s.worker.renderer.source.data_mask("halpha", 1, (0, 0, 3108, 2112))
+    assert m.shape == (-(-H // 2), -(-W // 2)) and 0 <= m.min() <= m.max() <= 1 and m.max() > 0.9 and 0.01 < m.mean() < 0.99
+    ha = s.worker.renderer.source.data_mask("halpha", 1, (0, 0, -(-W // 2), -(-H // 2)))
     assert ha.max() > 0.9 and 0.02 < ha.mean() < 0.5
     v.remove_mask(full)
     assert full["mask"] is None
@@ -2761,13 +2768,14 @@ def test_real_the_exports_read_back_with_their_wcs_and_the_reduced_one_matches_t
     from PIL import Image
     s = real
     v = s.view
-    full, classic = named(v, "Full"), named(v, "Classic")
+    full, classic = full_layer(v), named(v, "Classic")
     # the reduced export against the screen, on one layer: the engine's own resolution differences are measured on
     # that layer (below), so what Post adds is what is left
     v.select(full["id"], "layer")
     classic["visible"] = False
     full["sliders"]["sky"] = 2.4
     v.push()
+    v.request(final_only=True)
     assert s.settle(600)
     preview = shown(v)
     out = tmp_path / "chosen"
@@ -2777,12 +2785,14 @@ def test_real_the_exports_read_back_with_their_wcs_and_the_reduced_one_matches_t
     import cv2 as _cv
     ref_src = LayerSource(rsv.api_resolver(s.project), LayerService(s.worker.device), rsv.bases_of(s.project))
     ref_src.canvas([w.id for w in s.project.workflows])
-    solo = new_workflow_layer(1, "Full", True)
-    w1, h1 = ref_src._cv.size(1)
-    a1 = ref_src.layer(solo, 1, (0, 0, w1, h1))
-    a0 = ref_src.layer(solo, 0, (0, 0, cw, ch))
+    solo = snapshot([full])[0]                                                         # the same layer, its sliders
+    cp = Composer(ref_src)
+    cv = cp.canvas_of([solo])
+    w1, h1 = cv.size(1)
+    a1 = cp.layer_rgb(solo, 1, (0, 0, w1, h1), cv, cache=False)
+    a0 = cp.layer_rgb(solo, 0, (0, 0, cw, ch), cv, cache=False)
     base = np.abs(_cv.resize(a0, (w1, h1), interpolation=_cv.INTER_AREA) - a1) * 255
-    base999, base99 = float(np.percentile(base, 99.9)), float(np.percentile(base, 99))
+    base999, base99, base_mean = float(np.percentile(base, 99.9)), float(np.percentile(base, 99)), float(base.mean())
     del a0, a1
     done = {}
     answers = []
@@ -2800,7 +2810,7 @@ def test_real_the_exports_read_back_with_their_wcs_and_the_reduced_one_matches_t
     # the dialog makes the job: the image reduced to the screen's size
     d = ExportDialog(v)
     d.dest.setText((out / "heart_16bit.tif").as_posix())
-    d.size_cb.addItem("Screen", 3108)
+    d.size_cb.addItem("Screen", preview.shape[1])
     d.size_cb.setCurrentIndex(d.size_cb.count() - 1)
     reduced = d.job()
     d.reject()
@@ -2812,7 +2822,7 @@ def test_real_the_exports_read_back_with_their_wcs_and_the_reduced_one_matches_t
     p999 = float(np.percentile(diff, 99.9))
     p99 = float(np.percentile(diff, 99))
     print(f"export reduced vs 1/2 preview: p99.9 {p999:.2f} p99 {p99:.2f} mean {diff.mean():.3f} levels; the engine alone: "
-          f"p99.9 {base999:.2f} p99 {base99:.2f}; exports took {done}")
+          f"p99.9 {base999:.2f} p99 {base99:.2f} mean {base_mean:.3f}; exports took {done}")
     # the engine's own 1/2 rendering is not its reduced full rendering (p99.9 of 20 levels on Heart, on nebula details
     # only the full resolution has): Post adds no more than 2 levels to that
     assert p999 <= base999 + 2.0 and p99 <= base99 + 2.0 and diff.mean() < 1.5
@@ -2820,6 +2830,7 @@ def test_real_the_exports_read_back_with_their_wcs_and_the_reduced_one_matches_t
     v.add_filter("saturation")["params"]["strength"] = 50.0
     classic["visible"], classic["opacity"] = True, 30.0
     v.push()
+    v.request(final_only=True)
     assert s.settle(600)
     cw, ch = v.src.canvas
     export(dc.replace(reduced, format=["jpeg", "fits32f"], size=0, wcs=True, name="heart", history=False))

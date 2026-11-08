@@ -36,6 +36,7 @@ from test_post import (  # noqa: E402, F401 - the fixtures and helpers of Post's
     Setup,
     _fingerprint,
     _settings,
+    full_layer,
     named,
     post,
     preps,
@@ -604,7 +605,7 @@ def take_tool_shots(s, lang: str, out: Path):
     out.mkdir(parents=True, exist_ok=True)
     v, app = s.view, s.qapp
     s.page.resize(1600, 980)
-    full = named(v, "Full")
+    full = full_layer(v)
 
     def grab(w):
         for _i in range(6):
@@ -725,7 +726,7 @@ def drag_times(s, key: str, moves: int = 8) -> list[float]:
     """The drafts' times (ms, the whole request in the worker) while a filter's first slider (or a curve point) is
     dragged on the real project."""
     v = s.view
-    full = named(v, "Full")
+    full = full_layer(v)
     v.select(full["id"], "layer")
     f = v.add_filter(key)
     assert s.settle(600)

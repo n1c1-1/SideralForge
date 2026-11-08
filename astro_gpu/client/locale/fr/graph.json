@@ -513,5 +513,11 @@
   "Post, where the layer is set": "Post, où le calque se règle",
   "after the lights": "après les brutes",
   "Recombine comes with the lights: add them to the Session": "Recombiner vient avec les brutes : ajoutez-les à la Session",
-  "Comes with the lights: once they are added, Post combines the Stars block's two images": "Vient avec les brutes : une fois ajoutées, Post combine les deux images du bloc Étoiles"
+  "Comes with the lights: once they are added, Post combines the Stars block's two images": "Vient avec les brutes : une fois ajoutées, Post combine les deux images du bloc Étoiles",
+  "Part of the chain: it follows the blocks, it cannot be removed": "Fait partie de la chaîne : ce fil suit les blocs et ne peut pas être retiré",
+  "Chain wire: not removable": "Fil de chaîne : non retirable",
+  "needs 2 filter workflows, a colour stack or image": "il faut 2 workflows de filtres, un empilement couleur ou une image",
+  "The workflow this channel reads: a stack of its filter, or a linear image's output": "Le workflow que lit ce canal : un empilement de son filtre, ou la sortie d'une image linéaire",
+  "No Stars/background on a linear image: set Stars to “{mode}” first": "Pas d'Étoiles/fond sur une image linéaire : réglez d'abord Étoiles sur « {mode} »",
+  "A linear image among the channels has no Stars/background": "Une image linéaire parmi les canaux n'a pas d'Étoiles/fond"
 }

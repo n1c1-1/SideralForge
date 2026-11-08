@@ -357,7 +357,7 @@ def catalog_key(p, step: str) -> str:
     step = step.split("@", 1)[0]                     # a session's block: the block's catalogue (issue #43)
     base = step.partition("~")[0]                    # a block placed twice ("fond~2"): the same catalogue (round 4)
     if base in ("fond", "debruitage"):
-        from .model import method_of                 # the node's own method: Gradient 2 may differ from Gradient 1
+        from .model import method_of  # the node's own method: Gradient 2 may differ from Gradient 1
         return f"{base}:{method_of(p, step)}"
     return base
 

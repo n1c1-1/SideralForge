@@ -545,3 +545,20 @@ def test_api_registration_table_with_the_moffat_fit(registered, monkeypatch):
     t = api.registration_table(None, 1)
     r = t[truth.n // 2]
     assert r.fwhm_moffat == pytest.approx(truth.fwhm, rel=0.1)
+
+
+@pytest.mark.parametrize("settings", [{}, {"method": "classic"}, {"drizzle_rejection": "integration"}],
+                         ids=["drizzle", "classic", "integration"])
+def test_the_bar_only_goes_forward_after_the_fixed_pattern(small_night, monkeypatch, settings):
+    """Issue #50: the fixed pattern has its share of the bar, the passes the rest: it never falls back (every report
+    sent, not one per second)."""
+    sent, report, emit = [], Context.progress, Journal.emit
+
+    def spy(self, type_, **kw):
+        if type_ == "progress":
+            sent.append(kw["frac"])
+        return emit(self, type_, **kw)
+    monkeypatch.setattr(Context, "progress", lambda self, frac, msg="", force=False: report(self, frac, msg, True))
+    monkeypatch.setattr(Journal, "emit", spy)
+    stack_with(small_night, "bar_" + "_".join(settings.values() or ["drizzle"]), pattern_removal=True, **settings)
+    assert len(sent) > 8 and all(b >= a for a, b in zip(sent, sent[1:])) and sent[-1] == pytest.approx(1.0)

@@ -255,13 +255,18 @@ MASTERS = "masters.json"
 EXTRA_MASTERS = ("master_bias.npy", "master_flat_dark.npy")
 
 
-def result_params(p: CalibrateParams) -> dict:
-    """The settings that decide the result (the worker count does not)."""
-    d = p.model_dump(mode="json")
+def result_values(values: dict) -> dict:
+    """Of a stage's settings (a dict, its manifest's or ``model_dump``'s), those that decide the result (the worker
+    count does not)."""
+    d = dict(values)
     d.pop("workers", None)
     if d.get("apply_masters", True):                 # the default: as the results made before the setting existed
         d.pop("apply_masters", None)
     return d
+
+
+def result_params(p: CalibrateParams) -> dict:
+    return result_values(p.model_dump(mode="json"))
 
 
 def given_masters(ctx: Context, p: CalibrateParams) -> dict | None:

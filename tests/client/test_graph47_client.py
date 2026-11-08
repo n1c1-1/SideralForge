@@ -1050,3 +1050,168 @@ def test_recombine_is_shown_greyed_before_the_lights(qapp, tmp_path, monkeypatch
         page.close()
         m.close(save=False)
         w.stop()
+
+
+def test_a_chain_wire_says_it_cannot_be_removed(qapp, tmp_path, monkeypatch):
+    """Issue #52: the chain's wires are not selectable, but say so: in their tooltip, and when clicked."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from astro_gpu.client.graph import ChainWireItem
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        page.show()
+        settle(w, page)
+        view = page.graph
+        chain = [it for it in view.scene().items() if isinstance(it, ChainWireItem)]
+        assert chain and all("cannot be removed" in it.toolTip() for it in chain)
+        spots = [view.mapFromScene(it.path().pointAtPercent(0.5)) for it in chain]
+        pos = next(p for p in spots if isinstance(view.itemAt(p), ChainWireItem))
+        QTest.mouseClick(view.viewport(), Qt.LeftButton, pos=pos)
+        assert view.toast.text() == "Chain wire: not removable" and view.sel_wire is None
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def _carried(block: str):
+    from PySide6.QtCore import QMimeData
+    mime = QMimeData()
+    mime.setText("block:" + block)
+    return mime
+
+
+def _drag_over(view, block: str, pos):
+    """A palette card carried onto the graph, then held at ``pos`` (a function: the places appear once it is carried):
+    the move event, whose answer says if it can drop there."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent
+    mime = _carried(block)                                 # alive as long as its events (they hold a C++ pointer)
+    view.dragEnterEvent(QDragEnterEvent(QPoint(5, 5), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier))
+    move = QDragMoveEvent(pos(), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    view.dragMoveEvent(move)
+    return move
+
+
+def _drop(view, block: str, pos):
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QDropEvent
+    mime = _carried(block)
+    drop = QDropEvent(QPointF(pos), Qt.CopyAction, mime, Qt.LeftButton, Qt.NoModifier)
+    view.dropEvent(drop)
+    return drop
+
+
+def test_fusion_is_dropped_in_the_composition_column_not_on_the_new_flow_band(qapp, tmp_path, monkeypatch):
+    """Issue #53: Fusion's drop zone is in the Composition column; the new-flow band refuses it (it starts the flow of
+    a Session or an Image only)."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        view = page.graph
+        view.rebuild()
+        n = len(m.paths)
+
+        def band():
+            return view.mapFromScene(view.new_flow_ghost.rect.center())
+
+        def place():
+            return view.mapFromScene(view.ghosts[0].rect.center())
+        move = _drag_over(view, "fusion", band)
+        assert not move.isAccepted() and not view.new_flow_ghost.hot
+        _drop(view, "fusion", band())
+        settle(w, page)
+        assert len(m.paths) == n                                    # refused on the band
+        move = _drag_over(view, "fusion", place)
+        ghost = view.ghosts[0]
+        assert move.isAccepted() and ghost.text == "Fusion" and ghost.hot
+        assert view._cx["fusion"] <= ghost.rect.left() and ghost.rect.right() <= view._cx["fusion"] + view._cw["fusion"]
+        assert _drop(view, "fusion", place()).isAccepted()
+        settle(w, page)
+        assert len(m.paths) == n + 1 and m.paths[-1].source.get("fusion") and m.sel_step == "fusion"
+        assert view.col_of(Graph(m).node_of(m.paths[-1], "fusion")) == "fusion"
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def _a_fits(path: Path) -> str:
+    import numpy as np
+    from astropy.io import fits
+    fits.PrimaryHDU(np.full((3, 32, 32), 100.0, np.float32)).writeto(path)
+    return str(path)
+
+
+def test_a_linear_image_is_chosen_as_a_fusion_channel_on_its_row(qapp, tmp_path, monkeypatch):
+    """Issue #55: the two meet in a Fusion: a channel's row chooses a linear Image's output (with its Astrometry the
+    channels align); starless modes and an Image exclude each other, said where they are chosen; an image already
+    stretched is not offered."""
+    from PySide6.QtWidgets import QComboBox
+
+    from astro_gpu.core.store import Keys
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        page.palette_action("image:new")
+        settle(w, page)
+        img = m.paths[-1]
+        m.set_image_file(img, _a_fits(tmp_path / "stack.fits"))
+        page.place_block("astrometry", img.pid)
+        stretched = m.add_image_workflow("Done", _a_fits(tmp_path / "done.fits"), stretched=True)
+        settle(w, page)
+        page.place_fusion()
+        settle(w, page)
+        fu = m.paths[-1]
+        assert fu.source["fusion"]["stars"]["mode"] == "workflow"     # as for a colour stack: its starless image
+        offered = {q.pid: why for q, why in m.channel_choices(fu, "OIII")}
+        assert stretched.pid not in offered and "With channels" in offered[img.pid]
+        assert not m.set_fusion_channel(fu, "OIII", img.pid)
+        assert m.set_fusion_stars(m.view(fu.pid), None)
+        page.select(index=m.paths.index(m.view(fu.pid)), step="fusion")
+        settle(w, page)
+        rows = [c for c in page.panel.findChildren(QComboBox) if c.findData(img.pid) >= 0]
+        assert len(rows) == 2                                        # Ha, OIII
+        i = rows[1].findData(img.pid)
+        rows[1].setCurrentIndex(i)
+        rows[1].activated.emit(i)
+        settle(w, page)
+        fu = m.view(fu.pid)
+        assert [x["pid"] for x in fu.source["fusion"]["inputs"]] == [m.paths[0].pid, img.pid]
+        assert m.fusion_problem(fu) == ""
+        k = Keys(m.p)
+        got = next(x for x in k.overrides(fu.pid, "fusion")["inputs"] if x["role"] == "OIII")
+        assert "render_simple" in k.chain(img.pid) and got["dir"] and got["wcs"]
+        g = Graph(m)
+        assert g.leaves[img.pid] in g.fusion_inputs[id(g.node_of(fu, "fusion"))]
+        page.select(index=m.paths.index(fu), step="fusion")
+        settle(w, page)
+        stars = next(c for c in page.panel.findChildren(QComboBox) if c.itemText(0) == "With channels (no split)")
+        assert all(not stars.model().item(j).isEnabled() for j in range(1, stars.count()))
+        assert not m.set_fusion_stars(fu, {"mode": "palette"})
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_fusion_can_start_from_a_linear_image_alone(qapp, tmp_path, monkeypatch):
+    """Issue #55: no stack in the project: once its file is chosen, a linear Image gives the Fusion its channels (dual
+    band), with its stars (it has no starless image)."""
+    w, m, page = open_page(tmp_path, monkeypatch, workflows=())
+    try:
+        page.palette_action("image")
+        settle(w, page)
+        img = m.paths[-1]
+        assert page.palette_reason("fusion", img, None) == "needs 2 filter workflows, a colour stack or image"
+        m.set_image_file(img, _a_fits(tmp_path / "stack.fits"))
+        settle(w, page)
+        assert page.palette_reason("fusion", m.view(img.pid), None) == ""
+        page.place_fusion()
+        settle(w, page)
+        f = m.paths[-1].source["fusion"]
+        assert [(i["pid"], i["channel"]) for i in f["inputs"]] == [(img.pid, "R"), (img.pid, "GB")] and "stars" not in f
+        assert m.fusion_problem(m.paths[-1]) == ""
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()

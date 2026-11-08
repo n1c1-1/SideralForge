@@ -1843,10 +1843,50 @@ class ProjectModel(QObject):
             api.set_workflows(self.p, ws, self.p.current)
         return True
 
+    def reads_linear_image(self, p) -> bool:
+        """Whether a fusion has a linear Image among its channels (issue #55): such an image has no Stars/background
+        (it needs Denoise, which needs half-stacks), so that fusion cannot take the channels' starless images."""
+        views = {q.pid: q for q in self.paths}
+        return any(i["pid"] in views and self.source_kind(views[i["pid"]]) == "image"
+                   for i in p.source["fusion"].get("inputs") or [])
+
+    def channel_choices(self, p: WorkflowView, role: str) -> list[tuple[WorkflowView, str]]:
+        """The workflows a channel of the fusion ``p`` can read, each with why it cannot be chosen now ("" when it can;
+        issue #55): the stacks of its filter and the linear images; never a fusion, a workflow that ends early, or an
+        image already stretched (no Astrometry to align it, no linear values for the palette)."""
+        f = p.source["fusion"]
+        i = next(x for x in f["inputs"] if x["role"] == role)
+        out = []
+        for q in self.paths:
+            if q.pid != i["pid"]:
+                if q.pid == p.pid or is_fusion_view(q) or q.end or self.source_kind(q) == "stretched":
+                    continue
+                why = self._channel_problem(q, {**i, "pid": q.pid}, role, f, False)
+                if why is not None and "filter" in dict(why[1]):
+                    continue
+            out.append((q, _("No Stars/background on a linear image: set Stars to “{mode}” first").format(
+                mode=_("With channels (no split)")) if f.get("stars") and self.source_kind(q) == "image" else ""))
+        return out
+
+    def set_fusion_channel(self, p: WorkflowView, role: str, pid: int) -> bool:
+        """The workflow a channel of a fusion reads (issue #55), its colour kept."""
+        f = self.p.workflow(p.pid).source["fusion"]
+        if not is_fusion_view(p) or next(i for i in f["inputs"] if i["role"] == role)["pid"] == int(pid) or \
+                (f.get("stars") and self.source_kind(self.view(int(pid))) == "image"):
+            return False
+        with self._edit():
+            ws = api.workflows(self.p)
+            x = next(v for v in ws if v.id == p.pid)
+            x.source = {"fusion": {**x.source["fusion"], "inputs": [
+                {**i, "pid": int(pid)} if i["role"] == role else i for i in x.source["fusion"]["inputs"]]}}
+            api.set_workflows(self.p, ws, self.p.current)
+        return True
+
     def set_fusion_stars(self, p: WorkflowView, stars: dict | None) -> bool:
         """The star source of a fusion (option A), or None: the channels combined with their stars."""
         w = self.p.workflow(p.pid)
-        if not is_fusion_view(p) or (w.source["fusion"].get("stars") or None) == (stars or None):
+        if not is_fusion_view(p) or (w.source["fusion"].get("stars") or None) == (stars or None) or \
+                (stars and self.reads_linear_image(p)):
             return False
         with self._edit():
             ws = api.workflows(self.p)

@@ -8,11 +8,13 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import pytest
 import torch
 
 from astro_gpu.core import debayer as db
 from astro_gpu.core import poly
 from astro_gpu.core import stack_classic as sc
+from astro_gpu.stages import stack
 from astro_gpu.stages.stack import HIGH_SHIFT, drizzle_deposit
 
 CH = [0, 1, 1, 2]                                   # RGGB
@@ -31,6 +33,45 @@ def drizzle(val, X, Y, chmap, S, Ho, Wo, rej=None, w=1.0, h=None, tally=None):
     keep = torch.isfinite(val)
     drizzle_deposit(num, den, val, Xo, Yo, w, keep, chmap, S / 2 if h is None else h, S, Ho, Wo, rej, tally)
     return num.view(3, Ho, Wo), den.view(3, Ho, Wo)
+
+
+def test_a_drop_reaches_every_output_pixel_it_covers_at_any_scale():
+    """A drop of side 3 output pixels (scale 3) covers up to 4 rows: all of them are reached, its whole area deposited."""
+    H, W = 12, 12
+    yy, xx = torch.meshgrid(torch.arange(H, dtype=torch.float64), torch.arange(W, dtype=torch.float64), indexing="ij")
+    _num, den = drizzle(torch.ones((H, W), dtype=torch.float64), xx + 0.3, yy + 0.2, chmap_of(H, W), 3.0, 40, 40)
+    assert float(den.sum()) == pytest.approx(H * W * 9.0)
+
+
+def test_on_all_the_cores_the_drops_land_where_they_do_on_one(monkeypatch):
+    """The frame cut into bands of rows, the same sums as on one core (float rounding apart), with or without rejection
+    data; a frame turned a quarter of a turn, whose bands would write to the same rows, is dropped on one core."""
+    H, W = 240, 320
+    rng = np.random.default_rng(1)
+    yy, xx = torch.meshgrid(torch.arange(H, dtype=torch.float32), torch.arange(W, dtype=torch.float32), indexing="ij")
+    X, Y = xx + 0.37 + 1e-3 * yy, yy - 0.21 + 1e-3 * xx
+    val = torch.from_numpy(rng.uniform(100, 200, (H, W)).astype(np.float32))
+    chmap = chmap_of(H, W)
+    keep = torch.ones((H, W), dtype=torch.bool)
+    rej = torch.from_numpy((rng.random((H, W)) < 0.01).astype(np.uint8))
+
+    def run(parallel, reject):
+        monkeypatch.setattr(stack, "PARALLEL_SAMPLES", 1 if parallel else 10 ** 12)
+        num, den = torch.zeros(3 * H * W), torch.zeros(3 * H * W)
+        drizzle_deposit(num, den, val, X, Y, 1.0, keep, chmap, 0.35, 1.0, H, W, rej if reject else None)
+        return num, den
+
+    before = torch.get_num_threads()
+    torch.set_num_threads(4)
+    try:
+        for reject in (False, True):
+            a, b = run(False, reject), run(True, reject)
+            assert torch.get_num_threads() == 4
+            assert torch.allclose(a[0], b[0], rtol=1e-5) and torch.allclose(a[1], b[1], rtol=1e-5)
+        assert stack.deposit_bands(Y.ravel(), 0.35, 2, 4) is not None
+        assert stack.deposit_bands(X.ravel(), 0.35, 2, 4) is None        # the rows of a frame turned by 90 degrees
+    finally:
+        torch.set_num_threads(before)
 
 
 # ------------------------------------------------------------------------------------------------ the mapping

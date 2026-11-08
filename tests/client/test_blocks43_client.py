@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication, QComboBox, QPushButton  # noqa: E402
 from astro_gpu.client import i18n  # noqa: E402
 from astro_gpu.client.blocks import Graph, node_title  # noqa: E402
 from astro_gpu.client.graph import GraphPage  # noqa: E402
-from astro_gpu.client.model import ProjectModel, cuttable, from_engine  # noqa: E402
+from astro_gpu.client.model import ProjectModel  # noqa: E402
 from astro_gpu.client.services.worker import ApiWorker  # noqa: E402
 from astro_gpu.core import project2  # noqa: E402
 from astro_gpu.core import workflow as wfl  # noqa: E402

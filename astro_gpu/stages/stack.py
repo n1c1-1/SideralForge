@@ -34,8 +34,10 @@ its top-left corner (+ DRIZZLE_BOUNDS_TOLERANCE); a source pixel of CFA channel 
 from __future__ import annotations
 
 import importlib.util
+import math
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -333,10 +335,12 @@ class Stack(Stage):
 
         fpn = None
         if p.pattern_removal:
+            ctx.phase(0.0, 0.1)                         # issue #50: its share of the bar, the passes in the rest
             ctx.progress(0.0, "measuring the fixed pattern of the sensor")
             fpn, finfo = fixed_pattern(mm, used, coef, dev, H, W, p.pattern_frames,
-                                       lambda f: ctx.progress(0.1 * f, "measuring the fixed pattern of the sensor"),
+                                       lambda f: ctx.progress(f, "measuring the fixed pattern of the sensor"),
                                        period=P)
+            ctx.phase(0.1, 1.0)
             ctx.metric("fixed_pattern", finfo)
             ctx.log(finfo["msg"])
             if fpn is not None:
@@ -635,6 +639,10 @@ class Stack(Stage):
         ctx.preview("stack", asinh_preview(drz))
 
 
+#: from this many samples a frame is dropped on all the cores (CPU)
+PARALLEL_SAMPLES = 1_000_000
+
+
 def drizzle_deposit(num, den, val, Xo, Yo, w, keep, chmap, h: float, S: float, Ho: int, Wo: int, rej=None,
                     tally=None) -> None:
     """Each kept sample (``keep``) of a frame dropped onto the output grid (Ho, Wo) at scale ``S``: a square of half
@@ -649,18 +657,60 @@ def drizzle_deposit(num, den, val, Xo, Yo, w, keep, chmap, h: float, S: float, H
     [excluded, total]: the drop areas x weights left out and kept, added up."""
     v = val[keep]
     xo, yo, c = Xo[keep], Yo[keep], chmap[keep]
+    span = int(math.ceil(2 * h)) + 1                         # the output rows (or columns) one drop can touch
+    workers = torch.get_num_threads()
+    bands = None
+    if num.device.type == "cpu" and tally is None and workers > 1 and v.numel() >= PARALLEL_SAMPLES:
+        bands = deposit_bands(yo, h, span, workers)
+    if bands is None:
+        _drops(num, den, v, xo, yo, c, w, h, S, Ho, Wo, span, rej, tally)
+        return
+
+    def one(band):
+        i0, i1 = band
+        _drops(num, den, v[i0:i1], xo[i0:i1], yo[i0:i1], c[i0:i1], w, h, S, Ho, Wo, span, rej, None)
+
+    torch.set_num_threads(1)                                 # each band on one core: the bands are the parallelism
+    try:
+        with ThreadPoolExecutor(workers) as pool:
+            for group in (bands[0::2], bands[1::2]):         # two bands of a group never write to the same rows
+                list(pool.map(one, group))
+    finally:
+        torch.set_num_threads(workers)
+
+
+def deposit_bands(yo, h: float, span: int, workers: int) -> list[tuple[int, int]] | None:
+    """The samples (in the frame's order) cut into 2 x ``workers`` bands of consecutive samples, so that the even bands
+    write to rows the other even bands do not, and the odd ones likewise; None when a frame's rotation mixes the rows
+    too much for that (it is then dropped on one core)."""
+    n = yo.numel()
+    edges = [n * i // (2 * workers) for i in range(2 * workers + 1)]
+    bands = list(zip(edges[:-1], edges[1:]))
+    rows = []
+    for i0, i1 in bands:
+        lo, hi = torch.aminmax(yo[i0:i1])
+        rows.append((math.floor(float(lo) - h + 0.5), math.floor(float(hi) - h + 0.5) + span - 1))
+    for group in (rows[0::2], rows[1::2]):
+        ordered = sorted(group)
+        if any(a[1] >= b[0] for a, b in zip(ordered[:-1], ordered[1:])):
+            return None
+    return bands
+
+
+def _drops(num, den, v, xo, yo, c, w, h: float, S: float, Ho: int, Wo: int, span: int, rej, tally) -> None:
+    """``drizzle_deposit`` on the samples kept: each drop on the ``span`` x ``span`` output pixels it can touch."""
     jx0 = torch.floor(xo - h + 0.5)
     iy0 = torch.floor(yo - h + 0.5)
     if rej is not None:
         Hr, Wr = rej.shape
         lo_bit = torch.ones_like(c, dtype=torch.uint8) << c.to(torch.uint8)
         hi_bit = lo_bit << HIGH_SHIFT
-    for di in range(3):
+    for di in range(span):
         iy = iy0 + di
         wy = (torch.minimum(yo + h, iy + 0.5) - torch.maximum(yo - h, iy - 0.5)).clamp(min=0)
         if rej is not None:                 # output row -> reference row (output pixel centres at (X+.5)S-.5)
             qy = torch.floor(iy / S + DRIZZLE_BOUNDS_TOLERANCE).long()
-        for dj in range(3):
+        for dj in range(span):
             jx = jx0 + dj
             wx = (torch.minimum(xo + h, jx + 0.5) - torch.maximum(xo - h, jx - 0.5)).clamp(min=0)
             ww = wx * wy * w
