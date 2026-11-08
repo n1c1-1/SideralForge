@@ -227,7 +227,7 @@ class IconText(QWidget):
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(5)
-        self.label = QLabel(text)                        # first among the children: the text is what a search finds
+        self.label = QLabel(text, self)                  # the first child: the text is what a search for labels finds
         self.label.setWordWrap(True)
         if name:
             self.label.setObjectName(name)

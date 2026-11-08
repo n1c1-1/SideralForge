@@ -971,7 +971,7 @@ def test_the_engine_advice_is_a_recommended_outline_that_never_changes_the_metho
     rec = cards["classic"]
     assert rec.recommended and not rec.on and rec.tag.text() == "Recommended"
     assert ACCENT in rec.tag.styleSheet() and "border-radius" in rec.tag.styleSheet()
-    assert rec.info.text() == "i" and rec.info.toolTip() == "12 frames (drizzle needs 15): Classic"
+    assert rec.info.property("iconRole") == "info" and rec.info.toolTip() == "12 frames (drizzle needs 15): Classic"
     assert model.pending_change is None and "method" not in (model.view(1).params.get("stack") or {})
     # in French: the outline and the reason are translated
     appmod.apply_language("fr")
