@@ -1676,7 +1676,9 @@ def test_screenshots_of_the_failed_run_and_the_stopped_run_on_the_real_plan(env)
                 if lang == "fr":
                     assert untranslated(texts_of(d)) == [], untranslated(texts_of(d))
                 d.close()
+                d.deleteLater()                                    # (left to the interpreter's end: an abort at exit)
                 ctl.dialog = None
+                QApplication.processEvents()
             appmod.apply_language("en")
     finally:
         w.close()
