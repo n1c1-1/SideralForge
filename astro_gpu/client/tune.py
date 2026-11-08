@@ -39,7 +39,6 @@ Classes: ``TuneView``, ``Strip`` (the strip of blocks), ``WeightsChart`` and ``C
 from __future__ import annotations
 
 import html
-import re
 from collections import OrderedDict
 from functools import partial
 
@@ -1461,11 +1460,7 @@ class TuneView(QWidget):
                 tip = ""
                 if sky.objects:
                     text += "  ·  " + plural(len(sky.objects), "{n} named object", "{n} named objects")
-                    src = " + ".join(_(x) for x in re.sub(r"\s*\([^)]*\)", "", sky.source or "").split(" + ")
-                                     if x)
-                    if src:
-                        text += "  ·  " + _("names: {source}").format(source=src)
-                    tip = sky.source
+                    tip = _("names: {source}").format(source=sky.source)    # a source note: a sentence, in the tooltip
                 elif sky.why:
                     text += "  ·  " + _("No names: {why}").format(why=_(sky.why))
                 self.sky_note.setText(text)
