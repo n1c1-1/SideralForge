@@ -9,7 +9,10 @@ Noise2Noise steps on the half-stacks) helps most when the image differs from wha
 dithering, whose noise is independent from one pixel to the next, needs the long adaptation.
 
 Methods (the workflow's ``denoise`` option, ``method`` here): ``pretrained`` the network as it is (seconds, also on a
-processor); ``adapted`` the network adapted first (``adaptation``: short, about 40 s on a GPU; long, about 5 min).
+processor); ``adapted`` the network adapted first (``adaptation``: short, about 40 s on a GPU; long, about 5 min). A
+monochrome stack of few frames is adapted even with ``pretrained`` (issue #45, ``mono_adapt``): the network, trained on
+colour, turns its noise into star-like dots. A fine-tuning pass on monochrome half-stacks did not keep the stars within
+2 % on the held-out stacks (tools/bench/denoise_mono.py).
 """
 from __future__ import annotations
 
@@ -37,6 +40,10 @@ ADAPTATIONS = {"short": (500, 2e-4), "long": (4000, 3e-4)}
 UNDITHERED_CORRELATION = 0.08
 MODEL = Path(__file__).resolve().parents[1] / "resources" / "denoise" / "pretrained_unet.pt"
 MODEL_ID = hashlib.sha256(MODEL.read_bytes()).hexdigest()[:10] if MODEL.exists() else "missing"
+#: a monochrome stack of fewer frames than this is adapted by default (issue #45): the pretrained network turns the noise
+#: of those stacks into star-like dots (found again in the other half-stack: 12 and 13 frames 0-7 %, 20 frames 33-44 %,
+#: against 100 % at 34 frames and 84-98 % at 40)
+MONO_FEW_FRAMES = 30
 PATCH, BATCH = 192, 12
 #: the card memory the network takes for a tile of 512 (with its padding): 0.21 GB measured on 8 November 2026 for 512
 #: pixels in bfloat16, plus the padding's area; a 4 GB card holds it many times over
@@ -53,6 +60,11 @@ class DenoiseParams(StageParams):
                         tip="Long for a session without dithering (the noise independent from one pixel to the next), "
                             "which the pretrained network has not seen; short otherwise. On a processor, a step takes "
                             "about 4 s.")
+    mono_adapt: bool = P(True, label="Adapt mono", level=ADVANCED,
+                         help="A monochrome stack of fewer than 30 frames is adapted first, even with the Pretrained "
+                              "method: as it is, the network turns its noise into star-like dots.",
+                         tip="Off: the Pretrained method stays as it is on such a stack, in seconds, with those dots. "
+                             "The adaptation can dim the brightest stars: compare them in the result.")
     seed: int = P(0, label="Random seed", level=ADVANCED, ge=0,
                   help="Seed of the random tile selection of the adaptation (for reproducible runs).")
     #: set by the graph (issue #47): a later Denoise reads this one's denoised half-stacks
@@ -80,6 +92,12 @@ class Denoise(Stage):
     Params = DenoiseParams
     version = f"3-{MODEL_ID}"     # 3: the sky level of each colour kept (keep_level)
 
+    def mono_key_version(self, values: dict) -> str:
+        """The version in the store key of a monochrome workflow: its Pretrained method adapts the stacks of few frames
+        (issue #45). No other key moves: colour stacks, and the Adapted method, which does what it did."""
+        adapts = values.get("method", "pretrained") == "pretrained" and values.get("mono_adapt", True)
+        return f"{self.version}+mono-few-adapted" if adapts else str(self.version)
+
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
             c = noise_correlation(np.load(ctx.input("stack", "drz_A.npy"), mmap_mode="r"),
@@ -100,8 +118,15 @@ class Denoise(Stage):
         bk, sg, nm = norm_params(A, Wt)
         corr = noise_correlation(ctx.load("stack", "drz_A.npy", mmap=True), ctx.load("stack", "drz_B.npy", mmap=True))
         ctx.metric("noise_correlation", round(corr, 3))
+        full = image_in(ctx).img
+        mono = is_grey(full)                         # a monochrome stack (its three channels one, core/cfa.MONO)
+        frames = int(ctx.metric_of("stack", "frames_used", 0) or 0)
+        few = mono and p.mono_adapt and p.method == "pretrained" and 0 < frames < MONO_FEW_FRAMES       # issue #45
         net = pretrained(dev)
-        if p.method == "adapted":
+        if few:
+            ctx.log(f"monochrome stack of {frames} frames: the network is adapted to it first, as it is it would turn "
+                    "the noise into star-like dots (the Adapt mono setting)")
+        if p.method == "adapted" or few:
             steps, lr = ADAPTATIONS[p.adaptation]
             adapt(ctx, net, A, B, nm, bk, sg, dev, steps, lr, p.seed)
             ctx.metric("adaptation_steps", steps)
@@ -117,11 +142,8 @@ class Denoise(Stage):
         dA = apply_net(net, A, nm, bk, sg, dev)
         dB = apply_net(net, B, nm, bk, sg, dev)
         ctx.progress(0.96, "denoising the full stack")
-        full = image_in(ctx).img
-        # a monochrome stack (its three channels one, core/cfa.MONO): the network, trained on colour, moves them a
-        # little apart; their mean, in the three, keeps it grey (issue #43)
-        mono = bool(np.array_equal(full[0, ::97, ::97], full[1, ::97, ::97])
-                    and np.array_equal(full[2, ::97, ::97], full[1, ::97, ::97]))
+        # a monochrome stack: the network moves the three channels a little apart; their mean, in the three, keeps it
+        # grey (issue #43)
         grey = (lambda a: np.repeat(a.mean(0, keepdims=True), 3, axis=0)) if mono else (lambda a: a)
         dA, dB = keep_level(grey(dA), A, Wt), keep_level(grey(dB), B, Wt)
         ctx.save("n2n_avg.npy", 0.5 * (dA + dB))
@@ -187,6 +209,12 @@ def noise_correlation(A, B, size: int = 800) -> float:
     d = np.where(ok, d - d[ok].mean(), 0.0)
     den = float((d ** 2).sum())
     return float((d[:, 1:] * d[:, :-1]).sum() / den) if den > 0 else 0.25
+
+
+def is_grey(full: np.ndarray) -> bool:
+    """Whether a (3, H, W) stack is monochrome: its three channels one (core/cfa.MONO), on a sparse grid of pixels."""
+    return bool(np.array_equal(full[0, ::97, ::97], full[1, ::97, ::97])
+                and np.array_equal(full[2, ::97, ::97], full[1, ::97, ::97]))
 
 
 def pretrained(dev) -> nn.Module:

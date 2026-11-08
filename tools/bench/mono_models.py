@@ -40,7 +40,7 @@ from astro_gpu.stages.gradient import stack_image  # noqa: E402
 
 import torch  # noqa: E402
 
-DEV = torch.device("cuda:0")
+DEV = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 
 def context(p, k, wid, stage, st):
@@ -107,11 +107,18 @@ def measure_denoise(p, k, wid):
     full = stack_image(ctx)
     dF = own(p, k, wid, "denoise", "n2n_full.npy")
     A = stack_image(ctx, "drz_A.npy")
+    B = stack_image(ctx, "drz_B.npy")
     bk, sg, nm = dn.norm_params(A, ctx.load("stack", "drz_weight.npy").astype(np.float32))
     net = dn.pretrained(DEV)
     saved = Store(p.root).dir("denoise", k.key(wid, "denoise")) / "n2n_model.pt"
     net.load_state_dict(torch.load(saved, map_location=DEV, weights_only=False)["net"])   # the network the run used
     net.eval()                                                                          # (adapted: its own)
+    return measure_net(net, full, dF, A, B, nm, bk, sg), full, dF
+
+
+def measure_net(net, full, dF, A, B, nm, bk, sg):
+    """The issue's measures of a network's denoised image ``dF`` of ``full`` (noise, stars, the invented dots of the
+    two half-stacks): the Denoise block's result as the bench reads it, or any network's on any stack."""
     raw = dn.apply_net(net, full, (nm / np.sqrt(2)).astype(np.float32), bk, sg, DEV)
     g = full[1]
     bkg, sig = mad(g)
@@ -123,17 +130,16 @@ def measure_denoise(p, k, wid):
         res[f"{name}_stars"] = {"n": int(len(y)), "flux": ratio(a[:, 0], b[:, 0]), "peak": ratio(a[:, 1], b[:, 1]),
                                 "width": ratio(a[:, 2], b[:, 2])}
     res["channel_spread"] = spread(raw, max(res["noise_after"], 1e-12) * 1.0)
-    res["half_consistency"] = halves(ctx, net, A, nm, bk, sg, full)
-    return res, full, dF
+    res["half_consistency"] = halves(net, A, B, nm, bk, sg, full)
+    return res
 
 
-def halves(ctx, net, A, nm, bk, sg, full):
+def halves(net, A, B, nm, bk, sg, full):
     """Invented dots. The two half-stacks' noise is independent: a real star is in both, a dot made of noise in one
     only. The compact dots of the denoised half-stack A above 1.5 sigma of a raw half-stack's noise, and the share of
     them the denoised half-stack B also holds (above 0.75 of that sigma); the same on the two raw half-stacks blurred
     by 1.5 px (no network), for reference. One scale for every image: the raw half-stack's noise. On the faint half of
     the image (the sky, blurred) and on the brighter half."""
-    B = stack_image(ctx, "drz_B.npy")
     level = cv2.GaussianBlur(full[1], (0, 0), 8)
     dA = dn.apply_net(net, A, nm, bk, sg, DEV).mean(0)
     dB = dn.apply_net(net, B, nm, bk, sg, DEV).mean(0)
