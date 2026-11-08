@@ -23,13 +23,13 @@ MOFFAT_STARS = 150
 
 
 class RegisterParams(StageParams):
-    detect_sigma: float = P(8.0, label="Star detection threshold", level=ADVANCED, ge=3, le=50, unit="sigma",
+    detect_sigma: float = P(8.0, label="Detection threshold", level=ADVANCED, ge=3, le=50, unit="sigma",
                             help="Minimum significance of the stars used for alignment.",
                             tip="Lower it (5) for very short or very faint frames with few stars; raise it in very "
                                 "dense Milky Way fields to keep only clean stars.")
     max_stars: int = P(2500, label="Stars per frame", level=ADVANCED, ge=100, le=20000,
                        help="Brightest stars kept per frame for matching and for the alignment polynomial.")
-    align: bool = P(True, label="Align the frames", level=ADVANCED,
+    align: bool = P(True, label="Align frames", level=ADVANCED,
                     help="Off when the Registration block is cut (issue #43): the frames are taken as already aligned "
                          "(each stays where it is); the stars are still measured, to weigh and select the frames.")
     workers: int = P(8, label="Parallel workers", level=ADVANCED, ge=1, le=64,

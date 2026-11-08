@@ -16,7 +16,7 @@ from ..core import cfa as cfa_mod
 from ..core.imgutil import robust_sigma
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage
-from ..io.frames import read_cfa
+from ..io.frames import read_cfa, read_colour
 
 SAT_MARK = 65000.0      # value written for saturated pixels in the cache
 VALID_MAX = 60000.0     # anything above is treated as saturated downstream
@@ -32,13 +32,13 @@ class CalibrateParams(StageParams):
                            help="Pixels whose flat response differs from their neighbourhood by more than this fraction "
                                 "(dust specks, dead pixels) are excluded.",
                            tip="0.3 = 30 %. Lower it if dust donuts remain visible after calibration.")
-    hot_from_lights: bool = P(True, label="Hot pixels seen in the lights", level=ADVANCED,
+    hot_from_lights: bool = P(True, label="Hot pixels (lights)", level=ADVANCED,
                               help="Also flag the pixels that stand out from their neighbours in many light frames "
                                    "taken at different sky positions (the sky drifts across the sensor, a defect "
                                    "does not). Darks taken at another temperature miss pixels that are hot only "
                                    "when the sensor is warmer; in the stack they draw the drift path of the mount.",
                               tip="Skipped automatically when the sky did not move on the sensor during the night.")
-    flat_scale_px: float = P(0.0, label="Flat: large scales only", level=ADVANCED, ge=0, le=500, step=5, unit="px",
+    flat_scale_px: float = P(0.0, label="Flat scale", level=ADVANCED, ge=0, le=500, step=5, unit="px",
                              help="Keep only the scales of the master flat larger than this (Gaussian sigma, sensor "
                                   "pixels). 0 = the whole flat. For flat frames borrowed from another night of the "
                                   "same optics: they hold the vignetting of the instrument, but not this night's dust.",
@@ -47,7 +47,7 @@ class CalibrateParams(StageParams):
                           help="Raw values above this fraction of the sensor white level are flagged as saturated; the "
                                "stacker then treats them specially instead of averaging clipped values.",
                           tip="Keep the default unless star cores look flat-topped or rings appear around bright stars.")
-    apply_masters: bool = P(True, label="Apply the calibration frames", level=ADVANCED,
+    apply_masters: bool = P(True, label="Apply calibration", level=ADVANCED,
                             help="Off when the Calibration block is cut (issue #43): the frames are taken as they are "
                                  "(already calibrated), without master dark, flat or defective pixels.")
     workers: int = P(8, label="Parallel workers", level=ADVANCED, ge=1, le=64,
@@ -76,6 +76,10 @@ class Calibrate(Stage):
 
     def run(self, ctx: Context, p: CalibrateParams) -> None:
         frames = ctx.load_json("inventory", "frames.json")
+        if cfa_mod.is_colour(ctx.metric_of("inventory", "cfa")):       # frames already in colour (issue #57)
+            (ctx.dir / MASTERS).unlink(missing_ok=True)
+            calibrate_colour(ctx, p, frames)
+            return
         given = given_masters(ctx, p)
         if given is not None:                # the masters of an earlier result: rebuild the calibrated cache only
             rebuild_cache(ctx, p, frames["lights"], given, ctx.metric_of("inventory", "cfa"),
@@ -370,11 +374,11 @@ def _plane(a: np.ndarray, k: int, P: int = 2) -> np.ndarray:
 READERS = 4
 
 
-def _read_frames(paths: list[str], put, start: int = 0, tick=None) -> None:
+def _read_frames(paths: list[str], put, start: int = 0, tick=None, read=None) -> None:
     """The files from rank ``start`` read on several threads: ``put(i, frame)`` stores each one in its place (so the
     result does not depend on which is read first); ``tick(c)``: c files of ``paths`` are done."""
     with ThreadPoolExecutor(READERS) as pool:
-        jobs = [pool.submit(lambda i=i, q=q: put(i, read_cfa(q))) for i, q in enumerate(paths) if i >= start]
+        jobs = [pool.submit(lambda i=i, q=q: put(i, (read or read_cfa)(q))) for i, q in enumerate(paths) if i >= start]
         for c, job in enumerate(as_completed(jobs)):
             job.result()
             if tick is not None:
@@ -416,6 +420,13 @@ def _master_flat(paths: list[str], fdark: np.ndarray, ctx: Context) -> np.ndarra
 
     _read_frames(paths, put, 0, lambda c: _tick(ctx, f"reading flats {c}/{len(paths)}"))
     fl /= np.median(fl[:, H // 2 - 200:H // 2 + 200, W // 2 - 200:W // 2 + 200], axis=(1, 2), keepdims=True)
+    return _flats_mean(fl)
+
+
+def _flats_mean(fl: np.ndarray) -> np.ndarray:
+    """The flats (n, H, W), each over its central level, averaged without the values over 3 MAD from the pixel's
+    median (by bands of rows)."""
+    H, W = fl.shape[1:]
     out = np.empty((H, W), np.float32)
     for r in range(0, H, BAND):
         b = fl[:, r:r + BAND]
@@ -507,7 +518,7 @@ def _sky_noise(path: str, dark: np.ndarray, flat: np.ndarray, P: int = 2) -> flo
 
 def _flat_view(flat: np.ndarray, cfa: str) -> np.ndarray:
     """Flat field shown as a colour image normalised to its maximum (vignetting and dust)."""
-    rgb = np.moveaxis(cfa_mod.superpixel(flat, cfa), -1, 0)
+    rgb = np.moveaxis(cfa_mod.superpixel(flat, cfa), -1, 0)   # frames already in colour: their three planes (issue #57)
     return np.clip(rgb / np.percentile(rgb, 99.9), 0, 1)
 
 
@@ -591,4 +602,194 @@ def open_cache(ctx: Context, mode: str = "r"):
     info = ctx.load_json("calibrate", "cache.json")
     mm = np.memmap(info["path"], dtype=np.float16, mode=mode, shape=(info["n"], info["height"], info["width"]))
     return mm, info
+
+
+# ---------------------------------------------------------------------- frames already in colour (issue #57)
+#: what a colour frame's masters are, colour by colour, besides the luminance (H, W) kept under the usual names (the
+#: stack's saturation level, Inspect)
+MASTER_RGB = ("master_dark_rgb.npy", "master_flat_rgb.npy")
+
+
+def open_colour(info: dict) -> np.memmap:
+    """(memmap (N, 3, H, W) float16) of the three planes of the calibrated frames already in colour (``info``:
+    cache.json)."""
+    return np.memmap(info["rgb_path"], dtype=np.float16, mode="r", shape=(info["n"], 3, info["height"], info["width"]))
+
+
+def calibrate_colour(ctx: Context, p: CalibrateParams, frames: dict) -> None:
+    """The calibration of frames already in colour, channel by channel (issue #57): the master dark, bias and flat of
+    their own three planes, each frame's dark taken off and its flat divided by colour by colour; written as a
+    luminance cache (N, H, W) (what the registration reads) and the planes beside it (``_colour_cache``). The frames
+    are not linear when they were stretched (every JPEG is): the correction is then approximate (said by the session
+    and the inventory). Hot pixels are not looked for in the lights: a frame already demosaiced has spread them over
+    their neighbours."""
+    H, W = int(ctx.metric_of("inventory", "height")), int(ctx.metric_of("inventory", "width"))
+    black = float(ctx.metric_of("inventory", "black_level"))
+    white = float(ctx.metric_of("inventory", "white_level"))
+    if not p.apply_masters:
+        ctx.log("Calibration cut: the frames are taken as they are (no master dark, flat or defective pixels)")
+        ctx.metric("calibration_cut", True)
+        _colour_cache(ctx, p, frames["lights"], np.full((3, H, W), black, np.float32), np.ones((3, H, W), np.float32),
+                      np.zeros((H, W), bool), white, time.time())
+        return
+    nm = sum(len(frames[k]) for k in ("bias", "darks", "flats", "flat_darks"))
+    ctx._files_total, ctx._files_read, ctx._lights_from = nm, 0, nm / max(nm + len(frames["lights"]), 1)
+    ctx.phase(0.0, ctx._lights_from)
+    bias = _colour_median([f["path"] for f in frames["bias"]], ctx, "bias") if frames["bias"] else None
+    if bias is not None:
+        ctx.save("master_bias.npy", cfa_mod.luminance(bias))
+    if frames["darks"]:
+        dark = _colour_median([f["path"] for f in frames["darks"]], ctx, "darks")
+        one = cfa_mod.luminance(read_colour(frames["darks"][0]["path"]))
+        ctx.metric("dark_frame_noise", round(robust_sigma(one[::3, ::3])[1], 2))
+    else:
+        dark = bias.copy() if bias is not None else np.full((3, H, W), black, np.float32)
+        ctx.log("no dark frames: using " + ("the master bias" if bias is not None else "the black level") +
+                " as dark (hot pixels will not be removed by calibration)", "warning")
+    dark = scaled_dark(ctx, dark, bias, black, frames)
+    flat = _colour_flat([f["path"] for f in frames["flats"]], [f["path"] for f in frames["flat_darks"]], bias, dark, H, W,
+                        p.flat_scale_px, ctx)
+    ctx.log("hot pixels seen in the lights: not looked for in frames already in colour (demosaicing has spread them)")
+    level = np.median(dark, axis=(1, 2), keepdims=True)
+    t0 = time.time()
+    sky = read_colour(frames["lights"][len(frames["lights"]) // 2]["path"])
+    noise = float(np.median([robust_sigma(((sky - dark) / flat)[c, ::4, ::4])[1] for c in range(3)]))
+    bad = np.zeros((H, W), bool)
+    if frames["darks"]:
+        bad |= ((dark - level) > p.hot_sigma * noise).any(0)
+    from scipy.ndimage import median_filter
+    for c in range(3):
+        loc = median_filter(flat[c], size=9)
+        bad |= (flat[c] < (1 - p.flat_defect) * loc) | (flat[c] > (1 + p.flat_defect) * loc)
+        bad |= flat[c] < FLAT_UNLIT * float(np.median(flat[c]))
+    ctx.metric("bad_pixels_pct", round(100 * float(bad.mean()), 2))
+    ctx.metric("sky_noise_adu", round(noise, 2))
+    ctx.metric("dark_level", round(float(np.median(dark)), 1))
+    ctx.metric("vignetting_min", round(float(flat.min()), 3))
+    _colour_cache(ctx, p, frames["lights"], dark, flat, bad, white, t0)
+
+
+def _colour_median(paths: list[str], ctx: Context, label: str) -> np.ndarray:
+    """The pixel-wise median (3, H, W) of frames already in colour, in bands of rows (as ``_median_stack``)."""
+    first = read_colour(paths[0])
+    stack = np.empty((len(paths), *first.shape), np.float32)
+    stack[0] = first
+    _tick(ctx, f"reading {label} 1/{len(paths)}")
+
+    def put(i, a):
+        stack[i] = a
+
+    _read_frames(paths, put, 1, lambda c: _tick(ctx, f"reading {label} {c}/{len(paths)}"), read_colour)
+    out = np.empty(stack.shape[1:], np.float32)
+    for r in range(0, out.shape[1], BAND):
+        out[:, r:r + BAND] = np.median(stack[:, :, r:r + BAND], axis=0, overwrite_input=True)
+    return out
+
+
+def _colour_flat(paths: list[str], fd_paths: list[str], bias: np.ndarray | None, dark: np.ndarray, H: int, W: int,
+                 flat_scale_px: float, ctx: Context) -> np.ndarray:
+    """The master flat (3, H, W) of frames already in colour, each colour normalised to 1 at its centre; all ones
+    without flats. Each flat over its own central level, per colour, then ``_flats_mean``."""
+    if not paths:
+        ctx.log("no flat frames: vignetting and dust will not be corrected (the sky model will absorb part of "
+                "the vignetting)", "warning")
+        return np.ones((3, H, W), np.float32)
+    if fd_paths:
+        fdark = _colour_median(fd_paths, ctx, "flat darks")
+    elif bias is not None:
+        fdark = bias
+    else:
+        fdark = np.broadcast_to(np.median(dark, axis=(1, 2), keepdims=True), (3, H, W)).astype(np.float32)
+    fl = np.empty((len(paths), 3, H, W), np.float32)
+
+    def put(i, a):
+        fl[i] = a - fdark
+
+    _read_frames(paths, put, 0, lambda c: _tick(ctx, f"reading flats {c}/{len(paths)}"), read_colour)
+    y0, y1, x0, x1 = H // 2 - 200, H // 2 + 200, W // 2 - 200, W // 2 + 200
+    fl /= np.median(fl[:, :, max(y0, 0):y1, max(x0, 0):x1], axis=(2, 3), keepdims=True)
+    flat = np.stack([_flats_mean(fl[:, c]) for c in range(3)])
+    for c in range(3):
+        if flat_scale_px > 0:
+            flat[c] = cv2.GaussianBlur(flat[c], (0, 0), flat_scale_px)
+        flat[c] /= np.median(flat[c, max(y0, 0):y1, max(x0, 0):x1])
+    if flat_scale_px > 0:
+        ctx.log(f"master flat kept above {flat_scale_px:.0f} px only (vignetting, not dust)")
+    return flat
+
+
+def _colour_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark: np.ndarray, flat: np.ndarray,
+                  bad: np.ndarray, white: float, t0: float) -> None:
+    """The calibrated frames already in colour: their luminance in ``lights.f16`` (N, H, W), what the registration
+    reads as a monochrome mosaic, their three planes in ``lights_rgb.f16`` (N, 3, H, W), read by the stack; the masters
+    colour by colour (MASTER_RGB) and their luminance under the usual names."""
+    _, H, W = dark.shape
+    level = float(np.median(dark))
+    scale = float(min(1.0, 16000.0 / max(white - level, 1.0)))
+    n = len(lights)
+    cache, rgb = ctx.scratch / "lights.f16", ctx.scratch / "lights_rgb.f16"
+    ctx.save("master_dark.npy", cfa_mod.luminance(dark))
+    ctx.save("master_flat.npy", cfa_mod.luminance(flat))
+    ctx.save("badmask.npy", bad)
+    for name, a in zip(MASTER_RGB, (dark, flat)):
+        ctx.save(name, a)
+    mm = np.memmap(cache, dtype=np.float16, mode="w+", shape=(n, H, W))
+    mr = np.memmap(rgb, dtype=np.float16, mode="w+", shape=(n, 3, H, W))
+    del mm, mr
+    d = ctx.ckpt
+    np.save(d / "dark.npy", dark)
+    np.save(d / "flat.npy", flat)
+    np.save(d / "bad.npy", bad)
+    stats = np.zeros((n, 4, 2), np.float32)
+    init = (str(cache), str(rgb), n, H, W, str(d), p.saturation * white, scale)
+    ctx.phase(getattr(ctx, "_lights_from", 0.0), 1.0)
+    ctx.progress(0.0, f"calibrating {n} frames ({p.workers} processes)", force=True)
+    with get_context("spawn").Pool(p.workers, initializer=_init_colour, initargs=init) as pool:
+        for c, (idx, st) in enumerate(pool.imap_unordered(_calib_colour, list(enumerate(f["path"] for f in lights)),
+                                                          chunksize=2)):
+            stats[idx] = st
+            ctx.progress((c + 1) / n, f"{c + 1}/{n} frames calibrated")
+    for f in ("dark.npy", "flat.npy", "bad.npy"):
+        (d / f).unlink(missing_ok=True)
+    ctx.save("frame_stats.npy", stats)
+    # the cache's pattern is its luminance's: the stages that walk it read one monochrome mosaic (core/cfa.MONO)
+    ctx.save_json("cache.json", {"path": str(cache), "rgb_path": str(rgb), "n": n, "height": H, "width": W, "scale": scale,
+                                 "cfa": cfa_mod.MONO, "colour": True, "sat_mark": SAT_MARK, "valid_max": VALID_MAX,
+                                 "white_level": white, "dark_level": level})
+    ctx.metric("cache_scale", scale)
+    ctx.metric("cache_gb", round(n * H * W * 8 / 1e9, 1))
+    ctx.log(f"{n} frames already in colour calibrated in {(time.time() - t0) / 60:.1f} min")
+    from .inventory import _superpixel_rgb
+    ctx.preview("master_flat", _flat_view(flat, cfa_mod.RGB))
+    fr = np.nan_to_num(np.asarray(np.memmap(rgb, dtype=np.float16, mode="r", shape=(n, 3, H, W))[n // 2], np.float32))
+    ctx.preview("calibrated_frame", _superpixel_rgb(np.where(fr > VALID_MAX, 0, fr), cfa_mod.RGB))
+
+
+def _init_colour(cache, rgb, n, H, W, paths_dir, sat_raw, scale):
+    d = Path(paths_dir)
+    _G.update(dark=np.load(d / "dark.npy"), flat=np.load(d / "flat.npy"), bad=np.load(d / "bad.npy"),
+              mm=np.memmap(cache, dtype=np.float16, mode="r+", shape=(n, H, W)),
+              rgb=np.memmap(rgb, dtype=np.float16, mode="r+", shape=(n, 3, H, W)), sat=sat_raw, scale=scale)
+
+
+def _calib_colour(args):
+    """One frame already in colour, calibrated colour by colour: its three planes and its luminance written, a
+    saturated sample marked (the luminance too: a star clipped in one colour), the bad pixels left out."""
+    idx, path = args
+    raw = read_colour(path)
+    sat = raw >= _G["sat"]
+    x = (raw - _G["dark"]) / _G["flat"] * _G["scale"]
+    x = np.minimum(x, VALID_MAX - 1)
+    x[sat] = SAT_MARK
+    y = cfa_mod.luminance(np.where(sat, 0.0, x))
+    y[sat.any(0)] = SAT_MARK
+    x[:, _G["bad"]] = np.nan
+    y[_G["bad"]] = np.nan
+    _G["rgb"][idx] = x.astype(np.float16)
+    _G["mm"][idx] = y.astype(np.float16)
+    stats = []
+    for c in (0, 1, 1, 2):                                  # the same four entries as a Bayer sensor's (their mean)
+        v = x[c, ::4, ::4]
+        stats.append(robust_sigma(v[np.isfinite(v) & (v < VALID_MAX)]))
+    return idx, stats
 

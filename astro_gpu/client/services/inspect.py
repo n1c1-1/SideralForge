@@ -593,7 +593,7 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
     """The sessions, headers, star sizes and health checks of a project. ``headers`` caches the headers read (a dict
     owned by the service). A light that cannot be read never stops it (exploration 6.10: the checks stayed on "Reading
     the frames…"): it is said in the checks; the files the engine does not read (a JPEG) are not counted as kept."""
-    from ...core.project import frame_kind
+    from ...core.project import colour_lights, frame_kind
     from ...io.frames import read_info
     hdr = headers if headers is not None else {}
     out = ProjectFrames()
@@ -612,7 +612,8 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
         row = SessionRow(s.id, s.name, filter=s.filter)
         lights = _files(p, s.lights)
         row.lights = len(lights)
-        frames = [f for f in lights if frame_kind(f)]             # what the engine reads (not a JPEG added by mistake)
+        colour = colour_lights(lights)                            # issue #57: JPEGs only when they are the lights
+        frames = [f for f in lights if frame_kind(f) and (colour or frame_kind(f) != "colour")]   # what the engine reads
         row.darks, row.flats = len(_files(p, s.darks)), len(_files(p, s.flats))
         row.bias, row.flat_darks = len(_files(p, s.bias)), len(_files(p, s.flat_darks))
         for kind in ("lights", "darks", "flats", "bias", "flat_darks"):
@@ -1057,9 +1058,10 @@ def _calib_masters(cal_dir: str):
 
 
 def calibrated_frame(p, wid: int, path: str, which: str = "current") -> tuple[np.ndarray, str, str]:
-    """One light frame as the calibration made it: (mosaic in ADU above the dark, Bayer pattern, how it was got).
-    From the calibrated cache when it is on disk, else made again from the stage's own masters with its formula
-    ((raw − master dark) / master flat, defective pixels left empty)."""
+    """One light frame as the calibration made it: (mosaic in ADU above the dark, Bayer pattern, how it was got); a frame
+    already in colour: (its image (H, W, 3), no pattern, how it was got). From the calibrated cache when it is on disk,
+    else made again from the stage's own masters with its formula ((raw − master dark) / master flat, defective pixels
+    left empty)."""
     import json
 
     from ...io.frames import read_cfa
@@ -1074,12 +1076,17 @@ def calibrated_frame(p, wid: int, path: str, which: str = "current") -> tuple[np
     white = float(info.get("white_level") or 65535.0) - float(info.get("dark_level") or 0.0)
     cache = Path(info.get("path") or "")
     n, H, W = int(info["n"]), int(info["height"]), int(info["width"])
+    colour = bool(info.get("rgb_path"))                    # frames already in colour (issue #57): their three planes
+    if colour:
+        cache = Path(info["rgb_path"])
     idx = None
-    if cache.is_file() and cache.stat().st_size == n * H * W * 2:
+    if cache.is_file() and cache.stat().st_size == n * (3 if colour else 1) * H * W * 2:
         inv = inventory_headers(p, wid, "lights")
         order = list(inv)
         norm = norm_path(path)
         idx = order.index(norm) if norm in order and len(order) == n else None
+    if colour:
+        return _calibrated_colour(cache, info, d, path, idx, white), "", "cache" if idx is not None else "masters"
     if idx is not None:
         mm = np.memmap(cache, dtype=np.float16, mode="r", shape=(n, H, W))
         x = np.asarray(mm[idx], np.float32)
@@ -1094,6 +1101,28 @@ def calibrated_frame(p, wid: int, path: str, which: str = "current") -> tuple[np
         x[bad] = np.nan
         how = "masters"
     return np.nan_to_num(x, nan=0.0, posinf=white, neginf=0.0), cfa, how
+
+
+def _calibrated_colour(cache: Path, info: dict, d: Path, path: str, idx: int | None, white: float) -> np.ndarray:
+    """A frame already in colour as the calibration made it (issue #57): (H, W, 3) in ADU above the dark, from its
+    three planes in the cache (``idx``: its rank there), else made again colour by colour from the masters (a joined
+    set keeps its masters on the luminance only: the same for the three colours)."""
+    from ...io.frames import read_colour
+    from ...stages.calibrate import MASTER_RGB, VALID_MAX
+    n, H, W = int(info["n"]), int(info["height"]), int(info["width"])
+    if idx is not None:
+        mm = np.memmap(cache, dtype=np.float16, mode="r", shape=(n, 3, H, W))
+        x = np.array(mm[idx], np.float32)
+        sat = x >= VALID_MAX
+        x /= float(info.get("scale") or 1.0)
+        x[sat] = white
+    else:
+        dark, flat, bad = _calib_masters(str(d))
+        if all((d / f).is_file() for f in MASTER_RGB):
+            dark, flat = (np.load(d / f).astype(np.float32) for f in MASTER_RGB)
+        x = (read_colour(path) - dark) / flat
+        x[:, bad] = np.nan
+    return np.moveaxis(np.nan_to_num(x, nan=0.0, posinf=white, neginf=0.0), 0, -1)
 
 
 def calframe_source(p, wid: int, path: str, which: str = "current"):
@@ -1390,9 +1419,11 @@ def calibration_data(p, wid: int, which: str = "current", headers: dict | None =
                 out.masters.append((key, caption, st))
         try:
             info = json.loads((d / "cache.json").read_text(encoding="utf-8"))
-            out.cfa = str(info.get("cfa") or "")
-            c = Path(info.get("path") or "")
-            out.cache = c.is_file() and c.stat().st_size == int(info["n"]) * int(info["height"]) * int(info["width"]) * 2
+            colour = bool(info.get("rgb_path"))           # frames already in colour (issue #57): no mosaic to show
+            out.cfa = "RGB" if colour else str(info.get("cfa") or "")
+            c = Path(info.get("rgb_path" if colour else "path") or "")
+            out.cache = c.is_file() and c.stat().st_size == (3 if colour else 1) * int(info["n"]) * int(info["height"]) * \
+                int(info["width"]) * 2
         except (OSError, ValueError, KeyError):
             out.cache = False
     sid = str(which).partition("@")[2] if isinstance(which, str) else ""

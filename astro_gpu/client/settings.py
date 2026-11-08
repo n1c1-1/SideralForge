@@ -58,7 +58,7 @@ CATALOG = {
                                              "drizzle fills the hole with the other frames."),
             E("calibrate", "hot_from_lights", help="Also looks for hot pixels in the lights themselves, not only in "
                                                    "the darks."),
-            N("calibrate", "cold_pixels", "Correct cold pixels too", "bool", False,
+            N("calibrate", "cold_pixels", "Cold pixels", "bool", False,
               "Excludes pixels that are too dark (dead) the same way as hot pixels."),
         ]),
         ("Flats", [
@@ -116,10 +116,10 @@ CATALOG = {
             N("stack", "max_background", "Maximum background", "float", 0.0,
               "Excludes frames with a too bright background (Moon, dawn, headlights), as a multiple of the median "
               "background; 0 = no threshold.", lo=0.0, hi=5.0, step=0.1, unit="× median"),
-            N("stack", "min_roundness", "Minimum star roundness", "float", 0.0,
+            N("stack", "min_roundness", "Min roundness", "float", 0.0,
               "Excludes frames with elongated stars (wind, tracking); 1 = perfectly round, 0 = no threshold.",
               lo=0.0, hi=1.0, step=0.05),
-            N("stack", "keep_best", "Keep the best", "int", 100,
+            N("stack", "keep_best", "Keep best", "int", 100,
               "After the thresholds, keeps only this percentage of the best frames.", lo=10, hi=100, step=5,
               unit="% of frames"),
         ]),
@@ -164,7 +164,7 @@ CATALOG = {
                        "Linear fit clipping", "Generalized ESD"], reason=AS_TODAY, method="drizzle"),
             E("stack", "kappa", help="A pixel farther from the median than this threshold (in noise sigmas) is "
                                      "rejected.", method="drizzle"),
-            N("stack", "split_thresholds", "Separate low and high thresholds", "bool", False,
+            N("stack", "split_thresholds", "Separate thresholds", "bool", False,
               "By default the same threshold applies to too bright and too dark pixels. Separate, bright trails can "
               "be rejected harder.", method="drizzle"),
             E("stack", "core_tolerance", "expert", help="Margin left at the core of bright stars, which varies from "
@@ -223,7 +223,7 @@ CATALOG = {
               reason=AS_TODAY),
             E("color", "white_temp", label="White temperature",
               help="The temperature of this reference; 5778 K is that of the Sun."),
-            N("color", "neutral_zone", "Background neutralization area", "choice", "Automatic: nebula-free",
+            N("color", "neutral_zone", "Background area", "choice", "Automatic: nebula-free",
               "Where the sky background is made neutral grey.",
               choices=["Automatic: nebula-free", "Drawn on the image"], reason=AS_TODAY),
         ]),
@@ -247,7 +247,7 @@ CATALOG = {
         ("Deconvolution", [
             N("deconv", "iterations", "Iterations", "int", 30, "More iterations sharpen more, and raise the noise.",
               lo=5, hi=200, step=5),
-            N("deconv", "stars", "Correct the stars too", "bool", True, "Rounds and tightens the stars with the "
+            N("deconv", "stars", "Correct stars", "bool", True, "Rounds and tightens the stars with the "
               "local PSF."),
             N("deconv", "regularization", "Regularization", "float", 0.002, "Holds back noise and ringing.", lo=0.0,
               hi=0.05, step=0.001, level="expert"),
@@ -478,13 +478,25 @@ def stack_methods(s, p) -> list[str]:
     """The stacking methods the engine offers this workflow (the choices of its ``method`` setting), [] while the
     worker has not described the stage or when the engine has no choice of method."""
     info = s.param_info(p, *STACK_METHOD)
-    return list(info.choices or []) if info is not None else []
+    keys = list(info.choices or []) if info is not None else []
+    return [k for k in keys if k != "drizzle"] if colour_frames(s, p) else keys
+
+
+#: the Classic stack's settings that do not apply to frames already in colour: nothing is demosaiced
+NO_DEBAYER = ("classic_debayer", "classic_cfa_balance")
+
+
+def colour_frames(s, p) -> bool:
+    """Whether the workflow stacks frames already in colour (issue #57): the Classic stack is its only method."""
+    return bool(getattr(s, "colour_frames", lambda _p: False)(p))
 
 
 def stack_method(s, p) -> str | None:
     """The stacking method of the workflow (the effective value), None when the engine has no choice of method."""
     info = s.param_info(p, *STACK_METHOD)
-    return info.value if info is not None and info.choices else None
+    if info is None or not info.choices:
+        return None
+    return "classic" if colour_frames(s, p) else info.value
 
 
 def method_advice(s, p) -> tuple[str, str] | None:
@@ -539,6 +551,8 @@ def step_settings(s, p, step: str):
 
     def mine(r):
         m = setting_method(r)
+        if cur == "classic" and r.get("name") in NO_DEBAYER and colour_frames(s, p):      # issue #57: no demosaicing
+            return False
         return m is None or cur is None or m == cur
 
     out = []

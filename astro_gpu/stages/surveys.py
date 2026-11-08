@@ -23,12 +23,12 @@ HIPS_SERVERS = {"nsns": "https://simg.de/nebulae3/dr0_2/halpha"}
 
 
 class SurveysParams(StageParams):
-    survey: str = P("auto", label="H-alpha reference survey", choices=["auto", "nsns", "finkbeiner", "none"],
+    survey: str = P("auto", label="H-alpha survey", choices=["auto", "nsns", "finkbeiner", "none"],
                     help="Professional H-alpha map of the field: it shows where the faint nebulosity is, so that "
                          "the Gradient block takes no sky sample there. It never enters the sky model.",
                     tip="'Automatic' uses NSNS (sharper) when it covers the field, otherwise the all-sky Finkbeiner map. "
                         "'None': no survey (the Gradient block then chooses its samples on the image alone).")
-    min_coverage: float = P(0.95, label="Minimum NSNS coverage", level=ADVANCED, ge=0.0, le=1.0, step=0.05,
+    min_coverage: float = P(0.95, label="NSNS coverage", level=ADVANCED, ge=0.0, le=1.0, step=0.05,
                             help="Below this fraction of the field covered by NSNS, 'auto' switches to Finkbeiner.")
 
 

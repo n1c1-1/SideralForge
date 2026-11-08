@@ -204,8 +204,18 @@
  "{session}: the folder of the {kind} is not found: {folder} (is its disk plugged in?)": "{session} : dossier des {kind} introuvable : {folder} (son disque est-il branché ?)",
  "{session}: {name} is not a frame that can be read (damaged, or not a FITS file): take it out of the session": "{session} : {name} n'est pas une brute lisible (fichier abîmé, ou pas un FITS) : la retirer de la session",
  "{session}: the {kind} are {w}×{h} pixels, the lights {lw}×{lh}: they cannot calibrate them": "{session} : {kind} en {w}×{h} pixels, brutes en {lw}×{lh} : tailles différentes, calibration impossible",
- "{session}: no light frame in its folders (camera raw or FITS files)": "{session} : aucune brute dans ses dossiers (fichiers RAW d'appareil ou FITS)",
  "only 1 light frame: stacking needs at least 2": "une seule brute : l'empilement en demande au moins 2",
  "{n} light frame kept of {total}: stacking needs at least 2": "{n} brute gardée sur {total} : l'empilement en demande au moins 2",
- "its Image block has no file yet": "son bloc Image n'a pas encore de fichier"
+ "its Image block has no file yet": "son bloc Image n'a pas encore de fichier",
+ "{session}: no light frame in its folders (camera raw, FITS, JPEG, PNG or TIFF files)": "{session} : aucune brute dans ses dossiers (fichiers RAW d'appareil, FITS, JPEG, PNG ou TIFF)",
+ "{session}: the {kind} ({name}) are not of the same kind as the lights (frames already in colour against a raw mosaic): they cannot calibrate them; use {kind} of their kind": "{session} : les {kind} ({name}) ne sont pas de la même sorte que les brutes (images déjà en couleur face à une mosaïque RAW) : ils ne peuvent pas les calibrer ; prenez des {kind} de leur sorte",
+ "{0} cannot be used as a colour frame: {1}; take it out of the session": "{0} ne peut pas servir d'image couleur : {1} ; retirez-la de la session",
+ "it has one channel: it is not a colour image": "elle n'a qu'un canal : ce n'est pas une image en couleur",
+ "the file is damaged or wrongly named": "le fichier est abîmé ou mal nommé",
+ "the file is damaged or not a TIFF": "le fichier est abîmé ou n'est pas un TIFF",
+ "it is not a colour image of three planes": "ce n'est pas une image en couleur à trois plans",
+ "the {0} ({1}) are already in colour, the lights a raw mosaic or monochrome: they cannot calibrate them; take them out of the session, or use {0} of the same kind as the lights": "les {0} ({1}) sont déjà en couleur, les brutes une mosaïque RAW ou monochromes : ils ne peuvent pas les calibrer ; retirez-les de la session, ou prenez des {0} de la même sorte que les brutes",
+ "the {0} ({1}) are a raw mosaic or monochrome, the lights already in colour: they cannot calibrate them; take them out of the session, or use {0} of the same kind as the lights": "les {0} ({1}) sont une mosaïque RAW ou monochromes, les brutes déjà en couleur : ils ne peuvent pas les calibrer ; retirez-les de la session, ou prenez des {0} de la même sorte que les brutes",
+ "the {0} ({1}) reach {2} and the lights {3} (another bit depth): they cannot calibrate them; take them out of the session, or use {0} of the same kind as the lights": "les {0} ({1}) montent à {2} et les brutes à {3} (autre profondeur) : ils ne peuvent pas les calibrer ; retirez-les de la session, ou prenez des {0} de la même sorte que les brutes",
+ "Bayer drizzle does not apply to frames already in colour (no mosaic of raw colour samples to drop): choose the Classic stack": "Le drizzle Bayer ne s'applique pas aux images déjà en couleur (pas de mosaïque de pixels bruts à déposer) : choisissez l'empilement classique"
 }

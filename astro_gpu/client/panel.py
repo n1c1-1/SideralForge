@@ -610,6 +610,12 @@ class Panel(QWidget):
         gone = gone_kinds(s, {sid})
         warns = s.file_warnings(sid)                       # issue #58: files that may be mistakes, shown on their kind
         flagged = self._flagged(sid, warns)
+        note = getattr(s, "colour_note", lambda _i: None)(sid)
+        if note:                                           # issue #57: the limit of frames already in colour, said
+            from .frames import colour_note_text
+            lb = label("ⓘ " + colour_note_text(note), "small", wrap=True)
+            lb.setObjectName("colour_note")
+            self.bv.addWidget(lb)
         for kind, title in self.KIND_TITLES:
             if kind == "lights":
                 kept = counts.get("kept", n["lights"])
@@ -757,8 +763,8 @@ class Panel(QWidget):
             d = QFileDialog.getExistingDirectory(self, _("Add folder…"), _prefs.last_folder())
             got = [d] if d else []
         else:
-            from ..core.project import FITS_EXT, RAW_EXT  # frames first; any file still (issue #58: then warned)
-            pats = " ".join(f"*{e}" for e in sorted(RAW_EXT | FITS_EXT | {".fz"}))
+            from ..core.project import COLOUR_EXT, FITS_EXT, RAW_EXT  # frames first; any file still (#58: then warned)
+            pats = " ".join(f"*{e}" for e in sorted(RAW_EXT | FITS_EXT | COLOUR_EXT | {".fz"}))
             got, _f = QFileDialog.getOpenFileNames(self, _("Add files…"), _prefs.last_folder(),
                                                    _("Frames ({patterns})").format(patterns=pats) + ";;" +
                                                    _("All files (*)"))
@@ -782,7 +788,8 @@ class Panel(QWidget):
         whole = any(not Path(e).suffix for e in entries)
         new = [Path(d).as_posix()] if whole else [(Path(d) / Path(e).name).as_posix() for e in entries
                                                   if (Path(d) / Path(e).name).is_file()]
-        notes: list = [] if new else [("“{name}” holds no frames (camera raw or FITS): not added.", Path(d).name)]
+        notes: list = [] if new else [("“{name}” holds no frames (camera raw, FITS, JPEG, PNG or TIFF): not added.",
+                                       Path(d).name)]
         s = self.s
         with s.batch():
             if new and s.add_session_entries(sid, kind, new, notes):
@@ -1362,8 +1369,15 @@ class Panel(QWidget):
     def stack_methods(self, p):
         """The stacking methods the engine offers, as cards; the engine's advice marks one "Recommended" (with its
         reason under an "i"), and never changes the method by itself. Below, only the settings of the method shown."""
-        from .settings import STACK_METHOD, method_advice, method_text, stack_methods
+        from .settings import STACK_METHOD, colour_frames, method_advice, method_text, stack_methods
         keys = stack_methods(self.s, p)
+        if colour_frames(self.s, p):                       # issue #57: said, not silently left out
+            self.bv.addWidget(self.group_title(_("Method")))
+            why = label(_("Classic stack: Bayer drizzle does not apply to frames already in colour (no mosaic of raw "
+                          "colour samples to drop)."), "small", wrap=True)
+            why.setObjectName("colour_no_drizzle")
+            self.bv.addWidget(why)
+            return
         if len(keys) < 2:
             return
         info = self.s.param_info(p, *STACK_METHOD)

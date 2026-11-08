@@ -243,6 +243,28 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
          r"them out of the session, or use those of this camera$",
          "{0} {1} have another size than the lights ({2}), e.g. {3}: take them out of the session, or use those of "
          "this camera", (1,)),
+        # issue #57: frames already in colour
+        (r"^(.+) cannot be used as a colour frame: (.+); take it out of the session$",
+         "{0} cannot be used as a colour frame: {1}; take it out of the session", (1,)),
+        (r"^the (darks|flats|bias|flat darks) \((.+)\) are already in colour, the lights a raw mosaic or monochrome: "
+         r"they cannot calibrate them; take them out of the session, or use (?:darks|flats|bias|flat darks) of the "
+         r"same kind as the lights$",
+         "the {0} ({1}) are already in colour, the lights a raw mosaic or monochrome: they cannot calibrate them; "
+         "take them out of the session, or use {0} of the same kind as the lights", (0,)),
+        (r"^the (darks|flats|bias|flat darks) \((.+)\) are a raw mosaic or monochrome, the lights already in colour: "
+         r"they cannot calibrate them; take them out of the session, or use (?:darks|flats|bias|flat darks) of the "
+         r"same kind as the lights$",
+         "the {0} ({1}) are a raw mosaic or monochrome, the lights already in colour: they cannot calibrate them; "
+         "take them out of the session, or use {0} of the same kind as the lights", (0,)),
+        (r"^the (darks|flats|bias|flat darks) \((.+)\) reach (\d+) and the lights (\d+) \(another bit depth\): they "
+         r"cannot calibrate them; take them out of the session, or use (?:darks|flats|bias|flat darks) of the same "
+         r"kind as the lights$",
+         "the {0} ({1}) reach {2} and the lights {3} (another bit depth): they cannot calibrate them; take them out "
+         "of the session, or use {0} of the same kind as the lights", (0,)),
+        (r"^Bayer drizzle does not apply to frames already in colour \(no mosaic of raw colour samples to drop\): "
+         r"choose the Classic stack$",
+         "Bayer drizzle does not apply to frames already in colour (no mosaic of raw colour samples to drop): choose "
+         "the Classic stack", ()),
         (r"^only (\d+) stars found in the stack, at least 50 are needed to identify the field: add light frames, or "
          r"take Astrometry out of this workflow$", "only {0} stars found in the stack, at least 50 are needed to "
                                                    "identify the field: add light frames, or take Astrometry out of "

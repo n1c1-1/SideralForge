@@ -10,6 +10,10 @@ that every walk of the mosaic above holds for it (the lattice of period 2, its f
 deposits its samples in one channel and gives that channel to the three (``mono_rgb``): a grey image, which the
 blocks after it read as any stack. A mono session's filter (Ha, OIII, L, R...) is the session's.
 
+Frames already in colour (issue #57: JPEG, PNG, TIFF, RGB FITS): the pattern ``RGB``, no mosaic at all, read as three
+planes (io/frames.read_colour). What the chain walks as a mosaic is their luminance (``luminance``), a monochrome frame
+for the stages that only need its stars; the three planes are kept beside it for the stack.
+
 X-Trans: 20 green, 8 red and 8 blue samples in each 6 x 6 block, the three colours in every row and column and in
 every 3 x 3 window (checked by the tests): a 3 x 3 neighbourhood holds each colour, so the bilinear demosaicing and
 the half-resolution previews below work for it as for a Bayer pattern. Sources: Fujifilm's description of the X-Trans
@@ -24,6 +28,11 @@ CHANNELS = "RGB"
 BAYER = ("RGGB", "BGGR", "GRBG", "GBRG")
 #: a monochrome sensor (no colour filter array): every sample counts as one channel (green), see ``mono_rgb``
 MONO = "GGGG"
+#: frames already in colour (issue #57): three planes for each pixel, no mosaic
+RGB = "RGB"
+#: the luma weights of a JPEG (ITU-R BT.601, as in the JFIF specification's YCbCr): what registration reads of a colour
+#: frame, on the same scale as the file's own values
+LUMA = (0.299, 0.587, 0.114)
 #: the samples of each colour in a 6 x 6 X-Trans block
 XTRANS_COUNTS = {"R": 8, "G": 20, "B": 8}
 
@@ -46,15 +55,25 @@ def is_mono(cfa) -> bool:
     return cfa == MONO
 
 
+def is_colour(cfa) -> bool:
+    return cfa == RGB
+
+
+def luminance(a: np.ndarray) -> np.ndarray:
+    """The luma (H, W) float32 of a colour frame (3, H, W), by ``LUMA``."""
+    a = np.asarray(a, np.float32)
+    return np.float32(LUMA[0]) * a[0] + np.float32(LUMA[1]) * a[1] + np.float32(LUMA[2]) * a[2]
+
+
 def mono_rgb(a: np.ndarray) -> np.ndarray:
     """A monochrome stack's image (3, H, W), its samples in the green channel: that channel in the three."""
     return np.repeat(np.asarray(a)[1:2], 3, axis=0)
 
 
 def is_supported(cfa) -> bool:
-    """A Bayer pattern, monochrome, or an X-Trans one (the three colours in their counts, each row and column holding
-    all three)."""
-    if cfa in BAYER or cfa == MONO:
+    """A Bayer pattern, monochrome, frames already in colour, or an X-Trans pattern (the three colours in their counts,
+    each row and column holding all three)."""
+    if cfa in BAYER or cfa == MONO or cfa == RGB:
         return True
     if not is_xtrans(cfa) or any(cfa.count(c) != n for c, n in XTRANS_COUNTS.items()):
         return False
@@ -97,8 +116,12 @@ def superpixel(a: np.ndarray, cfa: str) -> np.ndarray:
     """(H // 2, W // 2, 3): each 2 x 2 cell one colour pixel. Bayer: the cell's own samples (the two greens averaged).
     X-Trans (a 2 x 2 cell does not hold the three colours): each colour the mean of its samples in the 3 x 3
     neighbourhood of every pixel, averaged over the cell - the same size, so that the previews and their coordinates
-    are those of a Bayer sensor."""
+    are those of a Bayer sensor. A frame already in colour, given as its three planes (3, H, W): each plane's cell
+    mean."""
     a = np.asarray(a, np.float32)
+    if is_colour(cfa):
+        H, W = a.shape[1] // 2 * 2, a.shape[2] // 2 * 2
+        return np.moveaxis(a[:, :H, :W].reshape(3, H // 2, 2, W // 2, 2).mean((2, 4)), 0, -1)
     H, W = a.shape[0] // 2 * 2, a.shape[1] // 2 * 2
     if is_mono(cfa):                                 # a grey picture: the cell's mean in the three channels
         m = a[:H, :W].reshape(H // 2, 2, W // 2, 2).mean((1, 3))

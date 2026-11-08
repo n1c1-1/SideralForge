@@ -649,7 +649,8 @@ def _external_data_ok(stage: str, d: Path) -> bool:
             frames = json.loads((d / "frames.json").read_text(encoding="utf-8"))
             return all(Path(f["path"]).is_file() for infos in frames.values() for f in infos)
         if stage in ("calibrate", "sessions"):
-            return Path(json.loads((d / "cache.json").read_text(encoding="utf-8"))["path"]).is_file()
+            c = json.loads((d / "cache.json").read_text(encoding="utf-8"))
+            return Path(c["path"]).is_file() and (not c.get("rgb_path") or Path(c["rgb_path"]).is_file())
     except (OSError, ValueError, KeyError, TypeError):
         return False
     return True

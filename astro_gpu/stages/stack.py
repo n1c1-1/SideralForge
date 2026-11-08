@@ -51,7 +51,7 @@ from ..core.params import ADVANCED, Auto, P, StageParams, check_choice
 from ..core.stack_classic import HIGH_SHIFT
 from ..core.stage import Context, Stage, StageError
 from ..io.frames import cfa_channel_map
-from .calibrate import VALID_MAX, open_cache
+from .calibrate import VALID_MAX, open_cache, open_colour
 
 #: the level of a parameter the project sets itself: never shown in a settings form
 INTERNAL = "internal"
@@ -100,6 +100,9 @@ DRIZZLE_BOUNDS_TOLERANCE = 1.0e-5
 #: the codes of the reasons of ``select_frames`` (frames.json "excluded"), in frame_weights' vocabulary
 THRESHOLD_CODES = {"not aligned": "not_aligned", "excluded by hand": "by_hand", "low transparency": "transparency",
                 "large stars": "fwhm"}
+#: the refusal of the Bayer drizzle for frames already in colour (issue #57)
+COLOUR_NO_DRIZZLE = ("Bayer drizzle does not apply to frames already in colour (no mosaic of raw colour samples to "
+                     "drop): choose the Classic stack")
 
 
 class StackParams(StageParams):
@@ -125,7 +128,7 @@ class StackParams(StageParams):
                           "(satellites, planes, cosmic rays, hot pixels). Bright outliers are dilated by one pixel "
                           "to remove the edges of trails.",
                      tip="Lower (3-4) removes more trails but may eat star cores in poor seeing.")
-    core_tolerance: float = P(0.5, label="Star core tolerance", level=ADVANCED, ge=0.0, le=2.0, step=0.1,
+    core_tolerance: float = P(0.5, label="Core tolerance", level=ADVANCED, ge=0.0, le=2.0, step=0.1,
                               help="Extra relative tolerance on bright pixels, so that sharp star cores (which vary "
                                    "with seeing and sub-pixel position) are not rejected.")
     half_block: int = P(20, label="Half-stack block", level=ADVANCED, ge=1, le=200, unit="frames",
@@ -136,7 +139,7 @@ class StackParams(StageParams):
                     help="Electrons per ADU in the calibrated frames, used for the noise model of the rejection.")
     read_noise: float = P(11.9, label="Read noise", level=ADVANCED, ge=0, unit="ADU",
                           help="Noise of a frame without light, used for the noise model of the rejection.")
-    pattern_removal: bool = P(False, label="Fixed pattern removal", level=ADVANCED,
+    pattern_removal: bool = P(False, label="Pattern removal", level=ADVANCED,
                               help="The sensor's fixed pattern (residual dark current, hot or cold columns, amplifier "
                                    "patterns not removed by the darks - or everything when there are no darks) stays "
                                    "at the same place on the sensor while the sky drifts between frames. Stacked, it "
@@ -147,7 +150,7 @@ class StackParams(StageParams):
                               tip="Off by default: on some stacks the estimate also held the tracks of the faint "
                                   "stars across the sensor, and subtracting it drew the very streaks it was meant to "
                                   "remove (without it the stacked background has none).")
-    pattern_frames: int = P(48, label="Frames for the pattern reference", level=ADVANCED, ge=8, le=400,
+    pattern_frames: int = P(48, label="Pattern frames", level=ADVANCED, ge=8, le=400,
                             help="Number of frames, evenly spread over the session, whose median is the first estimate "
                                  "of the fixed pattern; the final estimate uses all frames around it.")
     white_balance: bool = P(False, label="Camera white balance", key_neutral=False,
@@ -194,10 +197,11 @@ class StackParams(StageParams):
                                help="With the Classic method: how outliers are rejected pixel by pixel. Automatic: "
                                     "chosen by the number of frames (percentile under 6 frames, winsorized sigma "
                                     "clipping from 6 to 15, linear fit clipping from 16), with the usual thresholds.")
-    classic_cfa_balance: str = P("on", label="White balance before debayering (Classic)", level=ADVANCED,
+    classic_cfa_balance: str = P("on", label="Pre-balance (Classic)", level=ADVANCED,
                                  choices=list(ON_OFF),
-                                 help="With the Classic method: the colours of each frame are balanced before RCD "
-                                      "debayering and the balance is taken off after, as raw converters do, so that "
+                                 help="With the Classic method: white balance before debayering. The colours of each "
+                                      "frame are balanced before RCD debayering and the balance is taken off after, "
+                                      "as raw converters do, so that "
                                       "RCD does not move green light into the blue and red of the stars. Off: the "
                                       "debayering without balance.")
     drizzle_rejection: str = P("own", label="Rejection (drizzle)", level=ADVANCED, choices=list(DRIZZLE_REJECTIONS),
@@ -206,7 +210,7 @@ class StackParams(StageParams):
                                     "sky made from all frames. From the classic stack's rejection: the Classic "
                                     "method's rejection runs on the debayered, registered frames, and what it "
                                     "rejects in a frame is left out of that frame's drops on the same pixels.")
-    exclude: list[str] = P([], label="Frames excluded by hand", level=INTERNAL,
+    exclude: list[str] = P([], label="Excluded frames", level=INTERNAL,
                            help="Light frames left out of the stack whatever their quality (their files). Set by the "
                                 "project from the frames the user excluded; not a setting of its own.")
 
@@ -276,9 +280,13 @@ class Stack(Stage):
         except (OSError, KeyError, ValueError, AttributeError):      # no inventory or statistics: the aligned frames
             pass
         # DrizzlePac's rule on the Moffat FWHM of the frames kept (core/coverage.py); the reasons are its own
-        s = drizzle_suggestion(reg, ctx.load_json("calibrate", "cache.json"), use=use, weights=w)
+        cache = ctx.load_json("calibrate", "cache.json")
+        s = drizzle_suggestion(reg, cache, use=use, weights=w)
         a["scale"], a["pixfrac"] = s.scale, s.pixfrac
         a["method"] = s.method                     # an advice (Auto.advice): shown, never applied
+        if cache.get("rgb_path"):                  # frames already in colour (issue #57): no mosaic to drizzle, applied
+            a["method"] = Auto("classic", "frames already in colour: Classic stack, no Bayer drizzle (no mosaic of raw "
+                                       "colour samples to drop)")
         st = np.load(ctx.input("calibrate", "frame_stats.npy"))
         m, s_ = st[:, :, 0].mean(1), st[:, :, 1].mean(1)
         rn = ctx.metric_of("calibrate", "dark_frame_noise")
@@ -300,10 +308,14 @@ class Stack(Stage):
         dev = ctx.device
         mm, info = open_cache(ctx)
         H, W = info["height"], info["width"]
-        ch_of_k = cfa_channel_map(info["cfa"])
-        P = cfa_mod.period(info["cfa"])                # the pattern's period: 2 (Bayer), 6 (X-Trans)
-        mono = cfa_mod.is_mono(info["cfa"])           # a monochrome sensor: one channel (issue #43)
-        NP = P * P
+        colour = bool(info.get("rgb_path"))           # frames already in colour (issue #57): three planes, no mosaic
+        if colour and p.method != "classic":
+            raise StageError(COLOUR_NO_DRIZZLE)
+        rgb_mm = open_colour(info) if colour else None
+        ch_of_k = [0, 1, 2] if colour else cfa_channel_map(info["cfa"])
+        P = 1 if colour else cfa_mod.period(info["cfa"])      # the pattern's period: 2 (Bayer), 6 (X-Trans)
+        mono = not colour and cfa_mod.is_mono(info["cfa"])    # a monochrome sensor: one channel (issue #43)
+        NP = 3 if colour else P * P
         BS = 64 // P                                    # sky blocks of 64 sensor pixels
         reg = np.load(ctx.input("register", "reg.npz"))
         coef, transp, fwhm, ref = reg["coef"], reg["transp"].astype(float), reg["fwhm"], int(reg["ref"])
@@ -334,7 +346,9 @@ class Stack(Stage):
         used_metrics(ctx, used, Wo, Ho)
 
         fpn = None
-        if p.pattern_removal:
+        if p.pattern_removal and colour:
+            ctx.log("fixed pattern removal does not apply to frames already in colour: left off", "warning")
+        elif p.pattern_removal:
             ctx.phase(0.0, 0.1)                         # issue #50: its share of the bar, the passes in the rest
             ctx.progress(0.0, "measuring the fixed pattern of the sensor")
             fpn, finfo = fixed_pattern(mm, used, coef, dev, H, W, p.pattern_frames,
@@ -384,11 +398,14 @@ class Stack(Stage):
             b = v / (H / 2) - 1.0
             return np.stack([np.ones_like(a), a, b, a * a, a * b, b * b], -1)
 
+        def at_k(k):                                    # position k's cell of the pattern; a colour plane: its origin
+            return (0, 0) if colour else divmod(k, P)
+
         def block_bkg(frame):
             out, cx, cy = [], [], []
             for k in range(NP):
-                ky, kx = divmod(k, P)
-                pl = frame[ky::P, kx::P][: nby * BS, : nbx * BS]
+                ky, kx = at_k(k)
+                pl = (frame[k] if colour else frame[ky::P, kx::P])[: nby * BS, : nbx * BS]
                 b = pl.reshape(nby, BS, nbx, BS).permute(0, 2, 1, 3).reshape(nby, nbx, BS * BS)
                 b = torch.where(b > VALID_MAX, torch.nan, b)
                 out.append(torch.nanmedian(b, dim=-1).values)
@@ -396,19 +413,19 @@ class Stack(Stage):
             ii = (torch.arange(nby, device=dev) + 0.5) * BS - 0.5
             gy, gx = torch.meshgrid(ii, jj, indexing="ij")
             for k in range(NP):
-                ky, kx = divmod(k, P)
+                ky, kx = at_k(k)
                 cx.append(P * gx + kx)
                 cy.append(P * gy + ky)
             return torch.stack(out), torch.stack(cx), torch.stack(cy)
 
-        fr = torch.from_numpy(np.asarray(mm[ref], np.float32)).to(dev)
+        fr = torch.from_numpy(np.asarray((rgb_mm if colour else mm)[ref], np.float32)).to(dev)
         if fpn is not None:
             fr = torch.where(fr > VALID_MAX, fr, fr - fpn)
         Bref_np = block_bkg(fr)[0].cpu().numpy()
         from scipy.ndimage import map_coordinates
 
         def ref_bkg_at(k, u, v):
-            ky, kx = divmod(k, P)
+            ky, kx = at_k(k)
             pj = ((u - kx) / P + 0.5) / BS - 0.5
             pi = ((v - ky) / P + 0.5) / BS - 0.5
             return map_coordinates(Bref_np[k], [pi.ravel(), pj.ravel()], order=1, mode="nearest").reshape(pi.shape)
@@ -447,8 +464,8 @@ class Stack(Stage):
             norm[int(i)] = (Q, bkg_level)
             return norm[int(i)]
 
-        def load(i):                                # the calibrated CFA frame, for the Classic part
-            fr = torch.from_numpy(np.asarray(mm[i], np.float32)).to(dev)
+        def load(i):                                # the calibrated CFA frame (colour frames: its planes), for Classic
+            fr = torch.from_numpy(np.asarray((rgb_mm if colour else mm)[i], np.float32)).to(dev)
             return fr if fpn is None else torch.where(fr > VALID_MAX, fr, fr - fpn)
 
         if p.method == "classic":                   # debayered, interpolated (core/stack_classic.py), its hook
@@ -456,7 +473,8 @@ class Stack(Stage):
                 frame_norm(i, load(i))
                 ctx.progress(0.05 * (c_ + 1) / len(used), "normalisation")
             return stack_classic(ctx, p, wb=wb, load=load, coef=coef, used=used, weight=weight, norm=norm, transp=transp,
-                                 meta=meta, sel=sel, ch_of_k=ch_of_k, H=H, W=W, satval=satval, dev=dev, t0=t0)
+                                 meta=meta, sel=sel, ch_of_k=ch_of_k, H=H, W=W, satval=satval, dev=dev, t0=t0,
+                                 colour=colour)
 
         def frame_model(i):
             """The frame normalised to the reference (value, ADU of the reference), where its samples land on the
@@ -1147,7 +1165,7 @@ def white_balance_of(ctx: Context, p: StackParams, meta: list[dict]) -> np.ndarr
         ctx.log(f"camera white balance not read ({e}): the stack keeps the camera's colours", "warning")
         return None
     if wb is None:
-        ctx.log("the frames hold no camera white balance (FITS): the stack keeps the camera's colours")
+        ctx.log("the frames hold no camera white balance: the stack keeps the colours of the frames")
         return None
     ctx.log(f"camera white balance: red x {wb[0]:.3f}, blue x {wb[2]:.3f} (green 1)")
     ctx.metric("camera_white_balance", [round(float(v), 4) for v in wb])
@@ -1160,7 +1178,7 @@ def balanced(a: np.ndarray, wb: np.ndarray | None) -> np.ndarray:
 
 
 def stack_classic(ctx: Context, p: StackParams, *, wb=None, load, coef, used, weight, norm, transp, meta, sel, ch_of_k,
-                  H: int, W: int, satval, dev, t0: float) -> None:
+                  H: int, W: int, satval, dev, t0: float, colour: bool = False) -> None:
     """The hook of the Classic method (``method = classic``: RCD debayering, Lanczos-4
     registration with Siril's clamping, WBPP's rejection by frame count; core/stack_classic.py and the modules it
     uses). ``Stack.run`` calls it once the part both methods share is done: the frames ``used`` with their
@@ -1176,7 +1194,7 @@ def stack_classic(ctx: Context, p: StackParams, *, wb=None, load, coef, used, we
     res = sc.stack_classic(load, coef, bad=None, norm=nm, weights=weight, params=classic_params(p),
                            device=dev, used=used, ch_of_k=ch_of_k, H=H, W=W, sat_level=satval,
                            progress=lambda f, msg: ctx.progress(0.05 + 0.95 * f, msg),
-                           raw_template=raw_template(meta, used, ch_of_k))
+                           raw_template=raw_template(meta, used, ch_of_k), colour=colour)
     mono = cfa_mod.is_mono(meta[0].get("cfa", "")) if meta else False
     for name, a in res.arrays().items():
         if name in ("drz_full.npy", "drz_A.npy", "drz_B.npy"):

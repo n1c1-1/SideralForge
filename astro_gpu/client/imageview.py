@@ -534,7 +534,7 @@ def planar(arr: np.ndarray) -> np.ndarray:
 
 def _read(vi: ViewImage) -> tuple[np.ndarray, str, Any]:
     src = vi.source
-    cfa, wcs = vi.cfa, None
+    cfa, wcs = "" if vi.cfa == "RGB" else vi.cfa, None      # a frame already in colour (issue #57): no mosaic
     if isinstance(src, str | os.PathLike):
         arr, fcfa, wcs = read_file(src)
         cfa = cfa or fcfa
@@ -542,7 +542,8 @@ def _read(vi: ViewImage) -> tuple[np.ndarray, str, Any]:
         arr = src()
     else:
         arr = src
-    return np.asarray(arr), cfa, wcs
+    arr = np.asarray(arr)
+    return arr, "" if arr.ndim == 3 else cfa, wcs          # a mosaic is one plane: an image in colour has no pattern
 
 
 def _to_side(img: np.ndarray, side: int) -> np.ndarray:
