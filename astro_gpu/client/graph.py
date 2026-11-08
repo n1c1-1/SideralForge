@@ -2116,7 +2116,7 @@ class GraphMap(QWidget):
         super().__init__(view.viewport())
         self.view = view
         self.rows: list[tuple[QRectF, QColor]] = []       # each block: its rectangle in the scene, the colour of its state
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.OpenHandCursor)
         self.setToolTip(_("Overview: click or drag to move the view"))
 
     def _frame(self) -> tuple[QRectF, float]:
@@ -2257,8 +2257,7 @@ class PaletteCard(QFrame):
         self.setMaximumWidth(PALETTE_FOLDED_W - 12 if folded else PALETTE_W - 26)
         on = not reason or branch
         self.setObjectName("tool")
-        self.setCursor(Qt.OpenHandCursor if on and block in wfl.IO else
-                       Qt.PointingHandCursor if on else Qt.ForbiddenCursor)
+        self.setCursor(Qt.ForbiddenCursor if not on else Qt.ArrowCursor if block == "deconv" else Qt.OpenHandCursor)
         # available: a filled card; not available: the same card faint (a disabled tool), never dashed: dashed is
         # for the places a block can be dropped on
         self.setStyleSheet(f"QFrame#tool {{ background: {'#232831' if on else '#1e2128'}; border: 1px solid "
@@ -2283,13 +2282,13 @@ class PaletteCard(QFrame):
             t.setStyleSheet("font-weight: 600; font-size: 9pt;" + ("" if on else " color: #555b66;"))
             v.addWidget(t, 1)
         key = view_key(block)
-        what = BY_KEY[key]["what"] if key in BY_KEY else ""
+        what = textwrap.fill(_(BY_KEY[key]["what"]), 70) if key in BY_KEY else ""
         if branch:
-            tip = (_(what) + "\n" if what else "") + _("Drag it between blocks for a new branch")
+            tip = (what + "\n" if what else "") + _("Drag it between blocks for a new branch")
         elif reason:                                     # not available: why, the sentence begun with a capital
             tip = reason[:1].upper() + reason[1:]
         else:
-            tip = _(what) if what else ""
+            tip = what
         self.setToolTip((self.title + ("\n" + tip if tip else "")) if folded else tip)
         self.setAccessibleName(self.title)
 
