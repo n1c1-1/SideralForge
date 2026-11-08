@@ -137,6 +137,45 @@ def test_a_field_with_enough_stars_stays_on_the_usual_path(tmp_path, monkeypatch
     assert not any(m.startswith("sparse field") for _, m in logs)
 
 
+def test_a_frame_of_another_field_cannot_stay_the_reference(tmp_path, monkeypatch):
+    """Two frames of another field, with the most stars and sharpest, in the mid-session the reference is drawn from
+    (the two 75 s frames of the bench set, 23.5 degrees away): the reference is a frame of the session's field."""
+    sky, other = _sky(28), _sky(120, seed=99)
+    cats = [_aperture(_frame(sky, 0.05 * i, (10.0 * i, -6.0 * i), seed=i, keep=0.85)[0]) for i in range(1, 11)]
+    cats[4] = _aperture(_frame(other, 0.0, (5.0, 5.0), seed=50)[0])
+    cats[5] = _aperture(_frame(other, 0.0, (9.0, 2.0), seed=51)[0])
+    assert rg.reference_order(np.array([len(c) for c in cats]), np.full(10, 5.0))[0] in (4, 5)
+    z, logs, metrics = _run(tmp_path, cats, monkeypatch)
+    assert int(z["ref"]) not in (4, 5) and metrics["aligned"] == 8 and not np.isfinite(z["rms"][[4, 5]]).any()
+    assert any(m.startswith("reference frame: f") and "(another field?)" in m and m.endswith(" is used") for _, m in logs)
+
+
+def test_a_session_aligned_on_its_first_reference_tries_no_other(tmp_path, monkeypatch):
+    """The reference an ordinary session always had, and one pass over its frames: nothing is added to it."""
+    sky = _sky(600)
+    cats = [_aperture(_frame(sky, 0.0, (9.0 * i, 4.0 * i), seed=i)[0]) for i in range(7)]
+    calls = []
+    real = rg.fit_frame
+    monkeypatch.setattr(rg, "fit_frame", lambda *a, **k: calls.append(1) or real(*a, **k))
+    nst = np.array([len(c) for c in cats])
+    rich = np.where(nst >= np.percentile(nst, 50))[0]
+    mid = rich[(rich > 7 * 0.3) & (rich < 7 * 0.7)]
+    today = int((mid if len(mid) else rich)[np.argmin(np.full(7, 5.0)[mid if len(mid) else rich])])
+    z, logs, _ = _run(tmp_path, cats, monkeypatch)
+    assert int(z["ref"]) == today and len(calls) == 7
+    assert not any(m.startswith("reference frame:") for _, m in logs)
+
+
+def test_no_more_references_are_tried_than_the_limit(tmp_path, monkeypatch):
+    """Every frame its own field: the session is not aligned, and the search stops."""
+    cats = [_aperture(_sky(20, seed=100 + i)) for i in range(12)]
+    tried = []
+    real = rg.fit_sparse
+    monkeypatch.setattr(rg, "fit_sparse", lambda c, r, *a, **k: tried.append(id(r)) or real(c, r, *a, **k))
+    z, _, metrics = _run(tmp_path, cats, monkeypatch)
+    assert len(set(tried)) == rg.REFERENCE_TRIES and metrics["aligned"] == 1
+
+
 def test_frames_with_hardly_a_star_still_stop_the_run(tmp_path, monkeypatch):
     sky = _sky(4)
     cats = [_aperture(_frame(sky, seed=i)[0]) for i in range(5)]
