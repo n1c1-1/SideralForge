@@ -330,34 +330,9 @@ def test_new_project_writes_a_v2_folder(env):
     assert dlg.ok.isEnabled() and dlg.folder() == env["ws"] / "Rosette_ night 2"
 
 
-def test_import_folder_as_new_project_one_window_after_the_other(env, monkeypatch, qapp):
-    """GUI exploration 7.1, #28, #30: proposed where the projects are, never in the frames' folder; the import, then
-    the gallery; a folder without lights makes no project; an unreadable project says so plainly."""
+def test_an_unreadable_project_says_so_plainly(env):
+    """#30: said in plain words, never the raw error."""
     w = _main(env)
-    raw = env["tmp"] / "shoot" / "lights"
-    raw.mkdir(parents=True)
-    (raw / "L_001.fits").write_bytes(b"SIMPLE  =" + bytes(2871))
-    asked, order = [], []
-    monkeypatch.setattr(appmod.QFileDialog, "getExistingDirectory", lambda *a, **k: raw.as_posix())
-
-    def ask(name="", target="", location=None):
-        asked.append(location)
-        return (Path(location) / "M81").as_posix(), "M81", "", {}
-    monkeypatch.setattr(w.home, "ask_new_project", ask)
-    monkeypatch.setattr(w, "import_frames", lambda folder: order.append(("import", getattr(w.graph, "_gallery",
-                                                                                          None))) or True)
-    w.import_folder_as_new()
-    qapp.processEvents()
-    assert asked and Path(asked[0]).resolve() != raw.resolve() and raw.resolve() not in Path(asked[0]).resolve().parents
-    assert w.project is not None and raw.resolve() not in w.project.root.resolve().parents
-    assert order == [("import", None)] and w.graph._gallery is not None          # the gallery after the import
-    w.graph._gallery.reject()
-    empty = env["tmp"] / "empty"
-    empty.mkdir()
-    monkeypatch.setattr(appmod.QFileDialog, "getExistingDirectory", lambda *a, **k: empty.as_posix())
-    asked.clear()
-    w.import_folder_as_new()
-    assert not asked and "No project made" in w.status.text()
     bad = env["ws"] / "Broken"
     bad.mkdir()
     (bad / "project.astroproj").write_text("{'broken", encoding="utf-8")

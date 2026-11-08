@@ -6,10 +6,9 @@ worker thread and answers with a signal in the GUI thread:
 * images: the array of a block (stack, denoised, the starless image...) or the engine's preview, with the automatic
   display stretch, the histograms and the astrometric solution (``ShownImage``); the last images are kept (least recently used);
 * the metrics of a done result (``api.stage_outputs``), the frame table of Selection, the sessions with their headers
-  and health checks, the frames of a group, their thumbnails and statistics;
-* the scan of a folder to import, with its progress.
+  and health checks, the frames of a group, their thumbnails and statistics.
 
-Four workers: ``images`` (arrays, metrics, tables, scans), ``thumbs`` (the thumbnails of the grid and the filmstrip),
+Four workers: ``images`` (arrays, metrics, tables), ``thumbs`` (the thumbnails of the grid and the filmstrip),
 ``view`` (the statistics of the frame shown) and ``prefetch`` (the statistics of many frames), so that a long load never
 keeps another one waiting. Each request carries a channel and the latest one wins (``ApiWorker``).
 
@@ -678,39 +677,6 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
     return out
 
 
-def add_scan(p, scan, criteria=None, session: int | None = None) -> list:
-    """The frames of a scanned folder into the project (GUI thread: memory only, the model saves). One session per night by
-    default; with ``criteria`` that split a night (exposure, ISO / gain), one per group. ``session``: everything goes into it."""
-    lights = scan.frames.get("lights") or []
-    if session is not None or not lights or criteria is None:
-        return api.add_frames(p, scan, session)
-    by_night = api.group_sessions(lights, api.GroupingCriteria(True, False, False))
-    groups = api.group_sessions(lights, criteria)
-    if len(groups) <= len(by_night):
-        return api.add_frames(p, scan)
-    made = [api.add_session(p, lights=g.paths, name=g.name) for g in groups]
-    for s, g in zip(made, groups):
-        s.filter = g.filter                           # read from the FITS headers
-    from datetime import datetime
-    mids = [datetime.fromisoformat(g.start) if g.start else None for g in groups]
-    for kind in ("darks", "flats", "bias", "flat_darks"):
-        for folder in scan.folders.get(kind, []):
-            fl = [i for i in scan.frames.get(kind, []) if norm_path(Path(i.path).parent)
-                  == norm_path(folder)]
-            if not fl:
-                continue
-            ts = sorted(t for t in map(api._when, fl) if t)
-            near = 0
-            if ts and any(mids):
-                mid = ts[len(ts) // 2]
-                near = min((i for i, m in enumerate(mids) if m), key=lambda i: abs(mids[i] - mid))
-            lst = getattr(made[near], kind)
-            if not any(norm_path(folder) == norm_path(x) for x in lst):
-                lst.append(folder)
-    p.validate()
-    return made
-
-
 @dataclass
 class FrameItem:
     """One frame of a group of the browser."""
@@ -834,20 +800,14 @@ def inventory_headers(p, wid: int | None, kind: str) -> dict[str, dict]:
 
 
 def calibration_left_out(p, kind: str, seen: set[str]) -> list[tuple[int, Path]]:
-    """The calibration frames of a kind that were left out by hand: the files of the folders a session lists frame
-    by frame (``ProjectModel.set_calibration_excluded``) that no session lists. (session id, path)."""
-    from ...core.project import list_frames
+    """The calibration frames of a kind left out by hand (``ProjectModel.set_calibration_excluded``) that no session
+    lists and that are still on the disk. (session id, path)."""
     out = []
     for s in p.sessions:
-        folders = []
-        for e in getattr(s, kind):
-            q = Path(p.abspath(e))
-            if q.suffix and not q.is_dir():
-                folders.append(str(q.parent))
-        for f in list_frames(list(dict.fromkeys(folders))):
-            norm = norm_path(f)
-            if norm not in seen:
-                seen.add(norm)
+        for x in s.left_out.get(kind, []):
+            f = Path(p.abspath(x))
+            if norm_path(f) not in seen and f.is_file():
+                seen.add(norm_path(f))
                 out.append((s.id, f))
     return out
 
@@ -855,7 +815,7 @@ def calibration_left_out(p, kind: str, seen: set[str]) -> list[tuple[int, Path]]
 def set_calibration_excluded(model, item: FrameItem, excluded: bool, group: list[FrameItem]) -> bool:
     """Leave a calibration frame out of its master (or take it back): ``ProjectModel.set_calibration_excluded``, given
     the frames of the item's folder as the worker listed them (``group``: the kind's listing, left-out frames
-    included), so that the GUI thread reads no folder. False: the last frame of a folder stays."""
+    included), so that the GUI thread reads no folder. False: its session is not known."""
     if item.session is None:
         return False
     here = norm_path(Path(item.path).parent)
@@ -1660,10 +1620,10 @@ def color_fit_of(p, wid: int, which: str = "current"):
     return _try(fn, p, wid, which) if fn is not None else None
 
 
-def lights_of(p, wid: int | None, headers: dict | None = None) -> list[FrameItem]:
-    """The light frames with what is known of each: headers, star size, transparency, weight, state, roundness.
-    For an Outdated registration or stack, the numbers their previous results give."""
-    items = browse_group(p, wid, "lights", headers)
+def lights_of(p, wid: int | None, headers: dict | None = None, session: int | None = None) -> list[FrameItem]:
+    """The light frames (``session``: of that session) with what is known of each: headers, star size, transparency,
+    weight, state, roundness. For an Outdated registration or stack, the numbers their previous results give."""
+    items = browse_group(p, wid, "lights", headers, session)
     if wid is None:
         return items
     fn = diag("registration_table")
@@ -1732,10 +1692,6 @@ def final_sky_bundle(p, wid: int, which: str, grid, origin, w: int, h: int) -> S
 
 
 # ---------------------------------------------------------------------------------------------- the service
-class Cancelled(Exception):
-    """A scan stopped by the user."""
-
-
 class InspectService(QObject):
     """The requests of the views, and their answers as signals (GUI thread). One service per model (``service_of``)."""
 
@@ -1747,9 +1703,6 @@ class InspectService(QObject):
     groupReady = Signal(str, int, object)           # kind, token, [FrameItem]
     thumbReady = Signal(str, object)                # path, (h, w, 3) uint8
     statsReady = Signal(str, object)                # path, {level, noise, pct}
-    scanProgress = Signal(int, float, str)          # token, fraction, text
-    scanDone = Signal(int, object)                  # token, api.ScanResult
-    scanFailed = Signal(int, str)
     previewReady = Signal(int, int, int)            # token, kept, total: what the thresholds of Selection keep
     jobReady = Signal(str, int, object)             # name, token, result of ``request_job``
     jobFailed = Signal(str, int, str)               # name, token, reason (its first line)
@@ -1757,7 +1710,7 @@ class InspectService(QObject):
     def __init__(self, model):
         super().__init__()
         self.model = model
-        self.images = ApiWorker(self)               # arrays, metrics, tables, scans
+        self.images = ApiWorker(self)               # arrays, metrics, tables
         self.thumbs = ApiWorker(self)
         self.view = ApiWorker(self)                 # the statistics of the frame shown
         self.prefetch = ApiWorker(self)             # background batches (the statistics of the frames)
@@ -1769,11 +1722,9 @@ class InspectService(QObject):
         self.headers: dict = {}
         self._tokens: dict[str, int] = {}
         self._thumb_token = 0
-        self._scan_cancel: set[int] = set()
         self.thumb_cache: OrderedDict[str, np.ndarray] = OrderedDict()
         self.stats: dict[str, dict] = {}
         self._wb = None                              # the gains that make the sky of a light neutral
-        self.criteria = api.GroupingCriteria()       # how the next imported folder is grouped (the Grouping dialog)
         self.requests = 0                            # jobs sent to the workers (the tests count them)
         self._rw = None                              # the render worker of the final images (see ``use_renderer``)
         self._rw_own = False                         # made here (and stopped here), not lent by the window
@@ -1804,9 +1755,6 @@ class InspectService(QObject):
             path, st = result
             self.stats[path] = st
             self.statsReady.emit(path, st)
-        elif head == "inspect.scan":
-            token, res = result
-            self.scanDone.emit(token, res)
         elif head == "inspect.preview":
             token, kept, total = result
             self.previewReady.emit(token, kept, total)
@@ -1824,8 +1772,6 @@ class InspectService(QObject):
             self.imageFailed.emit(slot, self._tokens.get(channel, 0), why)
         elif head == "inspect.table":
             self.tableReady.emit(int(channel.split(":")[1]), self._tokens.get(channel, 0), why)
-        elif head == "inspect.scan":
-            self.scanFailed.emit(self._tokens.get(channel, 0), why)
 
     def _token(self, channel: str) -> int:
         self._tokens[channel] = self._tokens.get(channel, 0) + 1
@@ -2029,16 +1975,17 @@ class InspectService(QObject):
         t = api.selection_preview(self.model.p, wid, tmin, ratio)
         return token, t.kept, t.total
 
-    def request_group(self, wid: int | None, kind: str) -> int:
+    def request_group(self, wid: int | None, kind: str, session: int | None = None) -> int:
+        """The frames of a kind (``session``: of that session); answer: ``groupReady``."""
         token = self._token("inspect.group")
         self.requests += 1
-        self.images.submit("inspect.group", self._group_job, wid, kind, token)
+        self.images.submit("inspect.group", self._group_job, wid, kind, token, session)
         return token
 
-    def _group_job(self, wid, kind, token):
+    def _group_job(self, wid, kind, token, session=None):
         if kind == "lights":
-            return kind, token, lights_of(self.model.p, wid, self.headers)
-        return kind, token, browse_group(self.model.p, wid, kind, self.headers)
+            return kind, token, lights_of(self.model.p, wid, self.headers, session)
+        return kind, token, browse_group(self.model.p, wid, kind, self.headers, session)
 
     def _balanced(self, arr: np.ndarray, balance: bool) -> np.ndarray:
         """A raw frame is green (its pixels are not white balanced): the sky of the first light seen is made neutral and the
@@ -2110,32 +2057,6 @@ class InspectService(QObject):
 
     def _stats_job(self, path):
         return path, frame_stats(path)
-
-    def scan(self, folder: str) -> int:
-        """Read a folder to import; answers: ``scanProgress``, then ``scanDone`` or ``scanFailed``."""
-        token = self._token("inspect.scan")
-        self.requests += 1
-        self.images.submit("inspect.scan", self._scan_job, folder, token)
-        return token
-
-    def scan_files(self, chosen: dict) -> int:
-        """Read the frames chosen kind by kind (api.scan_files); the same answers as ``scan``."""
-        token = self._token("inspect.scan")
-        self.requests += 1
-        self.images.submit("inspect.scan", self._scan_job, chosen, token)
-        return token
-
-    def cancel_scan(self, token: int):
-        self._scan_cancel.add(token)
-
-    def _scan_job(self, what, token):
-        def progress(f, text):
-            if token in self._scan_cancel:
-                raise Cancelled()
-            self.scanProgress.emit(token, float(f), text)
-        if isinstance(what, dict):
-            return token, api.scan_files(what, progress)
-        return token, api.scan_folder(what, progress)
 
 
 _services: WeakKeyDictionary = WeakKeyDictionary()

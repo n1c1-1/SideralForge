@@ -1070,6 +1070,8 @@ def type_warning_english(w: dict, session: str) -> str:
                 "a JPEG, PNG or TIFF only with lights of its kind)")
     if w["key"] == "mixed":
         return f"{session}: {w['n']} {w['type']} file(s) among {w['of']} {w['main']} {w['kind']}: added by mistake?"
+    if w["key"] == "same_files":
+        return f"{session}: {w['n']} file(s) of the {w['kind']} are also in the {w['other']}"
     if w["key"] == "wrong_kind":
         return f"{session}: the {w['kind']} are {w['type']}, the lights {w['main']}: they cannot calibrate them"
     return f"{session}: the {w['kind']} are {w['type']}, the lights {w['main']}"

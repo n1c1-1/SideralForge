@@ -15,7 +15,7 @@ the ``ProjectModel``. It makes the edits (add or remove a block, new workflow, r
 to Post) and tells the window, by signals, what it must do (open Inspect or Post, import frames).
 
 The window (app.py ``graph_page``) builds it again with the project screen and connects its signals: ``openBlock``
-and ``openPost`` (Inspect or Post), ``addSources`` and ``addSession`` (import frames), ``variantMade`` (Inspect opens
+and ``openPost`` (Inspect or Post), ``addSession`` (a new session), ``variantMade`` (Inspect opens
 the variant compared with its original), ``changed`` (the Run button and the status line).
 
 Issue #43: the sessions calibrated each on its own sit as rows of a Session block and its Calibration block before the
@@ -43,6 +43,7 @@ from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRectF, Qt, QTime
 from PySide6.QtGui import (
     QBrush,
     QColor,
+    QCursor,
     QDrag,
     QFont,
     QFontMetrics,
@@ -2350,7 +2351,6 @@ class GraphPage(QWidget):
     openBlock = Signal()                   # double-click or Enter on a block: Inspect (Post when sel_step is "final")
     openPost = Signal()                    # "Open Post" of the Post block
     openLayer = Signal(int)                # Open in Post: Post, with this layer selected
-    addSources = Signal()                  # "Import folder…" of the Frames block
     addSession = Signal()
     variantMade = Signal(int, int)         # a variant (id) was made from this workflow (id): Inspect compares them
     changed = Signal()                     # the page was built again: the window updates its Run button and status
@@ -2442,13 +2442,12 @@ class GraphPage(QWidget):
         gv.postOpened.connect(self.open_post)
         gv.deselected.connect(self.deselect)
         gv.wireSelected.connect(self.show_wire)
-        gv.filesDropped.connect(self.add_dropped_files)
+        gv.filesDropped.connect(self.add_dropped_files, Qt.QueuedConnection)   # its menu after the drop is over
         pn = self.panel
         pn.changed.connect(self.request_refresh)
         pn.openTune.connect(self.openBlock.emit)
         pn.openPost.connect(self.openPost.emit)
         pn.variantMade.connect(self.variant_made)
-        pn.addSources.connect(self.addSources.emit)
         pn.addSession.connect(self.addSession.emit)
         pn.renamed.connect(self.rename)
         if hasattr(pn, "selectBlock"):
@@ -2693,35 +2692,32 @@ class GraphPage(QWidget):
             return s.palette_reason(p, block)
         return s.palette_reason(p, block)
 
-    def add_dropped_files(self, sid: int, paths: list):
-        """Files or folders dragged from the Explorer onto a Session block (decision 9, as reference apps import by
-        a drop): each goes to the kind its folder or file name says (dark, flat, bias, flat dark: the names the
-        import sorts by), the others to the lights."""
-        import re
-        from pathlib import Path
-
-        from ..core.newproject import GUESSES
+    def add_dropped_files(self, sid: int, paths: list, kind: str | None = None):
+        """Files or folders dragged from the Explorer onto a Session block (decision 9, as reference apps import by a
+        drop): nothing is guessed from their names, a menu asks what they are (``kind``: already said)."""
         s = self.s
-        names = {k: {n.lower() for n in v} for k, v in GUESSES.items()}
-
-        def kind_of(path: str) -> str:
-            parts = [x.lower() for x in Path(path).parts[-2:]]
-            first = re.split(r"[_\-\s.]+", Path(path).stem.lower())[0]       # "dark_001.fits": a dark
-            for k in ("flat_darks", "darks", "flats", "bias"):
-                if first in names[k] or any(x in names[k] for x in parts):
-                    return k
-            return "lights"
-        by: dict[str, list[str]] = {}
-        for f in paths:
-            by.setdefault(kind_of(f), []).append(f)
+        kind = kind or self.ask_dropped_kind()
+        if kind is None:
+            return
         notes: list = []
         with s.batch():                                   # one drop, one undo step
-            n = sum(s.add_session_entries(sid, k, fl, notes) for k, fl in by.items())
+            n = s.add_session_entries(sid, kind, paths, notes)
         said = [_(t).format(name=nm) for t, nm in notes]
         if n:
-            said.insert(0, plural(n, "{n} entry added to “{session}”", "{n} entries added to “{session}”",
-                                  session=s.session(sid).name) + " · Ctrl+Z")     # one undo step (control round)
+            said.insert(0, plural(n, "{n} file added to “{session}” · Ctrl+Z", "{n} files added to “{session}” · Ctrl+Z",
+                                  session=s.session(sid).name))     # one undo step (control round)
         self.toast(" · ".join(said) if said else _("Nothing added: no frame in what was dropped"))
+
+    def ask_dropped_kind(self) -> str | None:
+        """What the files dropped on a Session block are, as the user says; None: nothing."""
+        from .sources import GROUPS
+        m = QMenu(self)
+        for key, title, _sec in GROUPS:
+            m.addAction(_(title)).setData(key)
+        a = m.exec(QCursor.pos())
+        kind = a.data() if a is not None else None
+        m.deleteLater()
+        return kind
 
     def palette_action(self, block: str):
         """A double-click on a palette block: placed in the current workflow at its usual place; a source starts a
@@ -2736,7 +2732,7 @@ class GraphPage(QWidget):
             self.select(index=s.paths.index(q), step=f"session@{sid}")
             self.toast(_("“{session}”: workflow of its own · Ctrl+Z").format(session=s.session(sid).name))
             return
-        if block == "session":                             # issue #48: placed empty, its frames in its panel
+        if block == "session":                             # issue #48: placed empty, its files in its Inspect
             target = self.palette_path()
             joined = s.view(self.graph.plus_session_pid) if where == "join" and \
                 getattr(self.graph, "plus_session_pid", None) is not None else None

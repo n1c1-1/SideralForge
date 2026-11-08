@@ -16,7 +16,6 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from test_sources_import import close, open_page, settle  # noqa: E402
 
 from astro_gpu import api  # noqa: E402
-from astro_gpu.client import sources  # noqa: E402
 from astro_gpu.client.model import ProjectModel  # noqa: E402
 from astro_gpu.client.services.worker import ApiWorker  # noqa: E402
 from astro_gpu.core import project2  # noqa: E402
@@ -44,38 +43,6 @@ def frames(folder: Path, flt: str, n: int = 3) -> Path:
     for k in range(n):
         fits_frame(folder / f"L_{k:03d}.fits", flt)
     return folder
-
-
-class FakeImport:
-    """The import window, answered at once with the folder's scan."""
-    def __init__(self, model, folder, new_session, parent, svc, **_k):
-        self.scan = api.scan_folder(folder)
-
-    def exec(self):
-        return True
-
-    def deleteLater(self):
-        pass
-
-
-def test_the_fits_filter_makes_its_own_session_and_flow(qapp, tmp_path, monkeypatch):
-    """The FILTER of the FITS headers is the session's; OIII frames imported into an H-alpha project go to a flow of
-    their own (never stacked with Ha), named after the filter; the two sessions have two names."""
-    monkeypatch.setattr(sources, "ImportDialog", FakeImport)
-    ha, o3 = frames(tmp_path / "NGC7000" / "Ha", "Ha"), frames(tmp_path / "NGC7000" / "OIII", "OIII")
-    w, m, page = open_page(tmp_path, monkeypatch)
-    try:
-        assert sources.import_folder(m, page, folder=str(ha))
-        settle(w, page)
-        assert [(s.name, s.filter) for s in m.p.sessions] == [("2026-11-06 · Ha", "Ha")]
-        assert sources.import_folder(m, page, folder=str(o3))
-        settle(w, page)
-        assert [(s.name, s.filter) for s in m.p.sessions] == [("2026-11-06 · Ha", "Ha"), ("2026-11-06 · OIII", "OIII")]
-        flows = {w_.name: [x.filter for x in m.p.sessions_of(w_.id)] for w_ in m.p.workflows if w_.source is None}
-        assert sorted(flows.values()) == [["Ha"], ["OIII"]] and flows.get("OIII") == ["OIII"]
-        assert not [c for c in api.health_checks(m.p) if c.key == "filters_mixed"]
-    finally:
-        close(w, m, page)
 
 
 def test_two_filters_in_one_workflow_are_said_by_the_health_check(tmp_path):
@@ -106,47 +73,6 @@ def test_a_folder_named_after_its_filter_names_the_project_from_its_parent(tmp_p
     assert guess_names(str(tmp_path / "NGC7000 2026-08-01" / "Ha"))["name"] == "NGC7000 2026-08-01"
     assert guess_names(str(tmp_path / "NGC7000 2026-08-01" / "Ha"))["target"] == "NGC7000"
     assert guess_names(str(tmp_path / "M81 2026-03-01" / "lights"))["name"] == "M81 2026-03-01"
-
-
-def test_a_template_s_empty_session_receives_the_imported_frames(qapp, tmp_path, monkeypatch):
-    """Template, then Import folder: the template's empty Session holds the frames (no Session left apart); it is
-    the block selected first after the template is made."""
-    monkeypatch.setattr(sources, "ImportDialog", FakeImport)
-    raw = frames(tmp_path / "M31" / "lights", "")
-    w, m, page = open_page(tmp_path, monkeypatch)
-    try:
-        d = page.new_workflow(tab="frames")
-        d.pick(next(c.t for c in d.cards if c.t["key"] == "full"))
-        d.ok.click()
-        settle(w, page)
-        sid = m.p.sessions[0].id
-        assert m.sel_step in (f"session@{sid}", "sources")              # the block that waits for the user
-        before = [(q.pid, q.sessions) for q in m.paths]
-        assert sources.import_folder(m, page, folder=str(raw))
-        settle(w, page)
-        assert [(s.id, s.name, len(s.lights)) for s in m.p.sessions] == [(sid, "2026-11-06", 1)]
-        assert [(q.pid, q.sessions) for q in m.paths] == before
-    finally:
-        close(w, m, page)
-
-
-def test_the_filter_template_s_sessions_take_their_filter_s_frames(qapp, tmp_path, monkeypatch):
-    monkeypatch.setattr(sources, "ImportDialog", FakeImport)
-    o3 = frames(tmp_path / "T" / "OIII", "OIII")
-    w, m, page = open_page(tmp_path, monkeypatch)
-    try:
-        d = page.new_workflow(tab="mono")
-        d.pick(next(c.t for c in d.cards if c.t["key"] == "mono_each"))
-        d.filter_b["Ha"].setChecked(True)
-        d.filter_b["OIII"].setChecked(True)
-        d.ok.click()
-        settle(w, page)
-        assert sources.import_folder(m, page, folder=str(o3))
-        settle(w, page)
-        got = {s.filter: (s.name, len(s.lights)) for s in m.p.sessions}
-        assert got == {"Ha": ("Ha", 0), "OIII": ("OIII", 1)}
-    finally:
-        close(w, m, page)
 
 
 def test_the_selected_block_is_kept_without_an_edit(qapp, tmp_path, monkeypatch):
@@ -204,18 +130,23 @@ def test_an_image_only_project_shows_its_image_not_the_frames(qapp, tmp_path, mo
         close(w, m, page)
 
 
-def test_files_dropped_on_a_session_are_added_to_it(qapp, tmp_path, monkeypatch):
-    """Decision 9: files from the Explorer onto a Session block: added to it, sorted by their folder's name."""
+def test_files_dropped_on_a_session_go_where_the_user_says(qapp, tmp_path, monkeypatch):
+    """Decision 9: files from the Explorer onto a Session block: a menu asks what they are; nothing is guessed from
+    their names (a file called dark, said to be a light, is a light)."""
     w, m, page = open_page(tmp_path, monkeypatch, sessions=2, workflows=("Full",))
     try:
         toasts = []
         page.toast = toasts.append
         dark = fits_frame(tmp_path / "cal" / "darks" / "d_001.fits")
-        light = fits_frame(tmp_path / "more" / "x_001.fits")
-        page.add_dropped_files(2, [str(dark), str(light)])
+        monkeypatch.setattr(type(page), "ask_dropped_kind", lambda self: "lights")
+        page.add_dropped_files(2, [str(dark)])
         s = m.p.session(2)
-        assert any("darks" in x for x in s.darks) and any("x_001" in x or "more" in x for x in s.lights)
+        assert any("d_001" in x for x in s.lights) and not s.darks
         assert toasts and "night 2" in toasts[-1]
+        toasts.clear()
+        monkeypatch.setattr(type(page), "ask_dropped_kind", lambda self: None)    # the menu closed: nothing
+        page.add_dropped_files(2, [str(fits_frame(tmp_path / "more" / "x_001.fits"))])
+        assert not toasts and not any("x_001" in x for x in m.p.session(2).lights)
     finally:
         close(w, m, page)
 
@@ -242,13 +173,15 @@ def test_plus_session_joins_the_flow_it_is_drawn_with(qapp, tmp_path, monkeypatc
 
 def test_a_folder_not_found_says_so_and_is_chosen_again_from_its_row(qapp, tmp_path, monkeypatch):
     """GUI exploration 4: a darks (or lights) folder renamed outside: the Session and Calibration blocks and the
-    panel say it is not found, never "0 dark" or "none"; a click on its row chooses where it is now (one undo
-    step)."""
+    panel say it is not found, never "0 dark" or "none"; in the Session's files, Locate chooses where it is now (one
+    undo step)."""
     from PySide6.QtWidgets import QPushButton
     from test_sources_import import texts
 
     from astro_gpu.client.blocks import Graph
+    from astro_gpu.client.sources import SourcesView
     w, m, page = open_page(tmp_path, monkeypatch, sessions=1, workflows=("Full",))
+    view = SourcesView(m)
     try:
         darks = tmp_path / "cal" / "darks"
         for k in range(2):
@@ -262,14 +195,14 @@ def test_a_folder_not_found_says_so_and_is_chosen_again_from_its_row(qapp, tmp_p
         page.select(index=0, step="sources")
         page.refresh()
         assert any(t.startswith("Darks") and "folder not found" in t for t in texts(page.panel))
-        row = next(b for b in page.panel.findChildren(QPushButton) if "darks_old" in b.text())
-        assert "folder not found" in row.text() and "click to choose" in row.toolTip()
+        view.refresh()
         said: list = []
-        page.panel.toast.connect(said.append)
-        monkeypatch.setattr(type(page.panel), "pick_folder", lambda self, title, start: darks.as_posix())
-        row.click()
+        view.toast.connect(said.append)
+        monkeypatch.setattr(SourcesView, "ask_folder", lambda self, title, start: darks.as_posix())
+        next(b for b in view.findChildren(QPushButton) if b.text() == "Locate…").click()
         settle(w, page)
-        assert m.p.session(1).darks == [darks.as_posix()] and said and "found again" in said[-1]
+        assert [Path(x).name for x in m.p.session(1).darks] == ["D_000.fits", "D_001.fits"]   # its files, once for all
+        assert said and "found again" in said[-1]
         g = Graph(m)
         assert "2 darks" in g.summary(g.root)
         m.undo()
@@ -280,4 +213,5 @@ def test_a_folder_not_found_says_so_and_is_chosen_again_from_its_row(qapp, tmp_p
         page.refresh()
         assert any(t.startswith("Lights") and "folder not found" in t for t in texts(page.panel))
     finally:
+        view.close()
         close(w, m, page)

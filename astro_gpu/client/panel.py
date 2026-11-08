@@ -24,7 +24,6 @@ from pathlib import Path
 
 from PySide6.QtCore import QLocale, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QAbstractSpinBox,
     QApplication,
     QComboBox,
@@ -34,12 +33,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QMenu,
     QPushButton,
     QScrollArea,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -48,8 +43,8 @@ from .. import texts
 from ..core import workflow as wfl
 from . import prefs
 from .blocks import STATE_WORD, block_state, block_title
-from .i18n import _, all_workflows, hm, language, number, plural
-from .icons import IconLabel, IconText, icon_only, menu_button, set_icon
+from .i18n import _, all_workflows, hm, language, number
+from .icons import IconLabel, IconText, icon_only, set_icon
 from .layout import Sections
 from .model import NotInEngine, method_of, method_value, methods_of
 from .settings import RangeBar, SettingRow, fmt, needed_stages, selection_rule_text, step_settings
@@ -62,25 +57,6 @@ OPTIONAL_BLOCKS = ("debruitage", "etoiles", "deconv")
 EDITOR_W = 104                      # every editor of a row has this width...
 BACK_W = 22                         # ...then the unit column, then the ↺ button (its room kept when hidden)
 UNIT_MAX = 76                       # a longer unit wraps on two lines
-
-
-class FileList(QListWidget):
-    """A session's files of one folder (issue #58): several can be chosen (Ctrl, Shift), Del takes them out."""
-
-    def __init__(self, remove):
-        super().__init__()
-        self.remove = remove
-        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.setStyleSheet("QListWidget { background: transparent; border: none; }")
-
-    def chosen(self) -> list[str]:
-        return [it.data(Qt.UserRole) for it in self.selectedItems()]
-
-    def keyPressEvent(self, e):                                       # noqa: N802
-        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.selectedItems():
-            self.remove(self.chosen())
-            return
-        super().keyPressEvent(e)
 
 
 def kv(rows, pad=14) -> QLabel:
@@ -342,7 +318,6 @@ class Panel(QWidget):
     changed = Signal()                  # a setting changed (the window rebuilds the graph)
     openTune = Signal()                 # "Browse frames" and the like
     openPost = Signal()
-    addSources = Signal()
     addSession = Signal()
     renamed = Signal(int, str)
     openLayer = Signal(int)             # Open in Post (a Post layer's id)
@@ -517,9 +492,9 @@ class Panel(QWidget):
         s = self.s
         self.hv.addWidget(label(_("Frames"), "h1"))
         if not s.sources_loaded:
-            b = QPushButton(_("Import folder…"))
+            b = QPushButton(_("Open frames"))
             b.setObjectName("primary")
-            b.clicked.connect(self.addSources.emit)
+            b.clicked.connect(self.openTune.emit)
             self.bv.addWidget(b, 0, Qt.AlignLeft)
             self.bv.addStretch(1)
             return
@@ -570,7 +545,8 @@ class Panel(QWidget):
             self.renamed.emit(pid, t)
 
     def session_panel(self, sid: int):
-        """A Session block: its name, its filter, and its frames kind by kind, chosen here (issue #43)."""
+        """A Session block: its name, its filter, and what it holds kind by kind; its files are chosen in its Inspect
+        (the one place for them)."""
         from ..core.project2 import FILTERS
         s = self.s
         ses = s.session(sid)
@@ -613,7 +589,6 @@ class Panel(QWidget):
         from .frames import type_warning_text
         gone = gone_kinds(s, {sid})
         warns = s.file_warnings(sid)                       # issue #58: files that may be mistakes, shown on their kind
-        flagged = self._flagged(sid, warns)
         note = getattr(s, "colour_note", lambda _i: None)(sid)
         if note:                                           # issue #57: the limit of frames already in colour, said
             from .frames import colour_note_text
@@ -638,183 +613,14 @@ class Panel(QWidget):
                 self.bv.addWidget(IconText("link", _("shared with {names}: one master").format(names=names), "dim", "small"))
             for w in [w for w in warns if w["kind"] == kind]:      # issue #58: a file that may be a mistake
                 self.bv.addWidget(IconText("warning", type_warning_text(w), "warning", "warn"))
-            sets: dict[str, list[str]] = {}            # one row per folder: its own entry, or its files chosen one by one
-            for e in getattr(ses, kind):
-                pth = Path(s.p.abspath(e))
-                sets.setdefault((pth.parent if pth.suffix else pth).as_posix(), []).append(e)
-            files = s.session_files(sid, kind)
-            for folder, entries in sets.items():
-                # 7.4: a folder chosen whole lists every file of it, a file of it also chosen alone included once
-                whole = any(not Path(e).suffix for e in entries)
-                mine = list(dict.fromkeys(f for f in files if Path(f).parent.as_posix().lower() == folder.lower())) \
-                    if whole else [Path(s.p.abspath(e)).as_posix() for e in entries]
-                self._file_group(sid, kind, folder, entries, mine, flagged)
-            add = QHBoxLayout()
-            b = QPushButton(_("Add"))                       # one menu per kind: folder, files, another session's
-            menu = QMenu(b)
-            menu.addAction(_("Add folder…"), lambda k=kind: self._add_entries(sid, k, folder=True))
-            menu.addAction(_("Add files…"), lambda k=kind: self._add_entries(sid, k, folder=False))
-            others = [o for o in s.p.sessions if o.id != sid and getattr(o, kind)] if kind != "lights" else []
-            if others:
-                menu.addSeparator()
-                for o in others:
-                    menu.addAction(_("Use the frames of “{name}”").format(name=o.name),
-                                   lambda k=kind, oid=o.id: s.use_from_session(oid, sid, k))
-            b.setMenu(menu)
-            menu_button(b)
-            add.addWidget(b)
-            add.addStretch(1)
-            self.bv.addLayout(add)
         self.bv.addSpacing(8)
-        row = QHBoxLayout()
         if not self.tune:
-            b = QPushButton(_("Review frames…"))
-            b.setToolTip(_("Opens the frames in Inspect: leave out a frame with X"))
+            b = QPushButton(_("Open frames"))
+            b.setObjectName("primary")
+            b.setToolTip(_("Opens its files in Inspect: add them there, kind by kind, and review its frames"))
             b.clicked.connect(self.openTune.emit)
-            row.addWidget(b)
-        row.addStretch(1)
-        self.bv.addLayout(row)
+            self.bv.addWidget(b, 0, Qt.AlignLeft)
         self.bv.addStretch(1)
-
-    def _flagged(self, sid: int, warns: list[dict]) -> set[str]:
-        """The files a warning points at (lower-case paths): those of a type that is not read, or that differs."""
-        from ..core.project import file_type
-        out: set[str] = set()
-        for w in warns:
-            if w["key"] in ("unread", "mixed"):
-                out |= {f.lower() for f in self.s.session_files(sid, w["kind"]) if file_type(f) == w["type"]}
-        return out
-
-    def _file_group(self, sid: int, kind: str, folder: str, entries: list[str], files: list[str], flagged: set[str]):
-        """One folder of a session's list (issue #58): its row (folder icon, name · 15 files, its cross takes it all out),
-        opened on its files, each with its cross (several chosen, Del). A group holding a file a warning points at
-        opens by itself."""
-        opened = getattr(self, "_opened", set())
-        self._opened = opened
-        key = (sid, kind, folder.lower())
-        bad = [f for f in files if f.lower() in flagged]
-        is_open = key in opened or bool(bad)
-        r = QHBoxLayout()
-        n = len(files)
-        if not Path(folder).exists():                     # moved, renamed outside, its disk unplugged: said, and a
-            # click chooses where it is now, as a reference photo app's missing folder (GUI exploration 4)
-            t = QPushButton(Path(folder).name + "  · " + _("folder not found"))
-            set_icon(t, "folder_missing", 16, "warning")
-            t.setFlat(True)
-            t.setStyleSheet(f"QPushButton {{ text-align: left; padding: 2px 4px; color: {WARN}; }} ")
-            t.setToolTip(folder + "\n" + _("Not found (moved, renamed, or its disk unplugged): click to choose where "
-                                           "it is now"))
-            t.clicked.connect(lambda _c=False, k=kind, ens=list(entries): self._locate(sid, k, folder, ens))
-        else:
-            t = QPushButton(Path(folder).name + "  · " + plural(n, "{n} file", "{n} files"))
-            set_icon(t, "folder", 16)
-            t.setFlat(True)
-            t.setStyleSheet("QPushButton { text-align: left; padding: 2px 4px; } ")
-            t.setToolTip(folder + "\n" + _("Click to see its files, and take one out"))
-
-            def toggle(_c=False, k=key):
-                opened.symmetric_difference_update({k})
-                self.changed.emit()
-            t.clicked.connect(toggle)
-            chevron = QToolButton()                       # the row's disclosure
-            icon_only(chevron, "chevron_down" if is_open else "chevron_right", _("Show the files"), 16, "dim")
-            chevron.setAutoRaise(True)
-            chevron.setFixedSize(20, 20)
-            chevron.setStyleSheet("QToolButton { border: none; padding: 0; }")
-            chevron.clicked.connect(toggle)
-            r.addWidget(chevron)
-        r.addWidget(t, 1)
-        x = icon_only(QPushButton(), "remove", _("Remove the whole folder from the session (the files are not touched)"))
-        x.setFixedWidth(26)
-        x.setStyleSheet("QPushButton { padding: 0px; }")    # the cross whole in its 26 px (as a file's, below)
-        x.clicked.connect(lambda _c=False, k=kind, ens=list(entries): self._files_out(sid, k, ens, True))
-        r.addWidget(x)
-        self.bv.addLayout(r)
-        if not is_open or not files:
-            return
-        lst = FileList(lambda chosen, k=kind: self._files_out(sid, k, chosen))
-        for f in files:
-            it = QListWidgetItem()
-            it.setData(Qt.UserRole, f)
-            lst.addItem(it)
-            row = QWidget()
-            h = QHBoxLayout(row)
-            h.setContentsMargins(18, 0, 2, 0)
-            bad_file = f.lower() in flagged
-            if bad_file:
-                h.addWidget(IconLabel("warning", 16, "warning"))
-            name = label(Path(f).name, "warn" if bad_file else None)
-            name.setToolTip(f)
-            h.addWidget(name, 1)
-            b = icon_only(QPushButton(), "remove", _("Take this file out of the session (the file is not touched)"))
-            b.setFixedSize(26, 20)
-            b.setStyleSheet("QPushButton { padding: 0px; }")
-            b.clicked.connect(lambda _c=False, k=kind, ff=f: self._files_out(sid, k, [ff]))
-            h.addWidget(b)
-            it.setSizeHint(row.sizeHint())
-            lst.setItemWidget(it, row)
-        lst.setFixedHeight(min(len(files), 8) * (lst.sizeHintForRow(0) or 24) + 6)
-        self.bv.addWidget(lst)
-
-    def _files_out(self, sid: int, kind: str, files: list, entries: bool = False):
-        """Files (or a folder's entries) taken out of a session: one undo step, said with Ctrl+Z (control round,
-        decision 11: Ctrl+Z undid an older step, the file stayed out, nothing said)."""
-        s = self.s
-        name = s.session(sid).name
-        with s.batch():
-            done = any([s.remove_session_entry(sid, kind, e) for e in files]) if entries else \
-                s.remove_session_files(sid, kind, files)
-        if done:
-            self.toast.emit(_("Folder out of “{session}” · files kept · Ctrl+Z").format(session=name) if entries else
-                            plural(len(files), "{n} file out of “{session}” · file kept · Ctrl+Z",
-                                   "{n} files out of “{session}” · files kept · Ctrl+Z", session=name))
-
-    def _add_entries(self, sid: int, kind: str, folder: bool):
-        from . import prefs as _prefs
-        if folder:
-            d = QFileDialog.getExistingDirectory(self, _("Add folder…"), _prefs.last_folder())
-            got = [d] if d else []
-        else:
-            from ..core.project import COLOUR_EXT, FITS_EXT, RAW_EXT  # frames first; any file still (#58: then warned)
-            pats = " ".join(f"*{e}" for e in sorted(RAW_EXT | FITS_EXT | COLOUR_EXT | {".fz"}))
-            got, _f = QFileDialog.getOpenFileNames(self, _("Add files…"), _prefs.last_folder(),
-                                                   _("Frames ({patterns})").format(patterns=pats) + ";;" +
-                                                   _("All files (*)"))
-        if got:
-            _prefs.remember_folder(got[0])
-            notes: list = []                              # what was not added, said (GUI exploration 7.5)
-            self.s.add_session_entries(sid, kind, got, notes)
-            if notes:
-                self.toast.emit(" · ".join(_(t).format(name=nm) for t, nm in notes))
-
-    def _locate(self, sid: int, kind: str, folder: str, entries: list[str]):
-        """A folder of a session not found: where it is now, chosen (a reference photo app's "find missing folder",
-        GUI exploration 4); it takes the old one's place in the list, its files chosen one by one found in it by their
-        names. One undo step; a folder without frames chosen: nothing changes, said."""
-        from . import prefs as _prefs
-        start = next((p for p in Path(folder).parents if p.is_dir()), Path(_prefs.last_folder()))
-        d = self.pick_folder(_("Where is “{name}” now?").format(name=Path(folder).name), start.as_posix())
-        if not d:
-            return
-        _prefs.remember_folder(d)
-        whole = any(not Path(e).suffix for e in entries)
-        new = [Path(d).as_posix()] if whole else [(Path(d) / Path(e).name).as_posix() for e in entries
-                                                  if (Path(d) / Path(e).name).is_file()]
-        notes: list = [] if new else [("“{name}” holds no frames (camera raw, FITS, JPEG, PNG or TIFF): not added.",
-                                       Path(d).name)]
-        s = self.s
-        with s.batch():
-            if new and s.add_session_entries(sid, kind, new, notes):
-                for e in entries:
-                    s.remove_session_entry(sid, kind, e)
-                notes = []
-                self.toast.emit(_("“{name}” found again in “{session}” · Ctrl+Z").format(
-                    name=Path(d).name, session=s.session(sid).name))
-        if notes:
-            self.toast.emit(" · ".join(_(t).format(name=nm) for t, nm in notes))
-
-    def pick_folder(self, title: str, start: str) -> str:
-        return QFileDialog.getExistingDirectory(self, title, start)
 
     def all_nights(self):
         """A project made before issue #43: its nights are calibrated together. They can be calibrated each on its

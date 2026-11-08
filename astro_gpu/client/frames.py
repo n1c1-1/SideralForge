@@ -1,14 +1,13 @@
-"""Frames: the sessions of the project (one per night), the health check of the data set, and the frame browser.
+"""Frames: the files of each session and the frame browser (sources.py), the table of the sessions and the health check
+of the data set.
 
-An imported folder is sorted by itself: one session per night (noon to noon), grouped by exposure and ISO or gain as the
-Grouping dialog says. Darks, flats and bias are the project's: the engine makes one master of each kind. The sessions
-table and the health checks come from the headers of the frames and from the engine's checks, read by the worker
+The sessions table and the health checks come from the headers of the frames and from the engine's checks, read by the worker
 (``services/inspect.project_frames``).
 
 The checks the engine does not make yet (the master library, the sensor temperature, a rotated camera) show in Spec mode
 only, marked ◇.
 
-Classes: ``FramesView`` (the Sessions page and the browser of sources.py), ``GroupingDialog``.
+Classes: ``FramesView`` (the Files page, sources.py, and the Sessions page).
 """
 from __future__ import annotations
 
@@ -18,8 +17,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
-    QCheckBox,
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -32,13 +29,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import api, texts
+from .. import texts
 from . import prefs
 from .i18n import _, language, number, plural
 from .icons import IconLabel
 from .imageview import exposure_text
 from .services.inspect import ProjectFrames, service_of
-from .widgets import NEW, cap_dialog, clear, label
+from .widgets import NEW, clear, label
 
 MONTHS = {"en": ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
           "fr": ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]}
@@ -70,6 +67,9 @@ KIND_WORDS = {"lights": "lights", "darks": "darks", "flats": "flats", "bias": "b
 def type_warning_text(w: dict) -> str:
     """A file that may be a mistake (core.project.type_warnings, issue #58), in the interface's language."""
     kind = _(KIND_WORDS.get(w.get("kind", ""), w.get("kind", "")))
+    if w["key"] == "same_files":
+        return plural(w["n"], "{n} file is also in the {other}: right row?", "{n} files are also in the {other}: right row?",
+                      other=_(KIND_WORDS.get(w["other"], w["other"])))
     if w["key"] == "unread":
         return (_("{name} is not a frame the engine reads here (camera raw or FITS; a JPEG, PNG or TIFF only with lights "
                   "of its kind): added by mistake?").format(name=w["name"])
@@ -158,55 +158,9 @@ NEW_CHECKS = ["Darks: a master of the library is matched by exposure, ISO and te
               "Camera rotated: its session uses its own flats."]
 
 
-def grouping_sentence(c) -> str:
-    parts = [_("night (noon to noon)")] + ([_("exposure")] if c.exposure else []) + ([_("ISO / gain")] if c.iso else [])
-    what = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " " + _("and") + " " + parts[-1]
-    return _("Grouped by {what}.").format(what=what)
-
-
-class GroupingDialog(QDialog):
-    """How frames are grouped into sessions: by night (noon to noon), exposure, ISO or gain. The choice holds for the
-    folders imported next. The other criteria (filter, temperature, binning, rotation, object) are not in the engine yet."""
-
-    def __init__(self, criteria=None, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(_("Grouping"))
-        c = criteria or api.GroupingCriteria()
-        v = QVBoxLayout(self)
-        self.setMinimumWidth(340)
-        cap_dialog(self)
-        v.addWidget(label(_("Group frames by"), "h2"))
-        self.boxes: dict[str, QCheckBox] = {}
-        rows = [("night", _("Night (noon to noon)"), c.night, True), ("exposure", _("Exposure"), c.exposure, True),
-                ("iso", _("ISO / gain"), c.iso, True)]
-        if prefs.spec():
-            rows += [("filter", _("Filter"), True, False), ("temp", _("Sensor temperature (± 2 °C)"), True, False),
-                     ("binning", _("Binning"), True, False), ("rotation", _("Camera rotation"), True, False),
-                     ("object", _("Object (FITS OBJECT keyword)"), False, False)]
-        for key, text, on, real in rows:
-            b = QCheckBox(text + ("" if real else "  ◇"))
-            b.setChecked(on)
-            if not real:
-                b.setEnabled(False)
-                b.setToolTip("◇ " + _("Not in the engine yet."))
-            v.addWidget(b)
-            self.boxes[key] = b
-        v.addSpacing(4)
-        v.addWidget(label(_("The frames of a folder are sorted this way when it is imported."), "small", wrap=True))
-        v.addSpacing(6)
-        ok = QPushButton(_("OK"))
-        ok.setObjectName("primary")
-        ok.clicked.connect(self.accept)
-        v.addWidget(ok, 0, Qt.AlignRight)
-
-    def criteria(self):
-        return api.GroupingCriteria(night=self.boxes["night"].isChecked(), exposure=self.boxes["exposure"].isChecked(),
-                                    iso=self.boxes["iso"].isChecked())
-
-
 class FramesView(QWidget):
-    """The Frames block, inspected: sessions and health check, or the frame browser. Import folder… and Add session… run
-    the import themselves (``sources.import_folder``); ``imported`` follows a successful one."""
+    """The Session block, inspected: the files of a session and its frames, or the table of the sessions and the health
+    check. ``imported`` follows a session added."""
     imported = Signal()
     stackMode = Signal(str)
 
@@ -224,29 +178,19 @@ class FramesView(QWidget):
         h = QHBoxLayout(bar)
         h.setContentsMargins(10, 6, 10, 6)
         g = QButtonGroup(self)
-        self.tabs = []
-        for i, t in enumerate((_("Sessions"), _("Browse"))):
+        self.tabs = {}                                     # by page: 0 the table, 1 the files
+        for i, t in ((1, _("Files")), (0, _("Sessions"))):
             b = QPushButton(t)
             b.setObjectName("face")
             b.setCheckable(True)
             b.clicked.connect(lambda _x=False, k=i: self.show_page(k))
             g.addButton(b)
             h.addWidget(b)
-            self.tabs.append(b)
+            self.tabs[i] = b
         h.addStretch(1)
-        self.b_import = QPushButton(_("Import folder…"))
-        self.b_import.clicked.connect(self.import_folder)
         self.b_add = QPushButton(_("Add session…"))
         self.b_add.clicked.connect(self.add_session)
-        self.b_edit = QPushButton(_("Change frames…"))
-        self.b_edit.setToolTip(_("Choose again the lights, darks, flats and bias of the selected session (or "
-                                 "double-click its row)"))
-        self.b_edit.clicked.connect(lambda: self.edit_session())
-        self.b_group = QPushButton(_("Grouping…"))
-        self.b_group.clicked.connect(self.grouping)
-        self.table = None
-        for b in (self.b_import, self.b_add, self.b_edit, self.b_group):
-            h.addWidget(b)
+        h.addWidget(self.b_add)
         v.addWidget(bar)
         self.pages = QStackedWidget()
         v.addWidget(self.pages, 1)
@@ -264,36 +208,18 @@ class FramesView(QWidget):
         self.browser = browser
         self.pages.addWidget(browser)
         self.service.framesReady.connect(self._data_ready)
-        self.show_page(0)
-
-    def import_folder(self):
-        from .sources import import_folder
-        if import_folder(self.s, self.window(), service=self.service):
-            self.imported.emit()
+        self.show_page(1)
 
     def add_session(self):
-        from .sources import import_folder
-        if import_folder(self.s, self.window(), new_session=True, service=self.service):
-            self.imported.emit()
+        """A new session, without frames: its files are added on the Files page, shown then."""
+        self.browser.add_session()
+        self.show_page(1)
+        self.imported.emit()
 
-    def edit_session(self, row: int | None = None):
-        """Change frames…: the import dialog on the selected session's frames (the first when none is selected)."""
-        from .sources import edit_session_frames
-        sess = self.s.p.sessions
-        if not sess:
-            return
-        if row is None:
-            sel = self.table.selectionModel().selectedRows() if self.table is not None else []
-            row = sel[0].row() if sel else 0
-        if edit_session_frames(self.s, sess[row].id, self.window(), service=self.service):
-            self.imported.emit()
-
-    def grouping(self):
-        d = GroupingDialog(self.service.criteria, self.window())
-        if d.exec():
-            self.service.criteria = d.criteria()
-            self._build()
-        d.deleteLater()
+    def open_session(self, row: int):
+        """A session of the table: its files."""
+        self.browser.show_session(self.s.p.sessions[row].id)
+        self.show_page(1)
 
     def show_page(self, i):
         self.pages.setCurrentIndex(i)
@@ -329,14 +255,12 @@ class FramesView(QWidget):
     def _build(self):
         clear(self.sv)
         s = self.s
-        self.b_add.setEnabled(s.sources_loaded)
-        self.b_edit.setEnabled(s.sources_loaded and bool(s.p.sessions))
         if not s.sources_loaded:
             self.sv.addStretch(1)
             self.sv.addWidget(label(_("No frames yet"), "h1"), 0, Qt.AlignHCenter)
-            b = QPushButton(_("Import folder…"))
+            b = QPushButton(_("Add frames"))
             b.setObjectName("primary")
-            b.clicked.connect(self.import_folder)
+            b.clicked.connect(lambda: self.show_page(1))
             self.sv.addWidget(b, 0, Qt.AlignHCenter)
             self.sv.addStretch(2)
             return
@@ -368,10 +292,8 @@ class FramesView(QWidget):
         t.setFixedHeight(t.horizontalHeader().height() + sum(t.rowHeight(r) for r in range(len(sess))) + 6)
         t.setFrameShape(QFrame.NoFrame)
         t.setFixedWidth(sum(t.columnWidth(c) for c in range(len(cols))))
-        t.cellDoubleClicked.connect(lambda r, _c: self.edit_session(r))
-        self.table = t
+        t.cellDoubleClicked.connect(lambda r, _c: self.open_session(r))
         self.sv.addWidget(t, 0, Qt.AlignLeft)
-        self.sv.addWidget(label(grouping_sentence(self.service.criteria), "small"))
         self.sv.addSpacing(6)
         self.sv.addWidget(label(_("Health check"), "h2"))
         lines = check_lines(self.data)

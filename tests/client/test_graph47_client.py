@@ -716,7 +716,7 @@ def test_a_file_added_by_mistake_is_warned_and_taken_out_one_by_one(qapp, tmp_pa
     its files; one file taken out alone, a file of a folder chosen whole too (the folder becomes its other files);
     the last light can go."""
     from astro_gpu import api
-    from astro_gpu.client.panel import FileList
+    from astro_gpu.client.sources import FileList, SourcesView
     from astro_gpu.core.project import type_warnings
     assert [w["key"] for w in type_warnings({"lights": ["a.ARW", "b.ARW", "c.JPG"], "flats": ["f.fits"]})] == \
         ["unread", "other_type"]
@@ -738,9 +738,12 @@ def test_a_file_added_by_mistake_is_warned_and_taken_out_one_by_one(qapp, tmp_pa
         assert any(c.key == "file_types" for c in api.health_checks(m.p))
         page.select_node(Graph(m).root)
         settle(w, page)
-        lists = page.panel.findChildren(FileList)
-        assert lists and any("DSC05869.JPG" in it.data(256) for x in lists for it in
-                             [x.item(i) for i in range(x.count())])                # its group opened by itself
+        view = SourcesView(m)
+        view.refresh()
+        lst = view.file_list
+        assert isinstance(lst, FileList) and any("DSC05869.JPG" in (lst.item(i).data(256) or "") for i in range(lst.count()))
+        assert any("DSC05869.JPG" in x for x in view.anomalies("lights"))           # said beside its kind
+        view.close()
         assert m.remove_session_files(1, "lights", [jpg.as_posix()])
         w.wait(60)
         settle(w, page)
@@ -930,7 +933,12 @@ def test_control_round_undo_selects_the_block_before_and_a_file_taken_out_is_one
         settle(w, page)
         lights = list(m.session(1).lights)
         blocks = [n["block"] for n in m.p.workflow(p.pid).blocks]
-        page.panel._files_out(1, "lights", lights, True)
+        from astro_gpu.client.sources import SourcesView
+        view = SourcesView(m)
+        view.toast.connect(told.append)
+        view.refresh()
+        view.files_out("lights", lights)
+        view.close()
         settle(w, page)
         assert m.session(1).lights == [] and "Ctrl+Z" in told[-1]
         assert m.undo()

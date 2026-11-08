@@ -64,8 +64,10 @@ def type_warnings(files: dict[str, list]) -> list[dict]:
     """What may be a mistake in one session's files ({kind: [path]}), issue #58: a file the engine does not read (not a
     frame; or a JPEG, PNG or TIFF among raw or FITS frames, which leaves it aside); lights of mixed types (1 JPG among
     14 ARW); calibration frames of another type than the lights; and calibration frames that cannot calibrate these
-    lights (issue #57: frames already in colour against mosaics, one way or the other).
-    Each: {"key": "unread" | "mixed" | "other_type" | "wrong_kind", "kind", "type", "n", "main", "of", "name"}."""
+    lights (issue #57: frames already in colour against mosaics, one way or the other); the same files given as two
+    kinds (said on the later kind, ``other`` the earlier one).
+    Each: {"key": "unread" | "mixed" | "other_type" | "wrong_kind" | "same_files", "kind", "type", "n", "main", "of",
+    "name", "other"}."""
     out: list[dict] = []
     main: dict[str, str] = {}
     for kind, paths in files.items():
@@ -90,6 +92,12 @@ def type_warnings(files: dict[str, list]) -> list[dict]:
         if kind != "lights" and t != light and a and b:
             key = "wrong_kind" if (a == "colour") != (b == "colour") else "other_type"
             out.append({"key": key, "kind": kind, "type": t, "main": light, "n": len(files[kind])})
+    kinds = [k for k, paths in files.items() if paths]
+    names = {k: {os.path.normcase(str(f)) for f in files[k]} for k in kinds}
+    for i, kind in enumerate(kinds):
+        for other in kinds[:i]:
+            if names[kind] & names[other]:
+                out.append({"key": "same_files", "kind": kind, "other": other, "n": len(names[kind] & names[other])})
     return out
 
 

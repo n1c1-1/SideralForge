@@ -1,4 +1,4 @@
-"""Home: the projects opened last, then the sections. New project, open, import a folder as a new project.
+"""Home: the projects opened last, then the sections. New project, open.
 
 There is no workspace (issue #31): a project lives where the user puts it, and Home first shows the projects opened
 last (prefs "recent", up to ``prefs.RECENT_MAX``). Below them, the SECTIONS (Settings › Folders: a list of rows, prefs
@@ -722,9 +722,8 @@ class NewProjectDialog(QDialog):
 class HomeView(QWidget):
     openProject = Signal(str)                        # project folder
     createProject = Signal(str, str, str, object)    # folder, name, target, its details (#38: ra, dec, focal...)
-    importFolder = Signal()
 
-    def __init__(self, worker, can_import: bool = False, last=None, parent=None):
+    def __init__(self, worker, last=None, parent=None):
         """``last``: what a previous Home showed (its HomeScan), shown until the new scan is back."""
         super().__init__(parent)
         self.worker = worker
@@ -737,17 +736,13 @@ class HomeView(QWidget):
         lv.setContentsMargins(18, 20, 18, 18)
         lv.setSpacing(8)
         buttons = []
-        for text, fn, primary, on, role in ((_("New project…"), self.new_project, True, True, "new"),
-                                            (_("Import folder…"), lambda: self.importFolder.emit(), False, can_import, "import"),
-                                            (_("Open project…"), self.open_other, False, True, "open")):
-            b = QPushButton(text)                    # compact names (decision 12): the sentence in the tooltip
+        for text, fn, primary, role in ((_("New project…"), self.new_project, True, "new"),
+                                        (_("Open project…"), self.open_other, False, "open")):
+            b = QPushButton(text)                    # compact names (decision 12)
             set_icon(b, role, 16, "on_accent" if primary else "normal")
-            if fn is not self.new_project and fn is not self.open_other:
-                b.setToolTip(_("Import folder as new project…"))
             if primary:
                 b.setObjectName("primary")
             b.clicked.connect(lambda _x=False, f=fn: f())
-            b.setEnabled(on)
             lv.addWidget(b)
             buttons.append(b)
         lv.addStretch(1)

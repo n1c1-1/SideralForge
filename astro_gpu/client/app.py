@@ -57,7 +57,6 @@ from PySide6.QtWidgets import (
 
 from .. import __version__, api
 from ..core import project2
-from ..core.newproject import guess_names
 from ..core.project import Target
 from . import APP_NAME, prefs
 from . import layout as lay
@@ -307,7 +306,6 @@ class Main(QMainWindow):
         act(f, _("Save"), self.save, "Ctrl+S", enabled=has, role="save")
         act(f, _("Save as…"), self.save_as, enabled=has, role="save")
         f.addSeparator()
-        act(f, _("Import folder…"), self.add_sources, "Ctrl+I", enabled=has, role="import")
         self.a_export = act(f, _("Export image…"), self.export, "Ctrl+E", enabled=has, role="export")
         if spec:
             act(f, _("Export as script…"), new=True)
@@ -473,10 +471,9 @@ class Main(QMainWindow):
         if self.project is not None:
             self._leave_thumbnail()                  # Home shows the open project as Post last showed it
         if self.home is None:
-            self.home = HomeView(self.worker, can_import=True, last=last)
+            self.home = HomeView(self.worker, last=last)
             self.home.openProject.connect(self.open_project)
             self.home.createProject.connect(self.create_project)
-            self.home.importFolder.connect(self.import_folder_as_new)
             self.screens.insertWidget(0, self.home)
         else:
             self.home.rescan()
@@ -495,11 +492,9 @@ class Main(QMainWindow):
         self.show_home()
         self.home.open_other()
 
-    def create_project(self, root: str, name: str, target: str, details: dict | None = None,
-                       gallery: bool = True) -> bool:
+    def create_project(self, root: str, name: str, target: str, details: dict | None = None) -> bool:
         """A new v2 project in ``root``, opened. Its calibrated frames go to <cache folder>/<project folder>.
-        ``details``: the target's coordinates and the capture data New project gives (issue #38). ``gallery``: the
-        template gallery opens on it (an import opens it after its frames, GUI exploration 7.1)."""
+        ``details``: the target's coordinates and the capture data New project gives (issue #38)."""
         try:
             d = details or {}
             p = project2.create(root, name, Target(name=target, ra=d.get("ra"), dec=d.get("dec"),
@@ -513,31 +508,7 @@ class Main(QMainWindow):
         except (OSError, ValueError, project2.LegacyProject) as e:
             self.banner.say(_("The project cannot be created: {why}").format(why=e))
             return False
-        return self.open_project(root, created=True, gallery=gallery)
-
-    def import_folder_as_new(self):
-        """Import folder as new project: the folder of the lights gives the name and the target, then its frames
-        are read into the new project. GUI exploration 7.1, #28, #29: a folder without lights makes no project (said
-        why); the project is proposed where the projects are, never inside the frames' folder; the import window,
-        then the template gallery, one after the other."""
-        folder = QFileDialog.getExistingDirectory(self, _("Import folder as new project…"), prefs.last_folder())
-        if not folder:
-            return
-        from ..core.project import list_frames
-        if not list_frames([folder]):
-            from .sources import no_lights_text
-            self.flash(no_lights_text([folder]) + " " + _("No project made."))
-            return
-        from .home import projects_location
-        where = projects_location(avoid=folder)            # read before the frames' folder is the last one used
-        prefs.remember_folder(folder)
-        g = guess_names(folder)
-        got = self.home.ask_new_project(g["name"], g["target"], location=where)
-        if got and self.create_project(*got, gallery=False):
-            if not self.import_frames(folder):
-                self.flash(_("Project without lights: add them in Session"))
-            if self.graph is not None and self.s is not None and all(w.blocks == [] for w in self.s.p.workflows):
-                QTimer.singleShot(0, lambda: self.graph.new_workflow(fresh=True) if self.graph is not None else None)
+        return self.open_project(root, created=True)
 
     # ------------------------------------------------------------ a project
     def _device(self) -> tuple[bool, str | None]:
@@ -767,7 +738,6 @@ class Main(QMainWindow):
         page.openBlock.connect(lambda: self.set_mode(2 if self.s.sel_step == "final" else 1))
         page.openPost.connect(lambda: self.set_mode(2))
         page.openLayer.connect(self.open_layer)
-        page.addSources.connect(self.add_sources)
         page.addSession.connect(self.add_session)
         page.variantMade.connect(self._variant_made)
         page.changed.connect(self.request_refresh)
@@ -785,6 +755,7 @@ class Main(QMainWindow):
         from .tune import TuneView
         s = self.s
         self.browser = SourcesView(s)
+        self.browser.toast.connect(self.flash)
         self.frames = FramesView(s, self.browser)
         self.post_holder = PostHolder(self.post_page)
         tune = TuneView(s, self.steps, self.frames, self.post_holder)
@@ -1141,59 +1112,19 @@ class Main(QMainWindow):
         return PreviousVersionDialog(root, self)
 
     # ------------------------------------------------------------ frames, runs, export, undo
-    def add_sources(self):
-        """File > Import folder…: frames into the open project."""
-        if self.s is None:
-            return
-        from .services.inspect import service_of
-        from .sources import import_folder
-        import_folder(self.s, self, service=service_of(self.s))
-
     def add_session(self):
-        """Add a session…: its folder of lights; its calibration frames are chosen in its Session block, shown then
-        (issue #43). A project of one session calibrates each session on its own from then on (its first session's
-        results stay valid: the same keys); one made before with several nights calibrated together keeps that."""
+        """Add a session…: a new empty session, opened in Inspect, where its files are added (issue #43)."""
         s = self.s
         if s is None:
             return
-        if not s.sources_loaded:                      # the first frames: the import, which sorts them by kind
-            from .services.inspect import service_of
-            from .sources import import_folder
-            import_folder(s, self, new_session=True, service=service_of(s))
-            return
-        folder = QFileDialog.getExistingDirectory(self, _("Lights of the new session"), prefs.last_folder())
-        if not folder:
-            return
-        prefs.remember_folder(folder)
-        from ..core.project import list_frames
-        from ..io.frames import frame_filter
-        first = next(iter(list_frames([folder])), None)
-        flt = frame_filter(first) if first is not None else ""     # a monochrome camera's filter, from the header
-        with s.batch():
-            if s.stack_mode == "together" and len(s.p.sessions) == 1:
-                s.set_stack_mode("per_session")
-            sid = s.add_session(Path(folder).name, lights=[folder])
-            if flt:
-                s.set_session_filter(sid, flt)
-            # "+ Session": it joins the flow it is drawn with (else the one shown), or one of its own (decision 1)
-            pid = getattr(getattr(self.graph, "graph", None), "plus_session_pid", None)
-            q = s.join_session(s.view(pid) if pid is not None else s.path, sid)
-        if q is not None:
-            s.current = s.paths.index(s.view(q.pid))
-        self.flash(_("Session “{name}” added · darks/flats in its block").format(name=s.session(sid).name))
+        # "+ Session": it joins the flow it is drawn with (else the one shown), or one of its own (decision 1)
+        sid = s.new_session(getattr(getattr(self.graph, "graph", None), "plus_session_pid", None))
+        self.flash(_("Session “{name}” added · its files in Inspect").format(name=s.session(sid).name))
         self.select(step=f"session@{sid}" if s.separate_sessions() else "sources")
-
-    def import_frames(self, folder: str) -> bool:
-        """The frames of a folder into the open project, after Import folder as new project."""
-        if self.s is None:
-            return False
-        from .services.inspect import service_of
-        from .sources import import_folder
-        if import_folder(self.s, self, folder=folder, service=service_of(self.s)):
-            self.select(step="sources")
-            self.set_mode(1)
-            return True
-        return False
+        if self.browser is not None:
+            self.browser.show_session(sid)
+            self.frames.show_page(1)
+        self.set_mode(1)
 
     def export(self):
         """File > Export image… (the Export dialog of Post, on the composition of its layers)."""

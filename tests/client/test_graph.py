@@ -1404,10 +1404,10 @@ def test_a_project_without_workflows_has_a_graph_and_an_import_button(qapp, tmp_
     assert not items                                          # issue #47: a blank page is empty
     assert any(getattr(g, "text", "").startswith("Start: Session/Image") and g.role == "add" for g in pg.graph.scene().items())
     got = []
-    pg.addSources.connect(lambda: got.append(1))
+    pg.openBlock.connect(lambda: got.append(1))
     pg.select_node(pg.graph.graph.root)
     settle(w, pg)
-    button(pg.panel, "Import folder").click()
+    button(pg.panel, "Open frames").click()
     assert got
     assert [lb.text() for lb in pg.findChildren(QLabel) if lb.text() == "Blocks"]
     assert m.total_seconds() == 0 and m.all_pending() == []
