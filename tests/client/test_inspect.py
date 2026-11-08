@@ -734,6 +734,8 @@ def test_frames_shows_the_sessions_the_health_checks_and_the_counts(win):
     from PySide6.QtWidgets import QTableWidget
     inspect(win, "sources")
     f = win.frames
+    f.show_page(0)                                                       # the files come first, the table on its tab
+    settle(win)
     assert win.tune.pages.currentIndex() == 1 and f.data is not None
     t = f.pages.widget(0).findChildren(QTableWidget)[0]
     hdr = [t.horizontalHeaderItem(i).text() for i in range(t.columnCount())]
