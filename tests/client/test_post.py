@@ -1252,7 +1252,7 @@ def test_masks_with_parts_show_on_the_image_and_in_the_thumbnails(post):
     v.select(full["id"], "layer")
     assert v.b_maskadd.toolTip() == "Add a mask to the selected layer"
     v.mask_button()
-    assert full["mask"] is not None and v.sel == (full["id"], "mask") and v.b_maskadd.toolTip() == "Edit the mask of the selected layer"
+    assert full["mask"] is not None and v.sel == (full["id"], "mask") and v.b_maskadd.toolTip() == "Edit the mask of the selected layer"  # noqa: E501
     assert post.settle() and v.mask1 is not None and np.allclose(v.mask1, 1.0)         # empty: the layer shows everywhere
     assert "Empty: the layer shows everywhere." in [lb.text() for lb in widgets_of(v, QLabel)]
     for src in ("halpha", "luminance", "color", "gradient", "brush"):
@@ -1319,7 +1319,6 @@ def test_spot_healing_is_a_brush_healed_on_release_with_nothing_left_on_the_imag
     """Issue #20, Photoshop's Spot Healing Brush: a click or a stroke heals when let go (one Undo step); a stroke is
     spots every half radius, none healed from the stroke itself; Alt+click sets the source by hand for the strokes
     that follow (Photoshop's Healing Brush); nothing is drawn on the image afterwards."""
-    from PySide6.QtCore import Qt
     from PySide6.QtGui import QImage, QPainter
     v = post.view
     f = v.add_filter("heal")
@@ -1627,7 +1626,7 @@ def test_dragging_a_row_nests_or_unnests_a_filter_with_clear_hints(post):
     assert post.settle() and np.array_equal(shown(v), reference(post).rgb)
     # ▾ / ▸ hides a layer's children in the panel only
     v.toggle_children(full["id"])
-    assert [r.lay["name"] for r in v.rows] == ["Classic", "Full"] and row(full["id"]).toggle.property("iconRole") == "chevron_right"
+    assert [r.lay["name"] for r in v.rows] == ["Classic", "Full"] and row(full["id"]).toggle.property("iconRole") == "chevron_right"  # noqa: E501
     assert "2 filters" in row(full["id"]).sub.text()
     v.toggle_children(full["id"])
     assert len(v.rows) == 4
@@ -1704,7 +1703,7 @@ def test_sliders_are_greyed_with_their_reason_and_double_click_resets(post):
     sky.name.mouseDoubleClickEvent(None)
     assert "sky" not in lay["sliders"] and sky.val.text() == "0"
     # issue #16: a double-click on the slider itself too (Lightroom's)
-    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtCore import QPoint
     from PySide6.QtTest import QTest
     sky = sliders()["Sky"]
     sky.done.emit(3.5)
@@ -2464,7 +2463,7 @@ def test_the_french_switch_translates_every_thing_the_page_and_the_dialog_show(p
     try:
         assert s.settle()
         v = s.view
-        assert v.b_filter.toolTip().startswith("Ajouter") and v.b_cmp.text() == "Avant / après" and v.b_maskadd.toolTip().startswith("Ajouter")
+        assert v.b_filter.toolTip().startswith("Ajouter") and v.b_cmp.text() == "Avant / après" and v.b_maskadd.toolTip().startswith("Ajouter")  # noqa: E501
         assert [lb.text() for lb in v.findChildren(QLabel)][:1] != []
         for k in FILTERS:                                                               # every filter's panel
             v.select(full_layer(v)["id"], "layer")
