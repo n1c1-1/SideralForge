@@ -276,6 +276,27 @@ def simple_folder(d: Path, h: int, w: int, raw: bool = True, seed: int = 2) -> P
     return d
 
 
+def test_denoise_keeps_the_sky_level_of_each_colour():
+    """GUI exploration 4, Q2: the network moved the sky by a different amount in each colour (a green sky on Iris). The
+    level comes back to the input's, a nebula that fills the field not counting; uncovered pixels stay as they are."""
+    from astro_gpu.stages.denoise import keep_level
+    rng = np.random.default_rng(3)
+    src = 20.0 + 30.0 * cv2.GaussianBlur(rng.random((300, 400)).astype(np.float32), (0, 0), 40)      # a nebula everywhere
+    src = np.stack([src, src * 0.6, src * 0.4]) + rng.normal(0, 2, (3, 300, 400)).astype(np.float32)
+    weight = np.full((3, 300, 400), 10.0, np.float32)
+    weight[:, :, :8] = 0
+    clean = src - rng.normal(0, 2, (3, 300, 400)).astype(np.float32) * 0.1
+    shift = np.array([0.2, 1.2, 0.5], np.float32)[:, None, None]
+    got = keep_level(clean + shift, src, weight)
+    covered = weight.min(0) > 0
+    assert all(abs(float(np.median((got - src)[c][covered]))) < 0.02 for c in range(3))
+    assert np.array_equal(got[:, ~covered], (clean + shift)[:, ~covered])
+    grey = np.repeat(src[1:2], 3, 0)
+    done = np.repeat((clean + shift)[1:2], 3, 0)
+    kept = keep_level(done, grey, weight)
+    assert np.array_equal(kept[0], kept[2])                               # a monochrome stack stays grey
+
+
 def test_simple_render_2000x1500_under_2_s(tmp_path):
     d = simple_folder(tmp_path / "big", 1500, 2000)
     for dev in sorted({DEV, "cpu"}):

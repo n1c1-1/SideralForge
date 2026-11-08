@@ -74,7 +74,7 @@ class Denoise(Stage):
                    "data. Optionally adapted to this image first.")
     deps = ("stack",)
     Params = DenoiseParams
-    version = f"2-{MODEL_ID}"
+    version = f"3-{MODEL_ID}"     # 3: the sky level of each colour kept (keep_level)
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         try:
@@ -119,9 +119,9 @@ class Denoise(Stage):
         mono = bool(np.array_equal(full[0, ::97, ::97], full[1, ::97, ::97])
                     and np.array_equal(full[2, ::97, ::97], full[1, ::97, ::97]))
         grey = (lambda a: np.repeat(a.mean(0, keepdims=True), 3, axis=0)) if mono else (lambda a: a)
-        dA, dB = grey(dA), grey(dB)
+        dA, dB = keep_level(grey(dA), A, Wt), keep_level(grey(dB), B, Wt)
         ctx.save("n2n_avg.npy", 0.5 * (dA + dB))
-        dF = grey(apply_net(net, full, (nm / np.sqrt(2)).astype(np.float32), bk, sg, dev))
+        dF = keep_level(grey(apply_net(net, full, (nm / np.sqrt(2)).astype(np.float32), bk, sg, dev)), full, Wt)
         ctx.save("n2n_full.npy", dF)
         if p.keep_halves:                            # for a later Denoise block (issue #47)
             ctx.save("n2n_A.npy", dA)
@@ -133,6 +133,27 @@ class Denoise(Stage):
         ctx.metric("noise_reduction", round(g0 / max(g1, 1e-9), 2))
         ctx.log(f"background noise divided by {g0 / max(g1, 1e-9):.1f}")
         ctx.preview("before_after", before_after(full, dF))
+
+
+def keep_level(done: np.ndarray, src: np.ndarray, weight: np.ndarray, step: int = 7, rounds: int = 5,
+               k: float = 3.0) -> np.ndarray:
+    """``done`` (3, H, W) with the level of each colour of ``src``. The network moves the sky by a small amount that
+    differs from colour to colour; the strong stretch of a clean image shows it (a green sky on Iris). Measured on the
+    difference, the robust median of ``done - src`` over the covered pixels (every ``step``-th, clipped ``rounds``
+    times at ``k`` sigmas): the objects of the field, which the network keeps, do not count, even a nebula that fills
+    the field."""
+    w = weight if weight.ndim == 2 else weight.min(0)
+    covered = w > 0
+    out = done.copy()
+    for c in range(3):
+        v = (done[c] - src[c])[covered][::step]
+        v = v[np.isfinite(v)]
+        for _ in range(rounds):
+            d = np.abs(v - np.median(v))
+            v = v[d <= k * 1.4826 * np.median(d)]                # (<=: an exact difference stays)
+        if v.size:
+            out[c] = np.where(covered, done[c] - float(np.median(v)), done[c])
+    return out
 
 
 def before_after(full: np.ndarray, done: np.ndarray, size: int = 800) -> np.ndarray:
