@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QStackedWidget,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -64,7 +65,7 @@ from .gcguard import GuiGarbageCollector
 from .home import HomeView
 from .i18n import _, language, plain_error, plural, set_language
 from .icons import icon as make_icon
-from .icons import set_icon
+from .icons import IconLabel, icon_only, set_icon
 from .logview import LogPanel
 from .services.run import duration_text
 from .services.worker import ApiWorker, Machine, machine_info
@@ -187,6 +188,29 @@ class PostHolder(QWidget):
         self.ensure()
 
 
+class Banner(QFrame):
+    """A failure said without stopping the user: a strip over the window, until it is closed or replaced."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("banner")
+        self.setStyleSheet("QFrame#banner { background: #3a2f1c; border-bottom: 1px solid #5a4a26; }")
+        h = QHBoxLayout(self)
+        h.setContentsMargins(10, 5, 6, 5)
+        h.addWidget(IconLabel("warning", 16, "warning"))
+        self.text = label("", "", wrap=True)
+        h.addWidget(self.text, 1)
+        b = icon_only(QToolButton(), "remove", _("Close"))
+        b.setAutoRaise(True)
+        b.clicked.connect(self.hide)
+        h.addWidget(b)
+        self.hide()
+
+    def say(self, text: str):
+        self.text.setText(text)
+        self.show()
+
+
 class Main(QMainWindow):
     def __init__(self, worker: ApiWorker | None = None):
         super().__init__()
@@ -213,7 +237,14 @@ class Main(QMainWindow):
         self._flash_timer.setSingleShot(True)
         self._flash_timer.timeout.connect(self._flash_end)
         self.screens = QStackedWidget()
-        self.setCentralWidget(self.screens)
+        self.banner = Banner()
+        root = QWidget()
+        rv = QVBoxLayout(root)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(0)
+        rv.addWidget(self.banner)
+        rv.addWidget(self.screens, 1)
+        self.setCentralWidget(root)
         self.status = label("", "small")
         self.statusBar().addWidget(self.status, 1)
         self.spec_note = label("", "small")
@@ -480,7 +511,7 @@ class Main(QMainWindow):
             p.stack_mode = "per_session"
             project2.save(p)
         except (OSError, ValueError, project2.LegacyProject) as e:
-            QMessageBox.warning(self, _("New project"), _("The project cannot be created: {why}").format(why=e))
+            self.banner.say(_("The project cannot be created: {why}").format(why=e))
             return False
         return self.open_project(root, created=True, gallery=gallery)
 
@@ -530,14 +561,11 @@ class Main(QMainWindow):
             self.offer_import(root)
             return False
         except FileNotFoundError:
-            QMessageBox.warning(self, _("Open project"), _("No project in this folder: {folder}").format(
-                folder=root.as_posix()))
-            prefs.drop_recent(root.as_posix())
-            self.build_menus()
-            return False
+            self.banner.say(_("No project in this folder: {folder}").format(folder=root.as_posix()))
+            return False                                  # still in the recents: its disk may only be unplugged
         except (OSError, ValueError, KeyError, TypeError):   # said plainly, never the raw error (7.5)
-            QMessageBox.warning(self, _("Open project"), _("This project cannot be opened: its file is damaged, or "
-                                                           "it is not a project file of this program."))
+            self.banner.say(_("This project cannot be opened: its file is damaged, or it is not a project file of this "
+                              "program."))
             return False
         if self.close_project(go_home=False) is False:              # unsaved edits kept: Cancel
             return False
@@ -1042,8 +1070,7 @@ class Main(QMainWindow):
 
     def _worker_failed(self, channel, _n, text):
         if channel.startswith("cache."):
-            QMessageBox.warning(self, _("Clear cache"), _("The cache cannot be cleared: {why}").format(
-                why=plain_error(text)))
+            self.banner.say(_("The cache cannot be cleared: {why}").format(why=plain_error(text)))
 
     # ------------------------------------------------------------ files
     def save(self):
@@ -1075,7 +1102,7 @@ class Main(QMainWindow):
             return
         root = Path(d)
         if (root / project2.FILE).exists() or (root / project2.V1_FILE).exists():
-            QMessageBox.warning(self, _("Save as…"), _("This folder already holds a project."))
+            self.banner.say(_("This folder already holds a project."))
             return
         old = self.project.definition
         if self.s is not None and self.s.path is not None:
@@ -1091,7 +1118,7 @@ class Main(QMainWindow):
         try:
             project2.save(p, root)
         except (OSError, ValueError, project2.LegacyProject) as e:
-            QMessageBox.warning(self, _("Save as…"), _("The project cannot be saved: {why}").format(why=e))
+            self.banner.say(_("The project cannot be saved: {why}").format(why=e))
             return
         self.close_project(go_home=False, discard=True)  # its edits went into the copy: no question
         self.open_project(root)
@@ -1112,12 +1139,6 @@ class Main(QMainWindow):
     def import_dialog(self, root: Path):
         from .previous import PreviousVersionDialog
         return PreviousVersionDialog(root, self)
-
-    def import_box(self, root: Path) -> QMessageBox:
-        """A note that the folder holds a project of an older version (tests check its text)."""
-        return QMessageBox(QMessageBox.Information, _("Open project"), _(
-            "“{name}” was made with an older version. Import it as a new project to open it here; its folder "
-            "is never changed.").format(name=Path(root).name), QMessageBox.Ok, self)
 
     # ------------------------------------------------------------ frames, runs, export, undo
     def add_sources(self):
@@ -1247,7 +1268,7 @@ class Main(QMainWindow):
     def _confirm_clear(self, found):
         total = sum(b for _r, b in found)
         if not total:
-            QMessageBox.information(self, _("Clear cache"), _("The closed projects hold no unused results."))
+            self.flash(_("The closed projects hold no unused results."))
             return
         text = plural(len(found), "{size} of results no workflow uses, in {n} closed project. Clear them?",
                       "{size} of results no workflow uses, in {n} closed projects. Clear them?",
@@ -1453,7 +1474,10 @@ def main(argv=None):
     apply_language(prefs.get("language"))
 
     def show_error(t, v, tb):
-        QMessageBox.critical(None, APP_NAME, "".join(traceback.format_exception(t, v, tb))[-3000:])
+        box = QMessageBox(QMessageBox.Critical, APP_NAME, _("The program hit an unexpected error. The details below "
+                                                            "help to find it."))
+        box.setDetailedText("".join(traceback.format_exception(t, v, tb))[-3000:])
+        box.exec()
 
     sys.excepthook = show_error
     threading.Thread(target=_warm_up, name="warm-up", daemon=True).start()

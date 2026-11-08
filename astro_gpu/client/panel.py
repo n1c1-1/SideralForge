@@ -37,7 +37,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMenu,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QToolButton,
@@ -829,9 +828,10 @@ class Panel(QWidget):
             self.bv.addWidget(kv([(html.escape(ses["night"]), _("{lights} lights · {flats} flats · darks: {darks}").format(
                 lights=ses["lights"], flats=ses["flats"], darks=ses["darks"] or _("none")))], pad=10))
         self.bv.addSpacing(8)
-        b = QPushButton(_("Calibrate per night…"))
+        b = QPushButton(_("Calibrate per night"))
         b.setObjectName("primary")
-        b.setToolTip(_("Each night with its own calibration frames, then all stacked together"))
+        b.setToolTip(_("Each night with its own calibration frames, then all stacked together. Calibration and "
+                       "what follows are computed again."))
         b.clicked.connect(self._separate)
         self.bv.addWidget(b, 0, Qt.AlignLeft)
         a = QPushButton(_("Add session…"))
@@ -840,11 +840,9 @@ class Panel(QWidget):
         self.bv.addStretch(1)
 
     def _separate(self):
-        if QMessageBox.question(self, _("Calibrate per night"), _(
-                "Each night gets its own Session and Calibration blocks, and its own masters. Calibration and "
-                "everything after it are computed again. Undo takes it back.")) == QMessageBox.Yes:
-            self.s.set_stack_mode("per_session")
-            self.changed.emit()
+        self.s.set_stack_mode("per_session")
+        self.changed.emit()
+        self.toast.emit(_("Per night · to recompute · Ctrl+Z"))
 
     def image_panel(self, node):
         """The Image block of a workflow that starts from an image (issue #43)."""

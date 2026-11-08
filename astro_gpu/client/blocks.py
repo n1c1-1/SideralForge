@@ -475,6 +475,10 @@ class Graph:
                 self.compositions.append(n)
             elif (src, part) not in self.direct:
                 self.direct.append((src, part))
+        #: the workflows whose image comes to Post with their lights: no layer yet, their wire drawn dashed
+        waits = getattr(project, "awaits_post", lambda q: False)
+        self.awaits_post = {p.pid for p in project.paths if waits(p) and not (feeds is not None and feeds(p)) and
+                            (p.pid, "combined" if p.opts.get("etoiles") == "retirer" else None) not in removed}
         # GUI exploration 4, Q10: a workflow with Stars but no lights yet has no layer, so no Recombine block; it is
         # shown greyed from the start (no wire, never chosen), the one Post will give it once the lights are added
         gives = getattr(project, "gives_post", lambda q: True)

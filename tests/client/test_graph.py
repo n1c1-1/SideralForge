@@ -759,7 +759,7 @@ def test_the_mouse_over_and_on_every_block_works(world, model, page):
             ev = QGraphicsSceneHoverEvent(QEvent.GraphicsSceneHoverMove)
             ev.setPos(pos)
             it.hoverMoveEvent(ev)
-            assert it.cursor().shape() == (Qt.OpenHandCursor if grab else Qt.PointingHandCursor)
+            assert it.cursor().shape() == (Qt.OpenHandCursor if grab else Qt.ArrowCursor)
         assert isinstance(it._x_rect(), QRectF)
     stacking = next(it for it in items if it.node.key == "empilement")
     press = QGraphicsSceneMouseEvent(QEvent.GraphicsSceneMousePress)

@@ -136,14 +136,12 @@
   "{action} in {name}": "{action} dans {name}",
   "Session name": "Nom de la session",
   "The filter of these lights. Monochrome cameras are planned: the filter is kept for then.": "Le filtre de ces brutes. Les caméras monochromes sont prévues : le filtre est gardé pour alors.",
-  "Calibrate per night…": "Calibrer par nuit…",
-  "Each night with its own calibration frames, then all stacked together": "Chaque nuit avec ses propres images de calibration, puis toutes empilées ensemble",
+  "Each night with its own calibration frames, then all stacked together. Calibration and what follows are computed again.": "Chaque nuit avec ses propres images de calibration, puis toutes empilées ensemble. La calibration et tout ce qui suit sont recalculés.",
   "Add files…": "Ajouter fichiers…",
   "Review frames…": "Revoir images…",
   "Opens the frames in Inspect: leave out a frame with X": "Ouvre les images dans l'Inspection : écartez une image avec X",
   "Calibrated together: one master dark and one master flat for every night.": "Calibrées ensemble : un seul master dark et un seul master flat pour toutes les nuits.",
   "Calibrate per night": "Calibrer par nuit",
-  "Each night gets its own Session and Calibration blocks, and its own masters. Calibration and everything after it are computed again. Undo takes it back.": "Chaque nuit reçoit ses propres blocs Session et Calibration, et ses propres masters. La calibration et tout ce qui suit sont recalculés. Annuler revient en arrière.",
   "The blocks after it read it as a stack. Denoise needs the two half-stacks of a stack: it is not offered here.": "Les blocs suivants la lisent comme un empilement. Le débruitage a besoin des deux demi-piles d'un empilement : il n'est pas proposé ici.",
   "Cut this block (D): the image passes through it; its settings are kept": "Désactiver ce bloc (D) : l'image le traverse ; ses réglages sont gardés",
   "none (colour camera)": "aucun (capteur couleur)",
@@ -523,5 +521,10 @@
   "{n} {type} files are not frames the engine reads here (camera raw or FITS; a JPEG, PNG or TIFF only with lights of its kind)": "{n} fichiers {type} ne sont pas lus ici (RAW d'appareil ou FITS ; un JPEG, PNG ou TIFF seulement avec des brutes de sa sorte)",
   "The {kind} are {type} files, the lights {main}: they cannot calibrate them": "Les {kind} sont des fichiers {type}, les brutes {main} : ils ne peuvent pas les calibrer",
   "{type} frames already in colour: no debayering, no Bayer drizzle. They are not linear data (the camera or a program already stretched and balanced them): dark and flat correction are approximate.": "Images {type} déjà en couleur : pas de dématriçage, pas de drizzle Bayer. Ce ne sont pas des données linéaires (l'appareil ou un logiciel les a déjà étirées et équilibrées) : la correction par darks et flats est approximative.",
-  "{type} frames already in colour: no debayering, no Bayer drizzle. If they were stretched they are not linear data: dark and flat correction are then approximate.": "Images {type} déjà en couleur : pas de dématriçage, pas de drizzle Bayer. Si elles ont été étirées, ce ne sont pas des données linéaires : la correction par darks et flats est alors approximative."
+  "{type} frames already in colour: no debayering, no Bayer drizzle. If they were stretched they are not linear data: dark and flat correction are then approximate.": "Images {type} déjà en couleur : pas de dématriçage, pas de drizzle Bayer. Si elles ont été étirées, ce ne sont pas des données linéaires : la correction par darks et flats est alors approximative.",
+  "lights first": "brutes d'abord",
+  "{block}: lights first": "{block} : des brutes d'abord",
+  "“{name}”: its image comes to Post with the lights": "« {name} » : son image arrivera dans Post avec les brutes",
+  "Where the workflows' images become layers: stretched, balanced, blended and exported.": "Là où les images des workflows deviennent des calques : étirées, équilibrées, mélangées et exportées.",
+  "Per night · to recompute · Ctrl+Z": "Par nuit · à recalculer · Ctrl+Z"
 }

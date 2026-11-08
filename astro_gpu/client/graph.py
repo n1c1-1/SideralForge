@@ -35,6 +35,7 @@ The scene's items: ``BlockItem`` (a block), ``GhostItem`` (where a dragged tool 
 """
 from __future__ import annotations
 
+import textwrap
 import time
 from pathlib import Path
 
@@ -153,6 +154,16 @@ def review_tip(bp) -> str:
     return text
 
 
+POST_WHAT = "Where the workflows' images become layers: stretched, balanced, blended and exported."
+
+
+def block_what(node: Node) -> str:
+    """What a block does, for its tooltip: a paragraph of its own, wrapped (a plain tooltip never wraps by itself)."""
+    what = POST_WHAT if node.key == "final" else BY_KEY.get("session" if node.key == "sources" else kbase(node.key),
+                                                            {}).get("what")
+    return textwrap.fill(_(what), 70) + "\n" if what else ""
+
+
 class BlockItem(QGraphicsItem):
     def __init__(self, view, node: Node, title, summary, state, selected, dim, removable, w: float = BW, bp=None):
         super().__init__()
@@ -174,10 +185,9 @@ class BlockItem(QGraphicsItem):
             self.ports = PORTS["etoiles"]                 # a starless fusion: its two images, as the Split block's
         self.port = bool(self.ports)
         self.setAcceptHoverEvents(True)
-        self.setCursor(Qt.PointingHandCursor)
         # a block switched off is not computed: never "Up to date" (round 2), its line below says what it is
-        tip = f"{title}\n{summary}" + ("\n" + _(STATE_WORD[state]) if node.key not in ("sources", "final", "session")
-                                       and not node.cut else "")
+        tip = f"{title}\n{block_what(node)}{summary}" + ("\n" + _(STATE_WORD[state]) if node.key not in
+                                                          ("sources", "final", "session") and not node.cut else "")
         # a reason is a sentence of its own: its full stop is not doubled by the one after {why}
         if node.broken:
             tip += "\n" + _("Cannot run: {why}. Run is refused until it is fixed.").format(why=node.broken.rstrip("."))
@@ -328,7 +338,7 @@ class BlockItem(QGraphicsItem):
         self.update()
 
     def hoverMoveEvent(self, e):                                      # noqa: N802
-        self.setCursor(Qt.OpenHandCursor if self._on_port(e.pos()) != NO_PORT else Qt.PointingHandCursor)
+        self.setCursor(Qt.OpenHandCursor if self._on_port(e.pos()) != NO_PORT else Qt.ArrowCursor)
 
     def hoverLeaveEvent(self, e):                                     # noqa: N802
         self.hover = False
@@ -388,7 +398,6 @@ class WireItem(QGraphicsPathItem):
         self.view, self.base_pen, self.on_remove, self.pid = view, QPen(pen), on_remove, pid
         self.setPen(pen)
         self.setAcceptHoverEvents(True)
-        self.setCursor(Qt.PointingHandCursor)
         self.setToolTip(tip + "\n" + _("Click to select it, Del to remove it"))
         self.selected = False
         self.part: tuple | None = None                 # a Stars/background block's image sent as it is: (pid, part)
@@ -471,8 +480,6 @@ class GhostItem(QGraphicsItem):
         self.rect, self.text, self.on_click, self.pid, self.role = rect, text, on_click, pid, role
         self.hot = False
         self.setAcceptHoverEvents(True)
-        if on_click:
-            self.setCursor(Qt.PointingHandCursor)
 
     def boundingRect(self):                                           # noqa: N802
         return self.rect.adjusted(-2, -2, 2, 2)
@@ -879,6 +886,10 @@ class GraphView(QGraphicsView):
                            on_remove=lambda q=p: self.postLinkRemoved.emit(q.pid),
                            tip=_("“{name}”: its image to Post as a layer").format(name=p.name), pid=p.pid,
                            via_y=lanes.get(p.pid))
+            elif p.pid in g.awaits_post and p.pid in g.leaves:   # the same wire, dashed until the image exists
+                grey = next((n for n in g.nodes if n.key == "composition" and n.grey and p in n.paths), None)
+                self._wire(grey or g.leaves[p.pid], g.final, False, via_y=None if grey else lanes.get(p.pid),
+                           waiting=True, tip=_("“{name}”: its image comes to Post with the lights").format(name=p.name))
         # the Stars block's images: into its Stars and background blocks, or straight to Post
         for n in g.compositions:
             strong = cur is not None and cur in n.paths
@@ -1291,7 +1302,7 @@ class GraphView(QGraphicsView):
         return it
 
     def _wire(self, a: Node, b: Node, strong: bool, on_remove=None, tip: str = "", pid: int | None = None,
-              via_y: float | None = None):
+              via_y: float | None = None, waiting: bool = False):
         """A wire from a block to the next block of its workflows. A branch bends in the gap right after the block it
         leaves (the last one its workflows share), then runs straight on its own lane past the columns it skips."""
         x1, y1 = a.col + a.w, a.y
@@ -1311,6 +1322,9 @@ class GraphView(QGraphicsView):
         if xb is not None and (xb < x2 or not dx):
             path.lineTo(QPointF(x2, y2))
         pen = QPen(QColor("#9aa3b2" if strong else "#3d4452"), 2.2 if strong else 1.6)
+        if waiting:                                        # its image comes to Post with the lights
+            self._chain_wire(path, QPen(QColor("#6b7382"), 1.6, Qt.DashLine), tip).setZValue(1)
+            return
         if on_remove is not None:                          # issue #52: a link to Post the user can take away
             it = WireItem(self, path, pen, on_remove, tip, pid)
             self.scene().addItem(it)
@@ -1783,6 +1797,9 @@ class GraphView(QGraphicsView):
                 else:
                     to_post.append((_(text), lambda _c=False, w=what: self.partToPost.emit(node, w)))
             to_post.append((_("Recombine"), lambda: self.newComposition.emit(node), "add"))
+        elif self.has_port(node) and self.graph is not None and any(
+                self.graph.leaves.get(q.pid) is node and q.pid in self.graph.awaits_post for q in node.paths):
+            to_post.append((_("To Post") + "  —  " + _("lights first"), None))        # said, not hidden
         elif self.has_port(node):
             to_post.append((_("To Post"), lambda: self.sendToPost.emit(node)))
         wf = None
@@ -1861,7 +1878,10 @@ class GraphView(QGraphicsView):
                 a = m.addAction(text)
                 if role:
                     a.setIcon(icon(role[0], 16))
-                a.triggered.connect(fn)
+                if fn is None:
+                    a.setEnabled(False)
+                else:
+                    a.triggered.connect(fn)
             m.addSeparator()
             bp = self.graph.breakpoint(node) if self.graph is not None else None
             a = m.addAction(_("Review pause"))
@@ -2270,7 +2290,6 @@ class CombineCard(QFrame):
         self.page, self.split = page, split
         on = split is not None
         self.setObjectName("tool")
-        self.setCursor(Qt.PointingHandCursor if on else Qt.ArrowCursor)
         self.setStyleSheet(f"QFrame#tool {{ background: {'#232831' if on else 'transparent'}; border: 1px "
                            f"{'solid #353b47' if on else 'dashed #3a4150'}; border-radius: 6px; }}"
                            f"QFrame#tool:hover {{ border-color: {ACCENT if on else '#3a4150'}; }}"
@@ -3305,6 +3324,8 @@ class GraphPage(QWidget):
                          and g.leaves.get(q.pid) is g.node_of(q, node.key)), None)
             if last is not None and last.pid not in g.to_post and s.gives_post(last):
                 self.workflow_action("to_post", last.pid)            # its wire taken away before: given back
+            elif last is not None and last.pid in g.awaits_post:     # no layer yet: never "already a layer"
+                self.toast(_("{block}: lights first").format(block=block_title(p, node.key)))
             else:
                 self.toast(_("{block}: its image is already a layer of Post").format(
                     block=block_title(p, node.key)))

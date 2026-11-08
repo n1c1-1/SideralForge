@@ -1376,6 +1376,17 @@ class ProjectModel(QObject):
             return True
         return any(n["block"] == "output" and not n["off"] for n in w.blocks)
 
+    def awaits_post(self, p) -> bool:
+        """Whether a workflow will give Post an image once its lights, or its image file, are there: its wire to Post
+        is drawn dashed until then."""
+        try:
+            w = self.p.workflow(p.pid)
+        except KeyError:
+            return False
+        missing = (w.source is None and not any(s.lights for s in self.p.sessions_of(w.id))) or \
+            (isinstance(w.source, dict) and "path" in w.source and not w.source["path"])
+        return missing and (w.blocks is None or any(n["block"] == "output" and not n["off"] for n in w.blocks))
+
     def is_graph(self, p) -> bool:
         """A workflow made as a graph (issue #47), not from options."""
         try:
