@@ -542,7 +542,8 @@ def _read(vi: ViewImage) -> tuple[np.ndarray, str, Any]:
         arr = src()
     else:
         arr = src
-    return np.asarray(arr), cfa, wcs
+    arr = np.asarray(arr)
+    return arr, "" if arr.ndim == 3 else cfa, wcs          # a mosaic is one plane: an image in colour has no pattern
 
 
 def _to_side(img: np.ndarray, side: int) -> np.ndarray:
