@@ -27,8 +27,10 @@ from PySide6.QtWidgets import (  # noqa: E402
     QAbstractScrollArea,
     QApplication,
     QComboBox,
+    QDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QWidget,
 )
@@ -314,7 +316,7 @@ def test_sections_fold_and_alt_click_opens_only_one(env):
     w.select(step="fond")
     _settle(w, 10)
     panel = page.panel
-    ts = panel.sections
+    ts = panel.folds.titles
     assert len(ts) >= 2 and not any(t.folded for t in ts)
     QTest.mouseClick(ts[0], Qt.LeftButton, Qt.NoModifier, ts[0].rect().center())
     _settle(w)
@@ -329,7 +331,7 @@ def test_sections_fold_and_alt_click_opens_only_one(env):
     assert all(not r.isVisible() for r in ts[1].rows if ts[1].folded) or not ts[1].folded
     panel.refresh(panel.node)
     _settle(w)
-    assert not panel.sections[0].folded
+    assert not panel.folds.titles[0].folded
 
 
 def test_a_small_window_shows_one_section_at_a_time_and_a_large_one_never(env):
@@ -339,14 +341,108 @@ def test_a_small_window_shows_one_section_at_a_time_and_a_large_one_never(env):
     _settle(w, 10)
     QTest.mouseClick(page.dock.icons.itemAt(0).widget(), Qt.LeftButton)
     _settle(w)
-    ts = page.panel.sections
+    ts = page.panel.folds.titles
     assert len(ts) >= 2 and not ts[0].folded and all(t.folded for t in ts[1:])          # the first one open
     QTest.mouseClick(ts[1], Qt.LeftButton, Qt.NoModifier, ts[1].rect().center())         # a click: only that one
     _settle(w)
     assert ts[0].folded and not ts[1].folded
     w.resize(1920, 1080)
     _settle(w)
-    assert not page.panel.solo
+    assert not page.panel.folds.solo
+
+
+def _post_view(w):
+    for v in w.s.paths:                                # the workflows as if computed: Post shows its panel
+        v.rendered = True
+    w.set_mode(2)
+    _settle(w, 8)
+    w.post.update_page()
+    _settle(w, 8)
+    return w.post.view
+
+
+def test_posts_property_groups_fold_as_the_block_panels_sections(env):
+    w = _open(env, (1920, 1080))
+    view = _post_view(w)
+    ts = view.folds.titles
+    assert len(ts) >= 2 and not any(t.folded for t in ts) and ts[0].rows
+    row = next(r for r in ts[0].rows if r.isVisible())
+    QTest.mouseClick(ts[0], Qt.LeftButton, Qt.NoModifier, ts[0].rect().center())
+    _settle(w)
+    assert ts[0].folded and not row.isVisible() and not ts[1].folded
+    # Alt-click: only that one; a rebuild of the column keeps the folds
+    QTest.mouseClick(ts[1], Qt.LeftButton, Qt.AltModifier, ts[1].rect().center())
+    _settle(w)
+    assert ts[0].folded and not ts[1].folded
+    view.build_props()
+    _settle(w)
+    assert view.folds.titles[0].folded and not view.folds.titles[1].folded
+
+
+def test_a_row_its_panel_keeps_hidden_stays_hidden_when_its_section_opens(env):
+    w = _open(env, (1920, 1080))
+    view = _post_view(w)
+    t = view.folds.titles[0]
+    kept = next(r for r in t.rows if r.isVisible())
+    kept.hide()
+    t.set_folded(True)
+    t.set_folded(False)
+    _settle(w)
+    assert kept.isHidden()
+
+
+def test_posts_groups_open_one_at_a_time_on_a_small_window(env):
+    w = _open(env, (1366, 728))
+    view = _post_view(w)
+    ts = view.folds.titles
+    assert len(ts) >= 2 and not ts[0].folded and all(t.folded for t in ts[1:])
+    icons = [view.dock.icons.itemAt(i).widget().toolTip() for i in range(view.dock.icons.count())]
+    assert [t.text() for t in ts][0] in icons                  # one icon per group
+
+
+def test_a_dialog_left_open_elsewhere_does_not_keep_the_panel_open(env):
+    """What the click or the key went to decides, never what else is open in the process (a modal dialog of another
+    window, or left by a previous test in the same worker, kept the panel open)."""
+    w = _open(env, (1366, 728))
+    page = w.graph
+    other = QDialog()
+    other.setModal(True)
+    other.show()
+    _settle(w, 2)
+    try:
+        assert QApplication.activeModalWidget() is other
+        QTest.mouseClick(_icon(page), Qt.LeftButton)
+        _settle(w)
+        assert page.dock.is_open()
+        QTest.mouseClick(_vp(w), Qt.LeftButton, Qt.NoModifier, _empty_point(w))
+        _settle(w)
+        assert not page.dock.is_open()
+    finally:
+        other.reject()
+        other.deleteLater()
+
+
+def test_a_list_opened_from_the_panel_keeps_its_click_and_its_escape(env):
+    w = _open(env, (1366, 728))
+    page = w.graph
+    QTest.mouseClick(_icon(page), Qt.LeftButton)
+    _settle(w)
+    popup = QMenu(page.panel)                                  # a window of its own, as a combo's list
+    popup.addAction("x")
+    popup.show()
+    _settle(w, 2)
+    try:
+        QTest.keyClick(popup, Qt.Key_Escape)
+        _settle(w, 2)
+        assert page.dock.is_open()
+        popup.show()
+        _settle(w, 2)
+        QTest.mouseClick(popup, Qt.LeftButton, Qt.NoModifier, QPoint(2, 2))
+        _settle(w, 2)
+        assert page.dock.is_open()
+    finally:
+        popup.close()
+        popup.deleteLater()
 
 
 def test_the_setting_never_compact_is_todays_layout_on_any_screen(env):
@@ -440,13 +536,7 @@ def test_the_smallest_window_is_about_1024_by_640(env):
 
 def test_post_folds_its_layers_panel_on_a_small_window(env):
     w = _open(env, (1366, 728))
-    for v in w.s.paths:                                # the workflows as if computed: Post shows its panel
-        v.rendered = True
-    w.set_mode(2)
-    _settle(w, 8)
-    w.post.update_page()
-    _settle(w, 8)
-    view = w.post.view
+    view = _post_view(w)
     assert view.dock.state == "icons" and view.dock.strip.isVisible() and not view.right.isVisible()
     QTest.mouseClick(view.dock.icons.itemAt(0).widget(), Qt.LeftButton)
     _settle(w)

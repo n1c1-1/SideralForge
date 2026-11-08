@@ -65,7 +65,7 @@ from . import prefs
 from .curveseditor import CurvesEditor, FunctionGraph, caption
 from .i18n import _, language, log_detail, maybe, plain_error, plural
 from .imageview import ZOOM_PRESETS, ZOOM_STEP
-from .layout import Dock
+from .layout import Dock, Sections
 from .model import POST_PART_NAMES
 from .postengine import (
     BLENDS,
@@ -567,7 +567,8 @@ class PostView(QWidget):
         root.addWidget(self.split)
         # issue #44: docked, or the strip of icons (a click opens it over the viewer) or hidden, as the other pages
         self.dock = Dock(self, self.right, self._dock_panel, lambda: self.right.setParent(self),
-                         lambda: [(_("Layers"), self._show_layers), (_("Properties"), self._show_props)], _("Layers"))
+                         lambda: [(_("Layers"), self._show_layers)]
+                         + (self.folds.items() or [(_("Properties"), self._show_props)]), _("Layers"))
         root.addWidget(self.dock.strip)
         self.strip = self.dock.strip
         self.dock.chosen.connect(lambda st: self.panelChosen.emit(st))
@@ -710,6 +711,7 @@ class PostView(QWidget):
         psc.setWidget(ph)
         rv.addWidget(psc, 1)
         self.psc = psc
+        self.folds = Sections(self.pbox, psc)            # its groups fold, as the block panel's sections (issue #44)
         return right
 
     def _connect(self, own_worker: bool):
@@ -1632,8 +1634,10 @@ class PostView(QWidget):
         self.dock.set_state("docked" if on else "icons")
         prefs.set("post_panel_shown", bool(on))
 
-    def set_layout(self, state: str):
-        """Issue #44: docked | icons | hidden (the panel's state the window chose for this size range)."""
+    def set_layout(self, state: str, solo: bool = False):
+        """Issue #44: docked | icons | hidden (the panel's state the window chose for this size range), and its groups
+        one at a time on a small window."""
+        self.folds.set_solo(solo)
         self.dock.set_state(state)
 
     def set_compact(self, on: bool):
@@ -1840,6 +1844,7 @@ class PostView(QWidget):
     # ------------------------------------------------------------ properties of the selection
     def build_props(self):
         clear(self.pbox)
+        self.folds.reset()
         self.curves_editor = self.function_graph = None
         self.viewer.mode = "pan"
         lay = self.layer(self.sel[0]) if self.sel else None
@@ -1856,10 +1861,12 @@ class PostView(QWidget):
         else:
             self.layer_props(lay)
         self.pbox.addStretch(1)
+        self.folds.finish(f"{lay['kind']}:{lay.get('filter', '')}:{self.sel[1]}")     # issue #44: as the block panel's
+        self.dock.refresh_icons()
         self._hint()
 
     def _group(self, text):
-        g = label(text, "dim")
+        g = self.folds.title(text)
         g.setStyleSheet("color: #aab2bf; font-weight: 600; margin-top: 8px;")
         self.pbox.addWidget(g)
 
