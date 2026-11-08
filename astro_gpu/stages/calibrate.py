@@ -465,7 +465,7 @@ def _hot_from_lights(paths, dark, flat, bad, median_filter, n=40, k=5.0, cfa: st
         tick("hot pixels: the sky's drift")
     st = np.empty((len(sub), *dark.shape), np.float32)          # one array, the quartile in bands: the frames once
 
-    def put(i, a):
+    def put(i, a, st=st):
         st[i] = (a - dark) / flat
 
     _read_frames(sub, put, 0, (lambda c: tick(f"hot pixels: frame {c}/{len(sub)}")) if tick is not None else None)

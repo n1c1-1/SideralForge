@@ -1145,8 +1145,8 @@ def _a_fits(path: Path) -> str:
 
 def test_a_linear_image_is_chosen_as_a_fusion_channel_on_its_row(qapp, tmp_path, monkeypatch):
     """Issue #55: the two meet in a Fusion: a channel's row chooses a linear Image's output (with its Astrometry the
-    channels align); starless modes and an Image exclude each other, said where they are chosen; an image already
-    stretched is not offered."""
+    channels align); the starless modes work with it, it gets its Stars/background; an image already stretched is
+    listed greyed, with its reason."""
     from PySide6.QtWidgets import QComboBox
 
     from astro_gpu.core.store import Keys
@@ -1164,13 +1164,15 @@ def test_a_linear_image_is_chosen_as_a_fusion_channel_on_its_row(qapp, tmp_path,
         fu = m.paths[-1]
         assert fu.source["fusion"]["stars"]["mode"] == "workflow"     # as for a colour stack: its starless image
         offered = {q.pid: why for q, why in m.channel_choices(fu, "OIII")}
-        assert stretched.pid not in offered and "With channels" in offered[img.pid]
-        assert not m.set_fusion_channel(fu, "OIII", img.pid)
+        assert offered[img.pid] == "" and "stretch" in offered[stretched.pid]
+        assert not m.set_fusion_channel(fu, "OIII", stretched.pid)
         assert m.set_fusion_stars(m.view(fu.pid), None)
         page.select(index=m.paths.index(m.view(fu.pid)), step="fusion")
         settle(w, page)
         rows = [c for c in page.panel.findChildren(QComboBox) if c.findData(img.pid) >= 0]
         assert len(rows) == 2                                        # Ha, OIII
+        grey = rows[1].model().item(rows[1].findData(stretched.pid))
+        assert not grey.isEnabled() and "stretch" in grey.toolTip()
         i = rows[1].findData(img.pid)
         rows[1].setCurrentIndex(i)
         rows[1].activated.emit(i)
@@ -1186,8 +1188,13 @@ def test_a_linear_image_is_chosen_as_a_fusion_channel_on_its_row(qapp, tmp_path,
         page.select(index=m.paths.index(fu), step="fusion")
         settle(w, page)
         stars = next(c for c in page.panel.findChildren(QComboBox) if c.itemText(0) == "With channels (no split)")
-        assert all(not stars.model().item(j).isEnabled() for j in range(1, stars.count()))
-        assert not m.set_fusion_stars(fu, {"mode": "palette"})
+        j = next(k for k in range(stars.count()) if stars.itemData(k) == {"mode": "palette"})
+        assert stars.model().item(j).isEnabled()
+        stars.activated.emit(j)
+        settle(w, page)
+        assert m.view(fu.pid).source["fusion"]["stars"] == {"mode": "palette"}
+        assert "star_removal" in m.all_stages(m.view(img.pid))        # it gets its Stars/background, as a stack does
+        assert m.fusion_problem(m.view(fu.pid)) == ""
     finally:
         page.close()
         m.close(save=False)
@@ -1196,7 +1203,7 @@ def test_a_linear_image_is_chosen_as_a_fusion_channel_on_its_row(qapp, tmp_path,
 
 def test_a_fusion_can_start_from_a_linear_image_alone(qapp, tmp_path, monkeypatch):
     """Issue #55: no stack in the project: once its file is chosen, a linear Image gives the Fusion its channels (dual
-    band), with its stars (it has no starless image)."""
+    band), with its stars (a star source is chosen in the Fusion's panel)."""
     w, m, page = open_page(tmp_path, monkeypatch, workflows=())
     try:
         page.palette_action("image")
@@ -1211,6 +1218,111 @@ def test_a_fusion_can_start_from_a_linear_image_alone(qapp, tmp_path, monkeypatc
         f = m.paths[-1].source["fusion"]
         assert [(i["pid"], i["channel"]) for i in f["inputs"]] == [(img.pid, "R"), (img.pid, "GB")] and "stars" not in f
         assert m.fusion_problem(m.paths[-1]) == ""
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_linear_image_takes_stars_without_denoise(qapp, tmp_path, monkeypatch):
+    """Issue #55: Stars on a linear Image, from the palette, needs no Denoise: its chain has the Output, then the
+    network; the frames keep needing Denoise."""
+    w, m, page = open_page(tmp_path, monkeypatch, workflows=())
+    try:
+        page.palette_action("image")
+        settle(w, page)
+        img = m.paths[-1]
+        m.set_image_file(img, _a_fits(tmp_path / "stack.fits"))
+        settle(w, page)
+        assert page.palette_reason("stars", m.view(img.pid), None) == ""
+        page.place_block("stars", img.pid)
+        settle(w, page)
+        v = m.view(img.pid)
+        assert "etoiles" in m.display_keys(v) and m.all_stages(v)[-2:] == ["render_simple", "star_removal"]
+        assert "denoise" not in m.all_stages(v)
+        with pytest.raises(wfl.BlockRefused, match="Denoise"):
+            wfl.check_blocks([wfl.node("calibration"), wfl.node("registration"), wfl.node("selection"),
+                              wfl.node("stacking"), wfl.node("output"), wfl.node("stars")], "frames")
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_linear_image_chosen_in_a_starless_fusion_gets_its_stars(qapp, tmp_path, monkeypatch):
+    """Issue #55: a channel set to a linear Image while the Fusion takes starless images: the Image gets its
+    Stars/background (taken back with the Fusion, decision 2)."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        page.palette_action("image:new")
+        settle(w, page)
+        img = m.paths[-1]
+        m.set_image_file(img, _a_fits(tmp_path / "stack.fits"))
+        page.place_block("astrometry", img.pid)
+        settle(w, page)
+        page.place_fusion()
+        settle(w, page)
+        fu = m.paths[-1]
+        assert fu.source["fusion"]["stars"]["mode"] == "workflow"
+        assert m.set_fusion_channel(fu, "OIII", img.pid)
+        settle(w, page)
+        assert "star_removal" in m.all_stages(m.view(img.pid)) and m.fusion_problem(m.view(fu.pid)) == ""
+        m.remove_fusion(m.view(fu.pid))
+        settle(w, page)
+        assert "star_removal" not in m.all_stages(m.view(img.pid))
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_a_linear_image_is_a_fusion_star_source_once_it_has_its_astrometry(qapp, tmp_path, monkeypatch):
+    """Issue #55: the Fusion's Stars list offers a linear Image: choosing it gives it its Stars/background, and until
+    it has its Astrometry the Fusion says so (as for a channel) and Run is refused; then the engine reads its starless
+    result and its plate solution. An image already stretched is listed greyed, with its reason, and refused."""
+    from PySide6.QtWidgets import QComboBox
+
+    from astro_gpu.core.store import Keys
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        page.palette_action("image:new")
+        settle(w, page)
+        img = m.paths[-1]
+        m.set_image_file(img, _a_fits(tmp_path / "stack.fits"))
+        stretched = m.add_image_workflow("Done", _a_fits(tmp_path / "done.fits"), stretched=True)
+        settle(w, page)
+        page.place_fusion()
+        settle(w, page)
+        fu = m.paths[-1]
+        page.select(index=m.paths.index(fu), step="fusion")
+        settle(w, page)
+        stars = next(c for c in page.panel.findChildren(QComboBox) if c.itemText(0) == "With channels (no split)")
+        at = {stars.itemData(k).get("pid"): k for k in range(stars.count()) if stars.itemData(k)}
+        grey = stars.model().item(at[stretched.pid])
+        assert not grey.isEnabled() and "stretch" in grey.toolTip()
+        assert stars.model().item(at[img.pid]).isEnabled()
+        assert not m.set_fusion_stars(m.view(fu.pid), {"mode": "workflow", "pid": stretched.pid})
+        i18n.set_language("fr")
+        try:
+            assert "étirement" in next(why for q, why in m.star_choices(m.view(fu.pid)) if q.pid == stretched.pid)
+        finally:
+            i18n.set_language("en")
+        stars.activated.emit(at[img.pid])
+        settle(w, page)
+        fu = m.view(fu.pid)
+        assert fu.source["fusion"]["stars"] == {"mode": "workflow", "pid": img.pid}
+        assert "star_removal" in m.all_stages(m.view(img.pid))        # the Stars block it needs, as for a stack
+        assert m.fusion_problem(fu) == "Stars: needs Astrometry"
+        assert (fu.name, "Stars: needs Astrometry") in m.run_problems()
+        page.place_block("astrometry", img.pid)
+        settle(w, page)
+        fu = m.view(fu.pid)
+        assert m.fusion_problem(fu) == ""
+        k = Keys(m.p)
+        got = k.overrides(fu.pid, "fusion")["stars"]
+        assert k.key(img.pid, "star_removal") in got["dir"] and got["wcs"].endswith("wcs.fits")
+        v = m.view(img.pid)                                            # a star source keeps what the Fusion reads
+        assert "needed by" in m.removal_problem(v, "astrometrie") and fu.name in m.channel_problem(v)
     finally:
         page.close()
         m.close(save=False)

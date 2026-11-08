@@ -105,7 +105,7 @@ def test_the_placement_rules():
     img = [node("astrometry"), node("output")]
     e = wfl.palette_problem(img, "image", "denoise")
     assert e is not None and e.template == wfl.WHY_HALVES
-    assert wfl.palette_problem(img, "image", "stars").template == wfl.WHY_NEEDS            # Stars needs Denoise
+    assert wfl.palette_problem(img, "image", "stars") is None                              # no Denoise there (#55)
     assert wfl.places(img, "image", "gradient") == [0, 1, 2]
     # removing: Stacking makes the image the next blocks take; Astrometry is needed by Color; Output always there
     assert wfl.remove_problem(g, "frames", 3).template == wfl.WHY_REMOVE_BRIDGE

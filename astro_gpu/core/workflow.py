@@ -22,13 +22,13 @@ Issue #43, the blocks redesign:
   frames; no alignment: their settings imply it); Astrometry, Gradient and Color leave the chain. A block that needs a
   cut one is greyed (``greyed``: its reason): it leaves the chain too, and the image passes on.
 - Image source: a workflow may start from an image file (``image``): the ``image`` stage stands for the stack
-  (``PROVIDES``); the blocks before it are absent, and those that need a real stack (the half-stacks of Denoise, then
-  Stars) are greyed.
+  (``PROVIDES``); the blocks before it are absent, and Denoise, which needs a real stack (its half-stacks), is greyed.
 - Mono is planned, not built: a session has a filter; sessions of one filter will stack together.
 
 The Gradient block comes right after stacking: its method models the sky gradient, which every later stage reads
 removed (stages/gradient.py). The Stars block takes the stars off the Output block's image (stages/star_removal.py):
-it comes after it. Rule: Stars needs Denoise (the network was trained on denoised images). Other option values are not
+it comes after it. Rule: from frames, Stars needs Denoise (the network was trained on denoised images); an image file
+has no half-stacks to denoise, and Stars takes its noise unit from the image itself. Other option values are not
 in the engine and raise. A stored gradient "halpha" (the background anchored on the H-alpha survey, which worked on the
 starless image) is read as the method that replaces it, a stored denoise "n2n" (a network trained from scratch on each
 image) as the pretrained network, a stored stars "psf" or "psf_neural" (the star model subtracted, then redrawn) as the
@@ -127,12 +127,10 @@ def cuts(options: dict[str, Any]) -> list[str]:
 #: why a block cannot run (the user reads it on the greyed block; English, translated by the client)
 NEEDS_ASTROMETRY = "needs Astrometry"
 NEEDS_HALF_STACKS = "needs half-stacks"
-NEEDS_DENOISE = "needs Denoise"
 MONO_NO_COLOUR = "monochrome: colours from filters"
 
 
-def greyed(options: dict[str, Any], image: bool = False, mono: bool = False, stretched: bool = False
-           ) -> dict[str, str]:
+def greyed(options: dict[str, Any], image: bool = False, mono: bool = False) -> dict[str, str]:
     """{block: why it cannot run} for the blocks of a workflow that need a block it cut, or a stack when it starts
     from an image, or colours its monochrome frames do not have (issue #43: greyed, the image passes on)."""
     o = check_options(options)
@@ -144,8 +142,6 @@ def greyed(options: dict[str, Any], image: bool = False, mono: bool = False, str
         out["color"] = NEEDS_ASTROMETRY
     if image and o["denoise"]:
         out["denoise"] = NEEDS_HALF_STACKS
-    if image and o["stars"] and not stretched:
-        out["stars"] = NEEDS_DENOISE
     return out
 
 
@@ -657,7 +653,7 @@ def graph_problem(blocks: Sequence[dict], source: str, raise_it: bool = False) -
             return bad(WHY_NEEDS, need=_title("astrometry"))
         if b == "denoise" and (source != "frames" or "stacking" not in seen):
             return bad(WHY_HALVES)
-        if b == "stars" and source in ("frames", "image") and "denoise" not in seen:      # trained on denoised images
+        if b == "stars" and source == "frames" and "denoise" not in seen:      # trained on denoised images
             return bad(WHY_NEEDS, need=_title("denoise"))
         if b == "stars" and source not in ("stretched",) and "output" not in seen:
             return bad(WHY_NEEDS, need=_title("output"))
@@ -781,7 +777,7 @@ def from_options(options: dict[str, Any], end: str | None = None, source: str = 
     if "color" not in cut and "astrometry" not in cut:
         out.append(node("color"))
     out.append(node("output"))
-    if o["stars"] and (source == "frames" and o["denoise"]):
+    if o["stars"]:
         out.append(node("stars"))
     return out
 
@@ -798,7 +794,7 @@ def options_of(blocks: Sequence[dict], source: str = "frames") -> dict[str, Any]
                          "gradient": first["gradient"]["method"] if "gradient" in first else "polynomial",
                          "deconvolution": None}
     if o["stars"] and not o["denoise"]:
-        o["denoise"] = "pretrained"              # a stretched image or a fusion: their Split block needs no Denoise
+        o["denoise"] = "pretrained"              # an image or a fusion: their Split block needs no Denoise
     cut = []
     if source == "frames":
         cut += [b for b in ("calibration", "registration") if b not in first]

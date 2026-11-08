@@ -316,7 +316,6 @@
   "Workflow \"{name}\" deleted · Ctrl+Z": "Workflow « {name} » supprimé · Ctrl+Z",
   "only session": "seule session",
   "Cannot be switched off: {why}": "Ne peut pas être désactivé : {why}",
-  "linear image: needs frames, or mark it stretched": "image linéaire : partir des brutes, ou la marquer étirée",
   "The filter of these lights (a monochrome camera): the workflows by filter and their Fusion use it; none for a colour camera.": "Le filtre de ces brutes (caméra monochrome) : les workflows par filtre et leur Fusion s'en servent ; aucun pour une caméra couleur.",
   "{block} comes {where} {other}": "{block} vient {where} {other}",
   "needs {need} first": "il faut {need:le} avant",
@@ -518,6 +517,7 @@
   "Chain wire: not removable": "Fil de chaîne : non retirable",
   "needs 2 filter workflows, a colour stack or image": "il faut 2 workflows de filtres, un empilement couleur ou une image",
   "The workflow this channel reads: a stack of its filter, or a linear image's output": "Le workflow que lit ce canal : un empilement de son filtre, ou la sortie d'une image linéaire",
-  "No Stars/background on a linear image: set Stars to “{mode}” first": "Pas d'Étoiles/fond sur une image linéaire : réglez d'abord Étoiles sur « {mode} »",
-  "A linear image among the channels has no Stars/background": "Une image linéaire parmi les canaux n'a pas d'Étoiles/fond"
+  "An image already stretched: a stretch cannot be undone faithfully": "Image déjà étirée : un étirement ne se défait pas fidèlement",
+  "{role}: stretched image": "{role} : image étirée",
+  "stars of “{fusion}”": "étoiles de « {fusion} »"
 }

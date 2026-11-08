@@ -9,8 +9,9 @@ stars off, the background unchanged (docs/POINT_MATINEE_2026-11-05.md).
 
 It works on what it was trained on: the Output block's linear image (render_simple: the stack with its sky gradient
 removed, denoised, white balanced, its sky taken off), each channel minus its background, over one noise unit (the
-noise of the half-stacks before denoising, through the colour matrix, averaged over the three colours). The network sees
-a fixed asinh stretch of it, undone exactly on the way out.
+noise of the half-stacks before denoising, through the colour matrix, averaged over the three colours; a linear Image
+has no half-stacks: the spread of its own sky). The network sees a fixed asinh stretch of it, undone exactly on the
+way out.
 
 Outputs, in the units of the Output block's lin.npy (so that starless + stars is that image, to the pixel):
 
@@ -69,8 +70,11 @@ class StarRemoval(Stage):
         shown = np.zeros_like(valid)
         shown[y0:y1, x0:x1] = True
         shown &= valid
-        _bk, sg, _nm = norm_params(stack_image(ctx, "drz_A.npy"), ctx.load("stack", "drz_weight.npy", mmap=True))
-        unit = float(np.mean(np.sqrt((M ** 2) @ (np.asarray(sg, np.float64) ** 2))))
+        if (ctx.project.stage_dir("stack") / "drz_A.npy").is_file():
+            _bk, sg, _nm = norm_params(stack_image(ctx, "drz_A.npy"), ctx.load("stack", "drz_weight.npy", mmap=True))
+            unit = float(np.mean(np.sqrt((M ** 2) @ (np.asarray(sg, np.float64) ** 2))))
+        else:                                            # a linear Image (issue #55): no half-stack to read it on
+            unit = sky_unit(lin, shown)
         bk = np.array([np.median(lin[c][shown][::7]) for c in range(3)], np.float32)[:, None, None]
         ctx.log(f"noise unit {unit:.4g}, background {', '.join(f'{v:.3g}' for v in bk.ravel())}")
         dev = ctx.device
@@ -209,6 +213,13 @@ class NAFNet(nn.Module):
         for d, up, sk in zip(self.decs, self.ups, reversed(skips)):
             x = self._run(d, up(x) + sk)
         return (self.ending(x) + x0)[:, :, :H, :W]
+
+
+def sky_unit(lin: np.ndarray, shown: np.ndarray) -> float:
+    """The noise unit of an image without half-stacks: the spread of its sky over the shown pixels, in the colours of
+    ``lin`` (its colour matrix is applied already), averaged over the three colours; 1 for an image without noise."""
+    from .render_simple import sky_spread
+    return float(np.mean([sky_spread(lin[c][shown][::7]) for c in range(3)])) or 1.0
 
 
 def fwd(v):

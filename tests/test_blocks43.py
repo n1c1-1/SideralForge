@@ -211,8 +211,11 @@ def test_a_workflow_from_an_image_reads_it_as_the_stack(tmp_path, nights):
     assert q.workflow(w.id).source == {"path": str(img), "stretched": False}
     k = Keys(q)
     ch = k.chain(w.id)
-    assert ch[0] == "image" and not {"inventory", "calibrate", "register", "stack", "denoise", "star_removal"} & set(ch)
-    assert wfl.greyed(FULL, image=True) == {"denoise": wfl.NEEDS_HALF_STACKS, "stars": wfl.NEEDS_DENOISE}
+    assert ch[0] == "image" and not {"inventory", "calibrate", "register", "stack", "denoise"} & set(ch)
+    assert ch[-2:] == ["render_simple", "star_removal"]                     # Stars without Denoise (issue #55)
+    assert wfl.greyed(FULL, image=True) == {"denoise": wfl.NEEDS_HALF_STACKS}
+    assert k.deps(w.id, "star_removal")[:2] == ("render_simple", "image")
+    assert [n["block"] for n in wfl.from_options(FULL, source="image")][-2:] == ["output", "stars"]
     assert k.deps(w.id, "astrometry") == ("image",) and k.deps(w.id, "color") == ("catalogs", "image", "gradient")
     sp = StoreProject(k, w.id, "astrometry")
     assert sp.stage_dir("stack") == Store(q.root).dir("image", k.key(w.id, "image"))
@@ -420,6 +423,57 @@ def test_an_already_stretched_image_goes_to_post_as_it_is(tmp_path, nights):
     q = project2.load(p.root)
     q.workflow(w.id).source = {"path": str(png), "stretched": False}
     assert Keys(q).key(w.id, "image") != before                             # linear or stretched: two results
+
+
+def test_a_linear_image_has_its_stars_taken_off_and_gives_them_to_a_fusion(tmp_path):
+    """Issue #55, a real run on the CPU: an Image (a FITS file, no half-stack, no Denoise), its Output, its stars taken
+    off by the network, its noise unit read on its own sky; the fusion aligns those stars through the plate solutions,
+    and refuses them without one."""
+    from astropy.io import fits
+
+    from astro_gpu.stages.fusion import STARS_FILE, Fusion, FusionParams
+    from astro_gpu.stages.image import ImageParams, ImageSource
+    from astro_gpu.stages.render_simple import RenderSimple, RenderSimpleParams
+    from astro_gpu.stages.star_removal import StarRemoval, StarRemovalParams
+    H, W = 128, 128
+    sigma = 30.0
+    rng = np.random.default_rng(3)
+    a = 1000.0 + sigma * rng.standard_normal((3, H, W)) + 30000.0 * _star(H, W, 67, 66)
+    img = tmp_path / "linear.fits"
+    fits.PrimaryHDU(a.astype(np.float32)).writeto(img)
+    dirs = {"image": tmp_path / "image", "stack": tmp_path / "image", "render_simple": tmp_path / "out",
+            "star_removal": tmp_path / "split"}
+    pr = _Project(tmp_path, dirs, ["image", "render_simple", "star_removal"])
+    for st, par in ((ImageSource(), ImageParams(path=str(img))), (RenderSimple(), RenderSimpleParams()),
+                    (StarRemoval(), StarRemovalParams())):
+        st.run(Context(pr, st, Journal(pr.logs), "cpu"), par)
+    assert not (tmp_path / "image" / "drz_A.npy").exists()
+    prep = json.loads((tmp_path / "split" / "prep_stars.json").read_text())
+    assert prep["unit"] == pytest.approx(sigma, rel=0.25)
+    lin = np.load(tmp_path / "out" / "lin.npy")
+    starless, stars = np.load(tmp_path / "split" / "starless.npy"), np.load(tmp_path / "split" / "stars.npy")
+    assert np.allclose(starless + stars, lin, atol=1e-2)                    # the two images add up to the Output's
+    assert starless[:, 66, 67].max() < 0.2 * lin[:, 66, 67].min()           # the star is gone
+    assert stars[:, 66, 67].min() > 0.8 * lin[:, 66, 67].min()
+
+    # the fusion's channels on their own grid: the same star 3 px left and 2 px up there
+    _wcs([68.0, 67.0]).to_fits().writeto(tmp_path / "image_wcs.fits")
+    neb = np.repeat((500 * _star(H, W, 30, 30))[None], 3, 0) + 1.0
+    _output(tmp_path / "ch_out", neb, _wcs([65.0, 65.0]))
+    _split(tmp_path / "ch_split", neb, np.zeros((3, H, W)))
+    ins = [{"role": r, "channel": "L", "pid": 1, "dir": str(tmp_path / "ch_out"), "stars_dir": str(tmp_path / "ch_split"),
+            "wcs": str(tmp_path / "ch_out" / "wcs.fits")} for r in ("Ha", "OIII")]
+    source = {"mode": "workflow", "pid": 2, "dir": str(tmp_path / "split")}
+    out = tmp_path / "fused"
+    pr = _Project(tmp_path, {"fusion": out}, ["fusion"])
+    st = Fusion()
+    st.run(Context(pr, st, Journal(pr.logs), "cpu"),
+           FusionParams(palette="HOO", inputs=ins, stars={**source, "wcs": str(tmp_path / "image_wcs.fits")}))
+    layer = np.load(out / STARS_FILE)
+    y, x = np.unravel_index(np.argmax(layer.sum(0)), (H, W))
+    assert abs(int(y) - 64) <= 1 and abs(int(x) - 64) <= 1                  # aligned on the channels' grid
+    with pytest.raises(StageError, match="Astrometry"):
+        st.run(Context(pr, st, Journal(pr.logs), "cpu"), FusionParams(palette="HOO", inputs=ins, stars=source))
 
 
 # ---------------------------------------------------------------------------------------------- option A: stars

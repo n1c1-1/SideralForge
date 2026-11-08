@@ -50,6 +50,19 @@ def test_a_tiny_image_is_padded_to_one_tile(net):
     assert out.shape == (3, 40, 70) and np.isfinite(out).all()
 
 
+def test_without_half_stacks_the_noise_unit_is_the_spread_of_the_sky():
+    """Issue #55: a linear Image has no half-stack: the unit is read on its own sky, the stars and the nebula above the
+    sky do not widen it, the uncovered pixels do not count; an image without noise keeps a defined unit."""
+    rng = np.random.default_rng(0)
+    lin = 3.0 * rng.standard_normal((3, 200, 200)).astype(np.float32)
+    lin[:, 60:90, 60:90] += 500.0
+    shown = np.ones((200, 200), bool)
+    shown[:20] = False
+    lin[:, :20] = 1000.0 * rng.standard_normal((3, 20, 200)).astype(np.float32)
+    assert sr.sky_unit(lin, shown) == pytest.approx(3.0, rel=0.1)
+    assert sr.sky_unit(np.zeros((3, 50, 50), np.float32), np.ones((50, 50), bool)) == 1.0
+
+
 def _folder(tmp_path, h=64, w=96):
     """A star_removal folder: a sky, a nebula and two stars, the starless image and the stars."""
     rng = np.random.default_rng(0)

@@ -2,7 +2,8 @@
 
 The image (FITS or TIFF, linear: straight out of a stack) is written as a stack result, which the later stages read
 as "stack" (core/workflow.PROVIDES): drz_full.npy (3, H, W), drz_weight.npy (all ones: every pixel covered),
-drz_meta.json (scale 1: the image is at its own scale). It has no half-stacks: Denoise, then Stars, are greyed.
+drz_meta.json (scale 1: the image is at its own scale). It has no half-stacks: Denoise is greyed, and Stars takes its
+noise unit from the image itself (stages/star_removal.py).
 
 A monochrome image is given its one channel three times. Values in [0, 1] are brought to the range of a 16-bit
 sensor's (x 65535), so that the levels the later stages measure are of the size they meet in a stack.

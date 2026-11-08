@@ -1009,24 +1009,22 @@ class Panel(QWidget):
         s = self.s
         cur = f.get("stars") or {}
         self.bv.addWidget(self.group_title(_("Stars")))
-        # a stack only (issue #55): a linear Image has no Stars block, a stretched one no Astrometry to align its stars
-        others = [q for q in s.paths if q.pid != p.pid and q.source is None and not s.is_mono(q)]
-        choices = [(_("With channels (no split)"), None),
-                   (_("Channel stars, same palette"), {"mode": "palette"})]
-        choices += [(_("{channel} stars (neutral)").format(channel=r), {"mode": "channel", "role": r})
+        choices = [(_("With channels (no split)"), None, ""),
+                   (_("Channel stars, same palette"), {"mode": "palette"}, "")]
+        choices += [(_("{channel} stars (neutral)").format(channel=r), {"mode": "channel", "role": r}, "")
                     for r in roles]
         choices += [(_("“{workflow}” stars (own colours)").format(workflow=q.name),
-                     {"mode": "workflow", "pid": q.pid}) for q in others]
+                     {"mode": "workflow", "pid": q.pid}, why) for q, why in s.star_choices(p)]
         cb = QComboBox()
         cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)     # a long workflow name: elided,
         cb.setMinimumContentsLength(20)                                              # never wider than the panel
-        for text, val in choices:
+        for text, val, why in choices:
             cb.addItem(text, val)
-            if val and s.reads_linear_image(p):          # issue #55: no starless image from a linear Image channel
+            if why:                                      # issue #55: an image already stretched, greyed with its reason
                 item = cb.model().item(cb.count() - 1)
                 item.setEnabled(False)
-                item.setToolTip(_("A linear image among the channels has no Stars/background"))
-        cb.setCurrentIndex(next((i for i, (_t, v) in enumerate(choices) if (v or {}) == cur), 0))
+                item.setToolTip(why)
+        cb.setCurrentIndex(next((i for i, (_t, v, _w) in enumerate(choices) if (v or {}) == cur), 0))
         cb.setToolTip(_("The palette is made on the channels' starless images; these stars are put back by the "
                         "Recombine block. Each channel's workflow gets Stars/background."))
         cb.activated.connect(lambda i: s.set_fusion_stars(p, cb.itemData(i)))

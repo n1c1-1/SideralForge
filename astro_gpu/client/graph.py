@@ -2339,7 +2339,7 @@ class GraphPage(QWidget):
             pal = "HOO"                                   # a dual-band filter on a colour camera
             src = colour or image
             inputs = [{"pid": src.pid, "role": "Ha", "channel": "R"}, {"pid": src.pid, "role": "OIII", "channel": "GB"}]
-            stars = {"mode": "workflow", "pid": src.pid} if image is None else None      # a linear image has no split
+            stars = {"mode": "workflow", "pid": src.pid} if image is None else None      # an image keeps its stars
         return pal, inputs, stars
 
     def place_block(self, block: str, pid=None, index=None):
