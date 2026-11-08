@@ -13,8 +13,7 @@ import numpy as np
 import pytest
 import torch
 
-from astro_gpu.core import devices, selftest
-from astro_gpu.core import project2, runner2
+from astro_gpu.core import devices, runner2, selftest
 from astro_gpu.core.stage import Context
 from astro_gpu.stages import denoise as dn
 from astro_gpu.stages import star_removal as sr
@@ -237,7 +236,7 @@ def test_the_denoise_operation_runs_on_the_cpu():
 # ---------------------------------------------------------------------------------------------- a stage on the CPU in a run
 
 
-def test_a_job_the_profile_sends_to_the_cpu_runs_there(tmp_path, monkeypatch, proj):
+def test_a_job_the_profile_sends_to_the_cpu_runs_there(tmp_path, monkeypatch, proj):  # noqa: F811
     plan = tr.plan_all(proj)
     job = plan.jobs[0]
     info = runner2.prepare_run(proj, plan, "cuda:0", {job.key: selftest.STAGE_ON_CPU.format(why="the card failed")})
@@ -254,7 +253,7 @@ def test_stack_memory_follows_the_output_pixels():
     assert devices.stack_memory(48.0) == pytest.approx(8.0)
 
 
-def test_a_stack_that_does_not_fit_goes_to_the_cpu(tmp_path, monkeypatch, proj):
+def test_a_stack_that_does_not_fit_goes_to_the_cpu(tmp_path, monkeypatch, proj):  # noqa: F811
     from astro_gpu import api
     from astro_gpu.core import estimate as est
     monkeypatch.setattr(api.devices, "available", lambda d: True)

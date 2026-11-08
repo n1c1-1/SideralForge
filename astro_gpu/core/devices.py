@@ -76,7 +76,7 @@ def list_devices() -> list[DeviceInfo]:
     except Exception:  # noqa: BLE001
         pass
     try:
-        import torch_directml as dml                  # AMD (or any other card) through DirectML
+        import torch_directml as dml  # AMD (or any other card) through DirectML
         for i in range(dml.device_count()):
             name = str(dml.device_name(i))
             out.append(DeviceInfo(f"privateml:{i}", name, 0.0, _kind_of(name), True))

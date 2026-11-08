@@ -665,7 +665,7 @@ def drizzle_deposit(num, den, val, Xo, Yo, w, keep, chmap, h: float, S: float, H
     if bands is None:
         _drops(num, den, v, xo, yo, c, w, h, S, Ho, Wo, span, rej, tally)
     elif rej is None:
-        from ..core.stack_kernels import deposit                  # compiled: 15 times the generic operations
+        from ..core.stack_kernels import deposit  # compiled: 15 times the generic operations
         deposit(num.numpy(), den.numpy() if den is not None else np.empty(0, np.float32), v.numpy(), xo.numpy(),
                 yo.numpy(), c.numpy(), bands, w, h, Ho, Wo, span, workers)
     else:
