@@ -32,12 +32,12 @@ import numpy as np
 from . import devices
 
 #: the operations tested, in order, and the stage each one decides (Stack has two)
-OPERATIONS = {"drizzle": "stack", "sampling": "stack", "denoise": "denoise", "stars": "star_removal", "post": "post"}
+OPERATIONS = {"drizzle": "stack", "sampling": "stack", "classic": "stack", "denoise": "denoise", "stars": "star_removal", "post": "post"}
 STAGES = ("stack", "denoise", "star_removal", "post")
 #: the largest difference allowed between the card and the CPU, in the unit each operation returns its result in: the
 #: image's own scale for the sums and the render (rounding of float32 and of the order of the additions), the noise of
 #: the image for the networks (autocast on the card: bfloat16); set from what a sound card gives (see tests/test_selftest)
-TOLERANCE = {"drizzle": 5e-3, "sampling": 5e-3, "denoise": 0.3, "stars": 0.05, "post": 8e-3}
+TOLERANCE = {"drizzle": 5e-3, "sampling": 5e-3, "classic": 5e-3, "denoise": 0.3, "stars": 0.05, "post": 8e-3}
 #: seconds one operation may take before the card counts as gone (its child process is then ended)
 OP_TIMEOUT = 300.0
 #: the free share of the card's memory below which it is busy with something else: a test launched by itself waits
@@ -102,6 +102,20 @@ def op_sampling(dev: str) -> dict[str, np.ndarray]:
     return {k: (v / 20.0 if k == "cover" else v).cpu().numpy() for k, v in pr.items()}
 
 
+def op_classic(dev: str) -> dict[str, np.ndarray]:
+    """The Classic method of the Stacking block (core/stack_classic.py): frames debayered, interpolated and combined
+    with rejection, on a few small frames."""
+    from .stack_classic import ClassicParams, stack_classic
+    H, W, n = 300, 400, 8
+    rng = np.random.default_rng(3)
+    frames = rng.normal(1000.0, 30.0, (n, H, W)).astype(np.float32)
+    coef = np.zeros((n, 2, 10))
+    coef[:, 0, 0], coef[:, 0, 1], coef[:, 1, 0], coef[:, 1, 2] = W / 2 + 0.4, W / 2, H / 2 - 0.3, H / 2
+    res = stack_classic(lambda i: frames[i], coef, params=ClassicParams(band_pixels=1 << 16), device=dev,
+                        used=list(range(n)), ch_of_k=[0, 1, 1, 2], H=H, W=W)
+    return {"full": np.asarray(res.full) / 1000.0}
+
+
 _NETS: dict[tuple[str, str], Any] = {}
 
 
@@ -162,7 +176,7 @@ def op_post(dev: str) -> dict[str, np.ndarray]:
 
 
 OPS: dict[str, Callable[[str], dict[str, np.ndarray]]] = {
-    "drizzle": op_drizzle, "sampling": op_sampling, "denoise": op_denoise, "stars": op_stars, "post": op_post}
+    "drizzle": op_drizzle, "sampling": op_sampling, "classic": op_classic, "denoise": op_denoise, "stars": op_stars, "post": op_post}
 
 
 # ---------------------------------------------------------------------------------------------- one operation

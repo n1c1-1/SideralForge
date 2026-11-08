@@ -221,7 +221,7 @@ def test_no_card_nothing_to_test(monkeypatch):
 
 
 # ---------------------------------------------------------------------------------------------- the operations, on the CPU
-@pytest.mark.parametrize("op", ["drizzle", "sampling", "post"])
+@pytest.mark.parametrize("op", ["drizzle", "sampling", "classic", "post"])
 def test_operations_run_and_give_finite_numbers(op):
     out = selftest.OPS[op]("cpu")
     assert all(np.isfinite(v).all() for v in out.values())
