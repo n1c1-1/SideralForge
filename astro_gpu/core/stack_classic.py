@@ -239,8 +239,8 @@ def _reduce(count: np.ndarray, f: int) -> np.ndarray:
 
 def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weights=None,
                   params: ClassicParams | None = None, device="cpu", *, used, ch_of_k, H: int, W: int, sat_level=None,
-                  progress: Callable | None = None, masks: bool = False, raw_template: str | None = None
-                  ) -> ClassicResult:
+                  progress: Callable | None = None, masks: bool = False, raw_template: str | None = None,
+                  colour: bool = False) -> ClassicResult:
     """Stack the frames ``used`` by the Classic method (see the module's docstring for what stack.py passes).
 
     ``load(i)``: frame i, the calibrated CFA (H, W) (torch or numpy; NaN = bad, > VALID_MAX = saturated); ``coef``
@@ -248,7 +248,9 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
     normalisation (``Norm``; None: none); ``weights``: (n,) frame weights (None: equal); ``sat_level``: the
     saturation level (a float or a map (H, W)), put on the saturated samples (None: VALID_MAX); ``masks``: keep what
     was rejected in each frame (``ClassicResult.masks``); ``raw_template``: a raw file of the session, through which
-    an X-Trans frame is demosaiced (core/debayer.markesteijn; None: bilinear)."""
+    an X-Trans frame is demosaiced (core/debayer.markesteijn; None: bilinear); ``colour``: frames already in colour
+    (issue #57), ``load(i)`` gives their three planes (3, H, W): no debayering, the bad samples filled plane by
+    plane; everything from the resampling on is the same (the three channels of a debayered frame)."""
     p = params or ClassicParams()
     dev = torch.device(device)
     progress = progress or (lambda f, msg: None)
@@ -298,9 +300,16 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
         badm = torch.isnan(fr)
         if bad_t is not None:
             badm = badm | bad_t
-        fr, filled = db.fill_bad(fr, badm, ch_of_k=ch_of_k)
-        bal = db.cfa_balance(fr, ch_of_k) if p.cfa_balance and p.debayer == "rcd" else None
-        rgb = db.debayer(fr, ch_of_k, p.debayer, balance=bal, template=raw_template)
+        bal = None
+        if colour:                                       # already in colour (issue #57): no demosaicing
+            planes = [db.fill_bad(fr[c], badm[c]) for c in range(3)]
+            rgb = torch.stack([a for a, _ in planes])
+            filled = torch.stack([m for _, m in planes])
+            near, sat = near.any(0), sat.any(0)          # one flag per pixel, as for a mosaic
+        else:
+            fr, filled = db.fill_bad(fr, badm, ch_of_k=ch_of_k)
+            bal = db.cfa_balance(fr, ch_of_k) if p.cfa_balance and p.debayer == "rcd" else None
+            rgb = db.debayer(fr, ch_of_k, p.debayer, balance=bal, template=raw_template)
         del fr
         tc = time.time()
         x, y = rs.source_positions(coef[i], H, W, W, H, dev)

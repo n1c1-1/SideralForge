@@ -478,13 +478,25 @@ def stack_methods(s, p) -> list[str]:
     """The stacking methods the engine offers this workflow (the choices of its ``method`` setting), [] while the
     worker has not described the stage or when the engine has no choice of method."""
     info = s.param_info(p, *STACK_METHOD)
-    return list(info.choices or []) if info is not None else []
+    keys = list(info.choices or []) if info is not None else []
+    return [k for k in keys if k != "drizzle"] if colour_frames(s, p) else keys
+
+
+#: the Classic stack's settings that do not apply to frames already in colour: nothing is demosaiced
+NO_DEBAYER = ("classic_debayer", "classic_cfa_balance")
+
+
+def colour_frames(s, p) -> bool:
+    """Whether the workflow stacks frames already in colour (issue #57): the Classic stack is its only method."""
+    return bool(getattr(s, "colour_frames", lambda _p: False)(p))
 
 
 def stack_method(s, p) -> str | None:
     """The stacking method of the workflow (the effective value), None when the engine has no choice of method."""
     info = s.param_info(p, *STACK_METHOD)
-    return info.value if info is not None and info.choices else None
+    if info is None or not info.choices:
+        return None
+    return "classic" if colour_frames(s, p) else info.value
 
 
 def method_advice(s, p) -> tuple[str, str] | None:
@@ -539,6 +551,8 @@ def step_settings(s, p, step: str):
 
     def mine(r):
         m = setting_method(r)
+        if cur == "classic" and r.get("name") in NO_DEBAYER and colour_frames(s, p):      # issue #57: no demosaicing
+            return False
         return m is None or cur is None or m == cur
 
     out = []

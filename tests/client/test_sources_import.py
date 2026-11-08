@@ -301,10 +301,10 @@ def test_import_words_and_where_a_new_project_goes(tmp_path, monkeypatch):
     prefs.load()
     phone = tmp_path / "phone"
     phone.mkdir()
-    (phone / "a.JPG").write_bytes(b"\xff\xd8\xff")
+    (phone / "a.MOV").write_bytes(b"\xff\xd8\xff")                  # not a frame (JPEG lights are read, issue #57)
     empty = tmp_path / "empty"
     empty.mkdir()
-    assert "only JPG files" in no_lights_text([str(phone)])
+    assert "only MOV files" in no_lights_text([str(phone)])
     assert no_lights_text([str(empty)]) == "This folder holds no files."
     assert no_lights_text([str(tmp_path / "gone")]).startswith("Not found:")
     raw = tmp_path / "M81" / "lights"

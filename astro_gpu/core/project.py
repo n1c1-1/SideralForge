@@ -36,17 +36,19 @@ FORMAT = 1
 RAW_EXT = {".arw", ".cr2", ".cr3", ".nef", ".dng", ".orf", ".rw2", ".pef", ".srw", ".raf"}
 FITS_EXT = {".fit", ".fits", ".fts"}
 FITS_PACKED = {".fz", ".gz"}         # compressed FITS: .fits.fz (tile-compressed), .fit.gz (gzip)
+COLOUR_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}      # frames already in colour (issue #57)
 
 
 def frame_kind(path: str | Path) -> str:
-    """'raw', 'fits' (compressed FITS included) or '' for a file that is not a frame."""
+    """'raw', 'fits' (compressed FITS included), 'colour' (a JPEG, PNG or TIFF: a frame already in colour, issue #57)
+    or '' for a file that is not a frame."""
     name = Path(path).name.lower()
     ext = Path(name).suffix
     if ext in RAW_EXT:
         return "raw"
     if ext in FITS_EXT or ext == ".fz" or (ext in FITS_PACKED and Path(name[:-len(ext)]).suffix in FITS_EXT):
         return "fits"
-    return ""
+    return "colour" if ext in COLOUR_EXT else ""
 
 
 def file_type(path: str | Path) -> str:
@@ -59,9 +61,11 @@ def file_type(path: str | Path) -> str:
 
 
 def type_warnings(files: dict[str, list]) -> list[dict]:
-    """What may be a mistake in one session's files ({kind: [path]}), issue #58: a file the engine does not read (it is
-    not a camera raw or a FITS frame); lights of mixed types (1 JPG among 14 ARW); calibration frames of another type
-    than the lights. Each: {"key": "unread" | "mixed" | "other_type", "kind", "type", "n", "main", "of", "name"}."""
+    """What may be a mistake in one session's files ({kind: [path]}), issue #58: a file the engine does not read (not a
+    frame; or a JPEG, PNG or TIFF among raw or FITS frames, which leaves it aside); lights of mixed types (1 JPG among
+    14 ARW); calibration frames of another type than the lights; and calibration frames that cannot calibrate these
+    lights (issue #57: frames already in colour against mosaics, one way or the other).
+    Each: {"key": "unread" | "mixed" | "other_type" | "wrong_kind", "kind", "type", "n", "main", "of", "name"}."""
     out: list[dict] = []
     main: dict[str, str] = {}
     for kind, paths in files.items():
@@ -72,18 +76,28 @@ def type_warnings(files: dict[str, list]) -> list[dict]:
             types.setdefault(file_type(f), []).append(f)
         top = max(types, key=lambda t: (len(types[t]), bool(frame_kind(types[t][0]))))
         main[kind] = top
+        colour = frame_kind(types[top][0]) == "colour"
         for t, fs in sorted(types.items()):
-            if not frame_kind(fs[0]):
+            k = frame_kind(fs[0])
+            if not k or (k == "colour" and not colour):
                 out.append({"key": "unread", "kind": kind, "type": t, "n": len(fs), "name": Path(fs[0]).name})
             elif t != top:
                 out.append({"key": "mixed", "kind": kind, "type": t, "n": len(fs), "main": top, "of": len(types[top]),
                             "name": Path(fs[0]).name})
     light = main.get("lights")
     for kind, t in main.items():
-        if kind != "lights" and light and t != light and frame_kind("x." + t.lower()) and \
-                frame_kind("x." + light.lower()):
-            out.append({"key": "other_type", "kind": kind, "type": t, "main": light, "n": len(files[kind])})
+        a, b = frame_kind("x." + t.lower()), frame_kind("x." + light.lower()) if light else ""
+        if kind != "lights" and t != light and a and b:
+            key = "wrong_kind" if (a == "colour") != (b == "colour") else "other_type"
+            out.append({"key": key, "kind": kind, "type": t, "main": light, "n": len(files[kind])})
     return out
+
+
+def colour_lights(files: list) -> bool:
+    """Whether a list of light frames holds frames already in colour by their names: most of them are JPEG, PNG or
+    TIFF (the others are said by ``type_warnings``). An RGB FITS frame is found from its header (io/frames)."""
+    n = sum(1 for f in files if frame_kind(f) == "colour")
+    return n > 0 and 2 * n >= len(files)
 
 
 @dataclass
@@ -355,12 +369,15 @@ def remember(project: Project) -> None:
 
 
 def list_frames(folders: list[str]) -> list[Path]:
-    """All RAW / FITS files of the given folders (or files), sorted by name."""
+    """All the frames of the given folders (or files), sorted by name. In a folder holding raw or FITS frames, its JPEG,
+    PNG and TIFF files stay aside (a camera's JPEGs next to its raw files are not more frames): those are the frames
+    of a folder only when it holds no others (issue #57)."""
     out = []
     for f in folders:
         p = Path(f)
         if p.is_file():
             out.append(p)
         elif p.is_dir():
-            out += [q for q in p.iterdir() if q.is_file() and frame_kind(q)]
+            found = [q for q in p.iterdir() if q.is_file() and frame_kind(q)]
+            out += [q for q in found if frame_kind(q) != "colour"] or found
     return sorted(set(out))

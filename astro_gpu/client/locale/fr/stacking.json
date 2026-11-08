@@ -40,5 +40,7 @@
  "all frames · weight ≥ 5 %": "toutes · poids ≥ 5 %",
  "k × σ filters · weight ≥ 5 %": "filtres k × σ · poids ≥ 5 %",
  "Frame: click": "Image : cliquer",
- "The recommended method shows once the registration is computed.": "La méthode conseillée s'affiche une fois l'alignement calculé."
+ "The recommended method shows once the registration is computed.": "La méthode conseillée s'affiche une fois l'alignement calculé.",
+ "Classic stack · colour frames": "Empilement classique · images couleur",
+ "Classic stack: Bayer drizzle does not apply to frames already in colour (no mosaic of raw colour samples to drop).": "Empilement classique : le drizzle Bayer ne s'applique pas aux images déjà en couleur (pas de mosaïque de pixels bruts à déposer)."
 }

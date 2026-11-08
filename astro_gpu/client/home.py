@@ -543,7 +543,8 @@ def folder_name(name: str) -> str:
 
 
 def holds_frames(folder: Path) -> bool:
-    """Whether a folder holds frames (camera raw or FITS files) itself: the folder of a session's frames."""
+    """Whether a folder holds frames (camera raw, FITS, JPEG, PNG or TIFF files) itself: the folder of a session's
+    frames."""
     from ..core.project import frame_kind
     try:
         return any(frame_kind(q.name) for q in folder.iterdir())

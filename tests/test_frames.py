@@ -35,9 +35,15 @@ def test_cfa_channel_map():
 
 
 def test_non_bayer_fits_has_no_pattern(tmp_path):
-    p = tmp_path / "rgb.fits"
-    _write(p, np.zeros((3, 8, 8), np.float32))
+    p = tmp_path / "mono.fits"
+    _write(p, np.zeros((8, 8), np.float32))
     assert read_info(p).cfa == ""
+
+
+def test_an_rgb_fits_has_the_pattern_of_a_frame_already_in_colour(tmp_path):
+    p = tmp_path / "rgb.fits"                          # issue #57: three planes, not a monochrome frame
+    _write(p, np.zeros((3, 8, 8), np.float32))
+    assert read_info(p).cfa == "RGB"
 
 
 def test_compressed_fits_are_frames(tmp_path):
@@ -50,7 +56,7 @@ def test_compressed_fits_are_frames(tmp_path):
     (tmp_path / "c.fit.gz").write_bytes(gzip.compress((tmp_path / "b.fit").read_bytes()))
     (tmp_path / "notes.txt.gz").write_bytes(b"")
     assert [p.name for p in list_frames([str(tmp_path)])] == ["a.fits.fz", "b.fit", "c.fit.gz"]
-    assert frame_kind("x.NEF") == "raw" and frame_kind("x.tif") == ""
+    assert frame_kind("x.NEF") == "raw" and frame_kind("x.mov") == ""  # (a .tif is a colour frame, issue #57)
     i = read_info(tmp_path / "a.fits.fz")            # the image and its header are in the first extension
     assert (i.width, i.height, i.exposure, i.cfa) == (8, 8, 300.0, "RGGB")
     assert np.array_equal(read_cfa(tmp_path / "a.fits.fz"), a) and np.array_equal(read_cfa(tmp_path / "c.fit.gz"), a)

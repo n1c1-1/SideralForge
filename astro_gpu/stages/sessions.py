@@ -121,11 +121,15 @@ class Sessions(Stage):
         # the calibrated frames, one session after the other, on one scale
         cache = ctx.scratch / "lights.f16"
         out = np.memmap(cache, dtype=np.float16, mode="w+", shape=(n, H, W))
+        colour = all(c.get("rgb_path") for c in caches)      # frames already in colour (issue #57): their planes too
+        rgb_cache = ctx.scratch / "lights_rgb.f16"
+        out_rgb = np.memmap(rgb_cache, dtype=np.float16, mode="w+", shape=(n, 3, H, W)) if colour else None
         stats = []
         at = 0
         for name, c in zip(cal_names, caches):
             k = int(c["n"])
             src = np.memmap(c["path"], dtype=np.float16, mode="r", shape=(k, H, W))
+            src_rgb = np.memmap(c["rgb_path"], dtype=np.float16, mode="r", shape=(k, 3, H, W)) if colour else None
             f = scale / float(c["scale"])
             st = np.load(ctx.project.stage_dir(name) / "frame_stats.npy").astype(np.float32)
             for i in range(k):
@@ -134,19 +138,25 @@ class Sessions(Stage):
                     x = fr.astype(np.float32)
                     fr = np.where(x > VALID_MAX, SAT_MARK, x * f).astype(np.float16)
                 out[at + i] = fr
+                if colour:
+                    x = src_rgb[i].astype(np.float32)
+                    out_rgb[at + i] = np.where(x > VALID_MAX, SAT_MARK, x * f).astype(np.float16)
                 ctx.check_stop()
                 ctx.progress((at + i + 1) / n, f"{at + i + 1}/{n} frames joined")
             stats.append(st * f)
             at += k
-            del src
+            del src, src_rgb
         out.flush()
-        del out
+        if out_rgb is not None:
+            out_rgb.flush()
+        del out, out_rgb
         ctx.save("frame_stats.npy", np.concatenate(stats).astype(np.float32))
         ctx.save_json("frames.json", frames)
         ctx.save_json("cache.json", {"path": str(cache), "n": n, "height": H, "width": W, "scale": scale,
                                      "cfa": caches[0].get("cfa"), "sat_mark": SAT_MARK, "valid_max": VALID_MAX,
                                      "white_level": white, "dark_level": float(np.median([c["dark_level"] for c in caches])),
-                                     "sessions": [{"name": nm, "n": int(c["n"])} for nm, c in zip(cal_names, caches)]})
+                                     "sessions": [{"name": nm, "n": int(c["n"])} for nm, c in zip(cal_names, caches)],
+                                     **({"rgb_path": str(rgb_cache), "colour": True} if colour else {})})
         for k, v in m.items():
             ctx.metric(k, v)
         ctx.metric("sessions", len(cal_names))

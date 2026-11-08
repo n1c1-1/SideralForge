@@ -132,7 +132,7 @@ def mosaic_notch(ctx: Context, img: np.ndarray, scale: float, valid: np.ndarray,
         cfa = str(ctx.metric_of("inventory", "cfa") or "")
     except Exception:  # noqa: BLE001 - no inventory to read (a stack given as a file): a Bayer lattice
         cfa = ""
-    if cfa == "GGGG":                                # monochrome (core/cfa.MONO): no colour mosaic to take off
+    if cfa in ("GGGG", "RGB"):                       # monochrome or already in colour (core/cfa): no mosaic to take off
         return img, []
     out, taken = remove_mosaic_pattern(img, scale, valid, period=6 if len(cfa) == 36 else 2)
     if log:
