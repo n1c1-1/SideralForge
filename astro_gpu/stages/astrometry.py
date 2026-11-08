@@ -40,7 +40,7 @@ class AstrometryParams(StageParams):
                          "whole sky from its brightest stars (the shapes of groups of four stars, looked up in an "
                          "index of the sky).",
                     tip="Works for fields wider than about 1 deg; the first use downloads two bright-star catalogues.")
-    search_offsets: float = P(0.2, label="Centre search range", level=ADVANCED, ge=0.0, le=1.0, step=0.05,
+    search_offsets: float = P(0.2, label="Search range", level=ADVANCED, ge=0.0, le=1.0, step=0.05,
                               unit="x field", help="How far from the given centre the solver looks for the field.")
     sip_order: int = P(3, label="Distortion order", level=ADVANCED, ge=0, le=5,
                        help="Order of the SIP polynomial describing the optical distortion.",

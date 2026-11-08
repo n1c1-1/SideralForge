@@ -128,7 +128,7 @@ class StackParams(StageParams):
                           "(satellites, planes, cosmic rays, hot pixels). Bright outliers are dilated by one pixel "
                           "to remove the edges of trails.",
                      tip="Lower (3-4) removes more trails but may eat star cores in poor seeing.")
-    core_tolerance: float = P(0.5, label="Star core tolerance", level=ADVANCED, ge=0.0, le=2.0, step=0.1,
+    core_tolerance: float = P(0.5, label="Core tolerance", level=ADVANCED, ge=0.0, le=2.0, step=0.1,
                               help="Extra relative tolerance on bright pixels, so that sharp star cores (which vary "
                                    "with seeing and sub-pixel position) are not rejected.")
     half_block: int = P(20, label="Half-stack block", level=ADVANCED, ge=1, le=200, unit="frames",
@@ -139,7 +139,7 @@ class StackParams(StageParams):
                     help="Electrons per ADU in the calibrated frames, used for the noise model of the rejection.")
     read_noise: float = P(11.9, label="Read noise", level=ADVANCED, ge=0, unit="ADU",
                           help="Noise of a frame without light, used for the noise model of the rejection.")
-    pattern_removal: bool = P(False, label="Fixed pattern removal", level=ADVANCED,
+    pattern_removal: bool = P(False, label="Pattern removal", level=ADVANCED,
                               help="The sensor's fixed pattern (residual dark current, hot or cold columns, amplifier "
                                    "patterns not removed by the darks - or everything when there are no darks) stays "
                                    "at the same place on the sensor while the sky drifts between frames. Stacked, it "
@@ -150,7 +150,7 @@ class StackParams(StageParams):
                               tip="Off by default: on some stacks the estimate also held the tracks of the faint "
                                   "stars across the sensor, and subtracting it drew the very streaks it was meant to "
                                   "remove (without it the stacked background has none).")
-    pattern_frames: int = P(48, label="Frames for the pattern reference", level=ADVANCED, ge=8, le=400,
+    pattern_frames: int = P(48, label="Pattern frames", level=ADVANCED, ge=8, le=400,
                             help="Number of frames, evenly spread over the session, whose median is the first estimate "
                                  "of the fixed pattern; the final estimate uses all frames around it.")
     white_balance: bool = P(False, label="Camera white balance", key_neutral=False,
@@ -197,10 +197,11 @@ class StackParams(StageParams):
                                help="With the Classic method: how outliers are rejected pixel by pixel. Automatic: "
                                     "chosen by the number of frames (percentile under 6 frames, winsorized sigma "
                                     "clipping from 6 to 15, linear fit clipping from 16), with the usual thresholds.")
-    classic_cfa_balance: str = P("on", label="White balance before debayering (Classic)", level=ADVANCED,
+    classic_cfa_balance: str = P("on", label="Pre-balance (Classic)", level=ADVANCED,
                                  choices=list(ON_OFF),
-                                 help="With the Classic method: the colours of each frame are balanced before RCD "
-                                      "debayering and the balance is taken off after, as raw converters do, so that "
+                                 help="With the Classic method: white balance before debayering. The colours of each "
+                                      "frame are balanced before RCD debayering and the balance is taken off after, "
+                                      "as raw converters do, so that "
                                       "RCD does not move green light into the blue and red of the stars. Off: the "
                                       "debayering without balance.")
     drizzle_rejection: str = P("own", label="Rejection (drizzle)", level=ADVANCED, choices=list(DRIZZLE_REJECTIONS),
@@ -209,7 +210,7 @@ class StackParams(StageParams):
                                     "sky made from all frames. From the classic stack's rejection: the Classic "
                                     "method's rejection runs on the debayered, registered frames, and what it "
                                     "rejects in a frame is left out of that frame's drops on the same pixels.")
-    exclude: list[str] = P([], label="Frames excluded by hand", level=INTERNAL,
+    exclude: list[str] = P([], label="Excluded frames", level=INTERNAL,
                            help="Light frames left out of the stack whatever their quality (their files). Set by the "
                                 "project from the frames the user excluded; not a setting of its own.")
 

@@ -56,7 +56,7 @@ class DenoiseParams(StageParams):
     seed: int = P(0, label="Random seed", level=ADVANCED, ge=0,
                   help="Seed of the random tile selection of the adaptation (for reproducible runs).")
     #: set by the graph (issue #47): a later Denoise reads this one's denoised half-stacks
-    keep_halves: bool = P(False, label="Keep the half-stacks", level="internal",
+    keep_halves: bool = P(False, label="Keep half-stacks", level="internal",
                           help="Saves the denoised half-stacks too, for a Denoise block placed after this one.")
 
     @field_validator("method")

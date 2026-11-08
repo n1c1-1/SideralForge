@@ -1897,6 +1897,10 @@ class PostView(QWidget):
                 else:
                     sl = ContSlider(_(q["label"]), q["lo"], q["hi"], lay["params"][q["key"]], q["default"],
                                     unit=q["unit"], step=q["step"])
+                    if q.get("help"):                  # what the short name leaves out
+                        tip = _(q["help"]) + NL + _("Double-click: default value")
+                        sl.setToolTip(tip)
+                        sl.name.setToolTip(tip)
                     self._wire(sl, lambda v, k=q["key"]: (lay["params"].__setitem__(k, v), refresh()))
                     self.pbox.addWidget(sl)
             return

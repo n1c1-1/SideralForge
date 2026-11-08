@@ -103,11 +103,11 @@ class GradientParams(StageParams):
     downsample: int = P(4, label="Working reduction", level=ADVANCED, ge=1, le=8, unit="x",
                         help="Automatic model: the model is computed on a copy reduced this many times: faster, "
                              "coarser; the scale of the background itself does not change.")
-    protect_sigmas: float = P(0.0, label="Protection in sky noise", level=ADVANCED, ge=0.0, le=50.0, step=0.5,
+    protect_sigmas: float = P(0.0, label="Noise protection", level=ADVANCED, ge=0.0, le=50.0, step=0.5,
                               help="Automatic model: when not 0, the protection threshold is this many times the "
                                    "noise of the sky instead of a fraction of the image's range (a faint nebula is "
                                    "far below that fraction when bright stars set the range).")
-    rbf_smooth: float = P(0.5, label="Smoothing of the model", level=ADVANCED, ge=0.0, le=1.0, step=0.05,
+    rbf_smooth: float = P(0.5, label="Surface smoothing", level=ADVANCED, ge=0.0, le=1.0, step=0.05,
                           help="RBF: 0, the surface passes through every sample; higher, it passes near them, "
                                "smoother.")
     sample_points: list[list[float]] = P([], label="Sample points", level=ADVANCED,
@@ -116,7 +116,7 @@ class GradientParams(StageParams):
     exclude_ellipses: list[list[float]] = P([], label="Excluded ellipses", level=ADVANCED,
                                             help="Areas left out of the sky model: centre x, y, half axes and "
                                                  "angle (degrees).")
-    exclude_brush: list[list[float]] = P([], label="Excluded brush strokes", level=ADVANCED,
+    exclude_brush: list[list[float]] = P([], label="Excluded strokes", level=ADVANCED,
                                          help="Brush dabs x, y, radius, 1 to exclude / 0 to erase, in order.")
     avoid_emission: bool = P(True, label="Away from emission",
                              help="Samples chosen by the block (none placed) never sit where the professional H-alpha "

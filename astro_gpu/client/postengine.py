@@ -157,8 +157,8 @@ HUES = [("All", None), ("Reds", 0), ("Yellows", 60), ("Greens", 120), ("Cyans", 
         ("Magentas", 300)]
 
 
-def P(key, label, lo, hi, default, unit="", step=None):
-    return dict(key=key, label=label, type="float", lo=lo, hi=hi, default=default, unit=unit, step=step)
+def P(key, label, lo, hi, default, unit="", step=None, help=""):                   # noqa: A002 - the catalogue's word
+    return dict(key=key, label=label, type="float", lo=lo, hi=hi, default=default, unit=unit, step=step, help=help)
 
 
 def C(key, label, choices, default):
@@ -370,12 +370,13 @@ FILTERS = {
     # ---- stretch
     "ghs": dict(name="Generalised hyperbolic stretch", family="Stretch", fn=f_ghs, graph=pf_tone.ghs_curve, hist=True,
                 source=GHS,
-                params=[P("stretch", "Stretch factor ln(D+1)", 0, 10, 0, step=0.01),
-                        P("local", "Local intensity (b)", -5, 15, 0, step=0.1),
+                params=[P("stretch", "Stretch factor", 0, 10, 0, step=0.01,
+                          help="ln(D+1) in the formula of this stretch."),
+                        P("local", "Local intensity", -5, 15, 0, step=0.1, help="b in the formula of this stretch."),
                         P("symmetry", "Symmetry point", 0, 1, 0, step=0.001),
                         P("shadows", "Shadow protection", 0, 1, 0, step=0.001),
                         P("highlights", "Highlight protection", 0, 1, 1, step=0.001),
-                        P("black", "Black point (BP)", 0, 0.5, 0, step=0.001),
+                        P("black", "Black point", 0, 0.5, 0, step=0.001, help="BP in the formula of this stretch."),
                         C("model", "Color model", pf_tone.COLOUR_MODES, pf_tone.COLOUR_MODES[0])]),
     "asinh": dict(name="Arcsinh stretch", family="Stretch", fn=f_asinh, graph=pf_tone.asinh_curve, hist=True,
                   source="An arcsinh stretch (after Lupton et al. 2004): the colours kept",

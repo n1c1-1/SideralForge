@@ -24,13 +24,13 @@ def _cache() -> Path:
 
 
 class CatalogsParams(StageParams):
-    xp_gmin: float = P(7.5, label="Colour stars: brightest", level=ADVANCED, ge=3, le=15, step=0.5, unit="G mag",
+    xp_gmin: float = P(7.5, label="Bright limit", level=ADVANCED, ge=3, le=15, step=0.5, unit="G mag",
                        help="Brightest Gaia stars whose XP spectrum is used for the colour calibration.")
-    xp_gmax: float = P(14.0, label="Colour stars: faintest", level=ADVANCED, ge=8, le=17.5, step=0.5, unit="G mag",
+    xp_gmax: float = P(14.0, label="Faint limit", level=ADVANCED, ge=8, le=17.5, step=0.5, unit="G mag",
                        help="Faintest Gaia stars whose XP spectrum is used for the colour calibration.")
-    xp_max: int = P(4000, label="Colour stars: number", level=ADVANCED, ge=100, le=20000,
+    xp_max: int = P(4000, label="Star count", level=ADVANCED, ge=100, le=20000,
                     help="Maximum number of XP spectra downloaded (they are cached and reused).")
-    cell_deg: float = P(1.0, label="Query cell size", level=ADVANCED, ge=0.1, le=5, unit="deg",
+    cell_deg: float = P(1.0, label="Cell size", level=ADVANCED, ge=0.1, le=5, unit="deg",
                         help="Size of the cones in which the Gaia archive is queried.")
 
 
