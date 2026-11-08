@@ -1,4 +1,4 @@
-"""GUI exploration 2, the graph's structure: sessions joining a flow, a Fusion's channels and what it adds, names,
+"""GUI exploration 2, the graph's structure: sessions joining a flow, a Combine channels's channels and what it adds, names,
 Image blocks without a file, a session's Calibration, panel fields going away; offscreen on a scratch project (nothing is
 computed)."""
 from __future__ import annotations
@@ -108,7 +108,7 @@ def test_a_second_session_joins_the_chosen_flow_never_in_place_of_its_nights(qap
 
 def test_a_session_joining_a_filter_flow_takes_its_filter_and_a_fusion_chosen_starts_a_flow(qapp, tmp_path,
                                                                                              monkeypatch):
-    """Decision 1: Ha chosen, the new session joins Ha with the Ha filter (OIII untouched); a Fusion chosen: a flow of
+    """Decision 1: Ha chosen, the new session joins Ha with the Ha filter (OIII untouched); a Combine channels chosen: a flow of
     its own, said."""
     w, m, page = open_page(tmp_path, monkeypatch, filters=("Ha", "OIII"))
     try:
@@ -136,7 +136,7 @@ def test_a_session_joining_a_filter_flow_takes_its_filter_and_a_fusion_chosen_st
 
 def test_a_fusion_is_greyed_until_its_channels_have_astrometry_and_says_what_it_adds(qapp, tmp_path, monkeypatch):
     """Decision 2: the card says what is missing in each channel; placed, the toast names the blocks it added and
-    where; removed, the channels come back as they were; a second Fusion is a block of its own."""
+    where; removed, the channels come back as they were; a second Combine channels is a block of its own."""
     w, m, page = open_page(tmp_path, monkeypatch, filters=("Ha", "OIII"))
     try:
         for q in list(m.paths):
@@ -154,18 +154,18 @@ def test_a_fusion_is_greyed_until_its_channels_have_astrometry_and_says_what_it_
         settle(w, page)
         assert "Denoise" in page.toasts[-1] and "Ha, OIII" in page.toasts[-1] and "Ctrl+Z" in page.toasts[-1]
         assert all("stars" in blocks_of(m, n) for n in ("Ha", "OIII"))
-        page.place_fusion()                                       # a second Fusion: its own block
+        page.place_fusion()                                       # a second Combine channels: its own block
         settle(w, page)
         fusions = [q for q in m.paths if (q.source or {}).get("fusion")]
         g = Graph(m)
         assert len(fusions) == 2 and len({id(g.node_of(q, "fusion")) for q in fusions}) == 2
-        assert [node_title(m, g.node_of(q, "fusion")) for q in fusions] == ["Fusion 1", "Fusion 2"]
+        assert [node_title(m, g.node_of(q, "fusion")) for q in fusions] == ["Combine channels 1", "Combine channels 2"]
         page.remove_tool(g.node_of(fusions[0], "fusion"), None)   # the first goes: the second still needs the stars
         settle(w, page)
         assert all("stars" in blocks_of(m, n) for n in ("Ha", "OIII"))
         page.remove_tool(Graph(m).node_of(m.view(fusions[1].pid), "fusion"), None)
         settle(w, page)
-        assert {n: blocks_of(m, n) for n in ("Ha", "OIII")} == before            # as before the first Fusion
+        assert {n: blocks_of(m, n) for n in ("Ha", "OIII")} == before            # as before the first Combine channels
         assert not [n for n in Graph(m).nodes if n.key == "composition"]
     finally:
         done(w, m, page)
@@ -215,8 +215,8 @@ def test_a_fusion_named_by_its_palette_follows_it_and_a_name_given_stays(qapp, t
 
 
 def test_no_stars_block_is_placed_in_a_fusion_where_it_would_not_be_drawn(qapp, tmp_path, monkeypatch):
-    """GUI exploration 4: dragging Stars/background lit a place on each Fusion's lane; dropped there, the block went
-    into the fusion's graph, never drawn (a Fusion is one block; its stars are chosen in its panel). No place, the
+    """GUI exploration 4: dragging Stars/background lit a place on each Combine channels's lane; dropped there, the block went
+    into the fusion's graph, never drawn (a Combine channels is one block; its stars are chosen in its panel). No place, the
     palette says why, a placing is refused."""
     w, m, page = open_page(tmp_path, monkeypatch, filters=("Ha", "OIII"))
     try:
@@ -238,7 +238,7 @@ def test_no_stars_block_is_placed_in_a_fusion_where_it_would_not_be_drawn(qapp, 
 
 def test_a_fusion_channel_keeps_what_the_fusion_needs(qapp, tmp_path, monkeypatch):
     """Decision 3: a channel's Astrometry cannot be deleted nor switched off, its workflow cannot be deleted (no
-    Python error on Ctrl+Y any more); its session set to another filter: the Fusion red with the reason."""
+    Python error on Ctrl+Y any more); its session set to another filter: the Combine channels red with the reason."""
     w, m, page = open_page(tmp_path, monkeypatch, filters=("Ha", "OIII"))
     try:
         page.place_fusion()

@@ -247,7 +247,7 @@ BLOCKS: dict[str, tuple[str, ...]] = {
     "stars": ("star_removal",),                     # drawn before the Output, which every workflow ends with
     "output": ("render_simple",),
 }
-BLOCK_TITLES = {"fusion": "Fusion", "image": "Image", "calibration": "Calibration", "registration": "Registration",
+BLOCK_TITLES = {"fusion": "Combine channels", "image": "Image", "calibration": "Calibration", "registration": "Registration",
                 "selection": "Selection",
                 "stacking": "Stacking", "astrometry": "Astrometry", "color": "Color", "denoise": "Denoise",
                 "stars": "Stars/background", "gradient": "Gradient", "output": "Output"}

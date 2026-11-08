@@ -46,12 +46,12 @@ PHASES = [("Pre-processing", "calibration", "empilement"), ("Linear processing",
           ("Composition", "fusion", "composition")]
 TOOL_COLUMN = {"debruitage": "debruitage", "etoiles": "etoiles", "deconv": "deconv",
                "auto": "fond", "rbf": "fond", "simple": "fond"}
-TITLES = {"sources": "Frames", "final": "Post", "image": "Image", "session": "Session", "fusion": "Fusion",
+TITLES = {"sources": "Frames", "final": "Post", "image": "Image", "session": "Session", "fusion": "Combine channels",
           "calibration": "Calibration",
           "alignement": "Registration",
           "selection": "Selection", "empilement": "Stacking", "astrometrie": "Astrometry", "fond": "Gradient",
           "couleur": "Color", "debruitage": "Denoise", "deconv": "Deconvolution", "etoiles": "Stars/background",
-          "post": "Output", "demi_piles": "Half-stacks", "composition": "Recombine"}
+          "post": "Output", "demi_piles": "Half-stacks", "composition": "Combine layers"}
 # the optional blocks, in the toolbar's order
 TOOLBOX = ["debruitage", "deconv", "etoiles"]
 WARN_MARK = "⚠ "                       # a summary that opens with it: the block draws a warning icon (issue #58)
@@ -119,17 +119,17 @@ STEPS = [
               "inventing anything."),
     dict(key="etoiles", phase=4, title="Stars/background", kind="tool", tool="etoiles", stages=["star_removal"],
          what="A network trained on our stacks takes the stars off the image: two images, the starless image and the "
-              "stars alone, sent to Post as they are or combined by a Recombine block."),
+              "stars alone, sent to Post as they are or combined by a Combine layers block."),
     dict(key="fond", phase=4, title="Gradient", kind="slot", stages=["gradient"],
          what="Models the sky gradient (light pollution, the Moon, vignetting) on the stack and removes it from what "
               "every later block reads. Polynomial: a smooth surface fitted on the sky between the objects. "
               "Automatic: a more flexible surface that follows complex gradients."),
     dict(key="post", phase=5, title="Output", kind="fixed", stages=["render_simple"],
          what="Prepares the render: what this workflow gives in Post, its image and its sliders."),
-    dict(key="fusion", phase=6, title="Fusion", kind="slot", stages=["fusion", "render_simple"],
+    dict(key="fusion", phase=6, title="Combine channels", kind="slot", stages=["fusion", "render_simple"],
          what="Combines the outputs of several workflows (one per filter, or a dual-band image's channels) into one "
               "colour image with a palette (SHO, HSO, HOO, RGB, LRGB), aligned through their plate solutions."),
-    dict(key="composition", phase=6, title="Recombine", kind="slot", stages=[],
+    dict(key="composition", phase=6, title="Combine layers", kind="slot", stages=[],
          what="Combines the Stars/background block's two images: the starless image and the stars, each stretched, the stars "
               "put back on top (Screen, Linear dodge or Lighten). Its settings are those of its layer in Post."),
 ]
@@ -141,7 +141,7 @@ TOOLS = {
                             "to predict one from the other."),
     "etoiles": dict(title="Stars/background", phase=4,
                     what="Takes the stars off the image with a trained network: the starless image and the stars "
-                         "alone, two images for Post (combined by a Recombine block, or as they are)."),
+                         "alone, two images for Post (combined by a Combine layers block, or as they are)."),
     "deconv": dict(title="Deconvolution", phase=4,
                    what="Sharpens the image with the point spread function measured on the stars."),
 }
@@ -234,7 +234,7 @@ def node_title(s, n) -> str:
         return s.session(n.sid).name or _("Session {n}").format(n=n.sid)
     if n.key == "post" and not n.handle:              # issue #47: the block's name; the workflow's under it
         return _("Output")
-    if n.key == "composition" and n.num:              # several Recombine blocks: all numbered, top to bottom, as
+    if n.key == "composition" and n.num:              # several Combine layers blocks: all numbered, top to bottom, as
         return f"{block_title(None, 'composition')} {n.num}"     # Gradient 1, Gradient 2 (control round)
     if n.num and n.key in FRAME_KEYS:                 # frame blocks placed in parallel, the same way
         return f"{block_title(None, n.key)} {n.num}"
@@ -347,7 +347,7 @@ class Node:
     grey: str = ""                             # why it cannot run (a cut before it), translated; "" when it can
     broken: str = ""                           # why it cannot run at all (a fusion's channel gone...): circled in red
     slot: int = -1                             # an image block: its rank among its workflow's image blocks (#47)
-    num: int = 0                               # a Recombine block among several, or a frame block among those
+    num: int = 0                               # a Combine layers block among several, or a frame block among those
     #                                            placed in parallel: its number (control round)
     _bk: object = None
 
@@ -503,7 +503,7 @@ class Graph:
         waits = getattr(project, "awaits_post", lambda q: False)
         self.awaits_post = {p.pid for p in project.paths if waits(p) and not (feeds is not None and feeds(p)) and
                             (p.pid, "combined" if p.opts.get("etoiles") == "retirer" else None) not in removed}
-        # GUI exploration 4, Q10: a workflow with Stars but no lights yet has no layer, so no Recombine block; it is
+        # GUI exploration 4, Q10: a workflow with Stars but no lights yet has no layer, so no Combine layers block; it is
         # shown greyed from the start (no wire, never chosen), the one Post will give it once the lights are added
         gives = getattr(project, "gives_post", lambda q: True)
         for p in project.paths:
@@ -514,8 +514,8 @@ class Graph:
                     self.nodes.append(Node("composition", [p], src, grey=_("after the lights")))
         self._fold_outputs(project)
         self._number_parallel(model)
-        for p in project.paths:                       # several Recombine blocks of a workflow: each its number, its
-            mine = [n for n in self.compositions if p in n.paths]   # layer's ("Full · Recombine 2"), the first 1
+        for p in project.paths:                       # several Combine layers blocks of a workflow: each its number, its
+            mine = [n for n in self.compositions if p in n.paths]   # layer's ("Full · Combine layers 2"), the first 1
             if len(mine) > 1:                         # (control round: as Gradient 1, Gradient 2)
                 for n in mine:
                     name = str((project.post_layer(n.lid) or {}).get("name") or "") \

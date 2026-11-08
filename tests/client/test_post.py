@@ -233,11 +233,13 @@ class Setup:
 
     def settle(self, timeout=90):
         end = time.monotonic() + timeout
+        idle = 0
         while time.monotonic() < end:
             self.worker.settle(5)
             self.qapp.processEvents()
-            if not self.worker.busy() and not self.view._final_t.isActive() and not self.view._draft_t.isActive() \
-                    and not self.view._region_t.isActive():
+            idle = idle + 1 if not self.worker.busy() and not self.view._final_t.isActive() and \
+                not self.view._draft_t.isActive() and not self.view._region_t.isActive() else 0
+            if idle == 2:                             # twice: a result just delivered may have asked for the exact view
                 return True
         return False
 
@@ -1375,7 +1377,7 @@ def test_a_stars_workflow_comes_as_its_stars_and_background_image(preps, qapp):
         assert s.settle()
         v = s.view
         assert [(lay["name"], lay.get("part")) for lay in v.layers] == [
-            ("Classic", None), ("Full · Recombine", "combined")]
+            ("Classic", None), ("Full · Combine layers", "combined")]
         full = v.layers[1]
         assert full["blend"] == "Screen" and full["mode"] == "Normal" and full["visible"]
         assert np.array_equal(shown(v), reference(s).rgb)

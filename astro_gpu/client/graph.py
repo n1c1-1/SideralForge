@@ -194,7 +194,7 @@ class BlockItem(QGraphicsItem):
             tip += "\n" + _("Cannot run: {why}. Run is refused until it is fixed.").format(why=node.broken.rstrip("."))
         if node.cut:
             tip += "\n" + _("Switched off: the image passes through. D or the menu switches it on again.")
-        elif node.grey and node.key == "composition":     # a Recombine to come (GUI exploration 4, Q10)
+        elif node.grey and node.key == "composition":     # a Combine layers to come (GUI exploration 4, Q10)
             tip += "\n" + _("Comes with the lights: once they are added, Post combines the Stars block's two images")
         elif node.grey:
             tip += "\n" + _("Cannot run: {why}. The image passes through.").format(why=node.grey.rstrip("."))
@@ -202,7 +202,7 @@ class BlockItem(QGraphicsItem):
             tip += "\n" + _("Output ●: drag it onto Post to make a layer")
         elif node.key == "etoiles":
             tip += "\n" + _("● top: the starless image; ● bottom: the stars alone. Drag one onto Post to make it a "
-                            "layer, or onto Composition for a Recombine block")
+                            "layer, or onto Composition for a Combine layers block")
         if bp is not None and node.cut:                  # kept, but a block switched off is not run: no stop now
             tip += "\n" + _("Review point kept: it waits for the block to be switched on again (D); runs go "
                             "through meanwhile.")
@@ -692,7 +692,7 @@ class GraphView(QGraphicsView):
         to each other, so that a block is drawn between its own lanes only, and a workflow that leaves the trunk before
         a block never runs behind it. A workflow that ends on a block the others go on from (a branch sent to Post
         from a block in the middle) takes the lane right after the lanes of that block's own subtree: never one after
-        another channel's (control round: two Fusion channels' blocks on top of each other), nor after the trunk's
+        another channel's (control round: two Combine channels channels' blocks on top of each other), nor after the trunk's
         other branches (a workflow ending on Color drawn below a branch leaving at Gradient overlapped it)."""
         out: list[int] = []
         todo: list = [g.root]
@@ -825,7 +825,7 @@ class GraphView(QGraphicsView):
             k = seen.get(n.paths[0].pid, 0)
             seen[n.paths[0].pid] = k + 1
             n.y += k * (BH + 6)
-        # 2nd round: two blocks of one column (a fusion's Recombine and a workflow's) never drawn over each other
+        # 2nd round: two blocks of one column (a fusion's Combine layers and a workflow's) never drawn over each other
         for c in ("composition", "fusion"):
             low = None
             for n in sorted((n for n in g.nodes if n.paths and self.col_of(n) == c), key=lambda n: n.y):
@@ -1007,7 +1007,7 @@ class GraphView(QGraphicsView):
                     gh.setZValue(8)
                     sc.addItem(gh)
                     self.ghosts.append(gh)
-        if self.drag_block == "fusion":                  # issue #53: in the Composition column, under its Fusion blocks
+        if self.drag_block == "fusion":                  # issue #53: in the Composition column, under its Combine channels blocks
             below = [n.y for n in g.nodes if n.paths and self.col_of(n) == "fusion"]
             yc = max(below) + BH + 6 if below else mid
             r = QRectF(cx["fusion"] + 4, yc - BH / 2 + 4, cw["fusion"] - 8, BH - 8)
@@ -1119,7 +1119,7 @@ class GraphView(QGraphicsView):
         if item.node.key == "etoiles" and "composition" in getattr(self, "_cx", {}):
             x, w = self._cx["composition"], self._cw["composition"]
             y = item.node.y - BH / 2
-            self._comp_ghost = GhostItem(QRectF(x + 4, y + 4, w - 8, BH - 8), _("Recombine"), role="add")
+            self._comp_ghost = GhostItem(QRectF(x + 4, y + 4, w - 8, BH - 8), _("Combine layers"), role="add")
             self._comp_ghost.setZValue(8)
             self.scene().addItem(self._comp_ghost)
 
@@ -1265,7 +1265,7 @@ class GraphView(QGraphicsView):
             self.wireSelected.emit(w)
 
     def open_layer(self, node):
-        """Post opened on a Recombine block's layer; the one Post gives by default made a layer first, without an
+        """Post opened on a Combine layers block's layer; the one Post gives by default made a layer first, without an
         undo step (decision 7)."""
         lid = node.lid
         if lid is None and node.paths and hasattr(self.s, "default_post_layer"):
@@ -1348,7 +1348,7 @@ class GraphView(QGraphicsView):
         if via_y is not None and x2 - x1 > 4 * BEND:  # a workflow's image to Post: on its own lane past the blocks
             if abs(via_y - y1) > 1:                   # of the others, bent only at both ends (control round: it
                 path.cubicTo(QPointF(x1 + BEND / 2, y1), QPointF(x1 + BEND / 2, via_y), QPointF(x1 + BEND, via_y))
-            path.lineTo(QPointF(x2 - BEND, via_y))    # crossed the Recombine blocks on its way)
+            path.lineTo(QPointF(x2 - BEND, via_y))    # crossed the Combine layers blocks on its way)
             path.cubicTo(QPointF(x2 - BEND / 2, via_y), QPointF(x2 - BEND / 2, y2), QPointF(x2, y2))
             dx = xb = None
         else:
@@ -1833,7 +1833,7 @@ class GraphView(QGraphicsView):
                     to_post.append((_(out), lambda _c=False, w=what: self.partOutOfPost.emit(node, w)))
                 else:
                     to_post.append((_(text), lambda _c=False, w=what: self.partToPost.emit(node, w)))
-            to_post.append((_("Recombine"), lambda: self.newComposition.emit(node), "add"))
+            to_post.append((_("Combine layers"), lambda: self.newComposition.emit(node), "add"))
         elif self.has_port(node) and self.graph is not None and any(
                 self.graph.leaves.get(q.pid) is node and q.pid in self.graph.awaits_post for q in node.paths):
             to_post.append((_("To Post") + "  —  " + _("lights first"), None))        # said, not hidden
@@ -1999,7 +1999,7 @@ class GraphView(QGraphicsView):
             self.rebuild()                               # its places light up (8.2)
             e.acceptProposedAction()
             return
-        if k in ("fusion", "composition"):               # issue #53: in the Composition column (Recombine: after a split)
+        if k in ("fusion", "composition"):               # issue #53: in the Composition column (Combine layers: after a split)
             self.drag_block = k
             self.rebuild()
             e.acceptProposedAction()
@@ -2242,7 +2242,7 @@ PALETTE_GROUPS = [("Sources", ["session", "image"]),
                   ("Image", ["astrometry", "gradient", "denoise", "color"]),
                   ("Post", ["stars"]),
                   ("Composition", ["fusion", "composition"])]
-PALETTE_TITLES = {"session": "Session", "image": "Image", "fusion": "Fusion"}
+PALETTE_TITLES = {"session": "Session", "image": "Image", "fusion": "Combine channels"}
 
 
 class PaletteCard(QFrame):
@@ -2317,7 +2317,7 @@ class PaletteCard(QFrame):
 
 
 class CombineCard(QFrame):
-    """The Recombine block in the toolbar (issue #36): a click adds one for the current
+    """The Combine layers block in the toolbar (issue #36): a click adds one for the current
     workflow's split block (a layer of Post that puts its stars back on its starless image); greyed without one."""
 
     def __init__(self, page, split, parent=None):
@@ -2547,7 +2547,7 @@ class GraphPage(QWidget):
         k = self.s.sel_step
         q = self.s.path
         if k == "sources" and not self.s.p.sessions and q is not None and q.source is not None:
-            # no frames in the project: its Image (or Fusion) is what is shown and what the palette targets, never
+            # no frames in the project: its Image (or Combine channels) is what is shown and what the palette targets, never
             # the frames' import (decision 5)
             return g.node_of(q, "fusion" if "fusion" in q.source else "image") or g.root
         if k == "sources":
@@ -2669,7 +2669,7 @@ class GraphPage(QWidget):
                 return _("needs 2 filter workflows, a colour stack or image")
             got = self.fusion_choice()                    # decision 2: greyed until each channel has what it needs
             if got is not None:                           # its frames (control round: a template's colour project
-                empty = []                                # without frames made a Fusion of channels with nothing)
+                empty = []                                # without frames made a Combine channels of channels with nothing)
                 for i in got[1]:
                     q = s.view(i["pid"])
                     if q.source is None and not any(x.lights for x in s.p.sessions_of(q.pid)):
@@ -2770,7 +2770,7 @@ class GraphPage(QWidget):
             self.place_block(block, p.pid if p is not None else NEW_FRAMES)
 
     def place_fusion(self):
-        """A Fusion block placed from the palette (no template window once the project is made): the filters'
+        """A Combine channels block placed from the palette (no template window once the project is made): the filters'
         workflows combined with the first palette they make (SHO, HOO, LRGB, RGB...), else a colour workflow's
         channels as H-alpha and OIII (dual band); its palette and channels are changed in its panel. Refused, with
         what to do, until each channel has what it needs; what it adds to the channels is said (decision 2)."""
@@ -2778,13 +2778,13 @@ class GraphPage(QWidget):
         why = self.palette_reason("fusion", s.path, None)
         got = self.fusion_choice()
         if why or got is None:
-            self.toast(_("Fusion: {why}").format(why=why or _("place its workflows first")))
+            self.toast(_("Combine channels: {why}").format(why=why or _("place its workflows first")))
             return
         pal, inputs, stars = got
         chans = {i["pid"]: s.view(i["pid"]) for i in inputs}
         before = {pid: [n["block"] for n in s.graph(q)] for pid, q in chans.items()}
         q = s.add_fusion(pal, pal, inputs, stars=stars)
-        s.log('Fusion "{name}" placed', name=q.name)
+        s.log('Combine channels "{name}" placed', name=q.name)
         self.select(index=s.paths.index(q), step="fusion")
         added, where = [], []
         for pid, old in before.items():
@@ -2794,18 +2794,18 @@ class GraphPage(QWidget):
                 added += [b for b in more if b not in added]
                 where.append(s.view(pid).name)
         if added:                                         # the blocks it put in the channels: said, Ctrl+Z
-            self.toast(_("Fusion “{block}” placed · {blocks} added to {where} · Ctrl+Z").format(
+            self.toast(_("Combine channels “{block}” placed · {blocks} added to {where} · Ctrl+Z").format(
                 block=q.name, blocks=", ".join(block_title(None, view_key(b)) for b in added),
                 where=", ".join(where)))
         else:
-            self.toast(_("Fusion “{block}” placed · Ctrl+Z").format(block=q.name))
+            self.toast(_("Combine channels “{block}” placed · Ctrl+Z").format(block=q.name))
 
     def linear_images(self) -> list:
-        """The Image workflows a Fusion can read (issue #55): a linear image whose file is chosen."""
+        """The Image workflows a Combine channels can read (issue #55): a linear image whose file is chosen."""
         return [q for q in self.s.paths if self.s.source_kind(q) == "image" and q.source.get("path")]
 
     def fusion_choice(self):
-        """What a Fusion placed now combines: (palette, inputs, stars), or None when there is nothing to combine."""
+        """What a Combine channels placed now combines: (palette, inputs, stars), or None when there is nothing to combine."""
         from ..stages.fusion import PALETTES
         s = self.s
         by_filter = {}
@@ -2978,8 +2978,8 @@ class GraphPage(QWidget):
 
     def select_node(self, node):
         s = self.s
-        if node.key == "composition" and node.lid is None and node.grey:   # a Recombine to come (Q10): said, not chosen
-            self.toast(_("Recombine comes with the lights: add them to the Session"))
+        if node.key == "composition" and node.lid is None and node.grey:   # a Combine layers to come (Q10): said, not chosen
+            self.toast(_("Combine layers comes with the lights: add them to the Session"))
             return
         s.pending_change = None
         self.graph.select_wire(None)                      # a block chosen: the wire chosen before is not any more
@@ -3077,7 +3077,7 @@ class GraphPage(QWidget):
 
     def make_filters(self, t: dict, name: str, opts: dict):
         """A filters template (issue #43): one workflow per filter (made when the filter has none yet), then for a
-        palette the Fusion block of their outputs; a dual-band one: a colour workflow, then its fusion. Returns the
+        palette the Combine channels block of their outputs; a dual-band one: a colour workflow, then its fusion. Returns the
         workflow shown (the fusion, or the first filter's)."""
         s = self.s
         from .gallery import template_blocks
@@ -3122,7 +3122,7 @@ class GraphPage(QWidget):
         settings and results stay, the data passes through it; Undo takes it back."""
         s = self.s
         why = {"session": "a source: Del removes it", "sources": "a source: Del removes it",
-               "image": "a source: Del removes it",      # a Fusion reads its channels (control round: not a source)
+               "image": "a source: Del removes it",      # a Combine channels reads its channels (control round: not a source)
                "fusion": "it combines its channels: Del removes it; to leave it out of Post, remove its wire to Post",
                "composition": "hide its layer in Post, or Del removes it"}.get(node.key if node is not None else "")
         if why and (node.key != "sources" or s.p.sessions):     # refused, and why (decision 11)
@@ -3204,7 +3204,7 @@ class GraphPage(QWidget):
                     self.toast(_("{block} kept: {why}").format(block=block_title(None, node.key), why=why))
                     return
             with s.batch():
-                for q in gone:                            # a Fusion takes back what it added (decision 2)
+                for q in gone:                            # a Combine channels takes back what it added (decision 2)
                     if node.key == "fusion":
                         s.remove_fusion(s.view(q.pid))
                     else:
@@ -3305,7 +3305,7 @@ class GraphPage(QWidget):
         s = self.s
         src = s.source_kind(p)
         if src == "fusion":
-            self.toast(_("Fusion: no template"))
+            self.toast(_("Combine channels: no template"))
             return
         got = template_dialog(self, p.name)
         if got is None:
@@ -3392,7 +3392,7 @@ class GraphPage(QWidget):
         s = self.s
         p = s.path if s.path in node.paths else node.paths[0]
         lid = s.add_post_layer(p.pid, "combined", self)
-        s.log('Recombine for "{name}"', name=p.name)
+        s.log('Combine layers for "{name}"', name=p.name)
         s.sel_layer = lid
         s.select(index=s.paths.index(p), step="composition")
         s.scope = [p.pid]
@@ -3409,7 +3409,7 @@ class GraphPage(QWidget):
             s.remove_post_part(node.paths[0].pid, "combined", self)
         else:
             s.remove_post_layer(lid, self)
-        s.log("Recombine removed")
+        s.log("Combine layers removed")
         self.toast(_("{block} removed · Ctrl+Z").format(block=block_title(None, "composition")))
         if s.sel_step == "composition" and getattr(s, "sel_layer", None) == lid:
             s.select(step="etoiles")

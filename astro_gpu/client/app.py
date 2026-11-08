@@ -101,7 +101,7 @@ def apply_language(code: str):
 
 def no_block(w) -> bool:
     """A workflow with no block placed after its source (GUI exploration 6.5: it is not "up to date", it has nothing
-    to compute); a Fusion computes itself, a workflow made before the free graph has its blocks; an image already
+    to compute); a Combine channels computes itself, a workflow made before the free graph has its blocks; an image already
     stretched is its own Output (Image → Post: its Image block is computed, GUI exploration round 2)."""
     from ..core.project2 import is_fusion
     from ..core.workflow import source_of

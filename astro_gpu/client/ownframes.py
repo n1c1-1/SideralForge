@@ -35,7 +35,8 @@ def own_frames(panel, node, p) -> None:
 
 
 def _kind(panel, paths, sid: int, kind: str, title: str) -> None:
-    from .panel import FileList, label
+    from .sources import FileList
+    from .widgets import label
     s = panel.s
     files = s.calibration_files(paths[0], sid, kind)
     follows = s.calibration_follows(paths[0], sid, kind)

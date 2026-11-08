@@ -577,7 +577,7 @@ class Panel(QWidget):
         for f in FILTERS:
             cb.addItem(f or _("none (colour camera)"), f)
         cb.setCurrentIndex(max(0, cb.findData(ses.filter)))
-        cb.setToolTip(_("The filter of these lights (a monochrome camera): the workflows by filter and their Fusion "
+        cb.setToolTip(_("The filter of these lights (a monochrome camera): the workflows by filter and their Combine channels block "
                         "use it; none for a colour camera."))
         cb.currentIndexChanged.connect(lambda _i: s.set_session_filter(sid, cb.currentData()))
         row.addWidget(cb)
@@ -725,7 +725,7 @@ class Panel(QWidget):
         return True
 
     def fusion_panel(self, node):
-        """A Fusion block (issue #43): its workflow's name, its palette, its channels and the workflows they come
+        """A Combine channels block (issue #43): its workflow's name, its palette, its channels and the workflows they come
         from; its output is a layer of Post."""
         from ..stages.fusion import PALETTES
         s = self.s
@@ -743,7 +743,7 @@ class Panel(QWidget):
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")
         top.addWidget(chip)
         self.hv.addLayout(top)
-        self.hv.addWidget(label(_("Channel fusion"), "small"))
+        self.hv.addWidget(label(_("Combine channels"), "small"))
         acts = QHBoxLayout()                             # as the Image block: its Delete under its name (#34)
         x = QPushButton(_("Delete"))
         x.setToolTip(_("Take this block out, with the blocks after it (Del)"))
@@ -829,7 +829,7 @@ class Panel(QWidget):
 
     def fusion_stars(self, p, f: dict, roles: list[str]):
         """Option A: the palette on the channels' starless images, then the stars from a source, put back by the
-        Recombine block."""
+        Combine layers block."""
         s = self.s
         cur = f.get("stars") or {}
         self.bv.addWidget(self.group_title(_("Stars")))
@@ -850,7 +850,7 @@ class Panel(QWidget):
                 item.setToolTip(why)
         cb.setCurrentIndex(next((i for i, (_t, v, _w) in enumerate(choices) if (v or {}) == cur), 0))
         cb.setToolTip(_("The palette is made on the channels' starless images; these stars are put back by the "
-                        "Recombine block. Each channel's workflow gets Stars/background."))
+                        "Combine layers block. Each channel's workflow gets Stars/background."))
         cb.activated.connect(lambda i: s.set_fusion_stars(p, cb.itemData(i)))
         self.bv.addWidget(cb)
         if cur:
@@ -1014,7 +1014,7 @@ class Panel(QWidget):
             self.bv.addWidget(kv([(_("Output of"), block_title(p, p.end))]))
         if k == "etoiles":
             self.bv.addWidget(label(_("No setting here: the network is applied as it was trained. Its two images are "
-                                      "adjusted in a Recombine block, or each as a layer of Post."),
+                                      "adjusted in a Combine layers block, or each as a layer of Post."),
                                     "small", wrap=True))
         else:
             self.settings(p, sk, groups, extra)
@@ -1252,7 +1252,7 @@ class Panel(QWidget):
                     b.clicked.connect(lambda _c=False, w=what, pp=p: self._part_out_of_post(pp, w))
                 else:
                     b = QPushButton(_("To Post"))
-                    b.setToolTip(_("This image as a layer of Post, as it is (no Recombine "
+                    b.setToolTip(_("This image as a layer of Post, as it is (no Combine layers "
                                    "block)"))
                     b.clicked.connect(lambda _c=False, w=what, pp=p: self._part_to_post(pp, w))
                 row.addWidget(b, 0, Qt.AlignTop)
@@ -1260,7 +1260,7 @@ class Panel(QWidget):
             else:
                 self.bv.addWidget(lb)
         if len(node.paths) == 1:
-            nb = set_icon(QPushButton(_("Recombine").replace("&", "&&")), "add", 16)
+            nb = set_icon(QPushButton(_("Combine layers").replace("&", "&&")), "add", 16)
             nb.setToolTip(_("A layer of Post that puts the stars back on the starless image; each of the two keeps "
                             "its own settings"))
             nb.clicked.connect(lambda _c=False, pp=node.paths[0]: self._new_composition(pp))
@@ -1289,7 +1289,7 @@ class Panel(QWidget):
         """A Stars and background block for this workflow's Stars block (as dragging a dot onto Composition)."""
         from .post3 import tr_name
         lid = self.s.add_post_layer(p.pid, "combined", self)
-        self.s.log('Recombine for "{name}"', name=p.name)
+        self.s.log('Combine layers for "{name}"', name=p.name)
         self.s.sel_layer = lid
         self.s.select(index=self.s.paths.index(p), step="composition")
         self.s.scope = [p.pid]
@@ -1298,7 +1298,7 @@ class Panel(QWidget):
             name=tr_name(str(lay.get("name") or p.name)), block=block_title(None, "composition")) + " · Ctrl+Z")
 
     def _one_step(self, change):
-        """A change of a Recombine block whose layer is made real by it: one undo step (decision 7)."""
+        """A change of a Combine layers block whose layer is made real by it: one undo step (decision 7)."""
         with self.s.batch():
             change()
 
@@ -1321,7 +1321,7 @@ class Panel(QWidget):
         lay = (s.post_layer(node.lid) if node.lid is not None else None) or {}
         top = QHBoxLayout()
         from .blocks import node_title
-        top.addWidget(label(node_title(s, node), "h1", wrap=True), 1)        # "Recombine 2": as the graph names it
+        top.addWidget(label(node_title(s, node), "h1", wrap=True), 1)        # "Combine layers 2": as the graph names it
         st = block_state(s, p, "etoiles")
         chip = QLabel(_(STATE_WORD[st]))
         chip.setStyleSheet(f"color: {STATE_COLOR[st]}; font-size: 9pt;")

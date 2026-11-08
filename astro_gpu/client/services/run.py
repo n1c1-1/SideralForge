@@ -63,7 +63,7 @@ def size_text(gb: float) -> str:
 
 
 #: the stages the model's titles do not name (exploration 6.1: "sessions", "inventory@2" were shown as they are)
-STAGE_TITLES = {"sessions": "Sessions joined", "image": "Image", "fusion": "Fusion"}
+STAGE_TITLES = {"sessions": "Sessions joined", "image": "Image", "fusion": "Combine channels"}
 
 
 def stage_title(model, stage: str) -> str:
@@ -154,7 +154,7 @@ class PlanRefused(Exception):
 
 def run_key(key: str) -> str:
     """The block Run to here plans for a block of the views: its own, a block placed twice included ("fond~2"); for
-    Recombine, the Split block it reads (exploration #21: it answered "Nothing to run")."""
+    Combine layers, the Split block it reads (exploration #21: it answered "Nothing to run")."""
     return "etoiles" if key == "composition" else key
 
 

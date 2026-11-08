@@ -1932,12 +1932,12 @@ def test_round2_d_on_a_recombine_says_why_and_a_new_recombine_is_said_and_number
     p = model.view(1)
     comp = page.graph.graph.compositions[0]
     page.toggle_cut(comp, None)
-    assert toasts[-1].startswith("Recombine cannot be switched off")
+    assert toasts[-1].startswith("Combine layers cannot be switched off")
     page.new_composition(page.graph.graph.node_of(p, "etoiles"))
     settle(world["w"], page)
     g = Graph(model)
     assert len([n for n in g.compositions if p in n.paths]) == 2          # the default one stays: a second one
-    assert "Recombine 2" in toasts[-1] and toasts[-1].endswith("Ctrl+Z")
+    assert "Combine layers 2" in toasts[-1] and toasts[-1].endswith("Ctrl+Z")
     model.undo()
     settle(world["w"], page)
     assert len([n for n in Graph(model).compositions if p in n.paths]) == 1
@@ -1947,7 +1947,7 @@ def test_round2_opening_a_default_recombine_in_post_is_no_undo_step(world, model
     p = model.view(1)
     n = len(model._undo)
     lid = model.default_post_layer(p.pid)
-    assert len(model._undo) == n and model.post_layer(lid)["name"] == f"{p.name} · Recombine"
+    assert len(model._undo) == n and model.post_layer(lid)["name"] == f"{p.name} · Combine layers"
     assert len([x for x in Graph(model).compositions if p in x.paths]) == 1
 
 

@@ -486,7 +486,8 @@ FILTERS = {
 FAMILIES = ["Stretch", "Contrast", "Color", "Detail", "Noise", "Combine"]
 #: a filter name older saved compositions hold (a layer keeps its name) -> the filter's name today
 #: the part names older saved compositions hold in their layers' names -> today's (issue #36)
-OLD_PART_NAMES = {"Stars and background": "Recombine", "Combine stars & background layers": "Recombine"}
+OLD_PART_NAMES = {"Stars and background": "Combine layers", "Combine stars & background layers": "Combine layers",
+                  "Recombine": "Combine layers"}
 OLD_NAMES = {"Stretch (GHS)": "Arcsinh stretch (symmetry point)",
              # issue #15: no acronyms in the names (their sources still cite the methods)
              "Local histogram equalization (CLAHE)": "Local histogram equalization",

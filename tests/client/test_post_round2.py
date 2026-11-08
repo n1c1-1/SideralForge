@@ -154,10 +154,10 @@ def test_a_stretched_image_stands_for_the_output_its_layer_reaches_post(m, monke
 def test_the_split_images_names_are_translated_numbered_ones_too():
     try:
         i18n.set_language("fr")
-        assert tr_name("Workflow · Recombine") == "Workflow · Recombiner"
-        assert tr_name("Workflow · Recombine 2") == "Workflow · Recombiner 2"
+        assert tr_name("Workflow · Combine layers") == "Workflow · Combiner calques"
+        assert tr_name("Workflow · Combine layers 2") == "Workflow · Combiner calques 2"
         assert tr_name("Workflow · Stars alone") == "Workflow · Étoiles seules"
-        assert tr_name("Recombine 2 · Workflow 2") == "Recombiner 2 · Workflow 2"
+        assert tr_name("Combine layers 2 · Workflow 2") == "Combiner calques 2 · Workflow 2"
     finally:
         i18n.set_language("en")
 

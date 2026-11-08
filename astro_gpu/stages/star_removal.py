@@ -63,7 +63,7 @@ class StarRemoval(Stage):
     name = "star_removal"
     title = "Star removal"
     description = ("A network trained on our stacks takes the stars off the Output block's image: the starless image "
-                   "and the stars alone, two images that Post combines (the Recombine block) or takes as "
+                   "and the stars alone, two images that Post combines (the Combine layers block) or takes as "
                    "they are.")
     deps = ("render_simple", "stack")
     Params = StarRemovalParams
@@ -127,7 +127,7 @@ class StarRemoval(Stage):
 
     def fused(self, ctx: Context, prep: dict, lin: np.ndarray, valid: np.ndarray) -> None:
         """A starless fusion of filters (stages/fusion.py, option A): the starless image is the fusion's output, the
-        stars the fusion's star layer; written as this block writes its result, for Post and the Combine block."""
+        stars the fusion's star layer; written as this block writes its result, for Post and the Combine layers block."""
         from .fusion import STARS_FILE
         stars = ctx.load("stack", STARS_FILE).astype(np.float32)
         stars[:, ~valid] = 0

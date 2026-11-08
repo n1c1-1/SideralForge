@@ -134,7 +134,7 @@ def tr_name(n: str, image: bool = False) -> str:
         return _pieces(n, maybe) + _(COPY) * k
     known = {f["name"] for f in FILTERS.values()} | set(OLD_NAMES) | set(POST_PART_NAMES.values())
 
-    def piece(b):                                 # "Recombine 2": a numbered copy of a Split image's name
+    def piece(b):                                 # "Combine layers 2": a numbered copy of a Split image's name
         m = re.fullmatch(r"(.+) (\d+)", b)
         if b not in known and m and m.group(1) in POST_PART_NAMES.values():
             return _(m.group(1)) + " " + m.group(2)
@@ -326,7 +326,7 @@ class LayerRow(QFrame):
         eye.setChecked(lay["visible"])
         eye.setToolTip(_("Show / hide layer"))
         if lay["kind"] == "sub":
-            eye.setToolTip(_("Show / hide this image in its Recombine layer"))
+            eye.setToolTip(_("Show / hide this image in its Combine layers layer"))
             eye.toggled.connect(lambda v: panel.set_shown(lay["id"], lay["sub"], v))
         else:
             eye.toggled.connect(lambda v: panel.set_visible(lay["id"], v))

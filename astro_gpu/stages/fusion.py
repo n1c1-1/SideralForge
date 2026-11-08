@@ -150,7 +150,7 @@ def fuse(chans: dict[str, np.ndarray], palette: str) -> np.ndarray:
 
 class Fusion(Stage):
     name = "fusion"
-    title = "Channels' fusion"
+    title = "Combine channels"
     description = ("Combines the outputs of several workflows (one per filter, or a dual-band image's channels) into "
                    "one colour image with a palette (SHO, HSO, HOO, RGB, LRGB), aligned through their plate "
                    "solutions.")

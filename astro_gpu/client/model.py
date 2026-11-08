@@ -48,7 +48,7 @@ from .services.worker import ApiWorker, norm_path
 BY_OUTPUT = ("render_simple",)
 #: the name a layer of the Stars block's images gets after its workflow's ("Full · Stars and background"); its words
 #: are translated where shown (post3.tr_name)
-POST_PART_NAMES = {"starless": "Starless image", "stars": "Stars alone", "combined": "Recombine"}
+POST_PART_NAMES = {"starless": "Starless image", "stars": "Stars alone", "combined": "Combine layers"}
 
 # ---------------------------------------------------------------------------------------------- vocabulary
 #: the classic starting points, whose durations are asked of the worker beforehand (the gallery quotes them)
@@ -66,8 +66,8 @@ EXTRA_SECONDS = {"deconv": 150.0}
 NOT_IN_ENGINE = "Not in the engine yet."
 #: the block of the views → the engine's block of ``api.methods``, and the option each method sets
 METHOD_BLOCK = {"debruitage": "denoise", "fond": "gradient", "etoiles": "stars", "deconv": "deconvolution"}
-#: a Fusion's stars are chosen in its panel: a Stars block in its graph was never drawn (GUI exploration 4)
-FUSION_STARS = "Fusion: its stars in its panel"
+#: a Combine channels's stars are chosen in its panel: a Stars block in its graph was never drawn (GUI exploration 4)
+FUSION_STARS = "Combine channels: its stars in its panel"
 METHOD_OPT = {"debruitage": "dn", "fond": "fond", "etoiles": "etoiles", "deconv": "deconv_m"}
 #: the engine's method keys → the views'
 METHOD_KEY = {"debruitage": {"pretrained": "generique", "adapted": "affine"},
@@ -546,9 +546,9 @@ class ProjectModel(QObject):
         if w is not None:
             have |= {"post"} | ({node_key(n) for n in w.blocks} if w.blocks is not None else
                                 {"calibration", "alignement", "selection", "empilement"})
-            if w.source is not None:                    # an Image or a Fusion selected is taken back too
+            if w.source is not None:                    # an Image or a Combine channels selected is taken back too
                 have |= {"fusion"} if "fusion" in w.source else {"image"}
-            # a Recombine block (a Post layer, not a node; GUI exploration 4: it reopened on the Session): its stored
+            # a Combine layers block (a Post layer, not a node; GUI exploration 4: it reopened on the Session): its stored
             # layer, the one remembered first; none stored yet, the workflow's default one
             if any(n["block"] == "stars" for n in self.graph(self.paths[self.current])):
                 mine = [x for x in self.post_layers() if x.get("kind") == "workflow" and x.get("pid") == w.id]
@@ -599,7 +599,7 @@ class ProjectModel(QObject):
         if src is None:
             return self.sources_loaded
         if "fusion" in src:                  # its channels are the project's sessions: no lights, nothing (round 3: Shift+F5
-            return self.has_data()           # on a Fusion opened the run window where F5 said why in the status line)
+            return self.has_data()           # on a Combine channels opened the run window where F5 said why in the status line)
         return bool(src.get("path"))
 
     @property
@@ -807,7 +807,7 @@ class ProjectModel(QObject):
         from . import prefs
         want = {"current": self.path.pid if self.path is not None else None, "block": self.sel_step or ""}
         if self.sel_step == "composition" and self.sel_layer is not None:
-            want["layer"] = self.sel_layer                  # which Recombine block (GUI exploration 4)
+            want["layer"] = self.sel_layer                  # which Combine layers block (GUI exploration 4)
         key = Path(self.root).as_posix().lower()
         cur = dict(prefs.get(self.SELECTION_KEY) or {})
         if cur.get(key) == want:
@@ -919,20 +919,20 @@ class ProjectModel(QObject):
         def change(layers):
             self._filled(layers, None if keep_default else pid)
             if keep_default and part is not None and any(q.pid == pid for q in self.post_defaults(layers)):
-                # the image Post shows by default for this workflow stays: a Recombine added is a second one, the
+                # the image Post shows by default for this workflow stays: a Combine layers added is a second one, the
                 # first double-click of its card included (2nd round)
                 d = self.post_default_part(p)
                 layers.insert(0, new_workflow_layer(pid, p.name + ("" if d is None else " · " + POST_PART_NAMES[d]),
                                                     True, d))
             same = [x for x in layers if x.get("kind") == "workflow" and x.get("pid") == pid and x.get("part") == part]
-            if part == "combined" and same:               # several Recombine of one workflow: numbered (2nd round)
+            if part == "combined" and same:               # several Combine layers of one workflow: numbered (2nd round)
                 lay["name"] = f"{name} {len(same) + 1}"
             layers.insert(0, lay)
             return lay["id"]
         return self._post_edit(change, source)
 
     def default_post_layer(self, pid: int) -> int:
-        """The Recombine Post shows by default for a workflow, made a layer of its own to open it in Post: what Post
+        """The Combine layers Post shows by default for a workflow, made a layer of its own to open it in Post: what Post
         shows does not change, so it is not an undo step (decision 7: opening is never one)."""
         n, redo = len(self._undo), list(self._redo)
         lid = self.add_post_layer(pid, "combined", None, keep_default=False)
@@ -942,8 +942,8 @@ class ProjectModel(QObject):
 
     def _filled(self, layers: list[dict], skip: int | None = None):
         """A composition never filled (no workflow layer yet): the layers Post gives the workflows first (with the
-        split block, its Combine block; else its Output image: post3.sync_paths, the graph draws them before), so
-        that an image sent on top does not take their place (issue #29). ``skip``: a workflow whose Combine block is
+        split block, its Combine layers block; else its Output image: post3.sync_paths, the graph draws them before), so
+        that an image sent on top does not take their place (issue #29). ``skip``: a workflow whose Combine layers block is
         the one being added."""
         from .postengine import new_workflow_layer
         if any(x.get("kind") == "workflow" for x in layers):
@@ -1084,7 +1084,7 @@ class ProjectModel(QObject):
     def join_session(self, p, sid: int) -> WorkflowView | None:
         """A new session joins the chosen flow of frames ``p`` (GUI exploration 2, decision 1): it is added to that
         flow's sessions (every workflow of the flow: its branches too), never put in their place; joining a filter's
-        flow, a session without a filter takes that filter. A Fusion or an Image chosen, a session of another filter,
+        flow, a session without a filter takes that filter. A Combine channels or an Image chosen, a session of another filter,
         or nothing chosen among several flows: it starts a flow of its own (1.8: a Session placed is always in the
         graph). Returns the workflow that reads it (None when there is none)."""
         frames = [w for w in self.p.workflows if w.source is None]
@@ -1212,7 +1212,7 @@ class ProjectModel(QObject):
         return what or ""
 
     def _shown_keys(self, p) -> set:
-        """The keys of the blocks the graph draws for ``p`` (a session's blocks, a source, Recombine included)."""
+        """The keys of the blocks the graph draws for ``p`` (a session's blocks, a source, Combine layers included)."""
         from .blocks import Graph
         g = Graph(self)
         return {n.ref for n in g.nodes if p in n.paths or (n.sid is not None and n.key != "calibration")} | \
@@ -2001,7 +2001,7 @@ class ProjectModel(QObject):
         return out
 
     def remove_fusion(self, p: WorkflowView):
-        """A Fusion taken out (GUI exploration 2, decision 2): its workflow, and what placing it added to its channels
+        """A Combine channels taken out (GUI exploration 2, decision 2): its workflow, and what placing it added to its channels
         (their Denoise and Stars/background), unless another fusion still takes their starless images: the channels
         come back as they were before it."""
         f = (p.source or {}).get("fusion") or {}
@@ -2187,7 +2187,7 @@ class ProjectModel(QObject):
 
     def first_to_fill(self, p: WorkflowView) -> tuple[WorkflowView, str] | None:
         """(workflow, block) of the first block of ``p`` that waits for the user: a Session without lights, an Image
-        without a file; for a Fusion, its channels'. None when nothing waits (a new project from a template opens
+        without a file; for a Combine channels, its channels'. None when nothing waits (a new project from a template opens
         there, GUI exploration 2)."""
         src = p.source or {}
         if "fusion" in src:
@@ -2484,7 +2484,7 @@ class ProjectModel(QObject):
             return base + own if own != (None, ()) else base
         ref = next((b for b in self._blocks.get(p.pid, []) if view_key(b.block) == key), None)
         # GUI exploration 2: flows of other sessions are never one chain, even before their frames give them other
-        # keys (a filters template's); two Image blocks without a file are two blocks (decision 4); a second Fusion
+        # keys (a filters template's); two Image blocks without a file are two blocks (decision 4); a second Combine channels
         # is its own block (decision 2)
         mine = p.pid if is_fusion_view(p) or (isinstance(p.source, dict) and "path" in p.source
                                              and not p.source.get("path")) else None

@@ -292,8 +292,8 @@ def test_a_switched_off_block_is_said_so_and_its_pause_waits_for_it(world):
 
 
 def test_a_fusion_without_lights_has_nothing_to_run_as_f5_says(world):
-    """Round 3: Shift+F5 on a Fusion of a project without lights opened the run window where F5 said in the status line
-    that there is nothing to compute: a Fusion's data are its channels'."""
+    """Round 3: Shift+F5 on a Combine channels of a project without lights opened the run window where F5 said in the status line
+    that there is nothing to compute: a Combine channels's data are its channels'."""
     w = world(lights=False)
     fusion = SimpleNamespace(source={"fusion": {"inputs": []}})
     assert not w.m.has_data() and not w.m.has_data(fusion)
@@ -395,12 +395,12 @@ def test_a_closed_project_leaves_no_model_in_memory(env):
 
 
 def test_the_project_reopens_on_its_recombine_block(env):
-    """GUI exploration 4: Recombine selected, saved and reopened, the Session was selected (a Recombine is a Post layer,
+    """GUI exploration 4: Combine layers selected, saved and reopened, the Session was selected (a Combine layers is a Post layer,
     not a node of the graph). Its layer is selected again; without a Stars block, the Session."""
     stars = GRAPH[:3] + [{"block": "denoise"}, {"block": "stars"}]
     p = project(env, blocks=stars, current_block="composition")
     wid = p.workflows[0].id
-    p.post = {"layers": [{"kind": "workflow", "pid": wid, "part": "combined", "id": 7, "name": "Workflow · Recombine"}]}
+    p.post = {"layers": [{"kind": "workflow", "pid": wid, "part": "combined", "id": 7, "name": "Workflow · Combine layers"}]}
     project2.save(p)
     w = World(p)
     try:

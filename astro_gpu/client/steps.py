@@ -72,10 +72,10 @@ OUTPUT_COLOR_NOTE = ("Final image: the colour-calibrated stack with Post's sugge
 OUTPUT_RAW_NOTE = ("Final image: the stack in the camera's colours, the sky of each channel levelled, with Post's "
                    "suggested stretch. Cropped to the covered area, at half size. Adjust it in Post.")
 STARLESS_NOTE = ("The image without its stars, compared with the image with them (the same stretch: drag the divider). "
-                 "The Stars block's two images go to Post: combined by a Recombine block, or as they "
+                 "The Stars block's two images go to Post: combined by a Combine layers block, or as they "
                  "are.")
 STARS_NOTE = ("The stars alone: the image minus its starless image, stretched on their own. They go back on the "
-              "starless image with the blend mode of their Recombine block, or as a layer of Post.")
+              "starless image with the blend mode of their Combine layers block, or as a layer of Post.")
 
 
 def output_note(stage: str, stages: set) -> str:

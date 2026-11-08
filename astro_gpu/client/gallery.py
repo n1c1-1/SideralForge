@@ -11,7 +11,7 @@ in the graph's order, a block cut hatched in grey, one greyed by a cut outlined 
 Registration, an image file in place of the frames.
 
 The Filters tab (issue #43): a monochrome camera's filters, each its own workflow (its sessions: those of that filter),
-then a Fusion block in the Composition section combines their outputs with a palette; a colour camera's image shot
+then a Combine channels block in the Composition section combines their outputs with a palette; a colour camera's image shot
 through a dual-band filter, its red and its green-blue split into H-alpha and O III, then the same fusion. A template
 says which of the project's sessions it uses and which filter is missing.
 
@@ -111,9 +111,9 @@ GALLERY: list[dict] = [
               "of Post. Colour calibration is not offered: the colours come from combining the filters."),
     dict(key="sho", tab="mono", name="SHO (Hubble palette)", opts=CLASSIC_DN, kind="fusion", palette="SHO",
          filters=("SII", "Ha", "OIII"),
-         text="Narrowband: one workflow per filter, its stars taken off; a Fusion block combines the starless images: "
+         text="Narrowband: one workflow per filter, its stars taken off; a Combine channels block combines the starless images: "
               "S II red, H-alpha green, O III blue (aligned through their plate solutions, brought to the same scale). "
-              "The stars come back from the channels' stars, by the Combine block; the Fusion's panel offers other "
+              "The stars come back from the channels' stars, by the Combine layers block; the Combine channels panel offers other "
               "star sources (one channel's, a colour session's)."),
     dict(key="hso", tab="mono", name="HSO", opts=CLASSIC_DN, kind="fusion", palette="HSO",
          filters=("Ha", "SII", "OIII"),
@@ -131,8 +131,8 @@ GALLERY: list[dict] = [
     dict(key="dualband", tab="mono", name="Dual band (colour camera)", opts=CLASSIC_DN, kind="dualband",
          palette="HOO",
          text="A colour camera behind a dual-band filter (H-alpha and O III): one workflow stacks it and takes its "
-              "stars off, then a Fusion block takes its starless red as H-alpha and its green and blue as O III, "
-              "combined as HOO; its own stars, in their colours, come back by the Combine block."),
+              "stars off, then a Combine channels block takes its starless red as H-alpha and its green and blue as O III, "
+              "combined as HOO; its own stars, in their colours, come back by the Combine layers block."),
 ]
 
 #: the template chosen first in the frames' tab
@@ -142,7 +142,7 @@ _CUT_KEY = {"calibration": "calibration", "registration": "alignement", "astrome
             "gradient": "fond", "color": "couleur"}
 #: a block's name in the pictures: the graph's own, whole (control round: "Calib.", "Astrom." were abbreviations); the
 #: last block of a template is where its image goes, Post
-_PICTURE_NAMES = {"post": "Post", "combine": "Recombine"}
+_PICTURE_NAMES = {"post": "Post", "combine": "Combine layers"}
 
 
 def picture_name(key: str) -> str:
@@ -392,7 +392,7 @@ def draw_graph(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
 
 def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     """A filters template's graph: a row per filter (its session, then its own workflow up to its Output), the rows
-    joined into a Fusion block (a fusion's palette); a dual-band one: one colour row split into H-alpha and O III."""
+    joined into a Combine channels block (a fusion's palette); a dual-band one: one colour row split into H-alpha and O III."""
     pm = QPixmap(w, h)
     pm.fill(QColor("#15171c"))
     p = QPainter(pm)
@@ -404,10 +404,10 @@ def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     n = 1 + len(chain) + (2 if fusion else 0)
     gap = max(4.0, w * (0.008 if names else 0.012))      # with the names: narrower gaps, wider blocks
     bw = (w - 2 * gap - (n - 1) * gap - (gap * 2 if fusion else 0)) / n
-    # one row (dual band) whose names do not fit: the Fusion and the Recombine go on a second row (never cut names)
+    # one row (dual band) whose names do not fit: the Combine channels and the Combine layers go on a second row (never cut names)
     below = names and fusion and len(rows) == 1 and \
         bw < max(_name_width(x) for x in [picture_name(k) for k in chain] +
-                 [_("Fusion") + " " + t.get("palette", ""), _("Recombine")])
+                 [_("Combine channels") + " " + t.get("palette", ""), _("Combine layers")])
     if below:
         n = 1 + len(chain)
         bw = (w - 2 * gap - (n - 1) * gap) / n
@@ -460,8 +460,8 @@ def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
             p.drawPath(turn)
             ends = [(gap * 0.5, yf)]
         x = ends[0][0] + 3 * gap
-        r = block(x, yf, _("Fusion") + " " + t.get("palette", ""), "#c9a227")
-        r2 = block(r.right() + gap, yf, _("Recombine"), "#c9a227")     # the stars put back (option A)
+        r = block(x, yf, _("Combine channels") + " " + t.get("palette", ""), "#c9a227")
+        r2 = block(r.right() + gap, yf, _("Combine layers"), "#c9a227")     # the stars put back (option A)
         wire(r.right(), yf, r2.left(), yf)
         if kind == "dualband":                          # one colour image, two channels
             for _lab, dy in (("Ha", -bh * 0.25), ("OIII", bh * 0.25)):

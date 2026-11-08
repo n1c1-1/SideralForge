@@ -29,7 +29,7 @@ _missing: set[str] = set()
 
 #: the feminine nouns of the interface, by language: the names of the blocks and of the things a message names (a name
 #: is known by its first word: "Gradient 2", "Sortie Gradient"); any other name is masculine
-FEMININE = {"fr": {"Calibration", "Sélection", "Astrométrie", "Couleur", "Fusion", "Session", "Image", "Images",
+FEMININE = {"fr": {"Calibration", "Sélection", "Astrométrie", "Couleur", "Session", "Image", "Images",
                    "Sortie", "Branche", "Pause", "Variante", "Copie"}}
 #: the forms a translation may ask of a name in its fields: "{block} retiré{block:e}", "{block:un} seul{block:e}",
 #: "Retirer {name:de}" (French: agreement, articles, elision before a vowel; "de « Ha »" stays as it is)
