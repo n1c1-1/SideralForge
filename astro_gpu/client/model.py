@@ -319,9 +319,10 @@ def _frame_read(path: str, size: bool) -> tuple[bool, tuple[int, int] | None]:
             if not head.startswith(b"SIMPLE") and not head.startswith(b"\x1f\x8b"):    # gzipped: read by the engine
                 out = (False, None)
             elif size and head.startswith(b"SIMPLE"):
-                from ..io.frames import fits_header
+                from ..io.frames import fits_header, useful_area
                 hd = fits_header(path)
-                w, h = int(hd.get("NAXIS1", 0)), int(hd.get("NAXIS2", 0))
+                area = useful_area(hd)                 # the size the engine reads the frame at
+                w, h = area[2:] if area else (int(hd.get("NAXIS1", 0)), int(hd.get("NAXIS2", 0)))
                 out = (True, (w, h) if w and h else None)
         elif kind == "raw" and size:
             try:

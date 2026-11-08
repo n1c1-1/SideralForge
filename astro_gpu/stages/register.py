@@ -86,7 +86,8 @@ class Register(Stage):
         if not p.align:
             self._not_aligned(ctx, p, meta, cats, fwhm, rmsb, rnd, noise, psf, nst, W, H)
             return
-        if np.median(nst) < 30:
+        sparse = bool(np.median(nst) < SPARSE_STARS)         # the frames' polynomial may not find its 30 matched stars
+        if np.median(nst) < SPARSE_MIN_MATCHES:
             raise StageError(f"too few stars detected per frame (median {np.median(nst):.0f}); lower the detection "
                              "threshold or check the focus / exposure")
         cand = np.where(nst >= np.percentile(nst, 50))[0]
@@ -98,7 +99,7 @@ class Register(Stage):
         coef = np.zeros((n, 2, 10))
         nmatch, rms, transp = np.zeros(n, int), np.full(n, np.inf), np.zeros(n)
         failed = []
-        recovered = 0
+        recovered = from_few = 0
         for i in range(n):
             r = fit_frame(cats[i], refcat, tree, W, H)
             if r is None and cats[i] is not None and len(cats[i]) >= 30:
@@ -108,6 +109,9 @@ class Register(Stage):
                 if sh is not None:
                     r = _fit_from(cats[i], refcat, tree, W, H, cats[i][:, :2] - sh, 8.0)
                     recovered += r is not None
+            if r is None and sparse:
+                r = fit_sparse(cats[i], refcat, tree, W, H)
+                from_few += r is not None
             if r is None:
                 failed.append(meta[i]["path"])
             else:
@@ -116,6 +120,8 @@ class Register(Stage):
         if recovered:
             ctx.log(f"{recovered} frame(s) aligned from the shift the images' phase correlation gives (no clear vote "
                     "of their stars)")
+        if from_few:
+            ctx.log(f"sparse field: {from_few} frame(s) aligned from a few stars (rotation, shift and scale only)")
         fin = np.isfinite(rms)
         if fin.sum() >= 3:
             # a wrong match (6.5 px on the Stellina), not a softer frame (M33: 35 stacked frames at 1.0-1.9 px)
@@ -366,6 +372,112 @@ def _fit_from(cat, ref, tree, W, H, pred, tol):
     rms = float(np.sqrt(np.mean(d[m] ** 2)))
     ratio = np.median(cat[m, 2] / ref[j[m], 2])
     return np.stack([cx, cy]), int(m.sum()), rms, float(ratio)
+
+
+#: a field is sparse under this median of stars per frame (a frame of 100 stars or more reaches the 30 matches of the
+#: polynomial; the vote and the polynomial are never replaced above it)
+SPARSE_STARS = 100
+#: the triangle matching's stars (the brightest), its neighbours per star, its match radius in the space of the
+#: triangles' two shape ratios, and the distance (px) at which a star counts as matched: the values of Beroiz et al.
+TRIANGLE_STARS, TRIANGLE_NEIGHBOURS, TRIANGLE_RADIUS, STAR_TOL = 50, 5, 0.1, 2.0
+#: fewest matched stars for a transform: the triangle's 3, which any transform fits, and 3 more it did not use (a star
+#: falls within STAR_TOL of one of 50 others by chance once in 10 000 tries on a 6 Mpx frame, so three never do)
+SPARSE_MIN_MATCHES = 6
+#: largest residual (px) of a transform from few stars, as ``fit_frame`` asks of a turned fit; the largest change of
+#: scale between two frames of one instrument (a triangle fitted to a far smaller one maps every star onto one point)
+SPARSE_RMS, SPARSE_SCALE = 1.0, 0.05
+
+
+def _triangles(xy):
+    """(star indices, shape) of the triangles each star makes with its nearest neighbours: its vertices ordered by the
+    length of the opposite side, and the two ratios of its sorted sides (longest / middle, middle / shortest), which
+    neither a rotation, a shift nor a change of scale alters."""
+    from itertools import combinations
+    k = min(TRIANGLE_NEIGHBOURS, len(xy))
+    near = cKDTree(xy).query(xy, k=k)[1].reshape(len(xy), k)
+    tri = np.array(sorted({tuple(sorted(t)) for row in near.tolist() for t in combinations(row, 3)}), int).reshape(-1, 3)
+    p = xy[tri]
+    side = np.stack([np.hypot(*(p[:, 1] - p[:, 2]).T), np.hypot(*(p[:, 0] - p[:, 2]).T),
+                     np.hypot(*(p[:, 0] - p[:, 1]).T)], 1)
+    order = np.argsort(side, axis=1)
+    side, tri = np.take_along_axis(side, order, 1), np.take_along_axis(tri, order, 1)
+    ok = side[:, 0] > 0
+    return tri[ok], np.c_[side[ok, 2] / side[ok, 1], side[ok, 1] / side[ok, 0]]
+
+
+def _matched(pred, tree):
+    """(frame star, reference star, distance) of the stars within STAR_TOL of a reference star, each reference star
+    taken once, by the nearest."""
+    d, j = tree.query(pred, distance_upper_bound=STAR_TOL)
+    i = np.where(np.isfinite(d))[0]
+    i = i[np.argsort(d[i], kind="stable")]
+    _, first = np.unique(j[i], return_index=True)
+    i = np.sort(i[first])
+    return i, j[i], d[i]
+
+
+def _similarity(a, b):
+    """The rotation and scale ``s`` and the shift ``t`` of the least-squares similarity b = s a + t, positions as
+    complex numbers (Umeyama, IEEE TPAMI 13, 1991; no mirror image)."""
+    ma, mb = a.mean(-1, keepdims=True), b.mean(-1, keepdims=True)
+    s = ((b - mb) * np.conj(a - ma)).sum(-1) / np.maximum((np.abs(a - ma) ** 2).sum(-1), 1e-12)
+    return s, mb[..., 0] - s * ma[..., 0]
+
+
+def fit_sparse(cat, ref, tree, W, H):
+    """Registration of a frame of a sparse field, where the vote on the shifts has too few stars and the polynomial
+    cannot find its 30 matches: the triangle matching of V. Valdes et al. (PASP 107, 1119, 1995) and E. Groth (AJ 91,
+    1244, 1986), with the triangles from each star's nearest neighbours of M. Beroiz, J. Cabral, B. Sanchez, "Astroalign"
+    (Astronomy and Computing 32, 100384, 2020). Each triangle of the frame similar to one of the reference proposes a
+    similarity; all are tried and the one that brings the most stars is kept, so that the result does not depend on
+    any random draw. It is then refined on every star it matches, and stands only with SPARSE_MIN_MATCHES stars and a
+    residual under SPARSE_RMS. A similarity has four unknowns: with so few stars, a polynomial would follow their
+    noise. Returns what ``fit_frame`` returns, the polynomial's terms above order 1 at zero; None when no transform
+    stands."""
+    if cat is None or min(len(cat), len(ref)) < SPARSE_MIN_MATCHES:
+        return None
+    a, b = cat[:, :2], ref[:, :2]
+    ta, sa = _triangles(a[:TRIANGLE_STARS])
+    tb, sb = _triangles(b[:TRIANGLE_STARS])
+    if not len(ta) or not len(tb):
+        return None
+    near = cKDTree(sa).query_ball_tree(cKDTree(sb), r=TRIANGLE_RADIUS)
+    ia = np.array([i for i, v in enumerate(near) for _ in v], int)
+    ib = np.array([j for v in near for j in sorted(v)], int)
+    if not len(ia):
+        return None
+    za, zb = a[:, 0] + 1j * a[:, 1], b[:, 0] + 1j * b[:, 1]
+    p, q = za[ta[ia]], zb[tb[ib]]
+    s, t = _similarity(p, q)
+    keep = (np.abs(np.abs(s) - 1) < SPARSE_SCALE) & (np.abs(s[:, None] * p + t[:, None] - q).max(1) < STAR_TOL)
+    best, top = None, (0, 0.0)
+    for s1, t1 in zip(s[keep], t[keep]):
+        z = s1 * za + t1
+        i, _, d = _matched(np.c_[z.real, z.imag], tree)
+        score = (len(i), -float(np.sum(d ** 2)))
+        if score > top:
+            best, top = (s1, t1), score
+    if best is None:
+        return None
+    s1, t1 = best
+    for _ in range(3):
+        z = s1 * za + t1
+        i, j, d = _matched(np.c_[z.real, z.imag], tree)
+        if len(i) < SPARSE_MIN_MATCHES:
+            return None
+        s1, t1 = _similarity(za[i], zb[j])
+    z = s1 * za + t1
+    i, j, d = _matched(np.c_[z.real, z.imag], tree)
+    if len(i) < SPARSE_MIN_MATCHES or abs(abs(s1) - 1) >= SPARSE_SCALE:
+        return None
+    rms = float(np.sqrt(np.mean(d ** 2)))
+    if rms > SPARSE_RMS:
+        return None
+    # the similarity on the polynomial's coordinates (poly_terms: u = x / (W / 2) - 1, v = y / (H / 2) - 1)
+    cx, cy = np.zeros(10), np.zeros(10)
+    cx[:3] = s1.real * W / 2 - s1.imag * H / 2 + t1.real, s1.real * W / 2, -s1.imag * H / 2
+    cy[:3] = s1.imag * W / 2 + s1.real * H / 2 + t1.imag, s1.imag * W / 2, s1.real * H / 2
+    return np.stack([cx, cy]), len(i), rms, float(np.median(cat[i, 2] / ref[j, 2]))
 
 
 #: radii (super-pixels) of the apertures the stars' flux is measured in; the catalogue's columns 4 onwards

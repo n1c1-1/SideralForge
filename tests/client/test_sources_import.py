@@ -292,6 +292,26 @@ def test_a_frames_folder_not_found_is_said(tmp_path):
         i18n.set_language("en")
 
 
+def test_a_frame_with_a_useful_area_is_sized_and_said_as_the_engine_reads_it(tmp_path):
+    """Issue #46: the size the sessions' check compares is the useful area's, and the engine's two new lines have
+    their French."""
+    from astropy.io import fits
+
+    from astro_gpu.client.model import _frame_read
+    from astro_gpu.client.services.run import engine_text
+    p = tmp_path / "a.fits"
+    fits.PrimaryHDU(np.zeros((6, 8), np.uint16), fits.Header({"TRIMSEC": "[2:7,2:5]"})).writeto(p)
+    assert _frame_read(str(p), True) == (True, (6, 4))
+    i18n.set_language("fr")
+    try:
+        assert engine_text("useful area from the frames' header: 3054x2042 of 3136x2112 pixels, the overscan left out") \
+            == "zone utile lue dans l'en-tête des images : 3054x2042 sur 3136x2112 pixels, l'overscan laissé de côté"
+        assert engine_text("sparse field: 12 frame(s) aligned from a few stars (rotation, shift and scale only)") == \
+            "champ peu étoilé : 12 image(s) alignée(s) sur quelques étoiles (rotation, décalage et échelle seulement)"
+    finally:
+        i18n.set_language("en")
+
+
 def test_import_words_and_where_a_new_project_goes(tmp_path, monkeypatch):
     """7.1, 7.5, #28, #29: the import's "no lights" says why; the project is never proposed inside the frames'
     folder; "Pas d'offsets"."""

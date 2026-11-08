@@ -105,6 +105,8 @@
  "resuming calibration: {0}/{1} frames already done": "reprise de la calibration : {0}/{1} images déjà faites",
  "{0} frames calibrated in {1} min (cache {2} GB)": "{0} images calibrées en {1} min (cache {2} Go)",
  "{0}/{1} frames aligned, residual {2} px, FWHM {3} px, transparency p10/p90 {4}/{5}": "{0}/{1} images alignées, résidu {2} px, FWHM {3} px, transparence p10/p90 {4}/{5}",
+ "useful area from the frames' header: {0}x{1} of {2}x{3} pixels, the overscan left out": "zone utile lue dans l'en-tête des images : {0}x{1} sur {2}x{3} pixels, l'overscan laissé de côté",
+ "sparse field: {0} frame(s) aligned from a few stars (rotation, shift and scale only)": "champ peu étoilé : {0} image(s) alignée(s) sur quelques étoiles (rotation, décalage et échelle seulement)",
  "drizzle {0}x{1} from {2} frames in {3} min, {4} % pixels rejected": "drizzle {0}x{1} à partir de {2} images en {3} min, {4} % de pixels rejetés",
  "{0} stars detected in the stack": "{0} étoiles détectées dans l'empilement",
  "solved: centre RA {0} Dec {1}, {2}\"/px, field {3} x {4} deg, residual {5} px on {6} stars": "résolu : centre AD {0} Dec {1}, {2}\"/px, champ {3} x {4} deg, résidu {5} px sur {6} étoiles",

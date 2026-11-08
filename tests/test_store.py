@@ -380,6 +380,30 @@ def test_inventory_part_follows_names_sizes_and_order(proj, raws, tmp_path):
     assert K(proj).key(CLASSIC, "inventory") != ordered
 
 
+def test_a_useful_area_changes_the_key_of_the_frames_that_have_one_only(proj, tmp_path):
+    """Issue #46: results computed from the whole frame are not those of its useful area, and every other project
+    keeps its keys: the frame list alone, as it was."""
+    import numpy as np
+    from astropy.io import fits
+
+    def folder(name, **hdr):
+        d = tmp_path / name
+        d.mkdir()
+        fits.PrimaryHDU(np.zeros((6, 8), np.uint16), fits.Header(hdr)).writeto(d / "a.fits")
+        return str(d)
+
+    def keyed(path):
+        proj.sessions[0].lights = [path]
+        k = K(proj)
+        return k.key(CLASSIC, "inventory"), k.key_parts(CLASSIC, "inventory")["x"]
+
+    plain, x = keyed(folder("plain"))
+    assert x == [["lights", "a.fits", (tmp_path / "plain" / "a.fits").stat().st_size]]
+    assert keyed(folder("whole", TRIMSEC="[1:8,1:6]"))[0] == plain
+    trimmed, x = keyed(folder("cut", TRIMSEC="[2:7,2:5]"))
+    assert trimmed != plain and x["useful_areas"] == [[1, [1, 1, 6, 4]]]
+
+
 def test_the_frame_list_is_listed_once_until_forget(proj, raws, tmp_path):
     """GUI exploration 4: the estimates of a large project asked the frame list thousands of times (9 to 40 s at its
     opening): it is listed once per set of sessions, again when their folders change or after ``forget``."""

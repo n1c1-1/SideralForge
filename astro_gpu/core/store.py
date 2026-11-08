@@ -209,6 +209,18 @@ def key_rules() -> KeyRules:
 
 # ---------------------------------------------------------------------------------------------- disk parts
 
+def _useful_area(path: Path) -> list | None:
+    """The useful area of a FITS frame as a key holds it; None for any other file, or a header that cannot be read."""
+    from ..io.frames import fits_header, frame_kind, useful_area
+    if frame_kind(path) != "fits":
+        return None
+    try:
+        area = useful_area(fits_header(path))
+    except Exception:  # noqa: BLE001 - a frame that cannot be read is said by the inventory, not by a key
+        return None
+    return list(area) if area is not None else None
+
+
 class InputScan:
     """The parts of the keys that read the disk, cached: each session's frame files (by its folder and file lists)
     and file ids (the reference image). Call ``forget`` when files may have changed."""
@@ -286,6 +298,23 @@ class InputScan:
                     sizes.setdefault(f, n)
                     tag.setdefault(f, None if s.id == first else s.id)
             out += [[kind, f.name, sizes[f]] + ([tag[f]] if tag[f] is not None else []) for f in sorted(sizes)]
+        return out
+
+    def useful_areas(self, project: Project2, sessions: list) -> list[list]:
+        """The FITS useful areas (io/frames.useful_area) the sessions' lights are read through, from the header of each
+        session's first frame: [[session id, area]], empty for frames that have none (every frame of a camera raw file
+        or of a FITS file without such a section, which then keeps its key). Results computed when the area was not
+        read (full-size masters and calibrated frames) are not the same results."""
+        out = []
+        for s in sessions:
+            lights = self.session_frames(project, s)["lights"]
+            if not lights:
+                continue
+            k = "area:" + str(lights[0][0])
+            if k not in self._files:
+                self._files[k] = _useful_area(lights[0][0])
+            if self._files[k] is not None:
+                out.append([s.id, self._files[k]])
         return out
 
     def excluded_paths(self, project: Project2) -> list[str]:
@@ -416,8 +445,13 @@ class Keys:
         if base(stage) == "inventory":
             sid = session_of(stage)
             if sid is None and w is not None and w.sessions is not None:     # a filter's workflow: its sessions'
-                return self.scan.frames(p, None, p.sessions_of(w))
-            return self.scan.frames(p, int(sid) if sid is not None else None)
+                frames, sessions = self.scan.frames(p, None, p.sessions_of(w)), p.sessions_of(w)
+            else:
+                frames = self.scan.frames(p, int(sid) if sid is not None else None)
+                sessions = p.sessions if sid is None else [p.session(int(sid))]
+            # frames whose header gives a useful area only: the key of every other project stays what it was
+            areas = self.scan.useful_areas(p, sessions)
+            return {"frames": frames, "useful_areas": areas} if areas else frames
         if stage == "astrometry":
             # a field added later (pixel_um, issue #38) counts only when it is set: the keys of the projects made
             # before it stay as they were
