@@ -536,39 +536,35 @@ def test_the_status_line_names_the_source_on_screen(env):
 
 
 def test_the_template_gallery_on_the_model(qapp, tmp_path):
-    """Issue #43: tabs by kind of task, a thumbnail of each template's graph, the preview and its text, Create. Issue
-    #47: a template holds only the blocks it uses; the blank one; a missing filter gets an empty Session block."""
+    """Issue #43: a thumbnail of each template's graph, the preview and its text, Create. Issue #47: a template holds
+    only the blocks it uses; a missing filter gets an empty Session block."""
     from astro_gpu.client.gallery import template_blocks
     d = TemplateGallery(FakeModel())
-    assert d.tab_keys == ["frames", "mono", "image", "copy"]
-    assert d.choice["key"] == "full" and d.name.text() == "Full 2"            # the recommended one first (#11)
+    assert d.tab_keys == ["frames", "copy"]
+    assert d.choice["key"] == "colour_full" and d.name.text() == "Colour full"   # the recommended one first (#11)
     assert d.ok.isEnabled() and d.opts["etoiles"] == "retirer" and "cut" not in d.opts
-    calibrated = next(c.t for c in d.cards if c.t["key"] == "calibrated")
-    d.pick(calibrated)
-    assert "calibration" not in [n["block"] for n in template_blocks(calibrated)]
-    assert d.text.text().startswith("For frames another program")
-    blank = next(c.t for c in d.cards if c.t["key"] == "blank")
-    d.pick(blank)
-    assert d.ok.isEnabled() and template_blocks(blank) == []
-    d.tabs.setCurrentIndex(2)                                                 # from an image: a file first
-    assert {c.t["key"] for c in d.cards} == {"blank", "image", "image_colours", "image_plain", "image_stretched"}
+    assert {c.t["key"] for c in d.cards} == {"colour_min", "colour_full", "image", "filters_min", "filters_full", "images"}
+    minimal = next(c.t for c in d.cards if c.t["key"] == "colour_min")
+    d.pick(minimal)
+    assert "calibration" in [n["block"] for n in template_blocks(minimal)]
+    assert d.text.text().startswith("Calibration, registration")
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "image"))                  # from an image: a file first
     assert not d.ok.isEnabled() and d.file_row.isVisibleTo(d)
     img = tmp_path / "m42.fits"
     img.write_bytes((b"SIMPLE  =                    T".ljust(80) + b"END".ljust(80)).ljust(2880))   # a FITS file (7.3)
     d.file.setText(str(img))
     assert d.ok.isEnabled()
-    d.tabs.setCurrentIndex(1)                     # filters: the project's sessions have none, so nothing to make
-    assert {c.t["key"] for c in d.cards} >= {"mono_each", "sho", "hoo", "rgb", "lrgb", "dualband"}
-    d.pick(next(c.t for c in d.cards if c.t["key"] == "sho"))
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "filters_full"))  # the project's sessions have none: made empty
     assert d.ok.isEnabled() and "Empty Session blocks are made for SII, Ha, OIII" in d.duration.text()
-    d.tabs.setCurrentIndex(3)
+    d.palette.setCurrentText("HOO")
+    assert "made for Ha, OIII" in d.duration.text() and d.name.text() == "HOO"
+    d.tabs.setCurrentIndex(1)
     assert [c.t["copy"].name for c in d.cards] == ["Classic stack", "Full"] and d.name.text() == "Classic stack (copy)"
     # the graphs drawn from the templates: only their blocks; the mono ones' channels combined
-    plain = next(t for t in GALLERY if t["key"] == "image_plain")
-    assert chain_of(plain) == [("fond", ""), ("post", "")]
-    full = next(t for t in GALLERY if t["key"] == "full")
+    assert chain_of(next(t for t in GALLERY if t["key"] == "image")) == [("post", "")]
+    full = next(t for t in GALLERY if t["key"] == "colour_full")
     assert [k for k, _h in chain_of(full)][-4:] == ["debruitage", "couleur", "etoiles", "post"]
-    assert chain_of(next(t for t in GALLERY if t["key"] == "sho"))[-1] == ("post", "")
+    assert chain_of(next(t for t in GALLERY if t["key"] == "filters_full"))[-1] == ("post", "")
     pm = draw_graph(GALLERY[0], 300, 100, names=True)
     assert (pm.width(), pm.height()) == (300, 100)
 

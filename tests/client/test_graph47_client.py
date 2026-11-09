@@ -163,8 +163,9 @@ def test_a_workflow_saved_as_a_template_comes_back_in_the_gallery_and_as_a_file(
 def test_a_filters_template_on_a_new_project_makes_its_empty_sessions(qapp, tmp_path, monkeypatch):
     w, m, page = open_page(tmp_path, monkeypatch, workflows=())
     try:
-        d = page.new_workflow(tab="mono")
-        d.pick(next(c.t for c in d.cards if c.t["key"] == "hoo"))
+        d = page.new_workflow()
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "filters_full"))
+        d.palette.setCurrentText("HOO")
         assert d.ok.isEnabled()
         d.ok.click()
         settle(w, page)
@@ -179,18 +180,15 @@ def test_a_filters_template_on_a_new_project_makes_its_empty_sessions(qapp, tmp_
 
 def test_what_the_play_test_found_stays_fixed(qapp, tmp_path, monkeypatch):
     """The play-test of issue #47: an empty workflow from sessions, a template that takes its place, no Color in
-    monochrome, a refused delete keeps the selection, a fusion's channels are not Post layers by themselves, no
-    duration for the blank page."""
+    monochrome, a refused delete keeps the selection, a fusion's channels are not Post layers by themselves."""
     w, m, page = open_page(tmp_path, monkeypatch, workflows=())
     try:
         page.place_block("calibration")                            # sessions, no workflow: the block starts one
         settle(w, page)
         assert len(m.paths) == 1 and [n["block"] for n in m.p.workflows[0].blocks] == ["calibration"]
         d = page.new_workflow()
-        assert d.choice["key"] == "full"
-        d.pick(next(c.t for c in d.cards if c.t["key"] == "blank"))
-        assert d.duration.text() == ""                             # no duration for an empty page
-        d.pick(next(c.t for c in d.cards if c.t["key"] == "classic"))
+        assert d.choice["key"] == "colour_full"
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "colour_min"))
         page.make_workflow(d)                                     # an empty-ish workflow is kept: it has a block
         settle(w, page)
         assert len(m.paths) == 2
@@ -216,8 +214,9 @@ def test_a_template_takes_the_place_of_an_empty_workflow_and_channels_are_not_po
     w, m, page = open_page(tmp_path, monkeypatch, workflows=())
     try:
         assert m.ensure_frames_workflow() is not None and m.p.workflows[0].blocks == []
-        d = page.new_workflow(tab="mono")
-        d.pick(next(c.t for c in d.cards if c.t["key"] == "hoo"))
+        d = page.new_workflow()
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "filters_full"))
+        d.palette.setCurrentText("HOO")
         page.make_workflow(d)
         settle(w, page)
         assert not any(x.blocks == [] for x in m.p.workflows)     # the empty workflow made room
@@ -358,8 +357,9 @@ def test_a_fusion_channel_session_removed_keeps_the_project_valid_and_the_fusion
     w, m, page = open_page(tmp_path, monkeypatch, workflows=())
     try:
         assert m.ensure_frames_workflow() is not None
-        d = page.new_workflow(tab="mono")
-        d.pick(next(c.t for c in d.cards if c.t["key"] == "hoo"))
+        d = page.new_workflow()
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "filters_full"))
+        d.palette.setCurrentText("HOO")
         page.make_workflow(d)
         settle(w, page)
         hoo = next(q for q in m.paths if (q.source or {}).get("fusion"))
@@ -554,19 +554,87 @@ def test_branch_names_are_numbered_as_names_not_by_their_blocks_number(qapp, tmp
         w.stop()
 
 
-def test_a_new_projects_template_is_saved_with_it(qapp, tmp_path, monkeypatch):
-    """GUI exploration 4: the template chosen when the project is made is part of it: saved at once (closing the
-    project then asks nothing, and it reopens with its workflow, not empty with no template window)."""
-    w, m, page = open_page(tmp_path, monkeypatch)
+def _blank_page(tmp_path, monkeypatch):
+    w, m, page = open_page(tmp_path, monkeypatch, workflows=())
+    for x in list(m.p.sessions):
+        assert m.remove_session(x.id)
+    settle(w, page)
+    assert page.is_blank() and not m.paths
+    return w, m, page
+
+
+def test_a_blank_page_has_a_link_to_the_templates_in_place_of_the_graph(qapp, tmp_path, monkeypatch):
+    """No window on a new project: the page stays blank, its link shows the six cards in place of the graph, a click
+    makes the workflow, Ctrl+Z gives the blank page back."""
+    from astro_gpu.client.graph import LinkItem
+    w, m, page = _blank_page(tmp_path, monkeypatch)
+    page.show()
     try:
-        n0 = len(m.paths)
-        d = page.new_workflow(fresh=True)
-        d.pick(next(c.t for c in d.cards if c.t["key"] == "classic"))
-        d.name.setText("Made")
-        d.ok.click()
+        page.graph.rebuild()
+        link = next(x for x in page.graph.scene().items() if isinstance(x, LinkItem))
+        assert link.text == "Start from a template"
+        assert not page.templates.isVisibleTo(page)
+        page.graph.templatesAsked.emit()
+        assert page.templates.isVisibleTo(page) and not page.graph.isVisibleTo(page)
+        assert [c.t["key"] for c in page.templates.cards] == ["colour_min", "colour_full", "image", "filters_min",
+                                                              "filters_full", "images"]
+        page.templates.back_b.click()
+        assert page.graph.isVisibleTo(page) and not page.templates.isVisibleTo(page) and page.is_blank()
+        assert page.new_workflow() is None and page.templates.isVisibleTo(page)   # the menu: no window on a blank page
+        card = next(c for c in page.templates.cards if c.t["key"] == "colour_min")
+        card.mousePressEvent(None)
         settle(w, page)
-        assert len(m.paths) == n0 + 1 and not m.dirty and not m.can_undo()
-        assert "Made" in [x.name for x in project2.load(m.root).workflows]
+        assert page.graph.isVisibleTo(page) and not page.templates.isVisibleTo(page)
+        assert len(m.paths) == 1 and len(m.p.sessions) == 1 and "etoiles" not in m.display_keys(m.paths[0])
+        assert m.undo()
+        settle(w, page)
+        assert page.is_blank()
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_the_filters_card_makes_the_palette_chosen_on_it(qapp, tmp_path, monkeypatch):
+    w, m, page = _blank_page(tmp_path, monkeypatch)
+    try:
+        page.show_templates()
+        card = next(c for c in page.templates.cards if c.t["key"] == "filters_full")
+        card.set_palette("LRGB")
+        card.mousePressEvent(None)
+        settle(w, page)
+        assert sorted(x.filter for x in m.p.sessions) == ["B", "G", "L", "R"]
+        assert m.paths[-1].name == "LRGB" and (m.paths[-1].source or {}).get("fusion")
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def test_several_images_make_one_layer_each_and_cancelling_makes_nothing(qapp, tmp_path, monkeypatch):
+    """The files are asked first; a PNG is taken as stretched, a FITS as linear; each is a workflow going to Post."""
+    import cv2
+    import numpy as np
+    from astropy.io import fits
+
+    from astro_gpu.client import gallery
+    png, fit = tmp_path / "a.png", tmp_path / "b.fits"
+    cv2.imwrite(str(png), np.full((8, 8, 3), 128, np.uint8))
+    fits.PrimaryHDU(np.full((3, 8, 8), 0.1, np.float32)).writeto(fit)
+    w, m, page = _blank_page(tmp_path, monkeypatch)
+    try:
+        page.show_templates()
+        card = next(c for c in page.templates.cards if c.t["key"] == "images")
+        monkeypatch.setattr(gallery.QFileDialog, "getOpenFileNames", lambda *a, **k: ([], ""))
+        card.mousePressEvent(None)
+        settle(w, page)
+        assert page.is_blank() and page.templates.isVisibleTo(page)
+        monkeypatch.setattr(gallery.QFileDialog, "getOpenFileNames", lambda *a, **k: ([str(png), str(fit)], ""))
+        card.mousePressEvent(None)
+        settle(w, page)
+        assert [q.name for q in m.paths] == ["a", "b"] and [m.graph(q) for q in m.paths] == [[], []]
+        assert [m.p.workflow(q.pid).source["stretched"] for q in m.paths] == [True, False]
+        assert {q.pid for q in m.paths} <= set(Graph(m).to_post)
     finally:
         page.close()
         m.close(save=False)

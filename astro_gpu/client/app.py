@@ -521,7 +521,7 @@ class Main(QMainWindow):
             return False, "cpu"
         return True, (None if dev == "auto" else dev)
 
-    def open_project(self, root, created: bool = False, gallery: bool = True) -> bool:
+    def open_project(self, root, created: bool = False) -> bool:
         root = Path(root)
         if self.project is not None and root.as_posix().lower() == self.project.root.as_posix().lower():
             self.show_project()
@@ -549,9 +549,6 @@ class Main(QMainWindow):
         self.build_menus()
         self.build_project()
         self.run.attach()                            # a run that goes on (started before, or elsewhere): follow it
-        if created and gallery and not d.workflows and self.graph is not None:
-            # issue #43: a new project starts from the template gallery
-            QTimer.singleShot(0, lambda: self.graph.new_workflow(fresh=True) if self.graph is not None else None)
         return True
 
     def make_model(self):

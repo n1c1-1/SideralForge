@@ -774,22 +774,14 @@ def test_new_workflow_duplicate_rename_delete(world, model, page, monkeypatch):
     """New workflow is the template gallery (issue #43): opened without blocking; Create makes the workflow."""
     n0 = len(model.paths)
     d = page.new_workflow()
-    assert d.isVisible() and d.choice["key"] == "full"
+    assert d.isVisible() and d.choice["key"] == "colour_full"
     d.name.setText("Mine")
-    d.pick(next(c.t for c in d.cards if c.t["key"] == "classic"))
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "colour_min"))
     d.name.setText("Mine")
     d.ok.click()
     settle(world["w"], page)
     assert len(model.paths) == n0 + 1 and model.path.name == "Mine" and model.sel_step == "post"
     assert not model.path.opts["debruitage"] and model.path.opts["etoiles"] == "garder"
-    # a template without a block (issue #47): the workflow does not have it
-    d = page.new_workflow()
-    d.pick(next(c.t for c in d.cards if c.t["key"] == "calibrated"))
-    d.ok.click()
-    settle(world["w"], page)
-    assert model.path.opts["cut"] == ["calibration"] and "calibration" not in model.display_keys(model.path)
-    model.remove_path(model.paths.index(model.path))
-    settle(world["w"], page)
     # Duplicate keeps the options, the settings and the exit, at once (no template window after the start)
     src = model.view(1)
     page._gallery = None

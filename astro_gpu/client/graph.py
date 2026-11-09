@@ -97,7 +97,7 @@ from .blocks import (
     node_title,
 )
 from .dialogs import ask_name
-from .gallery import TemplateGallery
+from .gallery import TemplateGallery, TemplatePage
 from .i18n import _, hm, number, plural
 from .icons import BLOCK_ROLES, IconLabel, draw, icon, icon_only, set_icon
 from .imageview import ZOOM_PRESETS, ZOOM_STEP
@@ -517,6 +517,40 @@ class GhostItem(QGraphicsItem):
         e.accept()
 
 
+class LinkItem(QGraphicsItem):
+    """A link on the blank page: words alone, underlined under the mouse (dashed is for the places a block can go)."""
+
+    def __init__(self, center: QPointF, text: str, on_click):
+        super().__init__()
+        self.text, self.on_click = text, on_click
+        self.font = QFont("Segoe UI", 10)
+        w = QFontMetricsF(self.font).horizontalAdvance(text) + 8
+        self.rect = QRectF(center.x() - w / 2, center.y() - 12, w, 24)
+        self.setAcceptHoverEvents(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setZValue(7)
+
+    def boundingRect(self):                                           # noqa: N802
+        return self.rect
+
+    def paint(self, p, opt, widget=None):
+        f = QFont(self.font)
+        f.setUnderline(self.isUnderMouse())
+        p.setFont(f)
+        p.setPen(QColor(ACCENT))
+        p.drawText(self.rect, Qt.AlignCenter, self.text)
+
+    def hoverEnterEvent(self, e):                                     # noqa: N802
+        self.update()
+
+    def hoverLeaveEvent(self, e):                                     # noqa: N802
+        self.update()
+
+    def mousePressEvent(self, e):                                     # noqa: N802
+        self.on_click()
+        e.accept()
+
+
 class BandItem(QGraphicsItem):
     def __init__(self, rect, text):
         super().__init__()
@@ -564,6 +598,7 @@ class GraphView(QGraphicsView):
     openLayer = Signal(int)                # Open in Post (a Post layer's id)
     cutToggled = Signal(object, object)    # Node, list of pids (None: every workflow of the block): cut or restore it
     newSession = Signal()                  # "+ Session" (issue #43)
+    templatesAsked = Signal()              # the blank page's link
     sessionMenu = Signal(str, int)         # action (rename, remove), session id
     postOpened = Signal()                  # "Open Post" of the Post block's menu
     deselected = Signal()                  # 2nd round, decision 5: a click on empty space, Escape, or a wire chosen
@@ -973,6 +1008,8 @@ class GraphView(QGraphicsView):
         gh.hot = self.drag_block in ("session", "image")
         sc.addItem(gh)
         self.new_flow_ghost = gh
+        if not s.paths and not s.p.sessions and s.ready:
+            sc.addItem(LinkItem(QPointF((x0 + x1) / 2, y + BH + 22), _("Start from a template"), self.templatesAsked.emit))
         # issue #47: while an image or a frame block is dragged, a new branch can start under each block it can follow
         if self.drag_block in wfl.IO and (wfl.IO[self.drag_block] == (wfl.IMAGE, wfl.IMAGE)
                                           or self.drag_block in wfl.FRAME_BLOCKS):
@@ -2326,6 +2363,7 @@ class PaletteCard(QFrame):
         drag.setPixmap(self.grab())
         drag.setHotSpot(QPoint(20, 12))
         self.page.unfold_palette(False)                  # the places it covers are the first ones
+        self.page.hide_templates()
         drag.exec(Qt.CopyAction)
 
     def mouseDoubleClickEvent(self, e):                               # noqa: N802
@@ -2423,6 +2461,11 @@ class GraphPage(QWidget):
         self.graph = GraphView(project)
         self.graph.palette_flow = self.palette_path       # Q11: a palette block dragged shows its workflow's places first
         cv.addWidget(self.graph, 1)
+        self.templates = TemplatePage()                  # in place of the blank graph, behind its link
+        self.templates.hide()
+        self.templates.back.connect(self.hide_templates)
+        self.templates.chosen.connect(self.template_chosen)
+        cv.addWidget(self.templates, 1)
         ph.addWidget(centre, 1)
         self.panel = Panel(project, steps)
         ph.addWidget(self.panel)
@@ -2464,6 +2507,7 @@ class GraphPage(QWidget):
         gv.openLayer.connect(self.openLayer.emit)
         gv.cutToggled.connect(self.toggle_cut)
         gv.newSession.connect(self.addSession.emit)
+        gv.templatesAsked.connect(self.show_templates)
         gv.sessionMenu.connect(self.session_action)
         gv.postOpened.connect(self.open_post)
         gv.deselected.connect(self.deselect)
@@ -2546,6 +2590,8 @@ class GraphPage(QWidget):
         if node is None and w is not None:                # a wire still chosen: its layer stays in the panel
             self.show_wire(w)
         self.build_tools()
+        if not self.is_blank():
+            self.hide_templates()
         self.panel.corner.setToolTip(_("Fold to icons"))     # issue #44: its words follow the language as the page's
         self.left_arrow.setToolTip(_("Show the blocks again"))
         self.dock.retranslate()
@@ -3135,11 +3181,32 @@ class GraphPage(QWidget):
         s.scope = [q.pid for q in node.paths] if node is not None and node.key not in ("sources", "final") else None
 
     # ------------------------------------------------------------ actions
-    def new_workflow(self, start=None, tab=None, fresh: bool = False):
-        """New workflow: the template gallery (issue #43), or a copy of a workflow (``start``); ``tab``: the tab it
-        opens on; ``fresh``: a new project's first template, not an undo step (decision 6)."""
+    def is_blank(self) -> bool:
+        return not self.s.paths and not self.s.p.sessions
+
+    def show_templates(self):
+        """The templates in place of the blank graph."""
+        self.templates.build()
+        self.graph.hide()
+        self.templates.show()
+
+    def hide_templates(self):
+        if self.templates.isVisibleTo(self):
+            self.templates.hide()
+            self.graph.show()
+
+    def template_chosen(self, t: dict, files: list):
+        from .gallery import _view_opts
+        self.make_from_template(t, self.s.unique_name(t["palette"] if t.get("kind") == "fusion" else _(t["name"])),
+                                _view_opts(t), files)
+
+    def new_workflow(self, start=None, tab=None):
+        """New workflow: on a blank page its templates in place of the graph; else the template gallery (issue #43), or
+        a copy of a workflow (``start``); ``tab``: the tab it opens on."""
+        if start is None and self.is_blank():
+            self.show_templates()
+            return None
         d = TemplateGallery(self.s, start, self)
-        d.fresh = fresh
         if tab and tab in getattr(d, "tab_keys", []):
             d.tabs.setCurrentIndex(d.tab_keys.index(tab))
         d.accepted.connect(lambda: self.make_workflow(d))
@@ -3149,15 +3216,29 @@ class GraphPage(QWidget):
 
     def make_workflow(self, d):
         """The workflow the gallery's choice makes: a copy, from an image, or from the frames."""
+        if d.choice is not None:
+            self.make_from_template(d.choice, d.name.text().strip() or _("New workflow"), d.opts, d.images)
+
+    def place_images(self, files: list):
+        """One Image workflow per file, each a layer of Post, as a file's Inspect sends it; the first, or None."""
+        from ..stages.image import image_problem, stretched_by_nature
         s = self.s
-        t = d.choice
-        if t is None:
-            return
-        name = d.name.text().strip() or _("New workflow")
-        if t.get("blank"):                                 # issue #47: an empty page, built from the palette
-            s.log("Blank page")
-            self.toast(_("Place Session/Image first"))
-            return
+        for f in files:
+            why = image_problem(f)
+            if why:
+                self.toast(_(why).format(name=Path(f).name))
+                return None
+        made = []
+        with s.batch():
+            for f in files:
+                q = s.add_image_workflow(s.unique_name(Path(f).stem), f, stretched=stretched_by_nature(f))
+                s.set_graph(q, [])
+                made.append(s.view(q.pid))
+        return made[0] if made else None
+
+    def make_from_template(self, t: dict, name: str, opts: dict, files: list):
+        """The workflow a template makes: a copy, from images, or from the frames."""
+        s = self.s
         from .gallery import template_blocks, template_source
         empty = [q for q in s.paths if q.source is None and s.p.workflow(q.pid).blocks == []]
         frames_template = not t.get("copy") and template_source(t) == "frames"
@@ -3168,28 +3249,26 @@ class GraphPage(QWidget):
                     s.remove_path(s.paths.index(q))
         if t.get("copy") is not None:                      # a copy keeps its options, settings and exit
             p = s.duplicate(t["copy"], name)
-        elif t.get("kind") in ("filters", "fusion", "dualband"):
-            p = self.make_filters(t, name, d.opts)
+        elif t.get("kind") in ("filters", "fusion"):
+            p = self.make_filters(t, name, opts)
+            if p is None:
+                return
+        elif t.get("plain"):
+            p = self.place_images(files)
             if p is None:
                 return
         elif template_source(t) in ("image", "stretched"):
             with s.batch():
-                p = s.add_image_workflow(name, d.image, d.opts, stretched=template_source(t) == "stretched")
+                p = s.add_image_workflow(name, files[0], opts, stretched=template_source(t) == "stretched")
                 s.set_graph(p, template_blocks(t))
         else:
             with s.batch():
-                if t.get("sessions") and s.stack_mode == "together" and len(s.p.sessions) <= 1:
-                    s.set_stack_mode("per_session")
-                # GUI exploration 7.2: it starts from Session blocks, empty when the project has no frames yet (two
-                # nights for Several nights), never from a placeholder
-                for _i in range(int(t.get("sessions") or 1) - len(s.p.sessions)):
+                # GUI exploration 7.2: it starts from a Session block, empty when the project has no frames yet
+                if not s.p.sessions:
                     s.add_filter_session("")
-                p = s.add_path(name, d.opts, None, end=t.get("end"))
+                p = s.add_path(name, opts, None)
                 s.set_graph(p, template_blocks(t))         # issue #47: only the blocks it uses
         s.log('Workflow "{name}" created', name=p.name)
-        if getattr(d, "fresh", False):                     # a new project's template: where Undo stops (decision 6),
-            s.forget_undo()                                # and part of the project made (saved: closing it at once
-            s.flush()                                      # asks nothing; GUI exploration 4)
         todo = s.first_to_fill(p)                          # the block that waits for the user: its empty Session,
         if todo is not None:                               # its Image without a file (GUI exploration 2)
             self.select(index=s.paths.index(todo[0]), step=todo[1])
@@ -3197,25 +3276,14 @@ class GraphPage(QWidget):
             self.select(index=s.paths.index(p), step="post")
 
     def make_filters(self, t: dict, name: str, opts: dict):
-        """A filters template (issue #43): one workflow per filter (made when the filter has none yet), then for a
-        palette the Combine channels block of their outputs; a dual-band one: a colour workflow, then its fusion. Returns the
-        workflow shown (the fusion, or the first filter's)."""
+        """A filters template (issue #43): one workflow per filter (made when the filter has none yet), then for the
+        full one the Combine channels block of their outputs. Returns the workflow shown (the fusion, or the first
+        filter's)."""
         s = self.s
         from .gallery import template_blocks
         with s.batch():
-            if t["kind"] == "dualband":
-                colour = next((q for q in s.paths if q.source is None and not s.is_mono(q) and not q.end), None)
-                if colour is None:
-                    if not any(not x.filter for x in s.p.sessions):     # an empty colour Session block (#47)
-                        s.add_filter_session("")
-                    colour = s.add_path(s.unique_name(_("Dual band")), opts)
-                    s.set_graph(colour, template_blocks({**t, "kind": "dualband"}))
-                # option A: the starless channels, the stars of the colour image itself (their own colours)
-                return s.add_fusion(name, t["palette"], [{"pid": colour.pid, "role": "Ha", "channel": "R"},
-                                                         {"pid": colour.pid, "role": "OIII", "channel": "GB"}],
-                                    stars={"mode": "workflow", "pid": colour.pid})
             # One workflow per filter: the project's filters, else those chosen in the gallery (GUI exploration 7.2)
-            filters = (sorted(s.filters()) or [f for f in t["filters"] if f != "any"]) if t["kind"] == "filters" \
+            filters = (sorted(s.filters()) or list(t["filters"])) if t["kind"] == "filters" \
                 else list(t["filters"])
             for f in filters:                               # a missing filter: an empty Session block (issue #47)
                 if f not in s.filters():

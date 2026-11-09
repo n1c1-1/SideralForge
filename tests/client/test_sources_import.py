@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from astro_gpu.client import i18n, prefs  # noqa: E402
-from astro_gpu.client.gallery import GALLERY, chain_of, template_blocks, template_source  # noqa: E402
+from astro_gpu.client.gallery import GALLERY, TemplateGallery, chain_of, template_blocks, template_source  # noqa: E402
 from astro_gpu.client.graph import GraphPage  # noqa: E402
 from astro_gpu.client.model import ProjectModel  # noqa: E402
 from astro_gpu.client.services.worker import ApiWorker  # noqa: E402
@@ -88,17 +88,25 @@ def texts(widget) -> list[str]:
     return [x.text() for x in widget.findChildren(QLabel)] + [x.text() for x in widget.findChildren(QPushButton)]
 
 
-def test_the_already_stretched_template_makes_a_stretched_image(qapp, tmp_path, monkeypatch):
-    """1.7: its chain goes to Post as it is, its image marked stretched; its preview shows the same."""
-    t = next(x for x in GALLERY if x["key"] == "image_stretched")
-    assert template_source(t) == "stretched" and template_blocks(t) == [] and chain_of(t) == [("post", "")]
+def window(page):
+    """The templates' window, as a project with workflows opens it (these projects are blank)."""
+    d = TemplateGallery(page.s, None, page)
+    d.accepted.connect(lambda: page.make_workflow(d))
+    d.open()
+    return d
+
+
+def test_the_image_template_takes_a_png_as_stretched(qapp, tmp_path, monkeypatch):
+    """1.7: its chain goes to Post as it is, a PNG marked stretched; its preview shows the same."""
+    t = next(x for x in GALLERY if x["key"] == "image")
+    assert template_source(t) == "image" and template_blocks(t) == [] and chain_of(t) == [("post", "")]
     png = tmp_path / "done.png"
     import cv2
     cv2.imwrite(str(png), np.full((8, 8, 3), 128, np.uint8))
     w, m, page = open_page(tmp_path, monkeypatch)
     try:
-        d = page.new_workflow(tab="image")
-        d.pick(next(c.t for c in d.cards if c.t["key"] == "image_stretched"))
+        d = window(page)
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "image"))
         assert not d.ok.isEnabled() and d.why.text() == "No image file chosen yet."      # 7.5: says why
         d.file.setText(str(tmp_path / "gone.png"))
         assert not d.ok.isEnabled() and "File not found" in d.ok.toolTip()
@@ -150,32 +158,25 @@ def test_an_image_block_takes_a_png_as_stretched_and_refuses_what_is_not_an_imag
 
 
 def test_frames_templates_start_from_session_blocks(qapp, tmp_path, monkeypatch):
-    """7.2: Full on a project without frames starts from an (empty) Session block; Several nights from two."""
+    """7.2: a colour template on a project without frames starts from an (empty) Session block."""
     w, m, page = open_page(tmp_path, monkeypatch)
     try:
-        d = page.new_workflow(tab="frames")
-        d.pick(next(c.t for c in d.cards if c.t["key"] == "full"))
+        d = window(page)
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "colour_full"))
         d.ok.click()
         settle(w, page)
         assert len(m.p.sessions) == 1 and not m.p.sessions[0].lights
-        d = page.new_workflow(tab="frames")
-        d.pick(next(c.t for c in d.cards if c.t["key"] == "nights"))
-        d.ok.click()
-        settle(w, page)
-        assert len(m.p.sessions) == 2 and len(m.separate_sessions()) == 2
     finally:
         close(w, m, page)
 
 
 def test_one_workflow_per_filter_works_on_a_new_project(qapp, tmp_path, monkeypatch):
-    """7.2: its filters are chosen in the gallery; each gets its empty Session block and its workflow."""
+    """7.2: its filters come from the palette chosen in the gallery; each gets its empty Session block and its workflow."""
     w, m, page = open_page(tmp_path, monkeypatch)
     try:
-        d = page.new_workflow(tab="mono")
-        d.pick(next(c.t for c in d.cards if c.t["key"] == "mono_each"))
-        assert d.filter_row.isVisibleTo(d) and not d.ok.isEnabled() and "Choose the filters" in d.why.text()
-        d.filter_b["Ha"].setChecked(True)
-        d.filter_b["OIII"].setChecked(True)
+        d = window(page)
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "filters_min"))
+        assert d.palette_row.isVisibleTo(d) and d.palette.currentText() == "HOO"
         assert d.ok.isEnabled() and "Ha, OIII" in d.duration.text()
         d.ok.click()
         settle(w, page)

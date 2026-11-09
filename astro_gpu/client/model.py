@@ -1156,14 +1156,6 @@ class ProjectModel(QObject):
     def can_redo(self) -> bool:
         return bool(self._redo)
 
-    def forget_undo(self):
-        """The project as it is now is where Undo stops: a new project made from a template (decision 6, its first
-        Ctrl+Z never blanks the page)."""
-        self._undo.clear()
-        self._redo.clear()
-        self._undo_what.clear()
-        self._redo_what.clear()
-
     def undo(self) -> bool:
         what = self._move_what(self._undo, self._undo_what, self._redo_what)
         done = self._restore(self._undo, self._redo)

@@ -155,10 +155,9 @@ def test_filters_make_one_workflow_each_and_a_fusion_in_the_composition_section(
     m.set_session_filter(2, "OIII")
     assert m.filters() == {"Ha": [1], "OIII": [2]}
     d = page.new_workflow()
-    d.tabs.setCurrentIndex(d.tab_keys.index("mono"))
-    d.pick(next(c.t for c in d.cards if c.t["key"] == "sho"))
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "filters_full"))
     assert d.ok.isEnabled() and "Empty Session blocks are made for SII" in d.duration.text()   # #47: made empty
-    d.pick(next(c.t for c in d.cards if c.t["key"] == "hoo"))
+    d.palette.setCurrentText("HOO")
     assert d.ok.isEnabled() and "Ha" in d.duration.text()
     d.ok.click()
     settle(world)
@@ -179,8 +178,7 @@ def test_filters_make_one_workflow_each_and_a_fusion_in_the_composition_section(
     assert any(b.text() == "HOO" and b.isChecked() for b in page.panel.findChildren(QPushButton))
     assert m.set_fusion_palette(hoo, "SHO") is True                            # (the SII channel is then missing)
     d = page.new_workflow()                                                   # the same filters again: reused
-    d.tabs.setCurrentIndex(d.tab_keys.index("mono"))
-    d.pick(next(c.t for c in d.cards if c.t["key"] == "mono_each"))
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "filters_min"))
     d.ok.click()
     settle(world)
     assert [q.name for q in m.paths].count("Ha") == 1
@@ -206,8 +204,8 @@ def test_a_fusion_takes_its_stars_from_a_source_and_its_channels_split_them(worl
     m.set_session_filter(1, "Ha")
     m.set_session_filter(2, "OIII")
     d = page.new_workflow()
-    d.tabs.setCurrentIndex(d.tab_keys.index("mono"))
-    d.pick(next(c.t for c in d.cards if c.t["key"] == "hoo"))
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "filters_full"))
+    d.palette.setCurrentText("HOO")
     d.ok.click()
     settle(world)
     ha, oiii, hoo = m.paths[-3:]
