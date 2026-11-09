@@ -101,11 +101,11 @@ def apply_language(code: str):
 
 def no_block(w) -> bool:
     """A workflow with no block placed after its source (GUI exploration 6.5: it is not "up to date", it has nothing
-    to compute); a Combine channels computes itself, a workflow made before the free graph has its blocks; an image already
-    stretched is its own Output (Image → Post: its Image block is computed, GUI exploration round 2)."""
+    to compute); a Combine channels computes itself, a workflow made before the free graph has its blocks; an image is
+    computed to go to Post as it is, whether stretched or linear."""
     from ..core.project2 import is_fusion
     from ..core.workflow import source_of
-    return w.blocks is not None and not is_fusion(w) and source_of(w) != "stretched" and \
+    return w.blocks is not None and not is_fusion(w) and source_of(w) not in ("stretched", "image") and \
         all(b.get("block") == "output" for b in w.blocks)
 
 
@@ -316,7 +316,8 @@ class Main(QMainWindow):
 
         f = mb.addMenu(_("File"))
         act(f, _("Home"), self.show_home, "Ctrl+H", role="home")
-        act(f, _("New project…"), self.new_project, "Ctrl+N", role="new")
+        act(f, _("New project"), self.new_project, "Ctrl+N", role="new")
+        act(f, _("Open images…"), self.open_images, role="open")
         act(f, _("Open project…"), self.open_other, "Ctrl+O", role="open")
         rec = f.addMenu(_("Recent projects"))
         for r in prefs.recent():
@@ -498,6 +499,7 @@ class Main(QMainWindow):
             self.home = HomeView(self.worker, last=last)
             self.home.openProject.connect(self.open_project)
             self.home.newProject.connect(self.new_project)
+            self.home.openImages.connect(self.open_images)
             self.screens.insertWidget(0, self.home)
         else:
             self.home.rescan()
@@ -819,6 +821,9 @@ class Main(QMainWindow):
         page = PostPage3(self.s, worker=self.render_worker())
         page.set_image_resolver(lambda key, p=self.s.p: resolve_key(p, key))   # the layers Inspect sent, reopened
         page.goWorkflow.connect(lambda: self.set_mode(0))
+        page.openImages.connect(self.open_images)
+        page.view.openImages.connect(self.open_images)
+        page.view.runAsked.connect(self.launch)
         page.view.goResults.connect(self._go_results)
         page.view.toasted.connect(self.flash)            # what a change of Post did beyond Post (a branch removed)
         page.view.goProcessing.connect(lambda pid, k: (self.select(index=self.s.index_of(pid), step=k),
@@ -1012,8 +1017,7 @@ class Main(QMainWindow):
                                    _("nothing to compute: add lights or image"))
             elif empty:                                   # never "all up to date" with nothing placed (6.5, #13)
                 # its Image or Session is a block on screen: what is missing is a block after it (round 3)
-                line += "  ·  " + (_("nothing after Image: place a block") if images_only(s) else
-                                   _("nothing after Session: place a block") if not any(
+                line += "  ·  " + (_("nothing after Session: place a block") if not any(
                                        q.source is not None for q in s.paths) else
                                    _("nothing after the sources: place a block"))
             elif todo and self.run_refusal(cost):         # refused: said with its reason, never a time to run
@@ -1135,6 +1139,27 @@ class Main(QMainWindow):
         self._title()
         self.flash(_("Project saved"))
         return True
+
+    def open_images(self):
+        """Images as layers of Post, one Image workflow each (the graph follows); from nothing, the project is made
+        first. Computed at once: only then does Post have them."""
+        from .gallery import ask_files
+        files = ask_files(self, {"images": 1})
+        if not files:
+            return
+        if self.project is None:
+            self.new_project()
+        if self.project is not None and self.graph.place_images(files) is not None:
+            self.set_mode(2)
+            self._launch_when_ready()
+
+    def _launch_when_ready(self):
+        if self.s is None:
+            return
+        if self.s.ready:
+            self.launch()
+        else:
+            QTimer.singleShot(50, self._launch_when_ready)
 
     def _named_for_run(self) -> bool:
         return self.project is None or not drafts.is_untitled(self.project.root) or self.name_project()

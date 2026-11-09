@@ -657,6 +657,7 @@ def ask_project_name(parent, name: str = "") -> tuple[Path, str] | None:
 class HomeView(QWidget):
     openProject = Signal(str)                        # project folder
     newProject = Signal()                            # New project: the graph at once, the project without a name
+    openImages = Signal()                            # images as layers of Post, the project made for them
 
     def __init__(self, worker, last=None, parent=None):
         """``last``: what a previous Home showed (its HomeScan), shown until the new scan is back."""
@@ -672,6 +673,7 @@ class HomeView(QWidget):
         lv.setSpacing(8)
         buttons = []
         for text, fn, primary, role in ((_("New project"), self.newProject.emit, True, "new"),
+                                        (_("Open images…"), self.openImages.emit, False, "block_image"),
                                         (_("Open project…"), self.open_other, False, "open")):
             b = QPushButton(text)                    # compact names (decision 12)
             set_icon(b, role, 16, "on_accent" if primary else "normal")

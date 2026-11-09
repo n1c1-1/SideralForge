@@ -514,8 +514,9 @@ def test_the_log_gives_room_on_a_short_screen(env):
     assert w.logp.maximumHeight() == 200
 
 
-def test_the_status_line_names_the_source_on_screen(env):
-    """Control round: an Image project at opening said "no block: place one" while its Image block is on screen."""
+def test_an_image_with_its_file_and_no_block_is_something_to_compute(env):
+    """Control round: an Image project at opening said "no block: place one" while its Image block is on screen; it goes
+    to Post as it is, so its status is the run's."""
     from astro_gpu.core import workflow as wfl
     root = env["ws"] / "ImageOnly"
     p = project2.create(root, "ImageOnly", Target(name="M 31"))
@@ -531,8 +532,7 @@ def test_the_status_line_names_the_source_on_screen(env):
     for _i in range(20):
         w.worker.wait(30)
         QApplication.processEvents()
-    assert "nothing after Image: place a block" in w.status.text(), w.status.text()
-    assert "no block" not in w.status.text()
+    assert "place a block" not in w.status.text() and "no block" not in w.status.text(), w.status.text()
 
 
 def test_the_template_gallery_on_the_model(qapp, tmp_path):

@@ -527,6 +527,8 @@ class PostView(QWidget):
     rendered = Signal(object)                             # a Result was shown (tests, the status line)
     toasted = Signal(str)                                 # what a change did beyond Post (the window's status line)
     layerAsked = Signal(int)                              # Open in Post of a layer (the page lists it when not computed)
+    openImages = Signal()                                 # images asked as layers
+    runAsked = Signal()                                   # an image's kind changed: it is computed again
 
     def __init__(self, session, parent=None, *, worker: RenderWorker | None = None, persist: bool = True):
         super().__init__(parent)
@@ -711,13 +713,15 @@ class PostView(QWidget):
         btns = QHBoxLayout()
         btns.setSpacing(4)
         # the layers' buttons, as the reference editors': icons with their full names in the tooltips
+        self.b_open = icon_only(QPushButton(), "block_image", _("Open images as layers"), 16, box=28)
+        self.b_open.clicked.connect(self.openImages.emit)
         self.b_filter = icon_only(QPushButton(), "add", _("Add a filter layer above the selected layer"), 16, box=28)
         self.filter_menu = QMenu(self.b_filter)
         self.b_filter.setMenu(self.filter_menu)
         self.b_dup = icon_only(QPushButton(), "duplicate", _("Duplicate (Ctrl+J)"), 16, box=28)
         self.b_maskadd = icon_only(QPushButton(), "mask", _("Add a mask to the selected layer"), 16, box=28)
         self.b_del = icon_only(QPushButton(), "delete", _("Delete the selected layer"), 16, box=28)
-        for b in (self.b_filter, self.b_dup, self.b_maskadd, self.b_del):
+        for b in (self.b_open, self.b_filter, self.b_dup, self.b_maskadd, self.b_del):
             btns.addWidget(b)
         btns.addStretch(1)
         rv.addLayout(btns)
@@ -827,7 +831,8 @@ class PostView(QWidget):
             channel = channel or (getattr(self.s, "gives_post", None) is not None and not self.s.gives_post(p))
             if not out and p.rendered and p.pid not in known and not channel:   # with Stars: its Combine
                 # a block's image sent to Post (a branch made for it) is shown at once, as the Split images are
-                sent = getattr(p, "end", None) is not None or getattr(self.s, "is_sent_branch", lambda q: False)(p)
+                sent = getattr(p, "end", None) is not None or getattr(self.s, "is_sent_branch", lambda q: False)(p) or \
+                    getattr(self.s, "is_plain_image", lambda q: False)(p)
                 self.layers.insert(0, new_workflow_layer(
                     p.pid, p.name + (" · " + POST_PART_NAMES["combined"] if stars else ""), bool(sent),
                     part="combined" if stars else None))
@@ -1628,11 +1633,22 @@ class PostView(QWidget):
         if lay["kind"] == "workflow":
             m.addSeparator()
             m.addAction(_("Show workflow  →")).triggered.connect(lambda: self.goResults.emit(lay["pid"]))
+            q = self.path(lay["pid"])
+            if getattr(self.s, "is_plain_image", lambda x: False)(q):      # told from its file when it can be
+                a = m.addAction(_("Already stretched"))
+                a.setCheckable(True)
+                a.setChecked(bool(q.source.get("stretched")))
+                a.toggled.connect(lambda on, x=q: self.set_stretched(x, on))
         m.addAction(_("Rename")).triggered.connect(lambda: self.rename(lay))
         if not is_pixel(lay) or sum(map(is_pixel, self.layers)) > 1:
             m.addSeparator()
             m.addAction(_("Delete")).triggered.connect(lambda: (self.select(lay["id"], "layer"), self.delete()))
         m.exec(gpos)
+
+    def set_stretched(self, q, stretched: bool):
+        """An image's kind said by the user: computed again."""
+        self.s.set_image_file(q, stretched=stretched)
+        self.runAsked.emit()
 
     def _dock_panel(self):
         self.split.addWidget(self.right)
@@ -2479,6 +2495,7 @@ class PostView(QWidget):
 class PostPage3(QWidget):
     """The Post, or what is missing for it."""
     goWorkflow = Signal()
+    openImages = Signal()
 
     def __init__(self, session, parent=None, *, worker: RenderWorker | None = None, persist: bool = True):
         super().__init__(parent)
@@ -2500,6 +2517,11 @@ class PostPage3(QWidget):
         self.empty_list = QVBoxLayout()
         self.empty_list.setSpacing(2)
         ev.addLayout(self.empty_list)
+        o = set_icon(QPushButton(_("Open images…")), "block_image", 16, "on_accent")
+        o.setObjectName("primary")
+        o.setToolTip(_("Each image becomes a layer, and a block in the graph"))
+        o.clicked.connect(self.openImages.emit)
+        ev.addWidget(o, 0, Qt.AlignHCenter)
         b = QPushButton(_("Graph  →"))
         b.setObjectName("link")
         b.clicked.connect(self.goWorkflow.emit)

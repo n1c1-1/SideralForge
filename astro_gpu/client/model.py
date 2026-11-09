@@ -1445,6 +1445,11 @@ class ProjectModel(QObject):
             return True
         return any(n["block"] == "output" and not n["off"] for n in w.blocks)
 
+    def is_plain_image(self, p) -> bool:
+        """An image going to Post as it is: an Image block with a file, no block placed after it."""
+        return isinstance(p.source, dict) and bool(p.source.get("path")) and all(
+            n["block"] == "output" for n in self.graph(p))
+
     def awaits_post(self, p) -> bool:
         """Whether a workflow will give Post an image once its lights, or its image file, are there: its wire to Post
         is drawn dashed until then."""
