@@ -2232,14 +2232,15 @@ class ProjectModel(QObject):
         return sid
 
     def flows_of_session(self, sid: int) -> list[WorkflowView]:
-        """The workflows that read this session alone: they go with it (issue #47)."""
-        return [q for q in self.paths if q.source is None and q.sessions is not None and list(q.sessions) == [sid]]
+        """The workflows that read this session alone: they go with it (issue #47). The last session: all those from the
+        frames."""
+        last = len(self.p.sessions) <= 1
+        return [q for q in self.paths if q.source is None and (q.sessions is None and last or q.sessions is not None
+                                                               and list(q.sessions) == [sid])]
 
     def session_removal_problem(self, sid: int) -> str:
-        """Why a session cannot be taken out (translated), "" when it can: the last one stays; the only session of a
-        fusion's channel stays (GUI exploration 2, decision 3: no empty session in its place, no broken project)."""
-        if len(self.p.sessions) <= 1:
-            return _("only session")
+        """Why a session cannot be taken out (translated), "" when it can: the only session of a fusion's channel stays
+        (GUI exploration 2, decision 3: no broken project)."""
         for q in self.flows_of_session(sid):
             why = self.channel_problem(q)
             if why:
@@ -2247,8 +2248,8 @@ class ProjectModel(QObject):
         return ""
 
     def remove_session(self, sid: int) -> bool:
-        """Take a session out of the project (its files are never touched); the last one, and the only one of a
-        fusion's channel, stay (``session_removal_problem``)."""
+        """Take a session out of the project (its files are never touched); the only one of a fusion's channel stays
+        (``session_removal_problem``). The last one leaves a project without frames: its workflows from them go too."""
         if self.session_removal_problem(sid):
             return False
         with self._edit():
@@ -2260,7 +2261,9 @@ class ProjectModel(QObject):
                 if w.calibration and str(sid) in w.calibration:    # its Calibration placed in parallel on that night
                     w.calibration = {n: e for n, e in w.calibration.items() if n != str(sid)} or None
             for w in list(self.p.workflows):              # a flow of that session alone goes with it (issue #47)
-                if w.source is None and w.sessions is not None and sid in w.sessions:
+                if w.source is None and w.sessions is None and not self.p.sessions:
+                    api.delete_workflow(self.p, w.id)
+                elif w.source is None and w.sessions is not None and sid in w.sessions:
                     w.sessions = [x for x in w.sessions if x != sid]
                     if not w.sessions:
                         api.delete_workflow(self.p, w.id)

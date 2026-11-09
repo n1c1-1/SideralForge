@@ -6,7 +6,7 @@ window's edge does not flicker:
 
     large    width >= 1600 and height >= 880     exactly today's layout
     medium   width 1280-1599 or height 740-879   compact look
-    small    width < 1280 or height < 740        also: the right panel as icons, the blocks' palette folded
+    small    width < 1280 or height < 740        also: the right panel as icons, the blocks' palette automatic
 
 The automatic layout only applies until the user acts: a panel pinned, folded, resized or toggled is his choice, kept
 per size range (the setting ``layout``); View > Reset layout forgets them. The setting ``layout_density`` (Settings)
@@ -107,9 +107,10 @@ def reset():
 def state(cls: str) -> dict:
     """The panels of this size range: the user's choices, else the automatic layout.
 
-    right: docked | icons, left: docked | folded; hidden (Tab), right_hidden (Shift+Tab), max (Ctrl+Space)."""
+    right: docked | icons, left: docked | folded | auto (its icons, unfolded under the mouse); hidden (Tab), right_hidden
+    (Shift+Tab), max (Ctrl+Space)."""
     small = effective(cls) == SMALL
-    s = {"right": "icons" if small else "docked", "left": "folded" if small else "docked",
+    s = {"right": "icons" if small else "docked", "left": "auto" if small else "docked",
          "hidden": False, "right_hidden": False, "max": False}
     s.update(choices(cls))
     return s

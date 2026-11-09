@@ -20,7 +20,7 @@ if Path("C:/Windows/Fonts").is_dir():
 
 pytest.importorskip("PySide6")
 from PySide6.QtCore import QEvent, QPoint, QPointF, Qt  # noqa: E402
-from PySide6.QtGui import QMouseEvent, QNativeGestureEvent, QPointingDevice, QShortcut, QWheelEvent  # noqa: E402
+from PySide6.QtGui import QEnterEvent, QMouseEvent, QNativeGestureEvent, QPointingDevice, QShortcut, QWheelEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractButton,
@@ -37,7 +37,17 @@ from PySide6.QtWidgets import (  # noqa: E402
 
 from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import layout, prefs  # noqa: E402
-from astro_gpu.client.graph import MIN_SCALE, PALETTE_W, BlockItem, GhostItem, WireItem  # noqa: E402
+from astro_gpu.client import graph as graphmod  # noqa: E402
+from astro_gpu.client.graph import (  # noqa: E402
+    MIN_SCALE,
+    PALETTE_FOLD_MS,
+    PALETTE_FOLDED_W,
+    PALETTE_UNFOLD_MS,
+    PALETTE_W,
+    BlockItem,
+    GhostItem,
+    WireItem,
+)
 from astro_gpu.client.layout import size_class  # noqa: E402
 from astro_gpu.client.services.worker import Gpu, Machine  # noqa: E402
 from astro_gpu.client.viewer import StaticSource, Viewer  # noqa: E402
@@ -210,7 +220,7 @@ def test_a_laptop_window_gets_the_compact_look_and_the_folded_panels(env):
     page = w.graph
     assert w.size_range == "small" and w.compact and w.styleSheet() == layout.COMPACT_QSS
     assert page.dock.state == "icons" and page.dock.strip.isVisible() and page.dock.strip.width() == layout.STRIP_W
-    assert not page.panel.isVisible() and page.left_state == "folded" and page.palette_bar.width() < PALETTE_W
+    assert not page.panel.isVisible() and page.left_state == "auto" and page.palette_bar.width() < PALETTE_W
     assert w.proj_bar.height() == 36
     assert page.graph.width() > 1200                                 # the room goes to the graph
     # a 1920 x 1080 screen at 125 %: compact, the panels docked
@@ -251,6 +261,102 @@ def test_the_icons_open_the_panel_over_the_graph_and_esc_or_a_click_elsewhere_cl
     QTest.mouseClick(page.panel.corner, Qt.LeftButton)
     _settle(w)
     assert page.dock.state == "icons" and layout.choices("small")["right"] == "icons"
+
+
+def _mouse_on_palette(page, inside: bool):
+    bar = page.palette_bar
+    QApplication.sendEvent(bar, QEnterEvent(QPointF(5, 5), QPointF(5, 5), QPointF(bar.mapToGlobal(QPoint(5, 5))))
+                           if inside else QEvent(QEvent.Leave))
+
+
+def test_the_palette_of_a_small_screen_unfolds_under_the_mouse_over_the_graph(env):
+    w = _open(env, (1366, 728))
+    page = w.graph
+    card = page.cards["denoise"]
+    graph_at, y = page.graph.mapTo(page, QPoint(0, 0)), card.y()
+    assert page.palette_slot.width() == page.palette_bar.width() == PALETTE_FOLDED_W and not card.text.isVisible()
+    assert card.width() <= PALETTE_FOLDED_W - 12
+    # the mouse only crossing it opens nothing
+    _mouse_on_palette(page, True)
+    _mouse_on_palette(page, False)
+    QTest.qWait(PALETTE_UNFOLD_MS + 60)
+    assert page.palette_bar.width() == PALETTE_FOLDED_W
+    # staying: unfolded, over the graph, nothing moved
+    _mouse_on_palette(page, True)
+    QTest.qWait(PALETTE_UNFOLD_MS + 60)
+    _settle(w, 2)
+    assert page.palette_bar.width() == PALETTE_W and card.text.isVisible() and card.y() == y
+    assert page.palette_slot.width() == PALETTE_FOLDED_W and page.graph.mapTo(page, QPoint(0, 0)) == graph_at
+    assert page.palette_bar.geometry().right() > graph_at.x() and card.width() > PALETTE_FOLDED_W
+    # a slip out and back keeps it; out for good folds it
+    _mouse_on_palette(page, False)
+    _mouse_on_palette(page, True)
+    QTest.qWait(PALETTE_FOLD_MS + 60)
+    assert page.palette_bar.width() == PALETTE_W
+    _mouse_on_palette(page, False)
+    QTest.qWait(PALETTE_FOLD_MS + 60)
+    _settle(w, 2)
+    assert page.palette_bar.width() == PALETTE_FOLDED_W and not card.text.isVisible() and card.y() == y
+
+
+def test_a_drag_from_the_unfolded_palette_folds_it_and_keeps_its_card(env, monkeypatch):
+    w = _open(env, (1366, 728))
+    page = w.graph
+    card, seen = page.cards["denoise"], []
+
+    class Drag:
+        def __init__(self, source):
+            pass
+
+        def setMimeData(self, m):                                # noqa: N802
+            pass
+
+        def setPixmap(self, p):                                  # noqa: N802
+            pass
+
+        def setHotSpot(self, p):                                 # noqa: N802
+            pass
+
+        def exec(self, action):
+            seen.append(page.palette_bar.width())
+    monkeypatch.setattr(graphmod, "QDrag", Drag)
+    page.unfold_palette(True)
+    assert page.palette_bar.width() == PALETTE_W
+    _press(card, QPoint(5, 5))
+    _move(card, QPoint(40, 5))
+    assert seen == [PALETTE_FOLDED_W] and page.cards["denoise"] is card
+
+
+def test_the_palette_menu_has_three_ways_each_remembered(env, monkeypatch):
+    w = _open(env, (1366, 728))
+    page = w.graph
+    want = []
+    class Menu(QMenu):                                           # built, not run (exec would wait for a click)
+        def exec(self, *a):
+            return next(x for x in self.actions() if x.data() == want[-1])
+    monkeypatch.setattr(graphmod, "QMenu", Menu)
+
+    def choose(state):
+        want.append(state)
+        QTest.mouseClick(page.palette_button, Qt.LeftButton)
+        _settle(w, 2)
+    choose("docked")
+    assert page.left_state == "docked" and page.palette_slot.width() == page.palette_bar.width() == PALETTE_W
+    assert layout.choices("small")["left"] == "docked"
+    _mouse_on_palette(page, False)
+    QTest.qWait(PALETTE_FOLD_MS + 60)
+    assert page.palette_bar.width() == PALETTE_W                 # always open: the mouse leaving changes nothing
+    choose("folded")
+    assert page.left_state == "folded" and page.palette_slot.width() == page.palette_bar.width() == PALETTE_FOLDED_W
+    _mouse_on_palette(page, True)
+    QTest.qWait(PALETTE_UNFOLD_MS + 60)
+    assert page.palette_bar.width() == PALETTE_FOLDED_W          # always folded: the mouse opens nothing
+    _mouse_on_palette(page, False)
+    choose("auto")
+    assert page.left_state == "auto" and layout.choices("small")["left"] == "auto"
+    _mouse_on_palette(page, True)
+    QTest.qWait(PALETTE_UNFOLD_MS + 60)
+    assert page.palette_bar.width() == PALETTE_W
 
 
 def test_tab_shift_tab_and_ctrl_space_with_their_menu_marks(env):

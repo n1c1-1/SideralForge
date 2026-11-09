@@ -273,19 +273,28 @@ def test_branches_parallel_flows_removable_wires_and_the_palette_taking_a_block_
         w.stop()
 
 
-def test_a_lone_session_says_why_it_stays(qapp, tmp_path, monkeypatch):
-    """GUI exploration 2: Del, or the lone Session dragged onto the palette, is refused with the reason (it was
-    silent); the session stays."""
+def test_the_first_blocks_have_their_cross_and_the_last_session_can_go(qapp, tmp_path, monkeypatch):
+    """Session and Calibration are removed as any block; the last Session takes its workflows from the frames with it
+    (files kept), Ctrl+Z brings everything back."""
+    from astro_gpu.client.graph import BlockItem
     w, m, page = open_page(tmp_path, monkeypatch)
     said = []
     page.toasted.connect(said.append)
     try:
+        settle(w, page)
+        crosses = {it.node.key for it in page.graph.scene().items() if isinstance(it, BlockItem) and it.removable}
+        assert {"sources", "calibration"} <= crosses
+        n = len(m.paths)
+        assert len(m.p.sessions) == 1 and n >= 1
         m.select(step="sources")
         settle(w, page)
-        page._delete_selected()                                    # Del
-        assert said == ["Last session: kept"] and len(m.p.sessions) == 1
-        page.remove_tool(Graph(m).root, None)                      # dropped on the palette
-        assert said[-1] == "Last session: kept" and len(m.p.sessions) == 1
+        page._delete_selected()                                    # Del, as the block's cross
+        settle(w, page)
+        assert not m.p.sessions and not [q for q in m.paths if q.source is None]
+        assert "Ctrl+Z" in said[-1] and "files kept" in said[-1]
+        assert m.undo()
+        settle(w, page)
+        assert len(m.p.sessions) == 1 and len(m.paths) == n
     finally:
         page.close()
         m.close(save=False)

@@ -26,8 +26,8 @@ if Path("C:/Windows/Fonts").is_dir():
 
 pytest.importorskip("PySide6")
 from conftest import TEST_PROJECT, full_only, needs_test_project, scratch_project  # noqa: E402
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt  # noqa: E402
-from PySide6.QtGui import QFont, QFontMetricsF  # noqa: E402
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, QRectF, Qt  # noqa: E402
+from PySide6.QtGui import QDropEvent, QFont, QFontMetricsF  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QAbstractButton,
@@ -51,7 +51,7 @@ from astro_gpu import api  # noqa: E402
 from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import i18n, prefs  # noqa: E402
 from astro_gpu.client.blocks import STATE_WORD, Graph, block_state  # noqa: E402
-from astro_gpu.client.graph import BH, BW, MIN_SCALE, PALETTE_W, BlockItem, GraphPage  # noqa: E402
+from astro_gpu.client.graph import BH, BW, LANE, MIN_SCALE, PALETTE_W, BlockItem, GraphPage  # noqa: E402
 from astro_gpu.client.i18n import hm  # noqa: E402
 from astro_gpu.client.model import ProjectModel  # noqa: E402
 from astro_gpu.client.panel import CompactRow, MethodCard  # noqa: E402
@@ -444,7 +444,8 @@ def test_the_palette_offers_every_block_and_says_why_one_cannot_go(world, model,
     page.refresh()
     cards = {c.block: c for c in page.findChildren(PaletteCard)}
     assert cards["stars"].reason == "needs Denoise first"
-    assert cards["stars"].toolTip() == "Needs Denoise first"
+    tip = cards["stars"].toolTip().splitlines()                    # not here, but Classic + denoise can take it
+    assert "Needs Denoise first" in tip and tip[-1] == "Drag it onto another workflow"
     assert page.findChildren(QLabel, "h2")[0].text() == "Blocks"
 
 
@@ -1359,8 +1360,12 @@ def test_the_page_says_it_is_reading_while_the_worker_works(qapp):
 
 def test_dropping_a_block_on_a_lane_puts_it_where_the_rules_say(world, model, page):
     """Issue #47: while a palette block is dragged, its valid places light up; dropped on one, it goes there. GUI
-    exploration 4, Q11: only in the workflow the palette places in ("for …"), a large project lit a hundred places."""
+    exploration 4, Q11: shown at once only in the workflow the palette places in ("for …"), a large project lit a
+    hundred places; another workflow's are there too, shown when the cursor comes on its row."""
     graph = page.graph
+
+    def shown():
+        return {g.pid for g in graph.ghosts if g.isVisible()}
 
     def palette_on(pid):
         model.select(index=model.paths.index(model.view(pid)), step="empilement")
@@ -1369,15 +1374,21 @@ def test_dropping_a_block_on_a_lane_puts_it_where_the_rules_say(world, model, pa
     graph.drag_block = "stars"                                   # a palette block is being dragged
     palette_on(1)
     graph.rebuild()
-    assert not graph.ghosts                                      # Full has Split stars already
+    assert not shown() and {g.pid for g in graph.ghosts} == {3}  # Full has Split stars already, Classic + denoise not
     palette_on(3)
     graph.rebuild()
-    assert {g.pid for g in graph.ghosts} == {3}                  # Classic + denoise: no Split stars yet
+    assert shown() == {3}                                        # Classic + denoise: no Split stars yet
     idx = next(g.idx for g in graph.ghosts if g.pid == 3)
     graph.drag_block = "gradient"
     palette_on(2)
     graph.rebuild()
-    assert {g.pid for g in graph.ghosts} == {2} and len(graph.ghosts) >= 3
+    assert shown() == {2} and len([g for g in graph.ghosts if g.pid == 2]) >= 3
+    other = next(g for g in graph.ghosts if g.pid != 2 and abs(g.rect.center().y() - graph._lanes[2]) > LANE / 2)
+    assert not other.isVisible()
+    assert graph._light_ghost(graph.mapFromScene(other.rect.center())) is other and other.isVisible() and other.hot
+    assert 2 in shown()                                          # the palette's workflow stays shown
+    graph._light_ghost(graph.mapFromScene(QPointF(other.rect.center().x(), graph._lanes[2])))
+    assert not other.isVisible()
     graph.drag_block = None
     graph.rebuild()
     assert not graph.ghosts
@@ -1385,6 +1396,23 @@ def test_dropping_a_block_on_a_lane_puts_it_where_the_rules_say(world, model, pa
     settle(world["w"], page)
     assert model.view(3).opts["etoiles"] == "retirer" and model.sel_step == "etoiles" and model.path.pid == 3
     assert model.undo() and model.view(3).opts["etoiles"] == "garder"
+
+
+def test_a_block_dropped_on_another_workflows_place_goes_there(world, model, page):
+    """A block with several places: dropped on the row of a workflow that is not the selected one, it goes in that one."""
+    graph = page.graph
+    model.select(index=model.paths.index(model.view(2)), step="empilement")
+    graph.drag_block = "gradient"
+    graph.rebuild()
+    other = next(g for g in graph.ghosts if g.pid != 2 and hasattr(g, "idx"))
+    n = len(model.graph(model.view(other.pid)))
+    mime = QMimeData()
+    mime.setText("block:gradient")
+    graph.dropEvent(QDropEvent(QPointF(graph.mapFromScene(other.rect.center())), Qt.CopyAction, mime, Qt.LeftButton,
+                               Qt.NoModifier))
+    settle(world["w"], page)
+    assert len(model.graph(model.view(other.pid))) == n + 1 and model.path.pid == other.pid
+    assert model.undo() and len(model.graph(model.view(other.pid))) == n
 
 
 def test_a_project_without_workflows_has_a_graph_and_an_import_button(qapp, tmp_path):

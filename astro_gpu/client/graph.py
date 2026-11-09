@@ -68,6 +68,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStyleOptionGraphicsItem,
     QToolButton,
     QVBoxLayout,
@@ -363,9 +364,7 @@ class BlockItem(QGraphicsItem):
             self.view.move_wire(e.scenePos())
             return
         press = getattr(self, "_press", None)
-        # a lone Session is dragged too: dropped on the palette, it says why it stays (GUI exploration 2)
-        lone = self.node.key == "session" or (self.node.key == "sources" and len(self.view.s.p.sessions) == 1)
-        if press is not None and (self.removable or lone) and \
+        if press is not None and self.removable and \
                 (e.buttons() & Qt.LeftButton) and \
                 (e.screenPos() - press).manhattanLength() >= QApplication.startDragDistance():
             self._press = None                            # issue #54: dragged out to the palette, it is removed
@@ -480,6 +479,7 @@ class GhostItem(QGraphicsItem):
         super().__init__()
         self.rect, self.text, self.on_click, self.pid, self.role = rect, text, on_click, pid, role
         self.hot = False
+        self.far = False                                 # another workflow's place: shown when the cursor is on its row
         self.setAcceptHoverEvents(True)
 
     def boundingRect(self):                                           # noqa: N802
@@ -932,8 +932,8 @@ class GraphView(QGraphicsView):
                 continue                                  # a blank page is empty (issue #47)
             title = node_title(s, n)
             removable = n.key == "composition" or (n.key in ("image", "fusion", "calibration") and bool(n.paths)) or \
-                (n.key == "session" and len(s.p.sessions) > 1) or (n.sid is None and bool(n.paths) and kbase(n.key)
-                                                                   not in ("sources", "final", "session", "post"))
+                n.key == "session" or (n.key == "sources" and len(s.p.sessions) == 1) or \
+                (n.sid is None and bool(n.paths) and kbase(n.key) not in ("sources", "final", "session", "post"))
             dim = cur is not None and n.key not in ("sources", "final", "session") and n.sid is None \
                 and cur not in n.paths
             it = BlockItem(self, n, title, g.summary(n), g.state(n), n is sel or (sel is not None and n.key ==
@@ -1000,9 +1000,9 @@ class GraphView(QGraphicsView):
             title = block_title(None, "composition")
             flows = self._flows()
             for n in g.nodes:
-                if n.key == "etoiles" and n.paths and any(p in flows for p in n.paths):
+                if n.key == "etoiles" and n.paths:
                     r = QRectF(cx["composition"] + 4, n.y + BH / 2 + 6, cw["composition"] - 8, BH - 8)
-                    gh = GhostItem(r, title, None, n.paths[0].pid)
+                    gh = GhostItem(r, title, None, next(q for q in flows if q in n.paths).pid)
                     gh.node = n
                     gh.setZValue(8)
                     sc.addItem(gh)
@@ -1029,6 +1029,10 @@ class GraphView(QGraphicsView):
             self.ghosts.append(gh)
         r = sc.itemsBoundingRect().adjusted(-MARGIN, -10, MARGIN, 24)
         sc.setSceneRect(r)
+        own = self.palette_flow()
+        for gh in self.ghosts:                            # the graph's size is set by all of them: nothing moves
+            gh.far = own is not None and gh.pid not in (None, NEW_FRAMES, own.pid)
+            gh.setVisible(not gh.far)
         self.show_wait()
         self.map.rows = [(it.sceneBoundingRect(), QColor(STATE_COL.get(it.state, "#5d6470")))
                          for it in sc.items() if isinstance(it, BlockItem)]
@@ -1063,10 +1067,10 @@ class GraphView(QGraphicsView):
         return (None if n is not None and n.sid is not None else n), False
 
     def _flows(self) -> list:
-        """The workflows a dragged palette block can go in: the one the palette says ("for …"; GUI exploration 4, Q11:
-        a large project lit a hundred places at once); every one when it says none."""
+        """The workflows a dragged palette block can go in: all of them, the one the palette says ("for …") first: its
+        places are the ones always shown (a large project would light a hundred at once; GUI exploration 4, Q11)."""
         p = self.palette_flow()
-        return [p] if p is not None and p in self.s.paths else list(self.s.paths)
+        return [p] + [q for q in self.s.paths if q is not p] if p is not None and p in self.s.paths else list(self.s.paths)
 
     def _drop_targets(self, g: Graph, cols: list[str]) -> list[tuple[int, int, str]]:
         """(workflow, index in its graph, the column it opens before) of each place the dragged block can go: before
@@ -1746,9 +1750,13 @@ class GraphView(QGraphicsView):
             self._light_ghost(pos)
 
     def _light_ghost(self, pos):
-        """The place under ``pos`` (in the view) lit, the others not; the place (or None)."""
+        """The place under ``pos`` (in the view) lit, the others not, another workflow's shown on its row; the place
+        (or None)."""
         hit = self._ghost_at(pos)
+        y = self.mapToScene(pos).y()
         for g in self.ghosts:
+            if g.far:
+                g.setVisible(abs(g.rect.center().y() - y) <= LANE / 2)
             if g.hot != (g is hit):
                 g.hot = g is hit
                 g.update()
@@ -1873,11 +1881,7 @@ class GraphView(QGraphicsView):
         if node.key == "session" or (node.key == "sources" and len(self.s.p.sessions) == 1):   # a lone Session too
             sid = node.sid if node.sid is not None else self.s.p.sessions[0].id                    # (5.2)
             m.addAction(_("Rename session")).triggered.connect(lambda: self.sessionMenu.emit("rename", sid))
-            a = m.addAction(_("Delete") + "\t" + _("Del"))
-            a.triggered.connect(lambda: self.sessionMenu.emit("remove", sid))
-            a.setEnabled(len(self.s.p.sessions) > 1)
-            if len(self.s.p.sessions) <= 1:
-                a.setText(_("Delete") + "  —  " + _("only session"))
+            m.addAction(_("Delete") + "\t" + _("Del")).triggered.connect(lambda: self.sessionMenu.emit("remove", sid))
             m.addSeparator()
             m.addAction(_("Add session…")).triggered.connect(lambda: self.newSession.emit())
             m.exec(pos)
@@ -2234,6 +2238,7 @@ class ToolCard(QFrame):
 #: the palette's width (issue #47): a panel on the left of the graph; folded (issue #44), a column of icons
 PALETTE_W = 140
 PALETTE_FOLDED_W = 46
+PALETTE_UNFOLD_MS, PALETTE_FOLD_MS = 200, 300   # automatic: the mouse only crossing it opens nothing, a slip closes nothing
 NEW_FRAMES = -1        # a block placed "in the workflow from the frames" of sessions that have none yet: it starts one
 #: the palette (issue #47): every block, by group; the sources and the composition blocks are not graph nodes. The
 #: headings are one word, shown in capitals ("FRAMES": its own entry, "Frames" being the frames' block, "Images")
@@ -2248,9 +2253,11 @@ PALETTE_TITLES = {"session": "Session", "image": "Image", "fusion": "Combine cha
 class PaletteCard(QFrame):
     """A block of the palette (issue #47): dragged onto a workflow (only its valid places light up), or placed in the
     current workflow at its usual place by a double-click. Greyed when it cannot be placed: its tooltip says why.
-    ``branch``: it cannot be placed in the chain, but can be set in parallel: available, by a drag only."""
+    ``branch``: it cannot be placed in the current workflow's chain, but can go elsewhere: available, by a drag only;
+    the text says where. ``auto``: in the palette that unfolds by itself: the same card folded or not (``set_narrow``)."""
 
-    def __init__(self, page, block: str, reason: str, parent=None, folded: bool = False, branch: bool = False):
+    def __init__(self, page, block: str, reason: str, parent=None, folded: bool = False, branch: str = "",
+                 auto: bool = False):
         super().__init__(parent)
         self.page, self.block, self.reason, self.branch = page, block, reason, branch
         self._press = None
@@ -2275,23 +2282,32 @@ class PaletteCard(QFrame):
             v.addWidget(IconLabel(role, 20, "normal" if on else "disabled"), 0, Qt.AlignHCenter)
         else:
             v = QHBoxLayout(self)
-            v.setContentsMargins(7, 5, 7, 5)
+            v.setContentsMargins(*((9, 5, 5, 5) if auto else (7, 5, 7, 5)))   # auto: the icon centred in the strip
             v.setSpacing(5)
             v.addWidget(IconLabel(role, 16, "normal" if on else "disabled"), 0, Qt.AlignTop)
             t = QLabel(self.title)
             t.setWordWrap(True)                          # a long name wraps in the palette's width
             t.setStyleSheet("font-weight: 600; font-size: 9pt;" + ("" if on else " color: #555b66;"))
             v.addWidget(t, 1)
+            self.text = t
+            if auto:                                     # its height whether its name shows or not: nothing moves
+                v.addStretch()
+                t.ensurePolished()
+                self.setFixedHeight(max(t.heightForWidth(PALETTE_W - 61), 16) + 12)
         key = view_key(block)
         what = textwrap.fill(_(BY_KEY[key]["what"]), 70) if key in BY_KEY else ""
         if branch:
-            tip = (what + "\n" if what else "") + _("Drag it between blocks for a new branch")
+            tip = "\n".join(t for t in (what, reason[:1].upper() + reason[1:], branch) if t)
         elif reason:                                     # not available: why, the sentence begun with a capital
             tip = reason[:1].upper() + reason[1:]
         else:
             tip = what
         self.setToolTip((self.title + ("\n" + tip if tip else "")) if folded else tip)
         self.setAccessibleName(self.title)
+
+    def set_narrow(self, narrow: bool):
+        self.text.setVisible(not narrow)
+        self.setMaximumWidth(PALETTE_FOLDED_W - 12 if narrow else PALETTE_W - 26)
 
     def mousePressEvent(self, e):                                     # noqa: N802
         self._press = e.position().toPoint()
@@ -2309,6 +2325,7 @@ class PaletteCard(QFrame):
         drag.setMimeData(mime)
         drag.setPixmap(self.grab())
         drag.setHotSpot(QPoint(20, 12))
+        self.page.unfold_palette(False)                  # the places it covers are the first ones
         drag.exec(Qt.CopyAction)
 
     def mouseDoubleClickEvent(self, e):                               # noqa: N802
@@ -2378,7 +2395,7 @@ class GraphPage(QWidget):
         self.tl.setSpacing(4)
         # the palette (issue #47): a panel on the left, its groups one under the other, as the reference apps' tool
         # and library panels; it scrolls in a short window
-        bar = QScrollArea()
+        bar = QScrollArea(self)                          # over the page: unfolded by itself, it covers the graph
         bar.setWidget(tools)
         bar.setWidgetResizable(True)
         bar.setFrameShape(QFrame.NoFrame)
@@ -2393,9 +2410,18 @@ class GraphPage(QWidget):
         bar.setAcceptDrops(True)
         bar.viewport().setAcceptDrops(True)
         bar.viewport().installEventFilter(self)          # issue #54: a placed block dropped here is removed
-        ph.addWidget(bar)
+        bar.installEventFilter(self)                     # the mouse coming and going: the automatic mode
+        self.palette_slot = QWidget()                    # the room it takes in the page
+        self.palette_slot.setFixedWidth(PALETTE_W)
+        ph.addWidget(self.palette_slot)
+        self._unfolded = False
+        self._only_unfolded_items: list[QWidget] = []
+        self._unfold_timer = QTimer(self, singleShot=True, interval=PALETTE_UNFOLD_MS)
+        self._unfold_timer.timeout.connect(lambda: self.unfold_palette(True))
+        self._fold_timer = QTimer(self, singleShot=True, interval=PALETTE_FOLD_MS)
+        self._fold_timer.timeout.connect(lambda: self.unfold_palette(False))
         self.graph = GraphView(project)
-        self.graph.palette_flow = self.palette_path       # Q11: a palette block dragged lights its workflow's places
+        self.graph.palette_flow = self.palette_path       # Q11: a palette block dragged shows its workflow's places first
         cv.addWidget(self.graph, 1)
         ph.addWidget(centre, 1)
         self.panel = Panel(project, steps)
@@ -2564,15 +2590,17 @@ class GraphPage(QWidget):
         s = self.s
         p = self.palette_path()
         folded = self.left_state == "folded"
-        self.tl.setContentsMargins(*((4, 6, 8, 6) if folded else (10, 10, 14, 10)))
+        auto = self.left_state == "auto"
+        self._only_unfolded_items = []
+        self.tl.setContentsMargins(*((4, 6, 8, 6) if folded else (4, 10, 14, 10) if auto else (10, 10, 14, 10)))
         toggle = QToolButton()
-        icon_only(toggle, "fold_right" if folded else "fold_left",
-                  _("Unfold the blocks") if folded else _("Fold the blocks"), 16, "dim")
+        icon_only(toggle, "more", _("Blocks display"), 16, "dim")
         toggle.setAutoRaise(True)
         toggle.setFixedSize(20, 18)
         toggle.setStyleSheet("QToolButton { border: none; padding: 0; } "
                              "QToolButton:hover { background: #2b3446; border-radius: 3px; }")
-        toggle.clicked.connect(lambda: self.sideChosen.emit("left", "docked" if folded else "folded"))
+        toggle.clicked.connect(lambda: self.palette_menu(toggle))
+        self.palette_button = toggle
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         head = QVBoxLayout()
@@ -2580,9 +2608,16 @@ class GraphPage(QWidget):
         if folded:
             top.addStretch(1)
         else:
-            head.addWidget(label(_("Blocks"), "h2"))
-            head.addWidget(label(_('for "{name}"').format(name=p.name) if p is not None else _("new workflow"),
-                                 "small", wrap=True))
+            name = label(_("Blocks"), "h2")
+            text = _('for "{name}"').format(name=p.name) if p is not None else _("new workflow")
+            forw = label(text, "small", wrap=not auto)
+            if auto:                                      # one line: the blocks under it never move
+                forw.setToolTip(text)
+                forw.setText(forw.fontMetrics().elidedText(text, Qt.ElideRight, PALETTE_W - 44))
+                self._only_unfolded(name)
+                self._only_unfolded(forw)
+            head.addWidget(name)
+            head.addWidget(forw)
             top.addLayout(head, 1)
         top.addWidget(toggle, 0, Qt.AlignTop)
         self.tl.addLayout(top)
@@ -2596,18 +2631,77 @@ class GraphPage(QWidget):
             head_l.setStyleSheet("color: #8b93a1; font-size: 8pt; font-weight: 600; letter-spacing: 1px; "
                                  "background: transparent;")
             head_l.setVisible(not folded)                     # folded: only the blocks' first letters
+            if auto:
+                self._only_unfolded(head_l)
             self.tl.addWidget(head_l)
             for b in blocks:
                 reason = self.palette_reason(b, p, split)
-                card = PaletteCard(self, b, reason, folded=folded, branch=bool(reason) and self.branch_possible(b))
+                card = PaletteCard(self, b, reason, folded=folded, branch=self.drag_only(b) if reason else "", auto=auto)
                 self.cards[b] = card
                 self.tl.addWidget(card)
             if title == "Image" and prefs.spec():        # ◇ in Spec mode: not in the engine yet
-                card = PaletteCard(self, "deconv", "◇ " + _("Not in the engine yet."), folded=folded)
+                card = PaletteCard(self, "deconv", "◇ " + _("Not in the engine yet."), folded=folded, auto=auto)
                 self.cards["deconv"] = card
                 self.tl.addWidget(card)
         self.combine_card = self.cards["composition"]
         self.tl.addStretch(1)
+        self._fit_palette()
+
+    def _only_unfolded(self, w: QWidget):
+        """Shown only unfolded: its place kept when it is not, and no width asked of the strip."""
+        sp = w.sizePolicy()
+        sp.setHorizontalPolicy(QSizePolicy.Ignored)
+        sp.setRetainSizeWhenHidden(True)
+        w.setSizePolicy(sp)
+        self._only_unfolded_items.append(w)
+
+    def _fit_palette(self):
+        """The palette's width and, automatic, what shows in it: not built again for a hover (the cards stay under the
+        mouse, the one dragged alive)."""
+        st = self.left_state
+        auto = st == "auto"
+        wide = not (st == "folded" or auto and not self._unfolded)
+        self.palette_bar.setFixedWidth(PALETTE_W if wide else PALETTE_FOLDED_W)
+        self.palette_slot.setFixedWidth(PALETTE_FOLDED_W if st in ("folded", "auto") else PALETTE_W)
+        if auto:
+            m = self.tl.contentsMargins()
+            m.setRight(14 if wide else 8)
+            self.tl.setContentsMargins(m)
+            for w in self._only_unfolded_items:
+                w.setVisible(wide)
+            for card in self.cards.values():
+                card.set_narrow(not wide)
+        self._place_palette()
+
+    def _place_palette(self):
+        self.palette_bar.setGeometry(0, 0, self.palette_bar.width(), self.height())
+        self.palette_bar.raise_()
+
+    def unfold_palette(self, on: bool):
+        """The automatic palette opened over the graph, or back to its icons."""
+        if not on and QApplication.activePopupWidget() is not None:
+            self._fold_timer.start()                      # its menu is open
+            return
+        self._unfold_timer.stop()
+        self._fold_timer.stop()
+        on = on and self.left_state == "auto"
+        if on != self._unfolded:
+            self._unfolded = on
+            self._fit_palette()
+
+    def palette_menu(self, button):
+        """The palette's three ways of showing, as the reference apps' ribbon options."""
+        m = QMenu(self)
+        for state, word in (("auto", "Automatic"), ("docked", "Always open"), ("folded", "Always folded")):
+            a = m.addAction(_(word))
+            a.setCheckable(True)
+            a.setChecked(state == self.left_state)
+            a.setData(state)
+        a = m.exec(button.mapToGlobal(button.rect().bottomLeft()))
+        state = a.data() if a is not None else None
+        m.deleteLater()
+        if state and state != self.left_state:
+            self.sideChosen.emit("left", state)
 
     def set_layout(self, right: str, left: str, solo: bool):
         """Issue #44: the right panel (docked | icons | hidden), the blocks' palette (docked | folded | hidden) and the
@@ -2616,8 +2710,11 @@ class GraphPage(QWidget):
         self.dock.set_state(right)
         if left != self.left_state:
             self.left_state = left
-            self.palette_bar.setFixedWidth(PALETTE_FOLDED_W if left == "folded" else PALETTE_W)
+            self._unfolded = False
+            self._unfold_timer.stop()
+            self._fold_timer.stop()
             self.palette_bar.setVisible(left != "hidden")
+            self.palette_slot.setVisible(left != "hidden")
             self.left_arrow.setVisible(left == "hidden")
             self.build_tools()
         self._place_arrows()
@@ -2628,11 +2725,24 @@ class GraphPage(QWidget):
 
     def resizeEvent(self, e):                                         # noqa: N802
         super().resizeEvent(e)
+        self._place_palette()
         self._place_arrows()
 
     def eventFilter(self, obj, e):                                    # noqa: N802
         """The palette takes a placed block dragged onto it: removed, as dragging out of a toolbar (issue #54)."""
         bar = getattr(self, "palette_bar", None)
+        if bar is not None and obj is bar:
+            if e.type() == QEvent.Enter and self.left_state == "auto":
+                self._fold_timer.stop()
+                if not self._unfolded:
+                    self._unfold_timer.start()
+            elif e.type() == QEvent.Leave:
+                self._unfold_timer.stop()
+                if self._unfolded:
+                    self._fold_timer.start()
+            elif e.type() == QEvent.Hide:                 # another page, Tab
+                self.unfold_palette(False)
+            return False
         if bar is not None and obj is bar.viewport() and e.type() in (QEvent.DragEnter, QEvent.DragMove, QEvent.Drop):
             t = e.mimeData().text() if e.mimeData().hasText() else ""
             node = getattr(self.graph, "_dragged", None)
@@ -2646,11 +2756,22 @@ class GraphPage(QWidget):
             return True
         return super().eventFilter(obj, e)
 
-    def branch_possible(self, block: str) -> bool:
-        """Whether a frame block can be set in parallel somewhere (its card can then be dragged)."""
+    def drag_only(self, block: str) -> str:
+        """Where a block the current workflow cannot take can still be dragged, in words; "" when nowhere."""
         s = self.s
-        return s.ready and block in wfl.FRAME_BLOCKS and any(
-            s.can_branch(q, key, block) for q in self.graph._flows() for key in s.branch_keys(q))
+        if not s.ready or block == "deconv":
+            return ""
+        flows = self.graph._flows()
+        g = self.graph.graph
+        if block == "composition":
+            there = g is not None and any(n.key == "etoiles" and n.paths for n in g.nodes)
+        else:
+            there = block in wfl.IO and any(s.place_indices(q, block) for q in flows)
+        if there:
+            return _("Drag it onto another workflow")
+        if block in wfl.FRAME_BLOCKS and any(s.can_branch(q, key, block) for q in flows for key in s.branch_keys(q)):
+            return _("Drag it between blocks for a new branch")
+        return ""
 
     def palette_reason(self, block: str, p, split) -> str:
         """Why a palette block cannot be placed now (translated), "" when it can."""
@@ -2908,7 +3029,7 @@ class GraphPage(QWidget):
         if self.graph.remove_selected_wire():             # issue #52: a selected wire first
             return
         node = self.current_node()
-        if node is not None and node.key != "final":     # a lone Session ("sources") says why it stays
+        if node is not None and node.key != "final":
             self.remove_tool(node, None)
 
     def _rename_selected(self):
@@ -3161,9 +3282,6 @@ class GraphPage(QWidget):
                 else:
                     s.rename_session(sid, name)
         elif action == "remove":
-            if len(s.p.sessions) <= 1:
-                self.toast(_("Last session: kept"))
-                return
             name = s.session(sid).name
             why = s.session_removal_problem(sid)          # a fusion's channel: refused with the reason (decision 3)
             if why:
@@ -3186,7 +3304,7 @@ class GraphPage(QWidget):
         the reason, where the blocks after it need it."""
         s = self.s
         if node is not None and node.key == "sources" and len(s.p.sessions) == 1:
-            self.session_action("remove", s.p.sessions[0].id)   # a lone Session: refused with the reason, as its menu
+            self.session_action("remove", s.p.sessions[0].id)   # a lone Session: this block stands for it
             return
         if node is None or node.key in ("sources", "final"):
             return
