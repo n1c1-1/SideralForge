@@ -102,7 +102,7 @@ class GroupRow(QFrame):
         v.addWidget(b)
         h.addLayout(v, 1)
         if fill_menu is not None:
-            add = ic.icon_only(QToolButton(), "add", _("Add frames"), 16)
+            add = ic.icon_only(QToolButton(), "add", _("Add files or a folder; they can also be dropped here"), 16)
             add.setAutoRaise(True)
             add.setStyleSheet("QToolButton::menu-indicator { image: none; }")
             menu = QMenu(add)
@@ -190,6 +190,7 @@ class SourcesView(QWidget):
         self.can_post = None                               # callable: Post takes images (the window sets it)
         self._icons: dict[str, list[QListWidgetItem]] = {}
         self._group_token = 0
+        self._reading = False                              # the frames of the kind shown are being read
         self._seq_order: list[int] = []                    # the viewer's sequence: indices of ``items``
         self._syncing = False
         outer = QVBoxLayout(self)
@@ -554,7 +555,18 @@ class SourcesView(QWidget):
                          _("Choose files in the list first"))
         lst.itemSelectionChanged.connect(selection)
         selection()
-        self.lv.addWidget(b, 0, Qt.AlignLeft)
+        add = QPushButton(_("Add…"))                       # the "+" of the row, with its name (issue #61)
+        add.setToolTip(_("Add files or a folder; they can also be dropped here"))
+        menu = QMenu(add)
+        self._fill_add_menu(kind, menu)
+        add.setMenu(menu)
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(b)
+        h.addWidget(add)
+        h.addStretch(1)
+        self.lv.addWidget(row)
 
     def _file_picked(self, it, _prev=None):
         """A file chosen in the list: shown in the viewer."""
@@ -611,10 +623,12 @@ class SourcesView(QWidget):
         self.current_session()
         wid = self.s.path.pid if self.s.path is not None else None
         self._group_token = self.service.request_group(wid, self.group, self.sid)
+        self._reading = True
         self.service.request_frames(wid)
         self.build_left()
         self.build_right()
         self._show_zone()
+        self.update_count()
 
     def _frames_ready(self, data: ProjectFrames):
         self.data = data
@@ -626,6 +640,7 @@ class SourcesView(QWidget):
     def _group_ready(self, kind: str, token: int, items: list):
         if kind != self.group or token != self._group_token:
             return
+        self._reading = False
         same = [it.path for it in items] == [it.path for it in self.items]
         self.items = items
         self._show_zone()
@@ -1016,6 +1031,12 @@ class SourcesView(QWidget):
             self.toggle_keep()
 
     def update_count(self):
+        waiting = self._reading and not self.items and self.sid is not None and bool(self.held(self.group))
+        self.viewer.canvas.message = _("Reading the frames…") if waiting else ""     # never a zero that is not one (#60)
+        self.viewer.canvas.update()
+        if waiting:
+            self.count.setText(_("Reading the frames…"))
+            return
         n_ex = sum(self.excluded(i) for i in range(len(self.items)))
         noun = {"lights": "lights", "darks": "darks", "flats": "flats"}.get(self.group, "frames")
         self.count.setText(_("{n} {noun} · {x} excluded").format(n=len(self.items), noun=_(noun), x=n_ex))

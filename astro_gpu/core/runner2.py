@@ -885,10 +885,11 @@ class _Worker:
         mf = self.store.tmp_dir(job.stage, job.key) / "manifest.json"
         try:
             m = json.loads(mf.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return
+        except (OSError, ValueError):                 # it failed before starting (its settings): the record is made here
+            m = {"stage": job.stage}
         m.update(status="failed", error=msg, traceback=tb)
         try:
+            mf.parent.mkdir(parents=True, exist_ok=True)
             write_json(mf, m)
         except OSError:
             pass

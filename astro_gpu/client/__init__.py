@@ -8,4 +8,6 @@ widgets (widgets.py, viewer.py), the language (i18n.py, locale/), the preference
 """
 
 #: the product's name, as the user sees it (window titles, About, the files it writes); the package keeps its name
-APP_NAME = "SideralForge"
+APP_NAME = "FLOAT"
+#: what the name stands for (never translated)
+APP_MOTTO = "FLOw for AsTrophotography"

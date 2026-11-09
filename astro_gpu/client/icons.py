@@ -25,6 +25,8 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 from .widgets import ACCENT, BAD, DISABLED, ICON, ICON_DIM, INK, OK, WARN
 
 FOLDER = Path(__file__).parent / "icons"
+#: the program's own icon: not a role, it has its colours
+APP_ICON = Path(__file__).parent / "float.svg"
 SIZES = (16, 20)
 DEFAULT_SIZE = 16
 
@@ -117,6 +119,21 @@ def pixmap(role: str, size: int = DEFAULT_SIZE, state: str = "normal", dpr: floa
     pm.setDevicePixelRatio(ratio)
     _cache[key] = pm
     return pm
+
+
+def app_icon() -> QIcon:
+    """The program's icon (the window, the taskbar), drawn for each size the system may ask."""
+    rend = QSvgRenderer(str(APP_ICON))
+    ic = QIcon()
+    for size in (16, 24, 32, 48, 64, 128, 256):
+        img = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
+        img.fill(Qt.transparent)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing)
+        rend.render(p, QRectF(0, 0, size, size))
+        p.end()
+        ic.addPixmap(QPixmap.fromImage(img))
+    return ic
 
 
 def _ratios() -> set[float]:

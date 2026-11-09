@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSplitter,
+    QStyle,
     QStackedWidget,
     QToolButton,
     QVBoxLayout,
@@ -109,6 +110,17 @@ NL = "\n"                                                   # a line break in a 
 FAMILY_COL = {"Stretch": "#c9a35e", "Contrast": "#d98a4e", "Color": "#c46fa8", "Detail": "#5ea1ff",
               "Noise": "#62c2b1", "Combine": "#e06c6c"}
 TW, TH = THUMB                                           # thumbnail size
+LIST_MIN = 110                                           # the layer list, at its smallest
+BRUSH_MIN, BRUSH_MAX = 4.0, 1200.0                       # the mask brush, px across
+
+
+def brush_pos(px: float) -> float:
+    """The slider's position of a brush size: even by ratio, so that the small sizes stay easy to set."""
+    return float(np.log(np.clip(px, BRUSH_MIN, BRUSH_MAX) / BRUSH_MIN) / np.log(BRUSH_MAX / BRUSH_MIN))
+
+
+def brush_px(t: float) -> int:
+    return int(round(BRUSH_MIN * (BRUSH_MAX / BRUSH_MIN) ** t))
 COPY = " (copy)"                                         # a piece of the layer names, translated where shown
 #: what the Stars block's images are, under their name in the properties
 PART_NOTES = {"starless": "The Stars/background block's starless image, stretched like the whole image.",
@@ -161,7 +173,7 @@ def dec(s: str) -> str:
 def offset_text(x: float) -> str:
     """A rendering slider's value, as Lightroom shows it: its offset from the suggested setting (position 2), 0 there,
     with a true minus sign."""
-    return "0" if abs(x - 2) < 0.02 else dec(f"{x - 2:+.1f}").replace("-", "−")
+    return "0" if round(x - 2, 1) == 0 else dec(f"{x - 2:+.1f}").replace("-", "−")
 
 
 def with_unit(v: str, unit: str) -> str:
@@ -188,6 +200,20 @@ def fmt(v, step):
 
 
 # ======================================================================== a continuous slider
+class Step(list):
+    """A step of Post's Undo: the layers, and the crop of that moment."""
+    crop = None
+
+
+class ListSplit(QSplitter):
+    """The divider between the layer list and the settings; says when its height changes."""
+    resized = Signal()
+
+    def resizeEvent(self, e):                                        # noqa: N802 - Qt's name
+        super().resizeEvent(e)
+        self.resized.emit()
+
+
 class ContSlider(QWidget):
     """A slider that glides: `moved` while dragging (draft render), `done` when let go (full render). Double-click
     on the slider or on its name: back to the default (Lightroom's, issue #16)."""
@@ -243,7 +269,18 @@ class ContSlider(QWidget):
         if obj is self.s and e.type() == QEvent.MouseButtonDblClick and e.button() == Qt.LeftButton:
             self.reset()
             return True
+        if obj is self.s and e.type() == QEvent.MouseButtonPress and e.button() == Qt.LeftButton:
+            self._to_click(e.position().x())                 # then Qt's own press takes the handle now under the mouse
         return super().eventFilter(obj, e)
+
+    def _to_click(self, x: float):
+        """A click on the rail: the slider goes where it is clicked (issue #72); on the handle, nothing."""
+        length = self.s.style().pixelMetric(QStyle.PM_SliderLength, None, self.s)
+        span = max(1, self.s.width() - length)
+        at = QStyle.sliderPositionFromValue(0, 1000, self.s.value(), span)
+        if abs(x - (at + length / 2)) > length / 2:
+            self.s.setSliderDown(True)                       # one drag: `done` when let go
+            self.s.setValue(QStyle.sliderValueFromPosition(0, 1000, int(round(x - length / 2)), span))
 
     def value(self) -> float:
         x = self.lo + (self.hi - self.lo) * self.s.value() / 1000
@@ -547,6 +584,7 @@ class PostView(QWidget):
         self._heal_src = None                           # Alt+click: the source set by hand (x, y), then its offset
         self._heal_off = None                           # (dx, dy) of the strokes since, as Photoshop's Aligned
         self.show_mask = False
+        self.crop = None                                 # [x0, y0, x1, y1] of the canvas, or None: a setting of the composition
         self.mask1 = None                               # the selected layer's mask at half resolution (float)
         self.undo, self.redo = [], []
         self._mthumbs: dict[int, QPixmap] = {}
@@ -626,6 +664,10 @@ class PostView(QWidget):
         self.b_cmp.setCheckable(True)
         self.b_cmp.setObjectName("toggle")
         self.b_cmp.setToolTip(_("Before: the bottom layer, suggested settings (C)"))
+        self.b_crop = QPushButton(_("Crop"))
+        self.b_crop.setCheckable(True)
+        self.b_crop.setObjectName("toggle")
+        self.b_crop.setToolTip(_("Crop the picture: nothing is lost, it can be changed at any time (R)"))
         self.b_mask = QPushButton(_("Show mask"))
         self.b_mask.setCheckable(True)
         self.b_mask.setObjectName("toggle")
@@ -650,7 +692,7 @@ class PostView(QWidget):
         for w in (self.b_fit, self.b_100, self.zoom_lab):
             bar.addWidget(w)
         bar.addStretch(1)
-        for w in (self.b_grid, self.b_names, self.b_cmp, self.b_mask, self.b_undo, self.b_redo, self.b_export):
+        for w in (self.b_crop, self.b_grid, self.b_names, self.b_cmp, self.b_mask, self.b_undo, self.b_redo, self.b_export):
             bar.addWidget(w)
         mv.addLayout(bar)
         self.src = PostSource(self)
@@ -660,6 +702,7 @@ class PostView(QWidget):
         self.viewer.overlays.append(self._ann_overlay)
         self.viewer.overlays.append(self._heal_overlay)
         self.viewer.banner = _("Rendering…")
+        self.viewer.crop_box = tuple(self.crop) if self.crop else None
         mv.addWidget(self.viewer, 1)
         self.hint = label("", "small")
         self.hint.setContentsMargins(10, 3, 10, 5)
@@ -701,8 +744,10 @@ class PostView(QWidget):
         self.lbox.setContentsMargins(0, 0, 4, 12)          # (room for a drop line after the last row)
         self.lbox.setSpacing(2)
         self.lsc.setWidget(lh)
-        self.lsc.setMaximumHeight(370)
-        rv.addWidget(self.lsc)
+        top = QWidget()                                  # the list and its buttons, above the divider (issue #76)
+        tv = QVBoxLayout(top)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.addWidget(self.lsc, 1)
         self.drop_line = QFrame(lh)
         self.drop_line.setFixedHeight(3)
         self.drop_line.setStyleSheet(f"background: {ACCENT}; border-radius: 1px;")
@@ -727,8 +772,8 @@ class PostView(QWidget):
         for b in (self.b_open, self.b_align, self.b_filter, self.b_dup, self.b_maskadd, self.b_del):
             btns.addWidget(b)
         btns.addStretch(1)
-        rv.addLayout(btns)
-        rv.addWidget(hline())
+        tv.addLayout(btns)
+        tv.addWidget(hline())
         psc = QScrollArea()
         psc.setWidgetResizable(True)
         psc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -737,7 +782,17 @@ class PostView(QWidget):
         self.pbox.setContentsMargins(0, 0, 14, 0)
         self.pbox.setSpacing(4)
         psc.setWidget(ph)
-        rv.addWidget(psc, 1)
+        self.vsplit = ListSplit(Qt.Vertical)
+        self.vsplit.addWidget(top)
+        self.vsplit.addWidget(psc)
+        self.vsplit.setChildrenCollapsible(False)
+        self.vsplit.setStretchFactor(1, 1)
+        self.vsplit.splitterMoved.connect(lambda *_a: prefs.set("post_list_height", self.lsc.height()))
+        self.vsplit.resized.connect(self._fit_list)
+        self._list_t = QTimer(self)                      # (its own: it goes with the page)
+        self._list_t.setSingleShot(True)
+        self._list_t.timeout.connect(self._fit_list)
+        rv.addWidget(self.vsplit, 1)
         self.psc = psc
         self.folds = Sections(self.pbox, psc)            # its groups fold, as the block panel's sections (issue #44)
         return right
@@ -748,6 +803,8 @@ class PostView(QWidget):
         self.b_100.clicked.connect(lambda: self.viewer.zoom_to(1.0))
         self.b_cmp.toggled.connect(self._compare)
         self.b_mask.toggled.connect(self._mask_view)
+        self.b_crop.toggled.connect(self._crop_tool)
+        self.viewer.cropChanged.connect(self._crop_drawn)
         self.b_grid.toggled.connect(lambda on: self.set_annotations(grid=on))
         self.b_names.toggled.connect(lambda on: self.set_annotations(objects=on))
         self.b_undo.clicked.connect(self.do_undo)
@@ -764,7 +821,7 @@ class PostView(QWidget):
         self.viewer.toolRelease.connect(self._heal_release)
         # Ctrl+Z / Ctrl+Y are the window's Edit > Undo / Redo, which come here while Post is shown (two shortcuts on
         # one key would cancel each other)
-        for seq, fn in (("C", self.b_cmp.toggle), ("M", self.b_mask.toggle), ("F", self.viewer.fit),
+        for seq, fn in (("R", self.b_crop.toggle), ("C", self.b_cmp.toggle), ("M", self._toggle_mask), ("F", self.viewer.fit),
                         ("Ctrl+0", self.viewer.fit), ("1", lambda: self.viewer.zoom_to(1.0)),
                         ("+", lambda: self.viewer.zoom_by(ZOOM_STEP)), ("=", lambda: self.viewer.zoom_by(ZOOM_STEP)),
                         ("Ctrl++", lambda: self.viewer.zoom_by(ZOOM_STEP)),
@@ -822,6 +879,7 @@ class PostView(QWidget):
         if initial:
             post = getattr(getattr(self.s, "p", None), "post", None) or {}
             self.layers = load_layers(post.get("layers"), alive)
+            self._show_crop(post.get("crop"))
             self._saved = json.dumps(save_layers(self.layers), sort_keys=True)
         known = {lay["pid"] for lay in self.layers if lay["kind"] == "workflow"}
         fresh = not known
@@ -901,6 +959,10 @@ class PostView(QWidget):
         p = getattr(self.s, "p", None)
         if not self.persist or p is None or not hasattr(p, "post"):
             return
+        if (p.post or {}).get("crop") != self.crop:
+            p.post = {**(p.post or {}), "crop": self.crop}
+            if hasattr(self.s, "edited"):
+                self.s.edited()
         data = save_layers(self.layers)
         text = json.dumps(data, sort_keys=True)
         if text == self._saved:
@@ -983,13 +1045,28 @@ class PostView(QWidget):
 
     def _stale_thumbs(self):
         for lay in self.layers:
-            if is_pixel(lay) and self._lthumbs.get(lay["id"], (None,))[0] != self._thumb_sig(lay):
+            if is_pixel(lay) and (self._lthumbs.get(lay["id"], (None,))[0] != self._thumb_sig(lay) or
+                                  (is_group(lay) and any((lay["id"], s) not in self._lthumbs for s in SUBS))):
                 yield lay["id"]
 
     @staticmethod
     def _thumb_sig(lay):
         return (lay.get("pid"), lay.get("key"), lay.get("part"), json.dumps(lay["sliders"], sort_keys=True),
                 json.dumps(lay.get("base"), sort_keys=True, default=str), lay.get("linked"))
+
+    def _fit_list(self):
+        """The height of the layer list: the one dragged by hand, else what its rows need, giving way so that the
+        settings fit when they can."""
+        total = self.vsplit.height()
+        want = getattr(self, "_list_want", 0)
+        if total <= 0 or not want:
+            return
+        extra = self.vsplit.widget(0).height() - self.lsc.height()
+        chosen = prefs.get("post_list_height")
+        left = total - extra - self.pbox.sizeHint().height()
+        h = int(chosen) if chosen else max(LIST_MIN, min(want, left))
+        h = min(h, max(LIST_MIN, total - extra - 120))
+        self.vsplit.setSizes([h + extra, total - h - extra])
 
     def _view_changed(self):
         self.zoom_lab.setText(_("Zoom {p}").format(p=with_unit(f"{self.viewer.scale * 100:.0f}", "%")))
@@ -1148,7 +1225,7 @@ class PostView(QWidget):
     def _take_layer_thumbs(self, res):
         changed = False
         for lid, t in res.layer_thumbs.items():
-            lay = self.layer(lid)
+            lay = self.layer(lid[0] if isinstance(lid, tuple) else lid)      # (its id, one of its two images)
             if lay is not None:
                 self._lthumbs[lid] = (self._thumb_sig(lay), pix(t))
                 changed = True
@@ -1217,7 +1294,9 @@ class PostView(QWidget):
         if self._ann is None or self.show_mask or not (self.ann_show["grid"] or self.ann_show["objects"]):
             return
         from .annotate import paint
-        paint(p, self._ann, v, self.ann_show)
+        W, H = self.src.size()
+        x0, y0, x1, y1 = v.crop_box if v.crop_box and not v.crop_edit else (0, 0, W, H)
+        paint(p, self._ann, v, self.ann_show, QRectF(v.img_to_w(x0, y0), v.img_to_w(x1, y1)))
 
     # ------------------------------------------------------------ the red overlay of the mask being edited
     def _overlay(self, p: QPainter, v: Viewer):
@@ -1231,7 +1310,7 @@ class PostView(QWidget):
     def push(self, before=None):
         """One undo step: the composition before a change. The change itself follows in the same call (or came just
         before it, for a slider let go), so the composition is saved when the event loop comes back, with the change."""
-        self.undo.append(before if before is not None else snapshot(self.layers))
+        self.undo.append(self._step(before if before is not None else snapshot(self.layers)))
         self.redo.clear()
         self._undo_buttons()
         self._save_t.start(0)
@@ -1254,7 +1333,7 @@ class PostView(QWidget):
         """Post's last change undone; with none left, the workflows' (a "To Post" made in the graph, say): one Undo
         for the whole window. True when it was the workflows' step."""
         if self.undo and self.undo[-1] is not MODEL_STEP:
-            self.redo.append(snapshot(self.layers))
+            self.redo.append(self._step(snapshot(self.layers)))
             self.layers = self.undo.pop()
             self._restored()
             return False
@@ -1264,7 +1343,7 @@ class PostView(QWidget):
 
     def do_redo(self) -> bool:
         if self.redo and self.redo[-1] is not MODEL_STEP:
-            self.undo.append(snapshot(self.layers))
+            self.undo.append(self._step(snapshot(self.layers)))
             self.layers = self.redo.pop()
             self._restored()
             return False
@@ -1288,7 +1367,13 @@ class PostView(QWidget):
         self._undo_buttons()
         return done
 
+    def _step(self, layers) -> Step:
+        s = Step(layers)
+        s.crop = self.crop
+        return s
+
     def _restored(self):
+        self._show_crop(getattr(self.layers, "crop", self.crop))
         if self.sel and not self.layer(self.sel[0]):
             self.sel = (self.layers[-1]["id"], "layer") if self.layers else None
         self.rebuild()
@@ -1304,7 +1389,7 @@ class PostView(QWidget):
             draw_icon(qp, QRectF((TW - 20) / 2, (TH - 20) / 2, 20, 20), "filter_layer", "dim", 20)
             qp.end()
             return pm
-        hit = self._lthumbs.get(lay["id"])
+        hit = self._lthumbs.get((lay["id"], lay["sub"]) if lay["kind"] == "sub" else lay["id"])
         if hit is not None:
             return hit[1]
         pm = QPixmap(TW, TH)
@@ -1329,6 +1414,9 @@ class PostView(QWidget):
         for row in self.rows:
             if is_pixel(row.lay) and row.lay["id"] in self._lthumbs:
                 row.t.setPixmap(self._lthumbs[row.lay["id"]][1])
+            elif row.lay["kind"] == "sub" and (row.lay["id"], row.lay["sub"]) in self._lthumbs:
+                row.t.setPixmap(self.thumb(row.lay).scaled(TW * 2 // 3, TH * 2 // 3, Qt.KeepAspectRatio,
+                                                           Qt.SmoothTransformation))
 
     def build_filter_menu(self):
         """+ Filter: a menu by family."""
@@ -1345,6 +1433,7 @@ class PostView(QWidget):
     def rebuild(self, props: bool = True):
         """The layers' rows built again; ``props``: the properties panel too (not for a visibility toggle, issue #24:
         its scroll and an open curves editor were lost)."""
+        self._mask_button()
         clear(self.lbox)
         self.rows = []
         ids = {lay["id"] for lay in self.layers}
@@ -1383,7 +1472,8 @@ class PostView(QWidget):
         self.lsc.widget().ensurePolished()
         m = self.lbox.contentsMargins()
         want = sum(w.sizeHint().height() for w in kids) + self.lbox.spacing() * len(kids) + m.top() + m.bottom()
-        self.lsc.setFixedHeight(int(min(382, want + 2 * self.lsc.frameWidth())))
+        self._list_want = int(min(382, want + 2 * self.lsc.frameWidth()))
+        self._list_t.start(0)
         sel_row = next((r for r in self.rows if self.sel and r.lay["id"] == self.sel[0]), None)
         if sel_row is not None:
             # scrolled to the selected row up and down only: the list never stays scrolled sideways (it has no
@@ -1410,6 +1500,8 @@ class PostView(QWidget):
             self.build_props()
 
     def select(self, lid, what):
+        if self.b_crop.isChecked():
+            self.b_crop.setChecked(False)
         if self.sel == (lid, what):
             return
         self.sel = (lid, what)
@@ -1885,6 +1977,11 @@ class PostView(QWidget):
         self.curves_editor = self.function_graph = None
         self.viewer.mode = "pan"
         lay = self.layer(self.sel[0]) if self.sel else None
+        if self.b_crop.isChecked():
+            self.viewer.mode = "crop"
+            self._crop_props()
+            self.pbox.addStretch(1)
+            return
         if lay is None:
             self.pbox.addStretch(1)
             return
@@ -1895,6 +1992,7 @@ class PostView(QWidget):
             self.pbox.addWidget(label(_('Image of "{name}". The filters added while it is selected apply to it only, '
                                         "before the stars are put back on the starless image.").format(
                                             name=layer_name(lay)), "small", wrap=True))
+            self._part_props(lay, self.sel[1])
         else:
             self.layer_props(lay)
         self.pbox.addStretch(1)
@@ -2022,13 +2120,111 @@ class PostView(QWidget):
                     c.currentIndexChanged.connect(lambda i, c=c: self._set(lay, "blend", c.itemData(i)))
                     r.addWidget(c, 1)
                     self.pbox.addLayout(r)
-            pos = lay["sliders"].get(sd.key, 2.0)
-            sl = ContSlider(_(sd.name), 0, 4, pos, 2, ends=[_(e) for e in sd.ends] if sd.ends else None,
-                            show=offset_text)
-            ok, why, _need = self.s.slider_state(p, sd.key, part)   # the model answers in the language of the screen
-            sl.set_available(ok, why)
-            self._wire(sl, lambda v, k=sd.key: self._slider(lay, k, v))
-            self.pbox.addWidget(sl)
+            self._add_slider(lay, p, sd, part)
+
+    def _add_slider(self, lay, p, sd, part):
+        pos = lay["sliders"].get(sd.key, 2.0)
+        sl = ContSlider(_(sd.name), 0, 4, pos, 2, ends=[_(e) for e in sd.ends] if sd.ends else None,
+                        show=offset_text)
+        ok, why, _need = self.s.slider_state(p, sd.key, part)   # the model answers in the language of the screen
+        sl.set_available(ok, why)
+        self._wire(sl, lambda v, k=sd.key: self._slider(lay, k, v))
+        self.pbox.addWidget(sl)
+
+    def _part_props(self, lay, sub):
+        """The sliders of one of a Stars and background layer's two images: those of the layer, the same settings
+        (issue #73)."""
+        p = self.path(lay["pid"])
+        if p is None:
+            return
+        part = lay.get("part")
+        for sd in self.s.slider_infos(p, part):
+            if sd.available and (sd.group == STARS_GROUP) == (sub == "stars"):
+                self._add_slider(lay, p, sd, part)
+
+    # ------------------------------------------------------------ the crop (issue #75): a setting, never a layer
+    def _crop_tool(self, on):
+        v = self.viewer
+        v.crop_edit = on
+        if on and v.crop_box is None and v.source:
+            W, H = v.source.size()
+            v.crop_box = (0, 0, W, H)
+        if not on:
+            v.crop_ratio = None
+            v.crop_box = tuple(self.crop) if self.crop else None
+            v.mode = "pan"
+        v.fit()
+        self.build_props()
+        self.request(final_only=True)
+
+    def _show_crop(self, crop):
+        self.crop = list(crop) if crop else None
+        if not hasattr(self, "viewer"):                  # the page is being built: it reads it from there
+            return
+        if self.b_crop.isChecked():
+            self.b_crop.setChecked(False)
+        self.viewer.crop_box = tuple(self.crop) if self.crop else None
+        self.viewer.fit()
+
+    def _crop_drawn(self):
+        """The box as drawn becomes the crop (one undo step); the whole picture is no crop."""
+        W, H = self.src.size()
+        box = [int(round(c)) for c in self.viewer.crop_box]
+        self._set_crop(None if box == [0, 0, W, H] else box)
+
+    def _set_crop(self, box):
+        self.push()
+        self.crop = box
+        self._crop_info()
+
+    def _crop_info(self):
+        if getattr(self, "crop_size", None) is not None:
+            W, H = self.src.size()
+            x0, y0, x1, y1 = self.crop or (0, 0, W, H)
+            self.crop_size.setText(f"{x1 - x0} × {y1 - y0} px")
+            self.crop_off.setEnabled(self.crop is not None)
+
+    def _crop_props(self):
+        self.pbox.addWidget(label(_("Crop"), "h2"))
+        self.pbox.addWidget(label(_("Drag the handles or the box, or draw a new box. Nothing is lost: the rendering "
+                                    "of the whole image does not change."), "small", wrap=True))
+        r = QHBoxLayout()
+        r.addWidget(label(_("Proportions"), "dim"))
+        W, H = self.src.size()
+        cb = QComboBox()
+        cb.addItem(_("Free"), None)
+        cb.addItem(_("Original"), W / max(H, 1))
+        for name, q in (("3:2", 1.5), ("2:3", 2 / 3), ("16:9", 16 / 9), ("9:16", 9 / 16), ("1:1", 1.0)):
+            cb.addItem(name, q)
+        cb.currentIndexChanged.connect(lambda i: self._crop_ratio(cb.itemData(i)))
+        r.addWidget(cb, 1)
+        self.pbox.addLayout(r)
+        self.crop_ratio_cb = cb
+        self.crop_size = label("", "small")
+        self.pbox.addWidget(self.crop_size)
+        self.crop_off = QPushButton(_("Remove crop"))
+        self.crop_off.clicked.connect(self._crop_remove)
+        self.pbox.addWidget(self.crop_off, 0, Qt.AlignLeft)
+        self._crop_info()
+
+    def _crop_ratio(self, q):
+        """A fixed proportion: the largest box of it inside the present one, at its centre."""
+        v = self.viewer
+        v.crop_ratio = q
+        if q and v.crop_box:
+            x0, y0, x1, y1 = v.crop_box
+            w, h = x1 - x0, y1 - y0
+            w, h = (w, w / q) if w / q <= h else (h * q, h)
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            v.crop_box = (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+            v.update()
+            self._crop_drawn()
+
+    def _crop_remove(self):
+        W, H = self.src.size()
+        self.viewer.crop_box = (0, 0, W, H)
+        self.viewer.update()
+        self._set_crop(None)
 
     def image_props(self, lay):
         """An image layer: where it comes from, its automatic stretch (linked or each channel) and its three
@@ -2235,9 +2431,11 @@ class PostView(QWidget):
             cl.clicked.connect(lambda: self._part_set(part, "strokes", []))
             r.addWidget(cl)
             v.addLayout(r)
-            sz = ContSlider(_("Size"), 4, 400, part["size"], 60, unit="px", step=1)
-            sz.moved.connect(lambda val: (part.__setitem__("size", val), setattr(self.viewer, "brush_r", val / 2)))
-            sz.done.connect(lambda val: (part.__setitem__("size", val), setattr(self.viewer, "brush_r", val / 2)))
+            sz = ContSlider(_("Size"), 0.0, 1.0, brush_pos(part["size"]), brush_pos(60.0),
+                            show=lambda t: with_unit(str(brush_px(t)), "px"))
+            for sig in (sz.moved, sz.done):
+                sig.connect(lambda t: (part.__setitem__("size", float(brush_px(t))),
+                                       setattr(self.viewer, "brush_r", brush_px(t) / 2)))
             v.addWidget(sz)
             hd = ContSlider(_("Hardness"), 0, 100, part["hardness"], 50, unit="%", step=1)
             hd.done.connect(lambda val: part.__setitem__("hardness", val))
@@ -2276,7 +2474,7 @@ class PostView(QWidget):
         part = next((p for p in (lay["mask"]["parts"] if lay and lay["mask"] else [])
                      if p["id"] == self.part_sel and p["src"] == "brush"), None)
         if part:
-            part["size"] = float(np.clip(part["size"] * k, 4, 400))
+            part["size"] = float(np.clip(part["size"] * k, BRUSH_MIN, BRUSH_MAX))
             self.viewer.brush_r = part["size"] / 2
             self.build_props()
 
@@ -2465,6 +2663,20 @@ class PostView(QWidget):
             self._send_before()
         self.viewer.update()
         self._hint()
+
+    def _toggle_mask(self):
+        if self.b_mask.isEnabled():
+            self.b_mask.toggle()
+
+    def _mask_button(self):
+        """Show mask: greyed, the reason on hover, when the selected layer has none (issue #71)."""
+        lay = self.layer(self.sel[0]) if self.sel else None
+        has = lay is not None and lay.get("mask") is not None
+        self.b_mask.setEnabled(has)
+        self.b_mask.setToolTip(_("Mask of the selected layer, in gray (M)") if has else
+                               _("The selected layer has no mask"))
+        if not has and self.b_mask.isChecked():
+            self.b_mask.setChecked(False)
 
     def _mask_view(self, on):
         self.show_mask = on

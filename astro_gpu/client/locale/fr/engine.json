@@ -206,6 +206,8 @@
  "Disk space taken by the calibrated frames.": "Place prise sur le disque par les images calibrées.",
  "The frame all the others are aligned on.": "L'image sur laquelle toutes les autres sont alignées.",
  "Aligned frames": "Images alignées",
+ "Not aligned": "Non alignées",
+ "Frames left out because they could not be aligned.": "Images écartées faute d'alignement.",
  "Frames that could be aligned.": "Images qui ont pu être alignées.",
  "Alignment error": "Erreur d'alignement",
  "Typical gap of the stars after alignment.": "Écart typique des étoiles après l'alignement.",

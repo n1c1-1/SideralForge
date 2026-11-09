@@ -186,3 +186,20 @@ def test_the_palette_card_is_greyed_without_two_images(world):
     settle(w)
     w.graph.build_tools()
     assert w.graph.cards["align_images"].reason == "needs 2 images"
+
+
+def test_a_real_click_selects_the_block_and_its_cross_removes_it(world):
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtTest import QTest
+    w = world
+    w.show()
+    w.graph.align_images()
+    settle(w)
+    gv = w.graph.graph
+    QTest.mouseClick(gv.viewport(), Qt.LeftButton, pos=gv.mapFromScene(item(w).sceneBoundingRect().center()))
+    settle(w)
+    assert item(w).selected
+    x = item(w).mapToScene(item(w)._x_rect().center())
+    QTest.mouseClick(gv.viewport(), Qt.LeftButton, pos=gv.mapFromScene(QPointF(x)))
+    settle(w)
+    assert not [i for i in gv.scene().items() if isinstance(i, AlignItem)]

@@ -34,6 +34,13 @@ def test_every_svg_loads_and_paints(role, qapp):
     assert any(img.pixelColor(x, y).alpha() for x in range(20) for y in range(20))
 
 
+def test_the_program_icon_is_drawn_for_each_size_the_system_may_ask(qapp):
+    ic = icons.app_icon()
+    assert {s.width() for s in ic.availableSizes()} == {16, 24, 32, 48, 64, 128, 256}
+    img = ic.pixmap(32, 32).toImage()
+    assert img.pixelColor(16, 16).alpha() == 255 and img.pixelColor(0, 0).alpha() == 0   # rounded corners
+
+
 def test_files_hold_no_colour_and_are_recoloured_in_the_text():
     for role in icons.ROLES:
         src = (icons.FOLDER / f"{role}.svg").read_text(encoding="utf-8")

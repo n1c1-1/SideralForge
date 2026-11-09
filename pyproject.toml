@@ -36,7 +36,7 @@ astro-gpu = "astro_gpu.cli:main"
 
 [project.gui-scripts]
 astro-gpu-client = "astro_gpu.client.app:main"
-sideralforge = "astro_gpu.client.app:main"
+float = "astro_gpu.client.app:main"
 
 [build-system]
 requires = ["hatchling"]

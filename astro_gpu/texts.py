@@ -194,6 +194,7 @@ _METRIC_ROWS: list[tuple] = [
     # register
     ("reference_frame", "Reference frame", "", "", "The frame all the others are aligned on."),
     ("aligned", "Aligned frames", "", "d", "Frames that could be aligned."),
+    ("not_aligned", "Not aligned", "", "d", "Frames left out because they could not be aligned."),
     ("rms_px", "Alignment error", "px", ".3f", "Typical gap of the stars after alignment."),
     ("fwhm_px", "Star FWHM", "px", ".2f", "Median width of the stars."),
     ("fwhm_p10_p90", "Star FWHM range", "px", ".2f", "Star width of the sharpest and of the blurriest frames (10 % and 90 %)."),

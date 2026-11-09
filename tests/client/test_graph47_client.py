@@ -566,6 +566,9 @@ def _blank_page(tmp_path, monkeypatch):
 def test_a_blank_page_has_a_link_to_the_templates_in_place_of_the_graph(qapp, tmp_path, monkeypatch):
     """No window on a new project: the page stays blank, its link shows the six cards in place of the graph, a click
     makes the workflow, Ctrl+Z gives the blank page back."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
     from astro_gpu.client.graph import LinkItem
     w, m, page = _blank_page(tmp_path, monkeypatch)
     page.show()
@@ -574,7 +577,8 @@ def test_a_blank_page_has_a_link_to_the_templates_in_place_of_the_graph(qapp, tm
         link = next(x for x in page.graph.scene().items() if isinstance(x, LinkItem))
         assert link.text == "Start from a template"
         assert not page.templates.isVisibleTo(page)
-        page.graph.templatesAsked.emit()
+        QApplication.processEvents()                      # a real click, through the view (issue #59)
+        QTest.mouseClick(page.graph.viewport(), Qt.LeftButton, pos=page.graph.mapFromScene(link.sceneBoundingRect().center()))
         assert page.templates.isVisibleTo(page) and not page.graph.isVisibleTo(page)
         assert [c.t["key"] for c in page.templates.cards] == ["colour_min", "colour_full", "image", "filters_min",
                                                               "filters_full", "images"]

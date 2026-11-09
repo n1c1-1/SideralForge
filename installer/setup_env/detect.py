@@ -9,7 +9,7 @@ The rule (everybody gets a build that was tested, so one build per family):
 * no NVIDIA card, a driver too old or unreadable, Intel, AMD: the CPU build, with a plain message.
 
 ``detect()`` never raises: whatever goes wrong here ends in the CPU build, the installation goes on.
-``SIDERALFORGE_TEST_GPU`` replaces the detection (``none``, ``nvidia:610.88``, ``amd:Radeon RX 7600``, ``intel:Arc``):
+``FLOAT_TEST_GPU`` replaces the detection (``none``, ``nvidia:610.88``, ``amd:Radeon RX 7600``, ``intel:Arc``):
 end-to-end tests of the installer choose the path they test with it.
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ CUDA_MIN_DRIVER = (528, 33)
 #: the lock file's build for a recent enough NVIDIA card, and for everything else
 CUDA_BUILD = "cu128"
 CPU_BUILD = "cpu"
-TEST_VARIABLE = "SIDERALFORGE_TEST_GPU"
+TEST_VARIABLE = "FLOAT_TEST_GPU"
 #: the longest path Windows opens without long paths, and the longest path of an installed file below the install
 #: folder (173 measured on a real installation of the CUDA build, the longest; a little margin)
 MAX_PATH = 259

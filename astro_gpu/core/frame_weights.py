@@ -61,6 +61,7 @@ MIN_WEIGHT = 0.05
 
 # ------------------------------------------------------------------------------------------------- reason templates
 NOT_ALIGNED = "not aligned"
+SATURATED = "saturated frame"                   # stack.SATURATED
 BY_HAND = "excluded by hand"                    # stack.EXCLUDED
 NO_MEASURE = "no measure of its weight"
 _K = {
@@ -294,14 +295,14 @@ class FrameSelection:
         }
 
 
-def select(weight, fwhm=None, roundness=None, transparency=None, background=None, *, aligned=None, exclude=None,
-           filters: dict | None = None, min_weight: float = MIN_WEIGHT) -> FrameSelection:
+def select(weight, fwhm=None, roundness=None, transparency=None, background=None, *, aligned=None, saturated=None,
+           exclude=None, filters: dict | None = None, min_weight: float = MIN_WEIGHT) -> FrameSelection:
     """The frames left out, with their reasons, and the weights of the others (``weight`` unchanged).
 
     ``weight`` (n,): the stack's weight of each frame (NaN or <= 0 for an aligned frame: no measure); ``fwhm`` (n,)
     px (Moffat), ``roundness`` (n,) minor / major axis (1 = round), ``transparency`` (n,), ``background`` (n,) or
     (n, 3) the sky level: the measures of the filters (None: that filter cannot apply); ``aligned`` (n,) bool (None:
-    all); ``exclude`` (n,) bool: excluded by hand; ``filters`` {criterion: Siril-style spec} over NO_FILTERS (None:
+    all); ``saturated`` (n,) bool: frames without usable pixels (None: none); ``exclude`` (n,) bool: excluded by hand; ``filters`` {criterion: Siril-style spec} over NO_FILTERS (None:
     none, the default); ``min_weight`` relative to the best frame still in (0: none).
 
     Order: not aligned, by hand, the filters (statistics on all aligned frames), no measure of the weight, the
@@ -315,9 +316,13 @@ def select(weight, fwhm=None, roundness=None, transparency=None, background=None
     if unknown:
         raise ValueError(f"unknown frame filter(s) {sorted(unknown)}: {CRITERIA}")
 
+    blank = np.zeros(n, bool) if saturated is None else np.asarray(saturated, bool)
     exclusions: list[Reason] = []
-    for i in np.where(~aligned)[0]:
+    for i in np.where(blank)[0]:
+        exclusions.append(Reason(int(i), "saturated", SATURATED))
+    for i in np.where(~aligned & ~blank)[0]:
         exclusions.append(Reason(int(i), "not_aligned", NOT_ALIGNED))
+    aligned = aligned & ~blank
     for i in np.where(aligned & hand)[0]:
         exclusions.append(Reason(int(i), "by_hand", BY_HAND))
 

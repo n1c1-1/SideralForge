@@ -1,4 +1,4 @@
-"""Builds the SideralForge Windows installer: one command.
+"""Builds the FLOAT Windows installer: one command.
 
     python installer/build.py            # staging + compilation, the .exe in F:/astro_essais/A_REGARDER/installeur
     python installer/build.py lock       # regenerates installer/lock/lock.json (then build)
@@ -8,7 +8,7 @@ The lock file: the versions of the environment the tests pass on (``uv pip freez
 pyproject's dependencies and what they need, for two builds of PyTorch (CUDA and CPU), with each wheel's URL, size and
 SHA-256. Staging gathers what the .exe carries: a private Python (standalone, with Tk), uv, the Visual C++ runtime next
 to python.exe (PyTorch needs it and a clean Windows lacks it), the app's tracked files plus the Stars network (not in
-git), the setup scripts, an icon. Inno Setup compiles sideralforge.iss around it.
+git), the setup scripts, an icon. Inno Setup compiles float.iss around it.
 
 Run with a Python that has Pillow and certifi (the ComfyUI environment here). Inno Setup and uv must be installed.
 """
@@ -86,7 +86,7 @@ def python_version() -> str:
 
 
 def head_size(url: str) -> int:
-    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "SideralForge-build"})
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "FLOAT-build"})
     with urllib.request.urlopen(req, timeout=60) as r:
         return int(r.headers["Content-Length"])
 
@@ -179,16 +179,22 @@ def find_star_model() -> Path:
 
 
 def make_icon(path: Path) -> None:
-    """A dark disc with a four-point star (no image file in the repository)."""
-    from PIL import Image, ImageDraw
-    n = 256
-    im = Image.new("RGBA", (n, n), (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
-    d.ellipse([4, 4, n - 5, n - 5], fill=(18, 26, 48, 255))
-    c, r, w = n / 2, 104, 16
-    d.polygon([(c, c - r), (c + w, c - w), (c + r, c), (c + w, c + w), (c, c + r), (c - w, c + w), (c - r, c), (c - w, c - w)],
-              fill=(244, 232, 190, 255))
-    im.save(path, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+    """The program's icon (client/float.svg) as a Windows .ico, drawn for each of its sizes."""
+    from PIL import Image
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtSvg import QSvgRenderer
+    rend = QSvgRenderer(str(REPO / "astro_gpu" / "client" / "float.svg"))
+    images = []
+    for n in (16, 24, 32, 48, 64, 128, 256):
+        img = QImage(n, n, QImage.Format_RGBA8888)
+        img.fill(Qt.transparent)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing)
+        rend.render(p, QRectF(0, 0, n, n))
+        p.end()
+        images.append(Image.frombuffer("RGBA", (n, n), bytes(img.constBits()), "raw", "RGBA", img.bytesPerLine(), 1).copy())
+    images[-1].save(path, format="ICO", sizes=[i.size for i in images], append_images=images[:-1])
 
 
 def next_stage(base: Path) -> Path:
@@ -238,7 +244,7 @@ def stage(stage_dir: Path, python: str) -> None:
         shutil.copytree(LOCK_FILE.parent / "wheels", setup / "wheels")
     import certifi
     shutil.copy2(certifi.where(), setup / "cacert.pem")
-    make_icon(stage_dir / "sideralforge.ico")
+    make_icon(stage_dir / "float.ico")
 
 
 def iscc() -> str:
@@ -253,11 +259,11 @@ def iscc() -> str:
 def compile_installer(stage_dir: Path, out: Path, version: str) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     limit = detect.root_limit()
-    iss = stage_dir / "sideralforge.iss"
+    iss = stage_dir / "float.iss"
     # ISCC reads non-ASCII text only from a file with a byte-order mark
-    iss.write_text((HERE / "sideralforge.iss").read_text(encoding="utf-8"), encoding="utf-8-sig")
+    iss.write_text((HERE / "float.iss").read_text(encoding="utf-8"), encoding="utf-8-sig")
     run(iscc(), f"/DStageDir={stage_dir}", f"/DOutputDir={out}", f"/DAppVersion={version}", f"/DMaxRootLen={limit}", iss)
-    return out / "SideralForge-Setup.exe"
+    return out / "FLOAT-Setup.exe"
 
 
 def main() -> int:

@@ -135,6 +135,13 @@ class ExportDialog(QDialog):
                                   True)
         self.c_layers = self._check(v, _("Each layer as a separate file"), False)
         self.c_masks = self._check(v, _("The masks"), False)
+        self.c_card = self._check(v, _("Attach the night card (a PNG beside the image)"), False)
+        self.card = getattr(view, "card_source", None)
+        self._card_state()
+        if self.card is not None:
+            self.card.loaded.connect(self._card_state)
+            if not self.card.card_ready():
+                self.card.refresh()
         # the annotations of Post's view, drawn into the picture (PNG, JPEG, TIFF): handy to show what the image is
         show = dict(getattr(view, "ann_show", None) or {})
         ah = QHBoxLayout()
@@ -186,6 +193,12 @@ class ExportDialog(QDialog):
         it = combo.model().item(i)
         if it is not None:
             it.setFlags(it.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsSelectable)
+
+    def _card_state(self):
+        """The night card can be attached once the registration is read; greyed, it says why."""
+        ok = self.card is not None and self.card.card_ready()
+        self.c_card.setEnabled(ok)
+        self.c_card.setToolTip("" if ok else _("No registration result yet"))
 
     @staticmethod
     def _check(layout, text, on) -> QCheckBox:
@@ -258,7 +271,7 @@ class ExportDialog(QDialog):
     # ------------------------------------------------------------ the job
     def job(self) -> ExportJob:
         folder, name = split_file(self.dest.text())
-        return ExportJob(layers=snapshot(self.view.layers), folder=folder, name=name, format=self.format_key(),
+        return ExportJob(layers=snapshot(self.view.layers), crop=getattr(self.view, "crop", None), folder=folder, name=name, format=self.format_key(),
                          size=int(self.size_cb.currentData() or 0), wcs=self.c_wcs.isEnabled() and self.c_wcs.isChecked(),
                          history=self.c_hist.isChecked(), each_layer=self.c_layers.isChecked(),
                          masks=self.c_masks.isChecked(), project_name=self.pname,
@@ -305,9 +318,11 @@ class ExportDialog(QDialog):
                 log_detail(getattr(self.view, "s", None), error)     # the program's error: in the Log only
             self.status.setStyleSheet(f"color: {WARN};")
             return
+        folder, name = split_file(self.dest.text())
+        if self.c_card.isChecked() and self.c_card.isEnabled():
+            files = list(files) + self.card.save_cards(folder, Path(name).stem)
         self.files = files
         self.bar.setValue(100)
-        folder, _name = split_file(self.dest.text())
         self.status.setText(plural(len(files), "{n} file written to {folder}", "{n} files written to {folder}",
                                    folder=folder))
         self.status.setStyleSheet("")

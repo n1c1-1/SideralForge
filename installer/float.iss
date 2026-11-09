@@ -1,4 +1,4 @@
-; The SideralForge installer: per user, no administrator rights. build.py compiles it with
+; The FLOAT installer: per user, no administrator rights. build.py compiles it with
 ; /DStageDir=<the staged files> /DOutputDir=<where the .exe goes> /DAppVersion=<version> /DMaxRootLen=<characters>.
 ; The files are copied here; the libraries are fetched right after by setup\setup_env.py (its own window, or text when
 ; the installer runs silently). The uninstaller removes only this program's own folders: the user's projects and
@@ -19,21 +19,21 @@
 
 [Setup]
 AppId={{C2C8B4E6-6E20-4A6D-9B44-7F3D2A5E9B11}
-AppName=SideralForge
+AppName=FLOAT
 AppVersion={#AppVersion}
-AppPublisher=SideralForge
-DefaultDirName={autopf}\SideralForge
-DefaultGroupName=SideralForge
+AppPublisher=FLOAT
+DefaultDirName={autopf}\FLOAT
+DefaultGroupName=FLOAT
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 OutputDir={#OutputDir}
-OutputBaseFilename=SideralForge-Setup
-SetupIconFile={#StageDir}\sideralforge.ico
-UninstallDisplayIcon={app}\sideralforge.ico
-UninstallDisplayName=SideralForge
+OutputBaseFilename=FLOAT-Setup
+SetupIconFile={#StageDir}\float.ico
+UninstallDisplayIcon={app}\float.ico
+UninstallDisplayName=FLOAT
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -52,10 +52,10 @@ Name: "fr"; MessagesFile: "compiler:Languages\French.isl"
 [CustomMessages]
 en.DesktopIcon=Create a desktop shortcut
 fr.DesktopIcon=Créer un raccourci sur le Bureau
-en.LaunchApp=Start SideralForge
-fr.LaunchApp=Lancer SideralForge
-en.EnvFailed=The libraries could not be installed completely.%n%nSideralForge will offer to finish the installation the next time it is opened from the Start menu.
-fr.EnvFailed=Les bibliothèques n'ont pas pu être installées entièrement.%n%nSideralForge proposera de terminer l'installation à sa prochaine ouverture depuis le menu Démarrer.
+en.LaunchApp=Start FLOAT
+fr.LaunchApp=Lancer FLOAT
+en.EnvFailed=The libraries could not be installed completely.%n%nFLOAT will offer to finish the installation the next time it is opened from the Start menu.
+fr.EnvFailed=Les bibliothèques n'ont pas pu être installées entièrement.%n%nFLOAT proposera de terminer l'installation à sa prochaine ouverture depuis le menu Démarrer.
 en.TooLong=This folder's path is too long for Windows.%n%nPlease choose a shorter folder, at most %1 characters.
 fr.TooLong=Le chemin de ce dossier est trop long pour Windows.%n%nChoisissez un dossier plus court, de %1 caractères au maximum.
 
@@ -69,11 +69,11 @@ Type: filesandordirs; Name: "{app}\setup"
 Type: filesandordirs; Name: "{app}\python"
 
 [Files]
-Source: "{#StageDir}\*"; Excludes: "sideralforge.iss"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\*"; Excludes: "float.iss"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\SideralForge"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\setup\launch.py"""; WorkingDir: "{app}"; IconFilename: "{app}\sideralforge.ico"
-Name: "{autodesktop}\SideralForge"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\setup\launch.py"""; WorkingDir: "{app}"; IconFilename: "{app}\sideralforge.ico"; Tasks: desktopicon
+Name: "{autoprograms}\FLOAT"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\setup\launch.py"""; WorkingDir: "{app}"; IconFilename: "{app}\float.ico"
+Name: "{autodesktop}\FLOAT"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\setup\launch.py"""; WorkingDir: "{app}"; IconFilename: "{app}\float.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\setup\launch.py"""; WorkingDir: "{app}"; Description: "{cm:LaunchApp}"; Flags: postinstall nowait skipifsilent; Check: EnvReady

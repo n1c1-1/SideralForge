@@ -1,5 +1,5 @@
 """What the Start menu and desktop shortcuts run (with the private Python's pythonw): finishes the installation if a
-former one was stopped, then starts SideralForge, and says so if it cannot start.
+former one was stopped, then starts FLOAT, and says so if it cannot start.
 
     pythonw launch.py [project folder]
 """
@@ -21,7 +21,7 @@ DROP = ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "CONDA_PREFIX")
 
 def alert(text: str):
     try:
-        ctypes.windll.user32.MessageBoxW(0, text, "SideralForge", 0x10)
+        ctypes.windll.user32.MessageBoxW(0, text, "FLOAT", 0x10)
     except (AttributeError, OSError):
         pass
 
@@ -36,7 +36,7 @@ def main(argv=None) -> int:
     env = {**{k: v for k, v in os.environ.items() if k not in DROP}, "PYTHONIOENCODING": "utf-8"}
     logs = ROOT / "logs"
     logs.mkdir(exist_ok=True)
-    log_path = logs / "sideralforge.log"
+    log_path = logs / "float.log"
     with open(log_path, "wb") as log:
         # python.exe in a hidden console (not pythonw): the computing workers it starts then have a console of their
         # own and their child processes never open a window of their own
@@ -46,7 +46,7 @@ def main(argv=None) -> int:
     if rc != 0:
         tail = log_path.read_text(encoding="utf-8", errors="replace")[-1500:]
         fr = setup_env.windows_language() == "fr"
-        alert(("SideralForge s'est arrêté. Détails : " if fr else "SideralForge stopped. Details: ") + f"{log_path}\n\n{tail}")
+        alert(("FLOAT s'est arrêté. Détails : " if fr else "FLOAT stopped. Details: ") + f"{log_path}\n\n{tail}")
     return rc
 
 

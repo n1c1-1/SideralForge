@@ -58,11 +58,12 @@ from PySide6.QtWidgets import (
 from .. import __version__, api
 from ..core import project2
 from ..core.project import Target
-from . import APP_NAME, drafts, prefs
+from . import APP_MOTTO, APP_NAME, drafts, prefs
 from . import layout as lay
 from .gcguard import GuiGarbageCollector
 from .home import HomeView, ask_project_name
 from .i18n import _, language, plain_error, plural, set_language
+from .icons import app_icon
 from .icons import icon as make_icon
 from .icons import IconLabel, icon_only, set_icon
 from .logview import LogPanel
@@ -74,7 +75,7 @@ from .widgets import NEW, QSS, WARN, cap_dialog, clear, label, size_within
 EXTRA_QSS = ("QSlider:horizontal { margin-left: 6px; margin-right: 6px; }"
              "QMenuBar { background: #1c1f26; } QMenuBar::item:selected { background: #2b3446; }")
 HELP = """<h2>{title}</h2>
-<p>{p1}</p><p>{p2}</p>"""
+<p><i>{motto}</i></p><p>{p1}</p><p>{p2}</p>"""
 
 _qt_translator: QTranslator | None = None
 
@@ -346,6 +347,7 @@ class Main(QMainWindow):
         act(v, _("Graph"), lambda: self.set_mode(0), "Ctrl+1", enabled=has, role="graph")
         act(v, _("Inspect"), lambda: self.set_mode(1), "Ctrl+2", enabled=has, role="inspect")
         act(v, _("Post"), lambda: self.set_mode(2), "Ctrl+3", enabled=has, role="layers")
+        act(v, _("Report"), lambda: self.set_mode(3), "Ctrl+4", enabled=has)
         v.addSeparator()
         self.a_hide = act(v, _("Hide panels") + "\tTab", lambda: self.toggle_panels("hidden"), None, True, enabled=has)
         self.a_hide_r = act(v, _("Hide right") + "\tShift+Tab", lambda: self.toggle_panels("right_hidden"), None, True,
@@ -700,7 +702,7 @@ class Main(QMainWindow):
                 self.screens.removeWidget(self.proj_screen)
                 self.proj_screen.deleteLater()
                 self.proj_screen = None
-            self.graph = self.tune = self.frames = self.browser = self.steps = self.post_holder = None   # (steps held
+            self.report = self.graph = self.tune = self.frames = self.browser = self.steps = self.post_holder = None   # (steps held
             self.build_menus()                                                       # the closed model, GUI expl. 4)
         if go_home:
             self.show_home()
@@ -728,7 +730,7 @@ class Main(QMainWindow):
         h.addSpacing(30)
         self.mode_btns = []
         g = QButtonGroup(screen)
-        for i, name in enumerate((_("Graph"), _("Inspect"), _("Post"))):
+        for i, name in enumerate((_("Graph"), _("Inspect"), _("Post"), _("Report"))):
             b = QPushButton(name)
             b.setObjectName("seg")
             b.setCheckable(True)
@@ -758,6 +760,7 @@ class Main(QMainWindow):
         # the modes: Graph, and Inspect (which holds Frames and Post)
         self.modes.addWidget(self.graph_page())
         self.modes.addWidget(self.inspect_page())
+        self.modes.addWidget(self.report_page())
         self.proj_screen = screen
         self.screens.addWidget(screen)
         self.screens.setCurrentWidget(screen)
@@ -765,6 +768,12 @@ class Main(QMainWindow):
             self.run.retranslate()                   # the console of the last run, in the new Log panel
         self.set_mode(self.mode)
         self.apply_layout()
+
+    def report_page(self) -> QWidget:
+        """Report: the measures of a workflow, read-only (issue #81)."""
+        from .report import ReportPage
+        self.report = ReportPage(self.s, self.steps)
+        return self.report
 
     def graph_page(self) -> QWidget:
         """Graph: the toolbar of optional blocks, the GraphView and the block Panel."""
@@ -826,6 +835,7 @@ class Main(QMainWindow):
         page.view.runAsked.connect(self.launch)
         page.view.alignAsked.connect(self.align_layers)
         page.view.goResults.connect(self._go_results)
+        page.view.card_source = self.report              # the night card, for its Export
         page.view.toasted.connect(self.flash)            # what a change of Post did beyond Post (a branch removed)
         page.view.goProcessing.connect(lambda pid, k: (self.select(index=self.s.index_of(pid), step=k),
                                                        self.set_mode(1)))
@@ -895,8 +905,10 @@ class Main(QMainWindow):
             elif i == 1 and s.sel_step == "final":
                 self.select(step=self._last_step or ("post" if s.path is not None else "sources"))
         self.mode = i
-        self.modes.setCurrentIndex(0 if i == 0 else 1)
+        self.modes.setCurrentIndex(0 if i == 0 else 2 if i == 3 else 1)
         self.mode_btns[i].setChecked(True)
+        if i == 3:
+            self.report.refresh()
         if i == 2 and not was_post and self.post_holder is not None and self.post_holder.page is not None:
             self.post_holder.page.refresh()
         if i == 0 and self.graph is not None and getattr(self.graph, "graph", None) is not None:
@@ -950,7 +962,7 @@ class Main(QMainWindow):
         self.title.setText(self.project_name())
         self._title()
         self.update_device_combo()
-        btn = 0 if self.mode == 0 else (2 if s is not None and s.sel_step == "final" else 1)
+        btn = self.mode if self.mode in (0, 3) else (2 if s is not None and s.sel_step == "final" else 1)
         if self.mode != btn:
             self.mode = btn
         self.mode_btns[btn].setChecked(True)
@@ -1021,6 +1033,8 @@ class Main(QMainWindow):
                 line += "  ·  " + (_("nothing after Session: place a block") if not any(
                                        q.source is not None for q in s.paths) else
                                    _("nothing after the sources: place a block"))
+            elif running:                                 # the run says its own time left (issue #67)
+                pass
             elif todo and self.run_refusal(cost):         # refused: said with its reason, never a time to run
                 line += "  ·  " + self.run_refusal(cost)  # (round 2; report shots: the reason only in a tooltip)
             elif todo:
@@ -1137,6 +1151,7 @@ class Main(QMainWindow):
         drafts.clear_recovery(old)
         drafts.discard(old)
         prefs.add_recent(root.as_posix(), name, p.target.name or "")
+        self.title.setText(self.project_name())
         self._title()
         self.flash(_("Project saved"))
         return True
@@ -1467,6 +1482,7 @@ class Main(QMainWindow):
         lv = QVBoxLayout(d)
         t = QLabel(HELP.format(
             title=f"{APP_NAME} {__version__}",
+            motto=APP_MOTTO,
             p1=_("Deep-sky images from a camera's raw frames: calibration, registration, stacking, astrometry, "
                  "color calibration on Gaia, denoise, stars and gradient, then the final image in Post. Each "
                  "workflow keeps its own settings; a block shared by several workflows is computed once."),
@@ -1558,6 +1574,10 @@ def main(argv=None):
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app._gc = GuiGarbageCollector(app)                  # cycles collected on the GUI thread only (gcguard.py)
     app.setApplicationName(APP_NAME)
+    app.setWindowIcon(app_icon())
+    if sys.platform == "win32":                         # the taskbar shows this program's icon, not Python's
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_NAME)
     app.setStyleSheet(QSS + EXTRA_QSS)
     apply_language(prefs.get("language"))
 

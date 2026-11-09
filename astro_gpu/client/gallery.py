@@ -867,14 +867,14 @@ def delete_user_template(key: str) -> None:
 
 
 def export_template(t: dict, path: str) -> None:
-    Path(path).write_text(json.dumps({"format": "sideralforge-template", "version": 1,
+    Path(path).write_text(json.dumps({"format": "float-template", "version": 1,
                                       **{k: t[k] for k in ("tab", "name", "text", "source", "blocks")}},
                                      indent=1, ensure_ascii=False), encoding="utf-8")
 
 
 def import_template(path: str) -> dict:
     d = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(d, dict) or d.get("format") != "sideralforge-template":
+    if not isinstance(d, dict) or d.get("format") != "float-template":
         raise ValueError(_("not a template file"))
     return save_user_template(make_template(str(d.get("name") or Path(path).stem), str(d.get("tab") or "mine"),
                                             str(d.get("text") or ""), str(d.get("source") or "frames"),

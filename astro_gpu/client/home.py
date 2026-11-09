@@ -813,7 +813,7 @@ class HomeView(QWidget):
     def open_other(self):
         f, _x = QFileDialog.getOpenFileName(self, _("Open project"), prefs.last_folder(),
                                             # one kind of file for the user: a project, of this version or older
-                                            _("SideralForge project") + " (*.astroproj project.json)",
+                                            _("FLOAT project") + " (*.astroproj project.json)",
                                             options=QFileDialog.HideNameFilterDetails)   # no file name shown
         if f:
             prefs.remember_folder(Path(f).parent.parent)       # the folder the project's folder is in

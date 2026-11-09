@@ -20,6 +20,7 @@ from ..io.frames import read_cfa, read_colour
 
 SAT_MARK = 65000.0      # value written for saturated pixels in the cache
 VALID_MAX = 60000.0     # anything above is treated as saturated downstream
+MIN_USABLE = 0.5        # the share of a frame's samples below which it has no statistics (issue #64)
 
 
 class CalibrateParams(StageParams):
@@ -580,9 +581,15 @@ def _calib_one(args):
     _G["mm"][idx] = x.astype(np.float16)
     stats = []
     for v in _stat_samples(x, _G.get("cfa") or "RGGB"):
-        v = v[np.isfinite(v) & (v < VALID_MAX)]
-        stats.append(robust_sigma(v))
+        stats.append(_frame_stat(v))
     return idx, stats
+
+
+def _frame_stat(v: np.ndarray) -> tuple[float, float]:
+    """(level, noise) of a frame's samples; NaN for a frame with too few usable ones (a white frame, taken on purpose
+    to mark where a series starts): Selection leaves it out."""
+    ok = np.isfinite(v) & (v < VALID_MAX)
+    return robust_sigma(v[ok]) if ok.mean() >= MIN_USABLE else (np.nan, np.nan)
 
 
 def _stat_samples(x: np.ndarray, cfa: str) -> list[np.ndarray]:
@@ -789,7 +796,6 @@ def _calib_colour(args):
     _G["mm"][idx] = y.astype(np.float16)
     stats = []
     for c in (0, 1, 1, 2):                                  # the same four entries as a Bayer sensor's (their mean)
-        v = x[c, ::4, ::4]
-        stats.append(robust_sigma(v[np.isfinite(v) & (v < VALID_MAX)]))
+        stats.append(_frame_stat(x[c, ::4, ::4]))
     return idx, stats
 

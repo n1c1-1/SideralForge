@@ -46,6 +46,7 @@ class Viewer(QWidget):
     toolRelease = Signal()
     viewChanged = Signal()
     hovered = Signal(float, float)
+    cropChanged = Signal()                               # the crop box was drawn or moved (let go)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -56,7 +57,10 @@ class Viewer(QWidget):
         self.curtain = 0.5
         self.scale = 1.0
         self.cx = self.cy = 0.0
-        self.mode = "pan"                                 # pan | rect | brush | heal
+        self.mode = "pan"                                 # pan | rect | brush | heal | crop
+        self.crop_box = None                              # (x0, y0, x1, y1), image pixels: what is outside is not shown
+        self.crop_edit = False                            # the Crop tool is on: outside only dimmed, with the handles
+        self.crop_ratio = None                            # width / height of a fixed proportion
         self.brush_r = 30.0
         self.overlays = []                                # callables (painter, viewer)
         self.dim_outside = None                           # (x0, y0, x1, y1): darken outside (test zone)
@@ -88,8 +92,9 @@ class Viewer(QWidget):
         if not self.source:
             return
         w, h = self.source.size()
-        self.scale = max(min((self.width() - 16) / w, (self.height() - 16) / h), 0.02)
-        self.cx, self.cy = w / 2, h / 2
+        x0, y0, x1, y1 = self.crop_box if self.crop_box and not self.crop_edit else (0, 0, w, h)
+        self.scale = max(min((self.width() - 16) / (x1 - x0), (self.height() - 16) / (y1 - y0)), 0.02)
+        self.cx, self.cy = (x0 + x1) / 2, (y0 + y1) / 2
         self._fitted = False                              # stays fitted when the widget is resized
         self.viewChanged.emit()
         self.update()
@@ -179,7 +184,8 @@ class Viewer(QWidget):
 
     def _paint(self, p: QPainter):
         p.fillRect(self.rect(), QColor("#0f1115"))
-        if not self.source:
+        if not self.source:                              # the first image is awaited: said (issue #69)
+            self._paint_banner(p)
             return
         if self.compare is not None:
             xs = self.width() * self.curtain
@@ -196,6 +202,8 @@ class Viewer(QWidget):
             p.restore()
             p.setPen(QPen(QColor("#e6a23c"), 1.5, Qt.DashLine))
             p.drawRect(r)
+        if self.crop_box:
+            self._paint_crop(p)
         for ov in self.overlays:
             ov(p, self)
         if self.compare is not None:
@@ -217,18 +225,89 @@ class Viewer(QWidget):
             p.drawEllipse(self._mouse, self.brush_r * self.scale, self.brush_r * self.scale)
         if not self.whole_visible():
             self._minimap(p)
-        if self.banner:
-            f = QFont(self.font())
-            f.setBold(True)
-            p.setFont(f)
-            m = p.fontMetrics()
-            w = m.horizontalAdvance(self.banner) + 24
-            r = QRectF((self.width() - w) / 2, 10, w, m.height() + 10)
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(230, 162, 60, 230))
-            p.drawRoundedRect(r, 4, 4)
-            p.setPen(QColor("#15171c"))
-            p.drawText(r, Qt.AlignCenter, self.banner)
+        self._paint_banner(p)
+
+    def _paint_crop(self, p: QPainter):
+        r = QRectF(self.img_to_w(*self.crop_box[:2]), self.img_to_w(*self.crop_box[2:]))
+        p.save()
+        p.setClipRegion(self._outside(r))
+        p.fillRect(self.rect(), QColor(15, 17, 21, 170 if self.crop_edit else 255))
+        p.restore()
+        if not self.crop_edit:
+            return
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(255, 255, 255, 90), 1))
+        for k in (1, 2):                                 # the thirds
+            x, y = r.left() + r.width() * k / 3, r.top() + r.height() * k / 3
+            p.drawLine(QPointF(x, r.top()), QPointF(x, r.bottom()))
+            p.drawLine(QPointF(r.left(), y), QPointF(r.right(), y))
+        p.setPen(QPen(QColor("#e6a23c"), 1.5))
+        p.drawRect(r)
+        p.setBrush(QColor("#e6a23c"))
+        for pt in self._crop_points(r).values():
+            p.drawRect(QRectF(pt.x() - 4, pt.y() - 4, 8, 8))
+
+    @staticmethod
+    def _crop_points(r: QRectF) -> dict:
+        c = r.center()
+        return {"nw": r.topLeft(), "n": QPointF(c.x(), r.top()), "ne": r.topRight(), "e": QPointF(r.right(), c.y()),
+                "se": r.bottomRight(), "s": QPointF(c.x(), r.bottom()), "sw": r.bottomLeft(), "w": QPointF(r.left(), c.y())}
+
+    def _crop_handle(self, pos: QPointF) -> str | None:
+        """The handle under the mouse, "move" inside the box, None outside it."""
+        if not self.crop_box:
+            return None
+        r = QRectF(self.img_to_w(*self.crop_box[:2]), self.img_to_w(*self.crop_box[2:]))
+        for name, pt in self._crop_points(r).items():
+            if abs(pos.x() - pt.x()) <= 8 and abs(pos.y() - pt.y()) <= 8:
+                return name
+        return "move" if r.contains(pos) else None
+
+    def _crop_moved(self, handle: str, box, start, ix: float, iy: float):
+        """The box while a handle is dragged, inside the image and at its fixed proportion if it has one."""
+        W, H = self.source.size()
+        x0, y0, x1, y1 = box
+        if handle == "move":
+            dx = float(np.clip(ix - start[0], -x0, W - x1))
+            dy = float(np.clip(iy - start[1], -y0, H - y1))
+            return x0 + dx, y0 + dy, x1 + dx, y1 + dy
+        has_x, has_y = any(c in handle for c in "ew"), any(c in handle for c in "ns")
+        ax = (x1 if "w" in handle else x0) if has_x else (x0 + x1) / 2     # what stays still
+        ay = (y1 if "n" in handle else y0) if has_y else (y0 + y1) / 2
+        sx, sy = (1 if ix >= ax else -1), (1 if iy >= ay else -1)
+        w = abs(ix - ax) if has_x else x1 - x0
+        h = abs(iy - ay) if has_y else y1 - y0
+        maxw = (W - ax if sx > 0 else ax) if has_x else 2 * min(ax, W - ax)
+        maxh = (H - ay if sy > 0 else ay) if has_y else 2 * min(ay, H - ay)
+        if self.crop_ratio:
+            r = self.crop_ratio
+            if has_x and has_y:
+                w = max(w, h * r)
+            elif has_y:
+                w = h * r
+            h = w / r
+            f = min(1.0, maxw / max(w, 1e-6), maxh / max(h, 1e-6))
+            w, h = w * f, h * f
+        else:
+            w, h = min(w, maxw), min(h, maxh)
+        a, b = sorted((ax, ax + sx * w)) if has_x else (ax - w / 2, ax + w / 2)
+        c, d = sorted((ay, ay + sy * h)) if has_y else (ay - h / 2, ay + h / 2)
+        return a, c, b, d
+
+    def _paint_banner(self, p: QPainter):
+        if not self.banner:
+            return
+        f = QFont(self.font())
+        f.setBold(True)
+        p.setFont(f)
+        m = p.fontMetrics()
+        w = m.horizontalAdvance(self.banner) + 24
+        r = QRectF((self.width() - w) / 2, 10, w, m.height() + 10)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(230, 162, 60, 230))
+        p.drawRoundedRect(r, 4, 4)
+        p.setPen(QColor("#15171c"))
+        p.drawText(r, Qt.AlignCenter, self.banner)
 
     # ------------------------------------------------------------ minimap (issue #44: as the Inspect viewer's)
     def whole_visible(self) -> bool:
@@ -354,6 +433,13 @@ class Viewer(QWidget):
             self._drag = ("pan", pos, self.cx, self.cy)
         elif e.button() == Qt.LeftButton and self._near_curtain(pos.x()):
             self._drag = ("curtain",)
+        elif e.button() == Qt.LeftButton and self.mode == "crop" and self.source:
+            handle = self._crop_handle(pos)
+            W, H = self.source.size()
+            x, y = float(np.clip(ix, 0, W)), float(np.clip(iy, 0, H))
+            box = self.crop_box if handle else (x, y, x, y)     # outside the box: a new one, from here
+            self._drag = ("crop", handle or "se", box, (ix, iy), self.crop_box)
+            self.crop_box = box
         elif e.button() == Qt.LeftButton and self.mode == "rect":
             self._rect = [(ix, iy), (ix, iy)]
             self._drag = ("rect",)
@@ -377,12 +463,14 @@ class Viewer(QWidget):
             self.setCursor(Qt.PointingHandCursor)
         elif d is None:
             self.setCursor(Qt.SplitHCursor if self._near_curtain(pos.x()) else
-                           (Qt.CrossCursor if self.mode in ("rect",) else
+                           (Qt.CrossCursor if self.mode in ("rect", "crop") else
                             (Qt.BlankCursor if self.mode in ("brush", "heal") else Qt.OpenHandCursor)))
         elif d[0] == "minimap":
             self._minimap_goto(pos)
         elif d[0] == "curtain":
             self.curtain = float(np.clip(pos.x() / max(self.width(), 1), 0.02, 0.98))
+        elif d[0] == "crop":
+            self.crop_box = self._crop_moved(d[1], d[2], d[3], ix, iy)
         elif d[0] == "rect":
             self._rect[1] = (ix, iy)
         elif d[0] == "brush":
@@ -399,7 +487,13 @@ class Viewer(QWidget):
     def mouseReleaseEvent(self, e):
         d = self._drag
         self._drag = None
-        if d and d[0] == "rect" and self._rect:
+        if d and d[0] == "crop":
+            x0, y0, x1, y1 = self.crop_box
+            if x1 - x0 < 8 or y1 - y0 < 8:               # a click, not a box: as it was
+                self.crop_box = d[4]
+            else:
+                self.cropChanged.emit()
+        elif d and d[0] == "rect" and self._rect:
             (ax, ay), (bx, by) = self._rect
             self._rect = None
             if abs(bx - ax) > 8 and abs(by - ay) > 8:

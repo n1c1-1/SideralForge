@@ -1738,3 +1738,25 @@ def test_run_to_here_is_greyed_while_a_run_is_in_progress(win):
     finally:
         s.run_active = False
     assert "run is in progress" not in t._run_button(p, "fond").toolTip()
+
+
+def test_the_report_of_a_computed_project(win, tmp_path):
+    """On real results: the night card, the blocks and the charts, with no path in what is shown."""
+    from astro_gpu.client import report as rep
+    win.set_mode(3)
+    page = win.report
+    for _i in range(400):
+        if page.data is not None:
+            break
+        settle(win, 2)
+    assert page.card_ready() and page.data.reg.n == N_LIGHTS and page.data.fwhm is not None
+    settle(win)
+    page.build()
+    QApplication.processEvents()
+    assert "1. Observation" in page.view.toPlainText() and not rep.PATHS.search(page.view.toPlainText())
+    page.save_png(shots_dir() / "report.png")
+    page.save_pdf(shots_dir() / "report.pdf")
+    assert (shots_dir() / "report.pdf").stat().st_size > 5000
+    files = page.save_cards(shots_dir(), "test")
+    assert files and files[0].stat().st_size > 5000
+    win.set_mode(1)

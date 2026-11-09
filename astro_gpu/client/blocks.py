@@ -703,7 +703,8 @@ class Graph:
             return calibration_counts(inv.get("n_darks", 0), inv.get("n_flats", 0), inv.get("n_bias", 0),
                                       gone=gone_kinds(s))
         if k == "alignement":
-            return _("ref: sharpest frame")
+            left = getattr(getattr(s, "_facts", None), "register", {}).get("not_aligned")
+            return _("{n} not aligned").format(n=left) if left else _("ref: sharpest frame")
         if k == "selection":
             rule = s.selection_rule(p)
             if rule == "min_weight":

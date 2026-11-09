@@ -1,0 +1,197 @@
+"""The Report tab and its night card (issue #81), and the mask brush's size (issue #80)."""
+from __future__ import annotations
+
+import os
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QObject, Signal  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from astro_gpu.client import report as rep  # noqa: E402
+from astro_gpu.client.charts import RegistrationData  # noqa: E402
+from astro_gpu.client.chartview import ChartView  # noqa: E402
+from astro_gpu.client.post3 import BRUSH_MAX, BRUSH_MIN, brush_pos, brush_px  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    yield QApplication.instance() or QApplication([])
+
+
+class Service(QObject):
+    jobReady = Signal(str, int, object)
+    jobFailed = Signal(str, int, str)
+
+    def request_job(self, name, fn, *args):
+        return 1
+
+
+class Steps(QObject):
+    changed = Signal()
+    service = Service()
+
+    def facts(self, p, key):
+        return [("Value of " + key, "1")]
+
+
+def data(n=12, timed=True, figures=True):
+    t = 1000.0 + 15.0 * np.arange(n) if timed else np.full(n, np.nan)
+    reg = RegistrationData(names=[f"f{i}" for i in range(n)], iso=[""] * n, secs=t, fwhm=np.full(n, 9.0),
+                           transp=np.linspace(70, 100, n), nmatch=np.full(n, 50.0), nstars=np.full(n, 80.0),
+                           rms=np.full(n, 0.2), aligned=np.ones(n, bool), dx=np.linspace(0, 5, n), dy=np.zeros(n), ref=2,
+                           scale=2.0, roundness=np.full(n, 0.5))
+    kept = np.ones(n, bool)
+    kept[0] = False
+    d = rep.ReportData(reg=reg, sessions=[("Night 1", list(range(6))), ("Night 2", list(range(6, n)))], kept=kept,
+                       fwhm=np.linspace(2.0, 3.0, n), roundness=np.full(n, 0.9), sky=np.full(n, 800.0),
+                       exposure=np.full(n, 15.0), settings=[("Stacking", "Kappa", 5.0, True), ("Stacking", "Method", "drizzle", False)],
+                       astro=dict(focal_estimate_mm=272.4, field_deg=[7.33, 5.04]))
+    if figures:
+        rep.draw_figures(d, "M 45")
+    return d
+
+
+def page(monkeypatch, state="done", d=None):
+    q = SimpleNamespace(pid=1, name="Full")
+    s = SimpleNamespace(paths=[q], all_stages=lambda p: ("stack",), info=lambda: dict(camera="A7S", n_lights=12, iso_gain=5000.0, n_darks=48, n_flats=62),
+                        p=SimpleNamespace(acquisition={}), target="M 45", name="Pleiades", block_keys=lambda p: ["alignement", "empilement"])
+    monkeypatch.setattr(rep, "block_state", lambda *_a: state)
+    p = rep.ReportPage(s, Steps())
+    p.refresh()
+    p.data = d if d is not None else data()
+    p.build()
+    return p
+
+
+def text(p) -> str:
+    return p.view.toPlainText()
+
+
+def test_the_sizes_are_in_arcseconds_from_the_moffat_fit_and_the_kept_frames(qapp):
+    rows = dict(rep.card_rows(data(figures=False), list(range(6))))
+    assert rows["Frames kept"] == "5 / 6"
+    assert rows["Total exposure"] and rows["Best FWHM"] == '4.2"'           # 2.0 x the 2.09 px of frame 1, the first kept
+
+
+def test_the_card_counts_time_from_the_first_frame_never_the_clock(qapp):
+    d = data(figures=False)
+    x, minutes = rep.elapsed(d.reg, list(range(6)))
+    assert minutes and x[0] == 0.0 and abs(x[-1] - 1.25) < 1e-9
+
+
+def test_a_card_without_times_counts_the_frames(qapp):
+    d = data(timed=False, figures=False)
+    x, minutes = rep.elapsed(d.reg, list(range(6)))
+    assert not minutes and list(x) == [1, 2, 3, 4, 5, 6]
+
+
+def test_the_report_is_numbered_gives_each_block_and_the_recipe_and_a_stale_result_says_so(qapp, monkeypatch):
+    t = text(page(monkeypatch, "stale"))
+    assert "Processing report" in t and "1. Observation" in t and "2. Registration" in t and "3. Stacking" in t
+    assert "4. Recipe" in t and "5. Appendix" in t and "Value of alignement" in t and "Registration → Stacking" in t
+    assert t.count("Outdated") == 2
+
+
+def test_each_figure_has_its_number_and_caption(qapp, monkeypatch):
+    t = text(page(monkeypatch))
+    assert "Figure 1." in t and "Figure 2." in t and "Figure 3." in t and "Open circles" in t
+
+
+def test_the_report_uses_none_of_the_interactive_charts(qapp, monkeypatch):
+    assert not page(monkeypatch).findChildren(ChartView)
+
+
+def test_a_block_the_workflow_does_not_have_is_not_in_its_report(qapp, monkeypatch):
+    assert "Value of fond" not in text(page(monkeypatch))
+
+
+def test_nothing_computed_says_so(qapp, monkeypatch):
+    p = page(monkeypatch, d=rep.ReportData())
+    assert "Nothing computed yet" in text(p) and not p.card_ready()
+
+
+@pytest.mark.parametrize("value,ok", [(5.0, True), ("drizzle", True), (r"F:\photos\raw", False), ("C:/a/b", False),
+                                      ("/home/me/x.fits", False), (["a"], False), (None, False)])
+def test_a_setting_that_names_a_place_stays_out(value, ok):
+    assert rep.shareable(value) is ok
+
+
+def test_the_exports_hold_the_report_and_no_path(qapp, monkeypatch, tmp_path):
+    p = page(monkeypatch)
+    assert not rep.PATHS.search(text(p))
+    p.save_png(tmp_path / "r.png")
+    p.save_pdf(tmp_path / "r.pdf")
+    assert (tmp_path / "r.png").stat().st_size > 2000 and (tmp_path / "r.pdf").read_bytes()[:4] == b"%PDF"
+
+
+def test_one_night_card_per_session_beside_the_image(qapp, monkeypatch, tmp_path):
+    p = page(monkeypatch)
+    assert p.card_ready()
+    names = sorted(f.name for f in p.save_cards(tmp_path, "m45"))
+    assert names == ["m45_night_card_1.png", "m45_night_card_2.png"]
+    assert all((tmp_path / n).stat().st_size > 2000 for n in names)
+
+
+def test_the_brush_goes_to_1200_px_and_small_sizes_stay_on_the_slider():
+    assert BRUSH_MAX == 1200.0 and brush_px(0.0) == BRUSH_MIN and brush_px(1.0) == 1200
+    assert brush_px(brush_pos(60.0)) == 60
+    assert brush_pos(60.0) > 0.4                         # not squeezed at the start of the rail
+
+
+# ------------------------------------------------------------ the shooting details
+def test_the_text_to_paste_says_what_is_known_in_the_language_of_the_forum(qapp, monkeypatch):
+    p = page(monkeypatch)
+    p.lang.setCurrentIndex(p.lang.findData("fr"))
+    t = p.details()
+    assert t.startswith("M 45") and "Appareil : A7S · ISO 5000" in t and "Poses : 11 × 15 s" in t and "Darks : 48" in t
+    assert "Champ : 7,3° × 5,0°" in t and "Échantillonnage : 2,0\"/px" in t and "Traitement : FLOAT" in t
+    assert "Monture" not in t and "Date" not in t                                      # nobody said
+    p.lang.setCurrentIndex(p.lang.findData("en"))
+    assert "Field : 7.3° × 5.0°" in p.details() and "Processing : FLOAT" in p.details()
+
+
+def test_the_camera_clock_never_gives_the_date(qapp, monkeypatch):
+    p = page(monkeypatch)
+    assert not [r for r in rep.shot_rows(p.data, p.s.info(), {}, "en") if r[0] == "date" and r[2]]
+
+
+def test_a_click_enters_a_field_which_is_kept_in_the_project(qapp, monkeypatch):
+    p = page(monkeypatch)
+    assert "click to enter" in text(p)
+    monkeypatch.setattr(rep.QInputDialog, "getText", lambda *a, **k: ("Newton 130/900", True))
+    p.enter("instrument")
+    assert p.s.p.acquisition == {"instrument": "Newton 130/900"} and "Newton 130/900" in text(p)
+    assert "Instrument : Newton 130/900" in p.details()
+
+
+def test_a_field_left_empty_is_forgotten(qapp, monkeypatch):
+    p = page(monkeypatch)
+    p.s.p.acquisition["mount"] = "EQ6"
+    monkeypatch.setattr(rep.QInputDialog, "getText", lambda *a, **k: ("  ", True))
+    p.enter("mount")
+    assert p.s.p.acquisition == {}
+
+
+def test_a_paper_has_no_field_to_click(qapp, monkeypatch):
+    p = page(monkeypatch)
+    assert "click to enter" not in p.document(exporting=True).toPlainText()
+
+
+def test_the_recipe_gives_only_what_differs_from_the_defaults_and_the_appendix_all(qapp, monkeypatch):
+    t = text(page(monkeypatch))
+    recipe, appendix = t.split("5. Appendix")
+    assert "Kappa" in recipe and "Method" not in recipe and "Method" in appendix
+
+
+def test_the_details_stay_in_the_project_file(tmp_path):
+    from astro_gpu.core import project2
+    from astro_gpu.core.project import Target
+    p = project2.create(tmp_path / "A", "A", Target())
+    p.acquisition["mount"] = "EQ6"
+    project2.save(p)
+    assert project2.load(tmp_path / "A").acquisition == {"mount": "EQ6"}

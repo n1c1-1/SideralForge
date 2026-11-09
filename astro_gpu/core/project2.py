@@ -128,6 +128,9 @@ class Project2:
     show_all: bool = False
     render_bases: dict[str, dict[str, Any]] = field(default_factory=dict)
     post: dict[str, Any] = field(default_factory=lambda: {"layers": []})
+    #: what the files do not say of the shooting (instrument, mount, filter, location, date): entered in the Report; no
+    #: part of any result
+    acquisition: dict[str, str] = field(default_factory=dict)
     next_workflow_id: int = 1        # ids are never reused, so an undo can bring a deleted workflow back
     format: int = FORMAT
     root: Path | None = field(default=None, compare=False)
@@ -340,7 +343,8 @@ class Project2:
                 "excluded": [[sid, name] for sid, name in self.excluded], "stack_mode": self.stack_mode,
                 "workflows": [asdict(w) for w in self.workflows], "current": self.current,
                 "current_block": self.current_block, "show_all": self.show_all, "next_workflow_id": self.next_workflow_id,
-                "render_bases": copy.deepcopy(self.render_bases), "post": copy.deepcopy(self.post)}
+                "render_bases": copy.deepcopy(self.render_bases), "post": copy.deepcopy(self.post),
+                "acquisition": dict(self.acquisition)}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any], root: str | Path | None = None) -> Project2:
@@ -368,7 +372,8 @@ class Project2:
                 excluded=_excluded(d.get("excluded") or []), stack_mode=d.get("stack_mode", "together"),
                 workflows=workflows, current=d.get("current"), current_block=str(d.get("current_block") or ""),
                 show_all=bool(d.get("show_all")), render_bases=copy.deepcopy(d.get("render_bases") or {}),
-                post=copy.deepcopy(d.get("post") or {"layers": []}), next_workflow_id=nxt,
+                post=copy.deepcopy(d.get("post") or {"layers": []}), acquisition=dict(d.get("acquisition") or {}),
+                next_workflow_id=nxt,
                 root=Path(root) if root is not None else None)
         p.validate()
         return p

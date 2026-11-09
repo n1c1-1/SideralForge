@@ -36,7 +36,9 @@ from ..postengine import (
     Canvas,
     Composer,
     Provider,
+    SUBS,
     Superseded,
+    is_group,
     is_pixel,
     only_layer,
     source_id,
@@ -634,6 +636,10 @@ class Renderer:
             a = self.composer.cached(lay, 2, canvas)
             if a is not None:
                 out[lay["id"]] = thumb_of(a)
+            for sub in SUBS if is_group(lay) else ():     # its two images, each its own (issue #70)
+                b = self.composer.cached(dict(lay, part=sub), 2, canvas)
+                if b is not None:
+                    out[(lay["id"], sub)] = thumb_of(b)
         return out
 
     def _thumbs(self, req: Request, stop, t0) -> Result:
@@ -648,6 +654,9 @@ class Renderer:
                 raise Superseded()
             if lay["id"] in req.need_thumbs and is_pixel(lay) and self.source.available(source_id(lay)):
                 res.layer_thumbs[lay["id"]] = thumb_of(self.composer.layer_rgb(lay, 2, (0, 0, W, H), cv))
+                for sub in SUBS if is_group(lay) else ():
+                    res.layer_thumbs[(lay["id"], sub)] = thumb_of(
+                        self.composer.layer_rgb(dict(lay, part=sub), 2, (0, 0, W, H), cv))
         res.notes = self.source.notes()
         res.ms = 1000 * (time.perf_counter() - t0)
         return res
@@ -674,6 +683,8 @@ class ExportJob:
     jpeg_quality: int = 93
     #: burned into the PNG / JPEG / TIFF (never the FITS): {"grid": bool, "objects": bool}, or None
     annotations: dict | None = None
+    #: the crop of the composition (x0, y0, x1, y1), canvas pixels, or None: what is written, never what is rendered
+    crop: tuple | None = None
 
 
 def _slug(name: str) -> str:
@@ -746,6 +757,10 @@ def run_export(renderer: Renderer, job: ExportJob, progress, stop=None,
     canvas = cp.canvas_of(layers)
     if canvas is None:
         raise ValueError("no layer has a result to export")
+    crop = tuple(int(v) for v in job.crop) if job.crop else None
+    cut = (lambda a: a[..., crop[1]:crop[3], crop[0]:crop[2]]) if crop else (lambda a: a)
+    shown = Canvas(crop[2] - crop[0], crop[3] - crop[1], (canvas.origin[0] + crop[0], canvas.origin[1] + crop[1])) \
+        if crop else canvas
     folder = Path(job.folder)
     write = writer or getattr(renderer, "writer", None) or (lambda rgb, out, opts, meta: export_rgb(
         rgb, out, opts, meta.get("wcs"), tuple(meta.get("origin") or (0, 0)), meta.get("history")))
@@ -777,15 +792,15 @@ def run_export(renderer: Renderer, job: ExportJob, progress, stop=None,
             ref_pid = None
     sol = renderer.wcs_of(ref_pid) if ref_pid is not None and getattr(renderer, "wcs_of", None) else None
     wcs = export_header(sol) if job.wcs else None
-    meta = {"wcs": wcs, "origin": canvas.origin, "wf": ref_pid if job.wcs else None,
+    meta = {"wcs": wcs, "origin": shown.origin, "wf": ref_pid if job.wcs else None,
             "history": history_of(job, renderer, canvas) if job.history else None}
-    rgb = np.ascontiguousarray(np.moveaxis(comp.rgb, -1, 0))
+    rgb = np.ascontiguousarray(cut(np.moveaxis(comp.rgb, -1, 0)))
     show = dict(job.annotations or {})
     pictures = [f for f in formats if f != "fits32f"]
     if (show.get("grid") or show.get("objects")) and pictures and sol is not None:
         # the annotations (sky grid, named objects) burned into the pictures; the FITS file stays clean, with its WCS
         step("annotations")
-        ann = canvas_annotations(sol, canvas, show)
+        ann = canvas_annotations(sol, shown, show)
         files += write(_burned(rgb, ann, show), folder, ExportOptions(**dict(opts, formats=pictures)), meta)
         rest = [f for f in formats if f not in pictures]
         if rest:
@@ -800,8 +815,8 @@ def run_export(renderer: Renderer, job: ExportJob, progress, stop=None,
             step(f"layer {lay['name']}")
             c = cp.compose(only_layer(layers, lay["id"]), 0, cache=False, stop=stop)
             o = dict(opts, name=f"{job.name}_layer_{_slug(lay['name'])}")
-            files += write(np.ascontiguousarray(np.moveaxis(c.rgb, -1, 0)), folder / "layers", ExportOptions(**o),
-                           {"wcs": wcs, "origin": canvas.origin})
+            files += write(np.ascontiguousarray(cut(np.moveaxis(c.rgb, -1, 0))), folder / "layers", ExportOptions(**o),
+                           {"wcs": wcs, "origin": shown.origin})
             done += 1
     if job.masks:
         for lid in ids_with_mask:
@@ -813,8 +828,8 @@ def run_export(renderer: Renderer, job: ExportJob, progress, stop=None,
                 continue
             lay = next(x for x in layers if x["id"] == lid)
             o = dict(opts, name=f"{job.name}_mask_{_slug(lay['name'])}", formats=["png16"])
-            files += write(np.repeat(m[None], 3, 0).astype(np.float32), folder / "masks", ExportOptions(**o),
-                           {"origin": canvas.origin})
+            files += write(cut(np.repeat(m[None], 3, 0)).astype(np.float32), folder / "masks", ExportOptions(**o),
+                           {"origin": shown.origin})
             done += 1
     progress(1.0, "done")
     return files

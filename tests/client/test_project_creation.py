@@ -109,7 +109,7 @@ def test_the_name_is_asked_at_the_first_save_and_the_project_moves_there(env):
     assert w.project.root == root == w.s.root and (root / project2.FILE).is_file() and not w.s.dirty
     assert project2.load(root).name == "M 42" and len(project2.load(root).sessions) == 1
     assert not old.exists() and prefs.recent()[0]["path"] == root.as_posix()
-    assert w.windowTitle() == "SideralForge · M 42"
+    assert w.windowTitle() == "FLOAT · M 42"
     asked.clear()
     env["mp"].setattr(appmod, "ask_project_name", lambda parent, name="": asked.append(name))
     w.save()
@@ -393,3 +393,53 @@ def test_the_banner_of_a_failure_can_still_be_closed(env):
     w = main(env)
     w.banner.say("Something failed")
     assert w.banner.close_b.isVisibleTo(w.banner) and not w.banner.findChildren(QPushButton)
+
+
+def test_a_real_click_selects_the_project_block(env):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    w = project_with_a_chain(env)
+    gv = w.graph.graph
+    w.show()
+    settle(w)
+    assert not item(w).selected
+    QTest.mouseClick(gv.viewport(), Qt.LeftButton, pos=gv.mapFromScene(item(w).sceneBoundingRect().center()))
+    settle(w)
+    assert item(w).selected
+
+
+def test_the_top_bar_shows_the_name_given_at_the_first_save(env):
+    w = untitled(env)
+    env["mp"].setattr(appmod, "ask_project_name", named(env, "Orion"))
+    w.save()
+    assert "Orion" in w.title.text() and "Orion" in w.windowTitle()
+
+
+def test_the_status_bar_gives_no_duration_during_a_run(env):
+    w = project_with_a_chain(env)
+    env["mp"].setattr(type(w.run), "running", property(lambda s: True))
+    env["mp"].setattr(type(w.run), "progress", lambda s: 0.5)
+    w.refresh()
+    assert "to run" not in w._line
+
+
+@pytest.mark.parametrize("has,word", [(False, "Add lights"), (True, "Open frames")])
+def test_the_session_panel_says_add_lights_while_it_has_none(env, has, word):
+    from PySide6.QtWidgets import QPushButton
+    root = env["tmp"] / "ws" / "Empty"
+    frames = env["tmp"] / "frames"
+    frames.mkdir()
+    (frames / "a.fits").write_bytes(b"x")
+    files = [str(frames)] if has else []
+    p = project2.create(root, "Empty", Target())
+    p.sessions.append(project2.Session(1, "night", lights=files))
+    p.add_workflow("Full", TEMPLATES["Full"])
+    project2.save(p)
+    w = main(env)
+    w.open_project(root)
+    w.worker.wait()
+    settle(w, 12)
+    panel = w.graph.panel
+    panel.session_panel(1)
+    settle(w)
+    assert any(b.text() == word for b in panel.findChildren(QPushButton) if b.isVisibleTo(panel))

@@ -99,16 +99,26 @@ class Register(Stage):
             coef = np.zeros((n, 2, 10))
             nmatch, rms, transp = np.zeros(n, int), np.full(n, np.inf), np.zeros(n)
             failed = []
-            recovered = from_few = 0
+            recovered, from_few = [], 0
+            turn = None                                  # the half turn of the last frame found so
             for i in range(n):
-                r = fit_frame(cats[i], refcat, tree, W, H)
+                r = None
+                if turn is not None:
+                    r, turn = fit_half_turn(cats[i], refcat, tree, W, H, turn)
+                if r is None:
+                    r = fit_frame(cats[i], refcat, tree, W, H)
+                    if r is None or r[1] < 0.3 * min(len(cats[i]), len(refcat)):
+                        h, at = fit_half_turn(cats[i], refcat, tree, W, H)
+                        if h is not None and (r is None or h[1] > r[1]):
+                            r, turn = h, at
                 if r is None and cats[i] is not None and len(cats[i]) >= 30:
                     # no clear vote of the stars (a dense field: the brightest detections change from frame to frame):
                     # the shift from the images themselves (phase correlation), then the same fit (issue #37)
                     sh = phase_shift(mm, i, ref, H, W, info["cfa"])
                     if sh is not None:
                         r = _fit_from(cats[i], refcat, tree, W, H, cats[i][:, :2] - sh, 8.0)
-                        recovered += r is not None
+                        if r is not None:
+                            recovered.append(i)
                 if r is None and sparse:
                     r = fit_sparse(cats[i], refcat, tree, W, H)
                     from_few += r is not None
@@ -142,9 +152,6 @@ class Register(Stage):
         if ref != order[0]:
             ctx.log(f"reference frame: {os.path.basename(meta[order[0]]['path'])} aligned too few of the frames (another "
                     f"field?), {os.path.basename(meta[ref]['path'])} is used")
-        if recovered:
-            ctx.log(f"{recovered} frame(s) aligned from the shift the images' phase correlation gives (no clear vote "
-                    "of their stars)")
         if from_few:
             ctx.log(f"sparse field: {from_few} frame(s) aligned from a few stars (rotation, shift and scale only)")
         fin = np.isfinite(rms)
@@ -153,10 +160,14 @@ class Register(Stage):
             lim = max(2.5, 8 * float(np.median(rms[fin])))
             off = np.where(fin & (rms > lim))[0]
             for i in off:                   # a residual far above the others: a wrong match, not a sharper frame
-                failed.append(meta[i]["path"])
                 rms[i] = np.inf
             if len(off):
-                ctx.log(f"{len(off)} frame(s) aligned with a residual above {lim:.1f} px are left out", "warning")
+                ctx.log(f"{len(off)} frame(s) aligned with a residual above {lim:.1f} px are left out, e.g. "
+                        f"{os.path.basename(meta[off[0]]['path'])}", "warning")
+        kept_rec = sum(1 for i in recovered if np.isfinite(rms[i]))      # each frame said once, by its final outcome
+        if kept_rec:
+            ctx.log(f"{kept_rec} frame(s) aligned from the shift the images' phase correlation gives (no clear vote "
+                    "of their stars)")
         if failed:
             ctx.log(f"{len(failed)} frame(s) could not be aligned and will be ignored, e.g. {failed[0]}", "warning")
         # the transparency from the stars' flux in a fixed aperture (holding their light in every frame), not from
@@ -182,6 +193,8 @@ class Register(Stage):
         ok = np.isfinite(rms)
         ctx.metric("reference_frame", os.path.basename(meta[ref]["path"]))
         ctx.metric("aligned", int(ok.sum()))
+        if not ok.all():
+            ctx.metric("not_aligned", int((~ok).sum()))
         ctx.metric("rms_px", round(float(np.median(rms[ok])), 3))
         ctx.metric("fwhm_px", round(float(np.median(fwhm)), 2))
         ctx.metric("fwhm_p10_p90", [round(float(np.percentile(fwhm, 10)), 2), round(float(np.percentile(fwhm, 90)), 2)])
@@ -340,6 +353,9 @@ def _rotate(xy, ang_deg, W, H):
     return (xy - c) @ R.T + c
 
 
+HALF_TURN = 180.0
+
+
 def initial_rotation(a, b, W, H, max_deg=45.0, step=0.5):
     """(angle, shift) such that b turned by the angle about the frame centre, minus the shift, falls on a: the field of
     an alt-azimuth mount turns during the night. Votes on pair differences for each trial angle (6 px bins, the angle
@@ -383,6 +399,28 @@ def fit_frame(cat, ref, tree, W, H):
     if r2 is not None and r2[2] < max(1.0, 2 * (r[2] if r is not None else 0.5)) and (r is None or r2[1] > r[1]):
         return r2
     return r
+
+
+def fit_half_turn(cat, ref, tree, W, H, near=None):
+    """(fit, its angle) of a frame turned by about half a turn from the reference (the two sides of a meridian flip, a
+    camera put back the other way round: issue #63), (None, None) when it is not one. ``near``: the angle of the last
+    frame found so, tried first, without a search: the frames of a series share it."""
+    if cat is None or len(cat) < 30:
+        return None, None
+
+    def good(r):
+        return r is not None and r[1] >= 0.3 * min(len(cat), len(ref)) and r[2] < 1.0
+    if near is not None:
+        turned = np.c_[_rotate(cat[:, :2], near, W, H), cat[:, 2:]]
+        r = _fit_from(cat, ref, tree, W, H, turned[:, :2] - initial_shift(ref, turned, W, H), 8.0)
+        if good(r):
+            return r, near
+    turned = np.c_[_rotate(cat[:, :2], HALF_TURN, W, H), cat[:, 2:]]
+    ang, s = initial_rotation(ref, turned, W, H)
+    if ang is None:
+        return None, None
+    r = _fit_from(cat, ref, tree, W, H, _rotate(turned[:, :2], ang, W, H) - s, 8.0)
+    return (r, HALF_TURN + ang) if good(r) else (None, None)
 
 
 def _fit_from(cat, ref, tree, W, H, pred, tol):

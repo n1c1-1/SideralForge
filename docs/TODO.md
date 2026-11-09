@@ -14,6 +14,9 @@ option ; meilleur que notre ancien apprentissage sur chaque image, que GraXpert 
    des filtres ordinaires, plus de curseurs « magiques » ; le retrait des étoiles lui-même. l'outil de référence (installé par
    l'utilisateur) sert à comparer et pourra être une option, jamais une dépendance ; la resynthèse des étoiles devient
    le recours en cas de mise au point ou de suivi ratés.
+2. **Une liste de calques compacte dans Post** (issue #88) : une seule vue pour tout le monde, sans réglage. Des lignes
+   de 24 px, une vignette miniature pour les seules images, la grande vignette au survol ; 9 lignes passent d'environ
+   375 px à 215 px, ce qui compte sur un petit écran.
 
 ## Plus tard
 

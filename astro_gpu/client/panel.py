@@ -703,7 +703,7 @@ class Panel(QWidget):
                 self.bv.addWidget(IconText("warning", type_warning_text(w), "warning", "warn"))
         self.bv.addSpacing(8)
         if not self.tune:
-            b = QPushButton(_("Open frames"))
+            b = QPushButton(_("Open frames") if n["lights"] else _("Add lights"))
             b.setObjectName("primary")
             b.setToolTip(_("Opens its files in Inspect: add them there, kind by kind, and review its frames"))
             b.clicked.connect(self.openTune.emit)

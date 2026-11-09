@@ -80,7 +80,7 @@ def test_nvidia_smi_output(monkeypatch):
 
 def test_path_limit(tmp_path):
     assert detect.root_limit() == detect.MAX_PATH - detect.MAX_RELATIVE_PATH
-    assert detect.root_limit() >= len("C:/Users/" + "x" * 20 + "/AppData/Local/Programs/SideralForge")  # the default folder
+    assert detect.root_limit() >= len("C:/Users/" + "x" * 20 + "/AppData/Local/Programs/FLOAT")  # the default folder
 
     class Ui:
         pass
@@ -280,7 +280,7 @@ def test_sync_with_nothing_to_fetch_has_its_folder(tmp_path):
     inst.run_tool = lambda cmd, key: seen.append(inst.downloads.is_dir()) or ""
     inst.sync([fetch.Wheel("numba", "0.68.1", "n.whl", "u", "0" * 64, 1)])
     assert seen == [True]
-    assert (inst.site / "sideralforge_app.pth").read_text(encoding="ascii").strip() == r"..\..\..\app"
+    assert (inst.site / "float_app.pth").read_text(encoding="ascii").strip() == r"..\..\..\app"
 
 
 def test_ready_marker(tmp_path):

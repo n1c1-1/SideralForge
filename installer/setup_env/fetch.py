@@ -119,7 +119,7 @@ def _is_network(e: OSError) -> bool:
 
 
 def _open(url: str, start: int, context: ssl.SSLContext, timeout: float):
-    headers = {"User-Agent": "SideralForge-installer", "Accept-Encoding": "identity"}
+    headers = {"User-Agent": "FLOAT-installer", "Accept-Encoding": "identity"}
     if start:
         headers["Range"] = f"bytes={start}-"
     opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))

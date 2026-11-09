@@ -99,7 +99,9 @@ CLASSIC_VERSION = "2"
 DRIZZLE_BOUNDS_TOLERANCE = 1.0e-5
 #: the codes of the reasons of ``select_frames`` (frames.json "excluded"), in frame_weights' vocabulary
 THRESHOLD_CODES = {"not aligned": "not_aligned", "excluded by hand": "by_hand", "low transparency": "transparency",
-                "large stars": "fwhm"}
+                "large stars": "fwhm", "saturated frame": "saturated"}
+#: why a frame without usable pixels is left out (frame_weights.SATURATED)
+SATURATED = "saturated frame"
 #: the refusal of the Bayer drizzle for frames already in colour (issue #57)
 COLOUR_NO_DRIZZLE = ("Bayer drizzle does not apply to frames already in colour (no mosaic of raw colour samples to "
                      "drop): choose the Classic stack")
@@ -293,11 +295,11 @@ class Stack(Stage):
         scale = float(ctx.metric_of("calibrate", "cache_scale", 1.0))
         if rn:
             rn_c = rn * scale
-            g = float(np.median(m / np.maximum(s_ ** 2 - rn_c ** 2, 1e-3)))
+            g = float(np.nanmedian(m / np.maximum(s_ ** 2 - rn_c ** 2, 1e-3)))
             a["read_noise"] = Auto(round(rn_c, 2), "noise of a single dark frame")
             a["gain"] = Auto(round(g, 4), "sky level vs sky noise of the light frames, read noise removed")
         else:
-            g = float(np.median(m / np.maximum(s_ ** 2, 1e-3)))
+            g = float(np.nanmedian(m / np.maximum(s_ ** 2, 1e-3)))
             a["gain"] = Auto(round(g, 4), "sky level vs sky noise of the light frames (no darks: read noise ignored)")
         return a
 
@@ -1100,16 +1102,22 @@ def halves_noise(A: np.ndarray, B: np.ndarray, w_a: float, w_b: float) -> dict[s
     return out
 
 
+def saturated_frames(stats) -> np.ndarray:
+    """The frames calibrate could not measure, having too few usable pixels (a white frame: issue #64)."""
+    return ~np.isfinite(np.asarray(stats, float)[:, :, :2]).all((1, 2))
+
+
 def quality_weights(transp, fwhm, rms, stats, noise=None) -> tuple[np.ndarray, np.ndarray]:
     """The weight of every aligned frame, (transparency / noise)^2 x sharpness, the best = 1 (0 when not aligned),
     before any frame is left out; and the noise it used: the registration's (``noise``, reg.npz since
     version 2: the pixel noise alone), else the spread of the frame's pixels (``stats``, frame_stats.npy: the nebulae
     and stars of the field in it too)."""
     sig = stats[:, :, 1].mean(1)
-    if noise is not None and np.isfinite(noise).all() and (np.asarray(noise) > 0).all():
+    on = np.isfinite(rms) & ~saturated_frames(stats)    # a frame left out anyway does not change the measure of the others
+    if noise is not None and np.isfinite(np.asarray(noise)[on]).all() and (np.asarray(noise)[on] > 0).all():
         sig = np.asarray(noise, float)
     weight = (transp / sig) ** 2 * (np.percentile(fwhm, 5) / fwhm) ** 2
-    weight = np.where(np.isfinite(rms) & np.isfinite(weight), weight, 0.0)
+    weight = np.where(on & np.isfinite(weight), weight, 0.0)
     weight /= weight.max()
     return weight, sig
 
@@ -1125,6 +1133,7 @@ def select_frames(transp, fwhm, rms, stats, min_transparency: float, max_fwhm_ra
     tmin = min_transparency * np.percentile(transp[np.isfinite(rms)], 90)
     reasons = np.full(n, "", dtype=object)
     reasons[~np.isfinite(rms)] = "not aligned"
+    reasons[saturated_frames(stats)] = SATURATED
     if exclude is not None:
         reasons[(reasons == "") & np.asarray(exclude, bool)] = EXCLUDED
     reasons[(reasons == "") & (transp < tmin)] = "low transparency"
@@ -1354,12 +1363,15 @@ class Selection:
         return rows
 
     def log(self, ctx: Context) -> None:
-        counts: dict[str, int] = {}
-        for rows in self.exclusions().values():
+        by_code: dict[str, list[int]] = {}
+        for i, rows in self.exclusions().items():
             for code in {r["code"] for r in rows}:
-                counts[code] = counts.get(code, 0) + 1
-        for code, k in sorted(counts.items()):
-            ctx.log(f"{k} frame(s) excluded: {code.replace('_', ' ')}")
+                by_code.setdefault(code, []).append(i)
+        meta = ctx.load_json("inventory", "frames.json")["lights"]
+        for code, frames in sorted(by_code.items()):
+            names = ", ".join(os.path.basename(meta[i]["path"]) for i in sorted(frames)[:3])
+            more = f" and {len(frames) - 3} more" if len(frames) > 3 else ""
+            ctx.log(f"{len(frames)} frame(s) excluded: {code.replace('_', ' ')} ({names}{more})")
         what = {"min_weight": "minimum weight 5 %", "sota": "k x sigma filters and minimum weight",
                 "thresholds": "transparency and star size thresholds"}.get(self.mode, self.mode)
         ctx.log(f"frames: {int((self.weight > 0).sum())} of {len(self.weight)} kept ({what}); star size from "
@@ -1419,7 +1431,8 @@ def frame_selection(p: StackParams, reg, stats, excl) -> Selection:
         filters = dict(fwm.K_SIGMA_FILTERS)
         if p.selection_transparency == "off":
             filters["transparency"] = ""
-    fs = fwm.select(raw, fwhm=f_sel, roundness=r_sel, transparency=transp, aligned=np.isfinite(rms), exclude=excl,
+    fs = fwm.select(raw, fwhm=f_sel, roundness=r_sel, transparency=transp, aligned=np.isfinite(rms),
+                    saturated=saturated_frames(stats), exclude=excl,
                     filters=filters, min_weight=fwm.MIN_WEIGHT)
     fm = reg["fwhm_moffat"].astype(float) if src == "moffat" else None
     return Selection(p.selection, fs.weight, fs.reasons, fs, fm, src)

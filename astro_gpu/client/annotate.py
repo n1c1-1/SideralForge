@@ -167,27 +167,28 @@ def _font(p: QPainter, pt: float, v, bold: bool = False) -> QFontMetricsF:
     return QFontMetricsF(f)
 
 
-def label_at(w: np.ndarray, v, kind: str):
+def label_at(w: np.ndarray, v, kind: str, box=None):
     """Where a grid line enters the picture, on its left edge for a parallel and its top edge for a meridian (else the
     other edges): the point its label hangs from. None when the line does not cross it."""
-    W, H, m = v.width(), v.height(), 6.0 * getattr(v, "font_scale", 1.0)
-    edges = (("x", m), ("y", m), ("x", W - m), ("y", H - m)) if kind == "dec" else \
-        (("y", m), ("x", m), ("y", H - m), ("x", W - m))
+    x0, y0, x1, y1 = box or (0.0, 0.0, float(v.width()), float(v.height()))
+    m = 6.0 * getattr(v, "font_scale", 1.0)
+    edges = (("x", x0 + m), ("y", y0 + m), ("x", x1 - m), ("y", y1 - m)) if kind == "dec" else \
+        (("y", y0 + m), ("x", x0 + m), ("y", y1 - m), ("x", x1 - m))
     for axis, c in edges:
         a = w[:, 0] if axis == "x" else w[:, 1]
         o = w[:, 1] if axis == "x" else w[:, 0]
-        lim = H if axis == "x" else W
+        lo, hi = (y0, y1) if axis == "x" else (x0, x1)
         s = np.flatnonzero((a[:-1] - c) * (a[1:] - c) <= 0)
         for i in s:
             d = a[i + 1] - a[i]
             t = 0.0 if d == 0 else (c - a[i]) / d
             other = o[i] + t * (o[i + 1] - o[i])
-            if m <= other <= lim - m:
+            if lo + m <= other <= hi - m:
                 return (c, other) if axis == "x" else (other, c)
     return None
 
 
-def paint_grid(p: QPainter, lines, v) -> None:
+def paint_grid(p: QPainter, lines, v, box=None) -> None:
     """The RA / Dec grid with its labels on the edges (labels that would overlap are left out)."""
     fs = getattr(v, "font_scale", 1.0)
     p.setPen(QPen(GRID, 1.0 * fs))
@@ -197,16 +198,17 @@ def paint_grid(p: QPainter, lines, v) -> None:
         for piece in line.pieces:
             w = to_widget(piece, v)
             p.drawPolyline(QPolygonF([QPointF(x, y) for x, y in w]))
-            at = label_at(w, v, line.kind)
+            at = label_at(w, v, line.kind, box)
             if at is not None:
                 labels.append((line.label, at, line.kind))
     fm = _font(p, 8.5, v)
     taken: list[QRectF] = []
+    bx0, by0, bx1, by1 = box or (0.0, 0.0, float(v.width()), float(v.height()))
     for text, (x, y), kind in labels:
         tw, th = fm.horizontalAdvance(text) + 8 * fs, fm.height() + 2 * fs
         r = QRectF(x + 3 * fs, y - th / 2, tw, th) if kind == "dec" else QRectF(x - tw / 2, y + 3 * fs, tw, th)
-        r.translate(max(0.0, 2 - r.left()) + min(0.0, v.width() - 2 - r.right()),
-                    max(0.0, 2 - r.top()) + min(0.0, v.height() - 2 - r.bottom()))
+        r.translate(max(0.0, bx0 + 2 - r.left()) + min(0.0, bx1 - 2 - r.right()),
+                    max(0.0, by0 + 2 - r.top()) + min(0.0, by1 - 2 - r.bottom()))
         if any(r.intersects(t) for t in taken):
             continue
         taken.append(r)
@@ -217,13 +219,13 @@ def paint_grid(p: QPainter, lines, v) -> None:
         p.drawText(r, Qt.AlignCenter, text)
 
 
-def paint_objects(p: QPainter, objects, v, max_labels: int = 80) -> None:
+def paint_objects(p: QPainter, objects, v, max_labels: int = 80, box=None) -> None:
     """The named objects: each outline (its ellipse on the sky, through the solution) and a label above it, the
     labels that would overlap an earlier one left out (the objects come most important first)."""
     if not objects:
         return
     fs = getattr(v, "font_scale", 1.0)
-    W, H = v.width(), v.height()
+    bx0, by0, bx1, by1 = box or (0.0, 0.0, float(v.width()), float(v.height()))
     fm = _font(p, 9.0, v, bold=False)
     taken: list[QRectF] = []
     n_labels = 0
@@ -236,7 +238,7 @@ def paint_objects(p: QPainter, objects, v, max_labels: int = 80) -> None:
             pts = to_widget(o.outline, v)
             x0, y0 = pts.min(0)
             x1, y1 = pts.max(0)
-            if x1 < -20 or y1 < -20 or x0 > W + 20 or y0 > H + 20:
+            if x1 < bx0 - 20 or y1 < by0 - 20 or x0 > bx1 + 20 or y0 > by1 + 20:
                 continue
             if max(x1 - x0, y1 - y0) < 7 * fs:          # smaller than a marker on the screen: the marker
                 pts = None
@@ -244,7 +246,7 @@ def paint_objects(p: QPainter, objects, v, max_labels: int = 80) -> None:
             pts = None
         if pts is None:
             r = 7.0 * fs
-            if not (-20 <= c[0] <= W + 20 and -20 <= c[1] <= H + 20):
+            if not (bx0 - 20 <= c[0] <= bx1 + 20 and by0 - 20 <= c[1] <= by1 + 20):
                 continue
             x0, y0, x1, y1 = c[0] - r, c[1] - r, c[0] + r, c[1] + r
         path = QPainterPath()
@@ -264,16 +266,16 @@ def paint_objects(p: QPainter, objects, v, max_labels: int = 80) -> None:
         tw, th = fm.horizontalAdvance(text) + 10 * fs, fm.height() + 4 * fs
         # above the outline, centred on the object; below it when there is no room above; on the object when the
         # outline is taller than the picture; always inside the picture
-        lx = float(np.clip(c[0], max(x0, 0.0), min(x1, float(W)))) - tw / 2
-        if y0 - th - 2 * fs >= 0:
+        lx = float(np.clip(c[0], max(x0, bx0), min(x1, bx1))) - tw / 2
+        if y0 - th - 2 * fs >= by0:
             ly = y0 - th - 2 * fs
-        elif y1 + th + 2 * fs <= H:
+        elif y1 + th + 2 * fs <= by1:
             ly = y1 + 2 * fs
         else:
-            ly = float(np.clip(c[1], 0.0, H)) - th / 2
+            ly = float(np.clip(c[1], by0, by1)) - th / 2
         r = QRectF(lx, ly, tw, th)
-        r.translate(max(0.0, 2 - r.left()) + min(0.0, W - 2 - r.right()),
-                    max(0.0, 2 - r.top()) + min(0.0, H - 2 - r.bottom()))
+        r.translate(max(0.0, bx0 + 2 - r.left()) + min(0.0, bx1 - 2 - r.right()),
+                    max(0.0, by0 + 2 - r.top()) + min(0.0, by1 - 2 - r.bottom()))
         if any(r.intersects(t) for t in taken):
             continue
         taken.append(r)
@@ -285,17 +287,22 @@ def paint_objects(p: QPainter, objects, v, max_labels: int = 80) -> None:
         p.drawText(r, Qt.AlignCenter, text)
 
 
-def paint(p: QPainter, sky, v, show: dict) -> None:
+def paint(p: QPainter, sky, v, show: dict, picture: QRectF | None = None) -> None:
     """The grid and the objects of ``sky`` (``Annotations`` or ``services/inspect.SkyData``), as ``show`` says
-    ({"grid", "objects"} -> on)."""
+    ({"grid", "objects"} -> on). ``picture``: where the picture is on the surface: nothing is drawn outside it."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
     p.setRenderHint(QPainter.TextAntialiasing)
+    box = None
+    if picture is not None:
+        view = picture.intersected(QRectF(0, 0, v.width(), v.height()))
+        box = (view.left(), view.top(), view.right(), view.bottom())
+        p.setClipRect(view)
     try:
         if show.get("grid") and getattr(sky, "lines", None):
-            paint_grid(p, sky.lines, v)
+            paint_grid(p, sky.lines, v, box)
         if show.get("objects") and getattr(sky, "objects", None):
-            paint_objects(p, sky.objects, v)
+            paint_objects(p, sky.objects, v, box=box)
     finally:
         p.restore()
 

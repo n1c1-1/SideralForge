@@ -1484,7 +1484,7 @@ class GraphView(QGraphicsView):
         pos = e.position().toPoint()
         left = e.button() == Qt.LeftButton
         it = self.itemAt(pos) if left else None
-        empty = left and not isinstance(it, (BlockItem, WireItem, GhostItem))        # bands, chain wires
+        empty = left and not isinstance(it, (BlockItem, WireItem, GhostItem, LinkItem, ProjectItem, AlignItem))  # bands, chain wires
         # issue #44: the middle button, Space + drag, or a left drag on an empty area moves the graph; a press on a
         # chain wire says what it says, a left click on a block still selects it
         if e.button() == Qt.MiddleButton or (left and (self._space or (empty and not isinstance(it, ChainWireItem)))):

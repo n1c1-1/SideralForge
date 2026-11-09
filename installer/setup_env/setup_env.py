@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import detect  # noqa: E402
 import fetch  # noqa: E402
 
-MARKER = ".sideralforge_ok.json"
+MARKER = ".float_ok.json"
 SMOKE_CODE = """\
 import json, torch, numba, cv2, PySide6.QtWidgets
 import astro_gpu, astro_gpu.api, astro_gpu.client.app
@@ -37,8 +37,8 @@ print("SMOKE" + json.dumps({"torch": torch.__version__, "cuda": torch.cuda.is_av
 
 TEXTS = {
     "en": {
-        "title": "SideralForge setup",
-        "heading": "Preparing SideralForge",
+        "title": "FLOAT setup",
+        "heading": "Preparing FLOAT",
         "checking": "Looking at this computer...",
         "disk": "Checking the free disk space...",
         "python": "Preparing the private Python...",
@@ -52,7 +52,7 @@ TEXTS = {
         "cancel": "Cancel",
         "close": "Close",
         "cancel_ask": "Stop the installation?\n\nWhat was already downloaded is kept for the next attempt.",
-        "cancelled": "Stopped. Open SideralForge from the Start menu to finish the installation.",
+        "cancelled": "Stopped. Open FLOAT from the Start menu to finish the installation.",
         "net_error": "The download failed: no connection, or the server did not answer.\n"
                      "Check your internet connection, then press Retry; what was already downloaded is kept.\n\n({detail})",
         "disk_error": "Not enough disk space on this drive: {need} needed, {free} free.\n"
@@ -60,8 +60,8 @@ TEXTS = {
         "disk_full": "The disk became full during the download.\nFree some space, then press Retry.",
         "hash_error": "A downloaded file is damaged (checksum).\nPress Retry to download it again.\n\n({detail})",
         "install_error": "Installing the libraries failed.\n"
-                         "If SideralForge is open, close it, then press Retry.\nDetails: {log}",
-        "smoke_error": "SideralForge does not start in the new installation.\nPress Retry, or send the details: {log}",
+                         "If FLOAT is open, close it, then press Retry.\nDetails: {log}",
+        "smoke_error": "FLOAT does not start in the new installation.\nPress Retry, or send the details: {log}",
         "too_long": "The installation folder's path is too long for Windows ({n} characters, {max} at most).\n"
                     "Run the installer again and choose a shorter folder.",
         "torch_cuda": "PyTorch for NVIDIA cards",
@@ -69,21 +69,21 @@ TEXTS = {
         "qt": "the interface (Qt)",
         "library": "the library {name}",
         "card_ok": "Computations will run on your NVIDIA card: {name}, driver {driver}.",
-        "card_none": "No NVIDIA card found: SideralForge will compute on the processor, complete but slower.",
-        "card_old": "Your {name} has an old driver ({driver}; at least {min} is needed): SideralForge will compute on the "
+        "card_none": "No NVIDIA card found: FLOAT will compute on the processor, complete but slower.",
+        "card_old": "Your {name} has an old driver ({driver}; at least {min} is needed): FLOAT will compute on the "
                     "processor.\nTo use the card, update its driver from https://www.nvidia.com/drivers, then run this "
                     "installer again.",
-        "card_unknown": "The driver of your {name} could not be read: SideralForge will compute on the processor.\n"
+        "card_unknown": "The driver of your {name} could not be read: FLOAT will compute on the processor.\n"
                         "To use the card, update its driver from https://www.nvidia.com/drivers, then run this installer "
                         "again.",
-        "card_other": "Your {name} is not supported by default yet: SideralForge will compute on the processor. "
+        "card_other": "Your {name} is not supported by default yet: FLOAT will compute on the processor. "
                       "Settings > Compute has the beta options.",
-        "cuda_no": "PyTorch does not see your NVIDIA card yet. SideralForge works on the processor; updating the driver "
+        "cuda_no": "PyTorch does not see your NVIDIA card yet. FLOAT works on the processor; updating the driver "
                    "from https://www.nvidia.com/drivers should fix it.",
     },
     "fr": {
-        "title": "Installation de SideralForge",
-        "heading": "Préparation de SideralForge",
+        "title": "Installation de FLOAT",
+        "heading": "Préparation de FLOAT",
         "checking": "Analyse de cet ordinateur...",
         "disk": "Vérification de l'espace disque...",
         "python": "Préparation du Python privé...",
@@ -97,7 +97,7 @@ TEXTS = {
         "cancel": "Annuler",
         "close": "Fermer",
         "cancel_ask": "Arrêter l'installation ?\n\nCe qui est déjà téléchargé est conservé pour la prochaine fois.",
-        "cancelled": "Arrêté. Ouvrez SideralForge depuis le menu Démarrer pour terminer l'installation.",
+        "cancelled": "Arrêté. Ouvrez FLOAT depuis le menu Démarrer pour terminer l'installation.",
         "net_error": "Le téléchargement a échoué : pas de connexion, ou le serveur n'a pas répondu.\n"
                      "Vérifiez votre connexion internet, puis appuyez sur Réessayer ; ce qui est déjà téléchargé est "
                      "conservé.\n\n({detail})",
@@ -107,8 +107,8 @@ TEXTS = {
         "hash_error": "Un fichier téléchargé est abîmé (somme de contrôle).\nAppuyez sur Réessayer pour le télécharger à "
                       "nouveau.\n\n({detail})",
         "install_error": "L'installation des bibliothèques a échoué.\n"
-                         "Si SideralForge est ouvert, fermez-le, puis appuyez sur Réessayer.\nDétails : {log}",
-        "smoke_error": "SideralForge ne démarre pas dans la nouvelle installation.\n"
+                         "Si FLOAT est ouvert, fermez-le, puis appuyez sur Réessayer.\nDétails : {log}",
+        "smoke_error": "FLOAT ne démarre pas dans la nouvelle installation.\n"
                        "Appuyez sur Réessayer, ou envoyez les détails : {log}",
         "too_long": "Le chemin du dossier d'installation est trop long pour Windows ({n} caractères, {max} au maximum).\n"
                     "Relancez l'installation et choisissez un dossier plus court.",
@@ -117,16 +117,16 @@ TEXTS = {
         "qt": "l'interface (Qt)",
         "library": "la bibliothèque {name}",
         "card_ok": "Les calculs se feront sur votre carte NVIDIA : {name}, pilote {driver}.",
-        "card_none": "Aucune carte NVIDIA détectée : SideralForge calculera sur le processeur, complet mais plus lent.",
-        "card_old": "Votre {name} a un pilote ancien ({driver} ; il faut au moins {min}) : SideralForge calculera sur le "
+        "card_none": "Aucune carte NVIDIA détectée : FLOAT calculera sur le processeur, complet mais plus lent.",
+        "card_old": "Votre {name} a un pilote ancien ({driver} ; il faut au moins {min}) : FLOAT calculera sur le "
                     "processeur.\nPour utiliser la carte, mettez à jour son pilote depuis https://www.nvidia.com/drivers, "
                     "puis relancez cette installation.",
-        "card_unknown": "Le pilote de votre {name} n'a pas pu être lu : SideralForge calculera sur le processeur.\n"
+        "card_unknown": "Le pilote de votre {name} n'a pas pu être lu : FLOAT calculera sur le processeur.\n"
                         "Pour utiliser la carte, mettez à jour son pilote depuis https://www.nvidia.com/drivers, puis "
                         "relancez cette installation.",
-        "card_other": "Votre {name} n'est pas encore prise en charge par défaut : SideralForge calculera sur le "
+        "card_other": "Votre {name} n'est pas encore prise en charge par défaut : FLOAT calculera sur le "
                       "processeur. Réglages > Calcul propose les options bêta.",
-        "cuda_no": "PyTorch ne voit pas encore votre carte NVIDIA. SideralForge fonctionne sur le processeur ; mettre à "
+        "cuda_no": "PyTorch ne voit pas encore votre carte NVIDIA. FLOAT fonctionne sur le processeur ; mettre à "
                    "jour le pilote depuis https://www.nvidia.com/drivers devrait résoudre cela.",
     },
 }
@@ -321,7 +321,7 @@ class Installer:
         self.run_tool([self.root / "uv.exe", "pip", "sync", req, "--python", self.env_py, "--no-index", "--find-links",
                        self.downloads, "--offline"], "install_error")
         # the app's own code, found by every Python of the environment (relative: the path may have accents)
-        pth = self.site / "sideralforge_app.pth"
+        pth = self.site / "float_app.pth"
         pth.write_text("..\\..\\..\\app\n", encoding="ascii")
 
     def smoke(self, wheels: list[fetch.Wheel]):

@@ -1,4 +1,6 @@
-# SideralForge
+# FLOAT
+
+**FLOw for AsTrophotography.**
 
 GPU astrophotography processing for colour (one-shot colour / DSLR / mirrorless) deep-sky data: from the raw frames
 to a calibrated, physically anchored image, with an interactive final adjustment tab.
@@ -50,7 +52,7 @@ On the development PC the package is installed in editable mode in the Python en
 The client (projects, sessions, workflows as a graph of blocks, Inspect, Post, export):
 
 ```
-uv run sideralforge             # or: python -m astro_gpu.client
+uv run float                   # or: python -m astro_gpu.client
 ```
 
 Command line (projects of the older format, one chain per project):

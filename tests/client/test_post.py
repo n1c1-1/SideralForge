@@ -2860,3 +2860,98 @@ def test_real_screenshots_en_and_fr(qapp, tmp_path):
         finally:
             s.close()
             i18n.set_language("en")
+
+
+# ---------------------------------------------------------------------------------------------- the crop (issue #75)
+def test_the_crop_is_a_setting_that_leaves_the_rendering_alone_and_goes_back_with_undo(post):
+    v = post.view
+    W, H = v.src.size()
+    before = shown(v).copy()
+    v.b_crop.setChecked(True)
+    assert v.viewer.mode == "crop" and v.viewer.crop_box == (0, 0, W, H) and v.crop is None
+    box = (10, 20, W - 30, H - 40)
+    v.viewer.crop_box = box
+    v.viewer.cropChanged.emit()
+    assert v.crop == list(box)
+    v.b_crop.setChecked(False)
+    assert v.viewer.crop_box == box and not v.viewer.crop_edit and v.viewer.mode == "pan"
+    assert post.settle()
+    assert np.array_equal(shown(v), before), "the crop changes what is written, never the rendering"
+    v.do_undo()
+    assert v.crop is None and v.viewer.crop_box is None
+    v.do_redo()
+    assert v.crop == list(box) and v.viewer.crop_box == box
+
+
+def test_the_crop_proportions_and_its_removal(post):
+    v = post.view
+    W, H = v.src.size()
+    v.b_crop.setChecked(True)
+    cb = v.crop_ratio_cb
+    assert [cb.itemText(i) for i in range(cb.count())] == ["Free", "Original", "3:2", "2:3", "16:9", "9:16", "1:1"]
+    assert abs(cb.itemData(1) - W / H) < 1e-9
+    cb.setCurrentIndex(cb.findText("1:1"))
+    x0, y0, x1, y1 = v.crop
+    assert x1 - x0 == y1 - y0 and x1 - x0 == min(W, H)
+    v.crop_off.click()
+    assert v.crop is None and v.viewer.crop_box == (0, 0, W, H)
+    v.b_crop.setChecked(False)
+    assert v.viewer.crop_box is None
+
+
+def test_the_export_writes_the_crop_with_its_origin(exporting):
+    from astro_gpu.client.services.render import ExportJob, run_export
+    s = exporting
+    assert s.settle()
+    got = []
+
+    def writer(rgb, out, opts, meta):
+        got.append((rgb.shape, tuple(meta["origin"])))
+        return []
+    canvas = s.worker.renderer.composer.canvas_of(snapshot(s.view.layers))
+    run_export(s.worker.renderer, ExportJob(layers=snapshot(s.view.layers), folder=str(s.out), name="c", crop=(10, 20, 110, 80)),
+               lambda f, m: None, writer=writer)
+    assert got == [((3, 60, 100), (canvas.origin[0] + 10, canvas.origin[1] + 20))]
+
+
+def test_show_mask_is_greyed_without_a_mask(post):
+    v = post.view
+    lay = v.layer(v.sel[0])
+    assert lay["mask"] is None and not v.b_mask.isEnabled() and "no mask" in v.b_mask.toolTip()
+    v._toggle_mask()
+    assert not v.b_mask.isChecked()
+    v.add_mask(lay)
+    assert v.b_mask.isEnabled()
+    v.b_mask.setChecked(True)
+    v.remove_mask(lay)
+    assert not v.b_mask.isEnabled() and not v.b_mask.isChecked()
+
+
+def test_the_two_images_of_a_stars_layer_have_their_own_thumbnails_and_sliders(preps, qapp):
+    from astro_gpu.client.post3 import ContSlider
+    s = Setup(preps, qapp, stars=True)
+    try:
+        assert s.settle()
+        v = s.view
+        full = v.layers[1]
+        for _i in range(60):
+            s.settle()
+            if all((full["id"], sub) in v._lthumbs for sub in ("stars", "starless")):
+                break
+        stars, starless = (v._lthumbs[(full["id"], sub)][1].toImage() for sub in ("stars", "starless"))
+        assert stars != starless
+        v.select(full["id"], "stars")
+        names = [x.name.text() for x in widgets_of(v, ContSlider)]
+        assert names == ["Strength", "Small stars", "Star size", "Star color"]
+        v.select(full["id"], "starless")
+        names = [x.name.text() for x in widgets_of(v, ContSlider)]
+        assert names == ["Sky", "Contrast", "Faint tones", "Saturation", "Colours", "H-alpha"]
+    finally:
+        s.close()
+
+
+def test_the_divider_is_there_and_the_list_keeps_the_settings_reachable(post):
+    v = post.view
+    assert v.vsplit.count() == 2 and v.vsplit.widget(1) is v.psc and not v.vsplit.childrenCollapsible()
+    post.settle()
+    assert v.lsc.height() >= 40 and v.psc.height() >= 40
