@@ -46,7 +46,7 @@ PHASES = [("Pre-processing", "calibration", "empilement"), ("Linear processing",
           ("Composition", "fusion", "composition")]
 TOOL_COLUMN = {"debruitage": "debruitage", "etoiles": "etoiles", "deconv": "deconv",
                "auto": "fond", "rbf": "fond", "simple": "fond"}
-TITLES = {"sources": "Frames", "final": "Post", "image": "Image", "session": "Session", "fusion": "Combine channels",
+TITLES = {"align_images": "Align images", "sources": "Frames", "final": "Post", "image": "Image", "session": "Session", "fusion": "Combine channels",
           "calibration": "Calibration",
           "alignement": "Registration",
           "selection": "Selection", "empilement": "Stacking", "astrometrie": "Astrometry", "fond": "Gradient",
@@ -70,7 +70,7 @@ SIDE_INPUTS = {
 }
 TRUNK = ["inventory", "calibrate", "register", "stack"]
 #: the image blocks: placed in any order and more than once (issue #47), drawn in columns by their rank
-IMAGE_KEYS = {"astrometrie", "fond", "couleur", "debruitage", "deconv"}
+IMAGE_KEYS = {"align_images", "astrometrie", "fond", "couleur", "debruitage", "deconv"}
 #: the frame blocks, in their columns
 FRAME_KEYS = ["calibration", "alignement", "selection", "empilement"]
 
@@ -92,6 +92,9 @@ STEPS = [
          what="One night: its light frames and the dark, flat and bias frames chosen for it, and the filter."),
     dict(key="image", phase=0, title="Image", kind="fixed", stages=["image"],
          what="An image file (a linear stack) this workflow starts from: the blocks after it read it as a stack."),
+    dict(key="align_images", phase=0, title="Align images", kind="slot", stages=["image"],
+         what="Brings several images onto one of them, through their plate solutions or their stars: each image keeps its "
+              "own wire, the others follow the reference's frame, what overflows is cut."),
     dict(key="calibration", phase=1, title="Calibration", kind="fixed", stages=["inventory", "calibrate"],
          what="Dark and flat masters, then each light calibrated: thermal signal, vignetting and defective pixels "
               "removed."),

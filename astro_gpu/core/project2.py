@@ -385,7 +385,7 @@ def _copy_params(params: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]
 
 def check_source(source: Any, where: str = "source") -> dict[str, Any] | None:
     """A workflow's source as it is stored (issue #43): None (the sessions' frames); {"path": a file, "stretched":
-    bool} (an image: linear, or already stretched); or {"fusion": {"palette", "inputs": [{"pid", "role",
+    bool, "align": the workflow whose image it is aligned on, if any} (an image: linear, or already stretched); or {"fusion": {"palette", "inputs": [{"pid", "role",
     "channel"}]}} (other workflows' outputs combined, stages/fusion.py)."""
     if source is None:
         return None
@@ -414,8 +414,10 @@ def check_source(source: Any, where: str = "source") -> dict[str, Any] | None:
     # path "": an Image block placed from the palette, its file still to choose (it is not run)
     if not isinstance(source, dict) or not isinstance(source.get("path"), str):
         raise ValueError(f"{where}: an image source is {{'path': its file, 'stretched': false}}, not {source!r}")
-    if set(source) - {"path", "stretched"}:
-        raise ValueError(f"{where}: unknown keys of an image source: {sorted(set(source) - {'path', 'stretched'})}")
+    if set(source) - {"path", "stretched", "align"}:
+        raise ValueError(f"{where}: unknown keys of an image source: {sorted(set(source) - {'path', 'stretched', 'align'})}")
+    if "align" in source and not _is_int(source["align"]):
+        raise ValueError(f"{where}: an image is aligned on a workflow's id, not {source['align']!r}")
     return source
 
 

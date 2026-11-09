@@ -1096,7 +1096,7 @@ def test_the_page_is_empty_until_a_workflow_is_rendered(preps, qapp):
         assert "Full  ·  not computed yet" in texts and "Classic  ·  not computed yet" in texts
         went = []
         s.page.goWorkflow.connect(lambda: went.append(1))
-        next(b for b in s.page.empty.findChildren(QPushButton)).click()
+        next(b for b in s.page.empty.findChildren(QPushButton) if b.text() == "Graph  →").click()
         assert went
         s.model.paths[0].rendered = True
         s.model.pathsChanged.emit()

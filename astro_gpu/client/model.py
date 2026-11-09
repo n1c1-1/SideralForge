@@ -1092,6 +1092,7 @@ class ProjectModel(QObject):
             if top:
                 self._sync_graphs()
                 self._prune_breakpoints()
+                self._prune_alignment()
                 self._follow_branch_names()
                 self._prune_post()
                 if self._snapshot() != before:
@@ -1358,6 +1359,7 @@ class ProjectModel(QObject):
             g = None
         if g is not None and p.pid in self._chains:      # once the worker has read the project
             keys = ["image"] if p.source is not None else []
+            keys += ["align_images"] if (p.source or {}).get("align") is not None else []
             sep = bool(self.separate_sessions()) and p.source is None
             keys += [node_key(n) for n in g if not (sep and n["block"] == "calibration")]
             if "etoiles" in keys and "post" in keys:     # drawn as always: the Stars/background block holds the Output (#17)
@@ -1444,6 +1446,57 @@ class ProjectModel(QObject):
         if w.blocks is None or wfl.source_of(w) == "stretched":
             return True
         return any(n["block"] == "output" and not n["off"] for n in w.blocks)
+
+    # ------------------------------------------------------------ the Align images block
+    def image_flows(self) -> list[WorkflowView]:
+        """The workflows that start from an image with its file: what Align images can take."""
+        return [q for q in self.paths if isinstance(q.source, dict) and q.source.get("path")]
+
+    def align_problem(self) -> str:
+        """Why Align images cannot be used (translated), "" when it can."""
+        return "" if len(self.image_flows()) >= 2 else _("needs 2 images")
+
+    def align_group(self, p) -> list[WorkflowView]:
+        """The images aligned together with ``p`` (its block's wires), the reference's first."""
+        ref = (p.source or {}).get("align") if isinstance(p.source, dict) else None
+        if ref is None:
+            return []
+        group = [q for q in self.paths if isinstance(q.source, dict) and q.source.get("align") == ref]
+        return sorted(group, key=lambda q: q.pid != ref)
+
+    def align_images(self) -> WorkflowView | None:
+        """Every image in the Align images block, on the reference of one already there, else on the first; the first
+        image, or None when there are not two."""
+        flows = self.image_flows()
+        if len(flows) < 2:
+            return None
+        ref = next((q.source["align"] for q in flows if q.source.get("align") is not None), flows[0].pid)
+        with self._edit():
+            for q in flows:
+                w = self.p.workflow(q.pid)
+                w.source = {**w.source, "align": ref}
+        return self.view(flows[0].pid)
+
+    def set_align_reference(self, p, pid: int) -> None:
+        with self._edit():
+            for q in self.align_group(p):
+                w = self.p.workflow(q.pid)
+                w.source = {**w.source, "align": pid}
+
+    def remove_alignment(self, p) -> None:
+        with self._edit():
+            for q in self.align_group(p):
+                w = self.p.workflow(q.pid)
+                w.source = {k: v for k, v in w.source.items() if k != "align"}
+
+    def _prune_alignment(self):
+        """A block of one image, or on a workflow gone, has nothing to do: it goes."""
+        ws = {w.id: w for w in self.p.workflows}
+        marked = [w for w in ws.values() if isinstance(w.source, dict) and w.source.get("align") is not None]
+        for w in marked:
+            mates = [x for x in marked if x.source.get("align") == w.source["align"]]
+            if w.source["align"] not in ws or len(mates) < 2:
+                w.source = {k: v for k, v in w.source.items() if k != "align"}
 
     def is_plain_image(self, p) -> bool:
         """An image going to Post as it is: an Image block with a file, no block placed after it."""
@@ -2555,6 +2608,8 @@ class ProjectModel(QObject):
         # a Calibration or another frame block placed in parallel is a block of its own, and what follows it too, even
         # while they compute the same (one result): the user set it there
         own = (self.node_fork(p, key), self._forks(p))
+        if key == "align_images":                          # one per image, drawn together
+            return ("align_images", p.pid)
         if key == "selection":
             st = p.params.get("stack") or {}
             base = ("selection", st.get("min_transparency"), st.get("max_fwhm_ratio"),
@@ -3063,6 +3118,17 @@ class ProjectModel(QObject):
                     pause.waiting.append(q.pid)
                 else:
                     plans.append(pl)
+        return self._one_plan(plans)
+
+    def plan_align(self, p: WorkflowView) -> api.Plan:
+        """Run to here on Align images: every image of the block; one going straight to Post, its Output too (Post shows
+        it aligned at once)."""
+        return self._one_plan([self.plan_to_block(q, "post" if self.is_plain_image(q) and "render_simple" in self.all_stages(q)
+                                                  else "image") for q in self.align_group(p)])
+
+    @staticmethod
+    def _one_plan(plans: list) -> api.Plan:
+        """Several plans as one: a job two share is kept once (the jobs of a plan come after those they read)."""
         jobs: dict = {}
         for pl in plans:
             for j in pl.jobs:

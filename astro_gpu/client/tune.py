@@ -1011,11 +1011,12 @@ class TuneView(QWidget):
 
     def visuals(self, p, k) -> list[VisualSpec]:
         """The tabs of a block; the ◇ ones (not in the engine yet) only in Spec mode."""
+        k = "image" if k == "align_images" else k         # what it computes is its image's stage
         return [v for v in self.steps.visuals(p, k) if not v.spec or prefs.spec()]
 
     def _has_previous(self, p, k) -> bool:
         """Whether an Outdated block has a result to show: one of its pictures' stages is done or has its previous one."""
-        stages = ["register"] if k == "selection" else [v.stage for v in self.steps.visuals(p, k) if not v.spec]
+        stages = ["register"] if k == "selection" else [v.stage for v in self.visuals(p, k)]
         return any(self.steps.key_of(p, x, self.steps.which_for(p, x)) for x in stages)
 
     def _previous_tag(self, p, k):

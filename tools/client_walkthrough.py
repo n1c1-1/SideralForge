@@ -472,7 +472,7 @@ class Walk:
         self.settle()
 
         def classic(d):
-            d.pick(next(c.t for c in d.cards if c.t["key"] == "classic"))
+            d.pick(next(c.t for c in d.cards if c.t["key"] == "colour_min"))
             d.name.setText("Classic stack")
             self.shot("new_workflow", d)
             d.accept()

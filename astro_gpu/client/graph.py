@@ -593,6 +593,74 @@ class ProjectItem(QGraphicsItem):
         e.accept()
 
 
+class AlignItem(QGraphicsItem):
+    """The Align images block: one block across the lanes of its images, a wire in and a wire out on each lane."""
+
+    def __init__(self, view, nodes: list[Node], rect: QRectF, title: str, summary: str, state: str, selected: bool):
+        super().__init__()
+        self.view, self.nodes, self.rect, self.title, self.summary, self.state, self.selected = \
+            view, nodes, rect, title, summary, state, selected
+        self.hover = False
+        self.setAcceptHoverEvents(True)
+        self.setZValue(5)
+        self.setToolTip(f"{title}\n{block_what(nodes[0])}")
+
+    def boundingRect(self):                                           # noqa: N802
+        return self.rect.adjusted(-2, -2, 2, 2)
+
+    def _x_rect(self):
+        return QRectF(self.rect.right() - 20, self.rect.top() + 4, 16, 16)
+
+    def paint(self, p, opt, widget=None):
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(ACCENT if self.selected else "#3a4150"), 2 if self.selected else 1))
+        p.setBrush(QColor("#2b3446" if self.selected else "#22262e"))
+        p.drawRoundedRect(self.rect, 7, 7)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(STATE_COL.get(self.state, "#5d6470")))
+        p.drawRoundedRect(QRectF(self.rect.x(), self.rect.y() + 3, 4, self.rect.height() - 6), 2, 2)
+        c = self.rect.center()
+        f = QFont("Segoe UI", 10)
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor("#e8ebf0"))
+        p.drawText(QRectF(self.rect.x() + 10, c.y() - 22, self.rect.width() - 14, 22), Qt.AlignCenter | Qt.TextWordWrap, self.title)
+        f2 = QFont("Segoe UI", 8.5)
+        p.setFont(f2)
+        p.setPen(QColor("#8b93a1"))
+        p.drawText(QRectF(self.rect.x() + 6, c.y() + 2, self.rect.width() - 10, 18), Qt.AlignCenter,
+                   elide(self.summary, f2, self.rect.width() - 10))
+        if self.hover:
+            draw(p, self._x_rect(), "remove", "error")
+
+    def hoverEnterEvent(self, e):                                     # noqa: N802
+        self.hover = True
+        self.update()
+
+    def hoverLeaveEvent(self, e):                                     # noqa: N802
+        self.hover = False
+        self.update()
+
+    def mousePressEvent(self, e):                                     # noqa: N802
+        if e.button() == Qt.LeftButton and self._x_rect().contains(e.pos()):
+            self.view.remove_block(self.nodes[0], None)
+        elif e.button() == Qt.LeftButton:
+            self.view.blockClicked.emit(self.nodes[0])
+        e.accept()
+
+    def mouseDoubleClickEvent(self, e):                               # noqa: N802
+        self.view.blockOpened.emit(self.nodes[0])
+        e.accept()
+
+    def contextMenuEvent(self, e):                                    # noqa: N802
+        self.view.blockClicked.emit(self.nodes[0])
+        m = QMenu(self.view)
+        m.addAction(_("Delete") + "\t" + _("Del")).triggered.connect(lambda: self.view.remove_block(self.nodes[0], None))
+        m.exec(e.screenPos())
+        m.deleteLater()
+        e.accept()
+
+
 class BandItem(QGraphicsItem):
     def __init__(self, rect, text):
         super().__init__()
@@ -1002,7 +1070,10 @@ class GraphView(QGraphicsView):
             for src, lab in g.side_inputs(sel):
                 self._side_wire(src, sel, lab)
         # blocks
+        self._add_align_blocks(g, sel)
         for n in g.nodes:
+            if n.key == "align_images":
+                continue                                  # drawn together, across their lanes
             if n.key not in ("sources", "final", "session") and not n.paths:
                 continue                                  # a Session is drawn even when no workflow reads it (1.8)
             if n.key == "sources" and (g.sessions or (s.paths and not g.root.paths and not s.p.sessions)):
@@ -1131,6 +1202,24 @@ class GraphView(QGraphicsView):
         if self._sel_seen is not None and seen != self._sel_seen:
             self.reveal(self._sel_item)
         self._sel_seen = seen
+
+    def _add_align_blocks(self, g: Graph, sel):
+        """Each group of aligned images: one block across their lanes (each lane's node keeps its wires)."""
+        s = self.s
+        groups: dict[int, list[Node]] = {}
+        for n in g.nodes:
+            if n.key == "align_images":
+                groups.setdefault(n.paths[0].source["align"], []).append(n)
+        for ref, nodes in groups.items():
+            nodes.sort(key=lambda n: n.y)
+            r = QRectF(nodes[0].col, nodes[0].y - BH / 2, nodes[0].w, nodes[-1].y - nodes[0].y + BH)
+            name = next((n.paths[0].name for n in nodes if n.paths[0].pid == ref), "")
+            nodes.sort(key=lambda n: n.paths[0].pid == ref)   # a click shows an image that moves, not the reference
+            state = g.state(next(n for n in nodes if n.paths[0].pid != ref))
+            self.scene().addItem(AlignItem(self, nodes, r, _("Align images"), _("on {name}").format(name=name), state,
+                                           sel is not None and any(n is sel for n in nodes)))
+            if any(n is sel for n in nodes):
+                self._sel_item = None
 
     def _add_project(self, g: Graph, sel, cx: dict, cw: dict, gh_top: float):
         """The Project block, above the first object (the blank page: above its start zone); its wire to Astrometry only
@@ -2351,12 +2440,12 @@ PALETTE_UNFOLD_MS, PALETTE_FOLD_MS = 200, 300   # automatic: the mouse only cros
 NEW_FRAMES = -1        # a block placed "in the workflow from the frames" of sessions that have none yet: it starts one
 #: the palette (issue #47): every block, by group; the sources and the composition blocks are not graph nodes. The
 #: headings are one word, shown in capitals ("FRAMES": its own entry, "Frames" being the frames' block, "Images")
-PALETTE_GROUPS = [("Sources", ["session", "image"]),
+PALETTE_GROUPS = [("Sources", ["session", "image", "align_images"]),
                   ("FRAMES", ["calibration", "registration", "selection", "stacking"]),
                   ("Image", ["astrometry", "gradient", "denoise", "color"]),
                   ("Post", ["stars"]),
                   ("Composition", ["fusion", "composition"])]
-PALETTE_TITLES = {"session": "Session", "image": "Image", "fusion": "Combine channels"}
+PALETTE_TITLES = {"session": "Session", "image": "Image", "fusion": "Combine channels", "align_images": "Align images"}
 
 
 class PaletteCard(QFrame):
@@ -2374,7 +2463,8 @@ class PaletteCard(QFrame):
         self.setMaximumWidth(PALETTE_FOLDED_W - 12 if folded else PALETTE_W - 26)
         on = not reason or branch
         self.setObjectName("tool")
-        self.setCursor(Qt.ForbiddenCursor if not on else Qt.ArrowCursor if block == "deconv" else Qt.OpenHandCursor)
+        self.setCursor(Qt.ForbiddenCursor if not on else Qt.ArrowCursor if block in ("deconv", "align_images") else
+                       Qt.OpenHandCursor)
         # available: a filled card; not available: the same card faint (a disabled tool), never dashed: dashed is
         # for the places a block can be dropped on
         self.setStyleSheet(f"QFrame#tool {{ background: {'#232831' if on else '#1e2128'}; border: 1px solid "
@@ -2912,6 +3002,8 @@ class GraphPage(QWidget):
         s = self.s
         if not s.ready:
             return _("reading the project…")
+        if block == "align_images":
+            return s.align_problem()
         if p is None and s.p.sessions and block not in ("session", "image", "fusion", "composition"):
             return s.palette_reason(None, block)          # sessions without a workflow: the block starts one
         if block in ("session", "image"):
@@ -2981,6 +3073,9 @@ class GraphPage(QWidget):
         s = self.s
         block, _sep, where = block.partition(":")
         new = where == "new"
+        if block == "align_images":
+            self.align_images()
+            return
         if block == "session" and new and any(q.source is None for q in s.paths):
             q = s.add_parallel_flow()                      # issue #47: a second flow, its own night
             sid = s.sessions_of(q)[0]
@@ -3312,6 +3407,17 @@ class GraphPage(QWidget):
         if d.choice is not None:
             self.make_from_template(d.choice, d.name.text().strip() or _("New workflow"), d.opts, d.images)
 
+    def align_images(self) -> bool:
+        """Every image in the Align images block (the palette, Post's button), which is selected; False when it cannot."""
+        s = self.s
+        first = s.align_images()
+        if first is None:
+            self.toast(_("Align images: {why}").format(why=s.align_problem()))
+            return False
+        moved = s.align_group(first)[1]                   # the first that moves: what Inspect shows, and computes
+        self.select(index=s.paths.index(moved), step="align_images")
+        return True
+
     def place_images(self, files: list):
         """One Image workflow per file, each a layer of Post, as a file's Inspect sends it; the first, or None."""
         from ..stages.image import image_problem, stretched_by_nature
@@ -3404,6 +3510,7 @@ class GraphPage(QWidget):
         settings and results stay, the data passes through it; Undo takes it back."""
         s = self.s
         why = {"session": "a source: Del removes it", "sources": "a source: Del removes it",
+               "align_images": "Del removes it",
                "image": "a source: Del removes it",      # a Combine channels reads its channels (control round: not a source)
                "fusion": "it combines its channels: Del removes it; to leave it out of Post, remove its wire to Post",
                "composition": "hide its layer in Post, or Del removes it"}.get(node.key if node is not None else "")
@@ -3474,6 +3581,12 @@ class GraphPage(QWidget):
             return
         if node.key == "composition":
             self.remove_layer(node.lid, node)
+            return
+        if node.key == "align_images":
+            s.remove_alignment(node.paths[0])
+            s.log("Align images removed")
+            s.select(step="image")
+            self.toast(_("Align images removed · Ctrl+Z"))
             return
         if node.key in ("fusion", "image"):              # a source block: it goes with the blocks it feeds
             gone = [q for q in node.paths if pids is None or q.pid in pids]

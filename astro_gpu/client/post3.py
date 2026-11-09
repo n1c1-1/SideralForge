@@ -528,6 +528,7 @@ class PostView(QWidget):
     toasted = Signal(str)                                 # what a change did beyond Post (the window's status line)
     layerAsked = Signal(int)                              # Open in Post of a layer (the page lists it when not computed)
     openImages = Signal()                                 # images asked as layers
+    alignAsked = Signal()                                 # Aligner: the Align images block, its Inspect
     runAsked = Signal()                                   # an image's kind changed: it is computed again
 
     def __init__(self, session, parent=None, *, worker: RenderWorker | None = None, persist: bool = True):
@@ -715,13 +716,15 @@ class PostView(QWidget):
         # the layers' buttons, as the reference editors': icons with their full names in the tooltips
         self.b_open = icon_only(QPushButton(), "block_image", _("Open images as layers"), 16, box=28)
         self.b_open.clicked.connect(self.openImages.emit)
+        self.b_align = icon_only(QPushButton(), "block_alignment", _("Align the image layers"), 16, box=28)
+        self.b_align.clicked.connect(self.alignAsked.emit)
         self.b_filter = icon_only(QPushButton(), "add", _("Add a filter layer above the selected layer"), 16, box=28)
         self.filter_menu = QMenu(self.b_filter)
         self.b_filter.setMenu(self.filter_menu)
         self.b_dup = icon_only(QPushButton(), "duplicate", _("Duplicate (Ctrl+J)"), 16, box=28)
         self.b_maskadd = icon_only(QPushButton(), "mask", _("Add a mask to the selected layer"), 16, box=28)
         self.b_del = icon_only(QPushButton(), "delete", _("Delete the selected layer"), 16, box=28)
-        for b in (self.b_open, self.b_filter, self.b_dup, self.b_maskadd, self.b_del):
+        for b in (self.b_open, self.b_align, self.b_filter, self.b_dup, self.b_maskadd, self.b_del):
             btns.addWidget(b)
         btns.addStretch(1)
         rv.addLayout(btns)
@@ -1389,6 +1392,9 @@ class PostView(QWidget):
                                           self.lsc.horizontalScrollBar().setValue(0)))
         lay = self.layer(self.sel[0]) if self.sel else None
         self.b_dup.setEnabled(lay is not None)
+        why = self.s.align_problem() if hasattr(self.s, "align_problem") else "needs 2 images"     # greyed, and why
+        self.b_align.setEnabled(not why)
+        self.b_align.setToolTip(_("Align the image layers") if not why else _("Align the image layers") + ": " + why)
         self.b_del.setEnabled(lay is not None and (not is_pixel(lay) or sum(map(is_pixel, self.layers)) > 1))
         # greyed, it says why (control round): the last image layer stays, or nothing chosen
         self.b_del.setToolTip(_("Delete the selected layer") if self.b_del.isEnabled() else

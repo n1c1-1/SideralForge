@@ -480,6 +480,9 @@ class Keys:
         if stage == "image" and src:
             # 7.7: with a sample of its content, so that two images alike by name, size and date differ
             fid = self.scan.image_id(_absolute(self.project, src["path"])) if src["path"] else ["", None, None]
+            onto = self._aligned_on(w)
+            if onto:                                     # aligned on another image: that file is part of the result
+                fid = fid + ["align", *self.scan.image_id(onto)]
             return fid + ["stretched"] if src.get("stretched") else fid
         if stage == "fusion" and src:
             f = src["fusion"]
@@ -569,6 +572,12 @@ class Keys:
         ks = tuple(self.key(w, s) for s in self.rules.chains.key_stages(block, self.chain(w)))
         return ks + ((f"workflow {w.id}",) if block == "output" else ())
 
+    def _aligned_on(self, w) -> str:
+        """The file of the image a workflow's image is aligned on; "" when none (the reference itself: as it is)."""
+        pid = w.source.get("align")
+        ref = next((x for x in self.project.workflows if x.id == pid), None) if pid != w.id else None
+        return _absolute(self.project, ref.source["path"]) if ref is not None and (ref.source or {}).get("path") else ""
+
     # ------------------------------------------------------------------ what a job gets
     def overrides(self, wf: int | Workflow, stage: str) -> dict[str, Any]:
         """The values a job of the stage runs with over the automatic ones: stored, implied and injected (the
@@ -580,6 +589,7 @@ class Keys:
         if base(stage) == "image" and getattr(w, "source", None):
             v["path"] = _absolute(self.project, w.source["path"]) if w.source["path"] else ""
             v["stretched"] = bool(w.source.get("stretched"))
+            v["align_to"] = self._aligned_on(w)
         if base(stage) == "fusion" and getattr(w, "source", None):
             store = Store(self.project.root) if self.project.root is not None else None
             v["palette"] = w.source["fusion"]["palette"]

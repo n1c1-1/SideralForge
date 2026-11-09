@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 from .. import texts
 from ..core import workflow as wfl
 from . import prefs
-from .blocks import STATE_WORD, block_state, block_title
+from .blocks import BY_KEY, STATE_WORD, block_state, block_title
 from .i18n import _, all_workflows, hm, language, number
 from .icons import IconLabel, IconText, icon_only, set_icon
 from .layout import Sections
@@ -450,6 +450,8 @@ class Panel(QWidget):
         k = node.key
         if k == "project":
             self.project_panel()
+        elif k == "align_images":
+            self.align_panel(node)
         elif k == "session" or (k == "sources" and len(self.s.sessions) == 1):      # #48: even empty, its lists
             self.session_panel(node.sid if node.sid is not None else self.s.sessions[0]["id"])
         elif k == "sources" and self.s.sources_loaded and self.s.stack_mode == "together":
@@ -505,6 +507,25 @@ class Panel(QWidget):
             return True
         alive = {q.pid for q in self.s.paths}
         return bool(node.paths) and all(q.pid in alive for q in node.paths)
+
+    def align_panel(self, node):
+        """Align images: the reference among its images, the images it takes."""
+        s = self.s
+        group = s.align_group(s.view(node.paths[0].pid))
+        self.hv.addWidget(label(_("Align images"), "h1"))
+        self.bv.addWidget(label(_(BY_KEY["align_images"]["what"]), "small", wrap=True))
+        self.bv.addWidget(self.group_title(_("Reference")))
+        cb = QComboBox()
+        for q in group:
+            cb.addItem(q.name, q.pid)
+        cb.setCurrentIndex(cb.findData(group[0].source["align"]) if group else -1)
+        cb.setToolTip(_("The image the others are brought onto: they take its size and framing"))
+        cb.activated.connect(lambda _i: s.set_align_reference(group[0], cb.currentData()))
+        self.bv.addWidget(cb)
+        self.bv.addWidget(self.group_title(_("Images")))
+        for q in group:
+            self.bv.addWidget(label(q.name, "dim"))
+        self.bv.addStretch(1)
 
     def project_panel(self):
         """The Project block: the target and what is known of the capture, the comments."""

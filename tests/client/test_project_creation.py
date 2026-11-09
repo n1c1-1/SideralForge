@@ -10,8 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")
 pytest.importorskip("PySide6")
-from PySide6.QtCore import QPoint  # noqa: E402
-from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMessageBox, QPushButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QLineEdit, QMessageBox, QPushButton  # noqa: E402
 
 from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import drafts, prefs  # noqa: E402
@@ -86,7 +85,7 @@ def test_new_project_opens_the_graph_with_no_window_and_leaves_no_trace_when_clo
     w = untitled(env)
     root = w.project.root
     assert w.screens.currentWidget() is w.proj_screen and drafts.is_untitled(root) and (root / project2.FILE).is_file()
-    assert w.project.name == "Untitled" and not prefs.recent() and not QApplication.activeModalWidget()
+    assert w.project.name == "Untitled" and not prefs.recent() and not [d for d in w.findChildren(QDialog) if d.isVisible()]
     assert not w.s.dirty
     w.close_project()
     settle(w)
@@ -394,4 +393,3 @@ def test_the_banner_of_a_failure_can_still_be_closed(env):
     w = main(env)
     w.banner.say("Something failed")
     assert w.banner.close_b.isVisibleTo(w.banner) and not w.banner.findChildren(QPushButton)
-    assert not isinstance(QPoint(), QLabel)

@@ -67,7 +67,7 @@ def test_a_stretched_image_alone_has_something_to_run(model, tmp_path):
     w = model.p.workflow(q.pid)
     assert not appmod.no_block(w)
     lin = SimpleNamespace(blocks=[], source={"path": "x.fits", "stretched": False})
-    assert appmod.no_block(lin)                       # a linear image with nothing after it: still nothing placed
+    assert not appmod.no_block(lin)                   # a linear image too: it goes to Post as it is
     assert appmod.images_only(model)
     model.add_graph_workflow("Frames", [])
     assert not appmod.images_only(model)              # a frames workflow: "add lights or image" stays right
