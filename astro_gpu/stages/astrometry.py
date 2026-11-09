@@ -79,7 +79,7 @@ class Astrometry(Stage):
         # the target entered, else the object the FITS headers name; never the project's name (issue #38: a
         # project named "test" was looked up in the catalogues and on the network)
         name = tgt.name or ctx.metric_of("inventory", "object")
-        if name:
+        if name and (tgt.ra is None or tgt.dec is None):    # with its coordinates, its name changes nothing
             a["target"] = Auto(name, "project / FITS object name")
         pix, foc = ctx.metric_of("inventory", "pixel_um"), ctx.metric_of("inventory", "focal_mm")
         if getattr(tgt, "pixel_um", None) and not pix:

@@ -58,10 +58,10 @@ from PySide6.QtWidgets import (
 from .. import __version__, api
 from ..core import project2
 from ..core.project import Target
-from . import APP_NAME, prefs
+from . import APP_NAME, drafts, prefs
 from . import layout as lay
 from .gcguard import GuiGarbageCollector
-from .home import HomeView
+from .home import HomeView, ask_project_name
 from .i18n import _, language, plain_error, plural, set_language
 from .icons import icon as make_icon
 from .icons import IconLabel, icon_only, set_icon
@@ -69,7 +69,7 @@ from .logview import LogPanel
 from .services.run import duration_text
 from .services.worker import ApiWorker, Machine, machine_info
 from .settingsdlg import SettingsDialog, auto_device, device_items
-from .widgets import NEW, QSS, WARN, cap_dialog, label, size_within
+from .widgets import NEW, QSS, WARN, cap_dialog, clear, label, size_within
 
 EXTRA_QSS = ("QSlider:horizontal { margin-left: 6px; margin-right: 6px; }"
              "QMenuBar { background: #1c1f26; } QMenuBar::item:selected { background: #2b3446; }")
@@ -187,8 +187,13 @@ class PostHolder(QWidget):
         self.ensure()
 
 
+#: an edit is copied for the recovery after a crash this long after it (ms)
+RECOVERY_MS = 3000
+
+
 class Banner(QFrame):
-    """A failure said without stopping the user: a strip over the window, until it is closed or replaced."""
+    """A failure said without stopping the user: a strip over the window, until it is closed or replaced; ``ask``: with
+    what can be done about it."""
 
     def __init__(self):
         super().__init__()
@@ -199,13 +204,25 @@ class Banner(QFrame):
         h.addWidget(IconLabel("warning", 16, "warning"))
         self.text = label("", "", wrap=True)
         h.addWidget(self.text, 1)
-        b = icon_only(QToolButton(), "remove", _("Close"))
-        b.setAutoRaise(True)
-        b.clicked.connect(self.hide)
-        h.addWidget(b)
+        self.actions_box = QHBoxLayout()
+        h.addLayout(self.actions_box)
+        self.close_b = icon_only(QToolButton(), "remove", _("Close"))
+        self.close_b.setAutoRaise(True)
+        self.close_b.clicked.connect(self.hide)
+        h.addWidget(self.close_b)
         self.hide()
 
     def say(self, text: str):
+        self.ask(text)
+
+    def ask(self, text: str, *actions):
+        """``actions``: (words, what they do); each closes the strip first."""
+        clear(self.actions_box)
+        for words, fn in actions:
+            b = QPushButton(words)
+            b.clicked.connect(lambda _x=False, f=fn: (self.hide(), f()))
+            self.actions_box.addWidget(b)
+        self.close_b.setVisible(not actions)
         self.text.setText(text)
         self.show()
 
@@ -220,6 +237,12 @@ class Main(QMainWindow):
         self.worker.failed.connect(self._worker_failed)
         self.project: OpenProject | None = None
         self.s = None                                # the ProjectModel of the views
+        self._recovery_mine = False                  # the recovery copy of this project is this session's
+        self._recovery_timer = QTimer(self)
+        self._recovery_timer.setSingleShot(True)
+        self._recovery_timer.setInterval(RECOVERY_MS)
+        self._recovery_timer.timeout.connect(self._write_recovery)
+        drafts.clean_orphans()
         self.run = None                              # the RunController of the project
         self.render = None                           # the RenderWorker of Post (made when Post is first shown)
         self.machine: Machine | None = None
@@ -468,12 +491,13 @@ class Main(QMainWindow):
 
     # ------------------------------------------------------------ Home
     def show_home(self, last=None):
+        QTimer.singleShot(0, self.offer_recovery)
         if self.project is not None:
             self._leave_thumbnail()                  # Home shows the open project as Post last showed it
         if self.home is None:
             self.home = HomeView(self.worker, last=last)
             self.home.openProject.connect(self.open_project)
-            self.home.createProject.connect(self.create_project)
+            self.home.newProject.connect(self.new_project)
             self.screens.insertWidget(0, self.home)
         else:
             self.home.rescan()
@@ -485,14 +509,14 @@ class Main(QMainWindow):
         self.update_spec_note()
 
     def new_project(self):
-        self.show_home()
-        self.home.new_project()
+        """The graph at once: the project has no name until its first Save or Run (``name_project``)."""
+        self.create_project(drafts.new_root().as_posix(), _("Untitled"))
 
     def open_other(self):
         self.show_home()
         self.home.open_other()
 
-    def create_project(self, root: str, name: str, target: str, details: dict | None = None) -> bool:
+    def create_project(self, root: str, name: str, target: str = "", details: dict | None = None) -> bool:
         """A new v2 project in ``root``, opened. Its calibrated frames go to <cache folder>/<project folder>.
         ``details``: the target's coordinates and the capture data New project gives (issue #38)."""
         try:
@@ -521,13 +545,14 @@ class Main(QMainWindow):
             return False, "cpu"
         return True, (None if dev == "auto" else dev)
 
-    def open_project(self, root, created: bool = False) -> bool:
+    def open_project(self, root, created: bool = False, recovered=None) -> bool:
+        """``recovered``: the definition found after a crash, in place of the file."""
         root = Path(root)
         if self.project is not None and root.as_posix().lower() == self.project.root.as_posix().lower():
             self.show_project()
             return True
         try:
-            d = project2.load(root)
+            d = recovered if recovered is not None else project2.load(root)
         except project2.LegacyProject:
             self.offer_import(root)
             return False
@@ -542,13 +567,18 @@ class Main(QMainWindow):
             return False
         self.project = OpenProject(root, d)
         self.project.log("Project created" if created else "Project opened")
-        prefs.add_recent(root.as_posix(), d.name, d.target.name or "")
+        if not drafts.is_untitled(root):
+            prefs.add_recent(root.as_posix(), d.name, d.target.name or "")
+        self._recovery_mine = recovered is not None
         self.make_model()
         self.mode = 0
         self._last_step = None
         self.build_menus()
         self.build_project()
         self.run.attach()                            # a run that goes on (started before, or elsewhere): follow it
+        self.run.before_run = self._named_for_run
+        if recovered is not None:
+            self.s.edited()                              # it waits for Save, as before the crash
         return True
 
     def make_model(self):
@@ -562,6 +592,8 @@ class Main(QMainWindow):
         for sig in (s.pathsChanged, s.currentChanged, s.costChanged, s.sourcesChanged, s.readyChanged):
             sig.connect(self.request_refresh)
         s.dirtyChanged.connect(lambda _d: self._title())
+        s.dirtyChanged.connect(self._saved_or_not)
+        s.editMade.connect(self._recovery_timer.start)
         self.run = RunController(s, window=self, console=lambda: getattr(self, "logp", None))
         self.run.runningChanged.connect(lambda _on: self.request_refresh())
         # Inspect's Run to here greys while a run is in progress (issue #33)
@@ -606,9 +638,9 @@ class Main(QMainWindow):
 
     def ask_save(self) -> str:
         """The project has edits not saved: "save", "discard" or "cancel", as the user answers (offscreen, a test
-        harness: "save", as before Save existed)."""
+        harness: "save", as before Save existed; nothing asked of a project without a name)."""
         if QApplication.platformName() == "offscreen":
-            return "save"
+            return "discard" if drafts.is_untitled(self.project.root) else "save"
         box = QMessageBox(QMessageBox.Warning, _("Unsaved changes"),
                           _('Save the changes made to "{name}"?').format(name=self.project.name), parent=self)
         box.setInformativeText(_("Without saving, the changes since the last save are lost (the computed results "
@@ -632,7 +664,10 @@ class Main(QMainWindow):
                 if answer == "cancel":
                     return False
                 save = answer == "save"
+                if save and drafts.is_untitled(self.project.root) and not self.name_project():
+                    return False
         if self.project is not None:
+            self._recovery_timer.stop()
             if self.run is not None:
                 self.run.close()
                 if self._run_widget is not None:
@@ -654,6 +689,9 @@ class Main(QMainWindow):
             if self.render is not None:
                 self.render.stop()
                 self.render = None
+            if self._recovery_mine:
+                drafts.clear_recovery(self.project.root)
+            drafts.discard(self.project.root)            # a project without a name: nothing left behind
             self.project = None
             self.s = None
             if self.proj_screen is not None:
@@ -1046,9 +1084,100 @@ class Main(QMainWindow):
         in included (its focus taken away: it applies what it holds, as Enter would)."""
         self._commit_typing()
         self._flush_post()
+        if self.project is not None and drafts.is_untitled(self.project.root):
+            self.name_project()
+            return
         if self.s is not None:
             self.s.flush()
         self.flash(_("Project saved"))
+
+    def _suggested_name(self) -> str:
+        """The name a project without one is proposed: its target, else the folder of its images."""
+        s = self.s
+        if s.target_state().name:
+            return s.target_state().name
+        for ses in s.p.sessions:
+            for e in ses.lights:
+                f = Path(s.p.abspath(e))
+                return f.parent.name if f.suffix else f.name
+        for w in s.p.workflows:
+            if w.source and w.source.get("path"):
+                return Path(w.source["path"]).stem
+        return ""
+
+    def name_project(self) -> bool:
+        """A project without a name is given its name and folder, once: at its first Save or Run (its results will be
+        written there, and Save as does not move them). False when cancelled."""
+        got = ask_project_name(self, self._suggested_name())
+        if got is None:
+            return False
+        root, name = got
+        p, old = self.project.definition, self.project.root
+        if self.s.path is not None:
+            p.current = self.s.path.pid
+        for ses in p.sessions:
+            for kind in project2.KINDS:
+                setattr(ses, kind, [p.abspath(x) for x in getattr(ses, kind)])
+        p.name = name
+        cache = prefs.get("cache_dir")
+        p.scratch_dir = (Path(cache) / root.name).as_posix() if cache else ""
+        try:
+            project2.save(p, root)
+        except (OSError, ValueError, project2.LegacyProject) as e:
+            self.banner.say(_("The project cannot be saved: {why}").format(why=e))
+            return False
+        self.project.root = root
+        self.s.relocated(root)
+        self.s.flush()
+        drafts.clear_recovery(old)
+        drafts.discard(old)
+        prefs.add_recent(root.as_posix(), name, p.target.name or "")
+        self._title()
+        self.flash(_("Project saved"))
+        return True
+
+    def _named_for_run(self) -> bool:
+        return self.project is None or not drafts.is_untitled(self.project.root) or self.name_project()
+
+    # ------------------------------------------------------------ the recovery after a crash
+    def _write_recovery(self):
+        if self.s is not None and self.s.dirty:
+            drafts.write_recovery(self.project.root, self.project.name, self.project.definition.to_dict())
+            self._recovery_mine = True
+
+    def _saved_or_not(self, dirty: bool):
+        if not dirty and self.project is not None and self._recovery_mine:
+            self._recovery_timer.stop()
+            drafts.clear_recovery(self.project.root)
+            self._recovery_mine = False
+
+    def offer_recovery(self):
+        """What a crash left: said on Home, kept until the user chooses."""
+        found = drafts.recoveries() if self.project is None else []
+        if not found:
+            return
+        rec = found[0]
+        self.banner.ask(_("Unsaved work found: “{name}” ({when})").format(name=rec.get("name") or "", when=rec.get("saved")),
+                        (_("Reopen"), lambda: self.reopen_recovered(rec)), (_("Ignore"), lambda: self.ignore_recovered(rec)))
+
+    def reopen_recovered(self, rec: dict):
+        root = Path(rec["root"])
+        if not drafts.is_untitled(root) and not (root / project2.FILE).exists():
+            self.banner.say(_("Its folder is not found: {folder}").format(folder=root.as_posix()))
+            return
+        try:
+            d = project2.Project2.from_dict(rec["definition"], root)
+            root.mkdir(parents=True, exist_ok=True)
+        except (OSError, ValueError, KeyError, TypeError):
+            drafts.clear_recovery(root)
+            self.banner.say(_("This work cannot be reopened: its copy is damaged."))
+            return
+        self.open_project(root, recovered=d)
+
+    def ignore_recovered(self, rec: dict):
+        drafts.clear_recovery(rec["root"])
+        drafts.discard(rec["root"])
+        self.offer_recovery()
 
     @staticmethod
     def _commit_typing():

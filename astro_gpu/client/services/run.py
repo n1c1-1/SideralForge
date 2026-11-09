@@ -919,12 +919,17 @@ class RunController(QObject):
             return [[j.key] for j in plan.jobs]
 
     # ------------------------------------------------------------ planning
+    #: before a run: False when it must not start (the window sets it: a project without a name gets one first)
+    before_run = staticmethod(lambda: True)
+
     def launch(self, start: bool = False):
         """Run all (F5): the dialog of the plan, or the progress of the run in progress. With breakpoints the plan
         stops after the first review not done yet. ``start`` (the Run button, issue #51): the run starts at once, the
         dialog following it; not without frames (issue #48)."""
         if self.running:
             return self.show_dialog()
+        if not self.before_run():
+            return None
         self.scope = None
         d = self._plan_and_open(self.model.plan_run, lambda: _("Run project"), show_done=True)
         # never at once when the plan has something to say first (a file that may be a mistake, a workflow left out,
@@ -941,7 +946,7 @@ class RunController(QObject):
         if self.running:
             return self.show_dialog()
         key = m.sel_step
-        if p is None or run_here_refusal(m, key):                 # a Session block is not computed (#29)
+        if p is None or run_here_refusal(m, key) or not self.before_run():   # a Session block is not computed (#29)
             return None
         pid, name = p.pid, self.block_name(p, key)
         self.scope = {pid}

@@ -428,21 +428,23 @@ class Walk:
         print("2. A project from scratch", flush=True)
         w = self.w
 
-        def new(d):
-            d.name.setText(folder_name)
-            d.target.setText("IC 1805")
-            self.shot("new_project", d)
-            d.ok.click()
-        self.modal(w.home.new_project, new, "New project")
+        w.new_project()                                   # the graph at once, without a name
         self.wait_ready()
         self.pump(0.3)
-        g = getattr(w.graph, "_gallery", None)            # a new project opens on the template gallery (#43)
-        if g is not None and g.isVisible():
-            self.shot("gallery_new_project", g)
-            # issue #47: the template is chosen before the frames (an import no longer makes a workflow of its own)
-            g.pick(next(c.t for c in g.cards if c.t["key"] == "full"))
-            g.ok.click()
-            self.settle()
+        self.shot("new_project")
+        w.graph.show_templates()
+        self.settle()
+        self.shot("gallery_new_project")
+        # issue #47: the template is chosen before the frames (an import no longer makes a workflow of its own)
+        next(c for c in w.graph.templates.cards if c.t["key"] == "colour_full").mousePressEvent(None)
+        self.settle()
+
+        def named(d):
+            d.name.setText(folder_name)
+            self.shot("name_project", d)
+            d.ok.click()
+        self.modal(w.save, named, "Name the project")
+        self.wait_ready()
         self.shot("graph_new_project")
         sid = w.s.p.sessions[0].id                        # its files, kind by kind, as its Inspect adds them
         for kind, folder in (("lights", raw), ("darks", raw.parent / "darks"), ("flats", raw.parent / "flats"),
@@ -732,11 +734,11 @@ class Walk:
         self.settle()
         self.shot("home")
 
-        def cancel_new(d):
-            d.name.setText("M 42")
-            self.shot("new_project", d)
-            d.reject()
-        self.modal(w.home.new_project, cancel_new, "New project (fr)")
+        w.new_project()
+        self.wait_ready()
+        self.pump(0.3)
+        self.shot("new_project")
+        w.close_project()
         w.open_project(root)
         self.wait_ready()
         s = w.s

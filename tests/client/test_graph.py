@@ -1407,7 +1407,7 @@ def test_a_block_dropped_on_another_workflows_place_goes_there(world, model, pag
     assert model.undo() and len(model.graph(model.view(other.pid))) == n
 
 
-def test_a_project_without_workflows_has_a_graph_and_an_import_button(qapp, tmp_path):
+def test_a_project_without_workflows_has_a_blank_graph_and_the_project_panel(qapp, tmp_path):
     p = project2.create(tmp_path / "P", "P", Target(name="M 1"))
     w = ApiWorker()
     m = ProjectModel(p, w, readonly=True)
@@ -1423,12 +1423,7 @@ def test_a_project_without_workflows_has_a_graph_and_an_import_button(qapp, tmp_
     items = [it for it in pg.graph.scene().items() if isinstance(it, BlockItem)]
     assert not items                                          # issue #47: a blank page is empty
     assert any(getattr(g, "text", "").startswith("Start: Session/Image") and g.role == "add" for g in pg.graph.scene().items())
-    got = []
-    pg.openBlock.connect(lambda: got.append(1))
-    pg.select_node(pg.graph.graph.root)
-    settle(w, pg)
-    button(pg.panel, "Open frames").click()
-    assert got
+    assert [lb.text() for lb in pg.panel.findChildren(QLabel) if lb.text() == "Target"]   # the Project block's panel
     assert [lb.text() for lb in pg.findChildren(QLabel) if lb.text() == "Blocks"]
     assert m.total_seconds() == 0 and m.all_pending() == []
     w.stop()

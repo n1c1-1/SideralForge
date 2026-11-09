@@ -427,5 +427,5 @@ def test_new_project_is_never_proposed_in_the_frames_last_added(tmp_path, monkey
         def exec(self):
             return False
     monkeypatch.setattr(home, "NewProjectDialog", Dialog)
-    home.HomeView.ask_new_project(SimpleNamespace(window=lambda: None))
+    home.ask_project_name(None)
     assert seen == [tmp_path / "projects"]

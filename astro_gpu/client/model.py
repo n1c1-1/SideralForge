@@ -30,7 +30,7 @@ import hashlib
 import json
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from .. import api
 from ..core import workflow as wfl
+from ..core.project import Target
 from ..core.project2 import FILTERS, Workflow, read_state, write_state
 from .blocks import COLUMNS, KEY_ENGINE_BLOCK, TOOLS, TRUNK, block_state, kbase, knum  # noqa: F401  (TOOLS: test_model_surface)
 from .blocks import ENGINE_BLOCK as ENGINE_KEY
@@ -238,6 +239,17 @@ REVIEWED_KEPT = 400
 
 
 @dataclass
+class TargetState:
+    """What the Project block says of the target. ``dot``: "known", "unknown" or "empty"; ``name``: what it shows;
+    ``replace``: the object proposed in place of a target the solved field does not show."""
+
+    dot: str
+    name: str
+    note: str
+    replace: str = ""
+
+
+@dataclass
 class Facts:
     """What the done results say, read by the worker: the metrics of the stages the views quote."""
 
@@ -252,6 +264,8 @@ class Facts:
     checks: dict = field(default_factory=dict)
     #: session id -> io.frames.colour_session of its lights (issue #57), None for raw or FITS mosaics
     colour: dict = field(default_factory=dict)
+    #: the named objects of the first field solved, biggest first (core/skyobjects.SkyObject)
+    in_field: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------------------------- worker jobs
@@ -291,6 +305,12 @@ def _facts_job(p) -> Facts:
         f.colour[s.id] = _colour_of(files)
     if p.root is not None:
         f.reviewed = [str(x) for x in read_state(p.root).get("reviewed") or []]
+    for w in p.workflows:
+        try:
+            f.in_field = list(api.sky_objects(p, w.id))
+            break
+        except Exception:  # noqa: BLE001 - not solved, no astrometry in it, no catalogue: nothing to say from it
+            continue
     return f
 
 
@@ -482,6 +502,7 @@ class ProjectModel(QObject):
     selectionChanged = Signal()            # the count of kept frames changed
     postChanged = Signal(object)           # the Post composition changed (the object that changed it, or None)
     dirtyChanged = Signal(bool)            # there are edits not saved yet (True), or they were saved (False)
+    editMade = Signal()                    # any edit of the definition: the recovery copy is written some time after
 
     def __init__(self, project, worker: ApiWorker | None = None, *, readonly: bool = False,
                  history: list | None = None, gpu: bool = True, device: str | None = None):
@@ -819,7 +840,10 @@ class ProjectModel(QObject):
     def edited(self):
         """The definition changed (the workflows, the sessions, the frames excluded by hand, the Post composition):
         it waits for Save, the window says so."""
-        if self.readonly or self._dirty:
+        if self.readonly:
+            return
+        self.editMade.emit()
+        if self._dirty:
             return
         self._dirty = True
         self.dirtyChanged.emit(True)
@@ -1081,6 +1105,58 @@ class ProjectModel(QObject):
                 self._sync()
                 self.pathsChanged.emit()
 
+    # ------------------------------------------------------------ the Project block
+    def set_target_name(self, name: str):
+        """The target typed: its coordinates when the catalogues know it, else none (asked online when the field is
+        solved, else the stars alone solve it)."""
+        from ..stages.astrometry import find_offline
+        name = name.strip()
+        if name == (self.p.target.name or ""):
+            return
+        found = find_offline(name) if name else None
+        with self._edit():
+            self.p.target.name = name
+            self.p.target.ra, self.p.target.dec = found if found is not None else (None, None)
+
+    def set_target_values(self, **values):
+        """The coordinates or the capture data typed (``ra``, ``dec``, ``focal_mm``, ``pixel_um``: None when empty)."""
+        with self._edit():
+            for k, v in values.items():
+                setattr(self.p.target, k, v)
+
+    def set_description(self, text: str):
+        if text != (self.p.description or ""):
+            with self._edit():
+                self.p.description = text
+
+    def target_state(self) -> TargetState:
+        """What the Project block says of the target: known, unknown or nothing; a target the solved field does not
+        show is never replaced by itself, only proposed. The field's object is read from the results, not written into
+        the project: what the user typed, which Astrometry starts from, stays as it is."""
+        from ..stages.astrometry import _norm, find_offline
+        t = self.p.target
+        typed = (t.name or "").strip()
+        field_ = self._facts.in_field
+        main = field_[0] if field_ else None
+        if not typed:
+            if main is not None:
+                return TargetState("known", main.name, _("Found by Astrometry in the field"))
+            return TargetState("empty", "", _("Optional: Astrometry fills it in"))
+        found = find_offline(typed)
+        if found is None:
+            if t.ra is not None and t.dec is not None:
+                return TargetState("known", typed, _("Coordinates entered"))
+            return TargetState("unknown", typed, _("Not in the catalogues here: it will be looked up online, else the "
+                                                   "field is solved from its stars alone"))
+        if field_ and not any(_norm(typed) in {_norm(x) for x in (o.name, o.common_name, *o.aliases) if x} for o in field_):
+            return TargetState("unknown", typed, _("Not in the solved field, which shows {name}").format(name=main.name),
+                               main.name)
+        return TargetState("known", typed, _("Found: RA {ra}°, Dec {dec}°").format(ra=f"{found[0]:.3f}", dec=f"{found[1]:+.3f}"))
+
+    def relocated(self, root):
+        """The project was given its folder (it had none of its own yet)."""
+        self.root = Path(root)
+
     def join_session(self, p, sid: int) -> WorkflowView | None:
         """A new session joins the chosen flow of frames ``p`` (GUI exploration 2, decision 1): it is added to that
         flow's sessions (every workflow of the flow: its branches too), never put in their place; joining a filter's
@@ -1140,7 +1216,8 @@ class ProjectModel(QObject):
         """What Undo puts back: the workflows, and which sessions there are (a Session block is a block of the graph:
         removed, it comes back with what it had, issue #47), with their lists of files (``SessionSet``)."""
         post = json.dumps(getattr(self.p, "post", None) or {}, sort_keys=True)     # the composition too (2.1)
-        return (api.workflows(self.p), self.p.current, self.p.stack_mode, SessionSet(self.p), post)
+        return (api.workflows(self.p), self.p.current, self.p.stack_mode, SessionSet(self.p), post,
+                asdict(self.p.target), self.p.description)
 
     def _extra(self):
         """What an edit may change besides the workflows: the sessions and the frames excluded by hand."""
@@ -1217,7 +1294,8 @@ class ProjectModel(QObject):
         dst.append(self._snapshot())
         had = {v.pid: self.block_keys(v) for v in self.paths}      # decision 5: what comes back is selected
         old_keys = self.block_keys(self.path) if self.path is not None else []
-        ws, current, mode, sessions, post = src.pop()
+        ws, current, mode, sessions, post, target, description = src.pop()
+        self.p.target, self.p.description = Target(**target), description
         frames_back = sessions.put_back(self.p)           # first: the workflows name them
         api.set_workflows(self.p, ws, current)
         self.p.stack_mode = mode

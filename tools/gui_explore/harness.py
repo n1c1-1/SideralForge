@@ -331,31 +331,16 @@ class Explorer:
         return self.w
 
     def new_project(self, name: str = "Nouveau", template: str | None = None) -> Path:
-        """New project as the user makes it (create, then the template window the start opens; ``template``: the
-        key picked, None: Blank)."""
+        """A new project, as a folder given at once (``template``: the key of the card chosen on its blank page, None:
+        the blank page)."""
         root = self.ws / name
         self.open()
-
-        def pick(gal):                                 # the template window is modal: the watcher hands it here
-            if gal.__class__.__name__ != "TemplateGallery":
-                gal.reject()
-                return
-            tab = next((x["tab"] for x in gal.templates if x.get("key") == template), None) if template else None
-            if tab is not None and tab in gal.tab_keys:  # a template of another tab: that tab first, as the user
-                gal.tabs.setCurrentIndex(gal.tab_keys.index(tab))
-            t = next((c.t for c in gal.cards if (c.t.get("key") == template if template else c.t.get("blank"))), None)
-            if t is not None:
-                gal.pick(t)
-            gal.ok.click()
-        self.dialog_handler = pick
         self.w.create_project(str(root), name, "M 31")
         self.settle(10)
-        gal = next((x for x in self.dialogs() if x.__class__.__name__ == "TemplateGallery"), None)
-        if gal is not None:                            # opened without being modal: picked here
-            self.dialog_handler = None
-            pick(gal)
+        if template:
+            from astro_gpu.client.gallery import GALLERY
+            self.w.graph.template_chosen(next(t for t in GALLERY if t["key"] == template), [])
             self.settle(10)
-        self.dialog_handler = None
         return root
 
     @property

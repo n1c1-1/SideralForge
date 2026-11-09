@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -49,7 +50,7 @@ from .layout import Sections
 from .model import NotInEngine, method_of, method_value, methods_of
 from .settings import RangeBar, SettingRow, fmt, needed_stages, selection_rule_text, step_settings
 from .settings import loading as settings_loading
-from .widgets import ACCENT, BAD, NEW, WARN, clear, hline, label
+from .widgets import ACCENT, BAD, NEW, OK, WARN, clear, hline, label
 
 STATE_COLOR = {"done": "#5fbf7f", "pending": "#8b93a1", "stale": WARN, "running": ACCENT, "failed": BAD,
                "interrupted": WARN, "skipped": "#8b93a1"}
@@ -114,6 +115,21 @@ def spec_mark(row_layout, new):
         mark.setStyleSheet(f"color: {NEW};")
         mark.setToolTip(_("Not in the engine yet"))
         row_layout.addWidget(mark)
+
+
+class CommentEdit(QPlainTextEdit):
+    """Several lines typed: applied when the focus leaves, as a field's Enter (the panel is not built again under it)."""
+    finished = Signal(str)
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(text, parent)
+        self.setMaximumHeight(120)
+        self.setPlaceholderText(_("Notes on this project"))
+        self.setStyleSheet("QPlainTextEdit { background: #15171c; border: 1px solid #353b47; border-radius: 4px; }")
+
+    def focusOutEvent(self, e):                                       # noqa: N802
+        self.finished.emit(self.toPlainText())
+        super().focusOutEvent(e)
 
 
 class CompactRow(SettingRow):
@@ -394,7 +410,7 @@ class Panel(QWidget):
     def _rebuild(self):
         """Not while a setting is being typed: the editor would go away under the user's fingers."""
         fw = QApplication.focusWidget()
-        if fw is not None and self.isAncestorOf(fw) and isinstance(fw, QLineEdit | QAbstractSpinBox):
+        if fw is not None and self.isAncestorOf(fw) and isinstance(fw, QLineEdit | QAbstractSpinBox | QPlainTextEdit):
             self._later.start(400)
             return
         self.refresh(self.node)
@@ -432,7 +448,9 @@ class Panel(QWidget):
         if node is None:
             return
         k = node.key
-        if k == "session" or (k == "sources" and len(self.s.sessions) == 1):      # #48: even empty, its lists
+        if k == "project":
+            self.project_panel()
+        elif k == "session" or (k == "sources" and len(self.s.sessions) == 1):      # #48: even empty, its lists
             self.session_panel(node.sid if node.sid is not None else self.s.sessions[0]["id"])
         elif k == "sources" and self.s.sources_loaded and self.s.stack_mode == "together":
             self.all_nights()
@@ -479,7 +497,7 @@ class Panel(QWidget):
 
     def _alive(self, node) -> bool:
         """Whether a block shown is still in the project: its session and its workflows (GUI exploration 1.6)."""
-        if node.key in ("sources", "final"):
+        if node.key in ("sources", "final", "project"):
             return True
         if node.sid is not None and node.sid not in {x["id"] for x in self.s.sessions}:
             return False
@@ -487,6 +505,55 @@ class Panel(QWidget):
             return True
         alive = {q.pid for q in self.s.paths}
         return bool(node.paths) and all(q.pid in alive for q in node.paths)
+
+    def project_panel(self):
+        """The Project block: the target and what is known of the capture, the comments."""
+        s = self.s
+        t, st = s.p.target, s.target_state()
+        self.hv.addWidget(label(s.name, "h1"))
+        self.bv.addWidget(self.group_title(_("Target")))
+        row = QHBoxLayout()
+        dot = QLabel("●")
+        dot.setStyleSheet(f"color: {dict(known=OK, unknown=WARN, empty='#6b7382')[st.dot]}; font-size: 13pt;")
+        row.addWidget(dot)
+        ed = QLineEdit(t.name or "")
+        ed.setPlaceholderText(st.name or "NGC 7000")
+        ed.editingFinished.connect(lambda: s.set_target_name(ed.text()))
+        row.addWidget(ed, 1)
+        self.bv.addLayout(row)
+        self.bv.addWidget(label(st.note, "small", wrap=True))
+        if st.replace:
+            b = QPushButton(_("Replace by {name}").format(name=st.replace))
+            b.clicked.connect(lambda: s.set_target_name(st.replace))
+            self.bv.addWidget(b, 0, Qt.AlignLeft)
+        self.bv.addWidget(self.group_title(_("Capture")))
+        for key, word, unit in (("ra", "RA", "°"), ("dec", "Dec", "°"), ("focal_mm", "Focal length", "mm"),
+                                ("pixel_um", "Pixel size", "µm")):
+            row = QHBoxLayout()
+            row.addWidget(label(_(word), "dim"), 1)
+            e = QLineEdit("" if getattr(t, key) is None else f"{getattr(t, key):g}")
+            e.setPlaceholderText(_("optional"))
+            e.setFixedWidth(110)
+            e.editingFinished.connect(lambda k=key, x=e: self._capture_typed(k, x))
+            row.addWidget(e)
+            u = label(unit, "dim")
+            u.setFixedWidth(22)
+            row.addWidget(u)
+            self.bv.addLayout(row)
+        self.bv.addWidget(self.group_title(_("Comments")))
+        note = CommentEdit(s.p.description or "")
+        note.finished.connect(s.set_description)
+        self.bv.addWidget(note)
+        self.bv.addStretch(1)
+
+    def _capture_typed(self, key: str, ed: QLineEdit):
+        text = ed.text().replace(",", ".").strip()
+        try:
+            value = float(text) if text else None
+        except ValueError:
+            return
+        if value != getattr(self.s.p.target, key):
+            self.s.set_target_values(**{key: value})
 
     def sources(self):
         s = self.s

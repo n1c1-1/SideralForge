@@ -613,23 +613,6 @@ def test_the_gallery_fits_a_1366_by_768_screen_and_its_previews_never_cut_a_name
     assert not cut, cut
 
 
-def test_the_unknown_target_message_is_never_cut(qapp, tmp_path):
-    """GUI exploration 2: New project's message for a target the catalogues do not have had its second line cut."""
-    i18n.set_language("fr")
-    try:
-        d = NewProjectDialog(tmp_path.as_posix(), "Truc")
-        d.show()
-        d.target.setText("Truc inconnu 42")
-        d._check_target()
-        for _i in range(3):
-            qapp.processEvents()
-        lb = d.found
-        assert lb.text().startswith("Absente des catalogues") and lb.height() >= lb.heightForWidth(lb.width())
-        d.close()
-    finally:
-        i18n.set_language("en")
-
-
 def test_french_covers_every_shell_screen(env, qapp):
     """Home, project screen with the Log, every Settings page in Spec mode, the dialogs: no text left in English."""
     prefs.set("spec_mode", True)
@@ -740,7 +723,7 @@ def test_shots(env, qapp, tmp_path):
         w.b_log.setChecked(True)
         w.logp.set_console("[stack] 721 frames · drizzle ×1.5 · pixfrac 0.70\n[stack] done in 33 min 52 s")
         shot(w, f"log_{lang}")
-        for dlg, name in ((NewProjectDialog(env["ws"].as_posix(), "Rosette", "NGC 2237"), "new_project"),
+        for dlg, name in ((NewProjectDialog(env["ws"].as_posix(), "Rosette"), "new_project"),
                           (NewProjectDialog(env["ws"].as_posix(), "Iris"), "new_project_taken"),
                           (TemplateGallery(FakeModel()), "new_workflow"),
                           (name_dialog(w, "Rename", "Classic + denoise")[0], "rename"),

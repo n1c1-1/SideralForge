@@ -574,31 +574,26 @@ def projects_location(avoid: str = "") -> str:
 
 
 class NewProjectDialog(QDialog):
-    """Name, target and folder of a new project; the folder is <location>/<name>, the location chosen with Browse…
-    (where the projects are at first: ``projects_location``)."""
+    """Name and folder of a project not named yet, asked once, at its first Save or Run; the folder is <location>/<name>,
+    the location chosen with Browse… (where the projects are at first: ``projects_location``)."""
 
-    def __init__(self, location: str, name: str = "", target: str = "", parent=None):
+    def __init__(self, location: str, name: str = "", parent=None):
         super().__init__(parent)
         self.location = Path(location)
-        self.setWindowTitle(_("New project"))
+        self.setWindowTitle(_("Name the project"))
         self.setMinimumWidth(520)
         cap_dialog(self)
         v = QVBoxLayout(self)
-        v.addWidget(label(_("New project"), "h1"))
+        v.addWidget(label(_("Name the project"), "h1"))
         rows = []
-        for text, ph in ((_("Name"), "NGC 7000"), (_("Target"), _("optional: filled in by astrometry"))):
-            row = QHBoxLayout()
-            lb = label(text, "dim")
-            rows.append(lb)
-            row.addWidget(lb)
-            e = QLineEdit()
-            e.setPlaceholderText(ph)
-            row.addWidget(e, 1)
-            v.addLayout(row)
-            if text == _("Name"):
-                self.name = e
-            else:
-                self.target = e
+        row = QHBoxLayout()
+        lb = label(_("Name"), "dim")
+        rows.append(lb)
+        row.addWidget(lb)
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("NGC 7000")
+        row.addWidget(self.name, 1)
+        v.addLayout(row)
         row = QHBoxLayout()
         lb = label(_("Folder"), "dim")
         rows.append(lb)
@@ -620,86 +615,19 @@ class NewProjectDialog(QDialog):
         bb.addStretch(1)
         c = QPushButton(_("Cancel"))
         c.clicked.connect(self.reject)
-        self.ok = QPushButton(_("Create"))
+        self.ok = QPushButton(_("Save"))
         self.ok.setObjectName("primary")
         self.ok.setDefault(True)
         self.ok.clicked.connect(self.accept)
         bb.addWidget(c)
         bb.addWidget(self.ok)
         v.addLayout(bb)
-        # issue #38: the target checked against the catalogues as it is entered (offline: nothing waits on the
-        # network), and the capture data, all optional
-        self.found = label("", "small", wrap=True)
-        self.found.setContentsMargins(width + 6, 0, 0, 0)
-        v.insertWidget(v.indexOf(self.exists), self.found)
-        self._radec = None
-        cap = QHBoxLayout()
-        lb = label(_("Capture"), "dim")
-        lb.setFixedWidth(width)
-        cap.addWidget(lb)
-        self.focal = QLineEdit()
-        self.focal.setPlaceholderText(_("focal length, mm (optional)"))
-        self.pixel = QLineEdit()
-        self.pixel.setPlaceholderText(_("pixel size, µm (optional)"))
-        for e in (self.focal, self.pixel):
-            cap.addWidget(e, 1)
-        v.insertLayout(v.indexOf(self.exists), cap)
-        self.target.editingFinished.connect(self._check_target)
         self.name.textChanged.connect(self._update)
         self.name.setText(name)
-        self.target.setText(target)
         self._update()
-        if target:
-            self._check_target()
 
     def folder(self) -> Path:
         return self.location / folder_name(self.name.text())
-
-    def _check_target(self):
-        """The target looked up in the catalogues shipped with the application and the names found before: what it
-        is found as, or that it is unknown here (then the network is asked when the field is solved, else the stars
-        alone solve it)."""
-        from ..stages.astrometry import find_offline
-        t = self.target.text().strip()
-        self._radec = find_offline(t) if t else None
-        if not t:
-            self.found.setText("")
-        elif self._radec is not None:
-            ra, dec = self._radec
-            self.found.setText(_("Found: RA {ra}°, Dec {dec}°").format(ra=f"{ra:.3f}", dec=f"{dec:+.3f}"))
-            self.found.setStyleSheet("color: #5fbf7f;")
-        else:
-            self.found.setText(_("Not in the catalogues here: it will be looked up online, else the field is solved "
-                                 "from its stars alone"))
-            self.found.setStyleSheet(f"color: {WARN};")
-        self._fit_found()
-        QTimer.singleShot(0, self._fit_found)             # again once the dialog has its width
-
-    def _fit_found(self):
-        """The message under the target as tall as its lines: a dialog already shown does not grow by itself for a
-        wrapped label (GUI exploration 2: its second line was cut at the bottom)."""
-        try:
-            lb = self.found
-            lb.setMinimumHeight(lb.heightForWidth(lb.width()) if lb.text() else 0)
-            self.layout().activate()
-            if self.height() < self.minimumSizeHint().height():
-                self.resize(self.width(), self.minimumSizeHint().height())
-        except RuntimeError:                              # the dialog was closed meanwhile
-            pass
-
-    def details(self) -> dict:
-        """What New project gives the project's target: its coordinates when found, the capture data entered."""
-        def num(e):
-            try:
-                v = float(e.text().replace(",", ".").strip())
-                return v if v > 0 else None
-            except ValueError:
-                return None
-        self._check_target()
-        out = {"focal_mm": num(self.focal), "pixel_um": num(self.pixel)}
-        if self._radec is not None:
-            out["ra"], out["dec"] = self._radec
-        return {k: v for k, v in out.items() if v is not None}
 
     def _browse(self):
         """The location chosen (issue #31: the project decides where it lives, not a workspace)."""
@@ -717,11 +645,18 @@ class NewProjectDialog(QDialog):
         self.ok.setEnabled(bool(f) and not taken)
 
 
+def ask_project_name(parent, name: str = "") -> tuple[Path, str] | None:
+    """The project's folder and name, as the user says them, or None. Proposed where the projects are, never in the
+    folder of the frames last added (GUI exploration 4)."""
+    d = NewProjectDialog(projects_location(), name, parent)
+    return (d.folder(), d.name.text().strip()) if d.exec() else None
+
+
 # ---------------------------------------------------------------------------------------------- the view
 
 class HomeView(QWidget):
     openProject = Signal(str)                        # project folder
-    createProject = Signal(str, str, str, object)    # folder, name, target, its details (#38: ra, dec, focal...)
+    newProject = Signal()                            # New project: the graph at once, the project without a name
 
     def __init__(self, worker, last=None, parent=None):
         """``last``: what a previous Home showed (its HomeScan), shown until the new scan is back."""
@@ -736,7 +671,7 @@ class HomeView(QWidget):
         lv.setContentsMargins(18, 20, 18, 18)
         lv.setSpacing(8)
         buttons = []
-        for text, fn, primary, role in ((_("New project…"), self.new_project, True, "new"),
+        for text, fn, primary, role in ((_("New project"), self.newProject.emit, True, "new"),
                                         (_("Open project…"), self.open_other, False, "open")):
             b = QPushButton(text)                    # compact names (decision 12)
             set_icon(b, role, 16, "on_accent" if primary else "normal")
@@ -873,21 +808,6 @@ class HomeView(QWidget):
         return False
 
     # ------------------------------------------------------------ actions
-    def ask_new_project(self, name: str = "", target: str = "", location: str | None = None
-                        ) -> tuple[str, str, str, dict] | None:
-        """The New project dialog: (folder, name, target, details: ra, dec, focal_mm, pixel_um when known), or None.
-        ``location``: where it is proposed (else where the projects are: ``projects_location``, never the folder of
-        the frames last added, GUI exploration 4)."""
-        d = NewProjectDialog(location or projects_location(), name, target, self.window())
-        if d.exec():
-            return d.folder().as_posix(), d.name.text().strip(), d.target.text().strip(), d.details()
-        return None
-
-    def new_project(self):
-        got = self.ask_new_project()
-        if got:
-            self.createProject.emit(*got)
-
     def open_other(self):
         f, _x = QFileDialog.getOpenFileName(self, _("Open project"), prefs.last_folder(),
                                             # one kind of file for the user: a project, of this version or older

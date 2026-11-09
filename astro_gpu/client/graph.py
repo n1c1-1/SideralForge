@@ -551,6 +551,48 @@ class LinkItem(QGraphicsItem):
         e.accept()
 
 
+class ProjectItem(QGraphicsItem):
+    """The Project block: above the first object, out of the flow; what it says of the target by a dot (green known,
+    orange unknown to the catalogues here, grey empty). A click shows its panel."""
+
+    DOTS = {"known": OK, "unknown": WARN, "empty": "#6b7382"}
+
+    def __init__(self, view, rect: QRectF, title: str, summary: str, dot: str, selected: bool, tip: str):
+        super().__init__()
+        self.view, self.rect, self.title, self.summary, self.dot, self.selected = view, rect, title, summary, dot, selected
+        self.setToolTip(tip)
+        self.setZValue(6)
+
+    def boundingRect(self):                                           # noqa: N802
+        return self.rect.adjusted(-2, -2, 2, 2)
+
+    def paint(self, p, opt, widget=None):
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(ACCENT if self.selected else "#3a4150"), 2 if self.selected else 1))
+        p.setBrush(QColor("#2b3446" if self.selected else "#22262e"))
+        p.drawRoundedRect(self.rect, 7, 7)
+        c = QPointF(self.rect.right() - 14, self.rect.top() + 14)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(self.DOTS[self.dot]))
+        p.drawEllipse(c, 5, 5)
+        f = QFont("Segoe UI", 10)
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor("#e8ebf0"))
+        w = self.rect.width() - 34
+        p.drawText(QRectF(self.rect.x() + 11, self.rect.y() + 6, w, 20), Qt.AlignLeft | Qt.AlignVCenter,
+                   QFontMetrics(f).elidedText(self.title, Qt.ElideRight, int(w)))
+        f2 = QFont("Segoe UI", 8.5)
+        p.setFont(f2)
+        p.setPen(QColor("#8b93a1"))
+        p.drawText(QRectF(self.rect.x() + 11, self.rect.y() + 28, self.rect.width() - 15, 18), Qt.AlignLeft | Qt.AlignVCenter,
+                   elide(self.summary, f2, self.rect.width() - 15))
+
+    def mousePressEvent(self, e):                                     # noqa: N802
+        self.view.projectClicked.emit()
+        e.accept()
+
+
 class BandItem(QGraphicsItem):
     def __init__(self, rect, text):
         super().__init__()
@@ -599,6 +641,7 @@ class GraphView(QGraphicsView):
     cutToggled = Signal(object, object)    # Node, list of pids (None: every workflow of the block): cut or restore it
     newSession = Signal()                  # "+ Session" (issue #43)
     templatesAsked = Signal()              # the blank page's link
+    projectClicked = Signal()              # the Project block
     sessionMenu = Signal(str, int)         # action (rename, remove), session id
     postOpened = Signal()                  # "Open Post" of the Post block's menu
     deselected = Signal()                  # 2nd round, decision 5: a click on empty space, Escape, or a wire chosen
@@ -617,6 +660,7 @@ class GraphView(QGraphicsView):
         self.drag_tool = None
         self.drag_block = None                                         # issue #47: the palette block being dragged
         self.palette_flow = lambda: None                 # the workflow the palette places in (the page's); None: all
+        self.project_selected = lambda: False            # the Project block is the one selected (the page's)
         self.ghosts: list[GhostItem] = []
         self.graph: Graph | None = None
         self._sel_item = None
@@ -1064,6 +1108,7 @@ class GraphView(QGraphicsView):
             gh.setZValue(8)
             sc.addItem(gh)
             self.ghosts.append(gh)
+        self._add_project(g, sel, cx, cw, gh_top=self.new_flow_ghost.rect.top())
         r = sc.itemsBoundingRect().adjusted(-MARGIN, -10, MARGIN, 24)
         sc.setSceneRect(r)
         own = self.palette_flow()
@@ -1086,6 +1131,33 @@ class GraphView(QGraphicsView):
         if self._sel_seen is not None and seen != self._sel_seen:
             self.reveal(self._sel_item)
         self._sel_seen = seen
+
+    def _add_project(self, g: Graph, sel, cx: dict, cw: dict, gh_top: float):
+        """The Project block, above the first object (the blank page: above its start zone); its wire to Astrometry only
+        while one of the two is selected."""
+        s = self.s
+        first = [n.y for n in g.nodes if n.key in ("sources", "session", "image") and getattr(n, "y", None) is not None
+                 and (n.paths or n.key == "session" or s.p.sessions)]
+        x, w = cx.get("sources", 0.0), cw.get("sources", BW)
+        y = (min(first) - BH / 2 if first and (s.paths or s.p.sessions) else gh_top) - BH - 14
+        st = s.target_state()
+        mine = self.project_selected()
+        it = ProjectItem(self, QRectF(x, y, w, BH), st.name or _("Project"), s.name, st.dot, mine,
+                         _("The project: target, comments, capture data") + "\n" + st.note)
+        self.scene().addItem(it)
+        self.project_item = it
+        for n in g.nodes:
+            if kbase(n.key) == "astrometrie" and n.paths and (mine or n is sel):
+                self._project_wire(it, n)
+
+    def _project_wire(self, it: ProjectItem, n: Node):
+        x1, y1 = it.rect.right(), it.rect.center().y()
+        x2, y2 = n.col + n.w / 2, n.y - BH / 2
+        path = QPainterPath(QPointF(x1, y1))
+        path.cubicTo(QPointF(x2, y1), QPointF(x2, y1), QPointF(x2, y2))
+        wire = self.scene().addPath(path, QPen(QColor(ACCENT), 1.5, Qt.DashLine))
+        wire.setZValue(2)
+        wire.setToolTip(_("Astrometry starts from the target of the project"))
 
     def _branch_anchor(self, g: Graph, p, key: str) -> tuple[Node | None, bool]:
         """The block a new branch's place is drawn under, and whether a whole row is open there: a Calibration beside
@@ -2460,7 +2532,10 @@ class GraphPage(QWidget):
         self._fold_timer.timeout.connect(lambda: self.unfold_palette(False))
         self.graph = GraphView(project)
         self.graph.palette_flow = self.palette_path       # Q11: a palette block dragged shows its workflow's places first
+        self.graph.project_selected = lambda: self.project_node is self.current_node()
         cv.addWidget(self.graph, 1)
+        self.project_node = Node("project")              # the Project block's, in the panel (never in the graph's flow)
+        self._project_sel = False
         self.templates = TemplatePage()                  # in place of the blank graph, behind its link
         self.templates.hide()
         self.templates.back.connect(self.hide_templates)
@@ -2508,6 +2583,7 @@ class GraphPage(QWidget):
         gv.cutToggled.connect(self.toggle_cut)
         gv.newSession.connect(self.addSession.emit)
         gv.templatesAsked.connect(self.show_templates)
+        gv.projectClicked.connect(self.select_project)
         gv.sessionMenu.connect(self.session_action)
         gv.postOpened.connect(self.open_post)
         gv.deselected.connect(self.deselect)
@@ -2614,7 +2690,19 @@ class GraphPage(QWidget):
             self.s.name_step(text)                       # what Ctrl+Z / Ctrl+Y will say they undid or redid
             self._said_at = time.monotonic()             # not covered by the "+ ≈ 1 min to run" that follows
 
+    def select_project(self):
+        """The Project block chosen: its panel, no block selected."""
+        s = self.s
+        s.pending_change = None
+        s.scope = None
+        s.sel_step = ""
+        self._project_sel = True
+        s.select()
+        self.request_refresh()
+
     def current_node(self, g=None):
+        if self.is_blank() or (self._project_sel and not self.s.sel_step):
+            return self.project_node
         g = g or Graph(self.s)
         k = self.s.sel_step
         q = self.s.path
@@ -3075,7 +3163,7 @@ class GraphPage(QWidget):
         if self.graph.remove_selected_wire():             # issue #52: a selected wire first
             return
         node = self.current_node()
-        if node is not None and node.key != "final":
+        if node is not None and node.key not in ("final", "project"):
             self.remove_tool(node, None)
 
     def _rename_selected(self):
@@ -3103,6 +3191,9 @@ class GraphPage(QWidget):
         """Nothing selected (decision 5): an empty click, Escape, or a wire chosen; the panel empties, Del and D do
         nothing, the palette places in the current workflow."""
         s = self.s
+        if self._project_sel:
+            self._project_sel = False
+            self.request_refresh()
         if not s.sel_step:
             return
         s.pending_change = None
@@ -3145,6 +3236,7 @@ class GraphPage(QWidget):
 
     def select_node(self, node):
         s = self.s
+        self._project_sel = False
         if node.key == "composition" and node.lid is None and node.grey:   # a Combine layers to come (Q10): said, not chosen
             self.toast(_("Combine layers comes with the lights: add them to the Session"))
             return
@@ -3169,7 +3261,7 @@ class GraphPage(QWidget):
         from its frames yet: None (a block placed starts one)."""
         s = self.s
         node = self.current_node() if s.ready and s.sel_step else None
-        if node is not None and (node.key in ("sources", "session") or node.sid is not None):
+        if node is not None and (node.key in ("sources", "session") or node.sid is not None) and node is not self.project_node:
             return s.path if s.path is not None and s.path.source is None else None
         return s.path
 
@@ -3177,8 +3269,9 @@ class GraphPage(QWidget):
         s = self.s
         s.pending_change = None
         s.select(index, step)
+        self._project_sel = False
         node = self.current_node()
-        s.scope = [q.pid for q in node.paths] if node is not None and node.key not in ("sources", "final") else None
+        s.scope = [q.pid for q in node.paths] if node is not None and node.key not in ("sources", "final", "project") else None
 
     # ------------------------------------------------------------ actions
     def is_blank(self) -> bool:
@@ -3319,7 +3412,7 @@ class GraphPage(QWidget):
                 block=node_title(s, node) if node.key in ("session", "sources") else block_title(None, node.key),
                 why=_(why)))
             return
-        if node is None or (node.sid is not None and node.key != "calibration") or not node.paths or \
+        if node is None or node.key == "project" or (node.sid is not None and node.key != "calibration") or not node.paths or \
                 node.key in ("sources", "final", "session", "composition", "fusion", "image"):
             return
         paths = [q for q in node.paths if pids is None or q.pid in pids]
