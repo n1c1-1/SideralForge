@@ -74,6 +74,35 @@ def test_a_saturated_core_and_the_pixels_without_data_stay_as_they_were():
     assert np.abs(of[:, y, x] - full[:, y, x]).max() < 1e-3
 
 
+@pytest.mark.parametrize("method", ["rl", "zones"])
+def test_a_saturated_star_on_a_bright_sky_keeps_no_moat_and_no_pattern(method):
+    full, a, b, pts, _ = field()
+    y, x = int(pts[12][0]), int(pts[12][1])
+    yy, xx = np.mgrid[:full.shape[1], :full.shape[2]]
+    glow = 40 * np.exp(-((yy - y) ** 2 + (xx - x) ** 2) / (2 * 60.0 ** 2)).astype(np.float32)
+    core = (((yy - y) ** 2 + (xx - x) ** 2) < 9).astype(np.float32) * 5000
+    for im in (full, a, b):
+        im += glow + core
+    sat = core > 0
+    st = lib.StackDeconvSettings(method=method, tiles_long=2, log=lambda *x, **k: None, iterations=30, shrink=0.3)
+    of, *_ = lib.run(full, a, b, sat, np.ones(full.shape[1:], bool), st, "cpu")
+    r = np.hypot(yy - y, xx - x)
+    ring = (r > 4) & (r < 16)
+    assert float((of[1] - full[1])[ring].min()) > -3 * NOISE             # around it: as it was, neither dug nor rippled
+
+
+def test_richardson_lucy_keeps_the_colour_of_a_star():
+    full, a, b, pts, _ = field()
+    for im in (full, a, b):
+        im[0] = SKY + (im[0] - SKY) * 1.4
+        im[2] = SKY + (im[2] - SKY) * 0.7
+    st = lib.StackDeconvSettings(method="rl", tiles_long=2, log=lambda *x, **k: None, iterations=30)
+    of, *_ = lib.run(full, a, b, np.zeros(full.shape[1:], bool), np.ones(full.shape[1:], bool), st, "cpu")
+    y, x = int(round(pts[12][0])), int(round(pts[12][1]))
+    core = of[:, y - 1:y + 2, x - 1:x + 2].mean((1, 2)) - SKY
+    assert abs(core[0] / core[1] - 1.4) < 0.08 and abs(core[2] / core[1] - 0.7) < 0.06
+
+
 def test_too_few_stars_leave_the_image_as_it_is():
     rng = np.random.default_rng(0)
     a = (SKY + rng.normal(0, 1, (3, 200, 200))).astype(np.float32)

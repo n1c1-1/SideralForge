@@ -885,6 +885,17 @@ def stack_cards(page):
     return [c for c in page.panel.findChildren(StackMethodCard) if c.isVisibleTo(page.panel)]
 
 
+def test_a_block_after_the_stars_has_its_column_and_not_the_first(world, model, page):
+    from astro_gpu.client.blocks import Node
+    view = page.graph
+    n = Node("synth")
+    n.paths = [model.paths[0]]
+    g = type("G", (), {"nodes": [n, Node("etoiles")]})()
+    g.nodes[1].paths = [model.paths[0]]
+    cols = view.columns(g)
+    assert cols.index("etoiles") < cols.index("synth") < cols.index("final")
+
+
 def test_the_deconvolution_block_has_its_two_methods_and_their_own_settings(world, model, page):
     from astro_gpu.client.panel import MethodCard
     full = model.paths[0]

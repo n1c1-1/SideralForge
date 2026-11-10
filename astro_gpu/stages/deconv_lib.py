@@ -14,7 +14,8 @@ are left as they were measured: the filter fades out around them.
 
 The other method (``method`` "rl") is Richardson-Lucy (Richardson 1972, Lucy 1974) with the same star shapes and the
 same blending between zones, regularised by total variation (Dey et al. 2006). It is not linear: it keeps the values
-positive and follows the noise of each pixel, which a linear filter cannot do.
+positive and follows the noise of each pixel, which a linear filter cannot do. It works on the luminance, and its gain is
+applied to the three colours: each colour on its own converges at its own speed, which colours the cores of the stars.
 """
 from __future__ import annotations
 
@@ -424,9 +425,7 @@ class StackDeconvolver:
         Hp, Wp = H + 2 * P, W + 2 * P
         tgt = self.targets(psf)
         wy, wx = _tent(nty, H, dev), _tent(ntx, W, dev)
-        zone = _dilate(sat, R // 2).float()
-        keep = (_blur(zone, R / 4.0) * 2).clamp(0, 1)                # 1 at saturated cores, fading out
-        keep = torch.maximum(keep, (~valid).float())
+        keep = torch.maximum(_kept_zone(sat, R), (~valid).float())    # 1 at saturated stars, fading out
         outs = [torch.zeros_like(im, dtype=torch.float32) for im in images]
         gain = np.ones((C, nty, ntx))
         ys = [int(round(a * H / nty)) for a in range(nty + 1)]
@@ -472,25 +471,30 @@ class StackDeconvolver:
         R = s.radius
         P = 4 * R
         wy, wx = _tent(nty, H, dev), _tent(ntx, W, dev)
-        zone = _dilate(sat, R // 2).float()
-        keep = torch.maximum((_blur(zone, R / 4.0) * 2).clamp(0, 1), (~valid).float())
+        keep = torch.maximum(_kept_zone(sat, R), (~valid).float())
         outs = [torch.zeros_like(im, dtype=torch.float32) for im in images]
-        for c in range(C):
-            batch = torch.stack([_fill_invalid(im[c].float(), valid) for im in images])
-            sig = _robust_sigma((0.5 * (A[c] - B[c]))[valid].float())
-            shift = max(0.0, SKY_SIGMAS * sig - float(batch[0][valid].median()))
-            for a in range(nty):
-                for b in range(ntx):
-                    rows, cols = torch.nonzero(wy[a] > 0)[:, 0], torch.nonzero(wx[b] > 0)[:, 0]
-                    r0, r1, c0, c1 = int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
-                    d = F.pad(batch[None, :, r0:r1, c0:c1] + shift, (P, P, P, P), mode="reflect")[0]
-                    y = richardson_lucy(d, psf.kernels[c, a, b], s.iterations, s.regularization, sig)[:, P:-P, P:-P]
-                    wt = wy[a][r0:r1, None] * wx[b][None, c0:c1]
-                    for i, out in enumerate(outs):
-                        out[c, r0:r1, c0:c1] += wt * (y[i] - shift)
-            del batch
-            if s.tick is not None:
-                s.tick((c + 1) / C)
+        filled = [torch.stack([_fill_invalid(im[c].float(), valid) for c in range(C)]) for im in images]  # (C, H, W)
+        sigs = [_robust_sigma((0.5 * (A[c] - B[c]))[valid].float()) for c in range(C)]
+        shift = torch.tensor([max(0.0, SKY_SIGMAS * sigs[c] - float(filled[0][c][valid].median())) for c in range(C)],
+                             device=dev, dtype=torch.float32)[:, None, None]
+        sig = float(np.sqrt(sum(v * v for v in sigs))) / C               # the noise of the luminance
+        done, total = 0, nty * ntx
+        for a in range(nty):
+            for b in range(ntx):
+                rows, cols = torch.nonzero(wy[a] > 0)[:, 0], torch.nonzero(wx[b] > 0)[:, 0]
+                r0, r1, c0, c1 = int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+                raised = [f[:, r0:r1, c0:c1] + shift for f in filled]
+                lum = torch.stack([x.mean(0) for x in raised])            # (n, h, w)
+                d = F.pad(lum[None], (P, P, P, P), mode="reflect")[0]
+                K = psf.kernels[:, a, b].mean(0)
+                y = richardson_lucy(d, K / K.sum(), s.iterations, s.regularization, sig)[:, P:-P, P:-P]
+                gain = (y / lum.clamp(min=1e-3 * max(sig, 1e-12))).clamp(0.05, 20.0)
+                wt = wy[a][r0:r1, None] * wx[b][None, c0:c1]
+                for i, out in enumerate(outs):
+                    out[:, r0:r1, c0:c1] += wt[None] * (raised[i] * gain[i] - shift)
+                done += 1
+                if s.tick is not None and done % max(1, total // 8) == 0:
+                    s.tick(done / total)
         return _kept(images, outs, keep, valid)
 
 
@@ -498,6 +502,13 @@ class StackDeconvolver:
 SKY_SIGMAS = 8.0
 #: the term of the total variation is kept from dividing by less than this (Dey et al. 2006: it must stay positive)
 TV_FLOOR = 0.2
+
+
+def _kept_zone(sat: torch.Tensor, R: int) -> torch.Tensor:
+    """Where the image stays as measured (0..1): the saturated stars and, around them, the reach of the star shape
+    (1.5 R, the filters' own): a clipped core rings as far as the filter reaches. Its edge fades over R / 2 pixels."""
+    zone = _dilate(sat, int(1.5 * R)).float()
+    return (_blur(zone, R / 3.0) * 2).clamp(0, 1)
 
 
 def _kept(images, outs, keep, valid):
@@ -522,8 +533,10 @@ def richardson_lucy(d: torch.Tensor, K: torch.Tensor, iterations: int, reg: floa
     low = 1e-3 * max(sig, 1e-12)
     d = d.clamp(min=low)
     u = d.clone()
-    # no dark ring: nothing goes below the darkest of the smoothed image around it, the sky a star stands on
-    floor = -F.max_pool2d(F.pad(-_blur(d, 1.5)[None], (R, R, R, R), mode="reflect"), k, 1)[0] - sig
+    # no dark ring: nothing goes below the sky around it, a morphological opening of the smoothed image (the stars
+    # taken off, a nebula's level kept: its darkest value alone would leave a star a dark moat on a bright nebula)
+    low_ = -F.max_pool2d(F.pad(-_blur(d, 1.5)[None], (R, R, R, R), mode="reflect"), k, 1)
+    floor = F.max_pool2d(F.pad(low_, (R, R, R, R), mode="reflect"), k, 1)[0] - sig
     for _ in range(iterations):
         est = torch.fft.irfft2(torch.fft.rfft2(u) * Kh, s=(Hp, Wp)).clamp(min=low)
         ratio = torch.fft.irfft2(torch.fft.rfft2(d / est) * Kh.conj(), s=(Hp, Wp)).clamp(min=0)

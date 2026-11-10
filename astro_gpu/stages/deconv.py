@@ -47,7 +47,7 @@ class Deconv(Stage):
                    "of the field and per colour.")
     deps = ("stack",)
     Params = DeconvParams
-    version = "1"
+    version = "2"     # 2: the saturated stars protected further, the luminance alone for Richardson-Lucy
 
     def run(self, ctx: Context, p: DeconvParams) -> None:
         full, A, B = (image_in(ctx, h).img for h in ("full", "A", "B"))

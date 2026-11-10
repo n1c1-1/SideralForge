@@ -820,7 +820,7 @@ class GraphView(QGraphicsView):
         slots = [int(c[1:]) for c in used if c[:1] == "i" and c[1:].isdigit()]
         out = ["sources"] + [c for c in FRAME_KEYS if c in used]
         out += [f"i{k}" for k in range(max(slots) + 1 if slots else 0)]
-        out += [c for c in ("etoiles", "post", "fusion", "composition") if c in used]
+        out += [c for c in ("etoiles", "synth", "post", "fusion", "composition") if c in used]
         return out + ["final"]
 
     @staticmethod
@@ -989,7 +989,7 @@ class GraphView(QGraphicsView):
                      s_last + SROW if g.sessions else fmid + SROW / 2) + LANE
         # phase bands
         bands = [("Pre-processing", [c for c in cols if c in FRAME_KEYS]),
-                 ("Linear processing", [c for c in cols if (c[:1] == "i" and c[1:].isdigit()) or c == "etoiles"]),
+                 ("Linear processing", [c for c in cols if (c[:1] == "i" and c[1:].isdigit()) or c in ("etoiles", "synth")]),
                  ("Composition", [c for c in cols if c in ("fusion", "composition")])]
         for title, span in bands:
             if not span:
