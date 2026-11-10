@@ -72,3 +72,19 @@ def test_the_block_says_when_little_sky_is_left(qapp):
     assert e.sky_share() == 0.0 and "Gradient" in e.note.text() and "e0a050" in e.note.styleSheet()
     e = edit(qapp, Session(zone=[60, 80, 260, 280]), got(sky=True))
     assert e.sky_share() == 1.0 and "Gradient" not in e.note.text() and cropedit.SKY_MIN > 0
+
+
+def test_the_crop_page_is_built_when_its_frame_comes(qapp):
+    """The night test pass: the Crop page stayed on "Reading the results…": the frame came, but only a tab of pictures
+    was built again."""
+    from collections import OrderedDict
+    from types import SimpleNamespace
+
+    from astro_gpu.client.tune import TuneView
+    built = []
+    t = SimpleNamespace(_asked={"crop": (7, ("crop", ()))}, _data=OrderedDict(), _cur=None, isVisible=lambda: True,
+                        pages=SimpleNamespace(currentIndex=lambda: 0), s=SimpleNamespace(sel_step="crop", path="p"),
+                        _clear_center=lambda: built.append("cleared"), crop_center=built.append,
+                        _remember=lambda: None, _fill=lambda: built.append("fill"))
+    TuneView._job_ready(t, "crop", 7, got())
+    assert built == ["cleared", "p"]

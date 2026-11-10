@@ -213,6 +213,7 @@ def test_run_to_here_runs_the_block_placed_twice_and_is_refused_on_a_session(wor
     w.m.select(step="sources")                      # #29: a Session block is not computed: refused, with the reason
     assert w.ctl.run_to_here() is None and run_here_refusal(w.m, "sources")
     assert run_here_refusal(w.m, "fond~2") == "" and run_key("composition") == "etoiles"
+    assert run_key("crop") == "alignement"                      # the night test pass: Crop computes nothing
     assert p is w.m.path
 
 

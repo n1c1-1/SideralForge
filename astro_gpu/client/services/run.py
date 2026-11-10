@@ -154,8 +154,9 @@ class PlanRefused(Exception):
 
 def run_key(key: str) -> str:
     """The block Run to here plans for a block of the views: its own, a block placed twice included ("fond~2"); for
-    Combine layers, the Split block it reads (exploration #21: it answered "Nothing to run")."""
-    return {"composition": "etoiles", "align_images": "image"}.get(key, key)
+    Combine layers, the Split block it reads (exploration #21: it answered "Nothing to run"); for Crop, which computes
+    nothing, the Registration its frame comes from (the night test pass: "Crop is no longer in the graph")."""
+    return {"composition": "etoiles", "align_images": "image", "crop": "alignement"}.get(key, key)
 
 
 def plan_to(model, p, key: str):

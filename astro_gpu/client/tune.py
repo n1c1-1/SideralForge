@@ -1144,6 +1144,10 @@ class TuneView(QWidget):
             self._add_sky(result)
         elif name in ("lights", "registration") and self._cur is None and self.s.sel_step == "selection":
             self._build_selection()
+        elif name == "crop" and self._cur is None and (self.s.sel_step or "").partition("~")[0] == "crop" \
+                and self.s.path is not None and self.pages.currentIndex() == 0:
+            self._clear_center()                          # the Crop block has no tab of pictures: its page itself
+            self.crop_center(self.s.path)                 # (it stayed on "Reading the results…")
         elif self.isVisible() and self.pages.currentIndex() == 0 and name in getattr(self, "_cur_needs", {name}):
             # issue #24: only the tab that waits for it is built again (a late result of another tab used to rebuild
             # the one shown, its viewer with it)
