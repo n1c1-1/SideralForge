@@ -1210,6 +1210,7 @@ class TuneView(QWidget):
 
     def _make_view(self) -> ImageView:
         v = ImageView(post=True)
+        v.default_dir = lambda: str(getattr(self.s, "root", None) or "")
         v.setMinimumHeight(320)
         v.toasted.connect(self.toasted.emit)
         v.sendToPost.connect(lambda key, vv=v: self._send(vv, key))

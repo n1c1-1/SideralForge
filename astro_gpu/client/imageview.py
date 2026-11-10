@@ -2466,7 +2466,8 @@ class ImageView(QWidget):
         super().__init__(parent)
         self.setStyleSheet(QSS)
         self.loader = loader or default_loader()
-        self.export_dir: str = ""                 # where Export… proposes to write (default: the Pictures folder)
+        self.export_dir: str = ""                 # where Export… proposes to write: the last folder written to,
+        self.default_dir = None                   # else this (a callable: the project's folder), else Pictures
         self._vi: ViewImage | None = None
         self._prep: Prepared | None = None
         self._main: Display | None = None
@@ -3621,9 +3622,16 @@ def format_of(path: str | os.PathLike) -> str:
             ".jpg": "jpeg", ".jpeg": "jpeg"}.get(suf, "fits")
 
 
+def ascii_text(text: str) -> str:
+    """The text without its accents ("Aperçu" -> "Apercu"): what a FITS header can hold (the night test pass: a French
+    view's title made the FITS export fail)."""
+    import unicodedata
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+
+
 def slug(name: str) -> str:
-    """A file name from a name: every character but letters, digits, "_", "." and "-" becomes "_"."""
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "image"
+    """A file name from a name: its accents dropped, every character but letters, digits, "_", "." and "-" made "_"."""
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", ascii_text(name)).strip("_") or "image"
 
 
 def export_image(path: str | os.PathLike, prep: Prepared, st: sm.Stretch | None = None, fmt: str | None = None,
@@ -3717,7 +3725,7 @@ def _write_fits(path: Path, img: np.ndarray, prep: Prepared, origin, with_wcs: b
             w.wcs.crpix = [w.wcs.crpix[0] - origin[0], w.wcs.crpix[1] - origin[1]]
             hdr.update(w.to_header(relax=True))
     if vi.name:
-        hdr["OBJECT"] = (vi.name[:68], f"the image's name in {APP_NAME}")
+        hdr["OBJECT"] = (ascii_text(vi.name)[:68], f"the image's name in {APP_NAME}")
     hdr["BUNIT"] = ("ADU" if vi.units == "adu" else "", "data units")
     if prep.cfa:
         hdr["BAYERPAT"] = (prep.cfa, "colour pattern of the mosaic (36 letters: X-Trans)")
@@ -3849,8 +3857,8 @@ class ImageExportDialog(QDialog):
         bb.addWidget(self.cancel_b)
         bb.addWidget(self.go)
         v.addLayout(bb)
-        folder = view.export_dir or QStandardPaths.writableLocation(QStandardPaths.PicturesLocation) or \
-            str(Path.home())
+        folder = view.export_dir or (view.default_dir() if callable(view.default_dir) else "") or \
+            QStandardPaths.writableLocation(QStandardPaths.PicturesLocation) or str(Path.home())
         self.dest.setText((Path(folder) / (slug(self.vi.name or "image") + ".fits")).as_posix())
         self.fmt.currentIndexChanged.connect(self._changed)
         self.c_data.toggled.connect(self._changed)
@@ -3937,6 +3945,7 @@ class ImageExportDialog(QDialog):
             self.status.setStyleSheet(f"color: {WARN};")
             return
         self.result_path = Path(path)
+        self.view.export_dir = self.result_path.parent.as_posix()      # the next export proposes the same folder
         self.status.setText(_("Written: {path}").format(path=path))
         self.go.setText(_("Close"))
         self.cancel_b.setEnabled(False)

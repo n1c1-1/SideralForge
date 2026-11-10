@@ -1071,6 +1071,20 @@ def test_export_dialog_writes_in_a_worker(qapp, loader, tmp_path):
     from astropy.io import fits
     p = v.export(tmp_path / "r.fits")
     assert fits.getheader(p)["OBJECT"] == "Renamed"
+    # the night test pass: a French title (accents) made the FITS fail and its file name "Aper_u_gradient_retir";
+    # the folder proposed was Pictures, not the one written to last
+    show(v, iv.ViewImage(img, "Aperçu : gradient retiré", key="dlg"))
+    dlg = v.export_dialog()
+    assert dlg.dest.text() == (tmp_path / "out" / "Apercu_gradient_retire.fits").as_posix()
+    dlg.go.click()
+    assert dlg.wait(30) and not dlg.error
+    assert fits.getheader(dlg.result_path)["OBJECT"] == "Apercu : gradient retire"
+    dlg.go.click()
+    v.export_dir = ""
+    v.default_dir = lambda: (tmp_path / "project").as_posix()
+    dlg = v.export_dialog()
+    assert dlg.dest.text().startswith((tmp_path / "project").as_posix())
+    dlg.reject()
 
 
 def test_send_to_post_and_copy_view(qapp, loader):
