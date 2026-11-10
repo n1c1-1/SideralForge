@@ -282,6 +282,11 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
         # the lines the stages log (the common ones: the rest of their free diagnostics stays in English)
         (r"^(\d+) lights of ([\d.]+) s \(([\d.]+) h\), (\d+)x(\d+) (\w+), (\d+) darks, (\d+) flats, (\d+) bias, camera (.*)$",
          "{0} lights of {1} s ({2} h), {3}x{4} {5}, {6} darks, {7} flats, {8} bias, camera {9}", ()),
+        # the night test pass: an empty or damaged frame, named
+        (r"^(\d+) (lights|darks|flats|bias|flat darks) cannot be read and are left out \(damaged or empty files\?\): "
+         r"(.+)$", "{0} {1} cannot be read and are left out (damaged or empty files?): {2}", (1,)),
+        (r"^no light frame can be read \(damaged or empty files\?\): (.+); take them out of the session$",
+         "no light frame can be read (damaged or empty files?): {0}; take them out of the session", ()),
         (r"^(\d+) light frame\(s\) with a different size or pattern are ignored$",
          "{0} light frame(s) with a different size or pattern are ignored", ()),
         (r"^master dark level ([\d.]+) ADU, flat min ([\d.]+), ([\d.]+) % pixels excluded, sky noise ([\d.]+) ADU$",

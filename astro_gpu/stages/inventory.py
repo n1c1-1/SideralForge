@@ -53,11 +53,24 @@ class Inventory(Stage):
                 if not files:
                     out[k] = infos
                     continue
-                first = read_info(files[0])          # decoded once; the others only read their EXIF header
-                for info in ex.map(lambda f: read_info(f, like=first), files):
-                    infos.append(info.to_dict())
+                first = next((i for i in map(_readable, files) if i is not None), None)   # decoded once; the others
+                bad = []                                                                  # only read their header
+                for f, info in zip(files, ex.map(lambda f: _readable(f, like=first), files)):
+                    if info is None:
+                        bad.append(Path(f).name)
+                    else:
+                        infos.append(info.to_dict())
                     done += 1
                     ctx.progress(done / total, f"reading metadata {done}/{total}")
+                # the night test pass: an empty or damaged file stopped the whole run without its name; it is left
+                # out, by its name (all of them: what to do)
+                what = k.replace("_", " ")
+                if bad and not infos and k == "lights":
+                    raise StageError(f"no light frame can be read (damaged or empty files?): {', '.join(bad)}; take "
+                                     f"them out of the session")
+                if bad:
+                    ctx.log(f"{len(bad)} {what} cannot be read and are left out (damaged or empty files?): "
+                            f"{', '.join(bad)}", "warning")
                 out[k] = infos
         lights = out["lights"]
         sizes = Counter((f["width"], f["height"]) for f in lights)
@@ -135,6 +148,14 @@ class Inventory(Stage):
         read = read_colour if cfa_mod.is_colour(cfa) else read_cfa
         mid = read(lights[len(lights) // 2]["path"]) - first["black"]
         ctx.preview("middle_frame", _superpixel_rgb(mid, cfa))
+
+
+def _readable(f, like=None):
+    """A frame's metadata, None when the file cannot be read (empty, damaged, not what its name says)."""
+    try:
+        return read_info(f, like=like)
+    except Exception:  # noqa: BLE001 - every reader's own error (LibRaw, FITS, TIFF, an empty file): the file is named
+        return None
 
 
 def same_kind(out: dict, cfa: str, light: dict) -> None:

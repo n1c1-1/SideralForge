@@ -84,6 +84,38 @@ def test_the_inventory_works_on_the_useful_area_and_says_so(tmp_path):
     assert "useful area from the frames' header: 6x4 of 8x6 pixels, the overscan left out" in logs
 
 
+def _inventory_of(d):
+    from types import SimpleNamespace
+
+    from astro_gpu.core.project import Inputs
+    from astro_gpu.stages.inventory import Inventory, InventoryParams
+    logs, saved = [], {}
+    ctx = SimpleNamespace(project=SimpleNamespace(config=SimpleNamespace(inputs=Inputs(lights=[str(d)]))),
+                          progress=lambda *a, **k: None, log=lambda m, level="info": logs.append(m),
+                          preview=lambda *a, **k: None, save_json=lambda n, o: saved.update({n: o}), metrics={})
+    ctx.metric = lambda k, v: ctx.metrics.__setitem__(k, v)
+    Inventory().run(ctx, InventoryParams())
+    return ctx.metrics, logs
+
+
+def test_an_empty_or_damaged_frame_is_left_out_by_its_name(tmp_path):
+    """The night test pass: one empty or damaged file among the lights stopped the whole run, without its name."""
+    from astro_gpu.core.stage import StageError
+    d = tmp_path / "lights"
+    d.mkdir()
+    (d / "a_vide.ARW").write_bytes(b"")
+    (d / "b_abime.fits").write_bytes(b"" * 5000)
+    for i in range(2):
+        _write(d / f"l{i}.fits", np.full((6, 8), 100, np.uint16), EXPTIME=20.0)
+    metrics, logs = _inventory_of(d)
+    assert metrics["n_lights"] == 2
+    assert "2 lights cannot be read and are left out (damaged or empty files?): a_vide.ARW, b_abime.fits" in logs
+    for f in d.glob("l*.fits"):
+        f.unlink()
+    with pytest.raises(StageError, match="no light frame can be read .*a_vide.ARW, b_abime.fits"):
+        _inventory_of(d)
+
+
 def test_cfa_channel_map():
     assert cfa_channel_map("RGGB") == [0, 1, 1, 2]
     assert cfa_channel_map("BGGR") == [2, 1, 1, 0]
