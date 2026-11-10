@@ -236,11 +236,14 @@ CATALOG = {
             E("catalogs", "xp_max", "expert", help="Maximum number of stars used."),
         ]),
     ],
-    "debruitage:generique": [],
+    "debruitage:generique": [
+        ("Speed", [E("denoise", "fast")]),
+    ],
     "debruitage:affine": [
         ("Adaptation to the image", [
             E("denoise", "adaptation", help="How long the network learns this image's noise before denoising it."),
         ]),
+        ("Speed", [E("denoise", "fast")]),
         ("System", [E("denoise", "seed", "system")]),
     ],
     "deconv": [
@@ -464,8 +467,8 @@ def needed_stages(s, p, step: str) -> set[str]:
             if st:
                 out.add(st)
     out |= {x for x in _stages_of_step(s, p, step) if x not in ("inventory", "reference")}
-    if step == "selection":
-        out.add("stack")                                  # its thresholds are the stack's settings
+    if step in ("selection", "crop"):
+        out.add("stack")                                  # its thresholds, its zone are the stack's settings
     return out
 
 

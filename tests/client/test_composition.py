@@ -16,6 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from astro_gpu.core.project2 import active_version  # noqa: E402
 from astro_gpu import api  # noqa: E402
 from astro_gpu.client import postengine  # noqa: E402
 from astro_gpu.client.blocks import Graph, node_title  # noqa: E402
@@ -59,9 +60,9 @@ def two(qapp, tmp_path_factory):
 
 @pytest.fixture()
 def model(two):
-    two.p.post = {}
+    two.p.post = project2.new_post()
     yield two
-    two.p.post = {}
+    two.p.post = project2.new_post()
 
 
 def _full(m):
@@ -115,7 +116,7 @@ def test_the_model_adds_changes_and_removes_a_post_layer_and_says_who_did(model)
         me = object()
         lid = model.add_post_layer(full.pid, "stars", me)
         assert said == [me]
-        layers = model.p.post["layers"]
+        layers = active_version(model.p.post)["layers"]
         # on top of the layers Post gives the workflows (#29: the composition was never filled)
         assert [(x["pid"], x["part"], x["name"], x["mode"]) for x in layers][0] == (
             full.pid, "stars", "Full · Stars alone", "Screen")
@@ -123,14 +124,14 @@ def test_the_model_adds_changes_and_removes_a_post_layer_and_says_who_did(model)
         assert len(defaults) == 2
         assert layers[0]["id"] == lid and layers[0]["visible"] and model.post_layer(lid)["part"] == "stars"
         top = model.add_post_layer(full.pid, "combined")                    # a new one goes on top
-        assert said == [me, None] and [x["id"] for x in model.p.post["layers"]] == [top, lid] + defaults
+        assert said == [me, None] and [x["id"] for x in active_version(model.p.post)["layers"]] == [top, lid] + defaults
         assert model.post_layer(top)["blend"] == "Screen"
         model.set_post_layer(top, me, blend="Linear dodge (add)", sliders={"star_strength": 3.0})
         assert said[-1] is me
         assert model.post_layer(top)["blend"] == "Linear dodge (add)"
         assert model.post_layer(top)["sliders"] == {"star_strength": 3.0}
         model.remove_post_layer(lid, me)
-        assert said[-1] is me and [x["id"] for x in model.p.post["layers"]] == [top] + defaults
+        assert said[-1] is me and [x["id"] for x in active_version(model.p.post)["layers"]] == [top] + defaults
         assert model.post_layer(lid) is None
     finally:
         model.postChanged.disconnect(said.append)
@@ -141,10 +142,10 @@ def test_removing_a_layer_takes_its_own_filters_with_it(model):
     lid = model.add_post_layer(full.pid, "starless")
     keep = model.add_post_layer(full.pid, None)
     flt = postengine.new_filter_layer("saturation", lid)
-    model.set_post_layers([flt] + model.post_layers())
+    model.set_post_layers([flt] + model.post_layers(), scope="active")
     model.remove_post_layer(lid)
-    assert [x["id"] for x in model.p.post["layers"]][0] == keep and lid not in [x["id"] for x in model.p.post["layers"]]
-    assert flt["id"] not in [x["id"] for x in model.p.post["layers"]]
+    assert [x["id"] for x in active_version(model.p.post)["layers"]][0] == keep and lid not in [x["id"] for x in active_version(model.p.post)["layers"]]
+    assert flt["id"] not in [x["id"] for x in active_version(model.p.post)["layers"]]
 
 
 # ---------------------------------------------------------------------------------------------- the graph
@@ -182,7 +183,7 @@ def test_the_graph_has_a_block_per_stars_and_background_layer_and_sends_the_othe
 def test_an_image_layer_counts_in_the_post_block_without_a_workflow(model):
     full = _full(model)
     model.add_post_layer(full.pid, "combined")
-    model.set_post_layers([postengine.new_image_layer("stack/abc", "Stack")] + model.post_layers())
+    model.set_post_layers([postengine.new_image_layer("stack/abc", "Stack")] + model.post_layers(), scope="active")
     g = Graph(model)
     assert ("Stack", None) in g.post_layers and g.summary(g.final).startswith("4 ")   # Full's default Combine layers stays (2nd round)
 
@@ -256,7 +257,7 @@ def test_sending_the_stars_alone_keeps_the_combine_block_and_the_link_can_be_tak
     assert "Out of Post" in [b.text() for b in panel.findChildren(QPushButton)]
     lid = layers[0]["id"]
     model.set_post_layers(save_layers(postengine.normalize(load_layers(layers, {full.pid, classic.pid})
-                                                + [postengine.new_filter_layer("saturation", lid)])))
+                                                + [postengine.new_filter_layer("saturation", lid)])), scope="active")
     assert model.remove_post_part(full.pid, "stars") == 1
     left = model.post_layers()
     assert all(x.get("part") != "stars" and x.get("target") != lid for x in left)

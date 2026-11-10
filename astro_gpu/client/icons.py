@@ -56,7 +56,8 @@ CARBON = {
 }
 #: the block icons, drawn for the program: the palette's block -> role
 BLOCK_ROLES = {"session": "block_session", "image": "block_image", "calibration": "block_calibration",
-               "registration": "block_alignment", "selection": "block_selection", "stacking": "block_stacking",
+               "registration": "block_alignment", "selection": "block_selection", "crop": "block_crop",
+               "stacking": "block_stacking",
                "astrometry": "block_astrometry", "gradient": "block_gradient", "denoise": "block_denoise",
                "color": "block_colour", "stars": "block_stars", "fusion": "block_fusion",
                "composition": "block_recombine", "deconv": "deconvolve", "align_images": "block_alignment"}

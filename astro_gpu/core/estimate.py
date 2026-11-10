@@ -63,6 +63,8 @@ DENOISE_MPX_UNITS = 8.5
 DENOISE_SECONDS = {"gpu": {"step": 0.088, "mpx": 0.75}, "cpu": {"step": 3.6, "mpx": 3.3}}
 #: the adaptation lengths (stages/denoise.ADAPTATIONS: steps)
 DENOISE_ADAPT_STEPS = {"short": 500, "long": 4000}
+#: the network's passes over the image (stages/denoise.PASSES; the Fast pass setting: one). The times above are per pass
+DENOISE_PASSES = 4
 
 
 @dataclass
@@ -75,6 +77,7 @@ class Facts:
     scale: float = 1.5               # drizzle
     grid_mpx: float = 6384 * 4272 / 1e6
     iterations: int = 0              # denoise: adaptation steps (0: the pretrained network as it is)
+    passes: int = DENOISE_PASSES     # denoise: passes of the network over the image
 
 
 HEART_FACTS = Facts()
@@ -95,7 +98,7 @@ def units(stage: str, f: Facts) -> float:
     if stage == "stack":
         return f.lights * f.mpx * f.scale ** 2
     if stage == "denoise":
-        return float(f.iterations) + DENOISE_MPX_UNITS * f.grid_mpx
+        return float(f.iterations) + DENOISE_MPX_UNITS * f.grid_mpx * f.passes
     return f.grid_mpx
 
 
@@ -224,7 +227,7 @@ def estimate(stage: str, f: Facts, gpu: bool = True, history: dict | None = None
         return Estimate(statistics.median(own) * u, True, gb)
     if stage == "denoise":
         t = DENOISE_SECONDS[_kind(gpu)]
-        return Estimate(t["step"] * f.iterations + t["mpx"] * f.grid_mpx, False, gb)
+        return Estimate(t["step"] * f.iterations + t["mpx"] * f.grid_mpx * f.passes, False, gb)
     other = _rates(hist, stage, _kind(not gpu))          # measured on the other kind of machine: scaled, ≈
     if other:
         return Estimate(statistics.median(other) * u * (1 / factor if gpu else factor), False, gb)
@@ -313,6 +316,7 @@ def facts(keys: Any, wf: Any, store: Any = None) -> Facts:
     dn = {**given("denoise"), **(done("denoise").get("params") or {})}
     f.iterations = denoise_steps(dn.get("method") or (getattr(wf, "options", None) or {}).get("denoise"),
                                  dn.get("adaptation"))
+    f.passes = 1 if dn.get("fast") else DENOISE_PASSES
     return f
 
 

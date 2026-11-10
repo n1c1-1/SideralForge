@@ -17,17 +17,21 @@ from datetime import date
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QMarginsF, QSizeF, Qt, QUrl, Signal
-from PySide6.QtGui import QFont, QImage, QPainter, QPageSize, QPdfWriter, QTextDocument
+from PySide6.QtCore import QBuffer, QEvent, QIODevice, QMarginsF, QSizeF, Qt, QUrl, Signal
+from PySide6.QtGui import QFont, QImage, QPageSize, QPainter, QPdfWriter, QTextDocument
+from PySide6.QtPdf import QPdfDocument
+from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QFileDialog,
+    QFormLayout,
+    QFrame,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
+    QLineEdit,
+    QPlainTextEdit,
     QPushButton,
-    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -35,18 +39,33 @@ from PySide6.QtWidgets import (
 from . import APP_NAME
 from .blocks import STATE_WORD, block_state
 from .charts import LINES, RegistrationData, registration_data
-from .i18n import _, hm, language, number
+from .. import texts
+from ..core.params import ADVANCED
+from .i18n import _, language, number
 
 #: the sections that are blocks of the chain, in its order: (block key, title)
 BLOCKS = (("calibration", "Calibration"), ("alignement", "Registration"), ("selection", "Selection"),
-          ("empilement", "Stacking"), ("astrometrie", "Astrometry"), ("fond", "Gradient"), ("couleur", "Color"))
+          ("empilement", "Stacking"), ("astrometrie", "Astrometry"), ("fond", "Gradient"), ("debruitage", "Denoise"),
+          ("couleur", "Color"), ("etoiles", "Stars/background"))
 PAGE_W = 794                                             # the page on the screen, px (A4 at 96 dpi)
+FOOT = 40                                                # the foot of a page, px
 FIG_W = 640                                              # a figure in the page, px
+#: what each block does, in one sentence, at the head of its section
+INTRO = {"calibration": "Removes what comes from the sensor and the optics: its dark signal and the vignetting.",
+         "alignement": "Brings every frame onto one reference frame, by matching their stars.",
+         "selection": "Decides which frames are kept and how much each one counts.",
+         "empilement": "Combines the frames kept into one image, more signal and less noise than any of them.",
+         "astrometrie": "Finds where the image is on the sky, from its stars.",
+         "fond": "Removes the smooth gradient of the sky left by light pollution, the Moon and the vignetting.",
+         "debruitage": "Reduces the noise of the stacked image.",
+         "couleur": "Sets the colours from stars whose real colours are known.",
+         "etoiles": "Separates the stars from the sky, to process them apart."}
+ZOOM_STEP = 1.15                                         # the reader's zoom, per step
 #: what the files do not say: entered with a click, kept in the project
 ENTERED = ("instrument", "mount", "filter", "location", "date")
 #: the blocks' figures a reader of the report has no use for, and the star size on 2 x 2 super-pixels, which overestimates
 #: undersampled stars: the report's sizes are the Moffat fit's
-HIDDEN = ("Star FWHM range", "Cache size", "Flat minimum")
+HIDDEN = ("Star FWHM range", "Cache size", "Flat minimum", "Integration", "Stacked exposure", "Drift")
 #: the words of the shooting details, in the language of the forum whatever the language of the screen
 WORDS = {"en": dict(camera="Camera", instrument="Instrument", mount="Mount", filter="Filter", location="Location",
                     date="Date", frames="Frames", darks="Darks", flats="Flats", field="Field", sampling="Sampling",
@@ -108,6 +127,8 @@ def _settings(project, wf, stages) -> list:
     rows = []
     for stage in stages:
         st = known.get(stage.split("~")[0].split("@")[0])
+        if st is not None and st.name == "inventory":    # what was read, not a choice
+            continue
         try:
             out = api.stage_outputs(project, wf, stage) if st is not None else None
         except (OSError, ValueError, KeyError):
@@ -116,8 +137,12 @@ def _settings(project, wf, stages) -> list:
             continue
         for key, value in out.params.items():
             info = st.Params.model_fields.get(key)
-            if info is not None and shareable(value):
-                rows.append((st.title, (info.json_schema_extra or {}).get("label", key), value, value != info.default))
+            if info is None or not shareable(value) or key == "workers":
+                continue
+            extra = info.json_schema_extra or {}
+            changed = value != info.default
+            if changed or extra.get("level") != ADVANCED:   # the rest changes nothing a reader needs
+                rows.append((st.title, extra.get("label", key), value, changed))
     return rows
 
 
@@ -221,19 +246,34 @@ def size_of(d: ReportData) -> tuple[np.ndarray, float, str]:
     return (d.fwhm if d.fwhm is not None else d.reg.fwhm), 1.0, " px"
 
 
+def exact_time(seconds: float) -> str:
+    """A duration to the second: 7 min 30 s, never rounded to something another line contradicts."""
+    s = int(round(seconds))
+    h, m, s = s // 3600, s % 3600 // 60, s % 60
+    if h:
+        return f"{h} h {m:02d}"
+    return f"{m} min {s:02d} s" if s else f"{m} min"
+
+
+def size_text(v: float, k: float, unit: str, digits_of) -> str:
+    """A star size, in arcseconds with its pixels beside it: 10.7" alone looks like a terrible sky at 6.4"/px."""
+    return f"{digits_of(v * k)}{unit} ({digits_of(v)} px)" if unit == '"' else f"{digits_of(v)}{unit}"
+
+
 def card_rows(d: ReportData, idx: list) -> list:
     """The figures of a session."""
     kept = d.kept[idx]
     exp = d.exposure[idx] if d.exposure is not None else np.full(len(idx), np.nan)
     rows = [(_("Frames kept"), f"{int(kept.sum())} / {len(idx)}")]
     if np.isfinite(exp[kept]).any():
-        rows.append((_("Total exposure"), hm(float(np.nansum(exp[kept])))))
+        rows.append((_("Total exposure"), exact_time(float(np.nansum(exp[kept])))))
     size, k, unit = size_of(d)
     s = size[idx][kept]
     s = s[np.isfinite(s)]
     if len(s):
-        for name, v in ((_("Median FWHM"), np.median(s)), (_("Best FWHM"), s.min()), (_("Worst FWHM"), s.max())):
-            rows.append((name, f"{number(float(v * k), 1)}{unit}"))
+        rows.append((_("Median FWHM"), size_text(float(np.median(s)), k, unit, lambda x: number(x, 1))))
+        rows.append((_("Best FWHM"), f"{number(float(s.min() * k), 1)}{unit}"))
+        rows.append((_("Worst FWHM"), f"{number(float(s.max() * k), 1)}{unit}"))
     if d.roundness is not None and np.isfinite(d.roundness[idx][kept]).any():
         rows.append((_("Median roundness"), number(float(np.nanmedian(d.roundness[idx][kept])), 2)))
     return rows
@@ -245,7 +285,7 @@ def _night(d: ReportData, idx: list, heading: str = "", foot: str = "") -> bytes
     r, kept = d.reg, d.kept[idx]
     x, minutes = elapsed(r, idx)
     size, k, unit = size_of(d)
-    panels = [(_("FWHM") + f" ({unit.strip()})", size[idx] * k), (_("Transparency") + " (%)", r.transp[idx])]
+    panels = [(_("FWHM") + f" ({unit.strip()})", size[idx] * k), (_("Relative signal (%)"), r.transp[idx])]
     if d.sky is not None:
         panels.append((_("Sky level (ADU)"), d.sky[idx]))
     with matplotlib.rc_context(STYLE):
@@ -294,9 +334,9 @@ def _response(r) -> bytes:
         fig, (a,) = _figure(1, 2.5)
         for curve, col, name in zip(r.S, RGB, ("R", "G", "B")):
             a.plot(r.lam, np.maximum(curve, 0.0), "-", color=col, lw=0.9, label=name)
-        for lam0, name in LINES:
+        for i, (lam0, name) in enumerate(LINES):
             a.axvline(lam0, color=GREY, lw=0.4, ls=":")
-            a.text(lam0, 1.07, name, fontsize=6, ha="center", va="bottom", color=GREY)
+            a.text(lam0, 1.07 + 0.08 * (i % 2), name, fontsize=6, ha="center", va="bottom", color=GREY)  # close lines: staggered
         a.set_ylim(0.0, 1.05)
         a.set_xlabel(_("Wavelength (nm)"))
         a.set_ylabel(_("Relative response"))
@@ -311,7 +351,8 @@ def draw_figures(d: ReportData, title: str = ""):
         for name, idx in d.sessions:
             rows = [f"{a}: {b}" for a, b in card_rows(d, idx)]
             foot = "     ".join(rows[:3]) + chr(10) + "     ".join(rows[3:])
-            head = " · ".join(x for x in (_("Night card"), title, name) if x)
+            shown = name if len(d.sessions) > 1 else ""  # a project of one session: its name says nothing
+            head = " · ".join(x for x in (_("Night card"), title, shown) if x)
             d.nights.append(NightFigure(name, idx, _night(d, idx), _night(d, idx, head, foot)))
         d.drift = _drift(d.reg)
     if d.spectral is not None:
@@ -343,7 +384,7 @@ def shot_rows(d: ReportData, info: dict, entered: dict, lang: str) -> list:
         exp = d.exposure[d.kept]
         exp = exp[np.isfinite(exp)]
         groups = " + ".join(f"{int((np.round(exp) == t).sum())} × {t:g} s" for t in sorted(set(np.round(exp).tolist())))
-        rows.append(("frames", w["frames"], f"{groups} ({hm(float(exp.sum()))})"))
+        rows.append(("frames", w["frames"], f"{groups} ({exact_time(float(exp.sum()))})"))
     for k, n in (("darks", info.get("n_darks")), ("flats", info.get("n_flats"))):
         if n:
             rows.append((k, w[k], str(n)))
@@ -357,7 +398,7 @@ def shot_rows(d: ReportData, info: dict, entered: dict, lang: str) -> list:
         s = size[d.kept]
         s = s[np.isfinite(s)]
         if len(s):
-            rows.append(("fwhm", w["fwhm"], f"{_dec(float(np.median(s) * k), 1, lang)}{unit}"))
+            rows.append(("fwhm", w["fwhm"], size_text(float(np.median(s)), k, unit, lambda x: _dec(x, 1, lang))))
         rows.append(("kept", w["kept"], f"{int(d.kept.sum())}/{len(d.kept)}"))
     rows.append(("processing", w["processing"], APP_NAME))
     return rows
@@ -366,19 +407,37 @@ def shot_rows(d: ReportData, info: dict, entered: dict, lang: str) -> list:
 def shot_text(target: str, rows: list) -> str:
     """The text to paste in a forum: what is known, nothing else."""
     lines = [target] if target else []
-    return chr(10).join(lines + [f"{word} : {v}" if word != v else v for _k, word, v in rows if v])
+    colon = " : " if rows and rows[0][1] == WORDS["fr"]["camera"] else ": "
+    return chr(10).join(lines + [f"{word}{colon}{v}" for _k, word, v in rows if v])
 
 
 # ------------------------------------------------------------ the document
-def _table(rows, widths=("46%", "54%")) -> str:
+def _table(rows, widths=("38%", "62%")) -> str:
     if not rows:
         return ""
-    body = "".join(f"<tr><td width='{widths[0]}'>{a}</td><td width='{widths[1]}'>{b}</td></tr>" for a, b in rows)
-    return f"<hr/><table width='100%' cellspacing='0' cellpadding='2'>{body}</table><hr/>"
+    body = "".join(f"<tr><td width='{widths[0]}'>{a}</td><td width='{widths[1]}'><b>{b}</b></td></tr>" for a, b in rows)
+    return f"<hr/><table width='100%' cellspacing='0' cellpadding='3'>{body}</table><hr/>"
+
+
+def _meanings() -> dict:
+    """What each figure of the blocks means, by the name it is shown under."""
+    lang = language()
+    return {html.escape(texts.metric_label(k, lang)): texts.translate(m.meaning, lang) for k, m in texts.METRICS.items()}
+
+
+def _explained(rows) -> str:
+    """A block's figures, each with what it means: a reader should not need the manual."""
+    if not rows:
+        return ""
+    known = _meanings()
+    body = "".join(f"<tr><td width='30%'>{a}</td><td width='20%'><b>{b}</b></td>"
+                   f"<td width='50%' class='why'>{html.escape(known.get(a, '')) or '&nbsp;'}</td></tr>" for a, b in rows)
+    return f"<hr/><table width='100%' cellspacing='0' cellpadding='3'>{body}</table><hr/>"
 
 
 class ReportPage(QWidget):
-    """The tab: a white page, centred, and its two exports."""
+    """The tab: on the left what is entered and what can be pasted, on the right the report itself, in a PDF reader: what
+    is seen is what is exported, and it zooms."""
 
     loaded = Signal()                                    # the data of the workflow shown have been read
 
@@ -388,27 +447,83 @@ class ReportPage(QWidget):
         self.service = steps.service
         self.data: ReportData | None = None
         self._token = None
-        v = QVBoxLayout(self)
-        v.setContentsMargins(0, 0, 0, 0)
-        bar = QHBoxLayout()
-        bar.setContentsMargins(10, 8, 10, 8)
+        self._buffer = None
+        root = QHBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._side())
+        root.addLayout(self._reader(), 1)
+        self.service.jobReady.connect(self._ready)
+        self.service.jobFailed.connect(self._failed)
+        steps.changed.connect(self._facts_changed)
+
+    def _side(self) -> QWidget:
+        side = QFrame()
+        side.setFixedWidth(330)
+        side.setObjectName("panel")
+        v = QVBoxLayout(side)
+        v.setContentsMargins(12, 10, 12, 12)
         self.wf = QComboBox()
-        self.wf.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.wf.activated.connect(lambda _i: self.load())
-        bar.addWidget(self.wf)
-        bar.addStretch(1)
-        self.copied = QLabel("")
-        bar.addWidget(self.copied)
+        v.addWidget(self.wf)
+        title = QLabel(_("Shooting details"))
+        title.setObjectName("h2")
+        v.addWidget(title)
+        hint = QLabel(_("What the files do not say. Kept in the project."))
+        hint.setObjectName("small")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+        form = QFormLayout()
+        self.fields: dict[str, QLineEdit] = {}
+        for key, name in zip(ENTERED, ("Instrument", "Mount", "Filter", "Location", "Date")):
+            e = QLineEdit()
+            e.editingFinished.connect(lambda k=key: self.set_field(k))
+            form.addRow(_(name), e)
+            self.fields[key] = e
+        v.addLayout(form)
+        row = QHBoxLayout()
         self.lang = QComboBox()
         self.lang.addItem("Français", "fr")
         self.lang.addItem("English", "en")
         self.lang.setCurrentIndex(max(0, self.lang.findData(language())))
         self.lang.setToolTip(_("The language of the text to paste, whatever the language of the screen"))
-        bar.addWidget(self.lang)
-        self.b_copy = QPushButton(_("Copy details"))
+        self.lang.currentIndexChanged.connect(lambda _i: self._show_text())
+        row.addWidget(self.lang)
+        self.b_copy = QPushButton(_("Copy text"))
         self.b_copy.setToolTip(_("The shooting details as text, to paste in a forum"))
         self.b_copy.clicked.connect(self.copy_details)
-        bar.addWidget(self.b_copy)
+        row.addWidget(self.b_copy, 1)
+        v.addLayout(row)
+        self.text = QPlainTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setStyleSheet("QPlainTextEdit { background: #14161b; color: #e8ebf0; border: 1px solid #2a2f38; }")
+        v.addWidget(self.text, 1)
+        self.part = QComboBox()
+        self.part.setToolTip(_("A part of the report, as a picture to paste in a forum"))
+        v.addWidget(self.part)
+        self.b_card = QPushButton(_("Copy image"))
+        self.b_card.setToolTip(_("The part chosen above, as a picture"))
+        self.b_card.clicked.connect(self.copy_image)
+        v.addWidget(self.b_card)
+        self.copied = QLabel("")
+        self.copied.setObjectName("small")
+        v.addWidget(self.copied)
+        return side
+
+    def _reader(self) -> QVBoxLayout:
+        v = QVBoxLayout()
+        v.setContentsMargins(0, 0, 0, 0)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(10, 6, 10, 6)
+        self.b_out, self.b_in, self.b_fit = QPushButton("−"), QPushButton("+"), QPushButton(_("Fit width"))
+        self.b_out.clicked.connect(lambda: self.zoom_by(1 / ZOOM_STEP))
+        self.b_in.clicked.connect(lambda: self.zoom_by(ZOOM_STEP))
+        self.b_fit.clicked.connect(self.fit_width)
+        for b in (self.b_out, self.b_in, self.b_fit):
+            bar.addWidget(b)
+        self.zoom_lab = QLabel("")
+        bar.addWidget(self.zoom_lab)
+        bar.addStretch(1)
         self.b_png = QPushButton(_("Export PNG…"))
         self.b_pdf = QPushButton(_("Export PDF…"))
         self.b_png.clicked.connect(self._ask_png)
@@ -416,20 +531,37 @@ class ReportPage(QWidget):
         bar.addWidget(self.b_png)
         bar.addWidget(self.b_pdf)
         v.addLayout(bar)
-        row = QHBoxLayout()
-        row.addStretch(1)
-        self.view = QTextBrowser()
-        self.view.setFixedWidth(PAGE_W + 24)
-        self.view.setOpenLinks(False)
-        self.view.setOpenExternalLinks(False)
-        self.view.anchorClicked.connect(lambda url: self.enter(url.path()))
-        self.view.setStyleSheet("QTextBrowser { background: #ffffff; color: #000000; border: none; }")
-        row.addWidget(self.view)
-        row.addStretch(1)
-        v.addLayout(row, 1)
-        self.service.jobReady.connect(self._ready)
-        self.service.jobFailed.connect(self._failed)
-        steps.changed.connect(self._facts_changed)
+        self.pdf = QPdfDocument(self)
+        self.view = QPdfView(self)
+        self.view.setDocument(self.pdf)
+        self.view.setPageMode(QPdfView.PageMode.MultiPage)
+        self.view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+        self.view.viewport().installEventFilter(self)
+        v.addWidget(self.view, 1)
+        return v
+
+    # ------------------------------------------------------------ the reader's zoom
+    def zoom_by(self, k: float):
+        self.view.setZoomFactor(self._zoom() * k)
+        self.view.setZoomMode(QPdfView.ZoomMode.Custom)
+        self.zoom_lab.setText(f"{self.view.zoomFactor() * 100:.0f} %")
+
+    def _zoom(self) -> float:
+        """The scale shown; fitted to the width, Qt keeps no factor: it is worked out from the page."""
+        if self.view.zoomMode() == QPdfView.ZoomMode.Custom:
+            return self.view.zoomFactor()
+        points = self.pdf.pagePointSize(0).width() if self.pdf.pageCount() else 0
+        return (self.view.viewport().width() - 20) / (points * 96 / 72) if points else 1.0
+
+    def fit_width(self):
+        self.view.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+        self.zoom_lab.setText("")
+
+    def eventFilter(self, obj, e):                                   # noqa: N802 - Qt's name
+        if obj is self.view.viewport() and e.type() == QEvent.Wheel and e.modifiers() & Qt.ControlModifier:
+            self.zoom_by(ZOOM_STEP if e.angleDelta().y() > 0 else 1 / ZOOM_STEP)
+            return True
+        return super().eventFilter(obj, e)
 
     # ------------------------------------------------------------ data
     def path(self):
@@ -445,6 +577,7 @@ class ReportPage(QWidget):
         for q in self.s.paths:
             self.wf.addItem(q.name, q.pid)
         self.wf.setCurrentIndex(max(0, self.wf.findData(cur)))
+        self.wf.setVisible(self.wf.count() > 1)          # a project of one workflow: nothing to choose
         self.load()
 
     def load(self):
@@ -471,111 +604,161 @@ class ReportPage(QWidget):
         if self.data is not None and self.isVisible():
             self.build()
 
-    # ------------------------------------------------------------ the report
+    # ------------------------------------------------------------ what the user gives, what can be pasted
     def entered(self) -> dict:
         return self.s.p.acquisition
 
-    def enter(self, key: str):
-        """A click on a field the files do not give: what the user says, kept in the project."""
-        name = dict(zip(ENTERED, ("Instrument", "Mount", "Filter", "Location", "Date")))[key]
-        text, ok = QInputDialog.getText(self, _(name), _(name), text=self.entered().get(key, ""))
-        if not ok:
+    def set_field(self, key: str):
+        """A field left: what it holds is kept in the project; an empty one is forgotten."""
+        text = self.fields[key].text().strip()
+        if text == self.entered().get(key, ""):
             return
-        if text.strip():
-            self.entered()[key] = text.strip()
+        if text:
+            self.entered()[key] = text
         else:
             self.entered().pop(key, None)
         if hasattr(self.s, "edited"):
             self.s.edited()
-        at = self.view.verticalScrollBar().value()
         self.build()
-        self.view.verticalScrollBar().setValue(at)
 
     def details(self) -> str:
-        """The text the Copy button gives, in the language chosen."""
+        """The text to paste, in the language chosen."""
         if self.data is None or self.data.reg is None:
             return ""
         return shot_text(self.title(), shot_rows(self.data, self.s.info(), self.entered(), self.lang.currentData()))
+
+    def _show_text(self):
+        self.text.setPlainText(self.details())
 
     def copy_details(self):
         text = self.details()
         QApplication.clipboard().setText(text)
         self.copied.setText(_("Copied") if text else _("Nothing computed yet: run the workflow first."))
 
+    def copy_image(self):
+        """The part chosen, as a picture: the night card, or a section of the report as it is printed."""
+        i = self.part.currentIndex()
+        if i < 0:
+            self.copied.setText(_("Nothing computed yet: run the workflow first."))
+            return
+        QApplication.clipboard().setImage(self._part_image(i))
+        self.copied.setText(_("Copied"))
+
+    def _part_image(self, i: int) -> QImage:
+        nights = self.data.nights if self.data is not None else []
+        if i < len(nights):
+            return QImage.fromData(nights[i].card)
+        return self._picture([self._sections_now[i - len(nights)]], 2.0)
+
+    # ------------------------------------------------------------ the report
     def build(self):
         self.copied.setText("")
-        self.view.setDocument(self.document())
+        for key, e in self.fields.items():
+            e.setText(self.entered().get(key, ""))
+        self._show_text()
+        self._sections_now = self.sections()
+        self._fill_parts()
+        buf = QBuffer(self)
+        buf.open(QIODevice.ReadWrite)
+        self._write_pdf(buf)
+        buf.seek(0)
+        self.pdf.load(buf)
+        if self._buffer is not None:
+            self._buffer.deleteLater()
+        self._buffer = buf
 
-    def document(self, exporting: bool = False) -> QTextDocument:
-        self._exporting = exporting                      # a paper has no field to click
+    def _fill_parts(self):
+        was = self.part.currentText()
+        self.part.clear()
+        nights = self.data.nights if self.data is not None else []
+        for night in nights:
+            self.part.addItem(_("Night card") + (f" · {night.name}" if len(nights) > 1 else ""))
+        for title, _html in self._sections_now:
+            if title:
+                self.part.addItem(title)
+        # the sections without a title (the head, the appendix's parts) are not offered: keep the index in step
+        self._sections_now = [s for s in self._sections_now if s[0]] + [s for s in self._sections_now if not s[0]]
+        self.part.setCurrentIndex(max(0, self.part.findText(was)))
+        self.b_card.setEnabled(self.part.count() > 0)
+
+    def _new_doc(self, body: str) -> QTextDocument:
         doc = QTextDocument(self)
-        font = QFont("Times New Roman", 11)
+        font = QFont("Times New Roman", 12)
         font.setStyleHint(QFont.Serif)
         doc.setDefaultFont(font)
         doc.setDocumentMargin(36)
-        doc.setDefaultStyleSheet("h1 { font-size: 18pt; font-weight: normal; } h2 { font-size: 12.5pt; } "
-                                 "h3 { font-size: 11pt; font-style: italic; font-weight: normal; } "
-                                 ".cap { font-size: 9.5pt; } .state { color: #8a2a2a; font-style: italic; }")
-        self._n_fig = 0
-        self._doc = doc
-        doc.setHtml(self._html())
+        doc.setDefaultStyleSheet("h1 { font-size: 20pt; font-weight: normal; } h2 { font-size: 14pt; } "
+                                 "h3 { font-size: 12pt; font-style: italic; font-weight: normal; } "
+                                 ".cap { font-size: 10.5pt; } .state { color: #8a2a2a; font-style: italic; } "
+                                 ".why { color: #444444; font-size: 10.5pt; } .intro { font-style: italic; }")
+        for url, img in self._images.items():
+            doc.addResource(QTextDocument.ImageResource, QUrl(url), img)
+        doc.setHtml(body)
+        doc.setTextWidth(PAGE_W)
         return doc
+
+    def document(self) -> QTextDocument:
+        """The whole report as one document (its text; the pages are made by ``_write_pdf``)."""
+        return self._new_doc("".join(body for _title, body in self.sections()))
 
     def _figure(self, png: bytes, caption: str) -> str:
         self._n_fig += 1
         url = f"fig{self._n_fig}"
-        self._doc.addResource(QTextDocument.ImageResource, QUrl(url), QImage.fromData(png))
+        self._images[url] = QImage.fromData(png)
         return (f"<p align='center'><img src='{url}' width='{FIG_W}'/></p>"
                 f"<p class='cap'><b>{_('Figure')} {self._n_fig}.</b> {html.escape(caption)}</p>")
 
-    def _html(self) -> str:
+    def sections(self) -> list:
+        """[(title, html)]: the pieces the pages are made of, none of them cut, each one a picture to paste. An empty
+        title: a piece that is not offered on its own."""
+        self._n_fig = 0
+        self._images: dict[str, QImage] = {}
         d, p = self.data, self.path()
         many = p is not None and len(self.s.paths) > 1   # a project of one workflow: its name says nothing
+        version = self.s.post_version_label() if hasattr(self.s, "post_version_label") else ""
         head = (f"<h1 align='center'>{_('Processing report')}</h1>"
                 f"<p align='center'>{html.escape(self.title())}"
-                f"{' &mdash; ' + html.escape(p.name) if many else ''}<br/>"
+                f"{' &mdash; ' + html.escape(p.name) if many else ''}"
+                f"{' &mdash; ' + html.escape(version) if version else ''}<br/>"
                 f"<i>{APP_NAME}, {date.today().isoformat()}</i></p>")
         if d is not None and d.thumb:
-            self._doc.addResource(QTextDocument.ImageResource, QUrl("thumb"), QImage.fromData(d.thumb))
-            head += "<p align='center'><img src='thumb' width='440'/></p>"
+            self._images["thumb"] = QImage.fromData(d.thumb)
+            head += ("<p align='center'><img src='thumb' width='460'/></p>"
+                     f"<p class='cap' align='center'>{_('The final image, as Post last showed it.')}</p>")
         if d is None or p is None or d.reg is None:
-            return head + f"<p>{_('Nothing computed yet: run the workflow first.')}</p>"
-        parts, n = [head, self._observation(d)], 1
-        keys = self.s.block_keys(p)
+            return [("", head + f"<p>{_('Nothing computed yet: run the workflow first.')}</p>")]
+        out = [("", head)] + self._observation(d)
+        n, keys = 1, self.s.block_keys(p)
         for key, title in BLOCKS:
             if key in keys:
                 n += 1
-                parts.append(self._block(n, p, key, title, d))
-        parts.append(self._recipe(n + 1, keys, d))
-        parts.append(self._appendix(n + 2, d))
-        return "".join(parts)
+                out.append((f"{n}. {_(title)}", self._block(n, p, key, title, d)))
+        out.append((f"{n + 1}. {_('Recipe')}", self._recipe(n + 1, keys, d)))
+        return out + self._appendix(n + 2, d)
 
-    def _observation(self, d: ReportData) -> str:
-        rows = []
-        for key, word, value in shot_rows(d, self.s.info(), self.entered(), language() if language() in WORDS else "en"):
-            if key in ENTERED and not self._exporting:   # a click to give it, or to change it
-                link = html.escape(value) if value else _("click to enter")
-                value = f"<a href='edit:{key}'>{link}</a>"
-            elif value:
-                value = html.escape(value)
-            if value:
-                rows.append((word, value))
-        out = [f"<h2>1. {_('Observation')}</h2>", _table(rows)]
+    def _observation(self, d: ReportData) -> list:
+        lang = language() if language() in WORDS else "en"
+        rows = [(word, html.escape(value)) for key, word, value in shot_rows(d, self.s.info(), self.entered(), lang)
+                if value and key != "processing"]
+        title = f"1. {_('Observation')}"
+        out = [(title, f"<h2>{title}</h2>" + _table(rows))]
         for night in d.nights:
-            if night.name:
-                out.append(f"<h3>{html.escape(night.name)}</h3>")
-            out.append(_table(card_rows(d, night.idx)))
-            out.append(self._figure(night.figure, _("Star size (measured FWHM, Moffat fit), transparency relative to the "
-                                                    "best frames and sky level of each frame. Open circles: frames left "
-                                                    "out.")))
-        return "".join(out)
+            body = f"<h3>{html.escape(night.name)}</h3>" if len(d.nights) > 1 else ""
+            if len(d.nights) > 1 or d.roundness is not None:
+                body += _table(card_rows(d, night.idx))
+            body += self._figure(night.figure, _("Star size (measured FWHM, Moffat fit), signal of each frame relative to "
+                                                 "the best ones (100 = the best tenth; it can go a little above) and sky "
+                                                 "level after calibration. Open circles: frames left out."))
+            out.append((_("The night, frame by frame") + (f" · {night.name}" if len(d.nights) > 1 else ""), body))
+        return out
 
     def _block(self, n: int, p, key: str, title: str, d: ReportData) -> str:
         state = block_state(self.s, p, key)
-        out = [f"<h2>{n}. {_(title)}</h2>"]
+        out = [f"<h2>{n}. {_(title)}</h2>", f"<p class='intro'>{_(INTRO[key])}</p>"]
         if state != "done":
             out.append(f"<p class='state'>{_(STATE_WORD.get(state, state))}</p>")
-        out.append(_table([r for r in self.steps.facts(p, key) if r[0] not in [_(h) for h in HIDDEN]]))
+        hidden = [html.escape(_(h)) for h in HIDDEN]
+        out.append(_explained([r for r in self.steps.facts(p, key) if r[0] not in hidden]))
         if key == "alignement" and d.drift is not None:
             out.append(self._figure(d.drift, _("Offset of each frame from the reference frame, and alignment residual.")))
         if key == "couleur" and d.response is not None:
@@ -598,18 +781,19 @@ class ReportPage(QWidget):
         return (f"<h2>{n}. {_('Recipe')}</h2><p>{chain}</p>" +
                 (_table(rows) if rows else f"<p>{_('All the settings are the defaults.')}</p>"))
 
-    def _appendix(self, n: int, d: ReportData) -> str:
-        out = [f"<h2>{n}. {_('Appendix: all the settings')}</h2>"]
-        last, rows = None, []
+    def _appendix(self, n: int, d: ReportData) -> list:
+        """The settings of each block, a piece each. Of the two stacking methods, only the one that ran."""
+        classic = any(str(v) == "classic" for _b, name, v, _c in d.settings if name == "Stacking method")
+        other = "(drizzle)" if classic else "(Classic)"
+        by: dict = {}
         for block, name, value, _changed in d.settings:
-            if block != last:
-                if rows:
-                    out.append(_table(rows))
-                out.append(f"<h3>{html.escape(_(block))}</h3>")
-                rows, last = [], block
-            rows.append((html.escape(_(name)), self._value(value)))
-        out.append(_table(rows))
-        return "".join(out)
+            if other not in name:
+                by.setdefault(block, []).append((html.escape(_(name)), self._value(value)))
+        out = []
+        for i, (block, rows) in enumerate(by.items()):
+            head = f"<h2>{n}. {_('Appendix: settings')}</h2>" if i == 0 else ""
+            out.append(("", f"{head}<h3>{html.escape(_(block))}</h3>{_table(rows)}"))
+        return out
 
     # ------------------------------------------------------------ export
     def _ask_png(self):
@@ -622,25 +806,53 @@ class ReportPage(QWidget):
         if path:
             self.save_pdf(path)
 
-    def save_png(self, path):
-        doc = self.document(exporting=True)
-        doc.setTextWidth(PAGE_W)
-        size = doc.size().toSize()
-        img = QImage(size, QImage.Format_RGB32)
+    def _picture(self, parts: list, scale: float = 1.0) -> QImage:
+        docs = [self._new_doc(body) for _title, body in parts]
+        h = sum(d.size().height() for d in docs)
+        img = QImage(int(PAGE_W * scale), int(h * scale), QImage.Format_RGB32)
         img.fill(Qt.white)
         q = QPainter(img)
-        doc.drawContents(q)
+        q.scale(scale, scale)
+        for d in docs:
+            d.drawContents(q)
+            q.translate(0, d.size().height())
         q.end()
-        img.save(str(path), "PNG")
+        return img
 
-    def save_pdf(self, path):
-        w = QPdfWriter(str(path))
+    def save_png(self, path):
+        self._picture(self.sections()).save(str(path), "PNG")
+
+    def _write_pdf(self, device):
+        """The pages: a piece that does not fit goes whole to the next one; a foot on each."""
+        w = QPdfWriter(device)
         w.setPageSize(QPageSize(QPageSize.A4))
         w.setResolution(96)
         w.setPageMargins(QMarginsF(0, 0, 0, 0))
-        doc = self.document(exporting=True)
-        doc.setPageSize(QSizeF(w.width(), w.height()))
-        doc.print_(w)
+        H = w.height() - FOOT
+        q = QPainter(w)
+        page, y = 1, 0.0
+
+        def foot():
+            q.setPen(Qt.gray)
+            q.drawText(36, w.height() - 22, f"{self.title()} · {APP_NAME} · {page}")
+        for _title, body in self.sections():
+            doc = self._new_doc(body)
+            doc.setTextWidth(w.width())
+            h = doc.size().height()
+            if y and y + h > H:
+                foot()
+                w.newPage()
+                page, y = page + 1, 0.0
+            q.save()
+            q.translate(0, y)
+            doc.drawContents(q)
+            q.restore()
+            y += h
+        foot()
+        q.end()
+
+    def save_pdf(self, path):
+        self._write_pdf(str(path))
 
     # ------------------------------------------------------------ the night card, for Post's Export
     def card_ready(self) -> bool:

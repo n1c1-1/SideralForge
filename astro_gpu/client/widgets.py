@@ -3,7 +3,8 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt
+from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QVBoxLayout, QWidget
 
 ACCENT, OK, WARN, SHARED, BAD = "#5ea1ff", "#5fbf7f", "#e6a23c", "#a395ff", "#e06c6c"
@@ -83,6 +84,41 @@ QScrollBar::handle:horizontal {{ background: #353b47; border-radius: 4px; min-wi
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QDialog {{ background: #1c1f26; }}
 """
+
+
+class Spinner(QWidget):
+    """The turning arc that says a wait is going on and nothing has hung; it turns only while it is shown."""
+
+    def __init__(self, parent=None, size: int = 40):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.angle = 0
+        self.timer = QTimer(self)
+        self.timer.setInterval(40)
+        self.timer.timeout.connect(self._turn)
+
+    def _turn(self):
+        self.angle = (self.angle + 12) % 360
+        self.update()
+
+    def showEvent(self, e):                                          # noqa: N802 - Qt's name
+        self.timer.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):                                          # noqa: N802 - Qt's name
+        self.timer.stop()
+        super().hideEvent(e)
+
+    def paintEvent(self, e):                                         # noqa: N802 - Qt's name
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(4, 4, -4, -4)
+        p.setPen(QPen(QColor("#2f3542"), 4))
+        p.drawEllipse(r)
+        p.setPen(QPen(QColor(ACCENT), 4, Qt.SolidLine, Qt.RoundCap))
+        p.drawArc(r, -self.angle * 16, 100 * 16)
+        p.end()
 
 
 def label(text="", name=None, wrap=False) -> QLabel:

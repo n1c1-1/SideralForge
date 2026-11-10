@@ -69,7 +69,7 @@ def page(monkeypatch, state="done", d=None):
 
 
 def text(p) -> str:
-    return p.view.toPlainText()
+    return p.document().toPlainText()
 
 
 def test_the_sizes_are_in_arcseconds_from_the_moffat_fit_and_the_kept_frames(qapp):
@@ -100,6 +100,35 @@ def test_the_report_is_numbered_gives_each_block_and_the_recipe_and_a_stale_resu
 def test_each_figure_has_its_number_and_caption(qapp, monkeypatch):
     t = text(page(monkeypatch))
     assert "Figure 1." in t and "Figure 2." in t and "Figure 3." in t and "Open circles" in t
+
+
+def test_a_duration_is_exact_and_a_star_size_has_its_pixels():
+    assert rep.exact_time(450.0) == "7 min 30 s" and rep.exact_time(3900.0) == "1 h 05" and rep.exact_time(480.0) == "8 min"
+    assert rep.size_text(1.68, 6.37, '"', lambda x: f"{x:.1f}") == '10.7" (1.7 px)'
+
+
+def test_the_english_text_has_no_space_before_its_colons(qapp, monkeypatch):
+    p = page(monkeypatch)
+    p.lang.setCurrentIndex(p.lang.findData("en"))
+    assert "Camera: A7S" in p.details()
+
+
+def test_every_part_can_be_copied_as_a_picture(qapp, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    p = page(monkeypatch)
+    assert p.part.count() >= 5 and p.part.itemText(0).startswith("Night card")
+    for i in range(p.part.count()):
+        p.part.setCurrentIndex(i)
+        p.copy_image()
+        assert not QApplication.clipboard().image().isNull()
+
+
+def test_of_the_two_stacking_methods_only_the_one_that_ran_is_listed(qapp, monkeypatch):
+    d = data()
+    d.settings = [("Stacking", "Stacking method", "drizzle", False), ("Stacking", "Rejection (Classic)", "auto", False),
+                  ("Stacking", "Rejection (drizzle)", "own", False)]
+    t = text(page(monkeypatch, d=d))
+    assert "Rejection (drizzle)" in t and "Rejection (Classic)" not in t
 
 
 def test_the_report_uses_none_of_the_interactive_charts(qapp, monkeypatch):
@@ -152,7 +181,7 @@ def test_the_text_to_paste_says_what_is_known_in_the_language_of_the_forum(qapp,
     assert "Champ : 7,3° × 5,0°" in t and "Échantillonnage : 2,0\"/px" in t and "Traitement : FLOAT" in t
     assert "Monture" not in t and "Date" not in t                                      # nobody said
     p.lang.setCurrentIndex(p.lang.findData("en"))
-    assert "Field : 7.3° × 5.0°" in p.details() and "Processing : FLOAT" in p.details()
+    assert "Field: 7.3° × 5.0°" in p.details() and "Processing: FLOAT" in p.details()
 
 
 def test_the_camera_clock_never_gives_the_date(qapp, monkeypatch):
@@ -160,26 +189,54 @@ def test_the_camera_clock_never_gives_the_date(qapp, monkeypatch):
     assert not [r for r in rep.shot_rows(p.data, p.s.info(), {}, "en") if r[0] == "date" and r[2]]
 
 
-def test_a_click_enters_a_field_which_is_kept_in_the_project(qapp, monkeypatch):
+def test_a_field_is_kept_in_the_project_and_goes_in_the_report(qapp, monkeypatch):
     p = page(monkeypatch)
-    assert "click to enter" in text(p)
-    monkeypatch.setattr(rep.QInputDialog, "getText", lambda *a, **k: ("Newton 130/900", True))
-    p.enter("instrument")
+    p.fields["instrument"].setText("Newton 130/900")
+    p.set_field("instrument")
     assert p.s.p.acquisition == {"instrument": "Newton 130/900"} and "Newton 130/900" in text(p)
-    assert "Instrument : Newton 130/900" in p.details()
+    assert "Instrument: Newton 130/900" in p.details()
 
 
 def test_a_field_left_empty_is_forgotten(qapp, monkeypatch):
     p = page(monkeypatch)
     p.s.p.acquisition["mount"] = "EQ6"
-    monkeypatch.setattr(rep.QInputDialog, "getText", lambda *a, **k: ("  ", True))
-    p.enter("mount")
+    p.fields["mount"].setText("  ")
+    p.set_field("mount")
     assert p.s.p.acquisition == {}
 
 
-def test_a_paper_has_no_field_to_click(qapp, monkeypatch):
+def test_an_empty_field_is_not_in_the_report(qapp, monkeypatch):
+    assert "Mount" not in text(page(monkeypatch))
+
+
+def test_every_section_says_what_it_is_for_and_every_figure_what_it_means(qapp, monkeypatch):
     p = page(monkeypatch)
-    assert "click to enter" not in p.document(exporting=True).toPlainText()
+    monkeypatch.setattr(p.steps, "facts", lambda q, key: [("Aligned frames", "30")], raising=False)
+    t = text(p)
+    assert "by matching their stars" in t and "Frames that could be aligned." in t
+
+
+def test_the_reader_zooms_and_comes_back_to_the_width(qapp, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtPdfWidgets import QPdfView
+    p = page(monkeypatch)
+    p.resize(1200, 800)
+    QApplication.processEvents()
+    assert p.view.zoomMode() == QPdfView.ZoomMode.FitToWidth
+    p.zoom_by(1.5)
+    assert p.view.zoomMode() == QPdfView.ZoomMode.Custom
+    was = p.view.zoomFactor()
+    p.zoom_by(1.5)
+    assert abs(p.view.zoomFactor() / was - 1.5) < 1e-6
+    p.fit_width()
+    assert p.view.zoomMode() == QPdfView.ZoomMode.FitToWidth
+
+
+def test_the_text_and_the_curves_go_to_the_clipboard(qapp, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    p = page(monkeypatch)
+    p.copy_details()
+    assert QApplication.clipboard().text().startswith("M 45")
 
 
 def test_the_recipe_gives_only_what_differs_from_the_defaults_and_the_appendix_all(qapp, monkeypatch):

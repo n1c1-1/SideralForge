@@ -682,8 +682,10 @@ class SourcesView(QWidget):
         return float(self.data.camera.get("black") or 0) if self.data is not None else 0.0
 
     def excluded(self, i) -> bool:
-        """Left out of the stack: by hand, or by the thresholds of Selection."""
-        return bool(self.items[i].excluded or self.items[i].status)
+        """Left out of the stack: by hand, or by the thresholds of Selection; what a registration no longer current
+        said of a frame (a folder taken out and added back) is not an exclusion (issue #83)."""
+        it = self.items[i]
+        return bool(it.excluded or (it.status and self.s.state(self.s.path, "register") == "done"))
 
     def by_hand(self, i) -> bool:
         return bool(self.items[i].excluded)

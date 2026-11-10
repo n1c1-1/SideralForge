@@ -1139,6 +1139,48 @@ def _stack_meta(p, wid: int, which: str) -> tuple[str, float, int, int]:
     return str(reg or st.key), s, W, H
 
 
+def _stack_zone(p, wid: int, which: str) -> tuple[int, int]:
+    """Where the stack starts on the reference frame (a Crop block's zone: issue #79), in its pixels."""
+    import json
+    st = api.stage_outputs(p, wid, "stack", which)
+    meta = json.loads((Path(st.dir) / "drz_meta.json").read_text(encoding="utf-8")) if st is not None else {}
+    zone = meta.get("zone") or [0, 0]
+    return int(zone[0]), int(zone[1])
+
+
+#: the blocks in which the Crop block looks for the sky, in pixels of the image it shows
+SKY_BLOCK = 32
+
+
+def crop_frame(p, wid: int) -> dict:
+    """What the Crop block shows (issue #79): the reference frame in colour, stretched (``rgb``, ``step`` sensor pixels
+    per pixel of it), and where the sky is (``sky``, one value per block of ``SKY_BLOCK`` pixels of ``rgb``)."""
+    import json
+
+    from ..stretch import superpixel
+    out = api.stage_outputs(p, wid, "register", "current")
+    if out is None:
+        raise _unavailable(not_computed("register"))
+    ref = int(np.load(Path(out.dir) / "reg.npz")["ref"])
+    inv = api.stage_outputs(p, wid, "inventory", "current")
+    lights = json.loads((Path(inv.dir) / "frames.json").read_text(encoding="utf-8"))["lights"]
+    a, cfa, _how = calibrated_frame(p, wid, lights[ref]["path"])
+    a = np.nan_to_num(np.asarray(a, np.float32))
+    rgb = a if a.ndim == 3 else np.moveaxis(superpixel(a, cfa), 0, 2)
+    step = round(a.shape[1] / rgb.shape[1])
+    level = np.median(rgb, axis=(0, 1))
+    spread = 1.4826 * np.median(np.abs(rgb - level), axis=(0, 1))
+    shown = np.arcsinh(np.clip((rgb - level) / np.maximum(spread, 1e-6) + 2.0, 0, None) / 3.0) / 6.0
+    grey = rgb.mean(2)
+    H, W = grey.shape
+    n, m = max(1, H // SKY_BLOCK), max(1, W // SKY_BLOCK)
+    blocks = grey[:n * SKY_BLOCK, :m * SKY_BLOCK].reshape(n, -1, m, SKY_BLOCK).mean((1, 3))
+    low = float(np.quantile(blocks, .1))
+    noise = 1.4826 * float(np.median(np.abs(blocks[blocks <= np.median(blocks)] - low)))
+    return {"rgb": (np.clip(shown, 0, 1) * 255).astype(np.uint8), "step": step, "size": (W * step, H * step),
+            "sky": blocks <= low + 3 * max(noise, 1e-6)}
+
+
 def stack_place(p, wid: int, which="current"):
     """Where a picture on the stack grid of a workflow sits (``imageview.Placement``), read in the viewer's thread: on
     the grid of the registration's reference frame, at the drizzle scale. Its size (w, h) tells a reduced copy of the
@@ -1149,7 +1191,8 @@ def stack_place(p, wid: int, which="current"):
     def place(w: int, h: int):
         reg, s, W, H = _stack_meta(p, wid, which)
         fx, fy = (W / float(w), H / float(h)) if (w, h) != (W, H) else (1.0, 1.0)
-        return Placement.scaled(("reference frame", reg), fx / s, fy=fy / s)
+        x0, y0 = _stack_zone(p, wid, which)
+        return Placement.scaled(("reference frame", reg), fx / s, float(x0), float(y0), fy=fy / s)
     return place
 
 

@@ -39,7 +39,8 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from .. import api
 from ..core import workflow as wfl
 from ..core.project import Target
-from ..core.project2 import FILTERS, Workflow, read_state, write_state
+from ..core.project2 import (FILTERS, Workflow, active_version, read_state, versions_problem, workflow_images,
+                            write_state)
 from .blocks import COLUMNS, KEY_ENGINE_BLOCK, TOOLS, TRUNK, block_state, kbase, knum  # noqa: F401  (TOOLS: test_model_surface)
 from .blocks import ENGINE_BLOCK as ENGINE_KEY
 from .i18n import _, hm
@@ -804,6 +805,9 @@ class ProjectModel(QObject):
         if self._dirty and not self.readonly and self.root is not None:
             if self.path is not None:
                 self.p.current = self.path.pid
+            problem = versions_problem(self.p.post)
+            if problem:                                   # the file is written all the same (issue #82)
+                self.log("Post versions: {problem}", problem=problem)
             api.save(self.p)
         self.remember_selection()                          # with or without an edit: where it reopens (2, 6.6)
         if self._dirty:
@@ -849,7 +853,9 @@ class ProjectModel(QObject):
         self.dirtyChanged.emit(True)
 
     # ------------------------------------------------------------ the Post composition
-    # Post's layers are the project's (``project.post["layers"]``, postengine.save_layers). Post edits them, and so
+    # Post's layers are the project's, in the active one of its versions (``project.post["versions"]``, issue #82). A
+    # setting touches the active version; adding or taking out a workflow's image touches them all: ``scope`` says
+    # which, with no default. Post edits them, and so
     # does the graph: the Stars block's images sent to Post, the Stars and background blocks of the Composition
     # section (layers of part "combined") and their settings in the graph's panel. Every change goes through
     # ``set_post_layers``, which says it with ``postChanged``: Post and the graph show the same composition.
@@ -863,7 +869,93 @@ class ProjectModel(QObject):
         import copy as _copy
         if self.post_shown is not None:
             return self.post_shown()
-        return _copy.deepcopy(list(((getattr(self.p, "post", None) or {}).get("layers")) or []))
+        return _copy.deepcopy(list(self.post_version().get("layers") or []))
+
+    def post_version(self) -> dict:
+        """The active version of the composition."""
+        return active_version(self.p.post)
+
+    def post_versions(self) -> list[dict]:
+        return list(self.p.post["versions"])
+
+    def post_version_label(self) -> str:
+        """The active version's name, for an export or the report; nothing when there is only one."""
+        return self.post_version()["name"] if len(self.p.post["versions"]) > 1 else ""
+
+    def post_scope(self, layers: list[dict]) -> str:
+        """The scope of these layers replacing the active version's: all the versions when a workflow's image came or
+        went."""
+        return "active" if workflow_images({"layers": layers}) == workflow_images(self.post_version()) else "all"
+
+    def set_post_version(self, vid: int):
+        """Another version shown: not a step of the Undo (opening is never one)."""
+        if vid != self.p.post["active"]:
+            self.p.post = {**self.p.post, "active": vid}
+            self.edited()
+            self.postChanged.emit(None)
+
+    def new_post_version(self) -> int:
+        """A new version, a copy of the active one, made active. Its layers have ids of their own."""
+        import copy as _copy
+
+        from .postengine import reseed_ids, with_new_ids
+        post = self.p.post
+        with self._edit():
+            reseed_ids([x for v in post["versions"] for x in v.get("layers") or []])
+            have = {v["name"] for v in post["versions"]}
+            n = len(post["versions"]) + 1
+            while f"Version {n}" in have:
+                n += 1
+            vid = max(v["id"] for v in post["versions"]) + 1
+            made = _copy.deepcopy(self.post_version())
+            made.update(id=vid, name=f"Version {n}", layers=with_new_ids(made.get("layers") or []))
+            self.p.post = {**post, "versions": [*post["versions"], made], "active": vid}
+        self.postChanged.emit(None)
+        return vid
+
+    def rename_post_version(self, vid: int, name: str):
+        name = name.strip()
+        post = self.p.post
+        if not name or any(v["name"] == name for v in post["versions"]):
+            return
+        with self._edit():
+            self.p.post = {**post, "versions": [{**v, "name": name} if v["id"] == vid else v for v in post["versions"]]}
+        self.postChanged.emit(None)
+
+    def delete_post_version(self, vid: int):
+        """A version taken out; the last one stays."""
+        post = self.p.post
+        rest = [v for v in post["versions"] if v["id"] != vid]
+        if not rest:
+            return
+        with self._edit():
+            self.p.post = {**post, "versions": rest, "active": post["active"] if post["active"] != vid else rest[-1]["id"]}
+        self.postChanged.emit(None)
+
+    def _post_sync(self):
+        """Every version holds the workflows' images of the active one (a workflow touches them all, issue #82), each
+        found by its workflow and its image; what the others lack comes with the active one's settings, and ids of its
+        own."""
+        from .postengine import reseed_ids, with_new_ids
+        post = self.p.post
+        act = active_version(post)
+        want = workflow_images(act)
+        reseed_ids([x for v in post["versions"] for x in v.get("layers") or []])
+        for v in post["versions"]:
+            if v is act:
+                continue
+            have = workflow_images(v)
+            layers = list(v.get("layers") or [])
+            for key, n in (have - want).items():
+                mine = [x["id"] for x in layers if x.get("kind") == "workflow" and (x.get("pid"), x.get("part")) == key]
+                gone = set(mine[-n:])
+                layers = [x for x in layers if x["id"] not in gone and not (x.get("kind") == "filter"
+                                                                            and x.get("target") in gone)]
+            added = []
+            for key, n in (want - have).items():
+                mine = [x for x in act["layers"] if x.get("kind") == "workflow" and (x.get("pid"), x.get("part")) == key]
+                added += mine[:n]
+            v["layers"] = with_new_ids(added) + layers
 
     # A workflow's image is a layer of Post by default (the graph draws its wire, Post shows it). The images the user
     # took out (a wire removed, a layer deleted in Post) are listed in ``project.post["removed"]`` as (workflow id,
@@ -874,7 +966,7 @@ class ProjectModel(QObject):
         post = getattr(self.p, "post", None) or {}
         if "removed" in post or not post.get("edited"):
             return
-        have = {x.get("pid") for x in post.get("layers") or [] if x.get("kind") == "workflow"}
+        have = {x.get("pid") for x in active_version(post).get("layers") or [] if x.get("kind") == "workflow"}
         self.p.post = {k: v for k, v in post.items() if k != "edited"}
         self.p.post["removed"] = [[w.id, part] for w in self.p.workflows if w.id not in have
                                   for part in (None, "combined")]
@@ -891,24 +983,27 @@ class ProjectModel(QObject):
         """The workflows whose image Post shows by default with these layers (the saved ones by default): no layer of
         their own yet, an image to give, not a fusion's channel, not taken out."""
         if layers is None:
-            layers = (getattr(self.p, "post", None) or {}).get("layers") or []
+            layers = self.post_version().get("layers") or []
         have = {x.get("pid") for x in layers if x.get("kind") == "workflow"}
         out = self.post_removed()
         return [q for q in self.paths if q.pid not in have and (q.pid, self.post_default_part(q)) not in out
                 and not self.feeds_fusion(q) and self.gives_post(q)]
 
-    def set_post_layers(self, layers: list[dict], source=None):
+    def set_post_layers(self, layers: list[dict], source=None, *, scope: str):
         """The composition replaced (saved layers, postengine.save_layers); ``source``: who changed it (Post itself
         does not reload what it wrote). An image shown before and not any more was taken out: it stays out. A change
-        made from the graph is a step of its Undo (2.1); Post's own changes are in Post's Undo."""
+        made from the graph is a step of its Undo (2.1); Post's own changes are in Post's Undo. ``scope``: "active", or
+        "all" when a workflow's image came or went."""
+        if scope not in ("active", "all"):
+            raise ValueError(f"scope: active or all, not {scope!r}")
         if getattr(source, "is_post_page", False) or self._depth:
-            self._set_post_layers(layers, source)
+            self._set_post_layers(layers, source, scope)
             return
         with self._edit():
-            self._set_post_layers(layers, source)
+            self._set_post_layers(layers, source, scope)
 
-    def _set_post_layers(self, layers: list[dict], source=None):
-        old =(getattr(self.p, "post", None) or {}).get("layers") or []
+    def _set_post_layers(self, layers: list[dict], source, scope: str):
+        old = self.post_version().get("layers") or []
         shown = {(x.get("pid"), x.get("part")) for x in old if x.get("kind") == "workflow"}
         # Post holds layers only for the workflows already computed: the others' images, which it never had, are not
         # taken out by its saving its composition (GUI exploration 4: a filter added emptied Post of new branches)
@@ -918,16 +1013,19 @@ class ProjectModel(QObject):
         now = {(x.get("pid"), x.get("part")) for x in layers if x.get("kind") == "workflow"}
         alive = {q.pid for q in self.paths}
         out = {x for x in (self.post_removed() | (shown - now)) - now if x[0] in alive}
-        self.p.post = {**{k: v for k, v in (getattr(self.p, "post", None) or {}).items() if k != "edited"},
-                       "layers": layers, "removed": sorted([list(x) for x in out], key=str)}
+        self.p.post = {**{k: v for k, v in self.p.post.items() if k != "edited"},
+                       "removed": sorted([list(x) for x in out], key=str)}
+        self.post_version()["layers"] = layers
+        if scope == "all":
+            self._post_sync()
         self.edited()
         self.postChanged.emit(source)
 
-    def _post_edit(self, change, source=None):
+    def _post_edit(self, change, source=None, *, scope: str):
         from .postengine import load_layers, normalize, save_layers
         layers = load_layers(self.post_layers(), {q.pid for q in self.paths})
         out = change(layers)
-        self.set_post_layers(save_layers(normalize(layers)), source)
+        self.set_post_layers(save_layers(normalize(layers)), source, scope=scope)
         return out
 
     def add_post_layer(self, pid: int, part: str | None, source=None, keep_default: bool = True) -> int:
@@ -953,7 +1051,7 @@ class ProjectModel(QObject):
                 lay["name"] = f"{name} {len(same) + 1}"
             layers.insert(0, lay)
             return lay["id"]
-        return self._post_edit(change, source)
+        return self._post_edit(change, source, scope="all")
 
     def default_post_layer(self, pid: int) -> int:
         """The Combine layers Post shows by default for a workflow, made a layer of its own to open it in Post: what Post
@@ -996,13 +1094,13 @@ class ProjectModel(QObject):
             layers[:] = [x for x in layers if x["id"] not in gone and not (x["kind"] == "filter"
                                                                            and x.get("target") in gone)]
             return len(gone)
-        return self._post_edit(change, source)
+        return self._post_edit(change, source, scope="all")
 
     def remove_post_layer(self, lid: int, source=None):
         """A layer taken out of Post (its own filters go with it)."""
         def change(layers):
             layers[:] = [x for x in layers if x["id"] != lid and not (x["kind"] == "filter" and x.get("target") == lid)]
-        self._post_edit(change, source)
+        self._post_edit(change, source, scope="all")
 
     def set_post_layer(self, lid: int, source=None, **values):
         """Settings of a Post layer changed (``sliders``, ``blend``, ``visible``...)."""
@@ -1010,7 +1108,7 @@ class ProjectModel(QObject):
             for x in layers:
                 if x["id"] == lid:
                     x.update(values)
-        self._post_edit(change, source)
+        self._post_edit(change, source, scope="active")
 
     def post_layer(self, lid: int) -> dict | None:
         return next((x for x in self.post_layers() if x.get("id") == lid), None)
@@ -1373,7 +1471,7 @@ class ProjectModel(QObject):
             keys = keys + ["post"]
         if self.separate_sessions() and p.source is None:
             keys = [k for k in keys if k != "calibration"]      # each session's Calibration is drawn before the chain
-        want = [k for k in ("image", "calibration", "alignement", "selection", "empilement", "astrometrie", "fond",
+        want = [k for k in ("image", "calibration", "alignement", "selection", "crop", "empilement", "astrometrie", "fond",
                             "couleur", "debruitage", "etoiles", "post")]
         have = set(keys)
         extra = {ENGINE_KEY.get(b, b) for b in self.cut_blocks(p)} | {ENGINE_KEY.get(b, b) for b in self.greyed(p)}
@@ -2610,6 +2708,9 @@ class ProjectModel(QObject):
         own = (self.node_fork(p, key), self._forks(p))
         if key == "align_images":                          # one per image, drawn together
             return ("align_images", p.pid)
+        if key == "crop":
+            zone = (p.params.get("stack") or {}).get("zone")
+            return ("crop", tuple(zone) if zone else None) + own
         if key == "selection":
             st = p.params.get("stack") or {}
             base = ("selection", st.get("min_transparency"), st.get("max_fwhm_ratio"),
@@ -2953,11 +3054,13 @@ class ProjectModel(QObject):
     def _prune_post(self):
         """Post follows the graph (GUI exploration 3.3): a layer of a Split image goes with its Split block (the
         workflow's own image then comes back to Post), a layer of a workflow gone goes."""
-        post = getattr(self.p, "post", None) or {}
-        layers = post.get("layers") or []
-        if not layers:
-            return
         ws = {w.id: w for w in self.p.workflows}
+        for v in self.p.post["versions"]:
+            self._prune_version(v, ws)
+
+    @staticmethod
+    def _prune_version(v: dict, ws: dict):
+        layers = v.get("layers") or []
         keep, gone, changed = [], set(), False
         for x in layers:
             if x.get("kind") != "workflow":
@@ -2972,8 +3075,7 @@ class ProjectModel(QObject):
                 continue
             keep.append(x)
         if changed:
-            keep = [x for x in keep if not (x.get("kind") == "filter" and x.get("target") in gone)]
-            self.p.post = {**post, "layers": keep}
+            v["layers"] = [x for x in keep if not (x.get("kind") == "filter" and x.get("target") in gone)]
 
     def _prune_breakpoints(self):
         """A block that left a workflow takes its breakpoint with it (it would otherwise come back with the block)."""
@@ -3002,6 +3104,9 @@ class ProjectModel(QObject):
                 return next((b for b in self._blocks.get(p.pid, []) if view_key(b.block) == vk), None)
             b = ref(key)
             parts: list = [KEY_ENGINE_BLOCK.get(key, key), list(b.key) if b is not None else []]
+            if key == "crop":
+                reg = ref("alignement")
+                parts += [list(reg.key) if reg is not None else [], (p.params.get("stack") or {}).get("zone")]
             if key == "selection":
                 reg, st = ref("alignement"), p.params.get("stack") or {}
                 parts += [list(reg.key) if reg is not None else [], st.get("min_transparency"),
@@ -3242,12 +3347,11 @@ class ProjectModel(QObject):
     def _rename(self, pid: int, name: str):
         old = self.p.workflow(pid).name
         api.rename_workflow(self.p, pid, name)
-        post = getattr(self.p, "post", None) or {}
-        if post.get("layers"):                            # its layers named after it follow (GUI exploration 3.4)
-            self.p.post = {**post, "layers": [
+        for v in self.p.post["versions"]:                 # its layers named after it follow (GUI exploration 3.4)
+            v["layers"] = [
                 {**x, "name": self.p.workflow(pid).name + x["name"][len(old):]}
                 if x.get("kind") == "workflow" and x.get("pid") == pid and str(x.get("name", "")).startswith(old)
-                else x for x in post["layers"]]}
+                else x for x in v.get("layers") or []]
 
     @staticmethod
     def branch_name(flow: str, key: str) -> str:

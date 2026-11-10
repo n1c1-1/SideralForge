@@ -215,6 +215,16 @@ class StackParams(StageParams):
     exclude: list[str] = P([], label="Excluded frames", level=INTERNAL,
                            help="Light frames left out of the stack whatever their quality (their files). Set by the "
                                 "project from the frames the user excluded; not a setting of its own.")
+    zone: list[int] | None = P(None, label="Crop zone", level=INTERNAL,
+                               help="The part of the field stacked, in pixels of the reference frame (left, top, right, "
+                                    "bottom): set by the Crop block (issue #79). None: the whole field.")
+
+    @field_validator("zone")
+    @classmethod
+    def _zone(cls, v):
+        if v is not None and (len(v) != 4 or v[2] <= v[0] or v[3] <= v[1] or min(v) < 0):
+            raise ValueError(f"zone: left, top, right, bottom expected, not {v}")
+        return v
 
     @field_validator(*SWITCHES, *CLASSIC_CHOICES)
     @classmethod
@@ -328,6 +338,13 @@ class Stack(Stage):
         del dark, flat
         S, PIX = p.scale, p.pixfrac
         Ho, Wo = int(round(H * S)), int(round(W * S))
+        ox, oy, zone = 0.0, 0.0, None                 # where the output grid starts on the reference frame, in its pixels
+        if p.zone is not None:                        # at the scale (issue #79)
+            x0, y0, x1, y1 = p.zone
+            if x1 > W or y1 > H:
+                raise StageError(f"the crop zone {p.zone} goes beyond the frame ({W} x {H})")
+            ox, oy, zone = x0 * S, y0 * S, list(p.zone)
+            Ho, Wo = int(round((y1 - y0) * S)), int(round((x1 - x0) * S))
 
         meta = ctx.load_json("inventory", "frames.json")["lights"]
         wb = white_balance_of(ctx, p, meta)
@@ -476,7 +493,7 @@ class Stack(Stage):
                 ctx.progress(0.05 * (c_ + 1) / len(used), "normalisation")
             return stack_classic(ctx, p, wb=wb, load=load, coef=coef, used=used, weight=weight, norm=norm, transp=transp,
                                  meta=meta, sel=sel, ch_of_k=ch_of_k, H=H, W=W, satval=satval, dev=dev, t0=t0,
-                                 colour=colour)
+                                 colour=colour, zone=zone)
 
         def frame_model(i):
             """The frame normalised to the reference (value, ADU of the reference), where its samples land on the
@@ -497,13 +514,16 @@ class Stack(Stage):
             near = sat | (fr > NEAR_SATURATION * satval)
             val = torch.where(sat, satval, fr)
             val = (val - grad) / transp[i]
-            Xo, Yo = (X + 0.5) * S - 0.5, (Y + 0.5) * S - 0.5
+            Xo, Yo = (X + 0.5) * S - 0.5 - ox, (Y + 0.5) * S - 0.5 - oy
             if chan_fix is not None:                  # each colour's own image placed on the green one
                 dx, dy = chan_fix.at(Xo, Yo, chmap)
                 Xo, Yo = Xo - dx, Yo - dy
             return val, Xo, Yo, sat, bad, grad, bkg_level, near
 
         def deposit(num, den, val, Xo, Yo, w, keep, rej=None, tally=None):
+            if zone is not None:                      # only the samples of the zone: the time saved
+                m = 2 * h + 1
+                keep = keep & (Xo > -m) & (Xo < Wo + m) & (Yo > -m) & (Yo < Ho + m)
             drizzle_deposit(num, den, val, Xo, Yo, w, keep, chmap, h, S, Ho, Wo, rej, tally)
 
         chan_fix = None
@@ -546,7 +566,7 @@ class Stack(Stage):
             integ = integration_rejection(ctx, p, load, coef, used, weight, norm, transp, ch_of_k, H, W, satval, dev)
             ctx.log(f"drizzle rejection from the integration of the debayered frames: {integ.choice.reason}; "
                     f"{integ.rejected_pct:.2f} % of the values rejected")
-            Xr, Yr = (xx + 0.5) * S - 0.5, (yy + 0.5) * S - 0.5         # the reference pixels on the output grid
+            Xr, Yr = (xx + 0.5) * S - 0.5 - ox, (yy + 0.5) * S - 0.5 - oy  # the reference pixels on the output grid
         else:
             # ------------ pass 2: the strong outliers (satellites, planes, cosmic rays, hot pixels) left out of the
             # prediction, so that the final pass does not judge the other frames against a mean they pulled up or down
@@ -625,7 +645,7 @@ class Stack(Stage):
             ctx.metric("drizzle_excluded_pct", round(excluded_pct, 3))
         ctx.metric("rejected_pct", round(rej_pct, 3))
         meta_d = {"scale": S, "pixfrac": PIX, "n": int(len(used)), "reject_pct": rej_pct,
-                  "width": Wo, "height": Ho, "sensor": [W, H]}
+                  "width": Wo, "height": Ho, "sensor": [W, H], **({"zone": zone} if zone else {})}
         # the coverage per colour, measured and as the rule estimates it
         cov = coverage_record(full[1].view(3, Ho, Wo), rmap.f, coef[used], W, H, info["cfa"], S, PIX,
                               weight[used], drizzle_suggestion(reg, info, use=weight > 0, weights=weight))
@@ -1187,7 +1207,7 @@ def balanced(a: np.ndarray, wb: np.ndarray | None) -> np.ndarray:
 
 
 def stack_classic(ctx: Context, p: StackParams, *, wb=None, load, coef, used, weight, norm, transp, meta, sel, ch_of_k,
-                  H: int, W: int, satval, dev, t0: float, colour: bool = False) -> None:
+                  H: int, W: int, satval, dev, t0: float, colour: bool = False, zone=None) -> None:
     """The hook of the Classic method (``method = classic``: RCD debayering, Lanczos-4
     registration with Siril's clamping, WBPP's rejection by frame count; core/stack_classic.py and the modules it
     uses). ``Stack.run`` calls it once the part both methods share is done: the frames ``used`` with their
@@ -1210,13 +1230,16 @@ def stack_classic(ctx: Context, p: StackParams, *, wb=None, load, coef, used, we
             a = balanced(a, wb)
         if mono and name in ("drz_full.npy", "drz_A.npy", "drz_B.npy", "drz_weight.npy"):
             a = cfa_mod.mono_rgb(a)
+        if zone is not None:                        # the Classic stack is made whole, then cut (issue #79)
+            a = a[..., zone[1]:zone[3], zone[0]:zone[2]]
         ctx.save(name, a)
     res.save_rejection(ctx.out(REJECTION))
     ctx.metric("grid", [W, H])
     ctx.metric("rejected_pct", round(float(res.rejected_pct), 3))
     ctx.metric("near_saturation_pct", round(100 * float((res.saturation[0] > 0).mean()), 4))
     switches = {**p.switches(), **{k: getattr(p, k) for k in CLASSIC_CHOICES}}
-    ctx.save_json("drz_meta.json", {**res.meta(), "switches": switches})
+    cut = {"width": zone[2] - zone[0], "height": zone[3] - zone[1], "zone": zone} if zone else {}
+    ctx.save_json("drz_meta.json", {**res.meta(), **cut, "switches": switches})
     frames_d = []
     for f in res.frames:                    # the drizzle's record of each frame (its normalisation), and Classic's
         i = int(f["index"])

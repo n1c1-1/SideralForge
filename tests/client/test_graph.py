@@ -1335,10 +1335,13 @@ def test_the_page_says_it_is_reading_while_the_worker_works(qapp):
     root.show()
     qapp.processEvents()
     assert pg.graph.wait.isVisible() and pg.graph.wait.text() == "Reading the project…"
+    assert pg.graph.spinner.isVisible() and pg.graph.veil.isVisible() and pg.graph.spinner.timer.isActive()
+    assert pg.graph.viewport().cursor().shape() == Qt.BusyCursor
     assert not any(isinstance(it, BlockItem) and it.node.key == "calibration" for it in pg.graph.scene().items())
     assert w.wait(180)
     settle(w, pg)
-    assert not pg.graph.wait.isVisible()
+    assert not pg.graph.wait.isVisible() and not pg.graph.spinner.isVisible() and not pg.graph.veil.isVisible()
+    assert pg.graph.viewport().cursor().shape() != Qt.BusyCursor
     assert any(isinstance(it, BlockItem) and it.node.key == "calibration" for it in pg.graph.scene().items())
     appmod.apply_language("fr")
     pg.graph.show_wait()

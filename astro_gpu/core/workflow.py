@@ -239,6 +239,7 @@ BLOCKS: dict[str, tuple[str, ...]] = {
     "calibration": ("inventory", "calibrate"),
     "registration": ("sessions", "register"),       # the sessions join where they are registered together
     "selection": (),
+    "crop": (),                                     # a zone of the Stacking block (issue #79), as Selection its thresholds
     "stacking": ("stack",),
     "astrometry": ("astrometry", "reference", "catalogs", "surveys"),
     "gradient": ("gradient",),
@@ -248,11 +249,11 @@ BLOCKS: dict[str, tuple[str, ...]] = {
     "output": ("render_simple",),
 }
 BLOCK_TITLES = {"fusion": "Combine channels", "image": "Image", "calibration": "Calibration", "registration": "Registration",
-                "selection": "Selection",
+                "selection": "Selection", "crop": "Crop",
                 "stacking": "Stacking", "astrometry": "Astrometry", "color": "Color", "denoise": "Denoise",
                 "stars": "Stars/background", "gradient": "Gradient", "output": "Output"}
 #: what Run to here runs for a block without stages of its own
-RUN_TO: dict[str, tuple[str, ...]] = {"selection": ("register",)}
+RUN_TO: dict[str, tuple[str, ...]] = {"selection": ("register",), "crop": ("register",)}
 #: stages a block's key leaves out: the survey follows the Gradient method, not the Astrometry block
 KEY_LEAVES_OUT: dict[str, tuple[str, ...]] = {"astrometry": ("surveys", "catalogs")}   # catalogs: fetched for a
 #                                                 Color block after it; the plate solution is the same (issue #47)
@@ -463,7 +464,7 @@ class Chains:
         out = []
         for b, ss in self.blocks.items():
             mine = tuple(s for s in ss if s in inside)
-            if mine or (b in RUN_TO and all(s in inside for s in RUN_TO[b])):
+            if mine or (b in RUN_TO and b != "crop" and all(s in inside for s in RUN_TO[b])):  # (crop: placed by hand)
                 out.append((b, mine))
             out += [(self.block_of(s), (s,)) for s in chain if "~" in s and base(s) in ss]     # a graph's later nodes
             sids = list(dict.fromkeys(session_of(s) for s in chain if session_of(s) is not None and base(s) in ss))
@@ -506,14 +507,14 @@ FRAMES, IMAGE, PAIR = "frames", "image", "pair"
 #: what each block takes and gives
 IO: dict[str, tuple[str, str]] = {
     "calibration": (FRAMES, FRAMES), "registration": (FRAMES, FRAMES), "selection": (FRAMES, FRAMES),
-    "stacking": (FRAMES, IMAGE),
+    "crop": (FRAMES, FRAMES), "stacking": (FRAMES, IMAGE),
     "astrometry": (IMAGE, IMAGE), "gradient": (IMAGE, IMAGE), "color": (IMAGE, IMAGE), "denoise": (IMAGE, IMAGE),
     "output": (IMAGE, IMAGE), "stars": (IMAGE, PAIR)}
 #: the palette's blocks after the sources, in their usual order
-PALETTE = ("calibration", "registration", "selection", "stacking", "astrometry", "gradient", "denoise", "color",
+PALETTE = ("calibration", "registration", "selection", "crop", "stacking", "astrometry", "gradient", "denoise", "color",
            "output", "stars")
 #: the frame blocks keep this order among themselves (a calibration after the registration means nothing)
-FRAME_BLOCKS = ("calibration", "registration", "selection", "stacking")
+FRAME_BLOCKS = ("calibration", "registration", "selection", "crop", "stacking")
 #: the image blocks that change the image: any order, any number
 IMAGE_OPS = ("gradient", "color", "denoise")
 #: the blocks with a method, and their methods
@@ -823,7 +824,7 @@ def sequence_chain(blocks: Sequence[dict], source: str = "frames", *, reference:
     else:
         # a graph being built stops where its blocks do: the frames are aligned when a block from Registration on is
         # placed (without Registration, as a pass-through), stacked when Stacking is
-        later = {"registration", "selection", "stacking"} | {n["block"] for n in act if IO[n["block"]][0] == IMAGE}
+        later = {"registration", "selection", "crop", "stacking"} | {n["block"] for n in act if IO[n["block"]][0] == IMAGE}
         aligned = bool(has & later)
         if len(sessions) >= 2:
             out += [f"{s}@{sid}" for s in ("inventory", "calibrate") for sid in sessions]
@@ -868,6 +869,8 @@ def node_implied(blocks: Sequence[dict], entry: str, source: str = "frames") -> 
         return {"apply_masters": False}
     if b == "register" and "registration" not in has:
         return {"align": False}
+    if b == "stack" and "crop" not in has:
+        return {"zone": None}                         # the block taken off: the whole field again
     n = next((x for x in act if x["name"] == entry), None) if b in IMAGE_OPS else None
     if b == "gradient" and n is not None:
         return {"method": n["method"]}

@@ -69,6 +69,8 @@ class ExportDialog(QDialog):
         self.worker = view.worker
         s = view.s
         self.pname = getattr(s, "name", "") or "image"
+        version = s.post_version_label() if hasattr(s, "post_version_label") else ""
+        self.file_base = " ".join(x for x in (self.pname, version) if x)      # the file carries the version (issue #82)
         root = getattr(s, "root", None)
         self.root = Path(root) if root else None
         self.files: list[str] = []
@@ -217,7 +219,7 @@ class ExportDialog(QDialog):
 
     def default_file(self, fmt: str) -> str:
         base = self.root if self.root is not None else Path(prefs.last_folder()) / slug(self.pname)
-        name = slug(self.pname)
+        name = slug(self.file_base)
         return (base / "export" / name / (name + SUFFIX[fmt])).as_posix()
 
     def format_key(self) -> str:
@@ -248,7 +250,7 @@ class ExportDialog(QDialog):
         d = QFileDialog.getExistingDirectory(self, _("Choose the folder"), folder or prefs.last_folder())
         prefs.remember_folder(d)
         if d:
-            self.dest.setText(f"{Path(d).as_posix()}/{name or slug(self.pname)}{SUFFIX[self.format_key()]}")
+            self.dest.setText(f"{Path(d).as_posix()}/{name or slug(self.file_base)}{SUFFIX[self.format_key()]}")
 
     def problem(self) -> str:
         """Why the export cannot start (shown under the File line), or ''."""
@@ -315,7 +317,7 @@ class ExportDialog(QDialog):
             self.status.setText(_("Export stopped.") if error == "stopped"
                                 else _("The export failed: {why}").format(why=plain_error(error)))
             if error != "stopped":
-                log_detail(getattr(self.view, "s", None), error)     # the program's error: in the Log only
+                log_detail(getattr(self.view, "s", None), error.splitlines()[-1])     # the program's error: in the Log only
             self.status.setStyleSheet(f"color: {WARN};")
             return
         folder, name = split_file(self.dest.text())

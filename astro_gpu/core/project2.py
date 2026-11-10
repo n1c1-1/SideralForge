@@ -24,6 +24,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+from collections import Counter
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime
 from pathlib import Path
@@ -104,6 +105,45 @@ class Workflow:
         return dict(self.params.get(stage) or {})
 
 
+def new_post() -> dict[str, Any]:
+    """An empty composition of Post: its versions (issue #82), the first one active."""
+    return {"versions": [{"id": 1, "name": "Version 1", "layers": []}], "active": 1}
+
+
+def upgraded_post(post: dict[str, Any] | None) -> dict[str, Any]:
+    """A composition as saved. One from before the versions (its layers and crop at the top) becomes the first version:
+    the layers leave the old place, so that any code still reading it finds nothing there."""
+    post = copy.deepcopy(post or {})
+    if "versions" in post:
+        return post
+    first: dict[str, Any] = {"id": 1, "name": "Version 1", "layers": post.pop("layers", None) or []}
+    crop = post.pop("crop", None)
+    if crop:
+        first["crop"] = crop
+    return {**post, "versions": [first], "active": 1}
+
+
+def active_version(post: dict[str, Any]) -> dict[str, Any]:
+    return next(v for v in post["versions"] if v["id"] == post["active"])
+
+
+def workflow_images(version: dict[str, Any]) -> Counter:
+    """The workflows' images a version holds: (workflow, part) and how many times."""
+    return Counter((x.get("pid"), x.get("part")) for x in version.get("layers") or [] if x.get("kind") == "workflow")
+
+
+def versions_problem(post: dict[str, Any]) -> str | None:
+    """What is wrong between the versions of a composition (issue #82), None when nothing is: they all hold the same
+    workflows' images, and no two layers share an id."""
+    versions = post["versions"]
+    first = workflow_images(versions[0])
+    for v in versions[1:]:
+        if workflow_images(v) != first:
+            return f"the versions {versions[0]['name']!r} and {v['name']!r} do not hold the same workflows"
+    ids = [x["id"] for v in versions for x in v.get("layers") or []]
+    return "two layers of the versions share an id" if len(ids) != len(set(ids)) else None
+
+
 @dataclass
 class Project2:
     """The definition of a v2 project. ``root`` is where it lives (None for a definition built in memory)."""
@@ -127,7 +167,7 @@ class Project2:
     #: result
     show_all: bool = False
     render_bases: dict[str, dict[str, Any]] = field(default_factory=dict)
-    post: dict[str, Any] = field(default_factory=lambda: {"layers": []})
+    post: dict[str, Any] = field(default_factory=new_post)
     #: what the files do not say of the shooting (instrument, mount, filter, location, date): entered in the Report; no
     #: part of any result
     acquisition: dict[str, str] = field(default_factory=dict)
@@ -372,7 +412,7 @@ class Project2:
                 excluded=_excluded(d.get("excluded") or []), stack_mode=d.get("stack_mode", "together"),
                 workflows=workflows, current=d.get("current"), current_block=str(d.get("current_block") or ""),
                 show_all=bool(d.get("show_all")), render_bases=copy.deepcopy(d.get("render_bases") or {}),
-                post=copy.deepcopy(d.get("post") or {"layers": []}), acquisition=dict(d.get("acquisition") or {}),
+                post=upgraded_post(d.get("post")), acquisition=dict(d.get("acquisition") or {}),
                 next_workflow_id=nxt,
                 root=Path(root) if root is not None else None)
         p.validate()

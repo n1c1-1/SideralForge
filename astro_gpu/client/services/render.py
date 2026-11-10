@@ -31,6 +31,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
+from ..i18n import _
 from ..postengine import (
     ALIGN,
     Canvas,
@@ -495,6 +496,7 @@ class Request:
     overlay: bool = False                               # a red overlay of the first wanted mask
     need_thumbs: tuple = ()                             # (thumbs kind) the ids of the workflow layers to thumbnail
     refine: bool = False                                # (half) first the exact 1/4, shown at once ("refine")
+    plain: bool = False                                 # (before) these layers as they are: another version's
     hists: tuple = ()                                   # ids of filters whose input's histograms come back (not drafts)
     seq: int = 0
     tag: Any = None
@@ -566,7 +568,7 @@ class Renderer:
         if req.kind == "exact":
             return self._exact(req, stop, t0)
         layers = req.layers
-        if req.kind == "before":
+        if req.kind == "before" and not req.plain:
             layers = self._before_layers(layers)
         if req.kind == "half" and req.refine and req.box is None and emit is not None:
             first = Request(kind="refine", layers=layers, level=req.level + 1, want=req.want, overlay=req.overlay,
@@ -1117,12 +1119,15 @@ class RenderWorker(QThread):
                 src.set_image(key, source)
 
     def _run_export(self, job: ExportJob):
+        from ...render.layers import WriteFailed
         try:
             files = self.renderer.export(job, lambda f, m: self.progress.emit(f, m),
                                          lambda: self._stopping or self._cancel_export)
             self.exported.emit([str(p) for p in files], "")
         except Superseded:
             self.exported.emit([], "stopped")
+        except WriteFailed as e:                         # a sentence that names the file; its second line goes to the Log
+            self.exported.emit([], _("“{name}” could not be written").format(name=e.name) + chr(10) + e.why)
         except Exception as e:  # noqa: BLE001
             self.exported.emit([], f"{type(e).__name__}: {e}")
 

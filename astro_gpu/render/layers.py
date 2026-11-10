@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -288,6 +289,38 @@ def oriented_wcs(header, H: int, W: int, origin=(0, 0), k: int = 0, flip: bool =
     return fits.Header(h)
 
 
+class WriteFailed(Exception):
+    """A file of an export could not be written; the file there before, if any, is intact."""
+
+    def __init__(self, name: str, why: str):
+        super().__init__(f"{name}: {why}")
+        self.name, self.why = name, why
+
+
+#: the replacement of the file, when the system refuses it for a moment (another program reading it)
+REPLACE_TRIES, REPLACE_WAIT = 6, 0.25
+
+
+def _safely(p: Path, write) -> None:
+    """``write(a temporary path)`` in the same folder (its suffix says the format), which then takes the final name in
+    one step: a failure leaves the file there before as it was (issue #85)."""
+    tmp = p.with_name(f"{p.stem}.writing{p.suffix}")
+    try:
+        write(tmp)
+        for attempt in range(REPLACE_TRIES):
+            try:
+                os.replace(tmp, p)
+                break
+            except OSError:
+                if attempt == REPLACE_TRIES - 1:
+                    raise
+                time.sleep(REPLACE_WAIT)
+    except OSError as e:
+        raise WriteFailed(p.name, f"{type(e).__name__}: {e}") from e
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def export_rgb(rgb: np.ndarray, out_dir: str | Path, options: ExportOptions | dict | None = None, wcs=None,
                origin=(0, 0), history: dict | None = None, progress=lambda f, m: None) -> list[Path]:
     """Write a composed image (3, H, W), display sRGB in [0, 1]. ``wcs``: the grid's astrometric solution (a FITS
@@ -323,17 +356,18 @@ def export_rgb(rgb: np.ndarray, out_dir: str | Path, options: ExportOptions | di
         progress(0.1 + 0.8 * i / len(o.formats), f"writing {fmt}")
         if fmt == "tiff16":
             p = out_dir / f"{o.name}_16bit.tif"
-            tifffile.imwrite(p, (hwc * 65535 + 0.5).astype(np.uint16), photometric="rgb", iccprofile=icc,
-                             compression="zlib")
+            _safely(p, lambda t: tifffile.imwrite(t, (hwc * 65535 + 0.5).astype(np.uint16), photometric="rgb",
+                                                  iccprofile=icc, compression="zlib"))
         elif fmt == "tiff32f":
             p = out_dir / f"{o.name}_32bit_float.tif"
-            tifffile.imwrite(p, hwc, photometric="rgb", iccprofile=icc, compression="zlib")
+            _safely(p, lambda t: tifffile.imwrite(t, hwc, photometric="rgb", iccprofile=icc, compression="zlib"))
         elif fmt == "png16":
             p = out_dir / f"{o.name}.png"
-            cv2.imwrite(str(p), (hwc * 65535 + 0.5).astype(np.uint16)[:, :, ::-1])
+            _safely(p, lambda t: cv2.imwrite(str(t), (hwc * 65535 + 0.5).astype(np.uint16)[:, :, ::-1]))
         elif fmt == "jpeg":
             p = out_dir / f"{o.name}.jpg"
-            Image.fromarray((hwc * 255 + 0.5).astype(np.uint8)).save(p, quality=o.jpeg_quality, icc_profile=icc)
+            _safely(p, lambda t: Image.fromarray((hwc * 255 + 0.5).astype(np.uint8)).save(t, quality=o.jpeg_quality,
+                                                                                          icc_profile=icc))
         else:
             from astropy.io import fits
             p = out_dir / f"{o.name}.fits"
@@ -350,7 +384,8 @@ def export_rgb(rgb: np.ndarray, out_dir: str | Path, options: ExportOptions | di
                 hdr["DATE"] = (str(history.get("created") or "")[:19], "export date")
                 for line in history_lines(history):
                     hdr.add_history(line)
-            fits.PrimaryHDU(np.ascontiguousarray(img[:, ::-1], np.float32), header=hdr).writeto(p, overwrite=True)
+            _safely(p, lambda t: fits.PrimaryHDU(np.ascontiguousarray(img[:, ::-1], np.float32),
+                                                 header=hdr).writeto(t, overwrite=True))
         files.append(p)
     if history is not None:
         p = out_dir / f"{o.name}_history.json"

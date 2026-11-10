@@ -297,7 +297,7 @@ def test_denoise_keeps_the_tile_on_a_4_gb_card(monkeypatch):
     monkeypatch.setattr(dn, "_apply_net", lambda *a, **kw: seen.append(a[6]) or orig(*a, **kw))
     x, nm, bk, sg = _denoise_input()
     out = dn.apply_net(EchoUNet(), x, nm, bk, sg, torch.device("cpu"))
-    assert seen == [512] and np.allclose(out, x, atol=1e-5)
+    assert seen == [512] * len(dn.PASSES) and np.allclose(out, x, atol=1e-5)
 
 
 def test_denoise_shrinks_the_tile_when_memory_is_short(monkeypatch):
@@ -320,6 +320,36 @@ def test_the_denoise_error_passes_through_when_no_tile_helps():
     x, nm, bk, sg = _denoise_input()
     with pytest.raises(torch.OutOfMemoryError):
         dn.apply_net(EchoUNet(limit=16), x, nm, bk, sg, torch.device("cpu"))
+
+
+class LatticeUNet(torch.nn.Module):
+    """A network leaving a pattern on its own grid of 2 px: what the passes of the Denoise block are for (issue #84)."""
+
+    def forward(self, x):
+        h, w = x.shape[2:]
+        sign = ((-1.0) ** torch.arange(h, device=x.device))[:, None] * ((-1.0) ** torch.arange(w, device=x.device))[None]
+        return 0.1 * sign.expand(x.shape[0], 3, h, w).float()
+
+
+def test_the_passes_of_the_denoise_block_cancel_the_pattern_of_its_network(monkeypatch):
+    x, nm, bk, sg = _denoise_input()
+    dev = torch.device("cpu")
+    alone = dn._apply_net(LatticeUNet(), x, nm, bk, sg, dev, 512, 48)
+    out = dn.apply_net(LatticeUNet(), x, nm, bk, sg, dev)
+    assert out.shape == x.shape and out.dtype == x.dtype
+    assert np.abs(alone - x)[..., 8:-8, 8:-8].max() > 5e-3
+    assert np.abs(out - x)[..., 8:-8, 8:-8].max() < 1e-5                 # the pixels stay where they are: an image put back
+
+
+def test_the_fast_pass_of_the_denoise_block_is_the_network_once(monkeypatch):
+    seen = []
+    orig = dn._apply_net
+    monkeypatch.setattr(dn, "_apply_net", lambda *a, **kw: seen.append(a[6]) or orig(*a, **kw))
+    x, nm, bk, sg = _denoise_input()
+    dev = torch.device("cpu")
+    out = dn.apply_net(LatticeUNet(), x, nm, bk, sg, dev, shifts=dn.PASSES[:1])
+    assert seen == [512] and np.array_equal(out, orig(LatticeUNet(), x, nm, bk, sg, dev, 512, 48))
+    assert dn.DenoiseParams().fast is False
 
 
 class EchoNaf(torch.nn.Module):

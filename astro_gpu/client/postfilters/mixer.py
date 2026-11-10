@@ -11,6 +11,7 @@ dominant red in a dual-band image, the magenta of stars and halos in a narrowban
 """
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 from .colour import from_lab, to_lab
@@ -23,6 +24,9 @@ BANDS = (("red", 30.0), ("orange", 65.0), ("yellow", 100.0), ("green", 136.0), (
 NEUTRAL_C = 4.0
 #: the settings' ends: a hue shift in degrees, saturation and luminance in percent
 HUE_MAX, SAT_MAX, LUM_MAX = 30.0, 100.0, 100.0
+#: the hue circle of the table the settings are read from
+_PER_DEGREE = 4
+_HUES = np.arange(360 * _PER_DEGREE + 2, dtype=np.float32) / _PER_DEGREE
 
 
 def keys() -> list[str]:
@@ -51,25 +55,44 @@ def _weights(h: np.ndarray) -> np.ndarray:
     return out
 
 
+def _along(what: str, top: float, w: np.ndarray, p: dict) -> np.ndarray | None:
+    """One setting along the hue circle (``_HUES``); None when it is zero everywhere."""
+    values = [float(np.clip(float(p.get(f"{what}_{name}", 0.0)), -top, top)) for name, _c in BANDS]
+    return None if not any(values) else np.tensordot(np.array(values, np.float32), w, 1)
+
+
 def mix(x: np.ndarray, p: dict) -> np.ndarray:
-    """``x`` (h, w, 3, sRGB 0..1) through the mixer's settings ``p`` (``keys``); the identity at zero."""
+    """``x`` (h, w, 3, sRGB 0..1) through the mixer's settings ``p`` (``keys``); the identity at zero. Only the pixels
+    with a colour are worked on, and the bands' sum is read from a table along the hue circle (12 Mpx: 5 s without)."""
     if is_identity(p):
         return x
-    lab = to_lab(np.clip(x, 0, 1))
-    L, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
-    C = np.hypot(a, b)
-    h = np.degrees(np.arctan2(b, a)) % 360.0
-    w = _weights(h) * np.clip((C - NEUTRAL_C) / NEUTRAL_C, 0, 1)[None]   # nothing on what has no colour
-    dh = np.zeros_like(h, dtype=np.float32)
-    ds = np.zeros_like(h, dtype=np.float32)
-    dl = np.zeros_like(h, dtype=np.float32)
-    for i, (name, _c) in enumerate(BANDS):
-        dh += w[i] * np.clip(float(p.get(f"hue_{name}", 0.0)), -HUE_MAX, HUE_MAX)
-        ds += w[i] * np.clip(float(p.get(f"sat_{name}", 0.0)), -SAT_MAX, SAT_MAX) / 100.0
-        dl += w[i] * np.clip(float(p.get(f"lum_{name}", 0.0)), -LUM_MAX, LUM_MAX) / 100.0
-    h2 = np.radians(h + dh)
-    C2 = C * np.clip(1.0 + ds, 0.0, 3.0)
-    # the luminance of a colour: up or down by its share of the way to white or black (a colourful pixel only)
-    L2 = np.where(dl >= 0, L + (100.0 - L) * dl * 0.5, L * (1.0 + dl * 0.5))
-    out = np.stack([L2, C2 * np.cos(h2), C2 * np.sin(h2)], -1).astype(np.float32)
-    return np.clip(from_lab(out), 0, 1).astype(np.float32)
+    out = np.clip(x, 0, 1).astype(np.float32)
+    lab = to_lab(out)
+    on = cv2.magnitude(lab[..., 1], lab[..., 2]) > NEUTRAL_C               # nothing on what has no colour
+    if not on.any():
+        return out
+    L, a, b = lab[on].T
+    C = cv2.magnitude(a, b).ravel()
+    t = cv2.phase(a, b, angleInDegrees=True).ravel() * _PER_DEGREE
+    i = t.astype(np.int32)
+    t -= i
+    share = np.minimum((C - NEUTRAL_C) / NEUTRAL_C, 1.0)                  # a smooth start
+    w = _weights(_HUES)
+
+    def read(curve):
+        return share * (curve[i] + t * (curve[i + 1] - curve[i]))
+
+    dh, ds, dl = _along("hue", HUE_MAX, w, p), _along("sat", SAT_MAX, w, p), _along("lum", LUM_MAX, w, p)
+    if ds is not None:
+        scale = np.clip(1.0 + read(ds) / 100.0, 0.0, 3.0)
+        a, b = a * scale, b * scale
+    if dh is not None:
+        turn = np.radians(read(dh))
+        c, s = np.cos(turn), np.sin(turn)
+        a, b = a * c - b * s, a * s + b * c
+    if dl is not None:
+        # the luminance of a colour: up or down by its share of the way to white or black (a colourful pixel only)
+        d = read(dl) / 100.0
+        L = np.where(d >= 0, L + (100.0 - L) * d * 0.5, L * (1.0 + d * 0.5))
+    out[on] = np.clip(from_lab(np.stack([L, a, b], -1)[:, None].astype(np.float32)), 0, 1)[:, 0]
+    return out

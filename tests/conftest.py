@@ -451,7 +451,8 @@ def full_only(p, fresh_ids: bool = False):
         pytest.skip("the test project has no workflow with the Denoise and Stars blocks")
     p.workflows[:] = [dataclasses.replace(full, id=1, name="Full", end=None, variant_of=None, breakpoints=[])]
     p.next_workflow_id, p.current = (max(p.next_workflow_id, 2) if fresh_ids else 2), 1
-    p.post = {**(p.post or {}), "layers": []}
+    from astro_gpu.core.project2 import new_post
+    p.post = new_post()
     return p
 
 

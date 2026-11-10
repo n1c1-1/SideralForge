@@ -777,9 +777,11 @@ def test_estimates_follow_units_history_and_the_cpu():
     assert est.estimate("calibrate", f, history={}).disk_gb == pytest.approx(0.11 * 80 * 24 / (721 * heart.mpx)
                                                                              + 80 * 24e6 * 2 / 1e9)
     # Denoise: its measured times per adaptation step and per Mpx applied, not the reference x the CPU factor
-    assert est.estimate("denoise", f, gpu=False, history={}).seconds == pytest.approx(3.6 * 500 + 3.3 * 24.0)
-    assert est.estimate("denoise", f, history={}).seconds == pytest.approx(0.088 * 500 + 0.75 * 24.0)
-    assert est.units("denoise", f) == pytest.approx(500 + 8.5 * 24.0)
+    assert est.estimate("denoise", f, gpu=False, history={}).seconds == pytest.approx(3.6 * 500 + 3.3 * 24.0 * 4)
+    assert est.estimate("denoise", f, history={}).seconds == pytest.approx(0.088 * 500 + 0.75 * 24.0 * 4)
+    assert est.units("denoise", f) == pytest.approx(500 + 8.5 * 24.0 * 4)
+    fast = est.Facts(frames=100, lights=80, mpx=24.0, scale=1.0, grid_mpx=24.0, iterations=500, passes=1)
+    assert est.estimate("denoise", fast, history={}).seconds == pytest.approx(0.088 * 500 + 0.75 * 24.0)
     hist = {"stack": [[100.0, 1000.0, "gpu"], [300.0, 1000.0, "gpu"], [9.0, 1.0, "cpu"]]}
     m = est.estimate("stack", f, history=hist)
     assert m.measured and m.seconds == pytest.approx(0.2 * 80 * 24.0)

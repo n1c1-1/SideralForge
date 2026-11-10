@@ -273,3 +273,16 @@ def test_the_small_stars_go_and_the_large_ones_stay_exactly():
         cy, cx, a = rng.uniform(10, 290), rng.uniform(10, 290), rng.uniform(0.1, 1)
         img += a * np.exp(-((gx - cx) ** 2 + (gy - cy) ** 2) / (2 * 2.0 ** 2))
     assert abs(measure_fwhm(torch.from_numpy(np.stack([img] * 3))) - 2.355 * 2.0) < 0.35   # the width at half height
+
+
+def test_the_small_stars_go_and_the_halo_of_a_large_one_keeps_no_edge():
+    from astro_gpu.render.stars import STAR_LEVEL, fade_small_stars
+    yy, xx = torch.meshgrid(torch.arange(200.0), torch.arange(200.0), indexing="ij")
+    d = ((xx - 100) ** 2 + (yy - 100) ** 2).sqrt()
+    halo = 3 * STAR_LEVEL / (1 + (d / 14) ** 2)                          # falls below the stars' level, far from the core
+    y = (halo + 0.95 * torch.exp(-d ** 2 / (2 * 3.0 ** 2))).repeat(3, 1, 1)
+    small = 0.5 * torch.exp(-((xx - 150) ** 2 + (yy - 100) ** 2) / (2 * 0.7 ** 2))
+    z = fade_small_stars((y + small[None]).clamp(0, 1), 1.0, 2.0)
+    assert float(z[1, 100, 150]) < 2 * float(halo[100, 150])             # the small star gone, to the level of the halo
+    ring = (d > 8) & ((xx - 150) ** 2 + (yy - 100) ** 2 > 8 ** 2)
+    assert float((z[1] - y[1])[ring].abs().max()) < 0.01                 # the halo as it was, past the large star's edge

@@ -36,9 +36,10 @@ from conftest import TEST_PROJECT, TEST_PROJECT_CLASSIC, full_only, needs_test_p
 from PySide6.QtCore import QObject, Qt, Signal  # noqa: E402
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
+from astro_gpu.core.project2 import active_version, new_post  # noqa: E402
 from astro_gpu import api  # noqa: E402
 from astro_gpu.client import app as appmod  # noqa: E402
-from astro_gpu.client import i18n, postengine, prefs  # noqa: E402
+from astro_gpu.client import i18n, post3, postengine, prefs  # noqa: E402
 from astro_gpu.client.exportdlg import ExportDialog  # noqa: E402
 from astro_gpu.client.post3 import PostPage3, tr_name  # noqa: E402
 from astro_gpu.client.postengine import (  # noqa: E402
@@ -192,7 +193,7 @@ class ToyModel(QObject):
     def __init__(self, wfs, root=None, name="HeartSoul"):
         super().__init__()
         self.paths = wfs
-        self.p = SimpleNamespace(post={"layers": []}, render_bases={})
+        self.p = SimpleNamespace(post=new_post(), render_bases={})
         self.name, self.root = name, root
         self.device, self.gpu = "cpu", False
         self.touched = 0
@@ -1885,7 +1886,7 @@ def test_an_image_sent_from_a_stage_is_a_normal_layer(post, preps, tmp_path):
     assert post.settle() and near(shown(v), reference(post).rgb)
     assert "image" in next(r for r in v.rows if r.lay["id"] == lay["id"]).sub.text()
     # saved by its key, no pixels
-    saved = post.model.p.post["layers"]
+    saved = active_version(post.model.p.post)["layers"]
     img = next(x for x in saved if x["kind"] == "image")
     assert img["key"] == "stack/0123abcd" and img["linked"] is False and len(json.dumps(saved)) < 20_000
     # a file, a function
@@ -1978,7 +1979,7 @@ def test_the_composition_is_kept_in_the_project(preps, qapp):
         v.push()                                 # (a slider let go: the change, then the undo step)
         qapp.processEvents()                     # the composition is saved just after the edit, with it
         assert s.model.touched >= 1                                                      # the model is told to save
-        saved = s.model.p.post["layers"]
+        saved = active_version(s.model.p.post)["layers"]
         assert [lay["name"] for lay in saved] == ["Classic", "Saturation", "Full"] and json.dumps(saved)
         assert saved[1]["mask"]["parts"][0]["strokes"]
         assert saved[2]["sliders"]["sky"] == 3.2
@@ -2010,7 +2011,7 @@ def test_an_edit_is_saved_with_its_change_not_the_state_before_it(post, qapp):
 
     def saved():
         qapp.processEvents()
-        return [lay["name"] for lay in post.model.p.post["layers"]]
+        return [lay["name"] for lay in active_version(post.model.p.post)["layers"]]
     v.select(named(v, "Full")["id"], "layer")
     f = v.add_filter("saturation")
     assert saved() == ["Classic", "Saturation", "Full"]
@@ -2955,3 +2956,155 @@ def test_the_divider_is_there_and_the_list_keeps_the_settings_reachable(post):
     assert v.vsplit.count() == 2 and v.vsplit.widget(1) is v.psc and not v.vsplit.childrenCollapsible()
     post.settle()
     assert v.lsc.height() >= 40 and v.psc.height() >= 40
+
+
+def test_a_layer_row_is_one_short_line_and_its_image_grows_under_the_mouse(post):
+    from PySide6.QtCore import QEvent
+
+    from astro_gpu.client.post3 import ROW_H
+    v = post.view
+    row = v.rows[0]
+    assert all(r.height() == ROW_H or r.maximumHeight() == ROW_H for r in v.rows)
+    assert row.t.pixmap().height() <= 20
+    row.eventFilter(row.t, QEvent(QEvent.Enter))
+    assert v._big is not None and v._big.isVisible() and v._big.pixmap().height() > 40
+    row.eventFilter(row.t, QEvent(QEvent.Leave))
+    assert not v._big.isVisible()
+
+
+def test_hiding_the_top_filter_recomputes_nothing_below_it(post, monkeypatch):
+    """The steps of a composition are kept: only what is above a change is computed again (issue #87)."""
+    v = post.view
+    v.select(named(v, "Full")["id"], "layer")
+    low, top = v.add_filter("saturation"), None
+    low["params"]["strength"] = 60.0
+    top = v.add_filter("levels")
+    comp = post.worker.renderer.composer
+    calls = []
+    real = comp._apply
+    monkeypatch.setattr(comp, "_apply", lambda fl, *a, **k: (calls.append(fl["filter"]), real(fl, *a, **k))[1])
+    layers = snapshot(v.layers)
+    first = comp.compose(layers, 1).rgb
+    assert sorted(calls) == ["levels", "saturation"]
+    calls.clear()
+    assert np.array_equal(comp.compose(layers, 1).rgb, first) and calls == []
+    hidden = snapshot(v.layers)
+    next(x for x in hidden if x["id"] == top["id"])["visible"] = False
+    comp.compose(hidden, 1)
+    assert calls == []                                       # the saturation under it comes from what was kept
+
+
+def test_changing_a_filter_gives_the_right_image_after_a_kept_step(post):
+    v = post.view
+    v.select(named(v, "Full")["id"], "layer")
+    f = v.add_filter("saturation")
+    f["params"]["strength"] = 60.0
+    comp = post.worker.renderer.composer
+    comp.compose(snapshot(v.layers), 1)
+    f["params"]["strength"] = 10.0
+    kept = comp.compose(snapshot(v.layers), 1).rgb
+    assert np.array_equal(kept, comp.compose(snapshot(v.layers), 1, cache=False).rgb)
+
+
+def test_hiding_a_filter_of_a_sub_layer_changes_what_is_above_it(preps, qapp):
+    """The steps of a Stars and background layer are kept too, and depend on the filters of its two images."""
+    s = Setup(preps, qapp, stars=True)
+    try:
+        assert s.settle()
+        v = s.view
+        full = v.layers[1]
+        v.select(full["id"], "stars")
+        lv = v.add_filter("levels")
+        lv["params"].update(black=0.0, white=0.5)
+        v.select(full["id"], "layer")
+        v.add_filter("saturation")["params"]["strength"] = 60.0
+        comp = s.worker.renderer.composer
+        with_it = comp.compose(snapshot(v.layers), 1).rgb
+        lv["visible"] = False
+        without = comp.compose(snapshot(v.layers), 1).rgb
+        assert not np.array_equal(with_it, without)
+        assert np.array_equal(without, comp.compose(snapshot(v.layers), 1, cache=False).rgb)
+    finally:
+        s.close()
+
+
+def test_the_half_image_waits_for_a_quick_exact_one_not_for_a_slow_one(wide, monkeypatch):
+    """One change on screen per gesture when the exact image is near; else the half one meanwhile (issue #87)."""
+    from PySide6.QtTest import QTest
+    post = wide
+    v = post.view
+    halves, exact = [], []
+    v.rendered.connect(lambda r: (halves if r.kind == "half" else exact if r.kind == "exact" else []).append(r.rgb))
+    assert v.viewer.scale < 0.5
+    monkeypatch.setattr(post3, "HOLD_MS", 60000)
+    named(v, "Full")["sliders"]["sky"] = 3.0
+    v.request(final_only=True)
+    assert post.settle() and halves and exact
+    assert v.src.img1 is exact[-1] and v._held is None and not v._hold_t.isActive()
+    monkeypatch.setattr(post3, "HOLD_MS", 1)
+    halves.clear(), exact.clear()
+    renderer = post.worker.renderer
+    slow = renderer._exact
+    monkeypatch.setattr(renderer, "_exact", lambda *a: (time.sleep(.6), slow(*a))[1])
+    named(v, "Full")["sliders"]["sky"] = 2.0
+    v.request(final_only=True)
+    t0 = time.time()
+    while not halves and time.time() - t0 < 20:
+        QTest.qWait(10)
+    QTest.qWait(150)
+    assert halves and not exact and v.src.img1 is halves[-1]
+    assert post.settle() and v.src.img1 is exact[-1]
+
+
+def test_the_mixer_on_a_table_gives_the_mixer_band_by_band():
+    """The bands read from a table along the hue circle: the same colours as summing them pixel by pixel (issue #87)."""
+    from astro_gpu.client.postfilters import colour, mixer
+    x = np.random.default_rng(3).random((200, 300, 3), np.float32)
+    p = {k: 0.0 for k in mixer.keys()}
+    p.update(sat_red=40.0, hue_blue=-25.0, lum_aqua=30.0, lum_green=-40.0)
+    got = mixer.mix(x, p)
+    lab = colour.to_lab(np.clip(x, 0, 1))
+    L, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
+    C = np.hypot(a, b)
+    h = np.degrees(np.arctan2(b, a)) % 360.0
+    w = mixer._weights(h) * np.clip((C - mixer.NEUTRAL_C) / mixer.NEUTRAL_C, 0, 1)[None]
+    def total(what, scale=1.0):
+        return sum(w[i] * float(p[f"{what}_{name}"]) / scale for i, (name, _c) in enumerate(mixer.BANDS))
+    h2, C2, dl = np.radians(h + total("hue")), C * np.clip(1 + total("sat", 100.0), 0, 3), total("lum", 100.0)
+    L2 = np.where(dl >= 0, L + (100 - L) * dl * .5, L * (1 + dl * .5))
+    want = np.clip(colour.from_lab(np.stack([L2, C2 * np.cos(h2), C2 * np.sin(h2)], -1).astype(np.float32)), 0, 1)
+    assert np.abs(got - want).max() < 3e-3
+    grey = np.full((4, 4, 3), .4, np.float32)
+    assert np.array_equal(mixer.mix(grey, p), grey)                      # what has no colour is left as it is
+
+
+def test_a_version_of_post_has_its_layers_its_crop_and_its_undo(post):
+    """Issue #82: another version shown in the panel, and compared with the one shown."""
+    v = post.view
+    p = post.model.p
+    first = active_version(p.post)
+    first["layers"] = postengine.save_layers(v.layers)
+    second = {"id": 2, "name": "Bold", "layers": postengine.with_new_ids(first["layers"]), "crop": [10, 10, 60, 60]}
+    p.post = {**p.post, "versions": [first, second], "active": 2}
+    v.undo.append(snapshot(v.layers))
+    undo_of_first = list(v.undo)
+    v._post_changed(None)
+    assert v._version == 2 and v.crop == [10, 10, 60, 60] and v.undo == []
+    assert [lay["id"] for lay in v.layers] == [lay["id"] for lay in second["layers"]]
+    assert [v.cb_version.itemText(i) for i in range(v.cb_version.count())] == ["Version 1", "Bold"]
+    assert v.cb_version.currentText() == "Bold" and v.b_version_del.isEnabled()
+    p.post = {**p.post, "active": 1}
+    v._post_changed(None)
+    assert v._version == 1 and v.undo == undo_of_first and v.crop is None
+    assert v.cb_cmp.findData(2) >= 0 and v.cb_cmp.findData(1) < 0
+    sent = []
+    real = v.worker.request
+    v.worker.request = lambda req: (sent.append(req), real(req))[1]
+    v.cb_cmp.setCurrentIndex(v.cb_cmp.findData(2))
+    v._send_before()
+    assert sent[-1].kind == "before" and sent[-1].plain
+    assert [lay["id"] for lay in sent[-1].layers] == [lay["id"] for lay in second["layers"]]
+    v.cb_cmp.setCurrentIndex(0)
+    v._send_before()
+    assert sent[-1].kind == "before" and not sent[-1].plain
+    v.worker.request = real

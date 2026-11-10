@@ -104,7 +104,7 @@ from .imageview import ZOOM_PRESETS, ZOOM_STEP
 from .layout import ARROW_H, ARROW_W, Dock, fold_button, pinch_factor, wheel_gesture
 from .model import NotInEngine, cuttable, node_key, view_key  # noqa: F401  (cuttable: older callers)
 from .panel import Panel
-from .widgets import ACCENT, BAD, NEW, OK, WARN, clear, label
+from .widgets import ACCENT, BAD, NEW, OK, WARN, Spinner, clear, label
 
 BW, BH = 120, 54            # block size (a column is wider when its title needs it: TITLE_PAD)
 GAP = 12                    # between two columns: where the branches split
@@ -746,6 +746,11 @@ class GraphView(QGraphicsView):
         self.wait.setStyleSheet("color: #8b93a1; background: transparent;")
         self.wait.setAlignment(Qt.AlignCenter)
         self.wait.hide()
+        self.veil = QFrame(self)                                       # no graph before the project is read (#86)
+        self.veil.setStyleSheet("background: #15171c;")
+        self.veil.hide()
+        self.spinner = Spinner(self)
+        self.spinner.hide()
         self.b_all = QPushButton(_("Show all"), self)
         self.b_all.setCheckable(True)
         self.b_all.setObjectName("toggle")
@@ -1305,7 +1310,23 @@ class GraphView(QGraphicsView):
             text = "" if s.ready else _("Reading the project…")
         self.wait.setText(text)
         self.wait.setVisible(bool(text))
+        loading = not s.error and not s.ready
+        self.veil.setVisible(loading)
+        self.spinner.setVisible(loading)
+        if loading != getattr(self, "_loading", False):  # the system's busy cursor, as long as it lasts
+            self._loading = loading
+            if loading:
+                self.viewport().setCursor(Qt.BusyCursor)
+            else:
+                self.viewport().unsetCursor()
+        self._place_wait()
+
+    def _place_wait(self):
+        self.veil.setGeometry(self.rect())
+        self.spinner.move((self.width() - self.spinner.width()) // 2, self.height() // 2 - 90)
         self.wait.setGeometry(0, self.height() // 2 - 40, self.width(), 30)
+        self.veil.raise_()
+        self.spinner.raise_()
         self.wait.raise_()
 
     # ------------------------------------------------------------ pulling an output to the post
@@ -1969,7 +1990,7 @@ class GraphView(QGraphicsView):
         self.b_zoom.adjustSize()
         self.b_zoom.move(self.b_all.x() - self.b_zoom.width() - 6, 10)
         self.b_zoom.raise_()
-        self.wait.setGeometry(0, self.height() // 2 - 40, self.width(), 30)
+        self._place_wait()
         self._place_post_button()
 
     def show_toast(self, text):
@@ -2441,7 +2462,7 @@ NEW_FRAMES = -1        # a block placed "in the workflow from the frames" of ses
 #: the palette (issue #47): every block, by group; the sources and the composition blocks are not graph nodes. The
 #: headings are one word, shown in capitals ("FRAMES": its own entry, "Frames" being the frames' block, "Images")
 PALETTE_GROUPS = [("Sources", ["session", "image", "align_images"]),
-                  ("FRAMES", ["calibration", "registration", "selection", "stacking"]),
+                  ("FRAMES", ["calibration", "registration", "selection", "crop", "stacking"]),
                   ("Image", ["astrometry", "gradient", "denoise", "color"]),
                   ("Post", ["stars"]),
                   ("Composition", ["fusion", "composition"])]

@@ -50,6 +50,11 @@ MONO_FEW_FRAMES = 30
 MONO_TIP = ("A monochrome stack of fewer than 30 frames gets a network made for monochrome noise. It slightly brightens "
             "faint stars (+8 to +11 % on the bench): it is for pictures, not for photometry.")
 PATCH, BATCH = 192, 12
+#: the network's passes over the image, each with the image moved by (y, x) pixels (Lim et al. 2017, self-ensemble): the
+#: network leaves a pattern on its own grid of 2, 4 and 8 px, which falls elsewhere on the image at each pass. These
+#: four cancel the period of 2 px exactly and take the whole to less than half (issue #84: Rosette and Pleiades, the
+#: stars unchanged, the error against the other half-stack 1.2 to 1.4 % lower)
+PASSES = ((0, 0), (0, 1), (1, 0), (1, 1))
 #: the card memory the network takes for a tile of 512 (with its padding): 0.21 GB measured on 8 November 2026 for 512
 #: pixels in bfloat16, plus the padding's area; a 4 GB card holds it many times over
 TILE_GB = 0.35
@@ -66,6 +71,9 @@ class DenoiseParams(StageParams):
                         tip="Long for a session without dithering (the noise independent from one pixel to the next), "
                             "which the pretrained network has not seen; short otherwise. On a processor, a step takes "
                             "about 4 s.")
+    fast: bool = P(False, label="Fast pass",
+                   help="One pass of the network instead of four: four times faster, but its grid pattern can show in "
+                        "the sky under a strong stretch.")
     seed: int = P(0, label="Random seed", level=ADVANCED, ge=0,
                   help="Seed of the random tile selection of the adaptation (for reproducible runs).")
     #: set by the graph (issue #47): a later Denoise reads this one's denoised half-stacks
@@ -91,7 +99,7 @@ class Denoise(Stage):
                    "data. Optionally adapted to this image first.")
     deps = ("stack",)
     Params = DenoiseParams
-    version = f"3-{MODEL_ID}"     # 3: the sky level of each colour kept (keep_level)
+    version = f"4-{MODEL_ID}"     # 4: the network's four passes (PASSES); 3: the sky level of each colour kept (keep_level)
 
     def mono_key_version(self, values: dict, lights: int) -> str:
         """The version in the store key of a monochrome workflow of ``lights`` frames: with its own network when it has
@@ -140,15 +148,16 @@ class Denoise(Stage):
         torch.save({"net": net.state_dict(), "bk": bk, "sg": sg}, ctx.out("n2n_model.pt"))
         net.eval()
         ctx.progress(0.92, "denoising the half-stacks")
-        dA = apply_net(net, A, nm, bk, sg, dev)
-        dB = apply_net(net, B, nm, bk, sg, dev)
+        shifts = PASSES[:1] if p.fast else PASSES
+        dA = apply_net(net, A, nm, bk, sg, dev, shifts=shifts)
+        dB = apply_net(net, B, nm, bk, sg, dev, shifts=shifts)
         ctx.progress(0.96, "denoising the full stack")
         # a monochrome stack: the network moves the three channels a little apart; their mean, in the three, keeps it
         # grey (issue #43)
         grey = (lambda a: np.repeat(a.mean(0, keepdims=True), 3, axis=0)) if mono else (lambda a: a)
         dA, dB = keep_level(grey(dA), A, Wt), keep_level(grey(dB), B, Wt)
         ctx.save("n2n_avg.npy", 0.5 * (dA + dB))
-        dF = keep_level(grey(apply_net(net, full, (nm / np.sqrt(2)).astype(np.float32), bk, sg, dev)), full, Wt)
+        dF = keep_level(grey(apply_net(net, full, (nm / np.sqrt(2)).astype(np.float32), bk, sg, dev, shifts=shifts)), full, Wt)
         ctx.save("n2n_full.npy", dF)
         if p.keep_halves:                            # for a later Denoise block (issue #47)
             ctx.save("n2n_A.npy", dA)
@@ -351,12 +360,21 @@ def adapt(ctx, net, A, B, nm, bk, sg, dev, steps: int, lr: float, seed: int) -> 
 
 
 @torch.no_grad()
-def apply_net(net, x, nm, bk, sg, dev, tile=512, pad=48):
-    """Denoise a (3, H, W) linear image tile by tile with overlap. On a card with little free memory the tile is
-    smaller (``devices.tile_that_fits``; a memory error halves it, ``shrink_on_memory``): only then does the result
-    differ, by a fraction of the noise, at the seams of the tiles."""
+def apply_net(net, x, nm, bk, sg, dev, tile=512, pad=48, shifts=PASSES):
+    """Denoise a (3, H, W) linear image tile by tile with overlap, as the mean of ``shifts``. On a card with little free
+    memory the tile is smaller (``devices.tile_that_fits``; a memory error halves it, ``shrink_on_memory``): only then
+    does the result differ, by a fraction of the noise, at the seams of the tiles."""
     tile = devices.tile_that_fits(tile, dev, TILE_GB * (tile / 512) ** 2)
-    return devices.shrink_on_memory(lambda t: _apply_net(net, x, nm, bk, sg, dev, t, pad), tile, dev)
+
+    def passes(t):
+        total = 0
+        for dy, dx in shifts:
+            sx = np.pad(x, ((0, 0), (dy, 0), (dx, 0)), mode="reflect")
+            total = total + _apply_net(net, sx, np.pad(nm, ((dy, 0), (dx, 0)), mode="reflect"), bk, sg, dev, t, pad)[
+                :, dy:, dx:]
+        return (total / len(shifts)).astype(x.dtype)
+
+    return devices.shrink_on_memory(passes, tile, dev)
 
 
 @torch.no_grad()

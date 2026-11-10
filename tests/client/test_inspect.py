@@ -1753,7 +1753,10 @@ def test_the_report_of_a_computed_project(win, tmp_path):
     settle(win)
     page.build()
     QApplication.processEvents()
-    assert "1. Observation" in page.view.toPlainText() and not rep.PATHS.search(page.view.toPlainText())
+    assert "1. Observation" in page.document().toPlainText() and not rep.PATHS.search(page.document().toPlainText())
+    from PySide6.QtTest import QTest
+    QTest.qWait(2500)                                  # the reader draws its pages in the background
+    win.grab().save(str(shots_dir() / "report_window.png"))
     page.save_png(shots_dir() / "report.png")
     page.save_pdf(shots_dir() / "report.pdf")
     assert (shots_dir() / "report.pdf").stat().st_size > 5000

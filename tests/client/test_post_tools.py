@@ -45,6 +45,7 @@ from test_post import (  # noqa: E402, F401 - the fixtures and helpers of Post's
     shown,
 )
 
+from astro_gpu.core.project2 import active_version  # noqa: E402
 from astro_gpu.client import i18n, postengine  # noqa: E402
 from astro_gpu.client.curveseditor import CurvesEditor, FunctionGraph  # noqa: E402
 from astro_gpu.client.postengine import FILTERS, Composer, new_filter_layer, new_workflow_layer, normalize  # noqa: E402
@@ -516,9 +517,9 @@ def test_the_curves_editor_edits_by_hand_with_drafts_then_the_exact_image(post):
     assert ed.graph.curve is fl["params"]["curves"]["L*"] and "•" in ed.ch_buttons["RGB/K"].text()
     assert s.settle() and np.array_equal(shown(v), reference(s).rgb)
     v.flush()
-    saved = next(x for x in s.model.p.post["layers"] if x["id"] == fl["id"])
+    saved = next(x for x in active_version(s.model.p.post)["layers"] if x["id"] == fl["id"])
     assert saved["params"]["curves"]["RGB/K"]["pts"] == pc.preset_curves("Medium Contrast")["RGB/K"]["pts"]
-    back = postengine.load_layers(json.loads(json.dumps(s.model.p.post["layers"])), {1, 2})
+    back = postengine.load_layers(json.loads(json.dumps(active_version(s.model.p.post)["layers"])), {1, 2})
     assert next(x for x in back if x["id"] == fl["id"])["params"]["curves"] == pc.clean_curves(fl["params"]["curves"])
 
 

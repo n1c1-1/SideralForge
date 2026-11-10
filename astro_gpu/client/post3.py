@@ -15,7 +15,7 @@ red overlay on the image.
 Nothing here renders. Every image comes from the render worker (services/render.py): a draft while a slider or the
 brush moves (an eighth of the image on the CPU, a quarter on a GPU), on release the exact quarter first on the CPU then
 the half resolution (the screen), and the visible region at full resolution when zoomed in. A newer request replaces an
-older one. The layers are saved in the project (``project.post["layers"]``) through the model, which the graph edits
+older one. The layers are saved in the project (the active one of ``project.post["versions"]``) through the model, which the graph edits
 too (the Stars block's images sent to Post, the Stars and background blocks and their settings): a change made there
 comes back here (``postChanged``).
 
@@ -34,12 +34,13 @@ their ``ContSlider`` sliders and the Curves editor); ``PostSource`` and ``Before
 """
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -70,6 +71,7 @@ from .icons import icon_only, pixmap, set_icon
 from .imageview import ZOOM_PRESETS, ZOOM_STEP
 from .layout import Dock, Sections
 from .model import POST_PART_NAMES
+from ..core.project2 import active_version
 from .postengine import (
     BLENDS,
     DIRECTIONS,
@@ -111,6 +113,7 @@ FAMILY_COL = {"Stretch": "#c9a35e", "Contrast": "#d98a4e", "Color": "#c46fa8", "
               "Noise": "#62c2b1", "Combine": "#e06c6c"}
 TW, TH = THUMB                                           # thumbnail size
 LIST_MIN = 110                                           # the layer list, at its smallest
+ROW_H, SMALL_W, SMALL_H = 24, 30, 20                     # a row of the list and its thumbnails (#88)
 BRUSH_MIN, BRUSH_MAX = 4.0, 1200.0                       # the mask brush, px across
 
 
@@ -130,6 +133,7 @@ PART_NOTES = {"starless": "The Stars/background block's starless image, stretche
 REGION_MAX = 12_000_000                                  # pixels of the region rendered at full resolution
 REGION_WAIT_MS = 150                                     # after the view stops moving
 INDENT = 24                                              # a child row's indent (px)
+HOLD_MS = 600                                            # the exact image within this: the half one is not shown
 QUARTER_SCALE = 0.26                                     # zoomed out to this, the quarter-resolution image fills the screen
 TOGGLE_W = 16                                            # the ▾ / ▸ of a layer's children
 
@@ -200,6 +204,11 @@ def fmt(v, step):
 
 
 # ======================================================================== a continuous slider
+def small(pm: QPixmap) -> QPixmap:
+    """A thumbnail at the size of a row."""
+    return pm.scaled(SMALL_W, SMALL_H, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+
 class Step(list):
     """A step of Post's Undo: the layers, and the crop of that moment."""
     crop = None
@@ -356,8 +365,8 @@ class LayerRow(QFrame):
                            f"QFrame#lrow[drop=\"true\"] {{ border: 2px solid {ACCENT}; background: #22314a; }} "
                            "QLabel { background: transparent; }")
         h = QHBoxLayout(self)
-        compact = lay["kind"] in ("filter", "sub")      # issue #5: the filters, many, on one short line each
-        h.setContentsMargins(4, 1 if compact else 3, 6, 1 if compact else 3)
+        self.setFixedHeight(ROW_H)                      # one short line each, whatever it holds (#88)
+        h.setContentsMargins(4, 0, 6, 0)
         h.setSpacing(6)
         eye = EyeBox()
         eye.setChecked(lay["visible"])
@@ -389,21 +398,20 @@ class LayerRow(QFrame):
         else:
             h.addSpacing(TOGGLE_W)
         self.t = QLabel()
-        if compact:
-            thumb = thumb.scaled(TW * 2 // 3, TH * 2 // 3, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            self.t.setFixedSize(TW * 2 // 3 + 4, TH * 2 // 3 + 4)
+        self.t.setFixedSize(SMALL_W + 2, SMALL_H + 2)
+        self.t.setPixmap(small(thumb))
+        self.t.setStyleSheet(f"border: 1px solid {ACCENT if sel_layer else 'transparent'};")
+        if is_pixel(lay) or lay["kind"] == "sub":       # its image, larger, under the mouse
+            self.t.installEventFilter(self)
         else:
-            self.t.setFixedSize(TW + 4, TH + 4)
-        self.t.setPixmap(thumb)
-        self.t.setStyleSheet(f"border: 2px solid {ACCENT if sel_layer else 'transparent'};")
-        self.t.setToolTip(_("Layer settings"))
+            self.t.setToolTip(_("Layer settings"))
         h.addWidget(self.t)
         self.m = None
         if mthumb is not None:
             self.m = QLabel()
-            self.m.setPixmap(mthumb)
-            self.m.setFixedSize(TW + 4, TH + 4)
-            self.m.setStyleSheet(f"border: 2px solid {ACCENT if sel_mask else '#3a4150'};")
+            self.m.setPixmap(small(mthumb))
+            self.m.setFixedSize(SMALL_W + 2, SMALL_H + 2)
+            self.m.setStyleSheet(f"border: 1px solid {ACCENT if sel_mask else '#3a4150'};")
             self.m.setToolTip(_("Layer mask: white shows the layer, black hides it"))
             h.addWidget(self.m)
         v = QVBoxLayout()
@@ -413,11 +421,11 @@ class LayerRow(QFrame):
         self.n.setStyleSheet("font-weight: 600;" + ("" if lay["visible"] else " color: #8b93a1;"))
         v.addWidget(self.n)
         self.sub = label(panel.sub_text(lay), "small")
-        v.addWidget(self.sub)
-        # a filter at its usual blend (Normal, 100 %, no mask) says nothing more: one line
-        self.sub.setVisible(lay["kind"] != "sub" and not (compact and lay.get("target") and lay["mode"] == "Normal"
-                                                          and lay["opacity"] >= 100 and mthumb is None))
         h.addLayout(v, 1)
+        h.addWidget(self.sub)
+        # at its usual blend (Normal, 100 %) a row says nothing more
+        usual = f"{_('Normal')} · {with_unit('100', '%')}"
+        self.sub.setVisible(lay["kind"] != "sub" and self.sub.text() != usual)
         if lay["kind"] == "sub":
             self.setToolTip(_("The filters nested here apply to this image only, before the stars are put back on "
                               "the starless image"))
@@ -428,6 +436,13 @@ class LayerRow(QFrame):
             self.setToolTip(_('Applies to "{name}" only').format(name=layer_name(tgt)) if tgt else "")
         elif lay["kind"] == "filter":
             self.setToolTip(_("On all below"))
+
+    def eventFilter(self, obj, e):                                   # noqa: N802 - Qt's name
+        if obj is self.t and e.type() == QEvent.Enter:
+            self.panel.show_big(self.lay, self.t)
+        elif obj is self.t and e.type() == QEvent.Leave:
+            self.panel.hide_big()
+        return super().eventFilter(obj, e)
 
     def set_drop(self, on: bool, text: str = ""):
         """The frame of a drop that nests the dragged filter in this layer; ``text`` (what the drop does) shows in place of
@@ -585,8 +600,11 @@ class PostView(QWidget):
         self._heal_off = None                           # (dx, dy) of the strokes since, as Photoshop's Aligned
         self.show_mask = False
         self.crop = None                                 # [x0, y0, x1, y1] of the canvas, or None: a setting of the composition
+        self._big = None                                 # the larger thumbnail under the mouse
         self.mask1 = None                               # the selected layer's mask at half resolution (float)
         self.undo, self.redo = [], []
+        self._stacks: dict = {}                          # the other versions' (undo, redo)
+        self._version = None                             # the id of the version shown
         self._mthumbs: dict[int, QPixmap] = {}
         self._lthumbs: dict[int, tuple] = {}            # layer id -> (signature, pixmap)
         self._overlay_img = None
@@ -691,7 +709,29 @@ class PostView(QWidget):
         self.b_export = set_icon(QPushButton(_("Export…")), "export", 16)
         for w in (self.b_fit, self.b_100, self.zoom_lab):
             bar.addWidget(w)
+        bar.addSpacing(12)
+        self.cb_version = QComboBox()
+        self.cb_version.setEditable(True)
+        self.cb_version.setToolTip(_("The version shown; type here to rename it"))
+        self.cb_version.setMinimumWidth(120)
+        self.b_version_new = QPushButton("+")
+        self.b_version_new.setToolTip(_("New version: a copy of this one"))
+        self.b_version_del = QPushButton("−")
+        for b in (self.b_version_new, self.b_version_del):
+            b.setFixedWidth(26)
+        for w in (self.cb_version, self.b_version_new, self.b_version_del):
+            bar.addWidget(w)
+        self.cb_version.activated.connect(self._version_picked)
+        self.cb_version.lineEdit().editingFinished.connect(self._version_renamed)
+        self.b_version_new.clicked.connect(self._version_new)
+        self.b_version_del.clicked.connect(self._version_delete)
         bar.addStretch(1)
+        self.cb_cmp = QComboBox()
+        self.cb_cmp.setToolTip(_("What the picture is compared with; V shows one then the other whole"))
+        self.cb_cmp.setVisible(False)
+        self.cb_cmp.currentIndexChanged.connect(lambda *_a: self.b_cmp.isChecked() and self._send_before())
+        bar.addWidget(self.cb_cmp)
+        self._fill_versions()
         for w in (self.b_crop, self.b_grid, self.b_names, self.b_cmp, self.b_mask, self.b_undo, self.b_redo, self.b_export):
             bar.addWidget(w)
         mv.addLayout(bar)
@@ -821,7 +861,7 @@ class PostView(QWidget):
         self.viewer.toolRelease.connect(self._heal_release)
         # Ctrl+Z / Ctrl+Y are the window's Edit > Undo / Redo, which come here while Post is shown (two shortcuts on
         # one key would cancel each other)
-        for seq, fn in (("R", self.b_crop.toggle), ("C", self.b_cmp.toggle), ("M", self._toggle_mask), ("F", self.viewer.fit),
+        for seq, fn in (("R", self.b_crop.toggle), ("C", self.b_cmp.toggle), ("V", self._flip_compare), ("M", self._toggle_mask), ("F", self.viewer.fit),
                         ("Ctrl+0", self.viewer.fit), ("1", lambda: self.viewer.zoom_to(1.0)),
                         ("+", lambda: self.viewer.zoom_by(ZOOM_STEP)), ("=", lambda: self.viewer.zoom_by(ZOOM_STEP)),
                         ("Ctrl++", lambda: self.viewer.zoom_by(ZOOM_STEP)),
@@ -838,6 +878,10 @@ class PostView(QWidget):
         self._final_t = QTimer(self)
         self._final_t.setSingleShot(True)
         self._final_t.timeout.connect(self._send_final)
+        self._held = None                                # the half image waiting for the exact one (see HOLD_MS)
+        self._hold_t = QTimer(self)
+        self._hold_t.setSingleShot(True)
+        self._hold_t.timeout.connect(self._show_held)
         self._main_seq = 0                               # the newest draft or release request (the exact view's, Q1)
         self._region_t = QTimer(self)
         self._region_t.setSingleShot(True)
@@ -877,10 +921,12 @@ class PostView(QWidget):
         paths = list(self.s.paths)
         alive = {p.pid for p in paths}
         if initial:
-            post = getattr(getattr(self.s, "p", None), "post", None) or {}
-            self.layers = load_layers(post.get("layers"), alive)
-            self._show_crop(post.get("crop"))
+            version = self._version_shown()
+            self.layers = load_layers(version.get("layers"), alive)
+            self._show_crop(version.get("crop"))
             self._saved = json.dumps(save_layers(self.layers), sort_keys=True)
+            self._version = version.get("id")
+            self._fill_versions()
         known = {lay["pid"] for lay in self.layers if lay["kind"] == "workflow"}
         fresh = not known
         removed = getattr(self.s, "post_removed", lambda: set())()
@@ -917,13 +963,95 @@ class PostView(QWidget):
             self.request(final_only=True)                  # (nothing is saved here: the layers a workflow brings are
                                                            # worked out again from the workflows, only edits are kept)
 
+    def _version_shown(self) -> dict:
+        p = getattr(self.s, "p", None)
+        return active_version(p.post) if p is not None and hasattr(p, "post") else {}
+
+    def _fill_versions(self):
+        """The Version list and the choices of the comparison, as the project has them."""
+        if not hasattr(self, "cb_version"):
+            return
+        p = getattr(self.s, "p", None)
+        versions = p.post["versions"] if p is not None and hasattr(p, "post") else []
+        for cb in (self.cb_version, self.cb_cmp):
+            cb.blockSignals(True)
+        kept = self.cb_cmp.currentData()
+        self.cb_version.clear()
+        self.cb_cmp.clear()
+        self.cb_cmp.addItem(_("Suggested"), None)
+        for v in versions:
+            self.cb_version.addItem(v["name"], v["id"])
+            if v["id"] != self._version:
+                self.cb_cmp.addItem(v["name"], v["id"])
+        i = self.cb_version.findData(self._version)
+        self.cb_version.setCurrentIndex(max(i, 0))
+        j = self.cb_cmp.findData(kept)
+        self.cb_cmp.setCurrentIndex(max(j, 0))
+        self.b_version_del.setEnabled(len(versions) > 1)
+        self.b_version_del.setToolTip(_("Delete this version") if len(versions) > 1 else
+                                      _("The only version cannot be deleted"))
+        for cb in (self.cb_version, self.cb_cmp):
+            cb.blockSignals(False)
+
+    def _switch_version(self, version: dict):
+        """Another version in the panel: its layers, its crop and its own Undo."""
+        self._stacks[self._version] = (self.undo, self.redo)
+        self.undo, self.redo = self._stacks.get(version.get("id"), ([], []))
+        self._version = version.get("id")
+        self.layers = load_layers(version.get("layers"), {p.pid for p in self.s.paths})
+        self._saved = json.dumps(save_layers(self.layers), sort_keys=True)
+        self._show_crop(version.get("crop"))
+        self._fill_versions()
+        if self.sel and not self.layer(self.sel[0]):
+            self.sel = (self.layers[0]["id"], "layer") if self.layers else None
+        self.sync_paths()
+        self.rebuild()
+        self._undo_buttons()
+        self.request(final_only=True)
+        if self.b_cmp.isChecked():
+            self._send_before()
+
+    def _version_picked(self, i: int):
+        vid = self.cb_version.itemData(i)
+        if vid is not None and vid != self._version:
+            self._save()
+            self.s.set_post_version(vid)
+
+    def _version_new(self):
+        self._save()
+        self.s.new_post_version()
+
+    def _version_renamed(self):
+        self.s.rename_post_version(self._version, self.cb_version.currentText())
+        self._fill_versions()
+
+    def _version_delete(self):
+        self._save()
+        self.s.delete_post_version(self._version)
+
+    def _flip_compare(self):
+        """The whole picture from one of the two (the comparison on): the other one at the next press."""
+        if self.b_cmp.isChecked():
+            self.viewer.curtain = 0.0 if self.viewer.curtain > 0.5 else 1.0
+            self.viewer.update()
+
+    def _compared(self):
+        """The version the comparison shows, None: the suggested settings."""
+        vid = self.cb_cmp.currentData() if hasattr(self, "cb_cmp") else None
+        p = getattr(self.s, "p", None)
+        return None if vid is None or p is None else next((v for v in p.post["versions"] if v["id"] == vid), None)
+
     def _post_changed(self, source):
         """The graph changed the composition (a layer sent to Post, a Stars and background block, its settings):
         taken in as one undo step."""
         if source is self:
             return
-        post = getattr(getattr(self.s, "p", None), "post", None) or {}
-        text = json.dumps(post.get("layers") or [], sort_keys=True)
+        version = self._version_shown()
+        if version.get("id") != self._version:
+            self._switch_version(version)
+            return
+        self._fill_versions()
+        text = json.dumps(version.get("layers") or [], sort_keys=True)
         # what is shown, not what was saved last: a branch removed takes its layer from the panel without a save, and
         # its Ctrl+Z puts back the very composition saved before (the layer with its settings, not a new one)
         if text == self._saved and text == json.dumps(save_layers(self.layers), sort_keys=True):
@@ -932,7 +1060,7 @@ class PostView(QWidget):
             self.undo.append(snapshot(self.layers))
             self.redo.clear()
         old = {lay["id"] for lay in self.layers}
-        self.layers = load_layers(post.get("layers"), {p.pid for p in self.s.paths})
+        self.layers = load_layers(version.get("layers"), {p.pid for p in self.s.paths})
         self._saved = json.dumps(save_layers(self.layers), sort_keys=True)
         added = [lay["id"] for lay in self.layers if lay["id"] not in old]
         if added:                                   # a layer sent from the graph: selected, as a pasted layer is
@@ -959,8 +1087,9 @@ class PostView(QWidget):
         p = getattr(self.s, "p", None)
         if not self.persist or p is None or not hasattr(p, "post"):
             return
-        if (p.post or {}).get("crop") != self.crop:
-            p.post = {**(p.post or {}), "crop": self.crop}
+        version = active_version(p.post)
+        if version.get("crop") != self.crop:
+            version["crop"] = self.crop
             if hasattr(self.s, "edited"):
                 self.s.edited()
         data = save_layers(self.layers)
@@ -969,9 +1098,9 @@ class PostView(QWidget):
             return
         self._saved = text
         if hasattr(self.s, "set_post_layers"):
-            self.s.set_post_layers(data, self)
+            self.s.set_post_layers(data, self, scope=self.s.post_scope(data))
             return
-        p.post = {**(p.post or {}), "layers": data}
+        version["layers"] = data
         edited = getattr(self.s, "edited", None)
         if edited is not None:
             edited()
@@ -1002,6 +1131,14 @@ class PostView(QWidget):
         want, overlay = self._selected_wants()
         self._main_seq = self.worker.request(Request(kind="draft", layers=snapshot(self.layers),
                                                      level=self.draft_level, want=want, overlay=overlay))
+
+    def _show_held(self):
+        """The exact image is long to come: the half one in the meantime."""
+        res, self._held = self._held, None
+        if res is not None and res.seq == self._main_seq:
+            self.src.img1, self.src.seq1 = res.rgb, res.seq
+            self.src.version += 1
+            self.viewer.refresh()
 
     def _exact_wanted(self, res) -> bool:
         """After the release's image (GUI exploration 4, Q1 and Q4): the fitted view made again from the full
@@ -1041,7 +1178,12 @@ class PostView(QWidget):
             self.worker.request(Request(kind="thumbs", layers=snapshot(self.layers), need_thumbs=need))
 
     def _send_before(self):
-        self.worker.request(Request(kind="before", layers=snapshot(self.layers), level=HALF_LEVEL))
+        other = self._compared()
+        if other is None:
+            self.worker.request(Request(kind="before", layers=snapshot(self.layers), level=HALF_LEVEL))
+            return
+        layers = load_layers(copy.deepcopy(other.get("layers")), {p.pid for p in self.s.paths})
+        self.worker.request(Request(kind="before", layers=snapshot(layers), level=HALF_LEVEL, plain=True))
 
     def _stale_thumbs(self):
         for lay in self.layers:
@@ -1109,6 +1251,8 @@ class PostView(QWidget):
             return                                              # Inspect's final image, rendered on the same worker
         if res.kind == "exact":                                 # the release's image from the full resolution (Q1)
             if res.tag == self._main_seq and res.rgb is not None:     # nothing asked since its release
+                self._held = None
+                self._hold_t.stop()
                 self.src.img1, self.src.seq1 = res.rgb, res.seq
                 self.src.version += 1
                 self.viewer.refresh()
@@ -1147,6 +1291,9 @@ class PostView(QWidget):
                 if res.kind == "draft":
                     self.draft_ms = (self.draft_ms + [res.ms])[-4:]
                     self._adapt_draft()
+            elif self._exact_wanted(res) and self.src.img1 is not None:  # one change on screen per gesture (#87)
+                self._held = res
+                self._hold_t.start(HOLD_MS)
             else:
                 self.src.img1, self.src.seq1 = res.rgb, res.seq
             if res.kind == "refine" and res.mask_thumbs:
@@ -1408,15 +1555,29 @@ class PostView(QWidget):
     def _update_mask_thumb(self):
         for row in self.rows:
             if row.m is not None and row.lay["id"] in self._mthumbs:
-                row.m.setPixmap(self._mthumbs[row.lay["id"]])
+                row.m.setPixmap(small(self._mthumbs[row.lay["id"]]))
 
     def _update_layer_thumbs(self):
         for row in self.rows:
             if is_pixel(row.lay) and row.lay["id"] in self._lthumbs:
-                row.t.setPixmap(self._lthumbs[row.lay["id"]][1])
+                row.t.setPixmap(small(self._lthumbs[row.lay["id"]][1]))
             elif row.lay["kind"] == "sub" and (row.lay["id"], row.lay["sub"]) in self._lthumbs:
-                row.t.setPixmap(self.thumb(row.lay).scaled(TW * 2 // 3, TH * 2 // 3, Qt.KeepAspectRatio,
-                                                           Qt.SmoothTransformation))
+                row.t.setPixmap(small(self.thumb(row.lay)))
+
+    def show_big(self, lay, at: QWidget):
+        """A row's image, larger, beside the list while the mouse is on its thumbnail (#88)."""
+        if self._big is None:
+            self._big = QLabel(self, Qt.ToolTip)
+            self._big.setStyleSheet("border: 1px solid #3a4150; background: #14161b;")
+        self._big.setPixmap(self.thumb(lay).scaled(TW * 3, TH * 3, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self._big.adjustSize()
+        pos = at.mapToGlobal(QPoint(0, 0))
+        self._big.move(pos.x() - self._big.width() - 8, pos.y())
+        self._big.show()
+
+    def hide_big(self):
+        if self._big is not None:
+            self._big.hide()
 
     def build_filter_menu(self):
         """+ Filter: a menu by family."""
@@ -1434,6 +1595,7 @@ class PostView(QWidget):
         """The layers' rows built again; ``props``: the properties panel too (not for a visibility toggle, issue #24:
         its scroll and an open curves editor were lost)."""
         self._mask_button()
+        self.hide_big()
         clear(self.lbox)
         self.rows = []
         ids = {lay["id"] for lay in self.layers}
@@ -1518,14 +1680,14 @@ class PostView(QWidget):
         self.push()
         self.layer(lid)["visible"] = v
         self.rebuild(props=False)
-        self.request()
+        self.request(final_only=True)                    # no draft: the steps below it are kept, it is quick (#87)
 
     def set_shown(self, lid, sub, v):
         """One of a Stars and background layer's two images shown or not in it (issue #3)."""
         self.push()
         self.layer(lid)["shown"][sub] = v
         self.rebuild(props=False)
-        self.request()
+        self.request(final_only=True)
 
     def toggle_children(self, key):
         """The arrow: show or hide the rows under a layer (``key`` its id), or under one of a Stars and background
@@ -2658,6 +2820,7 @@ class PostView(QWidget):
 
     # ------------------------------------------------------------ view toggles
     def _compare(self, on):
+        self.cb_cmp.setVisible(on)
         self.viewer.compare = self.before if on else None
         if on:
             self._send_before()

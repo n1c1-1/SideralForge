@@ -840,6 +840,10 @@ class TuneView(QWidget):
         self._early, self._early_state = early, state
         if state == "stale":
             self._previous_tag(p, k)
+        if k == "crop":
+            self.head.addStretch(1)
+            self.crop_center(p)
+            return
         if k == "selection":
             self.head.addStretch(1)
             if keep:                                      # the same frames: only the thresholds may have moved (#24)
@@ -912,7 +916,7 @@ class TuneView(QWidget):
             return ("selection", p.pid, self._keys(p, "register", "inventory", "stack"), self._sources_sig(),
                     bool(self.s.thresholds_active()))
         state = block_state(self.s, p, k)
-        if state in ("pending", "running", "failed", "interrupted", "skipped") or k in ("selection", "calibration"):
+        if state in ("pending", "running", "failed", "interrupted", "skipped") or k in ("selection", "calibration", "crop"):
             return None
         if state == "stale" and not self._has_previous(p, k):
             return None
@@ -987,7 +991,7 @@ class TuneView(QWidget):
     @img_tab.setter
     def img_tab(self, i: int):
         p, k = self.s.path, self.s.sel_step
-        vis = self.visuals(p, k) if p is not None and k not in ("sources", "final", "selection") else []
+        vis = self.visuals(p, k) if p is not None and k not in ("sources", "final", "selection", "crop") else []
         if vis:
             self.tab_of[k] = vis[min(max(int(i), 0), len(vis) - 1)].key
 
@@ -1016,7 +1020,7 @@ class TuneView(QWidget):
 
     def _has_previous(self, p, k) -> bool:
         """Whether an Outdated block has a result to show: one of its pictures' stages is done or has its previous one."""
-        stages = ["register"] if k == "selection" else [v.stage for v in self.visuals(p, k)]
+        stages = ["register"] if k in ("selection", "crop") else [v.stage for v in self.visuals(p, k)]
         return any(self.steps.key_of(p, x, self.steps.which_for(p, x)) for x in stages)
 
     def _previous_tag(self, p, k):
@@ -2353,6 +2357,21 @@ class TuneView(QWidget):
                 elif name == "max_fwhm_ratio":
                     f = float(v) * (s.fwhm_median() or 1.0)
         return t, f
+
+    def crop_center(self, p):
+        """The Crop block (issue #79): the reference frame, the zone drawn on it, how much sky it leaves."""
+        from .cropedit import CropEdit
+        self._cur = None
+        s = self.s
+        got = self._need("crop", self._keys(p, "register", "calibrate"), si.crop_frame, p.pid)
+        if got is None:
+            self._loading()
+            return
+        if isinstance(got, _Failed):
+            self._message(_("No image for this block."))
+            return
+        self.crop_edit = CropEdit(s, p, got)
+        self.center.addWidget(self.crop_edit, 1)
 
     def selection_center(self, p):
         self._cur = None

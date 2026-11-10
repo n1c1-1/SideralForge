@@ -658,7 +658,7 @@ def test_post_saving_its_layers_keeps_the_workflows_not_computed_yet(qapp, tmp_p
         post_page = type("PostView", (), {"is_post_page": True})()
         lay = {"id": 50, "kind": "filter", "filter": "curves", "name": "Curves", "visible": True, "opacity": 100.0,
                "mode": "Normal", "params": {}, "mask": None}
-        m.set_post_layers([lay], post_page)                                      # nothing computed: no workflow layer
+        m.set_post_layers([lay], post_page, scope="all")                                      # nothing computed: no workflow layer
         settle(w, page)
         assert not m.post_removed() and set(Graph(m).to_post) == before
     finally:

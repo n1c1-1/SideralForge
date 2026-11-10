@@ -102,3 +102,29 @@ def test_the_count_says_the_frames_are_being_read_rather_than_zero(qapp):
     me._reading = False
     cls.update_count(me)
     assert me.count.text().startswith("0 ") and canvas.message == ""
+
+
+def test_the_spinner_turns_only_while_it_is_shown(qapp):
+    from astro_gpu.client.widgets import Spinner
+    s = Spinner()
+    assert not s.timer.isActive()
+    s.show()
+    assert s.timer.isActive()
+    s._turn()
+    assert s.angle == 12
+    s.hide()
+    assert not s.timer.isActive()
+
+
+def test_what_an_old_registration_said_is_not_an_exclusion(qapp):
+    from types import SimpleNamespace
+
+    from astro_gpu.client import sources
+    cls = next(c for c in vars(sources).values() if isinstance(c, type) and "update_count" in vars(c))
+    state = ["stale"]
+    me = SimpleNamespace(items=[SimpleNamespace(excluded=False, status="not aligned"),
+                                SimpleNamespace(excluded=True, status="")],
+                         s=SimpleNamespace(path=1, state=lambda p, st: state[0]))
+    assert not cls.excluded(me, 0) and cls.excluded(me, 1)
+    state[0] = "done"
+    assert cls.excluded(me, 0) and cls.excluded(me, 1)

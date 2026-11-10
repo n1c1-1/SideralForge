@@ -562,3 +562,26 @@ def test_the_bar_only_goes_forward_after_the_fixed_pattern(small_night, monkeypa
     monkeypatch.setattr(Journal, "emit", spy)
     stack_with(small_night, "bar_" + "_".join(settings.values() or ["drizzle"]), pattern_removal=True, **settings)
     assert len(sent) > 8 and all(b >= a for a, b in zip(sent, sent[1:])) and sent[-1] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("scale", (1.0, 1.5))
+def test_the_crop_zone_stacks_the_image_of_the_whole_field_cut(night, tmp_path, scale):
+    """The Crop block (issue #79): the zone comes out as the same pixels as the whole field's, cut."""
+    from astro_gpu.stages.stack import Stack, StackParams
+    root, proj, truth = night
+    params = dict(scale=scale, pixfrac=1.0, gain=1.0, read_noise=6.0, half_block=2)
+    whole_p = copy_project(proj.root, tmp_path / "whole")
+    run_stage(whole_p, Stack(), StackParams(**params))
+    whole = np.load(whole_p.stage_dir("stack") / "drz_full.npy")
+    H, W = (round(n / scale) for n in whole.shape[1:])
+    zone = [W // 4, H // 4, 3 * W // 4, 3 * H // 4]
+    part_p = copy_project(proj.root, tmp_path / "part")
+    run_stage(part_p, Stack(), StackParams(**params, zone=zone))
+    part = np.load(part_p.stage_dir("stack") / "drz_full.npy")
+    assert part.shape[1:] == (round((zone[3] - zone[1]) * scale), round((zone[2] - zone[0]) * scale))
+    meta = json.loads((part_p.stage_dir("stack") / "drz_meta.json").read_text())
+    assert meta["zone"] == zone and meta["sensor"] == [W, H]
+    y, x = round(zone[1] * scale), round(zone[0] * scale)
+    cut = whole[:, y:y + part.shape[1], x:x + part.shape[2]]
+    m = 12
+    assert np.median(np.abs(part - cut)[:, m:-m, m:-m]) < 0.02 * np.std(cut)

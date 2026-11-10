@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import hashlib
 import json
 import math
 from collections import OrderedDict
@@ -73,6 +74,19 @@ _ids = itertools.count(1)
 
 def new_id() -> int:
     return next(_ids)
+
+
+def with_new_ids(layers: list[dict]) -> list[dict]:
+    """A copy of these layers with ids of their own (a filter follows its layer, a mask's parts are renumbered)."""
+    out = copy.deepcopy(layers)
+    ids = {lay["id"]: new_id() for lay in out}
+    for lay in out:
+        lay["id"] = ids[lay["id"]]
+        if lay.get("target") in ids:
+            lay["target"] = ids[lay["target"]]
+        for part in (lay.get("mask") or {}).get("parts", []):
+            part["id"] = new_id()
+    return out
 
 
 def reseed_ids(layers: list[dict]) -> None:
@@ -966,6 +980,7 @@ class Composer:
     def __init__(self, provider: Provider, cache_bytes: int = 1_500_000_000):
         self.provider = provider
         self.images = ByteLRU(cache_bytes)
+        self.steps = ByteLRU(cache_bytes)                   # the image after each filter, by all that made it (#87)
         self._brush: dict = {}                              # (part id, level) -> (n strokes, last stroke, raster)
         self._canvas: tuple | None = None                   # (pids, canvas)
         self._drawn = 0
@@ -983,6 +998,7 @@ class Composer:
     def forget(self):
         """Drop every cached image (the results changed on disk, or an Undo)."""
         self.images.clear()
+        self.steps.clear()
         self._brush.clear()
         self._canvas = None
 
@@ -1183,6 +1199,9 @@ class Composer:
         ctx = Ctx(self, level, abox, draft)
         ctx.hist_ids, ctx.hists = set(hists), out.hists
         ctx.canvas_wh = (W, H)                                            # the whole canvas at this level
+        # the image after each step is kept: hiding a filter recomputes only what is above it (a region: not kept)
+        where = (level, (canvas.W, canvas.H, canvas.origin)) if cache and not draft and abox == (0, 0, W, H) else None
+        comp_sig = "empty"
         want = set(want)
         self._drawn = 0
         check = stop or (lambda: False)
@@ -1213,9 +1232,11 @@ class Composer:
                     continue
                 own = [fl for fl in stack if fl["kind"] == "filter" and fl.get("target") == lay["id"]]
                 if is_group(lay):
-                    src = self.group_rgb(lay, own, level, abox, canvas, ctx, cache, draft, check, keep_mask)
+                    src, sig = self.group_rgb(lay, own, level, abox, canvas, ctx, cache, draft, check, keep_mask,
+                                              where, want, thumbs)
                 else:
                     src = self.layer_rgb(lay, level, abox, canvas, cache, draft, check)
+                    sig = _sig(self._key(lay, level, abox, canvas))
                 for fl in own:                                            # this layer's own filters, bottom first
                     if fl.get("sub"):
                         continue
@@ -1224,8 +1245,9 @@ class Composer:
                         if fl["id"] in want or (thumbs and fl["mask"] is not None):
                             keep_mask(fl, self.mask(fl, level, abox, src, canvas, ctx))
                         continue
-                    src, fm = self._apply(fl, src, level, abox, canvas, ctx)
+                    src, fm, sig = self._step(fl, src, sig, where, want, thumbs, level, abox, canvas, ctx)
                     keep_mask(fl, fm)
+                comp_sig = _sig(comp_sig, sig, _settings_of(lay))
                 m = self.mask(lay, level, abox, src, canvas, ctx)
                 keep_mask(lay, m)
                 src = self.blend(lay["mode"], comp, src)
@@ -1236,7 +1258,7 @@ class Composer:
                     a = a if m is None else (a * m)[..., None]
                     comp = comp + (src - comp) * a
             else:
-                comp, m = self._apply(lay, comp, level, abox, canvas, ctx)
+                comp, m, comp_sig = self._step(lay, comp, comp_sig, where, want, thumbs, level, abox, canvas, ctx)
                 keep_mask(lay, m)
         cut = (slice(y0 - ay0, y0 - ay0 + (y1 - y0)), slice(x0 - ax0, x0 - ax0 + (x1 - x0)))
         out.rgb = np.clip(comp[cut], 0, 1).astype(np.float32, copy=False)
@@ -1244,13 +1266,15 @@ class Composer:
         out.drawn = self._drawn
         return out
 
-    def group_rgb(self, lay, own, level, abox, canvas, ctx, cache, draft, check, keep_mask) -> np.ndarray:
+    def group_rgb(self, lay, own, level, abox, canvas, ctx, cache, draft, check, keep_mask, where, want, thumbs):
         """A Stars and background layer whose sub-layers have filters (or one of them hidden): its two images, each
         through its own filters (bottom first), put together as its ``blend`` says (render/stars.blend: the same three
-        modes as Post's)."""
-        got = []
+        modes as Post's); with what the result depends on."""
+        got, sigs = [], [_settings_of(lay)]
         for sub in self._shown(lay):                                      # the starless image first, then the stars
-            x = self.layer_rgb(dict(lay, part=sub), level, abox, canvas, cache, draft, check)
+            part = dict(lay, part=sub)
+            x = self.layer_rgb(part, level, abox, canvas, cache, draft, check)
+            sig = _sig(self._key(part, level, abox, canvas))
             for fl in own:
                 if fl.get("sub") != sub:
                     continue
@@ -1258,10 +1282,26 @@ class Composer:
                     raise Superseded()
                 if not fl["visible"]:
                     continue
-                x, fm = self._apply(fl, x, level, abox, canvas, ctx)
+                x, fm, sig = self._step(fl, x, sig, where, want, thumbs, level, abox, canvas, ctx)
                 keep_mask(fl, fm)
             got.append(x)
-        return self._together(lay, got, (abox[3] - abox[1], abox[2] - abox[0]))
+            sigs.append(sig)
+        return self._together(lay, got, (abox[3] - abox[1], abox[2] - abox[0])), _sig(*sigs)
+
+    def _step(self, fl, under, sig, where, want, thumbs, level, abox, canvas, ctx):
+        """``_apply``, kept: (result, mask, what the result depends on). ``where``: None when it is not to be kept."""
+        new = _sig(sig, _settings_of(fl))
+        key = None if where is None else (new, where)
+        got = None if key is None else self.steps.get(key)
+        if got is None:
+            out, m = self._apply(fl, under, level, abox, canvas, ctx)
+            if key is not None:
+                self.steps.put(key, out.copy())                   # a filter may work in place on what it is given
+            return out, m, new
+        if fl["id"] in ctx.hist_ids:
+            ctx.hists[fl["id"]] = pf_curves.histograms(under)
+        wanted = fl["mask"] is not None and (fl["id"] in want or thumbs)
+        return got.copy(), self.mask(fl, level, abox, under, canvas, ctx) if wanted else None, new
 
     def _apply(self, fl, under, level, abox, canvas, ctx):
         """A filter layer on an image (its own layer's, or everything below): the filtered image, through the layer's
@@ -1295,6 +1335,16 @@ class Composer:
             b = np.clip(b, 0, 1)
             return (1 - 2 * b) * a * a + 2 * b * a
         return b
+
+
+def _settings_of(lay: dict) -> str:
+    """What a layer or a filter does to the image: all of it but its name and place in the list."""
+    return json.dumps({k: v for k, v in lay.items() if k not in ("id", "name", "target", "visible")}, sort_keys=True,
+                      default=str)
+
+
+def _sig(*what) -> str:
+    return hashlib.sha1(repr(what).encode("utf-8")).hexdigest()
 
 
 def only_layer(layers: list[dict], lid: int) -> list[dict]:
