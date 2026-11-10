@@ -29,6 +29,18 @@ BETA_WEIGHTS = Path("E:/float_train/run1/net_021818.pt")
 BETA_TILE, BETA_PAD = 512, 48
 
 
+def _ramp(n: int, before: bool, after: bool) -> np.ndarray:
+    """The weights of a tile along one axis: 1 inside, a cosine down to 0 over the overlap on the sides with a neighbour."""
+    w = np.ones(n, np.float32)
+    k = 2 * BETA_PAD
+    fade = 0.5 - 0.5 * np.cos(np.pi * (np.arange(k, dtype=np.float32) + 0.5) / k)
+    if before:
+        w[:k] = fade
+    if after:
+        w[-k:] = fade[::-1]
+    return w
+
+
 class DeconvParams(StageParams):
     method: str = P("rl", label="Method", choices=list(METHODS),
                     help="Richardson-Lucy: iterations with the star shape measured across the field. Neural "
@@ -53,7 +65,7 @@ class Deconv(Stage):
                    "of the field and per colour.")
     deps = ("stack",)
     Params = DeconvParams
-    version = "3"     # 3: Whyte et al. 2014 for the saturated pixels; the filter per zone taken out
+    version = "4"     # 4: damping, stop, local deringing, protection (#92); the network's tiles blended
 
     def run(self, ctx: Context, p: DeconvParams) -> None:
         full, A, B = (image_in(ctx, h).img for h in ("full", "A", "B"))
@@ -106,7 +118,7 @@ class Deconv(Stage):
         @torch.no_grad()
         def plane(x: np.ndarray) -> np.ndarray:
             H, W = x.shape
-            out = np.zeros_like(x)
+            out, total = np.zeros_like(x), np.zeros_like(x)
             for y in range(0, H, BETA_TILE):
                 for x0 in range(0, W, BETA_TILE):
                     y1, x1 = max(0, y - BETA_PAD), max(0, x0 - BETA_PAD)
@@ -114,9 +126,13 @@ class Deconv(Stage):
                     t = torch.from_numpy(np.ascontiguousarray(x[y1:y2, x1:x2]))[None, None].to(dev)
                     with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
                         o = inv(net(fwd(t)).float())[0, 0].cpu().numpy()
-                    a, b = y - y1, x0 - x1
-                    out[y:min(y + BETA_TILE, H), x0:min(x0 + BETA_TILE, W)] = o[a:a + min(BETA_TILE, H - y), b:b + min(BETA_TILE, W - x0)]
-            return out
+                    # a tile fades out over the overlap with the next one: its edges leave no seam
+                    wy = _ramp(y2 - y1, y1 > 0, y2 < H)
+                    wx = _ramp(x2 - x1, x1 > 0, x2 < W)
+                    w = (wy[:, None] * wx[None, :]).astype(np.float32)
+                    out[y1:y2, x1:x2] += o * w
+                    total[y1:y2, x1:x2] += w
+            return out / np.maximum(total, 1e-6)
 
         keep = None
         if sat is not None and sat.any():

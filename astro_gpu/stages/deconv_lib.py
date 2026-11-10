@@ -11,6 +11,14 @@ measured pixels the bright ones reach are left out of U's update, which keeps th
 image, and S is updated with a smooth saturation in the forward model. A total variation term holds the noise back
 (Dey et al. 2006). The same operation on the stack and on the two half-stacks: the later stages read the difference
 of the half-stacks as the noise.
+
+Against the rings around the other stars and the noise, four mechanisms (issue #92): the damped iteration of White (1994,
+Eqs. 7, 9, 10): pixels already within a few noise units of the data are no longer pushed; a stop when the estimate
+hardly changes any more, the mean of |change| / |estimate|, as the free software of the field does it; local deringing,
+at each iteration, and global deringing, after them. The last two follow the principle published by the commercial tools
+(a star support limiting the growth of rings at each iteration; the pixels of rings partly brought back afterwards):
+no equation of theirs is published, this is our reading of it. The result is kept where the signal is strong (a
+protection mask from the image itself).
 """
 from __future__ import annotations
 
@@ -26,6 +34,13 @@ import torch.nn.functional as F
 class StackDeconvSettings:
     iterations: int = 30          # rl: its iterations
     regularization: float = 0.002  # rl: strength of the total variation term
+    # the settings frozen on the tuning targets of issue #92 and judged on 33 others
+    damping: float = 3.0          # White 1994: noise units below which a pixel is no longer pushed (0: none)
+    stop: float = 0.003           # stops when the mean relative change of an iteration falls under this (0: never)
+    local_deringing: float = 0.9  # 0..1: how much of a darkening is refused in the star support, at each iteration
+    global_dark: float = 0.0      # 0..1: how much of what went below the measured image is given back, afterwards
+    protect_low: float = 3.0      # noise units over the sky where the result starts to count (0: everywhere)
+    protect_high: float = 15.0    # noise units over the sky where it counts in full
     tiles_long: int = 6           # tiles along the long side (the short side gets as many as keep them square)
     radius: int = 12              # half-size of the star stamps and kernels (stack pixels)
     min_stars: int = 20           # a tile with fewer stars leans on the smooth model of the field
@@ -311,15 +326,30 @@ class StackDeconvolver:
             sig = _robust_sigma((0.5 * (A[c] - B[c]))[valid].float())
             shift = max(0.0, SKY_SIGMAS * sig - float(batch[0][valid].median()))
             level = saturation_level(batch[0], sat) + shift
+            sky = float(batch[0][valid].median())
+            counts = (sky + shift) / max(sig * sig, 1e-30)              # an equivalent of counts: its noise is the stack's
+            light = batch[0] - _blur(batch[0], 12.0)
+            support = (_dilate(light > 8 * sig, s.radius // 2).float() if s.local_deringing > 0 else None)
+            support = None if support is None else _blur(support, 2.0)[None].repeat(len(images), 1, 1)
             for a in range(nty):
                 for b in range(ntx):
                     rows, cols = torch.nonzero(wy[a] > 0)[:, 0], torch.nonzero(wx[b] > 0)[:, 0]
                     r0, r1, c0, c1 = int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
                     d = F.pad(batch[None, :, r0:r1, c0:c1] + shift, (P, P, P, P), mode="reflect")[0]
-                    y = restore_saturated(d, psf.kernels[c, a, b], s.iterations, s.regularization, sig, level)[:, P:-P, P:-P]
+                    sup = None if support is None else F.pad(support[None, :, r0:r1, c0:c1], (P, P, P, P), mode="reflect")[0]
+                    y = restore_saturated(d, psf.kernels[c, a, b], s.iterations, s.regularization, sig, level, damping=s.damping,
+                                          counts=counts, stop=s.stop, support=sup, local=s.local_deringing)[:, P:-P, P:-P]
                     wt = wy[a][r0:r1, None] * wx[b][None, c0:c1]
                     for i, out in enumerate(outs):
-                        out[c, r0:r1, c0:c1] += wt * (y[i] - shift)
+                        v = y[i] - shift
+                        if s.global_dark > 0:                       # what went dark is partly given back
+                            m = batch[i, r0:r1, c0:c1]
+                            v = torch.where(v < m, m - (m - v) * (1 - s.global_dark), v)
+                        if s.protect_high > 0:                      # kept where the signal is strong
+                            sm = _blur(batch[i, r0:r1, c0:c1] - sky, 3.0)
+                            k = ((sm - s.protect_low * sig) / max((s.protect_high - s.protect_low) * sig, 1e-9)).clamp(0, 1)
+                            v = batch[i, r0:r1, c0:c1] + k * (v - batch[i, r0:r1, c0:c1])
+                        out[c, r0:r1, c0:c1] += wt * v
             del batch
             if s.tick is not None:
                 s.tick((c + 1) / C)
@@ -330,6 +360,8 @@ class StackDeconvolver:
 SKY_SIGMAS = 8.0
 #: the term of the total variation is kept from dividing by less than this (Dey et al. 2006: it must stay positive)
 TV_FLOOR = 0.2
+#: White 1994: how suddenly the damped likelihood becomes flat under the threshold (his N)
+DAMPING_N = 10
 #: Whyte et al. 2014: the smoothness of the saturation function (their a), the level above which a pixel is "bright"
 SATURATION_SMOOTHNESS, BRIGHT_LEVEL = 50.0, 0.9
 
@@ -354,10 +386,13 @@ def _kept(images, outs, keep, valid):
     return res
 
 
-def restore_saturated(d: torch.Tensor, K: torch.Tensor, iterations: int, reg: float, sig: float, level: float) -> torch.Tensor:
+def restore_saturated(d: torch.Tensor, K: torch.Tensor, iterations: int, reg: float, sig: float, level: float, *,
+                      damping: float = 0.0, counts: float = 1.0, stop: float = 0.0, support: torch.Tensor | None = None,
+                      local: float = 0.0) -> torch.Tensor:
     """A batch (n, H, W) of positive images restored by Richardson-Lucy with saturated pixels: Eqs. 18, 20, 21 and 23-25
     of Whyte, Sivic and Zisserman (IJCV 2014), in units of the clipping level, with the total variation of Dey et al.
-    (2006) on the part below it. ``sig``: the noise, the scale below which a gradient is flat."""
+    (2006) on the part below it. ``sig``: the noise, the scale below which a gradient is flat. ``damping``: White's T, in
+    noise units, with ``counts``, what makes a value here a number of counts of the same noise."""
     k = K.shape[-1]
     R = k // 2
     Hp, Wp = d.shape[-2:]
@@ -377,7 +412,13 @@ def restore_saturated(d: torch.Tensor, K: torch.Tensor, iterations: int, reg: fl
         u = (f <= BRIGHT_LEVEL).float()
         v = 1 - F.max_pool2d(F.pad((1 - u)[None], (R, R, R, R), mode="replicate"), k, 1)[0]    # not reached by S
         f_u, f_s = u * f, f - u * f
-        ratio_u = conv(g * v / conv(f_u).clamp(min=low) + (1 - v), True).clamp(min=0)
+        model = conv(f_u).clamp(min=low)
+        gain = g / model
+        if damping > 0:                                                    # White 1994, Eqs. 7, 9 and 10
+            D, I = (g * level * counts).clamp(min=1e-6), (model * level * counts).clamp(min=1e-6)
+            U = (-2.0 / damping ** 2 * (D * torch.log(I / D) - I + D)).clamp(0, 1)
+            gain = 1 + U ** (DAMPING_N - 1) * (DAMPING_N - (DAMPING_N - 1) * U) * (gain - 1)
+        ratio_u = conv(gain * v + (1 - v), True).clamp(min=0)
         x = conv(f).clamp(min=low)
         slope = torch.sigmoid(-a_ * (x - 1))
         clipped = (x - F.softplus(a_ * (x - 1)) / a_).clamp(min=low)
@@ -390,7 +431,12 @@ def restore_saturated(d: torch.Tensor, K: torch.Tensor, iterations: int, reg: fl
             gx, gy = gx / norm, gy / norm
             curv = torch.diff(gx, dim=-1, prepend=gx[..., :1] * 0) + torch.diff(gy, dim=-2, prepend=gy[..., :1, :] * 0)
             div = (1 - reg * curv).clamp(min=TV_FLOOR)
+        before = f
         f = (f_u * ratio_u / div + f_s * ratio_s).clamp(min=low)
+        if support is not None and local > 0:                              # the rings' growth refused around the stars
+            f = torch.where(f < before, before + (f - before) * (1 - support * local), f)
+        if stop > 0 and float(((f - before).abs() / before.abs().clamp(min=low)).mean()) < stop:
+            break
     return f * level
 
 
