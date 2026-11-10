@@ -134,6 +134,35 @@ def test_a_session_joining_a_filter_flow_takes_its_filter_and_a_fusion_chosen_st
         done(w, m, page)
 
 
+def fits_of(folder: Path, flt: str) -> Path:
+    import numpy as np
+    from astropy.io import fits
+    folder.mkdir(parents=True, exist_ok=True)
+    fits.PrimaryHDU(np.zeros((8, 8), np.uint16), header=fits.Header({"FILTER": flt})).writeto(folder / "l1.fits")
+    return folder / "l1.fits"
+
+
+@pytest.mark.parametrize("filters", [("Ha",), ("Ha", "OIII")])
+def test_a_session_added_to_a_filter_flow_follows_the_filter_of_its_frames(qapp, tmp_path, monkeypatch, filters):
+    """The night test pass: a second session added to the H-alpha flow, given OIII frames, kept the H-alpha filter, and
+    the two filters would have been stacked together. Its frames' filter wins: it goes to the OIII flow (made when
+    there is none, with the H-alpha flow's blocks)."""
+    w, m, page = open_page(tmp_path, monkeypatch, filters=filters)
+    try:
+        ha = next(q for q in m.paths if q.name == "Ha")
+        sid = m.new_session(ha.pid)
+        assert m.p.session(sid).filter == "Ha"                                  # joined Ha: took its filter
+        m.add_session_entries(sid, "lights", [str(fits_of(tmp_path / "oiii2", "OIII"))])
+        settle(w, page)
+        assert m.p.session(sid).filter == "OIII"
+        assert m.sessions_of(m.view(ha.pid)) == [1]
+        oiii = [q for q in m.paths if q.source is None and sid in m.sessions_of(q)]
+        assert len(oiii) == 1 and blocks_of(m, oiii[0].name) == blocks_of(m, "Ha")
+        assert sorted(m.filters()) == ["Ha", "OIII"]
+    finally:
+        done(w, m, page)
+
+
 def test_a_fusion_is_greyed_until_its_channels_have_astrometry_and_says_what_it_adds(qapp, tmp_path, monkeypatch):
     """Decision 2: the card says what is missing in each channel; placed, the toast names the blocks it added and
     where; removed, the channels come back as they were; a second Combine channels is a block of its own."""

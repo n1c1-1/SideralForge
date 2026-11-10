@@ -2596,18 +2596,35 @@ class ProjectModel(QObject):
         if not new:
             return 0
         flt = ""
-        if kind == "lights" and not s.filter:
+        if kind == "lights" and (not s.filter or not cur):
+            # a session's first lights say its filter, over the one it took from the flow it joined (an OIII night
+            # added to an H-alpha flow is not stacked with the H-alpha frames)
             from ..io.frames import frame_filter
             first = next((f for f in list_frames(new) if frame_kind(f) == "fits"), None)
             flt = frame_filter(first) if first is not None else ""
+        moved = bool(flt) and bool(s.filter) and flt != s.filter
         with self._edit():
             setattr(s, kind, cur + new)
             self._note_left_out(s, kind, new, False)      # a frame left out by hand, given again: in again
             if flt:
                 s.filter = flt
+            if moved:
+                self._refile_session(sid)
             self.p.validate()
         self.reload_sources()
         return len(new)
+
+    def _refile_session(self, sid: int) -> None:
+        """A session whose filter changed leaves the flow it was in and joins its filter's (``join_session``)."""
+        frames = [w for w in self.p.workflows if w.source is None]
+        w = next((x for x in frames if x.sessions is not None and sid in x.sessions), None) \
+            or next((x for x in frames if x.sessions is None), None)
+        if w is None:
+            return
+        for x in frames:
+            if x.sessions is not None and sid in x.sessions:
+                x.sessions = [k for k in x.sessions if k != sid]
+        self.join_session(self._view_of(w.id), sid)
 
     def session_files(self, sid: int, kind: str) -> list[str]:
         """The files a session's list gives for a kind (its folders' frames, its files), as the worker last read them."""
