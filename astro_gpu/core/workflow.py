@@ -9,7 +9,7 @@ when the stage key is the same (core/store.py); this module only says which stag
 each stage reads.
 
     options   {"denoise": None | "pretrained" | "adapted", "stars": None | "neural", "gradient": "polynomial" | "rbf" |
-               "automatic", "deconvolution": None, "cut": [the blocks the user cut, CUTTABLE]}
+               "automatic", "deconvolution": None | "rl" | "zones", "cut": [the blocks the user cut, CUTTABLE]}
     end       None, or "stacking" for the Raw stack exit (inventory → stack, then render_simple)
 
 Issue #43, the blocks redesign:
@@ -48,7 +48,7 @@ OPTION_VALUES: dict[str, tuple[Any, ...]] = {
     "denoise": (None, "pretrained", "adapted"),
     "stars": (None, "neural"),
     "gradient": ("polynomial", "rbf", "automatic"),
-    "deconvolution": (None,),
+    "deconvolution": (None, "rl", "zones"),
 }
 #: a missing option takes this value (the Classic stack). "cut", the blocks the user cut (a list, check_cut), is there
 #: only when one is: the options of a workflow without a cut stay as they were before issue #43
@@ -142,6 +142,8 @@ def greyed(options: dict[str, Any], image: bool = False, mono: bool = False) -> 
         out["color"] = NEEDS_ASTROMETRY
     if image and o["denoise"]:
         out["denoise"] = NEEDS_HALF_STACKS
+    if image and o["deconvolution"]:
+        out["deconv"] = NEEDS_HALF_STACKS
     return out
 
 
@@ -193,6 +195,8 @@ def implied(options: dict[str, Any], stage: str) -> dict[str, Any]:
         return {"method": o["gradient"]}
     if stage == "denoise" and o["denoise"]:
         return {"method": o["denoise"]}
+    if stage == "deconv" and o["deconvolution"]:
+        return {"method": o["deconvolution"]}
     if stage == "calibrate" and "calibration" in cuts(o):
         return {"apply_masters": False}
     if stage == "register" and "registration" in cuts(o):
@@ -204,15 +208,15 @@ def implied(options: dict[str, Any], stage: str) -> dict[str, Any]:
 
 #: the global order of the v2 stages (each stage only reads stages before it)
 ORDER = ["fusion", "image", "inventory", "calibrate", "sessions", "register", "stack", "astrometry", "reference", "catalogs",
-         "surveys", "gradient", "denoise", "color", "render_simple", "star_removal"]
+         "surveys", "gradient", "deconv", "denoise", "color", "render_simple", "star_removal", "synth_stars"]
 #: the stages that read the image the blocks before them made (issue #47), and which of those blocks they apply: all
 #: of them, or only the sky gradients (Color measures its stars on the stack, its sky removed, and the Color blocks
 #: before it applied: a second one measures what the first left; the star removal takes its noise from the
 #: half-stacks so)
-READERS: dict[str, str] = {"gradient": "all", "denoise": "all", "render_simple": "all", "color": "colours",
+READERS: dict[str, str] = {"gradient": "all", "deconv": "all", "denoise": "all", "render_simple": "all", "color": "colours",
                            "star_removal": "skies"}
 #: the image blocks each rule of READERS applies
-READ_KINDS: dict[str, tuple[str, ...]] = {"all": ("gradient", "denoise", "color"), "skies": ("gradient",),
+READ_KINDS: dict[str, tuple[str, ...]] = {"all": ("gradient", "deconv", "denoise", "color"), "skies": ("gradient",),
                                          "colours": ("gradient", "color")}
 #: stages that stand for others in a chain (issue #43): the sessions' join for each session's frames and calibration,
 #: the image of an image source for the stack
@@ -228,9 +232,11 @@ OPTIONAL: dict[str, tuple[str, ...]] = {
     "catalogs": ("inventory",),
     "gradient": ("surveys",),                       # where the H-alpha survey sees nebulosity: no sky sample there
     "color": ("gradient", "register"),             # without Registration (an image source): a default star size
-    "denoise": ("gradient",),
-    "render_simple": ("color", "denoise", "gradient"),
+    "deconv": ("gradient",),
+    "denoise": ("gradient", "deconv"),
+    "render_simple": ("color", "deconv", "denoise", "gradient"),
     "star_removal": ("gradient",),
+    "synth_stars": ("catalogs",),                   # the saturated stars' light, with the instrument's shape
 }
 #: the blocks of the graph and their stages; Selection has no stage of its own (it follows register)
 BLOCKS: dict[str, tuple[str, ...]] = {
@@ -243,15 +249,17 @@ BLOCKS: dict[str, tuple[str, ...]] = {
     "stacking": ("stack",),
     "astrometry": ("astrometry", "reference", "catalogs", "surveys"),
     "gradient": ("gradient",),
+    "deconv": ("deconv",),
     "denoise": ("denoise",),                        # Color applies its matrix after Denoise: the engine's order
     "color": ("color",),
     "stars": ("star_removal",),                     # drawn before the Output, which every workflow ends with
+    "synth": ("synth_stars",),                      # placed by hand after Stars/background (issue #77)
     "output": ("render_simple",),
 }
 BLOCK_TITLES = {"fusion": "Combine channels", "image": "Image", "calibration": "Calibration", "registration": "Registration",
                 "selection": "Selection", "crop": "Crop",
-                "stacking": "Stacking", "astrometry": "Astrometry", "color": "Color", "denoise": "Denoise",
-                "stars": "Stars/background", "gradient": "Gradient", "output": "Output"}
+                "stacking": "Stacking", "astrometry": "Astrometry", "color": "Color", "deconv": "Deconvolution", "denoise": "Denoise",
+                "synth": "Synthetic stars", "stars": "Stars/background", "gradient": "Gradient", "output": "Output"}
 #: what Run to here runs for a block without stages of its own
 RUN_TO: dict[str, tuple[str, ...]] = {"selection": ("register",), "crop": ("register",)}
 #: stages a block's key leaves out: the survey follows the Gradient method, not the Astrometry block
@@ -308,6 +316,8 @@ def chain_stages(options: dict[str, Any], end: str | None = None, reference: boo
         out.append("gradient")
     if colour:
         out.append("color")
+    if o["deconvolution"] and "deconv" not in grey:
+        out.append("deconv")
     if o["denoise"] and "denoise" not in grey:
         out.append("denoise")
     out.append("render_simple")
@@ -509,18 +519,20 @@ IO: dict[str, tuple[str, str]] = {
     "calibration": (FRAMES, FRAMES), "registration": (FRAMES, FRAMES), "selection": (FRAMES, FRAMES),
     "crop": (FRAMES, FRAMES), "stacking": (FRAMES, IMAGE),
     "astrometry": (IMAGE, IMAGE), "gradient": (IMAGE, IMAGE), "color": (IMAGE, IMAGE), "denoise": (IMAGE, IMAGE),
-    "output": (IMAGE, IMAGE), "stars": (IMAGE, PAIR)}
+    "deconv": (IMAGE, IMAGE),
+    "output": (IMAGE, IMAGE), "stars": (IMAGE, PAIR), "synth": (PAIR, PAIR)}
 #: the palette's blocks after the sources, in their usual order
-PALETTE = ("calibration", "registration", "selection", "crop", "stacking", "astrometry", "gradient", "denoise", "color",
-           "output", "stars")
+PALETTE = ("calibration", "registration", "selection", "crop", "stacking", "astrometry", "gradient", "deconv", "denoise",
+           "color", "output", "stars", "synth")
 #: the frame blocks keep this order among themselves (a calibration after the registration means nothing)
 FRAME_BLOCKS = ("calibration", "registration", "selection", "crop", "stacking")
 #: the image blocks that change the image: any order, any number
-IMAGE_OPS = ("gradient", "color", "denoise")
+IMAGE_OPS = ("gradient", "color", "deconv", "denoise")
 #: the blocks with a method, and their methods
 METHODS: dict[str, tuple[str, ...]] = {"gradient": OPTION_VALUES["gradient"], "denoise": ("pretrained", "adapted"),
+                                       "deconv": ("rl", "zones"), "synth": ("measured", "instrument"),
                                        "stars": ("neural",)}
-DEFAULT_METHOD = {"gradient": "polynomial", "denoise": "pretrained", "stars": "neural"}
+DEFAULT_METHOD = {"synth": "measured", "gradient": "polynomial", "deconv": "rl", "denoise": "pretrained", "stars": "neural"}
 #: the sources of a workflow
 SOURCES = ("frames", "image", "stretched", "fusion")
 #: what a source gives
@@ -641,7 +653,7 @@ def graph_problem(blocks: Sequence[dict], source: str, raise_it: bool = False) -
             return bad(WHY_SOURCE, source=SOURCE_WORDS[source], block=_title(b))
         if source == "fusion" and b not in ("output", "stars"):
             return bad(WHY_SOURCE, source=SOURCE_WORDS[source], block=_title(b))
-        if after_output and b != "stars":
+        if after_output and b not in ("stars", "synth"):
             return bad(WHY_AFTER_OUTPUT)
         if takes != kind and takes == IMAGE and kind == FRAMES:      # what to do, not only why (8.5)
             return bad(WHY_STACK_FIRST, block=_title(b))
@@ -655,8 +667,10 @@ def graph_problem(blocks: Sequence[dict], source: str, raise_it: bool = False) -
             frame_rank = r
         if b == "color" and "astrometry" not in seen:
             return bad(WHY_NEEDS, need=_title("astrometry"))
-        if b == "denoise" and (source != "frames" or "stacking" not in seen):
+        if b in ("denoise", "deconv") and (source != "frames" or "stacking" not in seen):
             return bad(WHY_HALVES)
+        if b == "synth" and "stars" not in seen:
+            return bad(WHY_NEEDS, need=_title("stars"))
         if b == "stars" and source == "frames" and "denoise" not in seen:      # trained on denoised images
             return bad(WHY_NEEDS, need=_title("denoise"))
         if b == "stars" and source not in ("stretched",) and "output" not in seen:
@@ -776,6 +790,8 @@ def from_options(options: dict[str, Any], end: str | None = None, source: str = 
         out.append(node("astrometry"))
     if "gradient" not in cut:
         out.append(node("gradient", o["gradient"]))
+    if o["deconvolution"] and source == "frames":
+        out.append(node("deconv", o["deconvolution"]))
     if o["denoise"] and source == "frames":
         out.append(node("denoise", o["denoise"]))
     if "color" not in cut and "astrometry" not in cut:
@@ -796,7 +812,7 @@ def options_of(blocks: Sequence[dict], source: str = "frames") -> dict[str, Any]
     o: dict[str, Any] = {"denoise": first["denoise"]["method"] if "denoise" in first else None,
                          "stars": "neural" if "stars" in first else None,
                          "gradient": first["gradient"]["method"] if "gradient" in first else "polynomial",
-                         "deconvolution": None}
+                         "deconvolution": first["deconv"]["method"] if "deconv" in first else None}
     if o["stars"] and not o["denoise"]:
         o["denoise"] = "pretrained"              # an image or a fusion: their Split block needs no Denoise
     cut = []
@@ -846,6 +862,8 @@ def sequence_chain(blocks: Sequence[dict], source: str = "frames", *, reference:
             out.append("render_simple")
         elif b == "stars":
             out.append("star_removal")
+        elif b == "synth":
+            out.append("synth_stars")
     return out
 
 
@@ -871,8 +889,11 @@ def node_implied(blocks: Sequence[dict], entry: str, source: str = "frames") -> 
         return {"align": False}
     if b == "stack" and "crop" not in has:
         return {"zone": None}                         # the block taken off: the whole field again
+    if b == "synth_stars":
+        n = next((x for x in act if x["block"] == "synth"), None)
+        return {"method": n["method"]} if n is not None and n.get("method") else {}
     n = next((x for x in act if x["name"] == entry), None) if b in IMAGE_OPS else None
-    if b == "gradient" and n is not None:
+    if b in ("gradient", "deconv") and n is not None:
         return {"method": n["method"]}
     if b == "denoise" and n is not None:
         out = {"method": n["method"]}
@@ -907,6 +928,8 @@ def sync_blocks(blocks: Sequence[dict], source: str, options: dict[str, Any]) ->
         drop("stars")
     if o["denoise"] is None:
         drop("denoise")
+    if o["deconvolution"] is None:
+        drop("deconv")
     for b in ("calibration", "registration"):
         if source == "frames":
             for n in g:
@@ -919,14 +942,16 @@ def sync_blocks(blocks: Sequence[dict], source: str, options: dict[str, Any]) ->
         if b not in cut and first(b) is None and source in ("frames", "image") and any(n["block"] == "output"
                                                                                       for n in g):
             add(b, o["gradient"] if b == "gradient" else None)
+    if o["deconvolution"] and first("deconv") is None and source == "frames":
+        add("deconv", o["deconvolution"])
     if o["denoise"] and first("denoise") is None and source == "frames":
         add("denoise", o["denoise"])
     if o["stars"] and first("stars") is None:
         add("stars")
-    for b in ("gradient", "denoise"):
+    for b, opt in (("gradient", "gradient"), ("denoise", "denoise"), ("deconv", "deconvolution")):
         n = first(b)
-        if n is not None and o.get(b):
-            n["method"] = o[b]
+        if n is not None and o.get(opt):
+            n["method"] = o[opt]
     return g
 
 

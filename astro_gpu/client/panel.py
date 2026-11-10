@@ -1072,7 +1072,7 @@ class Panel(QWidget):
             own_frames(self, node, p)
         if k == "etoiles":                  # what the block gives first: its two images, and where they go
             self.outputs(node)
-        if k.partition("~")[0] in ("fond", "debruitage", "etoiles", "deconv"):     # Gradient 2 too (round 3)
+        if k.partition("~")[0] in ("fond", "debruitage", "etoiles", "deconv", "synth"):     # Gradient 2 too (round 3)
             self.methods(p, k)
         if k == "fond" and self.tune and getattr(self, "grad_editor", None) is not None:
             self.bv.addWidget(self.group_title(_("Samples · exclusions")))
@@ -1237,7 +1237,7 @@ class Panel(QWidget):
         s = self.s
         from .model import METHOD_OPT
         cur = method_of(p, k)                           # a block placed twice ("fond~2"): its own node's (round 3)
-        again, k = "~" in k, k.partition("~")[0]
+        again, k = "~" in k or k == "synth", k.partition("~")[0]          # Synthetic stars: a block of the graph only
         self.bv.addWidget(self.group_title(_("Method")))
         opt = METHOD_OPT[k]
         spec = prefs.spec()

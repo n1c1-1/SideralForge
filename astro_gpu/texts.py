@@ -278,6 +278,13 @@ _METRIC_ROWS: list[tuple] = [
     ("noise_reduction", "Noise reduction", "×", ".2f", "How many times the noise went down."),
     ("noise_correlation", "Noise correlation between neighbours", "", ".2f",
      "Correlation of the noise between neighbouring pixels: near 0 for a session without dithering."),
+    ("star_width_before", "Star width before", "px", ".2f", "Median width at half height of the stars of the stack."),
+    ("star_width_after", "Star width after", "px", ".2f", "The same, measured on the deconvolved stack."),
+    ("stars_drawn", "Stars drawn", "", "d", "Detected stars redrawn."),
+    ("stars_kept", "Stars kept", "", "d", "The brightest and saturated stars, left as they were photographed."),
+    ("stars_saturated", "Saturated stars", "", "d", "Stars whose core is clipped."),
+    ("stars_from_catalogue", "From the catalogue", "", "d", "Saturated stars whose light comes from Gaia."),
+    ("zones", "Zones", "", "d", "Zones of the field, each with its own measured star shape."),
     ("adaptation_steps", "Adaptation steps", "", "d", "Steps the network learned this image for (0: pretrained only)."),
     # gradient
     ("gradient_pct", "Sky gradient", "%", ".2f", "Size of the gradient removed, against the sky level."),
@@ -463,7 +470,9 @@ CHOICE_TEXTS: dict[str, str] = {
     # the fusion's palettes (stages/fusion.py)
     "SHO": "SHO (Hubble palette)", "HSO": "HSO", "HOO": "HOO", "RGB": "RGB", "LRGB": "LRGB",
     # the Denoise block's methods and adaptation lengths (stages/denoise.py)
-    "pretrained": "Pretrained network", "adapted": "Pretrained + adapted", "short": "Short", "long": "Long",
+    "measured": "Image shape", "instrument": "Instrument PSF", "newton": "Newtonian", "refractor": "Refractor",
+    "sct": "Schmidt-Cassegrain", "lens": "Photo lens",
+    "rl": "Richardson-Lucy", "zones": "By zones", "pretrained": "Pretrained network", "adapted": "Pretrained + adapted", "short": "Short", "long": "Long",
 }
 
 _stage_index: dict[str, dict] | None = None

@@ -61,7 +61,7 @@ def test_implied_values():
 
 @pytest.mark.parametrize("options,end", [
     ({"denoise": "nlbayes"}, None),                                   # ◇ methods
-    ({"denoise": "pretrained", "stars": "neural", "gradient": "polynomial", "deconvolution": "rl"}, None),
+    ({"denoise": "pretrained", "stars": "neural", "gradient": "polynomial", "deconvolution": "neural"}, None),
     ({"stars": "learned"}, None),
     ({"gradient": None}, None),
     ({"gradient": "mars"}, None),
@@ -123,7 +123,7 @@ def test_no_block_after_an_early_output():
 
 
 def test_set_option_rejects_invalid_values():
-    for key, value in (("denoise", "nlbayes"), ("stars", "starnet"), ("stars", "psf"), ("deconvolution", "rl"),
+    for key, value in (("denoise", "nlbayes"), ("stars", "starnet"), ("stars", "psf"), ("deconvolution", "neural"),
                        ("colour", 1)):
         with pytest.raises(ValueError) as e:
             set_option(FULL, key, value)

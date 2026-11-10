@@ -40,8 +40,8 @@ from .i18n import _, hm, language, number, plural
 
 # the columns of the graph, left to right; optional columns only appear when a workflow uses them
 COLUMNS = ["sources", "calibration", "alignement", "selection", "crop", "empilement", "astrometrie", "fond", "couleur",
-           "deconv", "debruitage", "etoiles", "post", "fusion", "composition", "final"]
-OPTIONAL = {"crop", "debruitage", "deconv", "etoiles", "post", "fusion", "composition"}
+           "deconv", "debruitage", "etoiles", "synth", "post", "fusion", "composition", "final"]
+OPTIONAL = {"crop", "debruitage", "deconv", "etoiles", "synth", "post", "fusion", "composition"}
 PHASES = [("Pre-processing", "calibration", "empilement"), ("Linear processing", "astrometrie", "etoiles"),
           ("Composition", "fusion", "composition")]
 TOOL_COLUMN = {"debruitage": "debruitage", "etoiles": "etoiles", "deconv": "deconv",
@@ -50,7 +50,7 @@ TITLES = {"align_images": "Align images", "sources": "Frames", "final": "Post", 
           "calibration": "Calibration",
           "alignement": "Registration",
           "selection": "Selection", "crop": "Crop", "empilement": "Stacking", "astrometrie": "Astrometry", "fond": "Gradient",
-          "couleur": "Color", "debruitage": "Denoise", "deconv": "Deconvolution", "etoiles": "Stars/background",
+          "couleur": "Color", "debruitage": "Denoise", "deconv": "Deconvolution", "etoiles": "Stars/background", "synth": "Synthetic stars",
           "post": "Output", "demi_piles": "Half-stacks", "composition": "Combine layers"}
 # the optional blocks, in the toolbar's order
 TOOLBOX = ["debruitage", "deconv", "etoiles"]
@@ -61,7 +61,7 @@ STAR_OUTPUTS = (("starless", "Starless image"), ("stars", "Stars alone"))
 ENGINE_BLOCK = {"fusion": "fusion", "image": "image", "calibration": "calibration", "registration": "alignement",
                 "selection": "selection", "crop": "crop",
                 "stacking": "empilement", "astrometry": "astrometrie", "color": "couleur", "denoise": "debruitage",
-                "stars": "etoiles", "gradient": "fond", "output": "post"}
+                "deconv": "deconv", "synth": "synth", "stars": "etoiles", "gradient": "fond", "output": "post"}
 KEY_ENGINE_BLOCK = {v: k for k, v in ENGINE_BLOCK.items()}
 # the wires that are not the chain: what a block takes from a block further back, shown when it is selected
 SIDE_INPUTS = {
@@ -118,6 +118,8 @@ STEPS = [
     dict(key="couleur", phase=4, title="Color", kind="fixed", stages=["color"],
          what="Measures the sensor's response on the Gaia spectra of the field stars, then the matrix to the true "
               "sky colors."),
+    dict(key="synth", phase=4, title="Synthetic stars", kind="fixed", stages=["synth_stars"],
+         what="Draws the detected stars again, with the shape of this image or of the instrument."),
     dict(key="deconv", phase=4, title="Deconvolution", kind="tool", tool="deconv", stages=["deconv"],
          what="Sharpens the image with the point spread function measured on the stars."),
     dict(key="debruitage", phase=4, title="Denoise", kind="tool", tool="debruitage", stages=["denoise"],
@@ -148,6 +150,8 @@ TOOLS = {
     "etoiles": dict(title="Stars/background", phase=4,
                     what="Takes the stars off the image with a trained network: the starless image and the stars "
                          "alone, two images for Post (combined by a Combine layers block, or as they are)."),
+    "synth": dict(title="Synthetic stars", phase=4,
+                  what="Draws the detected stars again, with the shape of this image or of the instrument."),
     "deconv": dict(title="Deconvolution", phase=4,
                    what="Sharpens the image with the point spread function measured on the stars."),
 }
@@ -745,7 +749,7 @@ class Graph:
                 return _("pretrained + adapted · {length}").format(length=texts.choice_label(
                     str(s.param_value(p, stage, "adaptation") or "short"), language())) + fast
             return _("pretrained network") + fast
-        if k in ("fond", "etoiles", "deconv"):
+        if k in ("fond", "etoiles", "deconv", "synth"):
             return method_summary(s, p, node.key)
         if k == "astrometrie":                  # a result once computed; before, what it will do (round 3)
             return _("solved · Gaia DR3") if block_state(s, p, k) == "done" else _("solves the field · Gaia DR3")

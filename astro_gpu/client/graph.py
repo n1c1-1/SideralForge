@@ -2463,8 +2463,8 @@ NEW_FRAMES = -1        # a block placed "in the workflow from the frames" of ses
 #: headings are one word, shown in capitals ("FRAMES": its own entry, "Frames" being the frames' block, "Images")
 PALETTE_GROUPS = [("Sources", ["session", "image", "align_images"]),
                   ("FRAMES", ["calibration", "registration", "selection", "crop", "stacking"]),
-                  ("Image", ["astrometry", "gradient", "denoise", "color"]),
-                  ("Post", ["stars"]),
+                  ("Image", ["astrometry", "gradient", "deconv", "denoise", "color"]),
+                  ("Post", ["stars", "synth"]),
                   ("Composition", ["fusion", "composition"])]
 PALETTE_TITLES = {"session": "Session", "image": "Image", "fusion": "Combine channels", "align_images": "Align images"}
 
@@ -2484,7 +2484,7 @@ class PaletteCard(QFrame):
         self.setMaximumWidth(PALETTE_FOLDED_W - 12 if folded else PALETTE_W - 26)
         on = not reason or branch
         self.setObjectName("tool")
-        self.setCursor(Qt.ForbiddenCursor if not on else Qt.ArrowCursor if block in ("deconv", "align_images") else
+        self.setCursor(Qt.ForbiddenCursor if not on else Qt.ArrowCursor if block == "align_images" else
                        Qt.OpenHandCursor)
         # available: a filled card; not available: the same card faint (a disabled tool), never dashed: dashed is
         # for the places a block can be dropped on
@@ -2493,8 +2493,6 @@ class PaletteCard(QFrame):
                            f"QFrame#tool:hover {{ border-color: {ACCENT if on else '#3a4150'}; }}"
                            " QLabel { background: transparent; }")
         self.title = _(PALETTE_TITLES[block]) if block in PALETTE_TITLES else block_title(None, view_key(block))
-        if block == "deconv":
-            self.title += "  ◇"
         role = BLOCK_ROLES[block]
         if folded:
             v = QVBoxLayout(self)
@@ -2884,10 +2882,6 @@ class GraphPage(QWidget):
                 card = PaletteCard(self, b, reason, folded=folded, branch=self.drag_only(b) if reason else "", auto=auto)
                 self.cards[b] = card
                 self.tl.addWidget(card)
-            if title == "Image" and prefs.spec():        # ◇ in Spec mode: not in the engine yet
-                card = PaletteCard(self, "deconv", "◇ " + _("Not in the engine yet."), folded=folded, auto=auto)
-                self.cards["deconv"] = card
-                self.tl.addWidget(card)
         self.combine_card = self.cards["composition"]
         self.tl.addStretch(1)
         self._fit_palette()
@@ -3004,7 +2998,7 @@ class GraphPage(QWidget):
     def drag_only(self, block: str) -> str:
         """Where a block the current workflow cannot take can still be dragged, in words; "" when nowhere."""
         s = self.s
-        if not s.ready or block == "deconv":
+        if not s.ready:
             return ""
         flows = self.graph._flows()
         g = self.graph.graph

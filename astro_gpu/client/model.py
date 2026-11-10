@@ -64,23 +64,28 @@ DN_ENGINE = {"generique": "pretrained", "affine": "adapted"}
 DN_VIEW = {v: k for k, v in DN_ENGINE.items()}
 CALIBRATION_KINDS = ("darks", "flats", "bias", "flat_darks")    # the session's lists a frame can be left out of
 #: seconds of the methods the engine does not have yet (the spec's estimates)
-EXTRA_SECONDS = {"deconv": 150.0}
+EXTRA_SECONDS: dict[str, float] = {}
 NOT_IN_ENGINE = "Not in the engine yet."
 #: the block of the views → the engine's block of ``api.methods``, and the option each method sets
-METHOD_BLOCK = {"debruitage": "denoise", "fond": "gradient", "etoiles": "stars", "deconv": "deconvolution"}
+METHOD_BLOCK = {"synth": "synth", "debruitage": "denoise", "fond": "gradient", "etoiles": "stars", "deconv": "deconvolution"}
 #: a Combine channels's stars are chosen in its panel: a Stars block in its graph was never drawn (GUI exploration 4)
 FUSION_STARS = "Combine channels: its stars in its panel"
-METHOD_OPT = {"debruitage": "dn", "fond": "fond", "etoiles": "etoiles", "deconv": "deconv_m"}
+METHOD_OPT = {"synth": "synth_m", "debruitage": "dn", "fond": "fond", "etoiles": "etoiles", "deconv": "deconv_m"}
 #: the engine's method keys → the views'
 METHOD_KEY = {"debruitage": {"pretrained": "generique", "adapted": "affine"},
               "fond": {"polynomial": "simple", "rbf": "rbf", "automatic": "auto"},
               "etoiles": {"neural": "neural"},
-              "deconv": {"rl": "psf", "neural": "neural"}}
+              "deconv": {"rl": "psf", "zones": "zones", "neural": "neural"},
+              "synth": {"measured": "measured", "instrument": "instrument"}}
+#: the Deconvolution methods: the views' keys and the engine's
+DECONV_ENGINE = {"psf": "rl", "zones": "zones"}
+DECONV_VIEW = {v: k for k, v in DECONV_ENGINE.items()}
 #: the Gradient methods: the views' keys and the engine's
 GRADIENT_ENGINE = {"simple": "polynomial", "rbf": "rbf", "auto": "automatic"}
 GRADIENT_VIEW = {v: k for k, v in GRADIENT_ENGINE.items()}
 #: the toolbox: key of a tool → (engine option, value that adds it, value that removes it)
 TOOL_OPTION = {"debruitage": ("denoise", "pretrained", None), "etoiles": ("stars", "neural", None),
+               "deconv": ("deconvolution", "rl", None),
                "auto": ("gradient", "automatic", "polynomial"),
                "rbf": ("gradient", "rbf", "polynomial"),
                "simple": ("gradient", "polynomial", None)}
@@ -121,7 +126,8 @@ def to_engine(o: dict) -> dict:
     user cut (issue #43), kept as they are."""
     stars = "neural" if o.get("etoiles") == "retirer" else None
     out = {"denoise": DN_ENGINE.get(o.get("dn"), "pretrained") if o.get("debruitage") else None, "stars": stars,
-           "gradient": GRADIENT_ENGINE.get(o.get("fond"), "polynomial"), "deconvolution": None}
+           "gradient": GRADIENT_ENGINE.get(o.get("fond"), "polynomial"),
+           "deconvolution": DECONV_ENGINE.get(o.get("deconv_m"), "rl") if o.get("deconv") else None}
     if o.get("cut"):
         out["cut"] = list(o["cut"])
     return out
@@ -131,7 +137,8 @@ def from_engine(o: dict) -> dict:
     """The engine's options as the views'."""
     return {"debruitage": bool(o.get("denoise")), "dn": DN_VIEW.get(o.get("denoise"), "generique"),
             "etoiles": "retirer" if o.get("stars") else "garder", "fond": GRADIENT_VIEW.get(o.get("gradient"), "simple"),
-            "deconv": bool(o.get("deconvolution")), "cut": list(o.get("cut") or [])}
+            "deconv": bool(o.get("deconvolution")), "deconv_m": DECONV_VIEW.get(o.get("deconvolution"), "psf"),
+            "cut": list(o.get("cut") or [])}
 
 
 def is_fusion_view(p) -> bool:
@@ -175,6 +182,10 @@ def method_of(p: WorkflowView, block: str) -> str:
         return p.opts["fond"]
     if block == "etoiles":
         return "neural"
+    if block == "synth":
+        m = getattr(p, "model", None)
+        n = next((x for x in m.graph(p) if x["block"] == "synth"), None) if hasattr(m, "graph") else None
+        return (n or {}).get("method") or "measured"
     if block == "deconv":
         return p.opts.get("deconv_m", "psf")
     return p.opts.get("dn", "generique")
@@ -871,6 +882,15 @@ class ProjectModel(QObject):
             return self.post_shown()
         return _copy.deepcopy(list(self.post_version().get("layers") or []))
 
+    def synth_wanted(self) -> dict[int, str]:
+        """{workflow id: the method of its Synthetic stars block} for the workflows that have one."""
+        out = {}
+        for v in self.paths:
+            n = next((x for x in self.graph(v) if x["block"] == "synth" and not x.get("off")), None)
+            if n is not None:
+                out[v.pid] = n.get("method") or "measured"
+        return out
+
     def post_version(self) -> dict:
         """The active version of the composition."""
         return active_version(self.p.post)
@@ -1162,7 +1182,7 @@ class ProjectModel(QObject):
                 except (ValueError, KeyError):
                     pass
             for k in TOOLBOX:
-                if k != "deconv" and not self.has_tool(v.opts, k):
+                if not self.has_tool(v.opts, k):
                     try:
                         self.tool_cost(v.opts, k)
                     except (wfl.OptionRefused, ValueError):
@@ -1472,7 +1492,7 @@ class ProjectModel(QObject):
         if self.separate_sessions() and p.source is None:
             keys = [k for k in keys if k != "calibration"]      # each session's Calibration is drawn before the chain
         want = [k for k in ("image", "calibration", "alignement", "selection", "crop", "empilement", "astrometrie", "fond",
-                            "couleur", "debruitage", "etoiles", "post")]
+                            "couleur", "debruitage", "etoiles", "synth", "post")]
         have = set(keys)
         extra = {ENGINE_KEY.get(b, b) for b in self.cut_blocks(p)} | {ENGINE_KEY.get(b, b) for b in self.greyed(p)}
         if p.source is not None:
@@ -2734,7 +2754,7 @@ class ProjectModel(QObject):
                  "stack": "Stacking", "astrometry": "Astrometry", "reference": "Reference image",
                  "catalogs": "Gaia catalogues", "surveys": "H-alpha survey", "color": "Color", "denoise": "Denoise",
                  "gradient": "Sky gradient", "render_simple": "Output prep", "star_removal": "Star removal",
-                 "deconv": "Deconvolution"}
+                 "deconv": "Deconvolution", "synth_stars": "Synthetic stars"}
         b, sep, n = stage.partition("~")                  # a graph's later block (issue #47): "Denoise 2"
         return _(names.get(b, b)) + (f" {n}" if sep else "")
 
@@ -2869,7 +2889,8 @@ class ProjectModel(QObject):
         """(the cache key, the options the method needs) of a method's duration, or None when the engine refuses them.
         ``device``: "gpu", "cpu", or None for the machine's."""
         tool = {"fond": {"auto": "auto", "rbf": "rbf", "simple": "simple"}, "etoiles": {"neural": "etoiles"},
-                "debruitage": {"generique": "debruitage", "affine": "debruitage"}}.get(block, {}).get(method)
+                "debruitage": {"generique": "debruitage", "affine": "debruitage"},
+                "deconv": {"psf": "deconv", "zones": "deconv"}}.get(block, {}).get(method)
         try:
             opts = self.with_tool(p.opts, tool)[0] if tool else dict(p.opts)      # the options the method needs
         except wfl.OptionRefused:
@@ -3254,8 +3275,6 @@ class ProjectModel(QObject):
     @staticmethod
     def with_tool(o: dict, key: str) -> tuple[dict, list[str]]:
         """The options with this tool added, and what came with it (the notes are English texts to translate)."""
-        if key == "deconv":
-            return dict(o), [NOT_IN_ENGINE]
         opt, add, _rm = TOOL_OPTION[key]
         new, notes = wfl.set_option(to_engine(o), opt, add)
         return {**o, **from_engine(new)}, list(notes)
@@ -3263,8 +3282,6 @@ class ProjectModel(QObject):
     @staticmethod
     def without_tool(o: dict, key: str) -> tuple[dict | None, list[str]]:
         """The options with this tool removed and what went with it, or (None, [reason]) when it cannot go."""
-        if key == "deconv":
-            return dict(o), []
         opt, _add, rm = TOOL_OPTION[key]
         try:
             new, notes = wfl.set_option(to_engine(o), opt, rm)

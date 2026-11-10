@@ -390,7 +390,7 @@ def test_a_shared_stage_is_one_key(world, model):
     assert "star_removal" in model.downstream(full, "render_simple")
     assert [x for _p, x in model.pending_upto(classic, ["render_simple"])] == ["render_simple"]
     assert model.pending(full) == []
-    assert model.seconds("stack", full) > 0 and model.seconds("deconv") == 150.0
+    assert model.seconds("stack", full) > 0
 
 
 # ---------------------------------------------------------------------------------------------- option rules
@@ -885,6 +885,28 @@ def stack_cards(page):
     return [c for c in page.panel.findChildren(StackMethodCard) if c.isVisibleTo(page.panel)]
 
 
+def test_the_deconvolution_block_has_its_two_methods_and_their_own_settings(world, model, page):
+    from astro_gpu.client.panel import MethodCard
+    full = model.paths[0]
+    with_block, notes = ProjectModel.with_tool(full.opts, "deconv")
+    assert with_block["deconv"] and notes == []
+    model.set_opts(full, with_block)
+    settle(world["w"], page)
+    try:
+        page.select_node(node(page, "deconv"))
+        settle(world["w"], page)
+        cards = [c for c in page.panel.findChildren(MethodCard) if c.isVisibleTo(page.panel)]
+        assert len(cards) == 2
+        words = " ".join(texts_of(page.panel))
+        assert "Richardson-Lucy" in words and "Filter by zones" in words
+        keys = {r.r["key"] for r in live_rows(page)}
+        assert "deconv.iterations" in keys and "deconv.shrink" not in keys
+    finally:
+        _reset(model)
+        settle(world["w"], page)
+    assert not model.paths[0].opts["deconv"]
+
+
 def test_the_stacking_method_is_chosen_on_cards_and_shows_only_its_own_settings(world, model, page):
     """Drizzle (the default) and Classic stack, from the engine's list of methods: each shows its own settings only;
     choosing the other on a computed stack asks Replace or Try as variant; the withdrawn switches never show."""
@@ -1106,7 +1128,7 @@ def test_spec_mode_shows_what_the_engine_does_not_have_disabled(world, model, pa
         assert editors and not any(e.isEnabled() for e in editors), r.r["key"]
     from astro_gpu.client.graph import PaletteCard
     tc = {c.block: c for c in page.findChildren(PaletteCard)}
-    assert "deconv" in tc and tc["deconv"].reason and "◇" in tc["deconv"].title
+    assert "deconv" in tc and "◇" not in tc["deconv"].title
     # a ◇ value is never stored and never changes a key
     keys_before = {s: model.stage_key(model.paths[0], s) for s in model.all_stages(model.paths[0])}
     page.panel.set_setting(next(r for r in new_rows).r, 1)

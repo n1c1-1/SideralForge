@@ -493,6 +493,8 @@ FILTERS = {
                  source="A spot replaced by a patch of its neighbourhood, seamlessly (Poisson image editing, Perez et "
                         "al. 2003, as the healing brush of photo editors); the source found automatically, movable",
                  params=[SPOTS("spots")]),
+    "synth": dict(name="Synthetic stars", family="Detail", fn=lambda x, p, ctx: ctx.synth() if ctx.synth else x, hidden=True,
+                  source="The stars of the Synthetic stars block, through this row's mask", params=[]),
     "halpha_red": dict(name="H-alpha to red", family="Combine", fn=f_halpha, needs="halpha",
                        source="The engine's H-alpha map added to the red channel",
                        params=[P("strength", "Strength", 0, 1, 0, step=0.01)]),
@@ -540,6 +542,26 @@ def new_mask() -> dict:
     return {"parts": [], "feather": 0.0, "density": 100.0, "invert": False}
 
 
+def with_synth_rows(layers: list[dict], wanted: dict[int, str]) -> list[dict]:
+    """The layers with one Synthetic stars row on the stars of each combined layer whose workflow has the block
+    (``wanted``: {workflow id: its method}), none on the others. With the image's shape the row's mask starts closed, to
+    be painted (the corners); with the instrument's PSF, open: every star replaced."""
+    out = []
+    for lay in layers:
+        if lay.get("kind") == "filter" and lay.get("filter") == "synth":
+            t = next((x for x in layers if x["id"] == lay.get("target")), None)
+            if t is None or t.get("pid") not in wanted:
+                continue
+        if is_group(lay) and lay["pid"] in wanted and not any(
+                x.get("filter") == "synth" and x.get("target") == lay["id"] for x in layers):
+            row = new_filter_layer("synth", lay["id"], "stars")
+            if wanted[lay["pid"]] != "instrument":
+                row["mask"] = dict(new_mask(), parts=[new_part("brush")])
+            out.append(row)
+        out.append(lay)
+    return out
+
+
 def new_workflow_layer(pid: int, name: str, visible=False, part=None, base=None) -> dict:
     """A workflow's layer: its Output block's image (``part`` None) or one of its Stars block's images (``PARTS``). The
     stars alone go in Screen mode (they are black around the stars); the recombined image puts them back in Screen."""
@@ -571,7 +593,7 @@ def source_id(lay: dict):
     """What the composition asks the provider for: a workflow's id (its Output block's image), ("stars", id) for its
     Stars block's images, or ("image", key)."""
     if lay["kind"] == "workflow":
-        return ("stars", lay["pid"]) if lay.get("part") else lay["pid"]
+        return ("synth" if lay.get("part") == "synth" else "stars", lay["pid"]) if lay.get("part") else lay["pid"]
     return ("image", lay["key"])
 
 
@@ -599,7 +621,7 @@ def part_sliders(sliders: dict | None, part: str | None) -> dict:
     stretch takes the whole image's sky, render/stars.star_tone); the starless image, on all but the star sliders
     (issue #19: a starless slider leaves the stars as they are)."""
     sliders = sliders or {}
-    if part == "stars":
+    if part in ("stars", "synth"):
         return {k: v for k, v in sliders.items() if k.startswith("star_") or k == "sky"}
     if part == "starless":
         return {k: v for k, v in sliders.items() if not k.startswith("star_")}
@@ -953,6 +975,7 @@ class Ctx:
         self.draft = draft                                    # a quick look while something moves (tables, not exact)
         self.hist_ids: set = set()                            # the filters whose input's histograms are wanted
         self.hists: dict = {}
+        self.synth = None                                     # the Synthetic stars of the layer being composed
         self._memo: dict[str, np.ndarray] = {}
 
     def _data(self, name: str) -> np.ndarray:
@@ -1275,6 +1298,11 @@ class Composer:
             part = dict(lay, part=sub)
             x = self.layer_rgb(part, level, abox, canvas, cache, draft, check)
             sig = _sig(self._key(part, level, abox, canvas))
+            synth = dict(lay, part="synth")
+            ctx.synth = None
+            if sub == "stars" and self.provider.available(source_id(synth)):
+                ctx.synth = lambda: self.layer_rgb(synth, level, abox, canvas, cache, draft, check)
+                sig = _sig(sig, self._key(synth, level, abox, canvas))
             for fl in own:
                 if fl.get("sub") != sub:
                     continue

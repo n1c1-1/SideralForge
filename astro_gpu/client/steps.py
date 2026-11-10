@@ -43,6 +43,7 @@ FACTS = {
                     ("astrometry", "focal_estimate_mm"), ("reference", "stars_matched")],
     "couleur": [("color", "stars"), ("color", "white_balance"), ("color", "white_balance_stars"),
                 ("color", "chromaticity_residual")],
+    "deconv": [("deconv", "star_width_before"), ("deconv", "star_width_after"), ("deconv", "zones")],
     "debruitage": [("denoise", "noise_before"), ("denoise", "noise_after"), ("denoise", "noise_reduction"),
                    ("denoise", "noise_correlation"), ("denoise", "adaptation_steps")],
     "fond": [("gradient", "gradient_pct"), ("gradient", "samples_used")],
@@ -108,6 +109,7 @@ COVERAGE_DRIZZLE_NOTE = ("With the drizzle, red and blue are one pixel in four o
 COLOR_NOTE = ("Before, left of the divider: the stack output as it is, in the camera's colours. After, right: the "
               "same stack colour-calibrated (the colour matrix measured on the Gaia stars, the sky set grey). Drag the "
               "divider.")
+DECONV_NOTE = "Before (what the block reads) and after (deconvolved), with the same stretch."
 DENOISE_NOTE = ("Before (the stack, its gradient removed: what the block reads) and after (denoised), with the same "
                 "stretch on both. Drag the divider.")
 STACK_NOTE = "The stack output in the camera's colours, before colour calibration: its green cast is normal."
@@ -268,6 +270,10 @@ class Steps(QObject):
                     V("spectral", "Approximate spectral response", "chart", "color", "0", note=SPECTRAL_NOTE),
                     V("lines", "Colour of the lines", "chart", "color", "1", note=LINES_NOTE),
                     V("fit", "Star colours", "colorfit", "color")]
+        if k == "deconv":
+            return [V("deconvolved", "Deconvolved stack", "array", "deconv", "deconv_full", True, True, camera=True,
+                      neutral=True, compare=("result", "stack", "half_a"), open_compare=True, same_stretch=True,
+                      note=DECONV_NOTE)]
         if k == "debruitage":
             return [V("denoised", "Denoised stack", "array", "denoise", "n2n_full", True, True, camera=True,
                       neutral=True, compare=("result", "stack", "half_a"), open_compare=True, same_stretch=True,

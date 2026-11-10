@@ -325,6 +325,7 @@ def stack_image(ctx: Context, name: str = "drz_full.npy") -> np.ndarray:
 HALF_OF = {"drz_full.npy": "full", "drz_A.npy": "A", "drz_B.npy": "B"}
 STACK_FILE = {"full": "drz_full.npy", "A": "drz_A.npy", "B": "drz_B.npy"}
 DENOISE_FILE = {"full": "n2n_full.npy", "A": "n2n_A.npy", "B": "n2n_B.npy"}
+DECONV_FILE = {"full": "deconv_full.npy", "A": "deconv_A.npy", "B": "deconv_B.npy"}
 
 
 @dataclass
@@ -350,7 +351,7 @@ def image_ops(ctx: Context, which: str | None = None) -> list[str]:
         mine = set(keys.deps(ctx.project.workflow, own)) if own in chain else set()
         return [x for x in chain if x in mine and base(x) in kinds]
     me = ORDER.index(base(own)) if base(own) in ORDER else len(ORDER)
-    return [s for s in ("gradient", "denoise", "color") if s in kinds and ORDER.index(s) < me and ctx.has(s)]
+    return [s for s in ("gradient", "deconv", "denoise", "color") if s in kinds and ORDER.index(s) < me and ctx.has(s)]
 
 
 def image_in(ctx: Context, half: str = "full", ops: list[str] | None = None, skip_denoise: bool = False) -> ImageIn:
@@ -372,6 +373,8 @@ def image_in(ctx: Context, half: str = "full", ops: list[str] | None = None, ski
             a = np.tensordot(Mc.astype(np.float32), a, 1)
             M = Mc @ M
             level = Mc @ level if level is not None else None
+        elif b == "deconv":
+            a = ctx.load(e, DECONV_FILE[half]).astype(np.float32)
         elif b == "denoise" and not skip_denoise:
             a = ctx.load(e, DENOISE_FILE[half]).astype(np.float32)
     return ImageIn(a, M, level, list(ops))

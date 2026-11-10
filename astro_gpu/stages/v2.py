@@ -50,7 +50,7 @@ NON_KEY: dict[str, frozenset[str]] = {
     "fusion": frozenset({"inputs", "stars", "weights"}),        # the inputs' folders: their workflows' keys stand for them
 }
 #: the stages only v2 workflows have (issue #43: the sessions' join and the image source)
-NEW_STAGES = ("gradient", "render_simple", "star_removal", "sessions", "image", "fusion")
+NEW_STAGES = ("gradient", "render_simple", "star_removal", "sessions", "image", "fusion", "deconv", "synth_stars")
 
 
 def new_stages() -> list[Stage]:
@@ -59,8 +59,10 @@ def new_stages() -> list[Stage]:
     from .image import ImageSource
     from .render_simple import RenderSimple
     from .sessions import Sessions
+    from .deconv import Deconv
     from .star_removal import StarRemoval
-    return [Gradient(), RenderSimple(), StarRemoval(), Sessions(), ImageSource(), Fusion()]
+    from .synth_stars import SynthStars
+    return [Gradient(), RenderSimple(), StarRemoval(), Sessions(), ImageSource(), Fusion(), Deconv(), SynthStars()]
 
 
 def V2_STAGES() -> list[Stage]:            # noqa: N802 (a table, built on first use: it imports every stage)

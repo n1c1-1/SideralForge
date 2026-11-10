@@ -87,8 +87,9 @@ class StarsRenderEngine(SimpleRenderEngine):
         self.M = np.array(self.prep["M"], np.float64)
         self.SC = float(self.prep.get("drizzle_scale", 1.0))
         self.crop = self.prep["crop"]
-        self._host = {k: torch.from_numpy(np.load(self.dir / f"{k}.npy")) for k in ("starless", "stars")}
-        self.H, self.W = self._host["starless"].shape[-2:]
+        self._host = {k: torch.from_numpy(np.load(self.dir / f"{k}.npy")) for k in ("starless", "stars")
+                      if (self.dir / f"{k}.npy").exists()}      # a Synthetic stars block: its stars alone
+        self.H, self.W = self._host["stars"].shape[-2:]
         self.valid_host = torch.from_numpy(np.load(self.dir / "valid.npy"))
         self.has_raw = False
         self._proxy = {}

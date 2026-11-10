@@ -1579,9 +1579,20 @@ _METHODS: dict[str, list[MethodInfo]] = {
                    "alone, combined by a Combine layers block or each used as a layer of Post. Seconds on a "
                    "GPU, a few minutes on a processor."),
     ],
+    "synth": [
+        MethodInfo("measured", "Image shape", "image shape", "both", "synth_stars", False,
+                   "The detected stars drawn with the shape measured at the centre of the field: paint in Post where "
+                   "they replace the real ones, the corners for example."),
+        MethodInfo("instrument", "Instrument PSF", "instrument PSF", "both", "synth_stars", False,
+                   "Every star replaced by the theoretical star of the instrument: for a missed focus or a bad "
+                   "tracking."),
+    ],
     "deconvolution": [
-        MethodInfo("rl", "Measured PSF (Richardson-Lucy)", "Richardson-Lucy", "both", "deconv", True,
+        MethodInfo("rl", "Measured PSF (Richardson-Lucy)", "Richardson-Lucy", "both", "deconv", False,
                    "Classic deconvolution with the PSF measured across the field."),
+        MethodInfo("zones", "Filter by zones", "by zones", "both", "deconv", False,
+                   "A sharpening filter per zone of the field, the same on faint and bright stars: fast, keeps every "
+                   "flux, sharpens less."),
         MethodInfo("neural", "Neural network", "neural", "both", "deconv", True,
                    "A pretrained network that corrects the PSF locally, stars included."),
     ],

@@ -151,8 +151,8 @@ def test_options_speak_the_views_vocabulary():
     new, _n = ProjectModel.without_tool(classic, "debruitage")
     assert new is not None and not new["debruitage"]
     assert ProjectModel.has_tool(full, "simple") and not ProjectModel.has_tool(full, "auto")
-    _new, notes = ProjectModel.with_tool(full, "deconv")                 # the ◇ block: nothing to add, said so
-    assert notes == [modelmod.NOT_IN_ENGINE]
+    new, notes = ProjectModel.with_tool(full, "deconv")
+    assert new["deconv"] and new["deconv_m"] == "psf" and notes == []
 
 
 # ---------------------------------------------------------------------------------------------- the French

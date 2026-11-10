@@ -986,5 +986,19 @@
   "The only version cannot be deleted": "La seule version ne peut pas être supprimée",
   "Suggested": "Suggéré",
   "Post versions: {problem}": "Versions du Post : {problem}",
-  "Instrument": "Instrument"
+  "Instrument": "Instrument",
+  "Filter by zones": "Filtre par zones",
+  "by zones": "par zones",
+  "A sharpening filter per zone of the field, the same on faint and bright stars: fast, keeps every flux, sharpens less.": "Un filtre de netteté par zone du champ, le même sur les étoiles faibles et brillantes : rapide, garde tous les flux, accentue moins.",
+  "Deconvolved stack": "Empilement déconvolué",
+  "Before (what the block reads) and after (deconvolved), with the same stretch.": "Avant (ce que lit le bloc) et après (déconvolué), avec le même étirement.",
+  "Synthetic stars": "Étoiles de synthèse",
+  "Draws the detected stars again, with the shape of this image or of the instrument.": "Redessine les étoiles détectées, avec la forme de cette image ou celle de l'instrument.",
+  "Image shape": "Forme de l'image",
+  "image shape": "forme de l'image",
+  "Instrument PSF": "PSF instrument",
+  "instrument PSF": "PSF instrument",
+  "The detected stars drawn with the shape measured at the centre of the field: paint in Post where they replace the real ones, the corners for example.": "Les étoiles détectées, dessinées avec la forme mesurée au centre du champ : peignez dans le Post où elles remplacent les vraies, les coins par exemple.",
+  "Every star replaced by the theoretical star of the instrument: for a missed focus or a bad tracking.": "Chaque étoile remplacée par l'étoile théorique de l'instrument : pour une mise au point ou un suivi ratés.",
+  "The stars of the Synthetic stars block, through this row's mask": "Les étoiles du bloc Étoiles de synthèse, à travers le masque de cette ligne"
 }

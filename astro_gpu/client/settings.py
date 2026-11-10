@@ -32,9 +32,11 @@ AS_TODAY = "as the engine does today"
 NO_ZONE = "none"                    # value of a "zone" setting with nothing drawn
 
 
-def E(stage, name, level="normal", label=None, help=None, unit=None, method=None):   # noqa: A002 - the catalogue's words
-    """An engine setting; ``method``: the stacking method it belongs to (shown only with it), None for every method."""
-    return dict(kind="engine", stage=stage, name=name, level=level, label=label, help=help, unit=unit, method=method)
+def E(stage, name, level="normal", label=None, help=None, unit=None, method=None, kinds=None):   # noqa: A002 - the catalogue's words
+    """An engine setting; ``method``: the stacking method it belongs to (shown only with it), None for every method;
+    ``kinds``: shown only for these instrument types of the Synthetic stars block."""
+    return dict(kind="engine", stage=stage, name=name, level=level, label=label, help=help, unit=unit, method=method,
+                kinds=kinds)
 
 
 def N(stage, key, label, typ, default, help, level="normal", choices=None, lo=None, hi=None, step=None,   # noqa: A002
@@ -246,14 +248,27 @@ CATALOG = {
         ("Speed", [E("denoise", "fast")]),
         ("System", [E("denoise", "seed", "system")]),
     ],
-    "deconv": [
+    "synth:measured": [],
+    "synth:instrument": [
+        ("Instrument", [
+            E("synth_stars", "instrument"),
+            E("synth_stars", "diameter_mm"),
+            E("synth_stars", "obstruction", kinds=("newton", "sct")),
+            E("synth_stars", "spider_arms", kinds=("newton",)),
+            E("synth_stars", "spider_mm", kinds=("newton",)),
+            E("synth_stars", "angle_deg", kinds=("newton",)),
+            E("synth_stars", "seeing_px"),
+        ]),
+    ],
+    "deconv:psf": [
         ("Deconvolution", [
-            N("deconv", "iterations", "Iterations", "int", 30, "More iterations sharpen more, and raise the noise.",
-              lo=5, hi=200, step=5),
-            N("deconv", "stars", "Correct stars", "bool", True, "Rounds and tightens the stars with the "
-              "local PSF."),
-            N("deconv", "regularization", "Regularization", "float", 0.002, "Holds back noise and ringing.", lo=0.0,
-              hi=0.05, step=0.001, level="expert"),
+            E("deconv", "iterations"),
+            E("deconv", "regularization", "expert"),
+        ]),
+    ],
+    "deconv:zones": [
+        ("Deconvolution", [
+            E("deconv", "shrink"),
         ]),
     ],
     "fond:simple": [
@@ -359,7 +374,7 @@ TYPES = {"int": "int", "float": "float", "bool": "bool", "str": "str", "float | 
 def catalog_key(p, step: str) -> str:
     step = step.split("@", 1)[0]                     # a session's block: the block's catalogue (issue #43)
     base = step.partition("~")[0]                    # a block placed twice ("fond~2"): the same catalogue (round 4)
-    if base in ("fond", "debruitage"):
+    if base in ("fond", "debruitage", "deconv", "synth"):
         from .model import method_of  # the node's own method: Gradient 2 may differ from Gradient 1
         return f"{base}:{method_of(p, step)}"
     return base
@@ -560,7 +575,8 @@ def step_settings(s, p, step: str):
 
     out = []
     for title, items in CATALOG.get(catalog_key(p, step), []):
-        rs = [r for r in (resolve(s, p, step, it) for it in items if it["kind"] == "engine" or spec)
+        rs = [r for r in (resolve(s, p, step, it) for it in items if (it["kind"] == "engine" or spec)
+                          and (not it.get("kinds") or (s.param_value(p, "synth_stars", "instrument") or "newton") in it["kinds"]))
               if r is not None and mine(r)]
         if rs:
             out.append((_(title), rs))

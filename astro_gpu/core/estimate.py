@@ -42,7 +42,7 @@ LOCK_STALE = 30.0                              # a lock file older than this was
 HEART: dict[str, tuple[float, float]] = {
     "inventory": (5.0, 0.0), "calibrate": (310.8, 0.11), "register": (121.4, 0.0), "stack": (2064.0, 1.31),
     "astrometry": (124.1, 0.0), "reference": (89.8, 0.0), "catalogs": (178.3, 0.07), "surveys": (42.5, 0.11),
-    "color": (2.9, 0.0), "denoise": (20.4, 0.68), "gradient": (60.0, 0.01), "render_simple": (30.0, 0.7),
+    "synth_stars": (60.0, 0.3), "color": (2.9, 0.0), "deconv": (85.0, 1.0), "denoise": (20.4, 0.68), "gradient": (60.0, 0.01), "render_simple": (30.0, 0.7),
     "star_removal": (30.0, 0.66),
 }
 #: a stage the table does not know (tests' toy stages): one minute at Heart size
@@ -52,7 +52,7 @@ OTHER = (60.0, 0.0)
 #: writing; the 40 guessed before announced 50 minutes for North America, where the run takes about 4)
 CPU_FACTOR: dict[str, float] = {
     "inventory": 1, "calibrate": 1.3, "register": 1.5, "stack": 5, "astrometry": 1, "catalogs": 1, "surveys": 1,
-    "color": 1.5, "denoise": 45, "gradient": 1, "render_simple": 2, "star_removal": 4,
+    "synth_stars": 1, "color": 1.5, "deconv": 20, "denoise": 45, "gradient": 1, "render_simple": 2, "star_removal": 4,
 }
 DEFAULT_CPU_FACTOR = 2.0
 #: Denoise (stages/denoise.py): applying the pretrained network costs this many adaptation steps per Mpx of the stack

@@ -90,6 +90,7 @@ from .postengine import (
     is_group,
     is_pixel,
     load_layers,
+    with_synth_rows,
     move,
     new_filter_layer,
     new_id,
@@ -922,7 +923,7 @@ class PostView(QWidget):
         alive = {p.pid for p in paths}
         if initial:
             version = self._version_shown()
-            self.layers = load_layers(version.get("layers"), alive)
+            self.layers = self._with_synth(load_layers(version.get("layers"), alive))
             self._show_crop(version.get("crop"))
             self._saved = json.dumps(save_layers(self.layers), sort_keys=True)
             self._version = version.get("id")
@@ -944,7 +945,7 @@ class PostView(QWidget):
                     p.pid, p.name + (" · " + POST_PART_NAMES["combined"] if stars else ""), bool(sent),
                     part="combined" if stars else None))
         self.layers = [lay for lay in self.layers if lay["kind"] != "workflow" or lay["pid"] in alive]
-        self.layers = normalize(self.layers)
+        self.layers = normalize(self._with_synth(normalize(self.layers)))
         wl = [lay for lay in self.layers if lay["kind"] == "workflow"]
         if wl and fresh:                                # the first layers: "Full" (else the bottom one) is the base
             names = {lay["id"]: self.path(lay["pid"]).name for lay in wl}
@@ -966,6 +967,10 @@ class PostView(QWidget):
     def _version_shown(self) -> dict:
         p = getattr(self.s, "p", None)
         return active_version(p.post) if p is not None and hasattr(p, "post") else {}
+
+    def _with_synth(self, layers):
+        """The layers with the Synthetic stars row of the workflows that have the block (issue #77)."""
+        return with_synth_rows(layers, self.s.synth_wanted()) if hasattr(self.s, "synth_wanted") else layers
 
     def _fill_versions(self):
         """The Version list and the choices of the comparison, as the project has them."""
@@ -998,7 +1003,7 @@ class PostView(QWidget):
         self._stacks[self._version] = (self.undo, self.redo)
         self.undo, self.redo = self._stacks.get(version.get("id"), ([], []))
         self._version = version.get("id")
-        self.layers = load_layers(version.get("layers"), {p.pid for p in self.s.paths})
+        self.layers = self._with_synth(load_layers(version.get("layers"), {p.pid for p in self.s.paths}))
         self._saved = json.dumps(save_layers(self.layers), sort_keys=True)
         self._show_crop(version.get("crop"))
         self._fill_versions()
@@ -1060,7 +1065,7 @@ class PostView(QWidget):
             self.undo.append(snapshot(self.layers))
             self.redo.clear()
         old = {lay["id"] for lay in self.layers}
-        self.layers = load_layers(version.get("layers"), {p.pid for p in self.s.paths})
+        self.layers = self._with_synth(load_layers(version.get("layers"), {p.pid for p in self.s.paths}))
         self._saved = json.dumps(save_layers(self.layers), sort_keys=True)
         added = [lay["id"] for lay in self.layers if lay["id"] not in old]
         if added:                                   # a layer sent from the graph: selected, as a pasted layer is
