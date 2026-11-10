@@ -66,9 +66,10 @@ def env(tmp_path, monkeypatch, qapp):
     for n in ("heart_a7s", "heart_a7s_copy"):
         _project(copies / n, "heart_a7s", "IC 1805", "The reference Heart")
     prefs.set("cache_dir", (tmp_path / "scratch").as_posix())
-    rows = home.section_rows()
-    rows[0]["folder"] = copies.as_posix()
-    home.save_rows([{"label": "Mine", "folder": ws.as_posix(), "note": "", "open": True}] + rows)
+    home.save_rows([{"label": "Mine", "folder": ws.as_posix(), "note": "", "open": True},
+                    {"label": "Test copies", "folder": copies.as_posix(), "open": False,
+                     "note": "Copies of a project, used to try new versions of the program. Your own projects are not "
+                             "touched."}])
     appmod.apply_language("en")
     monkeypatch.setattr(appmod, "machine_info", lambda: MACHINE)
     windows = []
@@ -110,11 +111,7 @@ def test_hidden_folders():
 def test_the_default_sections(tmp_path, monkeypatch):
     monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
     prefs.load()
-    rows = home.section_rows()
-    assert [(r["label"], r["folder"], r["open"]) for r in rows] == [("Test copies", "F:/astro_essais/v2", False)]
-    assert all(r["note"] for r in rows) and "workspace" not in prefs.DEFAULTS
-    rows[0]["label"] = "changed"                                           # a copy: the defaults stay
-    assert prefs.DEFAULTS["home_sections"][0]["label"] == "Test copies"
+    assert home.section_rows() == [] and "workspace" not in prefs.DEFAULTS   # no folder of the development machine
     # the settings of an older version: their "My projects" row (the workspace, no folder of its own) is left out
     (tmp_path / "settings.json").write_text(json.dumps({"workspace": "D:/elsewhere", "home_sections": [
         {"label": "My projects", "workspace": True, "open": True, "note": "Your own projects."},
@@ -243,3 +240,19 @@ def test_every_text_of_home_has_its_french():
     assert not [t for t in shown if t not in cat]
     mine = json.loads((CLIENT / "locale" / "fr" / "home.json").read_text(encoding="utf-8"))
     assert mine and all(isinstance(v, str) and v for v in mine.values())
+
+
+def test_a_first_launch_speaks_the_system_language(monkeypatch):
+    """The night test pass: a French user started in English."""
+    import locale
+    monkeypatch.setattr(locale, "windows_locale", {})                           # an unknown language: English
+    monkeypatch.setattr(locale, "getlocale", lambda *a: ("", ""))
+    assert prefs.system_language() == "en"
+    try:
+        import ctypes
+        code = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+    except (AttributeError, OSError):                                          # not Windows
+        monkeypatch.setattr(locale, "getlocale", lambda *a: ("fr_FR", "UTF-8"))
+    else:
+        monkeypatch.setattr(locale, "windows_locale", {code: "fr_FR"})
+    assert prefs.system_language() == "fr"

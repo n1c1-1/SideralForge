@@ -1576,7 +1576,11 @@ def _warm_up():
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    f = prefs.settings_file()
+    first = f is not None and not f.exists()
     prefs.load()
+    if first:                                           # a first launch speaks the system's language
+        prefs.set("language", prefs.system_language())
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app._gc = GuiGarbageCollector(app)                  # cycles collected on the GUI thread only (gcguard.py)
     app.setApplicationName(APP_NAME)

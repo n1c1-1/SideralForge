@@ -3,8 +3,7 @@
 There is no workspace (issue #31): a project lives where the user puts it, and Home first shows the projects opened
 last (prefs "recent", up to ``prefs.RECENT_MAX``). Below them, the SECTIONS (Settings › Folders: a list of rows, prefs
 "home_sections"), each a folder with its name and a one-line description (a row's "only", a folder-name pattern such as
-"ours_*", keeps only the projects whose folder matches it): by default "Test copies" (F:/astro_essais/v2, closed until
-its header is clicked). The "My projects" row of the settings of older versions (the workspace) is no longer shown.
+"ours_*", keeps only the projects whose folder matches it): none at first. The "My projects" row of the settings of older versions (the workspace) is no longer shown.
 
 The folders are read in the ApiWorker (``scan_home``): every sub-folder holding a project.astroproj and, for a
 sub-folder holding none, its own sub-folders that do; names starting with "_" or ".", pytest and temporary folders are

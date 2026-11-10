@@ -23,11 +23,9 @@ DEFAULTS = {
     # the user's own templates (issue #47): {key, tab, name, text, source, blocks}, made with Save as template…
     "templates": [],
     # the sections of Home (Settings › Folders), under the recent projects: each lists the projects of a folder and of
-    # its sub-folders. "label" and "note" are English (translated where shown) or typed by the user; "open": shown open
-    "home_sections": [
-        {"label": "Test copies", "folder": "F:/astro_essais/v2", "open": False,
-         "note": "Copies of a project, used to try new versions of the program. Your own projects are not touched."},
-    ],
+    # its sub-folders. "label" and "note" are English (translated where shown) or typed by the user; "open": shown open.
+    # None at first (the night test pass: a folder of the development machine was shown to every new user)
+    "home_sections": [],
     "cache_dir": (Path.home() / "astro_gpu_scratch").as_posix(),   # calibrated frames: <cache_dir>/<project>
     "temp_dir": (Path(tempfile.gettempdir()) / "astro_gpu").as_posix(),
     "cache_limit_gb": 200,
@@ -84,6 +82,18 @@ def load():
         except (OSError, ValueError):
             pass
     return _data
+
+
+def system_language() -> str:
+    """The language of the system's interface when the program has it ("fr"), else "en": the language of a first
+    launch (the night test pass: a French user started in English and had to find Edit > Settings > Language)."""
+    import locale
+    try:
+        import ctypes
+        name = locale.windows_locale.get(ctypes.windll.kernel32.GetUserDefaultUILanguage(), "")
+    except (AttributeError, OSError):                 # not Windows
+        name = locale.getlocale()[0] or ""
+    return "fr" if name.lower().startswith("fr") else "en"
 
 
 def get(key):
