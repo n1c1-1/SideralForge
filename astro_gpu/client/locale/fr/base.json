@@ -1000,5 +1000,6 @@
   "The stars of the Synthetic stars block, through this row's mask": "Les étoiles du bloc Étoiles de synthèse, à travers le masque de cette ligne",
   "Neural network (beta)": "Réseau de neurones (bêta)",
   "neural (beta)": "neuronal (bêta)",
-  "A network trained on sharp images blurred by real star shapes. Beta: not finished; it also removes the noise, and its star fluxes are less reliable.": "Un réseau entraîné sur des images nettes floutées avec de vraies formes d'étoiles. Bêta : pas fini ; il retire aussi le bruit, et les flux des étoiles sont moins fiables."
+  "A network trained on sharp images blurred by real star shapes. Beta: not finished; it also removes the noise, and its star fluxes are less reliable.": "Un réseau entraîné sur des images nettes floutées avec de vraies formes d'étoiles. Bêta : pas fini ; il retire aussi le bruit, et les flux des étoiles sont moins fiables.",
+  "More tools": "Autres outils"
 }

@@ -1151,7 +1151,7 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     rows = {r.lay["id"]: r for r in v.rows}
     # the panel (Affinity Photo's): the filter is a child of its layer, indented under it
     assert [(r.lay["name"], r.depth) for r in v.rows] == [("Classic", 0), ("Full", 0), ("Saturation", 1)]
-    assert rows[sat["id"]].sub.text() == "Normal · 100%" and rows[sat["id"]].toolTip() == 'Applies to "Full" only'
+    assert rows[sat["id"]].sub.full_text() == "Normal · 100%" and rows[sat["id"]].toolTip() == 'Applies to "Full" only'
     assert rows[full["id"]].toggle is not None and rows[full["id"]].toggle.property("iconRole") == "chevron_down"
     assert rows[classic["id"]].toggle is None
     # another one, on everything below
@@ -1160,7 +1160,13 @@ def test_filters_on_one_layer_and_on_everything_below(post):
     assert sh["target"] == classic["id"]
     v.set_target(sh, None)
     assert sh["target"] is None and [lay["name"] for lay in v.layers] == ["Sharpen", "Classic", "Saturation", "Full"]
-    assert next(r for r in v.rows if r.lay["id"] == sh["id"]).sub.text() == "on everything below · Normal · 100%"
+    shr = next(r for r in v.rows if r.lay["id"] == sh["id"])
+    assert shr.sub.full_text() == "on everything below · Normal · 100%"
+    # the night test pass: the blend took the room and the name read "Sha…"; the blend is shortened first
+    v.left.resize(post3.LAYERS_W, v.left.height())
+    shr.resize(post3.LAYERS_W - 20, shr.height())
+    QApplication.processEvents()
+    assert shr.sub.width() <= post3.SUB_MAX and shr.n.text() == "Sharpen"
     assert [(r.lay["name"], r.depth) for r in v.rows] == [("Sharpen", 0), ("Classic", 0), ("Full", 0),
                                                          ("Saturation", 1)]
     # the properties of a filter: its settings; where it applies is its place in the layers (issue #26)
@@ -1577,7 +1583,7 @@ def _drag(v, row, target_row, rel=0.5, x=None):
     v.drag_start(row)
     v.drag_move(row, holder.mapToGlobal(pt))
     framed = [r for r in v.rows if r.property("drop")]                                  # a nest: the row says it
-    text = v.drop_text.text() if v.drop_text.isVisible() else (framed[0].sub.text() if framed else "")
+    text = v.drop_text.text() if v.drop_text.isVisible() else (framed[0].sub.full_text() if framed else "")
     seen = dict(v._drop or {}), v.drop_line.isVisible(), text, [bool(r.property("drop")) for r in v.rows]
     v.drag_end(row, holder.mapToGlobal(pt))
     return seen
@@ -1630,7 +1636,7 @@ def test_dragging_a_row_nests_or_unnests_a_filter_with_clear_hints(post):
     # ▾ / ▸ hides a layer's children in the panel only
     v.toggle_children(full["id"])
     assert [r.lay["name"] for r in v.rows] == ["Classic", "Full"] and row(full["id"]).toggle.property("iconRole") == "chevron_right"  # noqa: E501
-    assert "2 filters" in row(full["id"]).sub.text()
+    assert "2 filters" in row(full["id"]).sub.full_text()
     v.toggle_children(full["id"])
     assert len(v.rows) == 4
 
@@ -1884,7 +1890,7 @@ def test_an_image_sent_from_a_stage_is_a_normal_layer(post, preps, tmp_path):
     assert f["target"] == lay["id"] and [(r.lay["name"], r.depth) for r in v.rows][:2] == [("Stack", 0),
                                                                                         ("Curves", 1)]
     assert post.settle() and near(shown(v), reference(post).rgb)
-    assert "image" in next(r for r in v.rows if r.lay["id"] == lay["id"]).sub.text()
+    assert "image" in next(r for r in v.rows if r.lay["id"] == lay["id"]).sub.full_text()
     # saved by its key, no pixels
     saved = active_version(post.model.p.post)["layers"]
     img = next(x for x in saved if x["kind"] == "image")
@@ -1943,7 +1949,7 @@ def test_an_image_layer_is_found_again_from_the_store_or_said_missing(preps, qap
         s3.view = s3.page.view
         assert s3.settle()
         row = next(r for r in s3.view.rows if r.lay["kind"] == "image")
-        assert "not found" in row.sub.text() and s3.view.src.img1 is not None
+        assert "not found" in row.sub.full_text() and s3.view.src.img1 is not None
     finally:
         for x in (s2, s3):
             if x is not None:

@@ -707,6 +707,30 @@ def test_post_sides_are_shown_as_chosen_and_remembered(env):
     assert w.size_range == "large" and view.dock.state == "docked" and view.ldock.state == "docked"
 
 
+@pytest.mark.parametrize("size", [(1366, 728), (1024, 640)])
+def test_posts_tools_go_into_more_rather_than_push_the_sides_out(env, size):
+    """The night test pass: on a laptop with the layers docked, the bar of tools held the image at 1011 px and pushed
+    the layers out of the window, its buttons cut; dragging an edge did the same."""
+    w = _open(env, size)
+    view = _post_view(w)
+    view.ldock._choose("docked")
+    view.dock._choose("docked")
+    _settle(w)
+    sizes = view.split.sizes()
+    assert sum(sizes) <= view.split.width() + 2 * len(sizes) and all(x > 0 for x in sizes)
+    assert view.left.geometry().left() >= 0 and view.right.geometry().right() <= view.split.width()
+    assert view.b_more.isVisible() and not view.b_names.isVisible()               # the least used first
+    assert view.top_bar.sizeHint().width() <= view.centre.width()
+    view._fill_more()
+    hidden = [a.text() for a in view.more_menu.actions()]
+    assert "Object names" in hidden and view.b_export.isVisible()
+    a = next(x for x in view.more_menu.actions() if x.text() == "Object names")
+    assert a.isEnabled() == view.b_names.isEnabled()
+    w.resize(1920, 1080)
+    _settle(w)
+    assert not view.b_more.isVisible() and view.b_names.isVisible()
+
+
 # ---------------------------------------------------------------------------------------------- the graph's navigation
 def test_the_wheel_zooms_at_the_pointer_and_the_zoom_is_the_users(env):
     w = _open(env, (1366, 728))
