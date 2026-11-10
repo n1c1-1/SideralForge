@@ -338,6 +338,23 @@ def test_an_untitled_project_stays_untitled_after_a_crash(env):
     assert w2.project.root == root and drafts.is_untitled(root) and len(w2.s.p.sessions) == 1 and w2.s.dirty
 
 
+def test_a_project_opened_from_home_and_saved_leaves_no_copy_of_before(env):
+    """The night test pass: after a crash, the project opened from Home (not through the banner), edited and saved:
+    the older copy was still offered, and Reopen would have taken the saved work back."""
+    w = project_with_a_chain(env)
+    root = w.project.root
+    w.s.set_target_name("M 42")
+    w._write_recovery()
+    crash(w)
+    w2 = main(env)
+    w2.open_project(root)
+    w2.worker.wait()
+    settle(w2, 12)
+    w2.s.set_target_name("M 31")
+    w2.save()
+    assert project2.load(root).target.name == "M 31" and not drafts.recoveries()
+
+
 def test_ignore_drops_the_copy_and_the_folder_of_an_untitled_project(env):
     w = untitled(env)
     root = w.project.root

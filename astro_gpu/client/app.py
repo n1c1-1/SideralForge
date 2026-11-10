@@ -1198,7 +1198,9 @@ class Main(QMainWindow):
             self._recovery_mine = True
 
     def _saved_or_not(self, dirty: bool):
-        if not dirty and self.project is not None and self._recovery_mine:
+        # saved: the copy of this project goes, this session's or one a crash left (the night test pass: the project
+        # opened from Home, saved, and the older copy was still offered: Reopen would have taken the work back)
+        if not dirty and self.project is not None:
             self._recovery_timer.stop()
             drafts.clear_recovery(self.project.root)
             self._recovery_mine = False
