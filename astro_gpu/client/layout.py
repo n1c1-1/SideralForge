@@ -12,15 +12,29 @@ The automatic layout only applies until the user acts: a panel pinned, folded, r
 per size range (the setting ``layout``); View > Reset layout forgets them. The setting ``layout_density`` (Settings)
 is "auto", "compact" (always compact) or "comfortable" (never: today's layout on any screen).
 
-``Dock`` is a page's right panel: docked (today's), folded to a strip of icons (a click opens it over the main area, Esc
-or a click elsewhere closes it, the pin docks it again) or hidden (a small arrow at the window's edge brings it back).
+``Dock`` is a page's side panel: docked (today's), folded to a strip of icons (a click opens it over the main area, Esc
+or a click elsewhere closes it, the pin docks it again), automatic (the same strip, opened by the mouse resting on it and
+closed when the mouse leaves) or hidden (a small arrow at the window's edge brings it back).
 ``wheel_gesture`` tells a mouse wheel (zoom) from two fingers on a touchpad (pan) for the graph and the viewers.
 """
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QPainter
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLayout, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QAbstractSpinBox,
+    QApplication,
+    QFrame,
+    QLabel,
+    QLayout,
+    QLineEdit,
+    QMenu,
+    QPlainTextEdit,
+    QTextEdit,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from . import prefs
 from .i18n import _
@@ -34,6 +48,7 @@ MIN_WINDOW = (1024, 640)        # the smallest window that still shows every pag
 STRIP_W = 40                    # the panel folded to icons
 ARROW_W, ARROW_H = 16, 46       # the arrow left by a hidden side
 FLOAT_W = 400                   # a panel opened over the main area, when it has no width of its own
+UNFOLD_MS, FOLD_MS = 200, 300   # automatic: the mouse only crossing it opens nothing, a slip closes nothing (as the palette)
 
 #: the compact look: margins, spacing and buttons tighter, the text unchanged and never below 9 pt (set on the window:
 #: a large screen has no style sheet here at all)
@@ -48,7 +63,10 @@ QTreeWidget::item { padding: 2px 2px; }
 """
 
 
-OVERLAY_QSS = "QWidget#panel { background: #1c1f26; border-left: 1px solid #353b47; }"
+OVERLAY_QSS = {"right": "QWidget#panel { background: #1c1f26; border-left: 1px solid #353b47; }",
+               "left": "QWidget#panel { background: #1c1f26; border-right: 1px solid #353b47; }"}
+#: a panel's three ways of showing, as the blocks' palette (its menu's words)
+SHOWN = (("auto", "Automatic"), ("docked", "Kept open"), ("icons", "Kept folded"))
 
 
 def size_class(w: int, h: int, was: str | None = None) -> str:
@@ -98,10 +116,10 @@ def remember(cls: str, **kw):
 
 
 def reset():
-    """View > Reset layout: back to the automatic layout of every size range, Post's panel width included."""
+    """View > Reset layout: back to the automatic layout of every size range, the widths of Post's sides included."""
     prefs.set("layout", {})
     prefs.set("post_panel_width", 0)
-    prefs.set("post_panel_shown", True)
+    prefs.set("post_layers_width", 0)
 
 
 def state(cls: str) -> dict:
@@ -143,23 +161,29 @@ def pinch_factor(e) -> float | None:
 
 # ---------------------------------------------------------------------------------------------- the folding panel
 class Dock(QObject):
-    """A page's right panel: docked, folded to a strip of icons, or hidden (see the module's text).
+    """A page's side panel: docked, folded to a strip of icons, automatic or hidden (see the module's text).
 
     ``put`` and ``take`` place the panel in, and out of, its page's layout (a splitter or a box). ``sections``, when
     given, says the panel's sections: [(title, shows it, icon role)] for the strip's icons (the role may be left out);
-    the strip then has a first icon, ``role``, that opens the panel at its top."""
-    chosen = Signal(str)                               # the user's gesture: "docked" or "icons", to remember
+    the strip then has a first icon, ``role``, that opens the panel at its top. ``side``: "right" or "left"."""
+    chosen = Signal(str)                               # the user's gesture: "docked", "icons" or "auto", to remember
 
-    def __init__(self, page: QWidget, panel: QWidget, put, take, sections=None, title: str = "", role: str = "adjust"):
+    def __init__(self, page: QWidget, panel: QWidget, put, take, sections=None, title: str = "", role: str = "adjust",
+                 side: str = "right"):
         super().__init__(page)
         self.page, self.panel, self.put, self.take, self.sections = page, panel, put, take, sections or (lambda: [])
-        self.title, self.role = title, role
+        self.title, self.role, self.side = title, role, side
         self.state = "docked"
         self._open = False
+        self._unfold_t = QTimer(self, singleShot=True, interval=UNFOLD_MS)
+        self._unfold_t.timeout.connect(self._hover_open)
+        self._fold_t = QTimer(self, singleShot=True, interval=FOLD_MS)
+        self._fold_t.timeout.connect(self._hover_close)
         self.strip = QFrame(page)
         self.strip.setObjectName("panel")
         self.strip.setFixedWidth(STRIP_W)
-        self.strip.setStyleSheet("QFrame#panel { background: #1c1f26; border-left: 1px solid #2a2f38; }")
+        edge = "border-left" if side == "right" else "border-right"
+        self.strip.setStyleSheet(f"QFrame#panel {{ background: #1c1f26; {edge}: 1px solid #2a2f38; }}")
         v = QVBoxLayout(self.strip)
         v.setContentsMargins(4, 8, 4, 8)
         v.setSpacing(4)
@@ -175,18 +199,21 @@ class Dock(QObject):
         v.addStretch(1)
         self.strip.hide()
         self.arrow = QToolButton(page)
-        set_icon(self.arrow, "chevron_left", 16, "dim")
+        set_icon(self.arrow, "chevron_left" if side == "right" else "chevron_right", 16, "dim")
         self.arrow.setFixedSize(ARROW_W, ARROW_H)
         self.arrow.setToolTip(_("Show the panel again"))
+        inner = "left" if side == "right" else "right"
         self.arrow.setStyleSheet("QToolButton { background: #1c1f26; border: 1px solid #2a2f38; padding: 0; "
-                                 "border-top-left-radius: 5px; border-bottom-left-radius: 5px; }")
+                                 f"border-top-{inner}-radius: 5px; border-bottom-{inner}-radius: 5px; }}")
         self.arrow.hide()
         page.installEventFilter(self)
+        self.strip.installEventFilter(self)
+        panel.installEventFilter(self)
         self.refresh_icons()
 
     # ------------------------------------------------------------ states
     def set_state(self, st: str):
-        """docked | icons | hidden."""
+        """docked | icons | auto | hidden."""
         if st == self.state:
             return
         self.close_overlay()
@@ -201,7 +228,7 @@ class Dock(QObject):
         if was == "docked":
             self.take()
         self.panel.hide()
-        self.strip.setVisible(st == "icons")
+        self.strip.setVisible(st in ("icons", "auto"))
         self.arrow.setVisible(st == "hidden")
         self.place()
 
@@ -212,6 +239,20 @@ class Dock(QObject):
     def fold(self):
         """The panel's fold button."""
         self._choose("icons")
+
+    def menu(self, button: QWidget):
+        """The panel's three ways of showing (``SHOWN``), as the blocks' palette's menu."""
+        m = QMenu(button)
+        for st, word in SHOWN:
+            a = m.addAction(_(word))
+            a.setCheckable(True)
+            a.setChecked(st == self.state)
+            a.setData(st)
+        a = m.exec(button.mapToGlobal(button.rect().bottomLeft()))
+        st = a.data() if a is not None else None
+        m.deleteLater()
+        if st and st != self.state:
+            self._choose(st)
 
     def retranslate(self):
         """A change of language on a page that is not built again."""
@@ -248,15 +289,17 @@ class Dock(QObject):
 
     def open_overlay(self, show_section=None):
         """The folded panel, over the main area, at ``show_section``."""
-        if self.state != "icons":
+        if self.state not in ("icons", "auto"):
             return
+        self._unfold_t.stop()
+        self._fold_t.stop()
         p = self.panel
         if not self._open:
             self._open = True
             QApplication.instance().installEventFilter(self)
             # over the graph or the image: its own background and an edge (docked, it sits on the page's)
             p.setAttribute(Qt.WA_StyledBackground, True)
-            p.setStyleSheet(OVERLAY_QSS)
+            p.setStyleSheet(OVERLAY_QSS[self.side])
         p.setParent(self.page)
         self._place_overlay()
         p.raise_()
@@ -266,6 +309,8 @@ class Dock(QObject):
             QTimer.singleShot(0, self.panel, show_section)
 
     def close_overlay(self):
+        self._unfold_t.stop()
+        self._fold_t.stop()
         if not self._open:
             return
         self._open = False
@@ -277,13 +322,31 @@ class Dock(QObject):
     def _place_overlay(self):
         w = self._width()
         s = self.strip.geometry()
-        self.panel.setGeometry(max(0, s.x() - w), s.y(), w, s.height())
+        x = max(0, s.x() - w) if self.side == "right" else s.right() + 1
+        self.panel.setGeometry(x, s.y(), w, s.height())
 
     def place(self):
-        """The arrow of a hidden panel, at the middle of the page's right edge."""
+        """The arrow of a hidden panel, at the middle of the page's edge."""
         pg = self.page
-        self.arrow.move(pg.width() - ARROW_W, (pg.height() - ARROW_H) // 2)
+        self.arrow.move(pg.width() - ARROW_W if self.side == "right" else 0, (pg.height() - ARROW_H) // 2)
         self.arrow.raise_()
+
+    # ------------------------------------------------------------ automatic: opened by the mouse resting on the strip
+    def _hover_open(self):
+        if self.state == "auto" and not self._open and self.strip.underMouse():
+            self.open_overlay()
+
+    def _hover_close(self):
+        """The mouse left: closed, unless the user is still at work in it (a button held, a list or a menu open, a text
+        being typed), then looked at again later."""
+        if self.state != "auto" or not self._open or self.strip.underMouse() or self.panel.underMouse():
+            return
+        fw = QApplication.focusWidget()
+        typing = isinstance(fw, (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit)) and self.panel.isAncestorOf(fw)
+        if QApplication.mouseButtons() != Qt.NoButton or QApplication.activePopupWidget() is not None or typing:
+            self._fold_t.start()
+            return
+        self.close_overlay()
 
     def eventFilter(self, o, e):                                     # noqa: N802 - Qt's name
         t = e.type()
@@ -292,6 +355,15 @@ class Dock(QObject):
             if self._open:
                 self._place_overlay()
             return False
+        if self.state == "auto" and (o is self.strip or o is self.panel):
+            if t == QEvent.Enter:
+                self._fold_t.stop()
+                if not self._open and o is self.strip:
+                    self._unfold_t.start()
+            elif t == QEvent.Leave:
+                self._unfold_t.stop()
+                if self._open:
+                    self._fold_t.start()
         if self._open:
             if t == QEvent.Hide and o is self.page:
                 self.close_overlay()

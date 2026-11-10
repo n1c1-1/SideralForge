@@ -2951,11 +2951,12 @@ def test_the_two_images_of_a_stars_layer_have_their_own_thumbnails_and_sliders(p
         s.close()
 
 
-def test_the_divider_is_there_and_the_list_keeps_the_settings_reachable(post):
+def test_the_layers_and_the_settings_are_two_sides_of_the_image(post):
     v = post.view
-    assert v.vsplit.count() == 2 and v.vsplit.widget(1) is v.psc and not v.vsplit.childrenCollapsible()
     post.settle()
-    assert v.lsc.height() >= 40 and v.psc.height() >= 40
+    assert [v.split.widget(i) for i in range(v.split.count())] == [v.left, v.centre, v.right]
+    assert v.left.isAncestorOf(v.lsc) and v.right.isAncestorOf(v.psc) and not v.split.childrenCollapsible()
+    assert v.lsc.height() >= 200 and v.psc.height() >= 200      # each has the whole height
 
 
 def test_a_layer_row_is_one_short_line_and_its_image_grows_under_the_mouse(post):

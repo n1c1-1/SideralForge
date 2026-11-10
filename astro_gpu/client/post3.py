@@ -54,13 +54,14 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSplitter,
-    QStyle,
     QStackedWidget,
+    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from ..core.project2 import active_version
 from ..render.sliders import STARS as STARS_GROUP
 from ..render.sliders import group_title
 from . import prefs
@@ -71,7 +72,6 @@ from .icons import icon_only, pixmap, set_icon
 from .imageview import ZOOM_PRESETS, ZOOM_STEP
 from .layout import Dock, Sections
 from .model import POST_PART_NAMES
-from ..core.project2 import active_version
 from .postengine import (
     BLENDS,
     DIRECTIONS,
@@ -90,7 +90,6 @@ from .postengine import (
     is_group,
     is_pixel,
     load_layers,
-    with_synth_rows,
     move,
     new_filter_layer,
     new_id,
@@ -103,17 +102,17 @@ from .postengine import (
     save_layers,
     snapshot,
     tree,
+    with_synth_rows,
 )
 from .services.render import CPU_DRAFT_LEVEL, DRAFT_LEVEL, HALF_LEVEL, RenderWorker, Request, default_device_pref
 from .viewer import Viewer, to_qimage
-from .widgets import ACCENT, WARN, ElidedLabel, clear, hline, label
+from .widgets import ACCENT, WARN, ElidedLabel, clear, label
 
 NL = "\n"                                                   # a line break in a tooltip
 
 FAMILY_COL = {"Stretch": "#c9a35e", "Contrast": "#d98a4e", "Color": "#c46fa8", "Detail": "#5ea1ff",
               "Noise": "#62c2b1", "Combine": "#e06c6c"}
 TW, TH = THUMB                                           # thumbnail size
-LIST_MIN = 110                                           # the layer list, at its smallest
 ROW_H, SMALL_W, SMALL_H = 24, 30, 20                     # a row of the list and its thumbnails (#88)
 BRUSH_MIN, BRUSH_MAX = 4.0, 1200.0                       # the mask brush, px across
 
@@ -213,15 +212,6 @@ def small(pm: QPixmap) -> QPixmap:
 class Step(list):
     """A step of Post's Undo: the layers, and the crop of that moment."""
     crop = None
-
-
-class ListSplit(QSplitter):
-    """The divider between the layer list and the settings; says when its height changes."""
-    resized = Signal()
-
-    def resizeEvent(self, e):                                        # noqa: N802 - Qt's name
-        super().resizeEvent(e)
-        self.resized.emit()
 
 
 class ContSlider(QWidget):
@@ -327,8 +317,9 @@ class ContSlider(QWidget):
 
 
 # ======================================================================== the layers panel
-#: the right panel's width: by default, and the limits of the user's drag
-PANEL_W, PANEL_MIN, PANEL_MAX = 400, 320, 760
+#: the sides' widths: by default, and the limits of the user's drag
+PANEL_W, PANEL_MIN, PANEL_MAX = 400, 320, 760          # the settings, on the right
+LAYERS_W, LAYERS_MIN, LAYERS_MAX = 300, 230, 520       # the layers, on the left
 
 
 class EyeBox(QCheckBox):
@@ -576,7 +567,7 @@ class PostView(QWidget):
     is_post_page = True                                   # its changes go to its own Undo, not the graph's (2.1)
     goProcessing = Signal(int, str)
     goResults = Signal(int)
-    panelChosen = Signal(str)                             # issue #44: the panel pinned or folded by the user
+    panelChosen = Signal(str, str)                        # a side ("left", "right") shown another way by the user
     rendered = Signal(object)                             # a Result was shown (tests, the status line)
     toasted = Signal(str)                                 # what a change did beyond Post (the window's status line)
     layerAsked = Signal(int)                              # Open in Post of a layer (the page lists it when not computed)
@@ -631,29 +622,30 @@ class PostView(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        # the right panel, as the docks of the usual image editors: its width is the user's (its left edge dragged,
-        # kept in the settings); the double chevron at the top of the panel folds it into a thin strip at the window's
-        # edge, whose chevron opens it again (kept too)
+        # the layers on the left, the settings of the selection on the right, as the usual image editors: their widths
+        # are the user's (their inner edge dragged, kept in the settings). Each is docked, folded to a strip of icons (a
+        # click opens it over the image), automatic (the strip opens under the mouse) or hidden, as the graph's palette:
+        # the menu at its top right corner says which, remembered per size range
         self.split = QSplitter(Qt.Horizontal)
         self.split.setChildrenCollapsible(False)
-        self.split.addWidget(self._build_centre())
-        self.right = self._build_panel()
-        self.split.addWidget(self.right)
-        self.split.setStretchFactor(0, 1)
-        self.split.setStretchFactor(1, 0)
-        self.split.setSizes([10_000, int(prefs.get("post_panel_width") or PANEL_W)])
+        self.left = self._build_layers()
+        self.centre = self._build_centre()
+        self.right = self._build_settings()
+        for w in (self.left, self.centre, self.right):
+            self.split.addWidget(w)
         self.split.splitterMoved.connect(self._panel_moved)
+        self.ldock = Dock(self, self.left, lambda: self._dock_side(self.left), lambda: self.left.setParent(self),
+                          title=_("Layers"), role="layers", side="left")
+        self.dock = Dock(self, self.right, lambda: self._dock_side(self.right), lambda: self.right.setParent(self),
+                         lambda: self.folds.items(), _("Properties"), role="adjust")
+        root.addWidget(self.ldock.strip)
         root.addWidget(self.split)
-        # issue #44: docked, or the strip of icons (a click opens it over the viewer) or hidden, as the other pages
-        self.dock = Dock(self, self.right, self._dock_panel, lambda: self.right.setParent(self),
-                         lambda: [(_("Layers"), self._show_layers, "layers")]
-                         + (self.folds.items() or [(_("Properties"), self._show_props, "adjust")]),
-                         _("Layers"), role="section")
         root.addWidget(self.dock.strip)
-        self.strip = self.dock.strip
-        self.dock.chosen.connect(lambda st: self.panelChosen.emit(st))
-        self.fold_b.clicked.connect(self.dock.fold)
-        self._show_panel(prefs.get("post_panel_shown") is not False)
+        self.ldock.chosen.connect(lambda st: self.panelChosen.emit("left", st))
+        self.dock.chosen.connect(lambda st: self.panelChosen.emit("right", st))
+        self.lmenu_b.clicked.connect(lambda: self.ldock.menu(self.lmenu_b))
+        self.rmenu_b.clicked.connect(lambda: self.dock.menu(self.rmenu_b))
+        self._fit_split()
         self._connect(own_worker=worker is None)
         if self.layers:
             self.sel = (self.layers[-1]["id"], "layer")
@@ -750,33 +742,38 @@ class PostView(QWidget):
         mv.addWidget(self.hint)
         return mid
 
-    def _build_panel(self) -> QWidget:
-        """The right side: the layers, their buttons, then the properties of the selection."""
-        right = QWidget()
-        right.setObjectName("panel")
-        right.setMinimumWidth(PANEL_MIN)
-        right.setMaximumWidth(PANEL_MAX)
-        rv = QVBoxLayout(right)
-        rv.setContentsMargins(10, 10, 10, 8)
-        rv.setSpacing(6)
+    @staticmethod
+    def _menu_button() -> QToolButton:
+        """A side's menu: how it shows (see ``Dock.menu``)."""
+        b = QToolButton()
+        icon_only(b, "more", _("Panel display"), 16, "dim")
+        b.setAutoRaise(True)
+        b.setFixedSize(20, 18)
+        b.setStyleSheet("QToolButton { border: none; padding: 0; } "
+                        "QToolButton:hover { background: #2b3446; border-radius: 3px; }")
+        return b
+
+    def _build_layers(self) -> QWidget:
+        """The left side: the layers and their buttons."""
+        left = QWidget()
+        left.setObjectName("panel")
+        left.setMinimumWidth(LAYERS_MIN)
+        left.setMaximumWidth(LAYERS_MAX)
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(10, 10, 10, 8)
+        lv.setSpacing(6)
         head = QHBoxLayout()
         head.addWidget(label(_("Layers"), "h2"))
         head.addStretch(1)
-        fold = QToolButton()
-        icon_only(fold, "fold_right", _("Fold the panel"), 16, "dim")
-        fold.setAutoRaise(True)
-        fold.setFixedSize(20, 18)
-        fold.setStyleSheet("QToolButton { border: none; padding: 0; } "
-                           "QToolButton:hover { background: #2b3446; border-radius: 3px; }")
-        self.fold_b = fold
         # while a row is dragged between two others: what the drop does, beside the panel's title (a drop onto a layer
         # says it in that layer's row)
         self.drop_text = QLabel()
         self.drop_text.setStyleSheet(f"color: {ACCENT}; font-weight: 600;")
         self.drop_text.hide()
         head.addWidget(self.drop_text)
-        head.addWidget(fold)
-        rv.addLayout(head)
+        self.lmenu_b = self._menu_button()
+        head.addWidget(self.lmenu_b, 0, Qt.AlignTop)
+        lv.addLayout(head)
         self.lsc = QScrollArea()
         self.lsc.setWidgetResizable(True)
         self.lsc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -785,10 +782,7 @@ class PostView(QWidget):
         self.lbox.setContentsMargins(0, 0, 4, 12)          # (room for a drop line after the last row)
         self.lbox.setSpacing(2)
         self.lsc.setWidget(lh)
-        top = QWidget()                                  # the list and its buttons, above the divider (issue #76)
-        tv = QVBoxLayout(top)
-        tv.setContentsMargins(0, 0, 0, 0)
-        tv.addWidget(self.lsc, 1)
+        lv.addWidget(self.lsc, 1)
         self.drop_line = QFrame(lh)
         self.drop_line.setFixedHeight(3)
         self.drop_line.setStyleSheet(f"background: {ACCENT}; border-radius: 1px;")
@@ -813,8 +807,24 @@ class PostView(QWidget):
         for b in (self.b_open, self.b_align, self.b_filter, self.b_dup, self.b_maskadd, self.b_del):
             btns.addWidget(b)
         btns.addStretch(1)
-        tv.addLayout(btns)
-        tv.addWidget(hline())
+        lv.addLayout(btns)
+        return left
+
+    def _build_settings(self) -> QWidget:
+        """The right side: the settings of the selection (a layer, its mask or one of its parts)."""
+        right = QWidget()
+        right.setObjectName("panel")
+        right.setMinimumWidth(PANEL_MIN)
+        right.setMaximumWidth(PANEL_MAX)
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(10, 8, 10, 8)
+        rv.setSpacing(2)
+        head = QHBoxLayout()
+        head.addWidget(label(_("Properties"), "dim"))
+        head.addStretch(1)
+        self.rmenu_b = self._menu_button()
+        head.addWidget(self.rmenu_b)
+        rv.addLayout(head)
         psc = QScrollArea()
         psc.setWidgetResizable(True)
         psc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -823,17 +833,7 @@ class PostView(QWidget):
         self.pbox.setContentsMargins(0, 0, 14, 0)
         self.pbox.setSpacing(4)
         psc.setWidget(ph)
-        self.vsplit = ListSplit(Qt.Vertical)
-        self.vsplit.addWidget(top)
-        self.vsplit.addWidget(psc)
-        self.vsplit.setChildrenCollapsible(False)
-        self.vsplit.setStretchFactor(1, 1)
-        self.vsplit.splitterMoved.connect(lambda *_a: prefs.set("post_list_height", self.lsc.height()))
-        self.vsplit.resized.connect(self._fit_list)
-        self._list_t = QTimer(self)                      # (its own: it goes with the page)
-        self._list_t.setSingleShot(True)
-        self._list_t.timeout.connect(self._fit_list)
-        rv.addWidget(self.vsplit, 1)
+        rv.addWidget(psc, 1)
         self.psc = psc
         self.folds = Sections(self.pbox, psc)            # its groups fold, as the block panel's sections (issue #44)
         return right
@@ -1200,20 +1200,6 @@ class PostView(QWidget):
     def _thumb_sig(lay):
         return (lay.get("pid"), lay.get("key"), lay.get("part"), json.dumps(lay["sliders"], sort_keys=True),
                 json.dumps(lay.get("base"), sort_keys=True, default=str), lay.get("linked"))
-
-    def _fit_list(self):
-        """The height of the layer list: the one dragged by hand, else what its rows need, giving way so that the
-        settings fit when they can."""
-        total = self.vsplit.height()
-        want = getattr(self, "_list_want", 0)
-        if total <= 0 or not want:
-            return
-        extra = self.vsplit.widget(0).height() - self.lsc.height()
-        chosen = prefs.get("post_list_height")
-        left = total - extra - self.pbox.sizeHint().height()
-        h = int(chosen) if chosen else max(LIST_MIN, min(want, left))
-        h = min(h, max(LIST_MIN, total - extra - 120))
-        self.vsplit.setSizes([h + extra, total - h - extra])
 
     def _view_changed(self):
         self.zoom_lab.setText(_("Zoom {p}").format(p=with_unit(f"{self.viewer.scale * 100:.0f}", "%")))
@@ -1633,14 +1619,6 @@ class PostView(QWidget):
             b.clicked.connect(lambda _=False, pid=p.pid: self.goResults.emit(pid))
             self.lbox.addWidget(b)
         self.lbox.addStretch(1)
-        # as tall as the rows really are (styled first: a row is about 52 px, not a fixed guess; they are not shown yet,
-        # so the layout would not count them), up to 382 px: a list that fits never opens scrolled, its first row cut
-        kids = [w for w in (self.lbox.itemAt(i).widget() for i in range(self.lbox.count())) if w is not None]
-        self.lsc.widget().ensurePolished()
-        m = self.lbox.contentsMargins()
-        want = sum(w.sizeHint().height() for w in kids) + self.lbox.spacing() * len(kids) + m.top() + m.bottom()
-        self._list_want = int(min(382, want + 2 * self.lsc.frameWidth()))
-        self._list_t.start(0)
         sel_row = next((r for r in self.rows if self.sel and r.lay["id"] == self.sel[0]), None)
         if sel_row is not None:
             # scrolled to the selected row up and down only: the list never stays scrolled sideways (it has no
@@ -1915,33 +1893,37 @@ class PostView(QWidget):
         self.s.set_image_file(q, stretched=stretched)
         self.runAsked.emit()
 
-    def _dock_panel(self):
-        self.split.addWidget(self.right)
-        self.split.setStretchFactor(1, 0)
-        self.split.setSizes([10_000, int(prefs.get("post_panel_width") or PANEL_W)])
+    def _dock_side(self, w: QWidget):
+        """A side docked again, at its place in the splitter."""
+        if w is self.left:
+            self.split.insertWidget(0, w)
+        else:
+            self.split.addWidget(w)
+        self._fit_split()
 
-    def _show_layers(self):
-        self.lsc.ensureVisible(0, 0)
+    def _fit_split(self):
+        """The docked sides at their widths (the user's, else the default), the image the rest."""
+        wide = {id(self.left): int(prefs.get("post_layers_width") or LAYERS_W),
+                id(self.right): int(prefs.get("post_panel_width") or PANEL_W)}
+        ws = [self.split.widget(i) for i in range(self.split.count())]
+        for i, w in enumerate(ws):
+            self.split.setStretchFactor(i, 1 if w is self.centre else 0)
+        self.split.setSizes([wide.get(id(w), 10_000) for w in ws])
 
-    def _show_props(self):
-        self.psc.ensureVisible(0, 0)
-
-    def _show_panel(self, on: bool):
-        self.dock.set_state("docked" if on else "icons")
-        prefs.set("post_panel_shown", bool(on))
-
-    def set_layout(self, state: str, solo: bool = False):
-        """Issue #44: docked | icons | hidden (the panel's state the window chose for this size range), and its groups
-        one at a time on a small window."""
+    def set_layout(self, left: str, right: str, solo: bool = False):
+        """The two sides as the window chose for this size range (each docked | icons | auto | hidden), and the
+        settings' groups one at a time on a small window (issue #44)."""
         self.folds.set_solo(solo)
-        self.dock.set_state(state)
+        self.ldock.set_state(left)
+        self.dock.set_state(right)
 
     def set_compact(self, on: bool):
         self.top_bar.setContentsMargins(*((8, 2, 8, 2) if on else (10, 6, 10, 6)))
 
     def _panel_moved(self, *_a):
-        if self.right.isVisible():
-            prefs.set("post_panel_width", int(self.right.width()))
+        for w, key in ((self.left, "post_layers_width"), (self.right, "post_panel_width")):
+            if w.parent() is self.split and w.isVisible():
+                prefs.set(key, int(w.width()))
 
     def rename(self, lay, new: str | None = None):
         old = layer_name(lay)

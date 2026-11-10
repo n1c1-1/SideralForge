@@ -9,6 +9,7 @@ the touchpad; and the same in Post's viewer.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -640,30 +641,70 @@ def test_the_smallest_window_is_about_1024_by_640(env):
     assert w.mode == 0 and not _cut_controls(w)
 
 
-def test_post_folds_its_layers_panel_on_a_small_window(env):
+def _wait(w, until, ms=1500):
+    """Real time passing (the automatic side's delays), the events handled meanwhile."""
+    end = time.monotonic() + ms / 1000
+    while not until() and time.monotonic() < end:
+        QApplication.processEvents()
+        time.sleep(0.01)
+    return until()
+
+
+def test_post_has_its_layers_on_the_left_and_its_settings_on_the_right(env):
+    """As the usual image editors; on a small window the layers are automatic (the strip opens under the mouse), the
+    settings docked."""
     w = _open(env, (1366, 728))
     view = _post_view(w)
+    assert view.ldock.state == "auto" and view.ldock.strip.isVisible() and not view.left.isVisible()
+    assert view.dock.state == "docked" and view.right.isVisible()
+    assert view.ldock.strip.x() < view.viewer.mapTo(view, QPoint(0, 0)).x() < view.right.mapTo(view, QPoint(0, 0)).x()
+    # the mouse resting on the strip opens the layers over the image; leaving them closes them
+    QTest.mouseMove(view.ldock.strip, QPoint(20, 200))
+    assert _wait(w, view.ldock.is_open) and view.left.isVisible()
+    assert view.left.geometry().left() >= view.ldock.strip.geometry().right()
+    QTest.mouseMove(view.viewer, view.viewer.rect().center())
+    assert _wait(w, lambda: not view.ldock.is_open()) and not view.left.isVisible()
+    # only crossing it opens nothing
+    QTest.mouseMove(view.ldock.strip, QPoint(20, 200))
+    QTest.mouseMove(view.viewer, view.viewer.rect().center())
+    _wait(w, lambda: False, 400)
+    assert not view.ldock.is_open()
+
+
+def test_post_sides_are_shown_as_chosen_and_remembered(env):
+    w = _open(env, (1366, 728))
+    view = _post_view(w)
+    view.ldock._choose("docked")                               # as the menu at its corner does
+    _settle(w)
+    assert view.ldock.state == "docked" and view.left.isVisible() and layout.choices("small")["post_left"] == "docked"
+    assert "left" not in layout.choices("small")                # Post's own: the graph's palette did not move
+    view.dock._choose("icons")
+    _settle(w)
     assert view.dock.state == "icons" and view.dock.strip.isVisible() and not view.right.isVisible()
     QTest.mouseClick(view.dock.icons.itemAt(0).widget(), Qt.LeftButton)
     _settle(w)
     assert view.dock.is_open() and view.right.isVisible()
+    assert view.right.geometry().right() <= view.dock.strip.geometry().left()
     _activate(w)
     view.viewer.setFocus()
     QTest.keyClick(view.viewer, Qt.Key_Escape)
     _settle(w)
     assert not view.dock.is_open()
-    # the pin docks it, remembered for this size range (its own: Post's fold never moves the graph's panel)
     QTest.mouseClick(view.dock.pin, Qt.LeftButton)
     _settle(w)
-    assert view.dock.state == "docked" and layout.choices("small")["post"] == "docked" and "right" not in layout.choices("small")
-    # Tab hides it too; on a large window it starts docked
+    assert view.dock.state == "docked" and layout.choices("small")["post_right"] == "docked"
+    # Tab hides both, Shift+Tab the settings only; on a large window both start docked
     _key(w, Qt.Key_Tab, widget=view.viewer)
-    assert view.dock.state == "hidden"
+    assert view.dock.state == "hidden" and view.ldock.state == "hidden" and view.ldock.arrow.isVisible()
     _key(w, Qt.Key_Tab, widget=view.viewer)
-    assert view.dock.state == "docked"
+    assert view.dock.state == "docked" and view.ldock.state == "docked"
+    _key(w, Qt.Key_Backtab, Qt.ShiftModifier, widget=view.viewer)
+    assert view.dock.state == "hidden" and view.ldock.state == "docked"
+    _key(w, Qt.Key_Backtab, Qt.ShiftModifier, widget=view.viewer)
+    w.reset_layout()
     w.resize(1920, 1080)
     _settle(w)
-    assert w.size_range == "large" and view.dock.state == "docked"
+    assert w.size_range == "large" and view.dock.state == "docked" and view.ldock.state == "docked"
 
 
 # ---------------------------------------------------------------------------------------------- the graph's navigation

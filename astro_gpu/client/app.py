@@ -435,18 +435,18 @@ class Main(QMainWindow):
                 a.setChecked(bool(on))
 
     def _layout_post(self):
-        """Post's panel follows, except when the user folded or pinned Post's own (its choice is kept for this range)."""
+        """Post's two sides: the user's choice for this size range, else the layers as the graph's palette (automatic
+        on a small window) and the settings docked; Tab hides both, Shift+Tab the settings."""
         page = self.post_holder.page if self.post_holder is not None else None
         view = getattr(page, "view", None)
         if view is None:
             return
         cls = self.size_range or lay.LARGE
         st = lay.state(cls)
-        if st["hidden"] or st["right_hidden"] or st["max"]:
-            state = "hidden"
-        else:
-            state = st.get("post") or ("icons" if prefs.get("post_panel_shown") is False else st["right"])
-        view.set_layout(state, lay.effective(cls) == lay.SMALL)
+        gone = st["hidden"] or st["max"]
+        left = "hidden" if gone else st.get("post_left") or ("auto" if st["left"] == "auto" else "docked")
+        right = "hidden" if gone or st["right_hidden"] else st.get("post_right") or "docked"
+        view.set_layout(left, right, lay.effective(cls) == lay.SMALL)
         view.set_compact(lay.compact(cls))
 
     def _tab(self):
@@ -478,9 +478,8 @@ class Main(QMainWindow):
         lay.remember(self.size_range or lay.LARGE, **{side: st})
         self.apply_layout()
 
-    def _post_panel_chosen(self, st: str):
-        prefs.set("post_panel_shown", st == "docked")
-        lay.remember(self.size_range or lay.LARGE, post=st)
+    def _post_panel_chosen(self, side: str, st: str):
+        lay.remember(self.size_range or lay.LARGE, **{f"post_{side}": st})
         self.apply_layout()
 
     def _show_sides(self):
@@ -841,6 +840,7 @@ class Main(QMainWindow):
                                                        self.set_mode(1)))
         page.view.panelChosen.connect(self._post_panel_chosen)
         page.view.dock.arrow.clicked.connect(self._show_sides)
+        page.view.ldock.arrow.clicked.connect(self._show_sides)
         QTimer.singleShot(0, self._layout_post)
         return page
 
