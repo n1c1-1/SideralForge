@@ -896,7 +896,7 @@ def test_a_block_after_the_stars_has_its_column_and_not_the_first(world, model, 
     assert cols.index("etoiles") < cols.index("synth") < cols.index("final")
 
 
-def test_the_deconvolution_block_has_its_two_methods_and_their_own_settings(world, model, page):
+def test_the_deconvolution_block_has_its_method_and_its_settings(world, model, page):
     from astro_gpu.client.panel import MethodCard
     full = model.paths[0]
     with_block, notes = ProjectModel.with_tool(full.opts, "deconv")
@@ -907,11 +907,10 @@ def test_the_deconvolution_block_has_its_two_methods_and_their_own_settings(worl
         page.select_node(node(page, "deconv"))
         settle(world["w"], page)
         cards = [c for c in page.panel.findChildren(MethodCard) if c.isVisibleTo(page.panel)]
-        assert len(cards) == 2
-        words = " ".join(texts_of(page.panel))
-        assert "Richardson-Lucy" in words and "Filter by zones" in words
+        assert len(cards) == 1
+        assert "Richardson-Lucy" in " ".join(texts_of(page.panel))
         keys = {r.r["key"] for r in live_rows(page)}
-        assert "deconv.iterations" in keys and "deconv.shrink" not in keys
+        assert "deconv.iterations" in keys
     finally:
         _reset(model)
         settle(world["w"], page)

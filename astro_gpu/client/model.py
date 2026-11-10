@@ -75,10 +75,10 @@ METHOD_OPT = {"synth": "synth_m", "debruitage": "dn", "fond": "fond", "etoiles":
 METHOD_KEY = {"debruitage": {"pretrained": "generique", "adapted": "affine"},
               "fond": {"polynomial": "simple", "rbf": "rbf", "automatic": "auto"},
               "etoiles": {"neural": "neural"},
-              "deconv": {"rl": "psf", "zones": "zones", "neural": "neural"},
+              "deconv": {"rl": "psf", "neural": "neural"},
               "synth": {"measured": "measured", "instrument": "instrument"}}
 #: the Deconvolution methods: the views' keys and the engine's
-DECONV_ENGINE = {"psf": "rl", "zones": "zones"}
+DECONV_ENGINE = {"psf": "rl"}
 DECONV_VIEW = {v: k for k, v in DECONV_ENGINE.items()}
 #: the Gradient methods: the views' keys and the engine's
 GRADIENT_ENGINE = {"simple": "polynomial", "rbf": "rbf", "auto": "automatic"}
@@ -2890,7 +2890,7 @@ class ProjectModel(QObject):
         ``device``: "gpu", "cpu", or None for the machine's."""
         tool = {"fond": {"auto": "auto", "rbf": "rbf", "simple": "simple"}, "etoiles": {"neural": "etoiles"},
                 "debruitage": {"generique": "debruitage", "affine": "debruitage"},
-                "deconv": {"psf": "deconv", "zones": "deconv"}}.get(block, {}).get(method)
+                "deconv": {"psf": "deconv"}}.get(block, {}).get(method)
         try:
             opts = self.with_tool(p.opts, tool)[0] if tool else dict(p.opts)      # the options the method needs
         except wfl.OptionRefused:

@@ -9,7 +9,7 @@ when the stage key is the same (core/store.py); this module only says which stag
 each stage reads.
 
     options   {"denoise": None | "pretrained" | "adapted", "stars": None | "neural", "gradient": "polynomial" | "rbf" |
-               "automatic", "deconvolution": None | "rl" | "zones", "cut": [the blocks the user cut, CUTTABLE]}
+               "automatic", "deconvolution": None | "rl", "cut": [the blocks the user cut, CUTTABLE]}
     end       None, or "stacking" for the Raw stack exit (inventory → stack, then render_simple)
 
 Issue #43, the blocks redesign:
@@ -48,7 +48,7 @@ OPTION_VALUES: dict[str, tuple[Any, ...]] = {
     "denoise": (None, "pretrained", "adapted"),
     "stars": (None, "neural"),
     "gradient": ("polynomial", "rbf", "automatic"),
-    "deconvolution": (None, "rl", "zones"),
+    "deconvolution": (None, "rl"),
 }
 #: a missing option takes this value (the Classic stack). "cut", the blocks the user cut (a list, check_cut), is there
 #: only when one is: the options of a workflow without a cut stay as they were before issue #43
@@ -70,7 +70,7 @@ NOTE_DENOISE_ADDED = "Denoise added: needed by Stars/background"
 REFUSE_DENOISE = "needed by Stars/background"
 REFUSE_GRADIENT = "the sky gradient is always removed: choose another method instead"
 #: stored option values of earlier versions, read as the current ones
-OPTION_ALIASES: dict[str, dict[Any, Any]] = {"gradient": {"halpha": "polynomial"}, "denoise": {"n2n": "pretrained"},
+OPTION_ALIASES: dict[str, dict[Any, Any]] = {"deconvolution": {"zones": "rl"}, "gradient": {"halpha": "polynomial"}, "denoise": {"n2n": "pretrained"},
                                               "stars": {"psf": "neural", "psf_neural": "neural"}}
 REFUSE_AFTER_EXIT = "No block can be added after an early output"
 
@@ -530,7 +530,7 @@ FRAME_BLOCKS = ("calibration", "registration", "selection", "crop", "stacking")
 IMAGE_OPS = ("gradient", "color", "deconv", "denoise")
 #: the blocks with a method, and their methods
 METHODS: dict[str, tuple[str, ...]] = {"gradient": OPTION_VALUES["gradient"], "denoise": ("pretrained", "adapted"),
-                                       "deconv": ("rl", "zones"), "synth": ("measured", "instrument"),
+                                       "deconv": ("rl",), "synth": ("measured", "instrument"),
                                        "stars": ("neural",)}
 DEFAULT_METHOD = {"synth": "measured", "gradient": "polynomial", "deconv": "rl", "denoise": "pretrained", "stars": "neural"}
 #: the sources of a workflow

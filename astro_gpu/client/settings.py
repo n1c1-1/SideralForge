@@ -266,11 +266,6 @@ CATALOG = {
             E("deconv", "regularization", "expert"),
         ]),
     ],
-    "deconv:zones": [
-        ("Deconvolution", [
-            E("deconv", "shrink"),
-        ]),
-    ],
     "fond:simple": [
         ("Sky gradient", [
             E("gradient", "degree", help="1: a tilted plane; 2 or 3: a more flexible surface, for wide fields."),

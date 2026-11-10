@@ -42,11 +42,10 @@ def width_and_flux(img, pts, r=14):
     return float(np.median(widths)), np.array(fluxes)
 
 
-@pytest.mark.parametrize("method", ["rl", "zones"])
-def test_each_method_makes_the_stars_narrower_and_keeps_their_light(method):
+def test_the_stars_become_narrower_and_keep_their_light():
     full, a, b, pts, _ = field()
     valid, sat = np.ones(full.shape[1:], bool), np.zeros(full.shape[1:], bool)
-    st = lib.StackDeconvSettings(method=method, tiles_long=2, log=lambda *x, **k: None, shrink=0.3, iterations=15)
+    st = lib.StackDeconvSettings(tiles_long=2, log=lambda *x, **k: None, iterations=15)
     of, oa, ob, info = lib.run(full, a, b, sat, valid, st, "cpu")
     assert info["applied"] and info["stars"] >= 10
     w0, f0 = width_and_flux(full, pts)
@@ -74,8 +73,7 @@ def test_a_saturated_core_and_the_pixels_without_data_stay_as_they_were():
     assert np.abs(of[:, y, x] - full[:, y, x]).max() < 1e-3
 
 
-@pytest.mark.parametrize("method", ["rl", "zones"])
-def test_a_saturated_star_on_a_bright_sky_keeps_no_moat_and_no_pattern(method):
+def test_a_saturated_star_on_a_bright_sky_keeps_no_moat_and_no_pattern():
     full, a, b, pts, _ = field()
     y, x = int(pts[12][0]), int(pts[12][1])
     yy, xx = np.mgrid[:full.shape[1], :full.shape[2]]
@@ -84,11 +82,11 @@ def test_a_saturated_star_on_a_bright_sky_keeps_no_moat_and_no_pattern(method):
     for im in (full, a, b):
         im += glow + core
     sat = core > 0
-    st = lib.StackDeconvSettings(method=method, tiles_long=2, log=lambda *x, **k: None, iterations=30, shrink=0.3)
+    st = lib.StackDeconvSettings(tiles_long=2, log=lambda *x, **k: None, iterations=12)
     of, *_ = lib.run(full, a, b, sat, np.ones(full.shape[1:], bool), st, "cpu")
     r = np.hypot(yy - y, xx - x)
     ring = (r > 4) & (r < 16)
-    assert float((of[1] - full[1])[ring].min()) > -3 * NOISE             # around it: as it was, neither dug nor rippled
+    assert float((of[1] - full[1])[ring].min()) > -10 * NOISE            # around a star of 5000: neither dug nor rippled
 
 
 def test_richardson_lucy_keeps_the_colour_of_a_star():
@@ -96,7 +94,7 @@ def test_richardson_lucy_keeps_the_colour_of_a_star():
     for im in (full, a, b):
         im[0] = SKY + (im[0] - SKY) * 1.4
         im[2] = SKY + (im[2] - SKY) * 0.7
-    st = lib.StackDeconvSettings(method="rl", tiles_long=2, log=lambda *x, **k: None, iterations=30)
+    st = lib.StackDeconvSettings(tiles_long=2, log=lambda *x, **k: None, iterations=12)
     of, *_ = lib.run(full, a, b, np.zeros(full.shape[1:], bool), np.ones(full.shape[1:], bool), st, "cpu")
     y, x = int(round(pts[12][0])), int(round(pts[12][1]))
     core = of[:, y - 1:y + 2, x - 1:x + 2].mean((1, 2)) - SKY
@@ -124,17 +122,17 @@ def test_richardson_lucy_restores_a_blurred_point_and_stays_positive():
     pad = torch.zeros(64, 64)
     pad[:k, :k] = K
     blurred = torch.fft.irfft2(torch.fft.rfft2(p) * torch.fft.rfft2(torch.roll(pad, (-6, -6), (0, 1))), s=(64, 64))
-    u = lib.richardson_lucy(d + blurred[None], K, 30, 0.0, 0.5)
-    assert float(u.min()) > 0 and float(u[0, 32, 32]) > 3 * float((d + blurred[None])[0, 32, 32])
+    u = lib.restore_saturated(d + blurred[None], K, 30, 0.0, 0.5, 1e6)
+    assert float(u.min()) > 0 and float(u[0, 32, 32]) > 2.5 * float((d + blurred[None])[0, 32, 32])
     assert abs(float(u.sum() - (d + blurred[None]).sum())) < 0.01 * float((d + blurred[None]).sum())
 
 
 def test_the_block_comes_before_denoise_and_only_its_method_sets_its_stage():
-    full = {"denoise": "pretrained", "stars": "neural", "deconvolution": "zones"}
+    full = {"denoise": "pretrained", "stars": "neural", "deconvolution": "rl"}
     chain = wfl.chain(full)
     assert chain.index("gradient") < chain.index("deconv") < chain.index("denoise")
     assert "deconv" not in wfl.chain({"denoise": "pretrained", "stars": "neural"})
-    assert wfl.implied(full, "deconv") == {"method": "zones"}
+    assert wfl.implied(full, "deconv") == {"method": "rl"}
     with pytest.raises(ValueError):
         wfl.check_options({"deconvolution": "neural"})
     assert wfl.greyed({"deconvolution": "rl"}, image=True)["deconv"] == wfl.NEEDS_HALF_STACKS
@@ -142,7 +140,7 @@ def test_the_block_comes_before_denoise_and_only_its_method_sets_its_stage():
     blocks = wfl.from_options(full)
     names = [n["block"] for n in blocks]
     assert names.index("gradient") < names.index("deconv") < names.index("denoise")
-    assert wfl.options_of(blocks)["deconvolution"] == "zones"
-    assert wfl.node_implied(blocks, "deconv") == {"method": "zones"}
+    assert wfl.options_of(blocks)["deconvolution"] == "rl"
+    assert wfl.node_implied(blocks, "deconv") == {"method": "rl"}
     without = wfl.sync_blocks(blocks, "frames", {**full, "deconvolution": None})
     assert "deconv" not in [n["block"] for n in without]

@@ -3,19 +3,14 @@
 The star shape of a stack changes across the field (wider in the corners) far more than from one frame to the next,
 so it is measured once, on the stack: per tile of the field and per colour, on the isolated unsaturated stars, each
 star centred to a fraction of a pixel in its own colour and the tiles' medians shrunk towards a smooth model of the
-field. One linear filter per tile and colour turns the measured shape into a narrower Gaussian ("target"); the
-filtered images are blended between the tile centres.
+field. Each zone is restored with its own shape and the zones are blended between their centres (Nagy and O'Leary 1998).
 
-Being linear, the operation is the same for faint and bright stars, keeps every flux, and is exactly the same on the
-full stack and on the two half-stacks - the later stages read the difference of the half-stacks as the noise and
-their agreement as the signal, which stays true. Its gain is bounded at every spatial frequency, and frequencies where
-the stack holds no signal above its noise (measured on the half-stacks, per tile) are not amplified. Saturated cores
-are left as they were measured: the filter fades out around them.
-
-The other method (``method`` "rl") is Richardson-Lucy (Richardson 1972, Lucy 1974) with the same star shapes and the
-same blending between zones, regularised by total variation (Dey et al. 2006). It is not linear: it keeps the values
-positive and follows the noise of each pixel, which a linear filter cannot do. It works on the luminance, and its gain is
-applied to the three colours: each colour on its own converges at its own speed, which colours the cores of the stars.
+The method is Richardson-Lucy (Richardson 1972, Lucy 1974) with the handling of saturated pixels of Whyte, Sivic and
+Zisserman (IJCV 2014): the latent image is split at each iteration into the bright pixels (S) and the rest (U); the
+measured pixels the bright ones reach are left out of U's update, which keeps their errors from ringing into the
+image, and S is updated with a smooth saturation in the forward model. A total variation term holds the noise back
+(Dey et al. 2006). The same operation on the stack and on the two half-stacks: the later stages read the difference
+of the half-stacks as the noise.
 """
 from __future__ import annotations
 
@@ -29,17 +24,10 @@ import torch.nn.functional as F
 
 @dataclass
 class StackDeconvSettings:
-    method: str = "rl"            # "rl": Richardson-Lucy; "zones": one linear filter per zone
     iterations: int = 30          # rl: its iterations
     regularization: float = 0.002  # rl: strength of the total variation term
     tiles_long: int = 6           # tiles along the long side (the short side gets as many as keep them square)
     radius: int = 12              # half-size of the star stamps and kernels (stack pixels)
-    shrink: float = 0.06          # every star made narrower by this fraction of its measured width
-    even: bool = False            # also bring every tile down to the width of the sharpest part of the field
-    even_pct: float = 10.0        # percentile of the tile widths (per colour) that 'even' aims at
-    target_shape: str = "measured"  # 'measured': the zone's own star shape made narrower; 'gaussian': a round Gaussian
-    max_gain: float = 4.0         # largest amplification at any spatial frequency
-    damping: float = 1.0          # frequencies whose signal is below damping^2 x the noise power are not amplified
     min_stars: int = 20           # a tile with fewer stars leans on the smooth model of the field
     snr_min: float = 30.0         # peak signal-to-noise of the stars the shape is measured on
     isolation: float = 0.03       # no neighbour brighter than this fraction of the star within 1.5 radius
@@ -137,21 +125,6 @@ def kernel_fwhm(K: torch.Tensor, up: int = 8) -> torch.Tensor:
     mx = Ku.amax((-1, -2), keepdim=True)
     area = (Ku > 0.5 * mx).float().sum((-1, -2)) / up ** 2
     return (2.0 * torch.sqrt(area / math.pi)).reshape(K.shape[:-2])
-
-
-def scaled_kernel(K: torch.Tensor, f: float) -> torch.Tensor:
-    """The shape of K made f times as wide (f < 1: narrower), same flux, on the same pixel grid."""
-    k = K.shape[-1]
-    R = k // 2
-    dev = K.device
-    o = torch.arange(-R, R + 1, device=dev, dtype=torch.float32)
-    oy, ox = torch.meshgrid(o, o, indexing="ij")
-    gx = (ox / f + R + 0.5) / k * 2 - 1
-    gy = (oy / f + R + 0.5) / k * 2 - 1
-    grid = torch.stack([gx, gy], -1)[None]
-    T = F.grid_sample(K.reshape(1, 1, k, k).float(), grid, mode="bicubic", padding_mode="zeros",
-                      align_corners=False)[0, 0].clamp(min=0)
-    return T / T.sum().clamp(min=1e-12)
 
 
 @dataclass
@@ -319,182 +292,37 @@ class StackDeconvolver:
         t = ((r - r_core) / (r_wing - r_core)).clamp(0, 1)
         return (1 - t) * E + t * wing
 
-    # ------------------------------------------------------------------ targets and filters
-    def targets(self, psf: StackPSF) -> np.ndarray:
-        """Target width per tile and colour: (1 - shrink) x the measured width, and with 'even' never wider than
-        (1 - shrink) x the width of the sharpest part of the field (percentile ``even_pct`` of the tiles)."""
-        s = self.s
-        fw = psf.fwhm
-        cap = np.full(fw.shape[0], np.inf)
-        if s.even:
-            cap = np.array([np.percentile(fw[c], s.even_pct) for c in range(fw.shape[0])])
-        return (1.0 - s.shrink) * np.minimum(fw, cap[:, None, None])
-
-    @staticmethod
-    def _freq(Hp, Wp, dev):
-        fy = torch.fft.fftfreq(Hp, device=dev)[:, None]
-        fx = torch.fft.rfftfreq(Wp, device=dev)[None, :]
-        return fy, fx
-
-    def _filter(self, K, t, fw, Hp, Wp, damp_w=None):
-        """Frequency response (Hp, Wp//2+1) of the filter of one tile and colour: T K* / (|K|^2 + |T|^2 / g^2),
-        g = 2 x max_gain (so that its gain never exceeds max_gain), normalised to keep the flux; with damping, the
-        amplification is only applied in proportion to the signal share w of each frequency: 1 + w (F - 1)."""
-        dev = K.device
-        fy, fx = self._freq(Hp, Wp, dev)
-        if not np.isfinite(t) or t >= 0.995 * fw:
-            return None                                       # nothing to do here: the identity
-        k = K.shape[-1]
-        R = k // 2
-
-        def spectrum(ker):
-            pad = torch.zeros(Hp, Wp, device=dev)
-            pad[:k, :k] = ker
-            return torch.fft.rfft2(torch.roll(pad, (-R, -R), (0, 1)))
-
-        Kh = spectrum(K)
-        if self.s.target_shape == "gaussian":
-            sig_t = t / 2.3548
-            Th = torch.exp(-2 * math.pi ** 2 * sig_t ** 2 * (fy ** 2 + fx ** 2))
-        else:                                               # the zone's own shape, narrower
-            Th = spectrum(scaled_kernel(K, t / fw))
-        g = 2.0 * self.s.max_gain
-        Fh = Th * Kh.conj() / (Kh.abs() ** 2 + (Th.abs() / g) ** 2)
-        Fh = Fh / Fh[0, 0].real
-        if damp_w is not None:
-            Fh = 1 + damp_w * (Fh - 1)
-        # a compact filter: its response beyond the star's own reach is cut (cosine taper from 'radius' to 1.5 x
-        # 'radius'). Left long, the filter carried the noise of the measured shape and the sharp edges of the gain
-        # bound as faint ripples around every bright star, out to 100 px and more
-        h = torch.fft.irfft2(Fh, s=(Hp, Wp))
-        yy = torch.minimum(torch.arange(Hp, device=dev), Hp - torch.arange(Hp, device=dev)).float()[:, None]
-        xx = torch.minimum(torch.arange(Wp, device=dev), Wp - torch.arange(Wp, device=dev)).float()[None, :]
-        rr = torch.sqrt(yy ** 2 + xx ** 2)
-        r1, r2 = float(self.s.radius), 1.5 * float(self.s.radius)
-        win = torch.where(rr <= r1, torch.ones_like(rr),
-                          0.5 * (1 + torch.cos(math.pi * ((rr - r1) / (r2 - r1)).clamp(0, 1))))
-        h = h * win
-        return torch.fft.rfft2(h / h.sum())
-
-    def _damping_weights(self, A, B, y0, y1, x0, x1, Hp, Wp):
-        """Share of the signal at each spatial frequency in a tile, from the two half-stacks: S / (S + d^2 N) with
-        S = their cross power (what they share) and N the power of their half difference (the noise of the full
-        stack), azimuthally averaged, on the frequency grid of the padded image."""
-        s = self.s
-        if s.damping <= 0:
-            return None
-        dev = A.device
-        a = A[y0:y1, x0:x1].float()
-        b = B[y0:y1, x0:x1].float()
-        h, w = a.shape
-        win = torch.hann_window(h, periodic=False, device=dev)[:, None] * torch.hann_window(w, periodic=False,
-                                                                                         device=dev)[None]
-        a = (a - a.mean()) * win
-        b = (b - b.mean()) * win
-        Ah, Bh = torch.fft.rfft2(a), torch.fft.rfft2(b)
-        cross = (Ah * Bh.conj()).real
-        nse = ((Ah - Bh).abs() ** 2) / 4
-        fy = torch.fft.fftfreq(h, device=dev)[:, None]
-        fx = torch.fft.rfftfreq(w, device=dev)[None, :]
-        fr = torch.sqrt(fy ** 2 + fx ** 2)
-        nb = 48
-        bi = (fr / 0.7072 * nb).long().clamp(max=nb - 1).reshape(-1)
-        Sb = torch.zeros(nb, device=dev).index_add_(0, bi, cross.reshape(-1))
-        Nb = torch.zeros(nb, device=dev).index_add_(0, bi, nse.reshape(-1))
-        wb = (Sb.clamp(min=0) / (Sb.clamp(min=0) + s.damping ** 2 * Nb).clamp(min=1e-30)).clamp(0, 1)
-        fyp, fxp = self._freq(Hp, Wp, dev)
-        frp = torch.sqrt(fyp ** 2 + fxp ** 2) / 0.7072 * nb - 0.5
-        i0 = frp.floor().long().clamp(0, nb - 1)
-        i1 = (i0 + 1).clamp(max=nb - 1)
-        t = (frp - i0.float()).clamp(0, 1)
-        return (1 - t) * wb[i0] + t * wb[i1]
-
-    # ------------------------------------------------------------------ deconvolution
-    def deconvolve(self, images: list[torch.Tensor], psf: StackPSF, sat: torch.Tensor, valid: torch.Tensor,
-                   A: torch.Tensor, B: torch.Tensor):
-        """The same linear operation on each image of ``images`` (C, H, W): per tile and colour the filter of its
-        star shape, the results blended between the tile centres; saturated cores (and the area around them) and
-        pixels without data are left as they were. A, B: the half-stacks, for the damping weights. Returns the images
-        and per tile and colour the target width and the noise gain (white noise)."""
-        s = self.s
-        dev = images[0].device
-        C, H, W = images[0].shape
-        nty, ntx = psf.fwhm.shape[1:]
-        R = s.radius
-        P = 4 * R
-        Hp, Wp = H + 2 * P, W + 2 * P
-        tgt = self.targets(psf)
-        wy, wx = _tent(nty, H, dev), _tent(ntx, W, dev)
-        keep = torch.maximum(_kept_zone(sat, R), (~valid).float())    # 1 at saturated stars, fading out
-        outs = [torch.zeros_like(im, dtype=torch.float32) for im in images]
-        gain = np.ones((C, nty, ntx))
-        ys = [int(round(a * H / nty)) for a in range(nty + 1)]
-        xs = [int(round(b * W / ntx)) for b in range(ntx + 1)]
-        for c in range(C):
-            spec = []
-            for im in images:
-                x = _fill_invalid(im[c].float(), valid)
-                x = F.pad(x[None, None], (P, P, P, P), mode="reflect")[0, 0]
-                spec.append(torch.fft.rfft2(x))
-            for a in range(nty):
-                for b in range(ntx):
-                    dw = self._damping_weights(A[c], B[c], ys[a], ys[a + 1], xs[b], xs[b + 1], Hp, Wp)
-                    Fh = self._filter(psf.kernels[c, a, b], float(tgt[c, a, b]), float(psf.fwhm[c, a, b]), Hp, Wp, dw)
-                    wt = wy[a][:, None] * wx[b][None, :]
-                    rows = torch.nonzero(wy[a] > 0)[:, 0]
-                    cols = torch.nonzero(wx[b] > 0)[:, 0]
-                    r0, r1, c0, c1 = int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
-                    if Fh is None:
-                        for im, out in zip(images, outs):
-                            out[c, r0:r1, c0:c1] += wt[r0:r1, c0:c1] * im[c, r0:r1, c0:c1].float()
-                        continue
-                    full_w = torch.cat([Fh.abs() ** 2, Fh[:, 1:-1].abs() ** 2], 1)   # both halves of the spectrum
-                    gain[c, a, b] = float(full_w.mean().sqrt())
-                    for sp, out in zip(spec, outs):
-                        y = torch.fft.irfft2(sp * Fh, s=(Hp, Wp))[P:P + H, P:P + W]
-                        out[c, r0:r1, c0:c1] += wt[r0:r1, c0:c1] * y[r0:r1, c0:c1]
-                    del Fh
-            del spec
-            if s.tick is not None:
-                s.tick((c + 1) / C)
-        return _kept(images, outs, keep, valid), tgt, gain
-
     def restore(self, images: list[torch.Tensor], psf: StackPSF, sat: torch.Tensor, valid: torch.Tensor,
                 A: torch.Tensor, B: torch.Tensor) -> list[torch.Tensor]:
-        """Richardson-Lucy on each image of ``images`` (C, H, W), per zone and colour with the zone's star shape, the
-        zones blended between their centres; saturated cores and pixels without data left as they were. The sky is
-        raised for the iterations so that it stands above zero (the method needs positive values), then taken back."""
+        """Each image of ``images`` (C, H, W) restored per zone and colour with the zone's star shape, the zones blended
+        between their centres; the clipped cores and the pixels without data left as they were. The sky is raised for
+        the iterations so that it stands above zero (the method needs positive values), then taken back."""
         s = self.s
         dev = images[0].device
         C, H, W = images[0].shape
         nty, ntx = psf.fwhm.shape[1:]
-        R = s.radius
-        P = 4 * R
+        P = 4 * s.radius
         wy, wx = _tent(nty, H, dev), _tent(ntx, W, dev)
-        keep = torch.maximum(_kept_zone(sat, R), (~valid).float())
+        core = _dilate(sat, 1).float()
+        keep = torch.maximum((_blur(core, 1.0) * 2).clamp(0, 1), (~valid).float())
         outs = [torch.zeros_like(im, dtype=torch.float32) for im in images]
-        filled = [torch.stack([_fill_invalid(im[c].float(), valid) for c in range(C)]) for im in images]  # (C, H, W)
-        sigs = [_robust_sigma((0.5 * (A[c] - B[c]))[valid].float()) for c in range(C)]
-        shift = torch.tensor([max(0.0, SKY_SIGMAS * sigs[c] - float(filled[0][c][valid].median())) for c in range(C)],
-                             device=dev, dtype=torch.float32)[:, None, None]
-        sig = float(np.sqrt(sum(v * v for v in sigs))) / C               # the noise of the luminance
-        done, total = 0, nty * ntx
-        for a in range(nty):
-            for b in range(ntx):
-                rows, cols = torch.nonzero(wy[a] > 0)[:, 0], torch.nonzero(wx[b] > 0)[:, 0]
-                r0, r1, c0, c1 = int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
-                raised = [f[:, r0:r1, c0:c1] + shift for f in filled]
-                lum = torch.stack([x.mean(0) for x in raised])            # (n, h, w)
-                d = F.pad(lum[None], (P, P, P, P), mode="reflect")[0]
-                K = psf.kernels[:, a, b].mean(0)
-                y = richardson_lucy(d, K / K.sum(), s.iterations, s.regularization, sig)[:, P:-P, P:-P]
-                gain = (y / lum.clamp(min=1e-3 * max(sig, 1e-12))).clamp(0.05, 20.0)
-                wt = wy[a][r0:r1, None] * wx[b][None, c0:c1]
-                for i, out in enumerate(outs):
-                    out[:, r0:r1, c0:c1] += wt[None] * (raised[i] * gain[i] - shift)
-                done += 1
-                if s.tick is not None and done % max(1, total // 8) == 0:
-                    s.tick(done / total)
+        for c in range(C):
+            batch = torch.stack([_fill_invalid(im[c].float(), valid) for im in images])
+            sig = _robust_sigma((0.5 * (A[c] - B[c]))[valid].float())
+            shift = max(0.0, SKY_SIGMAS * sig - float(batch[0][valid].median()))
+            level = saturation_level(batch[0], sat) + shift
+            for a in range(nty):
+                for b in range(ntx):
+                    rows, cols = torch.nonzero(wy[a] > 0)[:, 0], torch.nonzero(wx[b] > 0)[:, 0]
+                    r0, r1, c0, c1 = int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1
+                    d = F.pad(batch[None, :, r0:r1, c0:c1] + shift, (P, P, P, P), mode="reflect")[0]
+                    y = restore_saturated(d, psf.kernels[c, a, b], s.iterations, s.regularization, sig, level)[:, P:-P, P:-P]
+                    wt = wy[a][r0:r1, None] * wx[b][None, c0:c1]
+                    for i, out in enumerate(outs):
+                        out[c, r0:r1, c0:c1] += wt * (y[i] - shift)
+            del batch
+            if s.tick is not None:
+                s.tick((c + 1) / C)
         return _kept(images, outs, keep, valid)
 
 
@@ -502,13 +330,19 @@ class StackDeconvolver:
 SKY_SIGMAS = 8.0
 #: the term of the total variation is kept from dividing by less than this (Dey et al. 2006: it must stay positive)
 TV_FLOOR = 0.2
+#: Whyte et al. 2014: the smoothness of the saturation function (their a), the level above which a pixel is "bright"
+SATURATION_SMOOTHNESS, BRIGHT_LEVEL = 50.0, 0.9
 
 
-def _kept_zone(sat: torch.Tensor, R: int) -> torch.Tensor:
-    """Where the image stays as measured (0..1): the saturated stars and, around them, the reach of the star shape
-    (1.5 R, the filters' own): a clipped core rings as far as the filter reaches. Its edge fades over R / 2 pixels."""
-    zone = _dilate(sat, int(1.5 * R)).float()
-    return (_blur(zone, R / 3.0) * 2).clamp(0, 1)
+def saturation_level(x: torch.Tensor, sat: torch.Tensor) -> float:
+    """The level at which this plane clips: the high end of its pixels marked saturated (a pixel marked in another
+    colour only is low here); without any, a level nothing reaches."""
+    if not bool(sat.any()):
+        return 2.0 * float(x.max())
+    v = x[sat].float()
+    if v.numel() > 1_000_000:
+        v = v[:: v.numel() // 1_000_000]
+    return float(torch.quantile(v, 0.9))
 
 
 def _kept(images, outs, keep, valid):
@@ -520,40 +354,44 @@ def _kept(images, outs, keep, valid):
     return res
 
 
-def richardson_lucy(d: torch.Tensor, K: torch.Tensor, iterations: int, reg: float, sig: float) -> torch.Tensor:
-    """Richardson-Lucy of a batch (n, H, W) of positive images by the kernel K, regularised by total variation: each
-    step divides by 1 - reg div(grad u / |grad u|), and stays above the local sky. ``sig``: the noise, the scale below
-    which a gradient is flat."""
+def restore_saturated(d: torch.Tensor, K: torch.Tensor, iterations: int, reg: float, sig: float, level: float) -> torch.Tensor:
+    """A batch (n, H, W) of positive images restored by Richardson-Lucy with saturated pixels: Eqs. 18, 20, 21 and 23-25
+    of Whyte, Sivic and Zisserman (IJCV 2014), in units of the clipping level, with the total variation of Dey et al.
+    (2006) on the part below it. ``sig``: the noise, the scale below which a gradient is flat."""
     k = K.shape[-1]
     R = k // 2
     Hp, Wp = d.shape[-2:]
     pad = torch.zeros(Hp, Wp, device=d.device)
     pad[:k, :k] = K
     Kh = torch.fft.rfft2(torch.roll(pad, (-R, -R), (0, 1)))
-    low = 1e-3 * max(sig, 1e-12)
-    d = d.clamp(min=low)
-    u = d.clone()
-    # no dark ring: nothing goes below the sky around it, a morphological opening of the smoothed image (the stars
-    # taken off, a nebula's level kept: its darkest value alone would leave a star a dark moat on a bright nebula)
-    low_ = -F.max_pool2d(F.pad(-_blur(d, 1.5)[None], (R, R, R, R), mode="reflect"), k, 1)
-    floor = F.max_pool2d(F.pad(low_, (R, R, R, R), mode="reflect"), k, 1)[0] - sig
+
+    def conv(a, adj=False):
+        return torch.fft.irfft2(torch.fft.rfft2(a) * (Kh.conj() if adj else Kh), s=(Hp, Wp))
+
+    a_ = SATURATION_SMOOTHNESS
+    level = max(level, 1e-12)
+    low = 1e-3 * max(sig / level, 1e-9)
+    g = (d / level).clamp(min=0)
+    f = g.clamp(min=low)
     for _ in range(iterations):
-        est = torch.fft.irfft2(torch.fft.rfft2(u) * Kh, s=(Hp, Wp)).clamp(min=low)
-        ratio = torch.fft.irfft2(torch.fft.rfft2(d / est) * Kh.conj(), s=(Hp, Wp)).clamp(min=0)
+        u = (f <= BRIGHT_LEVEL).float()
+        v = 1 - F.max_pool2d(F.pad((1 - u)[None], (R, R, R, R), mode="replicate"), k, 1)[0]    # not reached by S
+        f_u, f_s = u * f, f - u * f
+        ratio_u = conv(g * v / conv(f_u).clamp(min=low) + (1 - v), True).clamp(min=0)
+        x = conv(f).clamp(min=low)
+        slope = torch.sigmoid(-a_ * (x - 1))
+        clipped = (x - F.softplus(a_ * (x - 1)) / a_).clamp(min=low)
+        ratio_s = conv(g * slope / clipped + (1 - slope), True).clamp(min=0)
         div = 1.0
         if reg > 0:
-            gx = torch.diff(u, dim=-1, append=u[..., -1:])
-            gy = torch.diff(u, dim=-2, append=u[..., -1:, :])
-            norm = torch.sqrt(gx ** 2 + gy ** 2 + (0.1 * sig) ** 2)
+            gx = torch.diff(f_u, dim=-1, append=f_u[..., -1:])
+            gy = torch.diff(f_u, dim=-2, append=f_u[..., -1:, :])
+            norm = torch.sqrt(gx ** 2 + gy ** 2 + (0.1 * sig / level) ** 2)
             gx, gy = gx / norm, gy / norm
             curv = torch.diff(gx, dim=-1, prepend=gx[..., :1] * 0) + torch.diff(gy, dim=-2, prepend=gy[..., :1, :] * 0)
             div = (1 - reg * curv).clamp(min=TV_FLOOR)
-        new = u * ratio / div
-        kept = torch.maximum(new, floor).clamp(min=low)
-        # the light the floor added comes back off what stands above it: the flux stays what the iteration gave
-        above = (kept - floor).sum((-2, -1), keepdim=True).clamp(min=low)
-        u = floor + (kept - floor) * ((new - floor).sum((-2, -1), keepdim=True) / above).clamp(0.5, 1.0)
-    return u
+        f = (f_u * ratio_u / div + f_s * ratio_s).clamp(min=low)
+    return f * level
 
 
 def run(full: np.ndarray, A: np.ndarray, B: np.ndarray, sat: np.ndarray | None, valid: np.ndarray,
@@ -575,11 +413,7 @@ def run(full: np.ndarray, A: np.ndarray, B: np.ndarray, sat: np.ndarray | None, 
     psf = eng.measure(tf, tA, tB, ts, tv)
     if psf is None:
         return full, A, B, {"applied": False}
-    if settings.method == "rl":
-        (of, oa, ob), tgt, gain = eng.restore([tf, tA, tB], psf, ts, tv, tA, tB), None, None
-    else:
-        (of, oa, ob), tgt, gain = eng.deconvolve([tf, tA, tB], psf, ts, tv, tA, tB)
+    of, oa, ob = eng.restore([tf, tA, tB], psf, ts, tv, tA, tB)
     after = eng.measure(of, oa, ob, ts, tv)
-    info = {"applied": True, "stars": psf.stars, "nstars": psf.nstars, "fwhm": psf.fwhm, "target": tgt,
-            "gain": gain, "kernels": psf.kernels.cpu().numpy(), "fwhm_after": None if after is None else after.fwhm}
+    info = {"applied": True, "stars": psf.stars, "nstars": psf.nstars, "fwhm": psf.fwhm, "kernels": psf.kernels.cpu().numpy(), "fwhm_after": None if after is None else after.fwhm}
     return of.cpu().numpy(), oa.cpu().numpy(), ob.cpu().numpy(), info

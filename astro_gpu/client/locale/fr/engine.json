@@ -525,11 +525,8 @@
  "frames already in colour: Classic stack, no Bayer drizzle (no mosaic of raw colour samples to drop)": "images déjà en couleur : empilement classique, pas de drizzle Bayer (pas de mosaïque de pixels bruts à déposer)",
  "Colour frames": "Images couleur",
  "The frames are already in colour (JPEG, PNG, TIFF or RGB FITS): no debayering, no Bayer drizzle.": "Les images sont déjà en couleur (JPEG, PNG, TIFF ou FITS RVB) : pas de dématriçage, pas de drizzle Bayer.",
- "Star reduction": "Réduction étoiles",
- "How much narrower the stars become: a share of their measured width.": "De combien les étoiles deviennent plus fines : une part de leur largeur mesurée.",
  "More iterations sharpen more, and raise the noise.": "Plus d'itérations accentuent davantage, et font monter le bruit.",
  "Holds back noise and ringing.": "Retient le bruit et les anneaux.",
- "Richardson-Lucy: iterations with the star shape measured across the field. By zones: one sharpening filter per zone, faster.": "Richardson-Lucy : des itérations avec la forme d'étoile mesurée dans le champ. Par zones : un filtre de netteté par zone, plus rapide.",
  "Zones along the long side of the image, each with its own measured star shape.": "Zones le long du grand côté de l'image, chacune avec sa forme d'étoile mesurée.",
  "Sharpens the stack and its half-stacks with the star shape measured on the stack itself, per zone of the field and per colour.": "Accentue l'empilement et ses demi-empilements avec la forme d'étoile mesurée sur l'empilement lui-même, par zone du champ et par couleur.",
  "Star width before": "Largeur étoiles avant",
@@ -539,7 +536,6 @@
  "The same, measured on the deconvolved stack.": "La même, mesurée sur l'empilement déconvolué.",
  "Zones of the field, each with its own measured star shape.": "Zones du champ, chacune avec sa forme d'étoile mesurée.",
  "Richardson-Lucy": "Richardson-Lucy",
- "By zones": "Par zones",
  "Deconvolution": "Déconvolution",
  "Stars drawn": "Étoiles dessinées",
  "Detected stars redrawn.": "Étoiles détectées et redessinées.",
@@ -570,5 +566,6 @@
  "The direction of the spikes on the image.": "La direction des aigrettes sur l'image.",
  "Star width": "Largeur étoile",
  "The width at half height of the stars drawn: the turbulence added to the diffraction.": "La largeur à mi-hauteur des étoiles dessinées : la turbulence ajoutée à la diffraction.",
- "Draws the detected stars again, with the shape measured in the image or the instrument's.": "Redessine les étoiles détectées, avec la forme mesurée dans l'image ou celle de l'instrument."
+ "Draws the detected stars again, with the shape measured in the image or the instrument's.": "Redessine les étoiles détectées, avec la forme mesurée dans l'image ou celle de l'instrument.",
+ "Richardson-Lucy: iterations with the star shape measured across the field.": "Richardson-Lucy : des itérations avec la forme d'étoile mesurée dans le champ."
 }

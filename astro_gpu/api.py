@@ -1590,9 +1590,6 @@ _METHODS: dict[str, list[MethodInfo]] = {
     "deconvolution": [
         MethodInfo("rl", "Measured PSF (Richardson-Lucy)", "Richardson-Lucy", "both", "deconv", False,
                    "Classic deconvolution with the PSF measured across the field."),
-        MethodInfo("zones", "Filter by zones", "by zones", "both", "deconv", False,
-                   "A sharpening filter per zone of the field, the same on faint and bright stars: fast, keeps every "
-                   "flux, sharpens less."),
         MethodInfo("neural", "Neural network", "neural", "both", "deconv", True,
                    "A pretrained network that corrects the PSF locally, stars included."),
     ],

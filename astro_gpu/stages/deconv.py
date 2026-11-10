@@ -1,8 +1,8 @@
 """The Deconvolution block: the star shape measured on the stack, per zone and colour, and the stack and its two
 half-stacks sharpened with it (stages/deconv_lib.py). Optional, before Denoise, on linear data.
 
-Methods (the workflow's ``deconvolution`` option, ``method`` here): ``rl`` Richardson-Lucy, regularised; ``zones`` one
-linear filter per zone. The half-stacks are treated like the stack, so that a Denoise placed after it still reads two
+Its method (the workflow's ``deconvolution`` option, ``method`` here): ``rl`` Richardson-Lucy with the handling of
+saturated pixels of Whyte et al. 2014, regularised. The half-stacks are treated like the stack, so that a Denoise placed after it still reads two
 images whose difference is the noise.
 """
 from __future__ import annotations
@@ -18,19 +18,16 @@ from .denoise import before_after
 from .gradient import DECONV_FILE, image_in
 from .stack import SATURATION
 
-METHODS = ("rl", "zones")
+METHODS = ("rl",)
 
 
 class DeconvParams(StageParams):
     method: str = P("rl", label="Method", choices=list(METHODS),
-                    help="Richardson-Lucy: iterations with the star shape measured across the field. By zones: one "
-                         "sharpening filter per zone, faster.")
+                    help="Richardson-Lucy: iterations with the star shape measured across the field.")
     iterations: int = P(30, label="Iterations", ge=1, le=100,
                         help="More iterations sharpen more, and raise the noise.")
     regularization: float = P(0.002, label="Regularization", ge=0.0, le=0.05, step=0.001,
                               help="Holds back noise and ringing.")
-    shrink: float = P(0.15, label="Star reduction", ge=0.01, le=0.5, step=0.01,
-                      help="How much narrower the stars become: a share of their measured width.")
     tiles: int = P(6, label="Zones", level=ADVANCED, ge=1, le=16,
                    help="Zones along the long side of the image, each with its own measured star shape.")
 
@@ -47,7 +44,7 @@ class Deconv(Stage):
                    "of the field and per colour.")
     deps = ("stack",)
     Params = DeconvParams
-    version = "2"     # 2: the saturated stars protected further, the luminance alone for Richardson-Lucy
+    version = "3"     # 3: Whyte et al. 2014 for the saturated pixels; the filter per zone taken out
 
     def run(self, ctx: Context, p: DeconvParams) -> None:
         full, A, B = (image_in(ctx, h).img for h in ("full", "A", "B"))
@@ -66,8 +63,8 @@ class Deconv(Stage):
             ctx.check_stop()
             ctx.progress(0.1 + 0.8 * share, "deconvolving")
 
-        st = lib.StackDeconvSettings(method=p.method, iterations=p.iterations, regularization=p.regularization,
-                                     shrink=p.shrink, tiles_long=p.tiles, log=ctx.log, tick=tick)
+        st = lib.StackDeconvSettings(iterations=p.iterations, regularization=p.regularization, tiles_long=p.tiles,
+                                     log=ctx.log, tick=tick)
         ctx.progress(0.02, "measuring the star shape")
         of, oa, ob, info = lib.run(full, A, B, sat, valid, st, device)
         if info["applied"]:
