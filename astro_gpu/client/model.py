@@ -39,6 +39,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from .. import api
 from ..core import workflow as wfl
 from ..core.project import Target
+from ..core.project2 import FILE as PROJECT_FILE
 from ..core.project2 import (FILTERS, Workflow, active_version, read_state, versions_problem, workflow_images,
                             write_state)
 from .blocks import COLUMNS, KEY_ENGINE_BLOCK, TOOLS, TRUNK, block_state, kbase, knum  # noqa: F401  (TOOLS: test_model_surface)
@@ -522,6 +523,7 @@ class ProjectModel(QObject):
         self.p = project                                   # the definition (api.Project2): the source of truth
         self.root = Path(project.root) if project.root is not None else None
         self.readonly = readonly                           # never write the project (tests, fixtures)
+        self._disk = self._disk_sig()                      # the file as this window read it (``flush``)
         self._own_worker = worker is None
         self.worker = worker or ApiWorker(self)
         self.worker.done.connect(self._worker_done)
@@ -811,19 +813,37 @@ class ProjectModel(QObject):
         """Edits not saved yet."""
         return self._dirty
 
-    def flush(self):
-        """Save: write the definition now (the edits are written by Save only)."""
+    def _disk_sig(self):
+        """The project's file as it is on the disk now (its time and size), None without one."""
+        try:
+            st = (Path(self.root) / PROJECT_FILE).stat()
+        except (OSError, TypeError):
+            return None
+        return st.st_mtime_ns, st.st_size
+
+    def changed_on_disk(self) -> bool:
+        """The project's file was written by someone else (another window of the program) since this one read or
+        wrote it: Save would replace that work (the night test pass: the last window to save won, silently)."""
+        return self._disk is not None and self._disk_sig() != self._disk
+
+    def flush(self, force: bool = False) -> bool:
+        """Save: write the definition now (the edits are written by Save only). False, nothing written, when the file
+        changed on the disk since this window read it (``changed_on_disk``), unless ``force``."""
         if self._dirty and not self.readonly and self.root is not None:
+            if self.changed_on_disk() and not force:
+                return False
             if self.path is not None:
                 self.p.current = self.path.pid
             problem = versions_problem(self.p.post)
             if problem:                                   # the file is written all the same (issue #82)
                 self.log("Post versions: {problem}", problem=problem)
             api.save(self.p)
+            self._disk = self._disk_sig()
         self.remember_selection()                          # with or without an edit: where it reopens (2, 6.6)
         if self._dirty:
             self._dirty = False
             self.dirtyChanged.emit(False)
+        return True
 
     #: the settings key of the block shown per project (its folder): {"current": workflow id, "block": block}
     SELECTION_KEY = "selection"
@@ -1275,6 +1295,7 @@ class ProjectModel(QObject):
     def relocated(self, root):
         """The project was given its folder (it had none of its own yet)."""
         self.root = Path(root)
+        self._disk = self._disk_sig()
 
     def join_session(self, p, sid: int) -> WorkflowView | None:
         """A new session joins the chosen flow of frames ``p`` (GUI exploration 2, decision 1): it is added to that

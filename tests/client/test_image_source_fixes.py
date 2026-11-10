@@ -159,3 +159,20 @@ def test_an_image_file_gone_circles_its_block_and_refuses_run(model, tmp_path):
     (tmp_path / "damaged.fits").write_bytes(b"SIMPLE  =                    T" + b"\0" * 3000)
     model.set_image_file(q, str(tmp_path / "damaged.fits"))
     assert "damaged" in Graph(model).node_of(model.view(q.pid), "image").broken
+
+
+def test_a_second_window_never_replaces_what_the_first_saved(model, tmp_path):
+    """The night test pass: two windows on one project, the last to save replaced the other's work, silently. A
+    window whose file changed on the disk since it read it writes nothing (Save says so)."""
+    other = ProjectModel(project2.load(model.root), model.worker)
+    try:
+        model.set_description("from A")
+        assert model.flush() and not model.changed_on_disk() and other.changed_on_disk()
+        other.set_description("from B")
+        assert other.changed_on_disk() and other.flush() is False and other.dirty
+        assert project2.load(model.root).description == "from A"
+        assert other.flush(force=True) and project2.load(model.root).description == "from B"
+        model.set_description("A again")
+        assert model.flush() is False                     # now A is the one behind
+    finally:
+        other.close(save=False)

@@ -669,6 +669,10 @@ class Main(QMainWindow):
                 save = answer == "save"
                 if save and drafts.is_untitled(self.project.root) and not self.name_project():
                     return False
+                if save and self.s.changed_on_disk():  # another window's work is not replaced: closing waits
+                    self.banner.say(_("Another window of the program saved this project since it was opened here: "
+                                      "nothing is replaced. Save as… keeps this window's work in another folder."))
+                    return False
         if self.project is not None:
             self._recovery_timer.stop()
             if self.run is not None:
@@ -1106,8 +1110,10 @@ class Main(QMainWindow):
         if self.project is not None and drafts.is_untitled(self.project.root):
             self.name_project()
             return
-        if self.s is not None:
-            self.s.flush()
+        if self.s is not None and not self.s.flush():
+            self.banner.say(_("Another window of the program saved this project since it was opened here: nothing is "
+                              "replaced. Save as… keeps this window's work in another folder."))
+            return
         self.flash(_("Project saved"))
 
     def _suggested_name(self) -> str:
