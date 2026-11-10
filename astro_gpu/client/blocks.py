@@ -568,8 +568,9 @@ class Graph:
             last = po.parent if po is not None else None  # block, a branch sent to Post, showed it again)
             if last is None or po.children or po.key != "post":
                 continue
-            last.children.remove(po)
-            self.nodes.remove(po)
+            if po in last.children:                       # two workflows without blocks (images already stretched)
+                last.children.remove(po)                  # share theirs: taken out once
+                self.nodes.remove(po)
             self.by_path[p.pid]["post"] = last
             if self.leaves.get(p.pid) is po:
                 self.leaves[p.pid] = last

@@ -960,3 +960,20 @@ def test_the_post_viewer_has_the_graphs_gestures(qapp):
     finally:
         v.close()
         v.deleteLater()
+
+
+def test_a_project_of_two_stretched_pictures_opens_again(env):
+    """The night test pass: a project of two JPEGs (two workflows without blocks) did not open again: the graph took
+    their shared Output out twice, and the window stayed on Home with the project half open."""
+    import cv2
+    import numpy as np
+    root = env["tmp"] / "ws" / "Two"
+    p = project2.create(root, "Two", Target(name="M 31"))
+    for n in ("a", "b"):
+        jpg = env["tmp"] / f"{n}.jpg"
+        cv2.imwrite(str(jpg), np.full((8, 8, 3), 128, np.uint8))
+        p.add_workflow(n, {}).source = {"path": jpg.as_posix(), "stretched": True}
+        p.workflows[-1].blocks = []
+    project2.save(p)
+    w = _open(env, (1600, 900), root)
+    assert w.graph_page() is not None and [q.name for q in w.s.paths] == ["a", "b"]
