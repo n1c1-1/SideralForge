@@ -907,7 +907,7 @@ def test_the_deconvolution_block_has_its_method_and_its_settings(world, model, p
         page.select_node(node(page, "deconv"))
         settle(world["w"], page)
         cards = [c for c in page.panel.findChildren(MethodCard) if c.isVisibleTo(page.panel)]
-        assert len(cards) == 1
+        assert len(cards) == 2
         assert "Richardson-Lucy" in " ".join(texts_of(page.panel))
         keys = {r.r["key"] for r in live_rows(page)}
         assert "deconv.iterations" in keys

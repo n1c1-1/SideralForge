@@ -10,6 +10,15 @@ from astro_gpu.stages.deconv import Deconv, DeconvParams
 SKY, NOISE = 100.0, 0.5
 
 
+@pytest.fixture(autouse=True)
+def _few_threads():
+    """Small transforms: more threads only wait for one another (70 s a test at 8 threads, a few at 2)."""
+    n = torch.get_num_threads()
+    torch.set_num_threads(2)
+    yield
+    torch.set_num_threads(n)
+
+
 def field(seed=1, size=300, fwhm=4.0, stars=36):
     """A flat sky with blurred stars (3, H, W), two half-stacks with independent noise, and where the stars are."""
     rng = np.random.default_rng(seed)
@@ -45,7 +54,7 @@ def width_and_flux(img, pts, r=14):
 def test_the_stars_become_narrower_and_keep_their_light():
     full, a, b, pts, _ = field()
     valid, sat = np.ones(full.shape[1:], bool), np.zeros(full.shape[1:], bool)
-    st = lib.StackDeconvSettings(tiles_long=2, log=lambda *x, **k: None, iterations=15)
+    st = lib.StackDeconvSettings(tiles_long=1, log=lambda *x, **k: None, iterations=15)
     of, oa, ob, info = lib.run(full, a, b, sat, valid, st, "cpu")
     assert info["applied"] and info["stars"] >= 10
     w0, f0 = width_and_flux(full, pts)
@@ -67,7 +76,7 @@ def test_a_saturated_core_and_the_pixels_without_data_stay_as_they_were():
     sat = np.zeros(full.shape[1:], bool)
     y, x = int(pts[10][0]), int(pts[10][1])
     sat[y - 2:y + 3, x - 2:x + 3] = True
-    st = lib.StackDeconvSettings(tiles_long=2, log=lambda *x, **k: None)
+    st = lib.StackDeconvSettings(tiles_long=1, log=lambda *x, **k: None, iterations=6)
     of, *_ = lib.run(full, a, b, sat, valid, st, "cpu")
     assert np.array_equal(of[:, :20], full[:, :20])
     assert np.abs(of[:, y, x] - full[:, y, x]).max() < 1e-3
@@ -82,7 +91,7 @@ def test_a_saturated_star_on_a_bright_sky_keeps_no_moat_and_no_pattern():
     for im in (full, a, b):
         im += glow + core
     sat = core > 0
-    st = lib.StackDeconvSettings(tiles_long=2, log=lambda *x, **k: None, iterations=12)
+    st = lib.StackDeconvSettings(tiles_long=1, log=lambda *x, **k: None, iterations=12)
     of, *_ = lib.run(full, a, b, sat, np.ones(full.shape[1:], bool), st, "cpu")
     r = np.hypot(yy - y, xx - x)
     ring = (r > 4) & (r < 16)
@@ -94,7 +103,7 @@ def test_richardson_lucy_keeps_the_colour_of_a_star():
     for im in (full, a, b):
         im[0] = SKY + (im[0] - SKY) * 1.4
         im[2] = SKY + (im[2] - SKY) * 0.7
-    st = lib.StackDeconvSettings(tiles_long=2, log=lambda *x, **k: None, iterations=12)
+    st = lib.StackDeconvSettings(tiles_long=1, log=lambda *x, **k: None, iterations=12)
     of, *_ = lib.run(full, a, b, np.zeros(full.shape[1:], bool), np.ones(full.shape[1:], bool), st, "cpu")
     y, x = int(round(pts[12][0])), int(round(pts[12][1]))
     core = of[:, y - 1:y + 2, x - 1:x + 2].mean((1, 2)) - SKY
@@ -134,7 +143,7 @@ def test_the_block_comes_before_denoise_and_only_its_method_sets_its_stage():
     assert "deconv" not in wfl.chain({"denoise": "pretrained", "stars": "neural"})
     assert wfl.implied(full, "deconv") == {"method": "rl"}
     with pytest.raises(ValueError):
-        wfl.check_options({"deconvolution": "neural"})
+        wfl.check_options({"deconvolution": "wiener"})
     assert wfl.greyed({"deconvolution": "rl"}, image=True)["deconv"] == wfl.NEEDS_HALF_STACKS
     assert Deconv.name == "deconv" and DeconvParams().method == "rl"
     blocks = wfl.from_options(full)

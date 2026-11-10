@@ -3030,7 +3030,6 @@ def test_hiding_a_filter_of_a_sub_layer_changes_what_is_above_it(preps, qapp):
 
 def test_the_half_image_waits_for_a_quick_exact_one_not_for_a_slow_one(wide, monkeypatch):
     """One change on screen per gesture when the exact image is near; else the half one meanwhile (issue #87)."""
-    from PySide6.QtTest import QTest
     post = wide
     v = post.view
     halves, exact = [], []
@@ -3049,9 +3048,13 @@ def test_the_half_image_waits_for_a_quick_exact_one_not_for_a_slow_one(wide, mon
     named(v, "Full")["sliders"]["sky"] = 2.0
     v.request(final_only=True)
     t0 = time.time()
-    while not halves and time.time() - t0 < 20:
-        QTest.qWait(10)
-    QTest.qWait(150)
+    while not halves and time.time() - t0 < 20:                          # (QTest.qWait keeps Python's lock: the render
+        post.qapp.processEvents()                                        # thread would only run between its waits)
+        time.sleep(0.005)
+    t0 = time.time()
+    while time.time() - t0 < 0.15:
+        post.qapp.processEvents()
+        time.sleep(0.005)
     assert halves and not exact and v.src.img1 is halves[-1]
     assert post.settle() and v.src.img1 is exact[-1]
 

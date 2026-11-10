@@ -472,7 +472,7 @@ CHOICE_TEXTS: dict[str, str] = {
     # the Denoise block's methods and adaptation lengths (stages/denoise.py)
     "measured": "Image shape", "instrument": "Instrument PSF", "newton": "Newtonian", "refractor": "Refractor",
     "sct": "Schmidt-Cassegrain", "lens": "Photo lens",
-    "rl": "Richardson-Lucy", "pretrained": "Pretrained network", "adapted": "Pretrained + adapted", "short": "Short", "long": "Long",
+    "rl": "Richardson-Lucy", "neural": "Neural network", "pretrained": "Pretrained network", "adapted": "Pretrained + adapted", "short": "Short", "long": "Long",
 }
 
 _stage_index: dict[str, dict] | None = None

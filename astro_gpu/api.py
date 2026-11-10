@@ -1590,8 +1590,9 @@ _METHODS: dict[str, list[MethodInfo]] = {
     "deconvolution": [
         MethodInfo("rl", "Measured PSF (Richardson-Lucy)", "Richardson-Lucy", "both", "deconv", False,
                    "Classic deconvolution with the PSF measured across the field."),
-        MethodInfo("neural", "Neural network", "neural", "both", "deconv", True,
-                   "A pretrained network that corrects the PSF locally, stars included."),
+        MethodInfo("neural", "Neural network (beta)", "neural (beta)", "gpu", "deconv", False,
+                   "A network trained on sharp images blurred by real star shapes. Beta: not finished; it also removes "
+                   "the noise, and its star fluxes are less reliable."),
     ],
 }
 

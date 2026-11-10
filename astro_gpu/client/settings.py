@@ -260,6 +260,7 @@ CATALOG = {
             E("synth_stars", "seeing_px"),
         ]),
     ],
+    "deconv:neural": [],
     "deconv:psf": [
         ("Deconvolution", [
             E("deconv", "iterations"),

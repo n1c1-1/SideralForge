@@ -567,5 +567,6 @@
  "Star width": "Largeur étoile",
  "The width at half height of the stars drawn: the turbulence added to the diffraction.": "La largeur à mi-hauteur des étoiles dessinées : la turbulence ajoutée à la diffraction.",
  "Draws the detected stars again, with the shape measured in the image or the instrument's.": "Redessine les étoiles détectées, avec la forme mesurée dans l'image ou celle de l'instrument.",
- "Richardson-Lucy: iterations with the star shape measured across the field.": "Richardson-Lucy : des itérations avec la forme d'étoile mesurée dans le champ."
+ "Richardson-Lucy: iterations with the star shape measured across the field. Neural network: beta, it also removes the noise.": "Richardson-Lucy : des itérations avec la forme d'étoile mesurée dans le champ. Réseau de neurones : bêta, il retire aussi le bruit.",
+ "Neural network": "Réseau de neurones"
 }

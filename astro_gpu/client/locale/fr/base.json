@@ -997,5 +997,8 @@
   "instrument PSF": "PSF instrument",
   "The detected stars drawn with the shape measured at the centre of the field: paint in Post where they replace the real ones, the corners for example.": "Les étoiles détectées, dessinées avec la forme mesurée au centre du champ : peignez dans le Post où elles remplacent les vraies, les coins par exemple.",
   "Every star replaced by the theoretical star of the instrument: for a missed focus or a bad tracking.": "Chaque étoile remplacée par l'étoile théorique de l'instrument : pour une mise au point ou un suivi ratés.",
-  "The stars of the Synthetic stars block, through this row's mask": "Les étoiles du bloc Étoiles de synthèse, à travers le masque de cette ligne"
+  "The stars of the Synthetic stars block, through this row's mask": "Les étoiles du bloc Étoiles de synthèse, à travers le masque de cette ligne",
+  "Neural network (beta)": "Réseau de neurones (bêta)",
+  "neural (beta)": "neuronal (bêta)",
+  "A network trained on sharp images blurred by real star shapes. Beta: not finished; it also removes the noise, and its star fluxes are less reliable.": "Un réseau entraîné sur des images nettes floutées avec de vraies formes d'étoiles. Bêta : pas fini ; il retire aussi le bruit, et les flux des étoiles sont moins fiables."
 }
