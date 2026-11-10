@@ -490,6 +490,9 @@ class Main(QMainWindow):
     def reset_layout(self):
         lay.reset()
         self.apply_layout()
+        view = getattr(self.post, "view", None) if self.post is not None else None
+        if view is not None:                             # the widths too, at once (the night test pass: kept until
+            view._fit_split()                            # the next docking)
 
     # ------------------------------------------------------------ Home
     def show_home(self, last=None):

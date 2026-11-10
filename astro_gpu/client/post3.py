@@ -43,6 +43,7 @@ import numpy as np
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QFrame,
@@ -1013,8 +1014,12 @@ class PostView(QWidget):
         elif wl and not any(lay["visible"] for lay in wl):
             wl[-1]["visible"] = True
         if not initial:
-            if self.sel and not self.layer(self.sel[0]):
-                self.sel = (self.layers[-1]["id"], "layer") if self.layers else None
+            # a layer gone, or none chosen yet (the night test pass: Post opened by Open images showed an empty panel):
+            # the bottom one, as on reopening
+            if (self.sel is None or not self.layer(self.sel[0])) and self.layers:
+                self.sel = (self.layers[-1]["id"], "layer")
+            elif self.sel and not self.layer(self.sel[0]):
+                self.sel = None
             self.rebuild()
             self.worker.refresh()
             self.request(final_only=True)                  # (nothing is saved here: the layers a workflow brings are
@@ -1956,6 +1961,14 @@ class PostView(QWidget):
         else:
             self.split.addWidget(w)
         self._fit_split()
+
+    def showEvent(self, e):                                         # noqa: N802 - Qt's name
+        """Shown (the Post tab clicked): the keyboard comes to the image, so that R, C, V… answer at once (the night
+        test pass: it stayed on the tab's button)."""
+        super().showEvent(e)
+        fw = QApplication.focusWidget()
+        if fw is None or not self.isAncestorOf(fw):
+            QTimer.singleShot(0, lambda: self.isVisible() and self.viewer.setFocus(Qt.OtherFocusReason))
 
     def _fit_split(self):
         """The docked sides at their widths (the user's, else the default), the image the rest."""

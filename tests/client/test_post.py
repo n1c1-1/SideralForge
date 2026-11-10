@@ -3118,3 +3118,12 @@ def test_a_version_of_post_has_its_layers_its_crop_and_its_undo(post):
     v._send_before()
     assert sent[-1].kind == "before" and not sent[-1].plain
     v.worker.request = real
+
+
+def test_a_layer_is_chosen_when_the_first_ones_come(post):
+    """The night test pass: Post opened by Open images (its layer came after it opened) showed no layer chosen and an
+    empty settings panel."""
+    v = post.view
+    v.sel = None
+    v.sync_paths()
+    assert v.sel == (v.layers[-1]["id"], "layer")
