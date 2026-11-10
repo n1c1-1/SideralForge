@@ -69,6 +69,25 @@ def test_the_stars_become_narrower_and_keep_their_light():
     assert abs(float(np.median(d[ring]))) < NOISE                         # the sky stays where it is
 
 
+def test_stop_is_looked_at_after_each_zone():
+    """The night test pass: Stop waited for a whole colour (minutes on the processor); it is looked at after each zone."""
+    full, a, b, _pts, _ = field(size=160, stars=16)
+    valid, sat = np.ones(full.shape[1:], bool), np.zeros(full.shape[1:], bool)
+    seen = []
+    st = lib.StackDeconvSettings(tiles_long=2, log=lambda *x, **k: None, iterations=1, tick=seen.append)
+    lib.run(full, a, b, sat, valid, st, "cpu")
+    assert len(seen) == 3 * 4 and seen == sorted(seen) and seen[-1] == 1.0
+
+    class Stop(Exception):
+        pass
+
+    def stop(_share):
+        raise Stop
+    with pytest.raises(Stop):
+        lib.run(full, a, b, sat, valid, lib.StackDeconvSettings(tiles_long=2, log=lambda *x, **k: None, iterations=1,
+                                                                tick=stop), "cpu")
+
+
 def test_a_saturated_core_and_the_pixels_without_data_stay_as_they_were():
     full, a, b, pts, _ = field()
     valid = np.ones(full.shape[1:], bool)

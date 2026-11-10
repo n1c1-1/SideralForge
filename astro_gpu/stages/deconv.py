@@ -120,6 +120,7 @@ class Deconv(Stage):
             H, W = x.shape
             out, total = np.zeros_like(x), np.zeros_like(x)
             for y in range(0, H, BETA_TILE):
+                ctx.check_stop()                     # each row of tiles: minutes on the processor
                 for x0 in range(0, W, BETA_TILE):
                     y1, x1 = max(0, y - BETA_PAD), max(0, x0 - BETA_PAD)
                     y2, x2 = min(H, y + BETA_TILE + BETA_PAD), min(W, x0 + BETA_TILE + BETA_PAD)

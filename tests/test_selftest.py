@@ -316,6 +316,19 @@ def test_denoise_halves_the_tile_on_a_memory_error():
     assert np.allclose(out, x, atol=1e-5)
 
 
+def test_denoise_looks_at_stop_at_each_row_of_tiles():
+    """The night test pass: Stop waited for the end of a pass of the network (6 min on the processor)."""
+    x, nm, bk, sg = _denoise_input()
+    rows = []
+    dn.apply_net(EchoUNet(), x, nm, bk, sg, torch.device("cpu"), tile=128, shifts=dn.PASSES[:1], check=lambda: rows.append(1))
+    assert len(rows) == 3                                          # 300 rows in tiles of 128
+
+    def stop():
+        raise RuntimeError("stop requested")
+    with pytest.raises(RuntimeError, match="stop"):
+        dn.apply_net(EchoUNet(), x, nm, bk, sg, torch.device("cpu"), tile=128, check=stop)
+
+
 def test_the_denoise_error_passes_through_when_no_tile_helps():
     x, nm, bk, sg = _denoise_input()
     with pytest.raises(torch.OutOfMemoryError):

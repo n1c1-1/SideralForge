@@ -149,15 +149,16 @@ class Denoise(Stage):
         net.eval()
         ctx.progress(0.92, "denoising the half-stacks")
         shifts = PASSES[:1] if p.fast else PASSES
-        dA = apply_net(net, A, nm, bk, sg, dev, shifts=shifts)
-        dB = apply_net(net, B, nm, bk, sg, dev, shifts=shifts)
+        dA = apply_net(net, A, nm, bk, sg, dev, shifts=shifts, check=ctx.check_stop)
+        dB = apply_net(net, B, nm, bk, sg, dev, shifts=shifts, check=ctx.check_stop)
         ctx.progress(0.96, "denoising the full stack")
         # a monochrome stack: the network moves the three channels a little apart; their mean, in the three, keeps it
         # grey (issue #43)
         grey = (lambda a: np.repeat(a.mean(0, keepdims=True), 3, axis=0)) if mono else (lambda a: a)
         dA, dB = keep_level(grey(dA), A, Wt), keep_level(grey(dB), B, Wt)
         ctx.save("n2n_avg.npy", 0.5 * (dA + dB))
-        dF = keep_level(grey(apply_net(net, full, (nm / np.sqrt(2)).astype(np.float32), bk, sg, dev, shifts=shifts)), full, Wt)
+        dF = keep_level(grey(apply_net(net, full, (nm / np.sqrt(2)).astype(np.float32), bk, sg, dev, shifts=shifts,
+                                         check=ctx.check_stop)), full, Wt)
         ctx.save("n2n_full.npy", dF)
         if p.keep_halves:                            # for a later Denoise block (issue #47)
             ctx.save("n2n_A.npy", dA)
@@ -360,17 +361,18 @@ def adapt(ctx, net, A, B, nm, bk, sg, dev, steps: int, lr: float, seed: int) -> 
 
 
 @torch.no_grad()
-def apply_net(net, x, nm, bk, sg, dev, tile=512, pad=48, shifts=PASSES):
+def apply_net(net, x, nm, bk, sg, dev, tile=512, pad=48, shifts=PASSES, check=None):
     """Denoise a (3, H, W) linear image tile by tile with overlap, as the mean of ``shifts``. On a card with little free
     memory the tile is smaller (``devices.tile_that_fits``; a memory error halves it, ``shrink_on_memory``): only then
-    does the result differ, by a fraction of the noise, at the seams of the tiles."""
+    does the result differ, by a fraction of the noise, at the seams of the tiles. ``check``: called at each row of
+    tiles (the run's Stop: a pass takes minutes on the processor)."""
     tile = devices.tile_that_fits(tile, dev, TILE_GB * (tile / 512) ** 2)
 
     def passes(t):
         total = 0
         for dy, dx in shifts:
             sx = np.pad(x, ((0, 0), (dy, 0), (dx, 0)), mode="reflect")
-            total = total + _apply_net(net, sx, np.pad(nm, ((dy, 0), (dx, 0)), mode="reflect"), bk, sg, dev, t, pad)[
+            total = total + _apply_net(net, sx, np.pad(nm, ((dy, 0), (dx, 0)), mode="reflect"), bk, sg, dev, t, pad, check)[
                 :, dy:, dx:]
         return (total / len(shifts)).astype(x.dtype)
 
@@ -378,7 +380,7 @@ def apply_net(net, x, nm, bk, sg, dev, tile=512, pad=48, shifts=PASSES):
 
 
 @torch.no_grad()
-def _apply_net(net, x, nm, bk, sg, dev, tile, pad):
+def _apply_net(net, x, nm, bk, sg, dev, tile, pad, check=None):
     Hh, Ww = x.shape[1:]
     out = np.zeros_like(x)
     # the image goes to the card when it has the room; otherwise each tile does (the same numbers, only slower)
@@ -389,6 +391,8 @@ def _apply_net(net, x, nm, bk, sg, dev, tile, pad):
     bk_t = torch.as_tensor(np.asarray(bk), device=dev)
     sg_t = torch.as_tensor(np.asarray(sg), device=dev)
     for y in range(0, Hh, tile):
+        if check is not None:
+            check()
         for x0 in range(0, Ww, tile):
             y1, x1 = max(0, y - pad), max(0, x0 - pad)
             y2, x2 = min(Hh, y + tile + pad), min(Ww, x0 + tile + pad)

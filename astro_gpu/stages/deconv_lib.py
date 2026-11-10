@@ -47,7 +47,7 @@ class StackDeconvSettings:
     snr_min: float = 30.0         # peak signal-to-noise of the stars the shape is measured on
     isolation: float = 0.03       # no neighbour brighter than this fraction of the star within 1.5 radius
     log: object = field(default=print, repr=False)
-    tick: object = field(default=None, repr=False)   # called with the share done, after each colour
+    tick: object = field(default=None, repr=False)   # called with the share done, after each zone of each colour
 
 
 def tile_grid(H: int, W: int, tiles_long: int) -> tuple[int, int]:
@@ -350,9 +350,9 @@ class StackDeconvolver:
                             k = ((sm - s.protect_low * sig) / max((s.protect_high - s.protect_low) * sig, 1e-9)).clamp(0, 1)
                             v = batch[i, r0:r1, c0:c1] + k * (v - batch[i, r0:r1, c0:c1])
                         out[c, r0:r1, c0:c1] += wt * v
+                    if s.tick is not None:              # each zone: on the processor a colour takes minutes, and
+                        s.tick((c + (a * ntx + b + 1) / (nty * ntx)) / C)   # Stop is looked at here
             del batch
-            if s.tick is not None:
-                s.tick((c + 1) / C)
         return _kept(images, outs, keep, valid)
 
 
