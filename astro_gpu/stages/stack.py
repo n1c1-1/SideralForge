@@ -743,25 +743,40 @@ def drizzle_deposit(num, den, val, Xo, Yo, w, keep, chmap, h: float, S: float, H
     xo, yo, c = Xo[keep], Yo[keep], chmap[keep]
     span = int(math.ceil(2 * h)) + 1                         # the output rows (or columns) one drop can touch
     workers = torch.get_num_threads()
-    bands = None
+    bands = cuts = None
     if num.device.type == "cpu" and tally is None and workers > 1 and v.numel() >= PARALLEL_SAMPLES:
         bands = deposit_bands(yo, h, span, workers)
-    if bands is None:
+        if bands is None:                                    # a turned frame: by bands of output rows
+            iy0 = torch.floor(yo - h + 0.5)
+            cuts = row_cuts(iy0, Ho, 2 * workers)
+    if bands is None and cuts is None:
         _drops(num, den, v, xo, yo, c, w, h, S, Ho, Wo, span, rej, tally)
-    elif rej is None:
+    elif bands is not None and rej is None:
         from ..core.stack_kernels import deposit  # compiled: 15 times the generic operations
         deposit(num.numpy(), den.numpy() if den is not None else np.empty(0, np.float32), v.numpy(), xo.numpy(),
                 yo.numpy(), c.numpy(), bands, w, h, Ho, Wo, span, workers)
+    elif cuts is not None and rej is None:
+        from ..core.stack_kernels import deposit_by_rows
+        deposit_by_rows(num.numpy(), den.numpy() if den is not None else np.empty(0, np.float32), v.numpy(), xo.numpy(),
+                        yo.numpy(), iy0.numpy(), c.numpy(), cuts, w, h, Ho, Wo, span, workers)
     else:
         def one(band):
             i0, i1 = band
             _drops(num, den, v[i0:i1], xo[i0:i1], yo[i0:i1], c[i0:i1], w, h, S, Ho, Wo, span, rej, None)
 
+        def rows(r):                                         # the samples that reach rows [r0, r1), only those rows
+            r0, r1 = r
+            i = torch.nonzero((iy0 >= r0 - (span - 1)) & (iy0 < r1)).squeeze(1)
+            _drops(num, den, v[i], xo[i], yo[i], c[i], w, h, S, Ho, Wo, span, rej, None, (r0, r1))
+
         torch.set_num_threads(1)                             # each band on one core: the bands are the parallelism
         try:
             with ThreadPoolExecutor(workers) as pool:
-                for group in (bands[0::2], bands[1::2]):     # two bands of a group never write to the same rows
-                    list(pool.map(one, group))
+                if cuts is not None:                         # bands of output rows: never the same pixel
+                    list(pool.map(rows, zip(cuts[:-1], cuts[1:])))
+                else:
+                    for group in (bands[0::2], bands[1::2]):     # two bands of a group never write to the same rows
+                        list(pool.map(one, group))
         finally:
             torch.set_num_threads(workers)
 
@@ -769,7 +784,8 @@ def drizzle_deposit(num, den, val, Xo, Yo, w, keep, chmap, h: float, S: float, H
 def deposit_bands(yo, h: float, span: int, workers: int) -> list[tuple[int, int]] | None:
     """The samples (in the frame's order) cut into 2 x ``workers`` bands of consecutive samples, so that the even bands
     write to rows the other even bands do not, and the odd ones likewise; None when a frame's rotation mixes the rows
-    too much for that (it is then dropped on one core)."""
+    too much for that (a frame turned from the reference: its consecutive samples run across the output rows, so every
+    band of them reaches most rows; ``row_cuts`` then cuts the output instead)."""
     n = yo.numel()
     edges = [n * i // (2 * workers) for i in range(2 * workers + 1)]
     bands = list(zip(edges[:-1], edges[1:]))
@@ -784,8 +800,23 @@ def deposit_bands(yo, h: float, span: int, workers: int) -> list[tuple[int, int]
     return bands
 
 
-def _drops(num, den, v, xo, yo, c, w, h: float, S: float, Ho: int, Wo: int, span: int, rej, tally) -> None:
-    """``drizzle_deposit`` on the samples kept: each drop on the ``span`` x ``span`` output pixels it can touch."""
+def row_cuts(iy0, Ho: int, n: int) -> list[int] | None:
+    """The output rows 0..``Ho`` cut into up to ``n`` bands holding about as many first rows ``iy0`` of the drops (a
+    turned frame covers the output unevenly), for one worker each: a worker takes, in the frame's order, every sample
+    whose drop reaches its band and adds only to its band's rows, so each output pixel gets the terms of one worker in
+    the order the one-core loops give them, and the same float sums. None for a single band (it would be one core)."""
+    counts = torch.bincount(iy0.clamp(0, Ho - 1).long(), minlength=Ho)
+    cum = counts.cumsum(0)
+    inner = torch.searchsorted(cum, int(cum[-1]) * torch.arange(1, n) // n) + 1
+    cuts = sorted({0, Ho, *(int(r) for r in inner.clamp(0, Ho))})
+    return cuts if len(cuts) > 2 else None
+
+
+def _drops(num, den, v, xo, yo, c, w, h: float, S: float, Ho: int, Wo: int, span: int, rej, tally,
+           rows: tuple[int, int] | None = None) -> None:
+    """``drizzle_deposit`` on the samples kept: each drop on the ``span`` x ``span`` output pixels it can touch (of the
+    output rows [r0, r1) only: ``rows``)."""
+    r0, r1 = rows or (0, Ho)
     jx0 = torch.floor(xo - h + 0.5)
     iy0 = torch.floor(yo - h + 0.5)
     if rej is not None:
@@ -801,7 +832,7 @@ def _drops(num, den, v, xo, yo, c, w, h: float, S: float, Ho: int, Wo: int, span
             jx = jx0 + dj
             wx = (torch.minimum(xo + h, jx + 0.5) - torch.maximum(xo - h, jx - 0.5)).clamp(min=0)
             ww = wx * wy * w
-            ok = (ww > 0) & (jx >= 0) & (jx < Wo) & (iy >= 0) & (iy < Ho)
+            ok = (ww > 0) & (jx >= 0) & (jx < Wo) & (iy >= r0) & (iy < r1)
             if rej is not None:
                 qx = torch.floor(jx / S + DRIZZLE_BOUNDS_TOLERANCE).long()
                 inmap = (qx >= 0) & (qx < Wr) & (qy >= 0) & (qy < Hr)       # PCL: RejectionMap().Includes(q)

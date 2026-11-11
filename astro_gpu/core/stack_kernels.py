@@ -46,6 +46,52 @@ def deposit(num, den, v, xo, yo, c, bands: list[tuple[int, int]], w: float, h: f
 
 
 @njit(nogil=True, parallel=True, cache=True)
+def _drops_by_rows(num, den, v, xo, yo, iy0, c, cuts, w, h, Ho, Wo, span):
+    half = np.float32(0.5)
+    n = len(v)
+    for b in prange(len(cuts) - 1):
+        r0, r1 = cuts[b], cuts[b + 1]
+        m = 0
+        for i in range(n):                          # the samples whose drop can touch the band, in the frame's order
+            if iy0[i] + (span - 1) >= r0 and iy0[i] < r1:
+                m += 1
+        mine = np.empty(m, np.int64)
+        m = 0
+        for i in range(n):
+            if iy0[i] + (span - 1) >= r0 and iy0[i] < r1:
+                mine[m] = i
+                m += 1
+        for di in range(span):                      # the loops of stack._drops, in its order: each output pixel gets
+            for dj in range(span):                  # its terms in the same order, so the same float sums
+                for i in mine:
+                    iy = iy0[i] + np.float32(di)
+                    if iy < r0 or iy >= r1:
+                        continue
+                    x, y = xo[i], yo[i]
+                    wy = min(y + h, iy + half) - max(y - h, iy - half)
+                    jx = np.floor(x - h + half) + np.float32(dj)
+                    wx = min(x + h, jx + half) - max(x - h, jx - half)
+                    if wy <= 0 or wx <= 0 or jx < 0 or jx >= Wo:
+                        continue
+                    ww = wx * wy * w
+                    if not ww > 0:
+                        continue
+                    k = int(c[i]) * Ho * Wo + int(iy) * Wo + int(jx)
+                    num[k] += v[i] * ww
+                    if den.size:
+                        den[k] += ww
+
+
+def deposit_by_rows(num, den, v, xo, yo, iy0, c, cuts, w: float, h: float, Ho: int, Wo: int, span: int,
+                    workers: int) -> None:
+    """The drops of a frame turned from the reference (stack.drizzle_deposit), each band of output rows between two
+    ``cuts`` filled by one worker from the samples that reach it: the same bits as stack._drops on one core.
+    ``iy0``: each sample's first output row (float32, as stack._drops computes it); ``den``: an empty array or none."""
+    set_num_threads(max(1, workers))
+    _drops_by_rows(num, den, v, xo, yo, iy0, c, np.asarray(cuts, np.int64), np.float32(w), np.float32(h), Ho, Wo, span)
+
+
+@njit(nogil=True, parallel=True, cache=True)
 def _sample(mv, valid, cover, bkg, x, y, c, pred, w, cov, bk, Ho, Wo):
     for i in prange(len(x)):
         x0, y0 = np.floor(x[i]), np.floor(y[i])

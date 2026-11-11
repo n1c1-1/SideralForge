@@ -384,3 +384,83 @@ def test_frames_at_two_orientations_stack_into_one_image(tmp_path, method):
         sky = pl < np.median(pl[inner]) + 3 * s
         assert abs(np.median(pl[edge_in & sky]) - np.median(pl[edge_out & sky])) < 0.25 * s
         assert wt[c][both].mean() / wt[c][one].mean() == pytest.approx(2.0, rel=0.1)
+
+
+# ------------------------------------------------------------- the drizzle of a turned frame on all the cores (CPU)
+
+@pytest.fixture
+def four_cores():
+    import torch
+    before = torch.get_num_threads()
+    torch.set_num_threads(4)
+    yield
+    torch.set_num_threads(before)
+
+
+def test_a_turned_frame_is_dropped_on_all_the_cores_to_the_bit(monkeypatch, four_cores):
+    """A frame turned by 30 degrees, with or without the integration's rejection data: no drop of it on one core over
+    the whole frame (each worker a band of output rows), and the very sums of the one-core loops."""
+    import torch
+
+    from astro_gpu.stages import stack
+    Hs, Ws = 240, 320
+    rng = np.random.default_rng(4)
+    yy, xx = torch.meshgrid(torch.arange(Hs, dtype=torch.float32), torch.arange(Ws, dtype=torch.float32), indexing="ij")
+    t = np.deg2rad(30.0)
+    X = Ws / 2 + float(np.cos(t)) * (xx - Ws / 2) - float(np.sin(t)) * (yy - Hs / 2) + 0.37
+    Y = Hs / 2 + float(np.sin(t)) * (xx - Ws / 2) + float(np.cos(t)) * (yy - Hs / 2) - 0.21
+    val = torch.from_numpy(rng.uniform(100, 200, (Hs, Ws)).astype(np.float32))
+    chmap = torch.tensor([0, 1, 1, 2])[2 * (yy.long() % 2) + (xx.long() % 2)]
+    keep = torch.from_numpy(rng.random((Hs, Ws)) > 0.02)
+    rej = torch.from_numpy((rng.random((Hs, Ws)) < 0.01).astype(np.uint8) * 3)
+    whole = []
+    drops = stack._drops
+
+    def spy(num, den, v, *a, **k):
+        whole.append(v.numel() == int(keep.sum()))
+        drops(num, den, v, *a, **k)
+
+    monkeypatch.setattr(stack, "_drops", spy)
+    for r in (None, rej):
+        got = []
+        for limit in (10 ** 12, 1):
+            monkeypatch.setattr(stack, "PARALLEL_SAMPLES", limit)
+            whole.clear()
+            num, den = torch.zeros(3 * Hs * Ws), torch.zeros(3 * Hs * Ws)
+            stack.drizzle_deposit(num, den, val, X, Y, 0.8, keep, chmap, 0.5, 1.0, Hs, Ws, r)
+            got.append((num, den))
+        assert not any(whole)                                # on all the cores: never one drop of the whole frame
+        assert torch.get_num_threads() == 4
+        assert torch.equal(got[0][0], got[1][0]) and torch.equal(got[0][1], got[1][1])
+
+
+@pytest.mark.parametrize("ang, settings", [(30.0, {}), (82.2, {}), (180.0, {}),
+                                           (82.2, {"drizzle_rejection": "integration"})])
+def test_a_session_with_turned_frames_stacks_the_same_on_one_core_or_all(tmp_path, monkeypatch, four_cores, ang,
+                                                                           settings):
+    """The drizzle of a session whose frames are half turned: every file the same to the bit whether its turned frames
+    are dropped on one core, as before, or on all of them."""
+    from test_stack_reading import _same_files
+    from test_stacking import copy_project, run_stage
+
+    from astro_gpu.stages import stack
+    proj, _truth = two_orientations(tmp_path / "p", n=6, turned=3, ang=ang, n_stars=120)
+    params = stack.StackParams(scale=1.5, pixfrac=0.7, gain=1.0, read_noise=6.0, half_block=2, **settings)
+    monkeypatch.setattr(stack, "PARALLEL_SAMPLES", 1)
+    rows = stack.row_cuts
+    monkeypatch.setattr(stack, "row_cuts", lambda *a: None)     # a turned frame on one core
+    one = copy_project(proj.root, tmp_path / "one")
+    run_stage(one, stack.Stack(), params)
+    cut = []
+
+    def counted(*a):
+        c = rows(*a)
+        cut.append(c is not None)
+        return c
+
+    monkeypatch.setattr(stack, "row_cuts", counted)
+    every = copy_project(proj.root, tmp_path / "every")
+    run_stage(every, stack.Stack(), params)
+    _same_files(one.stage_dir("stack"), every.stage_dir("stack"))
+    # a half turn keeps the rows in bands of consecutive samples (the bands of the frame): no band of output rows
+    assert cut and all(cut) if ang != 180.0 else not cut
