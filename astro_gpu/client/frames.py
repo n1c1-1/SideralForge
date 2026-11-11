@@ -46,13 +46,20 @@ def fexp(t) -> str:
     return "–" if t is None else exposure_text(t)
 
 
+def night_start(first: str):
+    """The day the night of a frame began on (noon to noon: a frame of 00:16 on 1 January is of the night of 31
+    December), a ``date``; None for a time that cannot be read."""
+    try:
+        return (datetime.fromisoformat(first) - timedelta(hours=12)).date()
+    except (TypeError, ValueError):
+        return None
+
+
 def night_text(first: str) -> str:
     """The night a frame belongs to (noon to noon): "16 → 17 Aug 2026"."""
-    try:
-        t = datetime.fromisoformat(first)
-    except (TypeError, ValueError):
+    d0 = night_start(first)
+    if d0 is None:
         return "–"
-    d0 = (t - timedelta(hours=12)).date()
     d1 = d0 + timedelta(days=1)
     month = MONTHS.get(language(), MONTHS["en"])
     if d0.month == d1.month:

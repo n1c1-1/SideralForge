@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 
 from . import icons as ic
 from . import prefs
-from .frames import colour_note_text, fexp, night_text, type_warning_text
+from .frames import colour_note_text, fexp, night_start, type_warning_text
 from .i18n import _, hours_text, number, plural
 from .imageview import ImageView, ViewImage, quick_thumbnail
 from .services.inspect import FrameItem, ProjectFrames, calib_checks, flat_pct, light_thumb, service_of, set_calibration_excluded
@@ -725,9 +725,12 @@ class SourcesView(QWidget):
         if not n:
             return _("none yet") if key == "lights" else _("none · optional")
         if key == "lights" and row is not None and row.first:
+            # the day and the month of the night's first day, both (the day of the night with the frame's own month
+            # said "night of 31/01" for a frame of 00:16 on 1 January)
+            d0 = night_start(row.first)
             return _("{n} lights · {exp} · ISO {iso} · night of {day}/{month}").format(
-                n=n, exp=fexp(row.exposure), iso=int(row.iso) if row.iso else "–", day=night_text(row.first)[:2].strip(),
-                month=row.first[5:7])
+                n=n, exp=fexp(row.exposure), iso=int(row.iso) if row.iso else "–", day=d0.day if d0 else "–",
+                month=f"{d0.month:02d}" if d0 else "–")
         folders = {Path(f).parent.name for f in self.s.session_files(self.sid, key)}
         if len(folders) == 1:
             return _("{n} frames · {folder}").format(n=n, folder=folders.pop())
