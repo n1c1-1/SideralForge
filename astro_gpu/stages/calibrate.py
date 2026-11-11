@@ -69,8 +69,10 @@ class Calibrate(Stage):
     # 2: hot pixels also seen in the lights; 3: a bad pixel stays excluded when saturated; 4: hot pixels seen in the
     # lights when the sky did not move too (a lone pixel above its neighbours of every colour: m8 kept 45-57 coloured
     # dots per square degree), and then filled from their same-colour neighbours (left out, they were holes). The
-    # master bias and flat dark (EXTRA_MASTERS, for the Inspect mode) are extra files: an older result lacks them
-    version = "4"
+    # master bias and flat dark (EXTRA_MASTERS, for the Inspect mode) are extra files: an older result lacks them. 5: a
+    # FITS mosaic in floats on the 0-1 scale read in ADU (io/frames.fits_adu): a master dark of another program was read
+    # as 0.008 for 508 ADU, so the lights kept their black level, which the flat then turned into an inverted vignetting
+    version = "5"
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         n = max(1, min(12, (os.cpu_count() or 4) - 2))

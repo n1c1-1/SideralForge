@@ -335,8 +335,10 @@ def alignment(a: Prepared, b: Prepared) -> Alignment | None:
 RAW_SUFFIXES = {".arw", ".cr2", ".cr3", ".nef", ".dng", ".raf", ".orf", ".rw2", ".pef", ".srw"}
 
 
-def read_file(path: str | os.PathLike) -> tuple[np.ndarray, str, Any]:
-    """(array, Bayer pattern or "", WCS or None) of an image file (worker thread)."""
+def read_file(path: str | os.PathLike, frame: bool = False) -> tuple[np.ndarray, str, Any]:
+    """(array, Bayer pattern or "", WCS or None) of an image file (worker thread). ``frame``: a camera frame, whose
+    FITS values are read in ADU as the engine reads them (io/frames.fits_adu: a master in floats on the 0-1 scale
+    showed 0.008 where the engine and its white level say 508 ADU)."""
     p = Path(path)
     suf = p.suffix.lower()
     if suf == ".npy":
@@ -348,6 +350,9 @@ def read_file(path: str | os.PathLike) -> tuple[np.ndarray, str, Any]:
         with fits.open(p, memmap=False) as hl:
             hdu = next((h for h in hl if getattr(h, "data", None) is not None), hl[0])
             data, hdr = np.asarray(hdu.data), hdu.header
+        if frame:
+            from ..io.frames import fits_adu
+            data = fits_adu(data, hdr)
         cfa = str(hdr.get("BAYERPAT", "")).strip().upper() if data.ndim == 2 else ""
         wcs = None
         if "CTYPE1" in hdr:
@@ -538,7 +543,7 @@ def _read(vi: ViewImage) -> tuple[np.ndarray, str, Any]:
     src = vi.source
     cfa, wcs = "" if vi.cfa == "RGB" else vi.cfa, None      # a frame already in colour (issue #57): no mosaic
     if isinstance(src, str | os.PathLike):
-        arr, fcfa, wcs = read_file(src)
+        arr, fcfa, wcs = read_file(src, frame=bool(vi.camera))
         cfa = cfa or fcfa
     elif callable(src):
         arr = src()

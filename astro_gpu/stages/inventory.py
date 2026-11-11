@@ -28,7 +28,9 @@ class Inventory(Stage):
                    "sensor size, same colour pattern) and reads their metadata: exposure, ISO/gain, time, camera, "
                    "focal length, pointing. These measurements drive many automatic settings downstream.")
     Params = InventoryParams
-    version = "1"
+    # 2: the levels of FITS frames in floats in ADU, as their pixels are read (io/frames.fits_adu): a frame on the 0-1
+    # scale had a white level of 1, one in ADU too
+    version = "2"
 
     def run(self, ctx: Context, p: InventoryParams) -> None:
         cfg = ctx.project.config.inputs

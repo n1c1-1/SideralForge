@@ -214,3 +214,92 @@ def test_cr3_and_raf_metadata(tmp_path):
     (tmp_path / "x.raf").write_bytes(bytes(raf))
     t = exif_tags(tmp_path / "x.raf")
     assert str(t["Image Model"]) == "GFX 50R" and str(t["EXIF ExposureTime"]) == "300"
+
+
+def _mosaic(H=24, W=32, level=0.0, seed=0, noise=0.0) -> np.ndarray:
+    return (level + np.random.default_rng(seed).normal(0, noise, (H, W))).astype(np.float32)
+
+
+def test_a_float_fits_mosaic_on_the_0_1_scale_is_read_in_adu_and_its_levels_with_it(tmp_path):
+    """A master made by another program: floats between 0 and 1 (the raw ADU divided by 65535). read_cfa read it as it
+    is (0.0078 for a black level of 508 ADU) where read_colour brought it to ADU; its white level was 1."""
+    a = _mosaic(level=508 / 65535)
+    a[3, 5] = 4000 / 65535                                     # a hot pixel stays a hot pixel, in ADU
+    _write(tmp_path / "dark.fit", a, BAYERPAT="RGGB", ROWORDER="BOTTOM-UP", STACKCNT=16)
+    img = read_cfa(tmp_path / "dark.fit")
+    assert abs(float(np.median(img)) - 508) < 0.05 and abs(img[-4, 5] - 4000) < 0.5     # rows turned, values in ADU
+    info = read_info(tmp_path / "dark.fit")
+    assert info.white == 65535.0 and info.black == 0.0
+    _write(tmp_path / "flat.fit", a, BAYERPAT="RGGB", DATAMAX=1.0, PEDESTAL=100 / 65535)
+    info = read_info(tmp_path / "flat.fit")                 # the header's levels on the file's scale, brought to ADU too
+    assert info.white == 65535.0 and abs(info.black - 100) < 1e-3
+
+
+def test_a_float_fits_mosaic_in_adu_and_integer_files_are_read_as_they_are(tmp_path):
+    """The rule leaves alone what is already in ADU: floats past the 0-1 scale (a dark's black level and hot pixels are
+    far above it), 16-bit integers stored with BZERO 32768 (astropy gives 0-65535), 32-bit integers."""
+    adu = _mosaic(level=512.0, noise=3.0)
+    _write(tmp_path / "adu.fit", adu, BAYERPAT="RGGB")
+    assert np.allclose(read_cfa(tmp_path / "adu.fit"), adu) and read_info(tmp_path / "adu.fit").white == 65535.0
+    u16 = np.array([[0, 1, 512, 60000]] * 4, np.uint16)
+    _write(tmp_path / "u16.fit", u16, BAYERPAT="RGGB")
+    with fits.open(tmp_path / "u16.fit") as h:
+        assert h[0].header["BZERO"] == 32768 and h[0].header["BITPIX"] == 16      # what is on the disk
+    assert np.array_equal(read_cfa(tmp_path / "u16.fit"), u16.astype(np.float32))
+    assert read_info(tmp_path / "u16.fit").white == 65535.0
+    small = np.array([[0, 1, 1, 0]] * 4, np.int32)              # integers of 0 and 1: ADU, never the 0-1 scale
+    _write(tmp_path / "i32.fit", small)
+    assert np.array_equal(read_cfa(tmp_path / "i32.fit"), small.astype(np.float32))
+
+
+def test_an_rgb_fits_and_its_luminance_follow_the_same_rule(tmp_path):
+    from astro_gpu.io.frames import read_colour
+    a = np.stack([np.full((4, 6), v, np.float32) for v in (0.1, 0.2, 0.3)])
+    _write(tmp_path / "rgb.fit", a)
+    assert np.allclose(read_colour(tmp_path / "rgb.fit")[:, 0, 0], (6553.5, 13107.0, 19660.5))
+    assert 6553.5 < float(read_cfa(tmp_path / "rgb.fit")[0, 0]) < 19660.5          # its luminance, in ADU too
+
+
+def test_a_master_dark_on_the_0_1_scale_takes_the_black_level_and_the_hot_pixels_off_the_lights(tmp_path):
+    """A tiny session through Inventory and Calibration: 16-bit lights of a black level of 512, a sky of 300 ADU and a
+    hot pixel of 3000, a master dark of another program in floats on the 0-1 scale. Read as 0.008, the dark took
+    nothing off: the calibrated sky was 812 and the hot pixel stayed."""
+    import json
+
+    from astro_gpu.core.project import Inputs, Project
+    from astro_gpu.core.runner import Pipeline
+    from astro_gpu.stages.calibrate import Calibrate
+    from astro_gpu.stages.inventory import Inventory
+    L, D = tmp_path / "L", tmp_path / "D"
+    L.mkdir()
+    D.mkdir()
+    H, W = 24, 32
+    for i in range(3):
+        a = _mosaic(H, W, 812.0, seed=i, noise=3.0)
+        a[5, 7] += 3000
+        _write(L / f"l{i}.fits", np.round(a).astype(np.uint16), BAYERPAT="RGGB", EXPTIME=300.0,
+               **{"DATE-OBS": f"2026-08-16T22:0{i}:00"})
+    dark = _mosaic(H, W, 512.0)
+    dark[5, 7] += 3000
+    _write(D / "dark.fit", dark / np.float32(65535), BAYERPAT="RGGB", EXPTIME=300.0, STACKCNT=16)
+    pr = Project.create(tmp_path / "p", "p", Inputs(lights=[str(L)], darks=[str(D)]))
+    pr.config.devices = {"main": "cpu"}
+    pr.config.params = {"calibrate": {"workers": 1, "hot_from_lights": False}}
+    pr.save()
+    Pipeline(pr, [Inventory(), Calibrate()]).run()
+    d = Path(pr.stage_dir("calibrate"))
+    m = json.loads((d / "manifest.json").read_text())
+    assert m["status"] == "done", m.get("error")
+    assert abs(m["metrics"]["dark_level"] - 512) < 1
+    cache = json.loads((d / "cache.json").read_text())
+    fr = np.asarray(np.memmap(cache["path"], dtype=np.float16, mode="r", shape=(3, H, W))[0], np.float32) / cache["scale"]
+    assert abs(float(np.nanmedian(fr)) - 300) < 3
+    assert np.isnan(fr[5, 7]) or abs(fr[5, 7] - 300) < 20                              # taken off, or left out
+
+
+def test_the_viewer_reads_a_camera_frame_in_adu_and_any_other_fits_as_it_is(tmp_path):
+    """The frames' viewer is given the frame's white level in ADU: it reads the pixels on that scale too."""
+    from astro_gpu.client.imageview import read_file
+    _write(tmp_path / "dark.fit", _mosaic(level=508 / 65535), BAYERPAT="RGGB")
+    assert abs(float(np.median(read_file(tmp_path / "dark.fit", frame=True)[0])) - 508) < 0.05
+    assert float(np.median(read_file(tmp_path / "dark.fit")[0])) < 0.01                 # a result, an export: as it is

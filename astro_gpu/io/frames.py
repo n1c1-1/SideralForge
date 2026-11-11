@@ -134,14 +134,40 @@ def read_cfa(path: str | Path) -> np.ndarray:
 
 
 def _fits_data(path: Path):
-    """(the image, its header) of a FITS file, read as float32 (compressed FITS: the image is in the first extension)."""
+    """(the image in ADU (``fits_adu``), its header) of a FITS file, read as float32 (compressed FITS: the image is in
+    the first extension)."""
     from astropy.io import fits
     try:
         with fits.open(path, memmap=False) as h:
             hdu = next(x for x in h if x.data is not None)
-            return np.asarray(hdu.data, np.float32), hdu.header
+            return fits_adu(np.asarray(hdu.data, np.float32), hdu.header), hdu.header
     except (OSError, StopIteration, TypeError, ValueError) as e:
         raise unreadable(path) from e
+
+
+#: the highest value of a FITS image in floats that is still on the 0-1 scale (a little over 1: a calibrated or
+#: normalised frame can go past it); a frame in ADU, even a dark, has its black level and its hot pixels far above it
+UNIT_MAX = 1.5
+#: the ADU of 1.0 in a FITS image in floats on the 0-1 scale: the stacking programs write the raw ADU divided by 65535
+#: (a 14-bit camera's 512 black level is 0.0078 in their masters), whatever the camera's bit depth
+UNIT_ADU = 65535.0
+
+
+def fits_adu(a: np.ndarray, hd) -> np.ndarray:
+    """The one rule for the values of a FITS frame (lights, darks, bias, flats; mosaic, monochrome or in colour): an image
+    in floats (BITPIX < 0) whose values all stay within ``UNIT_MAX`` is on the 0-1 scale and is brought to ADU (times
+    ``UNIT_ADU``); one in floats already in ADU, and every integer image, as the file holds it (astropy has applied
+    BZERO and BSCALE: a 16-bit file with BZERO 32768 is 0-65535). Read on the whole image, so that every frame of a
+    file is on the scale its header levels are (``fits_level``)."""
+    if int(hd.get("BITPIX", 16)) >= 0 or not a.size or not float(np.nanmax(a)) <= UNIT_MAX:
+        return a
+    return a * np.float32(UNIT_ADU)
+
+
+def fits_level(v: float, hd) -> float:
+    """A level a FITS header gives in the image's own units (DATAMAX, SATURATE, PEDESTAL) in ADU, by ``fits_adu``'s rule:
+    a level within ``UNIT_MAX`` in a file of floats is on the 0-1 scale."""
+    return v * UNIT_ADU if int(hd.get("BITPIX", 16)) < 0 and v <= UNIT_MAX else v
 
 
 def _rows_top_down(a: np.ndarray, hd) -> np.ndarray:
@@ -184,15 +210,15 @@ def colour_session(lights: list, is_colour=None) -> dict | None:
 
 def read_colour(path: str | Path) -> np.ndarray:
     """A frame already in colour: (3, H, W) float32, planes R, G, B, top row first, as the file holds it (0-255,
-    0-65535; float images in 0-1 brought to 0-65535 so that the calibrated cache, float16, keeps their faint values)."""
+    0-65535; float images in 0-1 brought to 0-65535 so that the calibrated cache, float16, keeps their faint values:
+    ``fits_adu`` for a FITS file)."""
     path = Path(path)
     kind = frame_kind(path)
     if kind == "fits":
         a, hd = _fits_data(path)
         if a.ndim != 3 or a.shape[0] != 3:
             raise colour_refused(path, "it is not a colour image of three planes")
-        a = _rows_top_down(a, hd)
-        return np.ascontiguousarray(_fits_scale(a) if int(hd.get("BITPIX", 16)) < 0 else a)
+        return np.ascontiguousarray(_rows_top_down(a, hd))
     if kind != "colour":
         raise ValueError(f"unsupported file type: {path.name}")
     if path.suffix.lower() in (".tif", ".tiff"):
@@ -217,8 +243,9 @@ def read_colour(path: str | Path) -> np.ndarray:
 
 
 def _fits_scale(a: np.ndarray) -> np.ndarray:
-    """A float image in 0-1 brought to 0-65535; one already on that scale as it is."""
-    return a * np.float32(65535.0) if a.size and float(np.nanmax(a)) <= 1.5 else a
+    """A float image in 0-1 brought to 0-65535; one already on that scale as it is (a TIFF of floats: ``fits_adu``'s
+    rule)."""
+    return a * np.float32(UNIT_ADU) if a.size and float(np.nanmax(a)) <= UNIT_MAX else a
 
 
 def colour_refused(path: str | Path, why: str) -> Exception:
@@ -444,10 +471,15 @@ def _fits_info(path: Path) -> FrameInfo:
     if area is not None:
         w, h = area[2], area[3]
     bitpix = int(hd.get("BITPIX", 16))
-    white = float(hd.get("DATAMAX", hd.get("SATURATE", 2 ** 16 - 1 if bitpix in (16, 32) else 1.0)))
+    # the levels in ADU, as fits_adu reads the pixels: a file of floats reaches 65535 (on the 0-1 scale, brought to
+    # ADU; already in ADU, the 16 bits of a camera), and its header levels on the 0-1 scale are brought to ADU too
+    # (white 1.0 made a float master's level of 0.13 read as 13 % of saturation, where it is 8400 ADU)
+    white = fits_level(float(hd.get("DATAMAX", hd.get("SATURATE", 2 ** 16 - 1 if bitpix in (16, 32) or bitpix < 0
+                                                                else 1.0))), hd)
     if _is_rgb_fits(hd):                       # a frame already in colour (issue #57): read_colour's range
         pat, white = cfa_mod.RGB, 255.0 if bitpix == 8 else 65535.0 if bitpix < 0 else float(hd.get("DATAMAX", 65535.0))
-    info = FrameInfo(str(path), "fits", w, h, pat, float(hd.get("PEDESTAL", hd.get("OFFSET", 0)) or 0), white)
+    info = FrameInfo(str(path), "fits", w, h, pat, fits_level(float(hd.get("PEDESTAL", hd.get("OFFSET", 0)) or 0), hd),
+                     white)
     info.exposure = _exposure_s(hd)
     info.iso = _num(hd.get("GAIN", hd.get("ISOSPEED")))
     info.time = str(hd.get("DATE-OBS", "")) or datetime.fromtimestamp(path.stat().st_mtime).isoformat()
