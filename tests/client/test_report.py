@@ -156,6 +156,15 @@ def test_the_exports_hold_the_report_and_no_path(qapp, monkeypatch, tmp_path):
     p.save_png(tmp_path / "r.png")
     p.save_pdf(tmp_path / "r.pdf")
     assert (tmp_path / "r.png").stat().st_size > 2000 and (tmp_path / "r.pdf").read_bytes()[:4] == b"%PDF"
+    # the night test pass: 7 s without a sign, the file proposed in the program's own folder
+    said, asked = [], []
+    p.said.connect(said.append)
+    monkeypatch.setattr(p.s, "root", tmp_path, raising=False)
+    monkeypatch.setattr(rep.QFileDialog, "getSaveFileName",
+                        lambda *a: (asked.append(a[2]), ((tmp_path / "x.pdf").as_posix(), ""))[1])
+    p._ask_pdf()
+    assert asked[0].startswith(tmp_path.as_posix()) and asked[0].endswith("_report.pdf")
+    assert said[0].startswith("Writing x.pdf") and "x.pdf" in said[-1] and (tmp_path / "x.pdf").is_file()
 
 
 def test_one_night_card_per_session_beside_the_image(qapp, monkeypatch, tmp_path):

@@ -1005,5 +1005,6 @@
   "The image at the bottom has no Astrometry: place the block in its workflow, or put a layer that has one at the bottom": "L'image du bas n'a pas d'Astrométrie : placez le bloc dans son workflow, ou mettez en bas un calque qui en a une",
   "Astrometry is not computed yet for the image at the bottom": "L'Astrométrie de l'image du bas n'est pas encore calculée",
   "Needs the image's scale: place the Astrometry block in this workflow.": "Il faut l'échelle de l'image : placez le bloc Astrométrie dans ce workflow.",
-  "GPU": "Carte graphique"
+  "GPU": "Carte graphique",
+  "Writing {name}…": "Écriture de {name}…"
 }

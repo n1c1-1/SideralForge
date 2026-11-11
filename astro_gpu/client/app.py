@@ -779,6 +779,7 @@ class Main(QMainWindow):
         """Report: the measures of a workflow, read-only (issue #81)."""
         from .report import ReportPage
         self.report = ReportPage(self.s, self.steps)
+        self.report.said.connect(self.flash)
         return self.report
 
     def graph_page(self) -> QWidget:

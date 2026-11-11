@@ -440,6 +440,7 @@ class ReportPage(QWidget):
     is seen is what is exported, and it zooms."""
 
     loaded = Signal()                                    # the data of the workflow shown have been read
+    said = Signal(str)                                   # a word for the status line (an export written)
 
     def __init__(self, session, steps, parent=None):
         super().__init__(parent)
@@ -797,14 +798,31 @@ class ReportPage(QWidget):
 
     # ------------------------------------------------------------ export
     def _ask_png(self):
-        path, _f = QFileDialog.getSaveFileName(self, _("Export PNG…"), "report.png", "PNG (*.png)")
-        if path:
-            self.save_png(path)
+        self._export(_("Export PNG…"), "png", "PNG (*.png)", self.save_png)
 
     def _ask_pdf(self):
-        path, _f = QFileDialog.getSaveFileName(self, _("Export PDF…"), "report.pdf", "PDF (*.pdf)")
-        if path:
-            self.save_pdf(path)
+        self._export(_("Export PDF…"), "pdf", "PDF (*.pdf)", self.save_pdf)
+
+    def _export(self, title: str, ext: str, kinds: str, write):
+        """The file asked (in the project's folder at first, named after it), written with the wait shown, then said
+        (the night test pass: 7 s without a sign, the file proposed in the program's own folder)."""
+        from . import prefs
+        from .imageview import slug
+        root = getattr(self.s, "root", None)
+        folder = Path(root) if root else Path(prefs.last_folder())
+        path, _f = QFileDialog.getSaveFileName(self, title, (folder / f"{slug(self.title())}_report.{ext}").as_posix(),
+                                               kinds)
+        if not path:
+            return
+        prefs.remember_folder(path)
+        self.said.emit(_("Writing {name}…").format(name=Path(path).name))
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        QApplication.processEvents()
+        try:
+            write(path)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.said.emit(_("Exported to {path}").format(path=path))
 
     def _picture(self, parts: list, scale: float = 1.0) -> QImage:
         docs = [self._new_doc(body) for _title, body in parts]
