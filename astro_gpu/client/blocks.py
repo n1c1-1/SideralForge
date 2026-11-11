@@ -566,10 +566,16 @@ class Graph:
         for p in project.paths:                           # the Output is never a block: hidden in the wire of its
             po = self.by_path[p.pid].get("post")          # last block, always (#49; GUI exploration 2: a shared last
             last = po.parent if po is not None else None  # block, a branch sent to Post, showed it again)
-            if last is None or po.children or po.key != "post":
+            if last is None or po.key != "post":
                 continue
             if po in last.children:                       # two workflows without blocks (images already stretched)
-                last.children.remove(po)                  # share theirs: taken out once
+                # share theirs: taken out once. A block drawn after it (Synthetic stars, after the Stars/background that
+                # holds the Output) takes its place under the block before: the Output is never a block, whatever
+                # follows it (it came back each time a block was added after it: tests/client/test_no_output_block.py)
+                at = last.children.index(po)
+                last.children[at:at + 1] = po.children
+                for c in po.children:
+                    c.parent = last
                 self.nodes.remove(po)
             self.by_path[p.pid]["post"] = last
             if self.leaves.get(p.pid) is po:
