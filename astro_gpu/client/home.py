@@ -735,6 +735,22 @@ class HomeView(QWidget):
             lv.addWidget(b)
             buttons.append(b)
         lv.addStretch(1)
+        # the offline star catalogue, said where a new user starts (a run never downloads it: core/online.py)
+        self.sky_box = QWidget()
+        sv = QVBoxLayout(self.sky_box)
+        sv.setContentsMargins(0, 0, 0, 0)
+        sv.setSpacing(4)
+        self.sky_text = label(_("Star catalogue not installed: Astrometry and Color need it"), "small", wrap=True)
+        sv.addWidget(self.sky_text)
+        inst = QPushButton(_("Install catalogue"))
+        set_icon(inst, "catalogue", 16)
+        inst.setToolTip(_("Opens Settings › Catalogs & astrometry, where the offline star catalogue is installed. "
+                          "Nothing is downloaded during a run."))
+        from .settingsdlg import open_catalogs
+        inst.clicked.connect(lambda: open_catalogs(self))
+        sv.addWidget(inst, 0, Qt.AlignLeft)
+        lv.addWidget(self.sky_box)
+        self.sky_changed()
         left.setFixedWidth(max([300] + [b.sizeHint().width() + 40 for b in buttons]))   # wider only for a long text
         root.addWidget(left)
         self.recent_cards: list[ProjectCard] = []
@@ -756,6 +772,11 @@ class HomeView(QWidget):
         if isinstance(last, HomeScan):
             self.show_scan(last)
         self.rescan()
+
+    def sky_changed(self):
+        """The line on the star catalogue, shown while it is not installed (a few headers read: core/sirilcat.py)."""
+        from ..core import sirilcat
+        self.sky_box.setVisible(sirilcat.locate()["astro"] is None)
 
     # ------------------------------------------------------------ the projects
     def rescan(self):

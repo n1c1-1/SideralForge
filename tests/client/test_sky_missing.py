@@ -81,3 +81,121 @@ def test_the_block_without_its_catalogue_is_marked_and_says_why(qapp, tmp_path, 
     finally:
         done(w, m, page)
 
+
+def _button(root, text):
+    from PySide6.QtWidgets import QPushButton
+    return next(b for b in root.findChildren(QPushButton) if b.text() == text and b.isVisibleTo(root))
+
+
+def test_the_blocked_block_opens_the_catalogue_s_settings_page(qapp, tmp_path, monkeypatch, no_catalogue):  # noqa: F811
+    w, m, page = open_page(tmp_path, monkeypatch, workflows=("Full",))
+    try:
+        settle(w, page)
+        page.select(step="astrometrie")
+        settle(w, page)
+        b = _button(page.panel, "Install catalogue")
+        assert "Settings › Catalogs & astrometry" in b.toolTip()
+        asked = []
+        page.open_settings = lambda pg=None: asked.append(pg)      # the main window's (never a dialog in a test)
+        b.click()
+        assert asked == ["catalogs"]
+        page.select(step="empilement")                              # a block that needs no catalogue: no button
+        settle(w, page)
+        assert not [x for x in page.panel.findChildren(type(b)) if x.text() == "Install catalogue" and
+                    x.isVisibleTo(page.panel)]
+    finally:
+        done(w, m, page)
+
+
+def test_home_says_once_when_the_star_catalogue_is_not_installed(qapp, tmp_path, monkeypatch, no_catalogue):  # noqa: F811
+    from astro_gpu.client import prefs
+    from astro_gpu.client.home import HomeView
+    from astro_gpu.client.services.worker import ApiWorker
+    monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
+    prefs.load()
+    worker = ApiWorker()
+    home = HomeView(worker)
+    try:
+        home.resize(1200, 700)
+        assert home.sky_box.isVisibleTo(home)
+        assert home.sky_text.text() == "Star catalogue not installed: Astrometry and Color need it"
+        asked = []
+        home.open_settings = lambda pg=None: asked.append(pg)
+        _button(home, "Install catalogue").click()
+        assert asked == ["catalogs"]
+        from tests import skyfield
+        sky = skyfield.field(tmp_path / "sky", spectra=False)
+        monkeypatch.setenv("ASTRO_GPU_GAIA_EXTRACTS", str(sky["extracts"]))
+        sirilcat.reset()
+        home.sky_changed()
+        assert not home.sky_box.isVisibleTo(home)
+    finally:
+        home.close()
+        worker.stop()
+
+
+def test_get_survey_fetches_it_outside_the_run_and_the_next_run_uses_it(qapp, tmp_path, monkeypatch,  # noqa: F811
+                                                                         no_catalogue):
+    """The survey of the field not on the disk: the run gave 'none'. The Gradient block's panel says it and Get survey
+    fetches it (an action of the user, its progress shown), then the results made without it are computed again."""
+    import numpy as np
+
+    from astro_gpu.client.graph import GraphPage
+    from astro_gpu.client.model import ProjectModel
+    from astro_gpu.client.services import survey as survey_job
+    from astro_gpu.client.services.worker import ApiWorker
+    from astro_gpu.core import project2, runner2
+    from astro_gpu.core.project import Target
+    from astro_gpu.core.workflow import TEMPLATES, node
+    from astro_gpu.stages import surveys
+    from tests import skyfield
+    monkeypatch.setenv("ASTRO_GPU_SETTINGS", str(tmp_path / "settings.json"))
+    sky = skyfield.field(tmp_path / "sky", spectra=False)
+    monkeypatch.setenv("ASTRO_GPU_GAIA_EXTRACTS", str(sky["extracts"]))
+    sirilcat.reset()
+    p = project2.create(tmp_path / "P", "P", Target(**sky["target"]))
+    wf = p.add_workflow("Image", TEMPLATES["Classic stack"])
+    wf.source = {"path": str(sky["image"]), "stretched": False}
+    p.set_blocks(wf.id, [node("astrometry"), node("gradient")])
+    project2.save(p)
+    plan = runner2.plan_all(p)
+    assert runner2.run_plan(p.root, runner2.prepare_run(p, plan, "cpu").plan_file, echo=False) == "done"
+    fetched = []
+
+    def fake(wd, W, H, scale, which="auto", min_coverage=0.95, log=print, progress=None, fetch=False):
+        assert fetch                                              # the explicit action: it may fetch
+        for k in range(3):
+            progress(k / 3, f"tile {k + 1} of 3")
+        fetched.append((W, H))
+        return np.zeros((H, W), np.float32), "nsns"
+    monkeypatch.setattr(surveys, "survey_on_grid", fake)
+    worker = ApiWorker()
+    m = ProjectModel(project2.load(p.root), worker)
+    assert worker.wait(120)
+    m._sync()
+    page = GraphPage(m)
+    try:
+        page.resize(1500, 800)
+        page.select(step="fond")
+        settle(worker, page)
+        assert "H-alpha survey: not on this computer" in _texts(page.panel)
+        get = _button(page.panel, "Get survey")
+        assert "Nothing is downloaded during a run" in get.toolTip()
+        j = survey_job.job()
+        ended = []
+        j.finished.connect(lambda pid, why: ended.append((pid, why)))
+        get.click()
+        import time
+        t0 = time.monotonic()
+        while not ended and time.monotonic() - t0 < 20:
+            QApplication.processEvents()
+        QApplication.processEvents()
+        assert fetched == [(skyfield.W, skyfield.H)] and ended == [(wf.id, "")]
+        again = runner2.plan_all(project2.load(p.root))
+        assert {"surveys", "gradient", "render_simple"} <= {x.stage for x in again.jobs}       # computed again
+        assert {"image", "astrometry"}.isdisjoint({x.stage for x in again.jobs})                # kept
+        assert any((p.root / "store" / "_trash").glob("surveys-*-survey-*"))                    # never deleted
+    finally:
+        page.close()
+        m.close(save=False)
+        worker.stop()

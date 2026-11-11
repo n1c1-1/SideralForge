@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -1127,6 +1128,73 @@ class Panel(QWidget):
             self.bv.addWidget(label(_("The stars are taken off in each channel first: stars of different sizes from "
                                       "one filter to another leave no coloured rings."), "small", wrap=True))
 
+    def survey_row(self, p):
+        """The H-alpha survey the Gradient block keeps its samples away from, when the field's is not on this computer:
+        Get survey fetches it (an action of the user, never a run: core/online.py), its progress shown here; the run
+        after it computes the survey and the blocks after it again, with it."""
+        from .. import api
+        from .services.survey import job
+        j = job()
+        try:
+            st = api.survey_state(self.s.p, p.pid)
+        except Exception:  # noqa: BLE001 - a result that cannot be read: nothing to say
+            st = None
+        if not (st and st.get("missing")) and not j.running(p.pid):
+            return
+        box = QVBoxLayout()
+        box.setSpacing(4)
+        text = label(_("H-alpha survey: not on this computer"), "warn", wrap=True)
+        bar = QProgressBar()
+        bar.setRange(0, 1000)
+        bar.setTextVisible(False)
+        bar.setFixedHeight(6)
+        get = QPushButton(_("Get survey"))
+        set_icon(get, "catalogue", 16)
+        get.setToolTip(_("Fetches the professional H-alpha survey of this field once, kept on this computer, so that "
+                         "the Gradient block keeps its samples off the faint nebulosity. Nothing is downloaded during a "
+                         "run: the next run computes the survey and the blocks after it again, with it."))
+        box.addWidget(text)
+        box.addWidget(get, 0, Qt.AlignLeft)
+        box.addWidget(bar)
+        self.hv.addLayout(box)
+
+        def show(f=None, msg=None):
+            try:
+                on = j.running(p.pid)
+                f, msg = (j.last if f is None else (f, msg))
+                bar.setVisible(on)
+                bar.setValue(int(1000 * max(0.0, min(1.0, f))))
+                get.setEnabled(not j.running())
+                text.setText(_("H-alpha survey: fetching… {pct} %").format(pct=int(100 * f)) if on else
+                             _("H-alpha survey: not on this computer"))
+            except RuntimeError:                         # the panel was built again meanwhile
+                pass
+
+        def ended(pid, why):
+            try:
+                if pid != p.pid:
+                    return
+                if why:
+                    text.setText(_("H-alpha survey: {why}").format(why=_(why)))
+                    get.setEnabled(True)
+                    bar.setVisible(False)
+                else:
+                    self.s.results_changed()             # its Surveys and the blocks after it: to compute again
+            except RuntimeError:
+                pass
+        get.clicked.connect(lambda: j.start(self.s.p, p.pid) and show())
+        j.progress.connect(show, Qt.QueuedConnection)
+        j.finished.connect(ended, Qt.QueuedConnection)
+
+        def drop(*_a):                                   # the panel built again: these widgets are gone
+            for sig, slot in ((j.progress, show), (j.finished, ended)):
+                try:
+                    sig.disconnect(slot)
+                except (RuntimeError, TypeError):
+                    pass
+        get.destroyed.connect(drop)
+        show()
+
     def cut_panel(self, node):
         """A block the user cut, or greyed by a cut: what it means, and the way back."""
         s = self.s
@@ -1213,6 +1281,13 @@ class Panel(QWidget):
         if getattr(node, "missing", ""):                 # its data of the sky is not here (core/sky_data.py)
             self.hv.addWidget(label(_("Cannot run on this computer: {why}").format(why=node.missing.rstrip(".")),
                                     "warn", wrap=True))
+            from .settingsdlg import open_catalogs
+            inst = QPushButton(_("Install catalogue"))
+            set_icon(inst, "catalogue", 16)
+            inst.setToolTip(_("Opens Settings › Catalogs & astrometry, where the offline star catalogue is installed. "
+                              "Nothing is downloaded during a run: the runs leave this block out until then."))
+            inst.clicked.connect(lambda: open_catalogs(self))
+            self.hv.addWidget(inst, 0, Qt.AlignLeft)
         # which workflows a change goes to (the Stars block has no setting: nothing to apply)
         if node.shared and k != "etoiles":
             self.hv.addWidget(label(_("Apply to:"), "dim"))
@@ -1257,6 +1332,8 @@ class Panel(QWidget):
             own_frames(self, node, p)
         if k == "etoiles":                  # what the block gives first: its two images, and where they go
             self.outputs(node)
+        if k.partition("~")[0] == "fond":
+            self.survey_row(p)
         if k.partition("~")[0] in ("fond", "debruitage", "etoiles", "deconv", "synth"):     # Gradient 2 too (round 3)
             self.methods(p, k)
         if k == "fond" and self.tune and getattr(self, "grad_editor", None) is not None:

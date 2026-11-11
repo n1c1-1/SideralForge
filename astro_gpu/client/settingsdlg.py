@@ -86,6 +86,14 @@ def device_items(machine: Machine | None, dev: str = "auto") -> list[tuple[str, 
     return out
 
 
+def open_catalogs(widget) -> None:
+    """Settings › Catalogs & astrometry, where the offline catalogue is installed (a run never downloads it:
+    core/online.py), from a button of the window ``widget`` is in (a block's panel, Home)."""
+    win = widget.window()
+    if hasattr(win, "open_settings"):
+        win.open_settings("catalogs")
+
+
 class SettingsDialog(QDialog):
     languageChanged = Signal(str)
     deviceChanged = Signal(str)                      # auto | cuda:<n> | cpu

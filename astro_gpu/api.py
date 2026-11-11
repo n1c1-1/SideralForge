@@ -2005,6 +2005,80 @@ def stage_outputs(p: Project2, wf: int | Workflow, stage: str, which: str = "cur
                         m.get("finished") or "", m)
 
 
+def survey_state(p: Project2, wf: int | Workflow) -> dict | None:
+    """What the workflow's Surveys step gave (its ``survey.json``: {"survey", "title"} or {"survey": "none", "why"}),
+    None when it is not computed. ``missing``: True when the survey of the field was not on this computer (a run never
+    fetches it: Get survey, ``fetch_survey``)."""
+    d = _dir(p, wf, "surveys")
+    if d is None:
+        return None
+    try:
+        js = json.loads((d / "survey.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    js["missing"] = js.get("survey") == "none" and "not on this computer" in str(js.get("why") or "")
+    return js
+
+
+def fetch_survey(p: Project2, wf: int | Workflow, progress: Callable[[float, str], None] | None = None) -> str:
+    """Get survey: the H-alpha survey of the workflow's solved field fetched into the cache, an explicit action of the
+    user outside any run (a run never downloads: core/online.py). Then the Surveys results that said it was not on this
+    computer, and the results computed after them in the workflows that read them, go to the store's trash (never
+    deleted), so that the next run computes them with the survey (their keys do not change: the definition did not).
+    Returns the survey's title. Raises when the field is not solved, no survey covers it, or no service answers."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    from .stages.surveys import SURVEYS, survey_on_grid
+    ast, stk = _dir(p, wf, "astrometry"), _dir(p, wf, "stack")
+    if ast is None or stk is None:
+        raise ValueError("the field is not solved yet (Astrometry)")
+    m = json.loads((ast / "manifest.json").read_text(encoding="utf-8"))
+    meta = json.loads((stk / "drz_meta.json").read_text(encoding="utf-8"))
+    scale = float((m.get("metrics") or {})["scale_arcsec"])
+    which = (json.loads((_dir(p, wf, "surveys") / "manifest.json").read_text(encoding="utf-8")).get("params") or {}
+             ).get("survey", "auto") if _dir(p, wf, "surveys") is not None else "auto"
+    _img, used = survey_on_grid(WCS(fits.getheader(ast / "wcs.fits")), int(meta["width"]), int(meta["height"]), scale,
+                                "auto" if which == "none" else which, log=lambda *a: None, progress=progress,
+                                fetch=True)
+    keys, store = _keys(p), _store(p)
+    stale: dict[str, str] = {}                    # {key: stage} of the results made without the survey
+    for w in keys.project.workflows:
+        try:
+            chain = keys.chain(w)
+        except ValueError:
+            continue
+        if "surveys" not in chain:
+            continue
+        k = keys.key(w, "surveys")
+        st = survey_state(p, w.id)
+        if not (st and st["missing"] and store is not None and store.done("surveys", k)):
+            continue
+        for s in chain:
+            if s == "surveys" or "surveys" in _reads(keys, w, s):
+                ks = keys.key(w, s)
+                if store.done(s, ks):
+                    stale[ks] = s
+    if store is not None:
+        store.trash.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        for ks, s in stale.items():
+            os.replace(store.dir(s, ks), store.trash / f"{wfl.base(s)}-{ks}-survey-{stamp}")
+        store.forget()
+    return SURVEYS[used][1]
+
+
+def _reads(keys: Keys, w: Workflow, stage: str) -> set[str]:
+    """Every stage a stage of the workflow reads, directly or through others."""
+    out, todo = set(), list(keys.deps(w, stage))
+    while todo:
+        s = todo.pop()
+        if s not in out:
+            out.add(s)
+            todo += list(keys.deps(w, s))
+    return out
+
+
 def _reduce(a: Any, f: int) -> Any:
     import numpy as np
     if f <= 1 or a.ndim < 2:
