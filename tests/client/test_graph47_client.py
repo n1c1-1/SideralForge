@@ -758,6 +758,54 @@ def test_several_images_are_all_numbered_the_first_too(qapp, tmp_path, monkeypat
         w.stop()
 
 
+def test_an_image_added_beside_one_numbers_both_as_their_blocks(qapp, tmp_path, monkeypatch):
+    """Issue #134, the part left: the Image template then an Image from the palette made "Image" and "Image 2" (blocks
+    Image 1 and Image 2); then Several images in the New workflow window, workflows Image 1 to 3 beside the blocks Image
+    2 to 4. A second of a kind numbers the first, still named by default, and each block's number is its workflow's; a
+    name the user typed is kept."""
+    from astro_gpu.client.blocks import node_title
+
+    def image_template():
+        page.show_templates()
+        next(c for c in page.templates.cards if c.t["key"] == "image").mousePressEvent(None)
+        settle(w, page)
+
+    def same_numbers(names):
+        assert [q.name for q in m.paths] == names
+        g = Graph(m)
+        images = [n for n in g.nodes if n.key == "image"]
+        assert len(images) == len(names)
+        for n in images:
+            assert g.summary(n).startswith(node_title(m, n) + " · "), (node_title(m, n), g.summary(n))
+    w, m, page = _blank_page(tmp_path, monkeypatch)
+    try:
+        image_template()
+        same_numbers(["Image"])                                    # one alone: no number
+        page.palette_action("image")
+        settle(w, page)
+        same_numbers(["Image 1", "Image 2"])
+        assert m.undo()                                            # one Ctrl+Z: the first named as it was
+        settle(w, page)
+        same_numbers(["Image"])
+        d = page.new_workflow()
+        d.pick(next(c.t for c in d.cards if c.t["key"] == "images"))
+        d._create()
+        settle(w, page)
+        same_numbers(["Image 1", "Image 2", "Image 3", "Image 4"])
+        while not page.is_blank():
+            assert m.undo()
+            settle(w, page)
+        image_template()
+        assert m.rename(m.paths[0].pid, "M 31")
+        page.palette_action("image")
+        settle(w, page)
+        assert [q.name for q in m.paths] == ["M 31", "Image 2"]    # typed: kept; the new one, its block's number
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
 def test_post_saving_its_layers_keeps_the_workflows_not_computed_yet(qapp, tmp_path, monkeypatch):
     """GUI exploration 4: Post holds layers only for the computed workflows; its saving a composition (a filter added)
     does not take the others' images out of Post (they used to be listed as removed, their wires gone for good)."""

@@ -3257,7 +3257,7 @@ class GraphPage(QWidget):
                 self.toast(_("“{session}” joins “{name}” · Ctrl+Z").format(session=name, name=q.name))
         elif block == "image":                             # placed like the Session: its file chosen in its panel
             with s.batch():                           # one Ctrl+Z takes it away (2.2)
-                q = s.add_image_workflow(s.unique_name(_("Image")), "")
+                q = s.add_image_workflow(s.image_name(_("Image")), "")     # numbered with the others (#134)
                 s.set_graph(q, [])
             q = s.view(q.pid)
             s.log('Workflow "{name}" created', name=q.name)
@@ -3611,9 +3611,13 @@ class GraphPage(QWidget):
             # as many Image blocks as its picture shows ("Several images": three), each its own block and layer of Post
             # (two Image blocks without a file are two blocks, decision 4); one Ctrl+Z takes them all away. Several: all
             # numbered, the first too, as their blocks (Image 1, Image 2, Image 3; issue #134)
+            # numbered with the Images already there, which take their number when they have none (Image, then
+            # Several images: Image 1 to Image 4, each block's number its workflow's); a name typed is kept
             n = int(t.get("images") or 1) if t.get("plain") else 1
+            base = _("Image")
+            default = n > 1 or (t["name"] == "Image" and name == s.unique_name(base))
             with s.batch():
-                made = [s.add_image_workflow(name if n == 1 else s.unique_name(_("Image"), numbered=True), "", opts,
+                made = [s.add_image_workflow(s.image_name(base) if default else name, "", opts,
                                              stretched=template_source(t) == "stretched") for _i in range(n)]
                 for q in made:
                     s.set_graph(q, template_blocks(t))
