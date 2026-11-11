@@ -276,3 +276,21 @@ def test_the_figures_have_a_decimal_comma_in_french():
         assert ax.xaxis.get_major_formatter()(0.5, 0) == "0,5"
     finally:
         i18n.set_language("en")
+
+
+def test_the_session_card_quotes_only_what_was_measured():
+    """The head of the report, made to be posted: its figures come from this session's results, and say how."""
+    assert rep.sky_position(56.76679, 24.05996) == "03h47m04s +24°03′36″"
+    assert rep.sky_position(83.82, -5.39) == "05h35m17s −05°23′24″"
+    d = rep.ReportData(astro={"focal_estimate_mm": 893.7, "stars_used": 242, "residual_px": 0.189, "scale_arcsec": 1.9386},
+                       metrics={"register": {"drift_px": 24.8, "transparency_p10_p90": [0.74, 1.02]},
+                                "inventory": {"first_time": "2023-08-21T00:56:30", "last_time": "2023-08-21T00:59:20"},
+                                "denoise": {"noise_reduction": 14.81}, "catalogs": {"stars_deep": 3203, "xp_spectra": 609},
+                                "stack": {"channel_offsets": {"applied": True, "stars": 253,
+                                                              "centre_px": {"R": [-0.471, 0.289], "B": [0.513, -0.304]}}}})
+    got = {t: (v, h) for v, t, h in rep.highlights(d, "en")}
+    assert got["Focal length, measured"][0] == "894 mm" and "242 stars, residual 0.37″" in got["Focal length, measured"][1]
+    assert got["Field drift"][0] == "48″" and "17.0″ a minute" in got["Field drift"][1]
+    assert got["Colours offset, corrected"][0] == "0.60 px" and got["Sky noise"][0] == "÷ 14.8"
+    assert got["Gaia DR3 stars in the field"][0] == "3 203" and got["Transparency changes"][0] == "27 %"
+    assert not rep.highlights(rep.ReportData(), "en")                      # nothing measured: nothing quoted

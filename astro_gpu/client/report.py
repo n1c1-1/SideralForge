@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME
+from . import APP_MOTTO, APP_NAME
 from .blocks import STATE_WORD, block_state
 from .charts import LINES, RegistrationData, registration_data
 from .. import texts
@@ -111,6 +111,7 @@ class ReportData:
     drift: bytes | None = None
     response: bytes | None = None
     astro: dict = field(default_factory=dict)            # the Astrometry block's metrics
+    metrics: dict = field(default_factory=dict)          # {stage: its metrics} of the stages the head quotes
     thumb: bytes | None = None                           # the picture Post last showed
 
 
@@ -208,6 +209,13 @@ def report_data(project, wf, stages=(), title: str = "") -> ReportData:
     except (OSError, ValueError, KeyError):
         ast = None
     d.astro = dict(ast.metrics) if ast is not None else {}
+    for stage in HEAD_STAGES:
+        try:
+            out = api.stage_outputs(project, wf, stage)
+        except (OSError, ValueError, KeyError):
+            out = None
+        if out is not None:
+            d.metrics[stage] = dict(out.metrics)
     thumb = Path(project.root) / "cache" / "thumb.jpg" if project.root is not None else None
     if thumb is not None and thumb.is_file():
         d.thumb = thumb.read_bytes()
@@ -409,6 +417,83 @@ def shot_rows(d: ReportData, info: dict, entered: dict, lang: str) -> list:
         rows.append(("kept", w["kept"], f"{int(d.kept.sum())}/{len(d.kept)}"))
     rows.append(("processing", w["processing"], APP_NAME))
     return rows
+
+
+#: the stages whose figures the head of the report quotes
+HEAD_STAGES = ("inventory", "register", "stack", "catalogs", "gradient", "denoise", "color")
+
+
+def sky_position(ra: float, dec: float) -> str:
+    """RA and Dec as an observer reads them: 03h47m04s +24°03′36″."""
+    h = (ra % 360) / 15
+    t = int(round(h * 3600))
+    hh, mm, ss = t // 3600 % 24, t // 60 % 60, t % 60
+    sign, a = ("−" if dec < 0 else "+"), abs(dec)
+    u = int(round(a * 3600))
+    return f"{hh:02d}h{mm:02d}m{ss:02d}s {sign}{u // 3600:02d}°{u // 60 % 60:02d}′{u % 60:02d}″"
+
+
+def highlights(d: ReportData, lang: str) -> list:
+    """The figures of the head (the night test pass: a picture to post that says what others do not): [(value, what,
+    how it was measured)], each measured on this session's frames; none when it was not."""
+    m, a = d.metrics, d.astro
+    dec = lambda x, n=1: _dec(float(x), n, lang)          # noqa: E731
+    scale = float(a.get("scale_arcsec") or (d.reg.scale if d.reg is not None and d.reg.scale else 0) or 0)
+    out = []
+    if a.get("focal_estimate_mm") and a.get("stars_used"):
+        res = f"{dec(float(a['residual_px']) * scale, 2)}″" if a.get("residual_px") is not None and scale else "–"
+        out.append((f"{float(a['focal_estimate_mm']):.0f} mm", _("Focal length, measured"),
+                    _("from the solved sky: {n} stars, residual {res}").format(n=int(a["stars_used"]), res=res)))
+    if d.reg is not None and d.kept is not None:
+        size, k, unit = size_of(d)
+        sz = size[d.kept]
+        sz = sz[np.isfinite(sz)]
+        if len(sz) and unit == '"':
+            out.append((f"{dec(float(np.median(sz)) * k)}″", _("Star FWHM, measured"),
+                        _("median star width (Moffat fit) of {n} frames, best {best}″").format(
+                            n=len(sz), best=dec(float(sz.min()) * k))))
+    reg = m.get("register") or {}
+    inv = m.get("inventory") or {}
+    if reg.get("drift_px") and scale:
+        drift = float(reg["drift_px"]) * scale
+        how = _("how far the field moved on the sensor during the session (tracking and deliberate shifts)")
+        try:
+            from datetime import datetime
+            mins = (datetime.fromisoformat(inv["last_time"]) - datetime.fromisoformat(inv["first_time"])).total_seconds() / 60
+            if mins > 0:
+                how = _("how far the field moved on the sensor in {t} (tracking and deliberate shifts): {rate}″ a minute").format(
+                    t=exact_time(mins * 60), rate=dec(drift / mins))
+        except (KeyError, TypeError, ValueError):
+            pass
+        out.append((f"{drift:.0f}″", _("Field drift"), how))
+    ch = (m.get("stack") or {}).get("channel_offsets") or {}
+    if ch.get("applied") and ch.get("centre_px"):
+        r, b = (float(np.hypot(*ch["centre_px"][c])) for c in ("R", "B"))
+        out.append((f"{dec(max(r, b), 2)} px", _("Colours offset, corrected"),
+                    _("red {r} px and blue {b} px from green, measured on {n} stars").format(
+                        r=dec(r, 2), b=dec(b, 2), n=int(ch.get("stars") or 0))))
+    dn = m.get("denoise") or {}
+    if dn.get("noise_reduction"):
+        out.append((f"÷ {dec(dn['noise_reduction'])}", _("Sky noise"),
+                    _("measured on the sky before and after Denoise")))
+    gr = m.get("gradient") or {}
+    if gr.get("gradient_pct"):
+        out.append((f"{dec(gr['gradient_pct'])} %", _("Sky gradient, removed"),
+                    _("spread of the sky across the field, against its level, modelled on {n} samples").format(
+                        n=int(gr.get("samples_used") or 0))))
+    cat = m.get("catalogs") or {}
+    if cat.get("stars_deep"):
+        out.append((f"{int(cat['stars_deep']):,}".replace(",", " "), _("Gaia DR3 stars in the field"),
+                    _("{n} of them with their measured spectrum").format(n=int(cat.get("xp_spectra") or 0))))
+    if d.spectral is not None and getattr(d.spectral, "stars", 0):
+        out.append((str(int(d.spectral.stars)), _("Sensor response, rebuilt"),
+                    _("stars whose spectra rebuilt the sensor's colour response")))
+    if reg.get("transparency_p10_p90"):
+        lo, hi = (float(x) for x in reg["transparency_p10_p90"])
+        if hi > 0:
+            out.append((f"{100 * (hi - lo) / hi:.0f} %", _("Transparency changes"),
+                        _("signal of the stars from frame to frame (tenth to ninetieth percentile)")))
+    return out[:8]
 
 
 def shot_text(target: str, rows: list) -> str:
@@ -726,18 +811,10 @@ class ReportPage(QWidget):
         d, p = self.data, self.path()
         many = p is not None and len(self.s.paths) > 1   # a project of one workflow: its name says nothing
         version = self.s.post_version_label() if hasattr(self.s, "post_version_label") else ""
-        head = (f"<h1 align='center'>{_('Processing report')}</h1>"
-                f"<p align='center'>{html.escape(self.title())}"
-                f"{' &mdash; ' + html.escape(p.name) if many else ''}"
-                f"{' &mdash; ' + html.escape(version) if version else ''}<br/>"
-                f"<i>{APP_NAME}, {date.today().isoformat()}</i></p>")
-        if d is not None and d.thumb:
-            self._images["thumb"] = QImage.fromData(d.thumb)
-            head += ("<p align='center'><img src='thumb' width='460'/></p>"
-                     f"<p class='cap' align='center'>{_('The final image, as Post last showed it.')}</p>")
+        head = self._head(d, p, many, version)
         if d is None or p is None or d.reg is None:
             return [("", head + f"<p>{_('Nothing computed yet: run the workflow first.')}</p>")]
-        out = [("", head)] + self._observation(d)
+        out = [(_("Session card"), head)] + self._observation(d)
         n, keys = 1, self.s.block_keys(p)
         for key, title in BLOCKS:
             if key in keys:
@@ -745,6 +822,62 @@ class ReportPage(QWidget):
                 out.append((f"{n}. {_(title)}", self._block(n, p, key, title, d)))
         out.append((f"{n + 1}. {_('Recipe')}", self._recipe(n + 1, keys, d)))
         return out + self._appendix(n + 2, d)
+
+    def _head(self, d, p, many: bool, version: str) -> str:
+        """The first piece, made to be posted as a picture: the program's mark, the target, the image, the session in
+        one line and the figures measured on it (``highlights``)."""
+        from PySide6.QtCore import QRectF
+        from PySide6.QtSvg import QSvgRenderer
+
+        from .icons import APP_ICON
+        logo = QImage(112, 112, QImage.Format_ARGB32_Premultiplied)
+        logo.fill(Qt.transparent)
+        q = QPainter(logo)
+        q.setRenderHint(QPainter.Antialiasing)
+        QSvgRenderer(str(APP_ICON)).render(q, QRectF(0, 0, 112, 112))
+        q.end()
+        self._images["logo"] = logo
+        lang = language() if language() in WORDS else "en"
+        band = ("<table width='100%' cellspacing='0' cellpadding='10' bgcolor='#141a24'><tr>"
+                "<td width='70'><img src='logo' width='56' height='56'/></td>"
+                f"<td><span style='font-size:22pt; font-weight:bold; color:#ffffff'>{APP_NAME}</span><br/>"
+                f"<span style='font-size:9pt; color:#9aa6b8'>{APP_MOTTO}</span></td>"
+                f"<td align='right'><span style='font-size:9pt; color:#9aa6b8'>{_('Processing report')}<br/>"
+                f"{date.today().isoformat()}</span></td></tr></table>")
+        sub = [html.escape(x) for x in (p.name if many and p is not None else "", version) if x]
+        a = d.astro if d is not None else {}
+        where = []
+        if a.get("ra") is not None and a.get("dec") is not None:
+            where.append(sky_position(float(a["ra"]), float(a["dec"])))
+        if a.get("field_deg"):
+            where.append(_("field {w}° × {h}°").format(w=_dec(float(a["field_deg"][0]), 1, lang),
+                                                       h=_dec(float(a["field_deg"][1]), 1, lang)))
+        if a.get("scale_arcsec"):
+            where.append(f'{_dec(float(a["scale_arcsec"]), 2, lang)}″/px')
+        out = band + (f"<h1 align='center'>{html.escape(self.title())}</h1>"
+                      + (f"<p align='center'>{' &mdash; '.join(sub)}</p>" if sub else "")
+                      + (f"<p align='center' class='cap'>{html.escape(' · '.join(where))}</p>" if where else ""))
+        if d is not None and d.thumb:
+            self._images["thumb"] = QImage.fromData(d.thumb)
+            out += "<p align='center'><img src='thumb' width='600'/></p>"
+        if d is None or d.reg is None:
+            return out
+        rows = {k: v for k, _w, v in shot_rows(d, self.s.info(), self.entered(), lang) if v}
+        line = [rows[k] for k in ("camera", "instrument", "focal", "frames") if k in rows]
+        if "kept" in rows:
+            line.append(_("{kept} frames kept").format(kept=rows["kept"]))
+        if line:
+            out += f"<p align='center'><b>{html.escape(' · '.join(line))}</b></p>"
+        cells = [f"<td width='50%' bgcolor='#eef2f8'><span style='font-size:17pt; font-weight:bold; color:#1d4f9a'>"
+                 f"{html.escape(v)}</span><br/><b>{html.escape(t)}</b><br/>"
+                 f"<span style='font-size:8.5pt; color:#555555'>{html.escape(h)}</span></td>"
+                 for v, t, h in highlights(d, lang)]
+        if cells:
+            grid = "".join(f"<tr>{''.join(cells[i:i + 2])}</tr>" for i in range(0, len(cells), 2))
+            out += (f"<table width='100%' cellspacing='6' cellpadding='8'>{grid}</table>"
+                    f"<p align='center' class='cap'>{_('Every figure above is measured on the frames of this session.')}"
+                    "</p>")
+        return out
 
     def _observation(self, d: ReportData) -> list:
         lang = language() if language() in WORDS else "en"
