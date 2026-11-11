@@ -2541,15 +2541,10 @@ class TuneView(QWidget):
             return label(_("The x / y tracking appears once the offsets of the frames are known (Registration)."),
                          "dim")
         out = {r.name: _(r.status) for r in table.rows if r.status}         # status: the reason, '' when kept
-        ch = TrackChart(d, left_out=out)
-        ch.title = ""                          # its title on its own line: the chart's head is full beside the frames
-        box = QWidget()
-        bl = QVBoxLayout(box)
-        bl.setContentsMargins(0, 0, 0, 0)
-        bl.setSpacing(0)
-        bl.addWidget(label(_("Drift path (x / y)"), "h2"))
-        bl.addWidget(ch, 1)
-        return box
+        # its title in its own head row, as the frames': its legend goes to a row of its own when the head is full. A
+        # title on a line above an empty head row made the path ask 19 px more than the frames beside it, and their
+        # part scroll for 4 px at 1920 x 1150 (issue #148)
+        return TrackChart(d, left_out=out)
 
     def _ask_preview(self, c):
         """The engine counts the frames the dragged thresholds keep (selection_preview, in the worker)."""

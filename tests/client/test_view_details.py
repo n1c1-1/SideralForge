@@ -217,6 +217,65 @@ def test_the_curves_at_their_smallest_are_whole_and_their_part_scrolls(qapp):
     assert isinstance(sa, QScrollArea) and sa.verticalScrollBar().maximum() > 0          # the rest: scrolled to
 
 
+def test_the_curves_of_selection_scroll_only_when_they_do_not_fit(qapp):
+    """Issue #148: at 1920 x 1150, the handle at its first place, the curves showed a scroll bar for 4 px: the drift
+    path's title on a line of its own above an empty head row asked 19 px more than the frames beside it. Built as
+    Selection builds it, the part scrolls when the window is too small for its charts, never when they fit."""
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QScrollArea, QSplitter, QVBoxLayout, QWidget
+
+    from astro_gpu.client.charts import FramesChart, RegistrationData
+    from astro_gpu.client.tune import TuneView, scrolled_part
+    from astro_gpu.client.widgets import label
+    n = 30
+    rows = [SimpleNamespace(name=f"L_{i:03d}.fits", time=f"2026-01-01T22:{i:02d}:00", fwhm=3 + (i % 5) * 0.3,
+                            transparency=0.6 + (i % 7) * 0.05, status="", excluded=False, session=1) for i in range(n)]
+    nan = np.full(n, np.nan)
+    d = RegistrationData(names=[r.name for r in rows], iso=[r.time for r in rows], secs=np.arange(n) * 60.0 + 1e9,
+                         fwhm=np.array([r.fwhm for r in rows]), transp=np.full(n, 90.0), nmatch=nan, nstars=nan,
+                         rms=np.full(n, 0.3), aligned=np.ones(n, bool), dx=np.linspace(0, 40, n),
+                         dy=np.sin(np.arange(n)) * 3, ref=0, scale=None)
+    tv = SimpleNamespace(_need=lambda *a, **k: SimpleNamespace(data=d), _keys=lambda *a: ())
+
+    def part(w, h):
+        """Selection's part of the curves as ``_show_selection`` builds it, in a centre of Inspect of w x h."""
+        host = QWidget()
+        host.resize(w, h)
+        host._splits, host.center = {}, QVBoxLayout(host)
+        for name in ("_split", "_split_moved", "_save_splits"):
+            setattr(host, name, getattr(TuneView, name).__get__(host))
+        frames = FramesChart(rows, 60.0, 4.0, thresholds=True)
+        frames.setMinimumHeight(140)
+        track = TuneView._selection_track(tv, SimpleNamespace(pid=1), SimpleNamespace(rows=rows))
+        top = QWidget()
+        tl = QVBoxLayout(top)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(4)
+        row = QSplitter()
+        row.addWidget(frames)
+        row.addWidget(track)
+        tl.addWidget(scrolled_part(row), 1)
+        tl.addWidget(label("28 frames kept of 30", "dim"))
+        v = iv.ImageView()
+        v.setMinimumHeight(220)
+        host._split("selection", top, v, (2, 5))
+        host.show()
+        QApplication.processEvents()
+        QApplication.processEvents()
+        sa = top.findChild(QScrollArea)
+        host.hide()
+        return sa.verticalScrollBar().maximum(), sa.viewport().height(), row.minimumSizeHint().height()
+
+    # the centre of a 1920 x 1150 window, where the curves were given 241 px (the issue's case), of wider and taller ones
+    for w, h in ((1540, 955), (1540, 1000), (1800, 955)):
+        over, shown, need = part(w, h)
+        assert over == 0 and need <= shown, (w, h, over, shown, need)            # they fit: no scroll bar
+    for w, h in ((900, 520), (1540, 640)):                         # 1280 x 680, and a low window
+        over, shown, need = part(w, h)
+        assert over > 0 and over == need - shown, (w, h, over, shown, need)    # too small: it scrolls, by what lacks
+
+
 # ---------------------------------------------------------------------------------------------- 6. the named objects
 def _wcs(w=400, h=300, scale_deg=0.01):
     from astropy.wcs import WCS
