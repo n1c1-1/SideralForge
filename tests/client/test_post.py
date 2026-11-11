@@ -3173,3 +3173,15 @@ def test_every_tool_has_a_named_control(post):
     # a layer's right-click: Add a filter first
     m = v.layer_menu_of(v.layers[-1])
     assert m.actions()[0].text() == "Add a filter" and m.actions()[0].menu().actions()
+    # #141: Enter belongs to the crop only while it is drawn (it was taken from every field of Post)
+    assert not any(sc.isEnabled() for sc in v._crop_keys)
+    v.b_crop.setChecked(True)
+    assert all(sc.isEnabled() for sc in v._crop_keys)
+    v.b_crop.setChecked(False)
+    assert not any(sc.isEnabled() for sc in v._crop_keys)
+    # #120: one of a layer's two images has the filters in its right-click too
+    from astro_gpu.client.postengine import is_group, sub_row
+    grp = next((x for x in v.layers if is_group(x)), None)
+    if grp is not None:
+        sm = v.layer_menu_of(sub_row(grp, "stars"))
+        assert [a.text() for a in sm.actions()] == ["Add a filter"]

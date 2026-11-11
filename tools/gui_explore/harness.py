@@ -339,7 +339,7 @@ class Explorer:
         self.settle(10)
         if template:
             from astro_gpu.client.gallery import GALLERY
-            self.w.graph.template_chosen(next(t for t in GALLERY if t["key"] == template), [])
+            self.w.graph.template_chosen(next(t for t in GALLERY if t["key"] == template))
             self.settle(10)
         return root
 

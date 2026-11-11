@@ -410,7 +410,7 @@ class SectionTitle(QLabel):
         # a title stands out from the settings under it (#119: Starless and Stars alone were not told from the rest)
         self.setObjectName("sectiontitle")
         self.setStyleSheet("QLabel#sectiontitle { font-weight: 600; color: #e6edf7; padding: 6px 0 3px 0; "
-                           "border-top: 1px solid #353b47; }")
+                           "margin-top: 8px; border-top: 1px solid #353b47; }")
         self.sections, self.folded, self.rows, self._hover, self._shown = sections, False, [], False, []
         self.setToolTip(_("Click: fold or unfold · Alt-click: only this section"))
         self.setCursor(Qt.PointingHandCursor)

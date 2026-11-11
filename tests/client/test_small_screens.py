@@ -503,7 +503,13 @@ def test_posts_groups_all_stay_open_on_a_small_window(env):
     view = _post_view(w)
     ts = view.folds.titles
     assert len(ts) >= 2 and not any(t.folded for t in ts)
-    assert ts[0].objectName() == "sectiontitle"                # a title that stands out from the settings
+    # a title that stands out from the settings: its own look, that nothing sets again after it (the laptop's check:
+    # Post and the block panel put the grey one back)
+    assert ts[0].objectName() == "sectiontitle" and "#e6edf7" in ts[0].styleSheet() and "border-top" in ts[0].styleSheet()
+    w.set_mode(0)
+    w.select(step="fond")
+    _settle(w, 10)
+    assert all("#e6edf7" in t.styleSheet() for t in w.graph.panel.folds.titles)
     icons = [view.dock.icons.itemAt(i).widget().toolTip() for i in range(view.dock.icons.count())]
     assert [t.text() for t in ts][0] in icons                  # one icon per group
 

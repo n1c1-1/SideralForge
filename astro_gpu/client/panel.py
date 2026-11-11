@@ -1695,9 +1695,7 @@ class Panel(QWidget):
         self.changed.emit()
 
     def group_title(self, text):
-        g = self.folds.title(text)
-        g.setStyleSheet("color: #aab2bf; font-weight: 600; margin-top: 8px; margin-bottom: 2px;")
-        return g
+        return self.folds.title(text)                    # its look is the section title's own (layout.SectionTitle)
 
     # ------------------------------------------------------------ sections (issue #44)
     def _finish_sections(self):
