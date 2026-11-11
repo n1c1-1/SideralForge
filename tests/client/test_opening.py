@@ -133,6 +133,27 @@ def test_the_start_loads_the_stage_graph_and_the_names_while_home_is_shown(monke
     assert done == ["stages", "names", "render"]
 
 
+def test_home_reads_a_projects_state_once_until_its_files_or_results_change(env):
+    """Home read every recent project's state (the keys of all their frames) each time it was shown: read once per
+    session, again when the project file, its saved state or its results change, or once it was opened here."""
+    from astro_gpu import api
+    from astro_gpu.client import home as homemod
+    read = []
+    real = api.states
+    env["mp"].setattr(api, "states", lambda p, **k: (read.append(p.name), real(p, **k))[1])
+    root = _project(env["tmp"])
+    first = homemod.project_state(root.as_posix())
+    assert homemod.project_state(root.as_posix()) == first and len(read) == 1      # the same state, not read again
+    (root / "state.json").write_text('{"last_keys": {"1": {}}}', encoding="utf-8")   # its saved state changed
+    assert homemod.project_state(root.as_posix()) == first and len(read) == 2
+    (root / "store" / "inventory").mkdir(parents=True)                               # a result appeared
+    homemod.project_state(root.as_posix())
+    homemod.project_state(root.as_posix())
+    assert len(read) == 3 and homemod._key(root) in homemod._STATES
+    _open(env, root)                                                                  # opened here: read again after
+    assert homemod._key(root) not in homemod._STATES
+
+
 def test_home_stops_reading_the_other_projects_states_when_a_project_is_shown(env):
     """The states of Home's cards (the keys of every frame of every recent project) held the one worker before the
     project opened could be read: left for a project, Home reads no further project; shown again, it reads them anew."""

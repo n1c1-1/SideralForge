@@ -9,7 +9,8 @@ The folders are read in the ApiWorker (``scan_home``): every sub-folder holding 
 sub-folder holding none, its own sub-folders that do; names starting with "_" or ".", pytest and temporary folders are
 skipped (``hidden``). The cards show at once; the state of each project (up to date, outdated, never run) follows
 from a second, slower read of the worker (``project_state``: the keys of its stages, so the file lists of its
-frames), for the open sections. Nothing is written but the settings.
+frames), for the open sections; kept for the session until the project's files or results change. Nothing is written
+but the settings.
 
 Classes: ``HomeView`` shows a ``SectionView`` per section, each with its ``ProjectCard`` items; ``NewProjectDialog``.
 """
@@ -214,15 +215,59 @@ def project_info(root: Path) -> ProjectInfo:
     return info
 
 
+#: the states this session read, {project: (its signature, (state, args))} (#115: Home read every recent project's
+#: state again each time it was shown, the file lists of all their frames): read again when the signature changed, or
+#: after the project was opened here (``forget_state``)
+_STATES: dict[str, tuple[tuple, tuple[str, dict]]] = {}
+
+
+def _stat(f: Path) -> tuple[int, int] | None:
+    try:
+        st = os.stat(f)
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
+def state_signature(root: Path) -> tuple:
+    """What a project's state is read from, cheaply (no frame listed): the times and sizes of its project file, its
+    saved state, its run lock and its store, and the time of each stage folder of the store (a result done, replaced
+    or removed renames a folder in it)."""
+    store = root / "store"
+    parts = [_stat(root / project2.FILE), _stat(root / project2.STATE_FILE), _stat(root / "logs" / "run.lock"),
+             _stat(store)]
+    try:
+        with os.scandir(store) as it:
+            names = sorted(e.name for e in it if e.is_dir())
+    except OSError:
+        names = []
+    return (*parts, *((n, _stat(store / n)) for n in names))
+
+
+def forget_state(root: str | Path):
+    """A project opened here: its state is read again when Home shows it."""
+    _STATES.pop(_key(root), None)
+
+
 def project_state(root: str) -> tuple[str, dict]:
     """The state of a project for its card (worker thread; nothing is written): Running, Never run, every workflow
     up to date, or how many are outdated (computed earlier, a setting changed since) and how many have still to run.
-    Reads the keys of its stages, so the file lists of its frames."""
-    from .. import api
+    Reads the keys of its stages, so the file lists of its frames: once per session, until its signature changes."""
     d = Path(root)
+    sig = state_signature(d)                         # before the read: a change during it is read again next time
+    known = _STATES.get(_key(d))
+    if known is not None and known[0] == sig and not _running(d):
+        return known[1][0], dict(known[1][1])
     p = project2.load(d)
     if _running(d):
         return "Running", {}
+    out = _state_of(p)
+    _STATES[_key(d)] = (sig, out)
+    return out
+
+
+def _state_of(p: project2.Project2) -> tuple[str, dict]:
+    from .. import api
     if not p.workflows:
         return "No workflow yet", {}
     st = api.states(p, update=False)

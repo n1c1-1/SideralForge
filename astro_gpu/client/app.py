@@ -61,7 +61,7 @@ from ..core.project import Target
 from . import APP_MOTTO, APP_NAME, drafts, prefs
 from . import layout as lay
 from .gcguard import GuiGarbageCollector
-from .home import HomeView, ask_project_name
+from .home import HomeView, ask_project_name, forget_state
 from .i18n import _, language, plain_error, plural, set_language
 from .icons import app_icon
 from .icons import icon as make_icon
@@ -572,6 +572,7 @@ class Main(QMainWindow):
         if self.close_project(go_home=False) is False:              # unsaved edits kept: Cancel
             return False
         self.project = OpenProject(root, d)
+        forget_state(root)                               # Home reads its state again once it is closed
         self.project.log("Project created" if created else "Project opened")
         if not drafts.is_untitled(root):
             prefs.add_recent(root.as_posix(), d.name, d.target.name or "")
@@ -709,6 +710,7 @@ class Main(QMainWindow):
             if self._recovery_mine:
                 drafts.clear_recovery(self.project.root)
             drafts.discard(self.project.root)            # a project without a name: nothing left behind
+            forget_state(self.project.root)              # nor a state Home was still reading as it opened
             self.project = None
             self.s = None
             if self.proj_screen is not None:
