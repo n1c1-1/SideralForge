@@ -301,6 +301,21 @@ def test_the_session_card_quotes_only_what_was_measured():
     assert not rep.highlights(rep.ReportData(), "en")                      # nothing measured: nothing quoted
 
 
+@pytest.mark.parametrize("image,sensor,line,table", [(2.0, 2.0, "2.00″/px", None),       # solved: under the title, once
+                                                     (1.0, 2.0, "1.00″/px", "2.00″/px"),  # drizzled: two figures
+                                                     (None, 2.0, None, "2.00″/px")])      # not solved: from the focal length
+def test_the_first_page_gives_the_field_and_the_scale_once_written_one_way(qapp, monkeypatch, image, sensor, line, table):
+    """#137: the scale was written 1.94″/px under the title and 1.9"/px in Table 1, and the field given in both."""
+    d = data()
+    d.reg.scale = sensor
+    d.astro = dict(field_deg=[7.33, 5.04], **({"scale_arcsec": image} if image else {}))
+    head = page(monkeypatch, d=d)._parts[0][1][1]
+    under, tables = head.split("Table 1. Acquisition.")
+    assert '"/px' not in head and head.count("7.3° × 5.0°") == 1 and "7.3° × 5.0°" in under
+    assert (line is None or line in under) and (table is None or table in tables) and ("Sampling" in tables) == bool(table)
+    assert head.count("″/px") == (line is not None) + (table is not None)
+
+
 def test_without_a_scale_on_the_sky_the_star_size_is_given_in_pixels_saying_so(qapp, monkeypatch):
     """#135: no plate solving, no focal length: the stars' size is measured all the same, so the first page gives it,
     once, in pixels, and says why."""

@@ -435,6 +435,11 @@ def sky_position(ra: float, dec: float) -> str:
     return f"{hh:02d}h{mm:02d}m{ss:02d}s {sign}{u // 3600:02d}°{u // 60 % 60:02d}′{u % 60:02d}″"
 
 
+def scale_text(arcsec: float, lang: str) -> str:
+    """A scale on the sky as the first page writes it, wherever it is (#137): 1.94″/px."""
+    return f"{_dec(arcsec, 2, lang)}″/px"
+
+
 def highlights(d: ReportData, lang: str) -> list:
     """The figures of the head (the night test pass: a picture to post that says what others do not): [(value, what,
     how it was measured)], each measured on this session's frames; none when it was not."""
@@ -875,7 +880,7 @@ class ReportPage(QWidget):
             where.append(_("field {w}° × {h}°").format(w=_dec(float(a["field_deg"][0]), 1, lang),
                                                        h=_dec(float(a["field_deg"][1]), 1, lang)))
         if a.get("scale_arcsec"):
-            where.append(f'{_dec(float(a["scale_arcsec"]), 2, lang)}″/px')
+            where.append(scale_text(float(a["scale_arcsec"]), lang))
         out = (f"<p align='center' style='font-size:14pt;'>{html.escape(self.title())}</p>"
                + (f"<p align='center' style='{small}'>{' &mdash; '.join(sub)}</p>" if sub else "")
                + (f"<p align='center' style='{small}'>{html.escape(' · '.join(where))}</p>" if where else ""))
@@ -890,9 +895,15 @@ class ReportPage(QWidget):
         if d is None or d.reg is None:
             return out
         measured = highlights(d, lang)
-        # the focal length and the star size are in Table 2, with how they were measured: not twice
-        twice = {"focal", "fwhm"} if measured else set()
-        rows = [(html.escape(word), html.escape(value))
+        # the focal length and the star size are in Table 2, with how they were measured: not twice; the field is in the
+        # line under the title, the object's place on the sky, and so is the scale (#137): the sensor's sampling is in
+        # Table 1 only when it is another figure (a drizzled image's pixels are smaller) or the only one (no plate
+        # solving: the focal length and the pixel size give it), written the same way
+        twice = ({"focal", "fwhm"} if measured else set()) | {"field"}
+        written = {"sampling": scale_text(float(d.reg.scale), lang)} if d.reg.scale else {}
+        if written.get("sampling") in where:
+            twice.add("sampling")
+        rows = [(html.escape(word), html.escape(written.get(key, value)))
                 for key, word, value in shot_rows(d, self.s.info(), self.entered(), lang)
                 if value and key != "processing" and key not in twice]
         out += (f"<p style='{small}'>{_('Table 1. Acquisition.')}</p>"
