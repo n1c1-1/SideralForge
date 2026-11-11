@@ -791,6 +791,15 @@ def test_estimates_follow_units_history_and_the_cpu():
     assert est.denoise_steps("adapted", "long") == 4000
 
 
+def test_stacking_on_the_processor_is_estimated_near_what_was_measured():
+    """Issue #130: three runs on a laptop of 8 cores (drizzle scale 1, 12 Mpx); the factor guessed before announced
+    80 minutes where the run took 46."""
+    for lights, measured in ((50, 156.0), (50, 186.0), (754, 2766.0)):
+        f = est.Facts(frames=lights + 110, lights=lights, mpx=4256 * 2848 / 1e6, scale=1.0, grid_mpx=4256 * 2848 / 1e6)
+        got = est.estimate("stack", f, gpu=False, history={}).seconds
+        assert 0.8 < got / measured < 1.25, (lights, got, measured)
+
+
 def test_an_image_opened_is_estimated_at_its_own_size(tmp_path):
     """The night test pass: a picture of 1600 x 1100 was announced "≈ 3 min" on the processor and took 10 s (the
     reference's 27 Mpx grid)."""

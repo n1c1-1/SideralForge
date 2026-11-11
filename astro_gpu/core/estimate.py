@@ -49,9 +49,11 @@ HEART: dict[str, tuple[float, float]] = {
 OTHER = (60.0, 0.0)
 #: without a GPU, each stage takes this many times longer (guesses, not measured; star_removal measured on 5 November
 #: 2026, issue #9: 7.7 s per Mpx on 8 processor threads, about 4 times the reference's GPU time with its reading and
-#: writing; the 40 guessed before announced 50 minutes for North America, where the run takes about 4)
+#: writing; the 40 guessed before announced 50 minutes for North America, where the run takes about 4). Stacking
+#: measured on 11 November 2026 (issue #130) on a laptop of 8 cores, drizzle scale 1, 12 Mpx: 50 frames in 156 and
+#: 186 s, 754 frames in 2766 s, 2.5 to 2.9 times the reference; the 5 guessed before announced 80 minutes for 46
 CPU_FACTOR: dict[str, float] = {
-    "inventory": 1, "calibrate": 1.3, "register": 1.5, "stack": 5, "astrometry": 1, "catalogs": 1, "surveys": 1,
+    "inventory": 1, "calibrate": 1.3, "register": 1.5, "stack": 2.7, "astrometry": 1, "catalogs": 1, "surveys": 1,
     "synth_stars": 1, "color": 1.5, "deconv": 20, "denoise": 45, "gradient": 1, "render_simple": 2, "star_removal": 4,
 }
 DEFAULT_CPU_FACTOR = 2.0
