@@ -690,7 +690,9 @@ class ReportPage(QWidget):
         self.b_card.setEnabled(self.part.count() > 0)
 
     def _new_doc(self, body: str) -> QTextDocument:
-        doc = QTextDocument(self)
+        # no parent: gone with its last reference (the night test pass: owned by the page, each showing of the report
+        # kept its documents and their figures, about 15 MB, for good)
+        doc = QTextDocument()
         font = QFont("Times New Roman", 12)
         font.setStyleHint(QFont.Serif)
         doc.setDefaultFont(font)
