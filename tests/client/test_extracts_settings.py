@@ -109,6 +109,22 @@ def test_the_section_shows_the_folder_the_state_and_the_two_downloads(env, qapp)
     d.close()
 
 
+def test_each_extract_says_which_block_needs_it(env, qapp):
+    """The positions alone leave the Color block out of the runs (it calibrates on the spectra): the spectra's row says
+    so next to their download, and the positions' row says what needs them."""
+    d, page = _page(qapp)
+    shown = _gaia(_texts(page))
+    assert "Needed by Astrometry" in shown and "Needed by the Color block" in shown
+    assert shown.index("Star positions") < shown.index("Needed by Astrometry") < shown.index("Star spectra") < \
+        shown.index("Needed by the Color block")
+    d.close()
+    i18n.set_language("fr")
+    d, page = _page(qapp)
+    shown = _texts(page)
+    assert "Nécessaires au bloc Couleur" in shown and "Nécessaires à l'astrométrie" in shown
+    d.close()
+
+
 def test_installed_and_found_elsewhere_are_told_apart(env, qapp):
     other = env / "nowhere" / "siril"                               # another program's data folder
     _tiny_astro(other / ASTRO_NAME)

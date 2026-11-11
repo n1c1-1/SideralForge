@@ -4,6 +4,8 @@
  "Open folder": "Ouvrir dossier",
  "Star positions": "Positions des étoiles",
  "Star spectra": "Spectres des étoiles",
+ "Needed by Astrometry": "Nécessaires à l'astrométrie",
+ "Needed by the Color block": "Nécessaires au bloc Couleur",
  "Download star positions ({size})": "Télécharger les positions des étoiles ({size})",
  "Download star spectra ({size})": "Télécharger les spectres des étoiles ({size})",
  "Found in another program's data folder: {path}": "Trouvé dans le dossier de données d'un autre programme : {path}",

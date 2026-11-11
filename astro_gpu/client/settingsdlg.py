@@ -587,12 +587,21 @@ class SettingsDialog(QDialog):
         self.row(v, _("Folder"), box)
         self.ex = {"status": {}, "button": {}}
         buttons = QHBoxLayout()
-        for kind, name, button, tip in ((ge.ASTRO, _("Star positions"), _("Download positions ({size})"),
-                                         _("Download star positions ({size})")),
-                                        (ge.XP, _("Star spectra"), _("Download spectra ({size})"),
-                                         _("Download star spectra ({size})"))):
+        # each row says which block cannot run without it: the positions alone leave the Color block out of the
+        # runs (it calibrates on the spectra, the 10 GB part), which a user installing only the positions must know
+        for kind, name, needed, button, tip in (
+                (ge.ASTRO, _("Star positions"), _("Needed by Astrometry"), _("Download positions ({size})"),
+                 _("Download star positions ({size})")),
+                (ge.XP, _("Star spectra"), _("Needed by the Color block"), _("Download spectra ({size})"),
+                 _("Download star spectra ({size})"))):
             st = label("", "small", wrap=True)
-            self.row(v, name, st)
+            box = QWidget()
+            col = QVBoxLayout(box)
+            col.setContentsMargins(0, 0, 0, 0)
+            col.setSpacing(0)
+            col.addWidget(st)
+            col.addWidget(label(needed, "dim", wrap=True))
+            self.row(v, name, box)
             gb = f"{number(ge.DOWNLOAD_BYTES[kind] / 1e9)} {_('GB')}"
             b = QPushButton(button.format(size=gb))
             b.setToolTip(tip.format(size=gb))
