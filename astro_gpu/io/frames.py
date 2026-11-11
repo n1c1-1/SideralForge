@@ -70,9 +70,14 @@ class FrameInfo:
     filter: str = ""                # the session filter its FITS header names (FILTER: Ha, OIII...); "" for none
     stacked: int | None = None      # a master: the frames it was stacked from (0: not said); None: one frame
                                     # (``master_count``)
+    #: ``time`` is the file's date on disk, the frame having none of its own (no EXIF date, no DATE-OBS): never a
+    #: camera's clock to doubt (``clock_disagreement``). Not in ``to_dict``: the Inventory's record stays as it was
+    time_from_file: bool = False
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        del d["time_from_file"]
+        return d
 
 
 def _cfa_from_rawpy(r) -> str:
@@ -367,6 +372,7 @@ def _exif_into(info: FrameInfo, path: Path) -> None:
         pass
     if info.time is None:          # no capture time in the file: its date on disk (a copy's is the copy's date)
         info.time = datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+        info.time_from_file = True
     info.pixel_um = PIXEL_PITCH_UM.get(info.camera)
 
 
@@ -401,7 +407,8 @@ def name_date(name: str) -> datetime | None:
 def clock_disagreement(frames) -> dict | None:
     """Whether the frames' own date (EXIF, FITS header: their ``time`` as ``read_info`` gives it) contradicts the date
     their file names say: a camera whose clock was never set writes 2014-01-01 in frames a capture program named
-    2025-06-17. ``frames``: (file name or path, ISO time) pairs. The first pair that differs by more than two days (a
+    2025-06-17. ``frames``: (file name or path, ISO time) pairs, the frames' own times only (``time_from_file``: a
+    file's date on disk is no camera's clock). The first pair that differs by more than two days (a
     night crosses midnight, a time zone moves a few hours: not a disagreement) gives {"camera": ISO date, "names": ISO
     date}; None when they agree or when no name holds a date (nothing is guessed). Only said: the engine keeps the
     frames' own date."""
@@ -574,6 +581,7 @@ def _fits_info(path: Path) -> FrameInfo:
     info.exposure = _exposure_s(hd)
     info.iso = _num(hd.get("GAIN", hd.get("ISOSPEED")))
     info.time = str(hd.get("DATE-OBS", "")) or datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+    info.time_from_file = not hd.get("DATE-OBS")
     info.camera = str(hd.get("INSTRUME", "")).strip()
     info.focal_mm = _num(hd.get("FOCALLEN", hd.get("FOCAL")))
     info.pixel_um = _num(hd.get("XPIXSZ", hd.get("PIXSZ"))) or PIXEL_PITCH_UM.get(info.camera)

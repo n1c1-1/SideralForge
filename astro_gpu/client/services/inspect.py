@@ -550,7 +550,8 @@ class SessionRow:
     #: exposure, iso, time, file, median and low (0.01 % percentile) levels in ADU, stacked (a master: its frames)
     calib: dict = field(default_factory=dict)
     #: its frames' own date against the one their file names say, when they disagree (io/frames.clock_disagreement:
-    #: {"camera", "names"} ISO dates), from the first and last lights' headers read for ``first`` and ``last``
+    #: {"camera", "names"} ISO dates), from the first and last lights' headers read for ``first`` and ``last`` when
+    #: the date is their own (EXIF, DATE-OBS), never the file's date on disk
     clock: dict | None = None
 
 
@@ -687,7 +688,8 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
                 row.exposure, row.iso, row.temperature = a.exposure, a.iso, a.temperature
                 times = [x for x in (a.time, b.time if b is not None else None) if x]
                 row.first, row.last = (min(times), max(times)) if times else ("", "")
-                dates[s.id] = [(x.path, x.time) for x in (a, b) if x is not None and x.time]
+                dates[s.id] = [(x.path, x.time) for x in (a, b)        # the file's date on disk is not a clock
+                               if x is not None and x.time and not x.time_from_file]
                 row.clock = clock_disagreement(dates[s.id])
         rows = by_session.get(s.id)
         if rows:

@@ -1025,7 +1025,8 @@ def health_checks(p: Project2, dates: dict[int, list[tuple[str, str]]] | None = 
     """What to look at before running: no lights, no bias, flats of several sessions merged into one master, frames
     whose own date contradicts their file names', the star size per session (once Registration is done) and the disk
     the calibrated cache needs. Worker thread (it reads the frame lists and one header). ``dates``: {session id:
-    (path, time) of lights} whose headers the caller has read already; else the Inventory's, when it has run."""
+    (path, time) of lights} whose headers the caller has read already, their own dates only (never a file's date on
+    disk: a copy's); none, nothing is said of the dates (the Inventory's record does not say where a time came from)."""
     out: list[Check] = []
     inp = p.inputs()
     n = {k: len(getattr(inp, k)) for k in KINDS}
@@ -1051,8 +1052,6 @@ def health_checks(p: Project2, dates: dict[int, list[tuple[str, str]]] | None = 
         w = dict(items)
         out.append(Check("warn", "file_types", type_warning_english(w, ", ".join(names)),
                          {**w, "session": ", ".join(names), "sessions": names}))
-    if dated and dates is None:
-        dates = _inventory_dates(p)
     for s in dated:                                  # a camera whose clock was never set: said once per session; the
         bad = clock_disagreement((dates or {}).get(s.id, ()))   # engine keeps the camera's date (star epoch, night)
         if bad:
@@ -1087,24 +1086,6 @@ def health_checks(p: Project2, dates: dict[int, list[tuple[str, str]]] | None = 
     out.append(_disk_check(p))
     if not any(c.level == "warn" for c in out):
         out.insert(0, Check("ok", "ok", "Nothing to worry about"))
-    return out
-
-
-def _inventory_dates(p: Project2) -> dict[int, list[tuple[str, str]]]:
-    """{session id: (path, time) of its lights} as a done Inventory read them (its frames.json: no frame read again);
-    {} before it has run."""
-    sess = _light_sessions(p)
-    out: dict[int, list[tuple[str, str]]] = {}
-    for w in p.workflows:
-        try:
-            d = _dir(p, w, "inventory")
-            lights = json.loads((d / "frames.json").read_text(encoding="utf-8"))["lights"] if d is not None else []
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-        for f in lights:
-            sid = sess.get(os.path.normcase(os.path.normpath(str(f.get("path", "")))))
-            if sid is not None and f.get("time"):
-                out.setdefault(sid, []).append((f["path"], f["time"]))
     return out
 
 

@@ -3,6 +3,7 @@
 camera's date (the night, the stars' epoch); nothing is guessed when the names hold no date."""
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from astropy.io import fits
 from astro_gpu import api
 from astro_gpu.core import project2
 from astro_gpu.core.project import Target
+from astro_gpu.io import frames
 from astro_gpu.io.frames import clock_disagreement, name_date
 
 NAME = "Light_M8_120.0s_ISO800_2025-06-17_23-46-58.arw"          # a capture program's file name
@@ -91,5 +93,26 @@ def test_the_checks_before_a_run_say_it_once_per_session(tmp_path, monkeypatch):
 def test_names_without_a_date_are_never_looked_at(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "_disk_check", lambda p: api.Check("ok", "disk", ""))
     p = _project(tmp_path / "b", ["DSC01234.fits", "DSC01235.fits"], "2014-01-01T00:16:00")
-    monkeypatch.setattr(api, "_inventory_dates", lambda p: (_ for _ in ()).throw(AssertionError("read")))
-    assert not [c for c in api.health_checks(p) if c.key == "clock"]
+    dates = {s.id: [("DSC01234.fits", "2014-01-01T00:16:00")] for s in p.sessions}
+    monkeypatch.setattr(frames, "clock_disagreement", lambda f: (_ for _ in ()).throw(AssertionError("looked at")))
+    assert not [c for c in api.health_checks(p, dates) if c.key == "clock"]
+
+
+def test_a_frame_without_a_date_of_its_own_is_never_said_to_have_a_wrong_clock(tmp_path):
+    """No EXIF date, no DATE-OBS: its time is the file's date on disk (a copy's), marked so and never doubted."""
+    f = tmp_path / "Light_M8_2025-06-17_23-46-58.fits"
+    fits.PrimaryHDU(np.zeros((8, 8), np.uint16)).writeto(f)
+    later = datetime(2026, 6, 17, 12).timestamp()                       # copied a year later
+    os.utime(f, (later, later))
+    info = frames.read_info(f)
+    assert info.time_from_file and info.time.startswith("2026-06-17") and "time_from_file" not in info.to_dict()
+    raw = tmp_path / "Light_M8_2025-06-17_23-46-58.arw"                 # a raw whose EXIF says no date
+    raw.write_bytes(b"\0" * 64)
+    os.utime(raw, (later, later))
+    r = frames.FrameInfo(str(raw), "raw", 8, 8, "RGGB", 0.0, 1.0)
+    frames._exif_into(r, raw)
+    assert r.time_from_file
+    h = fits.Header()
+    h["DATE-OBS"] = "2014-01-01T00:16:00"
+    fits.PrimaryHDU(np.zeros((8, 8), np.uint16), h).writeto(tmp_path / "own.fits")
+    assert not frames.read_info(tmp_path / "own.fits").time_from_file

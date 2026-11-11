@@ -4,6 +4,7 @@ English and in French; nothing when the names hold no date."""
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,14 +28,18 @@ FR = ("Dates : l'appareil indique le 1 janv. 2014, les noms des fichiers le 17 j
       "jamais été réglée. Les positions des étoiles sont calculées pour la date de l'appareil.")
 
 
-def _project(root: Path, names: list[str]) -> project2.Project2:
+def _project(root: Path, names: list[str], date_obs: str | None = "2014-01-01T00:16:00") -> project2.Project2:
     p = project2.create(root / "P", "P", Target(name="M 8"))
     lights = root / "L"
     lights.mkdir(parents=True)
+    later = datetime(2026, 6, 17, 12).timestamp()
     for n in names:                                       # the camera's own date: its clock was never set
         h = fits.Header()
-        h["BAYERPAT"], h["EXPTIME"], h["DATE-OBS"] = "RGGB", 120.0, "2014-01-01T00:16:00"
+        h["BAYERPAT"], h["EXPTIME"] = "RGGB", 120.0
+        if date_obs:
+            h["DATE-OBS"] = date_obs
         fits.PrimaryHDU(np.full((8, 8), 900, np.uint16), h).writeto(lights / n)
+        os.utime(lights / n, (later, later))              # copied a year after the night
     p.sessions.append(project2.Session(1, "night 1", lights=[str(lights)]))
     project2.save(p)
     return p
@@ -66,6 +71,16 @@ def test_the_session_says_the_camera_clock_and_the_checks_once(tmp_path, english
 
 def test_names_without_a_date_say_nothing(tmp_path, english):
     d = project_frames(_project(tmp_path, ["DSC01234.fits", "DSC01235.fits"]), None)
+    assert d.sessions[0].clock is None
+    assert not any("Dates" in t for _ok, t in _lines(d))
+    assert not any(c.key == "clock" for c in d.checks)
+
+
+def test_a_date_on_disk_is_never_said_to_be_a_wrong_camera_clock(tmp_path, english):
+    """Frames without a date of their own (no DATE-OBS), named by date, copied a year later: their time is the file's,
+    no camera's clock to doubt."""
+    d = project_frames(_project(tmp_path, [f"Light_M8_2025-06-17_23-4{j}-58.fits" for j in range(2)], None), None)
+    assert d.sessions[0].first.startswith("2026-06-17")      # what the engine uses stays as it was
     assert d.sessions[0].clock is None
     assert not any("Dates" in t for _ok, t in _lines(d))
     assert not any(c.key == "clock" for c in d.checks)
