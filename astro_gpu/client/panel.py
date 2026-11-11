@@ -353,6 +353,7 @@ class Panel(QWidget):
         self.expert = False
         self.focus_key = None
         self.node = None
+        self.first_field: QLineEdit | None = None  # the block's first field, given the keyboard by its double-click (#89)
         self._unit_w = 0                    # the unit column of the rows shown
         self.setObjectName("panel")
         self.setFixedWidth(390)
@@ -442,6 +443,7 @@ class Panel(QWidget):
         clear(self.bv)
         self.folds.reset()
         self.details.hide()
+        self.first_field = None
         if node is not None and not self._alive(node):     # its block went away (Ctrl+Z, a removal): the page gives
             node = None                                     # the panel the block selected now
         self.node = node
@@ -542,6 +544,7 @@ class Panel(QWidget):
         ed.editingFinished.connect(lambda: s.set_target_name(ed.text()))
         row.addWidget(ed, 1)
         self.bv.addLayout(row)
+        self.first_field = ed
         self.bv.addWidget(label(st.note, "small", wrap=True))
         if st.replace:
             b = QPushButton(_("Replace by {name}").format(name=st.replace))

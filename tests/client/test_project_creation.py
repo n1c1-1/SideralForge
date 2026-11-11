@@ -425,6 +425,30 @@ def test_a_real_click_selects_the_project_block(env):
     assert item(w).selected
 
 
+@pytest.mark.parametrize("side", ["docked", "icons"])
+def test_a_double_click_on_the_project_block_opens_its_fields_to_be_typed_in(env, side):
+    """Issue #89: a double-click on the Project block did nothing more than a click; it opens it, as a double-click opens
+    the other blocks: its panel shown (over the graph when folded to icons), the keyboard in its first field, the
+    target, its text selected to be typed over; what is typed is the project's."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    w = project_with_a_chain(env)
+    w.s.set_target_name("M 42")
+    gv = w.graph.graph
+    w.graph.dock.set_state(side)
+    settle(w)
+    QTest.mouseDClick(gv.viewport(), Qt.LeftButton, pos=gv.mapFromScene(item(w).sceneBoundingRect().center()))
+    settle(w)
+    ed = w.focusWidget()                     # the window's (offscreen it is never active): the keyboard's once it is
+    assert isinstance(ed, QLineEdit) and w.graph.panel.isAncestorOf(ed) and ed.isVisible()
+    assert ed.text() == "M 42" and ed.selectedText() == "M 42" and item(w).selected
+    assert w.graph.dock.state == side and (side == "docked" or w.graph.dock.is_open())
+    QTest.keyClicks(ed, "NGC 7000")
+    ed.editingFinished.emit()
+    settle(w)
+    assert w.s.p.target.name == "NGC 7000"
+
+
 def test_the_top_bar_shows_the_name_given_at_the_first_save(env):
     w = untitled(env)
     env["mp"].setattr(appmod, "ask_project_name", named(env, "Orion"))

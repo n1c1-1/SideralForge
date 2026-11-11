@@ -553,7 +553,8 @@ class LinkItem(QGraphicsItem):
 
 class ProjectItem(QGraphicsItem):
     """The Project block: above the first object, out of the flow; what it says of the target by a dot (green known,
-    orange unknown to the catalogues here, grey empty). A click shows its panel."""
+    orange unknown to the catalogues here, grey empty). A click shows its panel; a double-click opens it, the keyboard
+    in its first field (issue #89)."""
 
     DOTS = {"known": OK, "unknown": WARN, "empty": "#6b7382"}
 
@@ -590,6 +591,11 @@ class ProjectItem(QGraphicsItem):
 
     def mousePressEvent(self, e):                                     # noqa: N802
         self.view.projectClicked.emit()
+        e.accept()
+
+    def mouseDoubleClickEvent(self, e):                               # noqa: N802
+        # Qt's own gave a second press, a click again: the panel shown, never its fields to be typed in (issue #89)
+        self.view.projectOpened.emit()
         e.accept()
 
 
@@ -710,6 +716,7 @@ class GraphView(QGraphicsView):
     newSession = Signal()                  # "+ Session" (issue #43)
     templatesAsked = Signal()              # the blank page's link
     projectClicked = Signal()              # the Project block
+    projectOpened = Signal()               # its double-click (issue #89): its fields, to be typed in
     sessionMenu = Signal(str, int)         # action (rename, remove), session id
     postOpened = Signal()                  # "Open Post" of the Post block's menu
     deselected = Signal()                  # 2nd round, decision 5: a click on empty space, Escape, or a wire chosen
@@ -2696,6 +2703,7 @@ class GraphPage(QWidget):
         gv.newSession.connect(self.addSession.emit)
         gv.templatesAsked.connect(self.show_templates)
         gv.projectClicked.connect(self.select_project)
+        gv.projectOpened.connect(self.open_project)
         gv.sessionMenu.connect(self.session_action)
         gv.postOpened.connect(self.open_post)
         gv.deselected.connect(self.deselect)
@@ -2811,6 +2819,28 @@ class GraphPage(QWidget):
         self._project_sel = True
         s.select()
         self.request_refresh()
+
+    def open_project(self):
+        """The Project block's double-click (issue #89): opened as a double-click opens the other blocks, here where its
+        fields are: its panel shown (over the graph when folded, back when hidden), the keyboard in its first field."""
+        self.select_project()
+        if self.dock.state == "hidden":
+            self.sidesShown.emit()
+        # after the refresh asked above: the graph is built again under the double-click, its item with it
+        QTimer.singleShot(0, self, self._type_in_project)
+
+    def _type_in_project(self, shown: bool = False):
+        if self._pending:
+            self.refresh()
+        if self.current_node() is not self.project_node:     # another block chosen meanwhile
+            return
+        self.dock.open_overlay()                         # folded to icons or automatic: over the graph; docked: as it is
+        ed = self.panel.first_field
+        if ed is not None and ed.isHidden() and not shown:   # a field just built is shown by its layout a moment later,
+            QTimer.singleShot(0, self, lambda: self._type_in_project(True))     # and a hidden one takes no keyboard
+        elif ed is not None:                             # the target, its text selected to be typed over
+            ed.setFocus(Qt.OtherFocusReason)
+            ed.selectAll()
 
     def current_node(self, g=None):
         if self.is_blank() or (self._project_sel and not self.s.sel_step):
