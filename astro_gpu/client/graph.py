@@ -65,6 +65,7 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMenu,
     QPushButton,
     QScrollArea,
@@ -96,7 +97,6 @@ from .blocks import (
     kbase,
     node_title,
 )
-from .dialogs import ask_name
 from .gallery import TemplateGallery, TemplatePage
 from .i18n import _, hm, number, plural
 from .icons import BLOCK_ROLES, IconLabel, draw, icon, icon_only, set_icon
@@ -390,6 +390,41 @@ class BlockItem(QGraphicsItem):
         self.view.blockClicked.emit(self.node)          # the block of the menu is the one selected (8.6, as editors)
         self.view.block_menu(self.node, e.screenPos())
         e.accept()
+
+
+class NameEdit(QLineEdit):
+    """A session's or a workflow's name typed on its block itself (GraphView.edit_name), never in a window: Enter or a
+    click elsewhere confirms, Escape gives the old name back. ``done`` gets the name typed, once."""
+
+    def __init__(self, parent, text: str, done):
+        super().__init__(text, parent)
+        self._done = done
+        self.setStyleSheet(f"QLineEdit {{ background: #15171c; color: #e8ebf0; border: 1px solid {ACCENT}; "
+                           "border-radius: 3px; padding: 0 3px; }")
+        self.editingFinished.connect(self.finish)        # Enter, or the focus gone (a click elsewhere)
+
+    def event(self, e):                                               # noqa: N802
+        if e.type() == QEvent.ShortcutOverride and e.key() in (Qt.Key_Escape, Qt.Key_Return, Qt.Key_Enter):
+            e.accept()                                   # the field's, not the page's Escape (deselect) or a shortcut's
+            return True
+        return super().event(e)
+
+    def keyPressEvent(self, e):                                       # noqa: N802
+        if e.key() == Qt.Key_Escape:
+            self.finish(cancel=True)
+            e.accept()
+            return
+        super().keyPressEvent(e)
+
+    def finish(self, cancel: bool = False):
+        if self._done is None:                           # editingFinished comes again with the focus going
+            return
+        done, self._done = self._done, None
+        text = self.text().strip()
+        self.hide()
+        self.deleteLater()
+        if not cancel:
+            done(text)
 
 
 class WireItem(QGraphicsPathItem):
@@ -780,7 +815,8 @@ class GraphView(QGraphicsView):
         self._zoomed = False
         self._k, self._c = 1.0, QPointF()
         self._rebuilding = False
-        self._view_timer = QTimer(self)               # the settings written at most twice a second, as a pan goes
+        self._name_edit = None                        # (NameEdit, its anchor, its line): a name typed on its block
+        self._view_timer = QTimer(self)              # the settings written at most twice a second, as a pan goes
         self._view_timer.setSingleShot(True)
         self._view_timer.setInterval(500)
         self._view_timer.timeout.connect(self._write_view)
@@ -1224,6 +1260,7 @@ class GraphView(QGraphicsView):
         if self._sel_seen is not None and seen != self._sel_seen:
             self.reveal(self._sel_item)
         self._sel_seen = seen
+        self._place_name_edit()                           # a name being typed follows its block, built again
 
     def _add_align_blocks(self, g: Graph, sel):
         """Each group of aligned images: one block across their lanes (each lane's node keeps its wires)."""
@@ -1520,6 +1557,7 @@ class GraphView(QGraphicsView):
         self.deselected.emit()
 
     def mousePressEvent(self, e):                                     # noqa: N802
+        self.close_name_edit()                            # a click elsewhere confirms a name being typed on its block
         pos = e.position().toPoint()
         left = e.button() == Qt.LeftButton
         it = self.itemAt(pos) if left else None
@@ -1892,12 +1930,70 @@ class GraphView(QGraphicsView):
         if self._zoomed and not self._fitting:
             self._store_view()
         self._place_map()
+        self._place_name_edit()
 
     def _after_view(self):
         self._place_post_button()
         k = self.zoom()
         self.b_zoom.setText(number(k * 100, 0 if k >= 0.1 else 1) + " %")
         self._place_map()
+        self._place_name_edit()
+
+    # ------------------------------------------------------------ a name typed on its block
+    def edit_name(self, anchor, line: int, text: str, done) -> bool:
+        """Rename, in place as a layer's name in the reference editors: a field over the block's line that shows the
+        name (``line`` 0, its title; 1, the line under it), its text selected whole; ``anchor(item)`` tells the block,
+        or the wire that stands for a workflow's Output. ``done(name)`` on Enter or a click elsewhere; Escape: nothing.
+        False when nothing in the graph shows it."""
+        if self.find_item(anchor) is None:
+            return False
+        self.close_name_edit()
+        ed = NameEdit(self.viewport(), text, done)
+        self._name_edit = (ed, anchor, line)
+        self.reveal(self.find_item(anchor))
+        self._place_name_edit()
+        ed.show()
+        ed.selectAll()
+        ed.setFocus(Qt.OtherFocusReason)
+        return True
+
+    def find_item(self, anchor):
+        return next((it for it in self.scene().items() if isinstance(it, (BlockItem, WireItem)) and anchor(it)), None)
+
+    def name_editor(self) -> NameEdit | None:
+        """The field of a name being typed, None once it is confirmed or cancelled (its ``done`` gone)."""
+        if self._name_edit is not None and self._name_edit[0]._done is None:
+            self._name_edit = None
+        return self._name_edit[0] if self._name_edit is not None else None
+
+    def close_name_edit(self, cancel: bool = False):
+        if self.name_editor() is not None:
+            ed = self._name_edit[0]
+            self._name_edit = None
+            ed.finish(cancel=cancel)
+
+    def _place_name_edit(self):
+        """The field over its line of the block at the view's zoom; its block gone (Ctrl+Z, deleted): given up."""
+        if self.name_editor() is None or self._rebuilding:
+            return
+        ed, anchor, line = self._name_edit
+        it = self.find_item(anchor)
+        if it is None:
+            self.close_name_edit(cancel=True)
+            return
+        if isinstance(it, BlockItem):
+            r = QRectF(8, 5, it.w - 14, 22) if line == 0 else QRectF(8, 27, it.w - 12, 20)
+            r = it.mapRectToScene(r)
+        else:                                             # a wire: across its middle
+            mid = it.path().pointAtPercent(0.5)
+            r = QRectF(mid.x() - BW / 2, mid.y() - 11, BW, 22)
+        k = self.zoom()
+        f = QFont("Segoe UI")
+        f.setPointSizeF(max(8.0, (10 if line == 0 else 8.5) * k))
+        f.setBold(line == 0)
+        ed.setFont(f)
+        box = self.mapFromScene(r).boundingRect()
+        ed.setGeometry(box.x(), box.y(), max(box.width(), 60), max(box.height(), QFontMetrics(f).height() + 6))
 
     def _whole_visible(self) -> bool:
         return self.horizontalScrollBar().maximum() <= 0 and self.verticalScrollBar().maximum() <= 0
@@ -3597,14 +3693,15 @@ class GraphPage(QWidget):
 
     def session_action(self, action: str, sid: int):
         s = self.s
-        if action == "rename":
-            name = ask_name(self, _("Rename session"), s.session(sid).name)
-            if name is not None:
-                why = s.name_problem(name, sid=sid)       # decision 8: never empty, never another's name
-                if why:
-                    self.toast(_("Name refused: {why}").format(why=why))
-                else:
-                    s.rename_session(sid, name)
+        if action == "rename":                            # on its block, never a window (no blocking window)
+            lone = len(s.p.sessions) == 1                 # a lone Session: the frames' block stands for it
+            def anchor(it):
+                return isinstance(it, BlockItem) and (it.node.key == "session" and it.node.sid == sid
+                                                      or (lone and it.node.key == "sources"))
+            if not self.graph.edit_name(anchor, 0, s.session(sid).name,
+                                        lambda name: self.rename_session(sid, name)):
+                self.select(step=f"session@{sid}")        # not drawn: its panel's name field, as typed there
+                self.focus_panel_name()
         elif action == "remove":
             name = s.session(sid).name
             why = s.session_removal_problem(sid)          # a fusion's channel: refused with the reason (decision 3)
@@ -3711,15 +3808,45 @@ class GraphPage(QWidget):
             return
         self.s.rename(pid, name)
 
+    def rename_session(self, sid: int, name: str):
+        """A session's name typed on its block: empty or unchanged, nothing; another's, refused with the reason."""
+        s = self.s
+        if sid not in [x.id for x in s.p.sessions] or not name or name == s.session(sid).name:
+            return                                        # gone meanwhile (Ctrl+Z), or nothing typed
+        why = s.name_problem(name, sid=sid)               # decision 8: never empty, never another's name
+        if why:
+            self.toast(_("Name refused: {why}").format(why=why))
+        else:
+            s.rename_session(sid, name)
+
+    def rename_typed(self, pid: int, name: str):
+        """A workflow's name typed on its block: empty or unchanged, nothing; another's, refused with the reason."""
+        p = self.s.view(pid)
+        if p is not None and name and name != p.name:
+            self.rename(pid, name)
+
+    def focus_panel_name(self):
+        """The panel's name field, the cursor in it, its text selected whole: the place to rename what is not drawn
+        in the graph (in place, never a window)."""
+        ed = next((e for e in self.panel.findChildren(QLineEdit) if e.isVisible() and
+                   e.toolTip() in (_("Session name"), _("Workflow name"))), None)
+        if ed is not None:
+            ed.setFocus(Qt.OtherFocusReason)
+            ed.selectAll()
+
     def workflow_action(self, action, pid):
         s = self.s
         p = s.view(pid)
         if p is None:
             return
-        if action == "rename":
-            t = ask_name(self, "Rename", p.name)
-            if t is not None:
-                self.rename(pid, t)
+        if action == "rename":                            # on its block, never a window (no blocking window)
+            def anchor(it):                               # its Output, or the block that holds it (#17), or the wire
+                if isinstance(it, WireItem):              # that stands for it
+                    return it.pid == pid
+                return (it.node.key == "post" or it.node.handle) and bool(it.node.paths) and it.node.paths[0].pid == pid
+            if not self.graph.edit_name(anchor, 1, p.name, lambda name: self.rename_typed(pid, name)):
+                self.select(index=s.paths.index(p), step="post")
+                self.focus_panel_name()
         elif action == "duplicate":                        # at once: no template window after the project's start
             q = s.duplicate(p, _("{name} (copy)").format(name=p.name))
             s.log('Workflow "{name}" created', name=q.name)

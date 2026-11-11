@@ -1150,15 +1150,14 @@ def _shortcut(page, key):
 def test_f2_renames_and_ctrl_d_duplicates_what_is_selected(qapp, tmp_path, monkeypatch):
     """GUI exploration 4, Q5: F2 renames the workflow of the selected block (the Session, when it is selected), Ctrl+D
     duplicates the workflow, as in the reference apps; D alone still switches the block off."""
-    from astro_gpu.client import graph as graphmod
     w, m, page = open_page(tmp_path, monkeypatch)
-    names = iter(["Renamed", "Night A"])
-    monkeypatch.setattr(graphmod, "ask_name", lambda parent, title, current: next(names))
+    no_window(monkeypatch)
     try:
         full = m.paths[0]
         page.select(index=0, step="empilement")
         settle(w, page)
         _shortcut(page, "F2").activated.emit()
+        type_name(page, "Renamed")
         settle(w, page)
         assert m.view(full.pid).name == "Renamed"
         n0 = len(m.paths)
@@ -1169,9 +1168,111 @@ def test_f2_renames_and_ctrl_d_duplicates_what_is_selected(qapp, tmp_path, monke
         page.select(index=0, step="sources")
         settle(w, page)
         _shortcut(page, "F2").activated.emit()
+        type_name(page, "Night A")
         _shortcut(page, "Ctrl+D").activated.emit()                   # a Session: nothing to duplicate
         settle(w, page)
         assert m.session(1).name == "Night A" and len(m.paths) == n0 + 1
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
+def no_window(monkeypatch):
+    """Renaming opens no window: a dialog run fails the test (it would also wait for a click, offscreen)."""
+    from PySide6.QtWidgets import QDialog
+
+    def refused(*a, **k):
+        raise AssertionError("a blocking window was opened")
+    monkeypatch.setattr(QDialog, "exec", refused)
+
+
+def type_name(page, text: str | None, key=None):
+    """The name typed in the field on the block, then Enter (or ``key``); None: nothing typed."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    ed = page.graph.name_editor()
+    assert ed is not None and ed.parent() is page.graph.viewport()    # on the graph, not in a window of its own
+    if text is not None:
+        ed.setText(text)
+    QTest.keyClick(ed, key if key is not None else Qt.Key_Return)
+    QApplication.processEvents()
+    assert page.graph.name_editor() is None
+
+
+def menu_action(page, node, text, monkeypatch):
+    """The action ``text`` of the block's menu (or of its Workflow submenu), the menus built, not run."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QMenu
+
+    from astro_gpu.client import graph as graphmod
+    got = []
+
+    class Menu(QMenu):
+        def __init__(self, *a):
+            super().__init__(*a)
+            got.append(self)
+
+        def exec(self, *a, **k):
+            pass
+    monkeypatch.setattr(graphmod, "QMenu", Menu)
+    page.graph.block_menu(node, QPoint(0, 0))
+    return next(a for mm in got for a in mm.actions() if a.text() == text)
+
+
+def test_rename_from_a_blocks_menu_types_the_name_on_the_block(qapp, tmp_path, monkeypatch):
+    """Rename session and the workflow's Rename, chosen in a block's menu, open no window: the name becomes a field on
+    the block itself, selected whole; Enter renames with one Undo step, Escape and an empty or unchanged name change
+    nothing, another's name is refused as before (the reason said)."""
+    w, m, page = open_page(tmp_path, monkeypatch, workflows=("Full", "Classic stack"))
+    no_window(monkeypatch)
+    from PySide6.QtCore import Qt
+    told = []
+    page.toasted.connect(told.append)
+    page.show()
+    try:
+        settle(w, page)
+        g = page.graph.graph
+        ses = next(n for n in g.nodes if n.key == "sources")     # a lone session: the frames' block stands for it
+        menu_action(page, ses, "Rename session", monkeypatch).trigger()
+        ed = page.graph.name_editor()
+        assert ed is not None and ed.text() == "night 1" and ed.selectedText() == "night 1" and ed.hasFocus()
+        blk = page.graph.find_item(lambda it: getattr(it, "node", None) is ses)
+        assert page.graph.viewport().rect().intersects(ed.geometry()) and \
+            page.graph.mapFromScene(blk.sceneBoundingRect()).boundingRect().intersects(ed.geometry())
+        type_name(page, "Night B")
+        settle(w, page)
+        assert m.session(1).name == "Night B"
+        m.undo()
+        settle(w, page)
+        assert m.session(1).name == "night 1"                    # one Undo step
+        menu_action(page, next(n for n in page.graph.graph.nodes if n.key == "sources"), "Rename session",
+                    monkeypatch).trigger()
+        type_name(page, "Typed", Qt.Key_Escape)                  # Escape: the name kept
+        menu_action(page, next(n for n in page.graph.graph.nodes if n.key == "sources"), "Rename session",
+                    monkeypatch).trigger()
+        type_name(page, "")                                      # empty: nothing, nothing said
+        settle(w, page)
+        assert m.session(1).name == "night 1" and not told
+
+        full, basic = m.paths[0], m.paths[1]
+        node = next(n for n in page.graph.graph.nodes if (n.key == "post" or n.handle) and n.paths
+                    and n.paths[0].pid == full.pid)
+        menu_action(page, node, "Rename", monkeypatch).trigger()
+        ed = page.graph.name_editor()
+        assert ed is not None and ed.selectedText() == "Full"
+        type_name(page, "Classic stack")                         # another's name: refused, the reason said
+        settle(w, page)
+        assert m.view(full.pid).name == "Full" and "Name refused" in told[-1]
+        node = next(n for n in page.graph.graph.nodes if (n.key == "post" or n.handle) and n.paths
+                    and n.paths[0].pid == full.pid)
+        menu_action(page, node, "Rename", monkeypatch).trigger()
+        type_name(page, "Wide field")
+        settle(w, page)
+        assert m.view(full.pid).name == "Wide field" and m.view(basic.pid).name == "Classic stack"
+        m.undo()
+        settle(w, page)
+        assert m.view(full.pid).name == "Full"                   # one Undo step
     finally:
         page.close()
         m.close(save=False)
