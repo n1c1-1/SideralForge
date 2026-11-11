@@ -24,8 +24,10 @@ from .gradient import DECONV_FILE, image_in
 from .stack import SATURATION
 
 METHODS = ("rl", "neural")
-#: the network of the Neural method, in beta: not bundled yet, read from where it was trained (tools/bench/deconv_train.py)
-BETA_WEIGHTS = Path("E:/float_train/run1/net_021818.pt")
+#: the network of the Neural method, in beta: not bundled yet, read from where it was trained (tools/bench/deconv_train.py).
+#: The second training's: it was trained on images that went through Denoise first, so the method denoises each plane
+#: (the block's pretrained network, its four passes) before the network, as the training and its measures did
+BETA_WEIGHTS = Path("E:/float_train/run2/net_058000.pt")
 BETA_TILE, BETA_PAD = 512, 48
 
 
@@ -65,7 +67,8 @@ class Deconv(Stage):
                    "of the field and per colour.")
     deps = ("stack",)
     Params = DeconvParams
-    version = "4"     # 4: damping, stop, local deringing, protection (#92); the network's tiles blended
+    version = "5"     # 5: the network of the second training, each plane denoised first; 4: damping, stop, local
+    #                   deringing, protection (#92), the network's tiles blended
 
     def run(self, ctx: Context, p: DeconvParams) -> None:
         full, A, B = (image_in(ctx, h).img for h in ("full", "A", "B"))
@@ -104,7 +107,9 @@ class Deconv(Stage):
         ctx.preview("before_after", before_after(full, of))
 
     def neural(self, ctx: Context, full, A, B, valid, sat, device) -> None:
-        """The network of the Neural method (beta), colour by colour, the stack and its half-stacks; clipped cores kept."""
+        """The network of the Neural method (beta), colour by colour, the stack and its half-stacks, each plane through
+        the pretrained Denoise first (what the network was trained on); clipped cores kept."""
+        from . import denoise as dn
         from .star_removal import NAFNet, fwd, inv
         if not BETA_WEIGHTS.is_file():
             raise StageError(f"the neural deconvolution's network is not here: {BETA_WEIGHTS}")
@@ -114,6 +119,15 @@ class Deconv(Stage):
         net.load_state_dict(torch.load(BETA_WEIGHTS, map_location="cpu", weights_only=False)["net"])
         dev = torch.device(device)
         net = net.to(dev).eval()
+        den = dn.pretrained(dev).eval()
+
+        def denoised(x: np.ndarray) -> np.ndarray:
+            """A plane in noise units through Denoise (as a grey image, its noise that of the stack), its level kept."""
+            three = np.repeat(x[None], 3, axis=0)
+            nm = np.full(x.shape, 2 ** -0.5, np.float32)
+            d = dn.apply_net(den, three, nm, np.zeros(3, np.float32), np.ones(3, np.float32), dev,
+                             check=ctx.check_stop).mean(0)
+            return d - float(np.median(d - x))
 
         @torch.no_grad()
         def plane(x: np.ndarray) -> np.ndarray:
@@ -142,12 +156,12 @@ class Deconv(Stage):
         res = [np.zeros_like(full), np.zeros_like(A), np.zeros_like(B)]
         for c in range(3):
             ctx.check_stop()
-            ctx.progress(0.05 + 0.3 * c, "the network")
+            ctx.progress(0.05 + 0.3 * c, "denoising, then the network")
             d = 0.5 * (A[c] - B[c])[valid]
             s = max(1.4826 * float(np.median(np.abs(d - np.median(d)))), 1e-9)
             bk = float(np.median(full[c][valid]))
             for k, im in enumerate((full, A, B)):
-                y = plane((im[c] - bk) / s) * s + bk
+                y = plane(denoised(((im[c] - bk) / s).astype(np.float32))) * s + bk
                 y = np.where(valid, y, im[c])
                 res[k][c] = y if keep is None else im[c] + (1 - keep) * (y - im[c])
         for half, a in (("full", res[0]), ("A", res[1]), ("B", res[2])):
