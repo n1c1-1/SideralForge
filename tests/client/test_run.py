@@ -421,7 +421,8 @@ def test_the_track_follows_the_events_of_a_failed_run():
     first = t.apply(_failed_run_events()[:4])
     assert t.status == "running" and t.current().stage == "a" and t.current().frac == 0.5
     assert first.stage_changed and first.progressed and not first.ended
-    assert 0.0 < t.fraction() < 0.5 and t.remaining() > 60.0               # b, c, d wait: their estimates add up
+    # b, c, d wait: their estimates add up (the clock of the events: a runs since 1001)
+    assert 0.0 < t.fraction(1003.0) < 0.5 and t.remaining() > 60.0
     rest = t.apply(_failed_run_events()[4:])
     assert rest.ended and t.finished and t.status == "failed"
     assert [j.state for j in t.jobs] == [DONE, FAILED, SKIPPED, DONE]
@@ -1316,7 +1317,10 @@ def test_the_graph_shows_the_running_blocks_and_their_progress(env):
         running = [it for it in items if it.state == "running"]
         assert [it.node.key for it in running] == ["debruitage"], [(it.node.key, it.state) for it in items]
         f = ov.fraction_of(running[0].node)
-        assert f is not None and 0.2 < f <= 1.0
+        # its row's figure (#136), in time: early in its job the estimate's share still leads, whatever its bar says
+        assert f is not None and 0.0 < f < 1.0
+        assert f == pytest.approx(w.track.progress(j for g in w.track.groups if jb().key in g
+                                                   for j in w.track.jobs if j.key in g), abs=0.01)
         assert all(ov.fraction_of(it.node) is None for it in items if it.state != "running")
         shot = ov.parent().grab()                             # the overlay paints without error
         assert not shot.isNull()

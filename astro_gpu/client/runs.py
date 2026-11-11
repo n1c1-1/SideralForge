@@ -540,8 +540,7 @@ class RunDialog(QDialog):
                 w.show_state(WAITING, 0.0, text, tip)
                 continue
             state = row_state([j.state for j in jobs])
-            tot = sum(RunTrack.weight(j) for j in jobs)
-            frac = sum(RunTrack.weight(j) * t.share(j, True) for j in jobs) / tot
+            frac = t.progress(jobs)                          # as its block's bar in the graph (#136)
             if r.echo:                                       # Selection: its Registration's state, no time of its own
                 w.show_state(state, frac, "", self._tip(jobs, state))
                 continue
@@ -741,8 +740,11 @@ class RunDialog(QDialog):
             " · " + _("≈ {t} left").format(t=hm(left)) if left > 30 else ""))
         j = t.current()
         if j is not None:
-            pct = int(round(100 * j.frac))
-            self.detail.setText(f"{stage_title(self.s, j.stage)} · {pct} %" +
+            # the running block and its progress as its row says them (#136: the running job's own bar, 22 %, over its
+            # row at 8 %)
+            r = next((w.row for w in self.rows if not w.row.echo and j.key in w.row.keys), None)
+            pct = int(round(100 * t.progress([t.by_key[k] for k in r.keys if k in t.by_key] if r is not None else [j])))
+            self.detail.setText(f"{r.title if r is not None else stage_title(self.s, j.stage)} · {pct} %" +
                                 (f" · {engine_text(j.msg)}" if j.msg else ""))
 
     def _fill_end(self, t: RunTrack):
@@ -919,16 +921,18 @@ class RunOverlay(QWidget):
         self.raise_()
 
     def fraction_of(self, node: Node) -> float | None:
-        """How far the running jobs of a block are, or None when nothing of it runs."""
+        """How far a block that runs is, as its row in the run window says it, or None when nothing of it runs."""
         t = self.c.track
         if t is None or not self.c.running:
             return None
         pids = {p.pid for p in node.paths}
-        jobs = [j for j in t.jobs if view_block(j.block) == node.ref and pids & set(j.wf)]     # "fond~2" too (4.2)
+        keys = {j.key for j in t.jobs if view_block(j.block) == node.ref and pids & set(j.wf)}     # "fond~2" too (4.2)
+        # its row's jobs: those of the blocks the graph does not show are folded into it (#136: its bar left them out)
+        keys |= {k for g in t.groups or [] if keys & set(g) for k in g}
+        jobs = [j for j in t.jobs if j.key in keys]
         if not jobs or not any(j.state == RUNNING for j in jobs):
             return None
-        tot = sum(RunTrack.weight(j) for j in jobs)
-        return sum(RunTrack.weight(j) * t.share(j) for j in jobs) / tot
+        return t.progress(jobs)
 
     def paintEvent(self, e):                                       # noqa: N802
         if not self.c.running:

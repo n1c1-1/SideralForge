@@ -211,6 +211,56 @@ def test_the_time_left_of_a_run_is_the_sum_of_its_rows(world):
     d.close()
 
 
+def _calibrating(w, now: float):
+    """A run of ``world()``'s plan: Inventory done in 1 min, Calibration 5 min into its job, half its bar, an ETA of 18
+    min (its time left 10 min, as in #116), the rest waiting: 20 min left after it."""
+    plan = w.m.plan_all()
+    est = {"inventory": 60.0, "calibrate": 240.0, "register": 120.0, "stack": 180.0, "gradient": 120.0,
+           "gradient~2": 120.0, "render_simple": 60.0}
+    for j in plan.jobs:
+        j.est_s = est[j.stage]
+    k = {j.stage: j.key for j in plan.jobs}
+    t = RunTrack.of_plan(plan, "r1")
+    t.plan, t.groups = plan, w.ctl.groups(plan)
+    t.apply([{"t": now - 400.0, "type": "run_start", "run": "r1", "device": "cpu", "pid": 1},
+             {"t": now - 370.0, "type": "stage_start", "run": "r1", "stage": "inventory", "key": k["inventory"]},
+             {"t": now - 310.0, "type": "stage_end", "run": "r1", "stage": "inventory", "key": k["inventory"],
+              "status": "done", "duration": 60.0},
+             {"t": now - 300.0, "type": "stage_start", "run": "r1", "stage": "calibrate", "key": k["calibrate"]},
+             {"t": now - 1.0, "type": "progress", "run": "r1", "stage": "calibrate", "key": k["calibrate"], "frac": 0.5,
+              "eta": 1080.0, "msg": "frame 6/12"}])
+    return plan, t, k
+
+
+def test_a_block_has_one_progress_in_its_row_the_window_and_the_graph_and_the_status_bar_says_the_run(world):
+    """#136: at the same moment the status bar said "Running: Astrometry · 32 %" (the whole run's share, read as the
+    block's), the window's line "Astrometry · 22 %" (the running job's own bar) and the row's bar 8 % (its jobs' bars
+    weighted by their estimates). The row, the line and the block's bar in the graph now show one figure, in time: what
+    the block took over that and its time left, so that its percentage and its time left agree."""
+    import time
+
+    from astro_gpu.client.blocks import Graph
+    from astro_gpu.client.runs import RunOverlay
+    w = world()
+    plan, t, k = _calibrating(w, time.time())
+    d = RunDialog(w.m, plan, "Run", track=t)
+    d.refresh()
+    row = next(r for r in d.rows if r.row.title == "Calibration")
+    assert row.dur.text() == "≈ 10 min"                          # 0.5 x 120 + 0.5 x 1080 s still to go
+    # Inventory's 60 s and Calibration's 300 s gone, 600 s to go: 360 / 960
+    assert row.bar.value() == pytest.approx(375, abs=2)
+    assert d.detail.text() == "Calibration · 38 % · frame 6/12"
+    w.ctl.track, w.ctl.phase = t, "running"
+    try:
+        node = Graph(w.m).node_of(w.m.view(plan.jobs[0].run_wf), "calibration")
+        assert RunOverlay.fraction_of(SimpleNamespace(c=w.ctl), node) == pytest.approx(0.375, abs=0.002)
+        # the run: 360 s gone, 600 + 600 s to go
+        assert w.ctl.status_text() == "Running: Calibration · 23 % of the run · ≈ 20 min left"
+    finally:
+        w.ctl.track, w.ctl.phase = None, "idle"
+        d.close()
+
+
 def test_a_long_recap_scrolls_in_its_box_never_cut(world):
     """GUI exploration 4: a large project's run not started listed its 72 blocks in one paragraph that ran out of the
     box, cut mid-name. The recap's lines are in a scroll area of bounded height; every name is in its text."""

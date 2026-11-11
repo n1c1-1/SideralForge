@@ -380,6 +380,7 @@ class JobState:
     msg: str = ""
     eta: float | None = None
     started: float | None = None
+    ended: float | None = None                   # when its stage_end came (a failure says no duration)
     duration: float | None = None
     error: str = ""
     reused: bool = False                         # found done and usable: nothing was computed
@@ -505,6 +506,7 @@ class RunTrack:
             self._say(out, t, "log", stage=j.stage if j is not None else (e.get("stage") or ""), level=level, msg=msg)
         elif kind == "stage_end" and j is not None:
             status = e.get("status")
+            j.ended = t
             if e.get("duration") is not None:
                 j.duration = float(e["duration"])
             if status == "done":
@@ -616,35 +618,56 @@ class RunTrack:
             return 0.0
         return max((self.t_end if self.t_end is not None else (now or time.time())) - self.t0, 0.0)
 
-    @staticmethod
-    def weight(j: JobState) -> float:
-        return max(j.est_s, 1.0)
+    def spent(self, j: JobState, now: float | None = None) -> float:
+        """Seconds one job took in this run: the time since it started while it runs, its duration once over (the
+        engine's, else until its end), nothing for a job that never started (reused: no time)."""
+        if j.started is None:
+            return 0.0
+        if j.state == RUNNING:
+            return max((now or time.time()) - j.started, 0.0)
+        if j.duration is not None:
+            return j.duration
+        end = j.ended if j.ended is not None else self.t_end if self.t_end is not None else (now or time.time())
+        return max(end - j.started, 0.0)
 
-    def share(self, j: JobState, shown: bool = False) -> float:
-        """How much of the job is done, 0..1. For the whole run a job that is over counts whole (the time is gone);
-        ``shown``: what a bar draws, the progress a stopped or failed job had reached, nothing for a job not run."""
+    @staticmethod
+    def to_go(j: JobState) -> float:
+        """Seconds one job has, or had when it ended, still to go: its estimate before it starts, nothing once done. The
+        running job's ETA is a straight line through its bar (core/stage.py), which the stages fill by phases and search
+        steps, not by time (#50; Astrometry's line assumes every scale of its list is tried, it stops at the first that
+        solves): early it is no time at all, so the estimate's remaining share leads and the ETA takes over as the bar
+        fills. A job stopped or failed keeps what it had to go when it ended."""
         if j.state == DONE:
-            return 1.0
-        if j.state in (RUNNING, FAILED, INTERRUPTED):
-            return j.frac if (j.state == RUNNING or shown) else 1.0
-        return 0.0 if shown else (1.0 if j.settled else 0.0)
-
-    def fraction(self) -> float:
-        tot = sum(self.weight(j) for j in self.jobs)
-        return sum(self.weight(j) * self.share(j) for j in self.jobs) / tot if tot else 0.0
-
-    @staticmethod
-    def left(j: JobState) -> float:
-        """Seconds to go in one job: its estimate while it waits, nothing once it is over (reused or not). The running
-        job's ETA is a straight line through its bar (core/stage.py), which the stages fill by phases and search steps,
-        not by time (#50; Astrometry's line assumes every scale of its list is tried, it stops at the first that solves):
-        early it is no time at all, so the estimate's remaining share leads and the ETA takes over as the bar fills."""
-        if j.state == WAITING:
-            return j.est_s
-        if j.state != RUNNING:
             return 0.0
         prior = max(j.est_s * (1.0 - j.frac), 0.0)
         return prior if j.eta is None else (1.0 - j.frac) * prior + j.frac * max(float(j.eta), 0.0)
+
+    @staticmethod
+    def left(j: JobState) -> float:
+        """Seconds to go in one job in this run: ``to_go`` while it waits or runs, nothing once it is over (reused or
+        not)."""
+        return RunTrack.to_go(j) if j.state in (WAITING, RUNNING) else 0.0
+
+    def progress(self, jobs, now: float | None = None) -> float:
+        """How far a block is, 0..1: the time its jobs took (``spent``) over that and the time they still have to go
+        (``to_go``). The row of the run window, the line under the summary and the block's bar in the graph all show
+        this one figure, and it comes from the time left the row says (#136: the status bar said 32 %, the window's
+        line the running job's own bar 22 %, the row the jobs' bars weighted by their estimates 8 %; a bar filled by
+        phases and search steps is no measure of time). A job stopped or failed counts what it had still to go, a job
+        not run its estimate: the bar of a block stopped shows how far it got."""
+        jobs = list(jobs)
+        gone, rest = sum(self.spent(j, now) for j in jobs), sum(self.to_go(j) for j in jobs)
+        if gone + rest > 0:
+            return gone / (gone + rest)
+        return 1.0 if jobs and all(j.state == DONE for j in jobs) else 0.0
+
+    def fraction(self, now: float | None = None) -> float:
+        """The share of the whole run done, 0..1, in time as ``progress``: what its jobs took over that and the time
+        left (``remaining``). A job over has nothing left to go in this run, whatever it reached: the run ends at 1."""
+        gone, rest = sum(self.spent(j, now) for j in self.jobs), self.remaining()
+        if gone + rest > 0:
+            return gone / (gone + rest)
+        return 1.0 if self.jobs and all(j.settled for j in self.jobs) else 0.0
 
     def remaining(self) -> float:
         """Seconds to go: the sum of the jobs' ``left``, as the run window's rows show them (#116: the status bar counted
@@ -939,8 +962,9 @@ class RunController(QObject):
         left = t.remaining()
         what = self.stage_title(j.stage) if j is not None else ""
         pct = int(round(100 * t.fraction()))
-        text = (_("Running: {stage} · {pct} %").format(stage=what, pct=pct) if what
-                else _("Running · {pct} %").format(pct=pct))
+        # the share of the whole run, said so (#136: "Running: Astrometry · 32 %" read as Astrometry's, its row said 8 %)
+        text = (_("Running: {stage} · {pct} % of the run").format(stage=what, pct=pct) if what
+                else _("Running · {pct} % of the run").format(pct=pct))
         return text + " · " + _("≈ {t} left").format(t=hm(left)) if left > 30 else text
 
     def stage_title(self, stage: str) -> str:
