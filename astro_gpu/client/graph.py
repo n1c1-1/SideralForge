@@ -1183,6 +1183,12 @@ class GraphView(QGraphicsView):
         self.new_flow_ghost = gh
         if not s.paths and not s.p.sessions and s.ready:
             sc.addItem(LinkItem(QPointF((x0 + x1) / 2, y + BH + 22), _("Start from a template"), self.templatesAsked.emit))
+        elif s.ready:                                    # issue #147: a further workflow's gallery (templates, a copy
+            # of a workflow, a template file), under the zone where a parallel flow starts, as the blank page's link
+            more = LinkItem(QPointF((x0 + x1) / 2, y + BH + 22), _("New workflow"), self.newWorkflow.emit)
+            more.setToolTip(_("A further workflow from a template, a copy of a workflow or a template file"))
+            sc.addItem(more)
+            self.new_workflow_link = more
         # issue #47: while an image or a frame block is dragged, a new branch can start under each block it can follow
         if self.drag_block in wfl.IO and (wfl.IO[self.drag_block] == (wfl.IMAGE, wfl.IMAGE)
                                           or self.drag_block in wfl.FRAME_BLOCKS):

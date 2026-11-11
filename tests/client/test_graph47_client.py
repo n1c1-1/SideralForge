@@ -599,6 +599,36 @@ def test_a_blank_page_has_a_link_to_the_templates_in_place_of_the_graph(qapp, tm
         w.stop()
 
 
+def test_a_project_with_a_workflow_has_a_new_workflow_link_that_opens_its_window(qapp, tmp_path, monkeypatch):
+    """Issue #147: the New workflow window (templates, a copy of a workflow, a template file) had no way in. Once the
+    project has a workflow, a named link under the zone where a parallel flow starts opens it, without blocking."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from astro_gpu.client.gallery import TemplateGallery
+    from astro_gpu.client.graph import LinkItem
+    w, m, page = open_page(tmp_path, monkeypatch)
+    page.show()
+    try:
+        assert m.paths
+        page.graph.rebuild()
+        link = next(x for x in page.graph.scene().items() if isinstance(x, LinkItem))
+        assert link.text == "New workflow" and link.toolTip()
+        QApplication.processEvents()
+        QTest.mouseClick(page.graph.viewport(), Qt.LeftButton, pos=page.graph.mapFromScene(link.sceneBoundingRect().center()))
+        d = page._gallery
+        assert isinstance(d, TemplateGallery) and d.isVisible() and "copy" in d.tab_keys
+        n = len(m.paths)
+        d.pick(next(c.t for c in d.cards))
+        d._create()
+        settle(w, page)
+        assert len(m.paths) > n
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
 def test_the_template_cards_take_the_height_of_their_content_in_a_grid_that_wraps(qapp, tmp_path, monkeypatch):
     """Issue #133: on a tall page the cards stretched to its whole height, their content in their top third. A card is
     as tall as the tallest of its row, its text whole, at the top; a tall page is empty below the cards; a wide page

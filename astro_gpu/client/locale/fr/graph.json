@@ -15,6 +15,7 @@
   "Several images": "Plusieurs images",
   "Templates": "Modèles",
   "Start from a template": "Partir d'un modèle",
+  "A further workflow from a template, a copy of a workflow or a template file": "Un workflow de plus, d'un modèle, de la copie d'un workflow ou d'un fichier de modèle",
   "Images": "Images",
   "a FITS, TIFF, PNG or JPEG file": "un fichier FITS, TIFF, PNG ou JPEG",
   "The filters shot: each gets its Session block and its workflow": "Les filtres utilisés : chacun reçoit son bloc Session et son workflow",
