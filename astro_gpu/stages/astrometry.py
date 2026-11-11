@@ -560,17 +560,28 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9+]", "", s.lower().replace("nebula", "").replace("galaxy", "")) or s.lower()
 
 
+#: the names made comparable, kept with the index they come from (issue #115: made again at each call, 15 000 names,
+#: 25 ms each time the graph drew its Project block, six times as a project opened). Read only by its callers
+_LOCAL: dict = {"index": None, "names": None}
+_LOCAL_LOCK = threading.Lock()
+
+
 def _local_names() -> dict[str, tuple[float, float]]:
     """Object names -> (ra, dec) from the catalogues shipped with the package (core/skyobjects.names_index: Messier,
-    NGC, IC, Sharpless with their common names such as 'Whirlpool Galaxy', and the Lynds dark nebulae)."""
+    NGC, IC, Sharpless with their common names such as 'Whirlpool Galaxy', and the Lynds dark nebulae). Made once per
+    index: a new catalogue (``skyobjects.reset``, other files) makes it again."""
     from ..core import skyobjects
     out: dict[str, tuple[float, float]] = {}
     try:
         index = skyobjects.names_index()
     except skyobjects.CatalogueUnavailable:
         return out
-    for n, (ra, dec, _d) in index.items():
-        out.setdefault(_norm(n), (ra, dec))
+    with _LOCAL_LOCK:
+        if _LOCAL["index"] is index:
+            return _LOCAL["names"]
+        for n, (ra, dec, _d) in index.items():
+            out.setdefault(_norm(n), (ra, dec))
+        _LOCAL.update(index=index, names=out)
     return out
 
 

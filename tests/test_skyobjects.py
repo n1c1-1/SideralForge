@@ -413,6 +413,24 @@ def test_the_target_search_index(home):
     assert idx["Sh2-155"][2] == "Sh2-155" and idx["NGC 5866"][2] == "M 102"
 
 
+def test_the_target_names_are_made_comparable_once_per_catalogue(home, shipped_tiny, monkeypatch):
+    """#115: the graph asks for its Project block's target at each drawing; the names were normalised again each time
+    (15 000 of them, six times as a project opened). Once per catalogue now, again when the catalogue changes."""
+    from astro_gpu.stages import astrometry as ast
+    seen = []
+    norm = ast._norm
+    monkeypatch.setattr(ast, "_norm", lambda s: (seen.append(s), norm(s))[1])
+    found = ast.find_offline("Whirlpool Galaxy")
+    first = len(seen)
+    assert found is not None and first > 20                # the whole index, the first time
+    for _i in range(3):
+        assert ast.find_offline("Whirlpool Galaxy") == found
+    assert len(seen) - first <= 2 * 3                    # then the name asked for only
+    so.reset()                                            # another catalogue: made again
+    n = len(seen)
+    assert ast.find_offline("Whirlpool Galaxy") == found and len(seen) - n > 20
+
+
 # ---------------------------------------------------------------------------------------------- the API
 
 def test_api_sky_objects_reads_the_solution_and_the_stack_grid(home, shipped_tiny, tmp_path, monkeypatch):
