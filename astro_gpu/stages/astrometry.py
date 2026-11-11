@@ -159,12 +159,36 @@ class Astrometry(Stage):
 
         def download(_f, msg):              # a field's first run: the sky tiles downloaded, said one by one
             ctx.progress(here[0], msg)
+
+        def depth(sc):                      # (G limit, radius deg) of the catalogue of a scale
+            fw, fh = W * sc / 3600, H * sc / 3600
+            glim = float(np.clip(12.5 - 1.25 * np.log10(max(fw * fh, 1e-3) / 37.0), 10.5, 16.0))
+            return glim, 0.5 * np.hypot(fw, fh) * (1 + 2 * p.search_offsets) + 0.2
+
+        def confirm(s2, ra2, dec2, flip2):
+            """The match at the scale and centre a trial's match gave, on the stars of a known scale (the catalogue to
+            its depth, 100 control points), its mirror first: (mirror, transform, pairs, centre, scale, G limit,
+            radius) as the search keeps it, or None. The catalogue is the one the solution is refined on."""
+            glim2, radius2 = depth(s2)
+            try:
+                gs2, gm2 = gaia_bright(ra0, dec0, radius2, glim2, ctx.log, download)
+            except Interrupted:
+                raise
+            except Exception as e:  # noqa: BLE001 - no catalogue at this scale: the search goes on as before
+                ctx.log(f"no Gaia stars at {s2:.2f}\"/px ({str(e)[:150]})", "warning")
+                return None
+            if len(gm2) < 20:
+                return None
+            r = _match(gs2, gm2, ra2, dec2, s2, W, H, brightdet, 0.0, W * s2 / 3600, H * s2 / 3600, aa, tol,
+                       (flip2, not flip2))
+            return None if r is None else (*r, s2, glim2, radius2)
         # pass 1: every scale with the given centre only (fast); pass 2: also shifted centres
         passes = [0.0, p.search_offsets] if p.search_offsets > 0 else [0.0]
-        # (scale, catalogue) -> the scales its centred match saw: pass 2 does not match the given centre again where
-        # pass 1 did on the same stars (issue #139: one of its 9 centres, a vain match of seconds per scale and
-        # mirror), it takes up what that match saw
-        centred: dict[tuple[float, int], list[float]] = {}
+        # (scale, catalogue) -> what its centred match saw: pass 2 does not match the given centre again where pass 1
+        # did on the same stars (issue #139: one of its 9 centres, a vain match of seconds per scale and mirror), it
+        # takes up what that match saw
+        centred: dict[tuple[float, int], list[tuple[float, float, float, bool]]] = {}
+        confirmed: list[float] = []                 # the scales matched where a trial's match put the field
         for ip, off in enumerate(passes):
             queue = list(scales)
             tried: list[float] = []
@@ -178,9 +202,7 @@ class Astrometry(Stage):
                 fw, fh = W * sc / 3600, H * sc / 3600
                 if not p.scale and (fw > 40 or fw < 0.1):
                     continue
-                area = fw * fh
-                glim = float(np.clip(12.5 - 1.25 * np.log10(max(area, 1e-3) / 37.0), 10.5, 16.0))
-                radius = 0.5 * np.hypot(fw, fh) * (1 + 2 * p.search_offsets) + 0.2
+                glim, radius = depth(sc)
                 try:
                     gs, gm = None, None
                     if not p.scale and glim > TRIAL_G:
@@ -215,7 +237,7 @@ class Astrometry(Stage):
                     if ip == 0:
                         centred[key] = []
                     continue
-                seen: list[float] = list(centred[key]) if again else []
+                seen: list[tuple[float, float, float, bool]] = list(centred[key]) if again else []
                 # scale unknown: 60 control points per trial (a vain trial costs ~2 s instead of ~70 s), and the
                 # scale that matches is matched again with the usual 100, as when the scale is known
                 res = _match(gs, gm, ra0, dec0, sc, W, H, brightdet, off, fw, fh, aa, tol, flips,
@@ -229,13 +251,25 @@ class Astrometry(Stage):
                     best = (*res, sc, glim, radius)
                     if res[2] >= GOOD_PAIRS:
                         break
-                # a certain match found at another scale than the trial one (triangles do not see the scale):
-                # try that scale next instead of walking the grid
-                for s2 in seen:
+                # a certain match found at another scale than the trial one (triangles do not see the scale) says the
+                # image's scale and, through its transform, where the field is: matched there at once, as a known
+                # scale is (issue #139, NGC 7000: the lead came at the 3.58"/px trial within a minute, the trial at
+                # 2.31"/px around the given centre, 0.2 deg off, on 60 stars failed, and the grid went on to 40"/px,
+                # 1 500 sky tiles, before the shifted centres of the second pass found it 22 min later); when that does
+                # not hold, that scale is tried next as before instead of walking the grid
+                for s2, ra2, dec2, flip2 in seen:
                     if len(tried) < len(scales) + 3 and all(abs(np.log(s2 / q)) > 0.02 for q in tried):
                         ctx.log(f"stars matched at {sc:.2f}\"/px trial: the image scale is about {s2:.2f}\"/px")
+                        if all(abs(np.log(s2 / q)) > 0.02 for q in confirmed):
+                            confirmed.append(s2)
+                            ctx.progress(here[0], f"searching the field at {s2:.2f}\"/px")
+                            hit = confirm(s2, ra2, dec2, flip2)
+                            if hit is not None and (best is None or hit[2] > best[2]):
+                                best = hit
                         queue.insert(0, s2)
                         break
+                if best is not None and best[2] >= GOOD_PAIRS:
+                    break
             if best is not None and (sparse or best[2] >= GOOD_PAIRS):
                 break
         if best is None and p.blind:
@@ -449,8 +483,9 @@ def _match(gs, gm, ra0, dec0, sc, W, H, brightdet, off, fw, fh, aa, tol, flips=(
     """Triangle match of the brightest detections with the Gaia stars projected at the trial scale and centres:
     (mirror, transform, matched pairs, centre) or None. The likely mirror is tried first and a certain match (>=
     GOOD_PAIRS pairs: the other mirror cannot give one) ends the search: a vain match costs ~35 s of exhausted
-    triangle lists, a good one ~1 s. ``seen``: where to put the scales of certain matches rejected for their scale;
-    ``centre=False``: the shifted centres only (``_centres``)."""
+    triangle lists, a good one ~1 s. ``seen``: where to put the certain matches rejected for their scale, as (the
+    image's scale, the RA and Dec its transform puts at the image's centre, mirror); ``centre=False``: the shifted
+    centres only (``_centres``)."""
     best = None
     for ra, dec in _centres(ra0, dec0, off, fw, fh, centre):
         w0 = _tan(ra, dec, sc, W, H)
@@ -471,7 +506,10 @@ def _match(gs, gm, ra0, dec0, sc, W, H, brightdet, off, fw, fh, aa, tol, flips=(
             if abs(np.log(T.scale)) < tol and (best is None or len(a) > best[2]):
                 best = (flip, T, len(a), list(w0.wcs.crval))
             elif seen is not None and len(a) >= GOOD_PAIRS and 0.2 < T.scale < 5:
-                seen.append(float(sc * T.scale))
+                # the image's centre (the same row mirrored or not) through the transform, on the trial's sky plane
+                cx, cy = T(np.array([[(W - 1) / 2, (H - 1) / 2]]))[0]
+                c = w0.pixel_to_world(cx, cy)
+                seen.append((float(sc * T.scale), float(c.ra.deg), float(c.dec.deg), flip))
             if best is not None and best[2] >= GOOD_PAIRS:
                 break
         if best is not None and best[2] >= GOOD_PAIRS:
