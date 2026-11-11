@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import hashlib
 import http.server
+import importlib.util
 import json
 import ssl
 import sys
 import threading
 import tomllib
 import urllib.error
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -138,6 +140,83 @@ def test_lock_asterion():
         assert f["url"].startswith("https://") or f["origin"]
     assert files["asterion-0.4.2-windows-x86_64.zip"]["url"].endswith("/v0.4.2/asterion-0.4.2-windows-x86_64.zip")
     assert files["tycho2.astx"]["dest"] == files["tycho2.astx.wide"]["dest"] == "catalogs"
+
+
+def load_build():
+    spec = importlib.util.spec_from_file_location("float_build", ROOT / "installer" / "build.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def fake_asterion(cache: Path) -> dict:
+    """A cache of small fake files laid out as the real ones (the archive with its top folder, the web interface and
+    README it carries, the index one folder down) and the lock part that pins them."""
+    cache.mkdir()
+    top = "asterion-0.4.2-windows-x86_64"
+    with zipfile.ZipFile(cache / f"{top}.zip", "w") as z:
+        for name, data in [("asterion.exe", b"MZ program"), ("asterion-web.exe", b"MZ web"), ("README.md", b"r"),
+                           ("LICENSE.txt", b"licence"), ("third-party/openngc.md", b"notice")]:
+            z.writestr(f"{top}/{name}", data)
+    (cache / "catalogs").mkdir()
+    (cache / "catalogs" / "tycho2.astx").write_bytes(b"index" * 100)
+    (cache / "catalogs" / "tycho2.astx.wide").write_bytes(b"wide" * 10)
+    files = []
+    for path, dest in [(cache / f"{top}.zip", ""), (cache / "catalogs" / "tycho2.astx", "catalogs"),
+                       (cache / "catalogs" / "tycho2.astx.wide", "catalogs")]:
+        files.append({"name": path.stem, "version": "0.4.2", "filename": path.name, "url": "", "origin": "test",
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "size": path.stat().st_size, "dest": dest})
+    return {"asterion": {"version": "0.4.2", "files": files}}
+
+
+def test_staged_asterion_is_what_float_finds(tmp_path, monkeypatch):
+    """The staged folder, put beside ``app`` as the installer does, is the one FLOAT's lookup finds: the program, then
+    the index in the ``catalogs`` folder beside it."""
+    from astro_gpu.core import asterion
+    build_mod = load_build()
+    lock = fake_asterion(tmp_path / "cache")
+    root = tmp_path / "FLOAT"
+    folder = build_mod.stage_asterion(root, lock, tmp_path / "cache", ask_version=False)
+    assert folder == root / "asterion"
+    assert sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file()) == [
+        "LICENSE.txt", "asterion.exe", "catalogs/tycho2.astx", "catalogs/tycho2.astx.wide", "third-party/openngc.md"]
+    # the module as the installation holds it: app/astro_gpu/core/asterion.py
+    here = root / "app" / "astro_gpu" / "core" / "asterion.py"
+    assert asterion.install_dir(here) == folder
+    monkeypatch.delenv(asterion.ENV_PROGRAM, raising=False)
+    monkeypatch.delenv(asterion.ENV_CATALOGS, raising=False)
+    monkeypatch.setattr(asterion, "own_dir", lambda: tmp_path / "nobody")
+    monkeypatch.setattr(asterion, "own_catalogs", lambda: tmp_path / "nobody" / "catalogs")
+    monkeypatch.setattr(asterion, "install_dir", lambda here=None: folder)
+    monkeypatch.setattr(asterion, "program_name", lambda: "asterion.exe")   # the Windows name, on any system
+    prog = asterion.find_program()
+    assert prog == folder / "asterion.exe"
+    assert asterion.find_catalogs(None, prog) == folder / "catalogs"
+    assert asterion.indexes(folder / "catalogs") == ["tycho2"]
+
+
+def test_staging_refuses_a_missing_or_different_file(tmp_path):
+    build_mod = load_build()
+    lock = fake_asterion(tmp_path / "cache")
+    (tmp_path / "cache" / "catalogs" / "tycho2.astx").write_bytes(b"index" * 99 + b"other")    # same size, other bytes
+    with pytest.raises(SystemExit, match="not the file the lock pins"):
+        build_mod.stage_asterion(tmp_path / "a", lock, tmp_path / "cache", ask_version=False)
+    (tmp_path / "cache" / "catalogs" / "tycho2.astx").unlink()
+    with pytest.raises(SystemExit, match="tycho2.astx is missing"):
+        build_mod.stage_asterion(tmp_path / "b", lock, tmp_path / "cache", ask_version=False)
+
+
+def test_inno_setup_installs_and_removes_the_asterion_folder():
+    """The folder comes with the [Files] line that copies the whole stage; an update removes the former one first and
+    the uninstaller removes it, by name, as the other folders of the program."""
+    text = (ROOT / "installer" / "float.iss").read_text(encoding="utf-8")
+    sections = {}
+    for block in text.split("\n["):
+        head, _, body = block.partition("]")
+        sections[head.strip("[")] = body
+    line = 'Type: filesandordirs; Name: "{app}\\asterion"'
+    assert line in sections["InstallDelete"] and line in sections["UninstallDelete"]
+    assert 'Source: "{#StageDir}\\*"' in sections["Files"] and "recursesubdirs" in sections["Files"]
 
 
 def test_bundled_wheels_are_shipped(build):

@@ -3,12 +3,19 @@
     python installer/build.py            # staging + compilation, the .exe in F:/astro_essais/A_REGARDER/installeur
     python installer/build.py lock       # regenerates installer/lock/lock.json (then build)
     python installer/build.py --out D:/x
+    python installer/build.py asterion --stage D:/x   # stages the plate solver's folder alone (a check, no .exe)
 
 The lock file: the versions of the environment the tests pass on (``uv pip freeze`` of LOCK_SOURCE), restricted to
 pyproject's dependencies and what they need, for two builds of PyTorch (CUDA and CPU), with each wheel's URL, size and
-SHA-256. Staging gathers what the .exe carries: a private Python (standalone, with Tk), uv, the Visual C++ runtime next
+SHA-256; and the Asterion plate solver (its released archive and its index), pinned the same way, which ``lock`` keeps
+as it is. Staging gathers what the .exe carries: a private Python (standalone, with Tk), uv, the Visual C++ runtime next
 to python.exe (PyTorch needs it and a clean Windows lacks it), the app's tracked files plus the Stars network (not in
-git), the setup scripts, an icon. Inno Setup compiles float.iss around it.
+git), the plate solver and its index in ``asterion`` (the layout astro_gpu/core/asterion.py looks for beside ``app``),
+the setup scripts, an icon. Inno Setup compiles float.iss around it.
+
+The plate solver's files come from a local folder (``--asterion-cache``, or FLOAT_ASTERION_CACHE), each found by its
+file name there or one folder down (the archive's folder and the catalogs' folder of a solver workspace both do), and
+checked against the lock: nothing is downloaded, a file missing or different stops the build.
 
 Run with a Python that has Pillow and certifi (the ComfyUI environment here). Inno Setup and uv must be installed.
 """
@@ -26,7 +33,8 @@ import tempfile
 import tomllib
 import urllib.parse
 import urllib.request
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
@@ -42,6 +50,10 @@ OUT_DEFAULT = Path("F:/astro_essais/A_REGARDER/installeur")
 STAR_MODEL = Path("astro_gpu/resources/stars/starless_nafnet.pt")
 VC_RUNTIME = ("msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "msvcp140_codecvt_ids.dll", "vcruntime140.dll",
               "vcruntime140_1.dll", "vcomp140.dll", "concrt140.dll")
+ASTERION_CACHE = Path(os.environ.get("FLOAT_ASTERION_CACHE") or REPO / "build" / "asterion-cache")
+#: what the installation keeps of the released archive: the program, its licence and the third-party notices (not the
+#: web interface, nor the README of a command line FLOAT runs itself)
+ASTERION_KEEP = ("asterion.exe", "LICENSE.txt", "third-party")
 
 
 def run(*cmd, **kw):
@@ -146,6 +158,11 @@ def make_lock() -> dict:
                 if norm(p["name"]) not in pins:
                     print("not in the tested environment:", p["name"], p["version"])
             lock["builds"][build] = wheels
+    # the plate solver is pinned by hand (a release of its own, not a Python package): kept through a new lock
+    if LOCK_FILE.is_file():
+        former = json.loads(LOCK_FILE.read_text(encoding="utf-8"))
+        if "asterion" in former:
+            lock["asterion"] = former["asterion"]
     LOCK_FILE.parent.mkdir(exist_ok=True)
     LOCK_FILE.write_text(json.dumps(lock, indent=1) + "\n", encoding="utf-8")
     for build, wheels in lock["builds"].items():
@@ -178,6 +195,73 @@ def find_star_model() -> Path:
     raise SystemExit(f"the Stars network is missing: {STAR_MODEL}")
 
 
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 22):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def pinned_file(entry: dict, cache: Path) -> Path:
+    """A file of the lock's ``asterion`` part from the local cache, by its name there or one folder down, with the
+    lock's size and checksum (the size first: a wrong file is said without reading 378 MB)."""
+    name = entry["filename"]
+    found = [cache / name] + (sorted(cache.glob(f"*/{name}")) if cache.is_dir() else [])
+    path = next((p for p in found if p.is_file()), None)
+    where = entry.get("url") or entry.get("origin") or "?"
+    if path is None:
+        raise SystemExit(f"{name} is missing from {cache} (--asterion-cache): put the pinned file there ({where})")
+    if path.stat().st_size != entry["size"] or sha256_file(path) != entry["sha256"]:
+        raise SystemExit(f"{path} is not the file the lock pins (size or checksum differs): get {name} again ({where})")
+    return path
+
+
+def link_or_copy(src: Path, dest: Path) -> None:
+    """A hard link when both are on one drive (the index is 378 MB: never twice on the build disk), else a copy; the
+    dates are kept either way: the index and its wide-field file stay as Asterion wrote them, one beside the other."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copy2(src, dest)
+
+
+def stage_asterion(stage_dir: Path, lock: dict, cache: Path = ASTERION_CACHE, ask_version: bool = True) -> Path:
+    """The plate solver's folder beside ``app``: the program, its licence and third-party notices unzipped from the
+    released archive (its top folder dropped), the index in ``catalogs``; the program asked its version (not by the
+    tests, whose program is a few fake bytes)."""
+    part = lock["asterion"]
+    folder = stage_dir / "asterion"
+    folder.mkdir(parents=True)
+    for entry in part["files"]:
+        src = pinned_file(entry, cache)
+        if not entry["filename"].endswith(".zip"):
+            link_or_copy(src, folder / entry["dest"] / entry["filename"])
+            continue
+        with zipfile.ZipFile(src) as z:
+            for info in z.infolist():
+                rel = PurePosixPath(info.filename).parts[1:]           # under the archive's own top folder
+                if not rel or rel[0] not in ASTERION_KEEP or info.is_dir():
+                    continue
+                if ".." in rel or ":" in info.filename:
+                    raise SystemExit(f"{src.name}: an unexpected path in the archive: {info.filename}")
+                dest = folder.joinpath(*rel)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(info) as fin, open(dest, "wb") as fout:
+                    shutil.copyfileobj(fin, fout, 1 << 22)
+    missing = [k for k in ASTERION_KEEP if not (folder / k).exists()]
+    if missing:
+        raise SystemExit(f"the Asterion archive has no {', '.join(missing)}")
+    if ask_version and sys.platform == "win32":
+        out = subprocess.run([str(folder / "asterion.exe"), "--version"], capture_output=True, text=True, timeout=60,
+                             stdin=subprocess.DEVNULL).stdout
+        if part["version"] not in out:
+            raise SystemExit(f"the staged asterion.exe answers {out.strip()!r}, not {part['version']}")
+    print("asterion:", part["version"], ", ".join(e["filename"] for e in part["files"]))
+    return folder
+
+
 def make_icon(path: Path) -> None:
     """The program's icon (client/float.svg) as a Windows .ico, drawn for each of its sizes."""
     from PIL import Image
@@ -204,8 +288,11 @@ def next_stage(base: Path) -> Path:
     return base / f"{n:03d}"
 
 
-def stage(stage_dir: Path, python: str) -> None:
+def stage(stage_dir: Path, lock: dict, cache: Path) -> None:
+    python = lock["python"]
     stage_dir.mkdir(parents=True)
+    # the plate solver first: a missing or wrong pinned file stops the build before the long copies
+    stage_asterion(stage_dir, lock, cache)
     # the private Python, a standalone build (with Tk for the progress window)
     tmp_py = stage_dir.with_name(stage_dir.name + "_python")
     run(uv(), "python", "install", python, "--install-dir", tmp_py, "--no-bin")
@@ -268,19 +355,24 @@ def compile_installer(stage_dir: Path, out: Path, version: str) -> Path:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", nargs="?", choices=("lock",))
+    ap.add_argument("what", nargs="?", choices=("lock", "asterion"))
     ap.add_argument("--out", type=Path, default=OUT_DEFAULT)
     ap.add_argument("--stage", type=Path, default=REPO / "build" / "installer-stage")
+    ap.add_argument("--asterion-cache", type=Path, default=ASTERION_CACHE)
     args = ap.parse_args()
     if args.what == "lock":
         make_lock()
         return 0
     check_lock()
     lock = json.loads(LOCK_FILE.read_text(encoding="utf-8"))
+    if args.what == "asterion":
+        folder = stage_asterion(next_stage(args.stage), lock, args.asterion_cache)
+        print(folder)
+        return 0
     with open(REPO / "pyproject.toml", "rb") as f:
         version = tomllib.load(f)["project"]["version"]
     stage_dir = next_stage(args.stage)
-    stage(stage_dir, lock["python"])
+    stage(stage_dir, lock, args.asterion_cache)
     exe = compile_installer(stage_dir, args.out, version)
     print(f"{exe}  {exe.stat().st_size / 1e6:.0f} MB")
     return 0

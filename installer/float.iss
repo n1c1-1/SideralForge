@@ -1,8 +1,9 @@
 ; The FLOAT installer: per user, no administrator rights. build.py compiles it with
 ; /DStageDir=<the staged files> /DOutputDir=<where the .exe goes> /DAppVersion=<version> /DMaxRootLen=<characters>.
 ; The files are copied here; the libraries are fetched right after by setup\setup_env.py (its own window, or text when
-; the installer runs silently). The uninstaller removes only this program's own folders: the user's projects and
-; settings live elsewhere and are never touched.
+; the installer runs silently). The Asterion plate solver and its index come inside, in {app}\asterion (nothing of it is
+; fetched). The uninstaller removes only this program's own folders: the user's projects and settings live elsewhere and
+; are never touched.
 
 #ifndef StageDir
   #define StageDir "stage"
@@ -67,6 +68,7 @@ Name: "desktopicon"; Description: "{cm:DesktopIcon}"; Flags: unchecked
 Type: filesandordirs; Name: "{app}\app"
 Type: filesandordirs; Name: "{app}\setup"
 Type: filesandordirs; Name: "{app}\python"
+Type: filesandordirs; Name: "{app}\asterion"
 
 [Files]
 Source: "{#StageDir}\*"; Excludes: "float.iss"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -85,6 +87,8 @@ Type: filesandordirs; Name: "{app}\env"
 Type: filesandordirs; Name: "{app}\python"
 Type: filesandordirs; Name: "{app}\app"
 Type: filesandordirs; Name: "{app}\setup"
+; the plate solver and its index; with the wide-field file Asterion may have written beside the index
+Type: filesandordirs; Name: "{app}\asterion"
 Type: filesandordirs; Name: "{app}\downloads"
 Type: filesandordirs; Name: "{app}\cache"
 Type: filesandordirs; Name: "{app}\logs"
