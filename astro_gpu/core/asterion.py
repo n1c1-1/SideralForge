@@ -28,13 +28,19 @@ first: not a real mirror). Its "rotation" is the position angle of the image's +
 ``up_position_angle`` (the angle of -y, the top of the picture) is rotation + 180.
 
 Where (the first found): the program, the ``exe`` given (the setting), ``ASTRO_GPU_ASTERION`` (its folder, or the
-program itself), FLOAT's own folder ``<ASTRO_GPU_HOME>/asterion`` (where Settings puts it), and, in an installed FLOAT,
-the ``asterion`` folder of the installation (beside ``app``); the index, the ``catalogs`` given, Asterion's own
-``ASTERION_CATALOGS``, FLOAT's own folder ``asterion`` of the cache (``skycache.cache_dir()``), and, as an extra place
-only, never required, Asterion's default ``~/.asterion/catalogs`` (an Asterion the user installed himself). The same
-files whichever way the program came: ``asterion.exe`` (``asterion`` elsewhere) alone in its folder, and the index
-files ``<name>.astx`` (with the ``<name>.astx.wide`` Asterion adds beside one the first time it solves a wide field: the
-index folder must be writable, or hold that file already). Nothing is ever downloaded here.
+program itself), FLOAT's own folder ``<ASTRO_GPU_HOME>/asterion`` (where Settings would put it), and, in an installed
+FLOAT, the ``asterion`` folder of the installation (beside ``app``); the index, the ``catalogs`` given, Asterion's own
+``ASTERION_CATALOGS``, the ``catalogs`` folder beside the program found, then beside FLOAT's own and the installation's,
+and, as an extra place only, never required, Asterion's default ``~/.asterion/catalogs`` (an Asterion the user installed
+himself). One layout whichever way the program came (the released archive or a build from its sources, which makes the
+same single file)::
+
+    asterion/asterion.exe                 the program (``asterion`` elsewhere), with LICENSE.txt and third-party/
+    asterion/catalogs/tycho2.astx         the index (378 MB), and any other <name>.astx installed
+    asterion/catalogs/tycho2.astx.wide    the quads of wide fields, which Asterion writes beside an index the first time
+                                          it solves a wide field: shipped with it, or the folder must be writable
+
+Nothing is ever downloaded here.
 """
 from __future__ import annotations
 
@@ -122,9 +128,8 @@ def own_dir() -> Path:
 
 
 def own_catalogs() -> Path:
-    """FLOAT's own folder of the index: ``asterion`` of the cache (beside ``gaia_extracts``)."""
-    from .skycache import cache_dir
-    return cache_dir() / "asterion"
+    """FLOAT's own folder of the index: ``catalogs`` beside its program (``<ASTRO_GPU_HOME>/asterion/catalogs``)."""
+    return own_dir() / "catalogs"
 
 
 def install_dir(here: Path | None = None) -> Path | None:
@@ -157,9 +162,12 @@ def _indexes(folder: Path) -> list[str]:
         return []
 
 
-def find_catalogs(catalogs: str | os.PathLike | None = None) -> Path | None:
-    """The first folder holding an index (``*.astx``)."""
-    for c in [catalogs, os.environ.get(ENV_CATALOGS), own_catalogs(), Path.home() / ".asterion" / "catalogs"]:
+def find_catalogs(catalogs: str | os.PathLike | None = None, program: Path | None = None) -> Path | None:
+    """The first folder holding an index (``*.astx``); ``program``: the one found, whose ``catalogs`` folder comes
+    before FLOAT's own (a program and its index given together, in one folder, stay together)."""
+    inst = install_dir()
+    for c in [catalogs, os.environ.get(ENV_CATALOGS), program.parent / "catalogs" if program else None, own_catalogs(),
+              inst / "catalogs" if inst else None, Path.home() / ".asterion" / "catalogs"]:
         if c and str(c).strip() and _indexes(Path(str(c).strip())):
             return Path(str(c).strip())
     return None
@@ -211,7 +219,7 @@ def status(exe: str | os.PathLike | None = None, catalogs: str | os.PathLike | N
     if tuple(int(x) for x in v.split(".")) < MIN_VERSION:
         return Status(False, prog, v, why=f"Asterion {v} is too old, {'.'.join(map(str, MIN_VERSION))} at least is "
                                           f"needed")
-    cat = find_catalogs(catalogs)
+    cat = find_catalogs(catalogs, prog)
     if cat is None:
         return Status(False, prog, v, why="the star index of the Asterion plate solver is not installed (Settings › "
                                           "Catalogs)")

@@ -220,7 +220,10 @@ def test_where_the_program_and_the_index_are_looked_for(tmp_path, monkeypatch):
     theirs = put(Path.home() / ".asterion" / "catalogs", "tycho2.astx")
     assert A.find_catalogs() == theirs
     ours = put(A.own_catalogs(), "gaia-500.astx")
-    assert A.find_catalogs() == ours
+    assert ours == own / "catalogs" and A.find_catalogs() == ours
+    beside = put(setting / "catalogs", "tycho2.astx")                     # a program and its index in one folder
+    assert A.find_catalogs(program=A.find_program(setting)) == beside
+    assert A.status(setting).catalogs == beside and A.status().catalogs == ours
     put(tmp_path / "notes", "readme.txt")
     monkeypatch.setenv(A.ENV_CATALOGS, str(tmp_path / "notes"))
     assert A.find_catalogs() == ours
