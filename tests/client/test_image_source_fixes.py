@@ -152,6 +152,7 @@ def test_an_image_file_gone_circles_its_block_and_refuses_run(model, tmp_path):
     q = model.view(q.pid)
     assert model.image_problem(q) == "" and not Graph(model).node_of(q, "image").broken
     assert not model.run_problems()
+    model.worker.wait(30)                     # the estimates read the image's size meanwhile (Windows: no rename then)
     fits.rename(tmp_path / "elsewhere.fits")
     assert model.image_problem(q) == "File not found: soon_gone.fits"
     assert Graph(model).node_of(q, "image").broken == "File not found: soon_gone.fits"

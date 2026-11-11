@@ -401,7 +401,7 @@ def test_parameter_texts_read_well():
     assert texts.param_texts("stack", "pixfrac", "en")["unit"] == ""
     assert texts.stage_title("stack", "fr") == "Empilement (drizzle)"
     assert texts.choice_label("nsns", "fr") == "NSNS" and texts.choice_label("aux", "en") == "Second GPU"
-    assert texts.choice_label("aux", "fr") == "GPU secondaire"
+    assert texts.choice_label("aux", "fr") == "Carte graphique secondaire"      # one name for it (#108)
     assert texts.choice_label("something else", "fr") == "something else"
     # the vocabulary of the glossary
     fr = " ".join(texts.catalogue("fr")[k] for k in texts.catalogue("fr") if "frames" in k.lower())
