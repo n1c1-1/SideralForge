@@ -1233,6 +1233,12 @@ class RunController(QObject):
         else:
             text = _("Run failed: {failed} failed, {skipped} not run").format(failed=c[FAILED], skipped=c["notrun"])
             self.model.log("Run failed: {failed} failed, {skipped} not run", failed=c[FAILED], skipped=c["notrun"])
+            bad = next((j for j in t.jobs if j.state == FAILED and (j.error or "").strip()), None)
+            if bad is not None:                              # why, without opening the log (the night test pass)
+                err = bad.error.strip().splitlines()[0]
+                text += " · " + _("{stage}: {error}").format(
+                    stage=self.stage_title(bad.stage), error=engine_text(err) if not is_raw_error(bad.error) else
+                    _("a program error (the detail is in the Log)"))
         self.phase = "idle"
         c_ = self._console_obj()
         if c_ is not None and hasattr(c_, "refresh"):

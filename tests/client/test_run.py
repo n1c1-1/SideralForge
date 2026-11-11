@@ -1063,9 +1063,13 @@ def test_run_to_here_runs_only_the_blocks_it_needs(toy):
 def test_failed_job_skips_its_downstream_blocks_and_says_so_in_plain_words(env):
     w = make_world(env["tmp"], fail=True)
     try:
+        ends = []
+        w.ctl.finished.connect(lambda status, text: ends.append(text))
         d = w.run_all()
         t = w.track
         assert t.status == "failed"
+        # the status line says why, without the log (the night test pass: "1 failed, 2 not run" and no reason)
+        assert ends and ends[-1].endswith("· Denoise: b failed on purpose"), ends
         by = {(j.stage, tuple(j.wf)): j.state for j in t.jobs}
         assert by[("denoise", (2,))] == FAILED and by[("render_simple", (2,))] == SKIPPED
         # Color does not read Denoise (issue #47: it comes after it, measured on the stack): one, done for both
