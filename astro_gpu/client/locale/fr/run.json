@@ -126,6 +126,7 @@
  "memory: {0} GB available, the {1} registered frames ({2} GB) are kept on disk and the rejection is computed in {3} parts": "mémoire : {0} Go disponibles, les {1} images alignées ({2} Go) sont gardées sur le disque et le rejet est calculé en {3} parties",
  "memory: {0} GB available, the {1} registered frames ({2} GB) are kept on disk": "mémoire : {0} Go disponibles, les {1} images alignées ({2} Go) sont gardées sur le disque",
  "memory: {0} GB available, the rejection is computed in {1} parts": "mémoire : {0} Go disponibles, le rejet est calculé en {1} parties",
+ "memory: {0} GB available, the calibrated frames ({1} GB) are written straight to the disk": "mémoire : {0} Go disponibles, les images calibrées ({1} Go) sont écrites directement sur le disque",
  "{0} stars detected in the stack": "{0} étoiles détectées dans l'empilement",
  "solved: centre RA {0} Dec {1}, {2}\"/px, field {3} x {4} deg, residual {5} px on {6} stars": "résolu : centre AD {0} Dec {1}, {2}\"/px, champ {3} x {4} deg, résidu {5} px sur {6} étoiles",
  "{0} Gaia stars G < {1} in the field": "{0} étoiles Gaia G < {1} dans le champ",

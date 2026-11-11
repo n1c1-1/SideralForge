@@ -216,6 +216,8 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
          "memory: {0} GB available, the {1} registered frames ({2} GB) are kept on disk", ()),
         (r"^memory: ([\d.]+) GB available, the rejection is computed in (\d+) parts$",
          "memory: {0} GB available, the rejection is computed in {1} parts", ()),
+        (r"^memory: ([\d.]+) GB available, the calibrated frames \(([\d.]+) GB\) are written straight to the disk$",
+         "memory: {0} GB available, the calibrated frames ({1} GB) are written straight to the disk", ()),
         # the runner's hand-over of a run to a fresh process after a graphics card fault (core/runner2.py)
         (r"^the graphics card stopped responding during (.+); the rest of the run continues in a fresh process$",
          "the graphics card stopped responding during {0}; the rest of the run continues in a fresh process", (0,)),

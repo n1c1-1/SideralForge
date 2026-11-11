@@ -442,7 +442,8 @@ def _calibrated_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark
     np.save(paths_dir / "bad.npy", bad)
     todo = [(i, lights[i]["path"]) for i in range(n) if not done[i]]
     sat_raw = p.saturation * white
-    init = (str(cache), n, H, W, str(paths_dir), sat_raw, scale, fill, cfa)
+    plain = plain_writes(ctx, n * H * W * 2, p.workers, H * W)
+    init = (str(cache), n, H, W, str(paths_dir), sat_raw, scale, fill, cfa, plain)
     ctx.phase(getattr(ctx, "_lights_from", 0.0), 1.0)          # issue #50: the lights' share of the bar
     ctx.progress(done.mean(), f"calibrating {len(todo)} frames ({p.workers} processes)", force=True)
     with devices.one_maths_thread():                           # issue #125: 1 GB less reserved a worker
@@ -466,8 +467,7 @@ def _calibrated_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark
     ctx.log(f"{n} frames calibrated in {(time.time() - t0) / 60:.1f} min (cache {n * H * W * 2 / 1e9:.1f} GB)")
     from .inventory import _superpixel_rgb
     ctx.preview("master_flat", _flat_view(flat, cfa))
-    mm = np.memmap(cache, dtype=np.float16, mode="r", shape=(n, H, W))
-    fr = np.nan_to_num(np.asarray(mm[n // 2], np.float32))
+    fr = np.nan_to_num(CachedFrames({"path": str(cache), "n": n, "height": H, "width": W})[n // 2])
     ctx.preview("calibrated_frame", _superpixel_rgb(np.where(fr > VALID_MAX, 0, fr), cfa))
 
 
@@ -632,11 +632,11 @@ def _flat_view(flat: np.ndarray, cfa: str) -> np.ndarray:
 _G: dict = {}
 
 
-def _init(cache, n, H, W, paths_dir, sat_raw, scale, fill=False, cfa="RGGB"):
+def _init(cache, n, H, W, paths_dir, sat_raw, scale, fill=False, cfa="RGGB", plain=False):
     d = Path(paths_dir)
     bad = np.load(d / "bad.npy")
     _G.update(dark=np.load(d / "dark.npy"), flat=np.load(d / "flat.npy"), bad=bad,
-              mm=np.memmap(cache, dtype=np.float16, mode="r+", shape=(n, H, W)), sat=sat_raw, scale=scale,
+              mm=FrameWriter(cache, n, (H, W), plain), sat=sat_raw, scale=scale,
               fill=_neighbours(bad, cfa) if fill else None, cfa=cfa)
 
 
@@ -683,7 +683,7 @@ def _calib_one(args):
         nb = np.where(nb > VALID_MAX, np.nan, nb)
         with np.errstate(all="ignore"):
             x[ys, xs] = np.nanmedian(nb, axis=1)          # NaN again when every neighbour is bad
-    _G["mm"][idx] = x.astype(np.float16)
+    _G["mm"][idx] = x
     stats = []
     for v in _stat_samples(x, _G.get("cfa") or "RGGB"):
         stats.append(_frame_stat(v))
@@ -772,6 +772,63 @@ class CachedFrames:
             out = self.buf.astype(np.float32)
         self.seconds += time.perf_counter() - t
         return out
+
+
+class FrameWriter:
+    """Where a calibration worker writes its frames into the cache ``path`` ((n, *shape) float16): ``writer[i] = x``
+    writes frame i, x converted to float16 as ``astype`` does.
+
+    Through a memory map (``plain`` False, as before), each frame written stays in the worker's working set as modified
+    pages of the map until the system writes them out and trims them: on a night of 796 frames (a 19 GB cache) on a
+    machine of 27.7 GB, Calibration's used memory reached 19 GB, 0.4 GB free and 18,000 pages read back from the disk
+    a second. With ``plain``, each frame is converted into a float16 buffer reused from frame to frame and written by
+    one plain write: the system's file cache holds it until it is on the disk and the workers hold nothing of the
+    cache (measured on 16 threads, a pool of 12, frames of 12 Mpx: the working set of the lights' phase 4.9 GB for 32
+    frames and 6.0 GB for 96 through the map, 4.3 and 4.4 GB written plainly, the same private memory). The file is the
+    same to the bit. Plain writes can wait for the disk sooner (a test of writing alone: 3.25 GB in 28 to 43 s, 5 to
+    7 s into a map), so they are used only when memory is short (``memory_short``)."""
+
+    def __init__(self, path, n: int, shape: tuple[int, ...], plain: bool):
+        self.path, self.plain = str(path), plain
+        self.mm = None if plain else np.memmap(path, dtype=np.float16, mode="r+", shape=(n, *shape))
+        self.buf = np.empty(shape, np.float16) if plain else None
+
+    def __setitem__(self, i: int, x: np.ndarray) -> None:
+        if self.mm is not None:
+            self.mm[i] = x.astype(np.float16)
+            return
+        np.copyto(self.buf, x, casting="unsafe")             # the float16 of astype, into the same buffer
+        view = memoryview(self.buf).cast("B")
+        with open(self.path, "r+b", buffering=0) as f:
+            f.seek(int(i) * view.nbytes)
+            done = 0
+            while done < view.nbytes:                         # a write may take less than given: the rest after
+                done += f.write(view[done:])
+
+
+#: what a calibration worker holds per pixel of a frame, besides the cache (the masters, the frame read and calibrated,
+#: their temporary arrays): measured 52 bytes a pixel on a 12 Mpx sensor, 7.6 GB for a pool of 12 (issue #125)
+WORKER_BYTES = 52
+
+
+def memory_short(cache_bytes: int, workers: int, pixels: int) -> float | None:
+    """The memory available (GB) when the calibrated cache (``cache_bytes``) and a pool of ``workers`` on frames of
+    ``pixels`` do not fit in the memory the engine may fill now (core/devices.memory_budget): the pools then write
+    and read the cache plainly (``FrameWriter``, ``CachedFrames``) instead of through memory maps. None when they fit:
+    a machine with the room keeps the maps, as before (no slower)."""
+    m = devices.memory_budget()
+    if m is None or cache_bytes + workers * WORKER_BYTES * pixels <= m[0]:
+        return None
+    return m[1] / 2 ** 30
+
+
+def plain_writes(ctx: Context, cache_bytes: int, workers: int, pixels: int) -> bool:
+    """Whether Calibration's workers write the frames plainly (``memory_short``), said in one line when they do."""
+    gb = memory_short(cache_bytes, workers, pixels)
+    if gb is not None:
+        ctx.log(f"memory: {gb:.1f} GB available, the calibrated frames ({cache_bytes / 2 ** 30:.1f} GB) are written "
+                f"straight to the disk")
+    return gb is not None
 
 
 def calibrate_colour(ctx: Context, p: CalibrateParams, frames: dict) -> None:
@@ -906,7 +963,8 @@ def _colour_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark: np
     np.save(d / "flat.npy", flat)
     np.save(d / "bad.npy", bad)
     stats = np.zeros((n, 4, 2), np.float32)
-    init = (str(cache), str(rgb), n, H, W, str(d), p.saturation * white, scale)
+    plain = plain_writes(ctx, n * H * W * 8, p.workers, 3 * H * W)        # the luminance and the three planes
+    init = (str(cache), str(rgb), n, H, W, str(d), p.saturation * white, scale, plain)
     ctx.phase(getattr(ctx, "_lights_from", 0.0), 1.0)
     ctx.progress(0.0, f"calibrating {n} frames ({p.workers} processes)", force=True)
     with devices.one_maths_thread():                           # issue #125: 1 GB less reserved a worker
@@ -928,15 +986,15 @@ def _colour_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark: np
     ctx.log(f"{n} frames already in colour calibrated in {(time.time() - t0) / 60:.1f} min")
     from .inventory import _superpixel_rgb
     ctx.preview("master_flat", _flat_view(flat, cfa_mod.RGB))
-    fr = np.nan_to_num(np.asarray(np.memmap(rgb, dtype=np.float16, mode="r", shape=(n, 3, H, W))[n // 2], np.float32))
+    fr = np.nan_to_num(CachedFrames({"rgb_path": str(rgb), "n": n, "height": H, "width": W}, colour=True)[n // 2])
     ctx.preview("calibrated_frame", _superpixel_rgb(np.where(fr > VALID_MAX, 0, fr), cfa_mod.RGB))
 
 
-def _init_colour(cache, rgb, n, H, W, paths_dir, sat_raw, scale):
+def _init_colour(cache, rgb, n, H, W, paths_dir, sat_raw, scale, plain=False):
     d = Path(paths_dir)
     _G.update(dark=np.load(d / "dark.npy"), flat=np.load(d / "flat.npy"), bad=np.load(d / "bad.npy"),
-              mm=np.memmap(cache, dtype=np.float16, mode="r+", shape=(n, H, W)),
-              rgb=np.memmap(rgb, dtype=np.float16, mode="r+", shape=(n, 3, H, W)), sat=sat_raw, scale=scale)
+              mm=FrameWriter(cache, n, (H, W), plain), rgb=FrameWriter(rgb, n, (3, H, W), plain), sat=sat_raw,
+              scale=scale)
 
 
 def _calib_colour(args):
@@ -952,8 +1010,8 @@ def _calib_colour(args):
     y[sat.any(0)] = SAT_MARK
     x[:, _G["bad"]] = np.nan
     y[_G["bad"]] = np.nan
-    _G["rgb"][idx] = x.astype(np.float16)
-    _G["mm"][idx] = y.astype(np.float16)
+    _G["rgb"][idx] = x
+    _G["mm"][idx] = y
     stats = []
     for c in (0, 1, 1, 2):                                  # the same four entries as a Bayer sensor's (their mean)
         stats.append(_frame_stat(x[c, ::4, ::4]))

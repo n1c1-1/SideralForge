@@ -18,7 +18,7 @@ from scipy.spatial import cKDTree
 from ..core import devices
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage, StageError
-from .calibrate import VALID_MAX, open_cache
+from .calibrate import VALID_MAX, CachedFrames, memory_short
 
 #: stars fitted per frame for the Moffat FWHM (core/psf_moffat.py: about 0.1 to 0.2 s a frame)
 MOFFAT_STARS = 150
@@ -62,8 +62,11 @@ class Register(Stage):
         return {"workers": Auto(n, "{cores} CPU cores detected", {"cores": os.cpu_count()})}
 
     def run(self, ctx: Context, p: RegisterParams) -> None:
-        mm, info = open_cache(ctx)
+        info = ctx.load_json("calibrate", "cache.json")
         n, H, W = info["n"], info["height"], info["width"]
+        # memory short: the frames read plainly, by this process and the pool's workers, no memory map (issue #125)
+        plain = memory_short(n * H * W * 2, p.workers, H * W) is not None
+        mm = CachedFrames(info, mapped=not plain)
         meta = ctx.load_json("inventory", "frames.json")["lights"]
         cache_p = ctx.ckpt / "catalogs.pkl"
         got = pickle.loads(cache_p.read_bytes()) if cache_p.exists() else None
@@ -77,7 +80,7 @@ class Register(Stage):
             noise = np.full(n, np.nan)
         todo = [i for i in range(n) if cats[i] is None or psf[i] is None]
         if todo:
-            init = (info["path"], n, H, W, p.detect_sigma, p.max_stars, info["cfa"])
+            init = (info["path"], n, H, W, p.detect_sigma, p.max_stars, info["cfa"], plain)
             # said at once, and one frame per task: a dense field takes 10 s and more per frame, so that a batch of 4
             # per worker kept the progress at 0 % for minutes (North America: first result after 141 s, issue #34)
             ctx.progress(0.0, f"detecting the stars of {len(todo)} frames ({p.workers} processes)")
@@ -694,8 +697,12 @@ def quality_plot(meta, fwhm, transp, ok):
 _G: dict = {}
 
 
-def _init(path, n, H, W, k, nmax, cfa):
-    _G.update(mm=np.memmap(path, dtype=np.float16, mode="r", shape=(n, H, W)), H=H, W=W, k=k, nmax=nmax, cfa=cfa)
+def _init(path, n, H, W, k, nmax, cfa, plain=True):
+    # ``plain``: each frame one read into a buffer, no memory map of the cache (issue #125: through a map, every frame
+    # a worker read stayed in its working set; measured on 16 threads, a pool of 12, frames of 12 Mpx: 3.4 GB for 32
+    # frames and 4.9 GB for 96 through the map, 3.4 GB both read plainly)
+    _G.update(mm=CachedFrames({"path": path, "n": n, "height": H, "width": W}, mapped=not plain), H=H, W=W, k=k,
+              nmax=nmax, cfa=cfa)
 
 
 def _catalog_moffat(idx):

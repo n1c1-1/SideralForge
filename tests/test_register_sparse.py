@@ -87,9 +87,8 @@ def _run(tmp_path, cats, monkeypatch):
     cache = tmp_path / "lights.f16"
     np.memmap(cache, dtype=np.float16, mode="w+", shape=(n, H_, W_)).flush()
     info = {"path": str(cache), "n": n, "height": H, "width": W, "cfa": "MONO"}
-    mm = np.zeros((n, H_, W_), np.float16)
-    monkeypatch.setattr(rg, "open_cache", lambda ctx: (mm, info))
     monkeypatch.setattr(rg, "phase_shift", lambda *a, **k: None)
+    monkeypatch.setattr(rg, "memory_short", lambda *a: 1.0)          # plain reads: no map of the small cache made
     monkeypatch.setattr(rg, "quality_plot", lambda *a, **k: np.zeros((4, 4, 3)))
     ck = tmp_path / "ck"
     ck.mkdir()
@@ -98,7 +97,8 @@ def _run(tmp_path, cats, monkeypatch):
     (ck / "catalogs.pkl").write_bytes(pickle.dumps((cats, fwhm, np.ones(n), nan, nan, psf)))
     logs, metrics = [], {}
     meta = {"lights": [{"path": f"f{i}.fits", "time": None} for i in range(n)]}
-    ctx = SimpleNamespace(ckpt=ck, load_json=lambda *a: meta, progress=lambda *a, **k: None,
+    ctx = SimpleNamespace(ckpt=ck, load_json=lambda *a: info if a == ("calibrate", "cache.json") else meta,
+                          progress=lambda *a, **k: None,
                           log=lambda m, level="info": logs.append((level, m)),
                           metric=lambda k, v: metrics.__setitem__(k, v), preview=lambda *a, **k: None,
                           out=lambda name: tmp_path / name)
