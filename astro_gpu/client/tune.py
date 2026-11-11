@@ -697,8 +697,9 @@ class TuneView(QWidget):
     def eventFilter(self, obj, e):                                    # noqa: N802
         try:
             if e.type() == QEvent.Resize and obj is self.strip_scroll.viewport():
-                QTimer.singleShot(0, self.show_open_block)    # the window resized after the strip was built
-                QTimer.singleShot(0, self.strip._fit_height)
+                QTimer.singleShot(0, self, self.show_open_block)    # the window resized after the strip was built;
+                QTimer.singleShot(0, self.strip, self.strip._fit_height)   # with their widget: not called once it is
+                # gone (the night test pass: "QScrollArea already deleted" when the palette changed its state)
         except RuntimeError:                              # closing: the strip already gone
             pass
         return super().eventFilter(obj, e)

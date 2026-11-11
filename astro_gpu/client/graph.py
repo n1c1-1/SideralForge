@@ -2506,6 +2506,9 @@ class PaletteCard(QFrame):
             t = QLabel(self.title)
             t.setWordWrap(True)                          # a long name wraps in the palette's width
             t.setStyleSheet("font-weight: 600; font-size: 9pt;" + ("" if on else " color: #555b66;"))
+            t.ensurePolished()                           # a word longer than the width (the night test pass:
+            if max(t.fontMetrics().horizontalAdvance(w) for w in self.title.split() or [""]) > PALETTE_W - 64:
+                t.setStyleSheet(t.styleSheet().replace("9pt", "8pt"))      # "Déconvolutior"): a size smaller
             v.addWidget(t, 1)
             self.text = t
             if auto:                                     # its height whether its name shows or not: nothing moves

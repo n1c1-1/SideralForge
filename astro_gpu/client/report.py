@@ -225,6 +225,12 @@ def _figure(rows: int, height: float):
 
 
 def _png(fig) -> bytes:
+    if language() == "fr":                               # a decimal comma on the axes too (the night test pass)
+        from matplotlib.ticker import FuncFormatter, ScalarFormatter
+        for ax in fig.axes:
+            for axis in (ax.xaxis, ax.yaxis):
+                if type(axis.get_major_formatter()) is ScalarFormatter:
+                    axis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{v:g}".replace(".", ",").replace("-", "−")))
     buf = io.BytesIO()
     fig.savefig(buf, format="png", facecolor="white")
     return buf.getvalue()
@@ -349,7 +355,8 @@ def draw_figures(d: ReportData, title: str = ""):
     """The report's figures and the cards. Agg only: no widget, so that the worker thread can do it."""
     if d.reg is not None:
         for name, idx in d.sessions:
-            rows = [f"{a}: {b}" for a, b in card_rows(d, idx)]
+            colon = " : " if language() == "fr" else ": "      # French typography (the night test pass)
+            rows = [f"{a}{colon}{b}" for a, b in card_rows(d, idx)]
             foot = "     ".join(rows[:3]) + chr(10) + "     ".join(rows[3:])
             shown = name if len(d.sessions) > 1 else ""  # a project of one session: its name says nothing
             head = " · ".join(x for x in (_("Night card"), title, shown) if x)

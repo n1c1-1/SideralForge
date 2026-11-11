@@ -1006,5 +1006,6 @@
   "Astrometry is not computed yet for the image at the bottom": "L'Astrométrie de l'image du bas n'est pas encore calculée",
   "Needs the image's scale: place the Astrometry block in this workflow.": "Il faut l'échelle de l'image : placez le bloc Astrométrie dans ce workflow.",
   "GPU": "Carte graphique",
-  "Writing {name}…": "Écriture de {name}…"
+  "Writing {name}…": "Écriture de {name}…",
+  "No graphics card computes here: nothing to test": "Aucune carte graphique ne calcule ici : rien à tester"
 }

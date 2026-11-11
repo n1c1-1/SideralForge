@@ -83,6 +83,9 @@ def test_the_cpu_setting_has_nothing_to_test(env, qapp):
     d, page = _dialog(qapp)
     b = next(x for x in page.findChildren(QPushButton) if x.text() == "Test again")
     assert not b.isEnabled() and "The processor computes: nothing to test" in _texts(page)
+    # the night test pass: four empty lines, and the greyed button did not say why
+    assert "nothing to test" in b.toolTip()
+    assert not any(lab.isVisibleTo(page) for lab in d.ct["rows"].values())
     d.close()
 
 

@@ -1194,7 +1194,8 @@ class ProjectModel(QObject):
         for v in list(self.paths):
             for stage in list(self._chains.get(v.pid, [])):
                 self.seconds(stage, v)
-            for block in ("debruitage", "etoiles", "fond"):
+            # Deconvolution and Synthetic stars too (the night test pass: their cards said "…" for good)
+            for block in ("debruitage", "etoiles", "fond", "deconv", "synth"):
                 try:
                     for m in methods_of(block):
                         for dev in ("gpu", "cpu"):                 # the card says both: GPU and CPU
@@ -2957,7 +2958,8 @@ class ProjectModel(QObject):
         k, opts = km
         got = self._est.get(k)
         if got is None:
-            w = self._what_if(opts, p.params)
+            # Synthetic stars is a block of the graph, not an option: its stage in this workflow as it is
+            w = p.pid if block == "synth" else self._what_if(opts, p.params)
             try:
                 chain = api.chain(self.p, w)
                 dev = k[4]

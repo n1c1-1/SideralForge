@@ -403,17 +403,18 @@ class SettingsDialog(QDialog):
         v.addWidget(label(_("Card test"), "h2"))
         status = label("", "small", wrap=True)
         v.addWidget(status)
-        rows = {}
+        rows, names = {}, []
         for stage, name in ((("stack", _("Stack")), ("denoise", _("Denoise")), ("star_removal", _("Stars")),
                              ("post", _("Post")))):
             val = label("", "small")
             self.row(v, name, val)
             rows[stage] = val
+            names.append(self._labels[-1])
         b = QPushButton(_("Test again"))
         b.setToolTip(_("Run the card test again now, in the background"))
         b.clicked.connect(self._ct_start)
         v.addWidget(b, 0, Qt.AlignLeft)
-        self.ct = {"status": status, "rows": rows, "button": b}
+        self.ct = {"status": status, "rows": rows, "button": b, "names": names}
         self._ct_refresh()
 
     def _ct_device(self) -> tuple[str, str | None]:
@@ -442,6 +443,12 @@ class SettingsDialog(QDialog):
         job = card_test_job()
         profile = st.profile_of(prefs.get("compute_profiles"), pref) if dev is not None else None
         self.ct["button"].setEnabled(dev is not None and not job.running())
+        # nothing to test on the processor: the section is its sentence, the button greyed says why (the night test
+        # pass: four empty lines, and a greyed button whose tip did not say why)
+        self.ct["button"].setToolTip(_("Run the card test again now, in the background") if dev is not None else
+                                     _("No graphics card computes here: nothing to test"))
+        for w in [*self.ct["names"], *self.ct["rows"].values()]:
+            w.setVisible(dev is not None)
         if job.running():
             text = _("Testing the card…")
         elif dev is None:

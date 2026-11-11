@@ -451,3 +451,17 @@ def test_a_new_session_s_name_is_never_another_s(qapp, tmp_path, monkeypatch):
         assert len(set(names)) == len(names) == 3
     finally:
         done(w, m, page)
+
+
+def test_the_deconvolution_and_synthetic_stars_cards_get_their_durations(qapp, tmp_path, monkeypatch):
+    """The night test pass: under each method of these two blocks, "…" for good: the worker never estimated them."""
+    w, m, page = open_page(tmp_path, monkeypatch)
+    try:
+        q = m.paths[0]
+        m._prefetch_estimates(False)
+        for block in ("deconv", "synth"):
+            for meth in ("psf", "neural") if block == "deconv" else ("measured", "instrument"):
+                got = m.method_times(q, block, meth)
+                assert got is not None and set(got) <= {"gpu", "cpu"} and got, (block, meth, got)
+    finally:
+        done(w, m, page)

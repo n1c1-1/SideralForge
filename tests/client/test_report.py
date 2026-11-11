@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QObject, Signal  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from astro_gpu.client import i18n  # noqa: E402
 from astro_gpu.client import report as rep  # noqa: E402
 from astro_gpu.client.charts import RegistrationData  # noqa: E402
 from astro_gpu.client.chartview import ChartView  # noqa: E402
@@ -261,3 +262,17 @@ def test_the_details_stay_in_the_project_file(tmp_path):
     p.acquisition["mount"] = "EQ6"
     project2.save(p)
     assert project2.load(tmp_path / "A").acquisition == {"mount": "EQ6"}
+
+
+def test_the_figures_have_a_decimal_comma_in_french():
+    """The night test pass: the night card's axis read 0.5, 1.0, 1.5 where the rest of the program writes 0,5."""
+    from matplotlib.figure import Figure
+    i18n.set_language("fr")
+    try:
+        fig = Figure()
+        ax = fig.add_subplot()
+        ax.plot([0, 0.5, 1.5], [1, 2, 3])
+        rep._png(fig)
+        assert ax.xaxis.get_major_formatter()(0.5, 0) == "0,5"
+    finally:
+        i18n.set_language("en")
