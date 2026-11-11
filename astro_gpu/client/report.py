@@ -750,10 +750,8 @@ class ReportPage(QWidget):
         self.copied.setText(_("Copied"))
 
     def _part_image(self, i: int) -> QImage:
-        nights = self.data.nights if self.data is not None else []
-        if i < len(nights):
-            return QImage.fromData(nights[i].card)
-        return self._picture([self._sections_now[i - len(nights)]], 2.0)
+        night, section = self._parts[i]
+        return QImage.fromData(night.card) if night is not None else self._picture([section], 2.0)
 
     # ------------------------------------------------------------ the report
     def _fill_entered(self):
@@ -782,16 +780,17 @@ class ReportPage(QWidget):
         self._buffer = buf
 
     def _fill_parts(self):
+        """What Copy image offers, [(night, section)] one of them None, in the order the report is read (#140): its first
+        page (the session card), the night cards, then the sections; the pieces without a title (the appendix's) are
+        not offered."""
         was = self.part.currentText()
         self.part.clear()
         nights = self.data.nights if self.data is not None else []
-        for night in nights:
-            self.part.addItem(_("Night card") + (f" · {night.name}" if len(nights) > 1 else ""))
-        for title, _html in self._sections_now:
-            if title:
-                self.part.addItem(title)
-        # the sections without a title (the head, the appendix's parts) are not offered: keep the index in step
-        self._sections_now = [s for s in self._sections_now if s[0]] + [s for s in self._sections_now if not s[0]]
+        titled = [s for s in self._sections_now if s[0]]
+        self._parts = [(None, s) for s in titled[:1]] + [(n, None) for n in nights] + [(None, s) for s in titled[1:]]
+        for night, section in self._parts:
+            self.part.addItem(section[0] if night is None else
+                              _("Night card") + (f" · {night.name}" if len(nights) > 1 else ""))
         self.part.setCurrentIndex(max(0, self.part.findText(was)))
         self.b_card.setEnabled(self.part.count() > 0)
 

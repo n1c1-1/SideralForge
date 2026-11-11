@@ -119,7 +119,10 @@ def test_the_english_text_has_no_space_before_its_colons(qapp, monkeypatch):
 def test_every_part_can_be_copied_as_a_picture(qapp, monkeypatch):
     from PySide6.QtWidgets import QApplication
     p = page(monkeypatch)
-    assert p.part.count() >= 5 and p.part.itemText(0).startswith("Night card")
+    # in the order the report is read (#140): its first page, the night cards, then the sections
+    names = [p.part.itemText(i) for i in range(p.part.count())]
+    assert names[:4] == ["Session card", "Night card · Night 1", "Night card · Night 2", "The night, frame by frame · Night 1"]
+    assert p.part.currentIndex() == 0 and "Table 1. Acquisition" in p._parts[0][1][1]
     for i in range(p.part.count()):
         p.part.setCurrentIndex(i)
         p.copy_image()
