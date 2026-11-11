@@ -1279,7 +1279,7 @@ class Panel(QWidget):
             acts.addStretch(1)
             self.hv.addLayout(acts)
         if getattr(node, "missing", ""):                 # its data of the sky is not here (core/sky_data.py)
-            self.hv.addWidget(label(_("Cannot run on this computer: {why}").format(why=node.missing.rstrip(".")),
+            self.hv.addWidget(label(_("Cannot run: {why}").format(why=node.missing.rstrip(".")),
                                     "warn", wrap=True))
             from .settingsdlg import open_catalogs
             inst = QPushButton(_("Install catalogue"))

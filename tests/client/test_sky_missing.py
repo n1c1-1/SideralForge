@@ -54,10 +54,10 @@ def test_the_block_without_its_catalogue_is_marked_and_says_why(qapp, tmp_path, 
         assert all(not n.missing for n in g.nodes if n is not ast)          # Stacking, Gradient...: they run
         item = next(it for it in page.graph.scene().items() if isinstance(it, BlockItem) and it.node.key == "astrometrie")
         tip = item.toolTip()
-        assert f"Cannot run on this computer: {NO_STARS}. Install it: Settings › Catalogs & astrometry" in tip
+        assert f"Cannot run: {NO_STARS}. Install it: Settings › Catalogs & astrometry" in tip
         page.select(step="astrometrie")
         settle(w, page)
-        assert f"Cannot run on this computer: {NO_STARS}" in _texts(page.panel)
+        assert f"Cannot run: {NO_STARS}" in _texts(page.panel)
         # the run window says it before the run, and the plan runs the rest
         plan = m.plan_all()
         assert plan.left_out == {q.pid: {"astrometry": NO_STARS}} and {"inventory", "stack"} <= {j.stage for j in

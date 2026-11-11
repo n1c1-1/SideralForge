@@ -194,7 +194,7 @@ class BlockItem(QGraphicsItem):
         if node.broken:
             tip += "\n" + _("Cannot run: {why}. Run is refused until it is fixed.").format(why=node.broken.rstrip("."))
         if node.missing:                                  # its data of the sky is not here: left out, the rest runs
-            tip += "\n" + _("Cannot run on this computer: {why}. Install it: Settings › Catalogs & astrometry. The "
+            tip += "\n" + _("Cannot run: {why}. Install it: Settings › Catalogs & astrometry. The "
                             "runs leave this block out, with the blocks after it.").format(why=node.missing.rstrip("."))
         if node.cut:
             tip += "\n" + _("Switched off: the image passes through. D or the menu switches it on again.")
