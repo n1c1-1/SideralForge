@@ -131,3 +131,36 @@ def test_the_start_loads_the_stage_graph_and_the_names_while_home_is_shown(monke
     monkeypatch.setattr(determinism, "warm_up", lambda: done.append("render"))
     appmod._warm_up()
     assert done == ["stages", "names", "render"]
+
+
+def test_home_stops_reading_the_other_projects_states_when_a_project_is_shown(env):
+    """The states of Home's cards (the keys of every frame of every recent project) held the one worker before the
+    project opened could be read: left for a project, Home reads no further project; shown again, it reads them anew."""
+    from astro_gpu.client import home as homemod
+    read = []
+    env["mp"].setattr(homemod, "project_state", lambda r: (read.append(r), ("Never run", {}))[1])
+    stop = homemod.threading.Event()
+    assert homemod.project_states(["a", "b"], stop) == [("a", "Never run", {}), ("b", "Never run", {})]
+    stop.set()
+    read.clear()
+    assert homemod.project_states(["a", "b"], stop) == [] and read == []
+    w = appmod.Main()
+    w.resize(1600, 900)
+    w.show()
+    env["windows"].append(w)
+    w.worker.wait()
+    _settle(w)
+    asked = w.home._stop
+    assert not asked.is_set()
+    w.new_project()                                               # the project in Home's place
+    assert asked.is_set()
+    w.worker.wait()
+    w.close_project()                                             # Home again: its own reads start again
+    _settle(w)
+    assert w.screens.currentWidget() is w.home
+    from types import SimpleNamespace
+    sent = []
+    env["mp"].setattr(w.worker, "submit", lambda channel, fn, *a: sent.append((channel, a)))
+    w.home.recent_cards = [SimpleNamespace(info=SimpleNamespace(root="r", state="workflows"))]
+    w.home._ask_states()
+    assert sent[0][0] == "home.states" and sent[0][1][0] == ["r"] and not sent[0][1][1].is_set()

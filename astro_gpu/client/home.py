@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -238,9 +239,12 @@ def project_state(root: str) -> tuple[str, dict]:
     return "mixed", {"n": n, "stale": stale, "todo": todo}
 
 
-def project_states(roots: list[str]) -> list[tuple[str, str, dict]]:
+def project_states(roots: list[str], stop: threading.Event | None = None) -> list[tuple[str, str, dict]]:
+    """The states of the cards (worker thread); ``stop`` set: no further project is read (Home left for a project)."""
     out = []
     for r in roots:
+        if stop is not None and stop.is_set():
+            break
         try:
             out.append((r, *project_state(r)))
         except Exception:  # noqa: BLE001 - a project whose frames cannot be read keeps its first state
@@ -665,6 +669,7 @@ class HomeView(QWidget):
         """``last``: what a previous Home showed (its HomeScan), shown until the new scan is back."""
         super().__init__(parent)
         self.worker = worker
+        self._stop = threading.Event()               # the states being read: no further project once Home is left
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -737,7 +742,20 @@ class HomeView(QWidget):
             if c.info.state == "workflows" and r not in self._resolved and r not in roots:
                 roots.append(r)
         if roots:
-            self.worker.submit("home.states", project_states, roots)
+            self._stop.set()
+            self._stop = threading.Event()
+            self.worker.submit("home.states", project_states, roots, self._stop)
+
+    def hideEvent(self, e):                                          # noqa: N802 - Qt's name
+        """A project shown in Home's place: its first reads go first (#115: the states of the recent projects, the keys
+        of all their frames, held the one worker for seconds on a laptop before the project could be read). Home reads
+        them again when it is shown (``rescan``). Not for the window minimised (a spontaneous hide): Home stays."""
+        super().hideEvent(e)
+        if e.spontaneous():
+            return
+        self._stop.set()
+        self.worker.cancel("home.states")
+        self.worker.cancel("home")
 
     def show_scan(self, scan: HomeScan):
         self.last = scan
