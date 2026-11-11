@@ -546,6 +546,9 @@ class SessionRow:
     filter: str = ""
     fwhm: float | None = None    # median star size of its frames, once Registration is done
     kept: int | None = None      # lights the stack takes (None: not known yet)
+    #: its own calibration frames, by kind (darks, flats, bias), as the middle one of them says (``_calib_of``):
+    #: exposure, iso, time, file, median and low (0.01 % percentile) levels in ADU, stacked (a master: its frames)
+    calib: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -569,10 +572,59 @@ def _files(p, entries) -> list[Path]:
     return list_frames([p.abspath(x) for x in entries])
 
 
-def _median_level(path, info) -> float:
+def _levels(path) -> tuple[float, float]:
+    """(median, lowest levels) of a frame in ADU: its 0.01 % percentile, a few pixels in a million (stages/calibrate:
+    ``LOW_PCT``), on one sample in 64."""
     from ...io.frames import read_cfa
+    from ...stages.calibrate import LOW_PCT
     a = read_cfa(path)[::8, ::8]
-    return float(np.median(a))
+    return float(np.median(a)), float(np.percentile(a, LOW_PCT))
+
+
+def _calib_of(files: list, hdr: dict) -> dict | None:
+    """What the middle one of a session's calibration frames of a kind says: its header (exposure, ISO, a master) and
+    its levels (one decode each, remembered in ``hdr`` by path: darks shared by sessions are read once)."""
+    from ...io.frames import read_info
+    if not files:
+        return None
+    mid = files[len(files) // 2]
+    k = ("calib", str(mid))
+    if k not in hdr:
+        info = read_info(mid)
+        med, low = _levels(mid)
+        hdr[k] = {"exposure": info.exposure, "iso": info.iso, "time": info.time, "file": mid.name, "level": med,
+                  "low": low, "stacked": info.stacked, "black": info.black, "white": info.white}
+    return hdr[k]
+
+
+def flat_pct(c: dict, camera: dict) -> float:
+    """A flat's level as % of the sensor's range: above the camera's black level (a master flat, already calibrated:
+    above zero), over the range of the lights' sensor (a master in floats is read up to 65535 ADU, a 14-bit camera
+    saturates at 16383)."""
+    black, white = float(camera.get("black") or c["black"] or 0), float(camera.get("white") or c["white"] or 0)
+    zero = 0.0 if c.get("stacked") is not None else black
+    return 100 * (c["level"] - zero) / max(white - black, 1.0)
+
+
+def calib_checks(row: SessionRow, camera: dict) -> dict:
+    """What a session's calibration frames contradict, by the Calibration's own rules (stages/calibrate): "dark_far"
+    (darks far under the bias, or the black level: their bias was taken off) and "flat_under" (flats that are not a
+    master go under the level they will be corrected with: their bias was taken off already), each with the reference
+    level {"ref": ADU, "what": "bias" | "black level" | "dark level"}; {} for none."""
+    from ...stages.calibrate import dark_far, flat_under
+    out: dict = {}
+    bias, black = row.calib.get("bias"), float(camera.get("black") or 0)
+    ref, what = (bias["level"], "bias") if bias else (black, "black level")
+    d = row.calib.get("darks")
+    if d and dark_far(d["level"], ref):
+        out["dark_far"] = {"ref": ref, "what": what}
+    f = row.calib.get("flats")
+    if not bias and d:                     # without bias the flats are corrected with the darks' level (master_flat)
+        ref, what = d["level"], "dark level"
+    if f and f.get("stacked") is None and not row.flat_darks and f["level"] > ref \
+            and flat_under((f["low"] - ref) / (f["level"] - ref)):
+        out["flat_under"] = {"ref": ref, "what": what}
+    return out
 
 
 def _first_readable(files: list, like=None, bad: list | None = None, tries: int = 8):
@@ -593,7 +645,6 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
     owned by the service). A light that cannot be read never stops it (exploration 6.10: the checks stayed on "Reading
     the frames…"): it is said in the checks; the files the engine does not read (a JPEG) are not counted as kept."""
     from ...core.project import colour_lights, frame_kind
-    from ...io.frames import read_info
     hdr = headers if headers is not None else {}
     out = ProjectFrames()
     table = None
@@ -639,6 +690,13 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
         else:
             ex = sum(1 for sid, _n in p.excluded if sid == s.id)
             row.kept = max(len(frames) - ex, 0)
+        for kind in ("darks", "flats", "bias"):           # its own, as the Calibration of the session reads them
+            try:
+                c = _calib_of(_files(p, getattr(s, kind)), hdr)
+            except Exception:  # noqa: BLE001 - a hint: an unreadable frame is reported by the import, not here
+                c = None
+            if c is not None:
+                row.calib[kind] = c
         out.sessions.append(row)
     if first_info is not None:
         out.camera = dict(camera=first_info.camera, width=first_info.width, height=first_info.height,
@@ -648,25 +706,16 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
         for s in p.sessions:
             seen += [p.abspath(x) for x in getattr(s, kind)]
         out.folders[kind] = list(dict.fromkeys(seen))
-    # the first dark and the first flat tell what they are (header), their level what they hold (one decode each)
+    # the project's: those of the first session that has some (each session's own are in its row, ``calib``)
     for kind in ("darks", "flats"):
-        fl = [f for s in p.sessions for f in _files(p, getattr(s, kind))]
-        if not fl:
+        c = next((r.calib[kind] for r in out.sessions if kind in r.calib), None)
+        if c is None:
             continue
-        mid = fl[len(fl) // 2]
-        try:
-            info = read_info(mid)
-            d = {"exposure": info.exposure, "iso": info.iso, "time": info.time, "file": mid.name}
-            lvl = hdr.get(("level", str(mid)))
-            if lvl is None:
-                lvl = hdr[("level", str(mid))] = _median_level(mid, info)
-            if kind == "darks":
-                out.dark_level, out.darks = lvl, d
-            else:
-                out.flat_pct = 100 * (lvl - info.black) / max(info.white - info.black, 1.0)
-                out.flats = d
-        except Exception:  # noqa: BLE001 - a hint: an unreadable frame is reported by the import, not here
-            pass
+        d = {k: c[k] for k in ("exposure", "iso", "time", "file")}
+        if kind == "darks":
+            out.dark_level, out.darks = c["level"], d
+        else:
+            out.flat_pct, out.flats = flat_pct(c, out.camera), d
     try:
         out.checks = api.health_checks(p)
     except Exception:  # noqa: BLE001
@@ -832,7 +881,7 @@ def frame_stats(path: str) -> dict[str, float]:
     med = float(np.median(a))
     noise = float(1.4826 * np.median(np.abs(a - med)))
     return {"level": med - info.black, "noise": noise, "pct": 100 * (med - info.black) / max(info.white - info.black, 1.0),
-            "black": info.black, "white": info.white}
+            "black": info.black, "white": info.white, "median": med, "stacked": info.stacked}
 
 
 # ---------------------------------------------------------------------------------------------- the viewer's sources

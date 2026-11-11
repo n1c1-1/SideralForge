@@ -47,7 +47,7 @@ from . import prefs
 from .frames import colour_note_text, fexp, night_text, type_warning_text
 from .i18n import _, hours_text, number, plural
 from .imageview import ImageView, ViewImage, quick_thumbnail
-from .services.inspect import FrameItem, ProjectFrames, light_thumb, service_of, set_calibration_excluded
+from .services.inspect import FrameItem, ProjectFrames, calib_checks, flat_pct, light_thumb, service_of, set_calibration_excluded
 from .services.worker import norm_path
 from .widgets import ACCENT, NEW, WARN, ElidedLabel, clear, hline, label, para
 
@@ -166,6 +166,16 @@ def frame_filter() -> str:
     from ..core.project import COLOUR_EXT, FITS_EXT, RAW_EXT
     pats = " ".join(f"*{e}" for e in sorted(RAW_EXT | FITS_EXT | COLOUR_EXT | {".fz"}))
     return _("Frames ({patterns})").format(patterns=pats) + ";;" + _("All files (*)")
+
+
+def master_text(kind: str, n: int) -> str:
+    """The matching line of a master dark or bias given as one file (io/frames.master_count: ``n`` its frames, 0 when
+    its header does not say): the Calibration uses it as it is."""
+    if kind == "Darks":
+        t = _("Darks: a master of {n} frames, used as it is.") if n else _("Darks: a master, used as it is.")
+    else:
+        t = _("Bias: a master of {n} frames, used as it is.") if n else _("Bias: a master, used as it is.")
+    return t.format(n=n)
 
 
 # ---------------------------------------------------------------------------------------------- the files and the browser
@@ -681,6 +691,11 @@ class SourcesView(QWidget):
     def black(self) -> float:
         return float(self.data.camera.get("black") or 0) if self.data is not None else 0.0
 
+    def _flat_pct(self, st: dict) -> float:
+        """A flat frame's level as % of the lights' sensor range (services/inspect.flat_pct), from its statistics."""
+        return flat_pct({"level": st.get("median", st["black"] + st["level"]), "stacked": st.get("stacked"),
+                         "black": st["black"], "white": st["white"]}, self.data.camera if self.data is not None else {})
+
     def excluded(self, i) -> bool:
         """Left out of the stack: by hand, or by the thresholds of Selection; what a registration no longer current
         said of a frame (a folder taken out and added back) is not an exclusion (issue #83)."""
@@ -791,26 +806,53 @@ class SourcesView(QWidget):
         out = []
         if d is None:
             return [(None, _("Reading the frames…"))]
+        # the session's own frames (its Calibration reads them), never the project's: a project of three sessions of
+        # one flat each said "3 frames" on each; what they contradict by the Calibration's rules is a warning
         ref = self._row()
-        if d.darks and ref is not None:
-            same = d.darks.get("exposure") == ref.exposure and d.darks.get("iso") == ref.iso
+        c = ref.calib if ref is not None else {}
+        bad = calib_checks(ref, d.camera) if ref is not None else {}
+        where = {"bias": _("the bias"), "black level": _("the black level"), "dark level": _("the darks' level")}
+        dk = c.get("darks")
+        if dk:
+            same = dk.get("exposure") == ref.exposure and dk.get("iso") == ref.iso
             t = (_("Darks: exposure {exp}, ISO {iso}, same as the lights.") if same else
                  _("Darks: exposure {exp}, ISO {iso}, different from the lights."))
-            out.append((same, t.format(exp=fexp(d.darks.get("exposure")), iso=int(d.darks.get("iso") or 0))))
-            if d.dark_level is not None:
-                out.append((True, _("Darks: median level {level} ADU, nominal black level {black} ADU.").format(
-                    level=number(d.dark_level, 0), black=number(self.black(), 0))))
-        if d.flats:
-            pct = d.flat_pct
-            n = d.counts.get("flats", 0)
-            if pct is not None:
-                out.append((None, _("Flats: {n} frames at {pct} % of saturation, exposure {exp}.").format(
-                    n=n, pct=number(pct, 0), exp=fexp(d.flats.get("exposure")))))
+            out.append((same, t.format(exp=fexp(dk.get("exposure")), iso=int(dk.get("iso") or 0))))
+            if dk.get("stacked") is not None:
+                out.append((None, master_text("Darks", dk["stacked"])))
+            far = bad.get("dark_far")
+            if far:
+                out.append((False, _("Darks: median level {level} ADU, far under {ref} ({value} ADU): they will not "
+                                     "take it off the lights.").format(level=number(dk["level"], 0), ref=where[far["what"]],
+                                                                       value=number(far["ref"], 0))))
             else:
-                out.append((None, _("Flats: {n} frames, exposure {exp}.").format(n=n, exp=fexp(d.flats.get("exposure")))))
-        if not d.counts.get("bias") and not d.counts.get("flat_darks"):
-            out.append((None, _("No bias, no dark flats: the flats are corrected with the camera black level "
-                                "({black} ADU).").format(black=int(self.black() or 0))))
+                out.append((True if self.black() else None, _("Darks: median level {level} ADU, nominal black level "
+                                                              "{black} ADU.").format(level=number(dk["level"], 0),
+                                                                                     black=number(self.black(), 0))))
+        if c.get("bias", {}).get("stacked") is not None:
+            out.append((None, master_text("Bias", c["bias"]["stacked"])))
+        fl = c.get("flats")
+        master_flat = fl is not None and fl.get("stacked") is not None
+        if fl:
+            pct, exp = number(flat_pct(fl, d.camera), 0), fexp(fl.get("exposure"))
+            if master_flat:
+                out.append((None, (_("Flats: a master of {n} frames at {pct} % of saturation, exposure {exp}: already "
+                                     "calibrated, used as it is.") if fl["stacked"] else
+                                   _("Flats: a master at {pct} % of saturation, exposure {exp}: already calibrated, used "
+                                     "as it is.")).format(n=fl["stacked"], pct=pct, exp=exp)))
+            else:
+                out.append((None, plural(ref.flats, "Flats: {n} frame at {pct} % of saturation, exposure {exp}.",
+                                         "Flats: {n} frames at {pct} % of saturation, exposure {exp}.", pct=pct, exp=exp)))
+            under = bad.get("flat_under")
+            if under:
+                out.append((False, _("Flats: their lowest levels ({low} ADU) are under {ref} ({value} ADU): their bias "
+                                     "was taken off already, and would be taken off again.").format(
+                    low=number(fl["low"], 0), ref=where[under["what"]], value=number(under["ref"], 0))))
+        if fl and not master_flat and ref is not None and not ref.bias and not ref.flat_darks:
+            out.append((None, _("No bias, no dark flats: the flats are corrected with the darks' level ({level} ADU).")
+                        .format(level=int(dk["level"])) if dk else
+                        _("No bias, no dark flats: the flats are corrected with the camera black level "
+                          "({black} ADU).").format(black=int(self.black() or 0))))
         n_ex = len(self.s.frames_excluded)
         if n_ex:
             t = (_("{n} frame excluded by hand: stacking to recompute.") if n_ex == 1 else
@@ -885,10 +927,10 @@ class SourcesView(QWidget):
         else:
             st = self.service.stats.get(f.path)
             info.update(excluded=bool(f.excluded), compact=True)
-            info["extra"] = [(_("Median level"), number(self.black() + st["level"], 0) + " ADU"),
+            info["extra"] = [(_("Median level"), number(st["black"] + st["level"], 0) + " ADU"),
                              (_("Noise σ"), number(st["noise"], 1) + " ADU")] if st else [(_("Median level"), "…")]
             if st and self.group == "flats":
-                info["extra"].append((_("Exposure level"), number(st["pct"], 0) + " %"))
+                info["extra"].append((_("Exposure level"), number(self._flat_pct(st), 0) + " %"))
             if f.flag:
                 info["flag"], info["flag_reason"] = f.flag, f.reason
         return info
@@ -1014,7 +1056,7 @@ class SourcesView(QWidget):
             else:
                 st = self.service.stats.get(f.path)
                 cells = [QTableWidgetItem(f.name), QTableWidgetItem((f.time or "")[:10]),
-                         NumItem(st["level"] if st else 0, number(self.black() + st["level"], 0) if st else "–"),
+                         NumItem(st["level"] if st else 0, number(st["black"] + st["level"], 0) if st else "–"),
                          NumItem(st["noise"] if st else 0, number(st["noise"], 2) if st else "–"),
                          QTableWidgetItem(keep)]
             cells[0].setData(Qt.UserRole, i)
@@ -1102,7 +1144,7 @@ class SourcesView(QWidget):
         else:
             st = self.service.stats.get(f.path)
             t = (_("{file} · {date} · level {level} ADU · noise {noise} ADU").format(
-                file=f.name, date=(f.time or "")[:10], level=number(self.black() + st["level"], 0),
+                file=f.name, date=(f.time or "")[:10], level=number(st["black"] + st["level"], 0),
                 noise=number(st["noise"], 2)) if st else f"{f.name} · {(f.time or '')[:10]}")
         self.info.setText(t + (" · " + _("EXCLUDED") if self.by_hand(self.cur) else ""))
 
@@ -1196,10 +1238,10 @@ class SourcesView(QWidget):
                          (_("Weight in the stack"), number(f.weight, 2) if f.weight is not None else "–")]
             elif st:
                 rows.append((_("Median level"), _("{level} ADU (nominal black {black} ADU)").format(
-                    level=number(self.black() + st["level"], 0), black=number(self.black(), 0)) if self.group == "darks"
+                    level=number(st["black"] + st["level"], 0), black=number(self.black(), 0)) if self.group == "darks"
                     else _("{level} ADU above black").format(level=number(st["level"]))))
                 if self.group == "flats":
-                    rows.append((_("Exposure level"), _("{pct} % of saturation").format(pct=number(st["pct"]))))
+                    rows.append((_("Exposure level"), _("{pct} % of saturation").format(pct=number(self._flat_pct(st)))))
                 else:
                     rows.append((_("Noise"), f"{number(st['noise'], 2)} ADU"))
             else:
