@@ -1,18 +1,23 @@
 """The workers of the Calibration and Registration pools start with one maths thread each (issue #125): OpenBLAS no
-longer reserves a buffer per processor thread in each of them (about 1 GB a worker on 16 threads). Their results are
-the same to the bit: a real run of both stages on the CPU over small FITS frames with stars, with real worker
-processes, compared file by file with the run whose workers keep every thread."""
+longer reserves a buffer per processor thread in each of them (about 1 GB a worker on 16 threads). Nor do they load
+PyTorch with the runner's module, which they import again as they start and whose maths they never use. Their results
+are the same to the bit: a real run of both stages on the CPU over small FITS frames with stars, with real worker
+processes, compared file by file with the run whose workers keep every thread, and with the run through a runner's
+worker whose pools' workers load PyTorch, as before."""
 from __future__ import annotations
 
 import contextlib
 import json
 import os
+import subprocess
+import sys
 from multiprocessing import get_context
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+import astro_gpu
 from astro_gpu import api
 from astro_gpu.core import devices, project2, runner2
 from astro_gpu.core import workflow as wfl
@@ -22,6 +27,8 @@ from astro_gpu.core.store import Keys, Store
 H, W, N = 360, 480, 6
 #: what a manifest holds that tells which run, when and how long, not what was computed
 TIMES = {"run", "started", "finished", "duration"}
+#: the folder astro_gpu is imported from, for the runner's worker processes the tests start
+SOURCE = Path(astro_gpu.__file__).resolve().parent.parent
 
 
 def _fits(path: Path, a: np.ndarray, kind: str, i: int) -> None:
@@ -56,8 +63,9 @@ def session(raw: Path) -> dict[str, Path]:
     return {"lights": raw / "L", "darks": raw / "D", "flats": raw / "F"}
 
 
-def run(root: Path, folders: dict[str, Path]) -> dict[str, Path]:
-    """Calibration and Registration of the session on the CPU, two workers each: {stage: its result's folder}."""
+def run(root: Path, folders: dict[str, Path], command: list[str] | None = None) -> dict[str, Path]:
+    """Calibration and Registration of the session on the CPU, two workers each: {stage: its result's folder}. In this
+    process, or, given ``command``, in the process it starts with the project and the plan (the runner's worker)."""
     p = project2.create(root, "p")
     p.devices = {"main": "cpu", "aux": ""}
     p.sessions.append(Session(1, "n", lights=[str(folders["lights"])], darks=[str(folders["darks"])],
@@ -67,7 +75,13 @@ def run(root: Path, folders: dict[str, Path]) -> dict[str, Path]:
     p.workflows[0].params = {"calibrate": {"workers": 2}, "register": {"workers": 2}}
     project2.save(p)
     plan = api.plan_workflows(p, [1], device="cpu")
-    assert runner2.run_plan(p.root, runner2.prepare_run(p, plan, "cpu").plan_file, echo=False) == "done"
+    plan_file = runner2.prepare_run(p, plan, "cpu").plan_file
+    if command is None:
+        assert runner2.run_plan(p.root, plan_file, echo=False) == "done"
+    else:
+        done = subprocess.run([*command, str(p.root), str(plan_file)], cwd=SOURCE, capture_output=True, text=True,
+                              env={**os.environ, "PYTHONPATH": str(SOURCE), "CUDA_VISIBLE_DEVICES": "-1"})
+        assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
     k, s = Keys(project2.load(p.root)), Store(p.root)
     return {st: s.dir(st, k.key(1, st)) for st in ("calibrate", "register")}
 
@@ -98,6 +112,23 @@ def _same(a, b) -> bool:
     return a == b
 
 
+def _same_results(one: dict[str, Path], other: dict[str, Path], root_one: Path, root_other: Path) -> None:
+    """Two runs of ``run``: the same files to the bit, the calibrated frames' cache included."""
+    for stage in ("calibrate", "register"):
+        a, b = one[stage], other[stage]
+        files = sorted(f.relative_to(a) for f in a.rglob("*") if f.is_file())
+        assert files == sorted(f.relative_to(b) for f in b.rglob("*") if f.is_file())
+        assert {"master_dark.npy", "master_flat.npy", "frame_stats.npy"} <= {f.name for f in files} or \
+            "reg.npz" in {f.name for f in files}, files
+        for f in files:
+            assert _same(_content(a / f, root_one), _content(b / f, root_other)), f"{stage}/{f}"
+    with np.load(one["register"] / "reg.npz") as z:      # a real registration: every frame aligned, its stars fitted
+        assert np.isfinite(z["rms"]).all() and np.isfinite(z["fwhm_moffat"]).all() and len(z["rms"]) == N
+    # the calibrated frames themselves (the cache the pool's workers write, in the scratch folder)
+    caches = [json.loads((d["calibrate"] / "cache.json").read_text(encoding="utf-8"))["path"] for d in (one, other)]
+    assert Path(caches[0]).read_bytes() == Path(caches[1]).read_bytes() and Path(caches[0]).stat().st_size > 0
+
+
 def test_one_maths_thread_in_the_workers_gives_the_same_files(tmp_path, monkeypatch):
     folders = session(tmp_path / "raw")
     one = run(tmp_path / "one", folders)
@@ -106,19 +137,42 @@ def test_one_maths_thread_in_the_workers_gives_the_same_files(tmp_path, monkeypa
     for k in devices.MATHS_THREADS:
         monkeypatch.delenv(k, raising=False)
     every = run(tmp_path / "every", folders)
-    for stage in ("calibrate", "register"):
-        a, b = one[stage], every[stage]
-        files = sorted(f.relative_to(a) for f in a.rglob("*") if f.is_file())
-        assert files == sorted(f.relative_to(b) for f in b.rglob("*") if f.is_file())
-        assert {"master_dark.npy", "master_flat.npy", "frame_stats.npy"} <= {f.name for f in files} or \
-            "reg.npz" in {f.name for f in files}, files
-        for f in files:
-            assert _same(_content(a / f, tmp_path / "one"), _content(b / f, tmp_path / "every")), f"{stage}/{f}"
-    with np.load(one["register"] / "reg.npz") as z:      # a real registration: every frame aligned, its stars fitted
-        assert np.isfinite(z["rms"]).all() and np.isfinite(z["fwhm_moffat"]).all() and len(z["rms"]) == N
-    # the calibrated frames themselves (the cache the pool's workers write, in the scratch folder)
-    caches = [json.loads((d["calibrate"] / "cache.json").read_text(encoding="utf-8"))["path"] for d in (one, every)]
-    assert Path(caches[0]).read_bytes() == Path(caches[1]).read_bytes() and Path(caches[0]).stat().st_size > 0
+    _same_results(one, every, tmp_path / "one", tmp_path / "every")
+
+
+#: the runner's worker as it was: PyTorch loaded with the runner's module, so that the pools' workers, which import
+#: the main module of their parent again (here this file), loaded it too
+WITH_TORCH = """import sys
+
+import torch  # noqa: F401
+
+from astro_gpu.core.runner2 import main
+
+if __name__ == "__main__":
+    sys.exit(main())
+"""
+
+
+def test_the_runners_workers_without_pytorch_give_the_same_files(tmp_path):
+    """Both stages run by the runner's worker process as the program starts it (``python -m astro_gpu.core.runner2``),
+    whose pools' workers no longer load PyTorch, and by a worker that loads it with its main module, as before: the
+    same files to the bit."""
+    folders = session(tmp_path / "raw")
+    new = run(tmp_path / "new", folders, [sys.executable, "-m", "astro_gpu.core.runner2"])
+    old_main = tmp_path / "runner_with_torch.py"
+    old_main.write_text(WITH_TORCH, encoding="utf-8")
+    old = run(tmp_path / "old", folders, [sys.executable, str(old_main)])
+    _same_results(new, old, tmp_path / "new", tmp_path / "old")
+
+
+def test_what_the_pools_workers_import_holds_no_pytorch():
+    """A spawned worker of the runner imports the runner's module (its parent's main module, under another name) and
+    the modules of the stages whose functions it runs: none of them loads PyTorch."""
+    code = ("import sys, astro_gpu.core.runner2, astro_gpu.stages.calibrate, astro_gpu.stages.register; "
+            "print('torch' in sys.modules)")
+    out = subprocess.run([sys.executable, "-c", code], cwd=SOURCE, capture_output=True, text=True, check=True,
+                         env={**os.environ, "PYTHONPATH": str(SOURCE), "CUDA_VISIBLE_DEVICES": "-1"})
+    assert out.stdout.strip() == "False"
 
 
 def _worker_threads(_):

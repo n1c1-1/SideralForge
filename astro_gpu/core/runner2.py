@@ -1010,4 +1010,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # PyTorch loaded first, as when core/determinism.py imported it with this module; the workers of the stages'
+    # pools, which import this module again under another name, go without it (issue #125)
+    import torch  # noqa: F401
     sys.exit(main())
