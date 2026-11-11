@@ -39,6 +39,10 @@ DATA_SOURCES: list[dict] = [
          licence="ESA", link="https://www.cosmos.esa.int/web/hipparcos",
          cite="ESA 1997, The Hipparcos and Tycho Catalogues (VizieR I/239); Høg et al. 2000, A&A 355, L27 "
               "(VizieR I/259)."),
+    dict(name="Asterion", by="the Asterion Solver authors", version="0.4.2",
+         use="The plate solver that gives Astrometry its first solution, with its index of the Tycho-2 stars "
+             "(installed separately).",
+         licence="Apache License 2.0", link="https://github.com/asterion-solver/asterion"),
     dict(name="VizieR", by="CDS, Strasbourg",
          use="Access to the Gaia, Hipparcos and Tycho-2 catalogues; the Sharpless and Lynds catalogues shipped with "
              "the program come from it.",

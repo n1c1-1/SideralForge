@@ -34,5 +34,11 @@
  "A download is already running.": "Un téléchargement est déjà en cours.",
  "Cannot write in {folder}: {why}": "Impossible d'écrire dans {folder} : {why}",
  "Done": "Terminé",
- "The program is in offline mode: nothing is downloaded.": "Le programme est en mode hors ligne : rien n'est téléchargé."
+ "The program is in offline mode: nothing is downloaded.": "Le programme est en mode hors ligne : rien n'est téléchargé.",
+ "Asterion plate solver": "Solveur astrométrique Asterion",
+ "Gives Astrometry its first solution in a second, at any scale; without it, the field is found by FLOAT's own search, minutes when the focal length is unknown.": "Donne à l'astrométrie sa première solution en une seconde, à toute échelle ; sans lui, le champ est trouvé par la recherche propre à FLOAT, des minutes quand la focale est inconnue.",
+ "Cannot run: {why}": "Ne peut pas tourner : {why}",
+ "Version {version}": "Version {version}",
+ "Program": "Programme",
+ "Star index": "Index d'étoiles"
 }

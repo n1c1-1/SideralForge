@@ -58,6 +58,12 @@ def _texts(root) -> list[str]:
            [w.text() for w in root.findChildren(QPushButton) if w.isVisibleTo(root)]
 
 
+def _gaia(shown: list[str]) -> list[str]:
+    """The texts of this section only: the Asterion section after it says its own "Not installed"."""
+    end = [i for i, t in enumerate(shown) if t in ("Asterion plate solver", "Solveur astrométrique Asterion")]
+    return shown[:end[0]] if end else shown
+
+
 def _page(qapp):
     d = SettingsDialog(None, MACHINE)
     d.show()
@@ -93,7 +99,7 @@ def test_the_section_shows_the_folder_the_state_and_the_two_downloads(env, qapp)
     shown = _texts(page)
     assert "Offline Gaia extracts" in shown and "Without them" in " ".join(shown)
     assert "Download positions (1.1 GB)" in shown and "Download spectra (10.6 GB)" in shown
-    assert shown.count("Not installed") == 2 and "Open folder" in shown
+    assert _gaia(shown).count("Not installed") == 2 and "Open folder" in shown
     assert not [t for t in shown if "Gaia DR3 folder" in t or "12 GB" in t or "◇" in t]      # the old, unbuilt widgets
     edit = next(e for e in page.findChildren(QLineEdit) if e.text() == str(ge.folder()))
     assert edit.isReadOnly() and ge.folder() == env / "home" / "cache" / "gaia_extracts"
@@ -117,7 +123,7 @@ def test_installed_and_found_elsewhere_are_told_apart(env, qapp):
     qapp.processEvents()
     page = d.pages.currentWidget()
     shown = _texts(page)
-    assert "Installed" in shown and shown.count("Not installed") == 1
+    assert "Installed" in shown and _gaia(shown).count("Not installed") == 1
     b = _button(page, "Download positions")
     assert not b.isEnabled() and b.toolTip() == "Already installed."
     # a download stopped half-way
@@ -201,7 +207,7 @@ def test_the_section_has_its_french(env, qapp):
     d, page = _page(qapp)
     shown = _texts(page)
     assert "Extraits Gaia hors ligne" in shown and "Télécharger positions (1,1 Go)" in shown
-    assert "Télécharger spectres (10,6 Go)" in shown and shown.count("Non installé") == 2
+    assert "Télécharger spectres (10,6 Go)" in shown and _gaia(shown).count("Non installé") == 2
     _tiny_astro(env / "nowhere" / "siril" / ASTRO_NAME)
     sirilcat.reset()
     d.rebuild()

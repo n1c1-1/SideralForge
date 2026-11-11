@@ -1057,5 +1057,6 @@
   "Keep this crop (Enter)": "Garder ce recadrage (Entrée)",
   "Leave the crop as it was (Esc)": "Laisser le recadrage comme il était (Échap)",
   "Heal spots, dust and satellite trails: click or paint over them (Alt+click: the source by hand)": "Effacer taches, poussières et traînées de satellites : cliquer ou peindre dessus (Alt+clic : la source à la main)",
-  "Add a filter": "Ajouter un filtre"
+  "Add a filter": "Ajouter un filtre",
+  "The plate solver that gives Astrometry its first solution, with its index of the Tycho-2 stars (installed separately).": "Le solveur astrométrique qui donne à l'astrométrie sa première solution, avec son index des étoiles de Tycho-2 (installé à part)."
 }

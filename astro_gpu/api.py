@@ -1052,6 +1052,15 @@ def health_checks(p: Project2) -> list[Check]:
                              "together; give each filter its own workflow", {"workflow": w.name, "filters": flts}))
     if not n["bias"]:
         out.append(Check("info", "no_bias", "No bias frames"))
+    if any("astrometry" in keys.chain(w) for w in p.workflows):
+        # information only: the block works without it, more slowly
+        from .core import asterion
+        st = asterion.status()
+        if not st.ok:
+            out.append(Check("info", "asterion", "Astrometry: Asterion is not installed, the field is found by FLOAT's "
+                             "own search (minutes rather than a second when the focal length is unknown)"
+                             if st.missing else f"Astrometry: Asterion cannot run ({st.why}), the field is found by "
+                             "FLOAT's own search", {"missing": st.missing, "why": st.why}))
     with_flats = [s for s in p.sessions if s.flats]
     if len(with_flats) > 1:
         out.append(Check("warn", "flats_merged", f"The flats of {len(with_flats)} sessions are merged into one master "

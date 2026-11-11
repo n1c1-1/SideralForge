@@ -294,5 +294,7 @@
   "A session holds the files of one night: its lights, darks, flats and bias, from wherever they are on the disk.": "Une session réunit les fichiers d'une nuit : ses lights, darks, flats et offsets, où qu'ils soient sur le disque.",
   "The session whose files are shown": "La session dont les fichiers sont affichés",
   "Session “{name}” added · its files in Inspect": "Session « {name} » ajoutée · ses fichiers dans Inspecter",
-  "Opens its files in Inspect: add them there, kind by kind, and review its frames": "Ouvre ses fichiers dans Inspecter : les ajouter type par type, et vérifier ses images"
+  "Opens its files in Inspect: add them there, kind by kind, and review its frames": "Ouvre ses fichiers dans Inspecter : les ajouter type par type, et vérifier ses images",
+  "Astrometry: Asterion is not installed, the field is found by FLOAT's own search (minutes rather than a second when the focal length is unknown).": "Astrométrie : Asterion n'est pas installé, le champ est trouvé par la recherche propre à FLOAT (des minutes plutôt qu'une seconde quand la focale est inconnue).",
+  "Astrometry: Asterion cannot run ({why}), the field is found by FLOAT's own search.": "Astrométrie : Asterion ne peut pas tourner ({why}), le champ est trouvé par la recherche propre à FLOAT."
 }

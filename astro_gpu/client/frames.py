@@ -127,6 +127,12 @@ def check_text(c, data: ProjectFrames | None = None) -> str:
     if c.key == "filters_mixed":                         # two filters in one workflow's stack
         return _("{workflow}: frames of {filters} would be stacked together; give each filter its own "
                  "workflow.").format(workflow=a.get("workflow", ""), filters=", ".join(a.get("filters", [])))
+    if c.key == "asterion":                              # the plate solver of the first solution, not there
+        if a.get("missing", True):
+            return _("Astrometry: Asterion is not installed, the field is found by FLOAT's own search (minutes rather "
+                     "than a second when the focal length is unknown).")
+        return _("Astrometry: Asterion cannot run ({why}), the field is found by FLOAT's own search.").format(
+            why=a.get("why", ""))
     if c.key == "flats_merged":
         return _("The flats of {n} sessions are merged into one master flat.").format(n=a.get("n", 0))
     if c.key == "disk":

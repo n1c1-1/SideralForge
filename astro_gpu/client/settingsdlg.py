@@ -483,6 +483,7 @@ class SettingsDialog(QDialog):
 
     def catalogs(self, v):
         self.offline_extracts(v)
+        self.asterion_status(v)
         self.row(v, _("Plate solver"), self.combo([("Internal (Gaia)", "internal", False),
                                                    ("External solver (installed separately)", "astap", True),
                                                    ("External all-sky index solver (installed separately)",
@@ -538,6 +539,26 @@ class SettingsDialog(QDialog):
         t = QTimer(b)
         t.timeout.connect(done)
         b.clicked.connect(go)
+
+    def asterion_status(self, v):
+        """Asterion, the plate solver of Astrometry's first solution (core/asterion.py): the program and its star index,
+        installed or not, and where. No install button yet: how they reach a computer is not decided."""
+        from ..core import asterion
+        st = asterion.status()
+        v.addWidget(label(_("Asterion plate solver"), "h2"))
+        v.addWidget(label(_("Gives Astrometry its first solution in a second, at any scale; without it, the field is "
+                            "found by FLOAT's own search, minutes when the focal length is unknown."), "small", wrap=True))
+        if st.program is None:
+            prog = _("Not installed")
+        elif not (st.ok or st.missing):
+            prog = _("Cannot run: {why}").format(why=st.why)
+        else:
+            prog = _("Version {version}").format(version=st.version) + f" · {st.program}"
+        self.row(v, _("Program"), label(prog, "small", wrap=True))
+        cat = asterion.find_catalogs(program=st.program)
+        idx = f"{', '.join(asterion.indexes(cat))} · {cat}" if cat is not None else _("Not installed")
+        self.row(v, _("Star index"), label(idx, "small", wrap=True))
+        v.addSpacing(6)
 
     def offline_extracts(self, v):
         """The Gaia DR3 extracts the engine reads offline: their folder, what is installed, the two downloads (run
