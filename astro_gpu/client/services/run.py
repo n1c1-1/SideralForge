@@ -620,15 +620,23 @@ class RunTrack:
         tot = sum(self.weight(j) for j in self.jobs)
         return sum(self.weight(j) * self.share(j) for j in self.jobs) / tot if tot else 0.0
 
+    @staticmethod
+    def left(j: JobState) -> float:
+        """Seconds to go in one job: its estimate while it waits, nothing once it is over (reused or not). The running
+        job's ETA is a straight line through its bar (core/stage.py), which the stages fill by phases and search steps,
+        not by time (#50; Astrometry's line assumes every scale of its list is tried, it stops at the first that solves):
+        early it is no time at all, so the estimate's remaining share leads and the ETA takes over as the bar fills."""
+        if j.state == WAITING:
+            return j.est_s
+        if j.state != RUNNING:
+            return 0.0
+        prior = max(j.est_s * (1.0 - j.frac), 0.0)
+        return prior if j.eta is None else (1.0 - j.frac) * prior + j.frac * max(float(j.eta), 0.0)
+
     def remaining(self) -> float:
-        """Seconds to go: the running job's own estimate (its ETA), and the estimates of the jobs that wait."""
-        left = 0.0
-        for j in self.jobs:
-            if j.state == WAITING:
-                left += j.est_s
-            elif j.state == RUNNING:
-                left += j.eta if j.eta is not None else max(j.est_s * (1.0 - j.frac), 0.0)
-        return left
+        """Seconds to go: the sum of the jobs' ``left``, as the run window's rows show them (#116: the status bar counted
+        the running job's ETA, its row its whole estimate: "28 min left" over rows adding up to 17)."""
+        return sum(self.left(j) for j in self.jobs)
 
     def current(self) -> JobState | None:
         return next((j for j in self.jobs if j.state == RUNNING), None)

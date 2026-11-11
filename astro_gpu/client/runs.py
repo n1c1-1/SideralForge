@@ -550,6 +550,10 @@ class RunDialog(QDialog):
                 text = hm(real) if any(not j.reused for j in jobs) else "—"
             elif state in (SKIPPED, NOT_STARTED):
                 text = "—"
+            elif state in (WAITING, RUNNING):
+                # its time left, as the status bar adds it up (#116): the running block showed its whole estimate, done
+                # jobs and all, while the status bar counted the running job's ETA
+                text = duration_text(sum(RunTrack.left(j) for j in jobs), measured) if est else ""
             else:
                 text = duration_text(est, measured) if est else ""
             w.show_state(state, frac, text, self._tip(jobs, state))

@@ -175,6 +175,42 @@ def test_the_recap_names_the_flow_when_two_rows_share_a_name_and_is_written_once
     d.close()
 
 
+def test_the_time_left_of_a_run_is_the_sum_of_its_rows(world):
+    """#116: the status bar said "28 min left" over rows adding up to 17: it counted the running job's ETA, the running
+    row its whole estimate (the done Inventory in it too). Both are the jobs' ``left`` now: the rows add up to it."""
+    import re
+    w = world()
+    plan = w.m.plan_all()
+    est = {"inventory": 60.0, "calibrate": 240.0, "register": 120.0, "stack": 180.0, "gradient": 120.0,
+           "gradient~2": 120.0, "render_simple": 60.0}
+    for j in plan.jobs:
+        j.est_s = est[j.stage]
+    k = {j.stage: j.key for j in plan.jobs}
+    t = RunTrack.of_plan(plan, "r1")
+    t.plan = plan
+    t.apply([{"t": 100.0, "type": "run_start", "run": "r1", "device": "cpu", "pid": 1},
+              {"t": 101.0, "type": "stage_start", "run": "r1", "stage": "inventory", "key": k["inventory"]},
+              {"t": 102.0, "type": "stage_end", "run": "r1", "stage": "inventory", "key": k["inventory"], "status": "done",
+               "duration": 1.0},
+              {"t": 103.0, "type": "stage_start", "run": "r1", "stage": "calibrate", "key": k["calibrate"]},
+              # half its bar, and an ETA far above its estimate (a straight line through a bar filled by phases)
+              {"t": 600.0, "type": "progress", "run": "r1", "stage": "calibrate", "key": k["calibrate"], "frac": 0.5,
+               "eta": 1080.0}])
+    d = RunDialog(w.m, plan, "Run", track=t)
+    d.refresh()
+    rows = {r.row.title: r.dur.text() for r in d.rows}
+    # Calibration: half of the estimate's half and half of the ETA, 0.5 x 120 + 0.5 x 1080 = 10 min; Gradient 2 holds
+    # the Output
+    assert rows == {"Calibration": "≈ 10 min", "Registration": "≈ 2 min", "Stacking": "≈ 3 min", "Gradient 1": "≈ 2 min",
+                    "Gradient 2": "≈ 3 min"}, rows
+    total = sum(int(re.search(r"(\d+) min", x).group(1)) for x in rows.values())
+    assert t.remaining() == pytest.approx(60.0 * total)
+    w.ctl.track, w.ctl.phase = t, "running"
+    assert w.ctl.status_text().endswith(f"≈ {total} min left") and d.summary.text().endswith(f"≈ {total} min left")
+    w.ctl.track, w.ctl.phase = None, "idle"
+    d.close()
+
+
 def test_a_long_recap_scrolls_in_its_box_never_cut(world):
     """GUI exploration 4: a large project's run not started listed its 72 blocks in one paragraph that ran out of the
     box, cut mid-name. The recap's lines are in a scroll area of bounded height; every name is in its text."""
