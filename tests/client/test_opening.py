@@ -121,6 +121,38 @@ def test_the_frames_are_read_when_inspect_shows_them_not_as_the_project_opens(en
     assert asked and w.browser.pages.currentIndex() == 1          # shown: read, its session's page
 
 
+def test_inspect_is_made_the_first_time_it_is_shown_not_as_the_project_opens(env):
+    """Inspect (its viewers, the frames page, the frames browser) was built as the project opened, hidden: made when it
+    is first shown, once, the window's layout applied to it; what reaches for its views before makes it."""
+    from astro_gpu.client import frames as framesmod
+    from astro_gpu.client import sources as sourcesmod
+    from astro_gpu.client import tune as tunemod
+    made = []
+    for mod, name in ((tunemod, "TuneView"), (framesmod, "FramesView"), (sourcesmod, "SourcesView")):
+        cls = getattr(mod, name)
+        env["mp"].setattr(cls, "__init__", lambda self, *a, _i=cls.__init__, _n=name, **k: (made.append(_n),
+                                                                                             _i(self, *a, **k))[1])
+    root = _project(env["tmp"])
+    w = _open(env, root)
+    assert made == [] and w._tune is None                         # opened: Inspect not made
+    w.toggle_panels("right_hidden")                               # Shift+Tab before Inspect is made
+    w.set_mode(1)
+    _settle(w)
+    assert sorted(made) == ["FramesView", "SourcesView", "TuneView"] and w.tune.isVisible()
+    assert w.tune.dock.state == w.graph.dock.state == "hidden"    # the window's layout, as the graph's panel
+    w.set_mode(0)
+    w.set_mode(1)
+    _settle(w)
+    assert len(made) == 3                                         # once
+    w.close_project()
+    _settle(w)
+    assert w.tune is None and w.post is None
+    w = _open(env, root)
+    made.clear()
+    assert w.frames is not None and w.post_holder is not None     # reached before it is shown: made, hidden
+    assert len(made) == 3 and not w.tune.isVisible()
+
+
 def test_the_start_loads_the_stage_graph_and_the_names_while_home_is_shown(monkeypatch):
     """The first opening needed every stage's module (the keys) and the catalogue's names (the Project block, in the GUI
     thread): the start's warm-up loads them first, then what the first render needs."""

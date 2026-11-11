@@ -164,11 +164,11 @@ class Harness(appmod.Main):
     def graph_page(self):
         if self.s is None or self.s.p is not self.project.definition:           # a change of language keeps the model
             self.s = ProjectModel(self.project.definition, self.worker, readonly=self.readonly)
+        self.steps = Steps(self.s)                   # as the window's: the Report reads them before Inspect is made
         return appmod.Placeholder("Graph")
 
     def inspect_page(self):
         s = self.s
-        self.steps = Steps(s)
         self.browser = SourcesView(s)
         self.frames = FramesView(s, self.browser)
         self.tune = TuneView(s, self.steps, self.frames, appmod.Placeholder("Post"))

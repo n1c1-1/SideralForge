@@ -15,8 +15,8 @@ Once a project is open the window holds, for it:
 * ``render``: the RenderWorker of Post (services/render.py), made when Post is first shown and kept while the project
   is open, so that a rebuilt screen (a change of language) does not load the engines again.
 The views are built again with the project screen: ``graph`` (GraphPage), ``tune`` (TuneView, holding Frames and the
-Post page). Classes: ``Main`` (the window), ``OpenProject`` (the open project as the shell knows it), ``PostHolder``
-(makes the Post page the first time it is shown).
+Post page; made the first time Inspect is shown or reached). Classes: ``Main`` (the window), ``OpenProject`` (the open
+project as the shell knows it), ``PageHolder`` (makes a page, Inspect or Post, the first time it is shown).
 
     python -m astro_gpu.client [project folder]
 """
@@ -165,22 +165,29 @@ class Placeholder(QWidget):
         v.addStretch(1)
 
 
-class PostHolder(QWidget):
-    """Post's place in Inspect. The page is made the first time it is shown: its engines load then, not when the
-    project opens (on the CPU, a layer's engine takes seconds)."""
+class PageHolder(QWidget):
+    """A page's place, the page made the first time it is shown or reached (``ensure``), not when the project opens:
+    Post in Inspect (its engines: on the CPU, a layer's engine takes seconds), Inspect in the modes (#115: its viewers,
+    frames page and browser froze the screen 0.2 s as a project opened, hidden)."""
 
     def __init__(self, make, parent=None):
         super().__init__(parent)
         self.setObjectName("root")
         self._make = make
+        self._making = False                         # what the page's making reaches for meanwhile is not made twice
         self.page = None
         self._v = QVBoxLayout(self)
         self._v.setContentsMargins(0, 0, 0, 0)
 
     def ensure(self):
-        if self.page is None:
-            self.page = self._make()
-            self._v.addWidget(self.page)
+        if self.page is None and not self._making:
+            self._making = True
+            try:
+                page = self._make()
+            finally:
+                self._making = False
+            self.page = page
+            self._v.addWidget(page)
         return self.page
 
     def showEvent(self, e):                                          # noqa: N802 - Qt's name
@@ -249,6 +256,7 @@ class Main(QMainWindow):
         self.machine: Machine | None = None
         self.home: HomeView | None = None
         self.proj_screen: QWidget | None = None
+        self._inspect_holder: PageHolder | None = None   # Inspect's place in the modes (its views: ``tune``…)
         self.graph = self.tune = self.frames = self.browser = self.steps = self.post_holder = None
         self.mode = 0
         self._last_step = None                       # the block Inspect showed before Post
@@ -411,7 +419,6 @@ class Main(QMainWindow):
         full = bool(st["max"])
         right = "hidden" if st["hidden"] or st["right_hidden"] or full else st["right"]
         left = "hidden" if st["hidden"] or full else st["left"]
-        solo = lay.effective(cls) == lay.SMALL
         if self.project is not None and self.proj_screen is not None:
             self.proj_bar.setFixedHeight(36 if comp else 46)
             self.proj_bar.setVisible(not full)
@@ -419,12 +426,21 @@ class Main(QMainWindow):
             self.logp.setVisible(self.b_log.isChecked() and not full)
             if self.graph is not None:
                 self.graph.set_layout(right, left)
-            if self.tune is not None:
-                self.tune.set_layout(right, not st["hidden"] and not full, comp)
-            if self.browser is not None:
-                self.browser.set_compact(solo)
+            self._layout_inspect()
             self._layout_post()
         self._sync_layout_marks()
+
+    def _layout_inspect(self):
+        """Inspect's right panel, band of blocks and look, as ``apply_layout`` says (Inspect made after it: when it is
+        first shown)."""
+        cls = self.size_range or lay.LARGE
+        st = lay.state(cls)
+        full = bool(st["max"])
+        if self._tune is not None:
+            right = "hidden" if st["hidden"] or st["right_hidden"] or full else st["right"]
+            self._tune.set_layout(right, not st["hidden"] and not full, lay.compact(cls))
+        if self._browser is not None:
+            self._browser.set_compact(lay.effective(cls) == lay.SMALL)
 
     def _sync_layout_marks(self):
         """The View menu's check marks: Hide panels, Hide right, Maximise."""
@@ -437,7 +453,7 @@ class Main(QMainWindow):
     def _layout_post(self):
         """Post's two sides: the user's choice for this size range, else the layers as the graph's palette (automatic
         on a small window) and the settings docked; Tab hides both, Shift+Tab the settings."""
-        page = self.post_holder.page if self.post_holder is not None else None
+        page = self._post_holder.page if self._post_holder is not None else None
         view = getattr(page, "view", None)
         if view is None:
             return
@@ -611,8 +627,7 @@ class Main(QMainWindow):
         self.run = RunController(s, window=self, console=lambda: getattr(self, "logp", None))
         self.run.runningChanged.connect(lambda _on: self.request_refresh())
         # Inspect's Run to here greys while a run is in progress (issue #33)
-        self.run.runningChanged.connect(lambda _on: getattr(getattr(self, "tune", None), "request_refresh",
-                                                            lambda: None)())
+        self.run.runningChanged.connect(lambda _on: getattr(self._tune, "request_refresh", lambda: None)())  # if made
         self.run.updated.connect(self._run_updated)
         self.run.finished.connect(self._run_finished)
         self.run.logRequested.connect(lambda: self.b_log.setChecked(True))
@@ -634,7 +649,7 @@ class Main(QMainWindow):
     def _leave_thumbnail(self):
         """The composition Post last showed becomes the project's picture on Home (``cache/thumb.jpg``, written by the
         worker)."""
-        holder = self.post_holder
+        holder = self._post_holder
         page = holder.page if holder is not None else None
         img = getattr(getattr(getattr(page, "view", None), "src", None), "img1", None)
         if img is None or self.s is None or self.s.readonly or self.project is None:
@@ -719,6 +734,7 @@ class Main(QMainWindow):
                 self.proj_screen = None
             self.report = self.graph = self.tune = self.frames = self.browser = self.steps = self.post_holder = None   # (steps held
             self.build_menus()                                                       # the closed model, GUI expl. 4)
+            self._inspect_holder = None
         if go_home:
             self.show_home()
         return True
@@ -772,9 +788,11 @@ class Main(QMainWindow):
         self.logp = LogPanel(self.project)
         self.logp.setVisible(self.b_log.isChecked())
         sv.addWidget(self.logp)
-        # the modes: Graph, and Inspect (which holds Frames and Post)
+        # the modes: Graph, and Inspect (which holds Frames and Post), made the first time it is shown or reached
         self.modes.addWidget(self.graph_page())
-        self.modes.addWidget(self.inspect_page())
+        self.tune = self.frames = self.browser = self.post_holder = None     # a rebuilt screen's: made again
+        self._inspect_holder = PageHolder(self._make_inspect)
+        self.modes.addWidget(self._inspect_holder)
         self.modes.addWidget(self.report_page())
         self.proj_screen = screen
         self.screens.addWidget(screen)
@@ -810,6 +828,53 @@ class Main(QMainWindow):
             self.run.watch_graph(page.graph)
         return page
 
+    def _make_inspect(self) -> QWidget:
+        page = self.inspect_page()
+        self._layout_inspect()                       # the window's layout, applied before Inspect was made
+        return page
+
+    def _inspect(self):
+        """Inspect made now if it was not yet (what reaches for its views: a test, Add session, Post)."""
+        if self._inspect_holder is not None and self.project is not None:
+            self._inspect_holder.ensure()
+
+    # Inspect's views, made with it (``inspect_page``): None while no project is open
+    @property
+    def tune(self):
+        self._inspect()
+        return self._tune
+
+    @tune.setter
+    def tune(self, v):
+        self._tune = v
+
+    @property
+    def frames(self):
+        self._inspect()
+        return self._frames
+
+    @frames.setter
+    def frames(self, v):
+        self._frames = v
+
+    @property
+    def browser(self):
+        self._inspect()
+        return self._browser
+
+    @browser.setter
+    def browser(self, v):
+        self._browser = v
+
+    @property
+    def post_holder(self):
+        self._inspect()
+        return self._post_holder
+
+    @post_holder.setter
+    def post_holder(self, v):
+        self._post_holder = v
+
     def inspect_page(self) -> QWidget:
         """Inspect: TuneView, with Frames (FramesView and its browser) and the Post page."""
         from .frames import FramesView
@@ -819,7 +884,7 @@ class Main(QMainWindow):
         self.browser = SourcesView(s)
         self.browser.toast.connect(self.flash)
         self.frames = FramesView(s, self.browser)
-        self.post_holder = PostHolder(self.post_page)
+        self.post_holder = PageHolder(self.post_page)
         tune = TuneView(s, self.steps, self.frames, self.post_holder)
         tune.back.connect(lambda: self.set_mode(0))
         tune.pick.connect(self._strip_pick)
@@ -871,7 +936,7 @@ class Main(QMainWindow):
     def _flush_post(self):
         """Post's last edit into the project's definition (it is saved just after an edit, when the event loop comes
         back: a close or a rebuild may come first)."""
-        page = self.post_holder.page if self.post_holder is not None else None
+        page = self._post_holder.page if self._post_holder is not None else None
         view = getattr(page, "view", None)
         if view is not None and hasattr(view, "flush"):
             try:
@@ -891,8 +956,8 @@ class Main(QMainWindow):
             self.post.view.select_layer(lid)
 
     def _post_shown(self) -> bool:
-        return self.s is not None and self.mode == 2 and self.post_holder is not None and \
-            self.post_holder.page is not None
+        return self.s is not None and self.mode == 2 and self._post_holder is not None and \
+            self._post_holder.page is not None
 
     def select(self, index=None, step=None):
         """Select a workflow and a block (the scope follows the block, as a click on the graph does)."""
@@ -928,8 +993,8 @@ class Main(QMainWindow):
         self.mode_btns[i].setChecked(True)
         if i == 3:
             self.report.refresh()
-        if i == 2 and not was_post and self.post_holder is not None and self.post_holder.page is not None:
-            self.post_holder.page.refresh()
+        if i == 2 and not was_post and self._post_holder is not None and self._post_holder.page is not None:
+            self._post_holder.page.refresh()
         if i == 0 and self.graph is not None and getattr(self.graph, "graph", None) is not None:
             self.graph.graph.rebuild()             # the arrows of the images sent to Post meanwhile
         self.refresh()
@@ -1470,8 +1535,8 @@ class Main(QMainWindow):
         self.update_spec_note()
         if self.graph is not None:
             self.graph.request_refresh()
-        if self.tune is not None:
-            self.tune.request_refresh()
+        if self._tune is not None:
+            self._tune.request_refresh()
         self.refresh()
 
     def toggle_log(self, on):
