@@ -197,7 +197,7 @@ def durations_text(times, here: str, estimated: bool = False) -> str:
             continue
         sec, measured = times[dev]
         d = hm(sec)
-        t = html.escape(f"{dev.upper()} {'' if (measured and not estimated) or d.startswith('≤') else '≈ '}{d}")
+        t = html.escape(f"{_(dev.upper())} {'' if (measured and not estimated) or d.startswith('≤') else '≈ '}{d}")
         parts.append(f"<b style='color:#e6edf7'>{t}</b>" if dev == here else t)
     return " · ".join(parts)
 

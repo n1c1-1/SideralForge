@@ -162,7 +162,7 @@ def test_the_new_words_are_french(env):
     i18n.set_language("fr")
     i18n._missing.clear()
     assert i18n._("Card test") == "Test de la carte" and i18n._("Test again") == "Retester"
-    assert i18n._("GPU · {n} x faster").startswith("GPU")
+    assert i18n._("GPU · {n} x faster").startswith("Carte graphique")         # one name for it (the night test pass)
     msg = st.STAGE_ON_CPU.format(why=st.REASONS[st.WRONG])
     assert "carte" in engine_text(msg) and "faux" in engine_text(msg)
     msg = "the graphics card has 3.1 GB free and this stack needs about 8.0 GB: it is computed on the CPU"

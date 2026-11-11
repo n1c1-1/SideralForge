@@ -43,7 +43,7 @@
   "The last image layer stays: Post needs an image (hide it with its eye)": "Le dernier calque image reste : Post a besoin d'une image (le masquer par son œil)",
   "Export stopped.": "Export interrompu.",
   "FITS 32-bit float": "FITS 32 bits virgule flottante",
-  "GPU memory full: rendered on the CPU": "Mémoire du GPU pleine : calculé sur le CPU",
+  "GPU memory full: rendered on the CPU": "Mémoire de la carte graphique pleine : calculé sur le processeur",
   "JPEG": "JPEG",
   "Linear sRGB": "sRGB linéaire",
   "Linked": "Liés",

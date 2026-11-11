@@ -282,6 +282,16 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
         # the lines the stages log (the common ones: the rest of their free diagnostics stays in English)
         (r"^(\d+) lights of ([\d.]+) s \(([\d.]+) h\), (\d+)x(\d+) (\w+), (\d+) darks, (\d+) flats, (\d+) bias, camera (.*)$",
          "{0} lights of {1} s ({2} h), {3}x{4} {5}, {6} darks, {7} flats, {8} bias, camera {9}", ()),
+        # the night test pass: the lines of a picture's first run, and the failures it met, were in English
+        (r"^no colour calibration: camera colours, each channel's sky made grey and scaled to the same spread \(gains "
+         r"(.+)\)$", "no colour calibration: camera colours, each channel's sky made grey and scaled to the same spread "
+                     "(gains {0})", ()),
+        (r"^colour mosaic pattern: (\d+) peaks notched \(strongest (\d+) x the spectrum around\)$",
+         "colour mosaic pattern: {0} peaks notched (strongest {1} x the spectrum around)", ()),
+        (r"^(.+): its stars match none of the reference's: not the same field$",
+         "{0}: its stars match none of the reference's: not the same field", ()),
+        (r"^the instrument's star needs the scale of the image: place the Astrometry block$",
+         "the instrument's star needs the scale of the image: place the Astrometry block", ()),
         # the night test pass: an empty or damaged frame, named
         (r"^(\d+) (lights|darks|flats|bias|flat darks) cannot be read and are left out \(damaged or empty files\?\): "
          r"(.+)$", "{0} {1} cannot be read and are left out (damaged or empty files?): {2}", (1,)),

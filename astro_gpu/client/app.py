@@ -350,8 +350,8 @@ class Main(QMainWindow):
         act(v, _("Report"), lambda: self.set_mode(3), "Ctrl+4", enabled=has)
         v.addSeparator()
         self.a_hide = act(v, _("Hide panels") + "\tTab", lambda: self.toggle_panels("hidden"), None, True, enabled=has)
-        self.a_hide_r = act(v, _("Hide right") + "\tShift+Tab", lambda: self.toggle_panels("right_hidden"), None, True,
-                            enabled=has)
+        self.a_hide_r = act(v, _("Hide right") + "\t" + QKeySequence("Shift+Tab").toString(QKeySequence.NativeText),
+                            lambda: self.toggle_panels("right_hidden"), None, True, enabled=has)   # "Maj+Tab" in French
         self.a_max = act(v, _("Maximise"), lambda: self.toggle_panels("max"), "Ctrl+Space", True, enabled=has)
         act(v, _("Reset layout"), self.reset_layout, enabled=has, role="reset")
         v.addSeparator()
