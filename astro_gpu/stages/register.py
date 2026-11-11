@@ -14,6 +14,7 @@ from multiprocessing import get_context
 import numpy as np
 from scipy.spatial import cKDTree
 
+from ..core import devices
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage, StageError
 from .calibrate import VALID_MAX, open_cache
@@ -75,7 +76,9 @@ class Register(Stage):
             # said at once, and one frame per task: a dense field takes 10 s and more per frame, so that a batch of 4
             # per worker kept the progress at 0 % for minutes (North America: first result after 141 s, issue #34)
             ctx.progress(0.0, f"detecting the stars of {len(todo)} frames ({p.workers} processes)")
-            with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
+            with devices.one_maths_thread():                   # issue #125: 1 GB less reserved a worker
+                pool = get_context("spawn").Pool(p.workers, initializer=_init, initargs=init)
+            with pool:
                 for c, res in enumerate(pool.imap_unordered(_catalog_moffat, todo, chunksize=1)):
                     idx, cat, fw, rb, rd, nz, psf[idx] = res
                     cats[idx], fwhm[idx], rmsb[idx], rnd[idx], noise[idx] = cat, fw, rb, rd, nz

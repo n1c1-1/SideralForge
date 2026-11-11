@@ -9,6 +9,8 @@ apart), or as a device of its own ('privateml', through the DirectML package); a
 """
 from __future__ import annotations
 
+import contextlib
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -24,6 +26,9 @@ SMALLEST_TILE = 128
 #: file cache the frames are read through): this share of the total memory, and never less than MEMORY_FLOOR_GB
 MEMORY_MARGIN = 0.15
 MEMORY_FLOOR_GB = 2.0
+#: the variables the maths libraries of a pool's worker read for their number of threads when they load: OpenBLAS
+#: (numpy and scipy each load their own copy), OpenMP and MKL (PyTorch's, which the workers import with the runner)
+MATHS_THREADS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")
 
 
 @dataclass
@@ -205,6 +210,27 @@ def memory_budget() -> tuple[int, int] | None:
         return None
     margin = max(MEMORY_MARGIN * vm.total, MEMORY_FLOOR_GB * 2 ** 30)
     return max(int(vm.available - margin), 0), int(vm.available)
+
+
+@contextlib.contextmanager
+def one_maths_thread():
+    """Inside the block, the processes started (the spawned workers of a multiprocessing pool, which read the
+    environment of this process when they start) get one maths thread each. OpenBLAS reserves a buffer per thread
+    as numpy and scipy load: about 1 GB per worker on a 16-thread processor, never used (issue #125; measured on 16
+    threads, a pool of 12 through the runner: 2063 MB reserved a worker, 1085 MB with one thread, the working set
+    the same; the pool 23.9 GB, 12.0 GB; Calibration and Registration no slower). The pool's processes are its
+    parallelism. After the block the variables are this process's again; its own libraries, loaded already, keep
+    their threads."""
+    before = {k: os.environ.get(k) for k in MATHS_THREADS}
+    os.environ.update({k: "1" for k in MATHS_THREADS})
+    try:
+        yield
+    finally:
+        for k, v in before.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def shrink_on_memory(fn, tile: int, device: Any, smallest: int = SMALLEST_TILE):

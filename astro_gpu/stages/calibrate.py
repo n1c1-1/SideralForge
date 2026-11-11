@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from ..core import cfa as cfa_mod
+from ..core import devices
 from ..core.imgutil import robust_sigma
 from ..core.params import ADVANCED, Auto, P, StageParams
 from ..core.stage import Context, Stage
@@ -342,7 +343,9 @@ def _calibrated_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark
     init = (str(cache), n, H, W, str(paths_dir), sat_raw, scale, fill, cfa)
     ctx.phase(getattr(ctx, "_lights_from", 0.0), 1.0)          # issue #50: the lights' share of the bar
     ctx.progress(done.mean(), f"calibrating {len(todo)} frames ({p.workers} processes)", force=True)
-    with get_context("spawn").Pool(p.workers, initializer=_init, initargs=init) as pool:
+    with devices.one_maths_thread():                           # issue #125: 1 GB less reserved a worker
+        pool = get_context("spawn").Pool(p.workers, initializer=_init, initargs=init)
+    with pool:
         for c, (idx, st) in enumerate(pool.imap_unordered(_calib_one, todo, chunksize=2)):
             stats[idx] = st
             done[idx] = True
@@ -751,7 +754,9 @@ def _colour_cache(ctx: Context, p: CalibrateParams, lights: list[dict], dark: np
     init = (str(cache), str(rgb), n, H, W, str(d), p.saturation * white, scale)
     ctx.phase(getattr(ctx, "_lights_from", 0.0), 1.0)
     ctx.progress(0.0, f"calibrating {n} frames ({p.workers} processes)", force=True)
-    with get_context("spawn").Pool(p.workers, initializer=_init_colour, initargs=init) as pool:
+    with devices.one_maths_thread():                           # issue #125: 1 GB less reserved a worker
+        pool = get_context("spawn").Pool(p.workers, initializer=_init_colour, initargs=init)
+    with pool:
         for c, (idx, st) in enumerate(pool.imap_unordered(_calib_colour, list(enumerate(f["path"] for f in lights)),
                                                           chunksize=2)):
             stats[idx] = st
