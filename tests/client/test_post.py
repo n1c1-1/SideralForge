@@ -3127,3 +3127,21 @@ def test_a_layer_is_chosen_when_the_first_ones_come(post):
     v.sel = None
     v.sync_paths()
     assert v.sel == (v.layers[-1]["id"], "layer")
+
+
+def test_sky_grid_and_names_are_greyed_without_a_solution(post, monkeypatch):
+    """The night test pass: without Astrometry (or on a layer taken before it) they could be ticked, on screen and in
+    Export…, and drew nothing, without a word."""
+    from types import SimpleNamespace
+    v = post.view
+    monkeypatch.setattr(v.s, "state_info", lambda p, stage: None, raising=False)
+    v.set_annotations(grid=True)
+    v.rebuild()
+    assert not v.b_grid.isEnabled() and not v.b_grid.isChecked() and "Astrometry" in v.b_grid.toolTip()
+    d = ExportDialog(v)
+    d.fmt.setCurrentIndex(d.fmt.findData("jpeg"))
+    assert not d.c_grid.isEnabled() and "Astrometry" in d.c_grid.toolTip()
+    d.reject()
+    monkeypatch.setattr(v.s, "state_info", lambda p, stage: SimpleNamespace(state="done"), raising=False)
+    v.rebuild()
+    assert v.b_grid.isEnabled() and v.b_names.isEnabled() and "RA / Dec" in v.b_grid.toolTip()

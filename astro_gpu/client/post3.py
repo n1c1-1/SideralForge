@@ -1459,6 +1459,36 @@ class PostView(QWidget):
         """The workflow whose solution the canvas uses: the bottom workflow layer (as the export does)."""
         return next((lay["pid"] for lay in reversed(self.layers) if lay["kind"] == "workflow"), None)
 
+    def ann_problem(self) -> str:
+        """Why the sky grid and the names cannot be drawn, '' when they can: the bottom workflow has no Astrometry, or it
+        is not computed (the night test pass: they could be ticked and showed nothing, on screen and in the export)."""
+        pid = self._ann_pid()
+        p = self.path(pid) if pid is not None else None
+        if p is None or not hasattr(self.s, "state_info"):
+            return ""
+        st = self.s.state_info(p, "astrometry")
+        if st is None:
+            return _("The image at the bottom has no Astrometry: place the block in its workflow, or put a layer that "
+                     "has one at the bottom")
+        if st.state not in ("done", "stale"):
+            return _("Astrometry is not computed yet for the image at the bottom")
+        return ""
+
+    def _ann_buttons(self):
+        """Sky grid and Object names greyed, the reason on hover, while there is no solution to draw."""
+        why = self.ann_problem()
+        for b, k in ((self.b_grid, "grid"), (self.b_names, "objects")):
+            b.setEnabled(not why)
+            if why:
+                if not b.property("why"):
+                    b.setProperty("tip", b.toolTip())         # its own tip, back once there is a solution
+                b.setToolTip(why)
+                if b.isChecked():
+                    self.set_annotations(**{k: False})
+            elif b.property("why"):
+                b.setToolTip(b.property("tip") or "")
+            b.setProperty("why", why)
+
     def _want_annotations(self):
         c, pid = self._canvas, self._ann_pid()
         if c is None or pid is None:
@@ -1647,6 +1677,7 @@ class PostView(QWidget):
         """The layers' rows built again; ``props``: the properties panel too (not for a visibility toggle, issue #24:
         its scroll and an open curves editor were lost)."""
         self._mask_button()
+        self._ann_buttons()
         self.hide_big()
         clear(self.lbox)
         self.rows = []

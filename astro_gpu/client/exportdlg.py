@@ -240,9 +240,13 @@ class ExportDialog(QDialog):
                 c.setChecked(False)
             c.setEnabled(on)
         self.c_wcs.setToolTip("" if fits else _("Only the FITS file has a header."))
+        why = self.view.ann_problem() if hasattr(self.view, "ann_problem") else ""
         for c in (self.c_grid, self.c_names):
             c.setToolTip(_("A FITS file stays clean: its header holds the astrometric solution.") if key == "fits32f"
-                         else _("Drawn into the picture, as Post shows them."))
+                         else why or _("Drawn into the picture, as Post shows them."))
+            if why and not fits:                          # nothing to draw (the night test pass: ticked, drew nothing)
+                c.setChecked(False)
+                c.setEnabled(False)
         self._check_dest()
 
     def _browse(self):
