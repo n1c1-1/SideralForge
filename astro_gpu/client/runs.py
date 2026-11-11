@@ -262,7 +262,7 @@ class RunRow(QFrame):
         self.who.setToolTip("\n".join(row.who))
         h.addWidget(self.who)
         self.dur = label("", "small")
-        self.dur.setFixedWidth(84)
+        self.dur.setFixedWidth(100)                           # "stopped · ≤ 1 min" (#138)
         self.dur.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         h.addWidget(self.dur)
         self.bar = QProgressBar()
@@ -553,6 +553,10 @@ class RunDialog(QDialog):
                 # its time left, as the status bar adds it up (#116): the running block showed its whole estimate, done
                 # jobs and all, while the status bar counted the running job's ETA
                 text = duration_text(sum(RunTrack.left(j) for j in jobs), measured) if est else ""
+            elif state == INTERRUPTED:
+                # the time it ran, as a done row says its duration; its bar how far it got (#138: it said its first
+                # estimate, as if it were still to run)
+                text = _("stopped · {t}").format(t=hm(sum(t.spent(j) for j in jobs)))
             else:
                 text = duration_text(est, measured) if est else ""
             w.show_state(state, frac, text, self._tip(jobs, state))

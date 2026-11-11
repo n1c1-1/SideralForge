@@ -261,6 +261,31 @@ def test_a_block_has_one_progress_in_its_row_the_window_and_the_graph_and_the_st
         d.close()
 
 
+def test_a_stopped_row_says_it_was_stopped_and_how_long_it_ran_never_its_estimate(world):
+    """#138: after Stop, the stopped row said "≈ 6 min", its first estimate, after 8 min of work. It says it was
+    stopped and the time it ran, as a done row says its duration; its bar how far it got. A worker that ended without
+    a word on the job (killed) counts until the run's end."""
+    import time
+    w = world()
+    now = time.time()
+    for said in (True, False):
+        plan, t, k = _calibrating(w, now)
+        end = [{"t": now + 180.0, "type": "stage_end", "run": "r1", "stage": "calibrate", "key": k["calibrate"],
+                "status": "interrupted", "duration": 480.0}] if said else []
+        t.apply(end + [{"t": now + 180.0, "type": "run_end", "run": "r1", "status": "interrupted",
+                        "interrupted": [] if said else [k["calibrate"]],
+                        "not_started": [j.key for j in plan.jobs if j.stage not in ("inventory", "calibrate")]}])
+        d = RunDialog(w.m, plan, "Run", track=t)
+        d.refresh()
+        rows = {r.row.title: r for r in d.rows}
+        cal = rows["Calibration"]
+        # Inventory 60 s and Calibration 480 s; 600 s it still had to go: 540 / 1140
+        assert cal.dur.text() == "stopped · 9 min" and cal.mark.state == "interrupted", (said, cal.dur.text())
+        assert cal.bar.value() == pytest.approx(474, abs=2)
+        assert all(r.dur.text() == "—" for title, r in rows.items() if title != "Calibration")
+        d.close()
+
+
 def test_a_long_recap_scrolls_in_its_box_never_cut(world):
     """GUI exploration 4: a large project's run not started listed its 72 blocks in one paragraph that ran out of the
     box, cut mid-name. The recap's lines are in a scroll area of bounded height; every name is in its text."""
