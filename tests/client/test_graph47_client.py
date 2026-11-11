@@ -660,6 +660,34 @@ def test_no_template_asks_for_a_file_it_only_places_its_blocks(qapp, tmp_path, m
         w.stop()
 
 
+def test_several_images_are_all_numbered_the_first_too(qapp, tmp_path, monkeypatch):
+    """Issue #134: "Several images" made Image, Image 2, Image 3, the first block's line ("Image · file to choose") not
+    saying the "Image 1" of its title. Made together, all are numbered, the first included; one alone has none; one
+    placed after a numbered series goes on with it."""
+    from astro_gpu.client.blocks import node_title
+    w, m, page = _blank_page(tmp_path, monkeypatch)
+    try:
+        page.show_templates()
+        next(c for c in page.templates.cards if c.t["key"] == "images").mousePressEvent(None)
+        settle(w, page)
+        assert [q.name for q in m.paths] == ["Image 1", "Image 2", "Image 3"]
+        g = Graph(m)
+        for n in (n for n in g.nodes if n.key == "image"):
+            assert g.summary(n).startswith(node_title(m, n) + " · "), g.summary(n)
+        assert m.unique_name("Image") == "Image 4"        # a fourth placed alone: "Image 4", as its block
+        while not page.is_blank():
+            assert m.undo()
+            settle(w, page)
+        page.show_templates()
+        next(c for c in page.templates.cards if c.t["key"] == "image").mousePressEvent(None)
+        settle(w, page)
+        assert len(m.paths) == 1 and not m.paths[0].name[-1].isdigit()      # one alone: no number
+    finally:
+        page.close()
+        m.close(save=False)
+        w.stop()
+
+
 def test_post_saving_its_layers_keeps_the_workflows_not_computed_yet(qapp, tmp_path, monkeypatch):
     """GUI exploration 4: Post holds layers only for the computed workflows; its saving a composition (a filter added)
     does not take the others' images out of Post (they used to be listed as removed, their wires gone for good)."""

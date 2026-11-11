@@ -3393,11 +3393,15 @@ class ProjectModel(QObject):
             api.set_workflows(self.p, ws, self.p.current)
 
     # ------------------------------------------------------------ workflows
-    def unique_name(self, base: str) -> str:
+    def unique_name(self, base: str, numbered: bool = False) -> str:
+        """``base``, else ``base 2``, ``base 3``... ``numbered``: one of several made together, numbered from 1 as a
+        block placed twice ("Image 1", "Image 2", issue #134); a series already numbered goes on numbered, so that the
+        workflow's name says the number its block shows."""
         names = {p.name for p in self.paths}
-        if base not in names:
+        series = any(x.startswith(base + " ") and x[len(base) + 1:].isdigit() for x in names)
+        if base not in names and not numbered and not series:
             return base
-        n = 2
+        n = 1 if numbered or base not in names else 2
         while f"{base} {n}" in names:
             n += 1
         return f"{base} {n}"

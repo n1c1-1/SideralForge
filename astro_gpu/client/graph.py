@@ -3504,10 +3504,11 @@ class GraphPage(QWidget):
                 return
         elif template_source(t) in ("image", "stretched"):
             # as many Image blocks as its picture shows ("Several images": three), each its own block and layer of Post
-            # (two Image blocks without a file are two blocks, decision 4); one Ctrl+Z takes them all away
+            # (two Image blocks without a file are two blocks, decision 4); one Ctrl+Z takes them all away. Several: all
+            # numbered, the first too, as their blocks (Image 1, Image 2, Image 3; issue #134)
             n = int(t.get("images") or 1) if t.get("plain") else 1
             with s.batch():
-                made = [s.add_image_workflow(name if n == 1 else _("Image"), "", opts,
+                made = [s.add_image_workflow(name if n == 1 else s.unique_name(_("Image"), numbered=True), "", opts,
                                              stretched=template_source(t) == "stretched") for _i in range(n)]
                 for q in made:
                     s.set_graph(q, template_blocks(t))
