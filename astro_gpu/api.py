@@ -2204,7 +2204,7 @@ def calibration_frames(p: Project2, session_id: int, wf: int | Workflow | None =
         t = info.temperature if info.temperature is not None else (
             dg.raw_temperature(f) if info.kind == "raw" else None)
         st.update(exposure=info.exposure, iso=info.iso, temperature=t, time=info.time, white=info.white,
-                  black=info.black)
+                  black=info.black, stacked=getattr(info, "stacked", None))
         return st
 
     stats: list[dict[str, Any]] = []
@@ -2229,6 +2229,7 @@ def calibration_frames(p: Project2, session_id: int, wf: int | Workflow | None =
     for i in by_kind.get("flats", []):
         st = stats[i]
         z = zero if zero is not None else float(st["black"])
+        z = 0.0 if st.get("stacked") is not None else z        # a master flat is already calibrated: used as it is
         st.update(zero=z, **dg.flat_measures(st, z, float(st["white"])))
     for kind, idx in by_kind.items():
         for i, (flag, reason, checks) in zip(idx, dg.flag_frames(kind, [stats[i] for i in idx])):

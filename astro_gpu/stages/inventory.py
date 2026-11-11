@@ -29,8 +29,9 @@ class Inventory(Stage):
                    "focal length, pointing. These measurements drive many automatic settings downstream.")
     Params = InventoryParams
     # 2: the levels of FITS frames in floats in ADU, as their pixels are read (io/frames.fits_adu): a frame on the 0-1
-    # scale had a white level of 1, one in ADU too
-    version = "2"
+    # scale had a white level of 1, one in ADU too. 3: each frame says whether it is a master, and of how many frames
+    # (``stacked``, io/frames.master_count), which the Calibration reads
+    version = "3"
 
     def run(self, ctx: Context, p: InventoryParams) -> None:
         cfg = ctx.project.config.inputs

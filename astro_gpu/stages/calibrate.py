@@ -71,8 +71,9 @@ class Calibrate(Stage):
     # dots per square degree), and then filled from their same-colour neighbours (left out, they were holes). The
     # master bias and flat dark (EXTRA_MASTERS, for the Inspect mode) are extra files: an older result lacks them. 5: a
     # FITS mosaic in floats on the 0-1 scale read in ADU (io/frames.fits_adu): a master dark of another program was read
-    # as 0.008 for 508 ADU, so the lights kept their black level, which the flat then turned into an inverted vignetting
-    version = "5"
+    # as 0.008 for 508 ADU, so the lights kept their black level, which the flat then turned into an inverted vignetting.
+    # 6: a master given (io/frames.master_count) is used as it is: a master flat had the bias taken off a second time
+    version = "6"
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         n = max(1, min(12, (os.cpu_count() or 4) - 2))
@@ -94,22 +95,26 @@ class Calibrate(Stage):
         if not p.apply_masters:
             pass_through(ctx, p, frames["lights"], H, W, black)
             return
+        ms = given_masters_of(ctx, frames)            # a master given: used as it is, its kind's single frames left out
         # issue #50: the masters' phase moves the bar too, file by file (its share: its files against the lights)
         n_hot = min(40, len(frames["lights"])) + 2 if p.hot_from_lights and len(frames["lights"]) >= 15 else 0
-        nm = sum(len(frames[k]) for k in ("bias", "darks", "flats", "flat_darks")) + (1 if frames["darks"] else 0) \
-            + n_hot
+        nm = sum(len(frames[k]) for k in ("bias", "darks", "flats", "flat_darks")) \
+            + (1 if frames["darks"] and "darks" not in ms else 0) + n_hot
         share = nm / max(nm + len(frames["lights"]), 1)
         ctx._files_total, ctx._files_read, ctx._lights_from = nm, 0, share
         ctx.phase(0.0, share)
-        bias = master_bias([f["path"] for f in frames["bias"]], ctx)
+        bias = master_bias([f["path"] for f in frames["bias"]], ctx, ms.get("bias"))
         if bias is not None:
             ctx.save("master_bias.npy", bias)
-        dark, dark_noise = master_dark([f["path"] for f in frames["darks"]], bias, H, W, black, ctx)
+        dark, dark_noise = master_dark([f["path"] for f in frames["darks"]], bias, H, W, black, ctx, ms.get("darks"))
+        if frames["darks"]:
+            check_dark(ctx, dark, bias, black)
         dark = scaled_dark(ctx, dark, bias, black, frames)
         kept: dict = {}
         flat = master_flat([f["path"] for f in frames["flats"]], [f["path"] for f in frames["flat_darks"]], bias,
                            float(np.median(dark)), H, W, p.flat_scale_px, ctx, keep=kept,
-                           cfa=ctx.metric_of("inventory", "cfa") or "RGGB")
+                           cfa=ctx.metric_of("inventory", "cfa") or "RGGB", master="flats" in ms,
+                           fd_masters=ms.get("flat_darks"))
         if "flat_dark" in kept:
             ctx.save("master_flat_dark.npy", kept.pop("flat_dark"))
         calibrate_lights(ctx, p, frames["lights"], dark, flat, bool(frames["darks"]), dark_noise,
@@ -133,15 +138,85 @@ def pass_through(ctx: Context, p: CalibrateParams, lights: list[dict], H: int, W
                       float(ctx.metric_of("inventory", "white_level")), time.time())
 
 
-def master_bias(paths: list[str], ctx: Context) -> np.ndarray | None:
-    """Master bias (offset): median of the bias frames, or None without any."""
+#: the calibration frames a master can stand for, and their names in a sentence
+CAL_KINDS = {"bias": "bias", "darks": "darks", "flats": "flats", "flat_darks": "flat darks"}
+
+
+def given_masters_of(ctx: Context, frames: dict) -> dict[str, list[dict]]:
+    """The masters among the calibration frames, by kind (io/frames.master_count, from their headers: a file another
+    program stacked). A master is not calibrated nor stacked again: it is used as it is (several of a kind: their mean,
+    weighted by their frames), and the single frames given beside it are left out (it holds them already, or they
+    would count twice). ``frames`` keeps the masters only, for the kinds that have one; each is said in the log, in one
+    line."""
+    out: dict[str, list[dict]] = {}
+    for kind, word in CAL_KINDS.items():
+        ms = [f for f in frames.get(kind) or [] if f.get("stacked") is not None]
+        if not ms:
+            continue
+        left = len(frames[kind]) - len(ms)
+        frames[kind] = out[kind] = ms
+        n = sum(int(f["stacked"]) for f in ms)
+        what = (("a master" if len(ms) == 1 else f"{len(ms)} masters") +
+                (f" of {n} frames" if n and all(f["stacked"] for f in ms) else ""))
+        done = ", already calibrated" if kind == "flats" else ""
+        ctx.log(f"the {word} are {what}{done}: used as {'it is' if len(ms) == 1 else 'they are'}" +
+                ("" if len(ms) == 1 else " (their mean, weighted by their frames)"))
+        if left:
+            ctx.log(f"{left} single {word} given beside the master are left out (it holds its frames already)",
+                    "warning")
+    return out
+
+
+def _masters_mean(ms: list[dict], ctx: Context, label: str, read=None) -> np.ndarray:
+    """The master of a kind given as masters: the one file as it is, or their mean weighted by the frames each holds
+    (one when its header does not say)."""
+    read = read or read_cfa
+    out, tot = None, 0.0
+    for i, f in enumerate(ms):
+        w = float(f.get("stacked") or 1)
+        a = read(f["path"]) * np.float32(w) if len(ms) > 1 else read(f["path"])
+        out = a if out is None else out + a
+        tot += w
+        _tick(ctx, f"reading the {label} {i + 1}/{len(ms)}")
+    return out if len(ms) == 1 else (out / np.float32(tot)).astype(np.float32)
+
+
+#: a dark whose median level is under this share of the bias level (or of the black level without bias frames) had its
+#: bias taken off: it does not take the lights' off (a master made by another program with its bias removed)
+DARK_FAR = 0.5
+#: a master flat over its centre whose lowest levels (its 0.01 % percentile) go under minus this share went under the
+#: level it was corrected with: the flats had their bias taken off already, and the calibration took it off again
+FLAT_UNDER = 0.005
+#: the percentile of a flat's lowest levels: a few pixels in a million, not the single dead pixel
+LOW_PCT = 0.01
+
+
+def dark_far(level: float, ref: float) -> bool:
+    """Whether darks of median ``level`` cannot take off the lights' bias level ``ref`` (``DARK_FAR``): the rule of the
+    stage's warning and of the Inspect's matching line."""
+    return ref > 0 and level < DARK_FAR * ref
+
+
+def flat_under(low: float) -> bool:
+    """Whether a flat whose lowest levels are ``low``, as a share of its central level once the bias (or the level it is
+    corrected with) is taken off, went under it (``FLAT_UNDER``): its bias was taken off twice."""
+    return low < -FLAT_UNDER
+
+
+def master_bias(paths: list[str], ctx: Context, masters: list[dict] | None = None) -> np.ndarray | None:
+    """Master bias (offset): median of the bias frames, or None without any; ``masters``: the given master, as it is."""
+    if masters:
+        return _masters_mean(masters, ctx, "master bias")
     return _median_stack(paths, ctx, "bias") if paths else None
 
 
 def master_dark(paths: list[str], bias: np.ndarray | None, H: int, W: int, black: float,
-                ctx: Context) -> tuple[np.ndarray, float | None]:
+                ctx: Context, masters: list[dict] | None = None) -> tuple[np.ndarray, float | None]:
     """Master dark (median of the darks) and the noise of one dark frame; without darks, the master bias or the black
-    level stands for it."""
+    level stands for it. ``masters``: the given master dark, as it is; the noise of one dark is then not known (a
+    master's is the noise of its mean, and its fixed pattern does not go down with it: none rather than a guess)."""
+    if masters:
+        return _masters_mean(masters, ctx, "master dark"), None
     if paths:
         dark = _median_stack(paths, ctx, "darks")
         one = read_cfa(paths[0])
@@ -174,15 +249,35 @@ def scaled_dark(ctx: Context, dark: np.ndarray, bias: np.ndarray | None, black: 
     return (base + (dark - base) * np.float32(r)).astype(np.float32)
 
 
+def check_dark(ctx: Context, dark: np.ndarray, bias: np.ndarray | None, black: float) -> None:
+    """Darks whose level is far under the bias (or the black level) had their bias taken off: said, never guessed
+    (``dark_far``): the lights then keep their own, which the flat turns into an inverted vignetting."""
+    level = float(np.median(dark))
+    ref = float(np.median(bias)) if bias is not None else black
+    if dark_far(level, ref):
+        ctx.log(f"the master dark's level ({level:.0f} ADU) is far under the {'bias' if bias is not None else 'black level'}"
+                f" ({ref:.0f} ADU): its bias was taken off, so it does not take the lights' off; give darks that hold it",
+                "warning")
+
+
 def master_flat(paths: list[str], flat_dark_paths: list[str], bias: np.ndarray | None, dark_level: float, H: int,
-                W: int, flat_scale_px: float, ctx: Context, keep: dict | None = None, cfa: str = "RGGB") -> np.ndarray:
+                W: int, flat_scale_px: float, ctx: Context, keep: dict | None = None, cfa: str = "RGGB",
+                master: bool = False, fd_masters: list[dict] | None = None) -> np.ndarray:
     """Master flat normalised to 1 at the centre of each position of the colour pattern (``cfa``: its 4 Bayer
     positions, its 36 X-Trans ones), all ones without flats. ``keep``: receives the master flat dark under
-    "flat_dark" when there are flat darks."""
+    "flat_dark" when there are flat darks (``fd_masters``: given as a master, as it is). ``master``: the flats are a
+    master (``given_masters_of``): already
+    calibrated (the stacking programs take the bias or the flat dark off each flat before they stack them, which is
+    what makes a master flat), so nothing is taken off it: the bias taken off again was 7 to 20 % of a flat's level."""
     P = cfa_mod.period(cfa)
     if paths:
-        if flat_dark_paths:
-            fdark = _median_stack(flat_dark_paths, ctx, "flat darks")
+        if master:
+            fdark = np.zeros((H, W), np.float32)
+            if flat_dark_paths:
+                ctx.log("the flat darks are not used: the master flat is already calibrated")
+        elif flat_dark_paths:
+            fdark = (_masters_mean(fd_masters, ctx, "master flat dark") if fd_masters else
+                     _median_stack(flat_dark_paths, ctx, "flat darks"))
             if keep is not None:
                 keep["flat_dark"] = fdark
         elif bias is not None:
@@ -190,6 +285,11 @@ def master_flat(paths: list[str], flat_dark_paths: list[str], bias: np.ndarray |
         else:
             fdark = np.full((H, W), dark_level, np.float32)   # flats are short: dark current negligible
         flat = _master_flat(paths, fdark, ctx)
+        low = float(np.percentile(flat[::2, ::2], LOW_PCT))
+        if not master and flat_under(low):
+            ctx.log(f"the flats go under the {'flat darks' if flat_dark_paths else 'bias' if bias is not None else 'dark level'}"
+                    f" they are corrected with ({100 * low:.1f} % of their level): their bias was taken off already, "
+                    "and is taken off again", "warning")
         if flat_scale_px > 0:
             # borrowed flat: vignetting only (each colour plane smoothed; its dust is not this night's dust)
             for k in range(P * P):
@@ -690,13 +790,17 @@ def calibrate_colour(ctx: Context, p: CalibrateParams, frames: dict) -> None:
         _colour_cache(ctx, p, frames["lights"], np.full((3, H, W), black, np.float32), np.ones((3, H, W), np.float32),
                       np.zeros((H, W), bool), white, time.time())
         return
+    ms = given_masters_of(ctx, frames)                # as for mosaics: a master given is used as it is
     nm = sum(len(frames[k]) for k in ("bias", "darks", "flats", "flat_darks"))
     ctx._files_total, ctx._files_read, ctx._lights_from = nm, 0, nm / max(nm + len(frames["lights"]), 1)
     ctx.phase(0.0, ctx._lights_from)
-    bias = _colour_median([f["path"] for f in frames["bias"]], ctx, "bias") if frames["bias"] else None
+    bias = (_masters_mean(ms["bias"], ctx, "master bias", read_colour) if "bias" in ms else
+            _colour_median([f["path"] for f in frames["bias"]], ctx, "bias") if frames["bias"] else None)
     if bias is not None:
         ctx.save("master_bias.npy", cfa_mod.luminance(bias))
-    if frames["darks"]:
+    if "darks" in ms:
+        dark = _masters_mean(ms["darks"], ctx, "master dark", read_colour)
+    elif frames["darks"]:
         dark = _colour_median([f["path"] for f in frames["darks"]], ctx, "darks")
         one = cfa_mod.luminance(read_colour(frames["darks"][0]["path"]))
         ctx.metric("dark_frame_noise", round(robust_sigma(one[::3, ::3])[1], 2))
@@ -704,9 +808,12 @@ def calibrate_colour(ctx: Context, p: CalibrateParams, frames: dict) -> None:
         dark = bias.copy() if bias is not None else np.full((3, H, W), black, np.float32)
         ctx.log("no dark frames: using " + ("the master bias" if bias is not None else "the black level") +
                 " as dark (hot pixels will not be removed by calibration)", "warning")
+    if frames["darks"]:
+        check_dark(ctx, dark, bias, black)
     dark = scaled_dark(ctx, dark, bias, black, frames)
-    flat = _colour_flat([f["path"] for f in frames["flats"]], [f["path"] for f in frames["flat_darks"]], bias, dark, H, W,
-                        p.flat_scale_px, ctx)
+    flat = _colour_flat([f["path"] for f in frames["flats"]], [] if "flats" in ms else
+                        [f["path"] for f in frames["flat_darks"]], None if "flats" in ms else bias,
+                        np.zeros_like(dark) if "flats" in ms else dark, H, W, p.flat_scale_px, ctx)
     ctx.log("hot pixels seen in the lights: not looked for in frames already in colour (demosaicing has spread them)")
     level = np.median(dark, axis=(1, 2), keepdims=True)
     t0 = time.time()

@@ -68,6 +68,8 @@ class FrameInfo:
     object: str = ""
     pixel_scale: float | None = None  # arcsec per pixel, when the FITS headers give it (PIXSCALE, SECPIX)
     filter: str = ""                # the session filter its FITS header names (FILTER: Ha, OIII...); "" for none
+    stacked: int | None = None      # a master: the frames it was stacked from (0: not said); None: one frame
+                                    # (``master_count``)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -455,6 +457,31 @@ def _filter_of(hd) -> str:
     return FILTER_NAMES.get(str(hd.get("FILTER", "")).strip().lower(), "")
 
 
+#: the header keywords of the number of frames a master was stacked from: STACKCNT (written by the stacking programs
+#: of amateur astronomy, with a HISTORY line of the stacking), NCOMBINE (the combining task of the professional
+#: reduction packages, and the programs that follow it). Keywords that count the darks or flats used to calibrate a
+#: frame (DARK_CNT, CALSTAT...) are left aside: a calibrated light carries them too
+STACK_COUNT = ("STACKCNT", "NCOMBINE")
+#: what else says a file is a master: its image type ('Master Flat', 'MASTERDARK', the archives' 'masterflat'), or a
+#: HISTORY line of its stacking ('mean stacking with winsorized sigma clipping rejection...')
+MASTER_TYPE = re.compile(r"master", re.I)
+MASTER_HISTORY = re.compile(r"\bstacking\b", re.I)
+
+
+def master_count(hd) -> int | None:
+    """Whether a calibration file is a master, and of how many frames, from its header alone: the frame count of
+    ``STACK_COUNT`` (above 1), else 0 for an image type or a HISTORY line of a stacking (``MASTER_TYPE``,
+    ``MASTER_HISTORY``); None for one frame. The only rule of the program for it (the Calibration uses a master as it
+    is, stages/calibrate.py)."""
+    for key in STACK_COUNT:
+        n = _num(hd.get(key))
+        if n is not None and n > 1:
+            return int(n)
+    if MASTER_TYPE.search(str(hd.get("IMAGETYP", ""))) or any(MASTER_HISTORY.search(str(h)) for h in hd.get("HISTORY", [])):
+        return 0
+    return None
+
+
 def _fits_info(path: Path) -> FrameInfo:
     hd = fits_header(path)
     naxis = int(hd.get("NAXIS", 0))
@@ -490,6 +517,7 @@ def _fits_info(path: Path) -> FrameInfo:
     info.object = str(hd.get("OBJECT", "")).strip()
     info.pixel_scale = _num(hd.get("PIXSCALE", hd.get("SECPIX")))
     info.filter = _filter_of(hd)
+    info.stacked = master_count(hd)
     try:
         if "RA" in hd and "DEC" in hd and isinstance(hd["RA"], (int, float)):
             info.ra, info.dec = float(hd["RA"]), float(hd["DEC"])
