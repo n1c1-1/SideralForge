@@ -791,6 +791,25 @@ def test_estimates_follow_units_history_and_the_cpu():
     assert est.denoise_steps("adapted", "long") == 4000
 
 
+def test_an_image_opened_is_estimated_at_its_own_size(tmp_path):
+    """The night test pass: a picture of 1600 x 1100 was announced "≈ 3 min" on the processor and took 10 s (the
+    reference's 27 Mpx grid)."""
+    from types import SimpleNamespace
+
+    import cv2
+    import numpy as np
+    jpg = tmp_path / "a.jpg"
+    cv2.imwrite(str(jpg), np.zeros((1100, 1600, 3), np.uint8))
+    w = SimpleNamespace(id=1, source={"path": jpg.as_posix(), "stretched": True}, options={})
+    keys = SimpleNamespace(chain=lambda wf: ["image", "render_simple"], overrides=lambda wf, st: {},
+                           project=SimpleNamespace(workflows=[w], sessions=[], abspath=lambda x: x),
+                           scan=SimpleNamespace(frames=lambda p: []), rules=SimpleNamespace(chains=SimpleNamespace(stages={})))
+    f = est.facts(keys, 1)
+    assert f.grid_mpx == pytest.approx(1.76) and f.scale == 1.0
+    total = sum(est.estimate(st, f, gpu=False, history={}).seconds for st in ("image", "render_simple"))
+    assert total < 20
+
+
 def test_record_keeps_the_last_20_written_atomically(state):
     for i in range(25):
         est.record("stack", 10.0 + i, 5.0, True)

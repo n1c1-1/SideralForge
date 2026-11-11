@@ -317,6 +317,14 @@ def facts(keys: Any, wf: Any, store: Any = None) -> Facts:
     f.iterations = denoise_steps(dn.get("method") or (getattr(wf, "options", None) or {}).get("denoise"),
                                  dn.get("adaptation"))
     f.passes = 1 if dn.get("fast") else DENOISE_PASSES
+    # an image opened (not frames): its own size is the grid (the night test pass: the reference's 27 Mpx gave "≈ 3 min"
+    # for a picture of 2 Mpx computed in 10 s)
+    w = wf if hasattr(wf, "source") else next((x for x in keys.project.workflows if x.id == wf), None)
+    path = (getattr(w, "source", None) or {}).get("path")
+    if path and not grid:
+        mpx = _sensor_mpx(str(keys.project.abspath(path)) if hasattr(keys.project, "abspath") else str(path))
+        if mpx:
+            f.mpx, f.scale, f.grid_mpx = mpx, 1.0, mpx
     return f
 
 
