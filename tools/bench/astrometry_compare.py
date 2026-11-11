@@ -89,7 +89,8 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=30.0)
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("ASTRO_GPU_HOME", str(args.out / "home"))
+    from astro_gpu.core.sirilcat import private_home
+    private_home(os.environ.get("ASTRO_GPU_HOME") or args.out / "home")     # the installed catalogue stays visible
     os.environ.setdefault("ASTRO_GPU_SETTINGS", str(args.out / "settings.json"))
     os.environ.setdefault("ASTRO_GPU_OFFLINE", "1")
     import numpy as np
