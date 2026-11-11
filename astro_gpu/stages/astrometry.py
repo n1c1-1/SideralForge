@@ -460,6 +460,14 @@ def _blind(ctx, xy, W, H, at: float = 0.05):
 
 
 def _first_solution(ctx, p, g, ra0, dec0):
+    """Asterion's solution of the stack or None, and what found the field written once (the metric said "float" then
+    "asterion" in the log of a run that Asterion solved)."""
+    sol = _asterion_solution(ctx, p, g, ra0, dec0)
+    ctx.metric("first_solver", "asterion" if sol is not None else "float")
+    return sol
+
+
+def _asterion_solution(ctx, p, g, ra0, dec0):
     """Asterion's solution of the stack (core/asterion.py) or None, said in one line: the plane the stage already holds
     (no second read of the stack), the target's position as a limit of the search (none: the whole sky) and the scale
     when it is known; 10 s at most, stopped with the stage. Not installed, no solution: FLOAT's own search, said as
@@ -468,7 +476,6 @@ def _first_solution(ctx, p, g, ra0, dec0):
     import time
 
     from ..core import asterion
-    ctx.metric("first_solver", "float")
     if (ra0 is None or dec0 is None) and not p.blind:      # the whole sky only when the block allows it
         return None
     st = asterion.status()
@@ -491,7 +498,6 @@ def _first_solution(ctx, p, g, ra0, dec0):
     if sol is None:
         ctx.log(f"Asterion found no solution in {s:.1f} s: FLOAT's own search finds the field")
         return None
-    ctx.metric("first_solver", "asterion")
     ctx.log(f"first solution by Asterion in {s:.1f} s: {sol.scale:.3f}\"/px, {sol.matched} stars matched")
     return sol
 
