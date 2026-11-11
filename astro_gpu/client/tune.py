@@ -782,6 +782,9 @@ class TuneView(QWidget):
         g = g or Graph(s)
         self.strip.build(s, g)
         QTimer.singleShot(0, self.show_open_block)         # once laid out: the open block's button in view
+        if s.sel_step == "final":                          # Post first: on a blank page the Project block is the one
+            self.pages.setCurrentIndex(2)                  # chosen, and Post must still show (its page asks for images)
+            return
         if self.project_open():
             self.project_center()
             return
@@ -789,9 +792,6 @@ class TuneView(QWidget):
             self.pages.setCurrentIndex(1)
             if hasattr(self.sources, "refresh"):
                 self.sources.refresh()
-            return
-        if s.sel_step == "final":
-            self.pages.setCurrentIndex(2)
             return
         self.pages.setCurrentIndex(0)
         p = s.path
