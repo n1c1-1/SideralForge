@@ -2861,12 +2861,22 @@ class GraphPage(QWidget):
         return g.node_of(self.s.path, k)
 
     def build_tools(self):
-        """The palette (issue #47): every block, greyed where it cannot be placed in the current workflow."""
-        clear(self.tl)
+        """The palette (issue #47): every block, greyed where it cannot be placed in the current workflow. Built again
+        only when what it shows changed (#115: five times as a project opened, 85 cards for the same palette)."""
         s = self.s
         p = self.palette_path()
         folded = self.left_state == "folded"
         auto = self.left_state == "auto"
+        g = getattr(self.graph, "graph", None)
+        split = g.node_of(p, "etoiles") if (g is not None and p is not None and s.ready) else None
+        why = {b: self.palette_reason(b, p, split) for _t, blocks in PALETTE_GROUPS for b in blocks}
+        branch = {b: self.drag_only(b) if r else "" for b, r in why.items()}
+        sig = (self.left_state, p.name if p is not None else None, self.window().styleSheet(), why, branch)
+        if sig == getattr(self, "_tools_sig", None) and getattr(self, "cards", None):
+            self._fit_palette()
+            return
+        self._tools_sig = sig
+        clear(self.tl)
         self._only_unfolded_items = []
         self.tl.setContentsMargins(*((4, 6, 8, 6) if folded else (4, 10, 14, 10) if auto else (10, 10, 14, 10)))
         toggle = QToolButton()
@@ -2898,8 +2908,6 @@ class GraphPage(QWidget):
         top.addWidget(toggle, 0, Qt.AlignTop)
         self.tl.addLayout(top)
         self.tl.addSpacing(4)
-        g = getattr(self.graph, "graph", None)
-        split = g.node_of(p, "etoiles") if (g is not None and p is not None and s.ready) else None
         self.cards: dict[str, PaletteCard] = {}
         for title, blocks in PALETTE_GROUPS:
             self.tl.addSpacing(6)
@@ -2911,8 +2919,7 @@ class GraphPage(QWidget):
                 self._only_unfolded(head_l)
             self.tl.addWidget(head_l)
             for b in blocks:
-                reason = self.palette_reason(b, p, split)
-                card = PaletteCard(self, b, reason, folded=folded, branch=self.drag_only(b) if reason else "", auto=auto)
+                card = PaletteCard(self, b, why[b], folded=folded, branch=branch[b], auto=auto)
                 self.cards[b] = card
                 self.tl.addWidget(card)
         self.combine_card = self.cards["composition"]
