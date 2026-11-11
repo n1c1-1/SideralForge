@@ -40,8 +40,8 @@ from .. import api
 from ..core import workflow as wfl
 from ..core.project import Target
 from ..core.project2 import FILE as PROJECT_FILE
-from ..core.project2 import (FILTERS, Workflow, active_version, read_state, versions_problem, workflow_images,
-                            write_state)
+from ..core.project2 import (ACQUISITION, FILTERS, Workflow, active_version, read_state, versions_problem,
+                            workflow_images, write_state)
 from .blocks import COLUMNS, KEY_ENGINE_BLOCK, TOOLS, TRUNK, block_state, kbase, knum  # noqa: F401  (TOOLS: test_model_surface)
 from .blocks import ENGINE_BLOCK as ENGINE_KEY
 from .i18n import _, hm
@@ -260,6 +260,22 @@ class TargetState:
     name: str
     note: str
     replace: str = ""
+
+
+@dataclass
+class ProjectState:
+    """How complete the Project block is (issue #89): ``level`` "none" (no target: red), "partial" (a target, shooting
+    details missing: orange) or "complete" (green); ``missing``: the words of what is missing, in the form's order."""
+
+    level: str
+    missing: list[str]
+
+    @property
+    def line(self) -> str:
+        """What is missing, in one line: the block's tooltip and the top of its form say it."""
+        if not self.missing:
+            return _("Complete: target and shooting details given")
+        return _("Missing: {what}").format(what=", ".join(self.missing))
 
 
 @dataclass
@@ -1269,6 +1285,38 @@ class ProjectModel(QObject):
             with self._edit():
                 self.p.description = text
 
+    def set_project_name(self, name: str) -> bool:
+        """The project's name typed in its form (issue #89): the top bar, the window's title and Home show it; its folder
+        keeps its own. An empty name is refused (False), the old one kept."""
+        name = name.strip()
+        if not name:
+            return False
+        if name != self.p.name:
+            with self._edit():
+                self.p.name = name
+        return True
+
+    def set_shooting_detail(self, key: str, text: str):
+        """A shooting detail (``ACQUISITION``) typed in the Report or in the Project block's form: one place in the
+        project for both, a change Undo takes back as any other (issue #89); an empty one is forgotten."""
+        text = text.strip()
+        if text == self.p.acquisition.get(key, ""):
+            return
+        with self._edit():
+            if text:
+                self.p.acquisition[key] = text
+            else:
+                self.p.acquisition.pop(key, None)
+
+    def project_state(self) -> ProjectState:
+        """How complete the Project block is (issue #89): a target (typed, or what Astrometry found in the field), then
+        every shooting detail the Report asks the user for (the files say the rest)."""
+        words = dict(instrument=_("instrument"), mount=_("mount"), filter=_("filter"), location=_("location"),
+                     date=_("date"))
+        has_target = bool(self.target_state().name)
+        missing = ([] if has_target else [_("target")]) + [words[k] for k in ACQUISITION if not self.p.acquisition.get(k)]
+        return ProjectState("none" if not has_target else "partial" if missing else "complete", missing)
+
     def target_state(self) -> TargetState:
         """What the Project block says of the target: known, unknown or nothing; a target the solved field does not
         show is never replaced by itself, only proposed. The field's object is read from the results, not written into
@@ -1357,8 +1405,9 @@ class ProjectModel(QObject):
         """What Undo puts back: the workflows, and which sessions there are (a Session block is a block of the graph:
         removed, it comes back with what it had, issue #47), with their lists of files (``SessionSet``)."""
         post = json.dumps(getattr(self.p, "post", None) or {}, sort_keys=True)     # the composition too (2.1)
+        # the Project block's form too (issue #89): its name and shooting details, as its target and comments
         return (api.workflows(self.p), self.p.current, self.p.stack_mode, SessionSet(self.p), post,
-                asdict(self.p.target), self.p.description)
+                asdict(self.p.target), self.p.description, self.p.name, dict(self.p.acquisition))
 
     def _extra(self):
         """What an edit may change besides the workflows: the sessions and the frames excluded by hand."""
@@ -1435,8 +1484,9 @@ class ProjectModel(QObject):
         dst.append(self._snapshot())
         had = {v.pid: self.block_keys(v) for v in self.paths}      # decision 5: what comes back is selected
         old_keys = self.block_keys(self.path) if self.path is not None else []
-        ws, current, mode, sessions, post, target, description = src.pop()
-        self.p.target, self.p.description = Target(**target), description
+        ws, current, mode, sessions, post, target, description, name, acquisition = src.pop()
+        self.p.target, self.p.description, self.p.name, self.p.acquisition = Target(**target), description, name, \
+            dict(acquisition)
         frames_back = sessions.put_back(self.p)           # first: the workflows name them
         api.set_workflows(self.p, ws, current)
         self.p.stack_mode = mode

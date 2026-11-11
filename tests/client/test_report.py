@@ -59,8 +59,10 @@ def data(n=12, timed=True, figures=True):
 
 def page(monkeypatch, state="done", d=None):
     q = SimpleNamespace(pid=1, name="Full")
+    acq: dict[str, str] = {}
     s = SimpleNamespace(paths=[q], all_stages=lambda p: ("stack",), info=lambda: dict(camera="A7S", n_lights=12, iso_gain=5000.0, n_darks=48, n_flats=62),
-                        p=SimpleNamespace(acquisition={}), target="M 45", name="Pleiades", block_keys=lambda p: ["alignement", "empilement"])
+                        p=SimpleNamespace(acquisition=acq), target="M 45", name="Pleiades", block_keys=lambda p: ["alignement", "empilement"],
+                        set_shooting_detail=lambda k, t: acq.__setitem__(k, t) if t else acq.pop(k, None))   # the model's
     monkeypatch.setattr(rep, "block_state", lambda *_a: state)
     p = rep.ReportPage(s, Steps())
     p.refresh()

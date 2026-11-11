@@ -135,6 +135,8 @@ def test_the_name_proposed_is_the_target_else_the_folder_of_the_images(env):
     assert w._suggested_name() == "Rosette"
     w.s.set_target_name("M 42")
     assert w._suggested_name() == "M 42"
+    w.s.set_project_name("Orion in the wind")                    # typed in the Project block's form (issue #89)
+    assert w._suggested_name() == "Orion in the wind"
 
 
 def test_closing_a_project_without_a_name_with_edits_asks_its_name_or_drops_it(env):
@@ -182,7 +184,7 @@ def click_project(w):
 def test_the_project_block_is_above_the_first_object_from_the_blank_page_on(env):
     w = untitled(env)
     it = item(w)
-    assert it.dot == "empty" and it.title == "Project" and it.summary == "Untitled"
+    assert it.state == "none" and it.title == "Project" and it.summary == "Untitled"
     zone = w.graph.graph.new_flow_ghost.rect
     assert it.rect.bottom() < zone.top()
     assert w.graph.current_node() is w.graph.project_node         # a blank page: its panel
@@ -223,7 +225,7 @@ def test_the_target_typed_goes_green_or_orange_and_undo_takes_it_back(env):
     assert w.s.dirty
     w.s.set_target_name("Region of mine")
     settle(w)
-    assert t.ra is None and w.s.target_state().dot == "unknown" and item(w).dot == "unknown"
+    assert t.ra is None and w.s.target_state().dot == "unknown" and item(w).state == "partial"
     assert w.s.undo()
     settle(w)
     assert w.s.p.target.name == "M 42" and w.s.p.target.ra is not None
@@ -425,28 +427,137 @@ def test_a_real_click_selects_the_project_block(env):
     assert item(w).selected
 
 
-@pytest.mark.parametrize("side", ["docked", "icons"])
-def test_a_double_click_on_the_project_block_opens_its_fields_to_be_typed_in(env, side):
-    """Issue #89: a double-click on the Project block did nothing more than a click; it opens it, as a double-click opens
-    the other blocks: its panel shown (over the graph when folded to icons), the keyboard in its first field, the
-    target, its text selected to be typed over; what is typed is the project's."""
+FULL = dict(instrument="Refractor 80/480", mount="German mount", filter="Dual band", location="Garden",
+            date="2026-11-09")
+
+
+def form(w):
+    """The Project block's form shown in the centre of Inspect (issue #89)."""
+    from astro_gpu.client.panel import ProjectForm
+    f = w.tune.project_form
+    assert isinstance(f, ProjectForm) and f.isVisible() and w.tune.isVisible()
+    return f
+
+
+def test_the_project_block_is_red_orange_or_green_and_its_tooltip_says_what_is_missing(env):
+    """Issue #89: red with no target, orange with a target but shooting details missing, green when complete."""
+    w = project_with_a_chain(env)
+    assert item(w).state == "none"
+    assert "Missing: target, instrument, mount, filter, location, date" in item(w).toolTip()
+    w.s.set_target_name("M 42")
+    settle(w)
+    assert item(w).state == "partial" and "Missing: instrument, mount, filter, location, date" in item(w).toolTip()
+    for k, v in FULL.items():
+        w.s.set_shooting_detail(k, v)
+    settle(w)
+    assert item(w).state == "complete" and "Missing" not in item(w).toolTip() and "Complete" in item(w).toolTip()
+    w.s.set_shooting_detail("date", "  ")                         # emptied: forgotten, missing again
+    settle(w)
+    assert "date" not in w.s.p.acquisition and item(w).state == "partial" and "Missing: date" in item(w).toolTip()
+    w.s.set_target_name("")
+    w.s._facts.in_field = [ROSETTE]                               # what Astrometry found counts as a target
+    w.graph.graph.rebuild()
+    assert item(w).state == "partial"
+    from astro_gpu.client.widgets import BAD, OK, WARN
+    assert ProjectItem.COLOURS == {"none": BAD, "partial": WARN, "complete": OK}
+
+
+def test_a_double_click_on_the_project_block_opens_its_form_in_inspect(env):
+    """Issue #89: a double-click on the Project block opens it in Inspect, as a double-click opens the other blocks, with
+    one form in the centre: name, target, shooting details; what is typed there is the project's."""
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
     w = project_with_a_chain(env)
     w.s.set_target_name("M 42")
     gv = w.graph.graph
-    w.graph.dock.set_state(side)
     settle(w)
     QTest.mouseDClick(gv.viewport(), Qt.LeftButton, pos=gv.mapFromScene(item(w).sceneBoundingRect().center()))
     settle(w)
-    ed = w.focusWidget()                     # the window's (offscreen it is never active): the keyboard's once it is
-    assert isinstance(ed, QLineEdit) and w.graph.panel.isAncestorOf(ed) and ed.isVisible()
-    assert ed.text() == "M 42" and ed.selectedText() == "M 42" and item(w).selected
-    assert w.graph.dock.state == side and (side == "docked" or w.graph.dock.is_open())
-    QTest.keyClicks(ed, "NGC 7000")
-    ed.editingFinished.emit()
+    assert w.mode == 1 and w.graph.project_open()
+    f = form(w)
+    assert w.tune.center.indexOf(f) >= 0 and not w.tune.panel.findChildren(QLineEdit)   # one form, in the centre
+    assert f.name.text() == "Chain" and f.target.text() == "M 42" and "Missing: instrument" in f.state.text()
+    assert all(e.toolTip() for e in [f.name, f.target, *f.capture.values(), *f.shooting.values(), f.comment])
+    f.name.setText("Orion")
+    f.name.editingFinished.emit()
+    f.target.setText("NGC 7000")
+    f.target.editingFinished.emit()
     settle(w)
-    assert w.s.p.target.name == "NGC 7000"
+    assert w.s.p.name == "Orion" and w.s.p.target.name == "NGC 7000" and w.s.dirty
+    assert form(w) is f and "Orion" in w.title.text()                      # kept, not built again under the fingers
+    f.name.setText("  ")                                                  # a name emptied: the one it had comes back
+    f.name.editingFinished.emit()
+    settle(w)
+    assert w.s.p.name == "Orion" and f.name.text() == "Orion"
+    assert w.s.undo()
+    settle(w)
+    assert w.s.p.target.name == "M 42" and f.target.text() == "M 42"
+    assert w.s.undo()
+    settle(w)
+    assert w.s.p.name == "Chain" and f.name.text() == "Chain"
+    w.tune.back.emit()                                                    # Esc: the graph, the block still chosen
+    settle(w)
+    assert w.mode == 0 and item(w).selected
+
+
+def test_a_single_click_keeps_the_graph_and_enter_opens_the_form(env):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    w = project_with_a_chain(env)
+    gv = w.graph.graph
+    QTest.mouseClick(gv.viewport(), Qt.LeftButton, pos=gv.mapFromScene(item(w).sceneBoundingRect().center()))
+    settle(w)
+    assert w.mode == 0 and item(w).selected and w.graph.panel.findChildren(QLineEdit)
+    w.activateWindow()                                    # offscreen the window is not active by itself: its shortcuts
+    QApplication.setActiveWindow(w)                       # need it to be
+    gv.viewport().setFocus()
+    QTest.keyClick(gv.viewport(), Qt.Key_Return)
+    settle(w)
+    assert w.mode == 1 and form(w).target.isVisible()
+    w.resize(1100, 520)                                   # a small window: the form scrolls, never wider than its room
+    settle(w)
+    f = form(w)
+    assert f.verticalScrollBar().maximum() > 0 and f.widget().width() <= f.viewport().width()
+    w.tune.select(step="alignement")                                     # another block: the form goes
+    w.tune.refresh()
+    settle(w)
+    assert w.tune.project_form is None and not w.graph.project_open()
+
+
+def test_a_shooting_detail_of_the_form_reaches_the_report_and_back(env):
+    """Issue #89: the form and the Report edit one place in the project: what is typed in one is in the other, in the
+    Report's text, saved with the project, taken back by Undo."""
+    from astro_gpu.client import report as rep
+    w = project_with_a_chain(env)
+    w.graph.open_project()
+    settle(w)
+    f = form(w)
+    f.shooting["mount"].setText("German mount")
+    f.shooting["mount"].editingFinished.emit()
+    settle(w)
+    assert w.s.p.acquisition == {"mount": "German mount"} and w.s.dirty
+    w.set_mode(3)
+    settle(w)
+    assert w.report.fields["mount"].text() == "German mount"
+    assert ("mount", "Mount", "German mount") in rep.shot_rows(rep.ReportData(), {}, w.report.entered(), "en")
+    w.report.fields["date"].setText("2026-11-09")
+    w.report.set_field("date")
+    assert w.s.undo()                                                   # Undo while the Report is shown: its field too
+    settle(w)
+    assert "date" not in w.s.p.acquisition and w.report.fields["date"].text() == ""
+    assert w.s.redo()
+    settle(w)
+    assert w.report.fields["date"].text() == "2026-11-09"
+    w.set_mode(0)
+    w.graph.open_project()
+    settle(w)
+    f = form(w)
+    assert f.shooting["date"].text() == "2026-11-09" and "Missing: target, instrument, filter, location" in f.state.text()
+    w.save()
+    assert project2.load(w.project.root).acquisition == {"mount": "German mount", "date": "2026-11-09"}
+    assert w.s.undo()
+    settle(w)
+    assert w.s.p.acquisition == {"mount": "German mount"} and form(w).shooting["date"].text() == ""
 
 
 def test_the_top_bar_shows_the_name_given_at_the_first_save(env):

@@ -15,7 +15,8 @@ Issue #44: the section titles fold (``layout.Sections``); Alt-click keeps one op
 the panel opens with one section at a time, and the ``layout.Dock`` of its page folds the whole panel to icons.
 
 Classes: ``Panel``, its rows (``CompactRow``), the method cards (``MethodCard``, ``StackMethodCard`` with its
-``InfoDot``) and ``Details`` (what is known about the setting clicked).
+``InfoDot``), ``Details`` (what is known about the setting clicked) and ``ProjectForm`` (the Project block's form, in the
+centre of Inspect, issue #89).
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -130,6 +132,186 @@ class CommentEdit(QPlainTextEdit):
     def focusOutEvent(self, e):                                       # noqa: N802
         self.finished.emit(self.toPlainText())
         super().focusOutEvent(e)
+
+
+# ---------------------------------------------------------------------------------------------- the Project block
+#: what the target field's dot says (``ProjectModel.target_state``): green known, orange unknown here, grey empty
+TARGET_DOTS = {"known": OK, "unknown": WARN, "empty": "#6b7382"}
+#: how complete the block is (``ProjectModel.project_state``, issue #89): the colour of the block and of its line
+PROJECT_COLOURS = {"none": BAD, "partial": WARN, "complete": OK}
+#: what is known of the capture, kept with the target: (key, name, unit, tooltip)
+CAPTURE = (("ra", "RA", "°", "The target's right ascension, when the catalogues here do not know it"),
+           ("dec", "Dec", "°", "The target's declination, when the catalogues here do not know it"),
+           ("focal_mm", "Focal length", "mm", "The focal length of the instrument: Astrometry starts from it"),
+           ("pixel_um", "Pixel size", "µm", "The size of the camera's pixels: Astrometry starts from it"))
+#: the shooting details the files do not say, in ``ACQUISITION``'s order: (key, name, tooltip)
+SHOOTING = (("instrument", "Instrument", "The telescope or lens, as the Report and the text to paste give it"),
+            ("mount", "Mount", "The mount, as the Report gives it"),
+            ("filter", "Filter", "The filter in front of the camera, as the Report gives it"),
+            ("location", "Location", "Where the frames were taken, as the Report gives it"),
+            ("date", "Date", "The night of the shooting: the Report takes it from here, never from the camera's clock"))
+
+
+def capture_text(t, key: str) -> str:
+    return "" if getattr(t, key) is None else f"{getattr(t, key):g}"
+
+
+def capture_typed(s, key: str, ed: QLineEdit):
+    """A capture value typed (a decimal comma taken as a point); what is not a number is left as typed, not applied."""
+    text = ed.text().replace(",", ".").strip()
+    try:
+        value = float(text) if text else None
+    except ValueError:
+        return
+    if value != getattr(s.p.target, key):
+        s.set_target_values(**{key: value})
+
+
+def project_state_line(ps) -> QLabel:
+    """What the Project block misses to be complete, in its colour (issue #89)."""
+    lb = label("", wrap=True)
+    set_project_state(lb, ps)
+    lb.setToolTip(_("Red: no target; orange: shooting details missing; green: complete"))
+    return lb
+
+
+def set_project_state(lb: QLabel, ps):
+    lb.setText("● " + ps.line)
+    lb.setStyleSheet(f"color: {PROJECT_COLOURS[ps.level]}; font-weight: 600;")
+
+
+class ProjectForm(QScrollArea):
+    """The Project block's form, in the centre of Inspect (issue #89): its name, its target (its state as in its panel),
+    the capture data, the shooting details the Report reads (the same values: one place in the project, the Report's
+    fields and these stay in step) and the comments; at its top, in one line, what is missing for the block to be
+    complete. A field applies at Enter or when it is left, as the panel's, through the model's setters (Undo, Save).
+    Built once while it is shown: ``load`` puts the project's values back in the fields not being typed in, never
+    building them again under the user's fingers. It scrolls on a small window."""
+
+    WIDTH = 640                                          # the form's column, at most
+    NAME_W = 140                                         # the column of the fields' names
+
+    def __init__(self, project, parent=None):
+        super().__init__(parent)
+        self.s = s = project
+        self.setObjectName("projectForm")
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet("QScrollArea#projectForm { background: transparent; } "
+                           "QScrollArea#projectForm > QWidget > QWidget { background: transparent; }")
+        host = QWidget()
+        outer = QHBoxLayout(host)
+        outer.setContentsMargins(16, 12, 16, 16)
+        col = QWidget()                                  # centred, as wide as the room up to WIDTH
+        col.setMaximumWidth(self.WIDTH)
+        outer.addStretch(1)
+        outer.addWidget(col, 100)
+        outer.addStretch(1)
+        self.v = v = QVBoxLayout(col)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+        self.state = project_state_line(s.project_state())
+        v.addWidget(self.state)
+        form = self._form(_("Project"))
+        self.name = self._field(form, _("Name"), _("The project's name: the top bar, the window's title and Home show it; "
+                                                   "its folder keeps its own"))
+        self.name.editingFinished.connect(self._name_typed)
+        row = QHBoxLayout()
+        self.dot = QLabel("●")
+        row.addWidget(self.dot)
+        self.target = QLineEdit()
+        self.target.setToolTip(_("The object photographed: Astrometry starts from it, the Report takes it as its title"))
+        self.target.editingFinished.connect(lambda: s.set_target_name(self.target.text()))
+        row.addWidget(self.target, 1)
+        form.addRow(self._name(_("Target")), row)
+        under = QVBoxLayout()                            # what the target's state says, under its field
+        under.setSpacing(4)
+        self.note = label("", "small", wrap=True)
+        under.addWidget(self.note)
+        self.replace = QPushButton()
+        self.replace.setToolTip(_("The object the solved field shows, in place of the target typed"))
+        self.replace.clicked.connect(lambda: s.set_target_name(s.target_state().replace))
+        under.addWidget(self.replace, 0, Qt.AlignLeft)
+        form.addRow("", under)
+        # what Astrometry starts from (the panel's Capture): named by its use, not "Prise de vue" next to the "Fiche de
+        # prise de vue" below it in French
+        form = self._form(_("Astrometry"))
+        self.capture: dict[str, QLineEdit] = {}
+        for key, word, unit, tip in CAPTURE:
+            row = QHBoxLayout()
+            e = QLineEdit()
+            e.setPlaceholderText(_("optional"))
+            e.setToolTip(_(tip))
+            e.setFixedWidth(140)
+            e.editingFinished.connect(lambda k=key, x=e: capture_typed(s, k, x))
+            row.addWidget(e)
+            row.addWidget(label(unit, "dim"))
+            row.addStretch(1)
+            form.addRow(self._name(_(word)), row)
+            self.capture[key] = e
+        form = self._form(_("Shooting details"))
+        form.addRow(label(_("What the files do not say. Kept in the project."), "small", wrap=True))
+        self.shooting: dict[str, QLineEdit] = {}
+        for key, word, tip in SHOOTING:
+            self.shooting[key] = e = self._field(form, _(word), _(tip))
+            e.editingFinished.connect(lambda k=key, x=e: s.set_shooting_detail(k, x.text()))
+        self._form(_("Comments"))
+        self.comment = CommentEdit("")
+        self.comment.setToolTip(_("Notes on this project"))
+        self.comment.finished.connect(s.set_description)
+        v.addWidget(self.comment)
+        v.addStretch(1)
+        self.setWidget(host)
+        self.load()
+
+    def _form(self, title: str) -> QFormLayout:
+        """A section: its title as the panel's, then its labelled rows."""
+        t = label(title)
+        t.setStyleSheet("color: #aab2bf; font-weight: 600; margin-top: 10px; margin-bottom: 2px;")
+        self.v.addWidget(t)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(6)
+        self.v.addLayout(form)
+        return form
+
+    def _name(self, text: str) -> QLabel:
+        """A field's name, all of one width: the fields of every section start at the same x."""
+        n = label(text, "dim")
+        n.setFixedWidth(self.NAME_W)
+        return n
+
+    def _field(self, form: QFormLayout, name: str, tip: str) -> QLineEdit:
+        e = QLineEdit()
+        e.setToolTip(tip)
+        form.addRow(self._name(name), e)
+        return e
+
+    def _name_typed(self):
+        if not self.s.set_project_name(self.name.text()):    # emptied: the name it had comes back
+            self.name.setText(self.s.name)
+
+    def load(self):
+        """The project's values in the fields (not in the one being typed in), the target's state and what is missing."""
+        s = self.s
+        t, st = s.p.target, s.target_state()
+        values = [(self.name, s.name), (self.target, t.name or "")] + \
+            [(self.capture[k], capture_text(t, k)) for k in self.capture] + \
+            [(self.shooting[k], s.p.acquisition.get(k, "")) for k in self.shooting]
+        for ed, text in values:
+            if not ed.hasFocus() and ed.text() != text:
+                ed.setText(text)
+        if not self.comment.hasFocus() and self.comment.toPlainText() != (s.p.description or ""):
+            self.comment.setPlainText(s.p.description or "")
+        self.target.setPlaceholderText(st.name or "NGC 7000")
+        self.dot.setStyleSheet(f"color: {TARGET_DOTS[st.dot]}; font-size: 13pt;")
+        self.note.setText(st.note)
+        self.replace.setText(_("Replace by {name}").format(name=st.replace))
+        self.replace.setVisible(bool(st.replace))
+        set_project_state(self.state, s.project_state())
 
 
 class CompactRow(SettingRow):
@@ -353,7 +535,6 @@ class Panel(QWidget):
         self.expert = False
         self.focus_key = None
         self.node = None
-        self.first_field: QLineEdit | None = None  # the block's first field, given the keyboard by its double-click (#89)
         self._unit_w = 0                    # the unit column of the rows shown
         self.setObjectName("panel")
         self.setFixedWidth(390)
@@ -443,7 +624,6 @@ class Panel(QWidget):
         clear(self.bv)
         self.folds.reset()
         self.details.hide()
-        self.first_field = None
         if node is not None and not self._alive(node):     # its block went away (Ctrl+Z, a removal): the page gives
             node = None                                     # the panel the block selected now
         self.node = node
@@ -530,35 +710,41 @@ class Panel(QWidget):
         self.bv.addStretch(1)
 
     def project_panel(self):
-        """The Project block: the target and what is known of the capture, the comments."""
+        """The Project block: what it misses to be complete, the target and what is known of the capture, the comments;
+        in Graph, the way to its whole form in Inspect (issue #89)."""
         s = self.s
         t, st = s.p.target, s.target_state()
         self.hv.addWidget(label(s.name, "h1"))
+        self.hv.addWidget(project_state_line(s.project_state()))
+        if not self.tune:
+            b = QPushButton(_("Open form"))
+            b.setToolTip(_("Opens the block in Inspect: its name, its target and the shooting details the Report reads"))
+            b.clicked.connect(self.openTune.emit)
+            self.hv.addWidget(b, 0, Qt.AlignLeft)
         self.bv.addWidget(self.group_title(_("Target")))
         row = QHBoxLayout()
         dot = QLabel("●")
-        dot.setStyleSheet(f"color: {dict(known=OK, unknown=WARN, empty='#6b7382')[st.dot]}; font-size: 13pt;")
+        dot.setStyleSheet(f"color: {TARGET_DOTS[st.dot]}; font-size: 13pt;")
         row.addWidget(dot)
         ed = QLineEdit(t.name or "")
         ed.setPlaceholderText(st.name or "NGC 7000")
         ed.editingFinished.connect(lambda: s.set_target_name(ed.text()))
         row.addWidget(ed, 1)
         self.bv.addLayout(row)
-        self.first_field = ed
         self.bv.addWidget(label(st.note, "small", wrap=True))
         if st.replace:
             b = QPushButton(_("Replace by {name}").format(name=st.replace))
             b.clicked.connect(lambda: s.set_target_name(st.replace))
             self.bv.addWidget(b, 0, Qt.AlignLeft)
         self.bv.addWidget(self.group_title(_("Capture")))
-        for key, word, unit in (("ra", "RA", "°"), ("dec", "Dec", "°"), ("focal_mm", "Focal length", "mm"),
-                                ("pixel_um", "Pixel size", "µm")):
+        for key, word, unit, tip in CAPTURE:
             row = QHBoxLayout()
             row.addWidget(label(_(word), "dim"), 1)
-            e = QLineEdit("" if getattr(t, key) is None else f"{getattr(t, key):g}")
+            e = QLineEdit(capture_text(t, key))
             e.setPlaceholderText(_("optional"))
+            e.setToolTip(_(tip))
             e.setFixedWidth(110)
-            e.editingFinished.connect(lambda k=key, x=e: self._capture_typed(k, x))
+            e.editingFinished.connect(lambda k=key, x=e: capture_typed(s, k, x))
             row.addWidget(e)
             u = label(unit, "dim")
             u.setFixedWidth(22)
@@ -569,15 +755,6 @@ class Panel(QWidget):
         note.finished.connect(s.set_description)
         self.bv.addWidget(note)
         self.bv.addStretch(1)
-
-    def _capture_typed(self, key: str, ed: QLineEdit):
-        text = ed.text().replace(",", ".").strip()
-        try:
-            value = float(text) if text else None
-        except ValueError:
-            return
-        if value != getattr(self.s.p.target, key):
-            self.s.set_target_values(**{key: value})
 
     def sources(self):
         s = self.s

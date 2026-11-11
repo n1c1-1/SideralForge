@@ -829,6 +829,8 @@ class Main(QMainWindow):
         tune.sideChosen.connect(lambda st: self._side_chosen("right", st))
         tune.sidesShown.connect(self._show_sides)
         tune.can_post = self.browser.can_post = lambda: True    # Post takes Inspect's images as layers
+        # the Project block chosen in the graph (a click, its double-click, Enter): its form (issue #89)
+        tune.project_open = lambda: self.graph is not None and self.graph.project_open()
         tune.sendToPost.connect(self._send_to_post)
         self.browser.sendToPost.connect(self._send_to_post)
         self.frames.imported.connect(self.request_refresh)
@@ -1128,8 +1130,11 @@ class Main(QMainWindow):
         self.flash(_("Project saved"))
 
     def _suggested_name(self) -> str:
-        """The name a project without one is proposed: its target, else the folder of its images."""
+        """The name a project without one is proposed: the name typed in its form (issue #89), else its target, else the
+        folder of its images."""
         s = self.s
+        if s.name and s.name not in ("Untitled", _("Untitled")):
+            return s.name
         if s.target_state().name:
             return s.target_state().name
         for ses in s.p.sessions:

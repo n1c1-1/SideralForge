@@ -84,7 +84,7 @@ from .i18n import _, hours_text, language, number, plural
 from .icons import IconLabel, IconText, icon, set_icon
 from .imageview import ImageView, ViewImage, quick_thumbnail, sky_text
 from .layout import Dock, fold_button
-from .panel import STATE_COLOR, STATE_WORD, Panel
+from .panel import STATE_COLOR, STATE_WORD, Panel, ProjectForm
 from .services import inspect as si
 from .services.inspect import CATALOGUE_G_MAX, VisualSpec
 from .services.run import duration_text
@@ -596,6 +596,8 @@ class TuneView(QWidget):
         self._cal_filter: dict[str, str] = {}             # calibration tab -> "all" | "flagged" (the suspicious frames)
         self._note_row = None                             # the line under the tabs, where a picture's options go
         self.can_post = None                              # callable: Post takes images (the window sets it)
+        self.project_open = lambda: False                 # callable: the Project block is the one open (the window
+        self.project_form: ProjectForm | None = None      # sets it: the graph's), its form in the centre (issue #89)
         self._pending = False
         self._dirty = True
         self.views: list[ImageView] = []                  # the viewers of the tab shown
@@ -780,6 +782,9 @@ class TuneView(QWidget):
         g = g or Graph(s)
         self.strip.build(s, g)
         QTimer.singleShot(0, self.show_open_block)         # once laid out: the open block's button in view
+        if self.project_open():
+            self.project_center()
+            return
         if s.sel_step == "sources" or s.sel_step.startswith("session@"):    # a Session block: its frames (#43)
             self.pages.setCurrentIndex(1)
             if hasattr(self.sources, "refresh"):
@@ -890,6 +895,25 @@ class TuneView(QWidget):
             self.grad_editor.attach(self.view, p)
         QTimer.singleShot(PREFETCH_DELAY_MS, lambda pp=p, kk=k: self._prefetch(pp, kk))
 
+    def project_center(self):
+        """The Project block open (issue #89): its form in the centre, the panel on the right empty (the form holds what
+        it had). The form stays while the block does: its values are put back, a field being typed in keeps its text."""
+        self.pages.setCurrentIndex(0)
+        self._remember()
+        self.panel.refresh(None)
+        clear(self.head)
+        self.grad_editor.detach()
+        self.head.addWidget(label(_("Project") + "  ·  " + self.s.name, "h1"))
+        self.head.addStretch(1)
+        self._cur = None
+        self._center_sig = ("project",)                   # another block after it: the centre is built again
+        if self.project_form is not None:
+            self.project_form.load()
+            return
+        self._clear_center()
+        self.project_form = ProjectForm(self.s)
+        self.center.addWidget(self.project_form, 1)
+
     def _exclusion_hold(self, p, k: str):
         """(signature, the one to compare it with) when the viewer shown has just left a frame out or taken it back
         (X): it shows it already, and the scan of the sources that follows must not build it again (issue #24, case
@@ -978,6 +1002,7 @@ class TuneView(QWidget):
         for v in list(self.views):
             self._release(v)
         clear(self.center)
+        self.project_form = None
         self.views, self.view, self.chart, self.table = [], None, None, None
         self.sel_frames, self._seq_items = [], []
         self._render_spec = self._render_geom = None

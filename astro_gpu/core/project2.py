@@ -46,6 +46,9 @@ CALIBRATION_KINDS = KINDS[1:]
 STACK_MODES = ("together", "per_session")
 #: the filters a session may name (mono is planned, not built: a colour sensor has none)
 FILTERS = ("", "L", "R", "G", "B", "Ha", "OIII", "SII")
+#: the shooting details the files do not say (``Project2.acquisition``), in the order the Report and the Project block's
+#: form show them (issue #89)
+ACQUISITION = ("instrument", "mount", "filter", "location", "date")
 
 
 class LegacyProject(Exception):
@@ -168,8 +171,8 @@ class Project2:
     show_all: bool = False
     render_bases: dict[str, dict[str, Any]] = field(default_factory=dict)
     post: dict[str, Any] = field(default_factory=new_post)
-    #: what the files do not say of the shooting (instrument, mount, filter, location, date): entered in the Report; no
-    #: part of any result
+    #: what the files do not say of the shooting (``ACQUISITION``): entered in the Report or the Project block's form in
+    #: Inspect (issue #89), both through ``ProjectModel.set_shooting_detail``; no part of any result
     acquisition: dict[str, str] = field(default_factory=dict)
     next_workflow_id: int = 1        # ids are never reused, so an undo can bring a deleted workflow back
     format: int = FORMAT

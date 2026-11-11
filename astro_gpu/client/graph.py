@@ -552,15 +552,16 @@ class LinkItem(QGraphicsItem):
 
 
 class ProjectItem(QGraphicsItem):
-    """The Project block: above the first object, out of the flow; what it says of the target by a dot (green known,
-    orange unknown to the catalogues here, grey empty). A click shows its panel; a double-click opens it, the keyboard
-    in its first field (issue #89)."""
+    """The Project block: above the first object, out of the flow. Its colour says how complete it is (issue #89): red
+    with no target, orange with a target but shooting details missing, green when complete; its tooltip says what is
+    missing. A click shows its panel; a double-click opens it in Inspect, its form in the centre."""
 
-    DOTS = {"known": OK, "unknown": WARN, "empty": "#6b7382"}
+    COLOURS = {"none": BAD, "partial": WARN, "complete": OK}
 
-    def __init__(self, view, rect: QRectF, title: str, summary: str, dot: str, selected: bool, tip: str):
+    def __init__(self, view, rect: QRectF, title: str, summary: str, state: str, selected: bool, tip: str):
         super().__init__()
-        self.view, self.rect, self.title, self.summary, self.dot, self.selected = view, rect, title, summary, dot, selected
+        self.view, self.rect, self.title, self.summary, self.state, self.selected = \
+            view, rect, title, summary, state, selected
         self.setToolTip(tip)
         self.setZValue(6)
 
@@ -569,18 +570,24 @@ class ProjectItem(QGraphicsItem):
 
     def paint(self, p, opt, widget=None):
         p.setRenderHint(QPainter.Antialiasing)
-        p.setPen(QPen(QColor(ACCENT if self.selected else "#3a4150"), 2 if self.selected else 1))
+        col = QColor(self.COLOURS[self.state])
+        # outlined in its colour (a grey dot said nothing, issue #89), the selection's blue over it; the band on its left
+        # as the blocks' state band
+        p.setPen(QPen(QColor(ACCENT) if self.selected else col, 2 if self.selected else 1.4))
         p.setBrush(QColor("#2b3446" if self.selected else "#22262e"))
         p.drawRoundedRect(self.rect, 7, 7)
-        c = QPointF(self.rect.right() - 14, self.rect.top() + 14)
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(self.DOTS[self.dot]))
-        p.drawEllipse(c, 5, 5)
+        p.setBrush(col)
+        band = QPainterPath()
+        band.addRoundedRect(QRectF(self.rect.x(), self.rect.y(), 8, self.rect.height()), 4, 4)
+        clip = QPainterPath()
+        clip.addRect(QRectF(self.rect.x(), self.rect.y(), 4, self.rect.height()))
+        p.drawPath(band.intersected(clip))
         f = QFont("Segoe UI", 10)
         f.setBold(True)
         p.setFont(f)
         p.setPen(QColor("#e8ebf0"))
-        w = self.rect.width() - 34
+        w = self.rect.width() - 20
         p.drawText(QRectF(self.rect.x() + 11, self.rect.y() + 6, w, 20), Qt.AlignLeft | Qt.AlignVCenter,
                    QFontMetrics(f).elidedText(self.title, Qt.ElideRight, int(w)))
         f2 = QFont("Segoe UI", 8.5)
@@ -594,7 +601,7 @@ class ProjectItem(QGraphicsItem):
         e.accept()
 
     def mouseDoubleClickEvent(self, e):                               # noqa: N802
-        # Qt's own gave a second press, a click again: the panel shown, never its fields to be typed in (issue #89)
+        # Qt's own gave a second press, a click again: Inspect never opened, its fields never typed in (issue #89)
         self.view.projectOpened.emit()
         e.accept()
 
@@ -716,7 +723,7 @@ class GraphView(QGraphicsView):
     newSession = Signal()                  # "+ Session" (issue #43)
     templatesAsked = Signal()              # the blank page's link
     projectClicked = Signal()              # the Project block
-    projectOpened = Signal()               # its double-click (issue #89): its fields, to be typed in
+    projectOpened = Signal()               # its double-click (issue #89): Inspect, its form in the centre
     sessionMenu = Signal(str, int)         # action (rename, remove), session id
     postOpened = Signal()                  # "Open Post" of the Post block's menu
     deselected = Signal()                  # 2nd round, decision 5: a click on empty space, Escape, or a wire chosen
@@ -1241,10 +1248,11 @@ class GraphView(QGraphicsView):
                  and (n.paths or n.key == "session" or s.p.sessions)]
         x, w = cx.get("sources", 0.0), cw.get("sources", BW)
         y = (min(first) - BH / 2 if first and (s.paths or s.p.sessions) else gh_top) - BH - 14
-        st = s.target_state()
+        st, ps = s.target_state(), s.project_state()
         mine = self.project_selected()
-        it = ProjectItem(self, QRectF(x, y, w, BH), st.name or _("Project"), s.name, st.dot, mine,
-                         _("The project: target, comments, capture data") + "\n" + st.note)
+        tip = [_("The project: target, comments, capture data"), ps.line] + ([st.note] if st.name else []) + \
+            [_("Double-click: its form in Inspect")]
+        it = ProjectItem(self, QRectF(x, y, w, BH), st.name or _("Project"), s.name, ps.level, mine, "\n".join(tip))
         self.scene().addItem(it)
         self.project_item = it
         for n in g.nodes:
@@ -2821,26 +2829,14 @@ class GraphPage(QWidget):
         self.request_refresh()
 
     def open_project(self):
-        """The Project block's double-click (issue #89): opened as a double-click opens the other blocks, here where its
-        fields are: its panel shown (over the graph when folded, back when hidden), the keyboard in its first field."""
+        """The Project block's double-click (issue #89): opened as a double-click opens the other blocks, in Inspect,
+        its form in the centre (Enter on it does the same)."""
         self.select_project()
-        if self.dock.state == "hidden":
-            self.sidesShown.emit()
-        # after the refresh asked above: the graph is built again under the double-click, its item with it
-        QTimer.singleShot(0, self, self._type_in_project)
+        self.openBlock.emit()
 
-    def _type_in_project(self, shown: bool = False):
-        if self._pending:
-            self.refresh()
-        if self.current_node() is not self.project_node:     # another block chosen meanwhile
-            return
-        self.dock.open_overlay()                         # folded to icons or automatic: over the graph; docked: as it is
-        ed = self.panel.first_field
-        if ed is not None and ed.isHidden() and not shown:   # a field just built is shown by its layout a moment later,
-            QTimer.singleShot(0, self, lambda: self._type_in_project(True))     # and a hidden one takes no keyboard
-        elif ed is not None:                             # the target, its text selected to be typed over
-            ed.setFocus(Qt.OtherFocusReason)
-            ed.selectAll()
+    def project_open(self) -> bool:
+        """Whether the Project block is the one chosen: Inspect shows its form then."""
+        return self.current_node() is self.project_node
 
     def current_node(self, g=None):
         if self.is_blank() or (self._project_sel and not self.s.sel_step):

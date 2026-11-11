@@ -41,6 +41,7 @@ from .blocks import STATE_WORD, block_state
 from .charts import LINES, RegistrationData, registration_data
 from .. import texts
 from ..core.params import ADVANCED
+from ..core.project2 import ACQUISITION
 from .i18n import _, language, number
 
 #: the sections that are blocks of the chain, in its order: (block key, title)
@@ -61,8 +62,9 @@ INTRO = {"calibration": "Removes what comes from the sensor and the optics: its 
          "couleur": "Sets the colours from stars whose real colours are known.",
          "etoiles": "Separates the stars from the sky, to process them apart."}
 ZOOM_STEP = 1.15                                         # the reader's zoom, per step
-#: what the files do not say: entered with a click, kept in the project
-ENTERED = ("instrument", "mount", "filter", "location", "date")
+#: what the files do not say: entered with a click, kept in the project (the Project block's form in Inspect edits the
+#: same, issue #89)
+ENTERED = ACQUISITION
 #: the blocks' figures a reader of the report has no use for, and the star size on 2 x 2 super-pixels, which overestimates
 #: undersampled stars: the report's sizes are the Moffat fit's
 HIDDEN = ("Star FWHM range", "Cache size", "Flat minimum", "Integration", "Stacked exposure", "Drift")
@@ -560,6 +562,8 @@ class ReportPage(QWidget):
         self.service.jobReady.connect(self._ready)
         self.service.jobFailed.connect(self._failed)
         steps.changed.connect(self._facts_changed)
+        if hasattr(session, "pathsChanged"):             # Undo of a shooting detail while the Report is shown (#89)
+            session.pathsChanged.connect(self._entered_changed)
 
     def _side(self) -> QWidget:
         side = QFrame()
@@ -682,6 +686,7 @@ class ReportPage(QWidget):
             self.wf.addItem(q.name, q.pid)
         self.wf.setCurrentIndex(max(0, self.wf.findData(cur)))
         self.wf.setVisible(self.wf.count() > 1)          # a project of one workflow: nothing to choose
+        self._fill_entered()                             # at once: typed in the Project block's form meanwhile (#89)
         self.load()
 
     def load(self):
@@ -713,16 +718,12 @@ class ReportPage(QWidget):
         return self.s.p.acquisition
 
     def set_field(self, key: str):
-        """A field left: what it holds is kept in the project; an empty one is forgotten."""
+        """A field left: what it holds is kept in the project (an empty one is forgotten), by the model as the Project
+        block's form keeps it (issue #89): Undo takes it back, Save writes it."""
         text = self.fields[key].text().strip()
         if text == self.entered().get(key, ""):
             return
-        if text:
-            self.entered()[key] = text
-        else:
-            self.entered().pop(key, None)
-        if hasattr(self.s, "edited"):
-            self.s.edited()
+        self.s.set_shooting_detail(key, text)
         self.build()
 
     def details(self) -> str:
@@ -755,10 +756,19 @@ class ReportPage(QWidget):
         return self._picture([self._sections_now[i - len(nights)]], 2.0)
 
     # ------------------------------------------------------------ the report
+    def _fill_entered(self):
+        for key, e in self.fields.items():
+            if not e.hasFocus():                         # the one being typed in keeps what is typed
+                e.setText(self.entered().get(key, ""))
+
+    def _entered_changed(self):
+        """The project changed (an Undo, the Project block's form): the fields and the report follow what is kept."""
+        if self.isVisible() and any(e.text().strip() != self.entered().get(k, "") for k, e in self.fields.items()):
+            self.build()
+
     def build(self):
         self.copied.setText("")
-        for key, e in self.fields.items():
-            e.setText(self.entered().get(key, ""))
+        self._fill_entered()
         self._show_text()
         self._sections_now = self.sections()
         self._fill_parts()
