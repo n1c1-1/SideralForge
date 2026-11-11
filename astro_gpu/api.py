@@ -1021,20 +1021,24 @@ def set_excluded(p: Project2, pairs: Iterable[tuple[int, str]], excluded: bool =
     p.validate()
 
 
-def health_checks(p: Project2) -> list[Check]:
-    """What to look at before running: no lights, no bias, flats of several sessions merged into one master, the star
-    size per session (once Registration is done) and the disk the calibrated cache needs. Worker thread (it reads
-    the frame lists and one header)."""
+def health_checks(p: Project2, dates: dict[int, list[tuple[str, str]]] | None = None) -> list[Check]:
+    """What to look at before running: no lights, no bias, flats of several sessions merged into one master, frames
+    whose own date contradicts their file names', the star size per session (once Registration is done) and the disk
+    the calibrated cache needs. Worker thread (it reads the frame lists and one header). ``dates``: {session id:
+    (path, time) of lights} whose headers the caller has read already; else the Inventory's, when it has run."""
     out: list[Check] = []
     inp = p.inputs()
     n = {k: len(getattr(inp, k)) for k in KINDS}
     if not p.sessions or not n["lights"]:
         return [Check("warn", "no_lights", "No light frames yet")]
-    from .io.frames import colour_session, master_kinds
+    from .io.frames import clock_disagreement, colour_session, master_kinds, name_date
     keys = _keys(p)
     same: dict[tuple, list[str]] = {}               # one warning, the sessions it concerns (nine said once each)
+    dated = []                                       # sessions whose file names say a date: nothing else is looked at
     for s in keys.project.sessions:                  # issue #58: a file added by mistake, said before the run
         fr = keys.scan.session_frames(keys.project, s)
+        if fr["lights"] and name_date(fr["lights"][0][0].name) is not None:
+            dated.append(s)
         files = {k: [str(f) for f, _size in fr[k]] for k in KINDS}
         for w in type_warnings(files, master_kinds(files)):
             same.setdefault(tuple(sorted(w.items())), []).append(s.name)
@@ -1047,6 +1051,14 @@ def health_checks(p: Project2) -> list[Check]:
         w = dict(items)
         out.append(Check("warn", "file_types", type_warning_english(w, ", ".join(names)),
                          {**w, "session": ", ".join(names), "sessions": names}))
+    if dated and dates is None:
+        dates = _inventory_dates(p)
+    for s in dated:                                  # a camera whose clock was never set: said once per session; the
+        bad = clock_disagreement((dates or {}).get(s.id, ()))   # engine keeps the camera's date (star epoch, night)
+        if bad:
+            out.append(Check("warn", "clock", f"{s.name}: dates: the camera says {bad['camera']}, the file names say "
+                             f"{bad['names']}: the camera's clock was probably never set. The star positions are "
+                             "computed for the camera's date", {**bad, "session": s.name}))
     for w in p.workflows:                            # two filters in one stack: a mistake, said before the run
         flts = sorted({s.filter for s in p.sessions_of(w) if s.lights} - {""}) if w.source is None else []
         if len(flts) > 1:
@@ -1075,6 +1087,24 @@ def health_checks(p: Project2) -> list[Check]:
     out.append(_disk_check(p))
     if not any(c.level == "warn" for c in out):
         out.insert(0, Check("ok", "ok", "Nothing to worry about"))
+    return out
+
+
+def _inventory_dates(p: Project2) -> dict[int, list[tuple[str, str]]]:
+    """{session id: (path, time) of its lights} as a done Inventory read them (its frames.json: no frame read again);
+    {} before it has run."""
+    sess = _light_sessions(p)
+    out: dict[int, list[tuple[str, str]]] = {}
+    for w in p.workflows:
+        try:
+            d = _dir(p, w, "inventory")
+            lights = json.loads((d / "frames.json").read_text(encoding="utf-8"))["lights"] if d is not None else []
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        for f in lights:
+            sid = sess.get(os.path.normcase(os.path.normpath(str(f.get("path", "")))))
+            if sid is not None and f.get("time"):
+                out.setdefault(sid, []).append((f["path"], f["time"]))
     return out
 
 

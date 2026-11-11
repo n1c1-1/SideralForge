@@ -549,6 +549,9 @@ class SessionRow:
     #: its own calibration frames, by kind (darks, flats, bias), as the middle one of them says (``_calib_of``):
     #: exposure, iso, time, file, median and low (0.01 % percentile) levels in ADU, stacked (a master: its frames)
     calib: dict = field(default_factory=dict)
+    #: its frames' own date against the one their file names say, when they disagree (io/frames.clock_disagreement:
+    #: {"camera", "names"} ISO dates), from the first and last lights' headers read for ``first`` and ``last``
+    clock: dict | None = None
 
 
 @dataclass
@@ -645,6 +648,7 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
     owned by the service). A light that cannot be read never stops it (exploration 6.10: the checks stayed on "Reading
     the frames…"): it is said in the checks; the files the engine does not read (a JPEG) are not counted as kept."""
     from ...core.project import colour_lights, frame_kind
+    from ...io.frames import clock_disagreement
     hdr = headers if headers is not None else {}
     out = ProjectFrames()
     table = None
@@ -658,6 +662,7 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
         for r in table.rows:
             by_session.setdefault(r.session, []).append(r)
     first_info = None
+    dates: dict[int, list[tuple[str, str]]] = {}      # the lights' own dates read here, for the health checks
     for s in p.sessions:
         row = SessionRow(s.id, s.name, filter=s.filter)
         lights = _files(p, s.lights)
@@ -682,6 +687,8 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
                 row.exposure, row.iso, row.temperature = a.exposure, a.iso, a.temperature
                 times = [x for x in (a.time, b.time if b is not None else None) if x]
                 row.first, row.last = (min(times), max(times)) if times else ("", "")
+                dates[s.id] = [(x.path, x.time) for x in (a, b) if x is not None and x.time]
+                row.clock = clock_disagreement(dates[s.id])
         rows = by_session.get(s.id)
         if rows:
             fw = [r.fwhm for r in rows if np.isfinite(r.fwhm)]
@@ -717,7 +724,7 @@ def project_frames(p, wid: int | None, headers: dict | None = None) -> ProjectFr
         else:
             out.flat_pct, out.flats = flat_pct(c, out.camera), d
     try:
-        out.checks = api.health_checks(p)
+        out.checks = api.health_checks(p, dates)
     except Exception:  # noqa: BLE001
         out.checks = []
     out.checks[:0] = [api.Check("warn", "unreadable", f"{name}: {f} cannot be read", {"session": name, "name": f})

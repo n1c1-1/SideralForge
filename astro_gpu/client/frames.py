@@ -55,6 +55,23 @@ def night_start(first: str):
         return None
 
 
+def day_text(iso: str) -> str:
+    """A day as the night's text writes it ("17 Jun 2025", "17 juin 2025"); the ISO text itself when it cannot be read."""
+    try:
+        d = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return str(iso)
+    return f"{d.day} {MONTHS.get(language(), MONTHS['en'])[d.month - 1]} {d.year}"
+
+
+def clock_text(a: dict) -> str:
+    """Frames whose own date contradicts the one their file names say (io/frames.clock_disagreement), said plainly: the
+    engine keeps the camera's date, the user is told which one and what it changes."""
+    return _("Dates: the camera says {camera}, the file names say {names}: the camera's clock was probably never set. "
+             "The star positions are computed for the camera's date.").format(camera=day_text(a.get("camera", "")),
+                                                                               names=day_text(a.get("names", "")))
+
+
 def night_text(first: str) -> str:
     """The night a frame belongs to (noon to noon): "16 → 17 Aug 2026"."""
     d0 = night_start(first)
@@ -121,6 +138,9 @@ def check_text(c, data: ProjectFrames | None = None) -> str:
     if c.key == "colour_frames":                          # issue #57: the limit of frames already in colour
         return f"{a.get('session', '')} : " + colour_note_text(a) if language() == "fr" else \
             f"{a.get('session', '')}: " + colour_note_text(a)
+    if c.key == "clock":                                  # a camera clock never set: once per session
+        return f"{a.get('session', '')} : " + clock_text(a) if language() == "fr" else \
+            f"{a.get('session', '')}: " + clock_text(a)
     if c.key == "unreadable":                             # GUI exploration 6.10: a light that cannot be read
         return _("{session}: {name} cannot be read (damaged, or not a frame): take it out of the session.").format(
             session=a.get("session", ""), name=a.get("name", ""))

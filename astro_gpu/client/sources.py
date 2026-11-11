@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 
 from . import icons as ic
 from . import prefs
-from .frames import colour_note_text, fexp, night_start, type_warning_text
+from .frames import clock_text, colour_note_text, fexp, night_start, type_warning_text
 from .i18n import _, hours_text, number, plural
 from .imageview import ImageView, ViewImage, quick_thumbnail
 from .services.inspect import FrameItem, ProjectFrames, calib_checks, flat_pct, light_thumb, service_of, set_calibration_excluded
@@ -857,6 +857,8 @@ class SourcesView(QWidget):
                         .format(level=int(dk["level"])) if dk else
                         _("No bias, no dark flats: the flats are corrected with the camera black level "
                           "({black} ADU).").format(black=int(self.black() or 0))))
+        if ref is not None and ref.clock:            # the frames' own date against their names': said, never changed
+            out.append((False, clock_text(ref.clock)))
         n_ex = len(self.s.frames_excluded)
         if n_ex:
             t = (_("{n} frame excluded by hand: stacking to recompute.") if n_ex == 1 else

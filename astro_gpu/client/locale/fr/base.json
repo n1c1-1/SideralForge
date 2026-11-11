@@ -806,6 +806,7 @@
   "Flats: a master of {n} frames at {pct} % of saturation, exposure {exp}: already calibrated, used as it is.": "Flats : un master de {n} images, exposé à {pct} % de la saturation, pose {exp} : déjà calibré, pris tel quel.",
   "Flats: a master at {pct} % of saturation, exposure {exp}: already calibrated, used as it is.": "Flats : un master, exposé à {pct} % de la saturation, pose {exp} : déjà calibré, pris tel quel.",
   "Flats: their lowest levels ({low} ADU) are under {ref} ({value} ADU): their bias was taken off already, and would be taken off again.": "Flats : leurs niveaux les plus bas ({low} ADU) sont en dessous {ref} ({value} ADU) : leur offset a déjà été ôté, il le serait une seconde fois.",
+  "Dates: the camera says {camera}, the file names say {names}: the camera's clock was probably never set. The star positions are computed for the camera's date.": "Dates : l'appareil indique le {camera}, les noms des fichiers le {names} : son horloge n'a sans doute jamais été réglée. Les positions des étoiles sont calculées pour la date de l'appareil.",
   "No bias, no dark flats: the flats are corrected with the camera black level ({black} ADU).": "Ni offsets ni darks de flat : les flats sont corrigés du niveau noir de l'appareil ({black} ADU).",
   "No bias, no dark flats: the flats are corrected with the darks' level ({level} ADU).": "Ni offsets ni darks de flat : les flats sont corrigés du niveau des darks ({level} ADU).",
   "{n} frame excluded by hand: stacking to recompute.": "{n} image exclue à la main : l'empilement est à recalculer.",
