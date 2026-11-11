@@ -454,6 +454,12 @@ def highlights(d: ReportData, lang: str) -> list:
             out.append((f"{dec(float(np.median(sz)) * k)}″", _("Star FWHM, measured"),
                         _("median star width (Moffat fit) of {n} frames, best {best}″").format(
                             n=len(sz), best=dec(float(sz.min()) * k))))
+        elif len(sz):                                    # no scale on the sky (#135): measured all the same, in pixels
+            how = _("median star width (Moffat fit) of {n} frames, best {best} px; in pixels: the scale on the sky is "
+                    "not known") if d.fwhm is not None else \
+                _("median star width of {n} frames, best {best} px; in pixels: the scale on the sky is not known")
+            out.append((f"{dec(float(np.median(sz)))} px", _("Star FWHM, measured"),
+                        how.format(n=len(sz), best=dec(float(sz.min())))))
     reg = m.get("register") or {}
     inv = m.get("inventory") or {}
     if reg.get("drift_px") and scale:

@@ -1012,6 +1012,8 @@
   "Focal length, measured": "Focale mesurée",
   "from the solved sky: {n} stars, residual {res}": "par l'astrométrie : {n} étoiles, résidu {res}",
   "median star width (Moffat fit) of {n} frames, best {best}″": "largeur médiane des étoiles (ajustement de Moffat) sur {n} poses, meilleure {best}″",
+  "median star width (Moffat fit) of {n} frames, best {best} px; in pixels: the scale on the sky is not known": "largeur médiane des étoiles (ajustement de Moffat) sur {n} poses, meilleure {best} px ; en pixels : l'échelle sur le ciel n'est pas connue",
+  "median star width of {n} frames, best {best} px; in pixels: the scale on the sky is not known": "largeur médiane des étoiles sur {n} poses, meilleure {best} px ; en pixels : l'échelle sur le ciel n'est pas connue",
   "Colours offset, corrected": "Décalage des couleurs, corrigé",
   "red {r} px and blue {b} px from green, measured on {n} stars": "rouge {r} px et bleu {b} px par rapport au vert, mesurés sur {n} étoiles",
   "measured on the sky before and after Denoise": "mesuré sur le ciel avant et après le Débruitage",

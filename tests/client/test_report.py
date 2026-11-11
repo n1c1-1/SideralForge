@@ -299,3 +299,15 @@ def test_the_session_card_quotes_only_what_was_measured():
     assert got["Colours offset, corrected"][0] == "0.60 px" and got["Sky noise"][0] == "÷ 14.8"
     assert got["Gaia DR3 stars in the field"][0] == "3 203" and got["Transparency changes"][0] == "27 %"
     assert not rep.highlights(rep.ReportData(), "en")                      # nothing measured: nothing quoted
+
+
+def test_without_a_scale_on_the_sky_the_star_size_is_given_in_pixels_saying_so(qapp, monkeypatch):
+    """#135: no plate solving, no focal length: the stars' size is measured all the same, so the first page gives it,
+    once, in pixels, and says why."""
+    d = data()
+    d.reg.scale, d.astro, d.metrics = None, {}, {"gradient": {"gradient_pct": 8.58, "samples_used": 261}}
+    got = {t: (v, h) for v, t, h in rep.highlights(d, "en")}
+    assert got["Star FWHM, measured"][0] == "2.5 px"
+    assert "11 frames, best 2.1 px; in pixels: the scale on the sky is not known" in got["Star FWHM, measured"][1]
+    head = page(monkeypatch, d=d)._parts[0][1][1]
+    assert head.count("Star FWHM, measured") == 1 and head.count("2.5 px") == 1 and "Median FWHM" not in head
