@@ -85,10 +85,12 @@ def _esa(query: str):
     return Gaia.launch_job_async(query).get_results()
 
 
-def gaia_cone(ra: float, dec: float, radius: float, cols: list[str], gfilter: str, say=None) -> dict:
+def gaia_cone(ra: float, dec: float, radius: float, cols: list[str], gfilter: str, say=None, polygon=None) -> dict:
     """Gaia DR3 stars within ``radius`` deg of (ra, dec) whose G magnitude passes ``gfilter`` (VizieR syntax):
     {VizieR column: array}. VizieR, else GAVO, else the ESA archive; raises ``online.ServiceDown`` when none
-    answers. ``say``: where the fallbacks are told (``online.sayer``)."""
+    answers. ``say``: where the fallbacks are told (``online.sayer``). ``polygon``: [(ra, dec)] of a region inside the
+    cone that holds every star the caller keeps (a sky tile with a margin, ``skycache.tile_polygon``): GAVO is asked for
+    it rather than the whole cone, so that the stars returned may be those of the polygon only."""
 
     def vizier():
         import astropy.units as u
@@ -101,7 +103,7 @@ def gaia_cone(ra: float, dec: float, radius: float, cols: list[str], gfilter: st
 
     def gavo():             # GAVO's gaia.dr3lite: the same columns but has_xp_sampled, which follows from G
         need = [k for k in cols if k != "XPsamp"] + (["Gmag"] if "XPsamp" in cols and "Gmag" not in cols else [])
-        t = _gavo_cone(need, ra, dec, radius, gfilter)
+        t = _gavo_cone(need, ra, dec, radius, gfilter, polygon=polygon)
         out = {k: _column(t, GAIA_COLS[k]) for k in need}
         if "XPsamp" in cols:
             out["XPsamp"] = (out["Gmag"] < XP_SAMPLED_G).astype(np.float64)
@@ -117,11 +119,23 @@ def gaia_cone(ra: float, dec: float, radius: float, cols: list[str], gfilter: st
                                budget=CONE_BUDGET)
 
 
-def _gavo_cone(need: list[str], ra: float, dec: float, radius: float, gfilter: str, depth: int = 0):
+def _gavo_cone(need: list[str], ra: float, dec: float, radius: float, gfilter: str, depth: int = 0, polygon=None):
     """A Gaia cone from GAVO; when the service fails on it (dense Milky Way fields), the cone is covered by 7 cones of
     half its radius (one at the centre, six around at 0.866 of the radius: the smallest cover), twice at most, and the
-    stars found twice are kept once."""
+    stars found twice are kept once. ``polygon``: asked first in place of the cone (see ``gaia_cone``), the cone when
+    the service fails on it."""
     sel = ", ".join(GAIA_COLS[k] for k in dict.fromkeys(need + ["Source", "RA_ICRS", "DE_ICRS"]))
+    if polygon:
+        # issue #129: GAVO took most of a field's first run on the cones around the sky tiles, twice the tile's area;
+        # the polygon around the tile came 2 to 5 times faster on small tiles near the Rosette, with the same stars in
+        # the tile (the caller keeps only those)
+        pts = ", ".join(f"{a:.8f}, {b:.8f}" for a, b in polygon)
+        try:
+            return _gavo(f"SELECT {sel} FROM gaia.dr3lite WHERE 1=CONTAINS(POINT('ICRS', ra, dec), POLYGON('ICRS', "
+                         f"{pts})) AND {_range_sql('phot_g_mean_mag', gfilter)}")
+        except Exception as e:  # noqa: BLE001 - the cone below
+            if online.unreachable(e):
+                raise
     try:                    # (two GAVO queries at most at once: online.SLOTS, held by the caller's online.call)
         return _gavo(f"SELECT {sel} FROM gaia.dr3lite WHERE 1=CONTAINS(POINT('ICRS', ra, dec), CIRCLE('ICRS', "
                      f"{ra:.8f}, {dec:.8f}, {radius:.6f})) AND {_range_sql('phot_g_mean_mag', gfilter)}")

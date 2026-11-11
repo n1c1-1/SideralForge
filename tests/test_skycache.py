@@ -57,7 +57,7 @@ class FakeGaia:
         self.sky, self.calls = sky, 0
         self.lock = threading.Lock()
 
-    def __call__(self, ra, dec, radius, cols, gfilter, say=None):
+    def __call__(self, ra, dec, radius, cols, gfilter, say=None, polygon=None):
         if online.offline():
             raise online.ServiceDown("vizier", "is not asked (offline mode)")
         with self.lock:
@@ -120,6 +120,119 @@ def test_tiles_in_cone_finds_every_tile_the_cone_touches():
             need = set(skycache.tile_of(level, c.ra.deg, c.dec.deg).tolist())
             assert need <= got, (level, ra0, dec0, r)
             assert len(got) <= len(need) + 12             # and not much more
+
+
+def _in_polygon(ra, dec, poly, ra0, dec0):
+    """Whether each position lies in the spherical polygon (great-circle edges): in the gnomonic projection around
+    (ra0, dec0) great circles are straight lines, so a plane polygon test is exact there."""
+    from matplotlib.path import Path as MPath
+    c = skycache._xyz(ra0, dec0)
+    e = np.cross([0.0, 0.0, 1.0], c)
+    e /= np.linalg.norm(e)
+    n = np.cross(c, e)
+
+    def plane(r, d):
+        p = skycache._xyz(r, d).reshape(-1, 3)
+        return np.c_[p @ e, p @ n] / (p @ c)[:, None]
+    pr, pd = np.array(poly).T
+    return MPath(plane(pr, pd), closed=False).contains_points(plane(ra, dec))
+
+
+def _pushed(ra0, dec0, ra, dec, margin):
+    """The positions moved ``margin`` deg away from (ra0, dec0) along the sky."""
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+    c0, p = SkyCoord(ra0 * u.deg, dec0 * u.deg), SkyCoord(ra * u.deg, dec * u.deg)
+    q = c0.directional_offset_by(c0.position_angle(p), c0.separation(p) + margin * u.deg)
+    return q.ra.deg, q.dec.deg
+
+
+def test_the_polygon_of_a_tile_holds_all_of_it_with_room_inside_its_cone():
+    """Issue #129: GAVO is asked a polygon around each sky tile rather than the cone around it (half the area). Every
+    point of the tile must be in it, its edge included and with room (half its 1' margin), and the polygon inside the
+    cone, whose stars it replaces: at both levels, across RA 0 and near the poles."""
+    import astropy.units as u
+    rng = np.random.default_rng(11)
+    places = [(0.05, 10.0), (359.9, -20.0), (97.98, 4.95), (10.0, 80.0), (200.0, -84.0)]
+    places += [(rng.uniform(0, 360), rng.uniform(-85, 85)) for _ in range(30)]
+    n_poly = 0
+    for level in (5, 6):
+        hp = skycache._hp(level)
+        for ra0, dec0 in places:
+            tile = int(skycache.tile_of(level, np.array([ra0]), np.array([dec0]))[0])
+            poly = skycache.tile_polygon(level, tile)
+            if poly is None:
+                continue
+            n_poly += 1
+            cra, cdec, r = skycache.tile_cone(level, tile)
+            pr, pd = np.array(poly).T
+            assert (skycache._sep(cra, cdec, pr, pd) <= r + 1e-6).all()
+            blon, blat = hp.boundaries_lonlat(np.array([tile]), step=256)
+            bra, bdec = blon.to_value(u.deg)[0], blat.to_value(u.deg)[0]
+            assert _in_polygon(bra, bdec, poly, cra, cdec).all(), (level, ra0, dec0)
+            assert _in_polygon(*_pushed(cra, cdec, bra, bdec, 0.5 / 60), poly, cra, cdec).all(), (level, ra0, dec0)
+            d = r * np.sqrt(rng.uniform(0, 1, 4000))
+            from astropy.coordinates import SkyCoord
+            q = SkyCoord(cra * u.deg, cdec * u.deg).directional_offset_by(rng.uniform(0, 2 * np.pi, 4000) * u.rad,
+                                                                          d * u.deg)
+            inside = skycache.tile_of(level, q.ra.deg, q.dec.deg) == tile
+            assert inside.sum() > 500 and _in_polygon(q.ra.deg[inside], q.dec.deg[inside], poly, cra, cdec).all()
+            # about half the cone: what GAVO reads
+            assert _in_polygon(q.ra.deg, q.dec.deg, poly, cra, cdec).mean() < 0.65
+    assert n_poly >= 66
+
+
+def test_gavo_is_asked_the_tile_polygon_and_the_cone_when_it_fails_on_it(monkeypatch):
+    from astropy.table import Table
+    asked = []
+    fail = {"how": None}
+
+    def gavo(query):
+        asked.append("POLYGON" if "POLYGON(" in query else "CIRCLE" if "CIRCLE(" in query else "?")
+        if fail["how"] is not None and "POLYGON(" in query:
+            raise fail["how"]
+        return Table({"source_id": np.array([1], np.int64), "ra": [97.9], "dec": [4.9], "phot_g_mean_mag": [12.0]})
+    monkeypatch.setattr(gaia_archive, "_gavo", gavo)
+    poly = skycache.tile_polygon(6, 22246)
+    need = ["RA_ICRS", "DE_ICRS", "Gmag"]
+    gaia_archive._gavo_cone(need, 97.98, 4.95, 0.72, "<16", polygon=poly)
+    assert asked == ["POLYGON"]
+    fail["how"] = ValueError("the service cannot read this polygon")
+    asked.clear()
+    assert len(gaia_archive._gavo_cone(need, 97.98, 4.95, 0.72, "<16", polygon=poly)) == 1
+    assert asked == ["POLYGON", "CIRCLE"]
+    import requests
+    fail["how"] = requests.ConnectionError("connection refused")             # unreachable: not the cone as well
+    asked.clear()
+    with pytest.raises(requests.ConnectionError):
+        gaia_archive._gavo_cone(need, 97.98, 4.95, 0.72, "<16", polygon=poly)
+    assert asked == ["POLYGON"]
+
+
+def test_a_tile_holds_the_same_stars_from_the_polygon_as_from_the_cone(monkeypatch, tmp_path):
+    """The tiles saved are those of the cones before: the stars of the polygon that fall in the tile."""
+    monkeypatch.setenv("ASTRO_GPU_OFFLINE", "")
+    sky = _sky(n=200000, ra0=98.0, dec0=5.0, half=4.0, seed=12)
+    cone_only = FakeGaia(sky)
+
+    def by_polygon(ra, dec, radius, cols, gfilter, say=None, polygon=None):
+        r = cone_only(ra, dec, radius, cols + ["RA_ICRS", "DE_ICRS"], gfilter)
+        m = _in_polygon(r["RA_ICRS"], r["DE_ICRS"], polygon, ra, dec)
+        assert 0.3 < m.mean() < 0.65                                          # half the stars of the cone
+        return {k: r[k][m] for k in cols}
+    cone = [(98.0, 5.0, 2.0)]
+    got = {}
+    for name, fake in (("cone", lambda *a, polygon=None, **k: cone_only(*a, **k)), ("polygon", by_polygon)):
+        monkeypatch.setenv("ASTRO_GPU_HOME", str(tmp_path / name))
+        monkeypatch.setattr(gaia_archive, "gaia_cone", fake)
+        got[name] = skycache.gaia_stars(cone, COLS, "<16")
+        lay = skycache.layers()[0]
+        got[name + " tiles"] = {p.name: lay.load(int(p.stem)) for p in lay.dir.glob("*.npz")}
+    assert got["cone tiles"].keys() == got["polygon tiles"].keys() and len(got["cone tiles"]) > 3
+    for t, a in got["cone tiles"].items():
+        b = got["polygon tiles"][t]
+        assert all(np.array_equal(a[k], b[k]) for k in COLS)
+    assert all(np.array_equal(got["cone"][k], got["polygon"][k]) for k in COLS)
 
 
 # ------------------------------------------------------------------ sky tiles
@@ -215,7 +328,7 @@ def test_a_silent_service_costs_seconds_and_the_next_one_answers(monkeypatch, si
     sky = _sky(seed=3)
     asked = []
 
-    def gavo_cone(need, ra, dec, radius, gfilter, depth=0):
+    def gavo_cone(need, ra, dec, radius, gfilter, depth=0, polygon=None):
         asked.append(radius)
         from astropy.table import Table
         r = FakeGaia(sky)(ra, dec, radius, need + ["Source"], gfilter)
@@ -270,7 +383,7 @@ def test_a_service_answering_not_found_is_set_aside_before_any_query_and_the_til
         raise AssertionError("VizieR asked although its probe failed")
     monkeypatch.setattr(gaia_archive, "_vizier", no_vizier)
 
-    def gavo_cone(need, ra, dec, radius, gfilter, depth=0):
+    def gavo_cone(need, ra, dec, radius, gfilter, depth=0, polygon=None):
         from astropy.table import Table
         r = FakeGaia(sky)(ra, dec, radius, need + ["Source"], gfilter)
         return Table({gaia_archive.GAIA_COLS[k]: v for k, v in r.items()})

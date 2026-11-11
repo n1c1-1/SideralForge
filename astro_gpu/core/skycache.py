@@ -179,6 +179,29 @@ def tile_cone(level: int, tile: int) -> tuple[float, float, float]:
     return ra, dec, r + 1.0 / 60.0
 
 
+def tile_polygon(level: int, tile: int, margin: float = 1.0 / 60.0) -> list[tuple[float, float]] | None:
+    """[(ra, dec)] of a polygon holding the whole tile, about half the area of ``tile_cone``'s cone: the tile's edges
+    sampled 8 times each, every point pushed ``margin`` deg away from the tile's centre along the sky. The polygon's
+    edges are great circles, the tile's are not: between two samples they part by under 1" at level 5, far inside the
+    margin. None near a pole (a tile with a corner on it: the cone then)."""
+    import astropy.units as u
+    hp = _hp(level)
+    lon, lat = hp.healpix_to_lonlat(np.array([tile]))
+    ra, dec = float(lon.to_value(u.deg)[0]), float(lat.to_value(u.deg)[0])
+    blon, blat = hp.boundaries_lonlat(np.array([tile]), step=8)
+    bra, bdec = blon.to_value(u.deg)[0], blat.to_value(u.deg)[0]
+    if np.abs(bdec).max() > 89.0:
+        return None
+    c, v = _xyz(ra, dec), _xyz(bra, bdec)
+    cos = np.clip(v @ c, -1.0, 1.0)
+    t = v - cos[:, None] * c                                     # the direction from the centre towards each point
+    t /= np.linalg.norm(t, axis=1, keepdims=True)
+    a = np.arccos(cos) + np.radians(margin)
+    p = np.cos(a)[:, None] * c + np.sin(a)[:, None] * t
+    return [(float(np.degrees(np.arctan2(y, x)) % 360.0), float(np.degrees(np.arcsin(np.clip(z, -1.0, 1.0)))))
+            for x, y, z in p]
+
+
 # ------------------------------------------------------------------ magnitude filters
 
 def parse_filter(gfilter: str) -> tuple[float | None, float]:
@@ -272,7 +295,8 @@ class SkyUnavailable(Exception):
 def _fetch_tile(layer: Layer, tile: int, say) -> dict:
     from .gaia_archive import gaia_cone
     ra, dec, r = tile_cone(layer.level, tile)
-    t = gaia_cone(ra, dec, r, layer.cols, filter_text(layer.lo, layer.hi), say=say)
+    t = gaia_cone(ra, dec, r, layer.cols, filter_text(layer.lo, layer.hi), say=say,
+                  polygon=tile_polygon(layer.level, tile))
     g = np.asarray(t["Gmag"], np.float64)
     keep = (tile_of(layer.level, t["RA_ICRS"], t["DE_ICRS"]) == tile) & (g < layer.hi)
     if layer.lo is not None:
