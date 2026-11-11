@@ -1041,7 +1041,7 @@
   "New version: a copy of this one, to try other settings without losing these": "Nouvelle version : une copie de celle-ci, pour essayer d'autres réglages sans perdre ceux-ci",
   "Apply": "Valider",
   "Keep this crop (Enter)": "Garder ce recadrage (Entrée)",
-  "Leave the crop as it was": "Laisser le recadrage comme il était",
+  "Leave the crop as it was (Esc)": "Laisser le recadrage comme il était (Échap)",
   "Heal spots, dust and satellite trails: click or paint over them (Alt+click: the source by hand)": "Effacer taches, poussières et traînées de satellites : cliquer ou peindre dessus (Alt+clic : la source à la main)",
   "Add a filter": "Ajouter un filtre"
 }

@@ -736,6 +736,23 @@ def test_posts_keys_answer_right_after_its_tab_is_clicked(env):
     assert view.b_crop.isChecked()
 
 
+def test_escape_while_cropping_cancels_the_crop_and_stays_in_post(env):
+    """#143: Escape while the crop was drawn left Post for the graph, the box drawn so far kept as the crop and the tool
+    still on. As in the reference image editors, Escape is the tool's first (Cancel), and leaves Post only when no tool
+    is on."""
+    w = _open(env, (1920, 1080))
+    view = _post_view(w)
+    assert view.b_crop_cancel.toolTip().endswith("(Esc)")
+    view.b_crop.setChecked(True)
+    _settle(w)
+    view._set_crop([10, 20, 300, 200])                                   # a box drawn (what a drag of its edge does)
+    _key(w, Qt.Key_Escape, widget=view.viewer)
+    assert w.mode == 2 and not view.b_crop.isChecked() and view.crop is None and view.viewer.crop_box is None
+    assert not view.b_crop_cancel.isVisible()
+    _key(w, Qt.Key_Escape, widget=view.viewer)                          # no tool on: Escape leaves Post, as before
+    assert w.mode == 0
+
+
 @pytest.mark.parametrize("size", [(1366, 728), (1024, 640)])
 def test_posts_tools_go_into_more_rather_than_push_the_sides_out(env, size):
     """The night test pass: on a laptop with the layers docked, the bar of tools held the image at 1011 px and pushed

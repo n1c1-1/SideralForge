@@ -742,7 +742,7 @@ class PostView(QWidget):
         self.b_crop_ok = set_icon(QPushButton(_("Apply")), "ok", 16, tip=_("Keep this crop (Enter)"))
         self.b_crop_ok.setObjectName("primary")
         self.b_crop_cancel = QPushButton(_("Cancel"))
-        self.b_crop_cancel.setToolTip(_("Leave the crop as it was"))
+        self.b_crop_cancel.setToolTip(_("Leave the crop as it was (Esc)"))
         for b in (self.b_crop_ok, self.b_crop_cancel):
             b.setVisible(False)
         self.b_heal = QPushButton(_("Spot healing"))
@@ -2069,6 +2069,37 @@ class PostView(QWidget):
         if fw is None or not self.isAncestorOf(fw):
             QTimer.singleShot(0, lambda: self.isVisible() and self.viewer.setFocus(Qt.OtherFocusReason))
 
+    def _tool_on(self) -> str | None:
+        """The tool Escape ends before it leaves Post: the crop being drawn, Spot healing, a mask being painted."""
+        if self.b_crop.isChecked():
+            return "crop"
+        if self.b_heal.isChecked():
+            return "heal"
+        return "brush" if self.viewer.mode == "brush" else None
+
+    def event(self, e):                                             # noqa: N802 - Qt's name
+        # Escape is the tool's first, as in the reference image editors (#143: it left Post for the graph, through
+        # Inspect's shortcut, the crop drawn so far kept and the tool still on); with no tool on, it leaves Post
+        if e.type() == QEvent.ShortcutOverride and e.key() == Qt.Key_Escape and e.modifiers() == Qt.NoModifier and \
+                self._tool_on():
+            e.accept()
+            return True
+        return super().event(e)
+
+    def keyPressEvent(self, e):                                     # noqa: N802 - Qt's name
+        tool = self._tool_on() if e.key() == Qt.Key_Escape and e.modifiers() == Qt.NoModifier else None
+        if tool == "crop":
+            self.crop_cancel()                           # as its Cancel button
+        elif tool == "heal":
+            self.b_heal.setChecked(False)
+        elif tool == "brush":
+            self.part_sel = None
+            self.build_props()
+        else:
+            super().keyPressEvent(e)
+            return
+        e.accept()
+
     def _fit_split(self):
         """The docked sides at their widths (the user's, else the default), the image the rest."""
         wide = {id(self.left): int(prefs.get("post_layers_width") or LAYERS_W),
@@ -2471,6 +2502,7 @@ class PostView(QWidget):
             v.crop_box = (0, 0, W, H)
         if not on:
             v.crop_ratio = None
+            v.end_crop_drag()                            # (Escape while the box is dragged: its release changes nothing)
             v.crop_box = tuple(self.crop) if self.crop else None
             v.mode = "pan"
         v.fit()

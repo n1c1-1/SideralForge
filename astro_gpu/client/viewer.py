@@ -512,6 +512,11 @@ class Viewer(QWidget):
             self.toolRelease.emit()
         self.update()
 
+    def end_crop_drag(self):
+        """The Crop tool left while its box is dragged (Escape): the release that follows changes nothing."""
+        if self._drag and self._drag[0] == "crop":
+            self._drag = None
+
     def leaveEvent(self, e):
         self._mouse = None
         self.update()
