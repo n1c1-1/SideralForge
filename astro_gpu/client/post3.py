@@ -322,7 +322,7 @@ class ContSlider(QWidget):
 PANEL_W, PANEL_MIN, PANEL_MAX = 400, 320, 760          # the settings, on the right
 LAYERS_W, LAYERS_MIN, LAYERS_MAX = 300, 230, 520       # the layers, on the left
 SUB_MAX = 120                                          # a layer row's blend, at most (its name keeps the rest)
-CENTRE_MIN = 470                                       # the image: its tools go into "…" rather than push the sides out
+CENTRE_MIN = 480                                       # the image: its tools go into "…" rather than push the sides out
 
 
 class EyeBox(QCheckBox):
@@ -708,16 +708,17 @@ class PostView(QWidget):
         for w in (self.b_fit, self.b_100, self.zoom_lab):
             bar.addWidget(w)
         bar.addSpacing(12)
+        # the versions of the processing (#123: a "+" and a "−" beside a list were not understood), as Lightroom's
+        # snapshots: their name, a named button that makes one, a bin that deletes the one shown
+        self.version_lab = label(_("Version"), "dim")
         self.cb_version = QComboBox()
         self.cb_version.setEditable(True)
         self.cb_version.setToolTip(_("The version shown; type here to rename it"))
         self.cb_version.setMinimumWidth(120)
-        self.b_version_new = QPushButton("+")
-        self.b_version_new.setToolTip(_("New version: a copy of this one"))
-        self.b_version_del = QPushButton("−")
-        for b in (self.b_version_new, self.b_version_del):
-            b.setFixedWidth(26)
-        for w in (self.cb_version, self.b_version_new, self.b_version_del):
+        self.b_version_new = set_icon(QPushButton(_("New version")), "add", 16)
+        self.b_version_new.setToolTip(_("New version: a copy of this one, to try other settings without losing these"))
+        self.b_version_del = icon_only(QPushButton(), "delete", _("Delete this version"), 16)
+        for w in (self.version_lab, self.cb_version, self.b_version_new, self.b_version_del):
             bar.addWidget(w)
         self.cb_version.activated.connect(self._version_picked)
         self.cb_version.lineEdit().editingFinished.connect(self._version_renamed)
@@ -736,8 +737,21 @@ class PostView(QWidget):
         self.more_menu = QMenu(self.b_more)
         self.b_more.clicked.connect(self._show_more)
         self.b_more.setVisible(False)
-        for w in (self.b_crop, self.b_grid, self.b_names, self.b_cmp, self.b_mask, self.b_more, self.b_undo, self.b_redo,
-                  self.b_export):
+        # the crop is confirmed or given up with named buttons, shown while it is drawn (#121), as Photoshop's options
+        # bar; Spot healing is a tool of the bar (#122: it was found only in the filters' menu)
+        self.b_crop_ok = set_icon(QPushButton(_("Apply")), "ok", 16, tip=_("Keep this crop (Enter)"))
+        self.b_crop_ok.setObjectName("primary")
+        self.b_crop_cancel = QPushButton(_("Cancel"))
+        self.b_crop_cancel.setToolTip(_("Leave the crop as it was"))
+        for b in (self.b_crop_ok, self.b_crop_cancel):
+            b.setVisible(False)
+        self.b_heal = QPushButton(_("Spot healing"))
+        self.b_heal.setCheckable(True)
+        self.b_heal.setObjectName("toggle")
+        self.b_heal.setToolTip(_("Heal spots, dust and satellite trails: click or paint over them (Alt+click: the "
+                                 "source by hand)"))
+        for w in (self.b_crop, self.b_crop_ok, self.b_crop_cancel, self.b_heal, self.b_grid, self.b_names, self.b_cmp,
+                  self.b_mask, self.b_more, self.b_undo, self.b_redo, self.b_export):
             bar.addWidget(w)
         mv.addLayout(bar)
         mid.setMinimumWidth(CENTRE_MIN)
@@ -758,7 +772,7 @@ class PostView(QWidget):
 
     def _overflow(self) -> tuple:
         """The tools that go into "…" when the bar has no room, the first to go first."""
-        return self.b_names, self.b_grid, self.b_mask, self.b_cmp, self.b_crop
+        return self.b_names, self.b_grid, self.b_mask, self.b_cmp, self.b_heal, self.b_crop
 
     def _fit_bar(self):
         """As many tools in the bar as the centre has room for; the others in "…"."""
@@ -769,6 +783,8 @@ class PostView(QWidget):
             b.setVisible(True)
         self.b_more.setVisible(False)
         self.b_export.setText(_("Export…"))
+        self.b_version_new.setText(_("New version"))
+        self.version_lab.setVisible(True)
         self.cb_version.setMinimumWidth(120)
         room = self.centre.width()
         for b in self._overflow():
@@ -776,10 +792,16 @@ class PostView(QWidget):
                 break
             b.setVisible(False)
             self.b_more.setVisible(True)
-        if need() > room:                                   # still too wide: Export by its icon, a narrower version
-            self.b_export.setText("")
-            self.b_export.setToolTip(_("Export…"))
-            self.cb_version.setMinimumWidth(95)
+        # still too wide, one step at a time: Export by its icon, the word "Version", a narrower list, and last of all
+        # New version by its icon (#123: its name is what makes it found); the names stay in the tooltips
+        steps = (lambda: (self.b_export.setText(""), self.b_export.setToolTip(_("Export…"))),
+                 lambda: self.version_lab.setVisible(False),
+                 lambda: self.cb_version.setMinimumWidth(95),
+                 lambda: self.b_version_new.setText(""))
+        for step in steps:
+            if need() <= room:
+                break
+            step()
 
     def _show_more(self):
         self._fill_more()
@@ -860,7 +882,9 @@ class PostView(QWidget):
         self.b_open.clicked.connect(self.openImages.emit)
         self.b_align = icon_only(QPushButton(), "block_alignment", _("Align the image layers"), 16, box=28)
         self.b_align.clicked.connect(self.alignAsked.emit)
-        self.b_filter = icon_only(QPushButton(), "add", _("Add a filter layer above the selected layer"), 16, box=28)
+        # #124: a "+" alone read as adding a layer: the button says "Filter", its menu the filters by family
+        self.b_filter = set_icon(QPushButton(_("Filter")), "filter_layer", 16,
+                                 tip=_("Add a filter layer above the selected layer"))
         self.filter_menu = QMenu(self.b_filter)
         self.b_filter.setMenu(self.filter_menu)
         self.b_dup = icon_only(QPushButton(), "duplicate", _("Duplicate (Ctrl+J)"), 16, box=28)
@@ -907,6 +931,9 @@ class PostView(QWidget):
         self.b_cmp.toggled.connect(self._compare)
         self.b_mask.toggled.connect(self._mask_view)
         self.b_crop.toggled.connect(self._crop_tool)
+        self.b_crop_ok.clicked.connect(self.crop_apply)
+        self.b_crop_cancel.clicked.connect(self.crop_cancel)
+        self.b_heal.toggled.connect(self.heal_tool)
         self.viewer.cropChanged.connect(self._crop_drawn)
         self.b_grid.toggled.connect(lambda on: self.set_annotations(grid=on))
         self.b_names.toggled.connect(lambda on: self.set_annotations(objects=on))
@@ -931,7 +958,7 @@ class PostView(QWidget):
                         ("-", lambda: self.viewer.zoom_by(1 / ZOOM_STEP)),
                         ("Ctrl+-", lambda: self.viewer.zoom_by(1 / ZOOM_STEP)), ("X", self.toggle_paint),
                         ("[", lambda: self.brush_size(1 / 1.25)), ("]", lambda: self.brush_size(1.25)),
-                        ("Ctrl+J", self.duplicate)):
+                        ("Ctrl+J", self.duplicate), ("Return", self.crop_apply), ("Enter", self.crop_apply)):
             sc = QShortcut(QKeySequence(seq), self)
             sc.setContext(Qt.WidgetWithChildrenShortcut)
             sc.activated.connect(fn)
@@ -1667,22 +1694,30 @@ class PostView(QWidget):
             self._big.hide()
 
     def build_filter_menu(self):
-        """+ Filter: a menu by family."""
+        """The Filter button's menu: the filters by family."""
         self.filter_menu.clear()
+        self._fill_filters(self.filter_menu)
+
+    def _fill_filters(self, menu: QMenu, lay=None):
+        """The filters by family into ``menu``; ``lay``: the layer they go on (chosen first: a layer's right-click)."""
         for fam in FAMILIES:
-            sub = self.filter_menu.addMenu(_(fam))
+            sub = menu.addMenu(_(fam))
             sub.setToolTipsVisible(True)
             for k, f in FILTERS.items():
                 if f["family"] == fam and not f.get("hidden"):
                     a = sub.addAction(_(f["name"]))
                     a.setToolTip(_(f["source"]))
-                    a.triggered.connect(lambda _c=False, kk=k: self.add_filter(kk))
+                    a.triggered.connect(lambda _c=False, kk=k: (lay is not None and self.select(lay["id"], "layer"),
+                                                                 self.add_filter(kk)))
 
     def rebuild(self, props: bool = True):
         """The layers' rows built again; ``props``: the properties panel too (not for a visibility toggle, issue #24:
         its scroll and an open curves editor were lost)."""
         self._mask_button()
         self._ann_buttons()
+        self.b_heal.blockSignals(True)                   # the tool is on while its layer is the one chosen
+        self.b_heal.setChecked(self._heal_layer() is not None)
+        self.b_heal.blockSignals(False)
         self.hide_big()
         clear(self.lbox)
         self.rows = []
@@ -1955,7 +1990,13 @@ class PostView(QWidget):
         return (fl["target"], fl["sub"]) if fl.get("sub") else fl.get("target")
 
     def layer_menu(self, lay, gpos):
+        self.layer_menu_of(lay).exec(gpos)
+
+    def layer_menu_of(self, lay) -> QMenu:
+        """A layer's right-click menu."""
         m = QMenu(self)
+        self._fill_filters(m.addMenu(_("Add a filter")), lay)     # #120: where one looks for them first
+        m.addSeparator()
         m.addAction(_("Duplicate")).triggered.connect(lambda: (self.select(lay["id"], "layer"), self.duplicate()))
         if lay["mask"] is None:
             m.addAction(_("Add mask")).triggered.connect(lambda: self.add_mask(lay))
@@ -1983,7 +2024,7 @@ class PostView(QWidget):
         if not is_pixel(lay) or sum(map(is_pixel, self.layers)) > 1:
             m.addSeparator()
             m.addAction(_("Delete")).triggered.connect(lambda: (self.select(lay["id"], "layer"), self.delete()))
-        m.exec(gpos)
+        return m
 
     def set_stretched(self, q, stretched: bool):
         """An image's kind said by the user: computed again."""
@@ -2397,6 +2438,11 @@ class PostView(QWidget):
     # ------------------------------------------------------------ the crop (issue #75): a setting, never a layer
     def _crop_tool(self, on):
         v = self.viewer
+        if on:
+            self._crop_before = list(self.crop) if self.crop else None
+        for b in (self.b_crop_ok, self.b_crop_cancel):
+            b.setVisible(on)
+        self._fit_bar()                                  # its two buttons take room in the bar
         v.crop_edit = on
         if on and v.crop_box is None and v.source:
             W, H = v.source.size()
@@ -2408,6 +2454,36 @@ class PostView(QWidget):
         v.fit()
         self.build_props()
         self.request(final_only=True)
+
+    def crop_apply(self):
+        """Apply: the crop drawn is kept (each change of the box was one already), the tool is left."""
+        if self.b_crop.isChecked():
+            self.b_crop.setChecked(False)
+
+    def crop_cancel(self):
+        """Cancel: the crop as it was when the tool was taken, the tool is left."""
+        if not self.b_crop.isChecked():
+            return
+        before = getattr(self, "_crop_before", None)
+        if (list(self.crop) if self.crop else None) != before:
+            self._set_crop(before)
+        self.b_crop.setChecked(False)
+
+    def heal_tool(self, on: bool = True):
+        """The Spot healing tool: its layer on the selected layer (the one there is, else a new one), its panel shown;
+        off, back to moving the picture."""
+        if not on:
+            if self._heal_layer() is not None:
+                self.viewer.mode = "pan"
+                bottom = next((x for x in reversed(self.layers) if is_pixel(x)), None)
+                if bottom is not None:
+                    self.select(bottom["id"], "layer")
+            return
+        lay = next((x for x in self.layers if x["kind"] == "filter" and x.get("filter") == "heal"), None)
+        if lay is not None:
+            self.select(lay["id"], "layer")
+        else:
+            self.add_filter("heal")
 
     def _show_crop(self, crop):
         self.crop = list(crop) if crop else None

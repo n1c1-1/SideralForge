@@ -3145,3 +3145,31 @@ def test_sky_grid_and_names_are_greyed_without_a_solution(post, monkeypatch):
     monkeypatch.setattr(v.s, "state_info", lambda p, stage: SimpleNamespace(state="done"), raising=False)
     v.rebuild()
     assert v.b_grid.isEnabled() and v.b_names.isEnabled() and "RA / Dec" in v.b_grid.toolTip()
+
+
+def test_every_tool_has_a_named_control(post):
+    """#120 to #124: the versions, the crop's confirmation, Spot healing and the filters were found only through a
+    "+", a key or the filters' menu; each has a named control now."""
+    v = post.view
+    assert v.b_filter.text() == "Filter" and v.b_version_new.text() == "New version" and v.b_heal.text() == "Spot healing"
+    # the crop: Apply and Cancel while it is drawn; Cancel gives back the crop it had
+    v.b_crop.setChecked(True)
+    assert v.b_crop_ok.isVisibleTo(v) and v.b_crop_cancel.isVisibleTo(v)
+    W, H = v.src.size()
+    v._set_crop([10, 10, W - 10, H - 10])
+    v.crop_cancel()
+    assert v.crop is None and not v.b_crop.isChecked() and not v.b_crop_ok.isVisibleTo(v)
+    v.b_crop.setChecked(True)
+    v._set_crop([10, 10, W - 10, H - 10])
+    v.crop_apply()
+    assert v.crop == [10, 10, W - 10, H - 10] and not v.b_crop.isChecked()
+    # Spot healing from the bar: its layer, its panel; once more, the same layer
+    v.b_heal.setChecked(True)
+    heal = [x for x in v.layers if x.get("filter") == "heal"]
+    assert len(heal) == 1 and v._heal_layer() is heal[0] and v.viewer.mode == "heal"
+    v.b_heal.setChecked(False)
+    v.b_heal.setChecked(True)
+    assert len([x for x in v.layers if x.get("filter") == "heal"]) == 1
+    # a layer's right-click: Add a filter first
+    m = v.layer_menu_of(v.layers[-1])
+    assert m.actions()[0].text() == "Add a filter" and m.actions()[0].menu().actions()
