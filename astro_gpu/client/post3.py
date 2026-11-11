@@ -708,8 +708,8 @@ class PostView(QWidget):
         for w in (self.b_fit, self.b_100, self.zoom_lab):
             bar.addWidget(w)
         bar.addSpacing(12)
-        # the versions of the processing (#123: a "+" and a "−" beside a list were not understood), as Lightroom's
-        # snapshots: their name, a named button that makes one, a bin that deletes the one shown
+        # the versions of the processing (#123: a "+" and a "−" beside a list were not understood), as the reference
+        # editors' snapshots: their name, a named button that makes one, a bin that deletes the one shown
         self.version_lab = label(_("Version"), "dim")
         self.cb_version = QComboBox()
         self.cb_version.setEditable(True)
@@ -737,8 +737,8 @@ class PostView(QWidget):
         self.more_menu = QMenu(self.b_more)
         self.b_more.clicked.connect(self._show_more)
         self.b_more.setVisible(False)
-        # the crop is confirmed or given up with named buttons, shown while it is drawn (#121), as Photoshop's options
-        # bar; Spot healing is a tool of the bar (#122: it was found only in the filters' menu)
+        # the crop is confirmed or given up with named buttons, shown while it is drawn (#121), as the reference
+        # editors' options bar; Spot healing is a tool of the bar (#122: it was found only in the filters' menu)
         self.b_crop_ok = set_icon(QPushButton(_("Apply")), "ok", 16, tip=_("Keep this crop (Enter)"))
         self.b_crop_ok.setObjectName("primary")
         self.b_crop_cancel = QPushButton(_("Cancel"))
