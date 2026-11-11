@@ -736,7 +736,7 @@ class Panel(QWidget):
             b = QPushButton(_("Replace by {name}").format(name=st.replace))
             b.clicked.connect(lambda: s.set_target_name(st.replace))
             self.bv.addWidget(b, 0, Qt.AlignLeft)
-        self.bv.addWidget(self.group_title(_("Capture")))
+        self.bv.addWidget(self.group_title(_("Astrometry")))
         for key, word, unit, tip in CAPTURE:
             row = QHBoxLayout()
             row.addWidget(label(_(word), "dim"), 1)
