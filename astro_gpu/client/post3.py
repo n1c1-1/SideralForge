@@ -667,6 +667,7 @@ class PostView(QWidget):
         bar = QHBoxLayout()
         bar.setContentsMargins(10, 6, 10, 6)
         self.top_bar = bar
+        self._probes = {}                                # hidden copies of its buttons, measured for its fit (_width_as)
         self.b_fit = icon_only(QPushButton(), "fit", _("Fit (F)"), 16)
         self.b_100 = icon_only(QPushButton(), "actual_size", _("Actual size (1)"), 16)
         self.zoom_lab = QPushButton(with_unit("100", "%"))   # the zoom, and its presets (issue #44: as Inspect's viewer)
@@ -772,36 +773,96 @@ class PostView(QWidget):
 
     def _overflow(self) -> tuple:
         """The tools that go into "…" when the bar has no room, the first to go first."""
-        return self.b_names, self.b_grid, self.b_mask, self.b_cmp, self.b_heal, self.b_crop
+        return (self.b_names, self.b_grid, self.b_mask, self.b_cmp, self.b_heal, self.b_crop, self.b_undo, self.b_redo,
+                self.b_version_del, self.b_version_new)
+
+    def _bar_steps(self) -> tuple:
+        """The bar narrowed one step at a time when the centre has no room (a laptop, Windows' scale at 125 or 150 %),
+        the least used first: the tools go into "…", then Export by its icon, the word "Version", a narrower list, New
+        version by its icon (#123: its name is what makes it found); then Fit and 100 % (the zoom's menu has them), Undo
+        and Redo (the Edit menu has them too), the bin and New version into "…": at the centre's narrowest, the crop's
+        Apply and Cancel shown, the bar still fits (#142). The names stay in the tooltips and in "…"."""
+        return (("hide", self.b_names), ("hide", self.b_grid), ("hide", self.b_mask), ("hide", self.b_cmp),
+                ("hide", self.b_heal), ("hide", self.b_crop), ("icon", self.b_export), ("hide", self.version_lab),
+                ("narrow", self.cb_version), ("icon", self.b_version_new), ("hide", self.b_fit), ("hide", self.b_100),
+                ("hide", self.b_undo), ("hide", self.b_redo), ("hide", self.b_version_del), ("hide", self.b_version_new))
+
+    def _bar_texts(self) -> dict:
+        """The buttons of the bar that go to their icon, and their name."""
+        return {self.b_export: _("Export…"), self.b_version_new: _("New version")}
+
+    @staticmethod
+    def _item_width(w: QWidget, min_w: int | None = None) -> int:
+        """The width the bar's layout gives a widget, as Qt's widget item works it out: its size hint, at least its
+        minimum hint and its minimum width (``min_w`` in its place), at most its maximum width."""
+        hint = min(max(w.sizeHint().width(), w.minimumSizeHint().width()), w.maximumWidth())
+        return max(hint, w.minimumWidth() if min_w is None else min_w)
+
+    def _width_as(self, b: QPushButton, text: str) -> int:
+        """The width the bar gives button ``b`` with this text (its icon alone for ""): a hidden copy measures it, as
+        working the fit out must change nothing in the bar (a change asks the layout again)."""
+        key = (b.property("iconRole"), b.iconSize().width(), text)
+        probe = self._probes.get(key)
+        if probe is None:
+            probe = self._probes[key] = set_icon(QPushButton(text, self.centre), key[0], key[1])
+            probe.hide()
+        return self._item_width(probe)
+
+    def _bar_need(self, k: int) -> int:
+        """The bar's width with the first ``k`` steps of ``_bar_steps`` taken, as its layout works it out (its widgets'
+        widths, its spacings, its margins), the bar left as it is."""
+        steps = self._bar_steps()
+        hidden = [w for kind, w in steps[:k] if kind == "hide"]
+        icons = [w for kind, w in steps[:k] if kind == "icon"]
+        narrow = [w for kind, w in steps[:k] if kind == "narrow"]
+        steered = [w for _kind, w in steps]
+        more = any(b in hidden for b in self._overflow())
+        texts = self._bar_texts()
+        bar = self.top_bar
+        m = bar.contentsMargins()
+        total, n = m.left() + m.right(), 0
+        for i in range(bar.count()):
+            item = bar.itemAt(i)
+            w = item.widget()
+            if w is None:                                # the space after the zoom, the stretch
+                total += item.sizeHint().width()
+                continue
+            if not (w not in hidden if w in steered else more if w is self.b_more else not w.isHidden()):
+                continue
+            n += 1
+            if w in texts:
+                total += self._width_as(w, "" if w in icons else texts[w])
+            elif w is self.cb_version:
+                total += self._item_width(w, 95 if w in narrow else 120)
+            else:
+                total += self._item_width(w)
+        return total + max(bar.spacing(), 0) * max(n - 1, 0)
 
     def _fit_bar(self):
-        """As many tools in the bar as the centre has room for; the others in "…"."""
-        def need() -> int:                                  # the bar's width now (its hint is kept until invalidated)
-            self.top_bar.invalidate()
-            return self.top_bar.sizeHint().width()
-        for b in self._overflow():
-            b.setVisible(True)
-        self.b_more.setVisible(False)
-        self.b_export.setText(_("Export…"))
-        self.b_version_new.setText(_("New version"))
-        self.version_lab.setVisible(True)
-        self.cb_version.setMinimumWidth(120)
+        """As many tools in the bar as the centre has room for, the others in "…": the bar's width worked out for each
+        step, without trying them on the bar, and the first that fits taken (#142: tried on the bar, a width that grew
+        afterwards, the zoom's "Zoom 27 %" or the list's longer name, was not seen: New version covered the list)."""
+        if not hasattr(self, "centre"):
+            return
+        steps = self._bar_steps()
         room = self.centre.width()
-        for b in self._overflow():
-            if need() <= room:
-                break
-            b.setVisible(False)
-            self.b_more.setVisible(True)
-        # still too wide, one step at a time: Export by its icon, the word "Version", a narrower list, and last of all
-        # New version by its icon (#123: its name is what makes it found); the names stay in the tooltips
-        steps = (lambda: (self.b_export.setText(""), self.b_export.setToolTip(_("Export…"))),
-                 lambda: self.version_lab.setVisible(False),
-                 lambda: self.cb_version.setMinimumWidth(95),
-                 lambda: self.b_version_new.setText(""))
-        for step in steps:
-            if need() <= room:
-                break
-            step()
+        k = next((k for k in range(len(steps) + 1) if self._bar_need(k) <= room), len(steps))
+        hidden = [w for kind, w in steps[:k] if kind == "hide"]
+        icons = [w for kind, w in steps[:k] if kind == "icon"]
+        more = any(b in hidden for b in self._overflow())
+        # only what changes is set: an unchanged bar asks nothing of the layout (this runs at each of its requests)
+        for w in [w for _kind, w in steps] + [self.b_more]:
+            show = more if w is self.b_more else w not in hidden
+            if w.isHidden() == show:
+                w.setVisible(show)
+        for b, text in self._bar_texts().items():
+            want = "" if b in icons else text
+            if b.text() != want:
+                b.setText(want)
+        self.b_export.setToolTip(_("Export…"))
+        narrow = 95 if any(kind == "narrow" for kind, _w in steps[:k]) else 120
+        if self.cb_version.minimumWidth() != narrow:
+            self.cb_version.setMinimumWidth(narrow)
 
     def _show_more(self):
         self._fill_more()
@@ -810,10 +871,12 @@ class PostView(QWidget):
     def _fill_more(self):
         """The "…" menu: the tools the bar has no room for, as their buttons (checked, greyed, their tip)."""
         self.more_menu.clear()
+        names = {self.b_undo: _("Undo"), self.b_redo: _("Redo"), self.b_version_del: _("Delete this version"),
+                 self.b_version_new: _("New version")}                   # (shown by their icons in the bar)
         for b in reversed(self._overflow()):
-            if b.isVisible():
+            if not b.isHidden():
                 continue
-            a = self.more_menu.addAction(b.text())
+            a = self.more_menu.addAction(names.get(b) or b.text())
             a.setCheckable(b.isCheckable())
             a.setChecked(b.isChecked())
             a.setEnabled(b.isEnabled())
@@ -822,7 +885,9 @@ class PostView(QWidget):
         self.more_menu.setToolTipsVisible(True)
 
     def eventFilter(self, obj, e):                                   # noqa: N802 - Qt's name
-        if obj is getattr(self, "centre", None) and e.type() == QEvent.Resize:
+        # resized, or a widget of the bar asks for another width (the zoom's text, a version's name, the crop's
+        # buttons, the compact look's margins): the fit again (#142)
+        if obj is getattr(self, "centre", None) and e.type() in (QEvent.Resize, QEvent.LayoutRequest):
             self._fit_bar()
         return super().eventFilter(obj, e)
 

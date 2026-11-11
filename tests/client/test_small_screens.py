@@ -753,10 +753,29 @@ def test_escape_while_cropping_cancels_the_crop_and_stays_in_post(env):
     assert w.mode == 0
 
 
-@pytest.mark.parametrize("size", [(1366, 728), (1024, 640)])
-def test_posts_tools_go_into_more_rather_than_push_the_sides_out(env, size):
+def _bar_fits(view):
+    """The bar's widgets one after the other, none over the next, the last inside the centre; its hint the room."""
+    _settle(view.window(), 3)
+    bar = view.top_bar
+    shown = [bar.itemAt(i).widget() for i in range(bar.count())]
+    shown = [x for x in shown if x is not None and not x.isHidden()]
+    for a, b in zip(shown, shown[1:]):
+        assert a.geometry().right() < b.geometry().left(), (a.text() if hasattr(a, "text") else a, view.centre.width())
+    assert shown[-1].geometry().right() < view.centre.width()
+    assert bar.sizeHint().width() <= view.centre.width()
+    k = next(k for k in range(len(view._bar_steps()) + 1) if view._bar_need(k) <= view.centre.width()
+             or k == len(view._bar_steps()))
+    assert view._bar_need(k) == bar.sizeHint().width()          # the fit's own sum is the layout's, to the pixel
+
+
+@pytest.mark.parametrize("size, lang", [((1366, 700), "en"), ((1366, 700), "fr"), ((1366, 728), "en"),
+                                        ((1280, 720), "fr"), ((1024, 640), "en")])
+def test_posts_tools_go_into_more_rather_than_push_the_sides_out(env, size, lang):
     """The night test pass: on a laptop with the layers docked, the bar of tools held the image at 1011 px and pushed
-    the layers out of the window, its buttons cut; dragging an edge did the same."""
+    the layers out of the window, its buttons cut; dragging an edge did the same. #142: at 1366 x 700 New version
+    covered the arrow of the version list (the fit was tried before the zoom's text grew): no overlap at any width
+    from the centre's minimum, the crop's Apply and Cancel shown or not."""
+    appmod.apply_language(lang)
     w = _open(env, size)
     view = _post_view(w)
     view.ldock._choose("docked")
@@ -766,15 +785,35 @@ def test_posts_tools_go_into_more_rather_than_push_the_sides_out(env, size):
     assert sum(sizes) <= view.split.width() + 2 * len(sizes) and all(x > 0 for x in sizes)
     assert view.left.geometry().left() >= 0 and view.right.geometry().right() <= view.split.width()
     assert view.b_more.isVisible() and not view.b_names.isVisible()               # the least used first
-    assert view.top_bar.sizeHint().width() <= view.centre.width()
+    _bar_fits(view)
     view._fill_more()
     hidden = [a.text() for a in view.more_menu.actions()]
-    assert "Object names" in hidden and view.b_export.isVisible()
-    a = next(x for x in view.more_menu.actions() if x.text() == "Object names")
+    assert view.b_names.text() in hidden and view.b_export.isVisible()
+    a = next(x for x in view.more_menu.actions() if x.text() == view.b_names.text())
     assert a.isEnabled() == view.b_names.isEnabled()
+    for zoom in (0.27, 1.0):                                    # "Zoom 27 %" is wider than "100 %"
+        for crop in (True, False):
+            view.viewer.zoom_to(zoom)
+            view.b_crop.setChecked(crop)
+            _bar_fits(view)
+    view.b_crop.setChecked(True)                                 # the centre at its narrowest
+    view.split.setSizes([post3.LAYERS_MAX, 0, post3.PANEL_MAX])
+    _settle(w)
+    assert view.centre.width() == post3.CENTRE_MIN, view.split.sizes()
+    _bar_fits(view)
+    view._fill_more()
+    names = [a.text() for a in view.more_menu.actions()]
+    assert view.b_crop_ok.isVisible() and view.b_crop_cancel.isVisible() and view.zoom_lab.isVisible()
+    assert all(n for n in names) and (view.b_undo.isVisible() or post3._("Undo") in names)
+    view.b_crop.setChecked(False)
     w.resize(1920, 1080)
     _settle(w)
-    assert not view.b_more.isVisible() and view.b_names.isVisible()
+    view._fit_split()
+    _settle(w)
+    _bar_fits(view)
+    if lang == "en":                                             # (the French names are longer: one tool or two in "…")
+        assert not view.b_more.isVisible() and view.b_names.isVisible()
+    assert view.b_crop.isVisible() and view.b_undo.isVisible() and view.b_version_new.text()
 
 
 # ---------------------------------------------------------------------------------------------- the graph's navigation
