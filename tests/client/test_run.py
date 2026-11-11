@@ -561,6 +561,13 @@ def test_numbers_and_the_engine_texts_follow_the_language():
         "calculé en 336 parties"
     assert engine_text('searching the field at 1.52"/px (shifted centres)') == \
         'recherche du champ à 1,52"/px (centres décalés)'
+    # issue #129: what a field's first run downloads, counted
+    assert engine_text("Gaia stars: tile 12 of 58") == "étoiles Gaia : tuile 12 sur 58"
+    assert engine_text("Gaia bright stars: tile 3 of 27") == "étoiles brillantes Gaia : tuile 3 sur 27"
+    assert engine_text("XP spectra: 300 of 609") == "spectres XP : 300 sur 609"
+    assert engine_text("Gaia stars: 58 sky tiles downloaded in 3.4 min") == \
+        "étoiles Gaia : 58 tuiles du ciel téléchargées en 3,4 min"
+    assert engine_text("Gaia bright stars: read") == "étoiles brillantes Gaia lues"
     assert "decimal" not in engine_text("a message nobody translated yet")
     t = RunTrack(_failed_plan(), "r1")
     t.apply(_failed_run_events())

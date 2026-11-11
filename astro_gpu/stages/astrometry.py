@@ -155,6 +155,10 @@ class Astrometry(Stage):
             scales = hints + scales
         best = None
         flips = mirror_hint(camera, pix)
+        here = [0.0]
+
+        def download(_f, msg):              # a field's first run: the sky tiles downloaded, said one by one
+            ctx.progress(here[0], msg)
         # pass 1: every scale with the given centre only (fast); pass 2: also shifted centres
         passes = [0.0, p.search_offsets] if p.search_offsets > 0 else [0.0]
         for ip, off in enumerate(passes):
@@ -165,8 +169,8 @@ class Astrometry(Stage):
                 sc = queue.pop(0)
                 tried.append(sc)
                 k += 1
-                ctx.progress(0.6 * (ip + min(k, len(scales) - 1) / len(scales)) / len(passes),
-                             f"searching the field at {sc:.2f}\"/px" + (" (shifted centres)" if off else ""))
+                here[0] = 0.6 * (ip + min(k, len(scales) - 1) / len(scales)) / len(passes)
+                ctx.progress(here[0], f"searching the field at {sc:.2f}\"/px" + (" (shifted centres)" if off else ""))
                 fw, fh = W * sc / 3600, H * sc / 3600
                 if not p.scale and (fw > 40 or fw < 0.1):
                     continue
@@ -179,11 +183,11 @@ class Astrometry(Stage):
                         # a trial only matches the 150 brightest stars in its frame: when the stars brighter than
                         # TRIAL_G give 150 at every trial centre, they are the same 150 (one small download shared
                         # by every trial scale; the full depth is fetched once, for the scale that matches)
-                        gs, gm = gaia_bright(ra0, dec0, radius, TRIAL_G, ctx.log)
+                        gs, gm = gaia_bright(ra0, dec0, radius, TRIAL_G, ctx.log, download)
                         if _fewest_in_frame(gs, ra0, dec0, sc, W, H, off, fw, fh) < 150:
                             gs, gm = None, None
                     if gs is None:
-                        gs, gm = gaia_bright(ra0, dec0, radius, glim, ctx.log)
+                        gs, gm = gaia_bright(ra0, dec0, radius, glim, ctx.log, download)
                 except Exception as e:  # noqa: BLE001 - no catalogue for this trial scale (offline, services down)
                     if p.scale:
                         raise StageError("the star catalogue for this field cannot be read: check the network "
@@ -225,7 +229,8 @@ class Astrometry(Stage):
             fw, fh = W * sc_b / 3600, H * sc_b / 3600
             glim = float(np.clip(12.5 - 1.25 * np.log10(max(fw * fh, 1e-3) / 37.0), 10.5, 16.0))
             radius = 0.5 * np.hypot(fw, fh) * (1 + 2 * p.search_offsets) + 0.2
-            gs, gm = gaia_bright(ra0, dec0, radius, glim, ctx.log)
+            here[0] = 0.6
+            gs, gm = gaia_bright(ra0, dec0, radius, glim, ctx.log, download)
             if sparse:
                 res = _match_sparse(gs, gm, ra0, dec0, sc_b, W, H, det, 0.0, fw, fh, 0.15, flips)
                 if res is not None:
@@ -520,11 +525,12 @@ _GAIA_CACHE: dict = {}
 _GAIA_LOCK = threading.Lock()
 
 
-def bright_stars(ra, dec, radius, glim, log=None) -> tuple[dict, str]:
+def bright_stars(ra, dec, radius, glim, log=None, progress=None) -> tuple[dict, str]:
     """Gaia DR3 stars brighter than glim within radius (deg) of (ra, dec), epoch 2016.0: ({"RA_ICRS", "DE_ICRS",
     "Gmag"}, where they came from). The offline astrometric extract when it is installed (local, instant; it keeps the 127
     brightest stars of every 14' cell, which in the Milky Way can stop short of glim: plenty for a solution), else
-    the sky tiles of the cache, else the network (tiles downloaded and cached)."""
+    the sky tiles of the cache, else the network (tiles downloaded and cached; ``progress(fraction, message)`` told of
+    each tile)."""
     from ..core import sirilcat, skycache
     s = sirilcat.astro_cone(ra, dec, radius, glim)
     if s is not None:
@@ -532,18 +538,20 @@ def bright_stars(ra, dec, radius, glim, log=None) -> tuple[dict, str]:
         if s["complete_to"] < glim:
             src += f", complete to G {s['complete_to']:.1f} here"
         return s, src
-    t = skycache.gaia_stars([(ra, dec, radius)], ["RA_ICRS", "DE_ICRS", "Gmag"], f"<{glim:.2f}", log=log)
+    t = skycache.gaia_stars([(ra, dec, radius)], ["RA_ICRS", "DE_ICRS", "Gmag"], f"<{glim:.2f}", log=log,
+                            progress=progress, label="Gaia stars")
     return t, "the Gaia sky tiles (cache, else network)"
 
 
-def gaia_bright(ra, dec, radius, glim, log=None):
-    """Gaia DR3 stars brighter than glim within radius (deg) of (ra, dec): (SkyCoord, G), brightest first."""
+def gaia_bright(ra, dec, radius, glim, log=None, progress=None):
+    """Gaia DR3 stars brighter than glim within radius (deg) of (ra, dec): (SkyCoord, G), brightest first. ``progress``:
+    told of each sky tile downloaded (a field's first run spends minutes there, issue #129)."""
     from astropy.coordinates import SkyCoord
     key = (round(ra, 2), round(dec, 2), round(radius, 1), round(glim, 1))
     with _GAIA_LOCK:
         hit = _GAIA_CACHE.get(key)
     if hit is None:
-        t, src = bright_stars(ra, dec, radius, float(f"{glim:.2f}"), log)
+        t, src = bright_stars(ra, dec, radius, float(f"{glim:.2f}"), log, progress)
         ok = np.isfinite(t["RA_ICRS"]) & np.isfinite(t["DE_ICRS"])
         ra_, dec_, g = (np.asarray(t[k], np.float64)[ok] for k in ("RA_ICRS", "DE_ICRS", "Gmag"))
         o = np.lexsort((dec_, ra_, g))              # one order whatever the source

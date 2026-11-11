@@ -104,6 +104,13 @@ class Catalogs(Stage):
 
 #: the magnitude limit of the stars: the colour stars (to xp_gmax) and their neighbours
 BRIGHT_G = 16.0
+#: XP spectra asked of GAVO or the ESA archive in one query (the batches of gaia_archive.xp_spectra_gavo / _esa; the
+#: ESA archive takes 5000 sources a request, its DataLink limit: cosmos.esa.int/web/gaia-users/archive/faq-old)
+XP_BATCH = 500
+#: batches asked at once. GAVO documents no limit on simultaneous queries (dc.zah.uni-heidelberg.de/static/help.shtml
+#: and its TAP capabilities give only a 20 s run time for a direct query and the row limits): 2, the queries this program
+#: sends it at most (online.SLOTS: it dropped connections at 6). The ESA archive: one, as before
+XP_AT_ONCE = {"gavo": 2}
 
 
 def _bright_stars(ctx, centres, radius, cols, fine):
@@ -114,7 +121,7 @@ def _bright_stars(ctx, centres, radius, cols, fine):
     from ..core import sirilcat
     if sirilcat.locate()["astro"] is None:
         ctx.log("offline Gaia extract not installed: the bright stars from the sky cache", "warning")
-        return _query_cells(ctx, centres, radius, cols, f"<{BRIGHT_G:g}", "bright", 0.0, 0.5, fine)
+        return _query_cells(ctx, centres, radius, cols, f"<{BRIGHT_G:g}", "bright stars", 0.0, 0.5, fine)
     parts = []
     for ra, dec in np.asarray(centres, np.float64).reshape(-1, 2):
         r = sirilcat.astro_cone(float(ra), float(dec), float(radius), BRIGHT_G)
@@ -190,7 +197,7 @@ def _query_cells(ctx, centres, radius, cols, gfilter, label, p0, p1, fine=None):
             parts.append(skycache.gaia_stars(cones, cols, gfilter, log=ctx.log, progress=prog, label=f"Gaia {label}"))
         except skycache.SkyUnavailable as e:
             raise StageError(f"{e}: connect to the internet once for this field, then it works offline") from e
-    ctx.progress(p1, f"Gaia {label}: {len(centres)} cells")
+    ctx.progress(p1, f"Gaia {label}: read")
     c = {k: np.concatenate([q[k] for q in parts if len(q[k])]) if any(len(q[k]) for q in parts) else np.zeros(0)
          for k in cols}
     # duplicates from overlapping cones: exact position (Gaia ids must stay int64: as floats they collide)
@@ -326,7 +333,7 @@ def _xp_spectra(ctx, sources, p0, p1, pos16=None, gmag=None):
         todo = [k for k in todo if not known[k]]
     # the stars of the offline extract have no Gaia id (negative ones): no service can be asked for them
     todo = [k for k in todo if ids[k] > 0]
-    ctx.progress(p0 + 0.1 * (p1 - p0), f"XP spectra: {len(ids) - len(todo)}/{len(ids)} local")
+    ctx.progress(p0 + 0.1 * (p1 - p0), f"XP spectra: {len(ids) - len(todo)} of {len(ids)}")
 
     def fetch(k):
         if online.is_down("vizier"):
@@ -338,29 +345,54 @@ def _xp_spectra(ctx, sources, p0, p1, pos16=None, gmag=None):
         except Exception as e:  # noqa: BLE001 - the batch services below take over
             if isinstance(e, online.ServiceDown):
                 say(f"{online.label('vizier')} {e.why}: XP spectra from {online.label('gavo')}")
-    if todo:
+
+    def told(n):                        # the stars dealt with so far: from the cache, the extract or a service
+        ctx.progress(p0 + (p1 - p0) * (0.1 + 0.9 * n / max(len(ids), 1)), f"XP spectra: {n} of {len(ids)}")
+    # VizieR one star a query, unless it is set aside or fails its probe (issue #129: during the CDS incident of November
+    # 2026 its queries answered a 404 page; each star's query was sent, and the line counted them as if given)
+    if todo and online.available("vizier"):
         done = [0]
         with ThreadPoolExecutor(10) as ex:
             for _ in ex.map(fetch, todo):
                 done[0] += 1
-                ctx.progress(p0 + (p1 - p0) * (0.1 + 0.9 * done[0] / len(todo)),
-                             f"XP spectra {len(ids) - len(todo) + done[0]}/{len(ids)}")
+                if not online.is_down("vizier"):
+                    told(len(ids) - len(todo) + done[0])
         todo = [k for k in todo if not known[k]]
-    # the spectra VizieR did not give: from GAVO, else the ESA archive (by batches)
+    elif todo and not online.offline():
+        say(f"{online.label('vizier')} {online.why_down('vizier')}: XP spectra from {online.label('gavo')}")
+    # the spectra VizieR did not give: from GAVO, else the ESA archive, by batches of XP_BATCH stars, each batch its own
+    # query, as many at once as the service takes (XP_AT_ONCE), so that the line counts them and a batch that fails
+    # sends only its own stars to the next service; the same queries as one batch after the other, the same spectra.
+    # The line counts the stars done with: given, or asked of the last service (it never goes back for the next one)
     for name, get in (("gavo", ga.xp_spectra_gavo), ("esa", ga.xp_spectra_esa)):
         if not todo:
             break
-        try:
-            got = online.call(name, lambda: get([ids[k] for k in todo]), ga.LAST_BUDGET)
-        except Exception as e:  # noqa: BLE001 - this service fails too: the next one
+        batches = [todo[i:i + XP_BATCH] for i in range(0, len(todo), XP_BATCH)]
+
+        def one(part, name=name, get=get):
+            try:
+                return part, online.call(name, lambda: get([ids[k] for k in part]), ga.LAST_BUDGET), None
+            except Exception as e:  # noqa: BLE001 - this batch goes to the next service
+                return part, {}, e
+        n_done, n_given, failed = len(ids) - len(todo), 0, []
+        with ThreadPoolExecutor(XP_AT_ONCE.get(name, 1)) as ex:
+            for part, got, err in ex.map(one, batches):
+                if err is not None:
+                    failed.append((part, err))
+                given = [k for k in part if ids[k] in got]
+                for k in given:
+                    rows[k] = got[ids[k]]
+                    store(ids[k], rows[k])
+                n_given += len(given)
+                n_done += len(part) if name == "esa" else len(given)
+                told(n_done)
+        if failed:
+            e = failed[0][1]
             why = e.why if isinstance(e, online.ServiceDown) else f"failed ({str(e)[:150]})"
-            say(f"{online.label(name)} {why}: {len(todo)} XP spectra still missing")
-            continue
-        ctx.log(f"{len(todo)} XP spectra asked of {online.label(name)}: {sum(ids[k] in got for k in todo)} given")
-        for k in todo:
-            if ids[k] in got:
-                rows[k] = got[ids[k]]
-                store(ids[k], rows[k])
+            say(f"{online.label(name)} {why}: {sum(len(p) for p, _ in failed)} XP spectra still missing")
+        if len(failed) < len(batches):
+            ctx.log(f"{len(todo) - sum(len(p) for p, _ in failed)} XP spectra asked of {online.label(name)}: "
+                    f"{n_given} given")
         todo = [k for k in todo if rows[k] is None]
     if len({len(r[0]) for r in rows if r is not None}) > 1:
         ctx.log("XP spectra from services with different wavelength grids: all brought to 400-800 nm")

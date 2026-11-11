@@ -192,7 +192,11 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
         (r"^training step (\d+), loss ([\d.]+)$", "training step {0}, loss {1}", ()),
         (r"^round (\d+)/(\d+), step (\d+)/(\d+) ?(.*)$", "round {0}/{1}, step {2}/{3} {4}", ()),
         (r"^Gaia (.+): cell (\d+)/(\d+)$", "Gaia {0}: cell {1}/{2}", ()),
-        (r"^XP spectra (\d+)/(\d+)$", "XP spectra {0}/{1}", ()),
+        # issue #129: a field's first run downloads its sky tiles and spectra, counted
+        (r"^XP spectra: (\d+) of (\d+)$", "XP spectra: {0} of {1}", ()),
+        (r"^(Gaia stars|Gaia bright stars): tile (\d+) of (\d+)$", "{0}: tile {1} of {2}", (0,)),
+        (r"^(Gaia stars|Gaia bright stars): (\d+) sky tiles downloaded in ([\d.]+) min$",
+         "{0}: {1} sky tiles downloaded in {2} min", (0,)),
         (r"^refining star positions \(pass (\d+)\)$", "refining star positions (pass {0})", ()),
         (r"^searching the field at ([\d.]+)\"/px( \(shifted centres\))?$", "searching the field at {0}\"/px{1}", ()),
         (r"^realigning colours of (.+)$", "realigning colours of {0}", ()),

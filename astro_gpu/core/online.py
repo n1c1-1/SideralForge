@@ -112,7 +112,10 @@ def _probe(name: str) -> bool:
     import requests
     try:
         r = requests.get(url, timeout=PROBE_S)
-        ok = r.status_code < 500
+        # a probe asks a fixed page that exists: "not found" or "gone" there is the service's own outage page (the CDS
+        # answered its VizieR queries with a 404 page during its November 2026 incident), not a wrong query; it was
+        # taken for an answer, and every first query of a chain lost a request on VizieR before the next source
+        ok = r.status_code < 500 and r.status_code not in (404, 410)
         why = f"answers with an error (HTTP {r.status_code})"
     except Exception as e:  # noqa: BLE001 - any failure means: not reachable now
         ok, why = False, _plain(e)

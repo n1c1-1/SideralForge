@@ -281,7 +281,7 @@ def _fetch_tile(layer: Layer, tile: int, say) -> dict:
 
 
 def gaia_stars(cones: list[tuple[float, float, float]], cols: list[str], gfilter: str, log: Callable | None = None,
-               progress: Callable[[float, str], None] | None = None, label: str = "Gaia") -> dict:
+               progress: Callable[[float, str], None] | None = None, label: str = "Gaia stars") -> dict:
     """Every Gaia DR3 star (columns ``cols``, VizieR names, positions at epoch 2016.0) inside the union of the cones
     [(ra, dec, radius deg)] whose G passes ``gfilter`` ('<18.5' or '18.5..20.5'), from cached tiles, the missing tiles
     downloaded and cached. Raises SkyUnavailable when tiles are missing and no service gives them."""
@@ -320,6 +320,8 @@ def gaia_stars(cones: list[tuple[float, float, float]], cols: list[str], gfilter
             lay.ensure()                          # once, before the threads
             fails: dict[int, str] = {}
             done = [0]
+            t0 = time.monotonic()
+            told = threading.Lock()                  # the tiles counted in order, whichever thread ends first
 
             def one(t):
                 try:
@@ -327,9 +329,11 @@ def gaia_stars(cones: list[tuple[float, float, float]], cols: list[str], gfilter
                     fails.pop(t, None)
                 except Exception as e:  # noqa: BLE001 - counted, reported below
                     fails[t] = str(e)[:200]
-                done[0] += 1
-                if progress:
-                    progress(min(1.0, done[0] / len(miss)), f"{label}: sky tile {min(done[0], len(miss))}/{len(miss)}")
+                with told:
+                    done[0] += 1
+                    if progress:
+                        k = min(done[0], len(miss))
+                        progress(k / len(miss), f"{label}: tile {k} of {len(miss)}")
             with ThreadPoolExecutor(min(TILE_WORKERS, len(miss))) as ex:
                 list(ex.map(one, miss))
             # a second chance for tiles that failed while a service still answers (a query error, a dropped
@@ -340,6 +344,8 @@ def gaia_stars(cones: list[tuple[float, float, float]], cols: list[str], gfilter
             if fails:
                 raise SkyUnavailable(f"{len(fails)} of the {len(ts)} sky tiles of the field ({label}) are not in the "
                                      f"cache and no service gave them ({next(iter(fails.values()))})")
+            # the time of a field's first run is mostly here (issue #129): said, so that a run's log shows it
+            say(f"{label}: {len(miss)} sky tiles downloaded in {(time.monotonic() - t0) / 60:.1f} min", "info")
     parts = [lay.load(t) for t in ts]
     out = {k: np.concatenate([p[k] for p in parts]) if parts else np.zeros(0) for k in need}
     g = out["Gmag"].astype(np.float64)
