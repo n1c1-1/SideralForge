@@ -103,6 +103,10 @@ PREFETCH_DELAY_MS = 400
 PREFETCH_MIN_BUDGET = 6 * 2 ** 30
 #: the kinds of tabs that show one picture of ``Steps.view_image`` (``_image_tab``)
 PREFETCH_KINDS = ("array", "preview", "color", "gradient", "removed", "calibrated")
+#: the least height of a chart in a tab split in two (``TuneView._split``): the handle gives it its room. A chart alone
+#: in a tab asks 300 px; two of them, or a chart and the frames' viewer, asked more than a laptop's window holds, and
+#: the handle, held between two minimums it could not meet, only made the display flicker (issue #118)
+SPLIT_CHART_MIN_H = 120
 
 
 class Strip(QFrame):
@@ -1556,6 +1560,9 @@ class TuneView(QWidget):
                          "QSplitter#tabsplit::handle:hover { background: #4d5a70; }")
         sp.addWidget(top)
         sp.addWidget(bottom)
+        for ch in (w_ for part in (top, bottom) for w_ in [part, *part.findChildren(ChartView)]):
+            if isinstance(ch, ChartView) and ch.minimumHeight() > SPLIT_CHART_MIN_H:
+                ch.setMinimumHeight(SPLIT_CHART_MIN_H)     # its room is the handle's (#118)
         sizes = self._splits.get(key) or (prefs.get("inspect_splits") or {}).get(key)
         if not (isinstance(sizes, list | tuple) and len(sizes) == 2 and all(isinstance(x, int | float) and x > 0
                                                                            for x in sizes)):

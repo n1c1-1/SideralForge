@@ -124,6 +124,50 @@ def test_the_before_follows_the_main_pictures_neutral_sky_or_its_own_option(qapp
     assert not v._cmp.stretch.neutral
 
 
+def test_the_handle_between_the_curves_and_the_frames_moves_on_a_laptop_window(qapp):
+    """Issue #118: on Selection the drift path (a chart asking 300 px) above the frames' viewer (220 px) asked more
+    than a laptop's window holds: the handle, held between the two minimums, only made the display flicker. In a tab
+    split in two the charts are as small as the handle makes them; where the user leaves it is kept."""
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from astro_gpu.client.chartview import ChartView
+    from astro_gpu.client.tune import TuneView
+
+    def page(splits=None):
+        host = QWidget()
+        host.resize(900, 520)                                  # the centre of Inspect on a 1280 x 680 window
+        host._splits, host.center = dict(splits or {}), QVBoxLayout(host)
+        for name in ("_split", "_split_moved", "_save_splits"):
+            setattr(host, name, getattr(TuneView, name).__get__(host))
+        top = QWidget()
+        tl = QVBoxLayout(top)
+        tl.setContentsMargins(0, 0, 0, 0)
+        ch = ChartView("Drift path (x / y)")
+        ch.setMinimumHeight(300)                               # as charts.TrackChart asks, alone in a tab
+        tl.addWidget(ch, 1)
+        v = iv.ImageView()
+        v.setMinimumHeight(220)
+        sp = host._split("selection", top, v, (2, 5))
+        host.show()
+        QApplication.processEvents()
+        return host, sp
+
+    host, sp = page()
+    assert sum(sp.sizes()) <= sp.height() and all(x > 0 for x in sp.sizes())     # the two parts fit
+    sp.moveSplitter(130, 1)                                    # the curves small, the frames large
+    QApplication.processEvents()
+    a, b = sp.sizes()
+    assert abs(a - 130) <= 2 and a + b <= sp.height()
+    sp.moveSplitter(sp.height() - 230, 1)                      # and the other way, down to the viewer's minimum
+    QApplication.processEvents()
+    a, b = sp.sizes()
+    assert b <= 232 and a > 250
+    want = host._splits["selection"]
+    _host2, sp2 = page(host._splits)                           # the block shown again: the handle where it was left
+    a2, b2 = sp2.sizes()
+    assert abs(a2 / (a2 + b2) - want[0] / sum(want)) < 0.05
+
+
 # ---------------------------------------------------------------------------------------------- 6. the named objects
 def _wcs(w=400, h=300, scale_deg=0.01):
     from astropy.wcs import WCS
