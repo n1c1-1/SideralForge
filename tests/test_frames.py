@@ -1,6 +1,8 @@
 """Frame readers: FITS Bayer pattern handling (offsets, row order) and metadata."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from astropy.io import fits
@@ -27,6 +29,21 @@ def test_fits_bayer_offsets_and_roworder(tmp_path):
     assert abs(info.ra - 0.875) < 1e-3 and abs(info.dec - 67.25) < 1e-3
     img = read_cfa(p)
     assert img.shape == (4, 6) and img[0, 0] == a[-1, 0]   # bottom-up rows flipped to top-down
+
+
+def test_a_header_without_coordinates_does_not_load_the_sky_coordinates(tmp_path):
+    """#115: the reader of a FITS header imported astropy's coordinates for any frame (half a second at the first opening
+    of a project of FITS frames); only a header with sexagesimal coordinates needs them (a process of its own: counted
+    from a clean start)."""
+    import subprocess
+    import sys
+    p = tmp_path / "f.fits"
+    _write(p, np.zeros((4, 6), np.uint16), BAYERPAT="RGGB", EXPTIME=60.0)
+    code = ("import sys; from astro_gpu.io.frames import read_info; i = read_info(sys.argv[1]); "
+            "print(i.cfa, i.ra, 'astropy.coordinates' in sys.modules)")
+    out = subprocess.run([sys.executable, "-c", code, str(p)], capture_output=True, text=True, timeout=120,
+                         cwd=str(Path(__file__).resolve().parents[1]))
+    assert out.stdout.split() == ["RGGB", "None", "False"], out.stderr[-2000:]
 
 
 def test_the_useful_area_of_the_header_is_the_frame(tmp_path):

@@ -459,14 +459,18 @@ def _fits_info(path: Path) -> FrameInfo:
     info.pixel_scale = _num(hd.get("PIXSCALE", hd.get("SECPIX")))
     info.filter = _filter_of(hd)
     try:
-        import astropy.units as u
-        from astropy.coordinates import SkyCoord
         if "RA" in hd and "DEC" in hd and isinstance(hd["RA"], (int, float)):
             info.ra, info.dec = float(hd["RA"]), float(hd["DEC"])
         elif "RA" in hd and "DEC" in hd and ":" in str(hd["RA"]):         # sexagesimal text (observatory archives)
+            # imported only then (#115: half a second at the first opening of a project of FITS frames, for nothing when
+            # their headers have no coordinates)
+            import astropy.units as u
+            from astropy.coordinates import SkyCoord
             c = SkyCoord(str(hd["RA"]), str(hd["DEC"]), unit=(u.hourangle, u.deg))
             info.ra, info.dec = float(c.ra.deg), float(c.dec.deg)
         elif "OBJCTRA" in hd and "OBJCTDEC" in hd:
+            import astropy.units as u
+            from astropy.coordinates import SkyCoord
             c = SkyCoord(hd["OBJCTRA"], hd["OBJCTDEC"], unit=(u.hourangle, u.deg))
             info.ra, info.dec = float(c.ra.deg), float(c.dec.deg)
     except Exception:  # noqa: BLE001
