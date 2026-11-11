@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -381,6 +381,10 @@ def draw_filters(t: dict, w: int, h: int, names: bool = False) -> QPixmap:
     return pm
 
 
+#: a template card's width (its picture 214 px, and its margins)
+CARD_W = 232
+
+
 def with_palette(t: dict, palette: str) -> dict:
     """A Filters template with this palette, and its filters."""
     return {**t, "palette": palette, "filters": PALETTES[palette]}
@@ -396,7 +400,7 @@ class TemplateCard(QFrame):
         self.t = t
         self.setObjectName("tcard")
         self.setCursor(Qt.PointingHandCursor)
-        self.setFixedWidth(232)
+        self.setFixedWidth(CARD_W)
         v = QVBoxLayout(self)
         v.setContentsMargins(8, 8, 8, 8)
         v.setSpacing(4)
@@ -465,7 +469,7 @@ class TemplatePage(QWidget):
         self.back_b.clicked.connect(self.back.emit)
         top.addWidget(self.back_b)
         out.addLayout(top)
-        sc = QScrollArea()
+        self.scroll = sc = QScrollArea()
         sc.setWidgetResizable(True)
         sc.setFrameShape(QFrame.NoFrame)
         host = QWidget()
@@ -474,6 +478,29 @@ class TemplatePage(QWidget):
         self.grid.setSpacing(12)
         sc.setWidget(host)
         out.addWidget(sc, 1)
+        self._cols = 0
+        sc.viewport().installEventFilter(self)          # its width decides the columns (a scroll bar coming takes some)
+
+    def eventFilter(self, obj, e):                                    # noqa: N802 - Qt's name
+        if e.type() == QEvent.Resize and obj is self.scroll.viewport():
+            self._reflow()
+        return super().eventFilter(obj, e)
+
+    def _reflow(self):
+        """The cards in as many columns as the page's width holds, row after row, as a picture browser's grid (issue
+        #133); each row as tall as its tallest card, a tall page's room left empty below them."""
+        sp = self.grid.spacing()
+        room = self.scroll.viewport().width() - self.grid.contentsMargins().left() - self.grid.contentsMargins().right()
+        cols = max(1, min(len(self.cards), (room + sp) // (CARD_W + sp))) if self.cards else 1
+        if cols == self._cols:                          # build() sets it to 0: its new cards are placed
+            return
+        self._cols = cols
+        for c in self.cards:
+            self.grid.removeWidget(c)
+        for n, c in enumerate(self.cards):
+            row = self.cards[n - n % cols:n - n % cols + cols]
+            c.setFixedHeight(max(x.own_h for x in row))
+            self.grid.addWidget(c, n // cols, n % cols)
 
     def build(self):
         """The cards, the user's templates after the six."""
@@ -484,7 +511,7 @@ class TemplatePage(QWidget):
                 w.setParent(None)
                 w.deleteLater()
         self.cards = []
-        for n, t in enumerate(GALLERY + user_templates()):
+        for t in GALLERY + user_templates():
             c = TemplateCard(t)
             what = label(_(t["text"]), "small", wrap=True)
             c.layout().addWidget(what)
@@ -492,10 +519,16 @@ class TemplatePage(QWidget):
                 box = palette_box(t["palette"])
                 box.currentTextChanged.connect(c.set_palette)
                 c.layout().addWidget(box)
+            # issue #133: its stretch made the cards, and the grid, take the page's whole height. A card is as tall as
+            # the tallest of its row (_reflow), never taller: the room left goes below its content, which keeps its
+            # top. Its own height is that of its text wrapped in its width (a label's size hint guesses a wider one)
             c.layout().addStretch(1)
+            c.ensurePolished()
+            c.own_h = c.heightForWidth(CARD_W)
             c.clicked.connect(self.chosen.emit)
-            self.grid.addWidget(c, n // 3, n % 3)
             self.cards.append(c)
+        self._cols = 0
+        self._reflow()
 
 
 class TemplateGallery(QDialog):
