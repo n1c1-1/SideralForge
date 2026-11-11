@@ -76,21 +76,24 @@ class SkyIndex:
     VT < 11, fields of ~1-6 deg). Read from the cache; ``fetch`` (an explicit action outside a run, never a run: core/
     online.py): its catalogue downloaded and the index built when it is not there, else ``SkyUnavailable``."""
 
-    def __init__(self, catalog: str = "hip", k: int | None = None, fetch: bool = False):
-        self.k = k or (8 if catalog == "hip" else 7)
+    def __init__(self, catalog: str = "hip", k: int | None = None, fetch: bool = False, stars=None, step=None):
+        self.k = k or K[catalog]
         self.combos = np.array(list(combinations(range(self.k), 3)))
         name = f"quads_{catalog}_k{self.k}.npz"
         p = skycache.find(name)             # the cache, else an earlier version's cache (read only)
         if p is not None:
             with np.load(p) as d:
                 self.ra, self.dec, self.codes, self.quads = d["ra"], d["dec"], d["codes"], d["quads"]
-        elif not fetch:
+        elif not fetch and stars is None:
             which = "Hipparcos" if catalog == "hip" else "Tycho-2"
             raise skycache.SkyUnavailable(f"the star index of the blind solver ({which}) is not on this computer: enter "
                                           "the target or its coordinates")
         else:
-            self.ra, self.dec = _hipparcos() if catalog == "hip" else _tycho()
-            self.codes, self.quads = self._build()
+            # ``stars``: the (ra, dec) list already on the disk (the installer, core/bright_stars.py, keeps it so that
+            # a cancel during the build does not download it again); ``step(i, n)`` after each of the n neighbour
+            # combinations of the build (progress; it may raise to cancel)
+            self.ra, self.dec = stars if stars is not None else star_list(catalog)
+            self.codes, self.quads = self._build(step)
             skycache.save_npz(skycache.cache_dir() / name, ra=self.ra, dec=self.dec, codes=self.codes,
                               quads=self.quads)
         self.catalog = catalog
@@ -98,11 +101,13 @@ class SkyIndex:
         self.star_tree = cKDTree(self.xyz)
         self.code_tree = cKDTree(self.codes)
 
-    def _build(self):
+    def _build(self, step=None):
         xyz = _unit(self.ra, self.dec)
         _, nb = cKDTree(xyz).query(xyz, self.k + 1)
         codes, quads = [], []
-        for c3 in self.combos:
+        for i, c3 in enumerate(self.combos):
+            if step is not None:
+                step(i, len(self.combos))
             idx = np.c_[nb[:, 0], nb[:, 1 + c3]]                      # (N, 4) star indices
             P = np.stack([_tangent_rows(xyz[idx[:, j]], xyz[idx[:, 0]]) for j in range(4)], 1)
             code, order, ok = quad_codes(P)
@@ -122,6 +127,16 @@ def _tangent_rows(xyz, centers):
     north = np.cross(c, east)
     d = (xyz * c).sum(1)
     return np.stack([(xyz * east).sum(1) / d, (xyz * north).sum(1) / d], 1)
+
+
+#: the two indexes of the blind solver: neighbours per star, and the file each is kept in (the cache)
+K = {"hip": 8, "tyc": 7}
+INDEX_FILES = {c: f"quads_{c}_k{k}.npz" for c, k in K.items()}
+
+
+def star_list(catalog: str, say=None) -> tuple[np.ndarray, np.ndarray]:
+    """(ra, dec) of the whole-sky list an index is built from, downloaded (an explicit action outside a run)."""
+    return _hipparcos(say=say) if catalog == "hip" else _tycho(say=say)
 
 
 def _hipparcos(vmax=9.5, say=None):

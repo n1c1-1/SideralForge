@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core import bright_stars as bs
 from ..core import gaia_extracts as ge
 from . import prefs
 from .i18n import LANGUAGES, _, maybe, number
@@ -585,15 +586,22 @@ class SettingsDialog(QDialog):
         hl.addWidget(where, 1)
         hl.addWidget(opn)
         self.row(v, _("Folder"), box)
-        self.ex = {"status": {}, "button": {}}
+        self.ex = {"status": {}, "button": {}, "tip": {}}
         buttons = QHBoxLayout()
         # each row says which block cannot run without it: the positions alone leave the Color block out of the
         # runs (it calibrates on the spectra, the 10 GB part), which a user installing only the positions must know
+        # the third row, the bright stars of the whole sky (core/bright_stars.py): their size is what the files take
+        # on the disk, built here from lists of a few MB
         for kind, name, needed, button, tip in (
                 (ge.ASTRO, _("Star positions"), _("Needed by Astrometry"), _("Download positions ({size})"),
                  _("Download star positions ({size})")),
                 (ge.XP, _("Star spectra"), _("Needed by the Color block"), _("Download spectra ({size})"),
-                 _("Download star spectra ({size})"))):
+                 _("Download star spectra ({size})")),
+                (bs.KIND, _("Bright stars"), _("Find an unknown field; add the brightest stars Gaia lacks"),
+                 _("Install bright stars ({size})"),
+                 _("Downloads the Hipparcos and Tycho-2 star lists ({download}) and builds the blind solver's index "
+                   "from them: {size} on the disk, about ten minutes. Without it, Astrometry needs the target or its "
+                   "coordinates."))):
             st = label("", "small", wrap=True)
             box = QWidget()
             col = QVBoxLayout(box)
@@ -602,9 +610,10 @@ class SettingsDialog(QDialog):
             col.addWidget(st)
             col.addWidget(label(needed, "dim", wrap=True))
             self.row(v, name, box)
-            gb = f"{number(ge.DOWNLOAD_BYTES[kind] / 1e9)} {_('GB')}"
+            gb = f"{number((ge.DOWNLOAD_BYTES.get(kind) or bs.DISK_BYTES) / 1e9)} {_('GB')}"
             b = QPushButton(button.format(size=gb))
-            b.setToolTip(tip.format(size=gb))
+            b.setToolTip(tip.format(size=gb, download=f"{number(bs.DOWNLOAD_BYTES / 1e6, 0)} {_('MB')}"))
+            self.ex["tip"][kind] = b.toolTip()
             b.clicked.connect(lambda _x=False, k=kind: self._ex_start(k))
             buttons.addWidget(b)
             self.ex["status"][kind], self.ex["button"][kind] = st, b
@@ -642,15 +651,30 @@ class SettingsDialog(QDialog):
             return _("Partly downloaded: {size}").format(size=ge.human(st.part_bytes))
         return _("Not installed")
 
+    def _bright_status_text(self, st) -> str:
+        if st.state == "installed":
+            size = f"{number(st.size / 1e9)} {_('GB')}" if st.size >= 1e9 else f"{number(st.size / 1e6, 0)} {_('MB')}"
+            return _("Installed") + f" · {size}"
+        if st.state == "partial":
+            return _("Partly installed: {n} of {total} files").format(n=st.files, total=st.total)
+        return _("Not installed")
+
     def _ex_refresh(self):
         """The state of each extract and which buttons can be pressed."""
         busy = extracts.job().running()
         try:
             for kind, lab in self.ex.get("status", {}).items():
+                b = self.ex["button"][kind]
+                if kind == bs.KIND:
+                    st = bs.status()
+                    lab.setText(self._bright_status_text(st))
+                    done = st.state == "installed"
+                    b.setEnabled(not busy and not done)
+                    b.setToolTip(_("Already installed.") if done else self.ex["tip"][kind])
+                    continue
                 st = ge.status(kind)
                 lab.setText(self._ex_status_text(st))
                 done = st.state == "installed" and st.own
-                b = self.ex["button"][kind]
                 b.setEnabled(not busy and not done)
                 b.setToolTip(_("Already installed.") if done else "")
         except RuntimeError:                         # the page was built again meanwhile

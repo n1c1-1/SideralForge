@@ -307,6 +307,7 @@
   "Cannot run: {why}": "Ne peut pas s'exécuter : {why}",
   "the star catalogue is not installed on this computer": "le catalogue d'étoiles n'est pas installé sur cet ordinateur",
   "the star spectra of the catalogue are not installed on this computer": "les spectres des étoiles du catalogue ne sont pas installés sur cet ordinateur",
+  "the target's position is unknown and the blind solver's star index is not installed on this computer": "la position de la cible est inconnue et l'index d'étoiles qui trouve un champ sans indication n'est pas installé sur cet ordinateur",
   "{block}: {method} · Ctrl+Z": "{block} : {method} · Ctrl+Z",
   "Review point kept: it waits for the block to be switched on again (D); runs go through meanwhile.": "Point de vérification gardé : il attend que le bloc soit réactivé (D) ; d'ici là l'exécution passe sans s'arrêter.",
   "{name} blocked: {why}": "{name} bloquée : {why}",

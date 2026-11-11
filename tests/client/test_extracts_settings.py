@@ -99,7 +99,7 @@ def test_the_section_shows_the_folder_the_state_and_the_two_downloads(env, qapp)
     shown = _texts(page)
     assert "Offline Gaia extracts" in shown and "Without them" in " ".join(shown)
     assert "Download positions (1.1 GB)" in shown and "Download spectra (10.6 GB)" in shown
-    assert _gaia(shown).count("Not installed") == 2 and "Open folder" in shown
+    assert _gaia(shown).count("Not installed") == 3 and "Open folder" in shown        # the bright stars too
     assert not [t for t in shown if "Gaia DR3 folder" in t or "12 GB" in t or "◇" in t]      # the old, unbuilt widgets
     edit = next(e for e in page.findChildren(QLineEdit) if e.text() == str(ge.folder()))
     assert edit.isReadOnly() and ge.folder() == env / "home" / "cache" / "gaia_extracts"
@@ -139,7 +139,7 @@ def test_installed_and_found_elsewhere_are_told_apart(env, qapp):
     qapp.processEvents()
     page = d.pages.currentWidget()
     shown = _texts(page)
-    assert "Installed" in shown and _gaia(shown).count("Not installed") == 1
+    assert "Installed" in shown and _gaia(shown).count("Not installed") == 2
     b = _button(page, "Download positions")
     assert not b.isEnabled() and b.toolTip() == "Already installed."
     # a download stopped half-way
@@ -218,12 +218,50 @@ def test_an_error_is_shown_in_plain_words(env, qapp, monkeypatch):
     d.close()
 
 
+def test_the_bright_stars_have_their_row_and_install_from_it(env, qapp, monkeypatch):
+    """The third row: the Hipparcos list and the blind solver's index, what they are for, installed or not with their
+    size, Install run by the one download job off the GUI thread (core/bright_stars.py, replaced here)."""
+    from astro_gpu.core import bright_stars as bs
+    from astro_gpu.core import skycache
+    d, page = _page(qapp)
+    shown = _gaia(_texts(page))
+    assert "Bright stars" in shown and "Find an unknown field; add the brightest stars Gaia lacks" in shown
+    assert shown.count("Not installed") == 3
+    b = _button(page, "Install bright stars (0.7 GB)")
+    assert b.isEnabled() and "Hipparcos and Tycho-2" in b.toolTip() and "25 MB" in b.toolTip()
+    main, ran_in = threading.get_ident(), []
+
+    def fake(progress=None, cancel=None):
+        ran_in.append(threading.get_ident())
+        progress(5, 14, "Tycho-2 index: building, 3 of 35")
+        for f in bs.FILES:
+            skycache.save_npz(skycache.cache_dir() / f, x=np.zeros(1000))
+        progress(14, 14, "Done")
+    monkeypatch.setattr(bs, "download", fake)
+    monkeypatch.setattr(ge, "download", lambda *a, **k: pytest.fail("the Gaia download ran"))
+    b.click()
+    _wait(qapp, lambda: not extracts.job().running() and "Done." in _texts(d.pages.currentWidget()))
+    assert ran_in and ran_in[0] != main
+    page = d.pages.currentWidget()
+    assert any(t.startswith("Installed · ") for t in _texts(page))
+    b = _button(page, "Install bright stars")
+    assert not b.isEnabled() and b.toolTip() == "Already installed."
+    (skycache.cache_dir() / bs.FILES[2]).unlink()
+    d.rebuild()
+    qapp.processEvents()
+    assert "Partly installed: 2 of 3 files" in _texts(d.pages.currentWidget())
+    d.close()
+
+
 def test_the_section_has_its_french(env, qapp):
     i18n.set_language("fr")
     d, page = _page(qapp)
     shown = _texts(page)
     assert "Extraits Gaia hors ligne" in shown and "Télécharger positions (1,1 Go)" in shown
-    assert "Télécharger spectres (10,6 Go)" in shown and _gaia(shown).count("Non installé") == 2
+    assert "Télécharger spectres (10,6 Go)" in shown and _gaia(shown).count("Non installé") == 3
+    assert "Étoiles brillantes" in shown and "Installer étoiles brillantes (0,7 Go)" in shown
+    from astro_gpu.core import bright_stars as bs
+    assert d._bright_status_text(bs.Status("installed", 3, 3, 737_000_000)) == "Installé · 737 Mo"
     _tiny_astro(env / "nowhere" / "siril" / ASTRO_NAME)
     sirilcat.reset()
     d.rebuild()

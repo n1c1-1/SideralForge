@@ -1,4 +1,5 @@
-"""The download of the offline Gaia extracts, off the GUI thread (core/gaia_extracts.py does the work).
+"""The download of the offline Gaia extracts and of the bright stars, off the GUI thread (core/gaia_extracts.py and
+core/bright_stars.py do the work).
 
 One job for the whole program (``job()``): a plain thread runs the download and tells the GUI by signals, so that it
 goes on when Settings is closed and a Settings opened later shows where it is. The ApiWorker is not used: it is one
@@ -15,6 +16,7 @@ import threading
 
 from PySide6.QtCore import QCoreApplication, QObject, Signal
 
+from ...core import bright_stars as bs
 from ...core import gaia_extracts as ge
 from ..i18n import _, number
 
@@ -42,7 +44,7 @@ class ExtractsJob(QObject):
             return False
         ge.translate, ge.number = _, number          # the language of the moment
         self.kind = kind
-        self.last = (0, 1, _("Reading the file list from Zenodo"))
+        self.last = (0, 1, _("Reading the file list from Zenodo") if kind != bs.KIND else _("Asking for the star lists"))
         self._cancel = threading.Event()
         self._thread = threading.Thread(target=self._run, args=(kind, self._cancel), daemon=True,
                                         name=f"gaia-extracts-{kind}")
@@ -59,7 +61,10 @@ class ExtractsJob(QObject):
     def _run(self, kind: str, cancel: threading.Event):
         outcome = ""
         try:
-            ge.download(kind, self._progress, cancel)
+            if kind == bs.KIND:                      # the bright stars: lists asked of the services, indexes built
+                bs.download(self._progress, cancel)
+            else:
+                ge.download(kind, self._progress, cancel)
         except ge.Cancelled:
             outcome = "cancelled"
         except ge.DownloadError as e:

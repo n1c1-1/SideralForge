@@ -116,7 +116,7 @@ def test_a_state_folder_of_its_own_still_sees_the_installed_catalogue(offline_sk
     monkeypatch.setenv("ASTRO_GPU_HOME", str(offline_sky / "a_run_s_own_state"))
     sirilcat.reset()
     assert sirilcat.locate()["astro"].path.parent == installed            # the default state folder's, read
-    assert sky_data.missing("astrometry") == ""
+    assert sky_data.missing("astrometry", (38.0, 61.0)) == ""            # a known field (else the blind index counts)
     env = dict(os.environ)
     sirilcat.private_home(offline_sky / "a_tool_s_state", env)
     assert env["ASTRO_GPU_HOME"] == str(offline_sky / "a_tool_s_state")

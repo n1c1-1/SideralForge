@@ -241,8 +241,11 @@ class Planner:
         from . import sirilcat, sky_data
         if base(stage) not in sky_data.STEPS:
             return ""
-        if sirilcat.locate()["astro"] is not None and sirilcat.locate()["xp"]:
-            return ""                                   # everything installed: the field's centre is not needed
+        # everything installed: the field's centre is not needed, but by an Astrometry that could not find a field of
+        # unknown position (neither Asterion nor the blind solver's index here)
+        found = sirilcat.locate()
+        if found["astro"] is not None and found["xp"] and (base(stage) != "astrometry" or sky_data.blind_ready()):
+            return ""
         return sky_data.missing(base(stage), self._centre(w))
 
     # ------------------------------------------------------------------ planning

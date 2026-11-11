@@ -9,6 +9,8 @@ graph marks the block that needs the data, its reason on hover, and its panel op
     step         what it reads                                     not on the disk
     astrometry   the stars of the field: the offline star          not runnable (no fallback: the solution IS the
                  extract, or the cached sky tiles of the field     match on the catalogue)
+    (astrometry) the target's position unknown: the blind         not runnable (it would stop at once), unless
+                 solver's index (core/bright_stars.py)              Asterion, installed, gives the first solution
     catalogs     the same stars, and their sampled spectra: the    not runnable, nor the Color block that reads it
                  offline spectra extract (its chunk of the field),  (it has no fallback; Color is the block named)
                  or, without the star extract, the cached spectra
@@ -28,6 +30,7 @@ import time
 #: the reasons, in English (the client translates them); ACTION is where the user gets the data
 NO_STARS = "the star catalogue is not installed on this computer"
 NO_SPECTRA = "the star spectra of the catalogue are not installed on this computer"
+NO_INDEX = "the target's position is unknown and the blind solver's star index is not installed on this computer"
 ACTION = "Settings › Catalogs & astrometry"
 #: the block that needs a step's data (the Catalogues step sits in the Astrometry block; Color is what needs it)
 NEEDED_BY = {"astrometry": "astrometry", "catalogs": "color"}
@@ -97,6 +100,22 @@ def spectra_here(centre: tuple[float, float] | None) -> bool:
     return _memo(("xp", str(skycache.cache_dir())), lambda: bool(skycache.listing("xp")))
 
 
+def blind_ready() -> bool:
+    """Whether a field of unknown position can be found: Asterion installed with its index (it solves at any scale,
+    core/asterion.py), else the blind solver's own index in the cache (core/bright_stars.py)."""
+    from . import bright_stars, skycache
+
+    def look() -> bool:
+        if bright_stars.index_here():
+            return True
+        from . import asterion
+        try:
+            return bool(asterion.status().ok)
+        except Exception:  # noqa: BLE001 - a program that does not answer is not one that solves
+            return False
+    return _memo(("blind", str(skycache.cache_dir())), look)
+
+
 def _chunk_of(ra: float, dec: float) -> int:
     import astropy.units as u
     from astropy_healpix import HEALPix
@@ -107,7 +126,9 @@ def missing(stage: str, centre: tuple[float, float] | None = None) -> str:
     """Why the step cannot run on this computer (English; the client translates it), "" when its data is here or it
     needs none. ``centre``: (ra, dec) of the field when known (the target, the solved field)."""
     if stage == "astrometry":
-        return "" if stars_here(centre) else NO_STARS
+        if not stars_here(centre):
+            return NO_STARS
+        return "" if centre is not None or blind_ready() else NO_INDEX
     if stage == "catalogs":
         if not stars_here(centre):
             return NO_STARS
