@@ -322,7 +322,7 @@ class ContSlider(QWidget):
 PANEL_W, PANEL_MIN, PANEL_MAX = 400, 320, 760          # the settings, on the right
 LAYERS_W, LAYERS_MIN, LAYERS_MAX = 300, 230, 520       # the layers, on the left
 SUB_MAX = 120                                          # a layer row's blend, at most (its name keeps the rest)
-CENTRE_MIN = 440                                       # the image: its tools go into "…" rather than push the sides out
+CENTRE_MIN = 470                                       # the image: its tools go into "…" rather than push the sides out
 
 
 class EyeBox(QCheckBox):
@@ -732,11 +732,9 @@ class PostView(QWidget):
         self._fill_versions()
         # a narrow centre (a laptop, Windows' scale at 125 or 150 %): the tools least used go into "…" one by one,
         # rather than the bar pushing the sides out of the window (the night test pass)
-        self.b_more = icon_only(QToolButton(), "more", _("More tools"), 16)
-        self.b_more.setPopupMode(QToolButton.InstantPopup)
+        self.b_more = icon_only(QPushButton(), "more", _("More tools"), 16)     # as the bar's other buttons
         self.more_menu = QMenu(self.b_more)
-        self.more_menu.aboutToShow.connect(self._fill_more)
-        self.b_more.setMenu(self.more_menu)
+        self.b_more.clicked.connect(self._show_more)
         self.b_more.setVisible(False)
         for w in (self.b_crop, self.b_grid, self.b_names, self.b_cmp, self.b_mask, self.b_more, self.b_undo, self.b_redo,
                   self.b_export):
@@ -764,6 +762,9 @@ class PostView(QWidget):
 
     def _fit_bar(self):
         """As many tools in the bar as the centre has room for; the others in "…"."""
+        def need() -> int:                                  # the bar's width now (its hint is kept until invalidated)
+            self.top_bar.invalidate()
+            return self.top_bar.sizeHint().width()
         for b in self._overflow():
             b.setVisible(True)
         self.b_more.setVisible(False)
@@ -771,14 +772,18 @@ class PostView(QWidget):
         self.cb_version.setMinimumWidth(120)
         room = self.centre.width()
         for b in self._overflow():
-            if self.top_bar.sizeHint().width() <= room:
+            if need() <= room:
                 break
             b.setVisible(False)
             self.b_more.setVisible(True)
-        if self.top_bar.sizeHint().width() > room:          # still too wide: Export by its icon, a narrower version
+        if need() > room:                                   # still too wide: Export by its icon, a narrower version
             self.b_export.setText("")
             self.b_export.setToolTip(_("Export…"))
-            self.cb_version.setMinimumWidth(70)
+            self.cb_version.setMinimumWidth(95)
+
+    def _show_more(self):
+        self._fill_more()
+        self.more_menu.exec(self.b_more.mapToGlobal(self.b_more.rect().bottomLeft()))
 
     def _fill_more(self):
         """The "…" menu: the tools the bar has no room for, as their buttons (checked, greyed, their tip)."""
