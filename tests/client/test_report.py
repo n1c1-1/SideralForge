@@ -93,8 +93,8 @@ def test_a_card_without_times_counts_the_frames(qapp):
 
 def test_the_report_is_numbered_gives_each_block_and_the_recipe_and_a_stale_result_says_so(qapp, monkeypatch):
     t = text(page(monkeypatch, "stale"))
-    assert "Processing report" in t and "1. Observation" in t and "2. Registration" in t and "3. Stacking" in t
-    assert "4. Recipe" in t and "5. Appendix" in t and "Value of alignement" in t and "Registration → Stacking" in t
+    assert "Processing report" in t and "Table 1. Acquisition" in t and "1. Registration" in t and "2. Stacking" in t
+    assert "3. Recipe" in t and "4. Appendix" in t and "Value of alignement" in t and "Registration → Stacking" in t
     assert t.count("Outdated") == 2
 
 
@@ -251,7 +251,7 @@ def test_the_text_and_the_curves_go_to_the_clipboard(qapp, monkeypatch):
 
 def test_the_recipe_gives_only_what_differs_from_the_defaults_and_the_appendix_all(qapp, monkeypatch):
     t = text(page(monkeypatch))
-    recipe, appendix = t.split("5. Appendix")
+    recipe, appendix = t.split("4. Appendix")
     assert "Kappa" in recipe and "Method" not in recipe and "Method" in appendix
 
 
