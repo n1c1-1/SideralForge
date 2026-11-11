@@ -193,6 +193,9 @@ class BlockItem(QGraphicsItem):
         # a reason is a sentence of its own: its full stop is not doubled by the one after {why}
         if node.broken:
             tip += "\n" + _("Cannot run: {why}. Run is refused until it is fixed.").format(why=node.broken.rstrip("."))
+        if node.missing:                                  # its data of the sky is not here: left out, the rest runs
+            tip += "\n" + _("Cannot run on this computer: {why}. Install it: Settings › Catalogs & astrometry. The "
+                            "runs leave this block out, with the blocks after it.").format(why=node.missing.rstrip("."))
         if node.cut:
             tip += "\n" + _("Switched off: the image passes through. D or the menu switches it on again.")
         elif node.grey and node.key == "composition":     # a Combine layers to come (GUI exploration 4, Q10)
@@ -277,7 +280,7 @@ class BlockItem(QGraphicsItem):
             p.restore()
             p.setPen(QPen(QColor("#9aa3b2"), 1.8))
             p.drawLine(QPointF(0, BH / 2), QPointF(w, BH / 2))
-        if self.node.grey:                             # greyed by a cut upstream: a dashed amber outline
+        if self.node.grey or self.node.missing:        # greyed by a cut upstream, or no data here: dashed amber
             p.setPen(QPen(QColor(GREY_COL), 1.4, Qt.DashLine))
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 7, 7)
@@ -298,7 +301,7 @@ class BlockItem(QGraphicsItem):
         p.setFont(f)
         p.setPen(QColor("#e8ebf0"))
         mark = ("failed", "error") if self.node.broken else ("off", "dim") if self.node.cut else \
-            ("not_computable", "warning") if self.node.grey else None
+            ("not_computable", "warning") if self.node.grey or self.node.missing else None
         x0 = 11 + (20 if mark else 0)                     # the block's state, before its title
         tw = w - 7 - x0 - (18 if self.removable and self.hover else 0)
         # a workflow's name loses its middle (two variants differ at their end; the whole name is in the tooltip), the

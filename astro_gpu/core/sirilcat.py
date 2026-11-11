@@ -20,10 +20,12 @@ number of records up to and including it, then the records grouped by pixel in p
   archive spectra of the user's cache: equal within 0.03 %).
 
 Where (the first found, per file): the folders of ``ASTRO_GPU_GAIA_EXTRACTS`` (separated by ``os.pathsep``; the older
-name ``ASTRO_GPU_SIRIL_CATALOGUES`` is still accepted), then our own folder; and, as an extra place only, never
-required, a copy that another program already put on this computer: the files named by the ``catalogue_gaia_astro`` /
-``catalogue_gaia_photo`` settings in its ``config*.ini`` and its data folder (Windows ``%LOCALAPPDATA%/siril``, Linux
-``~/.local/share/siril``, macOS ``~/Library/Application Support/siril``).
+name ``ASTRO_GPU_SIRIL_CATALOGUES`` is still accepted), then our own folder, then the one of the default state folder
+``~/.astro_gpu`` when ASTRO_GPU_HOME points elsewhere (as the cache of earlier downloads, ``skycache.legacy_dirs``:
+a run with a state folder of its own, a test, a bench, saw no catalogue although it was installed, and downloaded);
+and, as an extra place only, never required, a copy that another program already put on this computer: the files
+named by the ``catalogue_gaia_astro`` / ``catalogue_gaia_photo`` settings in its ``config*.ini`` and its data folder
+(Windows ``%LOCALAPPDATA%/siril``, Linux ``~/.local/share/siril``, macOS ``~/Library/Application Support/siril``).
 """
 from __future__ import annotations
 
@@ -185,9 +187,10 @@ def own_dir() -> Path:
 
 
 def _candidates() -> list[Path]:
+    from .skycache import legacy_dirs
     env = [Path(p) for name in ("ASTRO_GPU_GAIA_EXTRACTS", "ASTRO_GPU_SIRIL_CATALOGUES")
            for p in os.environ.get(name, "").split(os.pathsep) if p.strip()]
-    return env + [own_dir()] + _from_config() + _data_dirs()
+    return env + [own_dir()] + [d / "gaia_extracts" for d in legacy_dirs()] + _from_config() + _data_dirs()
 
 
 def _scan(p: Path, found: dict) -> None:

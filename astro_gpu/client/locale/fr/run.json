@@ -21,6 +21,7 @@
  "Done in {t}": "Terminé en {t}",
  "≈ {t} left": "reste ≈ {t}",
  "\"{name}\" not run: {why}": "« {name} » non exécuté : {why}",
+ "\"{name}\": {block} and the blocks after it not run: {why}. Install it: Settings › Catalogs & astrometry": "« {name} » : {block} et les blocs qui le suivent non exécutés : {why}. L'installer : Réglages › Catalogues et astrométrie",
  "the earlier layer belongs to another stack": "la couche antérieure appartient à un autre empilement",
  "Disk: {need} GB needed, {free} GB free": "Disque : {need} Go requis, {free} Go libres",
  "Run in progress": "Exécution en cours",

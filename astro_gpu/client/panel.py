@@ -1210,6 +1210,9 @@ class Panel(QWidget):
         if acts.count():
             acts.addStretch(1)
             self.hv.addLayout(acts)
+        if getattr(node, "missing", ""):                 # its data of the sky is not here (core/sky_data.py)
+            self.hv.addWidget(label(_("Cannot run on this computer: {why}").format(why=node.missing.rstrip(".")),
+                                    "warn", wrap=True))
         # which workflows a change goes to (the Stars block has no setting: nothing to apply)
         if node.shared and k != "etoiles":
             self.hv.addWidget(label(_("Apply to:"), "dim"))

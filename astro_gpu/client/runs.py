@@ -627,6 +627,15 @@ class RunDialog(QDialog):
             v = self.s.view(wid)
             out.append(_('"{name}" not run: {why}').format(
                 name=v.name if v is not None else self.names.get(wid, "?"), why=_(why)))
+        from ..core import sky_data
+        for wid, steps in (getattr(self.plan, "left_out", None) or {}).items():
+            v = self.s.view(wid)
+            for stage, why in steps.items():          # the data of the sky not on this computer (core/sky_data.py)
+                b = ENGINE_BLOCK.get(sky_data.NEEDED_BY.get(stage.split("@")[0].split("~")[0], ""), "")
+                out.append(_('"{name}": {block} and the blocks after it not run: {why}. Install it: Settings › '
+                             'Catalogs & astrometry').format(name=v.name if v is not None else self.names.get(wid, "?"),
+                                                            block=block_title(None, b) if b else stage,
+                                                            why=_(why).rstrip(".")))
         if self.plan is not None and self.plan.jobs and self.has_data():      # no disk need without data (6.7)
             free = self.c.free_gb() if self.c is not None else None
             if free is None and sync and self.c is not None:

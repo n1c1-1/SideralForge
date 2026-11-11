@@ -255,6 +255,9 @@ class Main(QMainWindow):
         self.render = None                           # the RenderWorker of Post (made when Post is first shown)
         self.machine: Machine | None = None
         self.home: HomeView | None = None
+        from .services import extracts
+        # a catalogue's download ends (it goes on with Settings closed): the blocks waiting for it can run
+        extracts.job().finished.connect(self.sky_changed, Qt.QueuedConnection)
         self.proj_screen: QWidget | None = None
         self._inspect_holder: PageHolder | None = None   # Inspect's place in the modes (its views: ``tune``…)
         self.graph = self.tune = self.frames = self.browser = self.steps = self.post_holder = None
@@ -1483,6 +1486,15 @@ class Main(QMainWindow):
         d.densityChanged.connect(self.apply_layout)
         d.exec()
         d.deleteLater()
+        self.sky_changed()                               # a catalogue installed there: planned again at once
+
+    def sky_changed(self, *_a):
+        """The data of the sky on this computer may have changed (an extract installed, a survey fetched): the blocks
+        that could not run for lack of it, and Home's line, are said again (core/sky_data.py)."""
+        if self.s is not None and hasattr(self.s, "sky_changed"):
+            self.s.sky_changed()
+        if self.home is not None and hasattr(self.home, "sky_changed"):
+            self.home.sky_changed()
 
     def change_language(self, code: str):
         apply_language(code)

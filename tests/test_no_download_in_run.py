@@ -42,6 +42,8 @@ def offline_sky(tmp_path, monkeypatch):
     monkeypatch.setenv("ASTRO_GPU_GAIA_EXTRACTS", "")
     monkeypatch.setenv("ASTRO_GPU_SIRIL_CATALOGUES", "")
     monkeypatch.delenv("ASTRO_GPU_OFFLINE", raising=False)    # not set aside by the offline mode: stopped by the guard
+    from astro_gpu.stages import astrometry
+    monkeypatch.setattr(astrometry, "_GAIA_CACHE", {})          # the stars an earlier test's run kept in this process
     online.reset()
     sirilcat.reset()
     yield tmp_path

@@ -2490,6 +2490,25 @@ class ProjectModel(QObject):
         why = self.greyed(p).get(engine_block(key), "")
         return _(why) if why else ""
 
+    def sky_missing(self, p: WorkflowView, key: str) -> str:
+        """Why this block of the workflow cannot run on this computer: the data of the sky it needs is not on the disk
+        (core/sky_data.py; a run never downloads it), translated; "" when it is there or the block needs none. From
+        Run all's plan (cached until the next change)."""
+        from ..core import sky_data
+        left = (self.cost().left_out or {}).get(p.pid) or {}
+        b = engine_block(kbase(key))
+        why = next((w for st, w in left.items() if sky_data.NEEDED_BY.get(st.split("@")[0].split("~")[0]) == b), "")
+        return _(why) if why else ""
+
+    def sky_changed(self):
+        """The data of the sky on the disk changed (the offline catalogue installed, a survey fetched): what the runs
+        can compute is planned again."""
+        from ..core import sky_data
+        sky_data.reset()
+        self._cache.clear()
+        self.costChanged.emit()
+        self.pathsChanged.emit()
+
     def set_cut(self, paths, key: str, on: bool) -> bool:
         """Switch a block off (``on``) in these workflows, or on again (issue #47): one change, for Undo. Its settings
         and results are kept; switched off, the data passes through it. False when nothing changes; ValueError

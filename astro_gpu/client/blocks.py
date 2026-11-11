@@ -356,6 +356,8 @@ class Node:
     cut: bool = False                          # cut by the user in its workflows (issue #43)
     grey: str = ""                             # why it cannot run (a cut before it), translated; "" when it can
     broken: str = ""                           # why it cannot run at all (a fusion's channel gone...): circled in red
+    missing: str = ""                          # why it cannot run on this computer: the data of the sky it needs is
+    #                                            not on the disk (core/sky_data.py); left out of the runs, the rest runs
     slot: int = -1                             # an image block: its rank among its workflow's image blocks (#47)
     num: int = 0                               # a Combine layers block among several, or a frame block among those
     #                                            placed in parallel: its number (control round)
@@ -468,6 +470,13 @@ class Graph:
                     self.by_path[p.pid]["post"] = n
                     if src["fusion"].get("stars"):       # option A: its starless image and its star layer
                         self.by_path[p.pid]["etoiles"] = n
+        # the data of the sky a block needs and this computer has not (the offline catalogue not installed): marked
+        # with the reason; the runs leave it out with what follows it, and run the rest
+        sky = getattr(project, "sky_missing", None)
+        if sky is not None:
+            for n in self.nodes:
+                if n.paths and n.key not in ("sources", "final", "session") and not n.cut and not n.grey:
+                    n.missing = next((w for q in n.paths if (w := sky(q, n.key))), "")
         self.compositions: list[Node] = []
         self.direct: list[tuple[Node, str]] = []
         self.to_post: set[int] = set()

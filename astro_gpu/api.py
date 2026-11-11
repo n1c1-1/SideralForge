@@ -223,6 +223,8 @@ class Cost:
     jobs: int
     keys: list[str] = field(default_factory=list)
     skipped: dict[int, str] = field(default_factory=dict)
+    #: {workflow: {stage: why}}: the steps whose data of the sky is not on this computer, left out (core/sky_data.py)
+    left_out: dict[int, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -1888,7 +1890,8 @@ def cost(p: Project2, workflows: Sequence[int | Workflow] | None = None, device:
     """What computing these workflows would take, on this machine: the plan's totals (jobs not done yet, each key
     once). Give what-if Workflow objects (``with_change``, a new workflow, a variant) to ask before changing."""
     plan = (plan_all(p, device, history) if workflows is None else plan_workflows(p, workflows, device, history))
-    return Cost(plan.seconds, plan.measured, plan.disk_gb, len(plan), plan.keys, dict(plan.skipped))
+    return Cost(plan.seconds, plan.measured, plan.disk_gb, len(plan), plan.keys, dict(plan.skipped),
+                {w: dict(v) for w, v in plan.left_out.items()})
 
 
 def estimate(p: Project2, wf: int | Workflow, stage: str, device: str | None = None) -> Estimate:

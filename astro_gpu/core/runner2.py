@@ -124,13 +124,16 @@ class Plan:
     """The jobs of a run, in order, each key once. ``targets``: the (workflow, stage) pairs asked for;
     ``skipped``: workflows left out, with the reason; ``rules``: 'module:function' building the KeyRules of other
     stages than the v2 ones (tests and tools; None: the v2 stages); ``gpu_check``: 'module:function(device)' telling
-    whether the process's CUDA context still works (tests; None: ``cuda_alive``)."""
+    whether the process's CUDA context still works (tests; None: ``cuda_alive``); ``left_out``: {workflow: {stage:
+    why}}, the steps whose data of the sky is not on this computer (core/sky_data.py), left out of the run with the
+    steps that need their result (the others run)."""
 
     jobs: list[Job] = field(default_factory=list)
     targets: list[tuple[int, str]] = field(default_factory=list)
     skipped: dict[int, str] = field(default_factory=dict)
     rules: str | None = None
     gpu_check: str | None = None
+    left_out: dict[int, dict[str, str]] = field(default_factory=dict)
 
     def __len__(self) -> int:
         return len(self.jobs)
@@ -158,13 +161,14 @@ class Plan:
     def to_dict(self) -> dict[str, Any]:
         return {"jobs": [j.to_dict() for j in self.jobs], "targets": [list(t) for t in self.targets],
                 "skipped": {str(k): v for k, v in self.skipped.items()}, "rules": self.rules,
-                "gpu_check": self.gpu_check}
+                "gpu_check": self.gpu_check, "left_out": {str(k): dict(v) for k, v in self.left_out.items()}}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Plan:
         return cls([Job.from_dict(j) for j in d.get("jobs") or []],
                    [(int(w), s) for w, s in d.get("targets") or []],
-                   {int(k): v for k, v in (d.get("skipped") or {}).items()}, d.get("rules"), d.get("gpu_check"))
+                   {int(k): v for k, v in (d.get("skipped") or {}).items()}, d.get("rules"), d.get("gpu_check"),
+                   {int(k): dict(v) for k, v in (d.get("left_out") or {}).items()})
 
 
 class Planner:
@@ -182,6 +186,10 @@ class Planner:
         self.jobs: dict[str, Job] = {}
         self.skipped: dict[int, str] = {}
         self._facts: dict[int, est.Facts] = {}
+        #: the keys that cannot run here (their data of the sky, or a result they read, is missing) and why;
+        #: {workflow: {stage: why}} of the steps that lack the data themselves (core/sky_data.py)
+        self.blocked: dict[str, str] = {}
+        self.left_out: dict[int, dict[str, str]] = {}
 
     @property
     def chains(self) -> wfl.Chains:
@@ -211,22 +219,62 @@ class Planner:
             out.append(w.id)
         return out
 
+    def _centre(self, w: Workflow) -> tuple[float, float] | None:
+        """(ra, dec) of the workflow's field when known: the target's, the solved field's, a name the catalogues on
+        this computer know; asked only when the offline star extract is not installed (core/sky_data.py)."""
+        t = self.project.target
+        if t.ra is not None and t.dec is not None:
+            return float(t.ra), float(t.dec)
+        if "astrometry" in self.keys.chain(w):
+            k = self.keys.key(w, "astrometry")
+            m = (self.store.manifest("astrometry", k).get("metrics") or {}) if self.done("astrometry", k) else {}
+            if m.get("ra") is not None and m.get("dec") is not None:
+                return float(m["ra"]), float(m["dec"])
+        if t.name:
+            from ..stages.astrometry import find_offline
+            return find_offline(t.name)
+        return None
+
+    def lacks(self, w: Workflow, stage: str) -> str:
+        """Why a step of the workflow cannot run on this computer: its data of the sky is not on the disk (a run never
+        downloads it: core/online.py); "" when it can."""
+        from . import sirilcat, sky_data
+        if base(stage) not in sky_data.STEPS:
+            return ""
+        if sirilcat.locate()["astro"] is not None and sirilcat.locate()["xp"]:
+            return ""                                   # everything installed: the field's centre is not needed
+        return sky_data.missing(base(stage), self._centre(w))
+
     # ------------------------------------------------------------------ planning
-    def need(self, wf: int | Workflow, stage: str, as_input: bool = False) -> None:
+    def need(self, wf: int | Workflow, stage: str, as_input: bool = False) -> str:
+        """Plan the job of a result and of what it needs; returns why it cannot run here ("" when planned or done)."""
         w = self.project.workflow(wf)
         k = self.keys.key(w, stage)
         if k in self.jobs:
-            return
+            return ""
+        if k in self.blocked:
+            return self.blocked[k]
         done = self.done(stage, k)
         if done and (not as_input or self.usable(stage, k)):
-            return
+            return ""
         deps = self.keys.deps(w, stage)
         for d in deps:
-            self.need(w, d, as_input=True)
+            why = self.need(w, d, as_input=True)
+            if why:                                     # a result it reads cannot be made here: neither can it
+                self.blocked[k] = why
+                return why
+        why = self.lacks(w, stage)
+        if why:                                         # its data of the sky is not here: left out, said for it
+            self.left_out.setdefault(w.id, {})[stage] = why
+            self.blocked[k] = why
+            return why
         others = {}
         if base(stage) == "fusion":                 # a fusion reads other workflows' results: computed first
             for pid, st in self.keys.fusion_inputs(w):
-                self.need(pid, st, as_input=True)
+                why = self.need(pid, st, as_input=True)
+                if why:
+                    self.blocked[k] = why
+                    return why
                 others[f"{st}#{pid}"] = self.keys.key(pid, st)
         e = est.estimate(base(stage), self._facts_of(w), self.gpu, self.history)
         part = 1.0
@@ -236,6 +284,7 @@ class Planner:
                            {**{d: self.keys.key(w, d) for d in deps}, **others}, round(e.seconds * part, 3),
                            e.measured,
                            round(e.disk_gb * part, 3), rerun=done)
+        return ""
 
     def plan(self, targets: list[tuple[int | Workflow, str]]) -> Plan:
         """The plan computing the given (workflow, stage) results and what they need. Workflows that cannot run
@@ -248,10 +297,10 @@ class Planner:
             if why:
                 self.skipped[w.id] = why
                 continue
-            self.need(w, stage)
-            asked.append((w.id, stage))
+            if not self.need(w, stage):                 # left out (its data of the sky is not here): not asked
+                asked.append((w.id, stage))
         jobs = order_jobs(self.jobs.values(), self.chains.order, {w for w, _ in asked})
-        return Plan(jobs, asked, dict(self.skipped))
+        return Plan(jobs, asked, dict(self.skipped), left_out={w: dict(v) for w, v in self.left_out.items()})
 
 
 def order_jobs(jobs: Any, order: list[str], targets: set[int] | None = None) -> list[Job]:
