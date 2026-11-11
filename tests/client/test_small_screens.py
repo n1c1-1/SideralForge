@@ -1008,7 +1008,7 @@ def test_the_post_viewer_has_the_graphs_gestures(qapp):
         v.deleteLater()
 
 
-def test_a_project_of_two_stretched_pictures_opens_again(env):
+def test_a_project_of_two_stretched_pictures_opens_again(env, monkeypatch):
     """The night test pass: a project of two JPEGs (two workflows without blocks) did not open again: the graph took
     their shared Output out twice, and the window stayed on Home with the project half open."""
     import cv2
@@ -1023,3 +1023,8 @@ def test_a_project_of_two_stretched_pictures_opens_again(env):
     project2.save(p)
     w = _open(env, (1600, 900), root)
     assert w.graph_page() is not None and [q.name for q in w.s.paths] == ["a", "b"]
+    # a project that fails to be shown for another reason: closed and said, never left half open
+    w.close_project()
+    monkeypatch.setattr(w, "build_project", lambda: 1 / 0)
+    assert w.open_project(root) is False and w.project is None and w.s is None
+    assert "cannot be shown" in w.banner.text.text()

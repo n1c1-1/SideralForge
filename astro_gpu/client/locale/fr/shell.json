@@ -140,5 +140,6 @@
  "Interface density": "Densité interface",
  "Auto: compact and icons on a small window · Never: today's layout on any screen": "Auto : compact et icônes sur une petite fenêtre · Jamais : la disposition d'origine sur tout écran",
  "The program hit an unexpected error. The details below help to find it.": "Le programme a rencontré une erreur imprévue. Le détail ci-dessous aide à la retrouver.",
- "Another window of the program saved this project since it was opened here: nothing is replaced. Save as… keeps this window's work in another folder.": "Une autre fenêtre du logiciel a enregistré ce projet depuis son ouverture ici : rien n'est remplacé. Enregistrer sous… garde le travail de cette fenêtre dans un autre dossier."
+ "Another window of the program saved this project since it was opened here: nothing is replaced. Save as… keeps this window's work in another folder.": "Une autre fenêtre du logiciel a enregistré ce projet depuis son ouverture ici : rien n'est remplacé. Enregistrer sous… garde le travail de cette fenêtre dans un autre dossier.",
+ "This project cannot be shown: {why}": "Ce projet ne peut pas être affiché : {why}"
 }

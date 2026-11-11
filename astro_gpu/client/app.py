@@ -576,11 +576,18 @@ class Main(QMainWindow):
         if not drafts.is_untitled(root):
             prefs.add_recent(root.as_posix(), d.name, d.target.name or "")
         self._recovery_mine = recovered is not None
-        self.make_model()
-        self.mode = 0
-        self._last_step = None
-        self.build_menus()
-        self.build_project()
+        try:
+            self.make_model()
+            self.mode = 0
+            self._last_step = None
+            self.build_menus()
+            self.build_project()
+        except Exception as e:  # noqa: BLE001 - the night test pass: a project that failed to build stayed half open,
+            import logging      # invisible, the next gestures acting on it; closed, said, the detail in the output
+            logging.getLogger(__name__).exception("the project could not be shown")
+            self.close_project(go_home=True, discard=True)
+            self.banner.say(_("This project cannot be shown: {why}").format(why=plain_error(f"{type(e).__name__}: {e}")))
+            return False
         self.run.attach()                            # a run that goes on (started before, or elsewhere): follow it
         self.run.before_run = self._named_for_run
         if recovered is not None:
