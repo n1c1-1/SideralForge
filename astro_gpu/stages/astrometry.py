@@ -8,7 +8,7 @@ import threading
 import numpy as np
 
 from ..core.params import ADVANCED, Auto, P, StageParams
-from ..core.stage import Context, Stage, StageError
+from ..core.stage import Context, Interrupted, Stage, StageError
 
 GOOD_PAIRS = 15     # matched star pairs that make a triangle match certain (false matches raise instead)
 TRIAL_G = 11.0      # the stars of the scale search trials when they are enough (see the search)
@@ -161,6 +161,10 @@ class Astrometry(Stage):
             ctx.progress(here[0], msg)
         # pass 1: every scale with the given centre only (fast); pass 2: also shifted centres
         passes = [0.0, p.search_offsets] if p.search_offsets > 0 else [0.0]
+        # (scale, catalogue) -> the scales its centred match saw: pass 2 does not match the given centre again where
+        # pass 1 did on the same stars (issue #139: one of its 9 centres, a vain match of seconds per scale and
+        # mirror), it takes up what that match saw
+        centred: dict[tuple[float, int], list[float]] = {}
         for ip, off in enumerate(passes):
             queue = list(scales)
             tried: list[float] = []
@@ -188,6 +192,11 @@ class Astrometry(Stage):
                             gs, gm = None, None
                     if gs is None:
                         gs, gm = gaia_bright(ra0, dec0, radius, glim, ctx.log, download)
+                except Interrupted:
+                    # Stop pressed while the sky tiles came (``download`` checks it): a stop, not a catalogue that
+                    # cannot be read (issue #139: it ended the run as a failure that blamed the network, or, the
+                    # scale unknown, was logged as a trial scale without stars)
+                    raise
                 except Exception as e:  # noqa: BLE001 - no catalogue for this trial scale (offline, services down)
                     if p.scale:
                         raise StageError("the star catalogue for this field cannot be read: check the network "
@@ -196,17 +205,23 @@ class Astrometry(Stage):
                     continue
                 if len(gm) < 20:
                     continue
+                key = (round(float(sc), 6), len(gm))
+                again = ip > 0 and key in centred
                 if sparse:
-                    res = _match_sparse(gs, gm, ra0, dec0, sc, W, H, det, off, fw, fh, tol, flips)
+                    res = _match_sparse(gs, gm, ra0, dec0, sc, W, H, det, off, fw, fh, tol, flips, centre=not again)
                     if res is not None:
                         best, odds = (*res[:4], sc, glim, radius), res[4]
                         break
+                    if ip == 0:
+                        centred[key] = []
                     continue
-                seen: list[float] = []
+                seen: list[float] = list(centred[key]) if again else []
                 # scale unknown: 60 control points per trial (a vain trial costs ~2 s instead of ~70 s), and the
                 # scale that matches is matched again with the usual 100, as when the scale is known
                 res = _match(gs, gm, ra0, dec0, sc, W, H, brightdet, off, fw, fh, aa, tol, flips,
-                             seen if not p.scale else None, mcp=100 if p.scale else 60)
+                             seen if not p.scale else None, mcp=100 if p.scale else 60, centre=not again)
+                if ip == 0:
+                    centred[key] = list(seen)
                 if res is not None and not p.scale and res[2] >= GOOD_PAIRS:
                     full = _match(gs, gm, ra0, dec0, sc, W, H, brightdet, off, fw, fh, aa, tol, (res[0],))
                     res = full if full is not None and full[2] >= res[2] else res
@@ -225,7 +240,7 @@ class Astrometry(Stage):
                 break
         if best is None and p.blind:
             ctx.log("guided search failed: trying the all-sky blind solver", "warning")
-            ra0, dec0, sc_b = _blind(ctx, brightdet, W, H)
+            ra0, dec0, sc_b = _blind(ctx, brightdet, W, H, at=0.6)
             fw, fh = W * sc_b / 3600, H * sc_b / 3600
             glim = float(np.clip(12.5 - 1.25 * np.log10(max(fw * fh, 1e-3) / 37.0), 10.5, 16.0))
             radius = 0.5 * np.hypot(fw, fh) * (1 + 2 * p.search_offsets) + 0.2
@@ -382,10 +397,12 @@ def remember_instrument(camera, pix, focal: float | None, mirror: bool) -> None:
         pass
 
 
-def _blind(ctx, xy, W, H):
-    """All-sky blind solve of the brightest stars: (ra, dec, scale) of the field centre."""
+def _blind(ctx, xy, W, H, at: float = 0.05):
+    """All-sky blind solve of the brightest stars: (ra, dec, scale) of the field centre. ``at``: where the bar stands
+    meanwhile, the end of the guided search when it comes after it (issue #139: the bar went back from 0.6 to 0.05,
+    and the time left, a straight line through the bar, jumped to some twenty times the time already spent)."""
     from ..core.blindsolve import solve_any
-    ctx.progress(0.05, "all-sky blind solving (first use builds the star index, a few minutes)")
+    ctx.progress(at, "all-sky blind solving (first use builds the star index, a few minutes)")
     r = solve_any(xy[:80], W, H)
     if r is None:
         raise StageError("the field could not be identified on the sky: enter the target name or its coordinates")
@@ -405,11 +422,15 @@ def _tan(ra, dec, scale, W, H):
     return w
 
 
-def _centres(ra0, dec0, off, fw, fh):
+def _centres(ra0, dec0, off, fw, fh, centre: bool = True):
+    """The trial centres: the given one, then those shifted by ``off`` of the field; ``centre=False``: the shifted ones
+    only."""
     dra_l = [0.0] + ([-off * fw, off * fw] if off > 0 else [])
     ddec_l = [0.0] + ([-off * fh, off * fh] if off > 0 else [])
     for dra in dra_l:
         for ddec in ddec_l:
+            if not centre and dra == 0.0 and ddec == 0.0:
+                continue
             dec_c = float(np.clip(dec0 + ddec, -89.9, 89.9))
             yield ra0 + dra / np.cos(np.radians(dec_c)), dec_c
 
@@ -424,38 +445,35 @@ def _fewest_in_frame(gs, ra0, dec0, sc, W, H, off, fw, fh) -> int:
 
 
 def _match(gs, gm, ra0, dec0, sc, W, H, brightdet, off, fw, fh, aa, tol, flips=(True, False), seen=None,
-           mcp=100):
+           mcp=100, centre=True):
     """Triangle match of the brightest detections with the Gaia stars projected at the trial scale and centres:
     (mirror, transform, matched pairs, centre) or None. The likely mirror is tried first and a certain match (>=
     GOOD_PAIRS pairs: the other mirror cannot give one) ends the search: a vain match costs ~35 s of exhausted
-    triangle lists, a good one ~1 s. ``seen``: where to put the scales of certain matches rejected for their scale."""
+    triangle lists, a good one ~1 s. ``seen``: where to put the scales of certain matches rejected for their scale;
+    ``centre=False``: the shifted centres only (``_centres``)."""
     best = None
-    dra_l = [0.0] + ([-off * fw, off * fw] if off > 0 else [])
-    ddec_l = [0.0] + ([-off * fh, off * fh] if off > 0 else [])
-    for dra in dra_l:
-        for ddec in ddec_l:
-            dec_c = float(np.clip(dec0 + ddec, -89.9, 89.9))
-            w0 = _tan(ra0 + dra / np.cos(np.radians(dec_c)), dec_c, sc, W, H)
-            px, py = w0.world_to_pixel(gs)
-            inb = (px > -0.15 * W) & (px < 1.15 * W) & (py > -0.15 * H) & (py < 1.15 * H)
-            if inb.sum() < 20:
+    for ra, dec in _centres(ra0, dec0, off, fw, fh, centre):
+        w0 = _tan(ra, dec, sc, W, H)
+        px, py = w0.world_to_pixel(gs)
+        inb = (px > -0.15 * W) & (px < 1.15 * W) & (py > -0.15 * H) & (py < 1.15 * H)
+        if inb.sum() < 20:
+            continue
+        order = np.argsort(gm[inb], kind="stable")
+        gpos = np.c_[px[inb], py[inb]][order][:150]
+        for flip in flips:
+            q = brightdet.copy()
+            if flip:
+                q[:, 1] = H - 1 - q[:, 1]
+            try:
+                T, (a, _) = aa.find_transform(q, gpos, max_control_points=mcp)
+            except Exception:  # noqa: BLE001 - no match for this hypothesis
                 continue
-            order = np.argsort(gm[inb], kind="stable")
-            gpos = np.c_[px[inb], py[inb]][order][:150]
-            for flip in flips:
-                q = brightdet.copy()
-                if flip:
-                    q[:, 1] = H - 1 - q[:, 1]
-                try:
-                    T, (a, _) = aa.find_transform(q, gpos, max_control_points=mcp)
-                except Exception:  # noqa: BLE001 - no match for this hypothesis
-                    continue
-                if abs(np.log(T.scale)) < tol and (best is None or len(a) > best[2]):
-                    best = (flip, T, len(a), list(w0.wcs.crval))
-                elif seen is not None and len(a) >= GOOD_PAIRS and 0.2 < T.scale < 5:
-                    seen.append(float(sc * T.scale))
-                if best is not None and best[2] >= GOOD_PAIRS:
-                    break
+            if abs(np.log(T.scale)) < tol and (best is None or len(a) > best[2]):
+                best = (flip, T, len(a), list(w0.wcs.crval))
+            elif seen is not None and len(a) >= GOOD_PAIRS and 0.2 < T.scale < 5:
+                seen.append(float(sc * T.scale))
+            if best is not None and best[2] >= GOOD_PAIRS:
+                break
         if best is not None and best[2] >= GOOD_PAIRS:
             break
     return best
@@ -483,17 +501,18 @@ def log_odds(pred, cat, s, t, tree, W, H, used) -> tuple[float, int]:
     return lo, len(hit) + len(used)
 
 
-def _match_sparse(gs, gm, ra0, dec0, sc, W, H, det, off, fw, fh, tol, flips):
+def _match_sparse(gs, gm, ra0, dec0, sc, W, H, det, off, fw, fh, tol, flips, centre=True):
     """The field of a stack of few stars on the catalogue: (mirror, transform, matched stars, centre, log odds) or None.
     Every triple of its brightest stars and of the catalogue's (the triangle matching of Groth 1986 and Valdes et al.
     1995: the nearest-neighbour triangles of the frames' registration need two lists of the same stars, which a list
     of detections and a catalogue are not) proposes a similarity; the one the stars prove best stands if its Bayes
-    factor reaches ODDS_TO_SOLVE (``log_odds``). No random draw: the same stars give the same solution."""
+    factor reaches ODDS_TO_SOLVE (``log_odds``). No random draw: the same stars give the same solution. ``centre``: as
+    in ``_match``."""
     from scipy.spatial import cKDTree
     from skimage.transform import SimilarityTransform
 
     from .register import triangle_similarities
-    for ra, dec in _centres(ra0, dec0, off, fw, fh):
+    for ra, dec in _centres(ra0, dec0, off, fw, fh, centre):
         w0 = _tan(ra, dec, sc, W, H)
         px, py = w0.world_to_pixel(gs)
         inb = (px > -0.15 * W) & (px < 1.15 * W) & (py > -0.15 * H) & (py < 1.15 * H)
