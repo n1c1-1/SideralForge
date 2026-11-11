@@ -552,12 +552,15 @@ def holds_frames(folder: Path) -> bool:
 
 
 def projects_location(avoid: str = "") -> str:
-    """Where a new project is proposed (GUI exploration 7.1): beside the last project opened, else the last folder
-    used, else the home folder; never in ``avoid`` or below it (the folder of the frames an import reads), never in a
-    folder of frames (GUI exploration 4: the darks just added to a session were the last folder used)."""
+    """Where a new project is proposed (GUI exploration 7.1): beside the last project opened, else in the first section
+    of Home (the night test pass: the user's home folder was proposed where Home showed a folder of projects), else
+    the last folder used, else the home folder; never in ``avoid`` or below it (the folder of the frames an import
+    reads), never in a folder of frames (GUI exploration 4: the darks just added to a session were the last folder
+    used)."""
     bad = Path(avoid).resolve() if avoid else None
     last = Path(prefs.last_folder())
-    for c in [Path(r["path"]).parent for r in prefs.recent()] + [last, Path.home()]:
+    sections = [Path(r["folder"]) for r in prefs.get("home_sections") or [] if isinstance(r, dict) and r.get("folder")]
+    for c in [Path(r["path"]).parent for r in prefs.recent()] + sections + [last, Path.home()]:
         try:
             if not c.is_dir():
                 continue

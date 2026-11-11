@@ -397,6 +397,11 @@ def test_import_words_and_where_a_new_project_goes(tmp_path, monkeypatch):
     prefs.add_recent((tmp_path / "projects" / "Old").as_posix(), "Old")
     (tmp_path / "projects").mkdir()
     assert Path(projects_location(avoid=str(raw))) == tmp_path / "projects"
+    # the night test pass: no project opened yet, a section on Home: there, not the user's home folder
+    prefs.set("recent", [])
+    (tmp_path / "mine").mkdir()
+    prefs.set("home_sections", [{"label": "Mine", "folder": (tmp_path / "mine").as_posix(), "note": "", "open": True}])
+    assert Path(projects_location(avoid=str(raw))) == tmp_path / "mine"
     i18n.set_language("fr")
     try:
         assert i18n._("No bias.") == "Pas d'offsets." and i18n._("No bias, no dark flats.") == \
