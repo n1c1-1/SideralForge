@@ -17,6 +17,14 @@ removal tools all work on a stretched image: the stretch here is known and undon
 and its tiled application are the Stars block's (stages/star_removal.py), which ships the run chosen
 (resources/stars/starless_nafnet.pt: run "mixed", 5 November 2026).
 
+**After a Deconvolution (11 November 2026).** The network of 5 November had only seen stars as the sky and the
+instrument leave them. Behind the Deconvolution block's network the stars are narrower and have lost their wings: it
+took off a little more than the star, 1 to 2 % of the local level out to 4 px on a nebula, a dark rim once the stars
+went back on. The run "deconv" starts from the shipped weights and gives a share of its tiles (input and target alike,
+stars of synthesis included: the truth under each star stays exact) to that network first, the clipped cores left as
+they are, as the block does (stages/deconv.py); the other tiles are the first training's, so that an image not
+deconvolved is treated as before. Its validation scores are given for both kinds of tiles.
+
 Left out: the bench's fields (denoise_dataset.HELD_OUT), set 53 (not reviewed), the levels of a reviewed field on
 another pixel grid than the reviewed one. Ignored zones (no loss): what the review could not settle (Alnitak's halo, the
 star of NGC 2023, a knot of M33), and in a field's other levels the zones retouched in the reviewed one.
@@ -26,6 +34,7 @@ Commands:
     python tools/bench/stars_train.py train --tag mixed --hours 8.5 --device cuda:0
     python tools/bench/stars_train.py train --tag real --synthetic 0 --hours 8.5 --device cuda:1
     python tools/bench/stars_train.py bench --tag mixed     # the bench's starless images, then stars_compare.py
+    python tools/bench/stars_train.py train --tag deconv --init shipped --deconv 0.5 --lr 1e-4 --hours 3
 
 Files: F:/astro_essais/stars_dataset_v2/<pair>/{starless_fixed.npy, ignore.npy}, fields.json;
 F:/astro_essais/stars_train/<tag>/{net.pt, best.pt, history.json, log}; F:/astro_essais/stars_compare/<case>/
@@ -47,7 +56,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tools" / "bench"))
 
-from astro_gpu.stages.star_removal import NAFNet, apply, fwd  # noqa: E402
+from astro_gpu.stages.star_removal import MODEL, NAFNet, apply, fwd, inv  # noqa: E402
 
 DS = Path("F:/astro_essais/stars_dataset_v2")
 REVIEW = Path("F:/astro_essais/stars_dataset/_revue")
@@ -61,6 +70,8 @@ IGNORED = [("user_Horsehead", 2568, 1136, 520),            # Alnitak: its halo a
            ("user_Horsehead", 3132, 2056, 60),             # the star of NGC 2023, left in the starless image
            ("set_36_osc_refractor_asi294mc_star71_m33", 3346, 2424, 45)]   # a knot of M33 taken off: H II region?
 PATCH, MARGIN = 256, 128
+#: the margin of a tile given to the Deconvolution block's network, cut off after it (that block's own: BETA_PAD)
+DEC_PAD = 48
 
 
 def log(msg: str) -> None:
@@ -138,11 +149,11 @@ def fixes() -> int:
 
 
 # ---------------------------------------------------------------------------------------------- synthetic stars
-def synthetic_stars(n: int, fwhm_field, top, gen, dev):
-    """n tiles (n, 3, PATCH, PATCH) of stars only, in sigmas: drawn on a wider area (the margin holds the stars whose
+def synthetic_stars(n: int, fwhm_field, top, gen, dev, size: int = PATCH):
+    """n tiles (n, 3, size, size) of stars only, in sigmas: drawn on a wider area (the margin holds the stars whose
     halo reaches the tile), one profile per tile, made by a product in Fourier space."""
     import torch
-    G = PATCH + 2 * MARGIN
+    G = size + 2 * MARGIN
     yy, xx = torch.meshgrid(torch.arange(G, device=dev, dtype=torch.float32) - G // 2,
                             torch.arange(G, device=dev, dtype=torch.float32) - G // 2, indexing="ij")
     out = torch.zeros(n, 3, G, G, device=dev)
@@ -206,7 +217,7 @@ def synthetic_stars(n: int, fwhm_field, top, gen, dev):
             for ch in range(3):
                 img[ch].index_add_(0, idx, flux * col[ch] * w)
     stars = torch.fft.irfft2(torch.fft.rfft2(out) * torch.fft.rfft2(psfs), s=(G, G))
-    stars = stars[:, :, MARGIN:MARGIN + PATCH, MARGIN:MARGIN + PATCH].clamp(min=0)
+    stars = stars[:, :, MARGIN:MARGIN + size, MARGIN:MARGIN + size].clamp(min=0)
     k = U(0, 0.15, (n, 1, 1, 1))
     return stars + k * stars.sqrt() * torch.randn(stars.shape, generator=gen, device=dev)
 
@@ -245,8 +256,7 @@ class Tiles:
         self.fields = sorted(self.by_field)
         self.rng = np.random.default_rng(seed)
 
-    def get(self, n):
-        P = PATCH
+    def get(self, n, P: int = PATCH):
         xin, tgt, msk, fw, top = [], [], [], [], []
         while len(xin) < n:
             i = self.by_field[self.fields[self.rng.integers(len(self.fields))]]
@@ -270,6 +280,54 @@ class Tiles:
             fw.append(self.pairs[i]["fwhm"])
             top.append(self.pairs[i]["top"])
         return np.stack(xin), np.stack(tgt), np.stack(msk)[:, None], np.array(fw), np.array(top)
+
+
+# ---------------------------------------------------------------------------------------------- after a deconvolution
+class Deconvolved:
+    """Tiles as the Deconvolution block's neural method leaves them (stages/deconv.py): its network colour by colour, on
+    data in noise units already denoised (the pairs are), the clipped cores and their surroundings kept as they were
+    (the block's own mask: the saturated pixels grown by 2 px, softened)."""
+
+    def __init__(self, dev):
+        import torch
+        import torch.nn as nn
+
+        from astro_gpu.stages.deconv import BETA_WEIGHTS
+        net = NAFNet(recompute=False)
+        w = net.intro.out_channels
+        net.intro, net.ending = nn.Conv2d(1, w, 3, padding=1), nn.Conv2d(w, 1, 3, padding=1)
+        net.load_state_dict(torch.load(BETA_WEIGHTS, map_location="cpu", weights_only=False)["net"])
+        self.net, self.dev = net.to(dev).eval(), dev
+        for q in self.net.parameters():
+            q.requires_grad_(False)
+        r = torch.arange(-4, 5, dtype=torch.float32, device=dev)
+        g = torch.exp(-r ** 2 / (2 * 1.5 ** 2))
+        self.g = (g / g.sum())[None, None]
+        log(f"deconvolution network: {BETA_WEIGHTS}")
+
+    def __call__(self, a, t, level):
+        """The input tiles ``a`` and their targets ``t`` (k, 3, S, S), ``level`` (k, 1, 1, 1) where the input clips."""
+        import torch
+        import torch.nn.functional as F
+        with torch.no_grad():
+            k, _, S, _ = a.shape
+            sat = (a >= 0.98 * level).any(1, keepdim=True).float()
+            core = F.max_pool2d(sat, 5, 1, 2)
+            core = F.conv2d(F.pad(core, (4, 4, 0, 0), mode="replicate"), self.g[:, :, None, :])
+            core = F.conv2d(F.pad(core, (0, 0, 4, 4), mode="replicate"), self.g[:, :, :, None])
+            keep = (2 * core).clamp(0, 1)
+            out = []
+            for x in (a, t):
+                with torch.autocast(self.dev.type, dtype=torch.bfloat16, enabled=self.dev.type == "cuda"):
+                    y = self.net(fwd(x.reshape(k * 3, 1, S, S)))
+                out.append(x + (1 - keep) * (inv(y.float()).reshape(k, 3, S, S) - x))
+            return out[0], out[1]
+
+
+def centre(v, size: int = PATCH):
+    """The middle ``size`` pixels of tiles drawn with a margin."""
+    d = (v.shape[-1] - size) // 2
+    return v[..., d:d + size, d:d + size] if d else v
 
 
 # ---------------------------------------------------------------------------------------------- the bench
@@ -301,14 +359,21 @@ def bench_case(case: str):
 
 
 # ---------------------------------------------------------------------------------------------- train
-def train(tag: str, hours: float, device: str, synthetic: float, batch: int, lr: float, recompute: bool) -> int:
+def train(tag: str, hours: float, device: str, synthetic: float, batch: int, lr: float, recompute: bool,
+          init: str | None = None, deconv: float = 0.0) -> int:
+    """``init``: the weights it starts from ("shipped": the Stars block's, or a file), a fine-tuning then: a short
+    warm-up, a validation every 1000 steps. ``deconv``: the share of the tiles given to the Deconvolution block's
+    network first."""
     import torch
     dev = torch.device(device)
     torch.backends.cudnn.benchmark = True
     out = TRAIN / tag
     out.mkdir(parents=True, exist_ok=True)
     pairs = training_pairs()
-    log(f"{tag}: {len(pairs)} pairs over {len({p['field'] for p in pairs})} fields, synthetic share {synthetic}")
+    log(f"{tag}: {len(pairs)} pairs over {len({p['field'] for p in pairs})} fields, synthetic share {synthetic}, "
+        f"deconvolved share {deconv}, from {init or 'scratch'}")
+    dec = Deconvolved(dev) if deconv > 0 else None
+    SIZE = PATCH + 2 * DEC_PAD if dec is not None else PATCH        # the tiles drawn: a margin for that network
     data = Tiles(pairs, seed=0)
     gen = torch.Generator(device=dev)
     gen.manual_seed(0)
@@ -316,7 +381,7 @@ def train(tag: str, hours: float, device: str, synthetic: float, batch: int, lr:
     vgen = torch.Generator(device=dev)
     vgen.manual_seed(123)
     vrng = np.random.default_rng(7)
-    vset = []
+    vset, vdec = [], []
     for case in ("heart", "iris", "m51", "m8", "rosette", "seestar"):
         try:
             _, S, (_, _, _, nm) = bench_case(case)
@@ -333,11 +398,25 @@ def train(tag: str, hours: float, device: str, synthetic: float, batch: int, lr:
         stars = synthetic_stars(len(tiles), [3.0] * len(tiles), [float(S.max())] * len(tiles), vgen, dev)
         sat = float(S.max())
         vset.append((case, torch.minimum(t + stars, torch.maximum(t, torch.full_like(t, sat))), t))
+        if dec is not None:                             # the same kind of tiles behind the Deconvolution's network
+            tiles = []
+            while len(tiles) < 6:
+                y, x = int(vrng.integers(0, H - SIZE)), int(vrng.integers(0, W - SIZE))
+                if nm[y:y + SIZE, x:x + SIZE].min() > 0:
+                    tiles.append(S[:, y:y + SIZE, x:x + SIZE])
+            t = torch.from_numpy(np.stack(tiles)).to(dev)
+            stars = synthetic_stars(len(tiles), [3.0] * len(tiles), [sat] * len(tiles), vgen, dev, SIZE)
+            a, t = dec(torch.minimum(t + stars, torch.maximum(t, torch.full_like(t, sat))), t,
+                       torch.full((len(tiles), 1, 1, 1), sat, device=dev))
+            vdec.append((case, centre(a).contiguous(), centre(t).contiguous()))
         del S
-    log(f"validation tiles: {sum(len(v[1]) for v in vset)}")
+    log(f"validation tiles: {sum(len(v[1]) for v in vset)}, behind a deconvolution {sum(len(v[1]) for v in vdec)}")
 
     torch.manual_seed(0)
     net = NAFNet(recompute=recompute).to(dev)
+    if init:
+        state = torch.load(MODEL if init == "shipped" else init, map_location=dev, weights_only=False)["net"]
+        net.load_state_dict({k: v.float() for k, v in state.items()})
     log(f"NAFNet: {sum(p.numel() for p in net.parameters()) / 1e6:.1f} M parameters, batch {batch}")
     opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-4, betas=(0.9, 0.9))
 
@@ -347,26 +426,33 @@ def train(tag: str, hours: float, device: str, synthetic: float, batch: int, lr:
         return ((pred - fwd(tgt)).abs() * msk).sum() / (msk.sum() * 3 + 1)
 
     hist, best = [], None
-    t0, it, run, warm = time.time(), 0, None, 1000
+    t0, it, run, warm, every = time.time(), 0, None, 200 if init else 1000, 1000 if init else 2000
     while True:
         frac = (time.time() - t0) / (hours * 3600)
         if frac >= 1.0:
             break
         for g in opt.param_groups:                       # warm-up, then a cosine to zero at the end of the time given
             g["lr"] = lr * min(1.0, (it + 1) / warm) * 0.5 * (1 + np.cos(np.pi * frac))
-        a, t, m, fw, top = data.get(batch)
+        a, t, m, fw, top = data.get(batch, SIZE)
         a, t, m = (torch.from_numpy(v).to(dev) for v in (a, t, m))
         m = m.float()
+        level = torch.from_numpy(top).float().to(dev)[:, None, None, None]      # where each input clips
         if synthetic > 0:
             pick = torch.rand(batch, generator=gen, device=dev) < synthetic
             if pick.any():
                 k = int(pick.sum())
-                stars = synthetic_stars(k, fw[pick.cpu().numpy()], top[pick.cpu().numpy()], gen, dev)
+                stars = synthetic_stars(k, fw[pick.cpu().numpy()], top[pick.cpu().numpy()], gen, dev, SIZE)
                 # on the starless image (stars of synthesis only) or on the stack (its own stars and more), half each
                 base = torch.where((torch.rand(k, 1, 1, 1, generator=gen, device=dev) < 0.5), t[pick], a[pick])
                 sat = torch.from_numpy(top[pick.cpu().numpy()]).float().to(dev)[:, None, None, None] \
                     * (0.5 + 0.5 * torch.rand(k, 1, 1, 1, generator=gen, device=dev))
                 a[pick] = torch.minimum(base + stars, torch.maximum(base, sat))
+                level[pick] = sat
+        if dec is not None:
+            behind = torch.rand(batch, generator=gen, device=dev) < deconv
+            if behind.any():
+                a[behind], t[behind] = dec(a[behind], t[behind], level[behind])
+            a, t, m = centre(a).contiguous(), centre(t).contiguous(), centre(m).contiguous()
         net.train()
         loss = loss_of(a, t, m)
         opt.zero_grad(set_to_none=True)
@@ -375,27 +461,30 @@ def train(tag: str, hours: float, device: str, synthetic: float, batch: int, lr:
         opt.step()
         run = loss.item() if run is None else 0.99 * run + 0.01 * loss.item()
         it += 1
-        if it % 2000 == 0:
+        if it % every == 0:
             net.eval()
-            vl, vs = [], []
+            vl, vs, vd = [], [], []
             with torch.no_grad():
-                for _case, x, tt in vset:
-                    with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
-                        pred = net(fwd(x)).float()
-                    err = (pred - fwd(tt)).abs()
-                    star = (fwd(x) - fwd(tt)).abs().max(1, keepdim=True)[0] > 0.01
-                    vl.append(float(err.mean()))
-                    vs.append(float(err[star.expand_as(err)].mean()) if star.any() else 0.0)
-            score = float(np.mean(vs))
+                for which, v_all, v_stars in ((vset, vl, vs), (vdec, [], vd)):
+                    for _case, x, tt in which:
+                        with torch.autocast(dev.type, dtype=torch.bfloat16, enabled=dev.type == "cuda"):
+                            pred = net(fwd(x)).float()
+                        err = (pred - fwd(tt)).abs()
+                        star = (fwd(x) - fwd(tt)).abs().max(1, keepdim=True)[0] > 0.01
+                        v_all.append(float(err.mean()))
+                        v_stars.append(float(err[star.expand_as(err)].mean()) if star.any() else 0.0)
+            score = float(np.mean(vs + vd))             # on the stars, both kinds of tiles
             hist.append({"step": it, "minutes": round((time.time() - t0) / 60, 1), "train": round(run, 5),
-                         "val": round(float(np.mean(vl)), 5), "val_stars": round(score, 5),
+                         "val": round(float(np.mean(vl)), 5), "val_stars": round(float(np.mean(vs)), 5),
+                         "val_stars_deconv": round(float(np.mean(vd)), 5) if vd else None,
                          "by_case": {c[0]: round(v, 5) for c, v in zip(vset, vs)}, "lr": opt.param_groups[0]["lr"]})
             (out / "history.json").write_text(json.dumps(hist, indent=1))
             torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "it": it}, out / "net.pt")
             if best is None or score < best:
                 best = score
                 torch.save({"net": net.state_dict(), "it": it}, out / "best.pt")
-            log(f"step {it}: train {run:.5f}, validation {np.mean(vl):.5f}, on the stars {score:.5f} "
+            log(f"step {it}: train {run:.5f}, validation {np.mean(vl):.5f}, on the stars {np.mean(vs):.5f}, "
+                f"behind a deconvolution {np.mean(vd) if vd else float('nan'):.5f} "
                 f"({', '.join(f'{c[0]} {v:.4f}' for c, v in zip(vset, vs))}), lr {opt.param_groups[0]['lr']:.1e}, "
                 f"{(time.time() - t0) / it:.2f} s/step")
     torch.save({"net": net.state_dict(), "opt": opt.state_dict(), "it": it}, out / "net.pt")
@@ -438,12 +527,15 @@ def main(argv=None) -> int:
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--recompute", action="store_true", help="train: less memory, slower (an 8 GB card)")
     ap.add_argument("--then-bench", action="store_true", help="train: then the bench's starless images and measures")
+    ap.add_argument("--init", default=None, help="train: start from these weights ('shipped': the Stars block's)")
+    ap.add_argument("--deconv", type=float, default=0.0,
+                    help="train: share of the tiles given to the Deconvolution block's network first")
     a = ap.parse_args(argv)
     if a.cmd == "fixes":
         return fixes()
     if a.cmd == "bench":
         return bench(a.tag, a.device)
-    r = train(a.tag, a.hours, a.device, a.synthetic, a.batch, a.lr, a.recompute)
+    r = train(a.tag, a.hours, a.device, a.synthetic, a.batch, a.lr, a.recompute, a.init, a.deconv)
     if a.then_bench:
         bench(a.tag, a.device)
         import subprocess
