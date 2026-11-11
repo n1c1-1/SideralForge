@@ -168,6 +168,55 @@ def test_the_handle_between_the_curves_and_the_frames_moves_on_a_laptop_window(q
     assert abs(a2 / (a2 + b2) - want[0] / sum(want)) < 0.05
 
 
+def test_the_curves_at_their_smallest_are_whole_and_their_part_scrolls(qapp):
+    """Issue #132: with the handle of Selection pulled to its top, the curves held at 120 px drew the Transparency panel
+    cut, without its x axis, and the drift path as a thin strip. The charts keep the height they need, whole; the part
+    scrolls below it; the handle still goes as high (#118)."""
+    from types import SimpleNamespace
+
+    from PySide6.QtGui import QFontMetricsF
+    from PySide6.QtWidgets import QScrollArea, QSplitter, QVBoxLayout, QWidget
+
+    from astro_gpu.client.charts import FramesChart, RegistrationData, TrackChart
+    from astro_gpu.client.tune import TuneView
+    n = 30
+    rows = [SimpleNamespace(name=f"L_{i:03d}.fits", time=f"2026-01-01T22:{i:02d}:00", fwhm=3 + (i % 5) * 0.3,
+                            transparency=0.6 + (i % 7) * 0.05, status="", excluded=False, session=1) for i in range(n)]
+    nan = np.full(n, np.nan)
+    d = RegistrationData(names=[r.name for r in rows], iso=[r.time for r in rows], secs=np.arange(n) * 60.0 + 1e9,
+                         fwhm=np.array([r.fwhm for r in rows]), transp=np.full(n, 90.0), nmatch=nan, nstars=nan,
+                         rms=np.full(n, 0.3), aligned=np.ones(n, bool), dx=np.linspace(0, 40, n),
+                         dy=np.sin(np.arange(n)) * 3, ref=0, scale=None)
+    host = QWidget()
+    host.resize(900, 520)                                      # the centre of Inspect on a 1280 x 680 window
+    host._splits, host.center = {}, QVBoxLayout(host)
+    for name in ("_split", "_split_moved", "_save_splits"):
+        setattr(host, name, getattr(TuneView, name).__get__(host))
+    frames, track = FramesChart(rows, 60.0, 4.0), TrackChart(d)
+    top = QWidget()                                            # as Selection: the frames and the drift path side by side
+    row = QSplitter()
+    row.addWidget(frames)
+    row.addWidget(track)
+    QVBoxLayout(top).addWidget(row)
+    v = iv.ImageView()
+    v.setMinimumHeight(220)
+    sp = host._split("selection", top, v, (2, 5))
+    host.show()
+    QApplication.processEvents()
+    sp.moveSplitter(0, 1)                                      # the handle at its top: the curves at their smallest
+    QApplication.processEvents()
+    a, b = sp.sizes()
+    assert a <= 150 and a + b <= sp.height()                   # the handle goes as high as before
+    lh = QFontMetricsF(frames._font()).height()
+    for ch in (frames, track):                                 # each panel whole, the last with its x axis under it
+        assert all(p.plot.height() >= 30 for p in ch.panels), type(ch).__name__
+        last = ch.panels[-1].plot
+        assert last.bottom() + lh <= ch.height(), (type(ch).__name__, last, ch.height())
+    assert track.panels[0].plot.height() >= 100                # a path, not a thin strip
+    sa = sp.widget(0)
+    assert isinstance(sa, QScrollArea) and sa.verticalScrollBar().maximum() > 0          # the rest: scrolled to
+
+
 # ---------------------------------------------------------------------------------------------- 6. the named objects
 def _wcs(w=400, h=300, scale_deg=0.01):
     from astropy.wcs import WCS

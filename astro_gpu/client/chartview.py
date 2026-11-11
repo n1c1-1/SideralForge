@@ -406,6 +406,7 @@ class ChartView(QWidget):
     rubberBand = Signal(QRectF, QPoint)          # Shift + drag: the rectangle (widget coordinates), the mouse (screen)
 
     HEAD = 30                                    # the title / legend row
+    MIN_PLOT_H = 44.0                            # a plot's least height, two values on its y axis (needed_height)
 
     def __init__(self, title: str = "", parent=None, *, zoom: str = "xy", readout: str = "x", pickable: bool = False,
                  snap: float | None = None, export_name: str = ""):
@@ -439,6 +440,8 @@ class ChartView(QWidget):
         self.xticks: list[tuple[float, str]] = []
         self._ctrl_left = 0.0
         self._legend_wrap = False                  # the legend on a row of its own, under the title and the buttons
+        self._placed = False                       # _layout has run: _legend_wrap is known
+        self._whole = False                        # keep_whole: never held lower than it needs
         self.setMouseTracking(True)
         self.setMinimumSize(280, 200)
         self._canvas = _Canvas(self)
@@ -700,6 +703,27 @@ class ChartView(QWidget):
         row = max(self.HEAD, QFontMetricsF(self._font()).height() + 14.0)
         return row + (row - 6.0 if self._legend_wrap else 0.0)
 
+    def needed_height(self) -> int:
+        """The least height at which the chart is drawn whole (issue #132: held below it, its last panel was cut,
+        without its x axis): the title row and the legend's own row when it has one (before the chart is placed, as on a
+        narrow chart), each panel's title band and a plot of MIN_PLOT_H, the x axis and its title, as ``_layout``
+        places them."""
+        fm = QFontMetricsF(self._font())
+        lh = fm.height()
+        row = max(self.HEAD, lh + 14.0)
+        wrap = self._legend_wrap if self._placed else bool(self.colorbar or any(t.legend for t in self.traces))
+        head = row + (row - 6.0 if wrap else 0.0)
+        bottom = lh + 10 + ((lh + 6) if self.x_title else 0) + 4
+        panels = self.panels or [None]
+        bands = sum((lh + 8) if p is not None and p.title else 6.0 for p in panels)
+        return int(math.ceil(head + bottom + bands + 6.0 * (len(panels) - 1) + self.MIN_PLOT_H * len(panels)))
+
+    def keep_whole(self):
+        """Its least height is what it needs (``needed_height``), followed as its legend goes to a row of its own or
+        back: in a part of a tab that scrolls below it (``TuneView._split``)."""
+        self._whole = True
+        self.setMinimumHeight(self.needed_height())
+
     def _legend_width(self, fm: QFontMetricsF) -> float:
         """The width the legend (and the colour bar) takes in the header."""
         w = sum(10 + 6 + fm.horizontalAdvance(key) + 16 for key in self._legend)
@@ -777,6 +801,9 @@ class ChartView(QWidget):
         if self._check_legend_wrap():                   # the header's height changed: place the panels again
             self._layout()
             return
+        self._placed = True
+        if self._whole and self.minimumHeight() != self.needed_height():
+            self.setMinimumHeight(self.needed_height())  # its legend's row came or went (keep_whole)
         self.update()
 
     def _place_controls(self, W: int):

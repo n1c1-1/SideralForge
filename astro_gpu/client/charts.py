@@ -566,6 +566,8 @@ class TrackChart(_Offsets):
     reference frame at the origin and the time as colour. Dithering makes a cloud, a drift a line, periodic error and
     field rotation loops and arcs."""
 
+    MIN_PLOT_H = 120.0                  # a pixel the same in x and y: lower, the path was a thin strip (issue #132)
+
     def __init__(self, d: RegistrationData, parent=None, left_out: dict | None = None):
         """``left_out``: in Selection, the frames the stack leaves out (name -> reason), circled in red on the path."""
         super().__init__(_("Drift path (x / y)"), parent, zoom="xy", readout="xy", snap=18.0,

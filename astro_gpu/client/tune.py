@@ -103,10 +103,26 @@ PREFETCH_DELAY_MS = 400
 PREFETCH_MIN_BUDGET = 6 * 2 ** 30
 #: the kinds of tabs that show one picture of ``Steps.view_image`` (``_image_tab``)
 PREFETCH_KINDS = ("array", "preview", "color", "gradient", "removed", "calibrated")
-#: the least height of a chart in a tab split in two (``TuneView._split``): the handle gives it its room. A chart alone
-#: in a tab asks 300 px; two of them, or a chart and the frames' viewer, asked more than a laptop's window holds, and
-#: the handle, held between two minimums it could not meet, only made the display flicker (issue #118)
+#: the least height of a part with charts in a tab split in two (``TuneView._split``): the handle gives it its room. A
+#: chart alone in a tab asks 300 px; two of them, or a chart and the frames' viewer, asked more than a laptop's window
+#: holds, and the handle, held between two minimums it could not meet, only made the display flicker (issue #118).
+#: Below what its charts need, the part scrolls: they are never drawn cut (issue #132)
 SPLIT_CHART_MIN_H = 120
+
+
+def scrolled_part(part: QWidget) -> QScrollArea:
+    """A part of a split tab with charts: the handle takes it down to SPLIT_CHART_MIN_H (#118), lower than its charts
+    need; they keep their height, whole, and the part scrolls (#132: the last curve was cut, the drift path a thin
+    strip). With room enough, no scroll bar: the charts share it as before."""
+    sa = QScrollArea()
+    sa.setWidget(part)
+    sa.setWidgetResizable(True)
+    sa.setFrameShape(QFrame.NoFrame)
+    sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    sa.setMinimumHeight(SPLIT_CHART_MIN_H)
+    sa.setStyleSheet("QScrollArea { background: transparent; } QScrollArea > QWidget > QWidget "
+                     "{ background: transparent; }")
+    return sa
 
 
 class Strip(QFrame):
@@ -1583,11 +1599,13 @@ class TuneView(QWidget):
         sp.setHandleWidth(9)
         sp.setStyleSheet("QSplitter#tabsplit::handle { background: #2a2f38; margin: 3px 40%; border-radius: 1px; } "
                          "QSplitter#tabsplit::handle:hover { background: #4d5a70; }")
-        sp.addWidget(top)
-        sp.addWidget(bottom)
-        for ch in (w_ for part in (top, bottom) for w_ in [part, *part.findChildren(ChartView)]):
-            if isinstance(ch, ChartView) and ch.minimumHeight() > SPLIT_CHART_MIN_H:
-                ch.setMinimumHeight(SPLIT_CHART_MIN_H)     # its room is the handle's (#118)
+        for part in (top, bottom):
+            charts = [w_ for w_ in [part, *part.findChildren(ChartView)] if isinstance(w_, ChartView)]
+            for ch in charts:                              # whole, never cut (#132): the height it needs to be drawn
+                ch.keep_whole()
+            # the part scrolls, unless it scrolls its charts itself (Selection: its count of frames kept stays in sight)
+            sp.addWidget(scrolled_part(part) if charts and not part.findChildren(QScrollArea) else part)
+
         sizes = self._splits.get(key) or (prefs.get("inspect_splits") or {}).get(key)
         if not (isinstance(sizes, list | tuple) and len(sizes) == 2 and all(isinstance(x, int | float) and x > 0
                                                                            for x in sizes)):
@@ -2478,10 +2496,10 @@ class TuneView(QWidget):
             row.addWidget(track)
             row.setStretchFactor(0, 1)
             row.setStretchFactor(1, 1)
-            tl.addWidget(row, 1)
+            tl.addWidget(scrolled_part(row), 1)
         else:
-            tl.addWidget(ch, 1)
-        self.kept_label = label("", "dim")
+            tl.addWidget(scrolled_part(ch), 1)
+        self.kept_label = label("", "dim")              # under the charts, never scrolled away with them (#132)
         tl.addWidget(self.kept_label)
         self._kept_n = (table.kept, table.total)
         self._kept_text()
