@@ -2,7 +2,9 @@
 
 Run by the installer right after it copied the files, and again by the launcher if a former run did not finish. Every
 step can be run again: what is already right stays, a re-install or an upgrade only fetches what changed, and a change
-of card (a new driver) is picked up the same way. Standard library only, from the private Python.
+of card (a new driver) is picked up the same way. The Asterion plate solver and its index came with the files: they are
+only checked at the end, and a problem with them is said without failing the installation. Standard library only, from
+the private Python.
 
     python setup_env.py --root <install folder> [--no-gui] [--lock lock.json] [--lang fr|en]
 
@@ -15,6 +17,7 @@ import ctypes
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -80,6 +83,11 @@ TEXTS = {
                       "Settings > Compute has the beta options.",
         "cuda_no": "PyTorch does not see your NVIDIA card yet. FLOAT works on the processor; updating the driver "
                    "from https://www.nvidia.com/drivers should fix it.",
+        "asterion_program": "The Asterion plate solver does not start in this installation. FLOAT works all the same: "
+                            "Astrometry uses its own search, slower. Running this installer again puts it back.",
+        "asterion_index": "The star index of the Asterion plate solver is missing or incomplete in this installation. "
+                          "FLOAT works all the same: Astrometry uses its own search, slower. Running this installer "
+                          "again puts it back.",
     },
     "fr": {
         "title": "Installation de FLOAT",
@@ -128,6 +136,12 @@ TEXTS = {
                       "processeur. Réglages > Calcul propose les options bêta.",
         "cuda_no": "PyTorch ne voit pas encore votre carte NVIDIA. FLOAT fonctionne sur le processeur ; mettre à "
                    "jour le pilote depuis https://www.nvidia.com/drivers devrait résoudre cela.",
+        "asterion_program": "Le solveur astrométrique Asterion ne démarre pas dans cette installation. FLOAT fonctionne "
+                            "quand même : l'Astrométrie utilise sa propre recherche, plus lente. Relancer cette "
+                            "installation le remet en place.",
+        "asterion_index": "L'index d'étoiles du solveur astrométrique Asterion manque ou est incomplet dans cette "
+                          "installation. FLOAT fonctionne quand même : l'Astrométrie utilise sa propre recherche, plus "
+                          "lente. Relancer cette installation le remet en place.",
     },
 }
 
@@ -336,10 +350,47 @@ class Installer:
         cuda_build = any(w.name.lower() == "torch" and "cu1" in w.version for w in wheels)
         return info, cuda_build
 
+    def check_asterion(self) -> str:
+        """The plate solver the package carries: ``asterion --version`` answers the lock's version and the index files
+        are there at their pinned sizes (not their checksums: 378 MB read at each setup for what Setup has just copied).
+        The text to tell the user when not, "" when all is right or the lock carries no plate solver. Never a failure:
+        without it FLOAT starts all the same, and its Astrometry uses its own search."""
+        part = self.lock.get("asterion")
+        if not part:
+            return ""
+        folder = self.root / "asterion"
+        try:
+            r = subprocess.run([str(folder / "asterion.exe"), "--version"], capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", timeout=60, stdin=subprocess.DEVNULL,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            answer = r.stdout.strip()
+        except (OSError, subprocess.SubprocessError) as e:
+            answer = f"{type(e).__name__}: {e}"
+        m = re.search(r"Asterion\D*(\d+\.\d+\.\d+)", answer)
+        if not m or m.group(1) != part["version"]:
+            self.note(f"asterion: the program answers {answer[:200]!r}, not {part['version']}")
+            return self.t["asterion_program"]
+        for f in part["files"]:
+            if f.get("dest") == "catalogs":
+                p = folder / "catalogs" / f["filename"]
+                size = p.stat().st_size if p.is_file() else -1
+                if size != f["size"]:
+                    self.note(f"asterion: {p} has {size} bytes, not {f['size']}")
+                    return self.t["asterion_index"]
+        self.note(f"asterion: {m.group(1)}, index there")
+        return ""
+
     def finish(self, build: str, info: dict, cuda_build: bool):
         self.summary = card_message(self.choice, self.lang)
         if cuda_build and not info.get("cuda"):
             self.summary += "\n" + self.t["cuda_no"]
+        try:
+            problem = self.check_asterion()
+        except Exception as e:  # noqa: BLE001 - a check that breaks must not stop the installation
+            self.note(f"asterion: check failed: {type(e).__name__}: {e}")
+            problem = self.t["asterion_program"]
+        if problem:
+            self.summary += "\n" + problem
         self.note("summary: " + self.summary)
         (self.env_dir / MARKER).write_text(json.dumps({"lock": self.lock_id, "build": build, "python": self.lock["python"],
                                                        "date": time.strftime("%Y-%m-%d %H:%M:%S"), "torch": info.get("torch")},

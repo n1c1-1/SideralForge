@@ -389,6 +389,81 @@ def test_ready_marker(tmp_path):
     assert not setup_env.is_ready(root)
 
 
+def asterion_install(tmp_path, monkeypatch, answer="Asterion Solver 0.4.2\n"):
+    """An installation with the plate solver's folder (fake files at the lock's sizes, sparse) and a program that
+    answers ``answer`` to --version."""
+    class Ui:
+        pass
+    part = {"version": "0.4.2", "files": [
+        {"filename": "asterion-0.4.2-windows-x86_64.zip", "dest": "", "size": 10},
+        {"filename": "tycho2.astx", "dest": "catalogs", "size": 5000},
+        {"filename": "tycho2.astx.wide", "dest": "catalogs", "size": 300}]}
+    lock = tmp_path / "lock.json"
+    lock.write_text(json.dumps({"python": "3.12.13", "builds": {}, "asterion": part}), encoding="utf-8")
+    cat = tmp_path / "asterion" / "catalogs"
+    cat.mkdir(parents=True)
+    (tmp_path / "asterion" / "asterion.exe").write_bytes(b"MZ")
+    (cat / "tycho2.astx").write_bytes(b"x" * 5000)
+    (cat / "tycho2.astx.wide").write_bytes(b"x" * 300)
+    asked = []
+
+    def run(cmd, **kw):
+        asked.append(cmd)
+        return type("R", (), {"returncode": 0, "stdout": answer})()
+    monkeypatch.setattr(setup_env.subprocess, "run", run)
+    inst = setup_env.Installer(tmp_path, Ui(), lock, "en", {})
+    return inst, asked
+
+
+def test_asterion_check_passes(tmp_path, monkeypatch):
+    inst, asked = asterion_install(tmp_path, monkeypatch)
+    assert inst.check_asterion() == ""
+    assert asked == [[str(tmp_path / "asterion" / "asterion.exe"), "--version"]]
+
+
+@pytest.mark.parametrize("answer", ["Asterion Solver 0.4.1\n", "", "not a solver"])
+def test_asterion_check_wrong_program(tmp_path, monkeypatch, answer):
+    inst, _ = asterion_install(tmp_path, monkeypatch, answer)
+    assert inst.check_asterion() == setup_env.TEXTS["en"]["asterion_program"]
+
+
+def test_asterion_check_missing_program(tmp_path, monkeypatch):
+    inst, _ = asterion_install(tmp_path, monkeypatch)
+
+    def missing(cmd, **kw):
+        raise FileNotFoundError(cmd[0])
+    monkeypatch.setattr(setup_env.subprocess, "run", missing)
+    assert inst.check_asterion() == setup_env.TEXTS["en"]["asterion_program"]
+
+
+@pytest.mark.parametrize("damage", ["missing", "short"])
+def test_asterion_check_index(tmp_path, monkeypatch, damage):
+    inst, _ = asterion_install(tmp_path, monkeypatch)
+    index = tmp_path / "asterion" / "catalogs" / "tycho2.astx"
+    index.unlink() if damage == "missing" else index.write_bytes(b"x" * 10)
+    assert inst.check_asterion() == setup_env.TEXTS["en"]["asterion_index"]
+
+
+def test_asterion_problem_is_said_and_installation_finishes(tmp_path, monkeypatch):
+    """A broken plate solver is said in the closing summary; the installation is still ready (FLOAT starts)."""
+    inst, _ = asterion_install(tmp_path, monkeypatch, "")
+    (tmp_path / "setup").mkdir()
+    inst.env_dir.mkdir()
+    inst.choice = detect.Choice("cpu", "no-card", "", "")
+    inst.run_tool = lambda cmd, key: ""
+    inst.finish("cpu", {}, False)
+    assert inst.summary.endswith(setup_env.TEXTS["en"]["asterion_program"])
+    assert (inst.env_dir / setup_env.MARKER).is_file()
+
+
+def test_asterion_check_without_a_plate_solver_in_the_lock(tmp_path):
+    class Ui:
+        pass
+    lock = tmp_path / "lock.json"
+    lock.write_text(json.dumps({"python": "3.12.13", "builds": {}}), encoding="utf-8")
+    assert setup_env.Installer(tmp_path, Ui(), lock, "en", {}).check_asterion() == ""
+
+
 # ------------------------------------------------------------------ the texts
 def test_two_languages_have_the_same_texts():
     assert set(setup_env.TEXTS["en"]) == set(setup_env.TEXTS["fr"])
