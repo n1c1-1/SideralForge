@@ -555,6 +555,10 @@ def test_numbers_and_the_engine_texts_follow_the_language():
         "40/40 images alignées, résidu 0,31 px, FWHM 2,80 px, transparence p10/p90 0,95/1,00"
     assert engine_text("loading the stack") == "chargement de l'empilement"
     assert engine_text("pass 2: 5/40 frames, rejected 0.31 %") == "passe 2 : 5/40 images, rejetés 0,31 %"
+    assert engine_text("memory: 9.8 GB available, the 754 registered frames (110.7 GB) are kept on disk and the "
+                       "rejection is computed in 336 parts") == \
+        "mémoire : 9,8 Go disponibles, les 754 images alignées (110,7 Go) sont gardées sur le disque et le rejet est " \
+        "calculé en 336 parties"
     assert engine_text('searching the field at 1.52"/px (shifted centres)') == \
         'recherche du champ à 1,52"/px (centres décalés)'
     assert "decimal" not in engine_text("a message nobody translated yet")

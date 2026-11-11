@@ -62,8 +62,12 @@ weights are computed as for the drizzle, before)::
 
 ``used`` are the frame indices to stack (weight > 0); ``weights`` and ``norm`` are indexed by frame (all n frames).
 Memory: the resampled frames are kept on the CPU (``store_dtype`` float32: 12 bytes per pixel and frame, 4.4 GB for
-30 frames of 12 Mpx; float16 halves it; ``masks``: 1 byte more), the rejection runs on the device by bands of
-``band_pixels``.
+30 frames of 12 Mpx; float16 halves it; their saturation flags 1 byte more, ``masks`` 1 more), the rejection runs on
+the device by bands of ``band_pixels``, holding about REJECTION_BYTES per value (frame x band pixel): 0.3 GB per
+frame for a band of a million pixels. Given ``memory`` (core/devices.memory_budget), the stack stays within it, its
+result unchanged to the bit (issue #125): the resampled frames go to a file in ``spill`` when they do not fit (out of
+core: a memory-mapped array, its file deleted when closed), and on the CPU each band is cut into pieces of a multiple
+of PIECE_ALIGN pixels that do (``_parts``).
 
 With Siril's own recipe (global IKSS normalisation, no weights, winsorized 3 / 3) it gives Siril's stack of the same
 frames: the same star FWHM, roundness and background noise, within a few hundredths. Time: about 1 s per 12 Mpx
@@ -76,6 +80,7 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -96,6 +101,21 @@ NEAR_SATURATION = 0.85
 REJECTION_SIDE = 4096
 #: RCD reads up to 4 samples away: a near-saturated sample marks the demosaiced pixels this far
 SAT_SPREAD = 2
+#: the memory the rejection of a band holds on the CPU per value (a frame's sample of a band pixel): the values, their
+#: float64 copies, their sorted order and the masks of the rounds; measured 270-280 bytes with the linear fit clipping
+#: of 16 to 64 frames, the most of the four methods
+REJECTION_BYTES = 320
+#: per pixel, what pass 1 holds besides the resampled frames (the frame being debayered by RCD, resampled by
+#: Lanczos-4 and normalised: measured 410 bytes on the CPU) and what pass 2 adds (the means, halves, weights,
+#: saturation shares and counts: 64 bytes)
+FRAME_BYTES = 420
+OUTPUT_BYTES = 64
+#: the pieces a band is cut into hold a multiple of this many pixels: the CPU sums a pixel's frames in an order set by
+#: its place in blocks of 32 (AVX2) or 64 (AVX-512) pixels of the band, which the pieces keep, so that the result
+#: stays the same to the bit (tests/test_stack_memory.py)
+PIECE_ALIGN = 256
+#: what the frames' file leaves free on its disk: without that much room, the frames stay in memory, as before
+DISK_MARGIN = 2 * 2 ** 30
 
 
 @dataclass
@@ -237,10 +257,74 @@ def _reduce(count: np.ndarray, f: int) -> np.ndarray:
     return r.astype(np.uint16 if r.max(initial=0) < 65536 else np.uint32)
 
 
+@dataclass
+class MemoryPlan:
+    """How the stack stays within the memory it is given (issue #125): the resampled frames on disk (``on_disk``),
+    the bands of the rejection cut into pieces of ``piece`` pixels (the band's size when they need not be), and the
+    plain line that says so ('' when nothing changes)."""
+    on_disk: bool
+    piece: int
+    note: str = ""
+
+    @classmethod
+    def of(cls, memory: tuple[int, int] | None, nu: int, H: int, W: int, itemsize: int, masks: bool, rows: int, dev,
+           disk: int) -> MemoryPlan:
+        """``disk``: the bytes free where the frames would go (0: nowhere; they then stay in memory, as before)."""
+        band = rows * W
+        if memory is None:
+            return cls(False, band)
+        budget, available = memory
+        cpu = torch.device(dev).type == "cpu"            # on a card, pass 1's frame and the rejection are in its memory
+        frames = nu * H * W * (3 * itemsize + 1 + (1 if masks else 0))     # the resampled frames, flags and masks
+        can_spill = frames + DISK_MARGIN <= disk
+        on_disk = can_spill and frames + ((FRAME_BYTES if cpu else 0) + OUTPUT_BYTES) * H * W > budget
+        room = budget - OUTPUT_BYTES * H * W - (0 if on_disk else frames)
+        piece = band
+        if cpu and nu * band * REJECTION_BYTES > room:
+            # what the pieces may hold; the bound only cuts on the CPU, whose sums it is checked against (a card's
+            # reductions are not)
+            piece = max(PIECE_ALIGN, room // (nu * REJECTION_BYTES) // PIECE_ALIGN * PIECE_ALIGN)
+            if not on_disk and can_spill and room < nu * PIECE_ALIGN * REJECTION_BYTES:
+                on_disk = True                                       # no room left for pieces: the frames go too
+                room = budget - OUTPUT_BYTES * H * W
+                piece = max(PIECE_ALIGN, room // (nu * REJECTION_BYTES) // PIECE_ALIGN * PIECE_ALIGN)
+            piece = min(piece, band)
+        said = []
+        if on_disk:
+            said.append(f"the {nu} registered frames ({frames / 2 ** 30:.1f} GB) are kept on disk")
+        if piece < band:
+            said.append(f"the rejection is computed in {len(_parts(H, W, rows, piece))} parts")
+        note = f"memory: {available / 2 ** 30:.1f} GB available, " + " and ".join(said) if said else ""
+        return cls(on_disk, piece, note)
+
+
+def _parts(H: int, W: int, rows: int, piece: int) -> list[tuple[int, int]]:
+    """The runs of pixels (first, end), flat in the (H, W) frame, the rejection works on: the bands of ``rows`` rows,
+    each cut from its start into pieces of ``piece`` pixels, the last one of a band taking what is left; with ``piece``
+    a multiple of PIECE_ALIGN, every pixel keeps its place in the blocks the CPU sums by, and the result its bits."""
+    out = []
+    for r0 in range(0, H, rows):
+        a, b = r0 * W, min(H, r0 + rows) * W
+        out.extend((o, min(b, o + piece)) for o in range(a, b, piece))
+    return out
+
+
+def _array(shape: tuple, dtype, on_disk: bool, folder, zero: bool = True) -> np.ndarray:
+    """An array of the stack: in memory (zeroed or not), or memory-mapped on a file of ``folder`` that the system
+    deletes once the array and its views are gone (a temporary file: deleted on close on Windows, unlinked at once
+    elsewhere), the pages written out to it as the memory needs them."""
+    if not on_disk:
+        return np.zeros(shape, dtype) if zero else np.empty(shape, dtype)
+    import tempfile
+    return np.memmap(tempfile.TemporaryFile(dir=folder, prefix="classic_", suffix=".tmp"), dtype, mode="w+",
+                     shape=shape)
+
+
 def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weights=None,
                   params: ClassicParams | None = None, device="cpu", *, used, ch_of_k, H: int, W: int, sat_level=None,
                   progress: Callable | None = None, masks: bool = False, raw_template: str | None = None,
-                  colour: bool = False) -> ClassicResult:
+                  colour: bool = False, memory: tuple[int, int] | None = None, spill=None,
+                  log: Callable | None = None) -> ClassicResult:
     """Stack the frames ``used`` by the Classic method (see the module's docstring for what stack.py passes).
 
     ``load(i)``: frame i, the calibrated CFA (H, W) (torch or numpy; NaN = bad, > VALID_MAX = saturated); ``coef``
@@ -250,7 +334,11 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
     was rejected in each frame (``ClassicResult.masks``); ``raw_template``: a raw file of the session, through which
     an X-Trans frame is demosaiced (core/debayer.markesteijn; None: bilinear); ``colour``: frames already in colour
     (issue #57), ``load(i)`` gives their three planes (3, H, W): no debayering, the bad samples filled plane by
-    plane; everything from the resampling on is the same (the three channels of a debayered frame)."""
+    plane; everything from the resampling on is the same (the three channels of a debayered frame). ``memory``:
+    (bytes the stack may fill, bytes available), core/devices.memory_budget; None: no bound. ``spill``: the folder
+    where the resampled frames go when they do not fit in it (None, or a disk without the room: kept in memory
+    whatever their size); ``log``:
+    where the plain line saying so goes (issue #125)."""
     p = params or ClassicParams()
     dev = torch.device(device)
     progress = progress or (lambda f, msg: None)
@@ -277,8 +365,13 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
         sat_t = sat_level.to(dev, torch.float32) if isinstance(sat_level, torch.Tensor) else \
             torch.as_tensor(np.asarray(sat_level, np.float32), device=dev)
     dtype = np.float16 if p.store_dtype == "float16" else np.float32
-    store = np.empty((nu, 3, H, W), dtype)
-    flags = np.zeros((nu, H, W), np.uint8)               # bit 0: near saturation, bit 1: saturated
+    rows = max(1, p.band_pixels // W)
+    disk = shutil.disk_usage(spill).free if spill is not None and memory is not None else 0
+    plan = MemoryPlan.of(memory, nu, H, W, np.dtype(dtype).itemsize, masks, rows, dev, disk)
+    if plan.note and log is not None:
+        log(plan.note)
+    store = _array((nu, 3, H, W), dtype, plan.on_disk, spill, zero=False)
+    flags = _array((nu, H, W), np.uint8, plan.on_disk, spill)     # bit 0: near saturation, bit 1: saturated
     Xg = torch.arange(W, device=dev, dtype=torch.float32)
     Yg = torch.arange(H, device=dev, dtype=torch.float32)
     frames = []
@@ -345,7 +438,7 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
     wsum = np.zeros_like(full)
     sat_share = np.zeros((2, H, W), np.float32)
     low_cnt = np.zeros((H, W), np.int32)
-    rej_masks = np.zeros((nu, H, W), np.uint8) if masks else None
+    rej_masks = _array((nu, H, W), np.uint8, plan.on_disk, spill) if masks else None
     high_cnt = np.zeros((H, W), np.int32)
     rej_lo_f = np.zeros(nu, np.int64)
     rej_hi_f = np.zeros(nu, np.int64)
@@ -353,17 +446,20 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
     rej_c = np.zeros(3, np.int64)
     tested_c = np.zeros(3, np.int64)
     ina = torch.as_tensor(in_a, device=dev)
-    rows = max(1, p.band_pixels // W)
-    for r0 in range(0, H, rows):
-        r1 = min(H, r0 + rows)
-        P = (r1 - r0) * W
-        fb = torch.from_numpy(np.ascontiguousarray(flags[:, r0:r1])).to(dev).view(nu, P)
+    # every array seen flat per frame and colour: a band of rows, or a piece of it, is a run of pixels (o0, o1)
+    full_f, A_f, B_f, wsum_f = (a.reshape(3, H * W) for a in (full, A, B, wsum))
+    sat_f, low_f, high_f = sat_share.reshape(2, H * W), low_cnt.reshape(H * W), high_cnt.reshape(H * W)
+    store_f, flags_f = store.reshape(nu, 3, H * W), flags.reshape(nu, H * W)
+    masks_f = None if rej_masks is None else rej_masks.reshape(nu, H * W)
+    for o0, o1 in _parts(H, W, rows, plan.piece):
+        P = o1 - o0
+        fb = torch.from_numpy(np.ascontiguousarray(flags_f[:, o0:o1])).to(dev)
         near_b, clip_b = (fb & 1) > 0, (fb & 2) > 0
         shares = torch.zeros((2, P), device=dev)
         lo_b = torch.zeros(P, dtype=torch.int32, device=dev)
         hi_b = torch.zeros_like(lo_b)
         for c in range(3):
-            v = torch.from_numpy(np.ascontiguousarray(store[:, c, r0:r1])).to(dev).float().view(nu, P)
+            v = torch.from_numpy(np.ascontiguousarray(store_f[:, c, o0:o1])).to(dev).float()
             valid = torch.isfinite(v)
             lo, hi = rc.reject(v, choice, valid)
             keep = valid & ~lo & ~hi
@@ -380,13 +476,13 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
             for j, m in enumerate((near_b, clip_b)):
                 sh = (wk * m).sum(0) / torch.where(den > 0, den, torch.ones_like(den))
                 shares[j] = torch.maximum(shares[j], torch.where(den > 0, sh, torch.zeros_like(sh)))
-            full[c, r0:r1] = mean.view(r1 - r0, W).cpu().numpy()
-            A[c, r0:r1] = half[0].view(r1 - r0, W).cpu().numpy()
-            B[c, r0:r1] = half[1].view(r1 - r0, W).cpu().numpy()
-            wsum[c, r0:r1] = den.view(r1 - r0, W).cpu().numpy()
-            if rej_masks is not None:
+            full_f[c, o0:o1] = mean.cpu().numpy()
+            A_f[c, o0:o1] = half[0].cpu().numpy()
+            B_f[c, o0:o1] = half[1].cpu().numpy()
+            wsum_f[c, o0:o1] = den.cpu().numpy()
+            if masks_f is not None:
                 bits = (lo.to(torch.uint8) << c) | (hi.to(torch.uint8) << (HIGH_SHIFT + c))
-                rej_masks[:, r0:r1] |= bits.view(nu, r1 - r0, W).cpu().numpy()
+                masks_f[:, o0:o1] |= bits.cpu().numpy()
             lo_b += lo.sum(0, dtype=torch.int32)
             hi_b += hi.sum(0, dtype=torch.int32)
             rej_lo_f += lo.sum(1).cpu().numpy()
@@ -396,11 +492,11 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
             rej_c[c] += int((lo | hi).sum())
             tested_c[c] += int(nv.sum())
             del v, valid, lo, hi, keep, mean, den, kept, wk, x0, half
-        low_cnt[r0:r1] = lo_b.view(r1 - r0, W).cpu().numpy()
-        high_cnt[r0:r1] = hi_b.view(r1 - r0, W).cpu().numpy()
-        sat_share[:, r0:r1] = shares.view(2, r1 - r0, W).cpu().numpy()
-        progress(0.6 + 0.4 * r1 / H, f"classic: rejection ({choice.method}) {r1}/{H} rows")
-    del store, flags
+        low_f[o0:o1] = lo_b.cpu().numpy()
+        high_f[o0:o1] = hi_b.cpu().numpy()
+        sat_f[:, o0:o1] = shares.cpu().numpy()
+        progress(0.6 + 0.4 * o1 / (H * W), f"classic: rejection ({choice.method}) {o1 // W}/{H} rows")
+    del store, flags, store_f, flags_f, masks_f              # the frames' file, if any, is deleted with its last view
     t2 = time.time()
 
     f = max(1, -(-max(H, W) // REJECTION_SIDE))

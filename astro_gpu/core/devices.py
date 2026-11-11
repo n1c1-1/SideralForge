@@ -20,6 +20,10 @@ _DEVICE = re.compile(r"cuda(:\d+)?|xpu(:\d+)?|mps(:0)?|privateml(:\d+)?")
 STACK_GB_PER_MPX = 2.0 / 12.0
 #: the smallest tile the networks accept when the memory is short (Denoise: 512 normally, Stars: 256)
 SMALLEST_TILE = 128
+#: what the engine leaves of the machine's available memory when it sizes its own arrays (the system, the client, the
+#: file cache the frames are read through): this share of the total memory, and never less than MEMORY_FLOOR_GB
+MEMORY_MARGIN = 0.15
+MEMORY_FLOOR_GB = 2.0
 
 
 @dataclass
@@ -188,6 +192,19 @@ def is_out_of_memory(e: BaseException) -> bool:
 def stack_memory(grid_mpx: float) -> float:
     """GB the Stack stage needs on the card for an output of ``grid_mpx`` megapixels."""
     return float(grid_mpx) * STACK_GB_PER_MPX
+
+
+def memory_budget() -> tuple[int, int] | None:
+    """(bytes the engine may fill in the machine's memory now, bytes available): the available memory psutil reads
+    (what the system can give without paging out), less MEMORY_MARGIN of the total and at least MEMORY_FLOOR_GB.
+    None when psutil cannot tell: the stages then size nothing by it."""
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+    except Exception:  # noqa: BLE001 - no psutil, or a system it cannot read
+        return None
+    margin = max(MEMORY_MARGIN * vm.total, MEMORY_FLOOR_GB * 2 ** 30)
+    return max(int(vm.available - margin), 0), int(vm.available)
 
 
 def shrink_on_memory(fn, tile: int, device: Any, smallest: int = SMALLEST_TILE):

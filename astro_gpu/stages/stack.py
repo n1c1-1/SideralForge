@@ -1223,7 +1223,7 @@ def stack_classic(ctx: Context, p: StackParams, *, wb=None, load, coef, used, we
     res = sc.stack_classic(load, coef, bad=None, norm=nm, weights=weight, params=classic_params(p),
                            device=dev, used=used, ch_of_k=ch_of_k, H=H, W=W, sat_level=satval,
                            progress=lambda f, msg: ctx.progress(0.05 + 0.95 * f, msg),
-                           raw_template=raw_template(meta, used, ch_of_k), colour=colour)
+                           raw_template=raw_template(meta, used, ch_of_k), colour=colour, **within_memory(ctx))
     mono = cfa_mod.is_mono(meta[0].get("cfa", "")) if meta else False
     for name, a in res.arrays().items():
         if name in ("drz_full.npy", "drz_A.npy", "drz_B.npy"):
@@ -1283,9 +1283,18 @@ def integration_rejection(ctx: Context, p: StackParams, load, coef, used, weight
     res = sc.stack_classic(load, coef, bad=None, norm=sc.Norm.from_drizzle(norm, transp), weights=weight,
                            params=classic_params(p), device=dev, used=used, ch_of_k=ch_of_k, H=H, W=W,
                            sat_level=satval, masks=True, raw_template=raw_template(meta, used, ch_of_k),
-                           progress=lambda f, msg: ctx.progress(0.3 + 0.4 * f, f"integration's rejection: {msg}"))
+                           progress=lambda f, msg: ctx.progress(0.3 + 0.4 * f, f"integration's rejection: {msg}"),
+                           **within_memory(ctx))
     res.full = res.A = res.B = res.weight = None            # only the rejection is used: free the images
     return res
+
+
+def within_memory(ctx: Context) -> dict:
+    """What keeps the Classic part within the machine's memory (issue #125; core/stack_classic ``MemoryPlan``): the
+    memory it may fill now, the scratch folder its resampled frames go to when they do not fit, the log of the line
+    that says so. The result is the same to the bit."""
+    from ..core import devices
+    return {"memory": devices.memory_budget(), "spill": ctx.scratch, "log": ctx.log}
 
 
 def raw_template(meta: list[dict], used, ch_of_k) -> str | None:

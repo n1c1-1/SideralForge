@@ -203,6 +203,15 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
          "the card test sends this block to the processor: {0}", (0,)),
         (r"^the graphics card has ([\d.]+) GB free and this stack needs about ([\d.]+) GB: it is computed on the CPU$",
          "the graphics card has {0} GB free and this stack needs about {1} GB: it is computed on the CPU", ()),
+        # issue #125: the Classic stack within the machine's memory (core/stack_classic.MemoryPlan)
+        (r"^memory: ([\d.]+) GB available, the (\d+) registered frames \(([\d.]+) GB\) are kept on disk and the "
+         r"rejection is computed in (\d+) parts$",
+         "memory: {0} GB available, the {1} registered frames ({2} GB) are kept on disk and the rejection is "
+         "computed in {3} parts", ()),
+        (r"^memory: ([\d.]+) GB available, the (\d+) registered frames \(([\d.]+) GB\) are kept on disk$",
+         "memory: {0} GB available, the {1} registered frames ({2} GB) are kept on disk", ()),
+        (r"^memory: ([\d.]+) GB available, the rejection is computed in (\d+) parts$",
+         "memory: {0} GB available, the rejection is computed in {1} parts", ()),
         # the runner's hand-over of a run to a fresh process after a graphics card fault (core/runner2.py)
         (r"^the graphics card stopped responding during (.+); the rest of the run continues in a fresh process$",
          "the graphics card stopped responding during {0}; the rest of the run continues in a fresh process", (0,)),
