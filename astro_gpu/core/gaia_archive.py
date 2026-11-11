@@ -179,11 +179,12 @@ def hipparcos_all(cols: list[str], vmax: float, say=None) -> dict:
     return out
 
 
-def hipparcos_cone(ra: float, dec: float, radius: float, cols: list[str], vmax: float, say=None) -> dict:
+def hipparcos_cone(ra: float, dec: float, radius: float, cols: list[str], vmax: float, say=None,
+                   fetch: bool = False) -> dict:
     """Hipparcos stars brighter than V = vmax within ``radius`` deg: {VizieR column: array} (from the whole-sky list,
-    cached)."""
+    cached; ``fetch``: downloaded when it is not, an explicit action outside a run)."""
     from .skycache import _sep, hipparcos
-    t = hipparcos(list(dict.fromkeys(list(cols) + ["RAICRS", "DEICRS"])), vmax, log=say)
+    t = hipparcos(list(dict.fromkeys(list(cols) + ["RAICRS", "DEICRS"])), vmax, log=say, fetch=fetch)
     m = _sep(ra, dec, t["RAICRS"], t["DEICRS"]) <= radius
     return {k: t[k][m] for k in cols}
 

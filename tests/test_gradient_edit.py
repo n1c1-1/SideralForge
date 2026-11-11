@@ -104,7 +104,7 @@ def test_survey_on_grid_falls_back_and_says_when_none_covers(monkeypatch):
     from astro_gpu.stages import surveys
     seen = []
 
-    def fake(name, wd, w, h, scale, log=print):
+    def fake(name, wd, w, h, scale, log=print, **k):
         seen.append(name)
         a = np.ones((h, w), np.float32)
         if name == "nsns":

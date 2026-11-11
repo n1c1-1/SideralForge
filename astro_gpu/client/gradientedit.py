@@ -1037,7 +1037,8 @@ def _survey_small(project, pid: int, sm: dict) -> dict:
             raise ValueError(_("the field is not solved yet (Astrometry)"))
         wd = WCS(fits.getheader(f"{out.dir}/wcs.fits"))
         scale = float(np.mean(proj_plane_pixel_scales(wd.celestial))) * 3600.0
-        img, name = survey_on_grid(wd, sm["W"], sm["H"], scale, log=lambda *a: None)
+        # the survey guide turned on by the user: an explicit action outside a run, what is missing is fetched
+        img, name = survey_on_grid(wd, sm["W"], sm["H"], scale, log=lambda *a: None, fetch=True)
     k = int(round(1 / sm["f"]))
     h, w = sm["arr"].shape[1:]
     with np.errstate(all="ignore"):

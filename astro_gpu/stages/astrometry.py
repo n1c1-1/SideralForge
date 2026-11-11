@@ -230,8 +230,8 @@ class Astrometry(Stage):
                     raise
                 except Exception as e:  # noqa: BLE001 - no catalogue for this trial scale (offline, services down)
                     if p.scale:
-                        raise StageError("the star catalogue for this field cannot be read: check the network "
-                                         "connection, or download the star positions in Settings") from e
+                        raise StageError("the star catalogue of this field is not on this computer: install it in "
+                                         "Settings › Catalogs & astrometry") from e
                     ctx.log(f"no Gaia stars at {sc:.2f}\"/px ({str(e)[:150]})", "warning")
                     continue
                 if len(gm) < 20:
@@ -642,8 +642,8 @@ def bright_stars(ra, dec, radius, glim, log=None, progress=None) -> tuple[dict, 
     """Gaia DR3 stars brighter than glim within radius (deg) of (ra, dec), epoch 2016.0: ({"RA_ICRS", "DE_ICRS",
     "Gmag"}, where they came from). The offline astrometric extract when it is installed (local, instant; it keeps the 127
     brightest stars of every 14' cell, which in the Milky Way can stop short of glim: plenty for a solution), else
-    the sky tiles of the cache, else the network (tiles downloaded and cached; ``progress(fraction, message)`` told of
-    each tile)."""
+    the sky tiles of the cache; never the network (a run downloads nothing: core/online.py), ``skycache.SkyUnavailable``
+    when the tiles are not all there."""
     from ..core import sirilcat, skycache
     s = sirilcat.astro_cone(ra, dec, radius, glim)
     if s is not None:
@@ -653,7 +653,7 @@ def bright_stars(ra, dec, radius, glim, log=None, progress=None) -> tuple[dict, 
         return s, src
     t = skycache.gaia_stars([(ra, dec, radius)], ["RA_ICRS", "DE_ICRS", "Gmag"], f"<{glim:.2f}", log=log,
                             progress=progress, label="Gaia stars")
-    return t, "the Gaia sky tiles (cache, else network)"
+    return t, "the Gaia sky tiles of the cache"
 
 
 def gaia_bright(ra, dec, radius, glim, log=None, progress=None):
@@ -728,9 +728,10 @@ def find_offline(name: str) -> tuple[float, float] | None:
     return None
 
 
-def resolve_name(name: str, log=None) -> tuple[float, float]:
-    """(ra, dec) of a named object: names resolved before (cache), the shipped catalogues, SIMBAD, NED (each service
-    given a few seconds; one line per fallback)."""
+def resolve_name(name: str, log=None, services: bool = False) -> tuple[float, float]:
+    """(ra, dec) of a named object: names resolved before (cache), the shipped catalogues; with ``services`` (an
+    explicit lookup outside a run, never the stage: a run downloads nothing, core/online.py), SIMBAD, NED (each
+    service given a few seconds; one line per fallback)."""
     from ..core import online, skycache
     say = online.sayer(log)
     candidates = list(dict.fromkeys([name, name.replace("_", " "),
@@ -792,9 +793,9 @@ def resolve_name(name: str, log=None) -> tuple[float, float]:
                 return float(t["RA"][0]), float(t["DEC"][0])
         return None
 
-    for svc, fn in (("simbad", simbad), ("ned", ned)):
+    for svc, fn in (("simbad", simbad), ("ned", ned)) if services else ():
         try:
-            r = online.call(svc, fn, 20.0)
+            r = online.call(svc, fn, 20.0, f"the position of '{name}'")
         except online.ServiceDown as e:
             say(f"{online.label(svc)} {e.why}: the name '{name}' is looked up elsewhere")
             continue
@@ -803,4 +804,5 @@ def resolve_name(name: str, log=None) -> tuple[float, float]:
         if r is not None:
             return remember(r[0], r[1], svc)
     raise StageError(f"'{name}' is not in the deep-sky catalogues and neither SIMBAD nor NED could give it: enter the "
-                     "RA/Dec of the field centre")
+                     "RA/Dec of the field centre" if services else
+                     f"'{name}' is not in the deep-sky catalogues on this computer: enter the RA/Dec of the field centre")

@@ -17,8 +17,9 @@ costs as much as a deep one, so the tiles stay small, close to the area really n
 GAVO minutes; a level-6 tile to G < 18.5, 16 000 stars, 1-5 s)
 
 A query is served by any complete layer with the columns and a magnitude range that contain it (the catalogues stage's
-deep layer serves the astrometry too); otherwise the missing tiles of its own layer are fetched (a cone around each
-tile; the stars outside the tile are dropped) and saved.
+deep layer serves the astrometry too); otherwise, and only when the caller asks for it (``fetch``: an explicit action,
+never a run: core/online.py), the missing tiles of its own layer are fetched (a cone around each tile; the stars outside
+the tile are dropped) and saved. The stages read the tiles they find and raise ``SkyUnavailable`` for the others.
 """
 from __future__ import annotations
 
@@ -32,6 +33,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+
+from .stage import StageError
 
 #: magnitude limits a layer is rounded to (a query for G < 13.3 fetches the G < 13.5 layer, reused by the next query
 #: of the field: half a magnitude more is about 40 % more stars to download)
@@ -288,8 +291,9 @@ def layers() -> list[Layer]:
     return [lay for d in sorted(root.iterdir()) if d.is_dir() and (lay := Layer.read(d)) is not None]
 
 
-class SkyUnavailable(Exception):
-    """Sky tiles are neither cached nor downloadable (no network, every service down)."""
+class SkyUnavailable(StageError):
+    """What is asked of the sky is not on this computer (and not fetched: a run never fetches), or no service gave it.
+    A StageError: its message is the stage's failure, said as it is."""
 
 
 def _fetch_tile(layer: Layer, tile: int, say) -> dict:
@@ -305,10 +309,12 @@ def _fetch_tile(layer: Layer, tile: int, say) -> dict:
 
 
 def gaia_stars(cones: list[tuple[float, float, float]], cols: list[str], gfilter: str, log: Callable | None = None,
-               progress: Callable[[float, str], None] | None = None, label: str = "Gaia stars") -> dict:
+               progress: Callable[[float, str], None] | None = None, label: str = "Gaia stars",
+               fetch: bool = False) -> dict:
     """Every Gaia DR3 star (columns ``cols``, VizieR names, positions at epoch 2016.0) inside the union of the cones
-    [(ra, dec, radius deg)] whose G passes ``gfilter`` ('<18.5' or '18.5..20.5'), from cached tiles, the missing tiles
-    downloaded and cached. Raises SkyUnavailable when tiles are missing and no service gives them."""
+    [(ra, dec, radius deg)] whose G passes ``gfilter`` ('<18.5' or '18.5..20.5'), from cached tiles. Raises
+    SkyUnavailable when tiles are missing; ``fetch`` (an explicit action outside a run): the missing tiles downloaded
+    and cached first, SkyUnavailable when no service gives them."""
     from . import online
     say = online.sayer(log)
     lo, hi = parse_filter(gfilter)
@@ -337,8 +343,10 @@ def gaia_stars(cones: list[tuple[float, float, float]], cols: list[str], gfilter
             lay = old
         ts = tiles_for(lay.level)
         miss = lay.missing(ts)
+        if miss and not fetch:
+            raise SkyUnavailable(f"{label}: {len(miss)} of the {len(ts)} sky tiles of the field are not on this computer "
+                                 "(the offline star catalogue is not installed)")
         if miss:
-            from . import online
             say(f"{label}: {len(miss)} of the {len(ts)} sky tiles of the field ({filter_text(lay.lo, lay.hi)}, "
                 f"{58.6 / 2 ** lay.level:.1f} deg wide) are not in the cache yet: downloading them", "info")
             lay.ensure()                          # once, before the threads
@@ -409,8 +417,9 @@ def in_cones(ra, dec, cones) -> np.ndarray:
 HIP_FILE = "hipparcos/hip_main_v{vmax:g}.npz"
 
 
-def hipparcos(cols: list[str], vmax: float, log: Callable | None = None) -> dict:
-    """Every Hipparcos star brighter than V = vmax (VizieR column names), downloaded once for the whole sky."""
+def hipparcos(cols: list[str], vmax: float, log: Callable | None = None, fetch: bool = False) -> dict:
+    """Every Hipparcos star brighter than V = vmax (VizieR column names), from the cache; ``fetch`` (an explicit action
+    outside a run): downloaded once for the whole sky when it is not there. SkyUnavailable when it is not."""
     from . import online
     from .gaia_archive import hipparcos_all
     rel = HIP_FILE.format(vmax=vmax)
@@ -419,6 +428,8 @@ def hipparcos(cols: list[str], vmax: float, log: Callable | None = None) -> dict
         with np.load(p) as z:
             if set(cols) <= set(z.files):
                 return {k: z[k] for k in cols}
+    if not fetch:
+        raise SkyUnavailable(f"the Hipparcos stars (V < {vmax:g}) are not on this computer")
     allcols = ["HIP", "RAICRS", "DEICRS", "Vmag", "B-V", "pmRA", "pmDE"]
     t = hipparcos_all(list(dict.fromkeys(allcols + list(cols))), vmax, say=online.sayer(log))
     save_npz(cache_dir() / rel, **t)

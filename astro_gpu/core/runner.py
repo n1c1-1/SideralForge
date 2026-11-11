@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from . import online
 from .determinism import deterministic
 from .files import write_json
 from .journal import Journal
@@ -186,16 +187,17 @@ class Pipeline:
         self.journal.emit("stage_start", stage=st.name, title=st.title)
         t0 = time.time()
         try:
-            with deterministic():                # same inputs, same outputs (core/determinism.py)
+            # nothing is downloaded while a stage runs (core/online.py): what it needs is on the disk, or it fails
+            with deterministic(), online.forbid(f"the {st.title} step"):
                 st.run(ctx, p)
         except Interrupted:
             m.update(status="interrupted", error="stopped by user", duration=time.time() - t0)
             _write_manifest(self.project, st.name, m)
             self.journal.emit("stage_end", stage=st.name, status="interrupted", duration=time.time() - t0)
             return "interrupted"
-        except Exception as e:  # noqa: BLE001 - report every failure to the user
+        except (Exception, online.NetworkForbidden) as e:  # noqa: BLE001 - report every failure to the user
             tb = traceback.format_exc()
-            msg = str(e) if isinstance(e, StageError) else f"{type(e).__name__}: {e}"
+            msg = str(e) if isinstance(e, (StageError, online.NetworkForbidden)) else f"{type(e).__name__}: {e}"
             m.update(status="failed", error=msg, traceback=tb, duration=time.time() - t0)
             _write_manifest(self.project, st.name, m)
             self.journal.emit("log", stage=st.name, level="error", msg=msg)

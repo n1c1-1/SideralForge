@@ -55,7 +55,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import devices
+from . import devices, online
 from . import estimate as est
 from . import workflow as wfl
 from .files import write_json
@@ -873,8 +873,8 @@ class _Worker:
             if res != "done":
                 return res
             self._commit(job, sp, w)
-        except Exception as e:  # noqa: BLE001 - a job that cannot run or be stored fails alone
-            msg = str(e) if isinstance(e, StageError) else f"{type(e).__name__}: {e}"
+        except (Exception, online.NetworkForbidden) as e:  # noqa: BLE001 - a job that cannot run or be stored fails alone
+            msg = str(e) if isinstance(e, (StageError, online.NetworkForbidden)) else f"{type(e).__name__}: {e}"
             self._mark_failed(job, msg, traceback.format_exc())
             self.journal.emit("log", stage=job.stage, level="error", msg=msg)
             self.journal.emit("stage_end", stage=job.stage, status="failed", error=msg)
@@ -999,6 +999,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("plan")
     a = ap.parse_args(argv)
     os.chdir(a.project)                               # relative paths of stage code resolve in the project
+    # a run's worker never reaches the network, from its first line to its last (core/online.py): not even between
+    # its stages
+    online.forbid("this run").on()
     status = run_plan(a.project, a.plan)
     if status == "handover":
         # the CUDA context is dead: leave at once, without the interpreter's teardown (freeing CUDA memory on a dead

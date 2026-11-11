@@ -225,7 +225,7 @@ def test_a_tile_holds_the_same_stars_from_the_polygon_as_from_the_cone(monkeypat
     for name, fake in (("cone", lambda *a, polygon=None, **k: cone_only(*a, **k)), ("polygon", by_polygon)):
         monkeypatch.setenv("ASTRO_GPU_HOME", str(tmp_path / name))
         monkeypatch.setattr(gaia_archive, "gaia_cone", fake)
-        got[name] = skycache.gaia_stars(cone, COLS, "<16")
+        got[name] = skycache.gaia_stars(cone, COLS, "<16", fetch=True)
         lay = skycache.layers()[0]
         got[name + " tiles"] = {p.name: lay.load(int(p.stem)) for p in lay.dir.glob("*.npz")}
     assert got["cone tiles"].keys() == got["polygon tiles"].keys() and len(got["cone tiles"]) > 3
@@ -239,14 +239,18 @@ def test_a_tile_holds_the_same_stars_from_the_polygon_as_from_the_cone(monkeypat
 
 def test_a_field_inside_fetched_tiles_needs_no_network(monkeypatch):
     """The catalogue was cached by exact cone centre: a re-stack of the same field (its solution moves the centres a
-    little) downloaded everything again. Tiles: the first field fetches its tiles, the moved field reads them, offline
-    too; the stars are exactly those of the cones."""
+    little) downloaded everything again. Tiles: the first field fetches its tiles (an explicit fetch: a run never
+    fetches), the moved field reads them, offline too; the stars are exactly those of the cones. Without ``fetch``,
+    tiles that are not there are never asked: a clear error at once."""
     monkeypatch.setenv("ASTRO_GPU_OFFLINE", "")
     sky = _sky()
     fake = FakeGaia(sky)
     monkeypatch.setattr(gaia_archive, "gaia_cone", fake)
     cones = [(150.0 + dx, 30.0 + dy, 0.75) for dx in (-0.6, 0.6) for dy in (-0.6, 0.6)]
-    got = skycache.gaia_stars(cones, COLS, "<18.5")
+    with pytest.raises(skycache.SkyUnavailable, match="not on this computer"):
+        skycache.gaia_stars(cones, COLS, "<18.5")                  # not fetched: nothing asked
+    assert fake.calls == 0
+    got = skycache.gaia_stars(cones, COLS, "<18.5", fetch=True)
     assert fake.calls > 0 and _same_set(got, _brute(sky, cones, COLS, None, 18.5))
     i = np.argsort(got["Source"])
     ref = _brute(sky, cones, COLS, None, 18.5)
@@ -267,7 +271,7 @@ def test_a_field_inside_fetched_tiles_needs_no_network(monkeypatch):
     # a field elsewhere, offline: a clear error at once, not a wait
     t = time.monotonic()
     with pytest.raises(skycache.SkyUnavailable):
-        skycache.gaia_stars([(160.0, 35.0, 0.5)], COLS, "<18.5")
+        skycache.gaia_stars([(160.0, 35.0, 0.5)], COLS, "<18.5", fetch=True)
     assert time.monotonic() - t < 5
 
 
@@ -278,13 +282,13 @@ def test_a_magnitude_range_layer_and_its_ladder(monkeypatch):
     monkeypatch.setattr(gaia_archive, "gaia_cone", fake)
     few = ["RA_ICRS", "DE_ICRS", "Gmag"]
     cones = [(150.0, 30.0, 1.2)]
-    f = skycache.gaia_stars(cones, few, "18.5..20.5")
+    f = skycache.gaia_stars(cones, few, "18.5..20.5", fetch=True)
     ref = _brute(sky, cones, few, 18.5, 20.5)
     assert np.array_equal(np.sort(f["Gmag"]), np.sort(ref["Gmag"]))
     # the astrometry's G < 13.3 fetches the G < 13.5 layer (level 5); G < 13.45 then reads it
-    a = skycache.gaia_stars(cones, few, "<13.3")
+    a = skycache.gaia_stars(cones, few, "<13.3", fetch=True)
     n = fake.calls
-    b = skycache.gaia_stars(cones, few, "<13.45")
+    b = skycache.gaia_stars(cones, few, "<13.45", fetch=True)
     assert fake.calls == n
     assert np.array_equal(np.sort(b["Gmag"]), np.sort(_brute(sky, cones, few, None, 13.45)["Gmag"]))
     assert (a["Gmag"] < 13.3).all()
@@ -337,7 +341,7 @@ def test_a_silent_service_costs_seconds_and_the_next_one_answers(monkeypatch, si
     logs = []
     t = time.monotonic()
     got = skycache.gaia_stars([(150.0, 30.0, 0.8)], ["RA_ICRS", "DE_ICRS", "Gmag"], "<16",
-                              log=lambda m, level="info": logs.append((level, m)))
+                              log=lambda m, level="info": logs.append((level, m)), fetch=True)
     assert time.monotonic() - t < 8
     assert asked and len(got["Gmag"]) == len(_brute(sky, [(150.0, 30.0, 0.8)], ["Gmag"], None, 16)["Gmag"])
     assert online.is_down("vizier")
@@ -391,7 +395,7 @@ def test_a_service_answering_not_found_is_set_aside_before_any_query_and_the_til
     logs, lines = [], []
     cone = [(150.0, 30.0, 2.5)]
     got = skycache.gaia_stars(cone, ["RA_ICRS", "DE_ICRS", "Gmag"], "<16", log=lambda m, level="info": logs.append(
-        (level, m)), progress=lambda f, m: lines.append((f, m)))
+        (level, m)), progress=lambda f, m: lines.append((f, m)), fetch=True)
     assert len(got["Gmag"]) == len(_brute(sky, cone, ["Gmag"], None, 16)["Gmag"])
     assert len(hits) == 1 and online.is_down("vizier")                       # the probe only, once
     assert [m for lv, m in logs if lv == "warning"] == [
@@ -450,7 +454,7 @@ def _xp_run(monkeypatch, tmp_path, url, sub, at_once, bad=None):
     monkeypatch.setattr(gaia_archive, "xp_spectra_gavo", gavo)
     monkeypatch.setattr(gaia_archive, "xp_spectra_esa", esa)
     ctx = _Ctx()
-    rows = catalogs._xp_spectra(ctx, np.arange(1001, 2701, dtype=np.int64), 0.85, 1.0)
+    rows = catalogs._xp_spectra(ctx, np.arange(1001, 2701, dtype=np.int64), 0.85, 1.0, fetch=True)
     return rows, ctx, gavo, esa
 
 
@@ -641,7 +645,8 @@ def test_catalogs_reads_an_earlier_versions_cones_else_the_tiles(monkeypatch):
         np.savez(old / f"{catalogs._cone_key(COLS, gf, c, radius)}.npz", **_brute(sky, [(*c, radius)], COLS, None, 18.5))
     asked = []
 
-    def fake_stars(cones, cols, gfilter, log=None, progress=None, label=""):
+    def fake_stars(cones, cols, gfilter, log=None, progress=None, label="", fetch=False):
+        assert not fetch                                         # the stage reads the disk only
         asked.append(cones)
         return _brute(sky, cones, cols, None, 18.5)
     monkeypatch.setattr(skycache, "gaia_stars", fake_stars)
@@ -675,7 +680,8 @@ def test_in_cones_is_the_union_of_the_cones():
 
 def test_survey_downloads_are_cached_and_a_missing_tile_is_remembered(monkeypatch):
     """The H-alpha cut-out and HiPS tiles: cached under ASTRO_GPU_HOME (a re-run works offline); a tile the server
-    does not have (outside the survey) is remembered as absent, not asked again."""
+    does not have (outside the survey) is remembered as absent, not asked again. Only an explicit fetch downloads:
+    without it, a file not there is said missing at once (a run)."""
     import urllib.error
 
     from astro_gpu.stages import surveys
@@ -688,9 +694,13 @@ def test_survey_downloads_are_cached_and_a_missing_tile_is_remembered(monkeypatc
         if "Npix9" in url:
             raise urllib.error.HTTPError(url, 404, "not found", {}, None)
         return b"SIMPLE  = T" + url.encode()
-    monkeypatch.setattr(surveys, "_get", get)
-    a = surveys._cached_url("https://example.org/hips/Norder3/Dir0/Npix1.fits", "hips_tiles", "hips", 10)
-    assert surveys._cached_url("https://example.org/hips/Norder3/Dir0/Npix9.fits", "hips_tiles", "hips", 10) is None
+    monkeypatch.setattr(online, "get", get)
+    with pytest.raises(surveys.SurveyMissing):
+        surveys._cached_url("https://example.org/hips/Norder3/Dir0/Npix1.fits", "hips_tiles", "hips", 10)
+    assert got == []
+    a = surveys._cached_url("https://example.org/hips/Norder3/Dir0/Npix1.fits", "hips_tiles", "hips", 10, fetch=True)
+    assert surveys._cached_url("https://example.org/hips/Norder3/Dir0/Npix9.fits", "hips_tiles", "hips", 10,
+                               fetch=True) is None
     monkeypatch.setenv("ASTRO_GPU_OFFLINE", "1")
     assert surveys._cached_url("https://example.org/hips/Norder3/Dir0/Npix1.fits", "hips_tiles", "hips", 10) == a
     assert surveys._cached_url("https://example.org/hips/Norder3/Dir0/Npix9.fits", "hips_tiles", "hips", 10) is None

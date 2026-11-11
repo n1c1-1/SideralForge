@@ -1,8 +1,9 @@
 """Gaia DR3 catalogues of the field: its bright stars and their XP spectra (colour).
 
 Only the bright stars are needed (the colour calibration's XP stars, G 7.5 to 14, and their neighbours): they come from
-the offline Gaia extract when it is installed (core/sirilcat; no network at all), else from the sky cache's G < 16
-layer, the astrometry's."""
+the offline Gaia extract when it is installed (core/sirilcat), else from the sky cache's G < 16 layer, the
+astrometry's. Nothing is downloaded here (a run never reaches the network: core/online.py): what is not on the disk
+makes the stage fail with its reason, and the pre-check of the run (core/sky_data.py) says it before."""
 from __future__ import annotations
 
 import hashlib
@@ -90,9 +91,8 @@ class Catalogs(Stage):
         rows = _xp_spectra(ctx, d["source"][sel].astype(np.int64), 0.85, 1.0, pos16[sel], d["g"][sel])
         n_ok = sum(r is not None for r in rows)
         if n_ok < 50:
-            raise StageError(f"only {n_ok} XP spectra available: the colour calibration needs at least 50 (connect to "
-                             "the internet once for this field, or download the offline Gaia spectra in Settings › "
-                             "Catalogs & astrometry)")
+            raise StageError(f"only {n_ok} star spectra of this field are on this computer: the colour calibration "
+                             "needs at least 50 (install the star spectra: Settings › Catalogs & astrometry)")
         keep = np.array([i for i, r in zip(sel, rows) if r is not None])
         lam = next(r for r in rows if r is not None)[0]
         flux = np.stack([r[1] for r in rows if r is not None])
@@ -193,10 +193,8 @@ def _query_cells(ctx, centres, radius, cols, gfilter, label, p0, p1, fine=None):
 
         def prog(f, msg):
             ctx.progress(p0 + (p1 - p0) * f, msg)
-        try:
-            parts.append(skycache.gaia_stars(cones, cols, gfilter, log=ctx.log, progress=prog, label=f"Gaia {label}"))
-        except skycache.SkyUnavailable as e:
-            raise StageError(f"{e}: connect to the internet once for this field, then it works offline") from e
+        # only the tiles on the disk (a run never downloads): the ones missing fail the stage with their reason
+        parts.append(skycache.gaia_stars(cones, cols, gfilter, log=ctx.log, progress=prog, label=f"Gaia {label}"))
     ctx.progress(p1, f"Gaia {label}: read")
     c = {k: np.concatenate([q[k] for q in parts if len(q[k])]) if any(len(q[k]) for q in parts) else np.zeros(0)
          for k in cols}
@@ -227,7 +225,7 @@ def _bright_missing(ctx, w, W, H, scale, epoch, deep, vmax=9.0):
     else:                                                    # else the whole-sky list (cached once)
         try:
             t = hipparcos_cone(centre.ra.deg, centre.dec.deg, radius, cols, vmax, say=online.sayer(ctx.log))
-        except Exception as e:  # noqa: BLE001 - no service answers: go on without the supplement
+        except Exception as e:  # noqa: BLE001 - not on the disk (never downloaded in a run): without the supplement
             ctx.log(f"Hipparcos stars unavailable ({str(e)[:150]}): bright stars missing from Gaia are not added",
                     "warning")
             return None
@@ -296,10 +294,11 @@ def _isolated_xp(d, p, W, H, scale):
     return keep[np.linspace(0, len(keep) - 1, p.xp_max).round().astype(int)]
 
 
-def _xp_spectra(ctx, sources, p0, p1, pos16=None, gmag=None):
+def _xp_spectra(ctx, sources, p0, p1, pos16=None, gmag=None, fetch=False):
     """XP spectra of the stars, in this order: the cache (by Gaia id; earlier versions' cache read too), the offline
-    spectra extract when installed (by position at epoch 2016.0 and G: it has no ids), VizieR (one star a
-    query), GAVO, the ESA archive (by batches). Downloads are cached by id; the offline spectra are not copied."""
+    spectra extract when installed (by position at epoch 2016.0 and G: it has no ids); then, only with ``fetch`` (an
+    explicit action outside a run; the stage never fetches), VizieR (one star a query), GAVO, the ESA archive (by
+    batches). Downloads are cached by id; the offline spectra are not copied. None for a star without its spectrum."""
     from ..core import gaia_archive as ga
     from ..core import online, sirilcat
     say = online.sayer(ctx.log)
@@ -332,7 +331,7 @@ def _xp_spectra(ctx, sources, p0, p1, pos16=None, gmag=None):
         ctx.log(f"{n} of {len(todo)} XP spectra read from the offline Gaia extract")
         todo = [k for k in todo if not known[k]]
     # the stars of the offline extract have no Gaia id (negative ones): no service can be asked for them
-    todo = [k for k in todo if ids[k] > 0]
+    todo = [k for k in todo if ids[k] > 0] if fetch else []
     ctx.progress(p0 + 0.1 * (p1 - p0), f"XP spectra: {len(ids) - len(todo)} of {len(ids)}")
 
     def fetch(k):

@@ -73,9 +73,10 @@ def quad_codes(P: np.ndarray):
 
 class SkyIndex:
     """Quad index of a bright-star catalogue: 'hip' (Hipparcos V < 9.5, fields > ~4 deg) or 'tyc' (Tycho-2
-    VT < 11, fields of ~1-6 deg)."""
+    VT < 11, fields of ~1-6 deg). Read from the cache; ``fetch`` (an explicit action outside a run, never a run: core/
+    online.py): its catalogue downloaded and the index built when it is not there, else ``SkyUnavailable``."""
 
-    def __init__(self, catalog: str = "hip", k: int | None = None):
+    def __init__(self, catalog: str = "hip", k: int | None = None, fetch: bool = False):
         self.k = k or (8 if catalog == "hip" else 7)
         self.combos = np.array(list(combinations(range(self.k), 3)))
         name = f"quads_{catalog}_k{self.k}.npz"
@@ -83,6 +84,10 @@ class SkyIndex:
         if p is not None:
             with np.load(p) as d:
                 self.ra, self.dec, self.codes, self.quads = d["ra"], d["dec"], d["codes"], d["quads"]
+        elif not fetch:
+            which = "Hipparcos" if catalog == "hip" else "Tycho-2"
+            raise skycache.SkyUnavailable(f"the star index of the blind solver ({which}) is not on this computer: enter "
+                                          "the target or its coordinates")
         else:
             self.ra, self.dec = _hipparcos() if catalog == "hip" else _tycho()
             self.codes, self.quads = self._build()

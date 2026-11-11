@@ -9,11 +9,12 @@ from astro_gpu.stages import surveys
 
 def test_the_tiles_come_first_and_the_cut_out_is_the_fallback(monkeypatch):
     asked = []
-    monkeypatch.setattr(surveys, "fetch_hips_tiles", lambda url, *a: (asked.append("tiles"), np.zeros((2, 2)))[1])
-    monkeypatch.setattr(surveys, "fetch_reprojected", lambda hips, *a: (asked.append("cut-out"), np.ones((2, 2)))[1])
+    monkeypatch.setattr(surveys, "fetch_hips_tiles", lambda url, *a, **k: (asked.append("tiles"), np.zeros((2, 2)))[1])
+    monkeypatch.setattr(surveys, "fetch_reprojected", lambda hips, *a, **k: (asked.append("cut-out"),
+                                                                              np.ones((2, 2)))[1])
     assert surveys.fetch_survey("nsns", None, 2, 2, 1.0).sum() == 0 and asked == ["tiles"]
 
-    def down(*a):
+    def down(*a, **k):
         raise OSError("no connection")
     monkeypatch.setattr(surveys, "fetch_hips_tiles", down)
     said = []

@@ -1,11 +1,16 @@
-"""Professional H-alpha sky survey reprojected onto the stack: the absolute reference of the faint background."""
+"""Professional H-alpha sky survey reprojected onto the stack: the absolute reference of the faint background.
+
+The stage reads the survey from the disk only (its tiles, or a cut-out of the field, kept in the cache): nothing is
+downloaded during a run (core/online.py). The survey of a field is fetched by an explicit action of the user, the
+Gradient block's Get survey (``fetch=True`` here, outside the run), or Settings' Download for offline use
+(``prefetch_field``). Not on the disk: the stage gives 'none' and the reason, as when no survey covers the field (its
+documented way: the Gradient block then chooses its samples on the image alone)."""
 from __future__ import annotations
 
 import io
 import json
 import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -35,10 +40,11 @@ class SurveysParams(StageParams):
 class Surveys(Stage):
     name = "surveys"
     title = "H-alpha reference"
-    description = ("Downloads once a professional H-alpha survey of the field (NSNS in the north, Finkbeiner "
-                   "elsewhere), kept on disk, and reprojects it onto the stack. It shows where the faint nebulosity "
-                   "is: the Gradient block takes no sky sample there, so the faint extensions of a nebula are not "
-                   "removed as sky. No survey (no network, or none covers the field): the run goes on without it.")
+    description = ("Reprojects onto the stack a professional H-alpha survey of the field (NSNS in the north, "
+                   "Finkbeiner elsewhere), fetched once by Get survey in the Gradient block and kept on disk. It shows "
+                   "where the faint nebulosity is: the Gradient block takes no sky sample there, so the faint "
+                   "extensions of a nebula are not removed as sky. No survey (not fetched for this field, or none "
+                   "covers it): the run goes on without it.")
     deps = ("astrometry", "stack")
     Params = SurveysParams
     version = "2"          # 2: never stops the run: no survey, or no network, gives 'none' and the reason
@@ -60,7 +66,7 @@ class Surveys(Stage):
             out, used = survey_on_grid(wd, W, H, scale, p.survey, p.min_coverage, ctx.log,
                                        lambda f, m: ctx.progress(0.1 + 0.8 * f, m))
         except Exception as e:  # noqa: BLE001 - a guide only: the run goes on without it, the reason said
-            why = (e.why if isinstance(e, online.ServiceDown) else
+            why = (str(e) if isinstance(e, SurveyMissing) else e.why if isinstance(e, online.ServiceDown) else
                    "no H-alpha survey covers this field" if isinstance(e, StageError) else f"not available ({e})")
             ctx.save_json("survey.json", {"survey": "none", "why": str(why)[:300]})
             ctx.metric("survey", "none")
@@ -77,15 +83,25 @@ class Surveys(Stage):
         ctx.preview("halpha_reference", np.clip((sm - lo) / max(hi - lo, 1e-6), 0, 1) ** 0.5)
 
 
+class SurveyMissing(StageError):
+    """The survey of the field is not on this computer (and is not fetched: a run never fetches)."""
+
+
+MISSING = "the H-alpha survey of this field is not on this computer (Get survey in the Gradient block)"
+
+
 def survey_on_grid(wd, W: int, H: int, scale: float, which: str = "auto", min_coverage: float = 0.95, log=print,
-                   progress=None) -> tuple[np.ndarray, str]:
+                   progress=None, fetch: bool = False) -> tuple[np.ndarray, str]:
     """The H-alpha survey of the field on a W x H grid of WCS ``wd`` (``scale`` arcsec per pixel), and the survey's
-    name: with ``auto``, NSNS when it covers ``min_coverage`` of the field, else Finkbeiner. NaN outside the survey."""
+    name: with ``auto``, NSNS when it covers ``min_coverage`` of the field, else Finkbeiner. NaN outside the survey.
+    From the disk; ``fetch`` (an explicit action outside a run): what is missing downloaded first, else
+    ``SurveyMissing``."""
     order = ["nsns", "finkbeiner"] if which == "auto" else [which]
     for k, name in enumerate(order):
         if progress is not None:
-            progress(k / len(order), f"downloading {SURVEYS[name][1]}")
-        img = fetch_survey(name, wd, W, H, scale, log)
+            progress(k / len(order), f"downloading {SURVEYS[name][1]}" if fetch else f"reading {SURVEYS[name][1]}")
+        sub = None if progress is None else (lambda f, m, k=k: progress((k + f) / len(order), m))
+        img = fetch_survey(name, wd, W, H, scale, log, fetch=fetch, progress=sub)
         cov = float(np.isfinite(img).mean())
         log(f"{SURVEYS[name][1]}: covers {100 * cov:.0f} % of the field")
         if cov >= min_coverage or name == order[-1]:
@@ -132,18 +148,23 @@ def has_emission(img: np.ndarray) -> bool:
     return float(hi - lo) > EMISSION_CONTRAST * max(noise, 1e-12)
 
 
-def fetch_survey(name: str, wd, W: int, H: int, scale: float, log=print) -> np.ndarray:
+def fetch_survey(name: str, wd, W: int, H: int, scale: float, log=print, fetch: bool = False,
+                 progress=None) -> np.ndarray:
     """The survey on the stack's grid. A survey with its own HiPS server is read tile by tile, each tile cached under
     ASTRO_GPU_HOME (issue #39: any field of a sky already seen, by any project, then works offline; the cut-out of the
     CDS service was cached for its exact grid only, so that a new stack of the same field downloaded again); the
-    cut-out service when the tiles cannot be had (and for the surveys without a server of their own)."""
+    cut-out service when the tiles cannot be had (and for the surveys without a server of their own). ``fetch``: what
+    the cache lacks is downloaded (an explicit action, never a run); without it, what is not on the disk raises
+    ``SurveyMissing``."""
     if name in HIPS_SERVERS:
         try:
-            return fetch_hips_tiles(HIPS_SERVERS[name], wd, W, H, scale)
+            return fetch_hips_tiles(HIPS_SERVERS[name], wd, W, H, scale, fetch=fetch, progress=progress)
+        except SurveyMissing:
+            pass                                # not every tile on the disk: a cut-out of this grid, if one is
         except Exception as e:  # noqa: BLE001 - the survey's server unreachable: the CDS cut-out (cached by grid)
             why = e.why if isinstance(e, online.ServiceDown) else f"does not answer ({str(e)[:120]})"
             log(f"the survey's own server {why}: the CDS cut-out service is asked", "warning")
-    return fetch_reprojected(SURVEYS[name][0], wd, W, H, scale)
+    return fetch_reprojected(SURVEYS[name][0], wd, W, H, scale, fetch=fetch)
 
 
 def prefetch_field(roots, which: str = "nsns", progress=None) -> dict:
@@ -178,7 +199,7 @@ def prefetch_field(roots, which: str = "nsns", progress=None) -> dict:
                 if scale is None or not sizes:
                     continue
                 W, H = max(sizes, key=lambda wh: wh[0] * wh[1])   # the largest: the tiles cover the others too
-                fetch_hips_tiles(url, wd, W, H, scale)
+                fetch_hips_tiles(url, wd, W, H, scale, fetch=True)
                 out["fields"] += 1
             except Exception as e:  # noqa: BLE001 - one field that cannot be read: the others still come
                 out["failed"].append(f"{Path(root).name}: {str(e)[:120]}")
@@ -186,15 +207,11 @@ def prefetch_field(roots, which: str = "nsns", progress=None) -> dict:
     return out
 
 
-def _get(url: str, timeout: float = 60.0) -> bytes:
-    with urllib.request.urlopen(url, timeout=timeout) as r:
-        return r.read()
-
-
-def _cached_url(url: str, sub: str, service: str, budget: float) -> bytes | None:
+def _cached_url(url: str, sub: str, service: str, budget: float, fetch: bool = False) -> bytes | None:
     """The bytes at ``url``, from the cache (``cache/<sub>/``; astropy's download cache, where earlier versions put
-    the tiles, is read too) else downloaded and cached; None when the server says the file does not exist (a tile
-    outside the survey, remembered as such)."""
+    the tiles, is read too), else (``fetch``: an explicit action, never a run) downloaded and cached, else
+    ``SurveyMissing``; None when the server said the file does not exist (a tile outside the survey, remembered as
+    such)."""
     import hashlib
     rel = f"{sub}/{hashlib.sha1(url.encode()).hexdigest()}"
     p = skycache.find(rel + ".fits")
@@ -208,8 +225,10 @@ def _cached_url(url: str, sub: str, service: str, budget: float) -> bytes | None
             return open(download_file(url, cache=True), "rb").read()
     except Exception:  # noqa: BLE001 - astropy's cache unreadable: download
         pass
+    if not fetch:
+        raise SurveyMissing(MISSING)
     try:
-        data = online.call(service, lambda: _get(url), budget)
+        data = online.call(service, lambda: online.get(url), budget, "a file of the H-alpha survey")
     except urllib.error.HTTPError as e:
         if e.code == 404:
             dst = skycache.cache_dir() / (rel + ".absent")
@@ -225,16 +244,18 @@ def _cached_url(url: str, sub: str, service: str, budget: float) -> bytes | None
     return data
 
 
-def fetch_hips_tiles(url: str, wd, W: int, H: int, scale: float) -> np.ndarray:
+def fetch_hips_tiles(url: str, wd, W: int, H: int, scale: float, fetch: bool = False, progress=None) -> np.ndarray:
     """The HiPS read tile by tile from its server, at the coarsest level still finer than 3 stack pixels (as the
     cut-out), sampled every 3 stack pixels then interpolated onto the stack. Within a tile, the HEALPix nested index
     of a pixel splits into x (even bits) and y (odd bits), and the value sits at row tile-1-x, column y: checked on the
-    NSNS maps the CDS cut-out gave the Iris and the Heart (correlation 0.994 and 0.998, levels within 1 %)."""
+    NSNS maps the CDS cut-out gave the Iris and the Heart (correlation 0.994 and 0.998, levels within 1 %). The tiles
+    from the cache; ``fetch``: the missing ones downloaded (``progress(fraction, message)`` told of each), else
+    ``SurveyMissing`` (``_cached_url``)."""
     import cv2
     from astropy.coordinates import ICRS
     from astropy.io import fits
     from astropy_healpix import HEALPix
-    props = _hips_properties(url)
+    props = _hips_properties(url, fetch)
     T, deepest = int(props["hips_tile_width"]), int(props["hips_order"])
     bits = int(round(np.log2(T)))
     pix_deg = 58.6323 / (T * 2 ** deepest)                     # mean HEALPix pixel size at the deepest level
@@ -245,9 +266,12 @@ def fetch_hips_tiles(url: str, wd, W: int, H: int, scale: float) -> np.ndarray:
     tile, sub = ip >> (2 * bits), ip & (T * T - 1)
     x, y = _compact(sub), _compact(sub >> 1)
     out = np.full(ip.shape, np.nan, np.float32)
-    for t in np.unique(tile):
+    tiles = np.unique(tile)
+    for i, t in enumerate(tiles):
+        if progress is not None:
+            progress(i / len(tiles), f"tile {i + 1} of {len(tiles)}")
         u = f"{url}/Norder{level}/Dir{(t // 10000) * 10000}/Npix{t}.fits"
-        raw = _cached_url(u, "hips_tiles", "hips", 120.0)
+        raw = _cached_url(u, "hips_tiles", "hips", 120.0, fetch)
         if raw is None:                                      # no tile there: outside the survey
             continue
         d = fits.getdata(io.BytesIO(raw)).astype(np.float32)
@@ -257,8 +281,8 @@ def fetch_hips_tiles(url: str, wd, W: int, H: int, scale: float) -> np.ndarray:
     return cv2.resize(small, (W, H), interpolation=cv2.INTER_LINEAR) if small.shape != (H, W) else small
 
 
-def _hips_properties(url: str) -> dict:
-    raw = _cached_url(f"{url}/properties", "hips_tiles", "hips", 60.0)
+def _hips_properties(url: str, fetch: bool = False) -> dict:
+    raw = _cached_url(f"{url}/properties", "hips_tiles", "hips", 60.0, fetch)
     if raw is None:
         raise StageError(f"{url} has no HiPS properties")
     lines = raw.decode("utf-8", "replace").splitlines()
@@ -276,8 +300,9 @@ def _compact(v: np.ndarray) -> np.ndarray:
     return (v | (v >> 16)) & 0x00000000FFFFFFFF
 
 
-def fetch_reprojected(hips: str, wd, W: int, H: int, scale: float) -> np.ndarray:
-    """hips2fits cut-out on a TAN grid 3x coarser than the stack, then bilinear reprojection onto the stack."""
+def fetch_reprojected(hips: str, wd, W: int, H: int, scale: float, fetch: bool = False) -> np.ndarray:
+    """hips2fits cut-out on a TAN grid 3x coarser than the stack, then bilinear reprojection onto the stack (from the
+    cache; ``fetch``: downloaded when it is not there)."""
     from astropy.io import fits
     from astropy.wcs import WCS
     from reproject import reproject_interp
@@ -290,7 +315,7 @@ def fetch_reprojected(hips: str, wd, W: int, H: int, scale: float) -> np.ndarray
            "CDELT1": -cs, "CDELT2": cs}
     url = ("https://alasky.cds.unistra.fr/hips-image-services/hips2fits?hips=" + urllib.parse.quote(hips, safe="")
            + f"&width={n}&height={n}&wcs=" + urllib.parse.quote(json.dumps(hdr)) + "&format=fits")
-    data = _cached_url(url, "hips2fits", "hips2fits", 300.0)
+    data = _cached_url(url, "hips2fits", "hips2fits", 300.0, fetch)
     if data is None:
         raise StageError("the CDS cut-out service has no image for this field")
     img = fits.open(io.BytesIO(data))[0].data.astype(np.float32)

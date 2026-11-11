@@ -10,7 +10,7 @@ from astro_gpu.core.blindsolve import SkyIndex, _tangent, _unit, solve
 @pytest.mark.network
 @pytest.mark.slow
 def test_blind_solve_synthetic_field():
-    idx = SkyIndex("hip")
+    idx = SkyIndex("hip", fetch=True)                       # an explicit fetch (a run never fetches)
     ra0, dec0, scale = 84.0, -2.0, 25.0 / 3600            # Orion belt, 25"/px
     W, H = 1200, 800
     c = _unit(np.array([ra0]), np.array([dec0]))[0]

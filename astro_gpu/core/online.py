@@ -12,6 +12,16 @@ How:
   query over budget sets the service aside and raises ``ServiceDown``.
 - ``first_answer(chain, what, say)``: the sources of a chain in order, one plain line per fallback.
 - ``ASTRO_GPU_OFFLINE=1`` sets every service aside (no network at all).
+
+THE RULE: NOTHING IS DOWNLOADED DURING A RUN. A run (the runner's worker process, and any stage run in another process:
+``runner.Pipeline._run_stage``) switches ``forbid`` on; from then on every way to the network raises
+``NetworkForbidden`` at once, with what was asked and of whom: the request layer here (``call``, ``first_answer``,
+``available``, ``probe_all``, ``requests_session``, ``get``), and below it every socket of the process (an audit hook
+on ``socket.connect`` and the name lookups: a library that does not go through this module is stopped too; the
+machine's own address is left alone). The stages read only what is on the disk (the offline Gaia extracts, the caches);
+what a run needs is checked before it starts (``core/sky_data.py``) and fetched by an explicit action of the user
+outside the run (Settings › Catalogs & astrometry, the Gradient block's Get survey). tests/test_no_download_in_run.py
+holds the rule.
 """
 from __future__ import annotations
 
@@ -68,8 +78,85 @@ class ServiceDown(Exception):
         self.name, self.why = name, why
 
 
+class NetworkForbidden(BaseException):
+    """The network was asked while a run forbids it (``forbid``). A BaseException, as KeyboardInterrupt: the broad
+    ``except Exception`` of a fallback cannot take it for a service that does not answer and go on; the runner makes it
+    the stage's failure, with this message."""
+
+
 def label(name: str | None) -> str:
     return LABELS.get(name or "", name or "")
+
+
+# ------------------------------------------------------------------ the guard: no network during a run
+
+#: why the network is forbidden now ("the Astrometry block", "this run"), innermost last; empty: allowed. Process-wide,
+#: not per thread: the threads a stage starts (the sky tiles, the spectra) are stopped as the stage itself
+_FORBID: list[str] = []
+#: the socket events stopped while forbidden, and the addresses left alone (the machine itself: a pipe of a library)
+_SOCKET_EVENTS = frozenset({"socket.connect", "socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyname_ex",
+                            "socket.gethostbyaddr", "socket.sendto", "socket.sendmsg"})
+_LOCAL = frozenset({None, "", "localhost", "127.0.0.1", "::1", b"localhost", b"127.0.0.1", b"::1"})
+_HOOKED: list[bool] = []
+
+
+def forbidden() -> str | None:
+    """Why the network is forbidden now (the run, the block running), None when it is allowed."""
+    return _FORBID[-1] if _FORBID else None
+
+
+def _refuse(what: str) -> NetworkForbidden:
+    return NetworkForbidden(f"nothing is downloaded during a run: asked for {what} while {_FORBID[-1]} ran. What a run "
+                            "needs comes from the disk: install it first (Settings › Catalogs & astrometry)")
+
+
+def guard(what: str) -> None:
+    """Raise ``NetworkForbidden`` at once when the network is forbidden; ``what``: what was asked, of whom."""
+    if _FORBID:
+        raise _refuse(what)
+
+
+def _audit(event: str, args: tuple) -> None:
+    """The socket net under the request layer (an audit hook: it costs one test of a list per audited event)."""
+    if not _FORBID or event not in _SOCKET_EVENTS:
+        return
+    if event.startswith("socket.get"):                       # a name lookup: (host, ...)
+        host = args[0] if args else None
+    else:                                                    # (socket, address): (host, port[, ...]), a pipe's path
+        addr = args[1] if len(args) > 1 else None
+        if not isinstance(addr, tuple):
+            return                                           # AF_UNIX and the like: the machine itself
+        host = addr[0] if addr else None
+    if host in _LOCAL or (isinstance(host, str) and host.startswith("127.")):
+        return
+    raise _refuse(f"a connection to {host if isinstance(host, str) else repr(host)}")
+
+
+def _hook() -> None:
+    if not _HOOKED:                              # an audit hook cannot be taken out: added once, read through _FORBID
+        import sys
+        sys.addaudithook(_audit)
+        _HOOKED.append(True)
+
+
+class forbid:  # noqa: N801 - used as a function: ``with online.forbid("the Astrometry block"):``
+    """No network while the block runs (nested: the innermost reason is said). ``forbid(why).on()`` without ``with``:
+    for the rest of the process (the runner's worker)."""
+
+    def __init__(self, why: str):
+        self.why = why
+
+    def on(self) -> forbid:
+        _hook()
+        _FORBID.append(self.why)
+        return self
+
+    def __enter__(self) -> forbid:
+        return self.on()
+
+    def __exit__(self, *exc) -> None:
+        if self.why in _FORBID:
+            del _FORBID[len(_FORBID) - 1 - _FORBID[::-1].index(self.why)]
 
 
 def offline() -> bool:
@@ -126,6 +213,7 @@ def _probe(name: str) -> bool:
 
 def available(name: str) -> bool:
     """False when the service is set aside or does not answer a tiny request (asked once per 10 minutes)."""
+    guard(f"an answer of {label(name)}")
     if is_down(name):
         return False
     if name not in PROBES:
@@ -149,6 +237,7 @@ def available(name: str) -> bool:
 def probe_all(names) -> None:
     """Start probing the services of a chain at once, in the background (a fallback then waits only for what is
     left of its own probe, not for one probe after the other; nobody waits for the probe of a service not asked)."""
+    guard(f"an answer of {', '.join(label(n) for n in names)}")
     with _LOCK:
         fresh = {n for n, t in _PROBED.items() if time.monotonic() - t < DOWN_FOR_S}
     for n in names:
@@ -158,6 +247,8 @@ def probe_all(names) -> None:
 
 def network_error(e: BaseException) -> bool:
     """Whether an exception says the service is unreachable / failing (not: our query was wrong)."""
+    if isinstance(e, NetworkForbidden):
+        return False
     try:
         import requests
         if isinstance(e, (requests.ConnectionError, requests.Timeout)):
@@ -195,10 +286,11 @@ def _plain(e: BaseException) -> str:
     return f"failed ({str(e)[:120]})"
 
 
-def call(name: str, fn: Callable[[], Any], budget: float) -> Any:
+def call(name: str, fn: Callable[[], Any], budget: float, what: str = "data") -> Any:
     """``fn()`` in a background thread for at most ``budget`` seconds. Raises ``ServiceDown`` when the service is set
     aside or unreachable, fails with a network error, or takes longer than the budget (the thread is abandoned; its own
-    socket timeouts end it)."""
+    socket timeouts end it); ``NetworkForbidden`` during a run (``what``: what is asked, said then)."""
+    guard(f"{what} from {label(name)}")
     if not available(name):
         raise ServiceDown(name, why_down(name))
     box: dict = {}
@@ -259,12 +351,13 @@ def first_answer(chain: list[tuple[str, Callable[[], Any]]], what: str, say: Cal
     """The answer of the first source of ``chain`` ([(service, fn)]) that gives one; one line per fallback, e.g.
     "VizieR (CDS, Strasbourg) does not answer (no connection): Gaia stars from GAVO (Heidelberg)". Raises
     ``ServiceDown`` (of the last source) when none answers."""
+    guard(f"{what} from {label(chain[0][0]) if chain else 'a service'}")
     say = say or (lambda msg, level="warning": None)
     probe_all([n for n, _ in chain])
     last: ServiceDown | None = None
     for i, (name, fn) in enumerate(chain):
         try:
-            return call(name, fn, budget)
+            return call(name, fn, budget, what)
         except Exception as e:  # noqa: BLE001 - this source failed: the next one
             last = e if isinstance(e, ServiceDown) else ServiceDown(name, f"failed ({str(e)[:120]})")
             nxt = chain[i + 1][0] if i + 1 < len(chain) else None
@@ -275,6 +368,7 @@ def first_answer(chain: list[tuple[str, Callable[[], Any]]], what: str, say: Cal
 
 def requests_session(timeout: tuple[float, float] | None = None):
     """A requests session whose requests have connect / read timeouts by default (pyvo sets none)."""
+    guard("a connection to an online service")
     import requests
 
     class _Session(requests.Session):
@@ -288,3 +382,11 @@ def requests_session(timeout: tuple[float, float] | None = None):
     except Exception:  # noqa: BLE001 - only the user agent
         pass
     return s
+
+
+def get(url: str, timeout: float = 60.0) -> bytes:
+    """The bytes at ``url`` (one GET; for ``call``): the only plain download of the stages' modules, through the guard."""
+    guard(f"the file {url}")
+    import urllib.request
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return r.read()
