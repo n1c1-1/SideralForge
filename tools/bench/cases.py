@@ -169,6 +169,19 @@ def calibration(man: dict, variant: str = "") -> dict:
     return cal
 
 
+def engine_home(profile: bool = True, home: str | Path | None = None) -> None:
+    """The engine of a bench tool, set before astro_gpu reads its state: ASTRO_GPU_HOME = ``home`` (default AG_HOME)
+    and, with ``profile``, USERPROFILE = HOME; the offline Gaia extracts installed for the user stay visible, read in
+    place (sirilcat.private_home: with a state folder of its own, a bench run saw no catalogue; and a run never
+    downloads one)."""
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from astro_gpu.core.sirilcat import private_home
+    private_home(home or AG_HOME)                    # before USERPROFILE moves: the user's home is where they are
+    if profile:
+        os.environ["USERPROFILE"] = str(HOME)
+
+
 def offline_env() -> None:
     """Our engine reads the bench's local Gaia extracts (Siril's) before any network service."""
     os.environ.setdefault("ASTRO_GPU_SIRIL_CATALOGUES", str(BENCH / "_siril" / "catalogues"))

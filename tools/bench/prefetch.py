@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -30,8 +29,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cases as C  # noqa: E402
 
-os.environ["USERPROFILE"] = str(C.HOME)
-os.environ["ASTRO_GPU_HOME"] = str(C.AG_HOME)
+C.engine_home()
 sys.path.insert(0, str(C.REPO))
 C.utf8_console()
 

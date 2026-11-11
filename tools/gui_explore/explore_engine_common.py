@@ -18,10 +18,12 @@ from pathlib import Path
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 BENCH = Path(os.environ.get("TEMP", "C:/Temp")) / "engine_explore_bench"
 BENCH.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault("ASTRO_GPU_HOME", str(BENCH / "_home"))
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from astro_gpu.core.sirilcat import private_home  # noqa: E402 - numpy only: reads no state of the engine
+
+private_home(os.environ.get("ASTRO_GPU_HOME") or BENCH / "_home")   # the installed catalogue stays seen
 
 import numpy as np  # noqa: E402
 

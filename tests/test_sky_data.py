@@ -99,3 +99,42 @@ def test_a_field_already_solved_is_checked_where_it_is_and_cached_tiles_count(of
 def test_the_other_steps_need_nothing_of_the_sky(stage, offline_sky, monkeypatch):  # noqa: F811
     _use(monkeypatch, None)
     assert sky_data.missing(stage, None) == ""
+
+
+def test_a_state_folder_of_its_own_still_sees_the_installed_catalogue(offline_sky, monkeypatch):  # noqa: F811
+    """11 November: a run whose state folder was not the user's saw no star catalogue although it was installed, and
+    downloaded. The extracts installed under the default state folder are found whatever ASTRO_GPU_HOME says, and a
+    process that gives the engine a state folder of its own (tests, bench, tools: ``sirilcat.private_home``) names the
+    installed ones for itself and its run workers, read in place."""
+    import os
+    sky = skyfield.field(offline_sky / "sky", spectra=False)
+    installed = Path.home() / ".astro_gpu" / "cache" / "gaia_extracts"
+    installed.mkdir(parents=True)
+    (installed / "siril_cat_healpix8_astro.dat").write_bytes((sky["extracts"] / "siril_cat_healpix8_astro.dat")
+                                                             .read_bytes())
+    _use(monkeypatch, None)
+    monkeypatch.setenv("ASTRO_GPU_HOME", str(offline_sky / "a_run_s_own_state"))
+    sirilcat.reset()
+    assert sirilcat.locate()["astro"].path.parent == installed            # the default state folder's, read
+    assert sky_data.missing("astrometry") == ""
+    env = dict(os.environ)
+    sirilcat.private_home(offline_sky / "a_tool_s_state", env)
+    assert env["ASTRO_GPU_HOME"] == str(offline_sky / "a_tool_s_state")
+    assert str(installed) in env["ASTRO_GPU_GAIA_EXTRACTS"].split(os.pathsep)
+    # a worker of that tool, its user profile moved too (the bench): the catalogue still found, by the name it got
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: offline_sky / "elsewhere"))
+    for k in ("ASTRO_GPU_HOME", "ASTRO_GPU_GAIA_EXTRACTS"):
+        monkeypatch.setenv(k, env[k])
+    sirilcat.reset()
+    assert sirilcat.locate()["astro"] is not None and sirilcat.locate()["astro"].path.parent == installed
+
+
+def test_every_tool_gives_the_engine_its_state_folder_through_the_one_helper():
+    """The tools and the tests that run the chain with a state folder of their own go through sirilcat.private_home,
+    so that the installed catalogue stays seen (a setting of ASTRO_GPU_HOME by hand lost it)."""
+    import re
+    root = Path(__file__).resolve().parents[1]
+    by_hand = re.compile(r"""environ(\[["']ASTRO_GPU_HOME["']\]\s*=|\.setdefault\(\s*["']ASTRO_GPU_HOME)""")
+    bad = [f"{f.relative_to(root)}:{i}" for f in sorted((root / "tools").rglob("*.py")) + [root / "tests" / "conftest.py"]
+           for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1) if by_hand.search(line)]
+    assert bad == []

@@ -21,7 +21,6 @@ The bench homes:
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import sys
 from datetime import datetime
@@ -30,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cases as C  # noqa: E402
 
-os.environ["ASTRO_GPU_HOME"] = str(C.AG_HOME)          # before astro_gpu is imported (nothing is written by it here)
+C.engine_home(profile=False)                           # before astro_gpu is imported (nothing is written by it here)
 sys.path.insert(0, str(C.REPO))
 C.utf8_console()
 

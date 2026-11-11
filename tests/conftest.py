@@ -80,7 +80,11 @@ if not WORKER:      # folders a killed session left (a worker killed by the time
             pass
 
 PRIVATE_HOME = Path(tempfile.mkdtemp(prefix=f"astro_gpu_test_home_{WORKER or ''}_"))
-os.environ["ASTRO_GPU_HOME"] = str(PRIVATE_HOME)          # BEFORE astro_gpu is imported; workers inherit it
+# BEFORE astro_gpu reads its state; workers inherit it. The offline Gaia extracts the user installed stay visible, read in
+# place (ASTRO_GPU_GAIA_EXTRACTS): a test run of the chain reads the catalogue as the user's runs do, never downloads
+from astro_gpu.core.sirilcat import private_home  # noqa: E402 - numpy only: reads no state of the engine
+
+private_home(PRIVATE_HOME)
 PRIVATE_TMP: Path | None = None
 if WORKER:
     # no temporary path shared between the workers: the folders the client tests build from %TEMP% (p10_settings, the

@@ -10,7 +10,6 @@ bright star. Writes <case>/sheet_<level>.jpg.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -19,8 +18,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cases as C  # noqa: E402
 
-os.environ["USERPROFILE"] = str(C.HOME)
-os.environ["ASTRO_GPU_HOME"] = str(C.AG_HOME)
+C.engine_home()
 sys.path.insert(0, str(C.REPO))
 
 from astropy.io import fits  # noqa: E402

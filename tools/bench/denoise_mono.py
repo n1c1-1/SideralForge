@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from datetime import datetime
@@ -100,7 +99,8 @@ def make(name: str, folder: str, filters: tuple, counts: tuple):
 
 
 def stack(only: list[str] | None) -> int:
-    os.environ["ASTRO_GPU_HOME"] = str(HOME / "_state")
+    from astro_gpu.core.sirilcat import private_home
+    private_home(HOME / "_state")                                   # the installed catalogue stays seen
     from astro_gpu import api
     from astro_gpu.core import runner2
     report_f = HOME / "stack.json"

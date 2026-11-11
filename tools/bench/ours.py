@@ -29,8 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cases as C  # noqa: E402
 
-os.environ["USERPROFILE"] = str(C.HOME)          # before astro_gpu is imported: Path.home() -> the bench home
-os.environ["ASTRO_GPU_HOME"] = str(C.AG_HOME)
+C.engine_home()                                  # before astro_gpu is imported: Path.home() -> the bench home
 os.environ["PYTHONUNBUFFERED"] = "1"
 C.offline_env()
 sys.path.insert(0, str(C.REPO))

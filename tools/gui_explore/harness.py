@@ -43,10 +43,12 @@ if Path("C:/Windows/Fonts").is_dir():
     os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")
 TMP = Path(tempfile.mkdtemp(prefix="gui_explore_", dir=os.environ.get("TEMP")))
 os.environ["ASTRO_GPU_SETTINGS"] = str(TMP / "settings.json")
-os.environ["ASTRO_GPU_HOME"] = str(TMP / "home")
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+from astro_gpu.core.sirilcat import private_home  # noqa: E402 - numpy only: reads no state of the engine
+
+private_home(TMP / "home")                       # the installed catalogue stays seen, read in place
 
 import numpy as np  # noqa: E402
 from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QTimer  # noqa: E402

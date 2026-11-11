@@ -336,7 +336,9 @@ def bench_case(case: str):
     each colour minus its sky, over the mean of the colours' noise (measured on the half-stacks before denoising, carried
     through the colour matrix)."""
     import os
-    os.environ.setdefault("ASTRO_GPU_HOME", str(BENCH / "_state_probe"))
+
+    from astro_gpu.core.sirilcat import private_home
+    private_home(os.environ.get("ASTRO_GPU_HOME") or BENCH / "_state_probe")   # the installed catalogue stays seen
     from stars_compare import OUT, SOURCE, read_fits
 
     from astro_gpu import api

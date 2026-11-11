@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -147,15 +146,14 @@ def main(argv: list[str] | None = None) -> int:
     # the engine's per-user state, before astro_gpu is imported (the detached worker inherits it)
     state = out.parent / "_state"
     state.mkdir(parents=True, exist_ok=True)
-    os.environ["ASTRO_GPU_HOME"] = str(state)
     profiles = Path.home() / ".astro_gpu" / "camera_profiles"
     if profiles.is_dir():
         shutil.copytree(profiles, state / "camera_profiles", dirs_exist_ok=True)
-    # the offline Gaia extracts the user installed (Settings › Catalogs & astrometry), read in place: no download
-    extracts = Path.home() / ".astro_gpu" / "cache" / "gaia_extracts"
-    if extracts.is_dir():
-        os.environ.setdefault("ASTRO_GPU_GAIA_EXTRACTS", str(extracts))
+    # the offline Gaia extracts the user installed (Settings › Catalogs & astrometry), read in place: a run never
+    # downloads (core/online.py)
     sys.path.insert(0, str(ROOT))
+    from astro_gpu.core.sirilcat import private_home
+    private_home(state)
     from astro_gpu import api
 
     t0 = time.time()

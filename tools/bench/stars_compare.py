@@ -59,7 +59,9 @@ def log(msg: str) -> None:
 
 def _api():
     import os
-    os.environ.setdefault("ASTRO_GPU_HOME", str(BENCH / "_state_probe"))
+
+    from astro_gpu.core.sirilcat import private_home
+    private_home(os.environ.get("ASTRO_GPU_HOME") or BENCH / "_state_probe")   # the installed catalogue stays seen
     from astro_gpu import api
     return api
 

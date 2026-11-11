@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import sys
 import time
 from datetime import datetime
@@ -71,7 +70,8 @@ def set_dirs(only: list[str] | None = None) -> list[Path]:
 
 # ---------------------------------------------------------------------------------------------- stack
 def stack(only: list[str] | None, device: str) -> int:
-    os.environ["ASTRO_GPU_HOME"] = str(PROJECTS / "_state")
+    from astro_gpu.core.sirilcat import private_home
+    private_home(PROJECTS / "_state")                               # the installed catalogue stays seen
     import make_test_project as mtp
 
     from astro_gpu import api
@@ -186,7 +186,8 @@ def log_events(log_files: list[Path]) -> dict[str, list[str]]:
 
 
 def report() -> int:
-    os.environ["ASTRO_GPU_HOME"] = str(PROJECTS / "_state")
+    from astro_gpu.core.sirilcat import private_home
+    private_home(PROJECTS / "_state")
     from astro_gpu import api
     st = json.loads((PROJECTS / "stack.json").read_text()) if (PROJECTS / "stack.json").exists() else {}
     events = log_events([Path("F:/astro_essais/denoise_night_1.log"), Path("F:/astro_essais/denoise_night.log")])

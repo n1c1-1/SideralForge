@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cases as C  # noqa: E402
 
-os.environ.setdefault("ASTRO_GPU_HOME", str(C.AG_HOME))      # before astro_gpu is imported: nothing of the user's
+C.engine_home(False, os.environ.get("ASTRO_GPU_HOME"))      # before astro_gpu is imported: nothing of the user's
 sys.path.insert(0, str(C.REPO))
 
 #: Siril's file, what it is (English, the client translates it), how to show it, the blocks it compares with first.

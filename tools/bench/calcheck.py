@@ -10,7 +10,6 @@ bench/calcheck.json (the summary). Nothing is excluded or changed.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 from datetime import datetime
@@ -19,8 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import cases as C  # noqa: E402
 
-os.environ["USERPROFILE"] = str(C.HOME)
-os.environ["ASTRO_GPU_HOME"] = str(C.AG_HOME)
+C.engine_home()
 C.offline_env()
 sys.path.insert(0, str(C.REPO))
 C.utf8_console()

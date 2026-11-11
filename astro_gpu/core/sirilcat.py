@@ -26,6 +26,9 @@ a run with a state folder of its own, a test, a bench, saw no catalogue although
 and, as an extra place only, never required, a copy that another program already put on this computer: the files
 named by the ``catalogue_gaia_astro`` / ``catalogue_gaia_photo`` settings in its ``config*.ini`` and its data folder
 (Windows ``%LOCALAPPDATA%/siril``, Linux ``~/.local/share/siril``, macOS ``~/Library/Application Support/siril``).
+
+A process that gives the engine a state folder of its own (the tests, the bench, the tools) calls ``private_home``:
+the extracts installed for the user stay visible there, and in the run workers it starts.
 """
 from __future__ import annotations
 
@@ -191,6 +194,29 @@ def _candidates() -> list[Path]:
     env = [Path(p) for name in ("ASTRO_GPU_GAIA_EXTRACTS", "ASTRO_GPU_SIRIL_CATALOGUES")
            for p in os.environ.get(name, "").split(os.pathsep) if p.strip()]
     return env + [own_dir()] + [d / "gaia_extracts" for d in legacy_dirs()] + _from_config() + _data_dirs()
+
+
+def installed_folders() -> list[Path]:
+    """The folders that hold extracts the engine finds now (``locate``)."""
+    f = locate()
+    paths = ([f["astro"].path] if f["astro"] is not None else []) + [cf.path for cf in f["xp"].values()]
+    return list(dict.fromkeys(p.parent.parent if p.parent.name.endswith("_xpsamp") else p.parent for p in paths))
+
+
+def private_home(home: str | os.PathLike, environ: dict | None = None) -> None:
+    """Give the engine the state folder ``home`` (ASTRO_GPU_HOME: its cache, timings, projects list) while it keeps
+    reading the extracts installed for the user, in place (never copied): their folders, found under the state folder
+    in use before, are named in ASTRO_GPU_GAIA_EXTRACTS. Call it before the engine is imported (core/project reads
+    ASTRO_GPU_HOME once); the run workers inherit both. ``environ``: the environment to set (os.environ)."""
+    env = os.environ if environ is None else environ
+    reset()
+    seen = [str(p) for p in installed_folders()]
+    have = [p for p in env.get("ASTRO_GPU_GAIA_EXTRACTS", "").split(os.pathsep) if p.strip()]
+    keep = list(dict.fromkeys(have + seen))
+    if keep:
+        env["ASTRO_GPU_GAIA_EXTRACTS"] = os.pathsep.join(keep)
+    env["ASTRO_GPU_HOME"] = str(home)
+    reset()
 
 
 def _scan(p: Path, found: dict) -> None:

@@ -76,9 +76,10 @@ def setup_environment(tmp: Path):
     real = Path.home() / ".astro_gpu" / "camera_profiles"
     if real.is_dir() and not (home / "camera_profiles").exists():
         shutil.copytree(real, home / "camera_profiles")             # read there, written here
-    os.environ["ASTRO_GPU_HOME"] = str(home)
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
+    from astro_gpu.core.sirilcat import private_home
+    private_home(home)                                              # the installed catalogue stays seen
 
 
 def raw_lights() -> Path:

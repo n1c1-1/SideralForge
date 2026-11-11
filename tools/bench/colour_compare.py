@@ -121,7 +121,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--cases", default=",".join(CASES))
     a = ap.parse_args(argv)
-    os.environ.setdefault("ASTRO_GPU_HOME", str(BENCH / "_state_probe"))
+    from astro_gpu.core.sirilcat import private_home
+    private_home(os.environ.get("ASTRO_GPU_HOME") or BENCH / "_state_probe")   # the installed catalogue stays seen
     from astro_gpu import api
     res = json.loads(OUT.read_text()) if OUT.exists() else {}
     for case in a.cases.split(","):
