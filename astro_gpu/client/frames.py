@@ -208,7 +208,10 @@ class FramesView(QWidget):
         self.browser = browser
         self.pages.addWidget(browser)
         self.service.framesReady.connect(self._data_ready)
-        self.show_page(1)
+        # the Files page, not read yet: Inspect reads it when it shows a Session block (#115: every light's header was
+        # read as the project opened, Inspect hidden, beside the worker's first reads)
+        self.pages.setCurrentIndex(1)
+        self.tabs[1].setChecked(True)
 
     def add_session(self):
         """A new session, without frames: its files are added on the Files page, shown then."""

@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 from astro_gpu.client import app as appmod  # noqa: E402
 from astro_gpu.client import graph as graphmod  # noqa: E402
 from astro_gpu.client import prefs  # noqa: E402
+from astro_gpu.client.services import inspect as inspectmod  # noqa: E402
 from astro_gpu.client.services.worker import Gpu, Machine  # noqa: E402
 from astro_gpu.core import project2  # noqa: E402
 from astro_gpu.core.project import Target  # noqa: E402
@@ -102,3 +103,19 @@ def test_the_palette_is_built_again_only_when_what_it_shows_changed(env):
     assert made == [] and page.cards == cards                    # the same cards, nothing built
     page.set_layout("docked", "folded")                           # what it shows changed: built again
     assert len(made) == len(page.cards) and page.cards["denoise"] is not cards["denoise"]
+
+
+def test_the_frames_are_read_when_inspect_shows_them_not_as_the_project_opens(env):
+    asked = []
+    real = inspectmod.InspectService.request_group
+
+    def request_group(self, *a, **k):
+        asked.append(a)
+        return real(self, *a, **k)
+    env["mp"].setattr(inspectmod.InspectService, "request_group", request_group)
+    w = _open(env, _project(env["tmp"]))
+    assert asked == [] and w.frames.pages.currentIndex() == 1     # the Files page, waiting to be shown
+    w.select(step="sources")
+    w.set_mode(1)
+    _settle(w)
+    assert asked and w.browser.pages.currentIndex() == 1          # shown: read, its session's page
