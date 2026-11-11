@@ -106,13 +106,15 @@ class Solution:
 @dataclass
 class Status:
     """Whether Asterion can solve here: ``ok``; ``program``, ``version``, ``catalogs`` and ``indexes`` found; ``why``
-    a plain English sentence when not (for the pre-checks and the block's greyed state)."""
+    a plain English sentence when not; ``missing``: not ok because the program or its index is not there (not
+    installed), rather than there and unusable (too old, not the program, which the stage says as a warning)."""
     ok: bool
     program: Path | None = None
     version: str = ""
     catalogs: Path | None = None
     indexes: list[str] = field(default_factory=list)
     why: str = ""
+    missing: bool = False
 
 
 # ------------------------------------------------------------------ where the program and its index are
@@ -155,7 +157,8 @@ def find_program(exe: str | os.PathLike | None = None) -> Path | None:
     return None
 
 
-def _indexes(folder: Path) -> list[str]:
+def indexes(folder: Path) -> list[str]:
+    """The names of the index files of a folder (``tycho2`` for ``tycho2.astx``)."""
     try:
         return sorted(p.stem for p in folder.glob("*.astx") if p.is_file() and p.stat().st_size > 0)
     except OSError:
@@ -168,7 +171,7 @@ def find_catalogs(catalogs: str | os.PathLike | None = None, program: Path | Non
     inst = install_dir()
     for c in [catalogs, os.environ.get(ENV_CATALOGS), program.parent / "catalogs" if program else None, own_catalogs(),
               inst / "catalogs" if inst else None, Path.home() / ".asterion" / "catalogs"]:
-        if c and str(c).strip() and _indexes(Path(str(c).strip())):
+        if c and str(c).strip() and indexes(Path(str(c).strip())):
             return Path(str(c).strip())
     return None
 
@@ -212,7 +215,7 @@ def status(exe: str | os.PathLike | None = None, catalogs: str | os.PathLike | N
     """Whether Asterion can solve on this computer, and why not (cheap: file lookups, and the version asked once)."""
     prog = find_program(exe)
     if prog is None:
-        return Status(False, why="the Asterion plate solver is not installed")
+        return Status(False, why="the Asterion plate solver is not installed", missing=True)
     v = program_version(prog)
     if not v:
         return Status(False, prog, why=f"{prog} does not run as the Asterion plate solver")
@@ -221,9 +224,9 @@ def status(exe: str | os.PathLike | None = None, catalogs: str | os.PathLike | N
                                           f"needed")
     cat = find_catalogs(catalogs, prog)
     if cat is None:
-        return Status(False, prog, v, why="the star index of the Asterion plate solver is not installed (Settings › "
-                                          "Catalogs)")
-    return Status(True, prog, v, cat, _indexes(cat))
+        return Status(False, prog, v, why="the star index of the Asterion plate solver is not installed",
+                      missing=True)
+    return Status(True, prog, v, cat, indexes(cat))
 
 
 def installed(exe: str | os.PathLike | None = None, catalogs: str | os.PathLike | None = None) -> bool:

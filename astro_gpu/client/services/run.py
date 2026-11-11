@@ -338,6 +338,13 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
         (r"^solved: centre RA ([\d.]+) Dec ([+-]?[\d.]+), ([\d.]+)\"/px, field ([\d.]+) x ([\d.]+) deg, "
          r"residual ([\d.]+) px on (\d+) stars$",
          "solved: centre RA {0} Dec {1}, {2}\"/px, field {3} x {4} deg, residual {5} px on {6} stars", ()),
+        # Astrometry's first solution (core/asterion.py): found, none, or the program cannot run (its reason in English)
+        (r"^first solution by Asterion in ([\d.]+) s: ([\d.]+)\"/px, (\d+) stars matched$",
+         "first solution by Asterion in {0} s: {1}\"/px, {2} stars matched", ()),
+        (r"^Asterion found no solution in ([\d.]+) s: FLOAT's own search finds the field$",
+         "Asterion found no solution in {0} s: FLOAT's own search finds the field", ()),
+        (r"^Asterion cannot run \((.+)\): FLOAT's own search finds the field$",
+         "Asterion cannot run ({0}): FLOAT's own search finds the field", ()),
         (r"^(\d+) Gaia stars G < ([\d.]+) in the field$", "{0} Gaia stars G < {1} in the field", ()),
         (r"^background noise divided by ([\d.]+)$", "background noise divided by {0}", ()),
         (r"^resuming the training at step (\d+)/(\d+)$", "resuming the training at step {0}/{1}", ()),

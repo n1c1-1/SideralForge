@@ -180,7 +180,7 @@ def test_a_program_that_fails_is_a_clear_error(tmp_path, fake):
 
 def test_nothing_installed_says_so_and_solve_raises(tmp_path):
     st = A.status()
-    assert not st.ok and "not installed" in st.why and st.program is None
+    assert not st.ok and "not installed" in st.why and st.program is None and st.missing
     assert not A.installed()
     with pytest.raises(A.AsterionError, match="not installed"):
         A.solve(np.ones((60, 80), np.float32), tmp_path)
@@ -192,9 +192,9 @@ def test_a_program_without_its_index_or_too_old_says_why(tmp_path, monkeypatch):
     prog.write_bytes(b"")
     monkeypatch.setattr(A, "program_version", lambda exe: "0.4.2")
     st = A.status()
-    assert not st.ok and st.program == prog and "star index" in st.why and "Settings" in st.why
+    assert not st.ok and st.program == prog and "star index" in st.why and st.missing
     monkeypatch.setattr(A, "program_version", lambda exe: "0.3.9")
-    assert "too old" in A.status().why
+    assert "too old" in A.status().why and not A.status().missing
     monkeypatch.setattr(A, "program_version", lambda exe: "")
     assert "does not run" in A.status().why
 

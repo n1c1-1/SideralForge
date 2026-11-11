@@ -245,5 +245,10 @@
  "{0}: its stars match none of the reference's: not the same field": "{0} : ses étoiles ne correspondent à aucune de la référence : ce n'est pas le même champ",
  "the instrument's star needs the scale of the image: place the Astrometry block": "l'étoile de l'instrument a besoin de l'échelle de l'image : placez le bloc Astrométrie",
  "{stage}: {error}": "{stage} : {error}",
- "a program error (the detail is in the Log)": "une erreur du programme (le détail est dans le Journal)"
+ "a program error (the detail is in the Log)": "une erreur du programme (le détail est dans le Journal)",
+ "first solution by Asterion": "première solution par Asterion",
+ "first solution by Asterion in {0} s: {1}\"/px, {2} stars matched": "première solution par Asterion en {0} s : {1}\"/px, {2} étoiles appariées",
+ "Asterion is not installed: FLOAT's own search finds the field": "Asterion n'est pas installé : la recherche propre à FLOAT trouve le champ",
+ "Asterion found no solution in {0} s: FLOAT's own search finds the field": "Asterion n'a pas trouvé de solution en {0} s : la recherche propre à FLOAT trouve le champ",
+ "Asterion cannot run ({0}): FLOAT's own search finds the field": "Asterion ne peut pas tourner ({0}) : la recherche propre à FLOAT trouve le champ"
 }

@@ -65,7 +65,8 @@ class Astrometry(Stage):
                    "typical residual is a few hundredths of a pixel.")
     deps = ("inventory", "stack")
     Params = AstrometryParams
-    version = "1"
+    version = "2"          # 2: the fine fit starts from Asterion's solution when it is installed: the corners can differ
+                           # (NGC 7000 2 px, its Tycho-2 stars there 1.0 -> 0.5 px off; 10 frames 30 px, 6.2 -> 0.3)
     network = True
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
@@ -132,6 +133,12 @@ class Astrometry(Stage):
         unproved = StageError(f"the {len(det)} stars of this sparse field do not identify it on the sky beyond doubt, so "
                               "no solution is given rather than a wrong one: take Astrometry out of this workflow")
         odds = 0.0
+        # Asterion's first solution when it is installed: the scale search, the triangle match and the blind solver
+        # below are then skipped and the fine fit starts from it (``first``); else, or without a solution, FLOAT's own
+        first = _first_solution(ctx, p, g, ra0, dec0)
+        if first is not None:
+            ra0, dec0 = first.ra, first.dec
+            p = p if p.scale else p.model_copy(update={"scale": first.scale})
         if ra0 is None or dec0 is None:
             if not p.blind:
                 raise StageError("the approximate field centre is unknown: enter the target name or its RA/Dec")
@@ -182,8 +189,10 @@ class Astrometry(Stage):
             r = _match(gs2, gm2, ra2, dec2, s2, W, H, brightdet, 0.0, W * s2 / 3600, H * s2 / 3600, aa, tol,
                        (flip2, not flip2))
             return None if r is None else (*r, s2, glim2, radius2)
-        # pass 1: every scale with the given centre only (fast); pass 2: also shifted centres
-        passes = [0.0, p.search_offsets] if p.search_offsets > 0 else [0.0]
+        if first is not None:               # (mirror, no transform: its WCS, its stars, centre, scale, depth)
+            best = (first.flipped, None, first.matched, [ra0, dec0], p.scale, *depth(p.scale))
+        # pass 1: every scale with the given centre only (fast); pass 2: also shifted centres; none after Asterion
+        passes = ([0.0, p.search_offsets] if p.search_offsets > 0 else [0.0]) if first is None else []
         # (scale, catalogue) -> what its centred match saw: pass 2 does not match the given centre again where pass 1
         # did on the same stars (issue #139: one of its 9 centres, a vain match of seconds per scale and mirror), it
         # takes up what that match saw
@@ -295,17 +304,21 @@ class Astrometry(Stage):
                              "coordinates, and the focal length and pixel size")
         flip, T, nm, crval, sc, glim, radius = best
         w0 = _tan(crval[0], crval[1], sc, W, H)
-        ctx.log(f"triangle match: {nm} stars, scale {sc * T.scale:.3f}\"/px, mirror {flip}")
-        if sparse:
+        if T is not None:
+            ctx.log(f"triangle match: {nm} stars, scale {sc * T.scale:.3f}\"/px, mirror {flip}")
+        if sparse and T is not None:
             ctx.log(f"sparse field: the solution holds {odds / np.log(10):.0f} powers of ten over chance, 9 needed "
                     f"({nm} of {len(det)} stars)")
         # with a few dozen stars, a distortion polynomial would follow their noise
         sip = None if sparse else (p.sip_order or None)
-        q = det[:4000].copy()
-        if flip:
-            q[:, 1] = H - 1 - q[:, 1]
-        pred = T(q)
-        sky = w0.pixel_to_world(pred[:, 0], pred[:, 1])
+        if T is None:                       # Asterion's solution: the stars' sky through its WCS
+            sky = first.wcs.pixel_to_world(det[:4000, 0], det[:4000, 1])
+        else:
+            q = det[:4000].copy()
+            if flip:
+                q[:, 1] = H - 1 - q[:, 1]
+            pred = T(q)
+            sky = w0.pixel_to_world(pred[:, 0], pred[:, 1])
         w1 = fit_wcs_from_points((det[:4000, 0], det[:4000, 1]), sky, projection="TAN", sip_degree=sip)
         gs, gm = gaia_bright(ra0, dec0, radius, glim, ctx.log)
         res = None
@@ -444,6 +457,43 @@ def _blind(ctx, xy, W, H, at: float = 0.05):
             f"{r['matches']} catalogue stars matched (chance level {r['chance']})")
     ctx.metric("blind_solved", True)
     return r["ra"], r["dec"], r["scale"]
+
+
+def _first_solution(ctx, p, g, ra0, dec0):
+    """Asterion's solution of the stack (core/asterion.py) or None, said in one line: the plane the stage already holds
+    (no second read of the stack), the target's position as a limit of the search (none: the whole sky) and the scale
+    when it is known; 10 s at most, stopped with the stage. Not installed, no solution: FLOAT's own search, said as
+    information; a program that cannot run: the same, said as a warning. The position unknown and Blind solving off:
+    none (the stage asks for the position, as before)."""
+    import time
+
+    from ..core import asterion
+    ctx.metric("first_solver", "float")
+    if (ra0 is None or dec0 is None) and not p.blind:      # the whole sky only when the block allows it
+        return None
+    st = asterion.status()
+    if not st.ok:
+        if st.missing:
+            ctx.log("Asterion is not installed: FLOAT's own search finds the field")
+        else:
+            ctx.log(f"Asterion cannot run ({st.why}): FLOAT's own search finds the field", "warning")
+        return None
+    ctx.progress(0.0, "first solution by Asterion")
+    t0 = time.monotonic()
+    try:
+        sol = asterion.solve(g, ctx.scratch, ra=ra0, dec=dec0, radius=None if ra0 is None else 10.0, scale=p.scale,
+                             timeout=10.0, check=ctx.check_stop)
+    except asterion.AsterionError as e:
+        ctx.log(f"Asterion cannot run ({e}): FLOAT's own search finds the field", "warning")
+        return None
+    s = time.monotonic() - t0
+    ctx.metric("first_solution_s", round(s, 2))
+    if sol is None:
+        ctx.log(f"Asterion found no solution in {s:.1f} s: FLOAT's own search finds the field")
+        return None
+    ctx.metric("first_solver", "asterion")
+    ctx.log(f"first solution by Asterion in {s:.1f} s: {sol.scale:.3f}\"/px, {sol.matched} stars matched")
+    return sol
 
 
 def _tan(ra, dec, scale, W, H):
