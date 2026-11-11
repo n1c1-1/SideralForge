@@ -179,6 +179,7 @@ def test_the_time_left_of_a_run_is_the_sum_of_its_rows(world):
     """#116: the status bar said "28 min left" over rows adding up to 17: it counted the running job's ETA, the running
     row its whole estimate (the done Inventory in it too). Both are the jobs' ``left`` now: the rows add up to it."""
     import re
+    import time
     w = world()
     plan = w.m.plan_all()
     est = {"inventory": 60.0, "calibrate": 240.0, "register": 120.0, "stack": 180.0, "gradient": 120.0,
@@ -188,13 +189,14 @@ def test_the_time_left_of_a_run_is_the_sum_of_its_rows(world):
     k = {j.stage: j.key for j in plan.jobs}
     t = RunTrack.of_plan(plan, "r1")
     t.plan = plan
-    t.apply([{"t": 100.0, "type": "run_start", "run": "r1", "device": "cpu", "pid": 1},
-              {"t": 101.0, "type": "stage_start", "run": "r1", "stage": "inventory", "key": k["inventory"]},
-              {"t": 102.0, "type": "stage_end", "run": "r1", "stage": "inventory", "key": k["inventory"], "status": "done",
-               "duration": 1.0},
-              {"t": 103.0, "type": "stage_start", "run": "r1", "stage": "calibrate", "key": k["calibrate"]},
+    now = time.time()                                    # the last event just came: the clock has not counted down yet
+    t.apply([{"t": now - 500.0, "type": "run_start", "run": "r1", "device": "cpu", "pid": 1},
+              {"t": now - 499.0, "type": "stage_start", "run": "r1", "stage": "inventory", "key": k["inventory"]},
+              {"t": now - 498.0, "type": "stage_end", "run": "r1", "stage": "inventory", "key": k["inventory"],
+               "status": "done", "duration": 1.0},
+              {"t": now - 497.0, "type": "stage_start", "run": "r1", "stage": "calibrate", "key": k["calibrate"]},
               # half its bar, and an ETA far above its estimate (a straight line through a bar filled by phases)
-              {"t": 600.0, "type": "progress", "run": "r1", "stage": "calibrate", "key": k["calibrate"], "frac": 0.5,
+              {"t": now, "type": "progress", "run": "r1", "stage": "calibrate", "key": k["calibrate"], "frac": 0.5,
                "eta": 1080.0}])
     d = RunDialog(w.m, plan, "Run", track=t)
     d.refresh()
@@ -204,7 +206,7 @@ def test_the_time_left_of_a_run_is_the_sum_of_its_rows(world):
     assert rows == {"Calibration": "≈ 10 min", "Registration": "≈ 2 min", "Stacking": "≈ 3 min", "Gradient 1": "≈ 2 min",
                     "Gradient 2": "≈ 3 min"}, rows
     total = sum(int(re.search(r"(\d+) min", x).group(1)) for x in rows.values())
-    assert t.remaining() == pytest.approx(60.0 * total)
+    assert t.remaining(now) == pytest.approx(60.0 * total)
     w.ctl.track, w.ctl.phase = t, "running"
     assert w.ctl.status_text().endswith(f"≈ {total} min left") and d.summary.text().endswith(f"≈ {total} min left")
     w.ctl.track, w.ctl.phase = None, "idle"
@@ -261,6 +263,39 @@ def test_a_block_has_one_progress_in_its_row_the_window_and_the_graph_and_the_st
         d.close()
 
 
+def test_the_time_of_a_run_moves_every_second_while_a_stage_says_nothing(world, monkeypatch):
+    """#150: during a search step of 2 min 27 s without an event the window kept "Running · 2 min · ≈ 4 min left", the
+    status bar its percentage, then everything jumped: they were redrawn on the events alone. The client's clock now
+    says the time every second; the running job's time left counts down from what its last event said."""
+    import time
+
+    from PySide6.QtTest import QTest
+    w = world()
+    clock = [time.time()]
+    plan, t, k = _calibrating(w, clock[0])
+    w.ctl.track, w.ctl.phase = t, "running"
+    d = RunDialog(w.m, plan, "Run", controller=w.ctl, track=t)
+    said = []
+    w.ctl.statusChanged.connect(said.append)
+    monkeypatch.setattr(time, "time", lambda: clock[0])
+    try:
+        w.ctl._emit_state(True)
+        d.refresh()
+        row = next(r for r in d.rows if r.row.title == "Calibration")
+        before = (d.summary.text(), row.dur.text(), w.ctl.status_text())
+        assert before[1] == "≈ 10 min" and before[2].endswith("≈ 20 min left")
+        clock[0] += 60.0                                 # a minute later, and no event came
+        said.clear()
+        QTest.qWait(1300)
+        assert said and said[-1].endswith("≈ 19 min left"), said
+        assert row.dur.text() == "≈ 9 min" and d.summary.text() != before[0], d.summary.text()
+        assert t.remaining(clock[0]) == pytest.approx(t.remaining(clock[0] - 60.0) - 60.0)
+    finally:
+        w.ctl.track, w.ctl.phase = None, "idle"
+        w.ctl._emit_state(False)
+        d.close()
+
+
 def test_a_stopped_row_says_it_was_stopped_and_how_long_it_ran_never_its_estimate(world):
     """#138: after Stop, the stopped row said "≈ 6 min", its first estimate, after 8 min of work. It says it was
     stopped and the time it ran, as a done row says its duration; its bar how far it got. A worker that ended without
@@ -279,9 +314,10 @@ def test_a_stopped_row_says_it_was_stopped_and_how_long_it_ran_never_its_estimat
         d.refresh()
         rows = {r.row.title: r for r in d.rows}
         cal = rows["Calibration"]
-        # Inventory 60 s and Calibration 480 s; 600 s it still had to go: 540 / 1140
+        # Inventory 60 s and Calibration 480 s; it still had to go the 599 s its last event said less the 181 s since
+        # (#150: the clock counts it down): 540 / 958
         assert cal.dur.text() == "stopped · 9 min" and cal.mark.state == "interrupted", (said, cal.dur.text())
-        assert cal.bar.value() == pytest.approx(474, abs=2)
+        assert cal.bar.value() == pytest.approx(563, abs=2), said
         assert all(r.dur.text() == "—" for title, r in rows.items() if title != "Calibration")
         d.close()
 

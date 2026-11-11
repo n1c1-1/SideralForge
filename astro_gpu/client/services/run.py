@@ -42,6 +42,7 @@ WAITING, RUNNING, DONE, FAILED, INTERRUPTED, SKIPPED, NOT_STARTED = (
     "waiting", "running", "done", "failed", "interrupted", "skipped", "not_started")
 SETTLED = (DONE, FAILED, SKIPPED, NOT_STARTED, INTERRUPTED)
 POLL_MS = 500
+CLOCK_MS = 1000                                  # the run's time is said again this often, events or not (#150)
 #: the model reads the states of the graph again at most this often while a run goes (it replans and rebuilds the graph:
 #: tens of ms each time, more on a busy machine); a stage that ends is shown within this time
 REFRESH_MS = 1500
@@ -401,8 +402,9 @@ class JobState:
     frac: float = 0.0
     msg: str = ""
     eta: float | None = None
+    said: float | None = None                    # when its bar and ETA were last said (its start, its last progress)
     started: float | None = None
-    ended: float | None = None                   # when its stage_end came (a failure says no duration)
+    ended: float | None = None                  # when its stage_end came (a failure says no duration)
     duration: float | None = None
     error: str = ""
     reused: bool = False                         # found done and usable: nothing was computed
@@ -508,14 +510,14 @@ class RunTrack:
                 self.by_key = {x.key: x for x in self.jobs}
             self.skipped = {int(k): v for k, v in (e.get("skipped") or {}).items()} or self.skipped
         elif kind == "stage_start" and j is not None:
-            j.state, j.started, j.frac, j.msg, j.eta, j.error = RUNNING, t, 0.0, "", None, ""
+            j.state, j.started, j.frac, j.msg, j.eta, j.error, j.said = RUNNING, t, 0.0, "", None, "", t
             self._say(out, t, "stage_start", stage=j.stage)
             out.stage_changed = out.progressed = True
         elif kind == "progress" and j is not None:
             if j.state in (WAITING, NOT_STARTED):
                 j.state, j.started = RUNNING, j.started or t
             j.frac = min(max(float(e.get("frac") or 0.0), 0.0), 1.0)
-            j.msg, j.eta = e.get("msg") or "", e.get("eta")
+            j.msg, j.eta, j.said = e.get("msg") or "", e.get("eta"), t
             norm, decile = re.sub(r"\d+(?:\.\d+)?", "#", j.msg), int(j.frac * 10)
             if norm != j.last_norm or decile != j.last_decile:
                 j.last_norm, j.last_decile = norm, decile
@@ -555,13 +557,14 @@ class RunTrack:
                 self.by_key[k].state = NOT_STARTED
         for k in e.get("interrupted") or []:
             if k in self.by_key and self.by_key[k].state in (WAITING, RUNNING):
-                self.by_key[k].state = INTERRUPTED
+                j = self.by_key[k]
+                j.state, j.ended = INTERRUPTED, (j.ended if j.ended is not None else t) if j.started is not None else None
         for k in e.get("failed") or []:
             if k in self.by_key and not self.by_key[k].settled:
                 self.by_key[k].state = FAILED
         for j in self.jobs:                      # nothing stays "running" or "waiting" in a run that is over
             if j.state == RUNNING:
-                j.state = INTERRUPTED
+                j.state, j.ended = INTERRUPTED, j.ended if j.ended is not None else t
             elif j.state == WAITING:
                 j.state = NOT_STARTED
         self.counts = self.count()
@@ -653,22 +656,26 @@ class RunTrack:
         return max(end - j.started, 0.0)
 
     @staticmethod
-    def to_go(j: JobState) -> float:
+    def to_go(j: JobState, now: float | None = None) -> float:
         """Seconds one job has, or had when it ended, still to go: its estimate before it starts, nothing once done. The
         running job's ETA is a straight line through its bar (core/stage.py), which the stages fill by phases and search
         steps, not by time (#50; Astrometry's line assumes every scale of its list is tried, it stops at the first that
         solves): early it is no time at all, so the estimate's remaining share leads and the ETA takes over as the bar
-        fills. A job stopped or failed keeps what it had to go when it ended."""
+        fills. A job stopped or failed keeps what it had to go when it ended. The client's clock counts it down from
+        what the last event said, the next event corrects it (#150: a search step of 2 min 27 s without an event froze
+        "≈ 4 min left", then everything jumped)."""
         if j.state == DONE:
             return 0.0
         prior = max(j.est_s * (1.0 - j.frac), 0.0)
-        return prior if j.eta is None else (1.0 - j.frac) * prior + j.frac * max(float(j.eta), 0.0)
+        rest = prior if j.eta is None else (1.0 - j.frac) * prior + j.frac * max(float(j.eta), 0.0)
+        at = (now or time.time()) if j.state == RUNNING else j.ended
+        return max(rest - (at - j.said), 0.0) if at is not None and j.said is not None else rest
 
     @staticmethod
-    def left(j: JobState) -> float:
+    def left(j: JobState, now: float | None = None) -> float:
         """Seconds to go in one job in this run: ``to_go`` while it waits or runs, nothing once it is over (reused or
         not)."""
-        return RunTrack.to_go(j) if j.state in (WAITING, RUNNING) else 0.0
+        return RunTrack.to_go(j, now) if j.state in (WAITING, RUNNING) else 0.0
 
     def progress(self, jobs, now: float | None = None) -> float:
         """How far a block is, 0..1: the time its jobs took (``spent``) over that and the time they still have to go
@@ -678,7 +685,7 @@ class RunTrack:
         phases and search steps is no measure of time). A job stopped or failed counts what it had still to go, a job
         not run its estimate: the bar of a block stopped shows how far it got."""
         jobs = list(jobs)
-        gone, rest = sum(self.spent(j, now) for j in jobs), sum(self.to_go(j) for j in jobs)
+        gone, rest = sum(self.spent(j, now) for j in jobs), sum(self.to_go(j, now) for j in jobs)
         if gone + rest > 0:
             return gone / (gone + rest)
         return 1.0 if jobs and all(j.state == DONE for j in jobs) else 0.0
@@ -686,15 +693,15 @@ class RunTrack:
     def fraction(self, now: float | None = None) -> float:
         """The share of the whole run done, 0..1, in time as ``progress``: what its jobs took over that and the time
         left (``remaining``). A job over has nothing left to go in this run, whatever it reached: the run ends at 1."""
-        gone, rest = sum(self.spent(j, now) for j in self.jobs), self.remaining()
+        gone, rest = sum(self.spent(j, now) for j in self.jobs), self.remaining(now)
         if gone + rest > 0:
             return gone / (gone + rest)
         return 1.0 if self.jobs and all(j.settled for j in self.jobs) else 0.0
 
-    def remaining(self) -> float:
+    def remaining(self, now: float | None = None) -> float:
         """Seconds to go: the sum of the jobs' ``left``, as the run window's rows show them (#116: the status bar counted
         the running job's ETA, its row its whole estimate: "28 min left" over rows adding up to 17)."""
-        return sum(self.left(j) for j in self.jobs)
+        return sum(self.left(j, now) for j in self.jobs)
 
     def current(self) -> JobState | None:
         return next((j for j in self.jobs if j.state == RUNNING), None)
@@ -951,6 +958,11 @@ class RunController(QObject):
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.timeout.connect(self._refresh_model)
+        # the elapsed time and the time left move every second by the client's own clock, whatever the stage does: the
+        # events only correct the bars (#150: they were redrawn on events alone, a search step without one froze them)
+        self._clock = QTimer(self)
+        self._clock.setInterval(CLOCK_MS)
+        self._clock.timeout.connect(self._tick)
         self.plan_error = ""                 # why the plan of the window could not be made ('' when it was)
         self._stop_asked = False             # Stop pressed while the run was starting
         self.scope: set | None = None        # the workflows of Run to here (what may refuse it); None: Run all
@@ -1315,7 +1327,19 @@ class RunController(QObject):
         self.finished.emit(t.status, text)
         self.show_dialog()
 
+    def _tick(self):
+        """One second of the clock: the window, the status bar and the graph's bars say the time again."""
+        if not self.running or self.track is None:
+            self._clock.stop()
+            return
+        self.updated.emit()
+        self.statusChanged.emit(self.status_text())
+
     def _emit_state(self, running: bool):
+        if running and not self._clock.isActive():
+            self._clock.start()
+        elif not running:
+            self._clock.stop()
         self.model.run_active = running                  # the views grey their Run to here meanwhile (issue #33)
         self.runningChanged.emit(running)
         self.statusChanged.emit(self.status_text())
