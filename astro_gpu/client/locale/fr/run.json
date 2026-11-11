@@ -15,6 +15,7 @@
  "Starting…": "Démarrage…",
  "Stopped": "Arrêté",
  "stopped · {t}": "arrêté · {t}",
+ "failed · {t}": "échec · {t}",
  "Run stopped": "Exécution arrêtée",
  "Running · {t}": "En cours · {t}",
  "Done in {t}": "Terminé en {t}",

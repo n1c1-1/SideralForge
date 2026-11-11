@@ -557,6 +557,8 @@ class RunDialog(QDialog):
                 # the time it ran, as a done row says its duration; its bar how far it got (#138: it said its first
                 # estimate, as if it were still to run)
                 text = _("stopped · {t}").format(t=hm(sum(t.spent(j) for j in jobs)))
+            elif state == FAILED:                         # the same for a failed row: the time it ran before it failed
+                text = _("failed · {t}").format(t=hm(sum(t.spent(j) for j in jobs)))
             else:
                 text = duration_text(est, measured) if est else ""
             w.show_state(state, frac, text, self._tip(jobs, state))

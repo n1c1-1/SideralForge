@@ -286,6 +286,23 @@ def test_a_stopped_row_says_it_was_stopped_and_how_long_it_ran_never_its_estimat
         d.close()
 
 
+def test_a_failed_row_says_it_failed_and_how_long_it_ran_never_its_estimate(world):
+    """As a stopped row (#138): a block that failed after 8 min said "≈ 4 min", its estimate."""
+    import time
+    w = world()
+    now = time.time()
+    plan, t, k = _calibrating(w, now)
+    t.apply([{"t": now + 180.0, "type": "stage_end", "run": "r1", "stage": "calibrate", "key": k["calibrate"],
+              "status": "failed", "duration": 480.0, "error": "ValueError: no frame"},
+             {"t": now + 180.0, "type": "run_end", "run": "r1", "status": "failed",
+              "not_started": [j.key for j in plan.jobs if j.stage not in ("inventory", "calibrate")]}])
+    d = RunDialog(w.m, plan, "Run", track=t)
+    d.refresh()
+    cal = {r.row.title: r for r in d.rows}["Calibration"]
+    assert cal.mark.state == "failed" and cal.dur.text() == "failed · 9 min", cal.dur.text()
+    d.close()
+
+
 def test_a_long_recap_scrolls_in_its_box_never_cut(world):
     """GUI exploration 4: a large project's run not started listed its 72 blocks in one paragraph that ran out of the
     box, cut mid-name. The recap's lines are in a scroll area of bounded height; every name is in its text."""
