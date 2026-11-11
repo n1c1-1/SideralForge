@@ -97,7 +97,8 @@ def window(page):
 
 
 def test_the_image_template_takes_a_png_as_stretched(qapp, tmp_path, monkeypatch):
-    """1.7: its chain goes to Post as it is, a PNG marked stretched; its preview shows the same."""
+    """1.7: its chain goes to Post as it is, a PNG marked stretched; its preview shows the same. Issue #114: Create asks
+    for no file, the Image block waits for it and takes the PNG chosen in its panel as stretched."""
     t = next(x for x in GALLERY if x["key"] == "image")
     assert template_source(t) == "image" and template_blocks(t) == [] and chain_of(t) == [("post", "")]
     png = tmp_path / "done.png"
@@ -107,14 +108,14 @@ def test_the_image_template_takes_a_png_as_stretched(qapp, tmp_path, monkeypatch
     try:
         d = window(page)
         d.pick(next(c.t for c in d.cards if c.t["key"] == "image"))
-        assert not d.ok.isEnabled() and d.why.text() == "No image file chosen yet."      # 7.5: says why
-        d.file.setText(str(tmp_path / "gone.png"))
-        assert not d.ok.isEnabled() and "File not found" in d.ok.toolTip()
-        d.file.setText(str(png))
-        assert d.ok.isEnabled() and not d.why.isVisibleTo(d)
+        assert d.ok.isEnabled()
         d.ok.click()
         settle(w, page)
         q = m.paths[-1]
+        assert m.p.workflow(q.pid).source == {"path": "", "stretched": False}
+        m.set_image_file(q, str(png))                     # as its panel's Choose image… sets it
+        settle(w, page)
+        q = m.view(q.pid)
         assert m.p.workflow(q.pid).source == {"path": png.as_posix(), "stretched": True}
         assert m.graph(q) == [] and m.source_kind(q) == "stretched"
     finally:

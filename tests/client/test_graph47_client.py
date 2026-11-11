@@ -615,30 +615,45 @@ def test_the_filters_card_makes_the_palette_chosen_on_it(qapp, tmp_path, monkeyp
         w.stop()
 
 
-def test_several_images_make_one_layer_each_and_cancelling_makes_nothing(qapp, tmp_path, monkeypatch):
-    """The files are asked first; a PNG is taken as stretched, a FITS as linear; each is a workflow going to Post."""
-    import cv2
-    import numpy as np
-    from astropy.io import fits
+def test_no_template_asks_for_a_file_it_only_places_its_blocks(qapp, tmp_path, monkeypatch):
+    """Issue #114: the Image template asked for its file as soon as it was chosen. No template asks for anything, on the
+    blank page as in the window: its blocks are placed, its Image blocks wait for their file (the first one selected,
+    its panel says what to choose), "Several images" places one per picture's image, each a block of its own."""
+    from PySide6.QtWidgets import QFileDialog
 
-    from astro_gpu.client import gallery
-    png, fit = tmp_path / "a.png", tmp_path / "b.fits"
-    cv2.imwrite(str(png), np.full((8, 8, 3), 128, np.uint8))
-    fits.PrimaryHDU(np.full((3, 8, 8), 0.1, np.float32)).writeto(fit)
+    from astro_gpu.client.gallery import GALLERY
+    asked = []
+    for f in ("getOpenFileName", "getOpenFileNames", "getExistingDirectory"):
+        monkeypatch.setattr(QFileDialog, f, lambda *a, f=f, **k: asked.append(f) or ("", ""))
     w, m, page = _blank_page(tmp_path, monkeypatch)
+
+    def placed(key, how):
+        assert not asked, f"{key} ({how}) asked for {asked}"
+        assert m.paths and not page.templates.isVisibleTo(page), f"{key} ({how}) placed nothing"
+        if key in ("image", "images"):
+            images = [q for q in m.paths if q.source is not None]
+            assert len(images) == (3 if key == "images" else 1)
+            assert all(m.p.workflow(q.pid).source["path"] == "" for q in images)
+            assert len([n for n in Graph(m).nodes if n.key == "image"]) == len(images)    # each a block of its own
+            assert m.sel_step == "image" and m.path.pid == images[0].pid      # the block that waits for its file
+        while not page.is_blank():                        # Ctrl+Z: the blank page again
+            assert m.undo()
+            settle(w, page)
+
     try:
-        page.show_templates()
-        card = next(c for c in page.templates.cards if c.t["key"] == "images")
-        monkeypatch.setattr(gallery.QFileDialog, "getOpenFileNames", lambda *a, **k: ([], ""))
-        card.mousePressEvent(None)
-        settle(w, page)
-        assert page.is_blank() and page.templates.isVisibleTo(page)
-        monkeypatch.setattr(gallery.QFileDialog, "getOpenFileNames", lambda *a, **k: ([str(png), str(fit)], ""))
-        card.mousePressEvent(None)
-        settle(w, page)
-        assert [q.name for q in m.paths] == ["a", "b"] and [m.graph(q) for q in m.paths] == [[], []]
-        assert [m.p.workflow(q.pid).source["stretched"] for q in m.paths] == [True, False]
-        assert {q.pid for q in m.paths} <= set(Graph(m).to_post)
+        for t in GALLERY:
+            page.show_templates()                         # the blank page's link
+            next(c for c in page.templates.cards if c.t["key"] == t["key"]).mousePressEvent(None)
+            settle(w, page)
+            placed(t["key"], "blank page")
+            d = TemplateGallery(m, None, page)            # the window, as a project with workflows opens it
+            d.accepted.connect(lambda d=d: page.make_workflow(d))
+            d.pick(next(c.t for c in d.cards if c.t["key"] == t["key"]))
+            assert d.ok.isEnabled(), t["key"]             # nothing to fill before Create
+            d.ok.click()
+            settle(w, page)
+            placed(t["key"], "window")
+            d.deleteLater()
     finally:
         page.close()
         m.close(save=False)

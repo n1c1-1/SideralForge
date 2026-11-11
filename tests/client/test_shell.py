@@ -548,11 +548,7 @@ def test_the_template_gallery_on_the_model(qapp, tmp_path):
     d.pick(minimal)
     assert "calibration" in [n["block"] for n in template_blocks(minimal)]
     assert d.text.text().startswith("Calibration, registration")
-    d.pick(next(c.t for c in d.cards if c.t["key"] == "image"))                  # from an image: a file first
-    assert not d.ok.isEnabled() and d.file_row.isVisibleTo(d)
-    img = tmp_path / "m42.fits"
-    img.write_bytes((b"SIMPLE  =                    T".ljust(80) + b"END".ljust(80)).ljust(2880))   # a FITS file (7.3)
-    d.file.setText(str(img))
+    d.pick(next(c.t for c in d.cards if c.t["key"] == "image"))   # from an image: no file asked (issue #114)
     assert d.ok.isEnabled()
     d.pick(next(c.t for c in d.cards if c.t["key"] == "filters_full"))  # the project's sessions have none: made empty
     assert d.ok.isEnabled() and "Empty Session blocks are made for SII, Ha, OIII" in d.duration.text()

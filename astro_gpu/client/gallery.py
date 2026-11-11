@@ -3,7 +3,8 @@
 Six templates (colour or filters, minimal or full; one image; several images), and the user's own. On a blank page they
 are shown in place of the graph, behind a link (``TemplatePage``): a click makes the workflow. A project that has
 workflows adds one in a window (``TemplateGallery``): a click shows the graph larger with what the template is for, its
-duration, its name, and for an image the file; Create makes the workflow.
+duration and its name; Create makes the workflow. A template asks for nothing (issue #114): it only places its blocks,
+an Image block's file and a Session's frames are chosen in the graph afterwards.
 
 A template (``GALLERY``) is a starting point only: the workflow it makes is an ordinary one, every block of which can
 be changed, added, removed or cut later. Its graph is drawn here from the template itself (``draw_graph``): the blocks
@@ -76,7 +77,7 @@ GALLERY: list[dict] = [
          text="Each filter's workflow with denoise and its stars taken off, then a Combine channels block makes the "
               "colour image with the palette chosen here; the stars come back by a Combine layers block."),
     dict(key="images", tab="frames", name="Several images", opts=CLASSIC, source="image", plain=True, blocks=[], images=3,
-         text="Several images to Post, one layer each: the files are asked first."),
+         text="Several images to Post, one layer each: each Image block takes its file in the graph."),
 ]
 
 #: the template chosen first in the frames' tab
@@ -433,7 +434,8 @@ def palette_box(current: str) -> QComboBox:
 
 
 def ask_files(parent, t: dict) -> list[str]:
-    """The files of an image template (several: as many as chosen); [] when cancelled."""
+    """The files Open images… asks for (several: as many as chosen); [] when cancelled. Never a template's: a template
+    asks for nothing (issue #114)."""
     if t.get("images"):
         files, _x = QFileDialog.getOpenFileNames(parent, _("Images"), prefs.last_folder(), image_filter())
     else:
@@ -445,9 +447,9 @@ def ask_files(parent, t: dict) -> list[str]:
 
 
 class TemplatePage(QWidget):
-    """The templates in place of the blank graph: a click on a card makes its workflow (an image's file asked first);
-    ``back``: the blank page again."""
-    chosen = Signal(object, list)
+    """The templates in place of the blank graph: a click on a card makes its workflow, asking for nothing (issue #114:
+    its Image blocks wait for their file, chosen in their panel); ``back``: the blank page again."""
+    chosen = Signal(object)
     back = Signal()
 
     def __init__(self, parent=None):
@@ -491,19 +493,14 @@ class TemplatePage(QWidget):
                 box.currentTextChanged.connect(c.set_palette)
                 c.layout().addWidget(box)
             c.layout().addStretch(1)
-            c.clicked.connect(self._choose)
+            c.clicked.connect(self.chosen.emit)
             self.grid.addWidget(c, n // 3, n % 3)
             self.cards.append(c)
-
-    def _choose(self, t: dict):
-        files = ask_files(self, t) if template_source(t) in ("image", "stretched") else []
-        if files or template_source(t) == "frames":
-            self.chosen.emit(t, files)
 
 
 class TemplateGallery(QDialog):
     """New workflow: the template gallery. After ``exec()``: ``choice`` (the template, or {"copy": workflow} for a
-    copy), ``name`` (a QLineEdit), ``image`` (the file of an image template)."""
+    copy), ``name`` (a QLineEdit). No file is asked here (issue #114): an image template's Image blocks wait for theirs."""
 
     def __init__(self, session, start=None, parent=None, templates: list[dict] | None = None):
         super().__init__(parent)
@@ -515,7 +512,6 @@ class TemplateGallery(QDialog):
         size_within(self, 1180, 660)
         cap_dialog(self)
         self.choice: dict | None = None
-        self.images: list[str] = []
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(10)
@@ -567,18 +563,6 @@ class TemplateGallery(QDialog):
         self.duration = label("", "small", wrap=True)
         sv.addWidget(self.duration)
         sv.addStretch(1)
-        self.file_row = QWidget()
-        fr = QHBoxLayout(self.file_row)
-        fr.setContentsMargins(0, 0, 0, 0)
-        fr.addWidget(label(_("Image"), "dim"))
-        self.file = QLineEdit()
-        self.file.setPlaceholderText(_("a FITS or TIFF file, straight out of a stack"))
-        self.file.textChanged.connect(self._update)
-        fr.addWidget(self.file, 1)
-        b = QPushButton(_("Browse…"))
-        b.clicked.connect(self._browse)
-        fr.addWidget(b)
-        sv.addWidget(self.file_row)
         # the filters shot, by their palette: each gets its Session block and its workflow (GUI exploration 7.2)
         self.palette_row = QWidget()
         flr = QHBoxLayout(self.palette_row)
@@ -589,8 +573,6 @@ class TemplateGallery(QDialog):
         flr.addWidget(self.palette)
         flr.addStretch(1)
         sv.addWidget(self.palette_row)
-        self.why = label("", "warn", wrap=True)             # why Create is greyed (GUI exploration 7.5)
-        sv.addWidget(self.why)
         nr = QHBoxLayout()
         nr.addWidget(label(_("Name"), "dim"))
         self.name = QLineEdit()
@@ -661,9 +643,6 @@ class TemplateGallery(QDialog):
         self.preview.setPixmap(draw_graph(t, PREVIEW_W, 190, names=True))
         self.title.setText(_(t["name"]) if not t.get("copy") else t["name"])
         self.text.setText(_(t["text"]) if not t.get("copy") else t["text"])
-        self.file_row.setVisible(template_source(t) in ("image", "stretched") and not t.get("copy"))
-        self.file.setPlaceholderText(_("a TIFF, PNG or JPEG file, already stretched") if template_source(t) ==
-                                     "stretched" else _("a FITS, TIFF, PNG or JPEG file"))
         self.palette_row.setVisible(self._asks_filters(t))
         self.palette.blockSignals(True)
         self.palette.setCurrentText(t.get("palette", "SHO"))
@@ -685,11 +664,6 @@ class TemplateGallery(QDialog):
             base = _("{name} (copy)").format(name=t["copy"].name)
         self.name.setText(self.s.unique_name(base) if hasattr(self.s, "unique_name") else base)
         self._update()
-
-    def _browse(self):
-        files = ask_files(self, self.choice or {})
-        if files:
-            self.file.setText(FILE_SEP.join(files))
 
     def _palette(self, palette: str):
         """Another palette: its filters are the template's."""
@@ -720,33 +694,19 @@ class TemplateGallery(QDialog):
         return t.get("kind") == "fusion" or (t.get("kind") == "filters" and
                                              not (self.s.filters() if hasattr(self.s, "filters") else {}))
 
-    def _files(self) -> list[str]:
-        return [f.strip() for f in self.file.text().split(FILE_SEP) if f.strip()]
-
     def _update(self):
         t = self.choice or {}
-        ok = bool(t)
-        why = ""
         if t.get("kind"):
             used = self.needs(t)
             new = self.to_create(t)
             self.duration.setText((_("Uses: {what}").format(what=", ".join(used)) if used else "") +
                                   ("\n" + _("Empty Session blocks are made for {what}: add their frames there.").format(
                                       what=", ".join(new)) if new else ""))
-        if template_source(t) in ("image", "stretched") and not t.get("copy"):
-            from ..stages.image import image_problem
-            for f in self._files() or [""]:              # a greyed Create says why (GUI exploration 7.5)
-                why = why or _(image_problem(f)).format(name=Path(f).name)
-            ok = ok and not why
-        self.why.setText(why)
-        self.why.setVisible(bool(why))
-        self.ok.setEnabled(ok)
-        self.ok.setToolTip(why)
+        self.ok.setEnabled(bool(t))                        # nothing to fill first (issue #114): a template is placed
 
     def _create(self):
         if not self.ok.isEnabled():
             return
-        self.images = self._files()
         self.accept()
 
     # ------------------------------------------------------------ the user's templates (issue #47)
@@ -801,10 +761,6 @@ class TemplateGallery(QDialog):
     @property
     def opts(self) -> dict:
         return _view_opts(self.choice or {})
-
-
-#: between the files of "Several images", in the window's field
-FILE_SEP = " ; "
 
 
 def image_filter() -> str:

@@ -3399,10 +3399,10 @@ class GraphPage(QWidget):
             self.templates.hide()
             self.graph.show()
 
-    def template_chosen(self, t: dict, files: list):
+    def template_chosen(self, t: dict):
         from .gallery import _view_opts
         self.make_from_template(t, self.s.unique_name(t["palette"] if t.get("kind") == "fusion" else _(t["name"])),
-                                _view_opts(t), files)
+                                _view_opts(t))
 
     def new_workflow(self, start=None, tab=None):
         """New workflow: on a blank page its templates in place of the graph; else the template gallery (issue #43), or
@@ -3421,7 +3421,7 @@ class GraphPage(QWidget):
     def make_workflow(self, d):
         """The workflow the gallery's choice makes: a copy, from an image, or from the frames."""
         if d.choice is not None:
-            self.make_from_template(d.choice, d.name.text().strip() or _("New workflow"), d.opts, d.images)
+            self.make_from_template(d.choice, d.name.text().strip() or _("New workflow"), d.opts)
 
     def align_images(self) -> bool:
         """Every image in the Align images block (the palette, Post's button), which is selected; False when it cannot."""
@@ -3451,8 +3451,9 @@ class GraphPage(QWidget):
                 made.append(s.view(q.pid))
         return made[0] if made else None
 
-    def make_from_template(self, t: dict, name: str, opts: dict, files: list):
-        """The workflow a template makes: a copy, from images, or from the frames."""
+    def make_from_template(self, t: dict, name: str, opts: dict):
+        """The workflow a template makes: a copy, from images, or from the frames. It asks for nothing (issue #114): its
+        blocks are placed, its Image blocks without their file and its Sessions without frames, chosen in the graph."""
         s = self.s
         from .gallery import template_blocks, template_source
         empty = [q for q in s.paths if q.source is None and s.p.workflow(q.pid).blocks == []]
@@ -3468,14 +3469,16 @@ class GraphPage(QWidget):
             p = self.make_filters(t, name, opts)
             if p is None:
                 return
-        elif t.get("plain"):
-            p = self.place_images(files)
-            if p is None:
-                return
         elif template_source(t) in ("image", "stretched"):
+            # as many Image blocks as its picture shows ("Several images": three), each its own block and layer of Post
+            # (two Image blocks without a file are two blocks, decision 4); one Ctrl+Z takes them all away
+            n = int(t.get("images") or 1) if t.get("plain") else 1
             with s.batch():
-                p = s.add_image_workflow(name, files[0], opts, stretched=template_source(t) == "stretched")
-                s.set_graph(p, template_blocks(t))
+                made = [s.add_image_workflow(name if n == 1 else _("Image"), "", opts,
+                                             stretched=template_source(t) == "stretched") for _i in range(n)]
+                for q in made:
+                    s.set_graph(q, template_blocks(t))
+            p = s.view(made[0].pid)
         else:
             with s.batch():
                 # GUI exploration 7.2: it starts from a Session block, empty when the project has no frames yet
