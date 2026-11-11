@@ -13,7 +13,7 @@ from astro_gpu.core import frame_weights as fwm
 from astro_gpu.core import runner2
 from astro_gpu.stages import register
 from astro_gpu.stages.calibrate import _frame_stat
-from astro_gpu.stages.register import fit_frame, fit_half_turn
+from astro_gpu.stages.register import apply_poly, fit_any_turn, fit_frame, fit_half_turn
 from astro_gpu.stages.stack import quality_weights, saturated_frames, select_frames
 
 W, H = 1920, 1280
@@ -67,6 +67,123 @@ def test_a_frame_of_another_field_is_not_taken_for_a_half_turn():
     assert r is None and at is None
 
 
+# ------------------------------------------------------------------- a turn by any angle (issue #63, second case)
+
+def seen(ref, ang, shift=(60.0, -40.0), scale=1.0002, seed=1, size=(W, H)):
+    """The reference's stars seen by a frame of a camera turned by ``ang`` degrees: shifted, 0.02 % larger, a tenth of
+    the stars missed, a tenth of spurious detections added, fluxes and positions noisy, the brightest first as the
+    detection gives them. Returns the catalogue and, for its true stars, their reference positions."""
+    w, h = size
+    rng = np.random.default_rng(seed)
+    t = np.deg2rad(ang)
+    c = np.array([w / 2, h / 2])
+    R = np.array([[np.cos(t), -np.sin(t)], [np.sin(t), np.cos(t)]])
+    xy = (ref[:, :2] - c) @ R.T * scale + c + np.array(shift)
+    keep = (xy[:, 0] > 0) & (xy[:, 0] < w) & (xy[:, 1] > 0) & (xy[:, 1] < h) & (rng.random(len(xy)) > 0.1)
+    cat = np.c_[xy, ref[:, 2:]][keep]
+    cat[:, :2] += rng.normal(0, 0.15, (len(cat), 2))
+    cat[:, 2] *= rng.lognormal(0, 0.1, len(cat))
+    k = len(cat) // 10
+    fake = np.c_[rng.uniform([0, 0], [w, h], (k, 2)), rng.uniform(1000, 3000, k), np.full((k, ref.shape[1] - 3), 2.0)]
+    truth = np.r_[ref[keep, :2], np.full((k, 2), np.nan)]
+    order = np.argsort(-np.r_[cat[:, 2], fake[:, 2]], kind="stable")
+    return np.r_[cat, fake][order], truth[order]
+
+
+def off_by(coef, cat, truth, w=W, h=H):
+    """Median distance (px) between the true stars' reference positions and where the fit puts them."""
+    x, y = apply_poly(coef, cat[:, 0], cat[:, 1], w, h)
+    ok = np.isfinite(truth[:, 0])
+    return float(np.median(np.hypot(x[ok] - truth[ok, 0], y[ok] - truth[ok, 1])))
+
+
+@pytest.mark.parametrize("ang", [82.2, 60.0, 100.0, 137.0, 263.0, 300.0])
+def test_a_frame_turned_by_any_angle_is_aligned(ang):
+    """The camera turned between two nights: neither the shift, nor the turn within 45 degrees, nor (but at 137
+    degrees, within 45 of the half turn) the half turn finds it; the triangles do, and the series' next frame is fitted
+    at its angle without a search."""
+    ref = field()
+    tree = cKDTree(ref[:, :2])
+    cat, truth = seen(ref, ang)
+    r = fit_frame(cat, ref, tree, W, H)
+    assert r is None or r[1] < 0.3 * len(cat)
+    if abs(ang - 180.0) > 45.0:
+        assert fit_half_turn(cat, ref, tree, W, H)[0] is None
+    r, at = fit_any_turn(cat, ref, tree, W, H)
+    assert r is not None and r[1] > 0.75 * len(cat) and r[2] < 0.6 and off_by(r[0], cat, truth) < 0.3
+    assert abs((at + ang + 180.0) % 360.0 - 180.0) < 0.05 and at == pytest.approx(register.turn_of(r[0]))
+    nxt, truth2 = seen(ref, ang + 0.02, (70.0, -35.0), seed=2)
+    r2, again = fit_half_turn(nxt, ref, tree, W, H, at)
+    assert r2 is not None and again == at and off_by(r2[0], nxt, truth2) < 0.3
+
+
+def test_a_turn_within_45_degrees_is_left_to_its_own_search():
+    """A frame the shift or the turn within 45 degrees aligns (or leaves out) today is not taken from them."""
+    ref = field()
+    r, at = fit_any_turn(seen(ref, 12.0)[0], ref, cKDTree(ref[:, :2]), W, H)
+    assert r is None and at is None
+
+
+def test_a_frame_of_another_field_is_not_taken_for_a_turned_one():
+    ref = field()
+    tree = cKDTree(ref[:, :2])
+    for seed in (7, 8, 9):
+        assert fit_any_turn(field(seed=seed), ref, tree, W, H) == (None, None)
+
+
+# ---------------------------------------------------------------- the stage: two nights, the camera turned between
+
+def night_pair(ang, n_stars, seed=0):
+    """Four frames of a first night turned by ``ang`` degrees, five of a second night (the reference's), and a frame of
+    another field last: star catalogues as the stage's checkpoint holds them, and the true positions."""
+    from test_register_sparse import H as Hs
+    from test_register_sparse import W as Ws
+    rng = np.random.default_rng(seed)
+    sky = np.c_[rng.uniform([0, 0], [Ws, Hs], (n_stars, 2)), np.sort(rng.pareto(1.5, n_stars) + 1)[::-1] * 1000,
+                np.full(n_stars, 2.0), np.full((n_stars, len(register.APERTURES)), np.nan)]
+    shots = [seen(sky, ang + 0.01 * i, (8.0 * i, -5.0 * i), seed=10 + i, size=(Ws, Hs)) for i in range(4)]
+    shots += [seen(sky, 0.0, (6.0 * i, 4.0 * i), seed=20 + i, size=(Ws, Hs)) for i in range(5)]
+    other = np.c_[rng.uniform([0, 0], [Ws, Hs], (n_stars, 2)), np.sort(rng.pareto(1.5, n_stars) + 1)[::-1] * 1000,
+                  np.full(n_stars, 2.0), np.full((n_stars, len(register.APERTURES)), np.nan)]
+    shots.append((other, None))
+    return [c for c, _ in shots], [t for _, t in shots], (Ws, Hs)
+
+
+@pytest.mark.parametrize("ang,n_stars", [(82.2, 400), (263.0, 1800)])
+def test_two_nights_with_the_camera_turned_between_are_aligned(tmp_path, monkeypatch, ang, n_stars):
+    """Every frame of both nights aligned, the turned night's first frame searched once and the others fitted at its
+    angle, the frame of another field refused, and the turn said in one line. 1 800 stars: the dense field whose turned
+    frames the shift's vote matched on chance pairs (48 stars at 2.3 px, kept under the residual limit of 2.5 px)."""
+    from test_register_sparse import _run
+    cats, truth, (Ws, Hs) = night_pair(ang, n_stars)
+    searched = []
+    real = register.fit_any_turn
+    monkeypatch.setattr(register, "fit_any_turn", lambda *a, **k: searched.append(1) or real(*a, **k))
+    z, logs, metrics = _run(tmp_path, cats, monkeypatch)
+    ok = np.isfinite(z["rms"])
+    assert ok[:9].all() and not ok[9] and metrics["aligned"] == 9 and metrics["not_aligned"] == 1
+    assert int(z["ref"]) >= 4
+    for i in range(9):
+        assert z["nmatch"][i] > 0.75 * len(cats[i]) and off_by(z["coef"][i], cats[i], truth[i], Ws, Hs) < 0.3
+    assert len(searched) == 2                       # the first turned frame and the frame of another field
+    turn = 360.0 - ang if ang > 180.0 else ang
+    assert ("info", f"4 frame(s) aligned after a turn of the camera of {turn:.1f} degrees") in logs
+    assert ("warning", "1 frame(s) could not be aligned and will be ignored, e.g. f9.fits") in logs
+
+
+def test_a_session_that_aligns_today_never_reaches_the_new_search(tmp_path, monkeypatch):
+    """The usual drift and a field turning within 45 degrees: the same path as before, and no turn said."""
+    from test_register_sparse import _run
+    cats, _truth, _size = night_pair(0.0, 400)
+    cats[:4] = night_pair(14.0, 400)[0][:4]
+
+    def never(*_a, **_k):
+        raise AssertionError("searched")
+    monkeypatch.setattr(register, "fit_any_turn", never)
+    z, logs, metrics = _run(tmp_path, cats[:9], monkeypatch)
+    assert metrics["aligned"] == 9 and not any("turn of the camera" in m for _, m in logs)
+
+
 def test_a_white_frame_has_no_statistics_but_a_normal_one_has():
     white = np.full(4000, 65000.0)
     almost = white.copy()
@@ -107,3 +224,4 @@ def test_a_block_that_fails_before_it_starts_is_recorded_as_failed(tmp_path):
     runner2._Worker._mark_failed(me, job, "ValidationError: gain", "trace")
     m = json.loads((tmp_path / "stack-k1.tmp" / "manifest.json").read_text(encoding="utf-8"))
     assert m["status"] == "failed" and m["error"] == "ValidationError: gain" and m["stage"] == "stack"
+

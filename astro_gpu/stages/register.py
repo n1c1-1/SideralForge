@@ -49,8 +49,10 @@ class Register(Stage):
     Params = RegisterParams
     # reg.npz's "roundness" is an extra array (same results): an older result lacks it; 2: an affine map before the
     # cubic (a frame turned by 0.7 degree with a 0.2 % change of scale locked on a third of its stars, 6 px off at
-    # the edges); the transparency from a fixed aperture (it followed the seeing); the pixel noise of each frame
-    version = "2"
+    # the edges); the transparency from a fixed aperture (it followed the seeing); the pixel noise of each frame. 3:
+    # frames turned by any angle are aligned (issue #63: a camera turned by 82 degrees between two nights, 21 frames
+    # left out), and a dense field's frame turned past 45 degrees no longer keeps a fit on chance pairs
+    version = "3"
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         n = max(1, min(12, (os.cpu_count() or 4) - 2))
@@ -96,14 +98,15 @@ class Register(Stage):
 
         def align_on(ref):
             """Every frame on the reference ``ref``: (ref, its catalogue, its tree, coef, nmatch, rms, transp, failed,
-            recovered, from_few)."""
+            recovered, from_few, turned)."""
             refcat = cats[ref]
             tree = cKDTree(refcat[:, :2])
             coef = np.zeros((n, 2, 10))
             nmatch, rms, transp = np.zeros(n, int), np.full(n, np.inf), np.zeros(n)
             failed = []
             recovered, from_few = [], 0
-            turn = None                                  # the half turn of the last frame found so
+            turn = None                                  # the turn (half or any) of the last frame found so
+            turned = []                                  # the frames aligned after a turn of the camera
             for i in range(n):
                 r = None
                 if turn is not None:
@@ -112,8 +115,12 @@ class Register(Stage):
                     r = fit_frame(cats[i], refcat, tree, W, H)
                     if r is None or r[1] < 0.3 * min(len(cats[i]), len(refcat)):
                         h, at = fit_half_turn(cats[i], refcat, tree, W, H)
+                        if h is None:                    # any other turn (issue #63: 82 degrees between two nights)
+                            h, at = fit_any_turn(cats[i], refcat, tree, W, H)
                         if h is not None and (r is None or h[1] > r[1]):
                             r, turn = h, at
+                if r is not None and turn is not None:
+                    turned.append(i)
                 if r is None and cats[i] is not None and len(cats[i]) >= 30:
                     # no clear vote of the stars (a dense field: the brightest detections change from frame to frame):
                     # the shift from the images themselves (phase correlation), then the same fit (issue #37)
@@ -130,7 +137,7 @@ class Register(Stage):
                 else:
                     coef[i], nmatch[i], rms[i], transp[i] = r
                 ctx.progress(0.9 + 0.1 * (i + 1) / n, f"aligning frame {i + 1}/{n}")
-            return ref, refcat, tree, coef, nmatch, rms, transp, failed, recovered, from_few
+            return ref, refcat, tree, coef, nmatch, rms, transp, failed, recovered, from_few, turned
 
         # the reference is that of the session's majority: a frame of another field in the folder aligns almost none
         # of the others. Another one is tried only then, so that a session aligned on its first reference never pays
@@ -151,7 +158,7 @@ class Register(Stage):
                 kept = got
             if 2 * ok_try.sum() >= n or tries == REFERENCE_TRIES:
                 break
-        ref, refcat, tree, coef, nmatch, rms, transp, failed, recovered, from_few = kept
+        ref, refcat, tree, coef, nmatch, rms, transp, failed, recovered, from_few, turned = kept
         if ref != order[0]:
             ctx.log(f"reference frame: {os.path.basename(meta[order[0]]['path'])} aligned too few of the frames (another "
                     f"field?), {os.path.basename(meta[ref]['path'])} is used")
@@ -171,6 +178,12 @@ class Register(Stage):
         if kept_rec:
             ctx.log(f"{kept_rec} frame(s) aligned from the shift the images' phase correlation gives (no clear vote "
                     "of their stars)")
+        turns = sorted(abs(turn_of(coef[i])) for i in turned if np.isfinite(rms[i]))
+        if turns:                       # how far, either way: frames of a series share it, two series give a range
+            ctx.log(f"{len(turns)} frame(s) aligned after a turn of the camera of {np.median(turns):.1f} degrees"
+                    if turns[-1] - turns[0] < 1.0 else
+                    f"{len(turns)} frame(s) aligned after turns of the camera of {turns[0]:.1f} to {turns[-1]:.1f} "
+                    "degrees")
         if failed:
             ctx.log(f"{len(failed)} frame(s) could not be aligned and will be ignored, e.g. {failed[0]}", "warning")
         # the transparency from the stars' flux in a fixed aperture (holding their light in every frame), not from
@@ -357,9 +370,11 @@ def _rotate(xy, ang_deg, W, H):
 
 
 HALF_TURN = 180.0
+#: the turn (degrees, either way) ``initial_rotation`` searches within: the slow turn of an alt-azimuth mount's field
+ROTATION_DEG = 45.0
 
 
-def initial_rotation(a, b, W, H, max_deg=45.0, step=0.5):
+def initial_rotation(a, b, W, H, max_deg=ROTATION_DEG, step=0.5):
     """(angle, shift) such that b turned by the angle about the frame centre, minus the shift, falls on a: the field of
     an alt-azimuth mount turns during the night. Votes on pair differences for each trial angle (6 px bins, the angle
     is only known to the step), the angle of the highest vote kept, its shift refined on nearest neighbours."""
@@ -407,7 +422,8 @@ def fit_frame(cat, ref, tree, W, H):
 def fit_half_turn(cat, ref, tree, W, H, near=None):
     """(fit, its angle) of a frame turned by about half a turn from the reference (the two sides of a meridian flip, a
     camera put back the other way round: issue #63), (None, None) when it is not one. ``near``: the angle of the last
-    frame found so, tried first, without a search: the frames of a series share it."""
+    frame found turned (by half a turn here, or by any angle by ``fit_any_turn``), tried first, without a search: the
+    frames of a series share it."""
     if cat is None or len(cat) < 30:
         return None, None
 
@@ -424,6 +440,49 @@ def fit_half_turn(cat, ref, tree, W, H, near=None):
         return None, None
     r = _fit_from(cat, ref, tree, W, H, _rotate(turned[:, :2], ang, W, H) - s, 8.0)
     return (r, HALF_TURN + ang) if good(r) else (None, None)
+
+
+def fit_any_turn(cat, ref, tree, W, H):
+    """(fit, its angle) of a frame turned by any angle from the reference (a camera turned in its adapter between two
+    nights: 82 degrees on a two-night North America, issue #63), (None, None) when it is not one. Tried only where the
+    half turn is, once it has failed: when neither the shift nor the turn within ROTATION_DEG matches 30 % of the
+    stars, so that a frame they align never reaches it; the next frames of the series are fitted at the angle
+    returned through ``fit_half_turn``'s ``near``, without a search. A turn within ROTATION_DEG is left to the
+    searches made for it (None here), so that a frame they align or leave out today stays so.
+
+    The first guess comes from the triangles of ``fit_sparse`` (V. Valdes et al., PASP 107, 1119, 1995; E. Groth, AJ 91,
+    1244, 1986; the brightest stars' nearest neighbours of M. Beroiz et al., Astronomy and Computing 32, 100384, 2020)
+    rather than from ``initial_rotation`` extended to the whole circle: a triangle's shape is unchanged by a rotation,
+    a shift or a change of scale, so that the turn is found whatever its angle in one pass (0.05 to 0.3 s a frame),
+    where the vote on the shifts would be repeated at each step of 0.5 degree of the circle (720 votes, four times the
+    half turn's search, which takes 1 s). Every similarity the triangles propose is scored on the stars it brings
+    within STAR_TOL of a reference star, the best one starts ``_fit_from``, and the fit is held to the half turn's
+    acceptance (the same share of matched stars, the same residual), so that the chance pairs of a dense field and a
+    frame of another field stay out."""
+    if cat is None or len(cat) < 30:
+        return None, None
+    s, t, _ = triangle_similarities(cat[:TRIANGLE_STARS, :2], ref[:TRIANGLE_STARS, :2])
+    za = cat[:, 0] + 1j * cat[:, 1]
+    best, top = None, (0, 0j)
+    for s1, t1 in zip(s, t):
+        z = s1 * za + t1
+        k = len(_matched(np.c_[z.real, z.imag], tree)[0])
+        if k > top[0]:
+            best, top = z, (k, s1)
+    # a frame within ROTATION_DEG of the reference is ``initial_rotation``'s (or the phase correlation's): left to them,
+    # as before, so that a frame they align or leave out is neither aligned otherwise nor said turned
+    if best is None or top[0] < SPARSE_MIN_MATCHES or abs(np.degrees(np.angle(top[1]))) <= ROTATION_DEG:
+        return None, None
+    r = _fit_from(cat, ref, tree, W, H, np.c_[best.real, best.imag], 8.0)
+    if r is None or r[1] < 0.3 * min(len(cat), len(ref)) or r[2] >= 1.0:
+        return None, None
+    return r, turn_of(r[0])
+
+
+def turn_of(coef) -> float:
+    """The angle (degrees, -180 to 180) by which a registration polynomial turns the frame onto the reference, from
+    its terms in u (dX/du, dY/du: the frame's x axis on the reference): ``_rotate``'s angle."""
+    return float(np.degrees(np.arctan2(coef[1, 1], coef[0, 1])))
 
 
 def _fit_from(cat, ref, tree, W, H, pred, tol):

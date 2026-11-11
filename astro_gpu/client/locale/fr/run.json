@@ -115,6 +115,8 @@
  "{0}/{1} frames aligned, residual {2} px, FWHM {3} px, transparency p10/p90 {4}/{5}": "{0}/{1} images alignées, résidu {2} px, FWHM {3} px, transparence p10/p90 {4}/{5}",
  "useful area from the frames' header: {0}x{1} of {2}x{3} pixels, the overscan left out": "zone utile lue dans l'en-tête des images : {0}x{1} sur {2}x{3} pixels, l'overscan laissé de côté",
  "sparse field: {0} frame(s) aligned from a few stars (rotation, shift and scale only)": "champ peu étoilé : {0} image(s) alignée(s) sur quelques étoiles (rotation, décalage et échelle seulement)",
+ "{0} frame(s) aligned after a turn of the camera of {1} degrees": "{0} image(s) alignée(s) après une rotation de la caméra de {1} degrés",
+ "{0} frame(s) aligned after turns of the camera of {1} to {2} degrees": "{0} image(s) alignée(s) après des rotations de la caméra de {1} à {2} degrés",
  "drizzle {0}x{1} from {2} frames in {3} min, {4} % pixels rejected": "drizzle {0}x{1} à partir de {2} images en {3} min, {4} % de pixels rejetés",
  "pass {0} done in {1} min, of which {2} s reading the frames": "passe {0} terminée en {1} min, dont {2} s de lecture des images",
  "normalisation done in {0} min, of which {1} s reading the frames": "normalisation terminée en {0} min, dont {1} s de lecture des images",

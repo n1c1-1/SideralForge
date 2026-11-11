@@ -240,6 +240,11 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
          "useful area from the frames' header: {0}x{1} of {2}x{3} pixels, the overscan left out", ()),
         (r"^sparse field: (\d+) frame\(s\) aligned from a few stars \(rotation, shift and scale only\)$",
          "sparse field: {0} frame(s) aligned from a few stars (rotation, shift and scale only)", ()),
+        # issue #63: frames of a camera turned between two nights (half a turn, or any angle)
+        (r"^(\d+) frame\(s\) aligned after a turn of the camera of ([\d.]+) degrees$",
+         "{0} frame(s) aligned after a turn of the camera of {1} degrees", ()),
+        (r"^(\d+) frame\(s\) aligned after turns of the camera of ([\d.]+) to ([\d.]+) degrees$",
+         "{0} frame(s) aligned after turns of the camera of {1} to {2} degrees", ()),
         (r"^only (\d+) light frame\(s\): a stack needs at least 2; add light frames to the session$",
          "only {0} light frame(s): a stack needs at least 2; add light frames to the session", ()),
         (r"^only (\d+) of (\d+) light frames could be aligned: a stack needs at least 2; check the frames$",
