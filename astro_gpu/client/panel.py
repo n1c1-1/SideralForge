@@ -52,7 +52,7 @@ from .layout import Sections
 from .model import NotInEngine, method_of, method_value, methods_of
 from .settings import RangeBar, SettingRow, fmt, needed_stages, selection_rule_text, step_settings
 from .settings import loading as settings_loading
-from .widgets import ACCENT, BAD, NEW, OK, WARN, clear, hline, label
+from .widgets import ACCENT, BAD, NEW, OK, WARN, clear, hline, label, put_back, typed
 
 STATE_COLOR = {"done": "#5fbf7f", "pending": "#8b93a1", "stale": WARN, "running": ACCENT, "failed": BAD,
                "interrupted": WARN, "skipped": "#8b93a1"}
@@ -186,7 +186,8 @@ class ProjectForm(QScrollArea):
     fields and these stay in step) and the comments; at its top, in one line, what is missing for the block to be
     complete. A field applies at Enter or when it is left, as the panel's, through the model's setters (Undo, Save).
     Built once while it is shown: ``load`` puts the project's values back in the fields not being typed in, never
-    building them again under the user's fingers. It scrolls on a small window."""
+    building them again under the user's fingers, and a field writes only what the user changed in it (issue #131: the
+    Report edits the same values). It scrolls on a small window."""
 
     WIDTH = 640                                          # the form's column, at most
     NAME_W = 140                                         # the column of the fields' names
@@ -194,6 +195,7 @@ class ProjectForm(QScrollArea):
     def __init__(self, project, parent=None):
         super().__init__(parent)
         self.s = s = project
+        self._given: dict = {}                           # {field: the text ``load`` last gave it} (``put_back``)
         self.setObjectName("projectForm")
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.NoFrame)
@@ -222,7 +224,7 @@ class ProjectForm(QScrollArea):
         row.addWidget(self.dot)
         self.target = QLineEdit()
         self.target.setToolTip(_("The object photographed: Astrometry starts from it, the Report takes it as its title"))
-        self.target.editingFinished.connect(lambda: s.set_target_name(self.target.text()))
+        self.target.editingFinished.connect(lambda: typed(self.target, self._given) and s.set_target_name(self.target.text()))
         row.addWidget(self.target, 1)
         form.addRow(self._name(_("Target")), row)
         under = QVBoxLayout()                            # what the target's state says, under its field
@@ -244,7 +246,7 @@ class ProjectForm(QScrollArea):
             e.setPlaceholderText(_("optional"))
             e.setToolTip(_(tip))
             e.setFixedWidth(140)
-            e.editingFinished.connect(lambda k=key, x=e: capture_typed(s, k, x))
+            e.editingFinished.connect(lambda k=key, x=e: typed(x, self._given) and capture_typed(s, k, x))
             row.addWidget(e)
             row.addWidget(label(unit, "dim"))
             row.addStretch(1)
@@ -255,11 +257,11 @@ class ProjectForm(QScrollArea):
         self.shooting: dict[str, QLineEdit] = {}
         for key, word, tip in SHOOTING:
             self.shooting[key] = e = self._field(form, _(word), _(tip))
-            e.editingFinished.connect(lambda k=key, x=e: s.set_shooting_detail(k, x.text()))
+            e.editingFinished.connect(lambda k=key, x=e: typed(x, self._given) and s.set_shooting_detail(k, x.text()))
         self._form(_("Comments"))
         self.comment = CommentEdit("")
         self.comment.setToolTip(_("Notes on this project"))
-        self.comment.finished.connect(s.set_description)
+        self.comment.finished.connect(lambda text: typed(self.comment, self._given) and s.set_description(text))
         v.addWidget(self.comment)
         v.addStretch(1)
         self.setWidget(host)
@@ -291,21 +293,21 @@ class ProjectForm(QScrollArea):
         return e
 
     def _name_typed(self):
+        if not typed(self.name, self._given):
+            return
         if not self.s.set_project_name(self.name.text()):    # emptied: the name it had comes back
             self.name.setText(self.s.name)
 
     def load(self):
-        """The project's values in the fields (not in the one being typed in), the target's state and what is missing."""
+        """The project's values in the fields (not in the one being typed in: the one the cursor merely sits in takes
+        them, issue #131), the target's state and what is missing."""
         s = self.s
         t, st = s.p.target, s.target_state()
         values = [(self.name, s.name), (self.target, t.name or "")] + \
             [(self.capture[k], capture_text(t, k)) for k in self.capture] + \
-            [(self.shooting[k], s.p.acquisition.get(k, "")) for k in self.shooting]
+            [(self.shooting[k], s.p.acquisition.get(k, "")) for k in self.shooting] + [(self.comment, s.p.description or "")]
         for ed, text in values:
-            if not ed.hasFocus() and ed.text() != text:
-                ed.setText(text)
-        if not self.comment.hasFocus() and self.comment.toPlainText() != (s.p.description or ""):
-            self.comment.setPlainText(s.p.description or "")
+            put_back(ed, text, self._given)
         self.target.setPlaceholderText(st.name or "NGC 7000")
         self.dot.setStyleSheet(f"color: {TARGET_DOTS[st.dot]}; font-size: 13pt;")
         self.note.setText(st.note)

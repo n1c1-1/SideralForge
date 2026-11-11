@@ -560,6 +560,54 @@ def test_a_shooting_detail_of_the_form_reaches_the_report_and_back(env):
     assert w.s.p.acquisition == {"mount": "German mount"} and form(w).shooting["date"].text() == ""
 
 
+def test_a_field_the_cursor_sits_in_takes_the_value_changed_elsewhere_and_enter_writes_only_a_change(env):
+    """Issue #131: Location typed in the form, Enter, the cursor left there; the Report changes it: the form shows the
+    Report's value and Enter there does not write the old one back. A field being typed in keeps what is typed. The
+    same both ways: the Report's field the cursor sits in takes the value the form changed."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    w = project_with_a_chain(env)
+    w.graph.open_project()
+    settle(w)
+    w.activateWindow()                                    # offscreen the window is not active by itself: no focus
+    QApplication.setActiveWindow(w)
+    f = form(w)
+    e = f.shooting["location"]
+    e.setFocus()
+    QTest.keyClicks(e, "Backyard")
+    QTest.keyClick(e, Qt.Key_Return)
+    settle(w)
+    assert e.hasFocus() and w.s.p.acquisition == {"location": "Backyard"}
+    w.s.set_shooting_detail("location", "Mountain site")                  # as the Report does
+    f.load()                                                              # the block shown again
+    assert e.hasFocus() and e.text() == "Mountain site"
+    QTest.keyClick(e, Qt.Key_Return)
+    settle(w)
+    assert w.s.p.acquisition == {"location": "Mountain site"}
+    w.s.set_shooting_detail("location", "Peak")                           # the form not shown again meanwhile
+    QTest.keyClick(e, Qt.Key_Return)
+    assert w.s.p.acquisition == {"location": "Peak"}
+    f.load()
+    QTest.keyClicks(e, " 2")                                              # being typed in: what is typed stays
+    w.s.set_shooting_detail("filter", "Dual band")
+    f.load()
+    assert e.text() == "Peak 2"
+    QTest.keyClick(e, Qt.Key_Return)
+    settle(w)
+    assert w.s.p.acquisition["location"] == "Peak 2"
+    w.set_mode(3)                                                         # the other way: the Report's field
+    settle(w)
+    r = w.report.fields["location"]
+    r.setFocus()
+    assert r.hasFocus() and r.text() == "Peak 2"
+    w.s.set_shooting_detail("location", "Garden")                         # as the form does
+    settle(w)
+    w.report._fill_entered()
+    assert r.text() == "Garden"
+    QTest.keyClick(r, Qt.Key_Return)
+    assert w.s.p.acquisition["location"] == "Garden"
+
+
 def test_the_top_bar_shows_the_name_given_at_the_first_save(env):
     w = untitled(env)
     env["mp"].setattr(appmod, "ask_project_name", named(env, "Orion"))

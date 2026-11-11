@@ -43,6 +43,7 @@ from .. import texts
 from ..core.params import ADVANCED
 from ..core.project2 import ACQUISITION
 from .i18n import _, language, number
+from .widgets import put_back, typed
 
 #: the sections that are blocks of the chain, in its order: (block key, title)
 BLOCKS = (("calibration", "Calibration"), ("alignement", "Registration"), ("selection", "Selection"),
@@ -565,6 +566,7 @@ class ReportPage(QWidget):
         self.data: ReportData | None = None
         self._token = None
         self._buffer = None
+        self._given: dict = {}                           # {field: the text it was last given} (``put_back``, #131)
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -730,9 +732,10 @@ class ReportPage(QWidget):
 
     def set_field(self, key: str):
         """A field left: what it holds is kept in the project (an empty one is forgotten), by the model as the Project
-        block's form keeps it (issue #89): Undo takes it back, Save writes it."""
+        block's form keeps it (issue #89): Undo takes it back, Save writes it. Only a value the user changed: the one it
+        was given, the form having changed it since, is not written back (#131)."""
         text = self.fields[key].text().strip()
-        if text == self.entered().get(key, ""):
+        if not typed(self.fields[key], self._given) or text == self.entered().get(key, ""):
             return
         self.s.set_shooting_detail(key, text)
         self.build()
@@ -766,9 +769,8 @@ class ReportPage(QWidget):
 
     # ------------------------------------------------------------ the report
     def _fill_entered(self):
-        for key, e in self.fields.items():
-            if not e.hasFocus():                         # the one being typed in keeps what is typed
-                e.setText(self.entered().get(key, ""))
+        for key, e in self.fields.items():               # the one being typed in keeps what is typed (#131)
+            put_back(e, self.entered().get(key, ""), self._given)
 
     def _entered_changed(self):
         """The project changed (an Undo, the Project block's form): the fields and the report follow what is kept."""

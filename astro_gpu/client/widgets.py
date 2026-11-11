@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPlainTextEdit, QVBoxLayout, QWidget
 
 ACCENT, OK, WARN, SHARED, BAD = "#5ea1ff", "#5fbf7f", "#e6a23c", "#a395ff", "#e06c6c"
 NEW = "#c9b37e"                       # the ◇ mark: what the engine does not have yet (Spec mode)
@@ -205,6 +205,32 @@ def clear(layout):
             w.deleteLater()
         elif it.layout() is not None:
             clear(it.layout())
+
+
+def _text_of(ed) -> str:
+    return ed.toPlainText() if isinstance(ed, QPlainTextEdit) else ed.text()
+
+
+def put_back(ed, text: str, given: dict):
+    """A value kept in the project put back in its field (issue #131: the Project block's form and the Report edit the
+    same). The field being typed in keeps what is typed; one the cursor merely sits in, its text still what it was last
+    given (``given``: {field: that text}), takes the new value: else Enter there wrote the old one back."""
+    now = _text_of(ed)
+    if ed.hasFocus() and now not in (given.get(ed), text):
+        return
+    if now != text:
+        ed.setPlainText(text) if isinstance(ed, QPlainTextEdit) else ed.setText(text)
+    given[ed] = text
+
+
+def typed(ed, given: dict) -> bool:
+    """Whether the user changed the field since it was given its value (``put_back``): Enter, or a field left, writes
+    only then, never the value it was given over one changed elsewhere since (issue #131)."""
+    now = _text_of(ed)
+    if now == given.get(ed):
+        return False
+    given[ed] = now                                      # written: the same text at the next Enter is not again
+    return True
 
 
 def spec_mark(text: str) -> str:
