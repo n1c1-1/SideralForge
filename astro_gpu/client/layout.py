@@ -407,7 +407,10 @@ class SectionTitle(QLabel):
 
     def __init__(self, text, sections):
         super().__init__(text)
-        self.setObjectName("dim")
+        # a title stands out from the settings under it (#119: Starless and Stars alone were not told from the rest)
+        self.setObjectName("sectiontitle")
+        self.setStyleSheet("QLabel#sectiontitle { font-weight: 600; color: #e6edf7; padding: 6px 0 3px 0; "
+                           "border-top: 1px solid #353b47; }")
         self.sections, self.folded, self.rows, self._hover, self._shown = sections, False, [], False, []
         self.setToolTip(_("Click: fold or unfold · Alt-click: only this section"))
         self.setCursor(Qt.PointingHandCursor)
@@ -463,16 +466,15 @@ def section_role(title: str) -> str:
 
 class Sections:
     """The folding sections of a settings column (a box of titles and rows, built again at each change): a section is
-    what lies between its title and the next one. What is folded is kept per kind of block or layer (``key``). On a
-    small window (``solo``) a kind is first shown with its first section open, and a click opens only the one clicked."""
+    what lies between its title and the next one. What is folded is kept per kind of block or layer (``key``), and only
+    the user folds: on a small window too, several stay open and the column scrolls (#119; the small window used to
+    open one at a time, closing the others)."""
 
     def __init__(self, box, scroll):
         self.box, self.scroll = box, scroll
         self.titles: list[SectionTitle] = []
         self.key = ""
-        self.solo = False
         self.folded: dict[str, set[str]] = {}          # kind -> the titles of its folded sections
-        self.auto: set[str] = set()                    # the kinds folded by the small window's default, not by the user
 
     def reset(self):
         self.titles = []
@@ -496,9 +498,6 @@ class Sections:
                     cur.rows.append(w)
             elif cur is not None and it.layout() is not None:
                 cur.rows += _widgets_of(it.layout())
-        if self.solo and len(self.titles) > 1 and key not in self.folded:
-            self.folded[key] = {t.text() for t in self.titles[1:]}
-            self.auto.add(key)
         self.apply()
 
     def apply(self):
@@ -507,9 +506,8 @@ class Sections:
             t.set_folded(t.text() in off)
 
     def clicked(self, t: SectionTitle, alt: bool):
-        self.auto.discard(self.key)
         off = self.folded.setdefault(self.key, set())
-        if alt or self.solo:
+        if alt:
             off.clear()
             off.update(x.text() for x in self.titles if x is not t)
         elif t.text() in off:
@@ -526,20 +524,6 @@ class Sections:
         if t.folded:
             self.clicked(t, False)
         self.scroll.ensureWidgetVisible(t, 0, 10)
-
-    def set_solo(self, on: bool):
-        """Small windows: one section at a time. Leaving them, what only that default folded opens again."""
-        if on == self.solo:
-            return
-        self.solo = on
-        if on and len(self.titles) > 1 and self.key not in self.folded:   # already built when the window says so
-            self.folded[self.key] = {t.text() for t in self.titles[1:]}
-            self.auto.add(self.key)
-        if not on:
-            for key in self.auto:
-                self.folded.pop(key, None)
-            self.auto.clear()
-        self.apply()
 
 
 def fold_button(owner: QWidget, on_click, tip: str, role: str = "fold_right") -> QToolButton:

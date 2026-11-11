@@ -679,9 +679,8 @@ class TuneView(QWidget):
         esc.activated.connect(self.back.emit)
 
     # ------------------------------------------------------------ selection (what the strip does)
-    def set_layout(self, right: str, strip_shown: bool, compact: bool, solo: bool):
+    def set_layout(self, right: str, strip_shown: bool, compact: bool):
         """Issue #44: the right panel (docked | icons | hidden), the band of blocks and the compact look."""
-        self.panel.folds.set_solo(solo)
         self.dock.set_state(right)
         self.strip.setVisible(strip_shown)
         self.strip.set_compact(compact)

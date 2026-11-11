@@ -2015,10 +2015,8 @@ class PostView(QWidget):
             self.split.setStretchFactor(i, 1 if w is self.centre else 0)
         self.split.setSizes([wide.get(id(w), 10_000) for w in ws])
 
-    def set_layout(self, left: str, right: str, solo: bool = False):
-        """The two sides as the window chose for this size range (each docked | icons | auto | hidden), and the
-        settings' groups one at a time on a small window (issue #44)."""
-        self.folds.set_solo(solo)
+    def set_layout(self, left: str, right: str):
+        """The two sides as the window chose for this size range (each docked | icons | auto | hidden)."""
         self.ldock.set_state(left)
         self.dock.set_state(right)
 

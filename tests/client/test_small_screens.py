@@ -441,7 +441,9 @@ def test_sections_fold_and_alt_click_opens_only_one(env):
     assert not panel.folds.titles[0].folded
 
 
-def test_a_small_window_shows_one_section_at_a_time_and_a_large_one_never(env):
+def test_a_small_window_never_folds_a_section_by_itself(env):
+    """#119: the small window opened one section at a time and closed the others; only the user folds now, the column
+    scrolls."""
     w = _open(env, (1366, 728))
     page = w.graph
     w.select(step="fond")
@@ -449,13 +451,10 @@ def test_a_small_window_shows_one_section_at_a_time_and_a_large_one_never(env):
     QTest.mouseClick(page.dock.icons.itemAt(0).widget(), Qt.LeftButton)
     _settle(w)
     ts = page.panel.folds.titles
-    assert len(ts) >= 2 and not ts[0].folded and all(t.folded for t in ts[1:])          # the first one open
-    QTest.mouseClick(ts[1], Qt.LeftButton, Qt.NoModifier, ts[1].rect().center())         # a click: only that one
+    assert len(ts) >= 2 and not any(t.folded for t in ts)
+    QTest.mouseClick(ts[1], Qt.LeftButton, Qt.NoModifier, ts[1].rect().center())         # a click folds that one only
     _settle(w)
-    assert ts[0].folded and not ts[1].folded
-    w.resize(1920, 1080)
-    _settle(w)
-    assert not page.panel.folds.solo
+    assert not ts[0].folded and ts[1].folded
 
 
 def _post_view(w):
@@ -498,11 +497,13 @@ def test_a_row_its_panel_keeps_hidden_stays_hidden_when_its_section_opens(env):
     assert kept.isHidden()
 
 
-def test_posts_groups_open_one_at_a_time_on_a_small_window(env):
+def test_posts_groups_all_stay_open_on_a_small_window(env):
+    """#119: opening Starless closed Stars alone and the other way round; the user folds, the column scrolls."""
     w = _open(env, (1366, 728))
     view = _post_view(w)
     ts = view.folds.titles
-    assert len(ts) >= 2 and not ts[0].folded and all(t.folded for t in ts[1:])
+    assert len(ts) >= 2 and not any(t.folded for t in ts)
+    assert ts[0].objectName() == "sectiontitle"                # a title that stands out from the settings
     icons = [view.dock.icons.itemAt(i).widget().toolTip() for i in range(view.dock.icons.count())]
     assert [t.text() for t in ts][0] in icons                  # one icon per group
 

@@ -418,9 +418,9 @@ class Main(QMainWindow):
             self.statusBar().setVisible(not full)
             self.logp.setVisible(self.b_log.isChecked() and not full)
             if self.graph is not None:
-                self.graph.set_layout(right, left, solo)
+                self.graph.set_layout(right, left)
             if self.tune is not None:
-                self.tune.set_layout(right, not st["hidden"] and not full, comp, solo)
+                self.tune.set_layout(right, not st["hidden"] and not full, comp)
             if self.browser is not None:
                 self.browser.set_compact(solo)
             self._layout_post()
@@ -446,7 +446,7 @@ class Main(QMainWindow):
         gone = st["hidden"] or st["max"]
         left = "hidden" if gone else st.get("post_left") or ("auto" if st["left"] == "auto" else "docked")
         right = "hidden" if gone or st["right_hidden"] else st.get("post_right") or "docked"
-        view.set_layout(left, right, lay.effective(cls) == lay.SMALL)
+        view.set_layout(left, right)
         view.set_compact(lay.compact(cls))
 
     def _tab(self):

@@ -2945,10 +2945,8 @@ class GraphPage(QWidget):
         if state and state != self.left_state:
             self.sideChosen.emit("left", state)
 
-    def set_layout(self, right: str, left: str, solo: bool):
-        """Issue #44: the right panel (docked | icons | hidden), the blocks' palette (docked | folded | hidden) and the
-        sections of the panel (one at a time on a small window)."""
-        self.panel.folds.set_solo(solo)
+    def set_layout(self, right: str, left: str):
+        """Issue #44: the right panel (docked | icons | hidden) and the blocks' palette (docked | folded | hidden)."""
         self.dock.set_state(right)
         if left != self.left_state:
             self.left_state = left
