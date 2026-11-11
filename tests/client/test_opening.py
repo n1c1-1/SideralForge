@@ -217,3 +217,15 @@ def test_home_stops_reading_the_other_projects_states_when_a_project_is_shown(en
     w.home.recent_cards = [SimpleNamespace(info=SimpleNamespace(root="r", state="workflows"))]
     w.home._ask_states()
     assert sent[0][0] == "home.states" and sent[0][1][0] == ["r"] and not sent[0][1][1].is_set()
+
+
+def test_the_undo_said_in_one_project_is_not_said_in_the_next_one(env):
+    """Issue #149: after Ctrl+Z in one project, another opened from its window (no Home between them) still said
+    "Undone: …" on its status line, though nothing was undone there."""
+    w = _open(env, _project(env["tmp"]))
+    w.flash("Undone: Workflow “Image 4” created")
+    assert "Undone" in w.status.text()
+    other = _project(env["tmp"] / "other")
+    assert w.open_project(other)
+    _settle(w)
+    assert w.project.root == other and "Undone" not in w.status.text(), w.status.text()

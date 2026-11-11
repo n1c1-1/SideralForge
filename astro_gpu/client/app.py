@@ -527,10 +527,8 @@ class Main(QMainWindow):
         else:
             self.home.rescan()
         self.screens.setCurrentWidget(self.home)
-        self._flash = ""
-        self._flash_timer.stop()
+        self._unflash()
         self.setWindowTitle(f"{APP_NAME} · " + _("Home"))
-        self.status.setText("")
         self.update_spec_note()
 
     def new_project(self):
@@ -731,6 +729,7 @@ class Main(QMainWindow):
             forget_state(self.project.root)              # nor a state Home was still reading as it opened
             self.project = None
             self.s = None
+            self._unflash()                              # its word (an Undo's) is never said in the next one (#149)
             if self.proj_screen is not None:
                 self.screens.removeWidget(self.proj_screen)
                 self.proj_screen.deleteLater()
@@ -1564,6 +1563,14 @@ class Main(QMainWindow):
         self._flash = text
         self.status.setText(text)
         self._flash_timer.start(4000)
+
+    def _unflash(self):
+        """No word said any more, nor a status line: a project closed, Home shown (issue #149: the Undo of one project
+        was said over the next one, opened from its window without Home between them)."""
+        self._flash = ""
+        self._flash_timer.stop()
+        self._line = ""
+        self.status.setText("")
 
     def _flash_end(self):
         self._flash = ""
