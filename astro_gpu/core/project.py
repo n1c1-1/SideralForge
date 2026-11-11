@@ -60,12 +60,14 @@ def file_type(path: str | Path) -> str:
     return Path(path).suffix.lstrip(".").upper() or "?"
 
 
-def type_warnings(files: dict[str, list]) -> list[dict]:
+def type_warnings(files: dict[str, list], masters: set | frozenset = frozenset()) -> list[dict]:
     """What may be a mistake in one session's files ({kind: [path]}), issue #58: a file the engine does not read (not a
     frame; or a JPEG, PNG or TIFF among raw or FITS frames, which leaves it aside); lights of mixed types (1 JPG among
-    14 ARW); calibration frames of another type than the lights; and calibration frames that cannot calibrate these
-    lights (issue #57: frames already in colour against mosaics, one way or the other); the same files given as two
-    kinds (said on the later kind, ``other`` the earlier one).
+    14 ARW); calibration frames of another type than the lights, unless they are masters (``masters``: the kinds given
+    as masters only, io/frames.master_kinds: a master FITS file beside raw lights is the normal case, and its scale is
+    read as the lights'); and calibration frames that cannot calibrate these lights (issue #57: frames already in
+    colour against mosaics, one way or the other); the same files given as two kinds (said on the later kind,
+    ``other`` the earlier one).
     Each: {"key": "unread" | "mixed" | "other_type" | "wrong_kind" | "same_files", "kind", "type", "n", "main", "of",
     "name", "other"}."""
     out: list[dict] = []
@@ -91,6 +93,8 @@ def type_warnings(files: dict[str, list]) -> list[dict]:
         a, b = frame_kind("x." + t.lower()), frame_kind("x." + light.lower()) if light else ""
         if kind != "lights" and t != light and a and b:
             key = "wrong_kind" if (a == "colour") != (b == "colour") else "other_type"
+            if key == "other_type" and kind in masters:
+                continue
             out.append({"key": key, "kind": kind, "type": t, "main": light, "n": len(files[kind])})
     kinds = [k for k, paths in files.items() if paths]
     names = {k: {os.path.normcase(str(f)) for f in files[k]} for k in kinds}

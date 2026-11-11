@@ -293,6 +293,8 @@ class Facts:
     checks: dict = field(default_factory=dict)
     #: session id -> io.frames.colour_session of its lights (issue #57), None for raw or FITS mosaics
     colour: dict = field(default_factory=dict)
+    #: session id -> the calibration kinds it gives as masters only (io/frames.master_kinds: their headers, read here)
+    masters: dict = field(default_factory=dict)
     #: the named objects of the first field solved, biggest first (core/skyobjects.SkyObject)
     in_field: list = field(default_factory=list)
 
@@ -332,6 +334,7 @@ def _facts_job(p) -> Facts:
         f.files[s.id] = files
         f.checks[s.id] = session_checks(p, s, files)
         f.colour[s.id] = _colour_of(files)
+        f.masters[s.id] = _masters_of(files)
     if p.root is not None:
         f.reviewed = [str(x) for x in read_state(p.root).get("reviewed") or []]
     for w in p.workflows:
@@ -350,6 +353,12 @@ def _colour_of(files: dict) -> dict | None:
         return colour_session(files.get("lights") or [], _is_colour)
     except (OSError, ValueError):
         return None
+
+
+def _masters_of(files: dict) -> set:
+    """io.frames.master_kinds of a session's files (worker thread): a master beside raw lights is no file mistake."""
+    from ..io.frames import master_kinds
+    return master_kinds(files)
 
 
 #: whether a frame is already in colour, by (path, modification time, size): its header is read once per client
@@ -2705,7 +2714,7 @@ class ProjectModel(QObject):
     def file_warnings(self, sid: int) -> list[dict]:
         """What may be a mistake among a session's files (issue #58): core.project.type_warnings."""
         from ..core.project import type_warnings
-        return type_warnings(self._facts.files.get(sid) or {})
+        return type_warnings(self._facts.files.get(sid) or {}, self._facts.masters.get(sid) or set())
 
     def remove_session_files(self, sid: int, kind: str, files: list[str]) -> bool:
         """Files taken out of a session (issue #58; the files themselves are never touched): a file chosen alone leaves

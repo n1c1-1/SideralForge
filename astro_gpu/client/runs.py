@@ -608,12 +608,15 @@ class RunDialog(QDialog):
             if any(self.s.view(w) is not None and self.s.view(w).source is None and
                    s in self.s.p.sessions_of(w) for w in wids) and s.id not in sids:
                 sids.append(s.id)
-        out = [_("{session}: {text}").format(session=self.s.p.session(sid).name, text=type_warning_text(w))
-               for sid in sids for w in self.s.file_warnings(sid)]
         from .frames import colour_note_text
         notes = {sid: getattr(self.s, "colour_note", lambda _i: None)(sid) for sid in sids}    # issue #57: said before
-        return out + [_("{session}: {text}").format(session=self.s.p.session(sid).name, text=colour_note_text(n))
-                      for sid, n in notes.items() if n]
+        # a same warning once, with the sessions it concerns (nine sessions' files said nine times the same line)
+        same: dict[str, list[str]] = {}
+        for sid in sids:
+            for text in [type_warning_text(w) for w in self.s.file_warnings(sid)] + \
+                    ([colour_note_text(notes[sid])] if notes[sid] else []):
+                same.setdefault(text, []).append(self.s.p.session(sid).name)
+        return [_("{session}: {text}").format(session=", ".join(names), text=text) for text, names in same.items()]
 
     def warnings(self, sync: bool = False) -> list[str]:
         """What the plan says before it runs: the workflows left out and why, the disk too small, the files that may be

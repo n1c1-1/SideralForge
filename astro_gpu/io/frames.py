@@ -482,6 +482,22 @@ def master_count(hd) -> int | None:
     return None
 
 
+def master_kinds(files: dict[str, list]) -> set[str]:
+    """The calibration kinds of a session ({kind: [path]}) given as masters only (``master_count``, their headers
+    alone; the first single frame stops the reading of its kind): a master FITS file beside raw lights is the normal
+    case, not a file of the wrong type (core/project.type_warnings)."""
+    out = set()
+    for kind, paths in files.items():
+        if kind == "lights" or not paths:
+            continue
+        try:
+            if all(frame_kind(Path(f)) == "fits" and master_count(fits_header(f)) is not None for f in paths):
+                out.add(kind)
+        except Exception:  # noqa: BLE001 - a header that cannot be read: not a master, said elsewhere
+            continue
+    return out
+
+
 def _fits_info(path: Path) -> FrameInfo:
     hd = fits_header(path)
     naxis = int(hd.get("NAXIS", 0))
