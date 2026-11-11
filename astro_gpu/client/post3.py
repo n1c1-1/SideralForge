@@ -1133,8 +1133,17 @@ class PostView(QWidget):
         self._fill_versions()
 
     def _version_delete(self):
+        """The version shown taken out, as one step of Undo (#145: the bin took it for good): the model keeps the step
+        (its snapshot holds the composition, every version with its layers and its crop), and the version shown after
+        it holds it on top of its Undo, so that Ctrl+Z there brings the version back before any older edit of its own."""
+        p = getattr(self.s, "p", None)
+        if p is None or len(p.post["versions"]) < 2:
+            return
         self._save()
         self.s.delete_post_version(self._version)
+        self.undo.append(MODEL_STEP)                     # (the delete showed the other version: its own Undo now)
+        self.redo.clear()
+        self._undo_buttons()
 
     def _flip_compare(self):
         """The whole picture from one of the two (the comparison on): the other one at the next press."""
@@ -1609,7 +1618,7 @@ class PostView(QWidget):
             return False
         if self.undo:
             self.undo.pop()
-        return self._model_step(getattr(self.s, "undo", None), self.redo)
+        return self._model_step(getattr(self.s, "undo", None), "redo")
 
     def do_redo(self) -> bool:
         if self.redo and self.redo[-1] is not MODEL_STEP:
@@ -1619,18 +1628,19 @@ class PostView(QWidget):
             return False
         if self.redo:
             self.redo.pop()
-        return self._model_step(getattr(self.s, "redo", None), self.undo)
+        return self._model_step(getattr(self.s, "redo", None), "undo")
 
-    def _model_step(self, fn, other: list) -> bool:
+    def _model_step(self, fn, other: str) -> bool:
         """A step of the workflows' Undo taken back or redone from here: the composition it puts back is not a step
-        of Post's."""
+        of Post's. ``other``: "undo" or "redo", the list that takes it back, the one of the version shown after the
+        step (a deleted version brought back shows itself, with its own lists, #145)."""
         if fn is None:
             return False
         self._restoring = True
         try:
             done = fn()
             if done:
-                other.append(MODEL_STEP)
+                getattr(self, other).append(MODEL_STEP)
         finally:
             self._restoring = False
         self.rebuild()

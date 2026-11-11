@@ -119,6 +119,46 @@ def test_the_last_version_stays_and_names_do_not_repeat(model):
     assert model.p.post["active"] == only and model.post_version_label() == ""
 
 
+def test_the_bin_is_one_step_of_undo_and_ctrl_z_brings_the_version_back(model):
+    """#145: the bin deleted the version at once and for good: Ctrl+Z undid instead the last edit of the version shown
+    after it. The delete is one step of Post's Undo, the version back with its layers and its crop, Ctrl+Y deletes it
+    again; the only version's bin is greyed, its reason on hover."""
+    from astro_gpu.client.post3 import PostPage3
+    from astro_gpu.client.services.render import RenderWorker
+    model.add_post_layer(by_name(model, "Full").pid, "stars")
+    page = PostPage3(model, worker=RenderWorker(None, resolver=lambda pid: None, device="cpu"))
+    v = page.view
+    try:
+        first = model.post_version()["id"]
+        assert not v.b_version_del.isEnabled() and v.b_version_del.toolTip() == "The only version cannot be deleted"
+        v.push()                                                   # an edit of the first version: a step of its own
+        v.layers[0]["opacity"] = 50.0
+        v._save()
+        v._version_new()
+        bold = model.p.post["active"]
+        assert v._version == bold and v.b_version_del.isEnabled()
+        v._set_crop([10, 10, 60, 60])
+        v.layers[0]["opacity"] = 20.0
+        v._save()
+        kept = text(model.post_version())
+        v.b_version_del.click()
+        assert [x["id"] for x in model.p.post["versions"]] == [first] and v._version == first
+        assert not v.b_version_del.isEnabled() and v.b_undo.isEnabled()
+        v.do_undo()
+        assert model.p.post["active"] == bold and v._version == bold and len(model.p.post["versions"]) == 2
+        assert text(model.post_version()) == kept and v.crop == [10, 10, 60, 60] and v.layers[0]["opacity"] == 20.0
+        v.do_redo()
+        assert [x["id"] for x in model.p.post["versions"]] == [first] and v._version == first and v.crop is None
+        v.do_undo()
+        assert v._version == bold and v.crop == [10, 10, 60, 60]
+        model.set_post_version(first)                              # the first version keeps its own step under it
+        v.do_undo()
+        assert v._version == first and v.layers[0]["opacity"] != 50.0
+    finally:
+        page.shutdown()
+        page.deleteLater()
+
+
 def test_the_save_says_when_the_versions_disagree_and_writes_all_the_same(model, monkeypatch):
     full = by_name(model, "Full")
     model.add_post_layer(full.pid, "stars")
