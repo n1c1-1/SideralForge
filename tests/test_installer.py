@@ -126,6 +126,20 @@ def test_lock_python_and_numba():
     assert any(w["name"] == "numba" for w in LOCK["builds"]["cu128"])
 
 
+def test_lock_asterion():
+    """The plate solver's released program and its index, each pinned by size and checksum; the index has no file of
+    its own to download (the release packs it), so its entries say where the bytes come from instead of a URL."""
+    a = LOCK["asterion"]
+    files = {f["filename"]: f for f in a["files"]}
+    assert set(files) == {f"asterion-{a['version']}-windows-x86_64.zip", "tycho2.astx", "tycho2.astx.wide"}
+    assert a["version"] == "0.4.2"
+    for f in files.values():
+        assert len(f["sha256"]) == 64 and int(f["sha256"], 16) >= 0 and f["size"] > 0
+        assert f["url"].startswith("https://") or f["origin"]
+    assert files["asterion-0.4.2-windows-x86_64.zip"]["url"].endswith("/v0.4.2/asterion-0.4.2-windows-x86_64.zip")
+    assert files["tycho2.astx"]["dest"] == files["tycho2.astx.wide"]["dest"] == "catalogs"
+
+
 def test_bundled_wheels_are_shipped(build):
     for w in LOCK["builds"][build]:
         if w.get("bundled"):

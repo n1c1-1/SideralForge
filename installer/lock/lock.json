@@ -1351,5 +1351,39 @@
     "size": 405257
    }
   ]
+ },
+ "asterion": {
+  "version": "0.4.2",
+  "files": [
+   {
+    "name": "asterion",
+    "version": "0.4.2",
+    "filename": "asterion-0.4.2-windows-x86_64.zip",
+    "url": "https://github.com/asterion-solver/asterion/releases/download/v0.4.2/asterion-0.4.2-windows-x86_64.zip",
+    "sha256": "b179481f5f5fecc7a5a16da0d31290696ce2e3409f3f3401d3a8450a3f0f1ebb",
+    "size": 34707133,
+    "dest": ""
+   },
+   {
+    "name": "tycho2",
+    "version": "catalogs-v1",
+    "filename": "tycho2.astx",
+    "url": "",
+    "origin": "asterion --download-catalog tycho2: the release https://github.com/asterion-solver/catalogs/releases/download/catalogs-v1/ (catalogs.properties), unpacked",
+    "sha256": "a9b9b94bcf13163447f412794db94ab76ed19f909c2dbd0816f9f35f7c26be62",
+    "size": 378244396,
+    "dest": "catalogs"
+   },
+   {
+    "name": "tycho2-wide",
+    "version": "catalogs-v1",
+    "filename": "tycho2.astx.wide",
+    "url": "",
+    "origin": "written by Asterion 0.4.2 beside tycho2.astx the first time it solves a wide field (not published)",
+    "sha256": "a94e5aee0323df6197705612eb6c650b46c1e1d16f971f69c1fc8b7fb7ebd6eb",
+    "size": 11219972,
+    "dest": "catalogs"
+   }
+  ]
  }
 }
