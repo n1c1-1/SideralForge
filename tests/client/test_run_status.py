@@ -296,6 +296,32 @@ def test_the_time_of_a_run_moves_every_second_while_a_stage_says_nothing(world, 
         d.close()
 
 
+def test_the_status_bar_names_the_block_of_its_row_never_a_stage_of_the_engine(world):
+    """#151: the status bar said "Running: Output prep" while the window said "Color", "Sky gradient" for the row
+    "Gradient": the engine's stages folded into a block. The status bar, the window's line and the rows name the block."""
+    import time
+    w = world()
+    now = time.time()
+    plan, t, k = _calibrating(w, now)
+    t.apply([{"t": now, "type": "stage_end", "run": "r1", "stage": "calibrate", "key": k["calibrate"], "status": "done",
+              "duration": 300.0},
+             {"t": now, "type": "stage_start", "run": "r1", "stage": "render_simple", "key": k["render_simple"]}])
+    d = RunDialog(w.m, plan, "Run", track=t)
+    d.refresh()
+    rows = {key: r.row.title for r in d.rows if not r.row.echo for key in r.row.keys}
+    w.ctl.track, w.ctl.phase = t, "running"
+    try:
+        # the output is made within the last Gradient: its stage has a name of its own, no row has it
+        row = rows[k["render_simple"]]
+        assert row != w.ctl.stage_title("render_simple") and row not in [w.ctl.stage_title(j.stage) for j in t.jobs]
+        assert w.ctl.status_text().startswith(f"Running: {row} · "), w.ctl.status_text()
+        assert d.detail.text().startswith(f"{row} · "), d.detail.text()
+        assert all(w.ctl.block_title(j) == rows[j.key] for j in t.jobs if j.key in rows)
+    finally:
+        w.ctl.track, w.ctl.phase = None, "idle"
+        d.close()
+
+
 def test_a_stopped_row_says_it_was_stopped_and_how_long_it_ran_never_its_estimate(world):
     """#138: after Stop, the stopped row said "≈ 6 min", its first estimate, after 8 min of work. It says it was
     stopped and the time it ran, as a done row says its duration; its bar how far it got. A worker that ended without

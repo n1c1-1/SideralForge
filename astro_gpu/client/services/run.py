@@ -944,6 +944,7 @@ class RunController(QObject):
         self.pause = None                    # the review the plan stops at (model.Pause), or None: it runs to the end
         self._planner = None                 # how the plan was made (Continue makes the next one the same way)
         self.names: dict[int, str] = {}      # workflow names of the run's frozen definition (when the model has moved on)
+        self._titles: tuple = (None, {})     # (what they were built for, job key: the title of its row): block_title
         self.follower: RunFollower | None = None
         self.dialog = None
         self._status_widget = None
@@ -994,7 +995,7 @@ class RunController(QObject):
             return _("Starting…")
         j = t.current()
         left = t.remaining()
-        what = self.stage_title(j.stage) if j is not None else ""
+        what = self.block_title(j) if j is not None else ""
         pct = int(round(100 * t.fraction()))
         # the share of the whole run, said so (#136: "Running: Astrometry · 32 %" read as Astrometry's, its row said 8 %)
         text = (_("Running: {stage} · {pct} % of the run").format(stage=what, pct=pct) if what
@@ -1004,6 +1005,24 @@ class RunController(QObject):
     def stage_title(self, stage: str) -> str:
         """A stage of the run in plain words (``stage_title``)."""
         return stage_title(self.model, stage)
+
+    def block_title(self, j: JobState) -> str:
+        """The block a job is part of, named as its row of the run window names it (runs.build_rows): the status bar,
+        the window's line and the rows say the same thing (#151: "Output prep", "Gaia catalogues", "Sky gradient", the
+        engine's stages folded into the blocks "Color", "Astrometry", "Gradient"). A job in no row: its stage."""
+        from ..i18n import language
+        from ..runs import build_rows
+        plan = self.track.plan if self.track is not None else None
+        if plan is None:
+            return self.stage_title(j.stage)
+        at = (id(plan), language(), tuple(sorted(self.names.items())))
+        if self._titles[0] != at:                            # built once per plan and language, not every second
+            try:
+                rows = build_rows(self.model, plan.jobs, self.names)
+                self._titles = (at, {k: r.title for r in rows if not r.echo for k in r.keys})
+            except Exception:  # noqa: BLE001 - a graph that cannot be built now: the stages' own names
+                self._titles = (at, {})
+        return self._titles[1].get(j.key) or self.stage_title(j.stage)
 
     def groups(self, plan) -> list[list[str]]:
         """The job keys of each block of the run window (runs.build_rows): what the console counts (#3)."""
@@ -1316,7 +1335,7 @@ class RunController(QObject):
             if bad is not None:                              # why, without opening the log (the night test pass)
                 err = bad.error.strip().splitlines()[0]
                 text += " · " + _("{stage}: {error}").format(
-                    stage=self.stage_title(bad.stage), error=engine_text(err) if not is_raw_error(bad.error) else
+                    stage=self.block_title(bad), error=engine_text(err) if not is_raw_error(bad.error) else
                     _("a program error (the detail is in the Log)"))
         self.phase = "idle"
         c_ = self._console_obj()
