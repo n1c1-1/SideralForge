@@ -50,6 +50,7 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMenu,
     QPushButton,
     QScrollArea,
@@ -57,6 +58,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QStyle,
+    QStyleOptionFrame,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -323,6 +325,7 @@ PANEL_W, PANEL_MIN, PANEL_MAX = 400, 320, 760          # the settings, on the ri
 LAYERS_W, LAYERS_MIN, LAYERS_MAX = 300, 230, 520       # the layers, on the left
 SUB_MAX = 120                                          # a layer row's blend, at most (its name keeps the rest)
 CENTRE_MIN = 480                                       # the image: its tools go into "…" rather than push the sides out
+VERSION_W = ((120, 200), (95, 120))                    # the version list's least and most width, then narrowed (#146)
 
 
 class EyeBox(QCheckBox):
@@ -340,6 +343,50 @@ class EyeBox(QCheckBox):
         p = QPainter(self)
         on = self.isChecked()
         p.drawPixmap(2, 2, pixmap("eye" if on else "eye_off", 16, "normal" if on else "dim", self.devicePixelRatioF()))
+        p.end()
+
+
+class NameEdit(QLineEdit):
+    """A name typed in place that shows its start when it is not typed in, cut at its end with "…" when it does not fit,
+    as the reference image editors' lists (#146: a name set or typed left the cursor at its end, which kept the end in
+    view, "oft background" for "Strong stars, soft background", after a click elsewhere and a resize too); while it is
+    typed in it scrolls as any field, Enter and the focus gone show its start again."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self.setCursorPosition(0)
+        self.textChanged.connect(lambda _t: None if self.hasFocus() else self.setCursorPosition(0))
+        self.editingFinished.connect(lambda: self.setCursorPosition(0))
+
+    def focusOutEvent(self, e):                                      # noqa: N802 - Qt's name
+        super().focusOutEvent(e)
+        self.setCursorPosition(0)
+
+    def _text_rect(self, opt: QStyleOptionFrame):
+        """Where the field draws its text: its contents, less its text margins and the 2 px each side it keeps."""
+        m = self.textMargins()
+        r = self.style().subElementRect(QStyle.SE_LineEditContents, opt, self)
+        return r.adjusted(m.left() + 2, m.top(), -m.right() - 2, -m.bottom())
+
+    def shown(self) -> str:
+        """The text as it is drawn: whole while typed in or when it fits, else its start and "…"."""
+        opt = QStyleOptionFrame()
+        self.initStyleOption(opt)
+        if self.hasFocus():
+            return self.text()
+        return self.fontMetrics().elidedText(self.text(), Qt.ElideRight, max(self._text_rect(opt).width(), 1))
+
+    def paintEvent(self, e):                                         # noqa: N802 - Qt's name
+        shown = self.shown()
+        if shown == self.text():
+            super().paintEvent(e)
+            return
+        opt = QStyleOptionFrame()
+        self.initStyleOption(opt)
+        p = QPainter(self)
+        self.style().drawPrimitive(QStyle.PE_PanelLineEdit, opt, p, self)          # as the field draws its own
+        p.setPen(self.palette().color(self.foregroundRole()))
+        p.drawText(self._text_rect(opt), int(Qt.AlignLeft | Qt.AlignVCenter), shown)
         p.end()
 
 
@@ -714,8 +761,14 @@ class PostView(QWidget):
         self.version_lab = label(_("Version"), "dim")
         self.cb_version = QComboBox()
         self.cb_version.setEditable(True)
+        self.cb_version.setLineEdit(NameEdit())          # its name's start shown, "…" at its end (#146)
         self.cb_version.setToolTip(_("The version shown; type here to rename it"))
-        self.cb_version.setMinimumWidth(120)
+        # one width whatever its names, today's (about "Version 1"), within bounds: a long name never pushes the bar, it
+        # is cut (#146; as wide as its names, the list resized itself after the bar's layout and covered New version)
+        self.cb_version.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.cb_version.setMinimumContentsLength(9)
+        self.cb_version.setMinimumWidth(VERSION_W[0][0])
+        self.cb_version.setMaximumWidth(VERSION_W[0][1])
         self.b_version_new = set_icon(QPushButton(_("New version")), "add", 16)
         self.b_version_new.setToolTip(_("New version: a copy of this one, to try other settings without losing these"))
         self.b_version_del = icon_only(QPushButton(), "delete", _("Delete this version"), 16)
@@ -792,10 +845,10 @@ class PostView(QWidget):
         return {self.b_export: _("Export…"), self.b_version_new: _("New version")}
 
     @staticmethod
-    def _item_width(w: QWidget, min_w: int | None = None) -> int:
+    def _item_width(w: QWidget, min_w: int | None = None, max_w: int | None = None) -> int:
         """The width the bar's layout gives a widget, as Qt's widget item works it out: its size hint, at least its
-        minimum hint and its minimum width (``min_w`` in its place), at most its maximum width."""
-        hint = min(max(w.sizeHint().width(), w.minimumSizeHint().width()), w.maximumWidth())
+        minimum hint and its minimum width (``min_w`` in its place), at most its maximum width (``max_w`` in its place)."""
+        hint = min(max(w.sizeHint().width(), w.minimumSizeHint().width()), w.maximumWidth() if max_w is None else max_w)
         return max(hint, w.minimumWidth() if min_w is None else min_w)
 
     def _width_as(self, b: QPushButton, text: str) -> int:
@@ -833,7 +886,7 @@ class PostView(QWidget):
             if w in texts:
                 total += self._width_as(w, "" if w in icons else texts[w])
             elif w is self.cb_version:
-                total += self._item_width(w, 95 if w in narrow else 120)
+                total += self._item_width(w, *VERSION_W[w in narrow])
             else:
                 total += self._item_width(w)
         return total + max(bar.spacing(), 0) * max(n - 1, 0)
@@ -860,9 +913,10 @@ class PostView(QWidget):
             if b.text() != want:
                 b.setText(want)
         self.b_export.setToolTip(_("Export…"))
-        narrow = 95 if any(kind == "narrow" for kind, _w in steps[:k]) else 120
-        if self.cb_version.minimumWidth() != narrow:
-            self.cb_version.setMinimumWidth(narrow)
+        lo, hi = VERSION_W[any(kind == "narrow" for kind, _w in steps[:k])]
+        if (self.cb_version.minimumWidth(), self.cb_version.maximumWidth()) != (lo, hi):
+            self.cb_version.setMinimumWidth(lo)
+            self.cb_version.setMaximumWidth(hi)
 
     def _show_more(self):
         self._fill_more()
@@ -1157,6 +1211,9 @@ class PostView(QWidget):
                 self.cb_cmp.addItem(v["name"], v["id"])
         i = self.cb_version.findData(self._version)
         self.cb_version.setCurrentIndex(max(i, 0))
+        self.cb_version.lineEdit().setCursorPosition(0)  # its start, Enter's renaming too (#146)
+        tip = _("The version shown; type here to rename it")
+        self.cb_version.setToolTip(f"{self.cb_version.currentText()}\n{tip}" if self.cb_version.count() else tip)
         j = self.cb_cmp.findData(kept)
         self.cb_cmp.setCurrentIndex(max(j, 0))
         self.b_version_del.setEnabled(len(versions) > 1)

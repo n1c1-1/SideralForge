@@ -816,6 +816,41 @@ def test_posts_tools_go_into_more_rather_than_push_the_sides_out(env, size, lang
     assert view.b_crop.isVisible() and view.b_undo.isVisible() and view.b_version_new.text()
 
 
+def test_a_long_version_name_shows_its_start_and_never_pushes_the_bar(env):
+    """#146: "Strong stars, soft background" read "oft background", after renaming, a click elsewhere and a resize. As
+    the reference image editors: its start, cut at its end with "…", the whole name on hover; the list's width bounded."""
+    w = _open(env, (1366, 728))
+    view = _post_view(w)
+    view.ldock._choose("docked")
+    view.dock._choose("docked")
+    long_name = "Strong stars, soft background, typed while cropping"
+    w.s.rename_post_version(view._version, long_name)
+    view._fill_versions()
+    _settle(w)
+    cb, ed = view.cb_version, view.cb_version.lineEdit()
+    assert cb.currentText() == long_name and ed.cursorPosition() == 0
+    assert ed.shown().startswith("Strong") and ed.shown().endswith("…") and long_name in cb.toolTip()
+    assert cb.width() <= post3.VERSION_W[0][1]
+    _bar_fits(view)
+    # typed in, then Enter and a click elsewhere: its start again
+    _activate(w)
+    ed.setFocus()
+    _settle(w, 2)
+    ed.end(False)
+    QTest.keyClicks(ed, " again")
+    assert ed.hasFocus() and ed.cursorPosition() == len(long_name) + 6 and ed.shown() == ed.text()
+    QTest.keyClick(ed, Qt.Key_Return)
+    _settle(w, 2)
+    assert cb.currentText() == long_name + " again" and ed.cursorPosition() == 0
+    view.viewer.setFocus()
+    _settle(w, 2)
+    assert not ed.hasFocus() and ed.cursorPosition() == 0 and ed.shown().startswith("Strong")
+    w.resize(1280, 720)
+    _settle(w)
+    assert ed.cursorPosition() == 0
+    _bar_fits(view)
+
+
 # ---------------------------------------------------------------------------------------------- the graph's navigation
 def test_the_wheel_zooms_at_the_pointer_and_the_zoom_is_the_users(env):
     w = _open(env, (1366, 728))
