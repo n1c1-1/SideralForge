@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
+from contextlib import contextmanager
 
 import numpy as np
 
@@ -21,6 +23,57 @@ SPARSE_TRIANGLE_STARS = 30
 #: the published decision on a solution (D. Lang et al., "Astrometry.net", AJ 139, 1782, 2010, and the defaults of its
 #: solver): the Bayes factor it must reach, the stars' position error (px), the share of stars with no counterpart
 ODDS_TO_SOLVE, VERIFY_PX, DISTRACTORS = 1e9, 1.0, 0.25
+#: seconds between two looks at a stop in the search's long loops (``_between``): a look reads the disk, a loop's step
+#: takes a millisecond or less, a stop is answered within about a second
+STOP_EVERY = 0.25
+
+_STOP = threading.local()       # the stop check of the search running in this thread (``_stoppable``), throttled
+_clock = time.monotonic
+
+
+@contextmanager
+def _stoppable(ctx):
+    """The search of this thread looks at a stop between the steps of its long loops (``_between``; issue #139: a stop
+    took 25 to 129 s, the trial scales' and the shifted centres' triangle matches, up to some 35 s each, and the blind
+    solver's candidates never looking at it), at most every STOP_EVERY seconds. A context without a stop check (a
+    test's): none."""
+    check = getattr(ctx, "check_stop", None)
+    last = [_clock()]
+
+    def every():
+        now = _clock()
+        if now - last[0] >= STOP_EVERY:
+            last[0] = now
+            check()
+    old, _STOP.check = getattr(_STOP, "check", None), every if check is not None else None
+    try:
+        yield
+    finally:
+        _STOP.check = old
+
+
+def _between() -> None:
+    """A step of one of the search's long loops: the stop looked at, when ``_stoppable`` says so. Between iterations,
+    never inside a numeric kernel: the results do not change."""
+    check = getattr(_STOP, "check", None)
+    if check is not None:
+        check()
+
+
+def _hooked(aa):
+    """astroalign whose triangle match looks at a stop between the hypotheses of its RANSAC (``_between``): a vain match
+    exhausts thousands of them, some 35 s with 100 control points. Its model's fit is the same fit, called after the
+    look; without ``_stoppable`` the look does nothing, so every other use of astroalign is unchanged."""
+    base = aa._MatchTransform
+    if not getattr(base, "stop_aware", False):
+        class StopAware(base):
+            stop_aware = True
+
+            def fit(self, data):
+                _between()
+                return super().fit(data)
+        aa._MatchTransform = StopAware
+    return aa
 
 
 class AstrometryParams(StageParams):
@@ -101,10 +154,15 @@ class Astrometry(Stage):
         return a
 
     def run(self, ctx: Context, p: AstrometryParams) -> None:
+        with _stoppable(ctx):
+            self._solve(ctx, p)
+
+    def _solve(self, ctx: Context, p: AstrometryParams) -> None:
         import astroalign as aa
         from astropy.io import fits
         from astropy.wcs.utils import fit_wcs_from_points
         from scipy.spatial import cKDTree
+        aa = _hooked(aa)
 
         ra0, dec0 = p.ra, p.dec
         S_drz = float(ctx.load_json("stack", "drz_meta.json")["scale"])
@@ -450,7 +508,7 @@ def _blind(ctx, xy, W, H, at: float = 0.05):
     and the time left, a straight line through the bar, jumped to some twenty times the time already spent)."""
     from ..core.blindsolve import solve_any
     ctx.progress(at, "all-sky blind solving (first use builds the star index, a few minutes)")
-    r = solve_any(xy[:80], W, H)
+    r = solve_any(xy[:80], W, H, check=_between)
     if r is None:
         raise StageError("the field could not be identified on the sky: enter the target name or its coordinates")
     ctx.log(f"blind solve: centre RA {r['ra']:.3f} Dec {r['dec']:+.3f}, {r['scale']:.2f}\"/px, "
@@ -624,6 +682,7 @@ def _match_sparse(gs, gm, ra0, dec0, sc, W, H, det, off, fw, fh, tol, flips, cen
             zq = q[:, 0] + 1j * q[:, 1]
             best = None
             for s, t, used in zip(sim, tra, tri):
+                _between()                  # thousands of similarities in a field of few stars
                 lo, nm = log_odds(s * zq + t, gz, s, t, tree, W, H, used)
                 if best is None or lo > best[0]:
                     best = (lo, nm, s, t)

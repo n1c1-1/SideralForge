@@ -169,8 +169,9 @@ def _tycho(vmax=11.0, say=None):
 
 
 def solve(xy: np.ndarray, width: int, height: int, index: SkyIndex | None = None, n_stars: int = 60,
-          tol: float = 0.012, min_matches: int = 10, progress=None) -> dict | None:
-    """Blind solve. ``xy`` (N, 2): detected stars, brightest first, in image pixels.
+          tol: float = 0.012, min_matches: int = 10, progress=None, check=None) -> dict | None:
+    """Blind solve. ``xy`` (N, 2): detected stars, brightest first, in image pixels. ``check()``: called before each of
+    the candidates verified (thousands, a stop answered between them, issue #139); it may raise to stop.
 
     Returns {"ra", "dec" (field centre), "scale" (arcsec/px), "rotation" (deg), "mirror", "matches"} or None.
     """
@@ -196,6 +197,8 @@ def solve(xy: np.ndarray, width: int, height: int, index: SkyIndex | None = None
         if progress:
             progress(f"{len(cand)} candidate matches ({'mirrored' if mirror else 'direct'})")
         for i, j in cand:
+            if check is not None:
+                check()
             r = _verify(pts, iquads[i], index.quads[j], index, min_matches, width, height)
             if r is not None and (best is None or r["matches"] > best["matches"]):
                 r["mirror"] = mirror
@@ -263,10 +266,10 @@ def _verify(pts, iq, cq, index, min_matches, width, height):
             "rotation": float(np.degrees(np.angle(a))), "_T": (a, b), "_c": c}
 
 
-def solve_any(xy, width, height, progress=None) -> dict | None:
-    """Try the wide-field (Hipparcos) index, then the small-field (Tycho-2) index."""
+def solve_any(xy, width, height, progress=None, check=None) -> dict | None:
+    """Try the wide-field (Hipparcos) index, then the small-field (Tycho-2) index. ``check``: as in ``solve``."""
     for cat in ("hip", "tyc"):
-        r = solve(xy, width, height, SkyIndex(cat), progress=progress)
+        r = solve(xy, width, height, SkyIndex(cat), progress=progress, check=check)
         if r is not None:
             r["index"] = cat
             return r
