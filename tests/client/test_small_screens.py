@@ -1015,6 +1015,38 @@ def test_the_post_viewer_has_the_graphs_gestures(qapp):
         v.deleteLater()
 
 
+def test_after_a_crop_the_minimap_is_of_the_cropped_picture(qapp):
+    """#144: after a crop the minimap of the whole image stayed over the corner of the cropped picture fitted to the
+    view. Fitted: none; zoomed in: the cropped picture, the frame of the view on its place in it, a click going there."""
+    a = np.zeros((900, 1400, 3), np.uint8)
+    a[100:500, 300:900] = 200                                    # the crop: bright, the rest black
+    v = Viewer()
+    v.resize(800, 600)
+    v.set_source(StaticSource(a))
+    v.show()
+    qapp.processEvents()
+    try:
+        v.crop_box = (300, 100, 900, 500)
+        v.fit()
+        assert v.whole_visible() and not v._in_minimap(QPointF(790, 590))
+        v.zoom_to(2.0, 600, 300)                                  # the view's centre: the crop's centre
+        assert not v.whole_visible()
+        r = v.minimap_rect()
+        assert r.width() / r.height() == pytest.approx(600 / 400, rel=0.02)
+        thumb = v._thumbnail()
+        assert thumb.pixelColor(1, 1).red() == 200 and thumb.pixelColor(thumb.width() - 2, thumb.height() - 2).red() == 200
+        img = v.grab().toImage()
+        assert img.pixelColor(r.center().toPoint() + QPoint(int(r.width() * 0.4), 0)).red() > 150   # its pictures, not black
+        QTest.mouseClick(v, Qt.LeftButton, Qt.NoModifier, (r.topLeft() + QPointF(r.width() / 4, r.height() / 4)).toPoint())
+        qapp.processEvents()
+        assert v.cx == pytest.approx(450, abs=6) and v.cy == pytest.approx(200, abs=6)
+        v.crop_edit = True                                       # the Crop tool on: the whole image again
+        assert v.extent() == (0, 0, 1400, 900)
+    finally:
+        v.close()
+        v.deleteLater()
+
+
 def test_a_project_of_two_stretched_pictures_opens_again(env, monkeypatch):
     """The night test pass: a project of two JPEGs (two workflows without blocks) did not open again: the graph took
     their shared Output out twice, and the window stayed on Home with the project half open."""

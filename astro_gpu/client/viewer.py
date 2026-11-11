@@ -310,16 +310,23 @@ class Viewer(QWidget):
         p.drawText(r, Qt.AlignCenter, self.banner)
 
     # ------------------------------------------------------------ minimap (issue #44: as the Inspect viewer's)
+    def extent(self) -> tuple:
+        """What the picture is, in image pixels (x0, y0, x1, y1): the crop once applied, else the whole image (#144:
+        the minimap showed the whole image over a cropped picture fitted to the view)."""
+        w, h = self.source.size()
+        return tuple(self.crop_box) if self.crop_box and not self.crop_edit else (0, 0, w, h)
+
     def whole_visible(self) -> bool:
         if not self.source:
             return True
-        w, h = self.source.size()
+        ex0, ey0, ex1, ey1 = self.extent()
         x0, y0 = self.w_to_img(0, 0)
         x1, y1 = self.w_to_img(self.width(), self.height())
-        return x0 <= 0 and y0 <= 0 and x1 >= w and y1 >= h
+        return x0 <= ex0 and y0 <= ey0 and x1 >= ex1 and y1 >= ey1
 
     def minimap_rect(self) -> QRectF:
-        w, h = self.source.size()
+        x0, y0, x1, y1 = self.extent()
+        w, h = max(x1 - x0, 1), max(y1 - y0, 1)
         f = min(190.0 / w, 130.0 / h)
         return QRectF(self.width() - w * f - 12, self.height() - h * f - 12, w * f, h * f)
 
@@ -328,16 +335,17 @@ class Viewer(QWidget):
             self.minimap_rect().adjusted(-4, -4, 4, 4).contains(pos)
 
     def _thumbnail(self) -> QImage:
-        """The small picture of the minimap, cut once per version of the image."""
+        """The small picture of the minimap, cut once per version of the image and per crop."""
         src = self.source
+        ext = self.extent()
         c = self._thumb
-        if c is not None and c[0] is src and c[1] == src.version:
+        if c is not None and c[0] is src and c[1] == src.version and c[3] == ext:
             return c[2]
-        w, h = src.size()
-        a = np.ascontiguousarray(src.region(1, 0, 0, max(w // 2, 1), max(h // 2, 1)))
+        x0, y0, x1, y1 = (int(round(v / 2)) for v in ext)                  # (the half resolution's pixels)
+        a = np.ascontiguousarray(src.region(1, x0, y0, max(x1, x0 + 1), max(y1, y0 + 1)))
         step = max(1, int(max(a.shape[1], a.shape[0]) / 200))
         qi = to_qimage(a[::step, ::step])
-        self._thumb = (src, src.version, qi)
+        self._thumb = (src, src.version, qi, ext)
         return qi
 
     def _minimap(self, p: QPainter):
@@ -348,12 +356,12 @@ class Viewer(QWidget):
         p.drawRoundedRect(r.adjusted(-4, -4, 4, 4), 5, 5)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.drawImage(r, self._thumbnail())
-        w, h = self.source.size()
-        f = r.width() / w
+        ex0, ey0, ex1, ey1 = self.extent()
+        f = r.width() / max(ex1 - ex0, 1)
         x0, y0 = self.w_to_img(0, 0)
         x1, y1 = self.w_to_img(self.width(), self.height())
-        v = QRectF(r.x() + max(x0, 0) * f, r.y() + max(y0, 0) * f, (min(x1, w) - max(x0, 0)) * f,
-                   (min(y1, h) - max(y0, 0)) * f)
+        x0, y0, x1, y1 = max(x0, ex0), max(y0, ey0), min(x1, ex1), min(y1, ey1)
+        v = QRectF(r.x() + (x0 - ex0) * f, r.y() + (y0 - ey0) * f, (x1 - x0) * f, (y1 - y0) * f)
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(QColor("#5ea1ff"), 1.5))
         p.drawRect(v)
@@ -361,10 +369,10 @@ class Viewer(QWidget):
 
     def _minimap_goto(self, pos: QPointF):
         r = self.minimap_rect()
-        w, _h = self.source.size()
-        f = r.width() / w
-        self.cx = (pos.x() - r.x()) / f
-        self.cy = (pos.y() - r.y()) / f
+        ex0, ey0, ex1, _ey1 = self.extent()
+        f = r.width() / max(ex1 - ex0, 1)
+        self.cx = ex0 + (pos.x() - r.x()) / f
+        self.cy = ey0 + (pos.y() - r.y()) / f
         self._fitted = True
         self.viewChanged.emit()
         self.update()
