@@ -784,6 +784,7 @@
   "Add the folder of the lights. Darks, flats and bias are searched next to it and sorted by type; their match with the lights (exposure, ISO, levels) is checked and reported. Each frame can then be browsed and excluded.": "Ajouter le dossier des brutes. Les darks, flats et offsets sont cherchés à côté et rangés par type ; leur correspondance avec les brutes (durée, ISO, niveaux) est vérifiée et affichée. Chaque image peut ensuite être parcourue et exclue.",
   "Add folder…": "Ajouter dossier…",
   "{n} frames · {folder}": "{n} images · {folder}",
+  "{n} frame · {folder}": "{n} image · {folder}",
   "none · optional": "aucun · facultatif",
   "+ Lights (another night)…": "+ Brutes (autre nuit)…",
   "Calibration matching": "Correspondances",

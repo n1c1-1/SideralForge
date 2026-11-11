@@ -728,12 +728,13 @@ class SourcesView(QWidget):
             # the day and the month of the night's first day, both (the day of the night with the frame's own month
             # said "night of 31/01" for a frame of 00:16 on 1 January)
             d0 = night_start(row.first)
-            return _("{n} lights · {exp} · ISO {iso} · night of {day}/{month}").format(
-                n=n, exp=fexp(row.exposure), iso=int(row.iso) if row.iso else "–", day=d0.day if d0 else "–",
-                month=f"{d0.month:02d}" if d0 else "–")
+            return plural(n, "{n} light · {exp} · ISO {iso} · night of {day}/{month}",
+                          "{n} lights · {exp} · ISO {iso} · night of {day}/{month}",
+                          exp=fexp(row.exposure), iso=int(row.iso) if row.iso else "–", day=d0.day if d0 else "–",
+                          month=f"{d0.month:02d}" if d0 else "–")
         folders = {Path(f).parent.name for f in self.s.session_files(self.sid, key)}
-        if len(folders) == 1:
-            return _("{n} frames · {folder}").format(n=n, folder=folders.pop())
+        if len(folders) == 1:                       # one frame is one frame: a master said "1 frames · master_DOF"
+            return plural(n, "{n} frame · {folder}", "{n} frames · {folder}", folder=folders.pop())
         return _("{n} frames · {f} folders").format(n=n, f=len(folders))
 
     def build_left(self):

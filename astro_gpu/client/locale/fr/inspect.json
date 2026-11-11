@@ -50,6 +50,7 @@
   "{n} flats": "{n} flats",
   "{n} lights": "{n} brutes",
   "{n} lights · {exp} · ISO {iso} · night of {day}/{month}": "{n} brutes · {exp} · ISO {iso} · nuit du {day}/{month}",
+  "{n} light · {exp} · ISO {iso} · night of {day}/{month}": "{n} brute · {exp} · ISO {iso} · nuit du {day}/{month}",
   "Folder \"{folder}\" imported · {lights} lights": "Dossier « {folder} » importé · {lights} brutes",
   "{kept} of {n} frames kept · {t}": "{kept} images sur {n} gardées · {t}",
   "Stack and solution": "Empilement et solution",

@@ -24,3 +24,20 @@ def test_the_night_of_a_frame_is_the_day_it_began_on(first, night, text):
     sub = SourcesView._sub(SimpleNamespace(), "lights", 24, row)
     assert sub == f"24 lights · 300 s · ISO 2000 · night of {night}", sub
     assert night_text(first) == text
+
+
+def test_one_frame_is_said_in_the_singular():
+    """A master given as a session's darks is one file: the line under "Darks" said "1 frames · master_DOF"."""
+    from astro_gpu.client import i18n
+    view = SimpleNamespace(sid=1, s=SimpleNamespace(session_files=lambda sid, key: ["D:/night/master_DOF/dark.fit"]))
+    row = SimpleNamespace(first="2025-06-17T23:46:58", exposure=300.0, iso=2000)
+    try:
+        assert SourcesView._sub(view, "darks", 1, None) == "1 frame · master_DOF"
+        assert SourcesView._sub(view, "darks", 16, None) == "16 frames · master_DOF"
+        assert SourcesView._sub(view, "lights", 1, row).startswith("1 light · ")
+        i18n.set_language("fr")
+        assert SourcesView._sub(view, "darks", 1, None) == "1 image · master_DOF"
+        assert SourcesView._sub(view, "lights", 1, row).startswith("1 brute · ")
+        assert not i18n.missing()
+    finally:
+        i18n.set_language("en")
