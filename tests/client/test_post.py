@@ -1676,6 +1676,56 @@ def test_duplicate_delete_and_rename_follow_the_rules(post):
     assert v.layers[-1]["name"] == "Kept"
 
 
+def test_a_layer_is_renamed_in_place_in_its_row(post, monkeypatch):
+    """No window over the work: Rename in a layer's menu, or a double-click on it, puts its name in a field of its row,
+    as the reference image editors; Enter or a click elsewhere keeps it, Escape gives it up, an empty or unchanged name
+    changes nothing, a new one is one step of Undo."""
+    from PySide6.QtTest import QTest
+
+    from astro_gpu.client import dialogs
+    monkeypatch.setattr(dialogs, "ask_name", lambda *a: pytest.fail("a window was opened"))
+    v = post.view
+
+    def editor(lid):
+        QApplication.processEvents()
+        row = next(r for r in v.rows if r.lay["id"] == lid)
+        assert row.name_edit is not None and row.name_edit.isVisibleTo(row) and not row.n.isVisibleTo(row)
+        return row.name_edit
+
+    full = named(v, "Full")
+    lid, steps = full["id"], len(v.undo)
+    m = v.layer_menu_of(full)
+    next(a for a in m.actions() if a.text() == "Rename").trigger()
+    ed = editor(lid)
+    assert ed.text() == "Full" and ed.selectedText() == "Full"
+    ed.setText("Mine")
+    QTest.keyClick(ed, Qt.Key_Return)
+    QApplication.processEvents()
+    assert v.layer(lid)["name"] == "Mine" and len(v.undo) == steps + 1
+    assert all(r.name_edit is None for r in v.rows)
+    row = next(r for r in v.rows if r.lay["id"] == lid)
+    row.mouseDoubleClickEvent(None)                                    # the double-click on its name
+    ed = editor(lid)
+    ed.setText("Other")
+    QTest.keyClick(ed, Qt.Key_Escape)                                  # given up
+    QApplication.processEvents()
+    assert v.layer(lid)["name"] == "Mine" and len(v.undo) == steps + 1 and row.n.isVisibleTo(row)
+    for typed in ("  ", "Mine"):                                       # empty or unchanged: nothing
+        v.rename(v.layer(lid))
+        ed = editor(lid)
+        ed.setText(typed)
+        QTest.keyClick(ed, Qt.Key_Return)
+        QApplication.processEvents()
+        assert v.layer(lid)["name"] == "Mine" and len(v.undo) == steps + 1
+    v.rename(v.layer(lid))                                             # a click elsewhere keeps it
+    ed = editor(lid)
+    ed.setText("Clicked")
+    QTest.mouseClick(v.viewer, Qt.LeftButton)
+    QApplication.processEvents()
+    assert v.layer(lid)["name"] == "Clicked" and len(v.undo) == steps + 2
+    assert all(r.name_edit is None for r in v.rows)
+
+
 def test_sliders_are_greyed_with_their_reason_and_double_click_resets(post):
     from astro_gpu.client.post3 import ContSlider
     v = post.view

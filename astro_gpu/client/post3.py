@@ -400,6 +400,7 @@ class LayerRow(QFrame):
         self.panel, self.lay, self.depth = panel, lay, depth
         self._press = None
         self._dragging = False
+        self.name_edit = None                           # its name typed in place (Rename, a double-click)
         self.setObjectName("lrow")
         on = sel_layer or sel_mask
         self.setStyleSheet(f"QFrame#lrow {{ background: {'#2b3446' if on else 'transparent'}; border-radius: 4px; "
@@ -462,6 +463,7 @@ class LayerRow(QFrame):
         self.n.setMinimumWidth(60)
         self.n.setStyleSheet("font-weight: 600;" + ("" if lay["visible"] else " color: #8b93a1;"))
         v.addWidget(self.n)
+        self._names = v
         # its blend, shortened before the name is (the night test pass: "Cou…" for Curves beside "on all below · Normal")
         self.sub = ElidedLabel(panel.sub_text(lay), "small", mode=Qt.ElideRight)
         self.sub.setMaximumWidth(SUB_MAX)
@@ -481,7 +483,51 @@ class LayerRow(QFrame):
         elif lay["kind"] == "filter":
             self.setToolTip(_("On all below"))
 
+    def edit_name(self):
+        """Its name typed in place, in its row, as the reference image editors rename a layer (a window over the work
+        stopped everything): Enter or a click elsewhere keeps it, Escape gives it up; an empty or unchanged name changes
+        nothing (``rename``), a new one is one step of Undo."""
+        if self.name_edit is not None:
+            return
+        ed = self.name_edit = NameEdit(layer_name(self.lay), self)
+        ed.setStyleSheet("QLineEdit { font-weight: 600; background: transparent; border: none; padding: 0; "
+                         f"border-bottom: 1px solid {ACCENT}; border-radius: 0; }}")
+        self._names.insertWidget(self._names.indexOf(self.n), ed)
+        self.n.hide()
+        ed.show()                                        # (a child made after its row was shown)
+        ed.editingFinished.connect(lambda: self.end_name(True))
+        ed.installEventFilter(self)
+        QApplication.instance().installEventFilter(self)          # a click anywhere else keeps the name
+        ed.selectAll()
+        ed.setFocus(Qt.OtherFocusReason)
+
+    def end_name(self, keep: bool):
+        """The name typed kept (``keep``) or given up, the row's name shown again."""
+        ed, self.name_edit = self.name_edit, None
+        if ed is None:                                   # (Enter, then the focus it loses: once)
+            return
+        QApplication.instance().removeEventFilter(self)
+        text = ed.text().strip()
+        ed.blockSignals(True)
+        ed.hide()
+        ed.deleteLater()
+        self.n.show()
+        if keep:
+            lay = self.panel.layer(self.lay["id"])       # (the layers may have been built again meanwhile)
+            if lay is not None:
+                self.panel.rename(lay, text)
+
     def eventFilter(self, obj, e):                                   # noqa: N802 - Qt's name
+        ed = self.name_edit
+        if ed is not None and obj is ed and e.type() in (QEvent.ShortcutOverride, QEvent.KeyPress) \
+                and e.key() == Qt.Key_Escape:
+            e.accept()                                   # Escape is the field's (it leaves Post otherwise)
+            if e.type() == QEvent.KeyPress:
+                self.end_name(False)
+            return True
+        if ed is not None and e.type() == QEvent.MouseButtonPress and isinstance(obj, QWidget) and obj is not ed \
+                and not ed.rect().contains(ed.mapFromGlobal(e.globalPosition().toPoint())):
+            QTimer.singleShot(0, lambda: self.end_name(True))     # after the click, which may rebuild the rows
         if obj is self.t and e.type() == QEvent.Enter:
             self.panel.show_big(self.lay, self.t)
         elif obj is self.t and e.type() == QEvent.Leave:
@@ -1861,6 +1907,9 @@ class PostView(QWidget):
         self.b_heal.setChecked(self._heal_layer() is not None)
         self.b_heal.blockSignals(False)
         self.hide_big()
+        for r in getattr(self, "rows", []):
+            if r.name_edit is not None:                  # a name being typed is kept, as a click elsewhere keeps it
+                r.end_name(True)
         clear(self.lbox)
         self.rows = []
         ids = {lay["id"] for lay in self.layers}
@@ -2245,10 +2294,13 @@ class PostView(QWidget):
                 prefs.set(key, int(w.width()))
 
     def rename(self, lay, new: str | None = None):
+        """The layer named ``new``; without it, its name typed in place in its row (``LayerRow.edit_name``), after the
+        menu that asked it has closed and given the focus back."""
         old = layer_name(lay)
         if new is None:
-            from .dialogs import ask_name
-            new = ask_name(self.window(), _("Rename layer"), old)
+            QTimer.singleShot(0, lambda: next((r.edit_name() for r in self.rows
+                                               if r.lay["kind"] != "sub" and r.lay["id"] == lay["id"]), None))
+            return
         if not new or new == old:
             return
         p = self.path(lay["pid"]) if lay["kind"] == "workflow" and lay.get("part") is None else None
