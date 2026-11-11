@@ -225,3 +225,128 @@ def test_a_block_that_fails_before_it_starts_is_recorded_as_failed(tmp_path):
     m = json.loads((tmp_path / "stack-k1.tmp" / "manifest.json").read_text(encoding="utf-8"))
     assert m["status"] == "failed" and m["error"] == "ValidationError: gain" and m["stage"] == "stack"
 
+
+# ------------------------------------------------------------------------ the stack of frames at two orientations
+
+def two_orientations(root, n=10, turned=5, ang=82.2, n_stars=160, seed=0, sigma=1.1, size=(192, 256)):
+    """A v1 project with done inventory, calibrate (a float16 cache of RGGB frames) and register results: the first
+    ``turned`` frames of a camera turned by ``ang`` degrees, the others not, each dithered; the polynomials from the
+    true turns and dithers. Returns the project and the truth (the stars on the reference, their colours)."""
+    from test_stacking import CH
+
+    from astro_gpu.core.project import Inputs, Project
+    Hs, Ws = size
+    rng = np.random.default_rng(seed)
+    proj = Project.create(root, "toy", Inputs())
+    sxy = rng.uniform([12, 12], [Ws - 12, Hs - 12], (n_stars, 2))
+    flux = np.exp(rng.uniform(np.log(1500), np.log(30000), n_stars))
+    col = np.c_[rng.uniform(0.6, 1.4, n_stars), np.ones(n_stars), rng.uniform(0.6, 1.4, n_stars)]
+    dith = rng.uniform(-3, 3, (n, 2))
+    yy, xx = np.mgrid[0:Hs, 0:Ws]
+    chan = CH[2 * (yy % 2) + (xx % 2)]
+    cache = root / "lights.f16"
+    mm = np.memmap(cache, dtype=np.float16, mode="w+", shape=(n, Hs, Ws))
+    stats = np.zeros((n, 4, 2), np.float32)
+    coef = np.zeros((n, 2, 10))
+    c0 = np.array([Ws / 2, Hs / 2])
+    for i in range(n):
+        t = np.deg2rad(ang if i < turned else 0.0)
+        ct, st = np.cos(t), np.sin(t)
+        fxy = (sxy - c0) @ np.array([[ct, -st], [st, ct]]).T + c0 + dith[i]      # the sky on this frame's sensor
+        img = np.full((Hs, Ws), 300.0)
+        for (x0, y0), f, c in zip(fxy, flux, col):
+            ix, iy = int(round(x0)), int(round(y0))
+            ys, xs = slice(max(iy - 7, 0), max(min(iy + 8, Hs), 0)), slice(max(ix - 7, 0), max(min(ix + 8, Ws), 0))
+            g = f / (2 * np.pi * sigma ** 2) * np.exp(-0.5 * ((xx[ys, xs] - x0) ** 2 + (yy[ys, xs] - y0) ** 2) / sigma ** 2)
+            img[ys, xs] += g * c[chan[ys, xs]]                                   # each sample its colour of the star
+        img = img + rng.normal(0, 1, img.shape) * np.sqrt(img + 36.0)
+        mm[i] = img
+        for k in range(4):
+            pl = img[k // 2::2, k % 2::2]
+            stats[i, k] = [np.median(pl), 1.4826 * np.median(np.abs(pl - np.median(pl)))]
+        dx, dy = dith[i]                                  # frame -> reference: X = c + R(-t) (x - c - dither)
+        coef[i, 0, :3] = [Ws / 2 - ct * dx - st * dy, ct * Ws / 2, st * Hs / 2]
+        coef[i, 1, :3] = [Hs / 2 + st * dx - ct * dy, -st * Ws / 2, ct * Hs / 2]
+    mm.flush()
+    del mm
+
+    def stage(name, files):
+        d = proj.stage_dir(name)
+        d.mkdir(parents=True, exist_ok=True)
+        for k, v in files.items():
+            if k.endswith(".json"):
+                (d / k).write_text(json.dumps(v))
+            elif k.endswith(".npz"):
+                np.savez(d / k, **v)
+            else:
+                np.save(d / k, v)
+        (d / "manifest.json").write_text(json.dumps({"status": "done", "metrics": {}}))
+    stage("inventory", {"frames.json": {"lights": [{"path": f"L{i:02d}.fits", "time": f"2026-01-01T21:{i:02d}:00"}
+                                                   for i in range(n)]}})
+    stage("calibrate", {"cache.json": {"path": str(cache), "n": n, "height": Hs, "width": Ws, "scale": 1.0,
+                                       "cfa": "RGGB", "white_level": 60000.0, "dark_level": 0.0},
+                        "frame_stats.npy": stats, "master_dark.npy": np.zeros((Hs, Ws), np.float32),
+                        "master_flat.npy": np.ones((Hs, Ws), np.float32)})
+    stage("register", {"reg.npz": {"coef": coef, "transp": np.ones(n), "fwhm": np.full(n, 2.6), "rms": np.full(n, 0.1),
+                                   "ref": n - 2, "nmatch": np.full(n, 100), "nstars": np.full(n, 150),
+                                   "noise": np.full(n, 36.0), "roundness": np.full(n, 0.95)}})
+    return proj, SimpleNamespace(sxy=sxy, flux=flux, col=col, ang=ang, size=size)
+
+
+def seen_turned(X, Y, truth, margin):
+    """Whether the reference position (X, Y) is on the turned frames' sensor, ``margin`` px inside its edges."""
+    Hs, Ws = truth.size
+    t = np.deg2rad(truth.ang)
+    x = Ws / 2 + np.cos(t) * (X - Ws / 2) - np.sin(t) * (Y - Hs / 2)
+    y = Hs / 2 + np.sin(t) * (X - Ws / 2) + np.cos(t) * (Y - Hs / 2)
+    return (x > margin) & (x < Ws - margin) & (y > margin) & (y < Hs - margin)
+
+
+@pytest.mark.parametrize("method", ["drizzle", "classic"])
+def test_frames_at_two_orientations_stack_into_one_image(tmp_path, method):
+    """Five frames turned by 82 degrees and five not, stacked by both methods: on the part of the sky both see and on
+    the part only the straight ones see, the stars round, of their size, of their whole flux (a frame put a turn wrong
+    would leave half of it elsewhere) and of their own colours through the mosaic; no step of the sky at the edge of
+    the turned frames; and the weight map twice as high where both orientations cover."""
+    from test_stacking import copy_project, run_stage
+
+    from astro_gpu.stages.stack import Stack, StackParams
+    proj, truth = two_orientations(tmp_path / "p")
+    Hs, Ws = truth.size
+    p = copy_project(proj.root, tmp_path / method)
+    params = {"scale": 1.0, "pixfrac": 1.0, "gain": 1.0, "read_noise": 6.0, "half_block": 2}
+    run_stage(p, Stack(), StackParams(**params, **({"method": "classic"} if method == "classic" else {})))
+    img, wt = np.load(p.stage_dir("stack") / "drz_full.npy"), np.load(p.stage_dir("stack") / "drz_weight.npy")
+    yy, xx = np.mgrid[-5:6, -5:6]
+    rows = []
+    for (x0, y0), f, c in zip(truth.sxy, truth.flux, truth.col):
+        ix, iy = int(round(x0)), int(round(y0))
+        if not (10 < ix < Ws - 10 and 10 < iy < Hs - 10) or f < 4000:
+            continue
+        sky = np.median(img[:, iy - 9:iy + 10, ix - 9:ix + 10].reshape(3, -1), axis=1)
+        star = img[:, iy - 5:iy + 6, ix - 5:ix + 6] - sky[:, None, None]
+        ap = (xx - (x0 - ix)) ** 2 + (yy - (y0 - iy)) ** 2 <= 16
+        fl = star[:, ap].sum(1)
+        g = np.clip(star[1], 0, None) * ap                   # the green image's second moments: size and roundness
+        mx, my = (g * xx).sum() / g.sum(), (g * yy).sum() / g.sum()
+        cov = np.cov(np.c_[xx.ravel() - mx, yy.ravel() - my].T, aweights=g.ravel(), bias=True)
+        ev = np.linalg.eigvalsh(cov)
+        rows.append((bool(seen_turned(x0, y0, truth, 6.0)), fl[1] / f, fl[0] / fl[1] / c[0], fl[2] / fl[1] / c[2],
+                     np.sqrt(ev[0] / ev[1]), 2.3548 * np.sqrt(ev.mean())))
+    m = np.array(rows)
+    for part in (m[:, 0] == 1, m[:, 0] == 0):
+        assert part.sum() >= 20
+        flux, red, blue, round_, fwhm = np.median(m[part, 1:], axis=0)
+        assert abs(flux - 1) < 0.04 and abs(red - 1) < 0.05 and abs(blue - 1) < 0.05
+        assert round_ > 0.92 and fwhm < 1.15 * 2.3548 * 1.1
+    Y, X = np.mgrid[0:Hs, 0:Ws]
+    inner = (X > 12) & (X < Ws - 12) & (Y > 12) & (Y < Hs - 12)
+    edge_in = seen_turned(X, Y, truth, 0.0) & ~seen_turned(X, Y, truth, 10.0) & inner
+    edge_out = ~seen_turned(X, Y, truth, 0.0) & seen_turned(X, Y, truth, -10.0) & inner
+    both, one = seen_turned(X, Y, truth, 6.0) & inner, ~seen_turned(X, Y, truth, -6.0) & inner
+    for c in range(3):
+        pl = img[c]
+        s = 1.4826 * np.median(np.abs(pl[inner] - np.median(pl[inner])))
+        sky = pl < np.median(pl[inner]) + 3 * s
+        assert abs(np.median(pl[edge_in & sky]) - np.median(pl[edge_out & sky])) < 0.25 * s
+        assert wt[c][both].mean() / wt[c][one].mean() == pytest.approx(2.0, rel=0.1)
