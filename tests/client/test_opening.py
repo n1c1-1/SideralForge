@@ -119,3 +119,15 @@ def test_the_frames_are_read_when_inspect_shows_them_not_as_the_project_opens(en
     w.set_mode(1)
     _settle(w)
     assert asked and w.browser.pages.currentIndex() == 1          # shown: read, its session's page
+
+
+def test_the_start_loads_the_stage_graph_and_the_names_while_home_is_shown(monkeypatch):
+    """The first opening needed every stage's module (the keys) and the catalogue's names (the Project block, in the GUI
+    thread): the start's warm-up loads them first, then what the first render needs."""
+    from astro_gpu.core import determinism, skyobjects, store
+    done = []
+    monkeypatch.setattr(store, "key_rules", lambda: done.append("stages"))
+    monkeypatch.setattr(skyobjects, "names_index", lambda: done.append("names"))
+    monkeypatch.setattr(determinism, "warm_up", lambda: done.append("render"))
+    appmod._warm_up()
+    assert done == ["stages", "names", "render"]

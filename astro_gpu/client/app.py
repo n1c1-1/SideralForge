@@ -1579,7 +1579,16 @@ def _clear_closed(roots: list[str]) -> tuple[int, int]:
 
 
 def _warm_up():
-    """What the first render would otherwise load while the user waits (core/determinism.warm_up)."""
+    """What the first opening and the first render would otherwise load while the user waits, loaded while Home is
+    shown (#115): the stage graph (every stage's module: the keys of any project need it, seconds on a laptop), the
+    names of the catalogue (the Project block's target, read in the GUI thread), then core/determinism.warm_up."""
+    try:
+        from ..core.store import key_rules
+        key_rules()
+        from ..core.skyobjects import names_index
+        names_index()
+    except Exception:  # noqa: BLE001 - a warm-up only: the opening loads them anyway
+        pass
     try:
         from ..core.determinism import warm_up
         warm_up()
