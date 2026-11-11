@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import pickle
+import warnings
 from multiprocessing import get_context
 
 import numpy as np
@@ -51,8 +52,10 @@ class Register(Stage):
     # cubic (a frame turned by 0.7 degree with a 0.2 % change of scale locked on a third of its stars, 6 px off at
     # the edges); the transparency from a fixed aperture (it followed the seeing); the pixel noise of each frame. 3:
     # frames turned by any angle are aligned (issue #63: a camera turned by 82 degrees between two nights, 21 frames
-    # left out), and a dense field's frame turned past 45 degrees no longer keeps a fit on chance pairs
-    version = "3"
+    # left out), and a dense field's frame turned past 45 degrees no longer keeps a fit on chance pairs. 4: the turn's
+    # triangles from more than the 50 brightest stars when those share none (the same frames, calibrated: their
+    # brightest stars lay off the reference's field)
+    version = "4"
 
     def auto(self, ctx: Context) -> dict[str, Auto]:
         n = max(1, min(12, (os.cpu_count() or 4) - 2))
@@ -458,25 +461,35 @@ def fit_any_turn(cat, ref, tree, W, H):
     half turn's search, which takes 1 s). Every similarity the triangles propose is scored on the stars it brings
     within STAR_TOL of a reference star, the best one starts ``_fit_from``, and the fit is held to the half turn's
     acceptance (the same share of matched stars, the same residual), so that the chance pairs of a dense field and a
-    frame of another field stay out."""
+    frame of another field stay out.
+
+    The triangles come from the brightest TURN_STARS[0] stars of each list (Beroiz et al.'s 50), then, while no fit
+    stands, from more (TURN_STARS), as the shift's vote takes more stars (issue #37): a turned frame does not see the
+    same part of the sky, and its brightest stars need not be the reference's. On the calibrated frames of the
+    two-night North America (the camera turned by 82 degrees, the field shifted by a third of its width), the 50
+    brightest detections of each frame lay along its left and right edges, which the turn puts mostly off the
+    reference: 6 to 8 of a frame's 50 fell on the reference's field, 1 to 3 among the reference's own 50, and no
+    triangle was common to both lists; with 150 stars every frame aligned (1 400 of its 2 500 stars matched)."""
     if cat is None or len(cat) < 30:
         return None, None
-    s, t, _ = triangle_similarities(cat[:TRIANGLE_STARS, :2], ref[:TRIANGLE_STARS, :2])
     za = cat[:, 0] + 1j * cat[:, 1]
-    best, top = None, (0, 0j)
-    for s1, t1 in zip(s, t):
-        z = s1 * za + t1
-        k = len(_matched(np.c_[z.real, z.imag], tree)[0])
-        if k > top[0]:
-            best, top = z, (k, s1)
-    # a frame within ROTATION_DEG of the reference is ``initial_rotation``'s (or the phase correlation's): left to them,
-    # as before, so that a frame they align or leave out is neither aligned otherwise nor said turned
-    if best is None or top[0] < SPARSE_MIN_MATCHES or abs(np.degrees(np.angle(top[1]))) <= ROTATION_DEG:
-        return None, None
-    r = _fit_from(cat, ref, tree, W, H, np.c_[best.real, best.imag], 8.0)
-    if r is None or r[1] < 0.3 * min(len(cat), len(ref)) or r[2] >= 1.0:
-        return None, None
-    return r, turn_of(r[0])
+    for nst in TURN_STARS:
+        s, t, _ = triangle_similarities(cat[:nst, :2], ref[:nst, :2])
+        best, top = None, 0
+        for s1, t1 in zip(s, t):
+            z = s1 * za + t1
+            k = len(_matched(np.c_[z.real, z.imag], tree)[0])
+            if k > top:
+                best, top = z, k
+        if best is None or top < SPARSE_MIN_MATCHES:
+            continue
+        r = _fit_from(cat, ref, tree, W, H, np.c_[best.real, best.imag], 8.0)
+        if r is None or r[1] < 0.3 * min(len(cat), len(ref)) or r[2] >= 1.0:
+            continue                     # chance triangles: more stars, as the shift's vote takes more (issue #37)
+        # a frame within ROTATION_DEG of the reference is ``initial_rotation``'s (or the phase correlation's): left to
+        # them, as before, so that a frame they align or leave out is neither aligned otherwise nor said turned
+        return (None, None) if abs(turn_of(r[0])) <= ROTATION_DEG else (r, turn_of(r[0]))
+    return None, None
 
 
 def turn_of(coef) -> float:
@@ -528,6 +541,9 @@ SPARSE_MIN_MATCHES = 6
 #: largest residual (px) of a transform from few stars, as ``fit_frame`` asks of a turned fit; the largest change of
 #: scale between two frames of one instrument (a triangle fitted to a far smaller one maps every star onto one point)
 SPARSE_RMS, SPARSE_SCALE = 1.0, 0.05
+#: the brightest stars of each list whose triangles ``fit_any_turn`` matches, in turn while no fit stands: Beroiz et
+#: al.'s 50, then three and six times as many (0.2 s a frame at 300 stars)
+TURN_STARS = (TRIANGLE_STARS, 3 * TRIANGLE_STARS, 6 * TRIANGLE_STARS)
 
 
 def _triangles(xy, nearest=True):
@@ -703,7 +719,9 @@ def _catalog(idx):
     a = equalised(np.asarray(_G["mm"][idx], np.float32), _G["cfa"], VALID_MAX)
     a = a[: H - H % 2, : W - W % 2].reshape(H // 2, 2, W // 2, 2)
     sat = (a > VALID_MAX).any(axis=(1, 3))
-    s = np.nanmean(a, axis=(1, 3)) * 4.0
+    with warnings.catch_warnings():         # a 2 x 2 block of bad pixels only (NaN after calibration): NaN, masked below
+        warnings.simplefilter("ignore", RuntimeWarning)
+        s = np.nanmean(a, axis=(1, 3)) * 4.0
     s[sat] = np.nan
     mask = ~np.isfinite(s)
     s = np.where(mask, np.nanmedian(s), s).astype(np.float32)

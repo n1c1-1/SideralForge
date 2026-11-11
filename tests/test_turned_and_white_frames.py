@@ -117,6 +117,40 @@ def test_a_frame_turned_by_any_angle_is_aligned(ang):
     assert r2 is not None and again == at and off_by(r2[0], nxt, truth2) < 0.3
 
 
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_a_turned_frame_whose_brightest_stars_are_off_the_reference_is_aligned(seed):
+    """The real two-night set as the stage sees it (calibrated frames of 4256 x 2848, the camera turned by 82 degrees):
+    the brightest stars are saturated and masked in every frame, and the brightest of what is left lie along each
+    sensor's left and right edges, which the turn puts off the other's field. The 50 brightest of the two lists then
+    share no triangle; the triangles of more stars find the turn, with the same acceptance."""
+    w, h = 4256, 2848
+    rng = np.random.default_rng(seed)
+    sky = rng.uniform([-1500, -1500], [w + 1500, h + 1500], (6000, 2))
+    flux = np.sort(rng.pareto(1.5, 6000) + 1)[::-1] * 1000
+    flux[:150] = np.nan                                      # saturated: masked in every frame
+
+    def shot(ang, shift, s, scale):
+        r = np.random.default_rng(s)
+        t = np.deg2rad(ang)
+        c = np.array([w / 2, h / 2])
+        xy = (sky - c) @ np.array([[np.cos(t), -np.sin(t)], [np.sin(t), np.cos(t)]]).T * scale + c + np.array(shift)
+        on = np.isfinite(flux) & (xy[:, 0] > 0) & (xy[:, 0] < w) & (xy[:, 1] > 0) & (xy[:, 1] < h)
+        xy = xy[on] + r.normal(0, 0.2, (on.sum(), 2))
+        f = flux[on] * (1 + 3 * np.abs(xy[:, 0] / (w / 2) - 1) ** 4) * r.lognormal(0, 0.1, on.sum())
+        first = np.argsort(-f)[:2500]                        # the stage keeps the 2 500 brightest detections
+        return np.c_[xy, f, np.full(on.sum(), 2.0)][first], sky[on][first]
+    ref, _ = shot(0.0, (0.0, 0.0), 1, 1.0)
+    cat, truth = shot(82.2, (-40.0, 1.0), 2, 1.0002)       # truth: the sky, the reference's own positions
+    tree = cKDTree(ref[:, :2])
+    s, t, _ = register.triangle_similarities(cat[:register.TRIANGLE_STARS, :2], ref[:register.TRIANGLE_STARS, :2])
+    za = cat[:, 0] + 1j * cat[:, 1]
+    assert max((len(register._matched(np.c_[(a * za + b).real, (a * za + b).imag], tree)[0]) for a, b in zip(s, t)),
+               default=0) < 30                               # the 50 brightest: chance triangles only
+    r, at = fit_any_turn(cat, ref, tree, w, h)
+    assert r is not None and r[1] >= 0.3 * len(cat) and r[2] < 1.0 and abs(at + 82.2) < 0.05
+    assert off_by(r[0], cat, truth, w, h) < 0.3
+
+
 def test_a_turn_within_45_degrees_is_left_to_its_own_search():
     """A frame the shift or the turn within 45 degrees aligns (or leaves out) today is not taken from them."""
     ref = field()
