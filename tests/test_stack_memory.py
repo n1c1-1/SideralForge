@@ -12,6 +12,8 @@ from astro_gpu.core import stack_classic as sc
 
 #: a machine whose memory leaves room for nothing: every frame on disk, pieces of PIECE_ALIGN pixels
 SHORT = (0, 3 * 2 ** 30)
+#: the lines that say the time of each pass, after the memory's
+PASSES = ["classic: debayering and resampling", "classic: rejection and means"]
 
 
 @pytest.fixture(scope="module")
@@ -47,8 +49,9 @@ def test_on_disk_and_in_pieces_the_result_is_the_same_to_the_bit(frames, tmp_pat
     rows = max(1, band // W)
     n = len(sc._parts(H, W, rows, sc.PIECE_ALIGN))
     assert n > -(-H // rows)                                 # in pieces indeed
-    assert lines == [f"memory: 3.0 GB available, the {len(used)} registered frames (0.0 GB) are kept on disk and "
-                     f"the rejection is computed in {n} parts"]
+    assert lines[0] == (f"memory: 3.0 GB available, the {len(used)} registered frames (0.0 GB) are kept on disk and "
+                        f"the rejection is computed in {n} parts")
+    assert [x.split(" done in ")[0] for x in lines[1:]] == PASSES      # then the time of each pass
     del got
     assert list(tmp_path.iterdir()) == []                    # the temporary files are gone with the arrays
 
@@ -56,7 +59,8 @@ def test_on_disk_and_in_pieces_the_result_is_the_same_to_the_bit(frames, tmp_pat
 def test_with_room_nothing_changes_and_nothing_is_said(frames, tmp_path):
     lines: list[str] = []
     res = _stack(frames, memory=(2 ** 34, 2 ** 35), spill=tmp_path, log=lines.append)
-    assert not isinstance(res.masks, np.memmap) and lines == [] and list(tmp_path.iterdir()) == []
+    assert not isinstance(res.masks, np.memmap) and list(tmp_path.iterdir()) == []
+    assert [x.split(" done in ")[0] for x in lines] == PASSES                   # the time of each pass only
 
 
 def test_the_plan_of_a_long_session():

@@ -338,7 +338,7 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
     (bytes the stack may fill, bytes available), core/devices.memory_budget; None: no bound. ``spill``: the folder
     where the resampled frames go when they do not fit in it (None, or a disk without the room: kept in memory
     whatever their size); ``log``:
-    where the plain line saying so goes (issue #125)."""
+    where the plain line saying so goes, and the time of each pass (issue #125)."""
     p = params or ClassicParams()
     dev = torch.device(device)
     progress = progress or (lambda f, msg: None)
@@ -430,6 +430,9 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
                        "cfa_balance": None if bal is None else [round(float(v), 5) for v in bal]})
         progress(0.6 * (k + 1) / nu, f"classic: {k + 1}/{nu} frames debayered and resampled")
     t1 = time.time()
+    if log is not None:                     # the time of each pass, in the log (issue #125)
+        log(f"classic: debayering and resampling done in {(t1 - t0) / 60:.1f} min, of which {t_load:.0f} s reading "
+            f"the frames")
 
     # ---------------- pass 2: rejection and the weighted means, by bands of rows
     full = np.zeros((3, H, W), np.float32)
@@ -498,6 +501,8 @@ def stack_classic(load: Callable, coef, bad=None, norm: Norm | None = None, weig
         progress(0.6 + 0.4 * o1 / (H * W), f"classic: rejection ({choice.method}) {o1 // W}/{H} rows")
     del store, flags, store_f, flags_f, masks_f              # the frames' file, if any, is deleted with its last view
     t2 = time.time()
+    if log is not None:
+        log(f"classic: rejection and means done in {(t2 - t1) / 60:.1f} min")
 
     f = max(1, -(-max(H, W) // REJECTION_SIDE))
     tested = int(tested_c.sum())

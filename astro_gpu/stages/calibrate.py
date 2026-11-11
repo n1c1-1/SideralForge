@@ -626,6 +626,52 @@ def open_colour(info: dict) -> np.memmap:
     return np.memmap(info["rgb_path"], dtype=np.float16, mode="r", shape=(info["n"], 3, info["height"], info["width"]))
 
 
+class CachedFrames:
+    """The calibrated frames of a cache (cache.json ``info``; ``colour``: the three planes of frames already in
+    colour), frame i as float32 (a new array) by ``frames[i]``, one thread at a time.
+
+    Each frame is one explicit read of its bytes into a float16 buffer reused from frame to frame (issue #125). Through
+    a memory map of the cache, the stack's three passes brought every frame in by page faults, and its pages stayed in
+    the process's working set until the system trimmed them: on a night of 754 frames (a 17 GB cache), the stack's
+    working set reached 19.9 GB, only 8.2 GB of it private, on a machine of 27.7 GB whose free memory stayed under
+    1 GB, about 4,000 pages read back from the disk a second. Read this way, the cache's pages are only in the
+    system's file cache, which it gives up first; the file is open only during a read. The values are the same to the
+    bit: the same float16, converted to float32 the same way. ``mapped``: through the memory map as before (the tests
+    compare both). ``seconds``: the time spent reading the frames, for the passes' lines in the log."""
+
+    def __init__(self, info: dict, colour: bool = False, mapped: bool = False):
+        self.path = info["rgb_path"] if colour else info["path"]
+        self.n = int(info["n"])
+        self.shape = (3, info["height"], info["width"]) if colour else (info["height"], info["width"])
+        self.mm = np.memmap(self.path, dtype=np.float16, mode="r", shape=(self.n, *self.shape)) if mapped else None
+        self.buf = None if mapped else np.empty(self.shape, np.float16)
+        self.seconds = 0.0
+
+    def __len__(self) -> int:
+        return self.n
+
+    def __getitem__(self, i) -> np.ndarray:
+        t = time.perf_counter()
+        i = int(i)
+        if not 0 <= i < self.n:
+            raise IndexError(f"frame {i} of a cache of {self.n}")
+        if self.mm is not None:
+            out = np.asarray(self.mm[i], np.float32)
+        else:
+            view = memoryview(self.buf).cast("B")
+            with open(self.path, "rb", buffering=0) as f:
+                f.seek(i * view.nbytes)
+                got = 0
+                while got < view.nbytes:                        # a read may return less than asked: the rest after
+                    k = f.readinto(view[got:])
+                    if not k:
+                        raise OSError(f"{self.path}: frame {i} cut short (a cache of {self.n} frames expected)")
+                    got += k
+            out = self.buf.astype(np.float32)
+        self.seconds += time.perf_counter() - t
+        return out
+
+
 def calibrate_colour(ctx: Context, p: CalibrateParams, frames: dict) -> None:
     """The calibration of frames already in colour, channel by channel (issue #57): the master dark, bias and flat of
     their own three planes, each frame's dark taken off and its flat divided by colour by colour; written as a

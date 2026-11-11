@@ -51,7 +51,7 @@ from ..core.params import ADVANCED, Auto, P, StageParams, check_choice
 from ..core.stack_classic import HIGH_SHIFT
 from ..core.stage import Context, Stage, StageError
 from ..io.frames import cfa_channel_map
-from .calibrate import VALID_MAX, open_cache, open_colour
+from .calibrate import VALID_MAX, CachedFrames
 
 #: the level of a parameter the project sets itself: never shown in a settings form
 INTERNAL = "internal"
@@ -318,12 +318,14 @@ class Stack(Stage):
         if p.method == "classic" and classic_missing():
             raise StageError(CLASSIC_NOT_YET)
         dev = ctx.device
-        mm, info = open_cache(ctx)
+        info = ctx.load_json("calibrate", "cache.json")
         H, W = info["height"], info["width"]
         colour = bool(info.get("rgb_path"))           # frames already in colour (issue #57): three planes, no mosaic
         if colour and p.method != "classic":
             raise StageError(COLOUR_NO_DRIZZLE)
-        rgb_mm = open_colour(info) if colour else None
+        mm = CachedFrames(info)                       # each frame one read, no memory map (issue #125)
+        rgb_mm = CachedFrames(info, colour=True) if colour else None
+        frames = rgb_mm if colour else mm
         ch_of_k = [0, 1, 2] if colour else cfa_channel_map(info["cfa"])
         P = 1 if colour else cfa_mod.period(info["cfa"])      # the pattern's period: 2 (Bayer), 6 (X-Trans)
         mono = not colour and cfa_mod.is_mono(info["cfa"])    # a monochrome sensor: one channel (issue #43)
@@ -437,7 +439,7 @@ class Stack(Stage):
                 cy.append(P * gy + ky)
             return torch.stack(out), torch.stack(cx), torch.stack(cy)
 
-        fr = torch.from_numpy(np.asarray((rgb_mm if colour else mm)[ref], np.float32)).to(dev)
+        fr = torch.from_numpy(frames[ref]).to(dev)
         if fpn is not None:
             fr = torch.where(fr > VALID_MAX, fr, fr - fpn)
         Bref_np = block_bkg(fr)[0].cpu().numpy()
@@ -484,13 +486,16 @@ class Stack(Stage):
             return norm[int(i)]
 
         def load(i):                                # the calibrated CFA frame (colour frames: its planes), for Classic
-            fr = torch.from_numpy(np.asarray((rgb_mm if colour else mm)[i], np.float32)).to(dev)
+            fr = torch.from_numpy(frames[i]).to(dev)
             return fr if fpn is None else torch.where(fr > VALID_MAX, fr, fr - fpn)
 
+        clock = PassClock(ctx, frames)
         if p.method == "classic":                   # debayered, interpolated (core/stack_classic.py), its hook
+            clock.start()
             for c_, i in enumerate(used):           # the normalisation: frame_norm's backgrounds
                 frame_norm(i, load(i))
                 ctx.progress(0.05 * (c_ + 1) / len(used), "normalisation")
+            clock.done("normalisation")
             return stack_classic(ctx, p, wb=wb, load=load, coef=coef, used=used, weight=weight, norm=norm, transp=transp,
                                  meta=meta, sel=sel, ch_of_k=ch_of_k, H=H, W=W, satval=satval, dev=dev, t0=t0,
                                  colour=colour, zone=zone)
@@ -499,7 +504,7 @@ class Stack(Stage):
             """The frame normalised to the reference (value, ADU of the reference), where its samples land on the
             output grid (Xo, Yo), its saturated and bad samples, its additive sky difference in its own ADU (grad,
             for the noise model) and its sky level per channel."""
-            fr = torch.from_numpy(np.asarray(mm[i], np.float32)).to(dev)
+            fr = torch.from_numpy(mm[i]).to(dev)
             if fpn is not None:
                 fr = torch.where(fr > VALID_MAX, fr, fr - fpn)
             X, Y = grid_poly(coef[i])
@@ -530,10 +535,12 @@ class Stack(Stage):
         # ---------------- pass 1: weighted mean (the first prediction)
         num = torch.zeros(3 * Ho * Wo, device=dev)
         den = torch.zeros(3 * Ho * Wo, device=dev)
+        clock.start()
         for c_, i in enumerate(used):
             val, Xo, Yo, sat, bad, _, _, _ = frame_model(i)
             deposit(num, den, val, Xo, Yo, float(weight[i]), ~bad)
             ctx.progress(0.3 * (c_ + 1) / len(used), f"pass 1: {c_ + 1}/{len(used)} frames")
+        clock.done("pass 1")
         model = Prediction(num, den, len(used), Ho, Wo, dev)
         del num, den
         # ---------------- the colours registered on each other for the whole night: the offsets of the red and blue
@@ -572,10 +579,12 @@ class Stack(Stage):
             # prediction, so that the final pass does not judge the other frames against a mean they pulled up or down
             num = torch.zeros(3 * Ho * Wo, device=dev)
             den = torch.zeros(3 * Ho * Wo, device=dev)
+            clock.start()
             for c_, i in enumerate(used):
                 val, Xo, Yo, bad, hi, lo, _, _, _ = judge(i, model, CLEAN_FACTOR * p.kappa, False)
                 deposit(num, den, val, Xo, Yo, float(weight[i]), ~bad & ~hi & ~lo)
                 ctx.progress(0.3 + 0.3 * (c_ + 1) / len(used), f"pass 2: {c_ + 1}/{len(used)} frames")
+            clock.done("pass 2")
             model = model.cleaned(num, den)
             del num, den
 
@@ -589,6 +598,7 @@ class Stack(Stage):
         near_acc = torch.zeros(3 * Ho * Wo, device=dev)     # the weight of the samples near saturation
         clip_acc = torch.zeros(3 * Ho * Wo, device=dev)     # and of the clipped ones
         tally = [0.0, 0.0]                                  # integration: drop weight excluded, deposited
+        clock.start()
         for c_, i in enumerate(used):
             rej = None
             if integ is None:
@@ -614,6 +624,7 @@ class Stack(Stage):
                     f"{100 * tally[0] / max(tally[1], 1e-12):.2f} % of the drops left out")
             ctx.progress((0.6 if integ is None else 0.7) + (0.4 if integ is None else 0.3) * (c_ + 1) / len(used),
                          f"pass 3: {c_ + 1}/{len(used)} frames, {done}")
+        clock.done("pass 3")
         del model, rej
 
         def finish(a):
@@ -693,6 +704,23 @@ class Stack(Stage):
                 f"{rej_pct:.2f} % pixels rejected" + ("" if integ is None else
                                                       f" (integration), {excluded_pct:.2f} % of the drops left out"))
         ctx.preview("stack", asinh_preview(drz))
+
+
+class PassClock:
+    """The time of each pass over the frames, one line in the log at its end (issue #125: the progress lines carry
+    no time, so where a night's 46 min went could not be read): its duration and how much of it went to reading the
+    frames (``frames``: the stack's ``CachedFrames``)."""
+
+    def __init__(self, ctx: Context, frames: CachedFrames):
+        self.ctx, self.frames = ctx, frames
+        self.start()
+
+    def start(self) -> None:
+        self.t, self.read = time.time(), self.frames.seconds
+
+    def done(self, what: str) -> None:
+        self.ctx.log(f"{what} done in {(time.time() - self.t) / 60:.1f} min, of which "
+                     f"{self.frames.seconds - self.read:.0f} s reading the frames")
 
 
 #: from this many samples a frame is dropped on all the cores (CPU)

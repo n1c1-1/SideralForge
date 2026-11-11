@@ -321,6 +321,14 @@ PATTERNS: list[tuple[re.Pattern, str, tuple]] = [
          "{0}/{1} frames aligned, residual {2} px, FWHM {3} px, transparency p10/p90 {4}/{5}", ()),
         (r"^drizzle (\d+)x(\d+) from (\d+) frames in ([\d.]+) min, ([\d.]+) % pixels rejected$",
          "drizzle {0}x{1} from {2} frames in {3} min, {4} % pixels rejected", ()),
+        # issue #125: the time of each pass of the stack (stages/stack.PassClock, core/stack_classic.py)
+        (r"^pass (\d) done in ([\d.]+) min, of which (\d+) s reading the frames$",
+         "pass {0} done in {1} min, of which {2} s reading the frames", ()),
+        (r"^normalisation done in ([\d.]+) min, of which (\d+) s reading the frames$",
+         "normalisation done in {0} min, of which {1} s reading the frames", ()),
+        (r"^classic: debayering and resampling done in ([\d.]+) min, of which (\d+) s reading the frames$",
+         "classic: debayering and resampling done in {0} min, of which {1} s reading the frames", ()),
+        (r"^classic: rejection and means done in ([\d.]+) min$", "classic: rejection and means done in {0} min", ()),
         (r"^(\d+) stars detected in the stack$", "{0} stars detected in the stack", ()),
         (r"^solved: centre RA ([\d.]+) Dec ([+-]?[\d.]+), ([\d.]+)\"/px, field ([\d.]+) x ([\d.]+) deg, "
          r"residual ([\d.]+) px on (\d+) stars$",
