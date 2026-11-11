@@ -1024,10 +1024,14 @@
   "Transparency changes": "Variation de transparence",
   "signal of the stars from frame to frame (tenth to ninetieth percentile)": "signal des étoiles d'une pose à l'autre (du 10e au 90e centile)",
   "field {w}° × {h}°": "champ {w}° × {h}°",
-  "{kept} frames kept": "{kept} poses gardées",
-  "Every figure above is measured on the frames of this session.": "Chaque valeur ci-dessus est mesurée sur les poses de cette session.",
   "Star FWHM, measured": "FWHM des étoiles",
   "Field drift": "Dérive du champ",
   "how far the field moved on the sensor during the session (tracking and deliberate shifts)": "déplacement du champ sur le capteur pendant la session (suivi et décalages volontaires)",
-  "how far the field moved on the sensor in {t} (tracking and deliberate shifts): {rate}″ a minute": "déplacement du champ sur le capteur en {t} (suivi et décalages volontaires) : {rate}″ par minute"
+  "how far the field moved on the sensor in {t} (tracking and deliberate shifts): {rate}″ a minute": "déplacement du champ sur le capteur en {t} (suivi et décalages volontaires) : {rate}″ par minute",
+  "Figure 1. The final image, as Post last showed it.": "Figure 1. L'image finale, telle que Post l'a montrée en dernier.",
+  "Table 2. Figures measured on the frames of this session.": "Tableau 2. Valeurs mesurées sur les poses de cette session.",
+  "Quantity": "Grandeur",
+  "Value": "Valeur",
+  "How it is measured": "Méthode de mesure",
+  "Table 1. Acquisition.": "Tableau 1. Acquisition."
 }

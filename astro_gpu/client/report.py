@@ -493,7 +493,7 @@ def highlights(d: ReportData, lang: str) -> list:
         if hi > 0:
             out.append((f"{100 * (hi - lo) / hi:.0f} %", _("Transparency changes"),
                         _("signal of the stars from frame to frame (tenth to ninetieth percentile)")))
-    return out[:8]
+    return out
 
 
 def shot_text(target: str, rows: list) -> str:
@@ -509,6 +509,16 @@ def _table(rows, widths=("38%", "62%")) -> str:
         return ""
     body = "".join(f"<tr><td width='{widths[0]}'>{a}</td><td width='{widths[1]}'><b>{b}</b></td></tr>" for a, b in rows)
     return f"<hr/><table width='100%' cellspacing='0' cellpadding='3'>{body}</table><hr/>"
+
+
+def _table3(head, rows, widths=("30%", "18%", "52%")) -> str:
+    """A table of three columns under a head row, ruled as the report's other tables."""
+    if not rows:
+        return ""
+    top = "".join(f"<td width='{w}'><i>{h}</i></td>" for w, h in zip(widths, head))
+    body = "".join(f"<tr><td width='{widths[0]}'>{a}</td><td width='{widths[1]}'><b>{b}</b></td>"
+                   f"<td width='{widths[2]}'><span class='cap'>{c}</span></td></tr>" for a, b, c in rows)
+    return f"<hr/><table width='100%' cellspacing='0' cellpadding='3'><tr>{top}</tr>{body}</table><hr/>"
 
 
 def _meanings() -> dict:
@@ -824,67 +834,60 @@ class ReportPage(QWidget):
         return out + self._appendix(n + 2, d)
 
     def _head(self, d, p, many: bool, version: str) -> str:
-        """The first piece, made to be posted as a picture: the program's mark, the target, the image, the session in
-        one line and the figures measured on it (``highlights``)."""
+        """The first piece, a page to post as a picture, as a scientific report opens: the program named discreetly, the
+        target and where it is, the final image (Figure 1), the observation (its table) and the figures measured on
+        the session with how each was measured (``highlights``)."""
         from PySide6.QtCore import QRectF
         from PySide6.QtSvg import QSvgRenderer
 
         from .icons import APP_ICON
-        logo = QImage(112, 112, QImage.Format_ARGB32_Premultiplied)
+        logo = QImage(64, 64, QImage.Format_ARGB32_Premultiplied)
         logo.fill(Qt.transparent)
         q = QPainter(logo)
         q.setRenderHint(QPainter.Antialiasing)
-        QSvgRenderer(str(APP_ICON)).render(q, QRectF(0, 0, 112, 112))
+        QSvgRenderer(str(APP_ICON)).render(q, QRectF(0, 0, 64, 64))
         q.end()
         self._images["logo"] = logo
         lang = language() if language() in WORDS else "en"
-        band = ("<table width='100%' cellspacing='0' cellpadding='10' bgcolor='#141a24'><tr>"
-                "<td width='70'><img src='logo' width='56' height='56'/></td>"
-                f"<td><span style='font-size:22pt; font-weight:bold; color:#ffffff'>{APP_NAME}</span><br/>"
-                f"<span style='font-size:9pt; color:#9aa6b8'>{APP_MOTTO}</span></td>"
-                f"<td align='right'><span style='font-size:9pt; color:#9aa6b8'>{_('Processing report')}<br/>"
-                f"{date.today().isoformat()}</span></td></tr></table>")
+        out = ("<table width='100%' cellspacing='0' cellpadding='0'><tr>"
+               f"<td><img src='logo' width='20' height='20'/>&nbsp;<span style='font-size:9pt; color:#666666'>"
+               f"{APP_NAME} &middot; {APP_MOTTO}</span></td>"
+               f"<td align='right'><span style='font-size:9pt; color:#666666'>{_('Processing report')} &middot; "
+               f"{date.today().isoformat()}</span></td></tr></table><hr/>")
         sub = [html.escape(x) for x in (p.name if many and p is not None else "", version) if x]
         a = d.astro if d is not None else {}
         where = []
         if a.get("ra") is not None and a.get("dec") is not None:
-            where.append(sky_position(float(a["ra"]), float(a["dec"])))
+            where.append(sky_position(float(a["ra"]), float(a["dec"])) + " (ICRS)")
         if a.get("field_deg"):
             where.append(_("field {w}° × {h}°").format(w=_dec(float(a["field_deg"][0]), 1, lang),
                                                        h=_dec(float(a["field_deg"][1]), 1, lang)))
         if a.get("scale_arcsec"):
             where.append(f'{_dec(float(a["scale_arcsec"]), 2, lang)}″/px')
-        out = band + (f"<h1 align='center'>{html.escape(self.title())}</h1>"
-                      + (f"<p align='center'>{' &mdash; '.join(sub)}</p>" if sub else "")
-                      + (f"<p align='center' class='cap'>{html.escape(' · '.join(where))}</p>" if where else ""))
+        out += (f"<h1 align='center'>{html.escape(self.title())}</h1>"
+                + (f"<p align='center'>{' &mdash; '.join(sub)}</p>" if sub else "")
+                + (f"<p align='center' class='cap'>{html.escape(' · '.join(where))}</p>" if where else ""))
         if d is not None and d.thumb:
             self._images["thumb"] = QImage.fromData(d.thumb)
-            out += "<p align='center'><img src='thumb' width='600'/></p>"
+            out += ("<p align='center'><img src='thumb' width='560'/></p>"
+                    f"<p class='cap' align='center'>{_('Figure 1. The final image, as Post last showed it.')}</p>")
         if d is None or d.reg is None:
             return out
-        rows = {k: v for k, _w, v in shot_rows(d, self.s.info(), self.entered(), lang) if v}
-        line = [rows[k] for k in ("camera", "instrument", "focal", "frames") if k in rows]
-        if "kept" in rows:
-            line.append(_("{kept} frames kept").format(kept=rows["kept"]))
-        if line:
-            out += f"<p align='center'><b>{html.escape(' · '.join(line))}</b></p>"
-        cells = [f"<td width='50%' bgcolor='#eef2f8'><span style='font-size:17pt; font-weight:bold; color:#1d4f9a'>"
-                 f"{html.escape(v)}</span><br/><b>{html.escape(t)}</b><br/>"
-                 f"<span style='font-size:8.5pt; color:#555555'>{html.escape(h)}</span></td>"
-                 for v, t, h in highlights(d, lang)]
-        if cells:
-            grid = "".join(f"<tr>{''.join(cells[i:i + 2])}</tr>" for i in range(0, len(cells), 2))
-            out += (f"<table width='100%' cellspacing='6' cellpadding='8'>{grid}</table>"
-                    f"<p align='center' class='cap'>{_('Every figure above is measured on the frames of this session.')}"
-                    "</p>")
+        measured = highlights(d, lang)
+        # the focal length and the star size are in Table 2, with how they were measured: not twice
+        twice = {"focal", "fwhm"} if measured else set()
+        rows = [(word, html.escape(value)) for key, word, value in shot_rows(d, self.s.info(), self.entered(), lang)
+                if value and key != "processing" and key not in twice]
+        out += (f"<h2>1. {_('Observation')}</h2><p class='cap'><b>{_('Table 1. Acquisition.')}</b></p>"
+                + _table(rows))
+        if measured:
+            out += (f"<p class='cap'><b>{_('Table 2. Figures measured on the frames of this session.')}</b></p>"
+                    + _table3((_("Quantity"), _("Value"), _("How it is measured")),
+                              [(html.escape(t), html.escape(v), html.escape(h)) for v, t, h in measured]))
         return out
 
     def _observation(self, d: ReportData) -> list:
-        lang = language() if language() in WORDS else "en"
-        rows = [(word, html.escape(value)) for key, word, value in shot_rows(d, self.s.info(), self.entered(), lang)
-                if value and key != "processing"]
-        title = f"1. {_('Observation')}"
-        out = [(title, f"<h2>{title}</h2>" + _table(rows))]
+        out = []                                         # (its table opens the report, in the session card)
         for night in d.nights:
             body = f"<h3>{html.escape(night.name)}</h3>" if len(d.nights) > 1 else ""
             if len(d.nights) > 1 or d.roundness is not None:
